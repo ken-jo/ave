@@ -10,7 +10,7 @@ import { type NameReader, plainFolderIgnore, projectFoldsCase } from "./folder-i
 import { createHostGit, type HostGit, HostGitError } from "./host-git.js";
 import { holdDir, type NodeId, nodeIdOf, type OwnedDir, OwnedFsError, realDirId, realWithin, type SourceRoot } from "./owned-fs.js";
 import type { JoinConflict } from "./shipped-shapes.js";
-import type { RunRef, StageWorkspaceProvider, WORKSPACE_REFUSALS } from "./stage-workspace.js";
+import type { RemovedRunProject, RunRef, StageWorkspaceProvider, WORKSPACE_REFUSALS } from "./stage-workspace.js";
 import { IGNORE_PREFIX, isIgnoreFolder, JOIN_DIR, OUT_DIR, RUN_FILE, runBranch, runRootOf, runSlug, stageDirName, WORKTREES_DIR } from "./workspace-layout.js";
 import { isRecordFilePath, isWorkspaceRecord, type LiveRepo, type OutputFile, ownerOf, recordFits, type Registration, runFolderOf, type StageEntry, samePath, vetRecordPath, type WorkspaceRecord } from "./workspace-record.js";
 import { copySeedFiles, hashSeedFile, listSeedFiles, MAX_SEED_BYTES, MAX_SEED_FILES, type SeedRules } from "./workspace-seed.js";
@@ -940,24 +940,26 @@ ${fields(side)}`;
   const unreadable = new Set<string>();
 
   /** Every run folder that holds its own record. A folder without one was not made by a run the host can name; it is left alone.
-   * `whole`: every entry under `worktrees` was read as some run's folder, so a run that is not among them has none. */
-  function recordedRuns(): { runs: Held[]; whole: boolean } {
+   * `whole`: every level under `worktrees` was listed. `unread`: the names of the run folders that hold no record the host reads;
+   * a run that is not among `runs` has no folder when its name is not among these either. */
+  function recordedRuns(): { runs: Held[]; whole: boolean; unread: Set<string> } {
     const found: Held[] = [];
+    const unread = new Set<string>();
     let whole = true;
     const real = (parent: OwnedDir, name: string): OwnedDir | undefined => { try { return parent.existing(name); } catch { return undefined; } };
     try {
       const base = holdDir(aveHome()).existing(WORKTREES_DIR);
-      if (base === undefined) return { runs: found, whole };
+      if (base === undefined) return { runs: found, whole, unread };
       for (const name of base.list()) {
         const project = real(base, name);
         if (project === undefined) { whole = false; continue; }
         for (const slug of project.list()) {
           const run = real(project, slug);
-          if (run === undefined) { whole = false; continue; }
+          if (run === undefined) { unread.add(slug); continue; }
           const runRoot = join(worktreesRoot(), name, slug);
           const file = readRunFile(runRoot, run);
           if (file !== null) { found.push({ runRoot, file, project, run }); continue; }
-          whole = false;
+          unread.add(slug);
           if (!unreadable.has(runRoot)) {
             unreadable.add(runRoot);
             log.warn("a folder under worktrees holds no record of its own and is left as it is: %s/%s", name, slug);
@@ -968,7 +970,7 @@ ${fields(side)}`;
       // A level that is no real directory holds no run the host can name.
       whole = false;
     }
-    return { runs: found, whole };
+    return { runs: found, whole, unread };
   }
 
   /** Inside the run's queue, a run folder seen earlier: the same directories holding the same owner's record, as it reads now. Null for
@@ -985,7 +987,7 @@ ${fields(side)}`;
     return (await options.removable?.())?.(run) === true;
   }
 
-  async function discard(projects: ReadonlyMap<string, string>): Promise<readonly string[]> {
+  async function discard(projects: ReadonlyMap<string, RemovedRunProject>): Promise<readonly string[]> {
     const taken: string[] = [];
     // A first selection only, so that the stores are read again for the few runs it names and not for every folder.
     const selected = await options.removable?.();
@@ -999,14 +1001,15 @@ ${fields(side)}`;
         const current = heldStill(seen);
         if (current === null) return;
         taken.push(runId);
-        await releaseIn({ ...current, ...liveOf(current.file, projects.get(runId)) }, "all", "drop");
+        await releaseIn({ ...current, ...liveOf(current.file, projects.get(runId)?.projectRoot) }, "all", "drop");
       });
       roots.delete(runSlug(itemId, runId));
     }
-    // A run with no folder left has nothing a root could be used for. A folder that could not be read may be any run's.
+    // A run with no folder left has nothing a root could be used for. A folder that could not be read may be the run's whose name
+    // it carries, under whichever project; a level that could not be listed may hold any run's.
     if (listed.whole) {
       const recorded = new Set(listed.runs.map(seen => seen.file.runId));
-      for (const runId of projects.keys()) if (!recorded.has(runId)) taken.push(runId);
+      for (const [runId, { itemId }] of projects) if (!recorded.has(runId) && !listed.unread.has(runSlug(itemId, runId))) taken.push(runId);
     }
     return taken;
   }

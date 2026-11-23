@@ -11,6 +11,9 @@ export const WORKSPACE_REFUSALS = [
 ] as const;
 type WorkspaceRefusal = typeof WORKSPACE_REFUSALS[number];
 
+/** What the host's run file named for a run when its record went: its project root, and the item it was a run of. */
+export interface RemovedRunProject { projectRoot: string; itemId: number }
+
 /** Where a run's stages work. Every stage child gets its own folder under the run root; there is no shared-folder mode. */
 export interface StageWorkspaceProvider {
   /** Once, at start. */
@@ -28,10 +31,11 @@ export interface StageWorkspaceProvider {
   release(run: RunRef, stageIds: readonly string[] | "all"): Promise<void>;
   /** Everything left under the run root, the output folder included, of each run that has no record and whose item is gone. A run
    * whose item is still listed keeps its output folder whether or not its record stays. The run branch stays. `projects` gives,
-   * by run id, the project root the host's run file named for a run when its record went; a git run is taken apart only against
-   * that root, as in `sweep`, and one with none is left whole, with a warning. Resolves to the ids of the runs it took in hand,
-   * taken apart or left whole, and of the runs in `projects` that have no folder left: what `projects` held for them has been used. */
-  discard(projects: ReadonlyMap<string, string>): Promise<readonly string[]>;
+   * by run id, what the host's run file named for a run when its record went; a git run is taken apart only against that root, as
+   * in `sweep`, and one with none is left whole, with a warning. Resolves to the ids of the runs it took in hand, taken apart or
+   * left whole, and of the runs in `projects` that have no folder left: what `projects` held for them has been used. A run has no
+   * folder left when every level was listed and no folder that could not be read carries the name its item and id give. */
+  discard(projects: ReadonlyMap<string, RemovedRunProject>): Promise<readonly string[]>;
   /** Boot: drop what no active run owns, and with it what `discard` would remove. An active run loses only what a stop during a
    * seeding left of its ignore matcher. `projects` gives, by run id, the project root the host's own run state names for a run; a
    * git run is taken apart only against that root, and one with none is left whole, with a warning. Nothing a run folder holds is

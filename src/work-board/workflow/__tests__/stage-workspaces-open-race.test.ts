@@ -320,7 +320,7 @@ onWindows.each<Unverified>([
       await expect(provider.integrate(run, "j1", ["s1"])).rejects.toThrow("the run has no integration worktree");
       await provider.release(run, "all");
       await provider.sweep([], rootAs === undefined ? undefined : new Map([[run.runId, fx.repo]]));
-      await provider.discard(new Map(rootAs === undefined ? [] : [[run.runId, fx.repo]]));
+      await provider.discard(new Map(rootAs === undefined ? [] : [[run.runId, { projectRoot: fx.repo, itemId: run.itemId }]]));
       expect(calls).toEqual([]);
       const paths = [record.project.root, local].map(path => path.toLowerCase());
       expect(between.asked.filter(path => paths.some(root => path.toLowerCase().startsWith(root)))).toEqual([]);
@@ -348,7 +348,7 @@ it("a record edited to name a registration's worktree outside the run folder is 
     between.asked.length = 0;
     await provider.release(handle.run, "all");
     await provider.sweep([], new Map([[handle.run.runId, fx.repo]]));
-    await provider.discard(new Map([[handle.run.runId, fx.repo]]));
+    await provider.discard(new Map([[handle.run.runId, { projectRoot: fx.repo, itemId: handle.run.itemId }]]));
     expect(calls).toEqual([]);
     expect(between.asked.filter(path => path.toLowerCase().startsWith(outside.toLowerCase()))).toEqual([]);
     expect(existsSync(join(runRoot, "s1", ".git"))).toBe(true);

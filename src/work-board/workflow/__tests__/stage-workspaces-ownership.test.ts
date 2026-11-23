@@ -78,11 +78,14 @@ async function scene(): Promise<Scene> {
 /** As after a restart, with item 7 gone from the board and item 8 still on it. A discard and a sweep have no project open; a release
  * is item 7's, with its project open, and a `swept` sweep and a `discarded` discard are given item 7's project as the host's run
  * state names it. */
+/** A run's project as the host's run file named it when its record went. */
+const named = ({ run }: GitHandle): [string, { projectRoot: string; itemId: number }] => [run.runId, { projectRoot: fx.repo, itemId: run.itemId }];
+
 async function operate(operation: "discard" | "sweep" | "release" | "swept" | "discarded", at?: Scene): Promise<void> {
   const provider = createStageWorkspaceProvider({ git: createHostGit({ env: fx.env }), removable: async () => run => run.itemId !== 8 });
   if (operation === "release") await provider.release((at as Scene).target.run, "all");
   else if (operation === "swept") await provider.sweep([], new Map([[(at as Scene).target.run.runId, fx.repo]]));
-  else if (operation === "discarded") await provider.discard(new Map([[(at as Scene).target.run.runId, fx.repo]]));
+  else if (operation === "discarded") await provider.discard(new Map([named((at as Scene).target)]));
   else await (operation === "discard" ? provider.discard(new Map()) : provider.sweep([]));
 }
 
@@ -170,29 +173,38 @@ it("a run whose release was refused for want of its project goes at a discard gi
   // held for it has been used.
   expect(await provider.discard(new Map())).toEqual([at.target.run.runId]);
   expectLeftWhole(at, "project.root");
-  expect(await provider.discard(new Map([[at.target.run.runId, fx.repo]]))).toEqual([at.target.run.runId]);
+  expect(await provider.discard(new Map([named(at.target)]))).toEqual([at.target.run.runId]);
   expect(existsSync(at.runRoot)).toBe(false);
   expect(existsSync(at.admin)).toBe(false);
   expect(fx.userGit(fx.repo, "branch", "--list", at.branch)).toBe("");
   expectUsersOwn(at);
 });
 
-it("a discard tells of a run it was given a root for that has no folder left, unless a folder it cannot read may be that run's", async () => {
+it("a discard tells of a run it was given a root for that has no folder left, whatever another run's folder it cannot read holds; not while a folder it cannot read carries the run's own name", async () => {
   const at = await scene();
   const provider = createStageWorkspaceProvider({ git: createHostGit({ env: fx.env }), removable: async () => run => run.itemId !== 8 });
   await provider.release(at.target.run, "all");
   expect(existsSync(at.runRoot)).toBe(false);
   // Item 8's run has its folder and its row: it is not taken in hand, and what is held for it waits.
-  const given = new Map([[at.target.run.runId, fx.repo], [at.other.run.runId, fx.repo]]);
+  const given = new Map([named(at.target), named(at.other)]);
   expect(await provider.discard(given)).toEqual([at.target.run.runId]);
   const record = join(at.otherRoot, RUN_FILE);
   const written = readFileSync(record, "utf8");
+  // Item 8's record can no longer be read: its folder may be its run's, and says nothing of item 7's.
   setPath(record, ["v"], 1);
   try {
-    expect(await provider.discard(given)).toEqual([]);
+    expect(await provider.discard(given)).toEqual([at.target.run.runId]);
   } finally {
     writeFileSync(record, written);
   }
+  // A folder with no record where item 7's run had its own.
+  mkdirSync(at.runRoot);
+  try {
+    expect(await provider.discard(given)).toEqual([]);
+  } finally {
+    rmSync(at.runRoot, { recursive: true });
+  }
+  expect(await provider.discard(given)).toEqual([at.target.run.runId]);
 });
 
 describe.each(["release", "swept", "discarded"] as const)("what a %s with its project open may remove of a git run", (operation) => {

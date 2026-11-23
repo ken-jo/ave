@@ -5,6 +5,7 @@ import type { WorkBoardStore } from "../../main/work-board-store.js";
 import type { RemovedRun } from "../../main/workflow-run-store.js";
 import type { WorkflowTemplateStore } from "../../main/workflow-template-store.js";
 import { boardRunState } from "../../work-board/workflow/run-state.js";
+import type { RemovedRunProject } from "../../work-board/workflow/stage-workspace.js";
 import { createStageWorkspaceProvider } from "../../work-board/workflow/stage-workspaces.js";
 import { bindStageWorkspace, unbindStageWorkspace } from "../../permissions/stage-workspace-binding.js";
 import type { StageRunEngineDeps } from "../../work-board/workflow/stage-run-engine.js";
@@ -25,13 +26,13 @@ export function workflowEngineExtensions(store: WorkBoardStore, attachments: Pic
   // A run's output folder lives as long as its item. A record can go while its row is still listed (a later run superseded it and the
   // row's history let it go): that run's output stays until the row goes. A board that cannot be read removes nothing.
   const workspace = createStageWorkspaceProvider({ removable: () => store.runsWithoutItem() });
-  // The project of each run whose record this process saw go, as the run file last named it: a git run is taken apart only against
-  // it, and its row may go after its record. An entry goes once a discard has used it or found no folder left of its run, and the
+  // The project of each run whose record this process saw go, as the run file last named it, with the run's item: a git run is taken
+  // apart only against it, and its row may go after its record. An entry goes once a discard has used it or found no folder left of its run, and the
   // oldest goes when more than KEPT_PROJECTS wait. A run with none here (its record went in an earlier process, or its entry aged out) is left whole.
-  const projects = new Map<string, string>();
-  const note = (runId: string, projectRoot: string): void => {
+  const projects = new Map<string, RemovedRunProject>();
+  const note = (runId: string, itemId: number, projectRoot: string): void => {
     projects.delete(runId);
-    projects.set(runId, projectRoot);
+    projects.set(runId, { projectRoot, itemId });
     for (const oldest of projects.keys()) {
       if (projects.size <= KEPT_PROJECTS) break;
       projects.delete(oldest);
@@ -50,10 +51,10 @@ export function workflowEngineExtensions(store: WorkBoardStore, attachments: Pic
   // while such a read is open every discard waits for it, the one its row's removal asks for too, or that discard would find the
   // run with no root and leave it whole with a warning, only for the next to take it apart.
   const reading = new Set<Promise<void>>();
-  const scheduled = (runId: string, attachmentId: string): void => {
+  const scheduled = (runId: string, itemId: number, attachmentId: string): void => {
     const read = attachments.getAttachment(attachmentId).catch(() => null).then((attachment) => {
       const approved = attachment?.approvedScope;
-      if (approved?.kind === "project") note(runId, approved.projectRoot);
+      if (approved?.kind === "project") note(runId, itemId, approved.projectRoot);
       reading.delete(read);
     });
     reading.add(read);
@@ -63,9 +64,9 @@ export function workflowEngineExtensions(store: WorkBoardStore, attachments: Pic
     else void Promise.all(reading).then(ask);
   };
   store.runs.onRunsRemoved = (removed: readonly RemovedRun[]) => {
-    for (const { runId, runStartedBy: source } of removed) {
-      if (source.kind === "schedule-attachment") scheduled(runId, source.attachmentId);
-      else if (source.projectRoot !== undefined) note(runId, source.projectRoot);
+    for (const { runId, itemId, runStartedBy: source } of removed) {
+      if (source.kind === "schedule-attachment") scheduled(runId, itemId, source.attachmentId);
+      else if (source.projectRoot !== undefined) note(runId, itemId, source.projectRoot);
     }
     ask();
   };

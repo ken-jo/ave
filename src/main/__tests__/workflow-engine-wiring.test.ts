@@ -9,6 +9,8 @@ import { stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
 import { gitFixture } from "../../work-board/workflow/__tests__/stage-git-fixture.js";
 import { stageRunHarness } from "../../work-board/workflow/__tests__/stage-run-harness.js";
 
+/** The project root a discard was given for each run. */
+const rootsOf = (projects: ReadonlyMap<string, { projectRoot: string }>): Map<string, string> => new Map([...projects].map(([runId, named]) => [runId, named.projectRoot]));
 const auto = (id: string, inputs: string[] = []) => stageOf(id, { inputs, gate: { type: "auto", pass: { kind: "stage_ok" } } });
 
 it("with the production parts and a workspace provider, an authorised template run starts, is stored in the run file and completes", async () => {
@@ -65,10 +67,11 @@ it("with the production parts alone a run works in stage folders under the home 
 
 it("the production parts give a discard the project of each run whose record went: a card's root at once, a schedule's approved one once read", async () => {
   const given: Map<string, string>[] = [];
+  const items: Map<string, number>[] = [];
   const atOnce: { removed: readonly RemovedRun[]; projects: Map<string, string> | undefined }[] = [];
   const h = await stageRunHarness({ wiring: (store, harness) => {
     const parts = workflowEngineExtensions(store, harness.templates);
-    vi.spyOn(parts.workspace, "discard").mockImplementation(async (projects) => { given.push(new Map(projects)); return []; });
+    vi.spyOn(parts.workspace, "discard").mockImplementation(async (projects) => { given.push(rootsOf(projects)); items.push(new Map([...projects].map(([runId, named]) => [runId, named.itemId]))); return []; });
     // A row's removal asks for a discard as soon as its record's has been announced.
     const announce = store.runs.onRunsRemoved;
     store.runs.onRunsRemoved = (removed) => {
@@ -98,6 +101,8 @@ it("the production parts give a discard the project of each run whose record wen
     expect(atOnce.find(entry => entry.removed.some(run => run.runId === cardRun))?.projects?.get(cardRun)).toBe(A);
     // A run with no project has none to give, and is left to the provider as one.
     await vi.waitFor(() => expect(given.at(-1)).toEqual(new Map([[cardRun, A], [scheduledRun, B]])), { timeout: 5000 });
+    // Each with the item it was a run of: the two name the run's folder.
+    expect(items.at(-1)).toEqual(new Map([[cardRun, card], [scheduledRun, scheduled]]));
   } finally {
     await h.cleanup();
   }
@@ -110,7 +115,7 @@ async function withNotedDiscards(run: (announce: (runs: [runId: string, projectR
   const taken: string[] = [];
   const h = await stageRunHarness({ wiring: (store, harness) => {
     const parts = workflowEngineExtensions(store, harness.templates);
-    vi.spyOn(parts.workspace, "discard").mockImplementation(async (projects) => { given.push(new Map(projects)); return [...taken]; });
+    vi.spyOn(parts.workspace, "discard").mockImplementation(async (projects) => { given.push(rootsOf(projects)); return [...taken]; });
     return { ...parts, workspace: harness.workspace, workspaceBinding: undefined };
   } });
   try {
@@ -175,7 +180,7 @@ it("a discard a row's removal asks for while a schedule's approved project is st
     expect.soft(discard).not.toHaveBeenCalled();
     answer();
     await vi.waitFor(() => expect(existsSync(open.workspace.runRoot)).toBe(false), { timeout: 20_000 });
-    expect.soft(discard.mock.calls.map(([projects]) => projects.get(run.runId))).toEqual(discard.mock.calls.map(() => fx.repo));
+    expect.soft(discard.mock.calls.map(([projects]) => projects.get(run.runId)?.projectRoot)).toEqual(discard.mock.calls.map(() => fx.repo));
     expect.soft(said.mock.calls.map(line => line.join(" ")).filter(line => line.includes("cleanup is unverified"))).toEqual([]);
   } finally {
     said.mockRestore();
@@ -197,7 +202,7 @@ async function withHeldDiscards(run: (announce: (runs: [runId: string, projectRo
   const discards: HeldDiscard[] = [];
   const h = await stageRunHarness({ wiring: (store, harness) => {
     const parts = workflowEngineExtensions(store, harness.templates);
-    vi.spyOn(parts.workspace, "discard").mockImplementation(projects => new Promise((answer, fail) => { discards.push({ given: new Map(projects), answer, fail }); }));
+    vi.spyOn(parts.workspace, "discard").mockImplementation(projects => new Promise((answer, fail) => { discards.push({ given: rootsOf(projects), answer, fail }); }));
     return { ...parts, workspace: harness.workspace, workspaceBinding: undefined };
   } });
   try {
