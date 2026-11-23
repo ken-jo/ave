@@ -26,8 +26,8 @@ export function workflowEngineExtensions(store: WorkBoardStore, attachments: Pic
   // row's history let it go): that run's output stays until the row goes. A board that cannot be read removes nothing.
   const workspace = createStageWorkspaceProvider({ removable: () => store.runsWithoutItem() });
   // The project of each run whose record this process saw go, as the run file last named it: a git run is taken apart only against
-  // it, and its row may go after its record. An entry goes once a discard has used it or found no folder left of its run, and the oldest goes when more than
-  // KEPT_PROJECTS wait. A run with none here (its record went in an earlier process, or its entry aged out) is left whole.
+  // it, and its row may go after its record. An entry goes once a discard has used it or found no folder left of its run, and the
+  // oldest goes when more than KEPT_PROJECTS wait. A run with none here (its record went in an earlier process, or its entry aged out) is left whole.
   const projects = new Map<string, string>();
   const note = (runId: string, projectRoot: string): void => {
     projects.delete(runId);
@@ -46,20 +46,30 @@ export function workflowEngineExtensions(store: WorkBoardStore, attachments: Pic
       .catch((error: unknown) => log.warn("[workflow] a removed run's workspace was not discarded: %s", (error as Error).message));
   };
   // As the engine tells a run's project: the card's root for Create and run, the approved snapshot for a schedule. A card's root is
-  // noted before anything is awaited, so a discard its row's removal asks for at once already has it.
-  const scheduled = async (runId: string, attachmentId: string): Promise<void> => {
-    const approved = (await attachments.getAttachment(attachmentId).catch(() => null))?.approvedScope;
-    if (approved?.kind === "project") note(runId, approved.projectRoot);
+  // noted before anything is awaited, so a discard its row's removal asks for at once already has it. A schedule's is read first:
+  // while such a read is open every discard waits for it, the one its row's removal asks for too, or that discard would find the
+  // run with no root and leave it whole with a warning, only for the next to take it apart.
+  const reading = new Set<Promise<void>>();
+  const scheduled = (runId: string, attachmentId: string): void => {
+    const read = attachments.getAttachment(attachmentId).catch(() => null).then((attachment) => {
+      const approved = attachment?.approvedScope;
+      if (approved?.kind === "project") note(runId, approved.projectRoot);
+      reading.delete(read);
+    });
+    reading.add(read);
+  };
+  const ask = (): void => {
+    if (reading.size === 0) discard();
+    else void Promise.all(reading).then(ask);
   };
   store.runs.onRunsRemoved = (removed: readonly RemovedRun[]) => {
-    const asked: Promise<void>[] = [];
     for (const { runId, runStartedBy: source } of removed) {
-      if (source.kind === "schedule-attachment") asked.push(scheduled(runId, source.attachmentId));
+      if (source.kind === "schedule-attachment") scheduled(runId, source.attachmentId);
       else if (source.projectRoot !== undefined) note(runId, source.projectRoot);
     }
-    void Promise.all(asked).then(discard);
+    ask();
   };
-  store.onItemRemoved = discard;
+  store.onItemRemoved = ask;
   return {
     runs: boardRunState(store),
     workspace,

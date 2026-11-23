@@ -6,6 +6,7 @@ import { aveHome } from "../../shared/ave-home.js";
 import { workflowEngineExtensions } from "../../boot/steps/workflow-engine-extensions.js";
 import type { RemovedRun } from "../workflow-run-store.js";
 import { stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
+import { gitFixture } from "../../work-board/workflow/__tests__/stage-git-fixture.js";
 import { stageRunHarness } from "../../work-board/workflow/__tests__/stage-run-harness.js";
 
 const auto = (id: string, inputs: string[] = []) => stageOf(id, { inputs, gate: { type: "auto", pass: { kind: "stage_ok" } } });
@@ -141,3 +142,41 @@ it("the production parts keep the projects of the newest 256 removed records tha
   expect(later?.size).toBe(256);
   expect([later?.has("stale"), later?.get("kept"), later?.has("later-254")]).toEqual([false, "/projects/b", true]);
 }));
+
+it("a discard a row's removal asks for while a schedule's approved project is still being read waits for it: the git run goes, with no warning", async () => {
+  // The repository's folder goes with the test run's temporary root.
+  const fx = gitFixture();
+  vi.stubEnv("GIT_CONFIG_GLOBAL", fx.env.GIT_CONFIG_GLOBAL ?? "");
+  vi.stubEnv("GIT_CONFIG_NOSYSTEM", "1");
+  const said = vi.spyOn(console, "warn");
+  let answer = (): void => undefined;
+  const reading = new Promise<void>((resolve) => { answer = resolve; });
+  let parts: ReturnType<typeof workflowEngineExtensions> | undefined;
+  const h = await stageRunHarness({ wiring: (store, harness) => {
+    parts = workflowEngineExtensions(store, { getAttachment: async (id) => { await reading; return { ...await harness.templates.getAttachment(id), approvedScope: { kind: "project", projectRoot: fx.repo } } as never; } });
+    return { ...parts, workspace: harness.workspace, workspaceBinding: undefined };
+  } });
+  try {
+    const version = await h.confirm([stageOf("a")]);
+    await h.addItem(version);
+    const workspace = parts?.workspace;
+    if (workspace === undefined) throw new Error("the parts were not chosen");
+    // A git run of a row that is not on the board, with no record left: only the root its removed record named lets it be taken apart.
+    const run = { itemId: 99, runId: `run-wiring-${process.pid}-${Date.now()}`, runKey: "key", projectRoot: fx.repo };
+    const open = await workspace.open(run, fx.repo);
+    if (!open.ok) throw new Error(open.code);
+    const discard = vi.spyOn(workspace, "discard");
+    h.board.runs.onRunsRemoved?.([{ runId: run.runId, itemId: run.itemId, runStartedBy: { kind: "schedule-attachment", attachmentId: "attachment", pin: h.pinOf(version), firedAt: "2026-11-16T00:00:00.000Z" } }]);
+    h.board.onItemRemoved?.();
+    await new Promise(resolve => setImmediate(resolve));
+    expect.soft(discard).not.toHaveBeenCalled();
+    answer();
+    await vi.waitFor(() => expect(existsSync(open.workspace.runRoot)).toBe(false), { timeout: 20_000 });
+    expect.soft(discard.mock.calls.map(([projects]) => projects.get(run.runId))).toEqual(discard.mock.calls.map(() => fx.repo));
+    expect.soft(said.mock.calls.map(line => line.join(" ")).filter(line => line.includes("cleanup is unverified"))).toEqual([]);
+  } finally {
+    said.mockRestore();
+    vi.unstubAllEnvs();
+    await h.cleanup();
+  }
+});
