@@ -9,8 +9,9 @@ import { workBoardOriginSessionId } from "../../../shared/work-board-types.js";
 import type { StageWorkspaceProvider } from "../stage-workspace.js";
 import { stageRunHarness } from "./stage-run-harness.js";
 
-it("checks board and run changes without advancing timers", { timeout: 5_000 }, async () => {
+it("checks board and run changes without advancing timers", async () => {
   const h = await stageRunHarness();
+  const release = deferred<void>();
   try {
     const version = await h.confirm([autoStageOf("a")]);
     const id = await h.addItem(version);
@@ -18,29 +19,52 @@ it("checks board and run changes without advancing timers", { timeout: 5_000 }, 
     expect(await h.board.beginRun(id, runId, "2026-11-16T00:00:00.000Z", {
       ...h.pinOf(version), source: h.local(version), stageRuns: [{ stageId: "a", attempt: 1, status: "waiting" }],
     })).toMatchObject({ status: "updated" });
-    const initial = deferred<void>();
-    const boardWake = deferred<void>();
+    const board = h.board;
+    const boardRead = await board.get(id);
+    const runRead = await board.runs.get(runId);
+    if (boardRead.status !== "found" || runRead.status !== "found") throw new Error("Missing wait fixture");
+    let boardSnapshot = boardRead;
+    let runSnapshot = runRead;
+    vi.spyOn(board, "get").mockImplementation(async () => boardSnapshot);
+    const read = vi.spyOn(board.runs, "get").mockImplementation(async () => runSnapshot);
+
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    const current = h.until(id, item => {
-      if (item.title === "Work") initial.resolve();
-      if (item.title === "Renamed") boardWake.resolve();
-      return h.statusOf(item, "a") === "running";
-    });
+    const matches = vi.fn((item: Awaited<ReturnType<typeof h.item>>) => h.statusOf(item, "a") === "running");
+    const current = h.until(id, matches);
     const stage = h.untilStage(id, "a", "running");
+    const done = Promise.all([current, stage]);
     const settled = vi.fn();
-    void Promise.all([current, stage]).then(settled, settled);
-    await initial.promise;
-    expect(await h.board.update(id, { title: "Renamed" })).toMatchObject({ status: "updated" });
-    await boardWake.promise;
+    void done.then(settled, settled);
+    await setImmediate();
+    expect(matches.mock.calls).toEqual([[expect.objectContaining({ title: "Work" })]]);
+    expect(read).toHaveBeenCalledTimes(2);
+
+    read.mockImplementationOnce(async () => {
+      await release.promise;
+      return runRead;
+    });
+    boardSnapshot = { ...boardRead, item: { ...boardRead.item, title: "Renamed" } };
+    board.boardChanged.emit();
+    await setImmediate();
+    expect(read).toHaveBeenCalledTimes(4);
     expect(settled).not.toHaveBeenCalled();
-    expect(await h.board.runs.update(runId, run => ({ ...run, stageRuns: [{ ...run.stageRuns[0], status: "running" }] })))
-      .toMatchObject({ status: "stored" });
-    for (const item of await Promise.all([current, stage])) {
+
+    runSnapshot = { ...runRead, run: { ...runRead.run, stageRuns: [{ ...runRead.run.stageRuns[0], status: "running" }] } };
+    board.runs.runChanged.emit(runId);
+    release.resolve();
+    await setImmediate();
+    expect(settled).toHaveBeenCalledTimes(1);
+    expect(matches.mock.calls).toEqual([
+      [expect.objectContaining({ title: "Work" })],
+      [expect.objectContaining({ title: "Renamed" })],
+    ]);
+    for (const item of await done) {
       expect(item.title).toBe("Renamed");
       expect(h.statusOf(item, "a")).toBe("running");
     }
     expect(vi.getTimerCount()).toBe(0);
   } finally {
+    release.resolve();
     vi.useRealTimers();
     await h.cleanup();
   }
