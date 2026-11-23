@@ -234,6 +234,7 @@ export class WorkflowRunStore {
 
   // Deletes whose outcome is unknown and whose marker the file may not hold: a write or read of it failed (see markUnknown).
   private unknown: DeleteMarker[] = [];
+  private stagedUnknownRemovals: ReadonlySet<DeleteMarker> | undefined;
 
   constructor(private readonly filePath = join(openFeatureNamespace("work-board").dir, "workflow-runs.json")) {}
 
@@ -407,13 +408,18 @@ export class WorkflowRunStore {
       if (hasIntent && !droppingStored && removed.size === 0) return "marked";
       if (!hasIntent) file.deleteIntents = [...intents, { itemId: intent.itemId, runId: intent.runId }];
       file.unknownDeletes = kept;
-      const committed = await this.commit(file, { confirm: runIds => {
-        if (runIds === undefined || removed.size === 0) return;
-        const count = this.unknown.length;
-        this.unknown = this.unknown.filter(marker => !removed.has(marker));
-        if (this.unknown.length < count) runIds.add(intent.runId);
-      } });
-      return committed ? "marked" : "too-large";
+      this.stagedUnknownRemovals = removed;
+      try {
+        const committed = await this.commit(file, { confirm: runIds => {
+          if (runIds === undefined || removed.size === 0) return;
+          const count = this.unknown.length;
+          this.unknown = this.unknown.filter(marker => !removed.has(marker));
+          if (this.unknown.length < count) runIds.add(intent.runId);
+        } });
+        return committed ? "marked" : "too-large";
+      } finally {
+        this.stagedUnknownRemovals = undefined;
+      }
     });
   }
 
@@ -456,10 +462,13 @@ export class WorkflowRunStore {
    * that cannot be written stays in memory only. Given the pair alone (only tests do), it is a row's delete that stored its intent. */
   async markUnknown(intent: DeleteIntent, operation: MarkerOp = { op: "row", ownIntent: true }): Promise<void> {
     const marker: DeleteMarker = { itemId: intent.itemId, runId: intent.runId, operation };
-    if (!this.unknown.some(sameMarker(marker))) this.unknown = [...this.unknown, marker];
+    const matches = sameMarker(marker);
+    if (!this.unknown.some(entry => !this.stagedUnknownRemovals?.has(entry) && matches(entry))) {
+      this.unknown = [...this.unknown, marker];
+    }
     await withInProcessFileQueue(this.filePath, async () => {
       const file = await this.read();
-      if (file === undefined || markersIn(file).some(sameMarker(marker))) return;
+      if (file === undefined || markersIn(file).some(matches)) return;
       file.unknownDeletes = [...(file.unknownDeletes ?? []), markerEntry(marker)];
       await this.commit(file);
     }).catch(() => undefined);

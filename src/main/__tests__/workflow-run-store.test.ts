@@ -163,11 +163,11 @@ it("refuses to persist a delete if a memory marker decision fails", async () => 
   expect(changed).not.toHaveBeenCalled();
 });
 
-it("delivers a successful delete commit and keeps a marker added during persistence", async () => {
+it.each(["row", "card"] as const)("delivers a successful delete commit and keeps a concurrently reported %s marker", async op => {
   const store = new WorkflowRunStore(file);
   const pair = { runId: "run-1", itemId: 1 };
   const rowMarker = { ...pair, operation: { op: "row", ownIntent: true } };
-  const cardOperation = { op: "card", ownIntent: true } as const;
+  const operation = { op, ownIntent: true } as const;
   await store.put(run());
   await store.markUnknown(pair);
   const changed = vi.fn(() => store.markersOf(pair));
@@ -176,7 +176,7 @@ it("delivers a successful delete commit and keeps a marker added during persiste
   const release = deferred<void>();
   const persist = namespace.writeFileAtomicAtPath;
   let persisted = false;
-  vi.spyOn(namespace, "writeFileAtomicAtPath").mockImplementationOnce(async (...args) => {
+  const write = vi.spyOn(namespace, "writeFileAtomicAtPath").mockImplementationOnce(async (...args) => {
     entered.resolve();
     await release.promise;
     await persist(...args);
@@ -192,16 +192,18 @@ it("delivers a successful delete commit and keeps a marker added during persiste
   let adding: Promise<void> | undefined;
   try {
     await entered.promise;
-    adding = store.markUnknown(pair, cardOperation);
+    adding = store.markUnknown(pair, operation);
     expect(changed).not.toHaveBeenCalled();
     release.resolve();
     await expect(deleting).resolves.toBe("marked");
     await adding;
     expect(persisted).toBe(true);
+    expect(write).toHaveBeenCalledTimes(2);
+    expect((await store.runFacts())?.of(pair)).toEqual({ readable: true, intent: true, unknown: true });
     expect(held.mock.calls).toEqual([[rowMarker]]);
     expect(changed).toHaveBeenCalledTimes(1);
     expect(changed).toHaveBeenCalledWith(pair.runId);
-    expect(await changed.mock.results[0].value).toEqual([{ ...pair, operation: cardOperation }]);
+    expect(await changed.mock.results[0].value).toEqual([{ ...pair, operation }]);
     expect((await new WorkflowRunStore(file).runFacts())?.of(pair))
       .toEqual({ readable: true, intent: true, unknown: false });
   } finally {
