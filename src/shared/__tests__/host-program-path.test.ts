@@ -58,7 +58,7 @@ describe("resolveHostProgram", () => {
   });
 
   it("refuses a relative path instead of joining it to a directory", () => {
-    expect(() => resolveHostProgram("bin/tool", { PATH: base })).toThrow(/bare name or an absolute path/u);
+    expect(() => resolveHostProgram("bin/tool", { PATH: base })).toThrow(/use an absolute path or a program name on PATH/u);
     expect(() => resolveHostProgram("./tool", { PATH: bin })).toThrow(HostProgramNotFoundError);
   });
 
@@ -74,7 +74,7 @@ describe("resolveHostProgram", () => {
     expect(resolveHostProgram("tool", { Path: `"${bin}"` })).toBe(expected());
     expect(resolveHostProgram("tool.exe", { Path: bin })).toBe(expected());
     expect(findHostProgram("only", { Path: bin })).toBeNull();
-    expect(() => resolveHostProgram("C:tool", { Path: bin })).toThrow(/bare name or an absolute path/u);
+    expect(() => resolveHostProgram("C:tool", { Path: bin })).toThrow(/use an absolute path or a program name on PATH/u);
     expect(resolveHostProgram("\\Tools\\tool.exe", { Path: bin })).toBe("\\Tools\\tool.exe");
   });
 });

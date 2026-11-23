@@ -99,7 +99,7 @@ export function resolveHostProgram(
   if (found !== null) return found;
   throw new HostProgramNotFoundError(
     /[\\/]/u.test(program) || (platform === "win32" && program.includes(":"))
-      ? `Program '${program}' must be a bare name or an absolute path`
+      ? `Program '${program}' is a relative path; use an absolute path or a program name on PATH`
       : `Program '${program}' was not found on PATH`,
   );
 }

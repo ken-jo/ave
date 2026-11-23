@@ -270,6 +270,8 @@ worker.onExit(({ reason }) => {
 const status = await worker.request("index_status", { scope: "all" });
 ```
 
+`command` is an absolute path or a program name the host finds on `PATH`, never in a current directory; a relative path is refused.
+
 `spawnWorker` resolves only after the hello. A worker that writes anything else
 first, answers wrongly or never answers is stopped and the call rejects with
 `worker-control-failed`. Reusing the `workerId` of a worker that is still running or

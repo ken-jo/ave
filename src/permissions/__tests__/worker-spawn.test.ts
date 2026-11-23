@@ -381,8 +381,11 @@ describe("spawnWorker — gate OFF (default)", () => {
 
   it("refuses a worker name reachable only through the cwd or empty and relative PATH entries, and a relative path", async () => {
     await withPlantedProgram(["ave-planted-worker"], async () => {
-      for (const command of ["ave-planted-worker", "./ave-planted-worker"]) {
-        await expect(spawnWorker(workerOptions({ command }))).rejects.toThrow(/not found on PATH|bare name or an absolute path/u);
+      for (const [command, message] of [
+        ["ave-planted-worker", /'ave-planted-worker' was not found on PATH/u],
+        ["./ave-planted-worker", /'\.\/ave-planted-worker' is a relative path; use an absolute path or a program name on PATH/u],
+      ] as const) {
+        await expect(spawnWorker(workerOptions({ command }))).rejects.toThrow(message);
       }
     });
     expect(spawnMock).not.toHaveBeenCalled();

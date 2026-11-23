@@ -716,10 +716,13 @@ describe("StdioTransport — regression", () => {
 
   it("refuses a configured name reachable only through the cwd or empty and relative PATH entries, and a relative path", async () => {
     await withPlantedProgram(["ave-planted-mcp"], async () => {
-      for (const command of ["ave-planted-mcp", "./ave-planted-mcp"]) {
+      for (const [command, message] of [
+        ["ave-planted-mcp", /'ave-planted-mcp' was not found on PATH/u],
+        ["./ave-planted-mcp", /'\.\/ave-planted-mcp' is a relative path; use an absolute path or a program name on PATH/u],
+      ] as const) {
         const client = new McpClient({ id: "planted", transport: "stdio", command },
           governanceWithPolicy(buildPolicy([stdioApproval("planted", command)])), new ToolRegistry(), stubbedGlobalNetworkFetch);
-        await expect(client.connect()).rejects.toThrow(/not found on PATH|bare name or an absolute path/u);
+        await expect(client.connect()).rejects.toThrow(message);
       }
     });
     expect(spawnMock).not.toHaveBeenCalled();
