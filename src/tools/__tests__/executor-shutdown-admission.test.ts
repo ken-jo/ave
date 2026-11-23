@@ -101,7 +101,7 @@ async function freshExecutor(
     .filter((name) => name.endsWith(".jsonl") && !name.includes("permission-audit"))
     .flatMap((name) => readFileSync(join(audit.getAuditDir(), name), "utf8").split("\n").filter(Boolean))
     .map((line) => JSON.parse(line) as Record<string, unknown>);
-  return { ledger, executor, executes, audit, rows, plainRows, hostShutdownRows, toolUses, cancelled, asked: asked.promise };
+  return { ledger, executor, executes, audit, rows, plainRows, hostShutdownRows, toolUses, cancelled, gate, asked: asked.promise };
 }
 
 describe("ToolExecutor admission across the quit seal", () => {
@@ -136,6 +136,27 @@ describe("ToolExecutor admission across the quit seal", () => {
     expect(result.is_error).toBe(true);
     expect(executes[0]).toHaveBeenCalledOnce();
     expect(hostShutdownRows(rowsAtClose, "tu-queued-0")).toEqual([expect.objectContaining({ trustOrigin: "unknown" })]);
+  });
+
+  it("keeps a user's answered deny when the seal lands before the executor resumes", async () => {
+    const { ledger, executor, executes, audit, rows, hostShutdownRows, toolUses, gate, asked } = await freshExecutor(1, [], { ask: true });
+    const running = executor.executeAll(toolUses, { sessionId: "sess-answered", permissionContext: userPermissionContext() });
+    const card = await asked;
+    // The person's answer settles the gate; the seal lands before the awaiting executor runs again.
+    expect(gate?.resolve(card.id, { requestId: card.id, choice: "deny-once", nonce: card.nonce, hmac: card.hmac })?.choice).toBe("deny-once");
+    ledger.sealToolInvocations();
+    let rowsAtClose: Array<Record<string, unknown>> = [];
+    const join = ledger.closeToolInvocationAudit(async () => { rowsAtClose = rows(); await audit.close(); });
+    const [result] = await running;
+    await join;
+    expect(result.is_error).toBe(true);
+    expect(executes[0]).not.toHaveBeenCalled();
+    expect(hostShutdownRows(rowsAtClose, "tu-queued-0")).toEqual([]);
+    // The user's row lands before the audit closes.
+    expect(rowsAtClose.filter((row) => row.toolUseId === "tu-queued-0" && row.decision === "deny")).toEqual([expect.objectContaining({
+      denyReasons: [{ reason: "user denied approval request", source: "tool-executor" }],
+      trustOrigin: "user-keyboard",
+    })]);
   });
 
   it("records a parked ask the seal cancels as the host's refusal", async () => {

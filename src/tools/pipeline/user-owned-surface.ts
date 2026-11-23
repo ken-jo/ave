@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { ApprovalDecision, ApprovalGate, ApprovalRequestInput } from "../../permissions/approval-gate.js";
-import { isHostApprovalRejectedDecision } from "../../permissions/approval-gate.js";
+import { hostPolicyDenial, isHostApprovalRejectedDecision } from "../../permissions/approval-gate.js";
 import type { PermissionCheckResult, PermissionManager } from "../../permissions/permission-manager.js";
+import { abortSupersedesApprovalDecision } from "./approval-outcome.js";
 
 export function userOwnedSurfaceCardFacts(
   permission: PermissionCheckResult,
@@ -32,8 +33,8 @@ export async function resolveUserOwnedSurfaceApproval(input: {
   let { permission, decision } = input;
   if (!request.userOwnedSurface || !sessionId || !decision.choice.startsWith("allow") || Boolean(isHostApprovalRejectedDecision(decision))) return { permission, decision };
   permission = manager.recheckPermission(permission);
-  if (permission.decision === "deny") return { permission, decision: { requestId: decision.requestId, choice: "deny-once" }, humanApproved: false };
-  if (permission.forceModal && !request.forceExplicit) return { permission, decision: { requestId: decision.requestId, choice: "deny-once" }, humanApproved: false };
+  if (permission.decision === "deny") return { permission, decision: hostPolicyDenial(decision.requestId), humanApproved: false };
+  if (permission.forceModal && !request.forceExplicit) return { permission, decision: hostPolicyDenial(decision.requestId), humanApproved: false };
   if (request.userOwnedSurfaceReviewFallback) return { permission, decision, humanApproved: true };
   const choice = gate.consumeUserOwnedSurfaceChoice(decision, sessionId, request.userOwnedSurface);
   if (choice === undefined) throw new Error("User-owned surface approval receipt is unavailable.");
@@ -53,7 +54,7 @@ export async function resolveUserOwnedSurfaceApproval(input: {
     ...(permission.forceModal ? { forceExplicit: true, allowedChoices: ["allow-once", "deny-once"], durableApprovalRecordAllowed: false } : {}),
   };
   decision = await gate.requestAndWait(fallback);
-  request.abortSignal?.throwIfAborted();
+  if (abortSupersedesApprovalDecision(request.abortSignal, decision)) request.abortSignal?.throwIfAborted();
   if (epoch !== manager.getPolicyEpoch() && !gate.allowsPolicyTransition(decision, epoch, manager.getPolicyEpoch())) throw new Error("Permission policy changed while approval was pending.");
   permission = manager.recheckPermission(permission);
   if (permission.decision === "deny") throw new Error(permission.reason);

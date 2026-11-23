@@ -38,7 +38,7 @@ import {
 } from "../shared/chat-origin.js";
 import type { ApprovalPurposeSuggestion } from "../shared/permission-review-status.js";
 import { t } from "../i18n/index.js";
-import { approvalFailureOutcome } from "./pipeline/approval-outcome.js";
+import { abortSupersedesApprovalDecision, approvalFailureOutcome } from "./pipeline/approval-outcome.js";
 import { createLogger } from "../lib/logger.js";
 import { AveHomeConfigurationRefusedWriteError } from "../shared/ave-home.js";
 import {
@@ -1162,8 +1162,9 @@ export async function authorizeToolInvocation(
         // deny-once when it unparks on the abort, which is the correct
         // fail-closed permission answer, but recording it as the outcome would
         // put the owner refusing this specific call into the transcript.
-        // Report the stop, exactly as the pre-ask check above does.
-        if (abortSignal?.aborted) {
+        // Report the stop, exactly as the pre-ask check above does. A deny the person already answered is
+        // still theirs when the quit seal lands before this resumes, and is recorded below as theirs.
+        if (abortSupersedesApprovalDecision(abortSignal, decision)) {
           return withHostShellExecutionPlan(
             await returnUserAbort(abortDeps(finalInput)),
           );

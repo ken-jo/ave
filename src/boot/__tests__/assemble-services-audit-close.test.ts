@@ -109,6 +109,8 @@ describe("shutdown permission audit ordering", () => {
     const { assembleAppServices: assemble } = await import("../assemble-services.js");
     const { ToolExecutor: Executor } = await import("../../tools/executor.js");
     const { HostExitAbortError } = await import("../../shared/host-exit-abort.js");
+    // The gate's host-decision markers live in its module, so it comes from the same fresh graph as the executor.
+    const { ApprovalGate: Gate } = await import("../../permissions/approval-gate.js");
     const controller = withTurn ? new AbortController() : undefined;
     const wc = makeMockWebContents();
     const sent = deferred<void>();
@@ -117,7 +119,7 @@ describe("shutdown permission audit ordering", () => {
     wc.send.mockImplementation((channel: string) => {
       if (channel === IPC_APPROVAL_REQUEST) sent.resolve();
     });
-    const approvalGate = new ApprovalGate(wc as never, undefined, undefined, audit);
+    const approvalGate = new Gate(wc as never, undefined, undefined, audit);
     gate = approvalGate;
     audit.beforeDeny = async () => {
       await afterQueuedCallbacks();

@@ -1,5 +1,7 @@
 import { admitToolInvocation, admitToolInvocationWhileAuditOpen, appendToolInvocationAudit, toolInvocationsSealed } from "../../tools/invocation-ledger.js";
 import { HostExitAbortError, isHostExitAbort } from "../../shared/host-exit-abort.js";
+import { isAnsweredApprovalDenial } from "../../permissions/approval-gate.js";
+import { hostApprovalDenialReason } from "../../tools/pipeline/approval-outcome.js";
 /** Route plugin calls through the executor; only trusted panel calls may use the app-only runtime bypass. */
 import { randomUUID } from "node:crypto";
 import { createHookRunner } from "../conversation.js";
@@ -662,8 +664,17 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
           if (!governedTool) {
             throw new Error(`[plugin-operation-policy] governed plugin tool '${toolName}' disappeared`);
           }
-          const hostShutdown = isHostExitAbort(admission.signal.reason);
-          if (hostShutdown || decision.choice !== "allow-once") {
+          if (isHostExitAbort(admission.signal.reason) || decision.choice !== "allow-once") {
+            // Who decided comes from the decision: a person's answered deny stays theirs even when the seal
+            // lands before this resumes; a deny the host produced, or an allow the seal vetoes, is the host's.
+            const denial = isAnsweredApprovalDenial(decision)
+              ? { reason: "plugin operation grant denied by user", trustOrigin: "user-keyboard" as const }
+              : {
+                  reason: isHostExitAbort(admission.signal.reason)
+                    ? "host-shutdown"
+                    : hostApprovalDenialReason(decision) ?? "approval rejected by host",
+                  trustOrigin: "unknown" as const,
+                };
             await appendToolInvocationAudit(bootAuditLogger, {
               decision: "deny",
               ts: new Date().toISOString(),
@@ -671,12 +682,8 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
               tool: toolName,
               source: "plugin",
               category: governedTool.category,
-              denyReasons: [{
-                reason: hostShutdown ? "host-shutdown" : "plugin operation grant denied by user",
-                source: "plugin-operation-grant",
-              }],
-              // A host-shutdown refusal is the host's, not a person's answer.
-              trustOrigin: hostShutdown ? "unknown" : "user-keyboard",
+              denyReasons: [{ reason: denial.reason, source: "plugin-operation-grant" }],
+              trustOrigin: denial.trustOrigin,
               pluginOperation: {
                 pluginId,
                 operation: inspected.operation,

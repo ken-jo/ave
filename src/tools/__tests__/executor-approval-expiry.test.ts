@@ -165,6 +165,23 @@ describe("tool approval expiration attribution", () => {
     expect(permissions().find((entry) => entry.decision === "deny")).toMatchObject({ trustOrigin: "user-keyboard" });
   });
 
+  it.each(["tool", "directory"] as const)("keeps an answered %s denial as the user's when the quit lands before the executor resumes", async (kind) => {
+    const quit = new AbortController();
+    const run = start(kind, quit.signal);
+    const request = await run.sent;
+    // The person's answer settles the gate; the quit lands before the awaiting executor runs again.
+    expect(gate?.resolve(request.id, {
+      requestId: request.id, choice: "deny-once", nonce: request.nonce, hmac: request.hmac,
+    })?.choice).toBe("deny-once");
+    quit.abort(new HostExitAbortError());
+    const [result] = await run.result;
+    expect(result.is_error).toBe(true);
+    expect(run.execute).not.toHaveBeenCalled();
+    const denied = permissions().filter((entry) => entry.decision === "deny");
+    expect(denied).toEqual([expect.objectContaining({ trustOrigin: "user-keyboard" })]);
+    expect(JSON.stringify(denied)).not.toContain("host-shutdown");
+  });
+
   it.each(["tool", "directory"] as const)("records a parked %s approval the quit cancels as the host's", async (kind) => {
     const quit = new AbortController();
     const run = start(kind, quit.signal);

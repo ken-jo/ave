@@ -11,7 +11,7 @@ import type { PermissionEvaluationContext } from "../permissions/evaluation-cont
 import type { ApprovalPurposeSuggestion } from "../shared/permission-review-status.js";
 import { classifyApprovalRuleVerdict } from "./pipeline/approval-memory-skip.js";
 import { createPluginReadjudicationBasis } from "../permissions/plugin-readjudication-evidence.js";
-import { approvalFailureOutcome, hostShutdownDenial } from "./pipeline/approval-outcome.js";
+import { abortSupersedesApprovalDecision, approvalFailureOutcome, hostShutdownDenial } from "./pipeline/approval-outcome.js";
 import { hostTerminalApprovalFacts } from "./pipeline/host-terminal-approval.js";
 import { disposableContainerCapability, resolveReviewerSandboxCapability } from "../permissions/sandbox-capability.js";
 import type { ToolOutputArtifactInfo, ToolOutputCapture } from "../shared/tool-output-artifact.js";
@@ -1066,7 +1066,9 @@ export async function executeAuthorizedToolInvocation(
     };
   };
 
+  let lateApprovalDecision: ApprovalDecision | undefined;
   const requestLateApproval = async (request: ApprovalRequestInput): Promise<void> => {
+    lateApprovalDecision = undefined;
     abortSignal?.throwIfAborted();
     if (permissionResult?.decision !== "ask" || !(permissionResult.pipelineRequest?.automationPause || permissionResult.forceModal && permissionResult.pipelineRequest?.floor)) {
       throw new Error("Late approval requires an issued human approval decision");
@@ -1087,7 +1089,8 @@ export async function executeAuthorizedToolInvocation(
       ...userOwnedSurfaceCardFacts(permissionResult),
     };
     let decision = await services.approvalGate!.requestAndWait(liveRequest);
-    abortSignal?.throwIfAborted();
+    lateApprovalDecision = decision;
+    if (abortSupersedesApprovalDecision(abortSignal, decision)) abortSignal?.throwIfAborted();
     const currentEpoch = services.permissionManager?.getPolicyEpoch();
     if (lateApprovalPolicyEpoch !== currentEpoch &&
         (lateApprovalPolicyEpoch === undefined || currentEpoch === undefined ||
@@ -1101,7 +1104,8 @@ export async function executeAuthorizedToolInvocation(
     }) : { permission: permissionResult, decision, humanApproved: undefined };
     permissionResult = surfaceResolution.permission;
     decision = surfaceResolution.decision;
-    abortSignal?.throwIfAborted();
+    lateApprovalDecision = decision;
+    if (abortSupersedesApprovalDecision(abortSignal, decision)) abortSignal?.throwIfAborted();
     const failure = approvalFailureOutcome(decision, toolUse.name, permissionResult);
     if (failure) {
       permissionResult = failure.permission;
@@ -1202,7 +1206,8 @@ export async function executeAuthorizedToolInvocation(
       } catch (error) {
         return {
           ok: false,
-          reason: abortSignal?.aborted ? "user-abort" : "error",
+          // A late deny the person answered ends as their denial, not as the seal's.
+          reason: abortSupersedesApprovalDecision(abortSignal, lateApprovalDecision) ? "user-abort" : "error",
           error: error instanceof Error ? error : new Error(String(error)),
         };
       }

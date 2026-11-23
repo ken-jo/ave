@@ -390,6 +390,22 @@ export function isHostApprovalRejectedDecision(
   );
 }
 
+// A deny a policy recheck substitutes for a person's allow. The host decided it, but it keeps the policy's own reason.
+const hostPolicyDenials = new WeakSet<ApprovalDecision>();
+
+export function hostPolicyDenial(requestId: string): ApprovalDecision {
+  const decision: ApprovalDecision = { requestId, choice: "deny-once" };
+  hostPolicyDenials.add(decision);
+  return decision;
+}
+
+// A deny the person answered. Every deny the host makes (timeout, rejection, disposal, an aborted turn, a policy recheck)
+// is marked when it is made, so none passes for one.
+export function isAnsweredApprovalDenial(decision: ApprovalDecision): boolean {
+  return decision.choice.startsWith("deny") && !hostTimeoutDecisions.has(decision) &&
+    !hostRejectedApprovalDecisions.has(decision) && !hostPolicyDenials.has(decision);
+}
+
 // An `egress-host` request is fully specified or it is a bug: it carries its payload with at least one offered scope, offers exactly allow-once and deny-once, and is never recorded in the user-approval store. Any other kind carrying the payload is a bug too.
 function assertEgressHostRequestShape(req: ApprovalRequestInput): void {
   if (req.kind !== "egress-host") {

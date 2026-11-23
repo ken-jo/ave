@@ -1,7 +1,7 @@
 import { deferred } from "../../../__tests__/support/deferred.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeMockWebContents } from "../../../__tests__/test-helpers.js";
-import { ApprovalGate, IPC_APPROVAL_REQUEST } from "../../../permissions/approval-gate.js";
+import { IPC_APPROVAL_REQUEST } from "../../../permissions/approval-gate.js";
 import type { BootContext, ReadyBootContext } from "../../context.js";
 import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
 import { PluginRuntimeDetachedOperationError } from "../../../plugins/runtime/detached-operation.js";
@@ -611,6 +611,8 @@ it("writes a host-shutdown denial for a parked plugin operation grant before aud
   vi.resetModules();
   const { setupPluginToolExecutor } = await import("../plugin-tool-executor.js");
   const { assembleAppServices } = await import("../../assemble-services.js");
+  // The gate's host-decision markers live in its module, so it comes from the same fresh graph as the executor.
+  const { ApprovalGate } = await import("../../../permissions/approval-gate.js");
   const ctx = makeContext();
   const stop = () => {};
   const card = deferred<void>();
@@ -771,6 +773,45 @@ it("keeps the keyboard origin on a plugin operation grant the user denied", asyn
   await expect(ctx.requestPluginOperationGrant({
     pluginId, toolName: "update_record", input: {}, appSessionId: "grant-window",
   })).rejects.toThrow("operation grant denied");
+  expect(rows).toEqual([expect.objectContaining({
+    decision: "deny",
+    denyReasons: [{ reason: "plugin operation grant denied by user", source: "plugin-operation-grant" }],
+    trustOrigin: "user-keyboard",
+  })]);
+});
+
+it("keeps a user's grant denial when the seal lands before the handler resumes", async () => {
+  vi.resetModules();
+  const { setupPluginToolExecutor } = await import("../plugin-tool-executor.js");
+  const ledger = await import("../../../tools/invocation-ledger.js");
+  const ctx = makeContext();
+  const rows: Array<Record<string, unknown>> = [];
+  const asked = deferred<void>();
+  const answer = deferred<{ requestId: string; choice: "deny-once" }>();
+  mocks.resolvePluginOperationAccount.mockReturnValue({ accountScopeHash: "account-scope", accountHash: "account" });
+  Object.assign(ctx, {
+    toolRegistry: { findByName: () => ({ category: "write" }) },
+    approvalGate: { requestAndWait: () => { asked.resolve(); return answer.promise; } },
+    bootAuditLogger: { appendPermissionAuditEntry: async (row: Record<string, unknown>) => { rows.push(row); } },
+    pluginBundleLifecycle: {
+      acquire: async () => ({
+        generation: { generationId: activeGenerationId, state: { runtime: { manifest: { version: "2.0.0" } } } },
+        release: vi.fn(),
+      }),
+      runWithLease: async (_lease: unknown, run: () => Promise<unknown>) => run(),
+    },
+  });
+  Object.assign(ctx.pluginRuntime, { getPluginAuthOperationAccount: () => undefined });
+  await setupPluginToolExecutor(ctx);
+  if (!ctx.requestPluginOperationGrant) throw new Error("Plugin grant handler missing");
+  const grant = ctx.requestPluginOperationGrant({
+    pluginId, toolName: "update_record", input: {}, appSessionId: "grant-window",
+  });
+  await asked.promise;
+  // The person's answer settles the gate; the seal lands before the awaiting handler runs again.
+  answer.resolve({ requestId: "grant-card", choice: "deny-once" });
+  ledger.sealToolInvocations();
+  await expect(grant).rejects.toThrow("operation grant denied");
   expect(rows).toEqual([expect.objectContaining({
     decision: "deny",
     denyReasons: [{ reason: "plugin operation grant denied by user", source: "plugin-operation-grant" }],

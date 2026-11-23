@@ -66,7 +66,7 @@ import {
 } from "../shared/chat-origin.js";
 import { isRationaleEligible, RationaleHumanApprovalDeniedError } from "./pipeline/rationale-control.js";
 import { approvalReasonFields, approvalTargetFor, type ApprovalDecision } from "../permissions/approval-gate.js";
-import { approvalFailureOutcome } from "./pipeline/approval-outcome.js";
+import { abortSupersedesApprovalDecision, approvalFailureOutcome } from "./pipeline/approval-outcome.js";
 import {
   buildPermissionEvaluationContext,
   type PermissionEvaluationContext,
@@ -1720,8 +1720,9 @@ async function runToolInvocationAttempt(
 
         // As on the tool-ask path: the gate's deny-once on an abort is the
         // right permission answer but the wrong transcript entry. The user
-        // stopped the turn; they did not refuse this directory.
-        if (abortSignal?.aborted) {
+        // stopped the turn; they did not refuse this directory. A deny the person already answered stays
+        // theirs when the quit seal lands before this resumes.
+        if (abortSupersedesApprovalDecision(abortSignal, decision)) {
           return {
             allowed: false,
             result: withHostShellExecutionPlan(
@@ -1787,7 +1788,7 @@ async function runToolInvocationAttempt(
         });
         dirLayerResult = surfaceResolution.permission;
         decision = surfaceResolution.decision;
-        if (abortSignal?.aborted) return { allowed: false, result: withHostShellExecutionPlan(await returnUserAbort(abortDeps(finalInput))) };
+        if (abortSupersedesApprovalDecision(abortSignal, decision)) return { allowed: false, result: withHostShellExecutionPlan(await returnUserAbort(abortDeps(finalInput))) };
         if (decision.choice.startsWith("deny")) return { allowed: false, approvalDecision: decision, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: dirLayerResult.reason, is_error: true, durationMs: Date.now() - startTime }) };
         const approvedPermissionResult: PermissionCheckResult = surfaceResolution.humanApproved === false ? dirLayerResult : { ...dirLayerResult, decision: "allow", reason: "The user approved this exact invocation." };
         // No remembered grant is kept while boot refuses the home folder (the card already answers once with a notice); an

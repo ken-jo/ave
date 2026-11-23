@@ -176,10 +176,11 @@ function manualGate() {
     },
   };
   const gate = new ApprovalGate(nativeWebContents as never);
-  const approve = (card: ApprovalRequest) => gate.resolveFromDesktopRenderer(card.id, {
-    requestId: card.id, choice: "allow-once", nonce: card.nonce, hmac: card.hmac,
+  const answer = (card: ApprovalRequest, choice: "allow-once" | "deny-once") => gate.resolveFromDesktopRenderer(card.id, {
+    requestId: card.id, choice, nonce: card.nonce, hmac: card.hmac,
   }, nativeWebContents as never);
-  return { gate, cards, approve, parkedAt };
+  const approve = (card: ApprovalRequest) => answer(card, "allow-once");
+  return { gate, cards, approve, deny: (card: ApprovalRequest) => answer(card, "deny-once"), parkedAt };
 }
 
 function heldHandlerFinalizers(toolUseId: string, count: number) {
@@ -325,6 +326,35 @@ describe("executor automated approval pause", () => {
       const rows = readFileSync(f.audit.getPermissionAuditLogFile(), "utf8").trimEnd().split("\n").map((line) => JSON.parse(line));
       expect(rows.at(-1)).toMatchObject({ decision: "deny", toolUseId: "cancel-late-card", denyReasons: [{ reason: "host-shutdown" }], trustOrigin: "unknown" });
     }
+  });
+
+  it("keeps an answered late denial as the user's when the quit lands before the executor resumes", async () => {
+    const f = await subject();
+    const quit = new AbortController();
+    const execute = vi.fn(async () => "wrote");
+    const registry = new ToolRegistry();
+    registry.register(makeWriteProbeTool(execute));
+    const { hooks, reached, release } = heldPreToolUse();
+    const { gate, cards, deny } = manualGate();
+    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, hooks, f.audit);
+    const pending = executor.executeAll([{ id: "deny-late-card", name: "write_probe", input: { path: join(f.root, "held.txt") } }], {
+      sessionId: SESSION_ID, executionCwd: f.root, abortSignal: quit.signal,
+      permissionContext: userPermissionContext({ additionalDirectories: [f.root] }),
+    });
+    await reached;
+    await f.pause();
+    release();
+    await vi.waitFor(() => expect(cards).toHaveLength(1));
+    // The person's answer settles the gate; the quit lands before the awaiting executor runs again.
+    expect(deny(cards[0])?.choice).toBe("deny-once");
+    quit.abort(new HostExitAbortError());
+    const [result] = await pending;
+    expect(result.is_error).toBe(true);
+    expect(execute).not.toHaveBeenCalled();
+    const rows = readFileSync(f.audit.getPermissionAuditLogFile(), "utf8").trimEnd().split("\n").map((line) => JSON.parse(line));
+    const denied = rows.filter((row) => row.toolUseId === "deny-late-card" && row.decision === "deny");
+    expect(denied).toEqual([expect.objectContaining({ trustOrigin: "user-keyboard" })]);
+    expect(JSON.stringify(denied)).not.toContain("host-shutdown");
   });
 
   it("settles caller cancellation while a late PermissionRequest hook is still held", async () => {
