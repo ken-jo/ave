@@ -14,6 +14,7 @@ import { ScriptHookManager } from "../../hooks/script-hook-manager.js";
 import { runWithInvocationOrigin } from "../../plugins/runtime/origin-chain.js";
 import { currentEffectLedger } from "../../permissions/effect-ledger.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
+import { HostExitAbortError } from "../../shared/host-exit-abort.js";
 import { createDynamicTool } from "../base.js";
 import { ToolExecutor } from "../executor.js";
 import { closeToolInvocationAudit, pendingToolInvocationCount, sealToolInvocations } from "../invocation-ledger.js";
@@ -1880,6 +1881,39 @@ describe("ToolExecutor plugin operation governance", () => {
 
     expect(result.is_error).toBeFalsy();
     expect(read).toHaveBeenCalledTimes(1);
+  });
+
+  it("records a write the quit interrupts as unsettled with the host's origin, not the invocation's", async () => {
+    const { executor, write, auditLogger } = setup();
+    await runWithInvocationOrigin("ui", undefined, () =>
+      executor.executeAll([{ id: "r-quit", name: "domain_read", input: { operation: "status" } }], options()),
+    );
+    const grant = executor.issuePluginOperationGrant({ toolName: "domain_write", input: { operation: "save", value: 34 }, principal });
+    let releaseWrite!: () => void;
+    const writeStarted = new Promise<void>((started) => {
+      write.mockImplementationOnce(() => new Promise((resolve) => {
+        started();
+        releaseWrite = () => resolve({ output: "late saved", isError: false });
+      }));
+    });
+    const quit = new AbortController();
+    const interrupted = runWithInvocationOrigin("ui", undefined, () =>
+      executor.executeAll(
+        [{ id: "w-quit", name: "domain_write", input: { operation: "save", value: 34 } }],
+        { ...options(grant.token), abortSignal: quit.signal },
+      ),
+    );
+    await writeStarted;
+    quit.abort(new HostExitAbortError());
+    try {
+      expect((await interrupted)[0].is_error).toBe(true);
+      const unsettled = auditLogger.appendPermissionAuditEntry.mock.calls
+        .map(([entry]) => entry)
+        .filter((entry) => JSON.stringify(entry.denyReasons ?? []).includes("remains unsettled after interruption"));
+      expect(unsettled).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "unknown" })]);
+    } finally {
+      releaseWrite();
+    }
   });
 
   // Seals the process-wide ledger, so it stays the last test in this file.
