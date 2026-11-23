@@ -33,12 +33,13 @@ describe("windows program lookup", () => {
   });
 
   describe.runIf(process.platform === "win32")("a program planted in the current directory", () => {
+    const PROBE = "ave-planted-probe";
     let planted: string;
     const cwd = process.cwd();
     const previous = process.env[VARIABLE];
     beforeAll(() => {
       planted = realpathSync(mkdtempSync(join(tmpdir(), "ave-program-lookup-")));
-      copyFileSync(win32SystemBinary("hostname.exe"), join(planted, "ave-planted-probe.exe"));
+      copyFileSync(win32SystemBinary("hostname.exe"), join(planted, `${PROBE}.exe`));
       process.chdir(planted);
     });
     afterAll(async () => {
@@ -47,7 +48,7 @@ describe("windows program lookup", () => {
       else process.env[VARIABLE] = previous;
       await cleanupTmpDir(planted);
     });
-    const launch = () => spawnSync("ave-planted-probe", [], { windowsHide: true, env: { SystemRoot: process.env.SystemRoot, PATH: win32SystemBinary("") } });
+    const launch = () => spawnSync(PROBE, [], { windowsHide: true, env: { SystemRoot: process.env.SystemRoot, PATH: win32SystemBinary("") } });
 
     it("runs without the variable (control)", () => {
       delete process.env[VARIABLE];
