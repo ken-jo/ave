@@ -1362,6 +1362,44 @@ describe("PluginConfigTab — auth UI", () => {
     expect(await screen.findByTestId("plugin-config:background-effects:digest-plugin")).toBeInTheDocument();
   });
 
+  it("says why an unapproved plugin from an unpinned source cannot be reviewed, and offers no review", async () => {
+    const cards = vi.fn(async () => [makePluginCard({ id: "digest-plugin", name: "Digest Plugin", description: "Morning digest" })]);
+    const getPluginBackgroundEffects = vi.fn(async (pluginId: string) => ({
+      ok: true as const, pluginId, name: "Digest Plugin", reviewSha256: null, declared: true, approved: false,
+      effects: {
+        ownStorage: true as const, networkDestinations: ["api.example.test"], alertKinds: [], suggestionSources: [], llm: false, workers: false,
+      },
+    }));
+    Object.defineProperty(window, "ave", {
+      value: {
+        pluginConfig: {
+          get: vi.fn(async () => ({ ok: true as const, config: {} })),
+          set: vi.fn(async () => ({ ok: true as const, config: {} })),
+          listSecretKeys: vi.fn(async () => ({ ok: true as const, keys: [] })),
+        },
+      },
+      writable: true,
+      configurable: true,
+    });
+    Object.defineProperty(window, "aveApi", {
+      value: { getPluginBackgroundEffects, listPluginUiExtensions: vi.fn(async () => []) },
+      writable: true,
+      configurable: true,
+    });
+    stubPluginCards(cards);
+    Object.defineProperty(window, "aveHost", {
+      value: { takePluginMarketplaceApi: () => null },
+      writable: true,
+      configurable: true,
+    });
+
+    render(<PluginConfigTab />);
+
+    const row = await screen.findByTestId("plugin-config:background-effects:digest-plugin");
+    expect(row).toHaveTextContent("출처가 고정되지 않았습니다. 마켓플레이스에서 다시 설치하세요.");
+    expect(within(row).queryByRole("button")).toBeNull();
+  });
+
   it("keeps the switch for a disabled plugin whose runtime is retired, so it can be re-enabled", async () => {
     // What the runtime reports after a disable: the generation is retired, so nothing is loaded (`runtimeLoaded: false`), and
     // the card is `disabled`. The switch is the only way back to enabled.

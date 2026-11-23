@@ -4441,6 +4441,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "pluginConfigTab.backgroundEffectsLabel": "백그라운드 작업",
   "pluginConfigTab.backgroundEffectsPending": "아직 승인되지 않았습니다. 검토하기 전까지 도구 호출 밖에서는 자체 저장 공간에만 쓸 수 있습니다.",
   "pluginConfigTab.backgroundEffectsReview": "검토",
+  "pluginConfigTab.backgroundEffectsUnpinned": "출처가 고정되지 않았습니다. 마켓플레이스에서 다시 설치하세요.",
   "pluginConfigTab.backgroundEffectsError": "백그라운드 작업 승인을 저장하지 못했습니다",
   "pluginConfigTab.contributionTrustLabel": "번들 실행 기능",
   "pluginConfigTab.contributionTrustDescription": "Hook과 MCP 번들은 정확한 버전과 fingerprint를 승인하기 전까지 격리됩니다.",

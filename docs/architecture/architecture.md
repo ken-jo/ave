@@ -2295,8 +2295,9 @@ Key boundaries:
   drops it and disable keeps it; boot also drops any approval whose extension the
   registry no longer names, so a removal that failed to save is not inherited by a
   reinstall. An install with no pinned source (admin, bundled
-  or a legacy row) cannot be approved, and a missing or unreadable approvals file
-  loads as empty. Within the approved scope a deny or a forced floor still
+  or a legacy row) cannot be approved, and its Review row says the source is not
+  pinned and asks for a reinstall from the marketplace. A missing or unreadable
+  approvals file loads as empty. Within the approved scope a deny or a forced floor still
   denies, and the card answers only ordinary asks (`file-write`,
   `shell-approval`, `network-approval`, and `review-required` only when the ask
   under the review is one of those, so a user ask rule, the exfiltration guard or

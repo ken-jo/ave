@@ -231,7 +231,7 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
   const [contributionTrustError, setContributionTrustError] = useState<string | null>(null);
   const contributionTrustRefreshRef = useRef(0);
   const [trustUpdating, setTrustUpdating] = useState<string | null>(null);
-  const [backgroundPending, setBackgroundPending] = useState<string | null>(null);
+  const [backgroundPending, setBackgroundPending] = useState<{ pluginId: string; reviewable: boolean } | null>(null);
   const backgroundRefreshRef = useRef(0);
   useEffect(() => {
     setToolsExpanded(false);
@@ -323,7 +323,8 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
     try {
       const result = await getApi().getPluginBackgroundEffects(pluginId);
       if (refreshId !== backgroundRefreshRef.current) return;
-      setBackgroundPending(result.ok && !result.approved && result.reviewSha256 ? pluginId : null);
+      // A declared scope from an unpinned source can never be approved, so the row says why instead of offering a review.
+      setBackgroundPending(result.ok && result.declared && !result.approved ? { pluginId, reviewable: result.reviewSha256 !== null } : null);
     } catch {
       // The host denies unapproved background effects, so a failed read only hides the prompt.
       if (refreshId === backgroundRefreshRef.current) setBackgroundPending(null);
@@ -1213,7 +1214,7 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                   </>
                 )}
 
-                {backgroundPending === selectedPlugin.id && (
+                {backgroundPending?.pluginId === selectedPlugin.id && (
                   <>
                     <Separator />
                     <div className="flex items-center justify-between gap-3" data-testid={`plugin-config:background-effects:${selectedPlugin.id}`}>
@@ -1221,15 +1222,19 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                         <p className="text-tiny font-medium uppercase tracking-wide text-muted-foreground">
                           {t("pluginConfigTab.backgroundEffectsLabel")}
                         </p>
-                        <p className="text-dense text-muted-foreground">{t("pluginConfigTab.backgroundEffectsPending")}</p>
+                        <p className="text-dense text-muted-foreground">
+                          {t(backgroundPending.reviewable ? "pluginConfigTab.backgroundEffectsPending" : "pluginConfigTab.backgroundEffectsUnpinned")}
+                        </p>
                       </div>
-                      <Button
-                        size="sm"
-                        className="h-7 px-2 text-xs"
-                        onClick={() => requestPluginBackgroundEffectsReview(selectedPlugin.id)}
-                      >
-                        {t("pluginConfigTab.backgroundEffectsReview")}
-                      </Button>
+                      {backgroundPending.reviewable && (
+                        <Button
+                          size="sm"
+                          className="h-7 px-2 text-xs"
+                          onClick={() => requestPluginBackgroundEffectsReview(selectedPlugin.id)}
+                        >
+                          {t("pluginConfigTab.backgroundEffectsReview")}
+                        </Button>
+                      )}
                     </div>
                   </>
                 )}

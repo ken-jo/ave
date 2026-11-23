@@ -4439,6 +4439,7 @@ export const en = {
   "pluginConfigTab.backgroundEffectsLabel": "Background effects",
   "pluginConfigTab.backgroundEffectsPending": "Not approved yet. Outside a tool call it can only write its own storage until you review it.",
   "pluginConfigTab.backgroundEffectsReview": "Review",
+  "pluginConfigTab.backgroundEffectsUnpinned": "Source not pinned; reinstall from the marketplace.",
   "pluginConfigTab.backgroundEffectsError": "Failed to save the background effects approval",
   "pluginConfigTab.contributionTrustLabel": "Bundled executable capabilities",
   "pluginConfigTab.contributionTrustDescription": "Hook and MCP bundles remain quarantined until you approve their exact version and fingerprint.",
