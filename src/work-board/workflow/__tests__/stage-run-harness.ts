@@ -608,10 +608,10 @@ export async function stageRunHarness(opts: {
   const waitForLive = untilLive;
   const untilSpawned = (count: number, itemId?: number) => waitForChildren(() => forItem(ofCurrentEngine(children), itemId), spawned => spawned.length >= count, false, itemId);
   const progressEnded = () => new Error("Progress wait ended: harness cleaned up");
-  /** `what`: the event the wait names when its bound expires. */
-  const waitForProgress = (check: (event: WorkBoardRunEvent) => boolean, what: string) => closed
+  /** `from` is the first event index to consider; `what` names the wait if it expires. */
+  const waitForProgress = (check: (event: WorkBoardRunEvent) => boolean, what: string, from = 0) => closed
     ? Promise.reject(progressEnded())
-    : waitForSignal(progressChanges, () => events.find(check), `progress signal never arrived for ${what}`);
+    : waitForSignal(progressChanges, () => events.slice(from).find(check), `progress signal never arrived for ${what}`);
   /** The event that ended the run; it follows the stored status, so a test waits for it. */
   const settleEvent = () => waitForProgress(event => event.phase === "cancelled" || event.phase === "done" || event.phase === "denied" || event.phase === "error",
     "a run's end (cancelled, done, denied or error)");
