@@ -7,7 +7,7 @@ import { canonicalWorkflowJson, resultHashOf } from "../../shared/workflow-templ
 import type { TemplateStage } from "../../shared/workflow-template-types.js";
 import { isStageId } from "../template-graph.js";
 import { type NameReader, plainFolderIgnore, projectFoldsCase } from "./folder-ignore.js";
-import { createHostGit, type HostGit, HostGitError } from "./host-git.js";
+import { createHostGit, type HostGit, HostGitError, hostGitFloorHolds } from "./host-git.js";
 import { holdDir, type NodeId, type OwnedDir, OwnedFsError, realDirId, realWithin, type SourceRoot } from "./owned-fs.js";
 import type { JoinConflict } from "./shipped-shapes.js";
 import type { RemovedRunProject, RunRef, StageWorkspaceProvider, WORKSPACE_REFUSALS } from "./stage-workspace.js";
@@ -361,6 +361,8 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     const live = at.live;
     if (live === undefined) return { field: "project.root", side: "unverified" };
     delete live.gitDir;
+    // A git whose hooks the floor is not proven to keep off is not run on the repository; the run waits for one that is.
+    if (!(await hostGitFloorHolds())) return { field: "git.hooks", side: "unverified" };
     // `live.root` is the caller's open project as `liveOf` (or `open`) read it from disk, not record text.
     let rootId: NodeId | undefined;
     // A root that cannot be read may still be the recorded one: nothing of the run is taken apart on that.
@@ -406,6 +408,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     try {
       const found = project === undefined ? { inWorkTree: false } : await gitProject(project.root);
       if (project !== undefined && "baseCommit" in found) {
+        if (!(await hostGitFloorHolds())) return refused("git-unavailable");
         const drivers = await git.drivers(project.root);
         // A filter the repository requires for checkout is never run, so such a repository gets no git workspace.
         if (drivers.requiredFilters.length > 0 && await usesFilter(project.root, drivers.requiredFilters)) return refused("git-unavailable");

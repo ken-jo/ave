@@ -3,9 +3,11 @@ import { inspectPhysicalFilesystemPath } from "./shell-filesystem-path.js";
 
 /** Configuration every host-owned Git process carries before its subcommand. */
 const HOST_GIT_CONFIG = ["safe.bareRepository=explicit", "core.fsmonitor=false"] as const;
-/** Every hook event Git documents (2.56). A configured hook is found apart from the hooks path, and some events are run under
- * `--no-verify` too, so each event is switched off as a whole; a Git child the process starts inherits the switches. */
-const HOOK_EVENTS = [
+/** Every hook event Git documents, as of the release `HOOK_EVENTS_VALIDATED` names; bumping that release means validating this list
+ * again. A configured hook is found apart from the hooks path, and some events are run under `--no-verify` too, so each event is
+ * switched off as a whole; a Git child the process starts inherits the switches. */
+export const HOOK_EVENTS_VALIDATED = [2, 56] as const;
+export const HOOK_EVENTS = [
   "applypatch-msg", "pre-applypatch", "post-applypatch", "pre-commit", "pre-merge-commit", "prepare-commit-msg", "commit-msg", "post-commit", "pre-rebase",
   "post-checkout", "post-merge", "pre-push", "pre-receive", "update", "proc-receive", "post-receive", "post-update", "reference-transaction", "push-to-checkout",
   "pre-auto-gc", "post-rewrite", "sendemail-validate", "fsmonitor-watchman", "p4-changelist", "p4-prepare-changelist", "p4-post-changelist", "p4-pre-submit",

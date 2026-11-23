@@ -1,6 +1,12 @@
 import { spawn } from "node:child_process";
+import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { delimiter, isAbsolute, join } from "node:path";
+import { createLogger } from "../../lib/logger.js";
 import { forceKillManagedChildProcess } from "../../main/managed-child-processes.js";
-import { buildHostGitArgs, isHostGitWorkspaceAvailable } from "../../shared/host-git.js";
+import { buildHostGitArgs, HOOK_EVENTS, HOOK_EVENTS_VALIDATED, isHostGitWorkspaceAvailable } from "../../shared/host-git.js";
+
+const log = createLogger("work-board-host-git");
 
 const GIT_TIMEOUT_MS = 120_000;
 const GIT_MAX_OUTPUT_BYTES = 32 * 1024 * 1024;
@@ -195,4 +201,68 @@ export function createHostGit(options: { env?: NodeJS.ProcessEnv; timeoutMs?: nu
   }
 
   return { run, drivers };
+}
+
+/** The git `spawn` starts in `env`: the first `git` program on its PATH, as an absolute path. A PATH entry that is not absolute would be
+ * read against the folder a call runs in, so one met first leaves the program unknown. */
+function resolvedGit(env: NodeJS.ProcessEnv): string | undefined {
+  const windows = process.platform === "win32";
+  const path = Object.entries(env).find(([key]) => (windows ? key.toUpperCase() : key) === "PATH")?.[1] ?? "";
+  for (const raw of path.split(delimiter)) {
+    const dir = windows ? raw.replace(/^"(.*)"$/u, "$1") : raw;
+    if (windows && dir === "") continue;
+    if (!isAbsolute(dir)) return undefined;
+    for (const name of windows ? ["git.com", "git.exe"] : ["git"]) {
+      const program = join(dir, name);
+      try { if (statSync(program).isFile()) return program; } catch { /* not here */ }
+    }
+  }
+  return undefined;
+}
+
+const floorProbes = new Map<string, Promise<boolean>>();
+let unprovenLogged = false;
+
+/**
+ * Whether the host floor keeps every event `HOOK_EVENTS` lists from running a configured hook on the git `env` starts, asked once per
+ * program and its modification time. In a scratch repository, through the same calls every host git process makes, a hook is
+ * configured ahead of the floor and run: one for an event the floor leaves alone must run, or nothing tells whether one ran at all,
+ * and none for a listed event may. Anything else, a failed call or a timeout among them, is no.
+ */
+export function hostGitFloorHolds(env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
+  const program = resolvedGit(env);
+  if (program === undefined) return Promise.resolve(false);
+  let key: string;
+  try { key = `${program}\0${statSync(program).mtimeMs}`; } catch { return Promise.resolve(false); }
+  let probe = floorProbes.get(key);
+  if (probe === undefined) {
+    probe = probeFloor(env).catch(() => false);
+    floorProbes.set(key, probe);
+  }
+  return probe;
+}
+
+async function probeFloor(env: NodeJS.ProcessEnv): Promise<boolean> {
+  const git = createHostGit({ env });
+  const scratch = mkdtempSync(join(tmpdir(), "ave-git-floor-"));
+  try {
+    const version = await git.run(scratch, ["--version"], { isolated: true });
+    if (version.code !== 0 || (await git.run(scratch, ["init", "-q"], { isolated: true })).code !== 0) return false;
+    const marker = join(scratch, "ran");
+    const quoted = `'${marker.split("\\").join("/").split("'").join("'\\''")}'`;
+    const hooked = async (event: string, exit: number, unlisted: string[] = []): Promise<number> => (await git.run(scratch, ["hook", "run", ...unlisted, "--ignore-missing", event], {
+      isolated: true, drivers: ["-c", `hook.ave-floor-probe.event=${event}`, "-c", `hook.ave-floor-probe.command=echo ran >> ${quoted}; exit ${exit}`],
+    })).code;
+    if (await hooked("ave-floor-probe", 0, ["--allow-unknown-hook-name"]) !== 0 || !existsSync(marker)) return false;
+    rmSync(marker);
+    for (const event of HOOK_EVENTS) if (await hooked(event, 3) !== 0 || existsSync(marker)) return false;
+    const [major = 0, minor = 0] = (/^git version (\d+)\.(\d+)/u.exec(version.stdout)?.slice(1) ?? []).map(Number);
+    if (!unprovenLogged && (major > HOOK_EVENTS_VALIDATED[0] || (major === HOOK_EVENTS_VALIDATED[0] && minor > HOOK_EVENTS_VALIDATED[1]))) {
+      unprovenLogged = true;
+      log.warn("git %s is newer than %s, the release the hook events were listed from: an event added since is not switched off", version.stdout.trim(), HOOK_EVENTS_VALIDATED.join("."));
+    }
+    return true;
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
 }

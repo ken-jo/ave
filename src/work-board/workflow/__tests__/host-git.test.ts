@@ -1,25 +1,30 @@
 import { type ChildProcess, execFileSync, type spawn as spawnType } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative, sep } from "node:path";
+import { delimiter, join, relative, sep } from "node:path";
 import { PassThrough } from "node:stream";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { holdSandboxGitWrites } from "../../../shared/host-git.js";
-import { createHostGit, HostGitError } from "../host-git.js";
+import { HOOK_EVENTS, holdSandboxGitWrites } from "../../../shared/host-git.js";
+import { createHostGit, HostGitError, hostGitFloorHolds } from "../host-git.js";
 import { removeTree } from "./stage-fixtures.js";
 
-/** `env`: the environment the last git process was started with. */
-const spawned = vi.hoisted(() => ({ fake: undefined as (() => unknown) | undefined, calls: 0, env: undefined as NodeJS.ProcessEnv | undefined }));
+/** `env`: the environment the last git process was started with. A fake is given the arguments git would have been. */
+const spawned = vi.hoisted(() => ({ fake: undefined as ((args: readonly string[]) => unknown) | undefined, calls: 0, env: undefined as NodeJS.ProcessEnv | undefined }));
 vi.mock("node:child_process", async (original) => {
   const real = await original<typeof import("node:child_process")>();
   const spawn = ((...args: Parameters<typeof spawnType>) => {
     spawned.calls += 1;
     spawned.env = (args[2] as { env?: NodeJS.ProcessEnv } | undefined)?.env;
-    return spawned.fake ? spawned.fake() : real.spawn(...args);
+    return spawned.fake ? spawned.fake(args[1] as readonly string[]) : real.spawn(...args);
   }) as typeof spawnType;
   return { ...real, spawn };
+});
+const warned = vi.hoisted(() => ({ lines: [] as string[] }));
+vi.mock("../../../lib/logger.js", () => {
+  const quiet = (): void => undefined;
+  return { createLogger: () => ({ warn: (line: string) => { warned.lines.push(line); }, info: quiet, debug: quiet, error: quiet }) };
 });
 
 let base: string;
@@ -328,13 +333,28 @@ describe("host git", () => {
   });
 });
 
-/** Every hook event git 2.56 documents: a hook of each is configured, and none may run for a host call. */
-const HOOK_EVENTS = [
-  "applypatch-msg", "pre-applypatch", "post-applypatch", "pre-commit", "pre-merge-commit", "prepare-commit-msg", "commit-msg", "post-commit", "pre-rebase",
-  "post-checkout", "post-merge", "pre-push", "pre-receive", "update", "proc-receive", "post-receive", "post-update", "reference-transaction", "push-to-checkout",
-  "pre-auto-gc", "post-rewrite", "sendemail-validate", "fsmonitor-watchman", "p4-changelist", "p4-prepare-changelist", "p4-post-changelist", "p4-pre-submit",
-  "post-index-change",
-];
+/** Whether the git in use runs a hook its configuration names, and leaves it off once its event is switched off: asked of git alone, in
+ * a repository of its own. */
+function configHooksSwitchable(): { version: string; switchable: boolean } {
+  const dir = mkdtempSync(join(tmpdir(), "hg-probe-"));
+  const git = (...args: string[]): void => { execFileSync("git", args, { cwd: dir, env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: join(dir, "none") }, stdio: "pipe" }); };
+  const marker = join(dir, "ran");
+  const hooked = (...switches: string[]): boolean => {
+    try { git("-c", "hook.probe.event=post-commit", "-c", `hook.probe.command=echo ran >> '${marker.split(sep).join("/")}'`, ...switches, "hook", "run", "--ignore-missing", "post-commit"); } catch { return false; }
+    const ran = existsSync(marker);
+    rmSync(marker, { force: true });
+    return ran;
+  };
+  try {
+    const version = execFileSync("git", ["--version"], { encoding: "utf8" }).trim();
+    git("init", "-q");
+    return { version, switchable: hooked() && !hooked("-c", "hook.post-commit.enabled=false") };
+  } catch {
+    return { version: "unknown", switchable: false };
+  } finally {
+    removeTree(dir);
+  }
+}
 
 describe("host git on the installed git", () => {
   const plain = (cwd: string, ...args: string[]): string => execFileSync("git", args, { cwd, env, encoding: "utf8", stdio: "pipe" }).trim();
@@ -433,5 +453,91 @@ describe("host git on the installed git", () => {
       release();
     }
     expect((await git.run(held, ["--version"])).code).toBe(0);
+  });
+});
+
+describe("the hook floor's probe", () => {
+  type Reply = { code: number; stdout?: string; ran?: boolean } | "hang";
+  const listedFrom = "git version 2.56.0\n";
+  /** A git that knows the event switch: the probe hook runs for its own event alone. */
+  const holding = (args: readonly string[]): Reply => args.includes("--version") ? { code: 0, stdout: listedFrom }
+    : args.includes("--allow-unknown-hook-name") ? { code: 0, ran: true } : { code: 0 };
+  /** Git processes that answer as `answer` says; one whose hook ran appends to the file its command names. */
+  function fakeGit(answer: (args: readonly string[]) => Reply): void {
+    spawned.fake = (args) => {
+      const reply = answer(args);
+      if (reply === "hang") return hangingChild().child;
+      const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill: () => true });
+      queueMicrotask(() => {
+        const command = args.find(arg => arg.startsWith("hook.ave-floor-probe.command="));
+        const marker = command === undefined ? undefined : /'([^']*)'/u.exec(command)?.[1];
+        if (reply.ran === true && marker !== undefined) appendFileSync(marker, "ran\n");
+        if (reply.stdout !== undefined) child.stdout.emit("data", Buffer.from(reply.stdout));
+        child.emit("close", reply.code);
+      });
+      return child;
+    };
+  }
+  /** The probe as a process starting afresh: nothing asked yet, nothing told yet. */
+  async function freshProbe(): Promise<typeof hostGitFloorHolds> {
+    vi.resetModules();
+    return (await import("../host-git.js")).hostGitFloorHolds;
+  }
+  /** `env` with `dir` alone on its PATH, holding a program named as git. */
+  function onPath(dir: string): NodeJS.ProcessEnv {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, process.platform === "win32" ? "git.exe" : "git"), "", { mode: 0o755 });
+    return { ...Object.fromEntries(Object.entries(env).filter(([key]) => key.toUpperCase() !== "PATH")), PATH: dir };
+  }
+
+  it("holds only when the probe hook runs for an event the floor leaves alone and for no listed one; any other answer refuses git", async () => {
+    const outcomes: Record<string, boolean> = {};
+    const cases: Record<string, (args: readonly string[]) => Reply> = {
+      "switch known": holding,
+      "listed hook ran": args => args.at(-1) === "post-commit" ? { code: 0, ran: true } : holding(args),
+      "listed hook failed": args => args.at(-1) === "p4-pre-submit" ? { code: 3 } : holding(args),
+      "no configured hook runs": args => args.includes("--allow-unknown-hook-name") ? { code: 0 } : holding(args),
+      "no such switch": args => args.includes("--allow-unknown-hook-name") ? { code: 129 } : holding(args),
+      "no scratch repository": args => args.includes("init") ? { code: 128 } : holding(args),
+    };
+    for (const [name, answer] of Object.entries(cases)) {
+      fakeGit(answer);
+      outcomes[name] = await (await freshProbe())(env);
+    }
+    expect(outcomes).toEqual({ "switch known": true, "listed hook ran": false, "listed hook failed": false, "no configured hook runs": false, "no such switch": false, "no scratch repository": false });
+  });
+
+  it("a probe call that does not finish in time refuses git", async () => {
+    fakeGit(args => args.at(-1) === "update" ? "hang" : holding(args));
+    const probe = await freshProbe();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      let answer: boolean | undefined;
+      void probe(env).then(holds => { answer = holds; });
+      while (answer === undefined) await vi.advanceTimersByTimeAsync(10_000);
+      expect(answer).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("is asked once per program until the program changes, and a git newer than the release the events were listed from is told of once", async () => {
+    fakeGit(args => args.includes("--version") ? { code: 0, stdout: "git version 2.99.1\n" } : holding(args));
+    const probe = await freshProbe();
+    const first = onPath(join(base, "first"));
+    warned.lines = [];
+    expect(await probe(first)).toBe(true);
+    const asked = spawned.calls;
+    expect(await probe(first)).toBe(true);
+    expect(spawned.calls).toBe(asked);
+    const program = join(base, "first", process.platform === "win32" ? "git.exe" : "git");
+    utimesSync(program, new Date(), new Date(Date.now() + 60_000));
+    expect(await probe(first)).toBe(true);
+    expect(spawned.calls).toBe(asked * 2);
+    expect(await probe(onPath(join(base, "second")))).toBe(true);
+    expect(warned.lines.filter(line => line.includes("newer"))).toHaveLength(1);
+    // A PATH that names no git, or a folder read against wherever a call runs, gives no program to vouch for.
+    expect(await probe({ ...first, PATH: join(base, "none") })).toBe(false);
+    expect(await probe({ ...first, PATH: ["relative", join(base, "first")].join(delimiter) })).toBe(false);
   });
 });
