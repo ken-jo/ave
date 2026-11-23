@@ -94,7 +94,7 @@ beforeEach(() => {
   project = join(base, "project");
   mkdirSync(project);
   writeFileSync(join(base, "gitconfig"), "[core]\n\tautocrlf = false\n");
-  env = { ...process.env, GIT_CONFIG_GLOBAL: join(base, "gitconfig"), GIT_CONFIG_NOSYSTEM: "1", GIT_CEILING_DIRECTORIES: base };
+  env = { ...process.env, GIT_CONFIG_GLOBAL: join(base, "gitconfig"), GIT_CONFIG_NOSYSTEM: "1" };
   write(project, "src/a.ts", "a\n");
   write(project, "src/deep/b.ts", "b\n");
   write(project, "docs/guide.md", "guide\n");

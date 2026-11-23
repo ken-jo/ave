@@ -1,9 +1,10 @@
 import { type ChildProcess, execFileSync, type spawn as spawnType } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { appendFileSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative, sep } from "node:path";
 import { PassThrough } from "node:stream";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { holdSandboxGitWrites } from "../../../shared/host-git.js";
 import { createHostGit, HostGitError } from "../host-git.js";
@@ -38,7 +39,7 @@ function hangingChild(): { child: ChildProcess; killed: () => number } {
 beforeEach(() => {
   base = mkdtempSync(join(tmpdir(), "hg-"));
   writeFileSync(join(base, "gitconfig"), "[core]\n\tautocrlf = false\n");
-  env = { ...process.env, GIT_CONFIG_GLOBAL: join(base, "gitconfig"), GIT_CONFIG_NOSYSTEM: "1", GIT_CEILING_DIRECTORIES: base };
+  env = { ...process.env, GIT_CONFIG_GLOBAL: join(base, "gitconfig"), GIT_CONFIG_NOSYSTEM: "1" };
   spawned.fake = undefined;
   spawned.calls = 0;
 });
@@ -119,7 +120,7 @@ describe("host git", () => {
     expect(await reasonOf(createHostGit({ env }).run(base, ["status"]))).toBe("terminated");
   });
 
-  it("an isolated call reads no inherited git variable and no system or user configuration; any other call still does", async () => {
+  it("an isolated call reads no system or user configuration; any other call reads the user's configuration files, and neither reads settings an inherited variable gives", async () => {
     writeFileSync(join(base, "gitconfig"), "[core]\n\tautocrlf = false\n[fixture]\n\tfile = inherited\n");
     const git = createHostGit({ env: {
       ...env, GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "fixture.count", GIT_CONFIG_VALUE_0: "inherited", GIT_CONFIG_PARAMETERS: "'fixture.parameters=inherited'",
@@ -130,7 +131,8 @@ describe("host git", () => {
       return result.stdout.split("\n").filter(line => line !== "");
     };
     const inherited = await listed(false);
-    for (const key of ["fixture.file=inherited", "fixture.count=inherited", "fixture.parameters=inherited"]) expect(inherited.some(line => line.endsWith(key)), key).toBe(true);
+    expect(inherited.some(line => line.endsWith("fixture.file=inherited"))).toBe(true);
+    expect(inherited.filter(line => /fixture\.(count|parameters)/u.test(line))).toEqual([]);
     const isolated = await listed(true);
     expect(isolated.length).toBeGreaterThan(0);
     // Only what the call itself carries is left.
@@ -233,7 +235,7 @@ describe("host git", () => {
     }
   });
 
-  it("drivers are read from the configuration every git command reads: a file an inherited variable names for the configuration command alone hides none, and one named through inherited variables is switched off too", async () => {
+  it("drivers are read from the configuration every git command reads: a file an inherited variable names for the configuration command alone hides none, and one inherited variables name reaches no call", async () => {
     const repo = repositoryWith('[filter "own"]\n\tclean = cat\n\trequired = true\n');
     writeFileSync(join(base, "other.cfg"), "");
     const git = createHostGit({ env: {
@@ -242,11 +244,10 @@ describe("host git", () => {
     } });
     const drivers = await git.drivers(repo);
     expect(drivers.requiredFilters).toEqual(["own"]);
-    for (const name of ["own", "counted", "given"]) {
-      expect(drivers.config, name).toContain(`filter.${name}.clean=`);
-      // What the call carries is read last: the driver git would run is none.
-      expect(await git.run(repo, ["config", "--get", `filter.${name}.clean`], { drivers: drivers.config }), name).toMatchObject({ code: 0, stdout: "\n" });
-    }
+    expect(drivers.config).toContain("filter.own.clean=");
+    // What the call carries is read last: the driver git would run is none.
+    expect(await git.run(repo, ["config", "--get", "filter.own.clean"], { drivers: drivers.config })).toMatchObject({ code: 0, stdout: "\n" });
+    for (const name of ["counted", "given"]) expect(await git.run(repo, ["config", "--get", `filter.${name}.clean`]), name).toMatchObject({ code: 1, stdout: "" });
   });
 
   it("an inherited variable that names another source of attributes, or another object store, is not passed on", async () => {
@@ -255,8 +256,8 @@ describe("host git", () => {
     plain("-c", "user.name=Alice Example", "-c", "user.email=alice@example.com", "commit", "-q", "--allow-empty", "-m", "first");
     // Not in the commit: only the work tree gives the file its filter.
     writeFileSync(join(repo, ".gitattributes"), "a.txt filter=own\n");
-    const attributes = await createHostGit({ env: { ...env, GIT_ATTR_SOURCE: "HEAD" } }).run(repo, ["check-attr", "filter", "--", "a.txt"]);
-    expect.soft(attributes).toMatchObject({ code: 0, stdout: "a.txt: filter: own\n" });
+    const attributes = await createHostGit({ env: { ...env, GIT_ATTR_SOURCE: "HEAD" } }).run(repo, ["check-attr", "-z", "--stdin", "filter"], { stdin: "a.txt\0" });
+    expect.soft(attributes).toMatchObject({ code: 0, stdout: "a.txt\0filter\0own\0" });
     mkdirSync(join(base, "objects"));
     const written = await createHostGit({ env: { ...env, GIT_OBJECT_DIRECTORY: join(base, "objects") } }).run(repo, ["hash-object", "-w", "--stdin"], { stdin: "kept\n" });
     expect.soft(written.code).toBe(0);
@@ -279,27 +280,140 @@ describe("host git", () => {
     expect.soft(() => plain(repo, ["cat-file", "-p", "HEAD:a.txt"])).not.toThrow();
   });
 
-  it("no inherited variable that names where the repository, its objects or its refs are kept, how a path is matched, or where git puts its answer, reaches git; what only configures it does", async () => {
-    const dropped = [
-      "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_IMPLICIT_WORK_TREE", "GIT_NAMESPACE", "GIT_OBJECT_DIRECTORY",
-      "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_QUARANTINE_PATH", "GIT_REPLACE_REF_BASE", "GIT_NO_REPLACE_OBJECTS", "GIT_GRAFT_FILE", "GIT_SHALLOW_FILE",
-      "GIT_REFERENCE_BACKEND", "GIT_ATTR_SOURCE", "GIT_CONFIG", "GIT_REDIRECT_STDIN", "GIT_REDIRECT_STDOUT", "GIT_REDIRECT_STDERR",
-      "GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS", "GIT_ICASE_PATHSPECS",
-      "GIT_ASK_YESNO", "GIT_PROXY_COMMAND", "GIT_ALLOW_PROTOCOL", "GIT_TEST_DEFAULT_REF_FORMAT",
+  it("git is given of the host's environment only what starts it and finds the user's configuration files, whatever a name's case, and the host's own git variables", async () => {
+    // On Windows a name is one variable however it is spelled.
+    const started = [...process.platform === "win32" ? ["Path", "SystemRoot", "userprofile"] : ["PATH", "USERPROFILE"], "HOME", "XDG_CONFIG_HOME", "TEMP", "LANG", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM"];
+    // Each a program, a transport, a repository or a configuration git would otherwise take from the host.
+    const others = [
+      "GIT_DIR", "git_work_tree", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_REFERENCE_BACKEND", "GIT_NAMESPACE",
+      "GIT_EXEC_PATH", "Git_Exec_Path", "GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM", "GIT_CONFIG", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0",
+      "GIT_CONFIG_VALUE_0", "GIT_CONFIG_PARAMETERS", "GIT_ALLOW_PROTOCOL", "GIT_NO_LAZY_FETCH", "GIT_PROTOCOL_FROM_USER", "GIT_SSH_COMMAND", "GIT_TRACE",
+      "GIT_TRACE2_EVENT", "GIT_LITERAL_PATHSPECS", "GIT_ATTR_SOURCE", "GIT_TEMPLATE_DIR", "GIT_TERMINAL_PROMPT", "EDITOR", "VISUAL", "PAGER", "EMAIL",
+      "SSH_AUTH_SOCK", "HTTPS_PROXY", "NODE_OPTIONS", "AVE_HOME",
     ];
-    const kept = ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS", "GIT_CEILING_DIRECTORIES", "GIT_EXEC_PATH", "GIT_TRACE"];
-    // A name is one variable however it is spelled.
-    const inherited = Object.fromEntries([...dropped.map((name, index) => index % 2 === 0 ? name : name.toLowerCase()), ...kept].map(name => [name, "inherited"]));
+    const inherited = Object.fromEntries([...started, ...others].map(name => [name, "inherited"]));
+    const own = { GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", GIT_ALLOW_PROTOCOL: "", GIT_NO_LAZY_FETCH: "1" };
     replying({ code: 0 });
     await createHostGit({ env: inherited }).run(base, ["--version"]);
-    const passed = Object.keys(spawned.env ?? {}).map(name => name.toUpperCase());
-    expect.soft(dropped.filter(name => passed.includes(name))).toEqual([]);
-    expect.soft(kept.filter(name => !passed.includes(name))).toEqual([]);
+    expect(spawned.env).toEqual({ ...Object.fromEntries(started.map(name => [name, "inherited"])), ...own });
     replying({ code: 0 });
     await createHostGit({ env: inherited }).run(base, ["--version"], { isolated: true });
-    expect(Object.entries(spawned.env ?? {}).sort()).toEqual([
-      ["GIT_CONFIG_GLOBAL", process.platform === "win32" ? "NUL" : "/dev/null"], ["GIT_CONFIG_NOSYSTEM", "1"], ["GIT_OPTIONAL_LOCKS", "0"], ["GIT_TERMINAL_PROMPT", "0"],
-    ]);
+    expect(spawned.env).toEqual({
+      ...Object.fromEntries(started.filter(name => !name.startsWith("GIT_")).map(name => [name, "inherited"])), ...own,
+      GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null",
+    });
+  });
+
+  it("every process the work board starts is started here, and only as git through the host floor", () => {
+    const board = fileURLToPath(new URL("../../", import.meta.url));
+    const sources = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap(entry => entry.isDirectory()
+      ? entry.name === "__tests__" ? [] : sources(join(dir, entry.name))
+      : entry.name.endsWith(".ts") ? [join(dir, entry.name)] : []);
+    const starting = sources(board).filter(file => /child_process/u.test(readFileSync(file, "utf8")));
+    expect(starting.map(file => relative(board, file).split(sep).join("/"))).toEqual(["workflow/host-git.ts"]);
+    const text = readFileSync(join(board, "workflow", "host-git.ts"), "utf8");
+    expect(text.match(/\bspawn\(/gu)).toHaveLength(1);
+    expect(text).toMatch(/\bspawn\("git", buildHostGitArgs\(/u);
+  });
+
+  it("a path reaches git only as a literal pathspec the call gives apart: an argument list that carries one is refused before git starts", async () => {
+    const repo = repositoryWith("");
+    for (const name of ["b[1].txt", "b1.txt"]) writeFileSync(join(repo, name), `${name}\n`);
+    const git = createHostGit({ env });
+    expect((await git.run(repo, ["add", "-A"])).code).toBe(0);
+    spawned.calls = 0;
+    expect(await reasonOf(git.run(repo, ["diff", "--cached", "--name-only", "--", "b[1].txt"]))).not.toBe("finished");
+    expect(spawned.calls).toBe(0);
+    expect(await git.run(repo, ["diff", "--cached", "--name-only"], { paths: ["b[1].txt"] })).toMatchObject({ code: 0, stdout: "b[1].txt\n" });
+  });
+});
+
+/** Every hook event git 2.56 documents: a hook of each is configured, and none may run for a host call. */
+const HOOK_EVENTS = [
+  "applypatch-msg", "pre-applypatch", "post-applypatch", "pre-commit", "pre-merge-commit", "prepare-commit-msg", "commit-msg", "post-commit", "pre-rebase",
+  "post-checkout", "post-merge", "pre-push", "pre-receive", "update", "proc-receive", "post-receive", "post-update", "reference-transaction", "push-to-checkout",
+  "pre-auto-gc", "post-rewrite", "sendemail-validate", "fsmonitor-watchman", "p4-changelist", "p4-prepare-changelist", "p4-post-changelist", "p4-pre-submit",
+  "post-index-change",
+];
+
+describe("host git on the installed git", () => {
+  const plain = (cwd: string, ...args: string[]): string => execFileSync("git", args, { cwd, env, encoding: "utf8", stdio: "pipe" }).trim();
+  const identity = "[user]\n\tname = Alice Example\n\temail = alice@example.com\n";
+
+  it("no hook runs for any host call, whether the repository, the user's file or a file it includes configures it; git without the floor runs them", async () => {
+    const marker = join(base, "fired.txt");
+    const hooks = join(base, "hooks");
+    mkdirSync(hooks);
+    const configured = (prefix: string): string => HOOK_EVENTS.map(event => `[hook "${prefix}-${event}"]\n\tcommand = echo ${prefix}-${event} >> '${marker.split(sep).join("/")}'\n\tevent = ${event}\n\tenabled = true\n`).join("");
+    for (const event of HOOK_EVENTS) writeFileSync(join(hooks, event), `#!/bin/sh\necho dir-${event} >> '${marker.split(sep).join("/")}'\n`, { mode: 0o755 });
+    const repo = repositoryWith(`${identity}${configured("repo")}[core]\n\thooksPath = ${hooks.split(sep).join("/")}\n`);
+    writeFileSync(join(base, "included.cfg"), configured("included"));
+    appendFileSync(join(base, "gitconfig"), `[include]\n\tpath = ${join(base, "included.cfg").split(sep).join("/")}\n${configured("user")}`);
+    const git = createHostGit({ env });
+    const ok = async (cwd: string, args: string[], call?: Parameters<ReturnType<typeof createHostGit>["run"]>[2]): Promise<void> => {
+      expect.soft(await git.run(cwd, args, call), args.join(" ")).toMatchObject({ code: 0 });
+    };
+    writeFileSync(join(repo, "a.txt"), "one\n");
+    await ok(repo, ["add", "-A"]);
+    await ok(repo, ["commit", "-q", "--no-verify", "-m", "first"]);
+    await ok(repo, ["update-ref", "refs/heads/side", "HEAD"]);
+    const side = join(base, "side");
+    await ok(repo, ["worktree", "add", "--no-checkout", side, "side"]);
+    const worktree = { gitDir: join(repo, ".git", "worktrees", "side"), workTree: side };
+    await ok(side, ["reset", "--hard", "-q"], { worktree });
+    writeFileSync(join(side, "a.txt"), "side\n");
+    await ok(side, ["add", "-A"], { worktree });
+    await ok(side, ["commit", "-q", "--no-verify", "-m", "side"], { worktree });
+    writeFileSync(join(repo, "b.txt"), "main\n");
+    await ok(repo, ["add", "-A"]);
+    await ok(repo, ["commit", "-q", "--no-verify", "-m", "main"]);
+    await ok(repo, ["merge", "--no-edit", "--no-verify", "-m", "both", "side"]);
+    writeFileSync(join(side, "a.txt"), "side again\n");
+    await ok(side, ["commit", "-q", "--no-verify", "-a", "-m", "side again"], { worktree });
+    writeFileSync(join(repo, "a.txt"), "main again\n");
+    await ok(repo, ["commit", "-q", "--no-verify", "-a", "-m", "main again"]);
+    expect.soft((await git.run(repo, ["merge", "--no-edit", "--no-verify", "side"])).code).toBe(1);
+    await ok(repo, ["merge", "--abort"]);
+    expect(existsSync(marker) ? readFileSync(marker, "utf8") : "").toBe("");
+    // The same hooks are live: git without the floor runs each kind.
+    writeFileSync(join(repo, "c.txt"), "control\n");
+    plain(repo, "add", "-A");
+    plain(repo, "commit", "-q", "--no-verify", "-m", "control");
+    const fired = readFileSync(marker, "utf8");
+    for (const kind of ["repo-post-commit", "user-post-commit", "included-post-commit", "dir-post-commit", "repo-prepare-commit-msg", "repo-reference-transaction"]) expect.soft(fired, kind).toContain(kind);
+  });
+
+  it("an exec path the host inherited is not where git starts its own programs", async () => {
+    const { GIT_EXEC_PATH: _, ...clean } = env;
+    const installed = execFileSync("git", ["--exec-path"], { env: clean, encoding: "utf8" }).trim();
+    expect((await createHostGit({ env: { ...clean, GIT_EXEC_PATH: base } }).run(base, ["--exec-path"])).stdout.trim()).toBe(installed);
+  });
+
+  it("a partial clone's missing object is not fetched, whatever a configuration file allows a protocol, nor is a transport a call asks for started; what the clone holds is read", async () => {
+    const source = repositoryWith(`${identity}[uploadpack]\n\tallowFilter = true\n\tallowAnySHA1InWant = true\n`);
+    writeFileSync(join(source, "far.txt"), "far\n");
+    plain(source, "add", "far.txt");
+    plain(source, "commit", "-q", "-m", "first");
+    const blob = plain(source, "rev-parse", "HEAD:far.txt");
+    const clone = join(base, "clone");
+    plain(base, "clone", "-q", "--filter=blob:none", "--no-checkout", pathToFileURL(source).href, clone);
+    writeFileSync(join(base, "allowing.cfg"), "[protocol \"file\"]\n\tallow = always\n[protocol]\n\tallow = always\n");
+    appendFileSync(join(base, "gitconfig"), `[include]\n\tpath = ${join(base, "allowing.cfg").split(sep).join("/")}\n`);
+    const git = createHostGit({ env });
+    expect((await git.run(clone, ["cat-file", "-t", "HEAD"])).stdout).toBe("commit\n");
+    expect((await git.run(clone, ["cat-file", "-p", `${blob}`])).code).not.toBe(0);
+    expect((await git.run(base, ["clone", "-q", pathToFileURL(source).href, join(base, "again")])).code).not.toBe(0);
+    expect(existsSync(join(base, "again"))).toBe(false);
+    // The same clone does fetch it on demand for git without the host's policy.
+    expect(plain(clone, "cat-file", "-p", blob)).toBe("far");
+  });
+
+  it("a ceiling the host inherited hides no repository from git's discovery", async () => {
+    const repo = repositoryWith("");
+    mkdirSync(join(repo, "sub"));
+    const top = await createHostGit({ env: { ...env, GIT_CEILING_DIRECTORIES: repo } }).run(join(repo, "sub"), ["rev-parse", "--show-toplevel"], { exact: true });
+    expect(top.code).toBe(0);
+    expect(realpathSync.native(top.stdout.trim())).toBe(realpathSync.native(repo));
   });
 
   it("a workspace a sandboxed command holds is refused before git starts, and runs again once released", async () => {

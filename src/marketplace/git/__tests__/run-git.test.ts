@@ -132,7 +132,8 @@ describe("GitRunner invocation contract", () => {
     const args = await t.runner.configArgs(remote("https://github.com/acme/tools"));
     const flags = args.filter((_, index) => index % 2 === 1);
     expect(args.filter((_, index) => index % 2 === 0).every((arg) => arg === "-c")).toBe(true);
-    expect(flags).toEqual([
+    // Every hook event is switched off by the host floor as well.
+    expect(flags.filter(flag => !/^hook\.[a-z0-9-]+\.enabled=false$/u.test(flag))).toEqual([
       "protocol.file.allow=never",
       "submodule.recurse=false",
       "http.followRedirects=false",

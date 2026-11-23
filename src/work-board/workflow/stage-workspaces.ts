@@ -639,7 +639,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     for (const paths of chunked(staged.filter(path => sensitive(join(dir, path))))) {
       await assertRepository(at);
       // Each is the one file that was checked: read as a pattern, a name would take other files out of the commit, or none.
-      await out(["reset", "-q", "HEAD", "--", ...paths.map(path => `:(literal)${path}`)], { drivers });
+      await out(["reset", "-q", "HEAD"], { drivers, paths });
     }
     const dirty = await inStage(["diff", "--cached", "--quiet", "--no-ext-diff", "--no-textconv", "HEAD"], { drivers });
     if (dirty.code !== 0) {
@@ -730,7 +730,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
           for (const other of stageIds) {
             const entry = file.stages[other];
             if (other === stageId || entry?.sealCommit === undefined || entry.base === undefined) continue;
-            const changed = await inJoin(["diff", "--quiet", "--no-ext-diff", "--no-textconv", END_OF_OPTIONS, entry.base, entry.sealCommit, "--", path], { drivers });
+            const changed = await inJoin(["diff", "--quiet", "--no-ext-diff", "--no-textconv", END_OF_OPTIONS, entry.base, entry.sealCommit], { drivers, paths: [path] });
             if (changed.code === 1) touched.push(other);
           }
           files.push({ path, stageIds: stageIds.filter(id => touched.includes(id)) });

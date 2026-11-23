@@ -10,14 +10,22 @@ import { buildHostGitArgs, holdSandboxGitWrites, isHostGitWorkspaceAvailable } f
 
 describe("host Git configuration floor", () => {
   it("applies the mandatory floor after caller configuration without changing command arguments", () => {
-    expect(buildHostGitArgs(["-C", "/project", "status"], {
+    const args = buildHostGitArgs(["-C", "/project", "status"], {
       configArgs: ["-c", "core.fsmonitor=untrusted-monitor", "-c", "safe.bareRepository=all"],
       disabledHooksPath: "/host/empty",
-    })).toEqual([
+    });
+    expect(args.slice(0, 10)).toEqual([
       "-c", "core.fsmonitor=untrusted-monitor", "-c", "safe.bareRepository=all",
       "-c", "safe.bareRepository=explicit", "-c", "core.fsmonitor=false",
-      "-c", "core.hooksPath=/host/empty", "-C", "/project", "status",
+      "-c", "core.hooksPath=/host/empty",
     ]);
+    expect(args.slice(-3)).toEqual(["-C", "/project", "status"]);
+    // Then every hook event, switched off as a whole.
+    const events = args.slice(10, -3);
+    expect(events.filter((_, index) => index % 2 === 0).every(arg => arg === "-c")).toBe(true);
+    const switched = events.filter((_, index) => index % 2 === 1);
+    expect(switched.every(entry => /^hook\.[a-z0-9-]+\.enabled=false$/u.test(entry))).toBe(true);
+    expect(switched).toEqual(expect.arrayContaining(["prepare-commit-msg", "post-commit", "reference-transaction", "post-checkout", "post-merge", "post-index-change"].map(event => `hook.${event}.enabled=false`)));
   });
 
   it("uses the null device when no owned empty directory is supplied", () => {

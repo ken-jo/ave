@@ -7,40 +7,35 @@ const GIT_MAX_OUTPUT_BYTES = 32 * 1024 * 1024;
 /** How long a process that was stopped, or that has exited, may keep its pipes open before the call is refused without it. */
 const GIT_TEARDOWN_MS = 5_000;
 
-/** On top of the host floor: no credential, prompt, signing, external diff, transport, submodule recursion or background maintenance. */
+/** On top of the host floor: no credential, prompt, signing or signature check, external diff, transport, submodule recursion or
+ * background maintenance. */
 const HARDENED_CONFIG = [
-  "credential.helper=", "core.askPass=", "commit.gpgSign=false", "tag.gpgSign=false", "diff.external=", "protocol.allow=never",
-  "submodule.recurse=false", "gc.auto=0", "maintenance.auto=false", "user.useConfigOnly=true",
+  "credential.helper=", "core.askPass=", "commit.gpgSign=false", "tag.gpgSign=false", "merge.verifySignatures=false", "diff.external=",
+  "protocol.allow=never", "submodule.recurse=false", "gc.auto=0", "maintenance.auto=false", "user.useConfigOnly=true",
 ] as const;
-/** Inherited variables git is never given, whatever their case. A call names its repository by its folder alone, and what it reads and
- * writes there is that repository's own. */
-const DROPPED_ENV = new RegExp(`^(${[
-  // Where the repository, its work tree and its index are.
-  "GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR",
-  // Where objects are read from or written to, and which ones stand in for others or end the history.
-  "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_QUARANTINE_PATH", "GIT_REPLACE_REF_BASE", "GIT_NO_REPLACE_OBJECTS",
-  "GIT_GRAFT_FILE", "GIT_SHALLOW_FILE",
-  // Where refs are kept and under which names.
-  "GIT_NAMESPACE", "GIT_REFERENCE_BACKEND",
-  // The attributes read for a path, and how the paths a call names are matched.
-  "GIT_ATTR_SOURCE", "GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS", "GIT_ICASE_PATHSPECS",
-  // Gives the configuration command alone another file to read: the drivers it lists would not be the ones a checkout runs.
-  "GIT_CONFIG",
-  // Git's input and its answer, taken from the pipes of the call.
-  "GIT_REDIRECT_STDIN", "GIT_REDIRECT_STDOUT", "GIT_REDIRECT_STDERR",
-  // Answers a prompt, supplies an identity or starts a program.
-  "GIT_ASKPASS", "SSH_ASKPASS", "GIT_ASK_YESNO", "GIT_EXTERNAL_DIFF", "GIT_EDITOR", "GIT_SEQUENCE_EDITOR", "GIT_PAGER", "GIT_SSH", "GIT_SSH_COMMAND",
-  "GIT_PROXY_COMMAND",
-  "GIT_(AUTHOR|COMMITTER)_(NAME|EMAIL|DATE)",
-  // Allows a transport the call forbids, and the switches of git's own test suite.
-  "GIT_ALLOW_PROTOCOL", "GIT_TEST_[^=]*",
-].join("|")})$`, "iu");
+/**
+ * What git is given of the host's environment, the name taken in upper case on Windows where case does not tell variables apart: what
+ * starts a process here, where the user's own configuration files are, the temporary folder, the language and the time zone. Every other
+ * variable would choose for git a program, a transport, a repository, a way of matching paths or settings of the host's, and the git
+ * variables a call carries besides are the host's own: no transport at all, no object fetched on demand, no prompt.
+ *
+ * The user's configuration files, and the files they include, are read as the user's own policy, `safe.directory` too: what the host
+ * relies on it sets itself, on the command line, which git reads after every file, and a hook of any event is switched off as a whole.
+ * Settings an inherited variable gives at the command line's level are not taken.
+ */
+const INHERITED_ENV = new Set([
+  "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "SYSTEMDRIVE", "PROGRAMDATA",
+  "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "XDG_CONFIG_HOME", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM",
+  "TEMP", "TMP", "TMPDIR", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "TZ",
+]);
+const OWN_ENV = { GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", GIT_ALLOW_PROTOCOL: "", GIT_NO_LAZY_FETCH: "1" } as const;
 
 interface HostGitResult { code: number; stdout: string; stderr: string }
 /** `worktree`: the registration and the folder git works on, given to it outright; it then reads no `.git` file to find them.
  * `exact`: the answer holds names the caller compares, looks up on disk or hands back to git, so it must be text as it stands: one
- * that is not would be read as other names, and is refused as `not-text`. */
-interface HostGitCall { stdin?: string; drivers?: readonly string[]; isolated?: boolean; exact?: boolean; worktree?: { gitDir: string; workTree: string } }
+ * that is not would be read as other names, and is refused as `not-text`. `paths`: the paths the call is about, each given to git as
+ * that one path and never as a pattern; an argument list carries none. */
+interface HostGitCall { stdin?: string; drivers?: readonly string[]; isolated?: boolean; exact?: boolean; worktree?: { gitDir: string; workTree: string }; paths?: readonly string[] }
 /** Bytes as the text they are and nothing else: no byte replaced, no leading mark dropped. Throws for bytes that are no text. */
 const STRICT_TEXT = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 export class HostGitError extends Error {
@@ -58,20 +53,20 @@ export interface HostGit {
   drivers(cwd: string, worktree?: HostGitCall["worktree"]): Promise<{ config: string[]; requiredFilters: string[] }>;
 }
 
-function gitEnv(base: NodeJS.ProcessEnv, dropped = DROPPED_ENV): NodeJS.ProcessEnv {
+function gitEnv(base: NodeJS.ProcessEnv, kept: (name: string) => boolean): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
-  for (const [key, value] of Object.entries(base)) if (!dropped.test(key)) env[key] = value;
-  return { ...env, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" };
+  for (const [key, value] of Object.entries(base)) if (kept(process.platform === "win32" ? key.toUpperCase() : key)) env[key] = value;
+  return { ...env, ...OWN_ENV };
 }
 
-/** No inherited git variable at all, and neither the system's nor the user's configuration file. */
+/** Neither the system's nor the user's configuration file. */
 function isolatedEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  return { ...gitEnv(base, /^GIT_/iu), GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null" };
+  return { ...gitEnv(base, name => INHERITED_ENV.has(name) && !name.startsWith("GIT_")), GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null" };
 }
 
 /** Every git call of a stage workspace goes through here: an argument vector with no shell, a timeout and a bounded output. */
 export function createHostGit(options: { env?: NodeJS.ProcessEnv; timeoutMs?: number; maxOutputBytes?: number; teardownMs?: number } = {}): HostGit {
-  const env = gitEnv(options.env ?? process.env);
+  const env = gitEnv(options.env ?? process.env, name => INHERITED_ENV.has(name));
   const isolated = isolatedEnv(options.env ?? process.env);
   const timeoutMs = options.timeoutMs ?? GIT_TIMEOUT_MS;
   const maxOutputBytes = options.maxOutputBytes ?? GIT_MAX_OUTPUT_BYTES;
@@ -79,10 +74,16 @@ export function createHostGit(options: { env?: NodeJS.ProcessEnv; timeoutMs?: nu
 
   /** What git wrote, as the bytes it wrote. */
   function raw(cwd: string, args: readonly string[], call: HostGitCall = {}): Promise<{ code: number; stdout: Buffer; stderr: Buffer }> {
+    if (args.includes("--")) return Promise.reject(new Error("a path reaches git only as one of the call's paths"));
     if (!isHostGitWorkspaceAvailable(cwd)) return Promise.reject(new HostGitError("held", "the workspace is held by a sandboxed command"));
     const configArgs = [...HARDENED_CONFIG.flatMap(entry => ["-c", entry]), ...(call.drivers ?? [])];
+    const full = [
+      ...call.worktree === undefined ? [] : [`--git-dir=${call.worktree.gitDir}`, `--work-tree=${call.worktree.workTree}`],
+      ...args,
+      ...call.paths === undefined ? [] : ["--", ...call.paths.map(path => `:(literal)${path}`)],
+    ];
     return new Promise((resolve, reject) => {
-      const child = spawn("git", buildHostGitArgs(call.worktree === undefined ? args : [`--git-dir=${call.worktree.gitDir}`, `--work-tree=${call.worktree.workTree}`, ...args], { configArgs }), { cwd, env: call.isolated === true ? isolated : env, shell: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+      const child = spawn("git", buildHostGitArgs(full, { configArgs }), { cwd, env: call.isolated === true ? isolated : env, shell: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
       const out: Buffer[] = [];
       const err: Buffer[] = [];
       let size = 0;

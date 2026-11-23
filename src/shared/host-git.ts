@@ -3,6 +3,14 @@ import { inspectPhysicalFilesystemPath } from "./shell-filesystem-path.js";
 
 /** Configuration every host-owned Git process carries before its subcommand. */
 const HOST_GIT_CONFIG = ["safe.bareRepository=explicit", "core.fsmonitor=false"] as const;
+/** Every hook event Git documents (2.56). A configured hook is found apart from the hooks path, and some events are run under
+ * `--no-verify` too, so each event is switched off as a whole; a Git child the process starts inherits the switches. */
+const HOOK_EVENTS = [
+  "applypatch-msg", "pre-applypatch", "post-applypatch", "pre-commit", "pre-merge-commit", "prepare-commit-msg", "commit-msg", "post-commit", "pre-rebase",
+  "post-checkout", "post-merge", "pre-push", "pre-receive", "update", "proc-receive", "post-receive", "post-update", "reference-transaction", "push-to-checkout",
+  "pre-auto-gc", "post-rewrite", "sendemail-validate", "fsmonitor-watchman", "p4-changelist", "p4-prepare-changelist", "p4-post-changelist", "p4-pre-submit",
+  "post-index-change",
+] as const;
 const MAX_WORKSPACE_PATH_COMPONENTS = 64;
 const sandboxGitWrites = new Map<symbol, readonly string[]>();
 
@@ -54,6 +62,7 @@ export function buildHostGitArgs(args: readonly string[], options: {
     ...options.configArgs ?? [],
     ...HOST_GIT_CONFIG.flatMap((entry) => ["-c", entry]),
     "-c", `core.hooksPath=${disabledHooksPath}`,
+    ...HOOK_EVENTS.flatMap((event) => ["-c", `hook.${event}.enabled=false`]),
     ...args,
   ];
 }
