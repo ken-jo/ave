@@ -203,6 +203,21 @@ describe("host git", () => {
     }
   });
 
+  it("an inherited variable that names another source of attributes, or another object store, is not passed on", async () => {
+    const repo = repositoryWith("");
+    const plain = (...args: string[]): string => execFileSync("git", args, { cwd: repo, env, encoding: "utf8", stdio: "pipe" }).trim();
+    plain("-c", "user.name=Alice Example", "-c", "user.email=alice@example.com", "commit", "-q", "--allow-empty", "-m", "first");
+    // Not in the commit: only the work tree gives the file its filter.
+    writeFileSync(join(repo, ".gitattributes"), "a.txt filter=own\n");
+    const attributes = await createHostGit({ env: { ...env, GIT_ATTR_SOURCE: "HEAD" } }).run(repo, ["check-attr", "filter", "--", "a.txt"]);
+    expect.soft(attributes).toMatchObject({ code: 0, stdout: "a.txt: filter: own\n" });
+    mkdirSync(join(base, "objects"));
+    const written = await createHostGit({ env: { ...env, GIT_OBJECT_DIRECTORY: join(base, "objects") } }).run(repo, ["hash-object", "-w", "--stdin"], { stdin: "kept\n" });
+    expect.soft(written.code).toBe(0);
+    // The repository's own store holds it, as git with no such variable finds.
+    expect.soft(plain("cat-file", "-t", written.stdout.trim())).toBe("blob");
+  });
+
   it("a workspace a sandboxed command holds is refused before git starts, and runs again once released", async () => {
     const held = join(base, "held");
     const sibling = join(base, "sibling");
