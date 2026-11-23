@@ -1,5 +1,7 @@
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original(), "linux"));
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
+// The platform is simulated, so the plain route's PATH lookup is pinned by name rather than run against this host.
+vi.mock("../../shared/host-program-path.js", () => ({ findHostProgram: (name: string) => `/resolved/${name}`, resolveHostProgram: (name: string) => `/resolved/${name}` }));
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
 
 /** Check external stdio-worker confinement wiring, sensitive-path denial, sanitized spawn environment, and capability attribution.
@@ -214,7 +216,7 @@ describe("StdioTransport ASRT wrap — gate OFF (default)", () => {
     // The plain spawn ran with the UNMODIFIED resolved command + args.
     expect(spawnMock).toHaveBeenCalledTimes(1);
     const [cmd, args] = spawnMock.mock.calls[0];
-    expect(cmd).toBe("ave-mcp-fs");
+    expect(cmd).toBe("/resolved/ave-mcp-fs");
     expect(args).toEqual(["--root", "/tmp"]);
     expect((spawnMock.mock.calls[0]![2] as { cwd: string; env: Record<string, string> }).cwd).toBe("/tmp/package-generation");
     expect((spawnMock.mock.calls[0]![2] as { env: Record<string, string> }).env.PLUGIN_DATA).toBe("/tmp/plugin-data");

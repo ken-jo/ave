@@ -6,6 +6,8 @@ import {
   vi,
   beforeEach,
   afterEach,
+  beforeAll,
+  afterAll,
 } from "vitest";
 import { PassThrough } from "node:stream";
 import { getAveAppVersion } from "../../shared/app-version.js";
@@ -38,11 +40,17 @@ vi.mock("node:child_process", () => ({
   },
 }));
 vi.mock("../../main/uv-runtime.js", () => ({
-  resolveBundledUvBinaryPath: vi.fn(() => "/test-runtime/uv"),
+  resolveBundledUvBinaryPath: vi.fn(() => (process.platform === "win32" ? "C:\\test-runtime\\uv.exe" : "/test-runtime/uv")),
 }));
 
 // Import after mocks so transport bindings use the test doubles.
 import { McpClient } from "../mcp-client.js";
+import { installProgramsOnPath, withPlantedProgram, type ProgramsOnPath } from "../../__tests__/support/planted-program.js";
+
+// Configured bare names resolve on PATH before the (faked) spawn.
+let programs: ProgramsOnPath;
+beforeAll(() => { programs = installProgramsOnPath(["ave-mcp-fs", "ave-mcp-stubborn", "ave-mcp-broken-stdin"]); });
+afterAll(async () => { await programs.restore(); });
 import { ToolRegistry } from "../../tools/registry.js";
 import {
   MCP_RESOURCE_MAX_CHARS,
@@ -698,6 +706,25 @@ describe("HttpTransport — SSE streaming", () => {
 });
 
 describe("StdioTransport — regression", () => {
+  it("spawns a configured bare name from its absolute PATH location", async () => {
+    spawnMock.mockImplementationOnce(() => { throw new Error("stop after spawn"); });
+    const client = new McpClient({ id: "fs", transport: "stdio", command: "ave-mcp-fs" },
+      governanceWithPolicy(buildPolicy([stdioApproval("fs", "ave-mcp-fs")])), new ToolRegistry(), stubbedGlobalNetworkFetch);
+    await expect(client.connect()).rejects.toThrow();
+    expect(spawnMock.mock.calls[0]?.[0]).toBe(programs.program("ave-mcp-fs"));
+  });
+
+  it("refuses a configured name reachable only through the cwd or empty and relative PATH entries, and a relative path", async () => {
+    await withPlantedProgram(["ave-planted-mcp"], async () => {
+      for (const command of ["ave-planted-mcp", "./ave-planted-mcp"]) {
+        const client = new McpClient({ id: "planted", transport: "stdio", command },
+          governanceWithPolicy(buildPolicy([stdioApproval("planted", command)])), new ToolRegistry(), stubbedGlobalNetworkFetch);
+        await expect(client.connect()).rejects.toThrow(/not found on PATH|bare name or an absolute path/u);
+      }
+    });
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
   it("connects via subprocess with newline-delimited JSON-RPC", async () => {
     const fake = new FakeChildProcess();
     fake.responses = {
@@ -833,7 +860,7 @@ describe("StdioTransport — regression", () => {
 
     await client.connect();
     expect(spawnMock).toHaveBeenCalledWith(
-      "/test-runtime/uv",
+      process.platform === "win32" ? "C:\\test-runtime\\uv.exe" : "/test-runtime/uv",
       ["tool", "run", "--from", "browser-use[cli]==0.12.6", "browser-use", "--mcp"],
       expect.objectContaining({
         env: expect.objectContaining({

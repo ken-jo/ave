@@ -53,3 +53,32 @@ export async function withPlantedProgram<T>(names: readonly string[], use: (plan
     await cleanupTmpDir(root);
   }
 }
+
+export interface ProgramsOnPath {
+  readonly dir: string;
+  /** The absolute path a bare name resolves to. */
+  program(name: string): string;
+  restore(): Promise<void>;
+}
+
+/** Stub programs in a fully qualified folder prepended to PATH, for tests whose spawn is faked but whose program name must still resolve. */
+export function installProgramsOnPath(names: readonly string[]): ProgramsOnPath {
+  const windows = process.platform === "win32";
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "ave-programs-on-path-")));
+  const file = (name: string) => join(dir, windows && !/\.(?:com|exe)$/iu.test(name) ? `${name}.exe` : name);
+  for (const name of names) {
+    writeFileSync(file(name), windows ? "" : "#!/bin/sh\nexit 0\n");
+    if (!windows) chmodSync(file(name), 0o755);
+  }
+  const previousPath = process.env.PATH;
+  process.env.PATH = [dir, previousPath].filter(Boolean).join(windows ? ";" : ":");
+  return {
+    dir,
+    program: file,
+    async restore() {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      await cleanupTmpDir(dir);
+    },
+  };
+}

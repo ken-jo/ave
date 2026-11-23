@@ -75,6 +75,7 @@ import {
 } from "../sandbox/wrap-bundled-command.js";
 import type { EgressInvocation } from "../permissions/egress-invocations.js";
 import { buildSafeChildEnv } from "../tools/safe-env.js";
+import { resolveHostProgram } from "../shared/host-program-path.js";
 import type { Readable, Writable } from "node:stream";
 import { terminateChildProcess } from "../tools/terminate-child-process.js";
 import { createSandboxProcessHome } from "../permissions/sandbox-process-home.js";
@@ -1824,7 +1825,8 @@ class StdioTransport implements McpTransport {
     }
 
     assertManagedChildProcessAdmissionOpen(`mcp:${this.config.id}`);
-    this.process = spawn(spawnCommand.command, spawnCommand.args, {
+    // A user-configured bare name resolves on PATH only, never in the server or host cwd.
+    this.process = spawn(resolveHostProgram(spawnCommand.command, baseEnv), spawnCommand.args, {
       stdio: ["pipe", "pipe", "pipe"],
       // Windows: 콘솔 창 생성 방지 (창이 뜨면 stdout 파이프 동작이 달라짐)
       windowsHide: true,
