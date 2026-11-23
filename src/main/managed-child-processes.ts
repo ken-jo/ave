@@ -407,6 +407,11 @@ function hostDeathReaper(): ProcessGroupReaper {
   return processGroupReaper;
 }
 
+export function _closeProcessGroupReaperPipeForTest(): void {
+  if (processGroupReaper === undefined) throw new Error("No process group reaper to shut down");
+  processGroupReaper.shutdown();
+}
+
 export function __resetManagedChildProcessesForTest(): void {
   for (const entry of [...managedChildren]) entry.dispose();
   managedChildren.clear();
