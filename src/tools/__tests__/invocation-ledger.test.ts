@@ -160,7 +160,6 @@ it("claims an attempt's terminal row exactly once and refuses a second claim as 
   expect(admission.terminal.state).toBe("committed");
   await expect(admission.terminal.commit(second)).resolves.toBeUndefined();
   expect(second).not.toHaveBeenCalled();
-  expect(admission.terminal.claim("invocation")).toBe(false);
   expect(logError).toHaveBeenCalledWith("%s", "terminal row of once claimed twice");
   admission.settle();
 });
@@ -189,8 +188,6 @@ it("moves ownership to a suspended rationale card and back at its sealed start",
   first.settle();
   expect(write).not.toHaveBeenCalled();
   expect(first.terminal.owner).toBe("rationale");
-  // Only the owner, or the host, may claim.
-  expect(first.terminal.claim("invocation")).toBe(false);
   const resumed = ledger.admitToolInvocation("held", undefined, "tu-held");
   expect(resumed.terminal.owner).toBe("invocation");
   expect(resumed.terminal.state).toBe("open");

@@ -62,8 +62,6 @@ export interface InvocationTerminal {
   hostTerminal(write: HostTerminalWrite): void;
   /** Records a human outcome accepted before the next yield, so a host write in that window keeps it. */
   select(outcome: unknown): void;
-  /** True exactly once. A second claim, or one after the sink closed, is refused, recorded as an audit failure and false. */
-  claim(by: TerminalOwner | "host"): boolean;
   /** Runs `enqueue` with the owner's row writer, to be called before its first await. A refused claim runs nothing and
    * resolves undefined: the refusal is already logged and recorded, and the late caller still returns its result. An
    * `enqueue` that fails before its row is an integrity failure: the host writes the row and the attempt ends failed. */
@@ -94,12 +92,6 @@ class TerminalLedger implements InvocationTerminal {
 
   select(outcome: unknown): void {
     if (this.#state === "open") this.#selected = outcome;
-  }
-
-  claim(by: TerminalOwner | "host"): boolean {
-    if (this.#refusal(by)) return false;
-    this.#take();
-    return true;
   }
 
   #refusal(by: TerminalOwner | "host"): TerminalClaimError | undefined {
@@ -250,7 +242,6 @@ export function admitToolInvocation(tool: string, parent?: AbortSignal, resumeOf
     get state() { return ledger.state; },
     hostTerminal: (write) => { ledger.hostTerminal(write); },
     select: (outcome) => { ledger.select(outcome); },
-    claim: (by) => ledger.claim(by),
     commit: (enqueue) => ledger.commit(enqueue),
     nextAttempt: () => {
       ledger = ledger.nextAttempt() as TerminalLedger;
