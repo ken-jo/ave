@@ -6,6 +6,7 @@ import { configureHostResources } from "../../main/host-resources.js";
 beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 import * as policyHome from "../../shared/policy-home.js";
 import { useTempDirs } from "../../__tests__/test-helpers.js";
+import { registerMxcShellLaunchAdmissionFixture } from "../../__tests__/support/mxc-shell-launch-admission.js";
 import { SandboxManager, type SandboxAskCallback, type ParentProxyRouter } from "@anthropic-ai/sandbox-runtime";
 import {
   closeAllEgressConnections,
@@ -16,7 +17,7 @@ import {
 import { openInvocationProxyListener } from "../egress-invocation-listener.js";
 import { openHostEgressListener } from "../egress-host-listener.js";
 import { EgressGrantStore, egressGrantScopesFor } from "../egress-grants.js";
-import { prepareMxcShellLaunch } from "../../tools/mxc-shell-launch.js";
+import { prepareOwnedMxcShellLaunch } from "../../__tests__/support/contained-shell-launch.js";
 
 vi.mock("../mxc-windows.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../mxc-windows.js")>(),
@@ -143,7 +144,7 @@ type LaneKind = "listener" | "launcher";
 
 async function lane(token: string, kind: LaneKind) {
   if (kind === "launcher") {
-    const launch = await prepareMxcShellLaunch({
+    const launch = await prepareOwnedMxcShellLaunch({
       egressToken: token,
       commandLine: "cmd.exe /d /c echo hi",
       cwd: String.raw`C:\work\repo`,
@@ -153,6 +154,7 @@ async function lane(token: string, kind: LaneKind) {
       exists: () => true,
     });
     listeners.push({ close: launch.release });
+    launch.activate();
     return { port: launch.proxyPort };
   }
   const relay = await openHostEgressListener(token);
@@ -175,6 +177,8 @@ async function initialize(upstreamRouter: ParentProxyRouter, callback: SandboxAs
 
 // The host relay and proxy-only initialization are Windows-only contracts.
 describe.skipIf(process.platform !== "win32")("container proxy regression coverage", () => {
+  registerMxcShellLaunchAdmissionFixture(TOKEN_A, TOKEN_B);
+
   it("excludes the configured range from relay binds and frontend registration", async () => {
     await initializeAsrtSandbox({ allowedDomains: [], windows: { externalConfinement: true, proxyPortRange: [42000, 42009] } });
     const forced = forceFirstPort(42008);

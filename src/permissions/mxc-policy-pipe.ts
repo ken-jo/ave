@@ -10,7 +10,7 @@ const MAX_POLICY_BYTES = 4 * 1024 * 1024;
 class PolicyHelperTerminationError extends Error {
   readonly outcome = "left";
   constructor(cause: Error | undefined) {
-    super(`Windows sandbox policy helper was left; termination was not confirmed${cause ? `: ${cause.message}` : ""}`, { cause });
+    super("Windows sandbox policy helper was left; termination was not confirmed", { cause });
   }
 }
 
@@ -37,7 +37,7 @@ export async function openMxcPolicyPipe(bytes: Buffer, pipe: string): Promise<{
   let resolveClosed: () => void;
   const completion = new Promise<void>((resolve) => { resolveClosed = resolve; });
   let releasePromise: Promise<void> | undefined;
-  const recordFailure = (error: unknown): Error => failure ??= error instanceof Error ? error : new Error(String(error));
+  const recordFailure = (error: unknown): Error => failure ??= error instanceof Error ? error : new Error("Windows sandbox policy helper failed", { cause: error });
   const cleanup = (operation: () => unknown): void => {
     try { operation(); } catch (error) { recordFailure(error); }
   };
@@ -50,11 +50,14 @@ export async function openMxcPolicyPipe(bytes: Buffer, pipe: string): Promise<{
       if (!closed) {
         stopped = new Promise<void>((resolve) => {
           const deadline = setTimeout(() => {
-            if (!exited && !closed && server.exitCode == null && server.signalCode == null) {
-              cleanup(() => retainUnterminatedChildProcess(server, "mxc:policy"));
-              failure = new PolicyHelperTerminationError(failure);
+            try {
+              if (!exited && !closed && server.exitCode == null && server.signalCode == null) {
+                cleanup(() => retainUnterminatedChildProcess(server, "mxc:policy"));
+                failure = new PolicyHelperTerminationError(failure);
+              }
+            } finally {
+              resolve();
             }
-            resolve();
           }, TOOL_TIMEOUT_POLICY.processTreeKillMs);
           deadline.unref();
           void completion.then(() => { clearTimeout(deadline); resolve(); });

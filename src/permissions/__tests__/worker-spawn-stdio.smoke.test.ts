@@ -73,6 +73,8 @@ function handle(frame) {
       // Stop reading stdin, then ask the plugin for more than the host may queue toward a worker that does not read.
       process.stdin.pause();
       for (let index = 0; index < 64; index += 1) send({ id: "blob-" + index, method: "fetch_blob" });
+      // A paused stdin stops holding the process open once its buffer fills: only the host may end this worker.
+      setInterval(() => {}, 60_000);
       return;
     case "break": return process.stdout.write("this is a log line, not a frame\n");
     default: return send({ id, error: { code: -32601, message: "no method " + method } });

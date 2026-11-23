@@ -165,6 +165,98 @@ describe("openInvocationProxyListener", () => {
     expect([...servers].every((server) => !server.listening)).toBe(true);
   });
 
+  it("fails with a tentative bind's unbind failure instead of binding again", async () => {
+    const originalAddress = http.Server.prototype.address;
+    const servers = new Set<http.Server>();
+    let first = true;
+    vi.spyOn(http.Server.prototype, "address").mockImplementation(function (this: http.Server) {
+      servers.add(this);
+      const address = originalAddress.call(this);
+      if (first && address !== null && typeof address !== "string") {
+        first = false;
+        return { ...address, port: 60088 };
+      }
+      return address;
+    });
+    const failure = new Error("tentative unbind failed");
+    const close = http.Server.prototype.close;
+    vi.spyOn(http.Server.prototype, "close").mockImplementationOnce(function (this: http.Server, callback?: (error?: Error) => void) {
+      queueMicrotask(() => callback?.(failure));
+      return this;
+    }).mockImplementation(function (this: http.Server, callback?: (error?: Error) => void) {
+      return close.call(this, callback);
+    });
+    await expect(openInvocationProxyListener({ upstream: () => undefined }).then((listener) => {
+      cleanups.push(listener.close);
+      return listener;
+    })).rejects.toBe(failure);
+    // Its own close, once the open failed, unbound the port the failed unbind left.
+    expect([...servers].every((server) => !server.listening)).toBe(true);
+  });
+
+  it("rejects a close whose unbind failed, keeps it retryable, and treats an unbound port as closed", async () => {
+    const { listener } = await setup("Basic aWQ=");
+    const failure = new Error("listener unbind failed");
+    const close = http.Server.prototype.close;
+    const spy = vi.spyOn(http.Server.prototype, "close").mockImplementationOnce(function (this: http.Server, callback?: (error?: Error) => void) {
+      queueMicrotask(() => callback?.(failure));
+      return this;
+    });
+    await expect(listener.close()).rejects.toBe(failure);
+    const connect = () => new Promise((resolve, reject) => {
+      const s = net.connect(listener.port, "127.0.0.1", () => { s.destroy(); resolve("connected"); });
+      s.on("error", reject);
+    });
+    // Still bound, dropping what connects, until a close succeeds.
+    await expect(connect()).resolves.toBe("connected");
+    spy.mockImplementationOnce(function (this: http.Server, callback?: (error?: Error) => void) {
+      close.call(this);
+      queueMicrotask(() => callback?.(Object.assign(new Error("Server is not running."), { code: "ERR_SERVER_NOT_RUNNING" })));
+      return this;
+    });
+    await expect(listener.close()).resolves.toBeUndefined();
+    await expect(connect()).rejects.toThrow();
+  });
+
+  it("stays closed when a close requested during a bind fails to unbind", async () => {
+    const originalAddress = http.Server.prototype.address;
+    const servers = new Set<http.Server>();
+    let first = true;
+    vi.spyOn(http.Server.prototype, "address").mockImplementation(function (this: http.Server) {
+      servers.add(this);
+      const address = originalAddress.call(this);
+      if (first && address !== null && typeof address !== "string") {
+        first = false;
+        return { ...address, port: 60088 };
+      }
+      return address;
+    });
+    const failure = new Error("listener unbind failed");
+    const close = http.Server.prototype.close;
+    let releaseTentative = (): void => { throw new Error("the tentative unbind never ran"); };
+    vi.spyOn(http.Server.prototype, "close").mockImplementationOnce(function (this: http.Server, callback?: (error?: Error) => void) {
+      // The tentative bind's unbind is still in flight when the owner's close runs.
+      releaseTentative = () => close.call(this, callback);
+      return this;
+    }).mockImplementationOnce(function (this: http.Server, callback?: (error?: Error) => void) {
+      queueMicrotask(() => callback?.(failure));
+      return this;
+    }).mockImplementation(function (this: http.Server, callback?: (error?: Error) => void) {
+      return close.call(this, callback);
+    });
+    let adopted = (): Promise<void> => Promise.reject(new Error("the listener was never adopted"));
+    const opening = openInvocationProxyListener({
+      upstream: () => undefined,
+      admission: { signal: new AbortController().signal, assertCanBind: () => {}, acceptsConnections: () => true, adopt: (c) => { adopted = c; } },
+    });
+    opening.then((listener) => cleanups.push(listener.close), () => {});
+    await expect(adopted()).rejects.toBe(failure);
+    releaseTentative();
+    await expect(opening).rejects.toThrow(/closed while binding/);
+    await expect(adopted()).resolves.toBeUndefined();
+    expect([...servers].every((server) => !server.listening)).toBe(true);
+  });
+
   it("does not expose the shell listener to a client restricted to the shared allow range", async () => {
     const { listener, upstream } = await setup("Basic aWQ=");
     const [start, end] = asrtSandbox.getWindowsProxyPortRange();
