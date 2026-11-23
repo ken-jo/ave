@@ -237,7 +237,14 @@ export async function removeOwnFile(
   remove: (folder: HeldDirectory, name: string) => Promise<"removed" | "absent" | "cancelled">,
 ): Promise<OwnFileResult> {
   const path = join(folder.path, at);
-  if (identity.kind === "fingerprint") return removeByContent(folder, original, at, identity.content, remove);
+  if (identity.kind === "fingerprint") {
+    try {
+      heldFolder(folder);
+    } catch {
+      return notMoved("unheld", path, { name: at, identity });
+    }
+    return removeByContent(folder, original, at, identity.content, remove);
+  }
   const found = compareFile(folder, at, identity.file);
   if (found !== "same") return notMoved(found, path, { name: at, identity });
   if (await linksIn(folder, at)) return removeByFileId(folder, original, at, identity, remove);

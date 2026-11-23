@@ -1241,6 +1241,22 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
     expect(fs.readdirSync(chosen)).toEqual([]);
   });
 
+  it("says a file known by its content is left because its folder is gone, not that it could not be moved aside", async () => {
+    const { removeOwnFile } = await import("../browser-download-files.js");
+    const chosen = join(base, "chosen");
+    fs.mkdirSync(chosen);
+    const info = fs.statSync(chosen, { bigint: true });
+    fs.rmSync(chosen, { recursive: true });
+    const name = ".0123456789abcdef0123456789abcdef.part";
+    const identity = { kind: "fingerprint", content: { size: 12n, mtimeNs: 1n, head: "0".repeat(64), tail: "0".repeat(64) } } as const;
+    const remove = vi.fn(async () => "removed" as const);
+    const result = await removeOwnFile({ path: chosen, dev: info.dev, ino: info.ino }, name, name, identity, remove);
+    expect(result).toEqual({ outcome: "left", at: { name, identity } });
+    expect(remove).not.toHaveBeenCalled();
+    expect(boundary.warn).toHaveBeenCalledWith({ path: join(chosen, name) }, expect.stringContaining("its folder is no longer the chosen one"));
+    expect(boundary.warn).not.toHaveBeenCalledWith(expect.anything(), expect.stringContaining("could not be moved aside"));
+  });
+
   describe("the hard-link probe", () => {
     const name = ".0123456789abcdef0123456789abcdef.part";
     const probes = () => boundary.links.filter(([, link]) => /\.probe$/u.test(link)).map(([, link]) => link);
