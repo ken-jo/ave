@@ -1,16 +1,21 @@
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { answeredApprovalDecision, answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
-import { answeredApprovalProvenance, answeredProvenanceRecord, isAnsweredApprovalDenial, provenanceTrustOrigin, type AnsweredProvenance, type ApprovalRequestInput } from "../../permissions/approval-gate.js";
+import { redactFsPath } from "../../audit/dlp-filter.js";
+import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
+import { answeredApprovalProvenance, answeredProvenanceRecord, approvalDecisionTrustOrigin, isAnsweredApprovalDenial, provenanceTrustOrigin, type AnsweredProvenance, type ApprovalRequestInput } from "../../permissions/approval-gate.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { ToolExecutor } from "../executor.js";
+import { HookRunner } from "../../hooks/hook-runner.js";
 import { WriteFileTool } from "../file-tools.js";
 import { ToolRegistry } from "../registry.js";
 import { permissionAuditEntryFromToolCall } from "../pipeline/audit-entries.js";
+import { AuditWriter } from "../pipeline/audit-writer.js";
 import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 
 const sessionRegistration = vi.hoisted(() => ({ error: undefined as string | undefined }));
@@ -90,7 +95,7 @@ describe("the answerer contract", () => {
     expect(() => answeredApprovalProvenance({ requestId: "unrecorded", choice: "allow-once" }))
       .toThrow("approval: an answered decision carries no record of who answered");
     expect(answeredProvenanceRecord(answeredApprovalProvenance(await answeredApprovalDecision({ choice: "allow-once" }))))
-      .toEqual({ decision: "allow", answerer: "desk", trustOrigin: "user-keyboard" });
+      .toEqual({ decision: "allow", requestId: expect.any(String), toolName: "answer", toolUseId: undefined, choice: "allow-once", answerer: "desk", trustOrigin: "user-keyboard" });
   });
 
   it("fails closed on a copied or edited answer handle", async () => {
@@ -103,7 +108,9 @@ describe("the answerer contract", () => {
 
   it("keeps the recorded answer when the decision object is edited after the gate accepted it", async () => {
     const decision = await answeredApprovalDecision({ choice: "deny-once" });
-    decision.choice = "allow-once";
+    // The accepted decision is immutable: a consumer cannot branch on an edited choice.
+    expect(() => { decision.choice = "allow-once"; }).toThrow(TypeError);
+    expect(decision.choice).toBe("deny-once");
     expect(provenanceTrustOrigin(answeredApprovalProvenance(decision), "allow", "plugin-emitted")).toBe("plugin-emitted");
     expect(provenanceTrustOrigin(answeredApprovalProvenance(decision), "deny", "plugin-emitted")).toBe("user-keyboard");
     expect(isAnsweredApprovalDenial(decision)).toBe(true);
@@ -117,6 +124,40 @@ describe("the answerer contract", () => {
       permissionContext: { trustOrigin: "plugin-emitted", additionalDirectories: [project] },
     })).rejects.toThrow("approval: an answered decision carries no record of who answered");
   });
+  it("refuses another invocation's allow at the terminal and grant writers", async () => {
+    const other = answeredApprovalProvenance(await answeredApprovalDecision({ choice: "allow-once" }, "desk", "write_file", "other-invocation"));
+    const terminal = (toolUseId: string) => permissionAuditEntryFromToolCall({
+      toolName: "write_file", source: "builtin", category: "write", input: { path: "notes.txt" },
+      permission: { decision: "allow", reason: "answered", provenance: other },
+      rateLimitRemaining: Infinity, trustOrigin: "plugin-emitted", cwd: "/workspace", audit: { toolUseId },
+    });
+    expect(() => terminal("this-invocation")).toThrow("does not settle this allow of write_file");
+    expect(terminal("other-invocation")).toMatchObject({ decision: "allow", trustOrigin: "user-keyboard" });
+    const writer = new AuditWriter(audit, registry, undefined, true);
+    const grant = (toolUseId: string, toolName = "write_file") => writer.auditPermissionGrant({
+      toolName, source: "builtin", category: "write", directory: project, grantLifetime: "turn", provenance: other, audit: { toolUseId },
+    });
+    await expect(grant("this-invocation")).rejects.toThrow("does not settle this allow of write_file");
+    await expect(grant("other-invocation", "edit_file")).rejects.toThrow("does not settle this allow of edit_file");
+    expect(existsSync(audit.getPermissionAuditLogFile()) ? (await readFile(audit.getPermissionAuditLogFile(), "utf8")).trim() : "").toBe("");
+  });
+
+  it("refuses an allow the gate settled for another invocation before the tool runs", async () => {
+    const requestAndWait = vi.fn(async () => answeredApprovalDecision({ choice: "allow-once" }, "desk", "write_file", "other-invocation"));
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
+    await expect(executor.executeAll([{ id: "plugin-substituted-write", name: "write_file", input: { path: join(project, "substituted.txt"), content: "substituted" } }], {
+      sessionId: randomUUID(), executionCwd: project,
+      permissionContext: { trustOrigin: "plugin-emitted", additionalDirectories: [project] },
+    })).rejects.toThrow("does not settle this allow of write_file");
+    await expect(readFile(join(project, "substituted.txt"))).rejects.toThrow();
+    expect((await auditRows()).filter(row => row.toolUseId === "plugin-substituted-write" && row.decision === "allow")).toEqual([]);
+  });
+
+  it("tells a host refusal from an allow without a record", () => {
+    expect(approvalDecisionTrustOrigin(Object.freeze({ requestId: "host-refusal", choice: "deny-once" as const }))).toBe("unknown");
+    expect(() => approvalDecisionTrustOrigin({ requestId: "forged", choice: "allow-once" })).toThrow("approval: an allow carries no record of who answered");
+  });
+
   it("never projects an ask nobody settled as an allow", () => {
     const entry = permissionAuditEntryFromToolCall({
       toolName: "write_file", source: "builtin", category: "write", input: { path: "notes.txt" },
@@ -196,6 +237,20 @@ describe("one terminal row per plugin-emitted invocation answered at the desk", 
     const rows = await ledger("plugin-dir-unkept");
     expect(rows.map(row => [row.decision, row.grantLifetime])).toEqual(expected);
     expect(rows.at(-1)).toMatchObject({ trustOrigin: "unknown", answerTrustOrigin: "user-keyboard", denyReasons: [{ reason }] });
+  });
+
+  it("keeps the desk's Deny Always row when its rule save fails on I/O", async () => {
+    const save = vi.spyOn(manager, "addAlwaysDeniedPersist").mockRejectedValue(new Error("EIO: write failed"));
+    const requestAndWait = answeringRequestAndWait(() => ({ choice: "deny-always" as const }));
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
+    const [result] = await executor.executeAll([{ id: "plugin-deny-always-io", name: "write_file", input: { path: join(project, "denied.txt"), content: "denied" } }], {
+      sessionId: randomUUID(), executionCwd: project,
+      permissionContext: { trustOrigin: "plugin-emitted", additionalDirectories: [project] },
+    });
+    expect(save).toHaveBeenCalledOnce();
+    expect(result.is_error).toBe(true);
+    await expect(readFile(join(project, "denied.txt"))).rejects.toThrow();
+    expect(await ledger("plugin-deny-always-io")).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "user-keyboard" })]);
   });
 
   it("records a failing tool card as the host's refusal", async () => {

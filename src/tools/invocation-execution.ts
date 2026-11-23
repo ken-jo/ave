@@ -6,7 +6,7 @@ import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pi
 import { NO_APPROVER_MESSAGE, offersFloorSessionAllow } from "../permissions/decision-pipeline.js";
 import { checkReplayRootBinding, type ReplayRootBinding } from "../permissions/reviewer/replay-root-binding.js";
 import { attachSandboxBlock, sandboxBlockForResult, type SandboxBlock } from "../shared/sandbox-block.js";
-import { answeredApprovalProvenance, approvalReasonFields, approvalRequestTarget, HOST_PROVENANCE, isHostApprovalRejectedDecision, provenanceTrustOrigin, RULE_PROVENANCE } from "../permissions/approval-gate.js";
+import { answeredApprovalProvenance, answeredRecordForAction, approvalReasonFields, approvalRequestTarget, HOST_PROVENANCE, isHostApprovalRejectedDecision, provenanceTrustOrigin, RULE_PROVENANCE } from "../permissions/approval-gate.js";
 import type { PermissionEvaluationContext } from "../permissions/evaluation-context.js";
 import type { ApprovalPurposeSuggestion } from "../shared/permission-review-status.js";
 import { classifyApprovalRuleVerdict } from "./pipeline/approval-memory-skip.js";
@@ -296,7 +296,13 @@ export async function executeAuthorizedToolInvocation(
     pluginAuthLifecycle,
   } = context;
   let sandboxBlock: SandboxBlock | undefined;
-  let permissionResult = context.permissionResult;
+  // Execution without an authorization result is a broken contract, never an allow; the admission writes the host's row.
+  if (context.permissionResult === undefined) throw new Error("Handler admission is missing its authorization result");
+  let permissionResult: PermissionCheckResult = context.permissionResult;
+  // An answer admits only the action it settled; a substituted one stops here, before any effect.
+  if (permissionResult.provenance.kind === "answered") {
+    answeredRecordForAction(permissionResult.provenance, permissionResult.decision === "deny" ? "deny" : "allow", toolUse.name, toolUse.id);
+  }
   if (typeof initialHumanApproved !== "boolean") {
     throw new Error("Handler admission is missing human approval provenance");
   }

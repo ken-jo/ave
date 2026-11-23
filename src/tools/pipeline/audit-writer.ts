@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import type { ToolRegistry } from "../registry.js";
 import type { ToolSource, ToolCategory, TrustLevel } from "../types.js";
 import type { PermissionCheckResult } from "../../permissions/permission-manager.js";
-import { provenanceTrustOrigin, type DecisionProvenance } from "../../permissions/approval-gate.js";
+import { answeredRecordForAction, provenanceTrustOrigin, type DecisionProvenance } from "../../permissions/approval-gate.js";
 import type { AuditLogger } from "../../audit/audit-logger.js";
 import type { PermissionAuditEntryInput, HookResult, ToolExecutionAuditMetadata } from "../../audit/audit-schema.js";
 import { isPiiRedactionEnabled, maskSensitiveData } from "../../audit/dlp-filter.js";
@@ -97,6 +97,8 @@ export class AuditWriter {
     provenance: DecisionProvenance;
     audit?: ToolExecutionAuditMetadata;
   }): Promise<void> {
+    // A grant records only the answer that allowed this action.
+    if (args.provenance.kind === "answered") answeredRecordForAction(args.provenance, "allow", args.toolName, args.audit?.toolUseId);
     if (!this.auditLogger.isPermissionAuditChainReady()) {
       if (this.requirePermissionAuditChain) {
         const error = new Error("permission audit chain is not initialized");

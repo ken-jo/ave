@@ -469,7 +469,7 @@ describe("scoped permission rules", () => {
     expect(readFileSync(target, "utf8")).toBe("created");
     expect(requestAndWait).not.toHaveBeenCalled();
     const sibling = join(external, "sibling.txt");
-    requestAndWait.mockImplementationOnce(() => answeredApprovalDecision({ choice: "deny-once" }));
+    requestAndWait.mockImplementationOnce((request) => answeredApprovalDecision({ choice: "deny-once" }, "desk", request.toolName));
     const [blocked] = await runWithToolExecutionCwd(project, () => executor.executeAll([
       { id: "external-sibling", name: "write_file", input: { path: sibling, content: "must not write" } },
     ], { sessionId: "external-file", permissionContext: userPermissionContext() }));

@@ -3,12 +3,13 @@ import { randomUUID } from "node:crypto";
 import type { Tool } from "../base.js";
 import type { ToolSource, ToolCategory } from "../types.js";
 import type { PermissionCheckResult } from "../../permissions/permission-manager.js";
-import { HOST_PROVENANCE, provenanceTrustOrigin, RULE_PROVENANCE } from "../../permissions/approval-gate.js";
+import { answeredRecordForAction, HOST_PROVENANCE, provenanceTrustOrigin } from "../../permissions/approval-gate.js";
 import type { AuditToolCategory, PermissionAuditEntryInput, HookResult, ToolExecutionAuditMetadata } from "../../audit/audit-schema.js";
 import { hookInvocationFailureReason, type HookTrustOrigin, type ScriptHookType } from "../../hooks/script-hook-types.js";
 import type { HookDispatchResult } from "../../hooks/script-hook-manager.js";
 import type { ToolPermissionContext } from "../executor.js";
 import { resolveToolPathForPermission } from "../../shared/tool-path-resolution.js";
+import { redactFsPath } from "../../audit/dlp-filter.js";
 
 // Redact nonempty answers[].freeText before audit while retaining choices and dismissal.
 // Non-JSON error responses pass through unchanged.

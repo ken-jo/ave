@@ -455,7 +455,7 @@ describe("RationaleHostCoordinator", () => {
     // The resume carries the answer the desk gave on the card, independently of any policy change.
     const resumeProvenance = sealed ? state.coordinator.loadHostResumeProvenance(sealed.resumeRequest) : null;
     expect(resumeProvenance?.kind).toBe("answered");
-    expect(resumeProvenance?.kind === "answered" && answeredProvenanceRecord(resumeProvenance)).toEqual({ decision: "allow", answerer: "desk", trustOrigin: "user-keyboard" });
+    expect(resumeProvenance?.kind === "answered" && answeredProvenanceRecord(resumeProvenance)).toMatchObject({ decision: "allow", choice: "allow-once", answerer: "desk", trustOrigin: "user-keyboard" });
     expect(await state.coordinator.createSealedResume({
       ticketId: materialized.control.ticketId,
       currentEligibilityContext: eligibilityContext,

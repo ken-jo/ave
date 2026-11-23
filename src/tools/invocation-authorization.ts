@@ -936,6 +936,7 @@ export async function authorizeToolInvocation(
             }) : undefined;
         const approvalRequest = {
           id: context.cardRequestId ?? randomUUID(),
+          invocationToolUseId: toolUse.id,
           ...browserApprovalCardFacts(tool, invocationPermissionContext.approvalMemory),
           ...(permissionResult.forceModal === true
             ? {

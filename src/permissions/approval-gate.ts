@@ -293,6 +293,8 @@ export type ApprovalRequestInput = Omit<
   ApprovalRequest,
   "requireExplicit" | "executionPlan" | "persistentAllowAllowed" | "exactRecordAllowed" | "persistentApprovalCwd" | "shellRule" | "hostTerminalAfterExternalContent" | "homeFolderRefused" | "requestingAgentTitle" | "readjudication"
 > & {
+  // Host-only: the tool call this card asks about. Its accepted answer is bound to it and never sent to the renderer.
+  readonly invocationToolUseId?: string;
   // Host-only native execution proof; removed before renderer/audit payloads.
   readonly hostShellExecutionPlan?: import("./host-shell-execution-plan.js").HostShellExecutionPlan;
   readonly verifiedShellCommand?: import("./verified-shell-command.js").VerifiedShellCommand;
@@ -395,6 +397,11 @@ export function isHostApprovalRejectedDecision(
 /** The gate's record of an accepted answer: which way it went, who gave it and the origin that answerer writes. */
 export interface AnsweredRecord {
   readonly decision: "allow" | "deny";
+  /** The request and action the answer settled; a writer refuses the record for any other. */
+  readonly requestId: string;
+  readonly toolName: string;
+  readonly toolUseId: string | undefined;
+  readonly choice: ApprovalChoice;
   readonly answerer: ApprovalAnswerer;
   readonly trustOrigin: TrustOriginWithUnknown;
 }
@@ -412,9 +419,10 @@ export { HOST_PROVENANCE, RULE_PROVENANCE, type HostProvenance, type RuleProvena
 const answeredDecisionHandles = new WeakMap<ApprovalDecision, AnsweredProvenance>();
 const answeredRecords = new WeakMap<AnsweredProvenance, AnsweredRecord>();
 
-function mintAnsweredProvenance(decision: ApprovalDecision, answerer: ApprovalAnswerer): void {
+function mintAnsweredProvenance(decision: ApprovalDecision, answerer: ApprovalAnswerer, toolName: string, toolUseId: string | undefined): void {
   const handle = Object.freeze({ kind: "answered" }) as AnsweredProvenance;
   answeredRecords.set(handle, Object.freeze({ decision: decision.choice.startsWith("allow") ? "allow" : "deny",
+    requestId: decision.requestId, toolName, toolUseId, choice: decision.choice,
     answerer, trustOrigin: APPROVAL_ANSWERER_TRUST_ORIGINS[answerer] }));
   answeredDecisionHandles.set(decision, handle);
 }
@@ -426,9 +434,23 @@ export function answeredProvenanceRecord(provenance: AnsweredProvenance): Answer
   return record;
 }
 
+/** A deny without a record is the host's own refusal; an allow without one breaks the gate's contract, and throws. */
 export function approvalDecisionTrustOrigin(decision: ApprovalDecision): TrustOriginWithUnknown {
   const handle = answeredDecisionHandles.get(decision);
-  return handle === undefined ? "unknown" : answeredProvenanceRecord(handle).trustOrigin;
+  if (handle !== undefined) return answeredProvenanceRecord(handle).trustOrigin;
+  if (decision.choice.startsWith("allow")) throw new Error("approval: an allow carries no record of who answered");
+  return "unknown";
+}
+
+/** An answered provenance as a writer may record it: minted by the gate for this action and this decision. */
+export function answeredRecordForAction(
+  provenance: AnsweredProvenance, decision: "allow" | "deny", toolName: string, toolUseId: string | undefined,
+): AnsweredRecord {
+  const record = answeredProvenanceRecord(provenance);
+  if (record.decision !== decision || record.toolName !== toolName || record.toolUseId !== undefined && record.toolUseId !== toolUseId) {
+    throw new Error(`approval: the answer to ${record.requestId} does not settle this ${decision} of ${toolName}`);
+  }
+  return record;
 }
 
 /** The gate's handle for a decision a caller is treating as answered. A missing handle breaks the gate's contract. */
@@ -658,6 +680,7 @@ interface PendingEntry {
   floorSessionGrant?: FloorSessionGrant;
   hostShellExecutionPlan?: import("./host-shell-execution-plan.js").HostShellExecutionPlan;
   verifiedShellCommand?: import("./verified-shell-command.js").VerifiedShellCommand;
+  invocationToolUseId?: string;
   projectCwd?: string;
   workingDirectoryIdentity?: string;
   riskCeilingAtApproval?: RiskLevel;
@@ -1136,6 +1159,7 @@ export class ApprovalGate {
       readjudication: _requestedReadjudication,
       verifiedShellCommand,
       hostShellExecutionPlan,
+      invocationToolUseId,
       ...request
     } = req as ApprovalRequestInput & { hostTerminalAfterExternalContent?: unknown; homeFolderRefused?: unknown; requestingAgentTitle?: unknown; readjudication?: unknown };
     if (toolApprovalWait !== undefined && !isIssuedToolApprovalWait(toolApprovalWait)) {
@@ -1621,6 +1645,7 @@ export class ApprovalGate {
         ...(floorSessionGrant !== undefined && shellRule?.sessionAllowed === true ? { floorSessionGrant } : {}),
         verifiedShellCommand,
         hostShellExecutionPlan,
+        ...(invocationToolUseId === undefined ? {} : { invocationToolUseId }),
         projectCwd: workingDirectory?.path,
         workingDirectoryIdentity: workingDirectory?.identity,
         riskCeilingAtApproval,
@@ -1986,7 +2011,8 @@ export class ApprovalGate {
       }
     }
     // User-owned surface choices carry only their authenticated selection, never auxiliary renderer content.
-    const resolvedDecision: ApprovalDecision =
+    // Every accepted answer is a fresh frozen object: consumers read the settled choice, never the caller's mutable response.
+    const resolvedDecision: ApprovalDecision = Object.freeze(
       entry.userOwnedSurface !== undefined
         ? {
             requestId,
@@ -1995,7 +2021,7 @@ export class ApprovalGate {
             hmac: decision.hmac,
             ...(entry.userOwnedSurface !== undefined && decision.choice === "allow-once" ? { userOwnedSurfaceChoice: decision.userOwnedSurfaceChoice } : {}),
           }
-        : decision;
+        : { ...decision, requestId });
     clearTimeout(entry.timer);
     this.pending.delete(requestId);
     if (nativeRenderer && entry.userOwnedSurface !== undefined && entry.sessionId !== undefined && resolvedDecision.choice === "allow-once" && isUserOwnedSurfaceChoice(resolvedDecision.userOwnedSurfaceChoice)) {
@@ -2040,7 +2066,7 @@ export class ApprovalGate {
       type: "approval",
       output: `[approval:decided] ${requestId} ${formatApprovalAuditFields({ ...entry, answeredBy }, entry.executionPlan)} choice=${resolvedDecision.choice} rememberPattern=${resolvedDecision.rememberPattern ?? "none"}${entry.kind === "egress-host" ? ` egressScope=${resolvedDecision.egressScope ?? "none"}` : ""}`,
     });
-    if (Object.hasOwn(APPROVAL_ANSWERER_TRUST_ORIGINS, answeredBy)) mintAnsweredProvenance(resolvedDecision, answeredBy);
+    if (Object.hasOwn(APPROVAL_ANSWERER_TRUST_ORIGINS, answeredBy)) mintAnsweredProvenance(resolvedDecision, answeredBy, entry.toolName, entry.invocationToolUseId);
     entry.resolve(resolvedDecision);
     return resolvedDecision;
   }

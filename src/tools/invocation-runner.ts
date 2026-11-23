@@ -1648,6 +1648,7 @@ async function runToolInvocationAttempt(
       if (services.approvalGate && !headless) {
         const approvalRequest = {
           id: behavior?.requestId ?? randomUUID(),
+          invocationToolUseId: toolUse.id,
           ...((dirLayerResult.forceModal === true)
             ? {
                 allowedChoices: ["allow-once", "deny-once"] as const,
