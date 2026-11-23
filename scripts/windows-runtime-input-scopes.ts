@@ -35,6 +35,10 @@ export const windowsRuntimeInputScopes: Readonly<Record<string, WindowsRuntimeIn
   "src/permissions/mxc-policy-pipe.ts": { digest: "ba872fabf25d82d2f69c8476ed1599cd1f3693f255c8c2bb4c530c6fe02e6fac", inputs: [] },
   "src/permissions/verified-shell-command.ts": { digest: "66b2bbaae48bb00432528998b52988ed6d766bdc043d2572890509f0a9cf26ac", inputs: [] },
   "src/permissions/windows-process-start-time.ts": { digest: "4476ee614bb958c124e0a563e199698cc4dc300badeb080c991d5daf4d69dcd4", inputs: [] },
+  // Resolves the Codex executable chain, CODEX_HOME/cap_sid and a private temporary directory, and probes them with /bin/ls or PowerShell.
+  "src/main/codex-executable-location.ts": { digest: "070abf3e0bdfaa76da9f22d5d10a4d34a0798fcc123c51591d18fe99b0c4e3ff", inputs: [] },
+  // Renames, restores access to and removes installed plugin trees at caller-supplied paths with /bin/chmod and /usr/bin/chflags.
+  "src/plugins/installed-entry-fs.ts": { digest: "03f9ca10298b322f1becf9b54e27db58027a898fb3cab27d62d313af4399bf41", inputs: [] },
   // Installation artifacts and interpreter provenance are global inputs.
   "src/main/host-script-runtime.ts": { digest: "a81b01ccadf4b001f72019255808470ebca77f81b08626cf7aa28ee75f7aabb2", inputs: ["scripts/**", "resources/**"] },
   "src/main/seed-ave-home-docs.ts": { digest: "a517e147b43901cbb921d3a17d7ea43da3ec7b1a8c5a341913caf81f0e88be9a", inputs: ["resources/**"] },
