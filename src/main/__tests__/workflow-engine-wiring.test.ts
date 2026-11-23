@@ -144,19 +144,20 @@ it("the production parts keep the projects of the newest 256 removed records tha
 }));
 
 it("a discard a row's removal asks for while a schedule's approved project is still being read waits for it: the git run goes, with no warning", async () => {
-  // The repository's folder goes with the test run's temporary root.
   const fx = gitFixture();
-  vi.stubEnv("GIT_CONFIG_GLOBAL", fx.env.GIT_CONFIG_GLOBAL ?? "");
-  vi.stubEnv("GIT_CONFIG_NOSYSTEM", "1");
   const said = vi.spyOn(console, "warn");
   let answer = (): void => undefined;
   const reading = new Promise<void>((resolve) => { answer = resolve; });
   let parts: ReturnType<typeof workflowEngineExtensions> | undefined;
-  const h = await stageRunHarness({ wiring: (store, harness) => {
-    parts = workflowEngineExtensions(store, { getAttachment: async (id) => { await reading; return { ...await harness.templates.getAttachment(id), approvedScope: { kind: "project", projectRoot: fx.repo } } as never; } });
-    return { ...parts, workspace: harness.workspace, workspaceBinding: undefined };
-  } });
+  let h: Awaited<ReturnType<typeof stageRunHarness>> | undefined;
+  let opened: (() => Promise<void>) | undefined;
   try {
+    vi.stubEnv("GIT_CONFIG_GLOBAL", fx.env.GIT_CONFIG_GLOBAL ?? "");
+    vi.stubEnv("GIT_CONFIG_NOSYSTEM", "1");
+    h = await stageRunHarness({ wiring: (store, harness) => {
+      parts = workflowEngineExtensions(store, { getAttachment: async (id) => { await reading; return { ...await harness.templates.getAttachment(id), approvedScope: { kind: "project", projectRoot: fx.repo } } as never; } });
+      return { ...parts, workspace: harness.workspace, workspaceBinding: undefined };
+    } });
     const version = await h.confirm([stageOf("a")]);
     await h.addItem(version);
     const workspace = parts?.workspace;
@@ -165,6 +166,8 @@ it("a discard a row's removal asks for while a schedule's approved project is st
     const run = { itemId: 99, runId: `run-wiring-${process.pid}-${Date.now()}`, runKey: "key", projectRoot: fx.repo };
     const open = await workspace.open(run, fx.repo);
     if (!open.ok) throw new Error(open.code);
+    // What a failed assertion leaves of the run goes before the repository does.
+    opened = () => workspace.release(run, "all");
     const discard = vi.spyOn(workspace, "discard");
     h.board.runs.onRunsRemoved?.([{ runId: run.runId, itemId: run.itemId, runStartedBy: { kind: "schedule-attachment", attachmentId: "attachment", pin: h.pinOf(version), firedAt: "2026-11-16T00:00:00.000Z" } }]);
     h.board.onItemRemoved?.();
@@ -176,8 +179,13 @@ it("a discard a row's removal asks for while a schedule's approved project is st
     expect.soft(said.mock.calls.map(line => line.join(" ")).filter(line => line.includes("cleanup is unverified"))).toEqual([]);
   } finally {
     said.mockRestore();
-    vi.unstubAllEnvs();
-    await h.cleanup();
+    try {
+      await opened?.().catch(() => undefined);
+      vi.unstubAllEnvs();
+      await h?.cleanup();
+    } finally {
+      await fx.done();
+    }
   }
 });
 
