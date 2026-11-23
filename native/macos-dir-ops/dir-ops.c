@@ -205,34 +205,130 @@ static void fresh_hidden_name(char name[HIDDEN_NAME_SIZE]) {
   memcpy(name + 1 + 2 * sizeof random, ".removing", sizeof ".removing");
 }
 
-// Remove the partial copy `part` from the held folder only while it is the file the copy wrote, `written` (the identity of the
-// descriptor it wrote through), never by its name alone: it is moved to a fresh hidden name, which nothing else uses, checked there,
-// and only then removed under that name. A file put at `part` meanwhile is put back there if the name is still free, or stays under the
-// hidden name. Returns 1 when the copy's file was removed; otherwise 0, with `hidden` holding the hidden name a file stays under, or
-// empty when nothing stays under one (the file at `part` could not be moved, or was moved back).
-static int remove_own_part(int to, const char *part, const struct stat *written, char hidden[HIDDEN_NAME_SIZE]) {
+// The file a copy writes, known by a descriptor of its own on it, kept until the helper ends. Its identity is taken through that
+// descriptor when the file is cleaned up, not when it is created: exFAT gives a new file its lasting file id only once it is written.
+struct written_file {
+  int fd;
+};
+
+// How much of each end of a file is compared to know it by its content (the host's fingerprint span).
+#define FINGERPRINT_SPAN (64 * 1024)
+
+static int read_at(int fd, unsigned char *bytes, size_t length, off_t offset) {
+  while (length > 0) {
+    const ssize_t count = pread(fd, bytes, length, offset);
+    if (count < 0 && errno == EINTR) continue;
+    if (count <= 0) return 0;
+    bytes += count;
+    length -= (size_t)count;
+    offset += count;
+  }
+  return 1;
+}
+
+static int same_range(int own, int other, off_t offset, size_t length) {
+  static unsigned char mine[FINGERPRINT_SPAN];
+  static unsigned char theirs[FINGERPRINT_SPAN];
+  return read_at(own, mine, length, offset) && read_at(other, theirs, length, offset) && memcmp(mine, theirs, length) == 0;
+}
+
+// Whether the ordinary file at `name`, read through a new descriptor, holds what the copy wrote, read through its own: the same size,
+// and the same first and last FINGERPRINT_SPAN bytes.
+static int same_content(int to, const char *name, int own) {
+  const int other = openat(to, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+  if (other < 0) return 0;
+  struct stat mine;
+  struct stat theirs;
+  int same = fstat(own, &mine) == 0 && fstat(other, &theirs) == 0 && S_ISREG(theirs.st_mode) && mine.st_size == theirs.st_size;
+  if (same) {
+    const size_t span = mine.st_size < FINGERPRINT_SPAN ? (size_t)mine.st_size : FINGERPRINT_SPAN;
+    same = same_range(own, other, 0, span) && same_range(own, other, mine.st_size - (off_t)span, span);
+  }
+  close(other);
+  return same;
+}
+
+// Put the file at `hidden` back at `part` without replacing anything: a new file created exclusively at `part` gets its bytes and is
+// synced, and only then is `hidden` removed. Returns 1 when the file is back at `part` and no longer at `hidden`.
+static int copy_back(int to, const char *hidden, const char *part) {
+  const int source = openat(to, hidden, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+  if (source < 0) return 0;
+  struct stat info;
+  int target = -1;
+  if (fstat(source, &info) == 0 && S_ISREG(info.st_mode)) {
+    target = openat(to, part, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, info.st_mode & 0777);
+  }
+  int copied = target >= 0;
+  static unsigned char chunk[FINGERPRINT_SPAN];
+  while (copied) {
+    const ssize_t count = read(source, chunk, sizeof chunk);
+    if (count < 0 && errno == EINTR) continue;
+    if (count <= 0) {
+      copied = count == 0;
+      break;
+    }
+    for (ssize_t done_bytes = 0; copied && done_bytes < count;) {
+      const ssize_t written = write(target, chunk + done_bytes, (size_t)(count - done_bytes));
+      if (written < 0 && errno == EINTR) continue;
+      if (written <= 0) copied = 0;
+      else done_bytes += written;
+    }
+  }
+  if (target >= 0) {
+    if (copied && fsync(target) != 0) copied = 0;
+    if (close(target) != 0) copied = 0;
+  }
+  close(source);
+  return copied && unlinkat(to, hidden, 0) == 0;
+}
+
+// Remove the partial copy `part` from the held folder only while it is the file the copy wrote, never by its name alone: it is moved to a
+// fresh hidden name, which nothing else uses, checked there, and only then removed under that name. A file put at `part` meanwhile is put
+// back there if the name is still free, or stays under the hidden name. Returns 1 when the copy's file was removed; otherwise 0, with
+// `hidden` holding the hidden name a file stays under, or empty when nothing stays under one (the file at `part` could not be moved, or was
+// put back).
+//
+// A volume without an exclusive rename (exFAT, FAT) is checked that the hidden name is free and then renamed to it plainly; the name is
+// random, so nothing else is there. There a file is removed only when both its id and its content (read through the copy's own
+// descriptor) are the copy's, and a file that is not is put back by copying it to a new file created exclusively at `part`, so it never
+// replaces one.
+static int remove_own_part(int to, const char *part, const struct written_file *written, char hidden[HIDDEN_NAME_SIZE]) {
   char aside[HIDDEN_NAME_SIZE];
   fresh_hidden_name(aside);
   hidden[0] = '\0';
-  if (renameatx_np(to, part, to, aside, RENAME_EXCL) != 0) return 0;
+  int exclusive = 1;
+  if (renameatx_np(to, part, to, aside, RENAME_EXCL) != 0) {
+    if (errno != ENOTSUP && errno != EINVAL) return 0;
+    struct stat there;
+    if (fstatat(to, aside, &there, AT_SYMLINK_NOFOLLOW) == 0 || errno != ENOENT) return 0;
+    if (renameat(to, part, to, aside) != 0) return 0;
+    exclusive = 0;
+  }
   struct stat moved;
   if (fstatat(to, aside, &moved, AT_SYMLINK_NOFOLLOW) != 0) {
     if (errno != ENOENT) memcpy(hidden, aside, HIDDEN_NAME_SIZE);
     return 0;
   }
-  if (moved.st_dev == written->st_dev && moved.st_ino == written->st_ino) {
+  struct stat own;
+  if (fstat(written->fd, &own) != 0) {
+    memcpy(hidden, aside, HIDDEN_NAME_SIZE);
+    return 0;
+  }
+  const int same_id = moved.st_dev == own.st_dev && moved.st_ino == own.st_ino;
+  if (same_id && (exclusive || same_content(to, aside, written->fd))) {
     if (unlinkat(to, aside, 0) == 0) return 1;
     if (errno != ENOENT) memcpy(hidden, aside, HIDDEN_NAME_SIZE);
     return 0;
   }
-  if (renameatx_np(to, aside, to, part, RENAME_EXCL) != 0) memcpy(hidden, aside, HIDDEN_NAME_SIZE);
+  const int back = exclusive ? renameatx_np(to, aside, to, part, RENAME_EXCL) == 0 : copy_back(to, aside, part);
+  if (!back) memcpy(hidden, aside, HIDDEN_NAME_SIZE);
   return 0;
 }
 
 // End a copy that stopped after creating `part` with `answer` and its exit code, saying what became of `part`: nothing more when
 // the copy's own file was removed, ` left` when it was not, or ` left <hidden name>` when a file stays under that name. `written` is
 // null when the copy's file could not be identified; it is then left.
-static int stopped_copy(int to, const char *part, const struct stat *written, const char *answer, int exit_code) {
+static int stopped_copy(int to, const char *part, const struct written_file *written, const char *answer, int exit_code) {
   char hidden[HIDDEN_NAME_SIZE] = "";
   if (written != NULL && remove_own_part(to, part, written, hidden)) printf("%s\n", answer);
   else if (hidden[0] == '\0') printf("%s left\n", answer);
@@ -242,7 +338,7 @@ static int stopped_copy(int to, const char *part, const struct stat *written, co
 }
 
 // Remove the partial copy as stopped_copy() does, and report `failure`, or `cancelled` when there is none.
-static int abandon(int to, const char *part, const struct stat *written, int failure) {
+static int abandon(int to, const char *part, const struct written_file *written, int failure) {
   if (failure == 0) return stopped_copy(to, part, written, "cancelled", EXIT_DONE);
   char answer[32];
   snprintf(answer, sizeof answer, "failed %s", errno_name(failure));
@@ -286,12 +382,15 @@ static int run_copy(char **argv) {
   if (!proceed("ready")) return done("cancelled");
   status = check_replaceable(to, target);
   if (status != 0) return status;
-  // The temporary file is created exclusively, never through a link, in the held folder.
-  const int copy = openat(to, part, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, info.st_mode & 0777);
+  // The temporary file is created exclusively, never through a link, in the held folder, and opened for reading too, so a cleanup can
+  // compare what it wrote.
+  const int copy = openat(to, part, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, info.st_mode & 0777);
   if (copy < 0) return failed(errno);
-  // The identity of the file this copy writes, so a cleanup removes only that file.
-  struct stat written;
-  if (fstat(copy, &written) != 0) {
+  // A descriptor on the file this copy writes that outlives the copy's own, so a cleanup removes only that file. The helper ends soon
+  // after any cleanup, which closes it.
+  struct written_file written;
+  written.fd = dup(copy);
+  if (written.fd < 0) {
     const int code = errno;
     close(copy);
     return abandon(to, part, NULL, code);

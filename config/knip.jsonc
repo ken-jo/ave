@@ -160,6 +160,8 @@
     "file",
     // External Go toolchain for the explicit parser rebuild, pinned by go.mod.
     "go",
+    // macOS disk images: the download-helper regression attaches an exFAT volume to copy onto.
+    "hdiutil",
     // Windows ACL inspection from the ave-home privacy regression.
     "icacls",
     "lsof",

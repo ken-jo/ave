@@ -52,12 +52,23 @@ stdin.
   Exit `4`: `failed <errno name>`. Exit `2`: the arguments are wrong.
 - A copy that stops after creating `part` (cancelled, failed, or refused
   `target` at the commit) removes it only as the file it wrote, never by its
-  name alone. It keeps the device and inode of the descriptor it writes
-  through, renames `part` exclusively (`RENAME_EXCL`) to a fresh hidden name
-  in the same folder, `.<32 hex digits>.removing`, checks that identity
-  there, and only then removes it under that name. A file found there that is
-  not the one written goes back to `part` exclusively, or stays under the
-  hidden name when `part` is taken again. When the file is not removed (it is
+  name alone. It keeps a descriptor of its own on the file it writes,
+  renames `part` exclusively (`RENAME_EXCL`) to a fresh hidden name in the
+  same folder, `.<32 hex digits>.removing`, checks there that the entry has
+  the device and inode that descriptor has, and only then removes it under
+  that name. A file found there that is not the one written goes back to
+  `part` exclusively, or stays under the hidden name when `part` is taken
+  again. A volume without an exclusive rename (exFAT, FAT: `ENOTSUP` or
+  `EINVAL`) is checked that the hidden name is free and renamed to it
+  plainly. There the file is removed only when its device and inode and its
+  content both match: the same size, and the same first and last 64 KiB read
+  through a new `O_NOFOLLOW` descriptor and through the copy's own. A file
+  that does not match is put back by copying it to a new file created
+  exclusively at `part`, synced before the hidden name is removed, or stays
+  under the hidden name when `part` is taken or the copy fails. The identity
+  is read through the descriptor at the cleanup, not when the file is
+  created: exFAT gives a new file its lasting inode only once it is
+  written. When the file is not removed (it is
   not the one written, it cannot be moved aside, or its removal fails), the
   outcome ends with ` left`, or ` left <hidden name>` when a file stays under
   that name: `cancelled left` (exit `0`), `failed <errno name> left` (exit

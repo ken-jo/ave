@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { afterQueuedCallbacks } from "../../../__tests__/support/deferred.js";
 
 // Hooks into the filesystem calls a test needs to steer or observe: a check of the staging folder that fails with a filesystem error, short
@@ -1122,58 +1122,99 @@ describe("the native helper", () => {
 
 // The macOS helper removes a copy's temporary file only while it is the file the copy wrote: a file put at its name before the copy is
 // cancelled, fails, or finds its target refused is left there, and the download reports its temporary file as left. Each case is proven
-// against the helper's own file too, which is removed.
+// against the helper's own file too, which is removed. `base` is a folder on the volume the chosen folder is on.
+type Ending = "cancelled" | "failed" | "refused";
+const ENDINGS = ["cancelled", "failed", "refused"] as const;
+const theTarget: Record<Ending, string[]> = { cancelled: [], failed: ["report.pdf"], refused: ["report.pdf"] };
+// A folder's entries, without the `._` entries a volume without extended attributes (exFAT) keeps them in.
+const entriesOf = (folder: string): string[] => readdirSync(folder).filter((name) => !name.startsWith("._")).sort();
+async function stoppedNativeCopy(ending: Ending, swap: boolean, base: string) {
+  const chosen = join(base, "chosen");
+  mkdirSync(chosen);
+  const target = join(chosen, "report.pdf");
+  // A target that cannot be replaced fails the commit rename (EPERM) and nothing before it.
+  if (ending === "failed") {
+    writeFileSync(target, "the user's report");
+    execFileSync("chflags", ["uchg", target]);
+  }
+  let download!: import("../browser-download-staging.js").ObservedDownload;
+  let swapped = "";
+  const root = atStep(acrossVolumes(prepare()), "copy", "copied", ({ part }) => {
+    if (swap) {
+      swapped = join(chosen, part ?? "");
+      moveAside(swapped, join(base, "the copy's own file"));
+      writeFileSync(swapped, "the user's file");
+    }
+    if (ending === "refused") mkdirSync(target);
+    if (ending === "cancelled") download.cancel();
+  });
+  const { asked, askSavePath } = dialogs();
+  const item = fakeItem();
+  const staged = stageBrowserDownload(item, { root, askSavePath }, Promise.resolve());
+  download = staged.download;
+  const done = doneOutcome(staged.download);
+  await settled();
+  asked[0]?.answer(target);
+  await settled();
+  item.complete("page data");
+  try {
+    return { outcome: await done, chosen, swapped };
+  } finally {
+    if (ending === "failed") execFileSync("chflags", ["nouchg", target]);
+  }
+}
+
+async function expectSwappedFileLeft(ending: Ending, base: string): Promise<void> {
+  const { outcome, chosen, swapped } = await stoppedNativeCopy(ending, true, base);
+  expect(readFileSync(swapped, "utf8")).toBe("the user's file");
+  expect(entriesOf(chosen)).toEqual([basename(swapped), ...theTarget[ending]].sort());
+  expect(outcome).toEqual({ state: "interrupted", cleanup: "part-left" });
+}
+
+async function expectOwnFileRemoved(ending: Ending, base: string): Promise<void> {
+  const { outcome, chosen } = await stoppedNativeCopy(ending, false, base);
+  expect(entriesOf(chosen)).toEqual(theTarget[ending]);
+  expect(outcome).toEqual({ state: ending === "cancelled" ? "cancelled" : "interrupted", cleanup: "removed" });
+}
+
 describe.runIf(process.platform === "darwin")("a stopped native copy's temporary file swapped for another file", () => {
-  type Ending = "cancelled" | "failed" | "refused";
-  const stoppedCopy = async (ending: Ending, swap: boolean) => {
-    const chosen = join(home, "chosen");
-    mkdirSync(chosen);
-    const target = join(chosen, "report.pdf");
-    // A target that cannot be replaced fails the commit rename (EPERM) and nothing before it.
-    if (ending === "failed") {
-      writeFileSync(target, "the user's report");
-      execFileSync("chflags", ["uchg", target]);
-    }
-    let download!: import("../browser-download-staging.js").ObservedDownload;
-    let swapped = "";
-    const root = atStep(acrossVolumes(prepare()), "copy", "copied", ({ part }) => {
-      if (swap) {
-        swapped = join(chosen, part ?? "");
-        moveAside(swapped, join(home, "the copy's own file"));
-        writeFileSync(swapped, "the user's file");
-      }
-      if (ending === "refused") mkdirSync(target);
-      if (ending === "cancelled") download.cancel();
-    });
-    const { asked, askSavePath } = dialogs();
-    const item = fakeItem();
-    const staged = stageBrowserDownload(item, { root, askSavePath }, Promise.resolve());
-    download = staged.download;
-    const done = doneOutcome(staged.download);
-    await settled();
-    asked[0]?.answer(target);
-    await settled();
-    item.complete("page data");
+  it.each(ENDINGS)("leaves a file put at the temporary file's name when the copy is %s", (ending) => expectSwappedFileLeft(ending, home));
+  it.each(ENDINGS)("removes its own temporary file when the copy is %s", (ending) => expectOwnFileRemoved(ending, home));
+});
+
+// The same on a volume without an exclusive rename, where the helper moves the file aside under a name it checked is free and knows its own
+// file by id and content: an exFAT disk image, created and attached for these tests.
+describe.runIf(process.platform === "darwin")("a stopped native copy's temporary file on an exFAT volume", () => {
+  let image = "";
+  let mounted: string | null = null;
+  let unavailable = "";
+  beforeAll(() => {
+    image = realpathSync(mkdtempSync(join(tmpdir(), "ave-download-exfat-")));
+    const mountPoint = join(image, "volume");
+    mkdirSync(mountPoint);
     try {
-      return { outcome: await done, chosen, swapped };
-    } finally {
-      if (ending === "failed") execFileSync("chflags", ["nouchg", target]);
+      execFileSync("hdiutil", ["create", "-size", "64m", "-fs", "ExFAT", "-volname", "AVETEST", "-o", join(image, "volume.dmg")], { stdio: "pipe" });
+      execFileSync("hdiutil", ["attach", "-nobrowse", "-mountpoint", mountPoint, join(image, "volume.dmg")], { stdio: "pipe" });
+      mounted = mountPoint;
+    } catch (error) {
+      unavailable = `hdiutil cannot create or attach an exFAT image here: ${(error as Error).message.split("\n")[0]}`;
     }
+  }, 60_000);
+  afterAll(() => {
+    if (mounted !== null) execFileSync("hdiutil", ["detach", "-force", mounted], { stdio: "pipe" });
+    rmSync(image, { recursive: true, force: true });
+  }, 60_000);
+  let cases = 0;
+  const onVolume = (skip: (note?: string) => never): string => {
+    if (mounted === null) skip(unavailable);
+    cases += 1;
+    const base = join(mounted as string, `case-${cases}`);
+    mkdirSync(base);
+    return base;
   };
-  const theTarget: Record<Ending, string[]> = { cancelled: [], failed: ["report.pdf"], refused: ["report.pdf"] };
 
-  it.each(["cancelled", "failed", "refused"] as const)("leaves a file put at the temporary file's name when the copy is %s", async (ending) => {
-    const { outcome, chosen, swapped } = await stoppedCopy(ending, true);
-    expect(readFileSync(swapped, "utf8")).toBe("the user's file");
-    expect(readdirSync(chosen).sort()).toEqual([basename(swapped), ...theTarget[ending]].sort());
-    expect(outcome).toEqual({ state: "interrupted", cleanup: "part-left" });
-  });
-
-  it.each(["cancelled", "failed", "refused"] as const)("removes its own temporary file when the copy is %s", async (ending) => {
-    const { outcome, chosen } = await stoppedCopy(ending, false);
-    expect(readdirSync(chosen)).toEqual(theTarget[ending]);
-    expect(outcome).toEqual({ state: ending === "cancelled" ? "cancelled" : "interrupted", cleanup: "removed" });
-  });
+  it.for(ENDINGS)("leaves a file put at the temporary file's name when the copy is %s", (ending, { skip }) => expectSwappedFileLeft(ending, onVolume(skip)));
+  it.for(ENDINGS)("removes its own temporary file when the copy is %s", (ending, { skip }) => expectOwnFileRemoved(ending, onVolume(skip)));
 });
 
 describe.runIf(process.platform === "linux")("a Linux copy whose temporary file cannot be removed when it stops", () => {
