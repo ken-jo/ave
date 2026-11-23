@@ -10,6 +10,7 @@ import { openFeatureNamespace } from "../storage/feature-namespace.js";
 import {
   heldFileOperations,
   HeldDirectoryRefusedError,
+  HeldFileHelperStalledError,
   HeldFileHelperUnavailableError,
   type HeldDirectory,
   type HeldFileOperations,
@@ -36,7 +37,16 @@ const DIRECTORY = posix ? constants.O_DIRECTORY : 0;
 /** Bytes a download may write before the user has answered its Save dialog; it is paused, so only what was already in flight lands. */
 export const UNANSWERED_DOWNLOAD_BYTES = 8 * 1024 * 1024;
 
-type DoneState = "completed" | "cancelled" | "interrupted";
+export type DoneState = "completed" | "cancelled" | "interrupted";
+
+/**
+ * What became of the staged file by the time `done` is reported: `removed` (moved to the chosen path, or deleted), `remove-failed` (it may
+ * still be in the staging folder), or `helper-still-running` (the removal's helper was killed but not seen to end). Whatever is left is
+ * removed by the next start's sweep.
+ */
+export type StagedCleanup = "removed" | "remove-failed" | "helper-still-running";
+
+type DoneListener = (event: unknown, state: DoneState, cleanup: StagedCleanup) => void;
 
 /** What the download list and the agent reports read of a download: a staged one that ends once the user chose and the file is in place. */
 export interface ObservedDownload {
@@ -50,9 +60,9 @@ export interface ObservedDownload {
   getSavePath(): string;
   cancel(): void;
   on(event: "updated", listener: (event: unknown, state: "progressing" | "interrupted") => void): unknown;
-  once(event: "done", listener: (event: unknown, state: DoneState) => void): unknown;
+  once(event: "done", listener: DoneListener): unknown;
   removeListener(event: "updated", listener: (event: unknown, state: "progressing" | "interrupted") => void): unknown;
-  removeListener(event: "done", listener: (event: unknown, state: DoneState) => void): unknown;
+  removeListener(event: "done", listener: DoneListener): unknown;
 }
 
 export type StageableDownloadItem = Pick<DownloadItem, "setSavePath" | "getFilename" | "getURL" | "getURLChain" | "hasUserGesture"
@@ -213,22 +223,30 @@ function lstatEntry(path: string): BigIntStats | null {
 }
 
 // Remove a staged file, only from inside the verified staging folder. When the folder can no longer be verified the file is left where it
-// is (the next start sweeps the verified folder) rather than removing whatever the old path now names.
-async function removeStaged(root: BrowserDownloadStagingRoot, name: string): Promise<void> {
+// is (the next start sweeps the verified folder) rather than removing whatever the old path now names. Only a removal the operation
+// confirmed is `removed`.
+async function removeStaged(root: BrowserDownloadStagingRoot, name: string): Promise<StagedCleanup> {
   try {
     // Cleanup runs to its end; a helper that stalls is killed within the stall bound, so `done` is never held up for longer.
-    await root.files.remove(root, name, proceedAlways, UNSTOPPED);
+    const removed = await root.files.remove(root, name, proceedAlways, UNSTOPPED);
+    if (removed !== "cancelled") return "removed";
+    log.warn("a staged browser download's removal was cancelled; the next start removes it");
+    return "remove-failed";
   } catch (error) {
     if (error instanceof HeldDirectoryRefusedError) {
       log.warn({ error: error.message }, "a staged browser download was left in place: its folder cannot be verified");
-      return;
+      return "remove-failed";
     }
     log.warn({ error: (error as Error).message }, "a staged browser download could not be removed; the next start removes it");
+    return error instanceof HeldFileHelperStalledError && error.stillRunning ? "helper-still-running" : "remove-failed";
   }
 }
 
-/** The staged file reached the chosen path (`committed`), or publication stopped before that point because the user cancelled. */
-type Published = "committed" | "cancelled";
+/**
+ * The staged file reached the chosen path (`committed`, with what became of the staged file: a move takes it, a copy removes it), or
+ * publication stopped before that point because the user cancelled.
+ */
+type Published = { readonly committed: true; readonly cleanup: StagedCleanup } | "cancelled";
 
 // Move the staged file to the destination. The rename into place is the commit point: a cancel before it removes every partial copy this
 // call made and the staged file; after it, the file is saved. A cross-volume copy goes through an exclusive temporary file in the folder.
@@ -248,18 +266,18 @@ async function publish(root: BrowserDownloadStagingRoot, name: string, destinati
       throw error;
     }
   }));
-  if (moved !== "cross-volume") return moved;
-  if (cancel.aborted) return "cancelled";
+  if (moved === "committed") return { committed: true, cleanup: "removed" };
+  if (moved === "cancelled" || cancel.aborted) return "cancelled";
   const part = `.${randomBytes(16).toString("hex")}.part`;
-  let copied: Published;
+  let copied: "committed" | "cancelled";
   try {
     copied = await refusingAsStaging(() => root.files.copy(root, name, destination.folder, destination.name, part, proceed, cancel));
   } catch (error) {
     if (error instanceof HeldFileHelperUnavailableError && error.passed !== null) reportStoppedCopy(error, destination, part);
     throw error;
   }
-  if (copied === "committed") await removeStaged(root, name);
-  return copied;
+  if (copied === "cancelled") return "cancelled";
+  return { committed: true, cleanup: await removeStaged(root, name) };
 }
 
 // A copy whose helper ended without its outcome: say whether it may have been saved, and what became of its temporary file.
@@ -302,16 +320,16 @@ class StagedDownload extends EventEmitter implements ObservedDownload {
     this.publishing = true;
     return true;
   }
-  // Ends the download once; `done` is reported after a staged file that was not saved has been removed.
-  finish(state: DoneState, savedTo?: string): void {
+  // Ends the download once; `done` is reported, with what became of the staged file, after one that was not saved has been removed.
+  finish(state: DoneState, saved?: { readonly path: string; readonly cleanup: StagedCleanup }): void {
     if (this.ended) return;
     this.ended = true;
-    if (savedTo !== undefined) {
-      this.savedPath = savedTo;
-      this.emit("done", {}, state);
+    if (saved !== undefined) {
+      this.savedPath = saved.path;
+      this.emit("done", {}, state, saved.cleanup);
       return;
     }
-    void removeStaged(this.root, this.name).then(() => { this.emit("done", {}, state); });
+    void removeStaged(this.root, this.name).then((cleanup) => { this.emit("done", {}, state, cleanup); });
   }
 }
 
@@ -355,7 +373,7 @@ export function stageBrowserDownload(item: StageableDownloadItem, deps: BrowserD
       return;
     }
     if (outcome === "cancelled") download.finish("cancelled");
-    else download.finish("completed", destination.path);
+    else download.finish("completed", { path: destination.path, cleanup: outcome.cleanup });
   };
   const answer = turn.then(async () => {
     if (download.isEnded) return false;

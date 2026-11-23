@@ -5,7 +5,8 @@ import { EventEmitter } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { DownloadItem, WebContents } from "electron";
+import type { WebContents } from "electron";
+import type { ObservedDownload } from "../browser-download-staging.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BrowserWorkspaceService, type BrowserPageRequest, type BrowserPageRequestHold } from "../browser-workspace.js";
 import { BrowserWorkspaceStore } from "../browser-workspace-store.js";
@@ -58,7 +59,7 @@ describe("browser workspace service", () => {
     const first = await service.getState(1);
     expect(first.tabs[0]).toMatchObject({ ...TARGET, url: "https://site.example/", zoomFactor: 1 });
     const item = Object.assign(new EventEmitter(), { getFilename: () => "report.txt", getReceivedBytes: () => 50, getTotalBytes: () => 100, setSavePath: vi.fn(), getSavePath: vi.fn() });
-    service.observeDownload(1, item as unknown as DownloadItem);
+    service.observeDownload(1, item as unknown as ObservedDownload);
     item.emit("done", {}, "completed");
     const state = await service.getState(1);
     expect(state.revision).toBeGreaterThan(first.revision);
@@ -87,7 +88,7 @@ describe("browser workspace service", () => {
     const { service, guest, events } = await setup();
     service.observeGuest(1, guest);
     const item = Object.assign(new EventEmitter(), { getFilename: () => "report.txt", getReceivedBytes: () => 0, getTotalBytes: () => 0 });
-    service.observeDownload(1, item as unknown as DownloadItem);
+    service.observeDownload(1, item as unknown as ObservedDownload);
     service.disposeWindow(1);
     expect(events.listenerCount("did-start-navigation")).toBe(0);
     expect(item.listenerCount("updated")).toBe(0); expect(item.listenerCount("done")).toBe(0);

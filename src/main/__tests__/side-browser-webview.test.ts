@@ -276,10 +276,10 @@ describe("side browser webview attach policy", () => {
       const observed = workspace.observeDownload.mock.calls[0]?.[1];
       if (!observed) throw new Error("the staged download was not observed");
       // Its Save dialog is the system's; closing it cancels the download, and `done` follows once its staged file is removed.
-      const state = await new Promise<string>((resolve) => {
-        observed.once("done", (_event, state) => resolve(state));
+      const ended = await new Promise<{ state: string; cleanup: string }>((resolve) => {
+        observed.once("done", (_event, state, cleanup) => resolve({ state, cleanup }));
       });
-      expect(state).toBe("cancelled");
+      expect(ended).toEqual({ state: "cancelled", cleanup: "removed" });
       expect(first.preventDefault).not.toHaveBeenCalled();
       expect(item.setSavePath).toHaveBeenCalledWith(expect.stringMatching(/browser-downloads[/\\][0-9a-f]{32}$/));
       expect(item.pause).toHaveBeenCalledOnce();

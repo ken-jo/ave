@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { nativeImage, type IpcMainInvokeEvent, type WebContents } from "electron";
-import type { ObservedDownload } from "./browser/browser-download-staging.js";
+import type { DoneState, ObservedDownload } from "./browser/browser-download-staging.js";
 import { CHANNELS } from "../contract/app-contract.js";
 import type { IpcDeps } from "../ipc/types.js";
 import { validateAppWindowMainFrameSender } from "../ipc/app-window-sender.js";
@@ -242,7 +242,7 @@ export class BrowserObservationRuntime implements AgentBrowserObservationSink {
       if (this.current(command.view)) this.adapter.record(command.view.id, { ...detail, download: { state } });
     };
     const dispose = (): void => { item.removeListener("done", done); this.downloads.delete(dispose); command.downloads.delete(dispose); };
-    const done = (_event: unknown, state: "completed" | "cancelled" | "interrupted"): void => { dispose(); record(state); };
+    const done = (_event: unknown, state: DoneState): void => { dispose(); record(state); };
     this.downloads.set(dispose, command.view);
     command.downloads.add(dispose);
     item.once("done", done);

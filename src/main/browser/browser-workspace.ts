@@ -2,7 +2,7 @@ import { matchesAccelerator, type ShortcutPlatform } from "../../shared/shortcut
 import { setBrowserGuestZoomFactor } from "./browser-guest-tracking.js";
 import { subscribeBrowserGuestDestroyed } from "./browser-guest-lifecycle.js";
 import type { WebContents } from "electron";
-import type { ObservedDownload } from "./browser-download-staging.js";
+import type { DoneState, ObservedDownload } from "./browser-download-staging.js";
 import { describeLoadFailure, describePageCrash } from "./browser-load-failure.js";
 import { dismissedPageDialogs } from "./browser-page-dialogs.js";
 import { BrowserPagePrompts } from "./browser-page-prompts.js";
@@ -523,7 +523,7 @@ export class BrowserWorkspaceService {
     };
     const updated = (_event: unknown, state: "progressing" | "interrupted") => update(state);
     const dispose = () => { item.removeListener("updated", updated); item.removeListener("done", done); this.downloadDisposers.get(windowId)?.delete(dispose); };
-    const done = (_event: unknown, state: "completed" | "cancelled" | "interrupted") => {
+    const done = (_event: unknown, state: DoneState) => {
       dispose();
       this.activeDownloads.delete(key);
       // Where the file was saved stays in main; the renderer names a download only by its id.

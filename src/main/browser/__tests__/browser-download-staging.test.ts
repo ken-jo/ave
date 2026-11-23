@@ -66,8 +66,9 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 
 const { prepareBrowserDownloadStaging, stageBrowserDownload, sweepBrowserDownloadStaging, BrowserDownloadStagingError, UNANSWERED_DOWNLOAD_BYTES } =
   await import("../browser-download-staging.js");
-const { _helperFileOperationsForTest } = await import("../browser-download-files.js");
+const { _helperFileOperationsForTest, HeldFileHelperStalledError } = await import("../browser-download-files.js");
 type Root = import("../browser-download-staging.js").BrowserDownloadStagingRoot;
+type Observed = import("../browser-download-staging.js").ObservedDownload;
 type Files = import("../browser-download-files.js").HeldFileOperations;
 // The step an operation reports while it holds its directories.
 type Step = Parameters<Parameters<Files["move"]>[4]>[0];
@@ -129,6 +130,9 @@ function dialogs() {
 const settled = afterQueuedCallbacks;
 const doneState = (download: { once(event: "done", listener: (event: unknown, state: string) => void): unknown }) =>
   new Promise<string>((resolve) => { download.once("done", (_event, state) => resolve(state)); });
+// The state `done` reports, with what it says became of the staged file.
+const doneOutcome = (download: Observed) =>
+  new Promise<{ state: string; cleanup: string }>((resolve) => { download.once("done", (_event, state, cleanup) => resolve({ state, cleanup })); });
 const stagingPath = () => join(aveHomeDir, "browser-downloads");
 
 // The staging root with some of its file operations replaced: the rest still run for real, natively on macOS and Windows.
@@ -292,8 +296,8 @@ describe("a staged download", () => {
     const second = fakeItem("two.bin");
     const one = stageBrowserDownload(first, { root, askSavePath }, Promise.resolve());
     const two = stageBrowserDownload(second, { root, askSavePath }, one.answered.then(() => undefined));
-    const firstDone = doneState(one.download);
-    const secondDone = doneState(two.download);
+    const firstDone = doneOutcome(one.download);
+    const secondDone = doneOutcome(two.download);
     await settled();
     expect(asked.map((dialog) => dialog.name)).toEqual(["one.bin"]);
     const chosen = join(home, "chosen");
@@ -306,8 +310,8 @@ describe("a staged download", () => {
     await settled();
     second.complete("second file");
     first.complete("first file");
-    expect(await secondDone).toBe("completed");
-    expect(await firstDone).toBe("completed");
+    expect(await secondDone).toEqual({ state: "completed", cleanup: "removed" });
+    expect(await firstDone).toEqual({ state: "completed", cleanup: "removed" });
     expect(readFileSync(join(chosen, "one.bin"), "utf8")).toBe("first file");
     expect(readFileSync(join(chosen, "two.bin"), "utf8")).toBe("second file");
     expect(one.download.getSavePath()).toBe(join(chosen, "one.bin"));
@@ -320,12 +324,12 @@ describe("a staged download", () => {
     const { asked, askSavePath } = dialogs();
     const item = fakeItem();
     const staged = stageBrowserDownload(item, { root, askSavePath }, Promise.resolve());
-    const done = doneState(staged.download);
+    const done = doneOutcome(staged.download);
     writeFileSync(item.path, "partial");
     await settled();
     asked[0]?.answer(null);
     expect(await staged.answered).toBe(false);
-    expect(await done).toBe("cancelled");
+    expect(await done).toEqual({ state: "cancelled", cleanup: "removed" });
     expect(item.cancel).toHaveBeenCalledOnce();
     expect(existsSync(item.path)).toBe(false);
     expectOnlyHeldPathOperations();
@@ -337,10 +341,10 @@ describe("a staged download", () => {
     let release!: () => void;
     const failing = fakeItem();
     const staged = stageBrowserDownload(failing, { root, askSavePath }, new Promise<void>((resolve) => { release = resolve; }));
-    const done = doneState(staged.download);
+    const done = doneOutcome(staged.download);
     writeFileSync(failing.path, "partial");
     failing.end("interrupted");
-    expect(await done).toBe("interrupted");
+    expect(await done).toEqual({ state: "interrupted", cleanup: "removed" });
     expect(existsSync(failing.path)).toBe(false);
     release();
     expect(await staged.answered).toBe(false);
@@ -426,14 +430,14 @@ describe("a staged download", () => {
     const { asked, askSavePath } = dialogs();
     const item = fakeItem();
     const staged = stageBrowserDownload(item, { root, askSavePath }, Promise.resolve());
-    const done = doneState(staged.download);
+    const done = doneOutcome(staged.download);
     await settled();
     const chosen = join(home, "chosen");
     mkdirSync(chosen);
     asked[0]?.answer(join(chosen, "report.pdf"));
     await settled();
     item.complete("across");
-    expect(await done).toBe("completed");
+    expect(await done).toEqual({ state: "completed", cleanup: "removed" });
     expect(readFileSync(join(chosen, "report.pdf"), "utf8")).toBe("across");
     expect(readdirSync(chosen)).toEqual(["report.pdf"]);
     expect(readdirSync(root.path)).toEqual([]);
@@ -472,6 +476,50 @@ describe("a staged download", () => {
     moveAside(root.path, join(home, "moved"));
     mkdirSync(root.path);
     expect(() => stageBrowserDownload(fakeItem(), { root, askSavePath: dialogs().askSavePath }, Promise.resolve())).toThrow(BrowserDownloadStagingError);
+  });
+});
+
+// A removal of the staged file that does not succeed: `done` says so, and the next start's sweep removes what was left.
+describe("what `done` reports when the staged file cannot be removed", () => {
+  const failingRemoval = (root: Root, error: Error): Root => withFiles(root, () => ({ remove: async () => { throw error; } }));
+  const faults = [
+    ["the removal fails", () => Object.assign(new Error("EIO: simulated"), { code: "EIO" }), "remove-failed"],
+    ["its helper is killed and seen to end", () => new HeldFileHelperStalledError("/helper", "said nothing for 1 ms", false), "remove-failed"],
+    ["its helper is killed but not seen to end", () => new HeldFileHelperStalledError("/helper", "said nothing for 1 ms", true), "helper-still-running"],
+  ] as const;
+
+  it.each(faults)("reports a closed dialog's staged file as not removed when %s", async (_case, fault, cleanup) => {
+    const prepared = prepare();
+    const { asked, askSavePath } = dialogs();
+    const item = fakeItem();
+    const staged = stageBrowserDownload(item, { root: failingRemoval(prepared, fault()), askSavePath }, Promise.resolve());
+    const done = doneOutcome(staged.download);
+    writeFileSync(item.path, "partial");
+    await settled();
+    asked[0]?.answer(null);
+    expect(await done).toEqual({ state: "cancelled", cleanup });
+    expect(readdirSync(prepared.path)).toEqual([basename(item.path)]);
+    expect(await sweepBrowserDownloadStaging(prepared)).toBe(1);
+    expect(readdirSync(prepared.path)).toEqual([]);
+  });
+
+  it.each(faults)("reports a saved cross-volume copy's staged file as not removed when %s", async (_case, fault, cleanup) => {
+    const prepared = prepare();
+    const { asked, askSavePath } = dialogs();
+    const item = fakeItem();
+    const staged = stageBrowserDownload(item, { root: acrossVolumes(failingRemoval(prepared, fault())), askSavePath }, Promise.resolve());
+    const done = doneOutcome(staged.download);
+    await settled();
+    const chosen = join(home, "chosen");
+    mkdirSync(chosen);
+    asked[0]?.answer(join(chosen, "report.pdf"));
+    await settled();
+    item.complete("across");
+    expect(await done).toEqual({ state: "completed", cleanup });
+    expect(readFileSync(join(chosen, "report.pdf"), "utf8")).toBe("across");
+    expect(readdirSync(prepared.path)).toEqual([basename(item.path)]);
+    expect(await sweepBrowserDownloadStaging(prepared)).toBe(1);
+    expect(readdirSync(prepared.path)).toEqual([]);
   });
 });
 
