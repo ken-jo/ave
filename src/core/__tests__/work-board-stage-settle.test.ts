@@ -44,9 +44,9 @@ type Outcome<T> = { ok: true; value: T } | { ok: false; error: unknown };
 const outcomeOf = <T>(work: Promise<T>): Promise<Outcome<T>> => work.then(value => ({ ok: true, value }), (error: unknown) => ({ ok: false, error }));
 
 /** The start's result, or undefined once the item's child is live. A refused start can reject the child wait before its result is returned,
- * so the side that fails first leaves the other to decide, the start under the signal-wait bound; a failure is the start's own. */
+ * so the side that fails first leaves the other to decide. Both sides share one signal-wait bound from entry; a failure is the start's own. */
 async function startOrLive<T>(h: Harness, itemId: number, started: Promise<T>): Promise<T | undefined> {
-  const start = outcomeOf(started);
+  const start = outcomeOf(within(started, `the start of item ${itemId} to return`));
   const live = outcomeOf(h.untilLive(1, itemId));
   const first = await Promise.race([start.then(outcome => ({ start: outcome })), live.then(outcome => ({ live: outcome }))]);
   if ("start" in first) {
@@ -55,7 +55,7 @@ async function startOrLive<T>(h: Harness, itemId: number, started: Promise<T>): 
     throw first.start.error;
   }
   if (first.live.ok) return undefined;
-  const result = await outcomeOf(within(started, `the start of item ${itemId} to return`));
+  const result = await start;
   if (result.ok) return result.value;
   throw result.error;
 }
@@ -210,12 +210,15 @@ it("a state change is reduced from the run as stored at the write: a workspace s
   return withHarness(async (h) => {
     const version = await h.confirm([stageOf("a"), stageOf("b")]);
     const id = await h.addItem(version);
-    void h.start(id, h.local(version));
+    const run = h.start(id, h.local(version));
     await h.untilLive(2);
     await h.until(id, item => item.stageRuns.every(stage => stage.childSessionId !== undefined));
     expect(trapped).toBe(true);
     expect((await h.stageRun(id, "a")).workspace).toBeDefined();
     expect((await h.stageRun(id, "b")).workspace).toBeDefined();
+    // The run ends here, so none of its board writes outlive the test.
+    for (const child of h.live()) child.finish();
+    expect(await run).toMatchObject({ status: "awaiting_approval" });
   }, (h) => {
     let real: WorkflowRunState | undefined;
     const runs = (): WorkflowRunState => real ??= boardRunState(h().board);
