@@ -1960,6 +1960,51 @@ describe("ToolExecutor plugin operation governance", () => {
     }
   });
 
+  it.each(["the ceiling", "a user stop"] as const)("records an ordinary plugin write %s interrupts with one terminal row", async (by) => {
+    vi.useFakeTimers();
+    const { executor, registry, auditLogger } = setup({ requireAuditChain: true });
+    let releaseWrite: (() => void) | undefined;
+    try {
+      let started!: () => void;
+      const writeStarted = new Promise<void>((resolve) => { started = resolve; });
+      registry.register(createDynamicTool({
+        name: "plain_write",
+        description: "write without operation governance",
+        source: "plugin",
+        category: "write",
+        pluginId: principal.ownerPluginId,
+        pluginGeneration: { pluginId: principal.ownerPluginId, generationId: principal.generationId },
+        modelVisible: true,
+        jsonSchema: { type: "object" },
+        execute: () => new Promise((resolve) => {
+          started();
+          releaseWrite = () => resolve({ output: "late saved", isError: false });
+        }),
+      }));
+      const stop = new AbortController();
+      const interrupted = runWithInvocationOrigin("ui", undefined, () =>
+        executor.executeAll([{ id: "plain-stop", name: "plain_write", input: { value: 1 } }], {
+          sessionId: "s",
+          abortSignal: stop.signal,
+          permissionContext: { trustOrigin: "plugin-emitted" as const, allowedPluginIds: new Set([principal.ownerPluginId]) },
+        }),
+      );
+      await writeStarted;
+      if (by === "the ceiling") await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.globalCeilingMs + 1);
+      else stop.abort();
+      expect((await interrupted)[0].is_error).toBe(true);
+      // The authorizing allow is the call's one terminal row; an ordinary write leaves no settlement row behind.
+      expect(auditLogger.appendPermissionAuditEntry.mock.calls
+        .map(([entry]) => entry)
+        .filter((entry) => entry.tool === "plain_write")
+        .map((entry) => [entry.decision, entry.trustOrigin]))
+        .toEqual([["allow", "plugin-emitted"]]);
+    } finally {
+      releaseWrite?.();
+      vi.useRealTimers();
+    }
+  });
+
   // Seals the process-wide ledger, so it stays the last test in this file.
   it("closes a detached write at the seal with one host-shutdown row and refuses its late settlement", async () => {
     vi.useFakeTimers();
