@@ -10,10 +10,10 @@ export class HostProgramNotFoundError extends Error {
   }
 }
 
-export function isFullyQualifiedProgram(program: string, platform: NodeJS.Platform = process.platform): boolean {
+function isFullyQualified(entry: string, platform: NodeJS.Platform): boolean {
   return platform === "win32"
-    ? /^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+)/u.test(program)
-    : posix.isAbsolute(program);
+    ? /^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+)/u.test(entry)
+    : posix.isAbsolute(entry);
 }
 
 function searchPath(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string {
@@ -27,7 +27,7 @@ function pathEntries(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string[
     .split(platform === "win32" ? ";" : ":")
     .map((entry) => (platform === "win32" ? entry.trim().replace(/^"(.*)"$/u, "$1") : entry))
     // Empty, "." and relative entries name the current directory; only fully qualified ones are searched.
-    .filter((entry) => isFullyQualifiedProgram(entry, platform));
+    .filter((entry) => isFullyQualified(entry, platform));
 }
 
 function runnable(candidate: string, platform: NodeJS.Platform): boolean {
@@ -47,9 +47,9 @@ export function findHostProgram(
   platform: NodeJS.Platform = process.platform,
 ): string | null {
   if (program === "" || program.includes("\0")) return null;
-  if (isFullyQualifiedProgram(program, platform)) return program;
-  if (/[\\/]/u.test(program) || (platform === "win32" && program.includes(":"))) return null;
   const paths = platform === "win32" ? win32 : posix;
+  if (paths.isAbsolute(program)) return program;
+  if (/[\\/]/u.test(program) || (platform === "win32" && program.includes(":"))) return null;
   // Windows launches only .com and .exe images without a shell; an explicit extension is tried as written first.
   const names = platform === "win32"
     ? [...(win32.extname(program) ? [program] : []), `${program}.com`, `${program}.exe`]

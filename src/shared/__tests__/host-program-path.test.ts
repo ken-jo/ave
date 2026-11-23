@@ -74,6 +74,6 @@ describe("resolveHostProgram", () => {
     expect(resolveHostProgram("tool.exe", { Path: bin })).toBe(expected());
     expect(findHostProgram("only", { Path: bin })).toBeNull();
     expect(() => resolveHostProgram("C:tool", { Path: bin })).toThrow(/bare name or an absolute path/u);
-    expect(() => resolveHostProgram("\\tool", { Path: bin })).toThrow(/bare name or an absolute path/u);
+    expect(resolveHostProgram("\\Tools\\tool.exe", { Path: bin })).toBe("\\Tools\\tool.exe");
   });
 });
