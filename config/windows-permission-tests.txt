@@ -335,6 +335,7 @@ src/plugins/__tests__/orphan-uninstall-sweeper.test.ts
 src/plugins/__tests__/plugin-file-identity.test.ts
 src/plugins/__tests__/plugin-host-storage-migration.test.ts
 src/plugins/__tests__/plugin-storage-layout.test.ts
+src/plugins/__tests__/plugin-background-effects.test.ts
 src/plugins/__tests__/resolve-bundled-argv.test.ts
 src/plugins/__tests__/storage-external-key.test.ts
 src/plugins/__tests__/storage-rejection-audit.test.ts

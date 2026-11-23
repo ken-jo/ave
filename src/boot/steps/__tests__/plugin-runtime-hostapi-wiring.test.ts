@@ -1462,6 +1462,9 @@ describe("HostApi incarnation authority", () => {
     const networkInit = (transport as ReturnType<typeof vi.fn>).mock.calls[0]?.[1] as RequestInit & { auth?: unknown };
     expect(networkInit.auth).toBeUndefined();
     expect(new Headers(networkInit.headers).get("authorization")).toBe("Bearer synthetic-secret");
+    // The approval covers the declared destinations only.
+    await expect(child.hostApi.hostFetch?.("https://refused.example.test")).rejects.toThrow("Host request failed.");
+    expect(transport).toHaveBeenCalledOnce();
     // An updated manifest is not covered by the earlier approval until it is approved itself.
     const updated = manifestOf("1.1.0");
     const updatedChild = await childFor(updated.manifest);

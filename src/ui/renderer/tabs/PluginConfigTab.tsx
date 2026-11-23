@@ -318,19 +318,24 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
 
   const refreshBackgroundEffects = useCallback(async (pluginId: string | null): Promise<void> => {
     const refreshId = ++backgroundRefreshRef.current;
-    setBackgroundPending(null);
-    if (!pluginId) return;
+    if (!pluginId) {
+      setBackgroundPending(null);
+      return;
+    }
     try {
       const result = await getApi().getPluginBackgroundEffects(pluginId);
-      if (refreshId === backgroundRefreshRef.current && result.ok && !result.approved && result.manifestSha256) setBackgroundPending(pluginId);
+      if (refreshId !== backgroundRefreshRef.current) return;
+      setBackgroundPending(result.ok && !result.approved && result.manifestSha256 ? pluginId : null);
     } catch {
       // The host denies unapproved background effects, so a failed read only hides the prompt.
+      if (refreshId === backgroundRefreshRef.current) setBackgroundPending(null);
     }
   }, []);
 
+  // Re-read on every card refresh too, so an install, update or enable of the selected plugin shows its pending review.
   useEffect(() => {
-    void refreshBackgroundEffects(selectedId);
-  }, [refreshBackgroundEffects, selectedId]);
+    void refreshBackgroundEffects(plugins.some((plugin) => plugin.id === selectedId) ? selectedId : null);
+  }, [plugins, refreshBackgroundEffects, selectedId]);
 
   /** Asks for the current manifest's background effects when they are not yet approved; false when cancelled or not saved. */
   const reviewBackgroundEffects = useCallback(async (pluginId: string, name: string): Promise<boolean> => {

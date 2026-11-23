@@ -1307,6 +1307,51 @@ describe("PluginConfigTab — auth UI", () => {
     await waitFor(() => expect(screen.queryByTestId("plugin-config:background-effects:digest-plugin")).toBeNull());
   });
 
+  it("shows the background effects review for the selected plugin once its manifest changes", async () => {
+    let approved = true;
+    let refresh: (() => void) | undefined;
+    const cards = vi.fn(async () => [makePluginCard({ id: "digest-plugin", name: "Digest Plugin", description: "Morning digest" })]);
+    const getPluginBackgroundEffects = vi.fn(async (pluginId: string) => ({
+      ok: true as const, pluginId, manifestSha256: approved ? "a".repeat(64) : "b".repeat(64), approved,
+      effects: { ownStorage: true as const, networkDestinations: [], alertKinds: [], suggestionSources: [] },
+    }));
+    Object.defineProperty(window, "ave", {
+      value: {
+        pluginConfig: {
+          get: vi.fn(async () => ({ ok: true as const, config: {} })),
+          set: vi.fn(async () => ({ ok: true as const, config: {} })),
+          listSecretKeys: vi.fn(async () => ({ ok: true as const, keys: [] })),
+        },
+      },
+      writable: true,
+      configurable: true,
+    });
+    Object.defineProperty(window, "aveApi", {
+      value: {
+        onPluginEnabledChanged: vi.fn((listener: () => void) => { refresh = listener; return () => undefined; }),
+        getPluginBackgroundEffects,
+        listPluginUiExtensions: vi.fn(async () => []),
+      },
+      writable: true,
+      configurable: true,
+    });
+    stubPluginCards(cards);
+    Object.defineProperty(window, "aveHost", {
+      value: { takePluginMarketplaceApi: () => null },
+      writable: true,
+      configurable: true,
+    });
+
+    render(<PluginConfigTab />);
+
+    await screen.findByTestId("plugin-config:enabled-toggle:digest-plugin");
+    await waitFor(() => expect(getPluginBackgroundEffects).toHaveBeenCalledWith("digest-plugin"));
+    expect(screen.queryByTestId("plugin-config:background-effects:digest-plugin")).toBeNull();
+    approved = false;
+    act(() => refresh?.());
+    expect(await screen.findByTestId("plugin-config:background-effects:digest-plugin")).toBeInTheDocument();
+  });
+
   it("keeps the switch for a disabled plugin whose runtime is retired, so it can be re-enabled", async () => {
     // What the runtime reports after a disable: the generation is retired, so nothing is loaded (`runtimeLoaded: false`), and
     // the card is `disabled`. The switch is the only way back to enabled.
