@@ -59,9 +59,10 @@ function createSearch(sourceTexts: ReadonlyMap<string, string>) {
     // The path filter preserves the matches presented to assertions, while narrowing parse inputs.
     return find((path, text) => {
       if (file !== undefined) return path === file;
-      // Identifiers can use Unicode escapes. Quoted keys can use other escapes, with trivia after "[".
-      return text.includes(name) || text.includes("\\u")
-        || (text.includes("\\") && /\[\s*(?:\/[/*]|["'][^\\\r\n]*\\)/.test(text));
+      // An identifier or string-literal key can differ from its raw spelling only through an
+      // escape or line continuation, both of which contain a backslash.
+      // Computed non-literal keys never yield a static callee name here.
+      return text.includes(name) || text.includes("\\");
     }, (node) => {
       if (!ts.isCallExpression(node)) return false;
       const callee = node.expression;
@@ -89,6 +90,20 @@ it("finds calls whose names are spelled only with escapes", () => {
   ]));
   expect(escapedCalls.callsOf("put")).toEqual(["hex-calls.ts#hex", `${unicodeFile}#bracket`, `${unicodeFile}#dot`]);
   expect(escapedCalls.callsOf("put", unicodeFile)).toEqual([`${unicodeFile}#bracket`, `${unicodeFile}#dot`]);
+});
+
+it.each([
+  ["U+0085 bracket trivia", 'function owner() { xs[\u0085"settleR\\x75n"](); }'],
+  ["U+200B bracket trivia", 'function owner() { xs[\u200B"settleR\\x75n"](); }'],
+  ["a line continuation", 'function owner() { xs["settleR\\\nun"](); }'],
+])("finds an escaped key with %s", (_spelling, text) => {
+  const file = "escaped-calls.ts";
+  const name = "settleRun";
+  expect(text).not.toContain(name);
+  expect(text).not.toContain("\\u");
+  const { callsOf } = createSearch(new Map([[file, text]]));
+  expect(callsOf(name, file)).toEqual([`${file}#owner`]);
+  expect(callsOf(name)).toEqual([`${file}#owner`]);
 });
 
 it("classifies a run in one place, which every consumer reads through the store", () => {
