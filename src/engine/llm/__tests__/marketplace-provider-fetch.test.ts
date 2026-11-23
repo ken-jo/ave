@@ -4,12 +4,22 @@ import {
   configuredModelProviderNetworkAccess,
   createGuardedMarketplaceProviderFetch,
   createGuardedModelProviderFetch,
+  createPublicModelProviderFetch,
   isGuardedInsecureCredentialedModelProviderFetch,
 } from "../marketplace-provider-fetch.js";
 import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
 import { unusedNetworkFetch } from "../../../__tests__/support/network-fetch-stubs.js";
 
 describe("guarded model-provider fetch", () => {
+  it('keeps public provider requests origin locked without granting private endpoint access', async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const publicFetch = createPublicModelProviderFetch('https://example.com/v1', fetchImpl);
+    await expect(publicFetch('https://other.example/v1/embeddings')).rejects.toThrow('configured origin');
+    const privateFetch = createPublicModelProviderFetch('http://127.0.0.1:9000/v1', fetchImpl);
+    await expect(privateFetch('http://127.0.0.1:9000/v1/embeddings')).rejects.toThrow(/non-public/);
+    expect(isGuardedInsecureCredentialedModelProviderFetch('http://127.0.0.1:9000/v1', privateFetch)).toBe(false);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
   it("rejects a public cross-origin request before it can forward credentials", async () => {
     const fetchImpl = vi.fn() as unknown as typeof fetch;
     const providerFetch = createGuardedModelProviderFetch(

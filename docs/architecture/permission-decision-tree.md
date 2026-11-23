@@ -200,6 +200,8 @@ Notes that are part of the contract:
   and a top-level child created after enumeration is not covered by that projection; the next projection denies it. Entry names
   are case-folded, so case-distinct siblings in a case-sensitive directory are not supported and no coverage is claimed for them.
   A relocated Ave home gets the root deny.
+- Local memory inference uses the Windows system directory for its working directory. The sandbox account already has read access there,
+  so inference needs no ACL grant for its fresh process HOME. The active model is under the denied Ave home models directory and the host streams its verified bytes.
 - Unverifiable Ave home boundary (boot category boundary-link or boundary-unlisted): the OS sandbox cannot deny reads inside the
   Ave home, so host shells (bash, PowerShell) run unconfined: on the unavailable-sandbox route, on the sandbox-off route when only
   worker confinement was requested (shell scope off), and as an explicit host request. Each one runs only after a human approves it

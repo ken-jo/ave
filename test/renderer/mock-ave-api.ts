@@ -1,3 +1,4 @@
+import { createMemoryMapApi } from "../../src/__tests__/support/memory-map-api.js";
 import { DEFAULT_SETTINGS } from "../../src/data/settings-defaults.js";
 import { DEFAULT_CORP_CA_COMMON_NAME } from "../../src/shared/corp-ca-common-name.js";
 import { DEFAULT_APPEARANCE } from "../../src/shared/appearance-settings.js";
@@ -733,6 +734,7 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
     memoryDeleteNote: vi.fn(async () => undefined),
     memorySearchNotes: vi.fn(async () => []),
 
+    memoryMap: createMemoryMapApi() as unknown as Mock,
     memoryGetDetail: vi.fn(async () => ({ ok: false as const, error: "not-found" as const })),
     memoryGetSummaries: vi.fn(async (options?: Parameters<AveApi["memoryGetSummaries"]>[0]): Promise<MemorySummariesResult> => {
       const notes: Extract<MemorySummariesResult, { ok: true }>["notes"] = [];

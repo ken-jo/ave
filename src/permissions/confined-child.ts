@@ -11,6 +11,7 @@ import {
   ensureSandboxTempPrincipalDir,
   getDefaultSensitiveReadDenyPaths,
   getDefaultSensitiveWriteDenyEntries,
+  isOfflineProcessConfinementActive,
   isPluginWorkerConfinementActive,
   assertExtensionStartAllowed,
   admitMxcExtensionFilesystem,
@@ -96,7 +97,7 @@ export function srtWinTargetEnv(
 
 const SRT_WIN_OWN_ENV = new Set(["path", "pathext", "tmpdir", "electron_run_as_node", "username"]);
 
-// How the child's filesystem access is granted. `allow-list` puts the paths in the ASRT command itself (macOS seatbelt, Linux bwrap `--bind`). `deny-only` is Windows, where reachability is an ACL question decided outside the wrap — a grant against a holder process the caller owns for the process's lifetime (`windows-acl-grant-holder.ts`; a worker in `worker-spawn.ts`, a plugin child in `spawnConfinedPluginChild`) — so the wrap carries the deny floor and nothing else: passing allow paths there would imply a confinement the wrap does not perform.
+// How the child's filesystem access is granted. `allow-list` puts the paths in the ASRT command itself (macOS seatbelt, Linux bwrap `--bind`). `deny-only` is Windows, where reachability is an ACL question decided outside the wrap — a grant against a holder process the caller owns for the process's lifetime (`windows-acl-grant-holder.ts`; a worker in `worker-spawn.ts`, a plugin child in `spawnConfinedPluginChild`) — so the wrap carries the deny floor and nothing else: passing allow paths there would imply a confinement the wrap does not perform. An offline service uses it on every platform, with no write roots.
 type ConfinementGrantMode = "allow-list" | "deny-only";
 
 export interface ConfinedChildSpec {
@@ -586,7 +587,10 @@ async function resolveSpawnLine(
   egress?: EgressInvocation;
 }> {
   assertExtensionStartAllowed();
-  if (!isPluginWorkerConfinementActive()) {
+  // An offline owner's refusal is enforced by the wrap, so it never runs without one; it follows the offline-service gate, not the extension setting.
+  const offline = isOfflineOwner(spec);
+  if (offline ? !isOfflineProcessConfinementActive() : !isPluginWorkerConfinementActive()) {
+    if (offline) throw new Error(`[confined-child] ${spec.label}: an offline process needs the OS sandbox, which is not active`);
     if (spec.requireWrap) throw new Error(`[confined-child] ${spec.label}: child requires active confinement`);
     return { executable: spec.command, args: [...spec.args], wrappedEnv: {}, confinement: "unconfined" };
   }
@@ -612,6 +616,7 @@ async function resolveSpawnLine(
       boundarySnapshot,
       ...(binShell !== undefined ? { binShell } : {}),
       commandId: egress.token,
+      ...(offline ? { denyUnixSockets: true } : {}),
     })));
   } catch (error) {
     egress.release();
@@ -636,6 +641,10 @@ async function resolveSpawnLine(
     egress,
     ...(relay !== undefined ? { relayRequest: relay.request } : {}),
   };
+}
+
+function isOfflineOwner(spec: ConfinedChildSpec): boolean {
+  return spec.egressOwner.network === "offline";
 }
 
 function requireTempPrincipal(spec: ConfinedChildSpec): SandboxTempPrincipal {
@@ -663,7 +672,8 @@ function buildFilesystemConfinement(spec: ConfinedChildSpec, temp: { dir: string
     if (spec.denyPluginsRoot === true) {
       throw new Error(`[confined-child] ${spec.label}: denyPluginsRoot needs an allow-list confinement to re-allow the child's own directories`);
     }
-    return floor;
+    // An offline service writes nothing. Without the empty list, macOS and Linux would apply the session's write roots.
+    return isOfflineOwner(spec) && process.platform !== "win32" ? { ...floor, allowWrite: [] } : floor;
   }
   if (temp === undefined) throw new Error(`[confined-child] ${spec.label}: an allow-list confinement was built without its temp directory`);
   // The temp directory is granted here for the same reason the deny floor is restated here: no caller should have to remember it, and one that forgot would produce a child whose `os.tmpdir` names a directory it cannot write — a failure with no obvious cause, arriving inside whatever library wanted a temp file. It is the principal's OWN directory, read and write; the shared root above it is read-denied by the floor, with the sandbox HOME root beside it, and ASRT's reads are deny-only, so that deny is what keeps one plugin from reading another's temp files or HOME.
