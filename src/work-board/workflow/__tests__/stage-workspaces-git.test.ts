@@ -253,6 +253,26 @@ describe("git stage workspaces", () => {
     expect((JSON.parse(readFileSync(record, "utf8")) as { merging?: string }).merging).toBeDefined();
   });
 
+  it("a ref store moved out of the repository after open gets no later step, and the release leaves the repository as it is", async () => {
+    const handle = start();
+    const open = await handle.provider.open(handle.run, repo);
+    if (!open.ok) throw new Error(open.code);
+    await stageRoot(handle, "s1");
+    const admin = join(repo, ".git", "worktrees");
+    const registered = readdirSync(admin).sort();
+    const store = join(base, "ref-store");
+    mkdirSync(store);
+    // Written to the configuration file alone, which any git can do, whether or not it reads such a store.
+    const config = join(repo, ".git", "config");
+    userGit(repo, "config", "--file", config, "core.repositoryformatversion", "1");
+    userGit(repo, "config", "--file", config, "extensions.refStorage", `reftable://${store.split("\\").join("/")}`);
+    expect(await handle.provider.prepare(handle.run, stageOf("s2"), 1).catch(() => "refused")).not.toMatchObject({ ok: true });
+    expect([readdirSync(admin).sort(), readdirSync(store)]).toEqual([registered, []]);
+    await handle.provider.release(handle.run, "all");
+    expect(existsSync(open.workspace.runRoot)).toBe(false);
+    expect([readdirSync(admin).sort(), readdirSync(store)]).toEqual([registered, []]);
+  });
+
   it("a merge state git gave no answer about is not taken for none", async () => {
     const { handle, failing } = await conflicting(args => args.includes("MERGE_HEAD"));
     failing.on = true;
