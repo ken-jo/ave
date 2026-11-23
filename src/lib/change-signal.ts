@@ -13,14 +13,23 @@ export class ChangeSignal<T = void> {
     };
   }
 
-  // A listener failure is reported and isolated; it never fails the write that already happened.
+  // Delivery is synchronous. Listener results are ignored except for reporting rejections.
   emit(change: T): void {
     for (const listener of this.listeners) {
       try {
-        listener(change);
+        const result = listener(change);
+        if (result !== undefined) void Promise.resolve(result).catch(error => this.reportListenerError(error));
       } catch (err) {
-        this.onListenerError(err);
+        void this.reportListenerError(err);
       }
+    }
+  }
+
+  private async reportListenerError(error: unknown): Promise<void> {
+    try {
+      await this.onListenerError(error);
+    } catch {
+      // Reporting must not interrupt delivery or fail a committed write.
     }
   }
 }

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useChromiumRuntime } from "../../__tests__/support/chromium-runtime.js";
 import { afterQueuedCallbacks } from "../../__tests__/support/deferred.js";
 import { AVE_SIDE_BROWSER_PARTITION } from "../../shared/side-browser.js";
+import type { ObservedDownload } from "../browser/browser-download-staging.js";
 
 useChromiumRuntime();
 
@@ -30,7 +31,8 @@ vi.mock("electron", () => ({
 const workspace = vi.hoisted(() => ({
   requestPermission: vi.fn(async (_guestId: number, _permission: string, _details: unknown) => true),
   checkPermission: vi.fn((_guestId: number, _permission: string, _details: unknown) => true),
-  observeGuest: vi.fn(), observeDownload: vi.fn(), registerPopup: vi.fn(() => "tab-popup"),
+  observeGuest: vi.fn(), observeDownload: vi.fn<(_contents: unknown, download: ObservedDownload) => void>(),
+  registerPopup: vi.fn(() => "tab-popup"),
 }));
 vi.mock("../browser/browser-workspace-desktop.js", () => ({
   getBrowserWorkspaceService: () => workspace,
@@ -265,17 +267,26 @@ describe("side browser webview attach policy", () => {
       expect(existsSync(leftover)).toBe(false);
       const download = electronMock.sideBrowserSession.on.mock.calls.find(([name]) => name === "will-download")![1];
       const contents = { id: 71, getURL: () => "https://site.example/", isDestroyed: () => false, hostWebContents: null };
+      let staged = "";
       const item = { getURL: () => "https://site.example/report", getURLChain: () => ["https://site.example/report"], getFilename: () => "report",
-        setSavePath: vi.fn(), pause: vi.fn(), resume: vi.fn(), on: vi.fn(), once: vi.fn(), getState: () => "progressing", cancel: vi.fn() };
+        setSavePath: vi.fn((path: string) => { staged = path; writeFileSync(path, "partial download"); }), pause: vi.fn(), resume: vi.fn(),
+        on: vi.fn(), once: vi.fn(), getState: () => "progressing", cancel: vi.fn() };
       const first = event();
       download(first, item, contents);
+      const observed = workspace.observeDownload.mock.calls[0]?.[1];
+      if (!observed) throw new Error("the staged download was not observed");
+      // Its Save dialog is the system's; closing it cancels the download, and `done` follows once its staged file is removed.
+      const state = await new Promise<string>((resolve) => {
+        observed.once("done", (_event, state) => resolve(state));
+      });
+      expect(state).toBe("cancelled");
       expect(first.preventDefault).not.toHaveBeenCalled();
       expect(item.setSavePath).toHaveBeenCalledWith(expect.stringMatching(/browser-downloads[/\\][0-9a-f]{32}$/));
       expect(item.pause).toHaveBeenCalledOnce();
       expect(workspace.observeDownload).toHaveBeenCalledWith(contents, expect.objectContaining({ getSavePath: expect.any(Function) }));
-      expect(workspace.observeDownload.mock.calls[0]?.[1]).not.toBe(item);
-      // Its Save dialog is the system's; closing it cancels the download.
-      await vi.waitFor(() => expect(item.cancel).toHaveBeenCalledOnce());
+      expect(observed).not.toBe(item);
+      expect(item.cancel).toHaveBeenCalledOnce();
+      expect(existsSync(staged)).toBe(false);
     } finally {
       vi.unstubAllEnvs();
       rmSync(home, { recursive: true, force: true });

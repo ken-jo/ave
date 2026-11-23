@@ -3,13 +3,18 @@ import { join } from "node:path";
 import { openFeatureNamespace } from "./storage/feature-namespace.js";
 import { repeatsKey, rewriteKeepingBytes, WorkBoardWriteRefusal } from "./storage/rewrite-keeping-bytes.js";
 import { AVE_HOME_INPUT_MAX_BYTES, AveHomeInputSizeLimitError, readAveHomeInput } from "../shared/ave-home-trust.js";
+import { ChangeSignal } from "../lib/change-signal.js";
+import { createLogger } from "../lib/logger.js";
 import { withInProcessFileQueue } from "../lib/with-file-lock.js";
 import { isRecord } from "../shared/is-record.js";
 import { canonicalWorkflowJson } from "../shared/workflow-template-output.js";
 import { requireTemplate, WorkflowTemplateError } from "../work-board/template-graph.js";
 import { assertWorkflowRunRecord } from "../work-board/template-run-fields.js";
 import type { WorkflowRunListResult, WorkflowRunReadResult, WorkflowRunRecord, WorkflowRunWriteResult } from "../shared/workflow-template-types.js";
+import { errorMessage } from "../shared/error-message.js";
 import type { MarkerOp, RunClass, RunFileFacts } from "./run-classification.js";
+
+const log = createLogger("ave");
 
 /** `rowIdFloor`: the highest board row id ever issued or seen. A file without it reads as 0; the floor read is never below any stored run's
  * itemId, and every write stores it, so it never goes down. */
@@ -71,10 +76,10 @@ function lookup(file: RunsFile, runId: string): { result: WorkflowRunReadResult;
 }
 
 // Applies `retain` to every readable entry. An unreadable or repeated entry is never offered and always stays as it is.
-function retainRuns(file: RunsFile, retain: WorkflowRunRetention): boolean {
+function retainRuns(file: RunsFile, retain: WorkflowRunRetention): string[] {
   const count = new Map<unknown, number>();
   for (const entry of file.runs) if (isRecord(entry)) count.set(entry.runId, (count.get(entry.runId) ?? 0) + 1);
-  let changed = false;
+  const changed: string[] = [];
   const kept: unknown[] = [];
   for (const entry of file.runs) {
     if (!isRecord(entry) || count.get(entry.runId) !== 1) { kept.push(entry); continue; }
@@ -82,12 +87,12 @@ function retainRuns(file: RunsFile, retain: WorkflowRunRetention): boolean {
     catch (error) { if (error instanceof WorkflowTemplateError) { kept.push(entry); continue; } throw error; }
     const next = retain(structuredClone(entry));
     if (next === null) {
-      if (entry.settled === undefined) kept.push(entry); else changed = true;
+      if (entry.settled === undefined) kept.push(entry); else changed.push(entry.runId);
       continue;
     }
     assertWorkflowRunRecord(next);
     requireTemplate(bindingOf(next) === bindingOf(entry) && sameEnd(next.settled, entry.settled), "invalid-template-run");
-    if (canonicalWorkflowJson(next) !== canonicalWorkflowJson(entry)) changed = true;
+    if (canonicalWorkflowJson(next) !== canonicalWorkflowJson(entry)) changed.push(entry.runId);
     kept.push(next);
   }
   file.runs = kept;
@@ -130,8 +135,8 @@ function markerOf(entry: unknown): DeleteMarker | undefined {
   if (!whole) return pair;
   return { ...pair, operation: { op: op as MarkerOp["op"], ownIntent: ownIntent as boolean, ...(entrySha === undefined ? {} : { entrySha: entrySha as string }) } };
 }
-const sameMarker = (a: DeleteMarker) => (b: DeleteMarker): boolean =>
-  samePair(a)(b) && canonicalWorkflowJson(a.operation ?? null) === canonicalWorkflowJson(b.operation ?? null);
+const markerOperationKey = (marker: DeleteMarker): string => canonicalWorkflowJson(marker.operation ?? null);
+const sameMarker = (a: DeleteMarker) => (b: DeleteMarker): boolean => samePair(a)(b) && markerOperationKey(a) === markerOperationKey(b);
 const markerEntry = ({ itemId, runId, operation }: DeleteMarker): Record<string, unknown> => ({ itemId, runId, ...operation });
 const markersIn = (file: RunsFile): DeleteMarker[] => (file.unknownDeletes ?? []).flatMap(entry => markerOf(entry) ?? []);
 // Whether a stored entry is a marker about the pair, whatever its shape.
@@ -176,6 +181,28 @@ function keepOpenIntents(file: RunsFile): void {
   file.heldEvents = dropFrom(file.heldEvents, entry => !open(heldOf(entry)));
 }
 
+function addChangedMetadataIds(file: RunsFile, runIds: Set<string>): void {
+  const fields = [
+    ["deleteIntents", (entry: unknown) => isIntent(entry) ? entry : undefined],
+    ["unknownDeletes", markerOf],
+    ["heldEvents", heldOf],
+  ] as const;
+  for (const [key, pairOf] of fields) {
+    // Mutations retain the original entry objects and replace the arrays when adding or removing entries.
+    const before = file.raw?.[key] as unknown[] | undefined;
+    const after = file[key];
+    if (before === after) continue;
+    const changed = new Set(before);
+    for (const entry of after ?? []) {
+      if (!changed.delete(entry)) changed.add(entry);
+    }
+    for (const entry of changed) {
+      const pair = pairOf(entry);
+      if (pair !== undefined) runIds.add(pair.runId);
+    }
+  }
+}
+
 function fileText({ raw, unchanged: _, ...known }: RunsFile): string {
   return `${JSON.stringify({ ...raw, ...known }, null, 2)}\n`;
 }
@@ -201,8 +228,14 @@ function bindingOf(run: WorkflowRunRecord): string {
 
 /** Template-run state in the covered `work-board/workflow-runs.json`, keyed by runId. */
 export class WorkflowRunStore {
+  /** Emits once per affected run id after a commit on this store and its memory updates. A change is a record write or removal
+   * (including retention and keyed discard), a keyed intent, delete marker or held event added or removed by the write, or a
+   * memory-only delete marker cleared as part of the commit. File-only bookkeeping and uncommitted memory updates do not emit. */
+  readonly runChanged = new ChangeSignal<string>((err) => log.warn("[workflow-runs] change listener failed: %s", errorMessage(err)));
+
   // Deletes whose outcome is unknown and whose marker the file may not hold: a write or read of it failed (see markUnknown).
   private unknown: DeleteMarker[] = [];
+  private stagedUnknownRemovals: ReadonlySet<DeleteMarker> | undefined;
 
   constructor(private readonly filePath = join(openFeatureNamespace("work-board").dir, "workflow-runs.json")) {}
 
@@ -330,9 +363,11 @@ export class WorkflowRunStore {
     return withInProcessFileQueue(this.filePath, async () => {
       const read = await this.load();
       if (!read?.bytes || !unreadableEntries(read.file).some(entry => entry.position === target.position && entry.hash === target.hash)) return "changed";
-      if (!(await allowed(read.file.runs[target.position]))) return "refused";
+      const entry = read.file.runs[target.position];
+      if (!(await allowed(entry))) return "refused";
+      const runIds = isRecord(entry) && typeof entry.runId === "string" ? [entry.runId] : [];
       read.file.runs.splice(target.position, 1);
-      return (await this.commit(read.file, true)) ? "discarded" : "too-large";
+      return (await this.commit(read.file, { discard: true, runIds })) ? "discarded" : "too-large";
     });
   }
 
@@ -355,14 +390,37 @@ export class WorkflowRunStore {
       if (file === undefined) return "pending-review";
       if (!openIntent(file, intent)) return "none";
       const intents = file.deleteIntents ?? [];
-      const stale = (marker: DeleteMarker | undefined): boolean => marker !== undefined && samePair(intent)(marker) && held(marker);
-      const dropping = (file.unknownDeletes ?? []).some(entry => stale(markerOf(entry))) || this.unknown.some(stale);
-      if (intents.some(sameIntent(intent)) && !dropping) return "marked";
-      if (!intents.some(sameIntent(intent))) file.deleteIntents = [...intents, { itemId: intent.itemId, runId: intent.runId }];
-      file.unknownDeletes = dropFrom(file.unknownDeletes, entry => stale(markerOf(entry)));
-      if (!(await this.commit(file))) return "too-large";
-      this.unknown = this.unknown.filter(marker => !stale(marker));
-      return "marked";
+      const memory = this.unknown;
+      const matches = samePair(intent);
+      const decisions = new Map<string, boolean>();
+      const stale = (marker: DeleteMarker | undefined): boolean => {
+        if (marker === undefined || !matches(marker)) return false;
+        const key = markerOperationKey(marker);
+        const known = decisions.get(key);
+        if (known !== undefined) return known;
+        const decision = held(marker);
+        decisions.set(key, decision);
+        return decision;
+      };
+      const kept = dropFrom(file.unknownDeletes, entry => stale(markerOf(entry)));
+      const removed = new Set(memory.filter(stale));
+      const droppingStored = (kept?.length ?? 0) < (file.unknownDeletes?.length ?? 0);
+      const hasIntent = intents.some(sameIntent(intent));
+      if (hasIntent && !droppingStored && removed.size === 0) return "marked";
+      if (!hasIntent) file.deleteIntents = [...intents, { itemId: intent.itemId, runId: intent.runId }];
+      file.unknownDeletes = kept;
+      this.stagedUnknownRemovals = removed;
+      try {
+        const committed = await this.commit(file, { settle: runIds => {
+          if (runIds === undefined || removed.size === 0) return;
+          const count = this.unknown.length;
+          this.unknown = this.unknown.filter(marker => !removed.has(marker));
+          if (this.unknown.length < count) runIds.add(intent.runId);
+        } });
+        return committed ? "marked" : "too-large";
+      } finally {
+        this.stagedUnknownRemovals = undefined;
+      }
     });
   }
 
@@ -376,18 +434,26 @@ export class WorkflowRunStore {
    * neither, whatever the write reported: true then. Otherwise the delete stays unknown as `operation` (see markUnknown), never read as not
    * landed, and false. */
   async withdrawIntent(intent: DeleteIntent, operation?: MarkerOp): Promise<boolean> {
+    let withdrawn = false;
     await withInProcessFileQueue(this.filePath, async () => {
-      const file = await this.read();
-      if (file === undefined || !holdsDelete(file, intent)) return;
+      const settle = async (runIds?: Set<string>) => {
+        const current = await this.read().catch(() => undefined);
+        if (current === undefined || holdsDelete(current, intent)) return;
+        const count = this.unknown.length;
+        this.unknown = this.unknown.filter(marker => !samePair(intent)(marker));
+        if (this.unknown.length < count) runIds?.add(intent.runId);
+        withdrawn = true;
+      };
+      const file = await this.read().catch(() => undefined);
+      if (file === undefined || !holdsDelete(file, intent)) {
+        await settle();
+        return;
+      }
       file.deleteIntents = dropFrom(file.deleteIntents, sameIntent(intent));
       file.unknownDeletes = dropFrom(file.unknownDeletes, aboutPair(intent));
-      await this.commit(file);
+      await this.commit(file, { settle });
     }).catch(() => undefined);
-    const file = await this.read().catch(() => undefined);
-    if (file !== undefined && !holdsDelete(file, intent)) {
-      this.unknown = this.unknown.filter(marker => !samePair(intent)(marker));
-      return true;
-    }
+    if (withdrawn) return true;
     await this.markUnknown(intent, operation);
     return false;
   }
@@ -397,10 +463,16 @@ export class WorkflowRunStore {
    * that cannot be written stays in memory only. Given the pair alone (only tests do), it is a row's delete that stored its intent. */
   async markUnknown(intent: DeleteIntent, operation: MarkerOp = { op: "row", ownIntent: true }): Promise<void> {
     const marker: DeleteMarker = { itemId: intent.itemId, runId: intent.runId, operation };
-    if (!this.unknown.some(sameMarker(marker))) this.unknown = [...this.unknown, marker];
+    const matches = sameMarker(marker);
+    const existing = this.unknown.find(matches);
+    if (existing === undefined) {
+      this.unknown = [...this.unknown, marker];
+    } else if (this.stagedUnknownRemovals?.has(existing)) {
+      this.unknown = this.unknown.map(entry => entry === existing ? marker : entry);
+    }
     await withInProcessFileQueue(this.filePath, async () => {
       const file = await this.read();
-      if (file === undefined || markersIn(file).some(sameMarker(marker))) return;
+      if (file === undefined || markersIn(file).some(matches)) return;
       file.unknownDeletes = [...(file.unknownDeletes ?? []), markerEntry(marker)];
       await this.commit(file);
     }).catch(() => undefined);
@@ -417,8 +489,6 @@ export class WorkflowRunStore {
    * only the marker, `held` keeps both. Each decided one counts once a read of the file again holds no such marker (and, not landed, no
    * intent); the rest stay unknown. */
   async resolveUnknown(outcome: (marker: DeleteMarker) => "unlanded" | "landed" | "held"): Promise<void> {
-    let back: DeleteMarker[] = [];
-    let decided = new Set<DeleteMarker>();
     await withInProcessFileQueue(this.filePath, async () => {
       const file = await this.read();
       if (file === undefined) return;
@@ -427,22 +497,26 @@ export class WorkflowRunStore {
       }
       const memory = this.unknown;
       const outcomes = new Map(memory.map(marker => [marker, outcome(marker)]));
-      decided = new Set(memory.filter(marker => outcomes.get(marker) !== "held"));
+      const decided = new Set(memory.filter(marker => outcomes.get(marker) !== "held"));
       if (decided.size === 0) return;
-      back = memory.filter(marker => outcomes.get(marker) === "unlanded");
+      const back = memory.filter(marker => outcomes.get(marker) === "unlanded");
       file.deleteIntents = dropFrom(file.deleteIntents, entry => back.some(marker => sameIntent(marker)(entry)));
       file.unknownDeletes = dropFrom(file.unknownDeletes, (entry) => {
         const marker = markerOf(entry);
         return marker !== undefined && [...decided].some(sameMarker(marker));
       });
-      await this.commit(file);
+      await this.commit(file, { settle: async runIds => {
+        const current = await this.read().catch(() => undefined);
+        if (current === undefined) return;
+        const stored = markersIn(current);
+        this.unknown = this.unknown.filter(marker => {
+          if (!decided.has(marker) || stored.some(sameMarker(marker))
+            || (back.includes(marker) && (current.deleteIntents ?? []).some(sameIntent(marker)))) return true;
+          runIds?.add(marker.runId);
+          return false;
+        });
+      } });
     }).catch(() => undefined);
-    if (decided.size === 0) return;
-    const file = await this.read().catch(() => undefined);
-    if (file === undefined) return;
-    const stored = markersIn(file);
-    this.unknown = this.unknown.filter(marker => !decided.has(marker) || stored.some(sameMarker(marker))
-      || (back.includes(marker) && (file.deleteIntents ?? []).some(sameIntent(marker))));
   }
 
   /** Holds a scheduler event of a run (work-board-run-ending.md, Held events), stored once by its identity; one of a run that is not open
@@ -545,7 +619,9 @@ export class WorkflowRunStore {
   async prune(retain: WorkflowRunRetention): Promise<void> {
     return withInProcessFileQueue(this.filePath, async () => {
       const file = await this.read();
-      if (file !== undefined && retainRuns(file, retain)) await this.commit(file);
+      if (file === undefined) return;
+      const runIds = retainRuns(file, retain);
+      if (runIds.length > 0) await this.commit(file, { runIds });
     });
   }
 
@@ -574,7 +650,7 @@ export class WorkflowRunStore {
     return withInProcessFileQueue(this.filePath, async (): Promise<WorkflowRunWriteResult | { status: "cause-refused" }> => {
       const file = await this.read();
       if (file === undefined) return { status: "pending-review" };
-      if (retain) retainRuns(file, retain);
+      const retainedChanges = retain ? retainRuns(file, retain) : [];
       const { result, index } = lookup(file, runId);
       if (result.status === "invalid" || result.status === "pending-review") return result;
       const stored = result.status === "found" ? result.run.settled : undefined;
@@ -594,19 +670,31 @@ export class WorkflowRunStore {
         assertWorkflowRunRecord(run);
       }
       if (index === -1) file.runs.push(run); else file.runs[index] = run;
-      if (!(await this.commit(file))) return { status: "too-large" };
+      if (!(await this.commit(file, { runIds: [runId, ...retainedChanges] }))) return { status: "too-large" };
       return { status: "stored", run: structuredClone(run) };
     });
   }
 
   // A file past the read limit could not be read again, so nothing could shrink it afterwards: such a write is refused and the file stays as it is.
   // Bytes it would not give back, and the file before a discard, are copied beside it first.
-  private async commit(file: RunsFile, discard = false): Promise<boolean> {
-    file.rowIdFloor = floorOver(file.runs, file.rowIdFloor);
-    keepOpenIntents(file);
-    const text = fileText(file);
-    if (Buffer.byteLength(text, "utf8") > AVE_HOME_INPUT_MAX_BYTES) return false;
-    await rewriteKeepingBytes(this.filePath, text, { tag: "invalid-runs", ...(discard ? {} : { unchanged: file.unchanged }) });
-    return true;
+  private async commit(file: RunsFile, { discard = false, runIds = [], settle }: {
+    discard?: boolean;
+    runIds?: readonly string[];
+    settle?: (committedIds: Set<string> | undefined) => void | Promise<void>;
+  } = {}): Promise<boolean> {
+    let committedIds: Set<string> | undefined;
+    try {
+      file.rowIdFloor = floorOver(file.runs, file.rowIdFloor);
+      keepOpenIntents(file);
+      const text = fileText(file);
+      if (Buffer.byteLength(text, "utf8") > AVE_HOME_INPUT_MAX_BYTES) return false;
+      await rewriteKeepingBytes(this.filePath, text, { tag: "invalid-runs", ...(discard ? {} : { unchanged: file.unchanged }) });
+      committedIds = new Set(runIds);
+      addChangedMetadataIds(file, committedIds);
+      return true;
+    } finally {
+      if (settle !== undefined) await settle(committedIds);
+      if (committedIds !== undefined) for (const runId of committedIds) this.runChanged.emit(runId);
+    }
   }
 }
