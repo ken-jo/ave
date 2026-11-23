@@ -1,3 +1,4 @@
+// windows-native: the Windows job runs this file from config/windows-native-tests.txt.
 import { readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";

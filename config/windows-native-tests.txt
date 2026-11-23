@@ -420,6 +420,7 @@ src/main/__tests__/telegram-paired-platform-runtime.test.ts
 src/main/__tests__/telegram-platform-runtime.test.ts
 src/main/__tests__/telegram-remote-approval.test.ts
 src/main/__tests__/telemetry-endpoint-validation.test.ts
+src/main/__tests__/windows-program-lookup.test.ts
 src/main/__tests__/work-board-delete-markers.test.ts
 src/main/__tests__/work-board-lifecycle-atomic.test.ts
 src/main/__tests__/work-board-proposals.test.ts
@@ -1021,6 +1022,7 @@ src/work-board/__tests__/work-memory.test.ts
 src/work-board/__tests__/work-report.test.ts
 src/work-board/workflow/__tests__/gate-check-refused.test.ts
 src/work-board/workflow/__tests__/gate-effect-token.test.ts
+src/work-board/workflow/__tests__/host-git-discovery.test.ts
 src/work-board/workflow/__tests__/host-git.test.ts
 src/work-board/workflow/__tests__/owned-fs.test.ts
 src/work-board/workflow/__tests__/run-adoption-classification.test.ts
@@ -1048,6 +1050,9 @@ src/work-board/workflow/__tests__/stage-workspaces-folder.test.ts
 src/work-board/workflow/__tests__/stage-workspaces-git.test.ts
 src/work-board/workflow/__tests__/stage-workspaces-open-race.test.ts
 src/work-board/workflow/__tests__/stage-workspaces-ownership.test.ts
+src/work-board/workflow/__tests__/stage-workspaces-unknown-stderr.test.ts
+src/work-board/workflow/__tests__/stage-workspaces-unknown-thrown.test.ts
+src/work-board/workflow/__tests__/stage-workspaces-unknown.test.ts
 src/work-board/workflow/__tests__/workspace-record.test.ts
 test/renderer/assistant-card-contrast.test.tsx
 test/renderer/plugin-load-refusal-visibility.test.tsx

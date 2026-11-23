@@ -1,3 +1,4 @@
+// windows-native: the Windows job runs this file from config/windows-native-tests.txt.
 import { accessSync, existsSync, statSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
