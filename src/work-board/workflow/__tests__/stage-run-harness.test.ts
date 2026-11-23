@@ -1112,3 +1112,58 @@ it("an accepted join decision puts its item back in flight for aggregate child w
     await h.cleanup();
   }
 });
+
+it.each(["accepted", "refused"] as const)("a late %s call that closes after its engine was replaced leaves the new engine's waits and flights alone", async outcome => {
+  const held = deferred<void>();
+  const release = deferred<void>();
+  let holding = false;
+  let engines = 0;
+  const h = await stageRunHarness({
+    wiring: store => {
+      const engine = engines++;
+      const runs = boardRunState(store);
+      return {
+        runs: {
+          ...runs,
+          get: async (...args: Parameters<typeof runs.get>) => {
+            const result = await runs.get(...args);
+            if (engine === 0 && holding) {
+              holding = false;
+              held.resolve();
+              await release.promise;
+            }
+            return result;
+          },
+        },
+      };
+    },
+  });
+  const runs: Promise<unknown>[] = [];
+  try {
+    const version = await h.confirm([stageOf("a")]);
+    const id = await h.addItem(version);
+    runs.push(h.start(id, h.local(version)));
+    (await h.untilLive(1, id))[0].finish({ ok: false, summary: "failed", error: "failed" });
+    expect(await runs[0]).toMatchObject({ status: "awaiting_approval" });
+    const { runId = "" } = await h.item(id);
+    holding = true;
+    const late = h.engine.retryStage(id, { runId: outcome === "accepted" ? runId : "run-other", stageId: "a" });
+    await held.promise;
+    h.makeEngine();
+    // The first child was spawned before the replacement and counts; a child the replaced engine spawns later does not.
+    const waits = Promise.allSettled([h.untilLive(1, id), h.untilSpawned(2)]);
+    release.resolve();
+    expect(await late).toMatchObject({ ok: outcome === "accepted" });
+    expect(await Promise.race([waits, setImmediate("still pending")])).toBe("still pending");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const timed = Promise.allSettled([h.untilSpawned(2)]);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(await timed).toEqual([{ status: "rejected", reason: expect.objectContaining({ message: "timed out waiting for children; in flight: none" }) }]);
+  } finally {
+    vi.useRealTimers();
+    release.resolve();
+    for (const child of h.live()) child.finish();
+    await Promise.allSettled(runs);
+    await h.cleanup();
+  }
+});
