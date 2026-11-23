@@ -17,7 +17,6 @@ const SRC = fileURLToPath(new URL("../../../", import.meta.url));
 const sources = new Map(readdirSync(SRC, { recursive: true, encoding: "utf8" })
   .filter(path => /\.tsx?$/.test(path) && !/__tests__|\.test\.tsx?$/.test(path))
   .map(path => [path.replaceAll("\\", "/"), readFileSync(join(SRC, path), "utf8")] as const));
-const syntaxByFile = new Map<string, ts.SourceFile>();
 
 const isFunction = (node: ts.Node | undefined): boolean => node !== undefined && (ts.isArrowFunction(node) || ts.isFunctionExpression(node));
 
@@ -31,38 +30,66 @@ function ownerOf(node: ts.Node): string {
   return names.join(">");
 }
 
-/** Every node that `pick` matches in the non-test files `where` takes, as "file#owner". */
-function find(where: (file: string, text: string) => boolean, pick: (node: ts.Node) => boolean): string[] {
-  const files = [...sources].filter(([file, text]) => where(file, text));
-  const missing = new Map(files.filter(([file]) => !syntaxByFile.has(file)));
-  if (missing.size > 0) {
-    const parsed = parseSourceTexts(missing);
-    expect([...parsed.keys()].sort()).toEqual([...missing.keys()].sort());
-    for (const [file, syntax] of parsed) syntaxByFile.set(file, syntax as ts.SourceFile);
+function createSearch(sourceTexts: ReadonlyMap<string, string>) {
+  const syntaxByFile = new Map<string, ts.SourceFile>();
+
+  /** Every node that `pick` matches in the files `where` takes, as "file#owner". */
+  function find(where: (file: string, text: string) => boolean, pick: (node: ts.Node) => boolean): string[] {
+    const files = [...sourceTexts].filter(([file, text]) => where(file, text));
+    const missing = new Map(files.filter(([file]) => !syntaxByFile.has(file)));
+    if (missing.size > 0) {
+      const parsed = parseSourceTexts(missing);
+      expect([...parsed.keys()].sort()).toEqual([...missing.keys()].sort());
+      for (const [file, syntax] of parsed) syntaxByFile.set(file, syntax as ts.SourceFile);
+    }
+    const found: string[] = [];
+    for (const [file] of files) {
+      const syntax = syntaxByFile.get(file);
+      if (!syntax) throw new Error(`Missing syntax for ${file}`);
+      const visit = (node: ts.Node): void => {
+        if (pick(node)) found.push(`${file}#${ownerOf(node)}`);
+        node.forEachChild(visit);
+      };
+      visit(syntax);
+    }
+    return found.sort();
   }
-  const found: string[] = [];
-  for (const [file] of files) {
-    const syntax = syntaxByFile.get(file);
-    if (!syntax) throw new Error(`Missing syntax for ${file}`);
-    const visit = (node: ts.Node): void => {
-      if (pick(node)) found.push(`${file}#${ownerOf(node)}`);
-      node.forEachChild(visit);
-    };
-    visit(syntax);
+
+  function callsOf(name: string, file?: string): string[] {
+    // The path filter preserves the matches presented to assertions, while narrowing parse inputs.
+    return find((path, text) => {
+      if (file !== undefined) return path === file;
+      // Identifiers can use Unicode escapes. Quoted keys can use other escapes, with trivia after "[".
+      return text.includes(name) || text.includes("\\u")
+        || (text.includes("\\") && /\[\s*(?:\/[/*]|["'][^\\\r\n]*\\)/.test(text));
+    }, (node) => {
+      if (!ts.isCallExpression(node)) return false;
+      const callee = node.expression;
+      return (ts.isIdentifier(callee) ? callee.text : ts.isPropertyAccessExpression(callee) ? callee.name.text : ts.isElementAccessExpression(callee) && ts.isStringLiteral(callee.argumentExpression) ? callee.argumentExpression.text : undefined) === name;
+    });
   }
-  return found.sort();
+
+  return { find, callsOf };
 }
 
-/** Every call of `name` in the selected file or throughout the non-test source. */
-const callsOf = (name: string, file?: string): string[] => find((path, text) => (file === undefined || path === file) && text.includes(name), (node) => {
-  if (!ts.isCallExpression(node)) return false;
-  const callee = node.expression;
-  return (ts.isIdentifier(callee) ? callee.text : ts.isPropertyAccessExpression(callee) ? callee.name.text : ts.isElementAccessExpression(callee) && ts.isStringLiteral(callee.argumentExpression) ? callee.argumentExpression.text : undefined) === name;
-});
+const { find, callsOf } = createSearch(sources);
 const ENGINE = "work-board/workflow/stage-run-engine.ts";
 const RUN_STATE = "work-board/workflow/run-state.ts";
 const STORE = "main/work-board-store.ts";
 const callsIn = (file: string, name: string): string[] => callsOf(name, file).map(entry => entry.slice(file.length + 1));
+
+it("finds calls whose names are spelled only with escapes", () => {
+  const unicodeFile = "unicode-calls.ts";
+  const escapedCalls = createSearch(new Map([
+    [unicodeFile, String.raw`
+      function dot() { xs.p\u0075t(); }
+      function bracket() { xs["p\u0075t"](); }
+    `],
+    ["hex-calls.ts", String.raw`function hex() { xs[/* key */ "p\x75t"](); }`],
+  ]));
+  expect(escapedCalls.callsOf("put")).toEqual(["hex-calls.ts#hex", `${unicodeFile}#bracket`, `${unicodeFile}#dot`]);
+  expect(escapedCalls.callsOf("put", unicodeFile)).toEqual([`${unicodeFile}#bracket`, `${unicodeFile}#dot`]);
+});
 
 it("classifies a run in one place, which every consumer reads through the store", () => {
   expect(callsOf("classifyRun")).toEqual([`${STORE}#classOn`]);
