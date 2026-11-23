@@ -176,6 +176,28 @@ describe("resolveHostGit", () => {
     }
   });
 
+  it("advances to the next candidate when a probe's stdout stays open past the deadline", async () => {
+    const { discoverHostGitAsync } = await import("../host-git-executable.js");
+    const { TOOL_TIMEOUT_POLICY } = await import("../tool-timeout-policy.js");
+    const held = join(root, "held");
+    const selected = join(host, binary);
+    vi.stubEnv("PATH", [held, host].join(delimiter));
+    vi.mocked(statSync).mockReturnValue({ isFile: () => true } as ReturnType<typeof statSync>);
+    const heldChild = gitProbeChild(() => {});
+    vi.mocked(spawn).mockImplementationOnce(() => heldChild)
+      .mockImplementationOnce(() => gitProbeChild((complete) => complete("git version 2.56.0")));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const discovery = discoverHostGitAsync(null);
+      await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.projectGitQueryMs);
+      await expect(discovery).resolves.toMatchObject({ git: { path: selected } });
+      expect(vi.mocked(spawn).mock.calls.map(([file]) => file)).toEqual([join(held, binary), selected]);
+      expect(heldChild.stdout?.destroyed).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 5_000);
+
   it.each([false, true])("rechecks identity across an awaited probe (second replacement: %s)", async (replaceAgain) => {
     const fs = await vi.importActual<typeof import("node:fs")>("node:fs");
     const { discoverHostGitAsync } = await import("../host-git-executable.js");

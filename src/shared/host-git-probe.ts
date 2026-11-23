@@ -1,4 +1,5 @@
 import { execFileSync, spawn, type ExecFileOptions } from "node:child_process";
+import { forceKillManagedChildProcess } from "../main/managed-child-processes.js";
 import { TOOL_TIMEOUT_POLICY } from "./tool-timeout-policy.js";
 
 interface ProbeOutput {
@@ -30,26 +31,35 @@ export function runGitProbeAsync(path: string, args: string[], options: ProbeOpt
     const child = spawn(path, args, { ...options, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
     const chunks: Buffer[] = [];
     let bytes = 0;
-    let stopped = false;
+    let settled = false;
+    const settle = (result: ProbeOutput) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    // A descendant that inherited stdout can hold `close` open indefinitely: settle first, then release the pipe and kill the tree.
     const stop = () => {
-      stopped = true;
-      child.kill();
+      if (settled) return;
+      settle({ stdout: "" });
+      child.stdout.destroy();
+      try {
+        // The Windows tree kill runs asynchronously; elsewhere the undetached probe gets a plain signal, keeping sync child APIs off discovery.
+        if (process.platform === "win32") void forceKillManagedChildProcess(child, "host git probe stopped");
+        else child.kill();
+      } catch {
+        // The probe has already settled as unavailable.
+      }
     };
     const timer = setTimeout(stop, TOOL_TIMEOUT_POLICY.projectGitQueryMs);
     timer.unref();
     child.stdout.on("data", (chunk: Buffer) => {
-      if (stopped) return;
+      if (settled) return;
       bytes += chunk.length;
       if (bytes > MAX_STDOUT_BYTES) stop();
       else chunks.push(chunk);
     });
-    child.once("error", () => {
-      clearTimeout(timer);
-      resolve({ stdout: "" });
-    });
-    child.once("close", (code) => {
-      clearTimeout(timer);
-      resolve(stopped ? { stdout: "" } : { stdout: Buffer.concat(chunks).toString("utf8"), exitCode: code ?? undefined });
-    });
+    child.once("error", () => settle({ stdout: "" }));
+    child.once("close", (code) => settle({ stdout: Buffer.concat(chunks).toString("utf8"), exitCode: code ?? undefined }));
   }).catch(() => ({ stdout: "" }));
 }
