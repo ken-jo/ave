@@ -454,6 +454,8 @@ export async function stageRunHarness(opts: {
         childChanges.delete(changed);
         reject(new Error(`timed out waiting for children; in flight: ${inFlight().join(", ") || "none"}`));
       }, 30_000);
+      // The bound never keeps the process alive by itself.
+      (timeout as { unref?: () => void }).unref?.();
       function settle(): void {
         childChanges.delete(changed);
         clearTimeout(timeout);

@@ -1047,3 +1047,26 @@ it("an aggregate wait created while a refused retry runs takes the failure that 
     await h.cleanup();
   }
 });
+
+it("a child wait that never settles times out and names the items in flight", async () => {
+  const h = await stageRunHarness();
+  let running: Promise<unknown> | undefined;
+  try {
+    const version = await h.confirm([stageOf("a")]);
+    const id = await h.addItem(version);
+    running = h.start(id, h.local(version));
+    await h.untilLive(1, id);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const wait = Promise.allSettled([h.untilLive(2), h.untilLive(2, id)]);
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(await Promise.race([wait, setImmediate("still pending")])).toBe("still pending");
+    await vi.advanceTimersByTimeAsync(1);
+    const timedOut = { status: "rejected", reason: expect.objectContaining({ message: `timed out waiting for children; in flight: ${workBoardOriginSessionId(id)}` }) };
+    expect(await wait).toEqual([timedOut, timedOut]);
+  } finally {
+    vi.useRealTimers();
+    for (const child of h.live()) child.finish();
+    await running;
+    await h.cleanup();
+  }
+});
