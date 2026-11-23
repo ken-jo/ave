@@ -21,7 +21,7 @@ const TOOL = "denial_probe";
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await cleanupTmpDir(root); });
 
-type Source = "rule" | "human" | "hook-mutation" | "host" | "integrity" | "deadline";
+type Source = "rule" | "unknown-tool" | "human" | "hook-mutation" | "host" | "integrity" | "deadline";
 
 async function setup(source: Source) {
   const root = mkdtempSync(join(tmpdir(), "ave-denial-lock-"));
@@ -57,7 +57,7 @@ async function setup(source: Source) {
     { requestId: request.id, choice: source === "host" ? "allow-once" : "deny-once" }, "desk", request.toolName,
     source === "human" ? request.invocationToolUseId : "another-call"));
   const executor = new ToolExecutor(registry, undefined, permissions, undefined, { requestAndWait } as unknown as ApprovalGate, hooks, audit);
-  const run = () => executor.executeAll([{ id: "denied-call", name: TOOL, input: {} }], {
+  const run = () => executor.executeAll([{ id: "denied-call", name: source === "unknown-tool" ? "missing_probe" : TOOL, input: {} }], {
     sessionId: "denial-session", executionCwd: root, permissionContext: userPermissionContext(),
   });
   const rows = () => readFileSync(audit.getPermissionAuditLogFile(), "utf8").split("\n").filter(Boolean)
@@ -72,11 +72,11 @@ async function expectOneDenial(probe: Awaited<ReturnType<typeof setup>>): Promis
   await new Promise<void>((done) => setImmediate(done));
   expect(probe.rows()).toEqual([expect.objectContaining({ decision: "deny" })]);
   expect(probe.denials()).toEqual([["PermissionDenied", "denial-session", "user-keyboard",
-    expect.objectContaining({ toolName: TOOL, denyReason: expect.objectContaining({ source: "tool-executor" }) }), expect.anything()]]);
+    expect.objectContaining({ toolName: expect.stringMatching(/_probe$/), denyReason: expect.objectContaining({ source: "tool-executor" }) }), expect.anything()]]);
 }
 
 describe("one deny row fires one PermissionDenied for every deny source", () => {
-  it.each(["rule", "human", "hook-mutation", "host", "integrity"] as const)("%s", async (source) => {
+  it.each(["rule", "unknown-tool", "human", "hook-mutation", "host", "integrity"] as const)("%s", async (source) => {
     const probe = await setup(source);
     try {
       await probe.run().catch(() => undefined);

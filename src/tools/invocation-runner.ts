@@ -565,7 +565,25 @@ async function runToolInvocationAttempt(
     };
 
 
+    const denialLifecycle: TerminalDenialLifecycle = {
+      governed: () => governedTool || pluginAuthLifecycle !== undefined,
+      fire: (event, reason) => services.auditWriter.fireLifecycleEvent(event, sessionId, { trustOrigin: permissionContext?.trustOrigin ?? "unknown" },
+        { toolName: toolUse.name, denyReason: { source: "tool-executor", reason } }, abortSignal),
+    };
+    // Registered before the tool lookup, so no attempt ends without a host row and every open attempt is listed.
+    let resolvedTool: Tool | undefined;
+    services.invocationTerminal?.hostTerminal((cause, detail, selected, row) => {
+      // A human outcome accepted before the host ended the attempt stays the row's outcome.
+      const denial = isSelectedRefusal(selected) ? selected
+        : cause === "host-shutdown" ? hostShutdownDenial()
+        : cause === "user-abort" ? refusal("user aborted turn", RULE_PROVENANCE)
+        : refusal(detail, HOST_PROVENANCE);
+      const hostSource = resolvedTool?.source ?? "builtin";
+      return services.auditWriter.auditToolCall(sessionId, toolUse.name, hostSource, trustFromSource(hostSource), toolUse.input, detail, true, startTime,
+        denial, Infinity, permissionContext, resolvedTool?.category ?? "meta", executionCwd, undefined, cause, undefined, currentAuditMetadata(toolUse.input), row);
+    }, denialLifecycle);
     const tool = services.toolRegistry.findByName(toolUse.name);
+    resolvedTool = tool;
     if (!tool) {
       const durationMs = Date.now() - startTime;
       await auditCurrentToolCall(sessionId, toolUse.name, "builtin", "high", toolUse.input, t("be_executor.toolNotFoundAudit"), true, startTime, { decision: "deny", reason: t("be_executor.toolNotFoundAudit"), provenance: RULE_PROVENANCE }, Infinity, permissionContext, undefined, executionCwd);
@@ -573,20 +591,6 @@ async function runToolInvocationAttempt(
       return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: t("be_executor.toolNotFound", { name: toolUse.name }), is_error: true, durationMs });
     }
     governedTool = tool.operationPolicy !== undefined;
-    const denialLifecycle: TerminalDenialLifecycle = {
-      governed: () => governedTool || pluginAuthLifecycle !== undefined,
-      fire: (event, reason) => services.auditWriter.fireLifecycleEvent(event, sessionId, { trustOrigin: permissionContext?.trustOrigin ?? "unknown" },
-        { toolName: toolUse.name, denyReason: { source: "tool-executor", reason } }, abortSignal),
-    };
-    services.invocationTerminal?.hostTerminal((cause, detail, selected, row) => {
-      // A human outcome accepted before the host ended the attempt stays the row's outcome.
-      const denial = isSelectedRefusal(selected) ? selected
-        : cause === "host-shutdown" ? hostShutdownDenial()
-        : cause === "user-abort" ? refusal("user aborted turn", RULE_PROVENANCE)
-        : refusal(detail, HOST_PROVENANCE);
-      return services.auditWriter.auditToolCall(sessionId, toolUse.name, tool.source, trustFromSource(tool.source), toolUse.input, detail, true, startTime,
-        denial, Infinity, permissionContext, tool.category, executionCwd, undefined, cause, undefined, currentAuditMetadata(toolUse.input), row);
-    }, denialLifecycle);
     let generationAccess: ReturnType<
       InvocationRunnerServices["pluginGenerationAccessProvider"]
     >;
