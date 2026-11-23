@@ -9,7 +9,7 @@ import { MARKETPLACE_DESCRIPTOR_FILE, type PackageDescriptor } from "../marketpl
 import { parsePortableMcp } from "../mcp/portable-mcp.js";
 import { treeDigest } from "../marketplace/resolve/plugin-ladder.js";
 import type { AgentPluginFile } from "../marketplace/content/agent-plugin-components.js";
-import { parseHookConfig } from "../hooks/hook-config.js";
+import { parseHookConfig } from "#hooks/hook-config";
 import { exportLegacyHooks, exportPlaceholder } from "../hooks/hook-import-export.js";
 import { containsStoredCredential } from "../mcp/studio-credential-guard.js";
 
