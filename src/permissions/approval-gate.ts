@@ -442,12 +442,13 @@ export function approvalDecisionTrustOrigin(decision: ApprovalDecision): TrustOr
   return "unknown";
 }
 
-/** An answered provenance as a writer may record it: minted by the gate for this action and this decision. */
+/** An answered provenance as a writer may record it: minted by the gate for this action, this decision and this call;
+ * an answer bound to no call settles no invocation-scoped row. */
 export function answeredRecordForAction(
   provenance: AnsweredProvenance, decision: "allow" | "deny", toolName: string, toolUseId: string | undefined,
 ): AnsweredRecord {
   const record = answeredProvenanceRecord(provenance);
-  if (record.decision !== decision || record.toolName !== toolName || record.toolUseId !== undefined && record.toolUseId !== toolUseId) {
+  if (record.decision !== decision || record.toolName !== toolName || record.toolUseId !== toolUseId) {
     throw new Error(`approval: the answer to ${record.requestId} does not settle this ${decision} of ${toolName}`);
   }
   return record;

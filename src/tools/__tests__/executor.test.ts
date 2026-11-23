@@ -2424,7 +2424,7 @@ describe("ToolExecutor — agent_spawn (meta + decisionOverride:'ask') permissio
       const gate = new ApprovalGate(wc as never);
       const requestSpy = vi
         .spyOn(gate, "requestAndWait")
-        .mockImplementation((request) => answeredApprovalDecision({ requestId: "req-test", choice: "deny-once" }, "desk", request.toolName));
+        .mockImplementation((request) => answeredApprovalDecision({ requestId: "req-test", choice: "deny-once" }, "desk", request.toolName, request.invocationToolUseId));
 
       const executor = new ToolExecutor(registry, undefined, permMgr, undefined, gate);
 
@@ -2459,7 +2459,7 @@ describe("ToolExecutor — agent_spawn (meta + decisionOverride:'ask') permissio
     const gate = new ApprovalGate(wc as never);
     const requestSpy = vi
       .spyOn(gate, "requestAndWait")
-      .mockImplementation((request) => answeredApprovalDecision({ requestId: "req-persist", choice: "deny-once" }, "desk", request.toolName));
+      .mockImplementation((request) => answeredApprovalDecision({ requestId: "req-persist", choice: "deny-once" }, "desk", request.toolName, request.invocationToolUseId));
 
     const executor = new ToolExecutor(registry, undefined, permMgr, undefined, gate);
 

@@ -299,7 +299,7 @@ async function fixture(audit?: (directory: string) => Promise<AuditLogger>) {
     createRationaleTicketCasExpectation(snapshot),
   );
   if (!receipt) throw new Error("allow-once receipt failed");
-  const resumeAnswer = await answeredApprovalDecision({ choice: "allow-once" }, "desk", control.action.toolName);
+  const resumeAnswer = await answeredApprovalDecision({ choice: "allow-once" }, "desk", control.action.toolName, "sealed-use");
 
   const request = createSealedRationaleResumeRequest({
     control,

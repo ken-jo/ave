@@ -148,6 +148,22 @@ describe("the answerer contract", () => {
     expect(existsSync(audit.getPermissionAuditLogFile()) ? (await readFile(audit.getPermissionAuditLogFile(), "utf8")).trim() : "").toBe("");
   });
 
+  it("refuses an answer bound to no invocation at an invocation's terminal and grant writers", async () => {
+    const unbound = answeredApprovalProvenance(await answeredApprovalDecision({ choice: "allow-once" }, "desk", "write_file"));
+    const terminal = (audit?: { toolUseId: string }) => permissionAuditEntryFromToolCall({
+      toolName: "write_file", source: "builtin", category: "write", input: { path: "notes.txt" },
+      permission: { decision: "allow", reason: "answered", provenance: unbound },
+      rateLimitRemaining: Infinity, trustOrigin: "plugin-emitted", cwd: "/workspace", ...(audit ? { audit } : {}),
+    });
+    expect(() => terminal({ toolUseId: "this-invocation" })).toThrow("does not settle this allow of write_file");
+    expect(terminal()).toMatchObject({ decision: "allow", trustOrigin: "user-keyboard" });
+    const writer = new AuditWriter(audit, registry, undefined, true);
+    await expect(writer.auditPermissionGrant({
+      toolName: "write_file", source: "builtin", category: "write", directory: project, grantLifetime: "turn", provenance: unbound,
+      audit: { toolUseId: "this-invocation" },
+    })).rejects.toThrow("does not settle this allow of write_file");
+  });
+
   it("refuses an allow the gate settled for another invocation before the tool runs", async () => {
     const requestAndWait = vi.fn(async () => answeredApprovalDecision({ choice: "allow-once" }, "desk", "write_file", "other-invocation"));
     const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
