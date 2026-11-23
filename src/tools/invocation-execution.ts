@@ -11,7 +11,7 @@ import type { PermissionEvaluationContext } from "../permissions/evaluation-cont
 import type { ApprovalPurposeSuggestion } from "../shared/permission-review-status.js";
 import { classifyApprovalRuleVerdict } from "./pipeline/approval-memory-skip.js";
 import { createPluginReadjudicationBasis } from "../permissions/plugin-readjudication-evidence.js";
-import { approvalFailureOutcome } from "./pipeline/approval-outcome.js";
+import { approvalFailureOutcome, hostShutdownDenial } from "./pipeline/approval-outcome.js";
 import { hostTerminalApprovalFacts } from "./pipeline/host-terminal-approval.js";
 import { disposableContainerCapability, resolveReviewerSandboxCapability } from "../permissions/sandbox-capability.js";
 import type { ToolOutputArtifactInfo, ToolOutputCapture } from "../shared/tool-output-artifact.js";
@@ -1490,6 +1490,8 @@ export async function executeAuthorizedToolInvocation(
           ...pluginOperationRow("indeterminate"),
           decision: "deny",
           denyReasons: [{ reason: "host-shutdown", source: "plugin-operation-execution" }],
+          // The seal stopped the worker; the invocation's principal decided nothing here.
+          trustOrigin: "unknown",
         }),
       );
     } else if (operationExecutionLease && deferredOperationSettlement) {
@@ -1529,7 +1531,7 @@ export async function executeAuthorizedToolInvocation(
         displayContent,
         true,
         startTime,
-        isHostExitAbort(abortSignal?.reason) ? { decision: "deny", reason: "host-shutdown" } : permissionResult,
+        isHostExitAbort(abortSignal?.reason) ? hostShutdownDenial() : permissionResult,
         rateResult.remaining,
         invocationPermissionContext,
         invocationCategory,

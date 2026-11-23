@@ -131,7 +131,8 @@ export function permissionAuditEntryFromToolCall(args: {
   hookChain?: HookResult[];
   audit?: ToolExecutionAuditMetadata;
 }): PermissionAuditEntryInput {
-  const base = permissionAuditBase(args);
+  // The row records who decided: a decision the host made carries its own origin.
+  const base = permissionAuditBase({ ...args, trustOrigin: args.permission?.trustOrigin ?? args.trustOrigin });
   if (args.permission?.decision === "deny") {
     const denyReasons = args.permission.denyReasons?.length
       ? args.permission.denyReasons

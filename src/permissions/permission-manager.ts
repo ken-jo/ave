@@ -204,6 +204,8 @@ export interface PermissionCheckResult {
     reason: string;
     source: string;
   }>;
+  // Set when the host, not the invocation's principal, made this decision; audit rows copy it instead of the invocation origin.
+  trustOrigin?: "unknown";
 }
 
 export interface PermissionCheckContext {

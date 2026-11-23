@@ -4,8 +4,10 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { deferred } from "../../__tests__/support/deferred.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
 import type { PluginRuntimeGenerationAccess } from "../../plugins/plugin-host-generation.js";
+import type { ApprovalRequest } from "../../permissions/approval-gate.js";
 
 const roots: string[] = [];
 const loggers: Array<{ close(): Promise<void> }> = [];
@@ -30,12 +32,14 @@ function holdResultOf(toolUseId: string) {
 async function freshExecutor(
   toolCount: number,
   metaToolNames: string[] = [],
-  { generationAccess, modelVisible, parallelSafe = [] }: {
-    generationAccess?: PluginRuntimeGenerationAccess; modelVisible?: false; parallelSafe?: number[];
+  { generationAccess, modelVisible, parallelSafe = [], ask }: {
+    generationAccess?: PluginRuntimeGenerationAccess; modelVisible?: false; parallelSafe?: number[]; ask?: true;
   } = {},
 ) {
   vi.resetModules();
   const ledger = await import("../invocation-ledger.js");
+  // The gate's host-decision markers live in its module, so it comes from the same fresh graph as the executor.
+  const { ApprovalGate, IPC_APPROVAL_REQUEST } = await import("../../permissions/approval-gate.js");
   const { ToolExecutor } = await import("../executor.js");
   const { ToolRegistry } = await import("../registry.js");
   const { createDynamicTool } = await import("../base.js");
@@ -46,7 +50,12 @@ async function freshExecutor(
   const root = mkdtempSync(join(tmpdir(), "ave-executor-shutdown-"));
   roots.push(root);
   const manager = new PermissionManager(join(root, "permissions.json"));
-  manager.checkDetailed = () => ({ decision: "allow", reason: "shutdown admission probe" });
+  manager.checkDetailed = () => ({ decision: ask ? "ask" : "allow", reason: "shutdown admission probe" });
+  const asked = deferred<ApprovalRequest>();
+  const gate = ask && new ApprovalGate({
+    isDestroyed: () => false,
+    send: (channel: string, request: ApprovalRequest) => { if (channel === IPC_APPROVAL_REQUEST) asked.resolve(request); },
+  } as never);
   const audit = new AuditLogger(join(root, "audit"));
   loggers.push(audit);
   await audit.setupPermissionAuditChain(randomBytes(32).toString("hex"));
@@ -78,7 +87,7 @@ async function freshExecutor(
       execute: async () => ({ output: "unintercepted", isError: false }),
     }));
   }
-  const executor = new ToolExecutor(registry, undefined, manager, undefined, undefined, generationAccess && new ScriptHookManager(), audit, undefined, undefined, undefined, generationAccess && (() => generationAccess));
+  const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, generationAccess && new ScriptHookManager(), audit, undefined, undefined, undefined, generationAccess && (() => generationAccess));
   const rows = (): Array<Record<string, unknown>> => {
     const file = audit.getPermissionAuditLogFile();
     if (!existsSync(file)) return [];
@@ -92,7 +101,7 @@ async function freshExecutor(
     .filter((name) => name.endsWith(".jsonl") && !name.includes("permission-audit"))
     .flatMap((name) => readFileSync(join(audit.getAuditDir(), name), "utf8").split("\n").filter(Boolean))
     .map((line) => JSON.parse(line) as Record<string, unknown>);
-  return { ledger, executor, executes, audit, rows, plainRows, hostShutdownRows, toolUses, cancelled };
+  return { ledger, executor, executes, audit, rows, plainRows, hostShutdownRows, toolUses, cancelled, asked: asked.promise };
 }
 
 describe("ToolExecutor admission across the quit seal", () => {
@@ -107,7 +116,40 @@ describe("ToolExecutor admission across the quit seal", () => {
     expect(result.is_error).toBe(true);
     expect(executes[0]).not.toHaveBeenCalled();
     expect(hostShutdownRows(rowsAtClose, "tu-queued-0")).toHaveLength(1);
-    expect(hostShutdownRows(rows(), "tu-queued-0")).toHaveLength(1);
+    // The host refused the call; the keyboard origin of the invocation does not carry over.
+    expect(hostShutdownRows(rows(), "tu-queued-0")).toEqual([expect.objectContaining({ trustOrigin: "unknown" })]);
+  });
+
+  it("records a tool the seal interrupts mid-execution as a host-shutdown deny without the invocation origin", async () => {
+    const { ledger, executor, executes, audit, rows, hostShutdownRows, toolUses } = await freshExecutor(1);
+    const started = deferred<void>();
+    const finish = deferred<string>();
+    executes[0].mockImplementationOnce(() => { started.resolve(); return finish.promise; });
+    const running = executor.executeAll(toolUses, { sessionId: "sess-interrupted", permissionContext: userPermissionContext() });
+    await started.promise;
+    let rowsAtClose: Array<Record<string, unknown>> = [];
+    ledger.sealToolInvocations();
+    const join = ledger.closeToolInvocationAudit(async () => { rowsAtClose = rows(); await audit.close(); });
+    const [result] = await running;
+    await join;
+    finish.resolve("late");
+    expect(result.is_error).toBe(true);
+    expect(executes[0]).toHaveBeenCalledOnce();
+    expect(hostShutdownRows(rowsAtClose, "tu-queued-0")).toEqual([expect.objectContaining({ trustOrigin: "unknown" })]);
+  });
+
+  it("records a parked ask the seal cancels as the host's refusal", async () => {
+    const { ledger, executor, executes, audit, rows, hostShutdownRows, toolUses, asked } = await freshExecutor(1, [], { ask: true });
+    const running = executor.executeAll(toolUses, { sessionId: "sess-parked", permissionContext: userPermissionContext() });
+    await asked;
+    ledger.sealToolInvocations();
+    let rowsAtClose: Array<Record<string, unknown>> = [];
+    const join = ledger.closeToolInvocationAudit(async () => { rowsAtClose = rows(); await audit.close(); });
+    const [result] = await running;
+    await join;
+    expect(result.is_error).toBe(true);
+    expect(executes[0]).not.toHaveBeenCalled();
+    expect(hostShutdownRows(rowsAtClose, "tu-queued-0")).toEqual([expect.objectContaining({ trustOrigin: "unknown" })]);
   });
 
   it.each(["executeAll", "executeConversationBatch"] as const)(

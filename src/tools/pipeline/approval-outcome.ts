@@ -8,6 +8,11 @@ import {
 import type { PermissionCheckResult } from "../../permissions/permission-manager.js";
 import { maskSensitiveData } from "../../shared/dlp.js";
 
+/** The host's refusal of a call the quit seal stopped; no person decided it. */
+export function hostShutdownDenial(): PermissionCheckResult {
+  return { decision: "deny", reason: "host-shutdown", trustOrigin: "unknown" };
+}
+
 /** Preserve host-owned failures in both tool and directory approval results. */
 export function approvalFailureOutcome(
   decision: ApprovalDecision,
@@ -30,6 +35,8 @@ export function approvalFailureOutcome(
       reason,
       // Denial audit must record why approval ended, not merely why it was requested.
       denyReasons: [{ source: "approval-gate", reason }],
+      // The host ended the approval; no person's origin belongs on its row.
+      trustOrigin: "unknown",
     },
   };
 }

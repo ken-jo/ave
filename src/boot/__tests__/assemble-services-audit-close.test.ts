@@ -171,7 +171,7 @@ describe("shutdown permission audit ordering", () => {
 
     expect(rows).toMatchObject([
       { decision: "ask", toolUseId: "shutdown-write-probe" },
-      { decision: "deny", toolUseId: "shutdown-write-probe", denyReasons: [{ reason: "host-shutdown" }] },
+      { decision: "deny", toolUseId: "shutdown-write-probe", denyReasons: [{ reason: "host-shutdown" }], trustOrigin: "unknown" },
     ]);
     expect(audit.order).toEqual(["append:ask", "append:deny", "close"]);
     expect(approvalGate.pendingCount).toBe(0);
@@ -190,7 +190,7 @@ describe("shutdown permission audit ordering", () => {
           await afterQueuedCallbacks();
           await ledger.appendToolInvocationAudit(audit, {
             decision: "deny", ts: new Date().toISOString(), auditId: "late-probe", tool: "late_probe",
-            source: "builtin", category: "write", trustOrigin: "user-keyboard",
+            source: "builtin", category: "write", trustOrigin: "unknown",
             denyReasons: [{ reason: "host-shutdown", source: "tool-executor" }],
           });
           return "written";

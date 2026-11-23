@@ -22,6 +22,7 @@ import type {
   ToolUseBlock,
 } from "../executor.js";
 import type { AuditWriter } from "./audit-writer.js";
+import { hostShutdownDenial } from "./approval-outcome.js";
 import { emitToolStart } from "./display-mask.js";
 
 // Record per-invocation state while stage-local permission, category, and scope mutations remain coordinated at authorization boundaries.
@@ -119,10 +120,9 @@ export async function returnUserAbort(deps: UserAbortDeps): Promise<ToolResult> 
   const msg = t("be_executor.toolExecutionCancelled");
   const durationMs = Date.now() - startTime;
   const hostShutdown = isHostExitAbort(abortSignal?.reason);
-  const abortedPermission: PermissionCheckResult = {
-    decision: "deny",
-    reason: hostShutdown ? "host-shutdown" : "user aborted turn",
-    };
+  const abortedPermission: PermissionCheckResult = hostShutdown
+    ? hostShutdownDenial()
+    : { decision: "deny", reason: "user aborted turn" };
   emitToolStart(callbacks, toolUse.name, input, meta);
   callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
   await auditWriter.auditToolCall(

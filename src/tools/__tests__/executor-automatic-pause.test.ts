@@ -323,7 +323,7 @@ describe("executor automated approval pause", () => {
     expect(f.manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(true);
     if (by === "quit") {
       const rows = readFileSync(f.audit.getPermissionAuditLogFile(), "utf8").trimEnd().split("\n").map((line) => JSON.parse(line));
-      expect(rows.at(-1)).toMatchObject({ decision: "deny", toolUseId: "cancel-late-card", denyReasons: [{ reason: "host-shutdown" }] });
+      expect(rows.at(-1)).toMatchObject({ decision: "deny", toolUseId: "cancel-late-card", denyReasons: [{ reason: "host-shutdown" }], trustOrigin: "unknown" });
     }
   });
 
@@ -804,7 +804,7 @@ describe("executor automated approval pause", () => {
     expect(mint).toHaveBeenCalledTimes(1);
     expect(execute).not.toHaveBeenCalled();
     const rows = readFileSync(f.audit.getPermissionAuditLogFile(), "utf8").trimEnd().split("\n").map((line) => JSON.parse(line));
-    expect(rows.at(-1)).toMatchObject({ decision: "deny", toolUseId: "late-host-shutdown", denyReasons: [{ reason: "host-shutdown" }] });
+    expect(rows.at(-1)).toMatchObject({ decision: "deny", toolUseId: "late-host-shutdown", denyReasons: [{ reason: "host-shutdown" }], trustOrigin: "unknown" });
   });
 
   it("preserves a rule-issued host permit when the reviewer pauses before the handler", async () => {

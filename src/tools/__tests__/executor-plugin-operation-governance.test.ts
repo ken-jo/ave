@@ -1926,6 +1926,8 @@ describe("ToolExecutor plugin operation governance", () => {
       expect(hostShutdownRows()[0][0]).toMatchObject({
         decision: "deny",
         denyReasons: [{ reason: "host-shutdown", source: "plugin-operation-execution" }],
+        // The seal closed it, not the plugin-emitted invocation.
+        trustOrigin: "unknown",
         pluginOperation: { outcome: "indeterminate" },
       });
       expect(pendingToolInvocationCount()).toBe(0);
