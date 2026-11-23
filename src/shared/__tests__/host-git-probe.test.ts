@@ -105,7 +105,7 @@ it.each([
     const probe = runGitProbeAsync(process.execPath, [wrapper, mode, pidFile], {});
     const startedAt = Date.now();
     await expect(probe).resolves.toEqual({ stdout: "" });
-    expect(Date.now() - startedAt).toBeLessThan(TEST_DEADLINE_MS + 1_000);
+    expect(Date.now() - startedAt).toBeLessThan(mode === "overflow" ? TEST_DEADLINE_MS : TEST_DEADLINE_MS + 1_000);
     helperPid = readPid(pidFile);
     expect(helperPid).toBeGreaterThan(0);
     if (reaped) await vi.waitFor(() => expect(alive(helperPid)).toBe(false), { timeout: 5_000, interval: 50 });
