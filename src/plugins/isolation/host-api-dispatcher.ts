@@ -18,7 +18,6 @@ import {
   sameEffectAuthority,
 } from "../../permissions/effect-enforcement.js";
 import { ManifestIntegrityError } from "../../permissions/manifest-integrity.js";
-import { methodEffect } from "../../permissions/effect-kind.js";
 import { PluginRuntimeDetachedOperationError } from "../runtime/detached-operation.js";
 import { currentInvocationOrigin } from "../runtime/origin-chain.js";
 import {
@@ -96,11 +95,10 @@ import {
 } from "./host-api-budgets.js";
 
 const log = createLogger("host-api-dispatcher");
-const MISSING_INVOCATION_TOKEN = "missing-invocation-token";
 const SETTLED_INVOCATION_TOKEN = "settled-invocation-token";
 const AMBIGUOUS_INVOCATION_TOKEN = "ambiguous-invocation-token";
 const INVOCATION_REFUSALS: ReadonlySet<unknown> = new Set([
-  MISSING_INVOCATION_TOKEN, SETTLED_INVOCATION_TOKEN, AMBIGUOUS_INVOCATION_TOKEN,
+  SETTLED_INVOCATION_TOKEN, AMBIGUOUS_INVOCATION_TOKEN,
 ]);
 
 /** Paths whose host implementation authorizes against the invocation's effect-gate frame. */
@@ -1361,7 +1359,6 @@ interface HostInvocationTable {
   resolve(token: string): { readonly run: InvocationContextRunner; readonly live: boolean } | undefined;
   /** Context runners of the tool calls still in flight. */
   live(): Iterable<InvocationContextRunner>;
-  toolCallsInFlight(): number;
 }
 
 function invocationTokenOf(params: unknown): string | undefined {
@@ -1440,7 +1437,7 @@ export class HostApiDispatcher {
       );
       const token = invocationTokenOf(request.params);
       const value = await (token === undefined
-        ? this.runTokenless(handler.path, args, controller.signal, invoke)
+        ? this.runTokenless(handler.path, controller.signal, invoke)
         : this.runInInvocation(handler.path, token, invoke));
       // JSON-RPC requires result; void or absent values cross as null.
       return { jsonrpc: "2.0", id, result: this.checkResult(handler, value) ?? null };
@@ -1452,19 +1449,8 @@ export class HostApiDispatcher {
     }
   }
 
-  private runTokenless(path: HostApiPath, args: readonly unknown[], signal: AbortSignal, invoke: () => Promise<unknown>): Promise<unknown> {
-    const gatedWrite = GATED_EFFECT_PATHS.has(path);
-    const rawMethod = path === "hostFetch" ? (args[1] as { method?: unknown } | undefined)?.method : undefined;
-    const isFetchWrite = path === "hostFetch"
-      && methodEffect(typeof rawMethod === "string" && rawMethod.length > 0 ? rawMethod : "GET") === "write";
-    const toolCallsInFlight = this.options.invocations?.toolCallsInFlight() ?? 0;
-    if (toolCallsInFlight > 1 || (toolCallsInFlight === 1 && (gatedWrite || isFetchWrite))) {
-      throw new HostApiBoundaryError(
-        "argument-marshalling-rejected",
-        `Host API '${path}' requires an invocation token while tool calls are active.`,
-        { reason: MISSING_INVOCATION_TOKEN },
-      );
-    }
+  /** A request without a token takes the standalone policy, whether or not a tool call is live. */
+  private runTokenless(path: HostApiPath, signal: AbortSignal, invoke: () => Promise<unknown>): Promise<unknown> {
     return runOutsideInvocation(() => {
       if (!readsEffectFrame(path)) return invoke();
       return runWithEffectGateContext({ headless: false, standalone: true, toolName: path, abortSignal: signal }, invoke);

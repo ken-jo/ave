@@ -27,7 +27,7 @@ export interface HostApiBudgetAudit {
   readonly code: HostApiWireErrorCode;
   readonly count: number;
   readonly bucket?: string;
-  readonly reason?: "missing-invocation-token" | "settled-invocation-token" | "ambiguous-invocation-token";
+  readonly reason?: "settled-invocation-token" | "ambiguous-invocation-token";
   readonly summary: boolean;
 }
 

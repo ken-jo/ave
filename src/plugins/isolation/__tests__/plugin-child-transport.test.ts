@@ -1,17 +1,25 @@
 /** The transport owns framing, call settlement and one termination sequence; faults are not terminal exits. */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AsyncLocalStorage, AsyncResource } from "node:async_hooks";
+import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { frameMessage, StdioFrameDecoder } from "../../../mcp/stdio-framing.js";
 import { INVOCATION_META, RPC_METHOD_NOT_FOUND } from "../../../mcp/protocol-constants.js";
 import { evaluateHostFetch } from "../../../main/host-fetch-guard.js";
-import { currentEffectGateContext, runWithEffectGateContext } from "../../../permissions/effect-enforcement.js";
+import { currentEffectGateContext, gateMutatingEffect, runWithEffectGateContext } from "../../../permissions/effect-enforcement.js";
+import type { ApprovalGate } from "../../../permissions/approval-gate.js";
+import { PermissionManager } from "../../../permissions/permission-manager.js";
+import { backgroundEffectSubject, PluginBackgroundEffectApprovals, withinBackgroundScope } from "../../plugin-background-effects.js";
+import type { PluginManifest, PluginRegistryTrust } from "../../types.js";
 import { servePluginChild } from "../plugin-child-main.js";
 import {
   defineHostApiPath,
   createServiceHostApiPaths,
   HOSTAPI_DISPATCH_TABLE,
   HostApiDispatcher,
+  type HostApiPathHandler,
 } from "../host-api-dispatcher.js";
 import { encodeHostFetchInit, FRAME_BYTES_MAX, hostApiMethodOf } from "../host-api-wire.js";
 import {
@@ -322,7 +330,9 @@ interface InvocationRig {
 }
 
 /** Construct inside a marker to test spawn-context isolation. */
-function invocationRig(options: { pluginId?: string; teardown?: () => void; terminate?: () => void } = {}): InvocationRig {
+function invocationRig(options: {
+  pluginId?: string; teardown?: () => void; terminate?: () => void; table?: Record<string, HostApiPathHandler>;
+} = {}): InvocationRig {
   const { link, childToHost, sent, fireGone, fireFault } = recordedLink();
   const pluginId = options.pluginId ?? "transportprobe";
   const seen: InvocationRig["seen"] = [];
@@ -337,7 +347,7 @@ function invocationRig(options: { pluginId?: string; teardown?: () => void; term
       table: {
         ...HOSTAPI_DISPATCH_TABLE,
         raiseAlert: defineHostApiPath("raiseAlert", async () => {
-          seen.push(marker.getStore());
+          seen.push(marker.getStore() ?? (currentEffectGateContext()?.standalone ? "standalone" : undefined));
           return { status: "raised", alertId: "alert" } as never;
         }),
         hasRoutineBySource: defineHostApiPath("hasRoutineBySource", async () => {
@@ -359,6 +369,7 @@ function invocationRig(options: { pluginId?: string; teardown?: () => void; term
           } } as unknown as Parameters<typeof createServiceHostApiPaths>[0],
           { read: [], write: [] },
         ).hostFetch,
+        ...options.table,
       },
     });
     transport.start();
@@ -500,7 +511,7 @@ describe("a tools/call's invocation, as the child's hostApi requests reach it", 
     const rig = invocationRig();
     const reply = await raiseAlertFromChild(rig, "background");
     expect(reply).toMatchObject({ result: { status: "raised" } });
-    expect(rig.seen).toEqual([undefined]);
+    expect(rig.seen).toEqual(["standalone"]);
     rig.transport.close("case over");
   });
 
@@ -719,80 +730,117 @@ describe("a tools/call's invocation, as the child's hostApi requests reach it", 
       });
       await vi.waitFor(() => expect(rig.sent.some((frame) => frame.id === "legacy")).toBe(true));
       expect(rig.sent.find((frame) => frame.id === "legacy")).toMatchObject({ result: { status: "raised" } });
-      expect(rig.seen).toEqual([undefined]);
+      expect(rig.seen).toEqual(["standalone"]);
     } finally {
       rig.transport.close("case over");
     }
   });
 
-  it.each([1, 2])("rejects and audits an unattributed write with %i live tool calls", async (count) => {
+  it.each([1, 2])("runs an unattributed write beside %i live tool calls in the standalone frame, with no refusal", async (count) => {
     const rig = invocationRig();
     const { frames, replies } = await callTools(rig, count);
     try {
       for (const id of ["omitted", "omitted-again"]) {
-        const reply = await raiseAlertFromChild(rig, id);
-        expect(reply.error).toMatchObject({
-          message: expect.stringContaining("requires an invocation token"),
-          data: { code: "argument-marshalling-rejected" },
-        });
+        await expect(raiseAlertFromChild(rig, id)).resolves.toMatchObject({ result: { status: "raised" } });
       }
-      expect(rig.seen).toEqual([]);
-      expect(rig.audit).toHaveBeenCalledExactlyOnceWith({
-        type: "plugin_hostapi_denied",
-        pluginId: "transportprobe",
-        method: "raiseAlert",
-        code: "argument-marshalling-rejected",
-        reason: "missing-invocation-token",
-        count: 1,
-        summary: false,
-      });
-      if (count === 2) {
-        rig.deliver({
-          jsonrpc: "2.0", id: "ambiguous-fetch", method: hostApiMethodOf("hostFetch"),
-          params: { input: "https://example.test" },
-        });
-        await settle();
-        expect(rig.sent.find((frame) => frame.id === "ambiguous-fetch")?.error)
-          .toMatchObject({ data: { code: "argument-marshalling-rejected" } });
-        expect(rig.audit).toHaveBeenLastCalledWith(expect.objectContaining({
-          method: "hostFetch", reason: "missing-invocation-token",
-        }));
-      }
+      rig.deliver({ jsonrpc: "2.0", id: "unattributed-fetch", method: hostApiMethodOf("hostFetch"), params: { input: "https://example.test" } });
+      await settle();
+      expect(rig.sent.find((frame) => frame.id === "unattributed-fetch")).toMatchObject({ result: { status: 200 } });
       for (const [index, frame] of frames.entries()) {
         const reply = await raiseAlertFromChild(rig, `attributed-${index}`, tokenOf(frame));
         expect(reply).toMatchObject({ result: { status: "raised" } });
         rig.deliver({ jsonrpc: "2.0", id: frame.id, result: { content: [] } });
       }
       await Promise.all(replies);
-      await expect(raiseAlertFromChild(rig, "after")).resolves.toMatchObject({ result: { status: "raised" } });
-      expect(rig.seen).toEqual([...frames.map((_, index) => `call-${index}`), undefined]);
+      expect(rig.seen).toEqual(["standalone", "standalone", ...frames.map((_, index) => `call-${index}`)]);
+      expect(rig.audit).not.toHaveBeenCalled();
     } finally {
       rig.transport.close("case over");
       await Promise.allSettled(replies);
     }
   });
 
-  it("rejects and audits an unattributed fetch write with redacted diagnostics", async () => {
+  it("runs unattributed fetches of every verb beside a live call, and audits a settled-token fetch write with redacted diagnostics", async () => {
     const rig = invocationRig();
-    const { replies } = await callTools(rig, 1);
+    const { frames, replies } = await callTools(rig, 1);
+    const init = (method: string) => encodeHostFetchInit({ method, headers: { Authorization: "header-secret" }, body: "body-secret" }, "fetch approval");
     try {
       for (const method of ["GET", "HEAD", "OPTIONS", "post", "PATCH"]) {
         rig.deliver({
           jsonrpc: "2.0", id: method, method: hostApiMethodOf("hostFetch"),
-          params: { input: "https://example.test/?token=url-secret", init: await encodeHostFetchInit({ method, headers: { Authorization: "header-secret" }, body: "body-secret" }, "fetch approval") },
+          params: { input: "https://example.test/?token=url-secret", init: await init(method) },
         });
         await settle();
-        const reply = rig.sent.find((frame) => frame.id === method)!;
-        if (method === "post" || method === "PATCH") {
-          expect(reply.error).toMatchObject({ data: { code: "argument-marshalling-rejected" } });
-        } else {
-          expect(reply).toMatchObject({ result: { status: 200 } });
-        }
+        expect(rig.sent.find((frame) => frame.id === method)).toMatchObject({ result: { status: 200 } });
       }
-      expect(rig.audit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
-        method: "hostFetch", reason: "missing-invocation-token",
-      }));
+      expect(rig.audit).not.toHaveBeenCalled();
+      rig.deliver({ jsonrpc: "2.0", id: frames[0]!.id as string, result: { content: [] } });
+      await replies[0];
+      rig.deliver({
+        jsonrpc: "2.0", id: "settled-post", method: hostApiMethodOf("hostFetch"),
+        params: { input: "https://example.test/?token=url-secret", init: await init("POST"), _meta: { [INVOCATION_META]: tokenOf(frames[0]!) } },
+      });
+      await settle();
+      expect(rig.sent.find((frame) => frame.id === "settled-post")?.error).toMatchObject({ data: { code: "argument-marshalling-rejected" } });
+      expect(rig.audit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ method: "hostFetch", reason: "settled-invocation-token" }));
       expect(JSON.stringify(rig.audit.mock.calls)).not.toMatch(/url-secret|header-secret|body-secret/);
+    } finally {
+      rig.transport.close("case over");
+      await Promise.allSettled(replies);
+    }
+  });
+
+  it.each([
+    ["declared and approved", ["background:call-llm"], true],
+    ["undeclared", [], false],
+  ] as const)("judges a background callLlm that is %s beside a long-running tool call by the standalone policy alone", async (_label, capabilities, allowed) => {
+    const permissionManager = new PermissionManager(join(tmpdir(), `transport-policy-${randomUUID()}.json`));
+    const manifest = {
+      id: "transportprobe", name: "Probe", version: "1.0.0", entry: "dist/plugin.js", description: "probe", tools: [], config: {},
+      capabilities: [...capabilities],
+    } as unknown as PluginManifest;
+    const entry: PluginRegistryTrust = {
+      installSource: "user",
+      origin: {
+        sourceId: "example-source", sourceOrigin: "custom", commit: "a".repeat(40), packagePath: "plugins/probe", version: "1.0.0",
+        rung: "release", artifactSha256: "b".repeat(64), installedAt: "2026-11-01T00:00:00.000Z",
+      },
+    };
+    const subject = backgroundEffectSubject(manifest, entry);
+    const approvals = new PluginBackgroundEffectApprovals();
+    if (subject.declared) approvals.approve(subject);
+    const asked = vi.fn();
+    const contexts: Array<boolean | undefined> = [];
+    const rig = invocationRig({ table: {
+      callLlm: defineHostApiPath("callLlm", async (call) => {
+        contexts.push(currentEffectGateContext()?.standalone);
+        await gateMutatingEffect({
+          pluginId: "transportprobe", methodPath: "callLlm", effect: "write", target: undefined, input: call.args,
+          approvalGate: { requestAndWait: asked } as unknown as ApprovalGate, permissionManager,
+          standaloneScope: async (path, target) => withinBackgroundScope(subject.effects, path, target) && approvals.isApproved(subject),
+        });
+        return "reply";
+      }),
+    } });
+    const { frames, replies } = await callTools(rig, 1);
+    try {
+      const replyTo = async (id: string) => {
+        await vi.waitFor(() => expect(rig.sent.some((frame) => frame.id === id)).toBe(true));
+        return rig.sent.find((frame) => frame.id === id);
+      };
+      rig.deliver({ jsonrpc: "2.0", id: "background-llm", method: hostApiMethodOf("callLlm"), params: { prompt: "hello", options: {} } });
+      const reply = await replyTo("background-llm");
+      if (allowed) expect(reply).toMatchObject({ result: "reply" });
+      else expect(reply?.error).toMatchObject({ data: { code: "effect-boundary-denied" } });
+      rig.deliver({
+        jsonrpc: "2.0", id: "tool-llm", method: hostApiMethodOf("callLlm"),
+        params: { prompt: "hello", options: {}, _meta: { [INVOCATION_META]: tokenOf(frames[0]!) } },
+      });
+      expect(await replyTo("tool-llm")).toMatchObject({ result: "reply" });
+      expect(contexts).toEqual([true, undefined]);
+      expect(asked).not.toHaveBeenCalled();
+      if (allowed) expect(rig.audit).not.toHaveBeenCalled();
+      else expect(rig.audit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ method: "callLlm", code: "effect-boundary-denied" }));
     } finally {
       rig.transport.close("case over");
       await Promise.allSettled(replies);

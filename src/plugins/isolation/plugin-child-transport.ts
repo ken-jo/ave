@@ -155,7 +155,6 @@ export class PluginChildTransport {
           return settled === undefined ? undefined : { run: settled, live: false };
         },
         live: () => this.liveInvocations.values(),
-        toolCallsInFlight: () => this.liveInvocations.size,
       },
       notifications: {
         deliver: (notification) => this.sendToChild(notification),
