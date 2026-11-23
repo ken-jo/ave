@@ -16,7 +16,7 @@ function firstImport(entry: string): string | undefined {
 
 describe("windows program lookup", () => {
   it.each(["main.ts", "headless-host.ts"])("is the first import of %s", (entry) => {
-    expect(firstImport(entry)).toBe("./main/windows-program-lookup.js");
+    expect(firstImport(entry)).toBe("./main/bare-program-lookup.js");
   });
 
   it.runIf(process.platform === "win32")("sets the variable when the module loads", async () => {
@@ -24,7 +24,7 @@ describe("windows program lookup", () => {
     delete process.env[VARIABLE];
     try {
       vi.resetModules();
-      await import("../windows-program-lookup.js");
+      await import("../bare-program-lookup.js");
       expect(process.env[VARIABLE]).toBe("1");
     } finally {
       if (previous === undefined) delete process.env[VARIABLE];
