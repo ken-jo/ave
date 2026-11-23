@@ -12,7 +12,7 @@ import { holdDir, type NodeId, nodeIdOf, type OwnedDir, OwnedFsError, realDirId,
 import type { JoinConflict } from "./shipped-shapes.js";
 import type { RunRef, StageWorkspaceProvider, WORKSPACE_REFUSALS } from "./stage-workspace.js";
 import { IGNORE_PREFIX, isIgnoreFolder, JOIN_DIR, OUT_DIR, RUN_FILE, runBranch, runRootOf, runSlug, stageDirName, WORKTREES_DIR } from "./workspace-layout.js";
-import { adminNameIn, isWorkspaceRecord, type OutputFile, ownerOf, recordFits, type Registration, runFolderOf, type StageEntry, samePath, type WorkspaceRecord } from "./workspace-record.js";
+import { adminNameByText, adminNameIn, isWorkspaceRecord, type OutputFile, ownerOf, recordFits, type Registration, repoDirIn, runFolderOf, type StageEntry, samePath, type WorkspaceRecord } from "./workspace-record.js";
 import { copySeedFiles, hashSeedFile, listSeedFiles, MAX_SEED_BYTES, MAX_SEED_FILES, type SeedRules } from "./workspace-seed.js";
 
 const log = createLogger("work-board-stage-workspace");
@@ -123,6 +123,14 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     for (const name of at.run.list()) if (isIgnoreFolder(name)) await at.run.remove(name);
   }
 
+  /** The `worktrees` folder of the repository the record names, held from that directory; a throw, with nothing asked, when the record's
+   * path for it is one that is not looked at. */
+  function repoWorktrees(repo: NonNullable<WorkspaceRecord["repo"]>): OwnedDir | undefined {
+    const gitDir = repoDirIn(aveHome(), repo.gitDir);
+    if (gitDir === undefined) throw new OwnedFsError("not-plain", "the record's repository is on a path that is not looked at");
+    return holdDir(gitDir, repo.id).existing("worktrees");
+  }
+
   /**
    * The registration git made for a folder of the run, read from the folder's `.git` file and taken only when the two name each other by
    * identity: the admin folder lies in this repository's `worktrees`, and its `gitdir` file points into this very folder of this very run
@@ -135,7 +143,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       const named = /^gitdir: (.+?)\r?\n?$/u.exec(folder.readFile(".git")?.toString("utf8") ?? "");
       if (named?.[1] === undefined) return undefined;
       const admin = resolve(folder.path, named[1]);
-      const worktrees = holdDir(repo.gitDir, repo.id).existing("worktrees");
+      const worktrees = repoWorktrees(repo);
       const name = worktrees === undefined ? undefined : adminNameIn(repo.gitDir, worktrees.id, admin);
       if (worktrees === undefined || name === undefined) return undefined;
       const held = worktrees.existing(name);
@@ -169,7 +177,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
   function ownRegistration(at: Held, key: string, registration: Registration): { worktrees: OwnedDir; name: string } | undefined {
     const repo = at.file.repo;
     if (repo === undefined) throw new OwnedFsError("changed", "the record names no repository");
-    const worktrees = holdDir(repo.gitDir, repo.id).existing("worktrees");
+    const worktrees = repoWorktrees(repo);
     if (worktrees === undefined) return undefined;
     const own = runFolderOf(at.run, key, registration.gitdir);
     if (own === undefined) throw new OwnedFsError("changed", "the registration points outside the run's folder");
@@ -312,7 +320,10 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
         const drivers = await git.drivers(project.root);
         // A filter the repository requires for checkout is never run, so such a repository gets no git workspace.
         if (drivers.requiredFilters.length > 0 && await usesFilter(project.root, drivers.requiredFilters)) return refused("git-unavailable");
-        gitRun = { baseCommit: found.baseCommit, branch: runBranch(run.runId), drivers: drivers.config, repo: await commonDirOf(project.root) };
+        const repo = await commonDirOf(project.root);
+        // A repository no later call would look at gets no git workspace: its registrations could never be taken out again.
+        if (repoDirIn(aveHome(), repo.gitDir) === undefined) return refused("git-unavailable");
+        gitRun = { baseCommit: found.baseCommit, branch: runBranch(run.runId), drivers: drivers.config, repo };
       } else ignoreRules = "inWorkTree" in found && found.inWorkTree;
     } catch {
       return refused(project !== undefined ? "git-unavailable" : "workspace-unavailable");
@@ -611,7 +622,10 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       joined.check();
       const link = /^gitdir: (.+?)\r?\n?$/u.exec(joined.readFile(".git")?.toString("utf8") ?? "")?.[1];
       const registration = file.registrations[JOIN_DIR];
-      if (link === undefined || registration === undefined || realDirId(resolve(joinDir, link)) !== registration.id) throw new Error("the integration worktree is not the run's own");
+      const repo = file.repo;
+      // The link is text anyone could have put there: only its name is taken, and that is looked up in the repository's own folder.
+      const name = link === undefined || repo === undefined ? undefined : adminNameByText(repo.gitDir, resolve(joinDir, link));
+      if (name === undefined || repo === undefined || registration === undefined || repoWorktrees(repo)?.child(name, registration.id) === undefined) throw new Error("the integration worktree is not the run's own");
     };
     const merging = async (): Promise<boolean> => (await git.run(joinDir, ["rev-parse", "--verify", "--quiet", "MERGE_HEAD"])).code === 0;
     const unmerged = async (): Promise<string[]> => nul(await gitOut(joinDir, ["diff", "--name-only", "-z", "--diff-filter=U", "--no-ext-diff", "--no-textconv"], { drivers }));

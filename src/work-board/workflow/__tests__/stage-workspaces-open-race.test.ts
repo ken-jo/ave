@@ -1,12 +1,13 @@
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, parse } from "node:path";
+import { dirname, join, parse, resolve } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { aveHome } from "../../../shared/ave-home.js";
 import { createHostGit, type HostGit } from "../host-git.js";
 import type { OwnedDir } from "../owned-fs.js";
 import { createStageWorkspaceProvider } from "../stage-workspaces.js";
-import { RUN_FILE } from "../workspace-layout.js";
-import { gitFixture, stageRoot } from "./stage-git-fixture.js";
+import { JOIN_DIR, RUN_FILE } from "../workspace-layout.js";
+import { type GitFixture, gitFixture, sealed, stageRoot } from "./stage-git-fixture.js";
 
 /** Runs before the run folder is made in its project folder, with that folder's path: where another process's release can come between. */
 const between = vi.hoisted(() => ({
@@ -17,7 +18,16 @@ const between = vi.hoisted(() => ({
   share: undefined as { run: string; volume: string; root: string; git?: string } | undefined,
   /** Every path off this machine the disk was asked about; none of them is really asked. */
   foreign: [] as string[],
+  /** Every path the disk was asked which directory it is. */
+  asked: [] as string[],
+  /** The home as the host names it, when that is not the path the test's home is at. */
+  home: undefined as string | undefined,
 }));
+
+vi.mock("../../../shared/ave-home.js", async (original) => {
+  const real = await original<typeof import("../../../shared/ave-home.js")>();
+  return { ...real, aveHome: () => between.home ?? real.aveHome() };
+});
 
 vi.mock("node:fs", async (original) => {
   const real = await original<typeof import("node:fs")>();
@@ -46,6 +56,7 @@ vi.mock("../owned-fs.js", async (original) => {
     return share !== undefined && path.toLowerCase().startsWith(share.root) ? share.volume + path.slice(share.root.length) : path;
   };
   const asked = (path: string): string | undefined => {
+    between.asked.push(path);
     const at = local(path);
     if (!/^[\\/]{2}/u.test(at)) return at;
     between.foreign.push(path);
@@ -78,7 +89,9 @@ afterEach(() => {
   between.act = undefined;
   between.removed = undefined;
   between.share = undefined;
+  between.home = undefined;
   between.foreign.length = 0;
+  between.asked.length = 0;
   rmSync(base, { recursive: true, force: true, maxRetries: 3 });
 });
 
@@ -179,7 +192,7 @@ const onWindows = it.skipIf(process.platform !== "win32");
 const relink = (stage: string, link: string): void => { rmSync(join(stage, ".git")); writeFileSync(join(stage, ".git"), link); };
 const slashed = (path: string, volume: string): string => path.slice(volume.length).replaceAll("\\", "/");
 
-onWindows("a project on a share keeps the registration a stage folder names by the share's path", async () => {
+onWindows("a project on the home's own share keeps the registration a stage folder names by the share's path", async () => {
   const fx = gitFixture();
   try {
     const handle = fx.start();
@@ -197,12 +210,129 @@ onWindows("a project on a share keeps the registration a stage folder names by t
     delete record.registrations.s1;
     writeFileSync(recordPath, JSON.stringify(record));
     relink(stage, `gitdir: //SERVER/Share/${slashed(admin, volume)}\n`);
-    await handle.provider.release(handle.run, ["s1"]);
+    // The home as the host names it on that share; a provider that has not seen the run finds it there.
+    const home = aveHome();
+    expect(parse(home).root).toBe(volume);
+    between.home = `\\\\Server\\share\\${home.slice(volume.length)}`;
+    const onShare = createStageWorkspaceProvider({ git: createHostGit({ env: fx.env }) });
+    await onShare.release(handle.run, ["s1"]);
     expect(existsSync(stage)).toBe(false);
     expect(existsSync(admin)).toBe(false);
+    await onShare.release(handle.run, "all");
+    expect(existsSync(open.workspace.runRoot)).toBe(false);
     expect(between.foreign).toEqual([]);
   } finally {
+    between.home = undefined;
     try { await fx.done(); } finally { between.share = undefined; }
+  }
+});
+
+onWindows("a record edited to name its repository on another share records no registration, and nothing off this machine is asked", async () => {
+  const fx = gitFixture();
+  try {
+    const handle = fx.start();
+    const open = await handle.provider.open(handle.run, fx.repo);
+    if (!open.ok) throw new Error("expected a workspace");
+    const stage = await stageRoot(handle, "s1");
+    const recordPath = join(open.workspace.runRoot, RUN_FILE);
+    const record = JSON.parse(readFileSync(recordPath, "utf8")) as Recorded;
+    const admin = record.registrations.s1?.admin as string;
+    // A stop before the host recorded the stage's registration; the record's shape and its own folder still fit.
+    record.repo.gitDir = `\\\\other\\share\\${record.repo.gitDir.slice(parse(record.repo.gitDir).root.length)}`;
+    delete record.registrations.s1;
+    writeFileSync(recordPath, JSON.stringify(record));
+    await handle.provider.release(handle.run, ["s1"]);
+    expect(existsSync(stage)).toBe(false);
+    expect(existsSync(admin)).toBe(true);
+    expect(between.foreign).toEqual([]);
+  } finally {
+    await fx.done();
+  }
+});
+
+onWindows("a release of a run whose record names its repository on another share or a device asks nothing off this machine", async () => {
+  for (const moved of [(git: string) => `\\\\other\\share\\${git.slice(parse(git).root.length)}`, (git: string) => `\\\\.\\${git}`]) {
+    const fx = gitFixture();
+    try {
+      const handle = fx.start();
+      const open = await handle.provider.open(handle.run, fx.repo);
+      if (!open.ok) throw new Error("expected a workspace");
+      await stageRoot(handle, "s1");
+      const recordPath = join(open.workspace.runRoot, RUN_FILE);
+      const record = JSON.parse(readFileSync(recordPath, "utf8")) as Recorded;
+      const admins = [record.registrations[JOIN_DIR]?.admin as string, record.registrations.s1?.admin as string];
+      record.repo.gitDir = moved(record.repo.gitDir);
+      writeFileSync(recordPath, JSON.stringify(record));
+      await handle.provider.release(handle.run, "all");
+      // The run folder goes; the repository is left as it is.
+      expect(existsSync(open.workspace.runRoot)).toBe(false);
+      expect(admins.map(admin => existsSync(admin))).toEqual([true, true]);
+      expect(between.foreign).toEqual([]);
+    } finally {
+      await fx.done();
+    }
+  }
+});
+
+/**
+ * Collects a sealed stage with the integration folder's link file replaced right before the host reads it: after the last git call in
+ * that folder, so no git process ever follows the link. Gives what the disk was asked from then on, and what a check of the
+ * repository alone asks.
+ */
+async function collectWithLink(fx: GitFixture, linkTo: (admin: string) => string): Promise<{ asked: string[]; repository: string[] }> {
+  const git = createHostGit({ env: fx.env });
+  let joinDir = "";
+  let admin = "";
+  let replaced = false;
+  const handle = fx.start({
+    git: {
+      drivers: cwd => git.drivers(cwd),
+      run: async (cwd, args, call) => {
+        if (replaced && resolve(cwd).toLowerCase() === joinDir.toLowerCase()) throw new Error("git was run in a folder whose link is not the run's");
+        const result = await git.run(cwd, args, call);
+        if (args[0] === "merge-base") {
+          relink(joinDir, linkTo(admin));
+          replaced = true;
+          between.asked.length = 0;
+        }
+        return result;
+      },
+    },
+  });
+  const open = await handle.provider.open(handle.run, fx.repo);
+  if (!open.ok) throw new Error("expected a workspace");
+  writeFileSync(join(await stageRoot(handle, "s1"), "a.txt"), "two\n");
+  await sealed(handle, "s1");
+  const record = JSON.parse(readFileSync(join(open.workspace.runRoot, RUN_FILE), "utf8")) as Recorded & { project: { root: string } };
+  admin = record.registrations[JOIN_DIR]?.admin as string;
+  joinDir = resolve(open.workspace.runRoot, JOIN_DIR);
+  await expect(handle.provider.integrate(handle.run, "j1", ["s1"])).rejects.toThrow("the integration worktree is not the run's own");
+  expect(replaced).toBe(true);
+  return { asked: [...between.asked], repository: [record.project.root, record.repo.gitDir] };
+}
+
+onWindows("an integration folder whose link names another share or a device is not collected into, and nothing is asked of the link", async () => {
+  for (const linkTo of [(admin: string) => `gitdir: //other/share/${slashed(admin, parse(admin).root)}\n`, (admin: string) => `gitdir: //./${admin.replaceAll("\\", "/")}\n`]) {
+    const fx = gitFixture();
+    try {
+      const { asked, repository } = await collectWithLink(fx, linkTo);
+      expect(between.foreign).toEqual([]);
+      expect(asked).toEqual(repository);
+    } finally {
+      await fx.done();
+    }
+  }
+});
+
+it("an integration folder whose link leaves the repository's worktrees folder by `..` is not collected into, and the folder it names is not asked about", async () => {
+  const fx = gitFixture();
+  try {
+    mkdirSync(join(fx.base, "other", "x"), { recursive: true });
+    // Four levels up from the admin folder is the folder the project is in.
+    const { asked, repository } = await collectWithLink(fx, admin => `gitdir: ${admin}/../../../../other/x\n`);
+    expect(asked).toEqual(repository);
+  } finally {
+    await fx.done();
   }
 });
 
