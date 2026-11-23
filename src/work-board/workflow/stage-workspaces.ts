@@ -48,6 +48,13 @@ const gitdirOf = (text: string): string => text.endsWith("\n") ? text.slice(0, -
 
 /** The mismatches already reported in this process, by record. */
 const warnedOnce = new Set<string>();
+
+/** The highest folder a plain-folder check looks at; none looks up to the volume root. */
+let plainCeiling: string | undefined;
+/** Keeps a test's folders from answering to a `.git` the account holds above its temp folder. */
+export function _setPlainFolderCeilingForTest(dir: string | undefined): void {
+  plainCeiling = dir === undefined ? undefined : realpathSync.native(dir);
+}
 /** Git writes the two files that tie a worktree to its registration as absolute paths, whatever the repository is configured to. */
 const ABSOLUTE_LINKS = ["-c", "worktree.useRelativePaths=false"];
 /** Before every commit or ref in an argument vector: git reads what follows as one, never as an option. */
@@ -269,7 +276,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       let found: boolean;
       try { found = lstatSync(join(dir, ".git"), { throwIfNoEntry: false }) !== undefined; } catch { found = true; }
       if (found) throw new Error("the folder lies in a repository git did not set up");
-      if (dirname(dir) === dir) return { inWorkTree: false };
+      if (dirname(dir) === dir || (plainCeiling !== undefined && samePath(dir, plainCeiling))) return { inWorkTree: false };
     }
   }
 

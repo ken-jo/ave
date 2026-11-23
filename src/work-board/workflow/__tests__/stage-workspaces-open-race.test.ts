@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { aveHome } from "../../../shared/ave-home.js";
 import { createHostGit, type HostGit } from "../host-git.js";
 import type { OwnedDir } from "../owned-fs.js";
-import { createStageWorkspaceProvider } from "../stage-workspaces.js";
+import { _setPlainFolderCeilingForTest, createStageWorkspaceProvider } from "../stage-workspaces.js";
 import { JOIN_DIR, OUT_DIR, RUN_FILE, runRootOf, runSlug } from "../workspace-layout.js";
 import { removeLink, stageOf } from "./stage-fixtures.js";
 import { type GitFixture, type GitHandle, gitFixture, sealed, stageRoot } from "./stage-git-fixture.js";
@@ -103,6 +103,7 @@ const run = (): { itemId: number; runId: string; runKey: string } => ({ itemId: 
 
 beforeEach(() => {
   base = mkdtempSync(join(tmpdir(), "swr-"));
+  _setPlainFolderCeilingForTest(base);
   mkdirSync(join(base, "project"));
   writeFileSync(join(base, "gitconfig"), "");
 });
@@ -118,6 +119,7 @@ afterEach(() => {
   between.unread = undefined;
   between.foreign.length = 0;
   between.asked.length = 0;
+  _setPlainFolderCeilingForTest(undefined);
   rmSync(base, { recursive: true, force: true, maxRetries: 3 });
 });
 

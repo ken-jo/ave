@@ -9,7 +9,7 @@ import { type NameReader, plainFolderIgnore, projectFoldsCase } from "../folder-
 import { createHostGit, type HostGit, HostGitError } from "../host-git.js";
 import { holdDir, nodeIdOf } from "../owned-fs.js";
 import type { RunRef } from "../stage-workspace.js";
-import { createStageWorkspaceProvider, type StageWorkspaceOptions } from "../stage-workspaces.js";
+import { _setPlainFolderCeilingForTest, createStageWorkspaceProvider, type StageWorkspaceOptions } from "../stage-workspaces.js";
 import { OUT_DIR, RUN_FILE, runRootOf } from "../workspace-layout.js";
 import { copySeedFiles, isInside, listSeedFiles } from "../workspace-seed.js";
 import { removeLink, removeTree, setPath, stageOf, writeUnder as write } from "./stage-fixtures.js";
@@ -91,6 +91,7 @@ async function withHome<T>(home: string, work: () => Promise<T>): Promise<T> {
 
 beforeEach(() => {
   base = mkdtempSync(join(tmpdir(), "swf-"));
+  _setPlainFolderCeilingForTest(base);
   project = join(base, "project");
   mkdirSync(project);
   writeFileSync(join(base, "gitconfig"), "[core]\n\tautocrlf = false\n");
@@ -103,6 +104,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   for (const { provider, run } of opened.splice(0)) await provider.release(run, "all");
+  _setPlainFolderCeilingForTest(undefined);
   removeTree(base);
 });
 
