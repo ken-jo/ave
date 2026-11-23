@@ -151,6 +151,7 @@ export function permissionAuditEntryFromToolCall(args: {
       ...base,
       decision: "deny",
       denyReasons,
+      cwd: args.cwd === undefined ? "unknown" : redactFsPath(args.cwd),
       ...(permission.answer ? { answerTrustOrigin: provenanceTrustOrigin(permission.answer, "allow", args.trustOrigin) } : {}),
       ...(args.hookChain ? { hookChain: args.hookChain } : {}),
     };
