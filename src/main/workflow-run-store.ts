@@ -11,6 +11,7 @@ import { canonicalWorkflowJson } from "../shared/workflow-template-output.js";
 import { requireTemplate, WorkflowTemplateError } from "../work-board/template-graph.js";
 import { assertWorkflowRunRecord } from "../work-board/template-run-fields.js";
 import type { WorkflowRunListResult, WorkflowRunReadResult, WorkflowRunRecord, WorkflowRunWriteResult } from "../shared/workflow-template-types.js";
+import { errorMessage } from "../shared/error-message.js";
 import type { MarkerOp, RunClass, RunFileFacts } from "./run-classification.js";
 
 const log = createLogger("ave");
@@ -230,7 +231,7 @@ export class WorkflowRunStore {
   /** Emits once per affected run id after a commit on this store and its memory updates. A change is a record write or removal
    * (including retention and keyed discard), a keyed intent, delete marker or held event added or removed by the write, or a
    * memory-only delete marker cleared as part of the commit. File-only bookkeeping and uncommitted memory updates do not emit. */
-  readonly runChanged = new ChangeSignal<string>((err) => log.warn("[workflow-runs] change listener failed: %s", err instanceof Error ? err.message : String(err)));
+  readonly runChanged = new ChangeSignal<string>((err) => log.warn("[workflow-runs] change listener failed: %s", errorMessage(err)));
 
   // Deletes whose outcome is unknown and whose marker the file may not hold: a write or read of it failed (see markUnknown).
   private unknown: DeleteMarker[] = [];
