@@ -69,8 +69,7 @@ export function runsRepoCodeOutOfProcess(text) {
 const RELATIVE_IMPORT = /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+|\bvi\.(?:mock|doMock|importActual)\s*(?:<[^>]*>)?\(\s*)["'](\.{1,2}\/[^"']+)["']/gu;
 const HELPER_EXTENSIONS = ["", ".ts", ".tsx", ".mts", ".cts", ".mjs", ".cjs", ".js", ".jsx", ".json"];
 
-// Follow helper imports too: they can bundle or spawn code absent from the test body.
-export function testRunsRepoCodeOutOfProcess(testPath, readText) {
+function someHelperSource(testPath, readText, matches, isHelperPath) {
   const seen = new Set();
   const pending = [testPath];
   while (pending.length > 0) {
@@ -79,10 +78,10 @@ export function testRunsRepoCodeOutOfProcess(testPath, readText) {
     seen.add(path);
     const text = readText(path);
     if (typeof text !== "string") continue;
-    if (runsRepoCodeOutOfProcess(text)) return true;
+    if (matches(path, text)) return true;
     for (const [, specifier] of text.matchAll(RELATIVE_IMPORT)) {
       const target = posix.normalize(posix.join(posix.dirname(path), specifier));
-      if (!target.includes("/__tests__/") || /\.(?:test|spec)\.[cm]?[jt]sx?$/u.test(target)) continue;
+      if (!isHelperPath(target) || /\.(?:test|spec)\.[cm]?[jt]sx?$/u.test(target)) continue;
       const base = target.replace(/\.[cm]?js$/u, "");
       for (const extension of HELPER_EXTENSIONS) {
         const candidate = `${extension === "" ? target : base}${extension}`;
@@ -94,6 +93,24 @@ export function testRunsRepoCodeOutOfProcess(testPath, readText) {
     }
   }
   return false;
+}
+
+// Follow helper imports too: they can bundle or spawn code absent from the test body.
+export function testRunsRepoCodeOutOfProcess(testPath, readText) {
+  return someHelperSource(testPath, readText, (_path, text) => runsRepoCodeOutOfProcess(text), (target) => target.includes("/__tests__/"));
+}
+
+const DIRECTORY_LISTING = /\breaddirSync\b|\breaddir\s*\(|\bopendirSync\b|\bopendir\s*\(|\bglobSync\b|\bglob\s*\(|\bnew\s+Glob\b|fast-glob|tinyglobby/u;
+const REPOSITORY_ANCHOR = /import\.meta\.(?:url|dirname|filename)|__dirname|__filename|process\.cwd\(\)|\b(?:resolve|join)\(\s*["'`](?:src|test|scripts|config|docs|web|\.)["'`/]|\b(?:readdirSync|readdir|opendirSync|opendir|globSync)\(\s*(?:(?:path\.)?(?:resolve|join)\(\s*)?["'`](?:src|test|scripts|config|resources|docs|web)\b/u;
+
+// A directory listing beside a checkout-relative root may scan repository files
+// that no import or literal path names, so the must-run set holds such tests.
+// Helpers under __tests__/ or test/ and imported scripts/ modules count too.
+// Exempt files list only temporary, home, host or caller-supplied directories.
+export function testListsRepositoryDirectories(testPath, readText, exempt = new Set()) {
+  return someHelperSource(testPath, readText,
+    (path, text) => !exempt.has(path) && DIRECTORY_LISTING.test(text) && REPOSITORY_ANCHOR.test(text),
+    (target) => target.includes("/__tests__/") || target.startsWith("test/") || target.startsWith("scripts/"));
 }
 
 // Directory entries expand to collected tests; stale entries selecting nothing fail.

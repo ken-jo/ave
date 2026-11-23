@@ -1,5 +1,5 @@
 {
-  "$comment": "Affected runs always retain smoke, child-process/bundle and tracked-tree invariants. Other domain groups run only when a changed path matches their triggers. Related tests, literal readers and lock suites are added independently. Full runs ignore this selection and execute every collected test. Unknown changes and failed discovery retain the full fallback.",
+  "$comment": "Affected runs always retain smoke, child-process/bundle, tracked-tree and repository-listing invariants. Other domain groups run only when a changed path matches their triggers. Related tests, literal readers and lock suites are added independently. Full runs ignore this selection and execute every collected test. Unknown changes and failed discovery retain the full fallback.",
   "groups": {
     "permissions": [
       "src/permissions/"
@@ -86,6 +86,41 @@
       "test/scripts/pre-push-tier.test.ts",
       "test/scripts/repository-identity.test.ts",
       "test/scripts/run-ci-suite.test.ts"
+    ],
+    "repository-listings": [
+      "src/__tests__/boot-llm-fetch-source.test.ts",
+      "src/components/ui/__tests__/loader.test.tsx",
+      "src/engine/__tests__/host-terminal-content-chokepoint.test.ts",
+      "src/engine/turn/__tests__/turn-entry-classification.test.ts",
+      "src/i18n/__tests__/korean-packaged-chunk.test.ts",
+      "src/i18n/__tests__/model-facing-keys.test.ts",
+      "src/i18n/__tests__/used-keys-exist.test.ts",
+      "src/main/__tests__/app-shutdown-order.test.ts",
+      "src/main/__tests__/browser-session-identity.test.ts",
+      "src/main/__tests__/desktop-packaging.test.ts",
+      "src/main/terminal/__tests__/changed-file-evidence.test.ts",
+      "src/permissions/__tests__/approval-run-kinds.integration.test.ts",
+      "src/permissions/__tests__/approval-surface-writers.test.ts",
+      "src/permissions/__tests__/asrt-protected-write-roots.test.ts",
+      "src/permissions/__tests__/sandbox-scope-gates.test.ts",
+      "src/plugins/__tests__/app-plugin-decoupling-audit.test.ts",
+      "src/plugins/__tests__/validate-boundary.test.ts",
+      "src/plugins/isolation/__tests__/host-api-boundary-contract.test.ts",
+      "src/shared/__tests__/ave-home-sweep.test.ts",
+      "src/ui/renderer/__tests__/settings-section-anchors.test.ts",
+      "src/ui/renderer/__tests__/theme-snapshot.test.tsx",
+      "src/ui/renderer/__tests__/window-surface-positioning.test.ts",
+      "src/ui/renderer/components/__tests__/tour-anchors-trigger.test.tsx",
+      "src/ui/renderer/hooks/__tests__/use-send-message-resource.test.tsx",
+      "src/work-board/workflow/__tests__/run-ending-structure.test.ts",
+      "test/scripts/document-consumer-guard.test.ts",
+      "test/scripts/e2e-electron-launch.test.ts",
+      "test/scripts/permission-timing-project.test.ts",
+      "test/scripts/preload-sites.test.ts",
+      "test/scripts/ripgrep-runtime-files.test.ts",
+      "test/scripts/web-site-contract.test.ts",
+      "test/scripts/windows-ci-test-list.test.ts",
+      "test/scripts/windows-native-test-inventory.test.ts"
     ],
     "smoke": [
       "src/plugins/__tests__/tool-name-policy.test.ts",

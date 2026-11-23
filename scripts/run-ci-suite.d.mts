@@ -27,6 +27,7 @@ export declare function selectCiTests(input: {
 }): CiSuitePlan;
 export declare function runsRepoCodeOutOfProcess(text: string): boolean;
 export declare function testRunsRepoCodeOutOfProcess(testPath: string, readText: (path: string) => string | null): boolean;
+export declare function testListsRepositoryDirectories(testPath: string, readText: (path: string) => string | null, exempt?: ReadonlySet<string>): boolean;
 export declare function runsCoverage(eventName: string | undefined): boolean;
 export const FULL_RUN_SHARDS: number;
 export declare function ciShardCount(plan: CiSuitePlan, coverage: boolean, nativeChecks?: boolean): number;
