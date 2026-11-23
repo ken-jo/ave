@@ -814,6 +814,7 @@ src/plugins/runtime/__tests__/min-app-version-schema-compat.test.ts
 src/plugins/runtime/__tests__/native-child-quarantine.test.ts
 src/plugins/runtime/__tests__/network-access-manifest.test.ts
 src/plugins/runtime/__tests__/onboarding-highlights-manifest.test.ts
+src/plugins/runtime/__tests__/plugin-loader.test.ts
 src/plugins/runtime/__tests__/plugin-operation-account-session.test.ts
 src/plugins/runtime/__tests__/prepared-artifact-identity.test.ts
 src/plugins/runtime/__tests__/read-ui-resource.test.ts

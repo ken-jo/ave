@@ -1,6 +1,6 @@
 // Multiplex one bounded JSON-RPC stream per direction; duplicate decoders can misroute frames.
 // This module must remain safe to import in the child.
-import type { Readable, Writable } from "node:stream";
+import type { Writable } from "node:stream";
 import { frameMessage, StdioFrameDecoder } from "../../mcp/stdio-framing.js";
 import { errorMessage } from "../../shared/error-message.js";
 import {
@@ -50,6 +50,15 @@ function isParamsObject(params: unknown): boolean {
   return typeof params === "object" && params !== null && !Array.isArray(params);
 }
 
+export interface FramedMessageInput {
+  on(event: "data", listener: (chunk: Buffer) => void): unknown;
+  off(event: "data", listener: (chunk: Buffer) => void): unknown;
+}
+
+export interface DecodedMessageInput {
+  subscribe(onMessage: (message: MultiplexedMessage) => void, onViolation: (reason: string) => void): void;
+}
+
 /** Use one decoder per direction and report oversized outbound notifications through the owner. */
 export class FramedMessageStream {
   private readonly decoder = new StdioFrameDecoder(FRAME_BYTES_MAX);
@@ -57,7 +66,7 @@ export class FramedMessageStream {
   private violated = false;
 
   constructor(
-    private readonly input: Readable,
+    private readonly input: FramedMessageInput | DecodedMessageInput,
     private readonly output: Writable,
     private readonly onMessage: (message: MultiplexedMessage) => void,
     private readonly onViolation: (reason: string) => void,
@@ -71,21 +80,31 @@ export class FramedMessageStream {
   start(): void {
     if (this.started) throw new Error("[child-stream-multiplex] already started");
     this.started = true;
+    const input = this.input;
+    const violate = (reason: string): void => {
+      if (this.violated) return;
+      this.violated = true;
+      this.onViolation(reason);
+    };
+    if ("subscribe" in input) {
+      input.subscribe((message) => {
+        if (!this.violated) this.onMessage(message);
+      }, violate);
+      return;
+    }
     const onData = (chunk: Buffer): void => {
       if (this.violated) return;
       let messages: Array<Record<string, unknown>>;
       try {
         messages = this.decoder.push(chunk);
       } catch (error) {
-        if (this.violated) return;
-        this.violated = true;
-        this.input.off("data", onData);
-        this.onViolation(errorMessage(error));
+        input.off("data", onData);
+        violate(errorMessage(error));
         return;
       }
       for (const message of messages) this.onMessage(message);
     };
-    this.input.on("data", onData);
+    input.on("data", onData);
   }
 
   /** Write each complete frame once so concurrent writers cannot interleave its bytes. Returns the UTF-8 bytes queued

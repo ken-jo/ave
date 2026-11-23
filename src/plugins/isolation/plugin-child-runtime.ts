@@ -11,6 +11,7 @@ import { describeNonJson } from "../../shared/json-representable.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { INVOCATION_META, RAW_RESULT_META } from "../../mcp/protocol-constants.js";
 import { resolvePluginSocketDir } from "../plugin-storage-layout.js";
+import { ownToolHandler } from "../runtime/plugin-loader.js";
 import type {
   PluginHostApi,
   PluginManifest,
@@ -355,7 +356,7 @@ export async function startPluginChildRuntime(
   const instance = await factory(runtimeContext);
 
   const delegate: PluginToolDelegate = async (name, args, invocationContext) => {
-    const handler = instance.handlers[name];
+    const handler = ownToolHandler(instance.handlers, name);
     if (!handler) {
       throw new Error(`[plugin-child:${pluginId}] tool '${name}' has no handler`);
     }

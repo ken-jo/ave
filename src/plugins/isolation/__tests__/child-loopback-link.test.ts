@@ -12,6 +12,7 @@ import {
   acceptHostOverLoopback,
   CHILD_ENV_ARG_PREFIX,
   CHILD_LOOPBACK_TRANSPORT_ARG,
+  CHILD_PRIVATE_STDIO_TRANSPORT_ARG,
   CHILD_RELAY_TRANSPORT_ARG,
   connectToAnnouncedChild,
   encodeChildEnv,
@@ -130,6 +131,7 @@ describe("the child's launch arguments", () => {
 
   it("reads a launch without either of its arguments as the stdio child, whatever else it carries", () => {
     expect(parseChildLaunchArgs([])).toEqual({ transport: "stdio" });
+    expect(parseChildLaunchArgs([CHILD_PRIVATE_STDIO_TRANSPORT_ARG])).toEqual({ transport: "stdio", privateInput: true });
     expect(parseChildLaunchArgs(["C:\\plugins\\p\\plugin.mjs"])).toEqual({ transport: "stdio" });
   });
 
