@@ -4,6 +4,7 @@ export const WINDOWS_TEST_LISTS = [
   "config/windows-application-tests.txt",
 ];
 export const WINDOWS_INVENTORY_LOCK = "test/scripts/windows-ci-test-list.test.ts";
+export const WINDOWS_TEST_REMOVALS = "config/windows-test-removals.json";
 const MARKERS = new Map([
   ["windows-permission", WINDOWS_TEST_LISTS[0]],
   ["windows-native", WINDOWS_TEST_LISTS[1]],
@@ -65,6 +66,10 @@ export function windowsInventoryDiff(changes, readVersion, isCollectedVitestFile
 
   for (const entry of changes) {
     const { path, status, oldMode, newMode } = entry;
+    if (path === WINDOWS_TEST_REMOVALS && status === "M" && oldMode === "100644" && newMode === "100644" && readVersion) {
+      changed = true;
+      continue;
+    }
     const isList = path === WINDOWS_TEST_LISTS[0] || path === WINDOWS_TEST_LISTS[1];
     const regularEdit = status === "M" && oldMode === "100644" && newMode === "100644";
     const isTest = isCollectedVitestFile(path);
@@ -99,4 +104,41 @@ export function windowsInventoryDiff(changes, readVersion, isCollectedVitestFile
     if (!markerOnly) ordinary.push(entry);
   }
   return { ordinary, suites, changed };
+}
+
+export function windowsCoverageDepartures(readVersion) {
+  const before = new Map();
+  const after = new Set();
+  for (const list of WINDOWS_TEST_LISTS) {
+    const oldText = readVersion(list, "before");
+    const newText = readVersion(list, "after");
+    for (const file of oldText === null ? [] : windowsTestFiles(oldText)) before.set(file, list);
+    for (const file of newText === null ? [] : windowsTestFiles(newText)) after.add(file);
+  }
+  return new Map([...before].filter(([file]) => !after.has(file)).sort(([a], [b]) => a.localeCompare(b, "en")));
+}
+
+export function assertWindowsRemovalRecords(departures, readVersion) {
+  const parse = side => {
+    const text = readVersion(WINDOWS_TEST_REMOVALS, side);
+    const records = text === null ? {} : JSON.parse(text);
+    if (!records || typeof records !== "object" || Array.isArray(records)) {
+      throw new Error("Windows test removal records must be an object keyed by suite path");
+    }
+    return records;
+  };
+  const before = parse("before");
+  const after = parse("after");
+  const problems = [];
+  for (const file of departures.keys()) {
+    const record = Object.hasOwn(after, file) ? after[file] : undefined;
+    if (Object.hasOwn(before, file) || !record || typeof record.reason !== "string" || !record.reason.trim()
+      || (record.replacement !== undefined && (typeof record.replacement !== "string"
+        || !record.replacement.trim() || record.replacement === file))) {
+      problems.push(file);
+    }
+  }
+  if (problems.length) {
+    throw new Error(`Last Windows lane removal needs a new record with a reason in ${WINDOWS_TEST_REMOVALS}:\n${problems.join("\n")}`);
+  }
 }

@@ -14,3 +14,7 @@ export function windowsInventoryDiff<T extends WindowsDiffEntry>(changes: readon
   suites: Map<string, Set<(typeof WINDOWS_TEST_LISTS)[0 | 1]>>;
   changed: boolean;
 };
+export const WINDOWS_TEST_REMOVALS: string;
+export type WindowsInventoryPath = (typeof WINDOWS_TEST_LISTS)[number];
+export function windowsCoverageDepartures(readVersion: ReadWindowsVersion): Map<string, WindowsInventoryPath>;
+export function assertWindowsRemovalRecords(departures: ReadonlyMap<string, WindowsInventoryPath>, readVersion: ReadWindowsVersion): void;

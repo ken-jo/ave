@@ -3,6 +3,9 @@ import { describe, expect, it } from "vitest";
 import { assertWindowsCoverage, planWindowsTests, pullRequestWindowsChanges } from "../../scripts/plan-windows-tests.js";
 import { plannedWindowsFiles, WINDOWS_TEST_LISTS, WINDOWS_TEST_SHARDS, windowsTestFiles } from "../../scripts/run-windows-test-list.mjs";
 import { windowsImportGraph, windowsRuntimeInputIndex } from "./windows-native-test-inventory.js";
+import {
+  assertWindowsRemovalRecords, windowsCoverageDepartures, WINDOWS_TEST_REMOVALS, type ReadWindowsVersion,
+} from "../../scripts/windows-test-inventory.mjs";
 
 const [permission, native, application] = WINDOWS_TEST_LISTS;
 const inventories = {
@@ -178,5 +181,54 @@ describe("Windows regression planning", () => {
     const result = planWindowsTests({ event: "pull_request", inventories, changes: [], readSources, durations: { [worst]: 100_000 } });
     expect(result.shards[0]?.files).toEqual([worst]);
     expect(result.shards[0]?.weightMs).toBe(101_000);
+  });
+});
+
+describe("last Windows lane removal", () => {
+  const file = "src/permissions/__tests__/sensitive-paths-canonicalize.test.ts";
+  const source = readFileSync(file, "utf8");
+  const updated = { ...inventories, [permission]: inventories[permission].filter(path => path !== file) };
+  function versions(record?: string, priorRecord?: string): ReadWindowsVersion {
+    return (path, side) => {
+      if (path === WINDOWS_TEST_REMOVALS) return (side === "before" ? priorRecord : record) ?? "{}";
+      if (path === file) return side === "before" ? source : source.replace("// windows-permission\n", "");
+      const list = WINDOWS_TEST_LISTS.find(list => list === path);
+      return list ? `${(side === "before" ? inventories : updated)[list].join("\n")}\n` : null;
+    };
+  }
+
+  it("rejects a matched declaration and row removal without a new record", () => {
+    expect(source).toMatch(/^\/\/ windows-permission\n/u);
+    const readVersion = versions();
+    const departures = windowsCoverageDepartures(readVersion);
+    expect([...departures]).toEqual([[file, permission]]);
+    expect(() => assertWindowsRemovalRecords(departures, readVersion)).toThrow(file);
+    const reused = JSON.stringify({ [file]: { reason: "Previously removed coverage" } });
+    expect(() => assertWindowsRemovalRecords(departures, versions(reused, reused))).toThrow(file);
+  });
+
+  it.each([false, true])("runs the departing suite once with a new record (full=%s)", full => {
+    const readVersion = versions(JSON.stringify({ [file]: { reason: "An equivalent canonicalization suite covers the boundary" } }));
+    const departures = windowsCoverageDepartures(readVersion);
+    expect(() => assertWindowsRemovalRecords(departures, readVersion)).not.toThrow();
+    const changes = [file, permission, WINDOWS_TEST_REMOVALS, ...(full ? [".github/workflows/ci.yml"] : [])]
+      .map(file => ({ file, status: "M", oldMode: "100644", newMode: "100644" }));
+    const result = planWindowsTests({
+      event: "pull_request", inventories: updated, changes, readVersion, coverageVersion: readVersion,
+      departures, readSources: () => { throw new Error("No source scan expected"); },
+    });
+    expect(result.mode).toBe(full ? "full" : "affected");
+    expect(result.departing).toEqual([file]);
+    const selected = WINDOWS_TEST_SHARDS.flatMap(shard =>
+      plannedWindowsFiles(permission, updated[permission].join("\n"), result, shard));
+    expect(selected.filter(path => path === file)).toEqual([file]);
+  });
+
+  it("does not count a lane transfer between the three lists as a departure", () => {
+    const original = versions();
+    expect(windowsCoverageDepartures((path, side) => {
+      const value = original(path, side);
+      return path === application && side === "after" ? `${value ?? ""}${file}\n` : value;
+    }).size).toBe(0);
   });
 });

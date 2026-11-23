@@ -21,9 +21,10 @@ export function plannedWindowsFiles(inventory, text, plan, shard) {
   if (supplemental !== undefined) {
     // A membership diff can name a collected suite outside the current list,
     // such as a removed entry that still needs its regression run.
-    if (plan.mode !== "affected" || !WINDOWS_TEST_LISTS.slice(0, 2).includes(inventory)
+    if (!WINDOWS_TEST_LISTS.includes(inventory)
       || !Array.isArray(supplemental) || !supplemental.every(file => typeof file === "string")
       || JSON.stringify(windowsTestFiles(supplemental.join("\n"))) !== JSON.stringify(supplemental)
+      || (plan.mode === "full" && (!Array.isArray(plan.departing) || supplemental.some(file => !plan.departing.includes(file))))
       || supplemental.some(file => full.has(file) || !selected?.includes(file))) {
       throw new Error(`Invalid Windows supplemental tests for ${inventory}`);
     }
