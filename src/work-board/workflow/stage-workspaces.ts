@@ -279,7 +279,10 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     // A top level that cannot be found says nothing of the folder: it is not thereby a plain one, whose ignore rules nobody asks.
     if (!samePath(realpathSync.native(top.stdout.replace(/\r?\n$/u, "")), root)) return { inWorkTree: true };
     const head = await git.run(root, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]);
-    return head.code === 0 ? { baseCommit: head.stdout.trim() } : { inWorkTree: true };
+    if (head.code === 0) return { baseCommit: head.stdout.trim() };
+    // Exit 1 with nothing written is a repository with no commit yet; any other failure is no answer.
+    if (head.code === 1 && head.stdout === "") return { inWorkTree: true };
+    throw new Error("git gave no answer for the project's HEAD");
   }
 
   async function usesFilter(root: string, filters: readonly string[]): Promise<boolean> {
