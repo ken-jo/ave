@@ -15,7 +15,7 @@ const B = "b".repeat(64);
 interface UpgradeRow { pluginId: string; name: string; reviewSha256: string | null; effects: Record<string, unknown> }
 
 /** A host that answers like the IPC handler: unavailable until the plugin runs, approval only for the review it shows. */
-function fakeHost(upgrade?: { reviews: UpgradeRow[] } | "fails") {
+function fakeHost(upgrade?: { reviews: readonly UpgradeRow[] } | "fails") {
   const runtime = new Set<(payload: { pluginId: string }) => void>();
   const enabled = new Set<(payload: { pluginId: string; enabled: boolean }) => void>();
   const uninstalled = new Set<(payload: { slug: string; success: boolean }) => void>();
