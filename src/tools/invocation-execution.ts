@@ -415,6 +415,7 @@ export async function executeAuthorizedToolInvocation(
         auditWriter: services.auditWriter,
         abortSignal,
         audit: currentAuditMetadata(),
+        terminal: services.invocationTerminal,
       }));
     }
     const msg = errorMessage(error);

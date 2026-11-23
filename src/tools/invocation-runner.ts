@@ -396,7 +396,7 @@ export async function runToolInvocation(
             category: services.toolRegistry.findByName(toolUse.name)?.category ?? "meta" as const, hookChain };
           // The rule's deny is the attempt's one terminal row, written with no logger when the chain is neither set up nor
           // required; the admission's settle then finds it claimed.
-          await commitTerminalRow(services.invocationTerminal, toolUse.name, (row) => row({ ...(ready ? { logger: services.auditLogger } : {}),
+          await commitTerminalRow(services.invocationTerminal, (row) => row({ ...(ready ? { logger: services.auditLogger } : {}),
             entry: { ...common, decision: "deny", denyReasons: [{ reason, source: "hook-input-mutation" }] } }));
         }
         if (denied) {
@@ -471,7 +471,7 @@ async function runToolInvocationAttempt(
       input: Record<string, unknown> = toolUse.input,
     ): ToolExecutionAuditMetadata => ({
       toolUseId: toolUse.id,
-      ...(services.invocationTerminal !== undefined && services.invocationTerminal.attempt > 1 ? { attempt: services.invocationTerminal.attempt } : {}),
+      ...(services.invocationTerminal.attempt > 1 ? { attempt: services.invocationTerminal.attempt } : {}),
       ...(hostShellExecutionPlanAudit !== undefined
         ? { executionPlan: hostShellExecutionPlanAudit }
         : {}),
@@ -508,12 +508,12 @@ async function runToolInvocationAttempt(
       // The row is claimed and enqueued before anything else awaits; a refused claim (a late resume after the host
       // wrote the row, or a closed sink) resolves without writing.
       const terminal = services.invocationTerminal;
-      const before = terminal?.state;
-      const written = commitTerminalRow(terminal, toolUse.name, (row) => {
+      const before = terminal.state;
+      const written = commitTerminalRow(terminal, (row) => {
         args[17] = row;
         return services.auditWriter.auditToolCall(...args);
       });
-      if (terminal && (before !== "open" || terminal.state === "open")) return written;
+      if (before !== "open" || terminal.state === "open") return written;
       written.catch(() => {});
       const denied = args[8];
       const history = services.permissionManager?.getRecentlyDenied();
@@ -572,7 +572,7 @@ async function runToolInvocationAttempt(
     };
     // Registered before the tool lookup, so no attempt ends without a host row and every open attempt is listed.
     let resolvedTool: Tool | undefined;
-    services.invocationTerminal?.hostTerminal((cause, detail, selected, row) => {
+    services.invocationTerminal.hostTerminal((cause, detail, selected, row) => {
       // A human outcome accepted before the host ended the attempt stays the row's outcome.
       const denial = isSelectedRefusal(selected) ? selected
         : cause === "host-shutdown" ? hostShutdownDenial()
@@ -2524,7 +2524,7 @@ async function runToolInvocationAttempt(
       approvalCacheKey,
       executionCwd,
       auditCurrentToolCall,
-      terminalClaimed: () => services.invocationTerminal !== undefined ? services.invocationTerminal.state !== "open" : denialRecorded,
+      terminalClaimed: () => services.invocationTerminal.state !== "open",
       auditCurrentPermissionAsk,
       withHostShellExecutionPlan,
       abortDeps,
@@ -2682,7 +2682,7 @@ async function runToolInvocationAttempt(
       && rationaleResumeContext === undefined) {
       // A recorded filesystem refusal creates a new exact host request. Every permission stage runs again.
       // The retry is its own attempt with its own terminal row; this attempt already wrote one.
-      const retryServices = services.invocationTerminal ? { ...services, invocationTerminal: services.invocationTerminal.nextAttempt() } : services;
+      const retryServices = { ...services, invocationTerminal: services.invocationTerminal.nextAttempt() };
       const retryResult = await runToolInvocation(retryServices, {
         ...toolUse, id: rationaleBatchContext === undefined ? randomUUID() : toolUse.id,
         input: { ...structuredClone(finalInput), cwd: blockedSandbox.cwd, executionMode: "host",

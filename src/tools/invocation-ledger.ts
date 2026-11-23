@@ -316,16 +316,15 @@ export function unsettledTerminalTools(): { open: string[]; enqueued: string[] }
   return { open: [...openTerminals].map((ledger) => ledger.tool), enqueued: [...enqueuedTerminals].map((ledger) => ledger.tool) };
 }
 
-/** Admission unless the audit is closed; a closed refusal has no row left to write, so it fails nothing. */
-/** Commits through the admission's terminal, or a standalone one for a call run without an admission. */
+/** Commits through the admission's terminal; no call writes a terminal row outside an admission. */
 export function commitTerminalRow<T>(
-  terminal: InvocationTerminal | undefined,
-  tool: string,
+  terminal: InvocationTerminal,
   enqueue: (row: TerminalRowWriter) => Promise<T>,
 ): Promise<T | undefined> {
-  return (terminal ?? new TerminalLedger(tool, 1, shutdown.signal)).commit(enqueue);
+  return terminal.commit(enqueue);
 }
 
+/** Admission unless the audit is closed; a closed refusal has no row left to write, so it fails nothing. */
 export function admitToolInvocationWhileAuditOpen(tool: string, parent?: AbortSignal, resumeOf?: string): ToolInvocationAdmission | undefined {
   return auditClosed ? undefined : admitToolInvocation(tool, parent, resumeOf);
 }
@@ -356,21 +355,37 @@ export function trackToolInvocationSettlement(settlement: Promise<unknown>): voi
   );
 }
 
-/** An invocation's allow or deny outcome; a directory grant and a plugin operation's row are records beside it. */
+/** An invocation's allow or deny outcome; a plugin operation's row is a record beside it, and a directory grant has its own writer. */
 function isTerminalRow(entry: PermissionAuditEntryInput): boolean {
   return (entry.decision === "allow" || entry.decision === "deny") && "toolUseId" in entry && entry.toolUseId !== undefined
-    && !("directory" in entry && entry.directory !== undefined) && !("pluginOperation" in entry && entry.pluginOperation !== undefined);
+    && !("pluginOperation" in entry && entry.pluginOperation !== undefined);
 }
 
-/** Records beside an invocation's outcome (asks, grants, plugin operations, mode changes); a terminal row is refused. */
+function refuseSideRecord(message: string): never {
+  const error = new Error(message);
+  recordToolInvocationAuditFailure(error);
+  throw error;
+}
+
+/** Records beside an invocation's outcome (asks, plugin operations, mode changes); a terminal row is refused. */
 export async function appendToolInvocationAudit(
   logger: Pick<AuditLogger, "appendPermissionAuditEntry">,
   entry: PermissionAuditEntryInput,
 ): ReturnType<AuditLogger["appendPermissionAuditEntry"]> {
-  if (isTerminalRow(entry)) {
-    const error = new Error(`terminal row of ${"tool" in entry ? entry.tool : entry.decision} must be written through its invocation's ledger`);
-    recordToolInvocationAuditFailure(error);
-    throw error;
+  if (isTerminalRow(entry)) refuseSideRecord(`terminal row of ${"tool" in entry ? entry.tool : entry.decision} must be written through its invocation's ledger`);
+  return appendTerminalRow(logger, entry);
+}
+
+/** A directory grant: the allow beside an invocation's outcome naming the folder and exactly one lifetime or policy rule. */
+export type DirectoryGrantRecord = Extract<PermissionAuditEntryInput, { decision: "allow" }> & { directory: string; directoryAllowed: true };
+
+export async function appendDirectoryGrantRecord(
+  logger: Pick<AuditLogger, "appendPermissionAuditEntry">,
+  entry: DirectoryGrantRecord,
+): ReturnType<AuditLogger["appendPermissionAuditEntry"]> {
+  if (entry.decision !== "allow" || entry.directoryAllowed !== true || typeof entry.directory !== "string"
+    || (entry.grantLifetime === undefined) === (entry.policyRule === undefined)) {
+    refuseSideRecord(`directory grant of ${entry.tool} must name its folder and exactly one lifetime or policy rule`);
   }
   return appendTerminalRow(logger, entry);
 }

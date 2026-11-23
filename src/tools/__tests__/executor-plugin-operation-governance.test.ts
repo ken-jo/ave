@@ -1648,6 +1648,7 @@ describe("ToolExecutor plugin operation governance", () => {
     const lifecycle = vi.spyOn(scriptHookManager, "runLifecycleEvent");
     const { executor, read, directWrite, auditLogger } = setup({
       scriptHookManager,
+      requireAuditChain: true,
     });
     const holderGrant = executor.issuePluginOperationGrant({
       toolName: "direct_write",
@@ -1697,6 +1698,11 @@ describe("ToolExecutor plugin operation governance", () => {
         terminationReason: "user-abort",
       })],
     }));
+    // The abort's row is the attempt's one terminal row; the admission's settle adds no host row.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const terminalRows = auditLogger.appendPermissionAuditEntry.mock.calls.map(([entry]) => entry)
+      .filter((entry) => entry.toolUseId === "queued-abort" && entry.pluginOperation === undefined && entry.decision !== "ask");
+    expect(terminalRows).toEqual([expect.objectContaining({ decision: "deny", denyReasons: [expect.objectContaining({ reason: "user aborted turn" })] })]);
 
     releaseHolder();
     await holder;

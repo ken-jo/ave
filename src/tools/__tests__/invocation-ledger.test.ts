@@ -271,8 +271,16 @@ it("refuses an invocation's outcome row outside its ledger and keeps the records
   const logger = { appendPermissionAuditEntry: async (entry: unknown) => { appended.push(entry); return {} as never; } };
   await expect(ledger.appendToolInvocationAudit(logger, ENTRY)).rejects.toThrow("terminal row of probe must be written through its invocation's ledger");
   await ledger.appendToolInvocationAudit(logger, { ...ENTRY, decision: "ask", reason: "asked" });
-  await ledger.appendToolInvocationAudit(logger, { ...ENTRY, decision: "allow", directory: "/home/alice/work", directoryAllowed: true });
-  expect(appended).toHaveLength(2);
+  const { denyReasons: _reasons, ...base } = ENTRY;
+  const grant = { ...base, decision: "allow", directory: "/home/alice/work", directoryAllowed: true } as const;
+  // An allow naming a folder is still the invocation's outcome unless it goes through the directory grant writer.
+  await expect(ledger.appendToolInvocationAudit(logger, grant)).rejects.toThrow("terminal row of probe must be written through its invocation's ledger");
+  await ledger.appendDirectoryGrantRecord(logger, { ...grant, grantLifetime: "session" });
+  await ledger.appendDirectoryGrantRecord(logger, { ...grant, policyRule: "workspace-root" });
+  await expect(ledger.appendDirectoryGrantRecord(logger, grant)).rejects.toThrow("directory grant of probe must name its folder and exactly one lifetime or policy rule");
+  await expect(ledger.appendDirectoryGrantRecord(logger, { ...grant, grantLifetime: "session", policyRule: "workspace-root" })).rejects.toThrow("exactly one lifetime");
+  await expect(ledger.appendDirectoryGrantRecord(logger, { ...ENTRY, directory: "/home/alice/work", directoryAllowed: true } as never)).rejects.toThrow("exactly one lifetime");
+  expect(appended).toHaveLength(3);
 });
 
 it("reports a drain the sink cannot finish before the deadline", async () => {

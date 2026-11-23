@@ -100,7 +100,7 @@ export interface UserAbortDeps {
   abortSignal?: AbortSignal;
   audit?: ToolExecutionAuditMetadata;
   /** The attempt's terminal ledger; its claim refuses a row the host already wrote. */
-  terminal?: InvocationTerminal;
+  terminal: InvocationTerminal;
 }
 
 // Emit cancellation result and fixed denial audit without participating in containment relaxation.
@@ -149,6 +149,6 @@ export async function returnUserAbort(deps: UserAbortDeps): Promise<ToolResult> 
     audit,
     row,
   );
-  await commitTerminalRow(deps.terminal, toolUse.name, write);
+  await commitTerminalRow(deps.terminal, write);
   return { tool_use_id: toolUse.id, content: msg, is_error: true, durationMs };
 }

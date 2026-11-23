@@ -1,4 +1,4 @@
-import { appendToolInvocationAudit, recordToolInvocationAuditFailure, type TerminalLifecycleEvent, type TerminalRowWriter } from "../invocation-ledger.js";
+import { appendDirectoryGrantRecord, appendToolInvocationAudit, recordToolInvocationAuditFailure, type DirectoryGrantRecord, type TerminalLifecycleEvent, type TerminalRowWriter } from "../invocation-ledger.js";
 import type { ToolAuditTerminationReason } from "../../audit/audit-logger.js";
 // Tool terminal rows finalize through auditToolCall with a row writer only the ledger hands out; the ledger fires PermissionDenied.
 import { randomUUID } from "node:crypto";
@@ -7,7 +7,7 @@ import type { ToolSource, ToolCategory, TrustLevel } from "../types.js";
 import type { PermissionCheckResult } from "../../permissions/permission-manager.js";
 import { answeredRecordForAction, provenanceTrustOrigin, type DecisionProvenance } from "../../permissions/approval-gate.js";
 import type { AuditLogger } from "../../audit/audit-logger.js";
-import type { PermissionAuditEntryInput, HookResult, ToolExecutionAuditMetadata } from "../../audit/audit-schema.js";
+import type { HookResult, ToolExecutionAuditMetadata } from "../../audit/audit-schema.js";
 import { isPiiRedactionEnabled, maskSensitiveData } from "../../audit/dlp-filter.js";
 import type {
   ScriptHookManager,
@@ -107,7 +107,7 @@ export class AuditWriter {
       }
       return;
     }
-    const entry: PermissionAuditEntryInput = {
+    const entry: DirectoryGrantRecord = {
       decision: "allow",
       ts: new Date().toISOString(),
       auditId: randomUUID(),
@@ -124,7 +124,7 @@ export class AuditWriter {
       trustOrigin: provenanceTrustOrigin(args.provenance, "allow", auditTrustOrigin(args.permissionContext)),
     };
     try {
-      await appendToolInvocationAudit(this.auditLogger, entry);
+      await appendDirectoryGrantRecord(this.auditLogger, entry);
     } catch (err) {
       if (this.requirePermissionAuditChain) {
         throw err;

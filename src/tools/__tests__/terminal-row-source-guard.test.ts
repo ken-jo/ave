@@ -13,12 +13,19 @@ const SIDE_RECORD_WRITERS = new Set([
   "tools/invocation-execution.ts",
   "tools/pipeline/audit-writer.ts",
 ]);
-// Rows that belong to no invocation: hook quarantine at boot, judge records, manifest violations.
+// The only writer of a directory grant beside an invocation's outcome.
+const DIRECTORY_GRANT_WRITER = "tools/pipeline/audit-writer.ts";
+// The sink itself, and rows that belong to no invocation: the audit self-test, hook quarantine at boot, judge records,
+// manifest violations.
 const NON_INVOCATION_WRITERS = new Set([
+  "audit/audit-logger.ts",
+  "audit/permission-audit-proof.ts",
   "boot/steps/hook-system-wiring.ts",
   "permissions/judge/judge-engine.ts",
   "permissions/manifest-integrity.ts",
 ]);
+// A direct sink append: a method access, a bracketed access outside a type, or a destructured method.
+const DIRECT_APPEND = /\.appendPermissionAuditEntry\b|\[\s*["'`]appendPermissionAuditEntry["'`]\s*\](?!\s*>)|\{[^{}]*\bappendPermissionAuditEntry\b[^{}]*\}\s*=(?![=>])/;
 
 function productFiles(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -38,11 +45,10 @@ function violations(file: string, source: string): string[] {
   const found: string[] = [];
   const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
   if (/\bappendTerminalRow\s*\(/.test(code)) found.push(`${file}: terminal append`);
-  if (/["'`]PermissionDenied["'`]/.test(code) && !EVENT_DECLARATIONS.has(file)) found.push(`${file}: PermissionDenied emit`);
+  if (/["'`]PermissionDenied["'`]|\.PermissionDenied\b/.test(code) && !EVENT_DECLARATIONS.has(file)) found.push(`${file}: PermissionDenied emit`);
   if (/\bappendToolInvocationAudit\s*\(/.test(code) && !SIDE_RECORD_WRITERS.has(file)) found.push(`${file}: invocation audit append`);
-  if (/\.appendPermissionAuditEntry\s*\(/.test(code) && !file.startsWith("audit/") && !NON_INVOCATION_WRITERS.has(file)) {
-    found.push(`${file}: direct permission audit append`);
-  }
+  if (/\bappendDirectoryGrantRecord\s*\(/.test(code) && file !== DIRECTORY_GRANT_WRITER) found.push(`${file}: directory grant append`);
+  if (DIRECT_APPEND.test(code) && !NON_INVOCATION_WRITERS.has(file)) found.push(`${file}: direct permission audit append`);
   return found;
 }
 
@@ -52,11 +58,22 @@ describe("terminal row source guard", () => {
     expect(found).toEqual([]);
   });
 
+  it("does not flag a type that names the sink method", () => {
+    expect(violations("tools/pipeline/rationale-host-coordinator.ts",
+      "type Append = ReturnType<AuditLogger[\"appendPermissionAuditEntry\"]>;\n")).toEqual([]);
+  });
+
   it.each([
     ["tools/invocation-runner.ts", "await appendToolInvocationAudit(services.auditLogger, { ...common, decision: \"deny\" });", "invocation audit append"],
     ["tools/pipeline/audit-writer.ts", "await this.fireLifecycleEvent(\"PermissionDenied\", sessionId, context, payload);", "PermissionDenied emit"],
     ["engine/turn/run-turn.ts", "void logger.appendPermissionAuditEntry(entry);", "direct permission audit append"],
     ["tools/pipeline/audit-writer.ts", "appendTerminalRow(logger, entry);", "terminal append"],
+    ["tools/invocation-runner.ts", "void hooks.runLifecycleEvent(HOOK_EVENT_TYPES.PermissionDenied, sessionId);", "PermissionDenied emit"],
+    ["engine/turn/run-turn.ts", "const { appendPermissionAuditEntry } = logger;", "direct permission audit append"],
+    ["engine/turn/run-turn.ts", "void logger[\"appendPermissionAuditEntry\"](entry);", "direct permission audit append"],
+    ["engine/turn/run-turn.ts", "const append = logger.appendPermissionAuditEntry.bind(logger);", "direct permission audit append"],
+    ["audit/audit-chain-export.ts", "void logger.appendPermissionAuditEntry(entry);", "direct permission audit append"],
+    ["tools/invocation-runner.ts", "await appendDirectoryGrantRecord(services.auditLogger, entry);", "directory grant append"],
   ])("flags a planted call in %s", (file, line, kind) => {
     expect(violations(file, `export function planted() {\n  ${line}\n}\n`)).toEqual([`${file}: ${kind}`]);
   });

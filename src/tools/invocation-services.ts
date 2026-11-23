@@ -51,7 +51,7 @@ export interface InvocationRunnerServices {
   readonly pluginOperationGrants: PluginOperationGrantCoordinator;
   readonly pluginGenerationAccessProvider: () => PluginRuntimeGenerationAccess | undefined;
   readonly pluginOperationIdentityProvider: PluginOperationIdentityProvider;
-  readonly invocationTerminal?: InvocationTerminal;
+  readonly invocationTerminal: InvocationTerminal;
 }
 
 export function resolveEnforcedCategory(
