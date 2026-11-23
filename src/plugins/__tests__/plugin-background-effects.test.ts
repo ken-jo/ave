@@ -129,7 +129,11 @@ describe("the install source an approval binds to", () => {
     expect(backgroundEffectSubject(declaring(), marketplaceEntry({ sourceId: "other-source" })).source).not.toBe(first);
     expect(backgroundEffectSubject(declaring(), marketplaceEntry({ sourceOrigin: "official" })).source).not.toBe(first);
     expect(backgroundEffectSubject(declaring(), marketplaceEntry({ packagePath: "plugins/fork" })).source).not.toBe(first);
-    expect(backgroundEffectSubject(declaring(), { installSource: "local-dev" }).source).not.toBe(first);
+    const dev = backgroundEffectSubject(declaring(), { installSource: "local-dev", manifestSha256: "e".repeat(64) }).source;
+    expect(dev).not.toBeNull();
+    expect(dev).not.toBe(first);
+    expect(backgroundEffectSubject(declaring(), { installSource: "local-dev", manifestSha256: "f".repeat(64) }).source).not.toBe(dev);
+    expect(backgroundEffectSubject(declaring(), { installSource: "local-dev" }).source).toBeNull();
     expect(backgroundEffectSubject(declaring(), { installSource: "user" }).source).toBeNull();
     expect(backgroundEffectSubject(declaring(), undefined).source).toBeNull();
   });
@@ -205,6 +209,22 @@ describe("background effect approvals", () => {
       writeFileSync(path, body);
       expect(new PluginBackgroundEffectApprovals(path).isApproved(subject)).toBe(false);
     }
+  });
+});
+
+describe("the subject a running plugin binds for its review", () => {
+  it("answers with the newest live binding and falls back as bindings go", async () => {
+    const approvals = new PluginBackgroundEffectApprovals();
+    const older = backgroundEffectSubject(declaring(), marketplaceEntry());
+    const newer = backgroundEffectSubject(declaring({ networkAccess: { allowedDomains: ["upload.example.test"] } } as Partial<PluginManifest>), marketplaceEntry());
+    const unbindOlder = approvals.bindSubject("sample", async () => older);
+    const unbindNewer = approvals.bindSubject("sample", async () => newer);
+    expect(await approvals.currentSubject("sample")).toBe(newer);
+    unbindNewer();
+    unbindNewer();
+    expect(await approvals.currentSubject("sample")).toBe(older);
+    unbindOlder();
+    expect(await approvals.currentSubject("sample")).toBeNull();
   });
 });
 

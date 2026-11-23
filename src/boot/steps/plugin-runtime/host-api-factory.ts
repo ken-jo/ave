@@ -489,7 +489,8 @@ export function createHostApiFactory(
       const backgroundEffects = declaredBackgroundEffects(manifest);
       // The card review reads this same subject, so an approval given, replaced or revoked while the plugin runs applies at once.
       const backgroundSubject = async () => backgroundEffectSubject(manifest, await readRegistryEntry());
-      deps.backgroundEffectApprovals?.bindSubject(pluginId, backgroundSubject);
+      const unbindBackgroundSubject = deps.backgroundEffectApprovals?.bindSubject(pluginId, backgroundSubject);
+      if (unbindBackgroundSubject) hostIncarnation.registerDisposer(unbindBackgroundSubject);
       const standaloneScope = async (methodPath: string, target: string | undefined): Promise<boolean> => {
         if (!withinBackgroundScope(backgroundEffects, methodPath, target)) return false;
         const approvals = deps.backgroundEffectApprovals;

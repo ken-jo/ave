@@ -115,17 +115,13 @@ export function sameEffectAuthority(a: EffectGateContext | undefined, b: EffectG
   const pb = b.permissionContext ?? {};
   return a.headless === b.headless && a.approvalSurface === b.approvalSurface && a.sessionId === b.sessionId
     && a.unattributedApproval === b.unattributedApproval && a.executionCwd === b.executionCwd
-    && sameReason(pa.admissionDenial, pb.admissionDenial) && sameReason(pa.floor, pb.floor)
-    && sameReason(pa.exfiltration, pb.exfiltration)
+    && pa.admissionDenial?.code === pb.admissionDenial?.code && pa.floor?.code === pb.floor?.code
+    && (pa.exfiltration === undefined) === (pb.exfiltration === undefined)
     && pa.manualRerun === pb.manualRerun && pa.ownerUnattended === pb.ownerUnattended
     && sameRemoteController(pa.remoteControllerAuthority, pb.remoteControllerAuthority) && pa.permissionStoreError === pb.permissionStoreError;
 }
 
-function sameReason(a: { code?: string; reason: string } | undefined, b: { code?: string; reason: string } | undefined): boolean {
-  return a === b || a !== undefined && b !== undefined && a.code === b.code && a.reason === b.reason;
-}
-
-// Per-turn authority objects compare by binding; the host-private guards must be the same instance.
+// Remote controllers are rebuilt per call, so they compare by binding value; the host-private guards must be the same instance.
 function sameRemoteController(a: RemoteControllerAuthority | undefined, b: RemoteControllerAuthority | undefined): boolean {
   if (a === b) return true;
   if (a === undefined || b === undefined || a.kind !== b.kind || a.actorId !== b.actorId) return false;
@@ -298,9 +294,11 @@ export type StandaloneScope = (methodPath: string, target: string | undefined) =
 // The enable-time card is the explicit allow for these category asks; floors, guardrails, secret reads, ask rules and unknown reasons still need a person.
 const CARD_ANSWERED_ASKS: ReadonlySet<string> = new Set(["file-write", "shell-approval", "network-approval", "review-required"]);
 
-function cardAnswersAsk(permission: { decision: string; reasonCode?: string; forceModal?: boolean }): boolean {
-  return permission.decision === "ask" && permission.forceModal !== true
-    && permission.reasonCode !== undefined && CARD_ANSWERED_ASKS.has(permission.reasonCode);
+function cardAnswersAsk(permission: { decision: string; reasonCode?: string; reason?: string; forceModal?: boolean }, ownStorageWrite: boolean): boolean {
+  if (permission.decision !== "ask") return false;
+  // Plugin storage sits in the app home, so every own-storage write meets that floor; the host already confines the path to that storage.
+  if (permission.forceModal === true) return ownStorageWrite && permission.reasonCode === "protected-path" && permission.reason === "application-home";
+  return permission.reasonCode !== undefined && CARD_ANSWERED_ASKS.has(permission.reasonCode);
 }
 
 // Standalone lifecycle work is outside tool policy. Tool effects are evaluated independently of their enclosing tool's approval.
@@ -362,8 +360,9 @@ export async function gateMutatingEffect(params: {
   if (ctx.standalone) {
     // Storage reads need no card but keep admission, floors and rules; remembered grants never widen the approved scope.
     const storageRead = params.effect === "read" && pathReadEffectPaths.has(params.methodPath);
+    const ownStorageWrite = params.effect === "write" && params.methodPath.startsWith("storage.");
     const denial = permission.decision === "deny" ? permission.reason
-      : permission.decision !== "allow" && (storageRead || !cardAnswersAsk(permission)) ? "needs an approval that work outside a tool call cannot ask for"
+      : permission.decision !== "allow" && (storageRead || !cardAnswersAsk(permission, ownStorageWrite)) ? "needs an approval that work outside a tool call cannot ask for"
         : !storageRead && await params.standaloneScope?.(params.methodPath, params.target) !== true
           ? "outside the background effects approved when the plugin was enabled" : undefined;
     if (denial !== undefined) throw new EffectBoundaryDeniedError(params.pluginId, params.methodPath, params.target, "denied", denial);

@@ -5,7 +5,7 @@ import { PassThrough } from "node:stream";
 import { frameMessage, StdioFrameDecoder } from "../../../mcp/stdio-framing.js";
 import { INVOCATION_META, RPC_METHOD_NOT_FOUND } from "../../../mcp/protocol-constants.js";
 import { evaluateHostFetch } from "../../../main/host-fetch-guard.js";
-import { runWithEffectGateContext } from "../../../permissions/effect-enforcement.js";
+import { currentEffectGateContext, runWithEffectGateContext } from "../../../permissions/effect-enforcement.js";
 import { servePluginChild } from "../plugin-child-main.js";
 import {
   defineHostApiPath,
@@ -531,6 +531,29 @@ describe("a tools/call's invocation, as the child's hostApi requests reach it", 
     } as never));
     expect(reply).toMatchObject({ result: { status: "raised" } });
     expect(seen).toEqual([undefined]);
+    dispatcher.childGone();
+  });
+
+  it("runs a tokenless storage read inside the standalone frame, so its admission, floors and rules still apply", async () => {
+    const frames: Array<boolean | undefined> = [];
+    const dispatcher = new HostApiDispatcher({
+      pluginId: "transportprobe",
+      isActive: () => true,
+      notifications: { deliver: () => undefined },
+      reportUnknownField: () => undefined,
+      table: {
+        ...HOSTAPI_DISPATCH_TABLE,
+        "storage.exists": defineHostApiPath("storage.exists", async () => {
+          frames.push(currentEffectGateContext()?.standalone);
+          return true;
+        }),
+      },
+    });
+    const reply = await dispatcher.handle({
+      jsonrpc: "2.0", id: "read", method: hostApiMethodOf("storage.exists"), params: { relPath: "state.json" },
+    } as never);
+    expect(reply).toMatchObject({ result: true });
+    expect(frames).toEqual([true]);
     dispatcher.childGone();
   });
 

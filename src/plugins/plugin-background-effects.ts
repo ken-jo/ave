@@ -62,7 +62,8 @@ export function backgroundEffectScopeSha256(effects: PluginBackgroundEffects): s
 export function backgroundEffectSource(entry: PluginRegistryTrust | undefined): string | null {
   const origin = entry?.origin;
   if (origin) return JSON.stringify(["source", origin.sourceOrigin, origin.sourceId, origin.packagePath]);
-  if (entry?.installSource === "local-dev") return JSON.stringify(["local-dev"]);
+  // A dev install pins no folder, only the manifest it installed, so each reinstalled manifest asks again.
+  if (entry?.installSource === "local-dev" && entry.manifestSha256) return JSON.stringify(["local-dev", entry.manifestSha256]);
   return null;
 }
 
@@ -163,7 +164,7 @@ function parseApprovals(value: unknown): Map<string, ApprovalRecord> | null {
 /** One approval per plugin, bound to its install source and declared scope; an unreadable file approves nothing and never stops boot. */
 export class PluginBackgroundEffectApprovals {
   private approvals = new Map<string, ApprovalRecord>();
-  private readonly subjects = new Map<string, () => Promise<PluginBackgroundEffectSubject>>();
+  private readonly subjects = new Map<string, Array<() => Promise<PluginBackgroundEffectSubject>>>();
 
   constructor(private readonly path?: string) {
     if (!path) return;
@@ -185,13 +186,20 @@ export class PluginBackgroundEffectApprovals {
     }
   }
 
-  /** The running HostApi registers how its gate derives the subject, so the card review reads that same subject. */
-  bindSubject(pluginId: string, read: () => Promise<PluginBackgroundEffectSubject>): void {
-    this.subjects.set(pluginId, read);
+  /** Each HostApi registers how its gate derives the subject, so the card review reads the newest live one; the returned call unbinds it. */
+  bindSubject(pluginId: string, read: () => Promise<PluginBackgroundEffectSubject>): () => void {
+    const reads = this.subjects.get(pluginId) ?? [];
+    const own = () => read();
+    this.subjects.set(pluginId, [...reads, own]);
+    return () => {
+      const rest = (this.subjects.get(pluginId) ?? []).filter((candidate) => candidate !== own);
+      if (rest.length > 0) this.subjects.set(pluginId, rest);
+      else this.subjects.delete(pluginId);
+    };
   }
 
   async currentSubject(pluginId: string): Promise<PluginBackgroundEffectSubject | null> {
-    const read = this.subjects.get(pluginId);
+    const read = this.subjects.get(pluginId)?.at(-1);
     return read ? await read() : null;
   }
 

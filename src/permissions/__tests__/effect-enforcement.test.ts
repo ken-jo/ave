@@ -19,8 +19,11 @@ import {
   ENFORCEMENT_EXCLUSIONS,
   EffectBoundaryDeniedError,
   type EffectGateContext,
+  sameEffectAuthority,
   __resetEffectGrantsForTest,
 } from "../effect-enforcement.js";
+import { aveHome } from "../../shared/ave-home.js";
+import { declaredBackgroundEffects, withinBackgroundScope } from "../../plugins/plugin-background-effects.js";
 import {
   writeClassifiedPaths,
   CHOKEPOINT_EFFECT,
@@ -178,6 +181,116 @@ describe("standalone frames run only the approved background scope", () => {
     await expect(runWithEffectGateContext(standalone, () => api.storage.write("a.txt", "x"))).rejects.toBeInstanceOf(EffectBoundaryDeniedError);
     expect(log).toEqual(["write"]);
     expect(requests).toHaveLength(1);
+  });
+});
+
+describe("standalone frames take only the asks the enable card answers", () => {
+  const standalone = (toolName: string) => ({ headless: false, standalone: true, toolName }) as const;
+  const asking = (result: Record<string, unknown>) => {
+    const real = permissionManager.checkDetailed.bind(permissionManager);
+    vi.spyOn(permissionManager, "checkDetailed").mockImplementation((...args) => ({ ...real(...args), ...result }) as never);
+  };
+
+  it.each([
+    ["a forced floor", { decision: "ask", reasonCode: "other-principal", forceModal: true }],
+    ["the app-home floor off own storage", { decision: "ask", reasonCode: "protected-path", reason: "application-home", forceModal: true }],
+    ["the exfiltration guardrail", { decision: "ask", reasonCode: "exfiltration-guardrail" }],
+    ["a secret read", { decision: "ask", reasonCode: "secret-read" }],
+    ["an ask rule", { decision: "ask", reasonCode: "rule-ask" }],
+    ["a manual rerun", { decision: "ask", reasonCode: "manual-rerun" }],
+    ["an unknown reason", { decision: "ask", reasonCode: "something-new" }],
+    ["no reason code", { decision: "ask", reasonCode: undefined }],
+  ])("denies %s inside the approved scope, without asking", async (_label, result) => {
+    const log: string[] = [];
+    const { gate, requests } = makeGate("allow-once");
+    asking(result);
+    const api = enforceMutatingEffects(makeApi(log), { ...deps(gate), standaloneScope: () => true });
+    await expect(runWithEffectGateContext(standalone("callLlm"), () => api.callLlm("hello"))).rejects.toBeInstanceOf(EffectBoundaryDeniedError);
+    expect(log).toEqual([]);
+    expect(requests).toHaveLength(0);
+  });
+
+  it.each(["file-write", "shell-approval", "network-approval", "review-required"])("runs an ordinary %s ask inside the approved scope", async (reasonCode) => {
+    const log: string[] = [];
+    const { gate, requests } = makeGate("deny-once");
+    asking({ decision: "ask", reasonCode });
+    const api = enforceMutatingEffects(makeApi(log), { ...deps(gate), standaloneScope: () => true });
+    await runWithEffectGateContext(standalone("callLlm"), () => api.callLlm("hello"));
+    expect(log).toEqual(["llm"]);
+    expect(requests).toHaveLength(0);
+  });
+
+  it("writes the plugin storage in the app home, but not a protected entry inside it", async () => {
+    const log: string[] = [];
+    const { gate, requests } = makeGate("allow-once");
+    const storage = join(aveHome(), "plugins", "p1", "data", "storage");
+    const approved = enforceMutatingEffects(makeApi(log), { ...deps(gate), resolveStoragePath: (rel: string) => join(storage, rel), standaloneScope: () => true });
+    await runWithEffectGateContext(standalone("storage.write"), () => approved.storage.write("state.json", "x"));
+    await expect(runWithEffectGateContext(standalone("storage.write"), () => approved.storage.write(".git/config", "x")))
+      .rejects.toBeInstanceOf(EffectBoundaryDeniedError);
+    const unapproved = enforceMutatingEffects(makeApi(log), { ...deps(gate), resolveStoragePath: (rel: string) => join(storage, rel), standaloneScope: () => false });
+    await expect(runWithEffectGateContext(standalone("storage.write"), () => unapproved.storage.write("state.json", "x")))
+      .rejects.toBeInstanceOf(EffectBoundaryDeniedError);
+    expect(log).toEqual(["write"]);
+    expect(requests).toHaveLength(0);
+  });
+
+  it("reads storage without an approved scope, but never past a deny or an ask", async () => {
+    const log: string[] = [];
+    const { gate, requests } = makeGate("allow-once");
+    const api = enforceMutatingEffects(makeApi(log), { ...deps(gate), standaloneScope: () => false });
+    await expect(runWithEffectGateContext(standalone("storage.read"), () => api.storage.read("a.txt"))).resolves.toBe("data");
+    asking({ decision: "deny", reason: "denied by rule" });
+    await expect(runWithEffectGateContext(standalone("storage.read"), () => api.storage.read("a.txt"))).rejects.toThrow("denied by rule");
+    vi.restoreAllMocks();
+    asking({ decision: "ask", reasonCode: "file-write" });
+    await expect(runWithEffectGateContext(standalone("storage.read"), () => api.storage.read("a.txt"))).rejects.toBeInstanceOf(EffectBoundaryDeniedError);
+    expect(log).toEqual(["read"]);
+    expect(requests).toHaveLength(0);
+  });
+
+  it.each(["strict", "default", "auto"] as const)("in %s mode fetches a declared loopback target the policy would ask for, and no undeclared one", async (mode) => {
+    permissionManager.setMode(mode);
+    const { gate, requests } = makeGate("allow-once");
+    const effects = declaredBackgroundEffects({
+      id: "p1", name: "P", version: "1.0.0", entry: "plugin.mjs", description: "p", tools: [],
+      networkAccess: { allowedDomains: ["127.0.0.1", "[::1]"] },
+    } as never);
+    const fetchFrom = (url: string) => runWithEffectGateContext(standalone("hostFetch"), () => gateMutatingEffect({
+      pluginId: "p1", methodPath: "hostFetch", effect: "read", target: new URL(url).origin,
+      input: [url, { method: "GET", headers: [], credentialAttached: false }], approvalGate: gate, permissionManager,
+      standaloneScope: (path, target) => withinBackgroundScope(effects, path, target),
+    }));
+    await expect(fetchFrom("http://127.0.0.1:8080/x")).resolves.toBeUndefined();
+    await expect(fetchFrom("http://[::1]:8080/x")).resolves.toBeUndefined();
+    await expect(fetchFrom("http://localhost:8080/x")).rejects.toBeInstanceOf(EffectBoundaryDeniedError);
+    await expect(fetchFrom("https://api.example.test/x")).rejects.toBeInstanceOf(EffectBoundaryDeniedError);
+    expect(requests).toHaveLength(0);
+  });
+});
+
+describe("effect authority across live calls compares values, not per-call objects", () => {
+  const bridge = (guard: object, chatId: string) => ({
+    kind: "platform-bridge", actorId: "actor-1", bridgeGuard: guard, bridgeBinding: { platform: "example", chatId },
+  });
+  const frame = (permissionContext: Record<string, unknown>) =>
+    ({ headless: false, toolName: "t", permissionContext }) as unknown as EffectGateContext;
+
+  it("treats rebuilt but equal remote controllers alike and tells different ones apart", () => {
+    const guard = { isCurrent: () => true };
+    expect(sameEffectAuthority(frame({ remoteControllerAuthority: bridge(guard, "c1") }), frame({ remoteControllerAuthority: bridge(guard, "c1") }))).toBe(true);
+    expect(sameEffectAuthority(frame({ remoteControllerAuthority: bridge(guard, "c1") }), frame({ remoteControllerAuthority: bridge(guard, "c2") }))).toBe(false);
+    expect(sameEffectAuthority(frame({ remoteControllerAuthority: bridge(guard, "c1") }), frame({ remoteControllerAuthority: bridge({ isCurrent: () => true }, "c1") }))).toBe(false);
+    expect(sameEffectAuthority(frame({ remoteControllerAuthority: bridge(guard, "c1") }), frame({}))).toBe(false);
+  });
+
+  it("compares floors and admission denials by code and the guardrail by presence, since their text is display", () => {
+    const floor = (code: string, reason: string) => frame({ floor: { code, reason } });
+    expect(sameEffectAuthority(floor("other-principal", "a"), floor("other-principal", "b"))).toBe(true);
+    expect(sameEffectAuthority(floor("other-principal", "a"), floor("protected-path", "a"))).toBe(false);
+    expect(sameEffectAuthority(frame({ exfiltration: { reason: "a" } }), frame({ exfiltration: { reason: "b" } }))).toBe(true);
+    expect(sameEffectAuthority(frame({ exfiltration: { reason: "a" } }), frame({}))).toBe(false);
+    expect(sameEffectAuthority(frame({ permissionStoreError: "x" }), frame({ permissionStoreError: "x" }))).toBe(true);
   });
 });
 
