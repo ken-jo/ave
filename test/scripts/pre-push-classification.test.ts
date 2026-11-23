@@ -12,7 +12,7 @@ import {
   selectMessageCatalogChecks,
   selectTriggeredLockSuites,
 } from "../../scripts/hooks/pre-push-source-policy.mjs";
-import { selectTargetedAveAppVitestFiles } from "../../scripts/hooks/pre-push-test-policy.mjs";
+import { selectPrePushRegressionTests, selectTargetedAveAppVitestFiles } from "../../scripts/hooks/pre-push-test-policy.mjs";
 import { GLOBAL_INPUT_TIER, selectScopedTier } from "../../scripts/hooks/pre-push-tier.mjs";
 import { gitFixtureEnv } from "../../src/__tests__/support/git-fixture-env.mjs";
 import { modifiedEntry as modified } from "../../src/__tests__/support/git-diff-entry.js";
@@ -63,6 +63,7 @@ function classify(entries: ReturnType<typeof modified>[], options: Classificatio
     isCanonicalGitPath,
     classifyDocumentationChanges,
     selectFastSourceChecks,
+    selectPrePushRegressionTests,
     selectTargetedAveAppVitestFiles,
     selectCommentOnlyAveAppFiles: () => ({ eligible: options.commentOnly === true, files: [] }),
     getGitBlob: () => "",
@@ -90,6 +91,33 @@ describe("pre-push classification precedence", () => {
       expect(selectTargetedAveAppVitestFiles([modified(`src/main/__tests__/${name}.test.ts`)]).eligible)
         .toBe(false);
     }
+  });
+
+  it.each([
+    "src/main/__tests__/app-shutdown-order.test.ts",
+    "src/permissions/__tests__/asrt-background-initialization.test.ts",
+    "src/permissions/__tests__/asrt-deny-absent.test.ts",
+    "src/permissions/__tests__/asrt-windows-grant-paths.test.ts",
+    "src/permissions/__tests__/worker-spawn.test.ts",
+  ])("runs the staging contract on a test-only change to %s", (path) => {
+    expect(classify([modified(path)])).toMatchObject({
+      testOnly: true,
+      testFiles: [path, "src/permissions/__tests__/browser-download-staging-windows.test.ts"].sort(),
+    });
+  });
+
+  it.each(["src/main/app-shutdown.ts", "src/permissions/asrt-sandbox.ts", "src/permissions/worker-spawn.ts"])(
+    "runs the staging contract on a source change to %s", (path) => {
+      expect(classify([modified(path)])).toMatchObject({
+        fastSource: true,
+        testFiles: ["src/permissions/__tests__/browser-download-staging-windows.test.ts"],
+      });
+    },
+  );
+
+  it("keeps unrelated test-only changes scoped to the changed file", () => {
+    const path = "src/ipc/__tests__/channel-inventory.test.ts";
+    expect(classify([modified(path)])).toMatchObject({ testOnly: true, testFiles: [path] });
   });
 
   it.each([

@@ -1,3 +1,4 @@
+import { MemoryEmbeddingsSection } from "./components/MemoryEmbeddingsSection.js";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "../../i18n/react.js";
 import { Button } from "../../components/ui/button.js";
@@ -625,6 +626,7 @@ export function SettingsContent({
               onPiiRedactToggle={() => s.setPiiRedactEnabled(!s.piiRedactEnabled)}
               onImmediateChange={chatSave.schedule}
             />
+            <MemoryEmbeddingsSection api={api.memoryMap} />
             {/* ChatTab is fully immediate-apply — no deferred-save bar needed. */}
           </TabsContent>
 

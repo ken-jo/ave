@@ -1,4 +1,4 @@
-import type { SandboxWindowsExtensionPlan, SandboxWindowsExtensionReason } from "../shared/sandbox-capability-info.js";
+import { egressProtocolCoverageFor, type SandboxWindowsExtensionPlan, type SandboxWindowsExtensionReason } from "../shared/sandbox-capability-info.js";
 import { MxcCapabilityUnavailableError } from "./mxc-extension-errors.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 
@@ -30,7 +30,7 @@ export function planWindowsExtensionHolder(input: WindowsExtensionHolderInputs):
     proxyOwnerVerified: false as const,
     hostLoopback: "bidirectional" as const,
     inboundProtection: "host-firewall" as const,
-    dnsProtection: "host-resolver" as const,
+    egressProtocolCoverage: egressProtocolCoverageFor("none"),
     ancestorAccess: "query-enumerate-only" as const,
     ancestorNameExposure: true as const,
   };
@@ -40,12 +40,14 @@ export function planWindowsExtensionHolder(input: WindowsExtensionHolderInputs):
   // One backend per holder tree: MXC is selectable only at the root or beneath an MXC ancestor.
   if (input.mxc.state === "available") {
     return ancestor === undefined || ancestor === "mxc"
-      ? { ...base, selectedBackend: "mxc", readiness: "ready", reason: "ready", egressIdentity: "kernel-channel" }
+      ? { ...base, selectedBackend: "mxc", readiness: "ready", reason: "ready", egressIdentity: "kernel-channel",
+        egressProtocolCoverage: egressProtocolCoverageFor("mxc") }
       : { ...base, readiness: "rejected", reason: "ancestor-already-admitted" };
   }
   if (ancestor !== undefined) return { ...base, readiness: "rejected", reason: "ancestor-already-admitted" };
   if (input.fallback.version === "0.0.80" && input.fallback.ready) {
-    return { ...base, selectedBackend: "srt-win", readiness: "fallback", reason: input.mxc.reason, fallbackVersion: "0.0.80" };
+    return { ...base, selectedBackend: "srt-win", readiness: "fallback", reason: input.mxc.reason,
+      fallbackVersion: "0.0.80", egressProtocolCoverage: egressProtocolCoverageFor("srt-win") };
   }
   return { ...base, readiness: input.mxc.reason === "readiness-deadline" ? "rejected" : "unavailable", reason: input.mxc.reason };
 }
@@ -110,7 +112,8 @@ export async function settleWindowsExtensionReadiness(input: {
     const mxc = await Promise.race([deadline, observed]);
     if (input.signal?.aborted) return { ...planWindowsExtensionHolder({ requested: true, mxc,
       fallback: { ...input.fallback, ready: false }, admittedAncestorBackend: input.admittedAncestorBackend() }),
-      selectedBackend: "none", readiness: "rejected", reason: "request-rejected", fallbackVersion: null, egressIdentity: "shared" };
+       selectedBackend: "none", readiness: "rejected", reason: "request-rejected", fallbackVersion: null, egressIdentity: "shared",
+       egressProtocolCoverage: egressProtocolCoverageFor("none") };
     return planWindowsExtensionHolder({ requested: true, mxc, fallback: input.fallback,
       admittedAncestorBackend: input.admittedAncestorBackend() });
   } finally {

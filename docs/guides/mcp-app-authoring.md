@@ -148,6 +148,8 @@ export default function createPlugin(ctx: PluginRuntimeContext): RuntimePlugin {
 
 You are the MCP server; the host relays. The host only calls this hook for a uri **you declared** and whose authority it **already verified**, so the hook's own job is small: return bytes. It is bounded by the host at a single chokepoint — a 10 s ceiling and a 4 MiB HTML cap, fail-closed — so ship a self-contained document (inline your CSS/JS, or bundle to one file), not a loader that fans out to disk.
 
+Write `handlers` as a plain object whose tools are its own function properties. The host binds only own keys, so a handler inherited through a prototype — a class instance's method, say — counts as missing, and its tool stays disabled.
+
 ## 3. Trigger the card from a tool
 
 Put the standard `_meta.ui` on what your tool handler returns. Same keys an external MCP server puts on its `CallToolResult` — nothing Ave-specific; the loopback delegate lifts them onto the wire for you.

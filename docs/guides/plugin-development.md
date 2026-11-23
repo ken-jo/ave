@@ -165,12 +165,20 @@ at each app release, so it describes what the host actually serves. To validate 
 `#/$defs/methods/ave~1host~1storage~1read/params`), not the method entry, which
 groups them under names that are not JSON Schema keywords; with Ajv, set
 `allowUnionTypes: true`, because a field that takes more than one type (a
-request id, a nullable value) is a type array. The host does not yet admit a
-extension that speaks the protocol without its JavaScript runtime; every extension
-today is a JavaScript `entry`.
+request id, a nullable value) is a type array. JavaScript `entry` plugins use the
+reference runtime. Admitted `process` plugins speak the same protocol over their
+executable’s stdio.
 
 Authors implementing their own transport use the JSON schema directly. The host
 does not maintain a generated TypeScript protocol client.
+
+The JavaScript reference runtime exposes `process.stdin` as a read-only event
+view. Use `on` or `once` to observe `data` (a copy of each received chunk) or
+`end` (host input closed), and `off` to remove a listener. Use `end` for brief
+local cleanup. The view has no writable side or file descriptor. The reference
+runtime reserves its protocol stream for the host bridge. Direct fd 0 access is
+unsupported. It is inert on ordinary reference launches. The native container
+provides its host pipe on fd 0, so use the event view there as well.
 
 ### Loopback OAuth with PKCE
 
@@ -309,6 +317,10 @@ provide:
 - `_meta["ai.agent-connector.ave/pathFields"]` where file access is possible;
 - execution handler;
 - required capabilities.
+
+Write `handlers` as a plain object whose tools are its own function properties.
+The host binds only own keys, so a handler inherited through a prototype — a
+class instance's method, say — counts as missing, and its tool stays disabled.
 
 The Host classifies risk for each invocation. An extension cannot assign its own
 permission category or lower a Host verdict. Tools are executed only after

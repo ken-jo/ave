@@ -38,12 +38,14 @@ import type {
   ScopedPermissionRule,
   ScopedPermissionRuleError,
 } from "../types.js";
-import type {
-  SandboxCapabilityInfo,
-  SandboxMxcUnavailableReason,
-  SandboxWindowsExtensionReason,
-  SandboxWindowsStatusInfo,
-  SandboxWindowsSubstrateInfo,
+import {
+  egressProtocolCoverageFor,
+  type EgressProtocolCoverage,
+  type SandboxCapabilityInfo,
+  type SandboxMxcUnavailableReason,
+  type SandboxWindowsExtensionReason,
+  type SandboxWindowsStatusInfo,
+  type SandboxWindowsSubstrateInfo,
 } from "../../../shared/sandbox-capability-info.js";
 import { PERMISSION_REVIEWER_FRAMEWORK } from "../../../shared/permission-reviewer-framework.js";
 import { RecentlyDeniedPanel } from "../components/permissions/RecentlyDeniedPanel.js";
@@ -213,7 +215,6 @@ const WINDOWS_EXTENSION_REASON_KEY = {
 /** What a selected container does not hide or block (design D2/D3 and the contract's measured residuals). Shown only
  * for a selected MXC plan: these describe the container request, never the srt-win fallback or an unconfined process. */
 const WINDOWS_MXC_EXTENSION_DISCLOSURE_KEYS = [
-  ["network", "permissionsTab.osSandboxWindowsExtensionsNetwork"],
   ["windows", "permissionsTab.osSandboxWindowsExtensionsWindows"],
   ["folder-names", "permissionsTab.osSandboxWindowsExtensionsFolderNames"],
   ["temp", "permissionsTab.osSandboxWindowsExtensionsTemp"],
@@ -222,6 +223,13 @@ const WINDOWS_MXC_EXTENSION_DISCLOSURE_KEYS = [
   ["environment", "permissionsTab.osSandboxWindowsExtensionsEnvironment"],
   ["reviewer", "permissionsTab.osSandboxWindowsExtensionsReviewer"],
 ] as const;
+
+function windowsEgressLimits(coverage: EgressProtocolCoverage): string {
+  return [
+    coverage.dns === "host-resolver" ? t("permissionsTab.osSandboxWindowsEgressHostResolver") : "",
+    coverage.rawIp === "unknown" ? t("permissionsTab.osSandboxWindowsEgressRawUnverified") : "",
+  ].filter(Boolean).join(" ");
+}
 
 /** The extension backend this session selected, from the shared plan: a checking or rejected plan refuses starts, so it
  * is never described as unconfined. Snapshots without a plan keep the substrate-only wording. */
@@ -350,6 +358,9 @@ function WindowsExtensionStatus({ substrate }: { substrate: SandboxWindowsSubstr
         >
           <p className="font-medium text-foreground">{t("permissionsTab.osSandboxWindowsExtensionsDisclosureHeading")}</p>
           <ul className="list-disc space-y-0.5 pl-4">
+            <li data-testid="os-sandbox-windows-extension-disclosure-network" className="[overflow-wrap:anywhere]">
+              {t("permissionsTab.osSandboxWindowsExtensionsNetwork")}{" "}{windowsEgressLimits(plan.egressProtocolCoverage)}
+            </li>
             {WINDOWS_MXC_EXTENSION_DISCLOSURE_KEYS.map(([id, key]) => (
               <li key={id} data-testid={`os-sandbox-windows-extension-disclosure-${id}`} className="[overflow-wrap:anywhere]">
                 {t(key)}
@@ -1415,7 +1426,9 @@ export function PermissionsTab({
               </p>
               {windowsSubstrate.shells === "mxc" ? (
                 <>
-                  <p data-testid="os-sandbox-windows-shells-limits">{t("permissionsTab.osSandboxWindowsShellsMxcLimits")}</p>
+                  <p data-testid="os-sandbox-windows-shells-limits">
+                    {windowsEgressLimits(egressProtocolCoverageFor(windowsSubstrate.shells))}{" "}{t("permissionsTab.osSandboxWindowsShellsMxcLimits")}
+                  </p>
                   <p data-testid="os-sandbox-windows-bash-note">{t("permissionsTab.osSandboxWindowsBashNote")}</p>
                 </>
               ) : null}

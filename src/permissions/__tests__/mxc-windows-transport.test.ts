@@ -9,8 +9,9 @@ import * as policyHome from "../../shared/policy-home.js";
 import * as hostEgress from "../egress-host-listener.js";
 import { getProtectedReadDenyFloor, getDefaultSensitiveWriteDenyPaths } from "../asrt-sandbox.js";
 import { requireMxcPolicyPipeHelper, requireMxcPrerequisites } from "../../__tests__/support/mxc-capability.js";
+import { registerMxcShellLaunchAdmissionFixture } from "../../__tests__/support/mxc-shell-launch-admission.js";
 import * as policyPipe from "../mxc-policy-pipe.js";
-import { prepareMxcShellLaunch } from "../../tools/mxc-shell-launch.js";
+import { prepareOwnedMxcShellLaunch } from "../../__tests__/support/contained-shell-launch.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { WINDOWS_COMMAND_LINE_LIMIT, WINDOWS_COMMAND_LINE_MARGIN, windowsCommandLineLength } from "../../shared/windows-command-line.js";
 import { buildMxcShellRequest, isWindowsPathAtOrUnder, mxcRequestArgs, MXC_REQUEST_CHARACTER_LIMIT, openMxcRequestTransport, parseMxcDryRunOutput, rankMxcFilesystem, resolveHostWxcExecPath } from "../mxc-windows.js";
@@ -80,12 +81,17 @@ describe("request size admission", () => {
   });
 
   it("fails closed when the native pipe cannot be opened", async () => {
-    vi.spyOn(policyPipe, "openMxcPolicyPipe").mockRejectedValue(new Error("pipe already exists"));
-    await expect(openMxcRequestTransport(request(25_000), LAUNCHER)).rejects.toThrow(/^Windows sandbox policy pipe could not be opened:/);
+    const failure = new Error("pipe already exists");
+    vi.spyOn(policyPipe, "openMxcPolicyPipe").mockRejectedValue(failure);
+    // The cause is carried raw: only whoever reports the failure reads it, after its resources are released.
+    await expect(openMxcRequestTransport(request(25_000), LAUNCHER)).rejects.toSatisfy((error: unknown) =>
+      error instanceof Error && error.message === "Windows sandbox policy pipe could not be opened" && error.cause === failure);
   });
 });
 
 describe.skipIf(process.platform !== "win32")("named-pipe policy delivery", () => {
+  registerMxcShellLaunchAdmissionFixture("length");
+
   it("withholds policy bytes from an impostor before delivering to the bound child", async (context) => {
     configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     requireMxcPolicyPipeHelper(context.skip);
@@ -162,7 +168,7 @@ describe.skipIf(process.platform !== "win32")("named-pipe policy delivery", () =
       return open(bytes, pipe);
     });
     try {
-      await expect(openMxcRequestTransport(request(25_000), LAUNCHER)).rejects.toThrow(/^Windows sandbox policy pipe could not be opened:/);
+      await expect(openMxcRequestTransport(request(25_000), LAUNCHER)).rejects.toThrow(/^Windows sandbox policy pipe could not be opened$/);
       expect(server.listening).toBe(true);
     } finally { await new Promise<void>((resolve) => server.close(() => resolve())); }
   });
@@ -246,7 +252,7 @@ describe.skipIf(process.platform !== "win32")("named-pipe policy delivery", () =
         const floor = getProtectedReadDenyFloor();
         const filesystem = { allowWrite: [directory], allowRead: [home!], denyRead: floor, denyWrite: getDefaultSensitiveWriteDenyPaths() };
         const env = { SYSTEMROOT: process.env.SystemRoot!, LOCALAPPDATA: directory };
-        const launch = await prepareMxcShellLaunch({ egressToken: "length", cwd: directory, commandLine: "cmd.exe /d /c exit 0", filesystem, env, timeoutMs: 1000, exists: () => true });
+        const launch = await prepareOwnedMxcShellLaunch({ egressToken: "length", cwd: directory, commandLine: "cmd.exe /d /c exit 0", filesystem, env, timeoutMs: 1000, exists: () => true });
         try {
           const grants = rankMxcFilesystem({ ...filesystem, protectedFloor: floor }, () => true);
           const body = buildMxcShellRequest({ cwd: directory, commandLine: "cmd.exe /d /c exit 0", grants, env, proxyUrl: `http://127.0.0.1:${launch.proxyPort}`, timeoutMs: 31_000 });

@@ -25,6 +25,7 @@ src/audit/__tests__/audit-search.test.ts
 src/audit/__tests__/audit-writer.test.ts
 src/audit/__tests__/dlp-home-encoder-chains.test.ts
 src/audit/__tests__/dlp-home-escape-boundaries.test.ts
+src/audit/__tests__/dlp-home-generic-profiles.test.ts
 src/audit/__tests__/dlp-home-paths.test.ts
 src/audit/__tests__/dlp-home-review-probes.test.ts
 src/audit/__tests__/dlp-stats.test.ts
@@ -244,6 +245,7 @@ src/ipc/__tests__/hook-trust-review.test.ts
 src/ipc/__tests__/marketplace-content-handlers.test.ts
 src/ipc/__tests__/mcp-app-download.test.ts
 src/ipc/__tests__/mcp-app-model-context.test.ts
+src/ipc/__tests__/memory-map.test.ts
 src/ipc/__tests__/permissions-sensitive-read-channels.test.ts
 src/ipc/__tests__/plugin-theme-notify.test.ts
 src/ipc/__tests__/terminal-domain.test.ts
@@ -451,6 +453,13 @@ src/main/chatgpt-plan/__tests__/host-and-callback.test.ts
 src/main/chatgpt-plan/__tests__/responses-fetch.test.ts
 src/main/chatgpt-plan/__tests__/runtime-transport.test.ts
 src/main/host-api/__tests__/resolve-api-key.test.ts
+src/main/memory-map/__tests__/host.test.ts
+src/main/memory-map/__tests__/inference-child-native.test.ts
+src/main/memory-map/__tests__/inference-child.test.ts
+src/main/memory-map/__tests__/model-manager.test.ts
+src/main/memory-map/__tests__/provider-embeddings.test.ts
+src/main/memory-map/__tests__/real-model.test.ts
+src/main/memory-map/__tests__/worker-client.test.ts
 src/main/terminal/__tests__/manual-shell.test.ts
 src/main/terminal/__tests__/pty-manager-host-control.test.ts
 src/main/terminal/__tests__/pty-manager-linux-sandbox.test.ts
@@ -573,6 +582,7 @@ src/observation/__tests__/text-document.test.ts
 src/permissions/__tests__/approval-gate-shutdown.test.ts
 src/permissions/__tests__/approval-rule-basis-gate.test.ts
 src/permissions/__tests__/approval-run-kinds.integration.test.ts
+src/permissions/__tests__/asrt-mxc-egress.test.ts
 src/permissions/__tests__/asrt-profile-compaction.test.ts
 src/permissions/__tests__/asrt-seccomp-helper-missing.test.ts
 src/permissions/__tests__/asrt-startup-cancellation.test.ts
@@ -655,6 +665,7 @@ src/permissions/__tests__/powershell-invocation-views.test.ts
 src/permissions/__tests__/powershell-launcher-output.test.ts
 src/permissions/__tests__/powershell-materialized-execution.test.ts
 src/permissions/__tests__/powershell-package-runner-shims.test.ts
+src/permissions/__tests__/powershell-profile-write-floor.test.ts
 src/permissions/__tests__/powershell-reusable-startup-proof.test.ts
 src/permissions/__tests__/powershell-runner-task-options.test.ts
 src/permissions/__tests__/powershell-static-analysis.test.ts
@@ -815,6 +826,7 @@ src/plugins/runtime/__tests__/min-app-version-schema-compat.test.ts
 src/plugins/runtime/__tests__/native-child-quarantine.test.ts
 src/plugins/runtime/__tests__/network-access-manifest.test.ts
 src/plugins/runtime/__tests__/onboarding-highlights-manifest.test.ts
+src/plugins/runtime/__tests__/plugin-loader.test.ts
 src/plugins/runtime/__tests__/plugin-operation-account-session.test.ts
 src/plugins/runtime/__tests__/prepared-artifact-identity.test.ts
 src/plugins/runtime/__tests__/read-ui-resource.test.ts
@@ -989,6 +1001,7 @@ src/tools/pipeline/__tests__/workload-broker-audit.test.ts
 src/ui/renderer/__tests__/TranscriptRenderer.test.tsx
 src/ui/renderer/__tests__/classify-turn-entries.test.ts
 src/ui/renderer/components/__tests__/MainSurfacePanels.test.tsx
+src/ui/renderer/components/__tests__/MemoryEmbeddingsSection.test.tsx
 src/ui/renderer/components/__tests__/SandboxStatusBadge.test.tsx
 src/ui/renderer/components/__tests__/ToolApprovalContent-host-execution.test.tsx
 src/ui/renderer/components/__tests__/sidechat-child-transcript.test.tsx

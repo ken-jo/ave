@@ -81,4 +81,10 @@ export function createProvider(config: ProviderConfig): LLMProvider {
     : transport;
 }
 
+export async function createEmbeddingModel(config: ProviderConfig, modelId: string) {
+  const { VercelUnifiedProvider } = await loadAdapterModule();
+  if (!config.fetch) throw new Error('Embedding transport is required');
+  return new VercelUnifiedProvider(config.vendor, config.apiKey, config.baseUrl, config.fetch, { wire: config.wire }, config.providerMetadata).embeddingModel(modelId);
+}
+
 export { llmVendorSecretKey as secretKeyFor } from "../../shared/llm-vendor-defaults.js";

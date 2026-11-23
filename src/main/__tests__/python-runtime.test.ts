@@ -7,12 +7,16 @@ vi.mock("node:fs", async original => (await import("../../__tests__/support/simu
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from "vitest";
 import type { SpawnOptionsWithoutStdio } from "node:child_process";
 import type { EventEmitter } from "node:events";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir, type as osType } from "node:os";
 import path from "node:path";
 import { gzipSync } from "node:zlib";
+import { resolveUvTarget } from "../../../scripts/uv-targets.mjs";
+import { aveHome } from "../../shared/ave-home.js";
 import { configureHostResources } from "../host-resources.js";
 import { initializeAveHomeFixture, protectAveHomeFixture } from "../../__tests__/support/ave-home-privacy.js";
+import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
@@ -149,7 +153,7 @@ function setupPythonRuntimeSetupSpawns(): void {
     .mockResolvedValueOnce(undefined)
     .mockResolvedValueOnce(undefined);
   mockedSpawn
-    .mockReturnValueOnce(makeSpawnMock("uv 0.7.3\n"))
+    .mockReturnValueOnce(makeSpawnMock("uv 0.13.9\n"))
     .mockReturnValueOnce(makeSpawnMock(""))
     .mockReturnValueOnce(makeSpawnMock(""))
     .mockReturnValueOnce(makeSpawnMock("3.12.3\n"));
@@ -222,16 +226,16 @@ describe("uvProxyEnvFromPacResolutions", () => {
   it("refuses to guess when two hosts route through different proxies", () => {
     // `HTTP_PROXY` is one value for all hosts, so per-host routing cannot be expressed. Picking one would send the other host's traffic somewhere the
     // configuration did not choose.
-    expect(uvProxyEnvFromPacResolutions([
+    expect(() => uvProxyEnvFromPacResolutions([
       ["https://pypi.org/simple/", "PROXY one.example.com:8080"],
       ["https://astral.sh/", "PROXY two.example.com:3128"],
-    ])).toEqual({});
+    ])).toThrow(t("be_pythonRuntime.errProxyRoutesIncompatible"));
   });
 
   it("refuses a proxy kind these variables cannot express", () => {
-    expect(uvProxyEnvFromPacResolutions([
+    expect(() => uvProxyEnvFromPacResolutions([
       ["https://pypi.org/simple/", "SOCKS4 legacy.example.com:1080"],
-    ])).toEqual({});
+    ])).toThrow(t("be_pythonRuntime.errProxyRouteUnsupported", { host: "pypi.org" }));
   });
 
   it("maps each expressible kind onto its scheme", () => {
@@ -317,8 +321,9 @@ describe("PythonRuntimeBootstrapper", () => {
     const uvEnv = (uvCall![2] as SpawnOptionsWithoutStdio).env!;
     expect(uvEnv.HTTP_PROXY).toBe("http://proxy.example.com:8080");
     expect(uvEnv.HTTPS_PROXY).toBe("http://proxy.example.com:8080");
-    expect(uvEnv.NO_PROXY).toBe("astral.sh");
-    expect(uvEnv.UV_NATIVE_TLS).toBe("1");
+    expect(uvEnv.NO_PROXY?.split(",")).toEqual(expect.arrayContaining(["astral.sh", "releases.astral.sh"]));
+    expect(uvEnv.UV_SYSTEM_CERTS).toBe("1");
+    expect(uvEnv.UV_NATIVE_TLS).toBeUndefined();
     // Derived, never inherited: nothing here came from this process's own env.
     expect(uvEnv.SSL_CERT_FILE).toBeUndefined();
 
@@ -329,10 +334,38 @@ describe("PythonRuntimeBootstrapper", () => {
     const verifyEnv = (verifyCall![2] as SpawnOptionsWithoutStdio).env!;
     expect(verifyEnv.HTTP_PROXY).toBeUndefined();
     expect(verifyEnv.HTTPS_PROXY).toBeUndefined();
-    expect(verifyEnv.UV_NATIVE_TLS).toBeUndefined();
+    expect(verifyEnv.UV_SYSTEM_CERTS).toBeUndefined();
 
-    // Four probe URLs, resolved once for the whole provision.
-    expect(resolveOsProxy).toHaveBeenCalledTimes(4);
+    expect(resolveOsProxy).toHaveBeenCalledWith("https://releases.astral.sh/github/python-build-standalone/releases/download/");
+    expect(resolveOsProxy).toHaveBeenCalledTimes(5);
+  });
+
+  it.each([
+    ["different proxy", "PROXY mirror.example.com:3128"],
+    ["direct parent domain", "PROXY proxy.example.com:8080"],
+    ["rejected lookup", new Error("PAC fixture failed")],
+  ])("stops provisioning when the mirror has a %s route", async (scenario, mirrorRoute) => {
+    setupPythonRuntimeSetupSpawns();
+    const resolveOsProxy = vi.fn(async (url: string) => {
+      const host = new URL(url).hostname;
+      if (host === "releases.astral.sh") {
+        if (mirrorRoute instanceof Error) throw mirrorRoute;
+        return mirrorRoute;
+      }
+      if (host === "astral.sh" && scenario === "direct parent domain") return "DIRECT";
+      return "PROXY proxy.example.com:8080";
+    });
+    const bootstrapper = new PythonRuntimeBootstrapper({
+      lockFilePath: "/installed/local-indexer/python-requirements.lock",
+      resolveOsProxy,
+    });
+
+    const message = mirrorRoute instanceof Error
+      ? t("be_pythonRuntime.errProxyRouteLookupFailed", { host: "releases.astral.sh" })
+      : t("be_pythonRuntime.errProxyRoutesIncompatible");
+    await expect(bootstrapper.ensureReady(null)).rejects.toThrow(message);
+    expect(resolveOsProxy).toHaveBeenCalledWith("https://pypi.org/simple/");
+    expect(mockedSpawn).not.toHaveBeenCalled();
   });
 
   it(".ready sentinel이 없으면 uv spawn을 호출한다", async () => {
@@ -348,18 +381,18 @@ describe("PythonRuntimeBootstrapper", () => {
     // uv python install 3.12 was invoked
     expect(mockedSpawn).toHaveBeenCalledWith(
       expect.any(String),
-      expect.arrayContaining(["python", "install", "3.12"]),
+      ["python", "install", "3.12", "--no-bin", "--no-registry"],
       expect.anything(),
     );
 
     // uv venv was invoked
     expect(mockedSpawn).toHaveBeenCalledWith(
       expect.any(String),
-      expect.arrayContaining(["venv"]),
+      ["venv", result.venvPath, "--python", "3.12"],
       expect.anything(),
     );
 
-    // uv pip sync was invoked without --frozen (uv 0.7.x 미지원)
+    // pip sync consumes the lockfile directly.
     expect(mockedSpawn).toHaveBeenCalledWith(
       expect.any(String),
       expect.arrayContaining(["pip", "sync"]),
@@ -371,10 +404,114 @@ describe("PythonRuntimeBootstrapper", () => {
     expect(pipSyncCall).toBeDefined();
     expect(pipSyncCall![1] as string[]).not.toContain("--frozen");
     expectArgsToContainPath(pipSyncCall![1] as string[], lockFilePath);
+    expect(pipSyncCall?.[1]?.slice(-2)).toEqual(["--python", result.pythonPath]);
 
     // result 유효
     expect(result.pythonPath).toBeTruthy();
     expect(result.venvPath).toBeTruthy();
+  });
+
+  it.each([false, true])("replaces an existing virtual environment during setup with forceSetup=%s", async (forceSetup) => {
+    const runtimeDir = path.join(aveHome(), "runtime");
+    const venvDir = path.join(runtimeDir, "venv");
+    registryTempRoots.push(venvDir);
+    mkdirSync(venvDir);
+    writeFileSync(path.join(venvDir, "pyvenv.cfg"), "version_info = 3.12.3\n");
+    const lockFilePath = path.join(runtimeDir, "python-requirements.lock");
+    setupPythonRuntimeSetupSpawns();
+    if (forceSetup) {
+      writeFileSync(path.join(venvDir, ".ready"), "{}");
+      mockedAccess.mockReset().mockResolvedValue(undefined);
+    }
+
+    const bootstrapper = new PythonRuntimeBootstrapper({ lockFilePath, forceSetup });
+    await bootstrapper.ensureReady(null);
+
+    expect(mockedSpawn).toHaveBeenCalledWith(
+      expect.any(String),
+      ["venv", realpathSync(venvDir), "--python", "3.12", "--clear"],
+      expect.anything(),
+    );
+  });
+
+  const runtimeLinkTypes = process.platform === "win32" ? ["dir", "junction"] as const : ["dir"] as const;
+  it.for(runtimeLinkTypes)("refuses to clear through a linked runtime ancestor (%s)", async (linkType, context) => {
+    if (linkType === "dir" && !canCreateSymlinks("dir")) context.skip("Directory symlink creation requires an unavailable privilege");
+    const externalRoot = mkdtempSync(path.join(tmpdir(), "ave-external-python-"));
+    registryTempRoots.push(externalRoot);
+    const externalVenv = path.join(externalRoot, "venv");
+    mkdirSync(externalVenv);
+    const marker = path.join(externalVenv, "pyvenv.cfg");
+    writeFileSync(marker, "keep");
+
+    const lock = "example==1.0\n";
+    const hash = createHash("sha256").update(lock).digest("hex").slice(0, 24);
+    const target = resolveUvTarget(process.platform, process.arch);
+    const managedRoot = path.join(aveHome(), "runtime", "python-envs");
+    mkdirSync(managedRoot, { recursive: true });
+    const runtimeLink = path.join(managedRoot, `${target.dir}-py312-${hash}`);
+    symlinkSync(externalRoot, runtimeLink, linkType);
+    mockedAccess.mockImplementation(async (file) => {
+      if (String(file).endsWith(".ready")) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+    });
+    mockedReadFile.mockResolvedValueOnce("{}").mockResolvedValueOnce(lock);
+    mockedSpawn.mockImplementation(() => makeSpawnMock());
+    try {
+      const result = new PythonRuntimeBootstrapper().ensureReadyForPluginManifest(
+        path.join(externalRoot, "plugin.json"), null,
+      );
+      await expect(result).rejects.toThrow(t("be_pythonRuntime.errUnsafeVenvClear"));
+      expect(mockedSpawn).not.toHaveBeenCalled();
+      expect(readFileSync(marker, "utf8")).toBe("keep");
+    } finally {
+      unlinkSync(runtimeLink);
+    }
+  });
+
+  it("refuses to clear a virtual environment under an injected runtime root", async () => {
+    const runtimeDir = mkdtempSync(path.join(tmpdir(), "ave-injected-python-"));
+    registryTempRoots.push(runtimeDir);
+    const venvDir = path.join(runtimeDir, "venv");
+    mkdirSync(venvDir);
+    writeFileSync(path.join(venvDir, "pyvenv.cfg"), "keep");
+    setupPythonRuntimeSetupSpawns();
+    const bootstrapper = new PythonRuntimeBootstrapper({
+      runtimeDir, lockFilePath: path.join(runtimeDir, "python-requirements.lock"),
+    });
+
+    await expect(bootstrapper.ensureReady(null)).rejects.toThrow(t("be_pythonRuntime.errUnsafeVenvClear"));
+    expect(mockedSpawn).not.toHaveBeenCalled();
+  });
+
+  it.each(["unrelated directory", "linked virtual environment"])("leaves clearing disabled for an existing %s", async (target) => {
+    const runtimeDir = mkdtempSync(path.join(tmpdir(), "ave-non-venv-"));
+    registryTempRoots.push(runtimeDir);
+    const venvDir = path.join(runtimeDir, "venv");
+    const dataDir = target === "linked virtual environment" ? path.join(runtimeDir, "external-env") : venvDir;
+    mkdirSync(dataDir);
+    if (target === "linked virtual environment") {
+      writeFileSync(path.join(dataDir, "pyvenv.cfg"), "version_info = 3.12.3\n");
+      symlinkSync(dataDir, venvDir, "junction");
+    }
+    const dataPath = path.join(dataDir, "data.txt");
+    writeFileSync(dataPath, "keep");
+    mockedAccess
+      .mockRejectedValueOnce(Object.assign(new Error("ENOENT"), { code: "ENOENT" }))
+      .mockResolvedValueOnce(undefined);
+    mockedSpawn
+      .mockReturnValueOnce(makeSpawnMock())
+      .mockReturnValueOnce(makeSpawnFailMock(1, "directory already exists"));
+
+    const bootstrapper = new PythonRuntimeBootstrapper({ runtimeDir });
+    await expect(bootstrapper.ensureReady(null)).rejects.toThrow("directory already exists");
+
+    expect(mockedSpawn).toHaveBeenCalledTimes(2);
+    expect(mockedSpawn).toHaveBeenLastCalledWith(
+      expect.any(String),
+      ["venv", venvDir, "--python", "3.12"],
+      expect.anything(),
+    );
+    expect(readFileSync(dataPath, "utf8")).toBe("keep");
   });
 
   it("Windows cached sync failure retries once with a no-cache copy fallback", async () => {
@@ -389,7 +526,7 @@ describe("PythonRuntimeBootstrapper", () => {
       .mockResolvedValueOnce(undefined)
       .mockResolvedValueOnce(undefined);
     mockedSpawn
-      .mockReturnValueOnce(makeSpawnMock("uv 0.7.3\n"))
+      .mockReturnValueOnce(makeSpawnMock("uv 0.13.9\n"))
       .mockReturnValueOnce(makeSpawnMock(""))
       .mockReturnValueOnce(makeSpawnFailMock(1, "cached wheel build failed"))
       .mockReturnValueOnce(makeSpawnMock(""))
@@ -433,7 +570,7 @@ describe("PythonRuntimeBootstrapper", () => {
       .mockResolvedValueOnce(undefined)
       .mockResolvedValueOnce(undefined);
     mockedSpawn
-      .mockReturnValueOnce(makeSpawnMock("uv 0.7.3\n"))
+      .mockReturnValueOnce(makeSpawnMock("uv 0.13.9\n"))
       .mockReturnValueOnce(makeSpawnMock(""))
       .mockReturnValueOnce(makeSpawnMockWithStderr(stderrChunks))
       .mockReturnValueOnce(makeSpawnMock("3.12.3\n"));
@@ -517,7 +654,7 @@ describe("PythonRuntimeBootstrapper", () => {
       throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
     });
     mockedSpawn
-      .mockReturnValueOnce(makeSpawnMock("uv 0.7.3\n"))
+      .mockReturnValueOnce(makeSpawnMock("uv 0.13.9\n"))
       .mockReturnValueOnce(makeSpawnMock(""))
       .mockReturnValueOnce(makeSpawnMock(""))
       .mockReturnValueOnce(makeSpawnMock("3.12.3\n"));
@@ -567,7 +704,7 @@ describe("PythonRuntimeBootstrapper", () => {
       return undefined;
     });
     mockedSpawn
-      .mockReturnValueOnce(makeSpawnMock("uv 0.7.3\n"))
+      .mockReturnValueOnce(makeSpawnMock("uv 0.13.9\n"))
       .mockReturnValueOnce(makeSpawnMock(""))
       .mockReturnValueOnce(makeSpawnMock(""))
       .mockReturnValueOnce(makeSpawnMock("3.12.3\n"));
@@ -688,7 +825,7 @@ describe("PythonRuntimeBootstrapper", () => {
       throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
     });
     mockedSpawn
-      .mockReturnValueOnce(makeSpawnMock("uv 0.7.3\n"))
+      .mockReturnValueOnce(makeSpawnMock("uv 0.13.9\n"))
       .mockReturnValueOnce(makeSpawnMock(""))
       .mockReturnValueOnce(makeSpawnMock(""))
       .mockReturnValueOnce(makeSpawnMock("3.12.3\n"));
@@ -791,7 +928,7 @@ describe("PythonRuntimeBootstrapper", () => {
     configurePackagedHostResources(resourcesPath);
     mockedAccess.mockResolvedValue(undefined);
     mockedSpawn
-      .mockReturnValueOnce(makeSpawnMock("uv 0.7.3\n"))
+      .mockReturnValueOnce(makeSpawnMock("uv 0.13.9\n"))
       .mockReturnValueOnce(makeSpawnMock(""))
       .mockReturnValueOnce(makeSpawnMock(""))
       .mockReturnValueOnce(makeSpawnMock("3.12.3\n"));
@@ -917,7 +1054,7 @@ describe("PythonRuntimeBootstrapper", () => {
     mockedAccess
       .mockRejectedValueOnce(Object.assign(new Error("ENOENT"), { code: "ENOENT" })) // no ready sentinel: the runtime folder was reset
       .mockResolvedValueOnce(undefined); // uv binary materialized from the app bundle
-    mockedSpawn.mockReturnValueOnce(makeSpawnFailMock(2, "error: Failed to fetch: https://github.com/astral-sh/python-build-standalone"));
+    mockedSpawn.mockReturnValueOnce(makeSpawnFailMock(2, "error: Failed to fetch: https://releases.astral.sh/github/python-build-standalone"));
     const writes = vi.mocked(fsMock.writeFile).mock.calls.length;
 
     const failure = await new PythonRuntimeBootstrapper().ensureReady(makeBrowserWindow()).then(() => undefined, (error: Error) => error);
@@ -934,7 +1071,7 @@ describe("PythonRuntimeBootstrapper", () => {
       .mockRejectedValueOnce(Object.assign(new Error("ENOENT"), { code: "ENOENT" })) // no ready sentinel
       .mockResolvedValueOnce(undefined); // uv binary present
     mockedSpawn
-      .mockReturnValueOnce(makeSpawnMock("uv 0.7.3\n")) // python install
+      .mockReturnValueOnce(makeSpawnMock("uv 0.13.9\n")) // python install
       .mockReturnValueOnce(makeSpawnFailMock(1, "venv creation failed")); // uv venv: no download involved
     const failure = await new PythonRuntimeBootstrapper().ensureReady(makeBrowserWindow()).then(() => undefined, (error: Error) => error);
     expect(failure?.message).toContain("venv creation failed");
@@ -1170,7 +1307,7 @@ describe("PythonRuntimeBootstrapper", () => {
         throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
       });
       mockedSpawn
-        .mockReturnValueOnce(makeSpawnMock("uv 0.7.3\n"))
+        .mockReturnValueOnce(makeSpawnMock("uv 0.13.9\n"))
         .mockReturnValueOnce(makeSpawnMock(""))
         .mockReturnValueOnce(makeSpawnMock(""))
         .mockReturnValueOnce(makeSpawnMock("3.12.3\n"));

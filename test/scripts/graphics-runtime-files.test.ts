@@ -13,6 +13,7 @@ import { upstreamSrtWinReceiptFixtures } from "../../src/__tests__/support/srt-w
 
 const SRT_WIN_BUILD_RECEIPTS = upstreamSrtWinReceiptFixtures();
 const require = createRequire(import.meta.url);
+const MEMORY_RUNTIME_NOTICES = require("../../scripts/lib/memory-runtime-notices.json") as readonly { noticeFile: string }[];
 const BUNDLED_RENDERER_NOTICES = require("../../scripts/lib/bundled-renderer-notices.json") as readonly { packageName: string; noticeFile: string }[];
 const { readUpstreamSrtWinInput } = require("../../scripts/lib/srt-win-integrity.cjs") as {
   readUpstreamSrtWinInput: (path: string, arch: string) => Buffer;
@@ -81,6 +82,14 @@ async function createPackage(platform: keyof typeof RUNTIME_FILES) {
     ? join(contents, "Frameworks", "Electron Framework.framework", "Versions", "A", "Libraries")
     : root;
   const modules = join(resources, "app.asar.unpacked", "node_modules");
+  const embeddingRuntime = join(modules, "onnxruntime-node", "bin", "napi-v6", platform, "x64");
+  const runtimeLibraries = platform === "win32" ? ["onnxruntime.dll", "DirectML.dll", "dxcompiler.dll"]
+    : [platform === "darwin" ? "libonnxruntime.1.dylib" : "libonnxruntime.so.1"];
+  for (const file of ["onnxruntime_binding.node", ...runtimeLibraries]) putFile(join(embeddingRuntime, file));
+  for (const { noticeFile } of MEMORY_RUNTIME_NOTICES) {
+    const relative = join("licenses", "memory", noticeFile);
+    putFile(join(resources, relative), readFileSync(join("resources", relative)));
+  }
   if (platform !== "win32") {
     putFile(join(modules, "@anthropic-ai/sandbox-runtime/vendor/java-proxy-agent/srt-proxy-agent.jar"));
   }

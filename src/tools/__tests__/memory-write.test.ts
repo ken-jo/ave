@@ -393,6 +393,21 @@ describe("memory_write — credential guard", () => {
     expect(saveMemory).toHaveBeenCalledTimes(1);
   });
 
+  it("stores docs that name a digest option in a query", async () => {
+    const { store, saveMemory } = makeStore();
+    const result = await run({ title: "Digest option", content: "Pass `?sig=sha256` or `?x-example-signature=sha256` to pick the digest, or `?signature=on&sig=hmac` to show it." }, store);
+    expect(result.isError).toBe(false);
+    expect(saveMemory).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a signed URL whose query holds its signature", async () => {
+    const { store, saveMemory } = makeStore();
+    const content = "https://objects.example/r?X-Example-Date=20261122T000000Z&X-Example-Signature=4f9c1e7d2b8a6c3e5f0a9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a";
+    const result = await run({ title: "Shared link", content }, store);
+    expect(result.isError).toBe(true);
+    expect(saveMemory).not.toHaveBeenCalled();
+  });
+
   it.each(["\n", "\r", "\r\n"])("rejects a JSON Authorization value after a line break %j at its colon (§18.8)", async (gap) => {
     const { store, saveMemory } = makeStore();
     const content = `{"Authorization":${gap}"Custom opaque-pass-12345"}`;

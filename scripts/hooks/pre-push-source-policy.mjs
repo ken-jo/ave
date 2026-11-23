@@ -84,6 +84,11 @@ export const AVE_APP_LOCK_SUITE_TRIGGERS = Object.freeze({
     "src/ipc/",
     "src/shared/ipc-channels.ts",
   ]),
+  "src/permissions/__tests__/sensitive-deny-platform-projection.test.ts": Object.freeze([
+    "src/permissions/asrt-sandbox.ts",
+    "src/permissions/sensitive-paths.ts",
+    "src/shared/ipc-channels.ts",
+  ]),
   "src/ui/renderer/__tests__/format-ipc-error-coverage.test.ts": Object.freeze([
     "src/alerts/",
     "src/ipc/domains/",

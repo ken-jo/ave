@@ -16,10 +16,13 @@ import {
   type EgressApprovalAnswer,
 } from "../egress-ask.js";
 import { createEgressAskCallback, type EgressAskDeps } from "../../__tests__/support/egress-permission.js";
+import { fixtureSecret } from "../../audit/__tests__/secret-fixtures.js";
 import { EgressGrantStore, egressDestinationNetwork } from "../egress-grants.js";
 import type { EgressIdentityStrength } from "../../shared/sandbox-capability-info.js";
 import type { EgressInvocationOwner, ShellEgressOwner } from "../egress-invocations.js";
 import { egressIdentityStrength, noteAsrtUnixSocketPolicy } from "../egress-identity.js";
+import * as denyMonitor from "../egress-deny-monitor.js";
+import * as terminalObservation from "../../tools/agent-terminal-observation.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { EGRESS_GRANT_SCOPE_LADDERS } from "../../shared/egress-grant-scopes.js";
 import { _resetAveHomePrivacyForTest, setAveHomeConfigurationRefusedAtBoot } from "../../shared/ave-home.js";
@@ -161,7 +164,8 @@ describe("egress ask callback — refused home folder", () => {
 });
 
 describe("egress ask callback — attribution", () => {
-  it("refuses offline service destinations before identity, grants, routing or endpoint allowlists", async () => {
+  // The identity is judged first only so that the refusal is attributed to a verified worker alone.
+  it("refuses offline service destinations before grants, routing or endpoint allowlists, attributed only to a verified worker", async () => {
     owners.set(WORKER_TOKEN, { kind: "worker", role: "worker", pluginId: undefined, network: "offline" });
     const allowlist = vi.fn(() => ["*"]);
     const identity = vi.fn(() => "kernel-channel" as const);
@@ -174,11 +178,15 @@ describe("egress ask callback — attribution", () => {
     });
     expect(await ask({ host: "model.example", port: 443 }, { attributionKey: WORKER_TOKEN, identity: "listener", phase: "name" }))
       .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.offline });
-    expect(identity).not.toHaveBeenCalled();
+    expect(await ask({ host: "model.example", port: 443 }, { attributionKey: WORKER_TOKEN, identity: "username", phase: "name" }))
+      .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
     expect(allowlist).not.toHaveBeenCalled();
     expect(rule).not.toHaveBeenCalled();
     expect(asked).toEqual([]);
-    expect(audit).toHaveLength(1);
+    expect(audit.map((row) => [row.reason, row.invocation.kind])).toEqual([
+      [EGRESS_DENY_REASONS.offline, "worker"],
+      [EGRESS_DENY_REASONS.unattributed, "unattributed"],
+    ]);
   });
 
   it("distinguishes host-owned listeners from shared labels and terminal scope", async () => {
@@ -222,11 +230,12 @@ describe("egress ask callback — attribution", () => {
       .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed });
     expect(await ask({ host: "example.com", port: 443 }, undefined))
       .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed });
+    // A key that names nobody, or that it refused, is not handed back for the proxy's own record either.
     expect(await ask({ host: "example.com", port: 443 }, listener("f".repeat(32))))
-      .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed });
+      .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
     // A live shell's key presented on the shared front end: it may have been read off that shell, so it vouches for nobody.
     expect(await ask({ host: "api.fixture.example", port: 443 }, { attributionKey: WORKER_TOKEN, identity: "username", addresses: [], resolution: "pinned" }))
-      .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed });
+      .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
     expect(asked).toEqual([]);
     expect(audit.map((row) => [row.decision, row.basis, row.invocation])).toEqual([
       ["deny", "policy", { kind: "unattributed" }],
@@ -258,7 +267,7 @@ describe("egress ask callback — attribution", () => {
     expect(await ask({ host: "api.fixture.example", port: 443 }, { attributionKey: WORKER_TOKEN, identity: "username", addresses: [], resolution: "pinned" }))
       .toBe(true);
     expect(await ask({ host: "github.com", port: 443 }, { attributionKey: SHELL_TOKEN, identity: "username", addresses: [], resolution: "pinned" }))
-      .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed });
+      .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
   });
 
   it("denies a malformed destination", async () => {
@@ -634,7 +643,7 @@ describe("egress ask callback — workspace terminal tab (design F)", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("closing the tab ends its banner at once, with the requester's reason, not the timeout", async () => {
+  it("closing the tab ends its banner at once, not at the timeout, and its refusal is not the closed tab's", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const tab = new AbortController();
     signals.set(TERMINAL_TOKEN, tab.signal);
@@ -642,7 +651,9 @@ describe("egress ask callback — workspace terminal tab (design F)", () => {
     const pending = callback()({ host: "github.com", port: 443 }, listener(TERMINAL_TOKEN));
     await untilAsked(1);
     tab.abort(new Error("terminal tab closed"));
-    expect(await pending).toEqual({ allow: false, reason: "network approval answer was rejected" });
+    const result = await pending;
+    expect(audit.at(-1)).toMatchObject({ invocation: { kind: "unattributed" }, decision: "deny", reason: EGRESS_DENY_REASONS.unattributed });
+    expect(result).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
     expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -690,7 +701,7 @@ describe("egress ask callback — workspace terminal tab (design F)", () => {
 
   it("refuses a terminal identity that only the proxy username vouches for on a kernel-channel host", async () => {
     expect(await callback()({ host: "github.com", port: 443 }, { attributionKey: TERMINAL_TOKEN, identity: "username", addresses: [], resolution: "pinned" }))
-      .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed });
+      .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
     expect(asked).toEqual([]);
   });
 });
@@ -832,6 +843,226 @@ describe("egress ask callback — shell calls", () => {
     release({ allow: true, scope: "once" });
     expect(await Promise.all([first, second])).toEqual([true, true]);
     expect(asked).toHaveLength(1);
+  });
+
+  it("attributes nothing to a key whose identity it refused: no deny-monitor note, observation, audit owner or proxy record", async () => {
+    const notes = vi.spyOn(denyMonitor, "noteCallbackDecision");
+    const observations = vi.spyOn(terminalObservation, "observeAgentTerminalEgressDecision");
+    const sharedFront = { attributionKey: SHELL_TOKEN, identity: "username" as const, addresses: [], resolution: "pinned" as const };
+    expect(await callback()({ host: "github.com", port: 443 }, sharedFront))
+      .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
+    expect(notes.mock.calls).toEqual([[undefined, "github.com", 443]]);
+    expect(observations.mock.calls.map(([key]) => key)).toEqual([undefined]);
+    expect(audit.map((row) => row.invocation)).toEqual([{ kind: "unattributed" }]);
+    expect(asked).toEqual([]);
+    // The listener's own key is accepted and attributed as before.
+    expect(await callback()({ host: "github.com", port: 443 }, listener(SHELL_TOKEN)))
+      .toEqual({ allow: false, reason: "denied by the user" });
+    expect(notes.mock.calls.at(-1)).toEqual([SHELL_TOKEN, "github.com", 443]);
+    expect(observations.mock.calls.at(-1)?.[0]).toBe(SHELL_TOKEN);
+  });
+
+  it.each(["remembered grant", "allow rule", "held answer", "prompt answer"] as const)("gives a %s allow only to an invocation that is still live", async (path) => {
+    const controller = new AbortController();
+    signals.set(SHELL_TOKEN, controller.signal);
+    const github = { host: "github.com", port: 443 };
+    const connection = listener(SHELL_TOKEN, ["140.82.112.3"]);
+    if (path === "remembered grant") {
+      await grants.grant("always", ["once", "session", "project", "always"], { token: SHELL_TOKEN, sessionId: "session-1", tabId: undefined, projectRoot: PROJECT, origin: "shell" }, { ...github, network: "public" });
+      expect(await callback()(github, connection)).toBe(true);
+      controller.abort();
+    } else if (path === "allow rule") {
+      networkRule = async () => ({ decision: "allow", pattern: "Network(github.com)", scope: "user" });
+      expect(await callback()(github, connection)).toBe(true);
+      controller.abort();
+    } else if (path === "held answer") {
+      answer = async () => ({ allow: true, scope: "session" });
+      const raw = rawCallback();
+      expect(await raw(github, { attributionKey: SHELL_TOKEN, identity: "listener", phase: "name" })).toBe(true);
+      controller.abort();
+      expect(await raw(github, { attributionKey: SHELL_TOKEN, identity: "listener", phase: "resolved", addresses: ["140.82.112.3"], resolution: "pinned" }))
+        .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
+    } else {
+      // The person answers after the call was cancelled.
+      answer = async () => { controller.abort(); return { allow: true, scope: "session" }; };
+    }
+    expect(await callback()(github, connection)).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
+    expect(audit.at(-1)).toMatchObject({ invocation: { kind: "unattributed" }, decision: "deny", reason: EGRESS_DENY_REASONS.unattributed });
+    if (path === "held answer" || path === "prompt answer") {
+      // Nothing it answered became a grant another call in the conversation could use.
+      answer = async () => ({ allow: false, reason: "denied by the user" });
+      expect(await callback()(github, listener(OTHER_SHELL_TOKEN, ["140.82.112.3"]))).toEqual({ allow: false, reason: "denied by the user" });
+    }
+  });
+
+  it("gives nothing to a token whose owner was replaced", async () => {
+    networkRule = async () => ({ decision: "allow", pattern: "Network(github.com)", scope: "user" });
+    const github = { host: "github.com", port: 443 };
+    const lookups = { count: 0 };
+    const replaced = createEgressAskCallback({
+      identityStrength: () => strength,
+      // The token is looked up once to judge it, then names another call.
+      ownerOf: (token) => (token === SHELL_TOKEN && lookups.count++ > 0 ? { ...interactiveShell } : owners.get(token)),
+      abortSignalOf: () => undefined,
+      workerAllowedDomains: () => [],
+      grants,
+      networkRule: (subject) => networkRule(subject),
+      shellAskEnabled: () => true,
+      requester: () => undefined,
+      audit: (entry) => audit.push(entry),
+    });
+    expect(await replaced(github, { attributionKey: SHELL_TOKEN, identity: "listener", phase: "resolved", addresses: ["140.82.112.3"], resolution: "pinned" }))
+      .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
+    expect(audit.at(-1)).toMatchObject({ invocation: { kind: "unattributed" } });
+  });
+
+  it("grants nothing when the call ends while its persistent grant waits in the store's queue", async () => {
+    const controller = new AbortController();
+    signals.set(SHELL_TOKEN, controller.signal);
+    const notes = vi.spyOn(denyMonitor, "noteCallbackDecision");
+    const observations = vi.spyOn(terminalObservation, "observeAgentTerminalEgressDecision");
+    const store = grants as unknown as { loadPersistent(): Promise<unknown> };
+    const load = store.loadPersistent.bind(grants);
+    let rereading!: () => void;
+    const reread = new Promise<void>((resolve) => { rereading = resolve; });
+    let ungate!: () => void;
+    const gate = new Promise<void>((resolve) => { ungate = resolve; });
+    answer = async () => {
+      // The store's next read is the re-read inside its write queue.
+      vi.spyOn(store, "loadPersistent").mockImplementationOnce(async () => { rereading(); await gate; return load(); });
+      return { allow: true, scope: "always" };
+    };
+    const github = { host: "github.com", port: 443 };
+    const decision = rawCallback()(github, { attributionKey: SHELL_TOKEN, identity: "listener", phase: "resolved", addresses: ["140.82.112.3"], resolution: "pinned" });
+    await reread;
+    controller.abort();
+    ungate();
+    const result = await decision;
+    const stored = new EgressGrantStore(join(dir, "shell-egress-hosts.json"));
+    expect(await stored.matchingScope({ token: OTHER_SHELL_TOKEN, sessionId: "session-1", tabId: undefined, projectRoot: PROJECT, origin: "shell" },
+      { ...github, network: "public" }, matchingScopes)).toBeUndefined();
+    expect(result).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
+    expect(audit.at(-1)).toMatchObject({ invocation: { kind: "unattributed" }, decision: "deny", reason: EGRESS_DENY_REASONS.unattributed });
+    expect(notes.mock.calls.at(-1)).toEqual([undefined, "github.com", 443]);
+    expect(observations.mock.calls.at(-1)?.[0]).toBeUndefined();
+  });
+
+  it.each(["prompt", "remembered grant"] as const)("does not act on a %s for a call that ended while its policy was evaluated", async (path) => {
+    const controller = new AbortController();
+    signals.set(SHELL_TOKEN, controller.signal);
+    const github = { host: "github.com", port: 443 };
+    if (path === "remembered grant") {
+      await grants.grant("always", ["once", "session", "project", "always"], { token: SHELL_TOKEN, sessionId: "session-1", tabId: undefined, projectRoot: PROJECT, origin: "shell" }, { ...github, network: "public" });
+    }
+    const noteUse = vi.spyOn(grants, "noteUse");
+    networkRule = async () => { controller.abort(); return undefined; };
+    answer = async () => ({ allow: true, scope: "session" });
+    const result = await rawCallback()(github, { attributionKey: SHELL_TOKEN, identity: "listener", phase: "resolved", addresses: ["140.82.112.3"], resolution: "pinned" });
+    expect(asked).toEqual([]);
+    expect(noteUse).not.toHaveBeenCalled();
+    expect(result).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
+    expect(audit.at(-1)).toMatchObject({ invocation: { kind: "unattributed" }, decision: "deny" });
+  });
+
+  it("reports no missing approver for a call that ended while its policy was evaluated", async () => {
+    const onNoApprover = vi.fn();
+    owners.set(SHELL_TOKEN, { ...interactiveShell, context: { ...interactiveShell.context, headless: true, approvalSurface: "unavailable", onNoApprover } });
+    const github = { host: "github.com", port: 443 };
+    expect(await callback()(github, listener(SHELL_TOKEN))).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.headless });
+    expect(onNoApprover).toHaveBeenCalledOnce();
+    const controller = new AbortController();
+    signals.set(SHELL_TOKEN, controller.signal);
+    networkRule = async () => { controller.abort(); return undefined; };
+    expect(await callback()(github, listener(SHELL_TOKEN))).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
+    expect(onNoApprover).toHaveBeenCalledOnce();
+    expect(audit.at(-1)).toMatchObject({ invocation: { kind: "unattributed" }, decision: "deny" });
+  });
+
+  const ASK_SECRET = fixtureSecret("gh", "p_", "1234567890abcdefghijklmnopqrstuv");
+  const ASK_FAILURE = String.raw`approval surface failed with ${ASK_SECRET} at C:\Users\alice\private\approval.sock`;
+
+  it.each(["denied answer", "failed ask"] as const)("does not attribute a %s to a call that ended while it was asked", async (path) => {
+    const controller = new AbortController();
+    signals.set(SHELL_TOKEN, controller.signal);
+    answer = async () => {
+      controller.abort();
+      if (path === "failed ask") throw new Error(ASK_FAILURE);
+      return { allow: false, reason: "denied by the user" };
+    };
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const result = await rawCallback()({ host: "github.com", port: 443 },
+        { attributionKey: SHELL_TOKEN, identity: "listener", phase: "resolved", addresses: ["140.82.112.3"], resolution: "pinned" });
+      expect(asked).toHaveLength(1);
+      expect(result).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
+      expect(audit.at(-1)).toMatchObject({ invocation: { kind: "unattributed" }, decision: "deny", reason: EGRESS_DENY_REASONS.unattributed });
+      // The failure the refusal no longer names is still kept for diagnosis, with its secret and home path masked.
+      const failureLogs = warn.mock.calls.filter(([message]) => message === "[egress-ask] egress decision failed after its invocation ended");
+      expect(failureLogs).toEqual(path === "failed ask"
+        ? [[expect.any(String), { reason: String.raw`approval surface failed with [REDACTED:TOKEN] at [home]\private\approval.sock` }]] : []);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("keeps the unattributed refusal and its audit row when the ended call's failure log throws", async () => {
+    const controller = new AbortController();
+    signals.set(SHELL_TOKEN, controller.signal);
+    answer = async () => {
+      controller.abort();
+      throw new Error(ASK_FAILURE);
+    };
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => { throw new Error("log sink failed"); });
+    try {
+      const result = await rawCallback()({ host: "github.com", port: 443 },
+        { attributionKey: SHELL_TOKEN, identity: "listener", phase: "resolved", addresses: ["140.82.112.3"], resolution: "pinned" });
+      expect(warn).toHaveBeenCalledWith("[egress-ask] egress decision failed after its invocation ended", expect.anything());
+      expect(result).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
+      expect(audit.at(-1)).toMatchObject({ invocation: { kind: "unattributed" }, decision: "deny", reason: EGRESS_DENY_REASONS.unattributed });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it.each([["held answer", SHELL_TOKEN], ["pending ask", TERMINAL_TOKEN]] as const)("never credits an earlier invocation's %s to a later one under the same token and owner", async (path, token) => {
+    const first = new AbortController();
+    signals.set(token, first.signal);
+    const github = { host: "github.com", port: 443 };
+    const byName = { attributionKey: token, identity: "listener", phase: "name" } as const;
+    const resolved = { ...byName, phase: "resolved", addresses: ["140.82.112.3"], resolution: "pinned" } as const;
+    const raw = rawCallback();
+    const replace = (): void => {
+      first.abort();
+      signals.set(token, new AbortController().signal);
+    };
+    if (path === "held answer") {
+      answer = async () => ({ allow: true, scope: "session" });
+      expect(await raw(github, byName)).toBe(true);
+      replace();
+      answer = async () => ({ allow: false, reason: "denied by the user" });
+      expect(await raw(github, resolved)).toEqual({ allow: false, reason: "denied by the user" });
+      expect(asked).toHaveLength(2);
+      return;
+    }
+    const replies: ((reply: EgressApprovalAnswer) => void)[] = [];
+    let onAsk = (): void => {};
+    answer = () => new Promise((resolve) => { replies.push(resolve); onAsk(); });
+    const asking = new Promise<void>((resolve) => { onAsk = resolve; });
+    const earlier = raw(github, resolved);
+    await asking;
+    replace();
+    let lookedUp!: (scope: undefined) => void;
+    vi.spyOn(grants, "matchingScope").mockImplementationOnce(() => new Promise((resolve) => { lookedUp = resolve; }));
+    let laterAsked = false;
+    onAsk = () => { laterAsked = true; };
+    const later = raw(github, resolved);
+    // Nothing awaits between a terminal's grant lookup and its ask, so the later connection reaches the ask before the earlier card's answer lands.
+    lookedUp(undefined);
+    replies[0]?.({ allow: true, scope: "tab" });
+    expect(await earlier).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
+    expect(laterAsked).toBe(true);
+    replies[1]?.({ allow: false, reason: "denied by the user" });
+    expect(await later).toEqual({ allow: false, reason: "denied by the user" });
   });
 
   it("hands the ask the call's abort signal", async () => {
@@ -1007,7 +1238,7 @@ describe("egress ask callback — local, private and reserved destinations", () 
     const byName = (token: string | undefined, host: string, port = 443) =>
       raw({ host, port }, { attributionKey: token, identity: "listener", phase: "name" });
     expect(await byName(undefined, "x.attacker.example")).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed });
-    expect(await byName("f".repeat(32), "x.attacker.example")).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed });
+    expect(await byName("f".repeat(32), "x.attacker.example")).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
     expect(await byName(WORKER_TOKEN, "x.attacker.example")).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.workerOffList });
     expect(await byName(SHELL_TOKEN, "169.254.169.254", 80)).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.reserved });
     expect(await byName(TERMINAL_TOKEN, "169.254.169.254", 80)).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.reserved });

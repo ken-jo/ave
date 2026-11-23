@@ -1,0 +1,280 @@
+import '../../../../../test/renderer/setup.js';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import type { IpcMainInvokeEvent } from 'electron';
+import type { IpcDeps } from '../../../../ipc/types.js';
+import { registerMemoryMapHandlers } from '../../../../ipc/domains/memory-map.js';
+import { CHANNELS } from '../../../../contract/app-contract.js';
+import type { MemoryEmbeddingConfig } from '../../../../shared/memory-embedding-config.js';
+import { createMemoryMapApi } from '../../../../__tests__/support/memory-map-api.js';
+import { makeMockAveApi } from '../../../../../test/renderer/mock-ave-api.js';
+import { getLocale, setLocale } from '../../../../i18n/index.js';
+import { SettingsEditorProvider, _unregisteredSettingsControlsForTest } from '../../context/SettingsEditorContext.js';
+import { MemoryEmbeddingsSection } from '../MemoryEmbeddingsSection.js';
+import { en } from '../../../../i18n/messages/en.js';
+import { ko } from '../../../../i18n/messages/ko.js';
+
+const ROUTE = { endpointId: 'a'.repeat(64), origin: 'https://example.com' };
+const { handlers } = vi.hoisted(() => ({
+  handlers: new Map<string, (event: IpcMainInvokeEvent, input?: unknown) => Promise<unknown>>(),
+}));
+vi.mock('electron', () => ({ ipcMain: { handle: (channel: string, handler: never) => handlers.set(channel, handler) } }));
+
+const previousLocale = getLocale();
+// The handlers load their runtime on the first request; load it here so its module graph is not transformed inside a waitFor.
+beforeAll(async () => { await import('../../../../ipc/domains/memory-map-runtime.js'); });
+afterEach(() => { setLocale(previousLocale); });
+
+describe('memory embeddings settings', () => {
+  it.each([['en', en], ['ko', ko]] as const)('registers the localized embedding source and resets it through the memory map API (%s)', async (locale, messages) => {
+    setLocale(locale);
+    const api = createMemoryMapApi();
+    const local = await api.settingsGet();
+    if (!local.ok) throw new Error('Missing settings');
+    const providerId = 'configured';
+    const modelId = 'embed-a';
+    api.settingsGet.mockResolvedValue({ ok: true, value: {
+      ...local.value,
+      source: 'provider',
+      namespace: { ...local.value.namespace, source: 'provider', providerId, modelId },
+      providers: [{ id: providerId, models: [modelId], route: ROUTE }],
+    } });
+    api.settingsSet.mockResolvedValue(local);
+    const { api: settingsApi } = makeMockAveApi();
+    const view = render(<SettingsEditorProvider api={settingsApi as never} modifiedOnly={false}>
+      <MemoryEmbeddingsSection api={api} />
+    </SettingsEditorProvider>);
+
+    await waitFor(() => expect(screen.getByRole('radio', { name: messages['memoryEmbeddings.provider'] })).toBeChecked());
+    await waitFor(() => expect(_unregisteredSettingsControlsForTest(view.container)).toEqual([]));
+    const marker = '[data-setting-control-id="memoryEmbedding.source"][data-setting-registered="true"]';
+    await waitFor(() => expect(view.container.querySelector(marker)).toHaveAttribute('data-setting-modified', 'true'));
+    expect(screen.getByRole('combobox', { name: messages['memoryEmbeddings.model'] })).toHaveValue(modelId);
+
+    const reset = view.getByLabelText(messages['settingsEditor.resetLabel'].replace('{label}', messages['memoryEmbeddings.source']));
+    fireEvent.click(reset);
+    await waitFor(() => expect(screen.getByRole('radio', { name: messages['memoryEmbeddings.local'] })).toBeChecked());
+    expect(api.settingsSet).toHaveBeenCalledWith({ source: 'local' });
+    expect(settingsApi.updateSettings).not.toHaveBeenCalled();
+    await waitFor(() => expect(view.container.querySelector(marker)).toHaveAttribute('data-setting-modified', 'false'));
+  });
+
+  it.each(['before Save', 'during Save'])('requires a fresh acknowledgement when the destination changes %s', async when => {
+    const api = createMemoryMapApi();
+    const event = { senderFrame: { url: 'file:///app/index.html' } } as IpcMainInvokeEvent;
+    const initialBaseUrl = 'https://api.openai.com/v1';
+    const replacementBaseUrl = 'https://api.mistral.ai/v1';
+    let baseUrl = initialBaseUrl;
+    let config: MemoryEmbeddingConfig | undefined;
+    const set = vi.fn(async (_key: string, value: MemoryEmbeddingConfig) => {
+      config = value;
+      if (when === 'during Save') baseUrl = replacementBaseUrl;
+    });
+    const transport = vi.fn();
+    registerMemoryMapHandlers({
+      auditLogger: { log: vi.fn() },
+      settingsService: {
+        get: (key: string) => key === 'memoryEmbedding' ? config : key === 'llm' ? {
+          vendors: { openai: { baseUrl } },
+          modelListCache: { saved: {
+            vendor: 'openai', baseUrl, endpoint: `${baseUrl}/models`, models: ['embed-a'],
+            modelEntries: [{ id: 'embed-a', outputModalities: ['embedding'] }],
+          } },
+        } : undefined,
+        hasStoredSecret: async (name: string) => name === 'llm.apiKey.openai',
+        set,
+      },
+      singleHopNetworkFetch: transport,
+      memoryManager: { readMemoryPanelCatalog: () => ({ notes: [] }) },
+    } as unknown as IpcDeps, () => ({ ok: true, options: {} }));
+    const invoke = (key: 'settingsGet' | 'settingsSet' | 'build', input?: unknown) => {
+      const handler = handlers.get(CHANNELS.memoryMap[key]);
+      if (!handler) throw new Error('Missing memory map handler');
+      return handler(event, input);
+    };
+    api.settingsGet.mockImplementation(async () =>
+      await invoke('settingsGet') as Awaited<ReturnType<typeof api.settingsGet>>);
+    api.settingsSet.mockImplementation(async input =>
+      await invoke('settingsSet', input) as Awaited<ReturnType<typeof api.settingsSet>>);
+
+    render(<MemoryEmbeddingsSection api={api} />);
+    await waitFor(() => expect(screen.getByRole('radio', { name: '제공자' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('radio', { name: '제공자' }));
+    fireEvent.change(screen.getByRole('combobox', { name: '제공자' }), { target: { value: 'openai' } });
+    fireEvent.change(screen.getByRole('combobox', { name: '임베딩 모델' }), { target: { value: 'embed-a' } });
+    const previousDestination = screen.queryByText(/https:\/\/api\.openai\.com/);
+    const acknowledgement = screen.getByRole('checkbox');
+    fireEvent.click(acknowledgement);
+    const save = screen.getByRole('button', { name: '저장' });
+    expect(save).toBeEnabled();
+    if (when === 'before Save') baseUrl = replacementBaseUrl;
+    fireEvent.click(save);
+    await waitFor(() => expect(api.settingsSet).toHaveBeenCalledOnce());
+    const firstResult = await api.settingsSet.mock.results[0]?.value;
+    expect(previousDestination).toBeTruthy();
+    if (when === 'before Save') {
+      expect(firstResult).toEqual({ ok: false, error: 'request-stale' });
+      expect(set).not.toHaveBeenCalled();
+      expect(await invoke('build')).toMatchObject({ ok: false });
+    } else {
+      expect(firstResult).toMatchObject({ ok: true });
+      expect(firstResult?.ok && firstResult.value.consent).toBeUndefined();
+      expect(set).toHaveBeenCalledOnce();
+    }
+    expect(transport).not.toHaveBeenCalled();
+    expect(await screen.findByText(/https:\/\/api\.mistral\.ai/)).toBeTruthy();
+    expect(acknowledgement).not.toBeChecked();
+    expect(save).toBeDisabled();
+    fireEvent.click(acknowledgement);
+    fireEvent.click(save);
+    await waitFor(() => expect(set).toHaveBeenCalledTimes(when === 'before Save' ? 1 : 2));
+    const [first, second] = api.settingsSet.mock.calls.map(([selection]) => selection.source === 'provider' ? selection.endpointId : undefined);
+    expect(first).toBeDefined();
+    expect(second).not.toBe(first);
+    expect(config?.consent).toMatchObject({ modelId: 'embed-a', endpointId: second });
+    expect(transport).not.toHaveBeenCalled();
+  });
+  it('revokes persisted provider consent when its acknowledgement is cleared', async () => {
+    const api = createMemoryMapApi();
+    const initial = await api.settingsGet();
+    if (!initial.ok) throw new Error('Missing settings');
+    const namespace = { ...initial.value.namespace, source: 'provider' as const, providerId: 'configured', modelId: 'embed-a', modelRevision: ROUTE.endpointId };
+    api.settingsGet.mockResolvedValue({ ok: true, value: {
+      ...initial.value, source: 'provider', namespace, providers: [{ id: 'configured', models: ['embed-a'], route: ROUTE }],
+      consent: { version: 2, providerId: 'configured', modelId: 'embed-a', endpointId: namespace.modelRevision, timestamp: '2026-11-22T00:00:00Z' },
+    } });
+    api.settingsSet.mockResolvedValue(initial);
+    render(<MemoryEmbeddingsSection api={api} />);
+    const acknowledgement = await screen.findByRole('checkbox');
+    expect(acknowledgement).toBeChecked();
+    fireEvent.click(acknowledgement);
+    expect(api.settingsSet).toHaveBeenCalledWith({ source: 'local' });
+    await waitFor(() => expect(screen.queryByRole('checkbox')).toBeNull());
+  });
+  it('requires explicit provider and model consent, resets it on changes, and opts out immediately', async () => {
+    const api = createMemoryMapApi();
+    const initial = await api.settingsGet();
+    if (!initial?.ok) throw new Error('Missing settings');
+    api.settingsGet.mockClear();
+    api.settingsGet.mockResolvedValue({ ok: true, value: { ...initial.value, providers: [{ id: 'configured', models: ['embed-a', 'embed-b'], route: ROUTE }, { id: 'no-embedding', models: [], reason: 'provider-no-embedding-model' }] } });
+    api.settingsSet.mockImplementation(async selection => ({ ok: true, value: { ...initial.value, source: selection.source, namespace: { ...initial.value.namespace, source: selection.source } } }));
+    render(<MemoryEmbeddingsSection api={api} />);
+    await waitFor(() => expect(screen.getByRole('radio', { name: '제공자' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('radio', { name: '제공자' }));
+    const save = screen.getByRole('button', { name: '저장' }); expect(save).toBeDisabled();
+    const provider = screen.getByRole('combobox', { name: '제공자' }); const model = screen.getByRole('combobox', { name: '임베딩 모델' });
+    fireEvent.change(provider, { target: { value: 'configured' } }); fireEvent.change(model, { target: { value: 'embed-a' } });
+    expect(save).toBeDisabled(); expect(api.settingsSet).not.toHaveBeenCalled();
+    const consent = screen.getByRole('checkbox'); expect(consent).toHaveAccessibleName(/configured/); expect(consent).toHaveAccessibleName(/질문/);
+    fireEvent.click(consent); expect(save).toBeEnabled();
+    fireEvent.change(model, { target: { value: 'embed-b' } }); expect(consent).not.toBeChecked(); expect(save).toBeDisabled();
+    fireEvent.click(consent); fireEvent.click(save);
+    await waitFor(() => expect(api.settingsSet).toHaveBeenCalledWith({ source: 'provider', providerId: 'configured', modelId: 'embed-b', endpointId: ROUTE.endpointId, consent: true }));
+    await waitFor(() => expect(screen.getByRole('radio', { name: '로컬' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('radio', { name: '로컬' }));
+    await waitFor(() => expect(api.settingsSet).toHaveBeenLastCalledWith({ source: 'local' }));
+  });
+  it.each(['provider-no-embedding-model', 'provider-route-ineligible'] as const)('shows translated refusal for %s', async reason => {
+    const api = createMemoryMapApi(); const result = await api.settingsGet(); if (!result.ok) throw new Error('Missing settings');
+    api.settingsGet.mockResolvedValue({ ok: true, value: { ...result.value, providers: [{ id: 'no-embedding', models: [], route: ROUTE, reason }] } });
+    render(<MemoryEmbeddingsSection api={api} />);
+    await waitFor(() => expect(screen.getByRole('radio', { name: '제공자' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('radio', { name: '제공자' })); fireEvent.change(screen.getByRole('combobox', { name: '제공자' }), { target: { value: 'no-embedding' } });
+    expect(screen.getByText(ko[`memoryMap.error.${reason}`])).toBeTruthy();
+    expect(screen.getByRole('combobox', { name: '임베딩 모델' })).toBeDisabled();
+    expect(screen.getByRole('checkbox')).toBeDisabled();
+    expect(screen.getByRole('button', { name: '저장' })).toBeDisabled();
+  });
+  it('keeps setup disabled for an unsupported local runtime when opting into a provider', async () => {
+    const api = createMemoryMapApi();
+    const initial = await api.settingsGet();
+    if (!initial.ok) throw new Error('Missing settings');
+    const settings = { ...initial.value, providers: [{ id: 'configured', models: ['embed-a'], route: ROUTE }] };
+    api.settingsGet.mockResolvedValue({ ok: true, value: settings });
+    api.modelStatus.mockResolvedValue({ ok: false, error: 'local-runtime-unavailable' });
+    api.settingsSet.mockResolvedValue({ ok: true, value: { ...settings, source: 'provider' } });
+
+    render(<MemoryEmbeddingsSection api={api} />);
+    const unavailable = ko['memoryMap.error.local-runtime-unavailable'];
+    expect(await screen.findByText(unavailable)).toBeTruthy();
+    const download = screen.getByRole('button', { name: '로컬 모델 다운로드' });
+    const existing = screen.getByRole('button', { name: '기존 모델 사용' });
+    expect(download).toBeDisabled();
+    expect(existing).toBeDisabled();
+    fireEvent.click(screen.getByRole('radio', { name: '제공자' }));
+    fireEvent.change(screen.getByRole('combobox', { name: '제공자' }), { target: { value: 'configured' } });
+    fireEvent.change(screen.getByRole('combobox', { name: '임베딩 모델' }), { target: { value: 'embed-a' } });
+    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.click(screen.getByRole('button', { name: '저장' }));
+    await waitFor(() => expect(screen.getByRole('radio', { name: '제공자' })).toBeEnabled());
+    expect(api.settingsSet).toHaveBeenCalledOnce();
+    expect(screen.getByText(unavailable)).toBeTruthy();
+    expect(download).toBeDisabled();
+    expect(existing).toBeDisabled();
+    expect(api.modelDownload).not.toHaveBeenCalled();
+    expect(api.modelUseExisting).not.toHaveBeenCalled();
+  });
+  it('keeps setup explicit and reports failed folder validation and retry', async () => {
+    const api = createMemoryMapApi();
+    render(<MemoryEmbeddingsSection api={api} />);
+    const download = await screen.findByRole('button', { name: '로컬 모델 다운로드' });
+    await waitFor(() => expect(download).toBeEnabled());
+    expect(api.modelDownload).not.toHaveBeenCalled();
+    expect(api.settingsSet).not.toHaveBeenCalled();
+    expect(screen.getByText(/135 MB/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '기존 모델 사용' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(ko['memoryMap.error.model-folder-invalid']);
+    fireEvent.click(download);
+    await waitFor(() => expect(api.modelDownload).toHaveBeenCalledOnce());
+    expect(await screen.findByRole('alert')).toHaveTextContent(ko['memoryMap.error.model-download-failed']);
+  });
+  it('shows progress bytes, cancel, ready revision and removes its subscription', async () => {
+    const api = createMemoryMapApi();
+    const stop = api.onModelProgress.mock.results;
+    const view = render(<MemoryEmbeddingsSection api={api} />);
+    await screen.findByText('모델이 설정되지 않았습니다');
+    act(() => api.onModelProgress.mock.calls[0][0]({ status: 'downloading', receivedBytes: 1024, totalBytes: 2048, completedFiles: 1, totalFiles: 4 }));
+    expect(screen.getByRole('progressbar')).toHaveAttribute('value', '1024');
+    expect(screen.getByText('1,024 / 2,048 바이트')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '다운로드 취소' }));
+    await waitFor(() => expect(api.modelCancel).toHaveBeenCalledOnce());
+    act(() => api.onModelProgress.mock.calls[0][0]({ status: 'ready', receivedBytes: 2048, totalBytes: 2048, completedFiles: 4, totalFiles: 4 }));
+    expect(await screen.findByText(/revision-1/)).toBeTruthy();
+    view.unmount();
+    expect(stop[0].value).toHaveBeenCalledOnce();
+  });
+  it('offers retry with a translated failure and accepts an existing model', async () => {
+    const api = createMemoryMapApi();
+    const status = { status: 'failed' as const, error: 'model-integrity-failed' as const, receivedBytes: 0, totalBytes: 1, completedFiles: 0, totalFiles: 4 };
+    api.modelStatus.mockResolvedValue({ ok: true, value: status });
+    api.modelUseExisting.mockResolvedValue({ ok: true, value: { ...status, status: 'ready', error: undefined } });
+    render(<MemoryEmbeddingsSection api={api} />);
+    expect(await screen.findByRole('button', { name: '다운로드 재시도' })).toBeTruthy();
+    expect(screen.getByRole('alert')).toHaveTextContent(ko['memoryMap.error.model-integrity-failed']);
+    fireEvent.click(screen.getByRole('button', { name: '기존 모델 사용' }));
+    expect(await screen.findByText(/모델 준비됨/)).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+  it('offers adoption for a legacy model location', async () => {
+    const api = createMemoryMapApi();
+    api.modelStatus.mockResolvedValue({ ok: true, value: {
+      status: 'legacy-location', receivedBytes: 0, totalBytes: 0, completedFiles: 0, totalFiles: 4,
+    } });
+    render(<MemoryEmbeddingsSection api={api} />);
+    expect(await screen.findByText('모델이 이전 위치에 있습니다. ‘기존 모델 사용’을 선택해 Ave로 복사하세요.')).toBeTruthy();
+    const existing = screen.getByRole('button', { name: '기존 모델 사용' });
+    expect(existing).toBeEnabled();
+    expect(screen.queryByRole('alert')).toBeNull();
+    fireEvent.click(existing);
+    expect(api.modelUseExisting).toHaveBeenCalledOnce();
+    await screen.findByRole('alert');
+  });
+  it('provides legacy model location guidance in both locales', () => {
+    expect(en['memoryEmbeddings.legacy-location']).toBe('This model is stored in a previous location. Choose “Use existing model” to copy it into Ave.');
+    expect(ko['memoryEmbeddings.legacy-location']).toBe('모델이 이전 위치에 있습니다. ‘기존 모델 사용’을 선택해 Ave로 복사하세요.');
+  });
+  it('keeps embedding and map keys in both catalogs', () => {
+    const keys = (catalog: Record<string, string>) => Object.keys(catalog).filter(key => key.startsWith('memoryEmbeddings.') || key.startsWith('memoryMap.')).sort();
+    expect(keys(en)).toEqual(keys(ko));
+  });
+});

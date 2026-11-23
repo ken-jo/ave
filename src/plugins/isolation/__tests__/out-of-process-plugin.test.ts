@@ -3,10 +3,11 @@ vi.mock("../../../shared/windows-configuration-handles.js", async original => (a
 vi.mock("node:fs", async original => (await import("../../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
 
 import { writePermissionSettingsFixture } from "../../../__tests__/support/permission-settings-fixture.js";
+import { deferred } from "../../../__tests__/support/deferred.js";
 import { setFixtureOwner } from "../../../__tests__/support/fixture-owner.js";
 import { ensureAveHomePrivate } from "../../../shared/ave-home.js";
 /** Exercise the real child runtime and factory; recorded spawn calls alone do not prove confinement. */
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, type TestContext, vi } from "vitest";
 import { configureHostResources } from "../../../main/host-resources.js";
 
 beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
@@ -37,6 +38,7 @@ const windowsGrant = vi.hoisted(() => ({
   calls: [] as Array<{ label: string; allowRead: readonly string[]; allowWrite: readonly string[] }>,
   events: [] as string[],
   lost: [] as Array<(reason: Error) => void>,
+  own: undefined as ((release: () => void) => void) | undefined,
   alive: true,
   /** Labels whose turn applied a grant. */
   granted: [] as string[],
@@ -54,6 +56,7 @@ vi.mock("../../../permissions/windows-acl-grant-holder.js", async () => {
       label: string; allowRead: readonly string[]; allowWrite: readonly string[]; assertStillValid?: () => void;
     }) => {
       windowsGrant.calls.push(opts);
+      const own = windowsGrant.own;
       // FIFO turns as in the real grant queue: the check runs when the turn starts, before anything is applied.
       return turns(async () => {
         await windowsGrant.ahead;
@@ -61,16 +64,30 @@ vi.mock("../../../permissions/windows-acl-grant-holder.js", async () => {
         windowsGrant.granted.push(opts.label);
         if (windowsGrant.blockingMs > 0) blockMainThread(windowsGrant.blockingMs);
         windowsGrant.events.push("grant");
+        const listeners: Array<(reason: Error) => void> = [];
+        let released = false;
+        const release = () => {
+          if (released) return;
+          released = true;
+          for (const listener of listeners.splice(0)) {
+            const index = windowsGrant.lost.indexOf(listener);
+            if (index >= 0) windowsGrant.lost.splice(index, 1);
+          }
+          if (windowsGrant.events.at(-1) !== "release") windowsGrant.events.push("release");
+        };
+        own?.(release);
         await windowsGrant.applying;
         return {
           assertAlive: () => {
             if (!windowsGrant.alive) throw new Error("holder gone");
           },
-          onLost: (listener: (reason: Error) => void) => void windowsGrant.lost.push(listener),
-          // Grant release must be idempotent across every child termination path.
-          release: () => {
-            if (windowsGrant.events.at(-1) !== "release") windowsGrant.events.push("release");
+          onLost: (listener: (reason: Error) => void) => {
+            if (released) return;
+            const registered = (reason: Error) => listener(reason);
+            listeners.push(registered);
+            windowsGrant.lost.push(registered);
           },
+          release,
         };
       });
     },
@@ -78,7 +95,7 @@ vi.mock("../../../permissions/windows-acl-grant-holder.js", async () => {
 });
 
 /** `on` forces a synthetic home for the Windows grant cases on every host. Otherwise the simulated-win32 factory keeps real profile creation on a native host and gives emulated Windows a host directory instead of cwd-relative profile paths. */
-const fakeSandboxHome = vi.hoisted(() => ({ on: false }));
+const fakeSandboxHome = vi.hoisted(() => ({ on: false, own: undefined as OwnResource | undefined }));
 vi.mock("../../../permissions/sandbox-process-home.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../permissions/sandbox-process-home.js")>();
   const simulated = await (await import("../../../__tests__/support/simulated-win32-drive.js")).simulatedSandboxProcessHome(actual);
@@ -90,19 +107,27 @@ vi.mock("../../../permissions/sandbox-process-home.js", async (importOriginal) =
     createSandboxProcessHome: (...args: Parameters<typeof actual.createSandboxProcessHome>) => {
       if (!fakeSandboxHome.on) return simulated.createSandboxProcessHome(...args);
       const home = fs.mkdtempSync(path.join(os.tmpdir(), "oop-fake-sandbox-home-"));
-      return { path: home, env: { HOME: home }, cleanup: () => fs.rmSync(home, { recursive: true, force: true }) };
+      const cleanup = () => fs.rmSync(home, { recursive: true, force: true });
+      fakeSandboxHome.own?.("sandbox home", cleanup);
+      return { path: home, env: { HOME: home }, cleanup };
     },
   };
 });
 
 const transportWarnings = vi.hoisted(() => [] as unknown[][]);
 const factoryDebug = vi.hoisted(() => [] as string[]);
+const sessionWarnings = vi.hoisted(() => [] as unknown[][]);
 vi.mock("../../../lib/logger.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../lib/logger.js")>();
   return {
     ...actual,
     createLogger: (name: string) => {
       const logger = actual.createLogger(name);
+      if (name === "plugin-protocol-session") {
+        return Object.assign(Object.create(logger) as typeof logger, {
+          warn: (...args: unknown[]) => void sessionWarnings.push(args),
+        });
+      }
       if (name === "out-of-process-plugin" || name === "plugin-runtime") {
         return Object.assign(Object.create(logger) as typeof logger, {
           debug: (...args: unknown[]) => void factoryDebug.push(args.map(String).join(" ")),
@@ -116,8 +141,8 @@ vi.mock("../../../lib/logger.js", async (importOriginal) => {
   };
 });
 import { EventEmitter } from "node:events";
-import { connect } from "node:net";
-import { spawn as spawnProcess } from "node:child_process";
+import { Server, type Socket } from "node:net";
+import { type ChildProcess, spawn as spawnProcess } from "node:child_process";
 import { PassThrough } from "node:stream";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -135,6 +160,7 @@ import { TOOL_TIMEOUT_POLICY, windowsSrtPluginChildFactoryBudgetMs } from "../..
 import { setAveHomePrivacyAtBoot, approveExtensionsWithoutIsolation, _resetAveHomePrivacyForTest } from "../../../shared/ave-home.js";
 import { setPluginWorkerConfinementRequestedAtBoot, __resetSandboxRequestedAtBootForTest } from "../../../permissions/sandbox-capability.js";
 import { setProcessPlatform } from "../../../__tests__/support/process-platform.js";
+import { getManagedChildProcessCount, trackManagedChildProcess } from "../../../main/managed-child-processes.js";
 import { createBoundHostApiDispatchTable } from "../bound-host-api-table.js";
 import {
   acceptHostOverLoopback,
@@ -143,7 +169,10 @@ import {
   encodeChildEnv,
   parseChildLaunchArgs,
 } from "../child-loopback-link.js";
+import { pacePluginChildInput } from "../plugin-child-credit.js";
+import { consumePluginChildInput } from "../../../__tests__/support/plugin-child-input.js";
 import { openPluginProtocolSession } from "../plugin-protocol-session.js";
+import { buildMethodMap } from "../../runtime/plugin-loader.js";
 import { PluginChildTerminationUnverifiedError, type ChildLink } from "../plugin-child-transport.js";
 import {
   FRAME_BYTES_MAX,
@@ -191,13 +220,112 @@ const MANIFEST: PluginManifest = {
   ],
 };
 
+const RESOURCE_CLOSE_TIMEOUT_MS = 5_000;
+const CHILD_EXIT_TIMEOUT_MS = 5_000;
+const realSetTimeout = setTimeout;
+const realClearTimeout = clearTimeout;
+
+async function withRealTimeout<T>(result: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      result,
+      new Promise<never>((_, reject) => {
+        timer = realSetTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    realClearTimeout(timer);
+  }
+}
+
+type OwnResource = (name: string, close: () => unknown) => () => Promise<void>;
+
+function testResources(onTestFinished: TestContext["onTestFinished"]): OwnResource {
+  const disposers: Array<() => Promise<void>> = [];
+  let closed = false;
+  let lateDrainScheduled = false;
+  const drain = async () => {
+    const errors: unknown[] = [];
+    for (let dispose = disposers.pop(); dispose; dispose = disposers.pop()) {
+      try {
+        await dispose();
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    closed = true;
+    lateDrainScheduled = false;
+    if (errors.length > 0) throw new AggregateError(errors, "Test resource cleanup failed");
+  };
+  onTestFinished(drain);
+  return (name, close) => {
+    let closing: Promise<void> | undefined;
+    const run = async () => {
+      try {
+        await withRealTimeout(Promise.resolve().then(close), RESOURCE_CLOSE_TIMEOUT_MS, "close timed out");
+      } catch (error) {
+        throw new Error(`Could not clean up ${name}`, { cause: error });
+      }
+    };
+    const dispose = () => (closing ??= run());
+    disposers.push(dispose);
+    if (closed && !lateDrainScheduled) {
+      lateDrainScheduled = true;
+      // Preserve reverse registration order for a resource and its event listeners.
+      queueMicrotask(() => { void drain().catch((error: unknown) => console.error(error)); });
+    }
+    return dispose;
+  };
+}
+
+function ownDirectory(own: OwnResource, dir: string): void {
+  own("temporary directory", () => rmSync(dir, { recursive: true, force: true }));
+}
+
+function ownStream(own: OwnResource, stream: Socket | PassThrough): void {
+  if (stream instanceof PassThrough) own("pipe listeners", () => stream.removeAllListeners());
+  const { promise, resolve } = deferred<void>();
+  const wasClosed = stream.closed;
+  own("stream close listener", () => stream.off("close", resolve));
+  own("stream", async () => {
+    if (wasClosed) return;
+    stream.destroy();
+    await promise;
+  });
+  stream.on("close", resolve);
+}
+
+function ownChildProcess(own: OwnResource, child: ChildProcess): Promise<string> {
+  const { promise: closed, resolve: recordClose } = deferred<void>();
+  const { promise: exited, resolve: recordExit } = deferred<string>();
+  const errors: Error[] = [];
+  const onExit = (code: number | null) => recordExit(`code=${String(code)}`);
+  const onClose = () => recordClose();
+  const onError = (error: Error) => errors.push(error);
+  own("child exit listener", () => child.off("exit", onExit));
+  own("child close listener", () => child.off("close", onClose));
+  own("child error listener", () => child.off("error", onError));
+  own("child process and stdio", async () => {
+    if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) child.kill();
+    await closed;
+    if (errors.length > 0) throw new AggregateError(errors, "Child process errors");
+  });
+  child.on("exit", onExit);
+  child.on("close", onClose);
+  child.on("error", onError);
+  return exited;
+}
+
 /** Import a real on-disk plugin module; replacing the loader would bypass the boundary under test. */
-function writePluginModule(): { dir: string; entryPath: string } {
+function writePluginModule(own?: OwnResource): { dir: string; entryPath: string } {
   const dir = mkdtempSync(join(tmpdir(), "oop-plugin-"));
+  if (own) ownDirectory(own, dir);
   const entryPath = join(dir, "plugin.mjs");
-  writeFileSync(
-    entryPath,
-    `export const createPlugin = async (context) => {
+  try {
+    writeFileSync(
+      entryPath,
+      `export const createPlugin = async (context) => {
   const seen = [];
   context.hostApi.config.onChange("ping", (data) => seen.push(data));
   return {
@@ -216,8 +344,16 @@ function writePluginModule(): { dir: string; entryPath: string } {
   };
 };
 `,
-    "utf-8",
-  );
+      "utf-8",
+    );
+  } catch (error) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], "Could not write or remove the plugin module fixture");
+    }
+    throw error;
+  }
   return { dir, entryPath };
 }
 
@@ -282,13 +418,15 @@ function fakeHostApi(): PluginHostApi & {
   return hostApi;
 }
 
-function pairedChild(): {
+function pairedChild(own?: OwnResource): {
   child: { link: ChildLink };
   kill: (reason: string) => void;
   sendAsChild: (frame: Record<string, unknown>) => void;
 } {
   const hostToChild = new PassThrough();
+  if (own) ownStream(own, hostToChild);
   const childToHost = new PassThrough();
+  if (own) ownStream(own, childToHost);
   const service = servePluginChild(hostToChild, childToHost);
   const goneHandlers: Array<(reason: string) => void> = [];
   const link: ChildLink = {
@@ -298,12 +436,14 @@ function pairedChild(): {
     onGone: (handler) => goneHandlers.push(handler),
     onFault: () => undefined,
   };
+  function kill(reason: string): void {
+    service.hostGone();
+    for (const handler of goneHandlers.splice(0)) handler(reason);
+  }
+  own?.("paired child service", () => kill("test finished"));
   return {
     child: { link },
-    kill: (reason) => {
-      service.hostGone();
-      for (const handler of goneHandlers) handler(reason);
-    },
+    kill,
     sendAsChild: (frame) => { childToHost.write(`${JSON.stringify(frame)}\n`); },
   };
 }
@@ -833,17 +973,20 @@ describe("a message too large to frame fails its call, not the channel", () => {
   });
 });
 
-function writeModule(prefix: string, source: string): { dir: string; entryPath: string } {
+function writeModule(prefix: string, source: string, own?: OwnResource): { dir: string; entryPath: string } {
   const dir = mkdtempSync(join(tmpdir(), prefix));
+  if (own) ownDirectory(own, dir);
   const entryPath = join(dir, "plugin.mjs");
   writeFileSync(entryPath, source, "utf-8");
   return { dir, entryPath };
 }
 
-function hostFrames(link: ChildLink): Array<Record<string, unknown>> {
+function hostFrames(link: ChildLink, own?: OwnResource): Array<Record<string, unknown>> {
   const frames: Array<Record<string, unknown>> = [];
   const decoder = new StdioFrameDecoder(FRAME_BYTES_MAX);
-  link.output.on("data", (chunk: Buffer) => frames.push(...decoder.push(chunk)));
+  const onData = (chunk: Buffer) => frames.push(...decoder.push(chunk));
+  own?.("frame listener", () => link.output.off("data", onData));
+  link.output.on("data", onData);
   return frames;
 }
 
@@ -1022,7 +1165,7 @@ describe("construct negotiates the host protocol", () => {
     const roots = spawnableRoots();
     const { dir, entryPath } = writePluginModule();
     const input = new PassThrough(), output = new PassThrough(), stderr = new PassThrough();
-    const service = servePluginChild(input, output);
+    const service = servePluginChild(consumePluginChildInput(input, output), output);
     let finish!: (result: { exitCode: number; timedOut: boolean }) => void;
     const completion = new Promise<{ exitCode: number; timedOut: boolean }>((resolve) => { finish = resolve; });
     const dispose = vi.fn(async () => {
@@ -1069,7 +1212,7 @@ describe("construct negotiates the host protocol", () => {
     const roots = spawnableRoots();
     const { dir, entryPath } = writePluginModule();
     const input = new PassThrough(), output = new PassThrough();
-    const service = servePluginChild(input, output);
+    const service = servePluginChild(consumePluginChildInput(input, output), output);
     // The supervisor already reported exit, so termination begins at attach; disposal stays pending, which keeps
     // the streams up and lets the handshake complete regardless.
     const dispose = vi.fn(() => new Promise<void>(() => {}));
@@ -1223,6 +1366,146 @@ describe("construct negotiates the host protocol", () => {
     );
     expect(terminated()).toMatch(/startup failed/);
   });
+
+  it("binds only declared tool names from a construct reply, never an inherited key", async () => {
+    const { child, terminated } = scriptedChild({
+      ...CONSTRUCTED,
+      implementedToolNames: ["pilot_echo", "pilot_unlisted", "__proto__"],
+      pluginProtocol: { requires: [] },
+    });
+    const factory = sessionFactory({
+      manifest: MANIFEST,
+      entryPath: join(tmpdir(), "never-imported.mjs"),
+      link: child.link,
+    });
+    const instance = await factory(hostContext(fakeHostApi()));
+    expect(Object.getPrototypeOf(instance.handlers)).toBeNull();
+    expect(Object.keys(instance.handlers)).toEqual(["pilot_echo"]);
+    expect(terminated()).toBeUndefined();
+  });
+
+  it("keeps a declared __proto__ tool an own handler, and the method map binds it", async () => {
+    const manifest: PluginManifest = {
+      ...MANIFEST,
+      tools: [...MANIFEST.tools, { name: "__proto__", description: "named like the prototype key", inputSchema: EMPTY_SCHEMA }],
+    };
+    const { child, terminated } = scriptedChild({
+      ...CONSTRUCTED,
+      implementedToolNames: ["pilot_echo", "__proto__"],
+      pluginProtocol: { requires: [] },
+    });
+    const factory = sessionFactory({
+      manifest,
+      entryPath: join(tmpdir(), "never-imported.mjs"),
+      link: child.link,
+    });
+    const instance = await factory(hostContext(fakeHostApi()));
+    expect(Object.getPrototypeOf(instance.handlers)).toBeNull();
+    expect(Object.keys(instance.handlers)).toEqual(["pilot_echo", "__proto__"]);
+    const missing: string[] = [];
+    const methods = buildMethodMap(manifest, instance, (toolName) => void missing.push(toolName));
+    expect([...methods.keys()]).toEqual(["pilot_echo", "__proto__"]);
+    expect(missing).toEqual(MANIFEST.tools.map((tool) => tool.name).filter((name) => name !== "pilot_echo"));
+    expect(terminated()).toBeUndefined();
+  });
+
+  it.each([
+    ["a non-string entry", ["pilot_echo", 1]],
+    ["a bare string", "pilot_echo"],
+    ["no field", undefined],
+  ])("fails a construct reply whose implementedToolNames is %s", async (_case, implementedToolNames) => {
+    const { child, terminated } = scriptedChild({
+      ...CONSTRUCTED,
+      implementedToolNames,
+      pluginProtocol: { requires: [] },
+    });
+    const factory = sessionFactory({
+      manifest: MANIFEST,
+      entryPath: join(tmpdir(), "never-imported.mjs"),
+      link: child.link,
+    });
+    await expect(factory(hostContext(fakeHostApi()))).rejects.toThrow(
+      /construct answered no implementedToolNames list/,
+    );
+    expect(terminated()).toMatch(/startup failed/);
+  });
+
+  it.each([
+    ["lifecycleHooks is a bare string", { lifecycleHooks: "start" }, /construct answered no lifecycleHooks list/],
+    ["lifecycleHooks has a non-string entry", { lifecycleHooks: ["start", 1] }, /construct answered no lifecycleHooks list/],
+    ["lifecycleHooks is missing", { lifecycleHooks: undefined }, /construct answered no lifecycleHooks list/],
+    ["lifecycleHooks names an unknown hook", { lifecycleHooks: ["start", "restart"] }, /construct answered an unknown lifecycle hook/],
+    ["lifecycleHooks names an inherited key", { lifecycleHooks: ["constructor"] }, /construct answered an unknown lifecycle hook/],
+    ["servesUiResources is a string", { servesUiResources: "yes" }, /construct answered no servesUiResources flag/],
+    ["servesUiResources is missing", { servesUiResources: undefined }, /construct answered no servesUiResources flag/],
+  ])("fails a construct reply whose %s", async (_case, fields, refusal) => {
+    const { child, terminated } = scriptedChild({
+      ...CONSTRUCTED,
+      ...fields,
+      pluginProtocol: { requires: [] },
+    });
+    const factory = sessionFactory({
+      manifest: MANIFEST,
+      entryPath: join(tmpdir(), "never-imported.mjs"),
+      link: child.link,
+    });
+    await expect(factory(hostContext(fakeHostApi()))).rejects.toThrow(refusal);
+    expect(terminated()).toMatch(/startup failed/);
+  });
+
+  it("binds every known lifecycle hook a construct reply names", async () => {
+    const { child, terminated } = scriptedChild({
+      ...CONSTRUCTED,
+      lifecycleHooks: ["start", "onPublished", "stop"],
+      pluginProtocol: { requires: [] },
+    });
+    const instance = await sessionFactory({
+      manifest: MANIFEST,
+      entryPath: join(tmpdir(), "never-imported.mjs"),
+      link: child.link,
+    })(hostContext(fakeHostApi()));
+    expect([typeof instance.start, typeof instance.onPublished]).toEqual(["function", "function"]);
+    expect(terminated()).toBeUndefined();
+  });
+
+  function constructNaming(implementedToolNames: readonly string[]): Promise<RuntimePlugin> {
+    const { child } = scriptedChild({ ...CONSTRUCTED, implementedToolNames, pluginProtocol: { requires: [] } });
+    return sessionFactory({
+      manifest: MANIFEST,
+      entryPath: join(tmpdir(), "never-imported.mjs"),
+      link: child.link,
+    })(hostContext(fakeHostApi()));
+  }
+
+  it("warns once when a construct reply names undeclared tools, and not for a declared subset", async () => {
+    sessionWarnings.length = 0;
+    await constructNaming(["pilot_echo"]);
+    expect(sessionWarnings).toEqual([]);
+    const instance = await constructNaming(["pilot_echo", "pilot_unlisted", "pilot_other"]);
+    expect(Object.keys(instance.handlers)).toEqual(["pilot_echo"]);
+    expect(sessionWarnings).toEqual([[
+      { pluginId: PLUGIN_ID, undeclaredCount: 2, undeclared: ["pilot_unlisted", "pilot_other"] },
+      expect.stringMatching(/undeclared tools/),
+    ]]);
+  });
+
+  it("caps that warning at a count and the first five names, each clipped to 64 code points", async () => {
+    const long = `pilot_${"x".repeat(200)}`;
+    // Astral code points take two UTF-16 units each: 70 of them clip to 64, and exactly 64 stay whole.
+    const astral = "\u{1F9EA}".repeat(70);
+    const astralAtCap = "\u{1F9EA}".repeat(64);
+    const extras = [long, astral, astralAtCap, ...Array.from({ length: 6 }, (_, index) => `pilot_extra_${index}`)];
+    sessionWarnings.length = 0;
+    await constructNaming(["pilot_echo", ...extras]);
+    expect(sessionWarnings).toEqual([[
+      {
+        pluginId: PLUGIN_ID,
+        undeclaredCount: 9,
+        undeclared: [`${long.slice(0, 64)}…`, `${astralAtCap}…`, astralAtCap, "pilot_extra_0", "pilot_extra_1"],
+      },
+      expect.stringMatching(/undeclared tools/),
+    ]]);
+  });
 });
 
 /** Record both launch forms as received by spawn; live confinement is measured separately. */
@@ -1283,8 +1566,10 @@ describe("the factory's launch reaches the spawn as decided", () => {
           args: string[];
           baseEnv: NodeJS.ProcessEnv;
           extraEnv: Record<string, string>;
+          requireWrap: boolean;
         };
         expect(spec.command).toBe("/usr/bin/env");
+        expect(spec.requireWrap).toBe(true);
         expect(spec.args).toEqual([
           `SMOKE_VENDOR_DIR=${join(root, "vendor")}`,
           `PLUGIN_ROOT=${root}`,
@@ -1327,6 +1612,31 @@ describe("the factory's launch reaches the spawn as decided", () => {
       roots.remove();
     }
   });
+
+  it.runIf(process.platform === "linux" || process.platform === "darwin")(
+    "kills a process launch that comes back unconfined before exposing it to the session",
+    async () => {
+      const roots = spawnableRoots();
+      const kill = vi.fn();
+      const stdin = new PassThrough();
+      const stdout = new PassThrough();
+      const child = Object.assign(new EventEmitter(), { exitCode: null, signalCode: null, stdin, stdout, stdio: [stdin, stdout], kill });
+      sandbox.active = true;
+      spawnConfinedChild.mockResolvedValueOnce({ child, confinement: "unconfined" });
+      try {
+        const { pluginRoot } = roots.context;
+        if (!pluginRoot) throw new Error("Missing plugin root");
+        const refused = await attempt(processLaunch(pluginRoot), PROCESS_MANIFEST, roots);
+        expect(refused).toBeInstanceOf(ProcessEntryUnconfinedError);
+        expect(kill).toHaveBeenCalledWith("SIGKILL");
+      } finally {
+        stdin.destroy();
+        stdout.destroy();
+        sandbox.active = false;
+        roots.remove();
+      }
+    },
+  );
 
   it("refuses a process launch on Windows even with the sandbox on, before anything is spawned", async () => {
     const roots = spawnableRoots();
@@ -1402,11 +1712,71 @@ describe("the factory's launch reaches the spawn as decided", () => {
   });
 });
 
+it.each(["explicit stop", "clean EOF", "PGID reuse"])("stops a confined POSIX group after leader exit (%s)", async (mode) => {
+  const roots = spawnableRoots();
+  const input = new PassThrough();
+  const stdout = new PassThrough();
+  const child = Object.assign(new EventEmitter(), {
+    pid: 4242, exitCode: null as number | null, signalCode: null, stdio: [null, stdout, null, input], stdout, kill: vi.fn(),
+  });
+  const platform = process.platform;
+  vi.useFakeTimers();
+  setProcessPlatform("linux");
+  let originalGroupGone = false;
+  const kill = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+    if (pid === -child.pid && signal === 0 && originalGroupGone) {
+      throw Object.assign(new Error("No such process"), { code: "ESRCH" });
+    }
+    return true;
+  });
+  const before = getManagedChildProcessCount();
+  const dispose = trackManagedChildProcess(child as unknown as ChildProcess, { killProcessGroup: true });
+  spawnConfinedChild.mockResolvedValueOnce({ child, confinement: "linux-bubblewrap" });
+  try {
+    const { pluginRoot, pluginSocketDir } = roots.context;
+    if (!pluginRoot || !pluginSocketDir) throw new Error("Missing plugin paths");
+    const plugin = await spawnConfinedPluginChild({
+      pluginId: "example",
+      socketDir: pluginSocketDir,
+      launch: { kind: "entry", childEntryPath: join(pluginRoot, "plugin.mjs") },
+      envelope: { read: [], write: [] },
+    });
+    if (mode === "explicit stop") plugin.link.terminate("explicit stop");
+    child.exitCode = 0;
+    child.emit("exit", 0, null);
+    expect(kill).toHaveBeenCalledWith(-child.pid, "SIGTERM");
+    if (mode === "PGID reuse") {
+      originalGroupGone = true;
+      vi.advanceTimersByTime(TOOL_TIMEOUT_POLICY.processGroupPollMs);
+      expect(getManagedChildProcessCount()).toBe(before);
+      originalGroupGone = false;
+      vi.advanceTimersByTime(TOOL_TIMEOUT_POLICY.pluginChildForceKillMs - TOOL_TIMEOUT_POLICY.processGroupPollMs);
+      expect(kill).not.toHaveBeenCalledWith(-child.pid, "SIGKILL");
+    } else {
+      vi.advanceTimersByTime(TOOL_TIMEOUT_POLICY.pluginChildForceKillMs);
+      expect(kill.mock.calls.filter(([, signal]) => signal !== 0)).toEqual([
+        [-child.pid, "SIGTERM"], [-child.pid, "SIGKILL"],
+      ]);
+    }
+    expect(child.kill).not.toHaveBeenCalled();
+  } finally {
+    dispose();
+    child.emit("close");
+    input.destroy();
+    stdout.destroy();
+    kill.mockRestore();
+    setProcessPlatform(platform);
+    vi.useRealTimers();
+    roots.remove();
+  }
+});
+
 /** Hold Windows grants against the holder process and record ordering; this suite does not measure effective ACLs. */
 describe("on Windows a confined child holds a grant on its own directories for exactly its lifetime", () => {
   type FakeChild = EventEmitter & {
     pid: number | undefined;
-    stdin: PassThrough;
+    stdin: null;
+    stdio: Array<PassThrough | null>;
     stdout: PassThrough;
     stderr: PassThrough;
     exitCode: number | null;
@@ -1414,19 +1784,31 @@ describe("on Windows a confined child holds a grant on its own directories for e
     kill: ReturnType<typeof vi.fn>;
   };
 
-  function fakeChild(opts: { readonly pid?: number } = { pid: 4242 }): FakeChild {
+  function fakeChild(opts: { readonly pid?: number } = { pid: 4242 }, own?: OwnResource): FakeChild {
     const { pid } = opts;
+    const makePipe = () => {
+      const pipe = new PassThrough();
+      if (own) ownStream(own, pipe);
+      return pipe;
+    };
+    const input = makePipe();
+    const stdout = makePipe();
+    const stderr = makePipe();
     const child = Object.assign(new EventEmitter(), {
       pid,
-      stdin: new PassThrough(),
-      stdout: new PassThrough(),
-      stderr: new PassThrough(),
+      stdin: null,
+      stdout,
+      stderr,
+      stdio: [null, stdout, stderr, input],
       exitCode: null as number | null,
       signalCode: null as NodeJS.Signals | null,
       kill: vi.fn(),
     });
+    own?.("fake child listeners", () => child.removeAllListeners());
+    own?.("fake child", () => end(child, null, "SIGTERM"));
     child.kill.mockImplementation((signal: NodeJS.Signals) => {
-      setImmediate(() => end(child, null, signal));
+      const immediate = setImmediate(() => end(child, null, signal));
+      own?.("fake child exit immediate", () => clearImmediate(immediate));
       return true;
     });
     return child;
@@ -1441,8 +1823,12 @@ describe("on Windows a confined child holds a grant on its own directories for e
   }
 
   /** Match production layout: immutable generation roots are separate from writable runtime roots. */
-  function aveLayout(pluginRootFor: (pluginsRoot: string) => string = (p) => join(p, ".cache", PLUGIN_ID, "g1")) {
+  function aveLayout(
+    pluginRootFor: (pluginsRoot: string) => string = (p) => join(p, ".cache", PLUGIN_ID, "g1"),
+    ownResource?: OwnResource,
+  ) {
     const home = mkdtempSync(join(tmpdir(), "oop-win-grant-"));
+    if (ownResource) ownDirectory(ownResource, home);
     const pluginsRoot = join(home, "plugins");
     const own = join(pluginsRoot, PLUGIN_ID);
     const context: Partial<PluginRuntimeContext> = {
@@ -1456,13 +1842,30 @@ describe("on Windows a confined child holds a grant on its own directories for e
   async function asWindows(
     layout: ReturnType<typeof aveLayout>,
     run: () => Promise<void>,
-    opts: { readonly sandboxActive?: boolean } = {},
+    opts: { readonly sandboxActive?: boolean; readonly own?: OwnResource } = {},
   ): Promise<void> {
     const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
     const previousHome = process.env.AVE_HOME;
+    const grants: Array<() => void> = [];
+    const restore = () => {
+      Object.defineProperty(process, "platform", platform);
+      if (previousHome === undefined) delete process.env.AVE_HOME;
+      else process.env.AVE_HOME = previousHome;
+      fakeSandboxHome.on = false;
+      fakeSandboxHome.own = undefined;
+      windowsGrant.own = undefined;
+      windowsGrant.blockingMs = 0;
+      sandbox.active = false;
+      spawnConfinedChild.mockReset();
+    };
+    opts.own?.("Windows fixture state", restore);
+    windowsGrant.own = (release) => {
+      if (opts.own) opts.own("Windows filesystem grant", release);
+      else grants.push(release);
+    };
+    fakeSandboxHome.own = opts.own;
     windowsGrant.calls.length = 0;
     windowsGrant.events.length = 0;
-    windowsGrant.lost.length = 0;
     windowsGrant.alive = true;
     windowsGrant.granted.length = 0;
     windowsGrant.ahead = undefined;
@@ -1477,14 +1880,11 @@ describe("on Windows a confined child holds a grant on its own directories for e
     try {
       await run();
     } finally {
-      Object.defineProperty(process, "platform", platform);
-      if (previousHome === undefined) delete process.env.AVE_HOME;
-      else process.env.AVE_HOME = previousHome;
-      fakeSandboxHome.on = false;
-      windowsGrant.blockingMs = 0;
-      sandbox.active = false;
-      spawnConfinedChild.mockReset();
-      rmSync(layout.home, { recursive: true, force: true });
+      if (!opts.own) {
+        for (const release of grants) release();
+        restore();
+        rmSync(layout.home, { recursive: true, force: true });
+      }
     }
   }
 
@@ -1722,7 +2122,7 @@ describe("on Windows a confined child holds a grant on its own directories for e
         windowsGrant.events.push("spawn");
         spawned = fakeChild();
         setImmediate(() => {
-          for (const listener of windowsGrant.lost) listener(new Error("holder exited"));
+          for (const listener of [...windowsGrant.lost]) listener(new Error("holder exited"));
         });
         return { child: spawned, confinement: "windows-srt" };
       });
@@ -1764,83 +2164,133 @@ describe("on Windows a confined child holds a grant on its own directories for e
     );
   });
 
+  function serveOwnedLoopback(
+    own: OwnResource,
+    opts: Parameters<typeof acceptHostOverLoopback>[0],
+    onAccepted: (socket: Socket) => void,
+    onRejected: () => void,
+  ): Server {
+    let server: Server | undefined;
+    let serving: Promise<void> | undefined;
+    const listen = Server.prototype.listen;
+    // The loopback API hands out the socket only after authentication. Capture the
+    // listener and pending peers while the real acceptor sets them up.
+    const spy = vi.spyOn(Server.prototype, "listen").mockImplementation(function (this: Server, ...args) {
+      server = this;
+      const { promise, resolve } = deferred<void>();
+      const onConnection = (socket: Socket) => ownStream(own, socket);
+      own("loopback connection listener", () => this.off("connection", onConnection));
+      this.prependListener("connection", onConnection);
+      let closed = false;
+      const onClose = () => {
+        closed = true;
+        resolve();
+      };
+      own("loopback close listener", () => this.off("close", onClose));
+      this.on("close", onClose);
+      own("loopback server", async () => {
+        // Run the acceptor's own failure path to clear its pending accept timer.
+        if (!closed) this.emit("error", new Error("test finished accepting loopback"));
+        await promise;
+        await serving;
+      });
+      return Reflect.apply(listen, this, args) as Server;
+    });
+    try {
+      serving = acceptHostOverLoopback(opts).then(onAccepted, onRejected);
+      void serving.catch(() => undefined);
+    } finally {
+      spy.mockRestore();
+    }
+    if (!server) throw new Error("Expected a loopback server");
+    return server;
+  }
+
   /** Use the real child loopback implementation to exercise the host handshake; this test does not prove OS sandbox admission. */
-  function loopbackChild(opts: { readonly onAnnounce?: (port: number) => void; readonly ignoresEof?: boolean } = {}) {
+  function loopbackChild(own: OwnResource, opts: {
+    readonly onAnnounce?: (server: Server, port: number) => void;
+    readonly onAccepted?: (socket: Socket) => void;
+    readonly ignoresEof?: boolean;
+  } = {}) {
     return async (spec: { args: string[] }) => {
       windowsGrant.events.push("spawn");
-      const child = fakeChild();
+      const child = fakeChild(undefined, own);
       if (opts.ignoresEof) child.kill.mockImplementation((signal: NodeJS.Signals) => {
-        setTimeout(() => end(child, null, signal), 50);
+        const timer = setTimeout(() => end(child, null, signal), 50);
+        own("fake child exit timer", () => clearTimeout(timer));
         return true;
       });
       const entryAt = spec.args.indexOf(spec.args.find((arg) => !arg.startsWith("--"))!);
       const mode = parseChildLaunchArgs(spec.args.slice(entryAt + 1));
       if (mode.transport !== "loopback") throw new Error("expected the loopback launch");
-      void acceptHostOverLoopback({
+      const server = serveOwnedLoopback(own, {
         announce: (line) => {
-          opts.onAnnounce?.(Number(line.split(" ")[1]));
+          opts.onAnnounce?.(server, Number(line.split(" ")[1]));
           child.stdout.write(line);
         },
         acceptTimeoutMs: 5_000,
         handshakeTimeoutMs: 5_000,
-      }).then((socket) => {
+      }, (socket) => {
+        opts.onAccepted?.(socket);
         if (opts.ignoresEof) socket.allowHalfOpen = true;
-        const service = servePluginChild(socket, socket);
-        socket.resume();
-        socket.on("close", () => {
-          service.hostGone();
+        const service = servePluginChild(consumePluginChildInput(socket, socket), socket);
+        const onClose = own("loopback child service", () => service.hostGone());
+        const socketClosed = () => {
+          void onClose().catch(() => undefined);
           if (!opts.ignoresEof) end(child, 0, null);
-        });
+        };
+        own("loopback child close listener", () => socket.off("close", socketClosed));
+        socket.on("close", socketClosed);
+        socket.resume();
       }, () => end(child, 1, null));
       return { child, confinement: "windows-srt" };
     };
   }
 
-  it("names the factory deadline when it passes between spawn and the post-spawn check", async () => {
-    const layout = aveLayout();
-    const { dir, entryPath } = writePluginModule();
-    try {
-      await asWindows(layout, async () => {
-        let releaseAnnounce = (): void => {};
-        const announceGate = new Promise<void>((resolve) => { releaseAnnounce = resolve; });
-        const serve = loopbackChild();
-        spawnConfinedChild.mockImplementation(async (spec: { args: string[]; assertStillValid?: () => void }) => {
-          spec.assertStillValid?.();
-          const spawned = await serve(spec);
-          const write = spawned.child.stdout.write.bind(spawned.child.stdout);
-          spawned.child.stdout.write = ((line: string) => {
-            void announceGate.then(() => write(line));
-            return true;
-          }) as typeof spawned.child.stdout.write;
-          return spawned;
-        });
-        const factory = createOutOfProcessPluginFactory({
-          manifest: MANIFEST,
-          launch: { kind: "entry", entryPath },
-          registerSandboxEnvelope: envelopeRegistration(layout.home),
-        });
-        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-        try {
-          const { deadline, late } = underFactoryDeadline(() => Promise.resolve(factory(hostContext(fakeHostApi(), layout.context))));
-          await until(() => spawnConfinedChild.mock.calls.length === 1);
-          await vi.advanceTimersByTimeAsync(FACTORY_DEADLINE_MS + 1);
-          expect(await deadline).toMatchObject(FACTORY_TIMEOUT);
-          releaseAnnounce();
-          expect(await late()).toMatchObject(DEADLINE_PASSED);
-          await until(() => windowsGrant.events.includes("release"));
-          expect(windowsGrant.events).toEqual(["grant", "spawn", "release"]);
-          const termination = factoryDebug.find((line) => line.includes("terminating child"));
-          expect(termination).toContain("refused after spawn: plugin-factory-deadline-passed");
-          await until(() => factoryDebug.some((line) => line.includes("plugin factory rejected after timeout")));
-          expect(factoryDebug.find((line) => line.includes("plugin factory rejected after timeout"))).toContain("plugin-factory-deadline-passed");
-        } finally {
-          releaseAnnounce();
-          vi.useRealTimers();
-        }
+  it("names the factory deadline when it passes between spawn and the post-spawn check", async ({ onTestFinished }) => {
+    const own = testResources(onTestFinished);
+    const layout = aveLayout(undefined, own);
+    const { entryPath } = writePluginModule(own);
+    await asWindows(layout, async () => {
+      let releaseAnnounce = (): void => {};
+      const announceGate = new Promise<void>((resolve) => { releaseAnnounce = resolve; });
+      own("announce gate", releaseAnnounce);
+      const serve = loopbackChild(own);
+      spawnConfinedChild.mockImplementation(async (spec: { args: string[]; assertStillValid?: () => void }) => {
+        spec.assertStillValid?.();
+        const spawned = await serve(spec);
+        const write = spawned.child.stdout.write.bind(spawned.child.stdout);
+        spawned.child.stdout.write = ((line: string) => {
+          void announceGate.then(() => write(line));
+          return true;
+        }) as typeof spawned.child.stdout.write;
+        return spawned;
       });
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+      const factory = createOutOfProcessPluginFactory({
+        manifest: MANIFEST,
+        launch: { kind: "entry", entryPath },
+        registerSandboxEnvelope: envelopeRegistration(layout.home),
+      });
+      own("fake clock", () => vi.useRealTimers());
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const { deadline, late } = underFactoryDeadline(() => Promise.resolve(factory(hostContext(fakeHostApi(), layout.context))));
+        await until(() => spawnConfinedChild.mock.calls.length === 1);
+        await vi.advanceTimersByTimeAsync(FACTORY_DEADLINE_MS + 1);
+        expect(await deadline).toMatchObject(FACTORY_TIMEOUT);
+        releaseAnnounce();
+        expect(await vi.waitFor(late, { message: "Waiting for the late factory result" })).toMatchObject(DEADLINE_PASSED);
+        await until(() => windowsGrant.events.includes("release"));
+        expect(windowsGrant.events).toEqual(["grant", "spawn", "release"]);
+        const termination = factoryDebug.find((line) => line.includes("terminating child"));
+        expect(termination).toContain("refused after spawn: plugin-factory-deadline-passed");
+        await until(() => factoryDebug.some((line) => line.includes("plugin factory rejected after timeout")));
+        expect(factoryDebug.find((line) => line.includes("plugin factory rejected after timeout"))).toContain("plugin-factory-deadline-passed");
+      } finally {
+        releaseAnnounce();
+        vi.useRealTimers();
+      }
+    }, { own });
   });
 
   it("spawns nothing when a synchronous grant turn outlasts the factory deadline", async () => {
@@ -1896,60 +2346,103 @@ describe("on Windows a confined child holds a grant on its own directories for e
     });
   });
 
-  it("serves a tool call over the authenticated loopback channel, then stops, releases, and leaves no listener", async () => {
-    const layout = aveLayout();
-    const { dir, entryPath } = writePluginModule();
+  it("serves a tool call over the authenticated loopback channel, then stops, releases, and leaves no listener", async ({ onTestFinished }) => {
+    const own = testResources(onTestFinished);
+    const layout = aveLayout(undefined, own);
+    const { entryPath } = writePluginModule(own);
     let port = 0;
-    try {
-      await asWindows(layout, async () => {
-        spawnConfinedChild.mockImplementation(loopbackChild({ onAnnounce: (announced) => (port = announced) }));
-        const factory = createOutOfProcessPluginFactory({ manifest: MANIFEST, launch: { kind: "entry", entryPath } });
-        const instance = await factory(hostContext(fakeHostApi(), layout.context));
-        const echoed = (await instance.handlers.pilot_echo!({ text: "over loopback" })) as { payload: unknown };
-        expect(echoed.payload).toEqual({ text: "over loopback" });
-        await instance.stop?.();
-        // Stop resolves only after the child's exit released the grant: no release may trail the reported stop.
-        expect(windowsGrant.events).toEqual(["grant", "spawn", "release"]);
-        expect(port).toBeGreaterThan(0);
-        const refused = await new Promise<string>((resolve) => {
-          const probe = connect({ host: "127.0.0.1", port });
-          probe.once("connect", () => {
-            probe.destroy();
-            resolve("connected");
-          });
-          probe.once("error", (error: NodeJS.ErrnoException) => resolve(error.code ?? "error"));
-        });
-        expect(refused).toBe("ECONNREFUSED");
-      });
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    let server: Server | undefined;
+    await asWindows(layout, async () => {
+      spawnConfinedChild.mockImplementation(loopbackChild(own, {
+        onAnnounce: (listening, announced) => {
+          server = listening;
+          port = announced;
+        },
+      }));
+      const factory = createOutOfProcessPluginFactory({ manifest: MANIFEST, launch: { kind: "entry", entryPath } });
+      const instance = await factory(hostContext(fakeHostApi(), layout.context));
+      const stop = own("loopback session", () => instance.stop?.());
+      const echoed = (await instance.handlers.pilot_echo!({ text: "over loopback" })) as { payload: unknown };
+      expect(echoed.payload).toEqual({ text: "over loopback" });
+      await stop();
+      // Stop resolves only after the child's exit released the grant: no release may trail the reported stop.
+      expect(windowsGrant.events).toEqual(["grant", "spawn", "release"]);
+      expect(port).toBeGreaterThan(0);
+      expect(server?.listening).toBe(false);
+    }, { own });
   });
 
-  it("finishes releasing the grant before stop returns when the child ignores socket EOF", async () => {
-    const layout = aveLayout();
-    const { dir, entryPath } = writePluginModule();
-    try {
-      await asWindows(layout, async () => {
-        spawnConfinedChild.mockImplementation(loopbackChild({ ignoresEof: true }));
-        const factory = createOutOfProcessPluginFactory({ manifest: MANIFEST, launch: { kind: "entry", entryPath } });
-        const instance = await factory(hostContext(fakeHostApi(), layout.context));
-        await instance.stop?.();
-        expect(windowsGrant.events).toEqual(["grant", "spawn", "release"]);
-      });
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+  it("finishes releasing the grant before stop returns when the child ignores socket EOF", async ({ onTestFinished }) => {
+    const own = testResources(onTestFinished);
+    const layout = aveLayout(undefined, own);
+    const { entryPath } = writePluginModule(own);
+    await asWindows(layout, async () => {
+      spawnConfinedChild.mockImplementation(loopbackChild(own, { ignoresEof: true }));
+      const factory = createOutOfProcessPluginFactory({ manifest: MANIFEST, launch: { kind: "entry", entryPath } });
+      const instance = await factory(hostContext(fakeHostApi(), layout.context));
+      const stop = own("loopback session", () => instance.stop?.());
+      await stop();
+      expect(windowsGrant.events).toEqual(["grant", "spawn", "release"]);
+    }, { own });
   });
 
-  it("refuses a child whose stdout says anything before its announce, ends it, and releases the grant", async () => {
-    const layout = aveLayout();
+  it.for([false, true])("uses one deadline after a clean wrapped socket close, with session stop: %s", async (stopDuringGrace, { onTestFinished }) => {
+    const own = testResources(onTestFinished);
+    const layout = aveLayout(undefined, own);
+    const { entryPath } = writePluginModule(own);
+    await asWindows(layout, async () => {
+      let peer: Socket | undefined;
+      let wrapper: FakeChild | undefined;
+      const spawnLoopback = loopbackChild(own, {
+        ignoresEof: true,
+        onAccepted: (socket) => { peer = socket; },
+      });
+      spawnConfinedChild.mockImplementation(async (spec: { args: string[] }) => {
+        const result = await spawnLoopback(spec);
+        wrapper = result.child;
+        wrapper.kill.mockReset().mockReturnValue(true);
+        return result;
+      });
+      const factory = createOutOfProcessPluginFactory({ manifest: MANIFEST, launch: { kind: "entry", entryPath } });
+      const instance = await factory(hostContext(fakeHostApi(), layout.context));
+      if (!peer || !wrapper) throw new Error("missing wrapped child or peer");
+      const socket = peer;
+      const child = wrapper;
+      vi.useFakeTimers();
+      try {
+        const closed = new Promise<void>((resolve) => socket.once("close", () => resolve()));
+        socket.end();
+        await closed;
+        const { pluginShutdownKillGraceMs: grace, pluginChildForceKillMs: force } = TOOL_TIMEOUT_POLICY;
+        await vi.advanceTimersByTimeAsync(grace - 1);
+        const stop = stopDuringGrace ? Promise.resolve(instance.stop?.()).catch((error: unknown) => error) : undefined;
+        await vi.advanceTimersByTimeAsync(0);
+        expect(child.kill.mock.calls).toEqual([]);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(child.kill.mock.calls).toEqual([["SIGTERM"]]);
+        await vi.advanceTimersByTimeAsync(force - 1);
+        expect(child.kill.mock.calls).toEqual([["SIGTERM"]]);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(child.kill.mock.calls).toEqual([["SIGTERM"], ["SIGKILL"]]);
+        end(child, 0, null);
+        expect(await stop).toBeUndefined();
+      } finally {
+        end(child, 0, null);
+        vi.useRealTimers();
+      }
+    }, { own });
+  });
+
+  it("refuses a child whose stdout says anything before its announce, ends it, and releases the grant", async ({ onTestFinished }) => {
+    const own = testResources(onTestFinished);
+    const layout = aveLayout(undefined, own);
     await asWindows(layout, async () => {
       let spawned: FakeChild | undefined;
       spawnConfinedChild.mockImplementation(async () => {
         windowsGrant.events.push("spawn");
-        spawned = fakeChild();
-        setImmediate(() => spawned!.stdout.write("AVE-CHILD-LISTEN 1 not-a-nonce\n"));
+        spawned = fakeChild(undefined, own);
+        const announce = setImmediate(() => spawned!.stdout.write("AVE-CHILD-LISTEN 1 not-a-nonce\n"));
+        own("invalid announce immediate", () => clearImmediate(announce));
         return { child: spawned, confinement: "windows-srt" };
       });
       const outcome = await construct(layout);
@@ -1959,74 +2452,81 @@ describe("on Windows a confined child holds a grant on its own directories for e
       await vi.waitFor(() => expect(windowsGrant.events).toEqual(["grant", "spawn", "release"]));
       // A start that failed leaves no throwaway HOME behind.
       expect(existsSync(windowsGrant.calls[0]!.allowRead.at(-1)!)).toBe(false);
-    });
+    }, { own });
   });
 
   /** Simulate process death before return or at acceptance while descendant listener and channel remain alive. */
-  function deadLoopbackChild(when: "before-return" | "at-accept", served: { count: number }) {
-    return async (spec: { args: string[] }) => {
+  function deadLoopbackChild(own: OwnResource, when: "before-return" | "at-accept") {
+    const { promise: exited, resolve: observeExit } = deferred<number | null>();
+    let exitAtAccept: (() => Promise<void>) | undefined;
+    const spawn = async (spec: { args: string[] }) => {
       windowsGrant.events.push("spawn");
-      const child = fakeChild();
+      const child = fakeChild(undefined, own);
+      child.once("exit", observeExit);
+      own("fake child exit listener", () => child.off("exit", observeExit));
       const entryAt = spec.args.indexOf(spec.args.find((arg) => !arg.startsWith("--"))!);
       const mode = parseChildLaunchArgs(spec.args.slice(entryAt + 1));
       if (mode.transport !== "loopback") throw new Error("expected the loopback launch");
-      void acceptHostOverLoopback({
+      serveOwnedLoopback(own, {
         announce: (line) => child.stdout.write(line),
         acceptTimeoutMs: 5_000,
         handshakeTimeoutMs: 5_000,
-      }).then((socket) => {
+      }, (socket) => {
         if (when === "at-accept") {
           child.exitCode = 3;
-          setTimeout(() => {
+          exitAtAccept = own("pending fake child exit", () => {
             child.exitCode = null;
             end(child, 3, null);
-          }, 150);
+          });
         }
-        served.count += 1;
-        servePluginChild(socket, socket);
+        const service = servePluginChild(socket, socket);
+        own("dead loopback child service", () => service.hostGone());
         socket.resume();
       }, () => undefined);
       if (when === "before-return") end(child, 3, null);
       return { child, confinement: "windows-srt" };
     };
+    return { spawn, exited, exit: () => exitAtAccept?.() };
   }
 
-  it.each(["before-return", "at-accept"] as const)(
+  it.for(["before-return", "at-accept"] as const)(
     "does not serve a plugin from a child that is already dead (%s): the load fails with its exit and the grant is released",
-    async (when) => {
-      const layout = aveLayout();
-      const { dir, entryPath } = writePluginModule();
-      const served = { count: 0 };
-      try {
-        await asWindows(layout, async () => {
-          spawnConfinedChild.mockImplementation(deadLoopbackChild(when, served));
-          const factory = createOutOfProcessPluginFactory({ manifest: MANIFEST, launch: { kind: "entry", entryPath } });
-          const outcome = await Promise.resolve(factory(hostContext(fakeHostApi(), layout.context))).then(
-            () => "constructed",
-            (error: unknown) => error,
-          );
-          expect(outcome).toBeInstanceOf(Error);
-          expect((outcome as Error).message).toContain(`${PLUGIN_ID}: child exited code=3`);
-          await vi.waitFor(() => expect(windowsGrant.events).toEqual(["grant", "spawn", "release"]));
-        });
-      } finally {
-        rmSync(dir, { recursive: true, force: true });
-      }
+    async (when, { onTestFinished }) => {
+      const own = testResources(onTestFinished);
+      const layout = aveLayout(undefined, own);
+      const { entryPath } = writePluginModule(own);
+      const child = deadLoopbackChild(own, when);
+      await asWindows(layout, async () => {
+        spawnConfinedChild.mockImplementation(child.spawn);
+        const factory = createOutOfProcessPluginFactory({ manifest: MANIFEST, launch: { kind: "entry", entryPath } });
+        const outcome = await Promise.resolve(factory(hostContext(fakeHostApi(), layout.context))).then(
+          () => "constructed",
+          (error: unknown) => error,
+        );
+        expect(outcome).toBeInstanceOf(Error);
+        expect((outcome as Error).message).toContain(`${PLUGIN_ID}: child exited code=3`);
+        await child.exit();
+        await expect(withRealTimeout(child.exited, CHILD_EXIT_TIMEOUT_MS, "Fake child did not emit exit")).resolves.toBe(3);
+        await vi.waitFor(() => expect(windowsGrant.events).toEqual(["grant", "spawn", "release"]));
+      }, { own });
     },
   );
 
-  it("refuses a sandboxed Windows launch that came back unwrapped", async () => {
-    const layout = aveLayout();
+  it("refuses a sandboxed Windows launch that came back unwrapped", async ({ onTestFinished }) => {
+    const own = testResources(onTestFinished);
+    const layout = aveLayout(undefined, own);
     await asWindows(layout, async () => {
-      spawnConfinedChild.mockImplementation(async () => ({ child: fakeChild(), confinement: "unconfined" }));
+      spawnConfinedChild.mockImplementation(async () => ({ child: fakeChild(undefined, own), confinement: "unconfined" }));
       const outcome = await construct(layout);
       expect((outcome as Error).message).toContain("came back 'unconfined', not 'windows-srt'");
-    });
+    }, { own });
   });
 
-  it("runs the real child entry over loopback: the argument's environment applies, stdin's end is not the host leaving, and the channel's end is", async () => {
+  it("runs the real child entry over loopback: the argument's environment applies, stdin's end is not the host leaving, and the channel's end is", async ({ onTestFinished }) => {
+    const own = testResources(onTestFinished);
     // Use a real child with ended stdin to reproduce the Windows wrapper transport without requiring that wrapper.
     const dir = mkdtempSync(join(tmpdir(), "oop-loopback-real-"));
+    ownDirectory(own, dir);
     const entryPath = join(dir, "plugin.mjs");
     writeFileSync(
       entryPath,
@@ -2040,31 +2540,29 @@ describe("on Windows a confined child holds a grant on its own directories for e
       [pluginChildEntryPath(), CHILD_LOOPBACK_TRANSPORT_ARG, encodeChildEnv({ CHILD_ENV_PROBE: "from the argument" })],
       { env: { ...buildSafeChildEnv(), ELECTRON_RUN_AS_NODE: "1" }, stdio: ["pipe", "pipe", "pipe"] },
     );
+    const exited = ownChildProcess(own, child);
     child.stdin!.end();
-    const exited = new Promise<string>((resolve) => child.once("exit", (code) => resolve(`code=${String(code)}`)));
-    try {
-      const socket = await connectToAnnouncedChild({ stdout: child.stdout!, exited, timeoutMs: 20_000 });
-      // Windows resets loopback when the peer exits; observe the error instead of throwing it.
-      socket.on("error", () => undefined);
-      const link: ChildLink = {
-        input: socket,
-        output: socket,
-        terminate: () => socket.destroy(),
-        onGone: (handler) => void exited.then(handler),
-        onFault: () => undefined,
-      };
-      const manifest: PluginManifest = {
-        ...MANIFEST,
-        tools: [{ name: "probe_env", description: "read the child's environment", inputSchema: EMPTY_SCHEMA }],
-      };
-      const instance = await sessionFactory({ manifest, entryPath, link })(hostContext(fakeHostApi()));
-      await expect(instance.handlers.probe_env!()).resolves.toBe("from the argument");
-      socket.end();
-      await expect(exited).resolves.toBe("code=0");
-    } finally {
-      child.kill();
-      rmSync(dir, { recursive: true, force: true });
-    }
+    const socket = await connectToAnnouncedChild({ stdout: child.stdout!, exited, timeoutMs: 20_000 });
+    ownStream(own, socket);
+    // Windows resets loopback when the peer exits; observe the error instead of throwing it.
+    const onError = () => undefined;
+    own("loopback socket error listener", () => socket.off("error", onError));
+    socket.on("error", onError);
+    const link: ChildLink = {
+      ...pacePluginChildInput(socket, socket),
+      terminate: () => socket.destroy(),
+      onGone: (handler) => void exited.then(handler),
+      onFault: () => undefined,
+    };
+    const manifest: PluginManifest = {
+      ...MANIFEST,
+      tools: [{ name: "probe_env", description: "read the child's environment", inputSchema: EMPTY_SCHEMA }],
+    };
+    const instance = await sessionFactory({ manifest, entryPath, link })(hostContext(fakeHostApi()));
+    own("real child session", () => instance.stop?.());
+    await expect(instance.handlers.probe_env!()).resolves.toBe("from the argument");
+    socket.end();
+    await expect(withRealTimeout(exited, CHILD_EXIT_TIMEOUT_MS, "Real child did not exit after channel EOF")).resolves.toBe("code=0");
   }, 30_000);
 
   it.skipIf(process.platform === "win32")("makes no ACL grant off Windows, where the wrap carries the allow-list", async () => {
@@ -2111,11 +2609,13 @@ describe("on Windows a confined child holds a grant on its own directories for e
 
 /** Stored ~/ paths are refused at spawn; clearing the value or approving an absolute directory permits a fresh incarnation. */
 describe("a stored '~/…' directory value: refused with guidance, and both ways out load", () => {
-  it("fails construction with no child, then loads from an approved absolute path, then with the value cleared", async () => {
+  it("fails construction with no child, then loads from an approved absolute path, then with the value cleared", async ({ onTestFinished }) => {
+    const own = testResources(onTestFinished);
     const actual = await vi.importActual<typeof import("../../../permissions/confined-child.js")>(
       "../../../permissions/confined-child.js",
     );
-    const root = mkdtempSync(join(process.platform === "darwin" ? "/private/tmp" : process.platform === "win32" ? tmpdir() : "/tmp", "oop-tilde-"));
+    const root = mkdtempSync(join(tmpdir(), "oop-tilde-"));
+    ownDirectory(own, root);
     const previousHome = process.env.AVE_HOME;
     const home = join(root, "home");
     const approved = join(root, "approved");
@@ -2164,98 +2664,95 @@ describe("a stored '~/…' directory value: refused with guidance, and both ways
         config: { dataDirectory },
       });
     };
-    process.env.AVE_HOME = home;
-    spawnConfinedChild.mockReset();
-    spawnConfinedChild.mockImplementation(actual.spawnConfinedChild);
-    const loaded: RuntimePlugin[] = [];
-    try {
-      const refused = await Promise.resolve(factory(storeAndContext("~/ave-git-cache"))).then(() => undefined, (error: unknown) => error);
-      expect(refused).toBeInstanceOf(PluginSandboxGrantError);
-      expect((refused as Error).message).toBe(
-        "[out-of-process-plugin] tilde-cache: cannot widen the child's envelope for config key 'dataDirectory': "
-          + "'~/ave-git-cache' is not an absolute path — the host cannot resolve a relative value, because "
-          + "the directory it would be relative to is the plugin's to choose; "
-          + "enter an approved absolute directory for 'dataDirectory', or clear the setting",
-      );
-      expect(spawnConfinedChild).not.toHaveBeenCalled();
-      expect(confinements).toEqual([]);
-
-      const fromApproved = await factory(storeAndContext(approved));
-      loaded.push(fromApproved);
-      await expect(fromApproved.handlers.cache_where!()).resolves.toBe(approved);
-      expect(spawnConfinedChild).toHaveBeenCalledTimes(1);
-      await fromApproved.stop?.();
-      loaded.length = 0;
-
-      const cleared = await factory(storeAndContext(""));
-      loaded.push(cleared);
-      await expect(cleared.handlers.cache_where!()).resolves.toBe("");
-      expect(spawnConfinedChild).toHaveBeenCalledTimes(2);
-      // Clearing config removes the requested grant; only the approved-value child may write the directory.
-      const writes = spawnConfinedChild.mock.calls.map(([spec]) => (spec as { allowWrite?: readonly string[] }).allowWrite ?? []);
-      expect(writes[0]).toContain(approved);
-      expect(writes[1]).not.toContain(approved);
-      expect(confinements).toEqual(["unconfined", "unconfined"]);
-    } finally {
-      for (const instance of loaded) await instance.stop?.();
-      spawnConfinedChild.mockReset();
+    own("AVE_HOME", () => {
       if (previousHome === undefined) delete process.env.AVE_HOME;
       else process.env.AVE_HOME = previousHome;
-      rmSync(root, { recursive: true, force: true });
-    }
+    });
+    process.env.AVE_HOME = home;
+    own("child spawn mock", () => spawnConfinedChild.mockReset());
+    spawnConfinedChild.mockReset();
+    spawnConfinedChild.mockImplementation(async (spec: Parameters<typeof actual.spawnConfinedChild>[0]) => {
+      const spawned = await actual.spawnConfinedChild(spec);
+      ownChildProcess(own, spawned.child);
+      return spawned;
+    });
+    const refused = await Promise.resolve(factory(storeAndContext("~/ave-git-cache"))).then(() => undefined, (error: unknown) => error);
+    expect(refused).toBeInstanceOf(PluginSandboxGrantError);
+    expect((refused as Error).message).toBe(
+      "[out-of-process-plugin] tilde-cache: cannot widen the child's envelope for config key 'dataDirectory': "
+        + "'~/ave-git-cache' is not an absolute path — the host cannot resolve a relative value, because "
+        + "the directory it would be relative to is the plugin's to choose; "
+        + "enter an approved absolute directory for 'dataDirectory', or clear the setting",
+    );
+    expect(spawnConfinedChild).not.toHaveBeenCalled();
+    expect(confinements).toEqual([]);
+
+    const fromApproved = await factory(storeAndContext(approved));
+    const stopApproved = own("approved plugin session", () => fromApproved.stop?.());
+    await expect(fromApproved.handlers.cache_where!()).resolves.toBe(approved);
+    expect(spawnConfinedChild).toHaveBeenCalledTimes(1);
+    await stopApproved();
+
+    const cleared = await factory(storeAndContext(""));
+    own("cleared plugin session", () => cleared.stop?.());
+    await expect(cleared.handlers.cache_where!()).resolves.toBe("");
+    expect(spawnConfinedChild).toHaveBeenCalledTimes(2);
+    // Clearing config removes the requested grant; only the approved-value child may write the directory.
+    const writes = spawnConfinedChild.mock.calls.map(([spec]) => (spec as { allowWrite?: readonly string[] }).allowWrite ?? []);
+    expect(writes[0]).toContain(approved);
+    expect(writes[1]).not.toContain(approved);
+    expect(confinements).toEqual(["unconfined", "unconfined"]);
   });
 });
 
 describe("a ui:// card is MCP resources/read", () => {
   const CARD = "ui://sampleassistant/card";
 
-  it("reads the card through the child's MCP server when the manifest declares it", async () => {
-    const { dir, entryPath } = writeModule(
+  it("reads the card through the child's MCP server when the manifest declares it", async ({ onTestFinished }) => {
+    const own = testResources(onTestFinished);
+    const { entryPath } = writeModule(
       "oop-plugin-card-",
       "export const createPlugin = async () => ({\n"
         + "  handlers: {},\n"
         + "  readUiResource: async (uri) => `<p>${uri}</p>`,\n"
         + "});\n",
+      own,
     );
-    const { child } = pairedChild();
-    const sent = hostFrames(child.link);
-    try {
-      const factory = sessionFactory({
-        manifest: { ...MANIFEST, uiResources: [{ uri: CARD }] },
-        entryPath,
-        link: child.link,
-      });
-      const instance = await factory(hostContext(fakeHostApi()));
-      await expect(instance.readUiResource?.(CARD)).resolves.toBe(`<p>${CARD}</p>`);
-      expect(sent.some((frame) => frame.method === "resources/read")).toBe(true);
-      await instance.stop?.();
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    const { child } = pairedChild(own);
+    const sent = hostFrames(child.link, own);
+    const factory = sessionFactory({
+      manifest: { ...MANIFEST, uiResources: [{ uri: CARD }] },
+      entryPath,
+      link: child.link,
+    });
+    const instance = await factory(hostContext(fakeHostApi()));
+    const stop = own("paired child session", () => instance.stop?.());
+    await expect(instance.readUiResource?.(CARD)).resolves.toBe(`<p>${CARD}</p>`);
+    expect(sent.some((frame) => frame.method === "resources/read")).toBe(true);
+    await stop();
   });
 
-  it("offers no read when the manifest declares no card, even if the plugin has the hook", async () => {
-    const { dir, entryPath } = writeModule(
+  it("offers no read when the manifest declares no card, even if the plugin has the hook", async ({ onTestFinished }) => {
+    const own = testResources(onTestFinished);
+    const { entryPath } = writeModule(
       "oop-plugin-nocard-",
       "export const createPlugin = async () => ({\n"
         + "  handlers: {},\n"
         + "  readUiResource: async (uri) => `<p>${uri}</p>`,\n"
         + "});\n",
+      own,
     );
-    const { child } = pairedChild();
-    try {
-      const factory = sessionFactory({
-        manifest: MANIFEST,
-        entryPath,
-        link: child.link,
-      });
-      const instance = await factory(hostContext(fakeHostApi()));
-      // The child's server would refuse the read, so the host is not handed a
-      // hook that can only fail.
-      expect(instance.readUiResource).toBeUndefined();
-      await instance.stop?.();
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    const { child } = pairedChild(own);
+    const factory = sessionFactory({
+      manifest: MANIFEST,
+      entryPath,
+      link: child.link,
+    });
+    const instance = await factory(hostContext(fakeHostApi()));
+    const stop = own("paired child session", () => instance.stop?.());
+    // The child's server would refuse the read, so the host is not handed a
+    // hook that can only fail.
+    expect(instance.readUiResource).toBeUndefined();
+    await stop();
   });
 });

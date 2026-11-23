@@ -21,11 +21,19 @@ function isTransientStatus(status) {
   return status === 429 || (status >= 500 && status <= 599);
 }
 
-function isTransientNetworkError(error) {
+export class DownloadHttpError extends Error {
+  constructor(status, message) {
+    super(message);
+    this.name = "DownloadHttpError";
+    this.status = status;
+  }
+}
+
+export function isTransientNetworkError(error) {
   // undici reports connection failures as `TypeError: fetch failed` and mid-body drops as `TypeError: terminated`.
   // Other TypeErrors (e.g. `Invalid URL`) are deterministic and fail on the first attempt.
-  if (error instanceof TypeError && (error.message === "fetch failed" || error.message === "terminated")) return true;
   for (let current = error; current && typeof current === "object"; current = current.cause) {
+    if (current instanceof TypeError && (current.message === "fetch failed" || current.message === "terminated")) return true;
     if (TRANSIENT_NETWORK_CODES.has(current.code)) return true;
     if (typeof current.message === "string" && current.message.includes("socket hang up")) return true;
   }
@@ -55,9 +63,8 @@ export async function fetchBytesWithRetry(url, { httpError, log = () => {}, fetc
       failure = error;
     }
     if (failure === undefined) {
-      const message = httpError(response);
-      if (!isTransientStatus(response.status)) throw new Error(message);
-      failure = new Error(message);
+      failure = new DownloadHttpError(response.status, httpError(response));
+      if (!isTransientStatus(response.status)) throw failure;
     }
     const message = failure instanceof Error ? failure.message : String(failure);
     if (attempt >= DOWNLOAD_ATTEMPTS) {

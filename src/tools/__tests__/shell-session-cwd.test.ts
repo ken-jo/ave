@@ -8,7 +8,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../permissions/asrt-sandbox.js")>(),
   wrapToolCommand: vi.fn(async (command: string) => ({ argv: ["/bin/bash", "-c", command], env: { ...process.env } })),
   cleanupAsrtSandboxAfterCommand: vi.fn(async () => {}),
-  getDefaultSensitiveReadDenyPaths: () => [], getDefaultSensitiveWriteDenyPaths: () => [],
+  getDefaultSensitiveReadDenyPaths: () => [], getDefaultSensitiveWriteDenyEntries: () => [],
 }));
 
 import type { ToolExecutionContext } from "../base.js";

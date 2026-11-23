@@ -121,15 +121,17 @@
     "build:windows-job": "node scripts/build-windows-job.mjs"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "~4.0.96",
-    "@ai-sdk/azure": "^4.0.116",
-    "@ai-sdk/google": "^4.0.111",
-    "@ai-sdk/google-vertex": "^5.0.131",
-    "@ai-sdk/openai": "^4.0.108",
-    "@ai-sdk/openai-compatible": "~3.0.84",
-    "@ai-sdk/otel": "^1.0.162",
+    "@ai-sdk/anthropic": "~4.0.106",
+    "@ai-sdk/azure": "^4.0.129",
+    "@ai-sdk/google": "^4.0.122",
+    "@ai-sdk/google-vertex": "^5.0.142",
+    "@ai-sdk/openai": "^4.0.121",
+    "@ai-sdk/openai-compatible": "~3.0.93",
+    "@ai-sdk/otel": "^1.0.176",
     "@anthropic-ai/sandbox-runtime": "0.0.80",
     "@ave/shell-parser-runtime": "file:resources/shell-parser",
+    "@cosmos.gl/graph": "3.6.0",
+    "@huggingface/tokenizers": "0.2.0",
     "@microsoft/mxc-sdk": "1.0.1",
     "@modelcontextprotocol/client": "2.4.0",
     "@modelcontextprotocol/ext-apps": "2.0.4",
@@ -137,52 +139,54 @@
     "@napi-rs/canvas": "1.0.10",
     "@nodable/entities": "3.1.0",
     "@opentelemetry/api": "^1.10.0",
-    "@opentelemetry/context-async-hooks": "^3.0.0",
-    "@opentelemetry/exporter-trace-otlp-http": "^0.300.0",
-    "@opentelemetry/resources": "^3.0.0",
-    "@opentelemetry/sdk-trace": "^3.0.0",
+    "@opentelemetry/context-async-hooks": "^3.1.1",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.301.2",
+    "@opentelemetry/resources": "^3.1.1",
+    "@opentelemetry/sdk-trace": "^3.1.1",
     "@vscode/ripgrep": "1.18.0",
     "adm-zip": "^0.6.1",
-    "ai": "~7.0.162",
+    "ai": "~7.0.176",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
-    "better-sqlite3": "^13.0.3",
+    "better-sqlite3": "^13.2.0",
     "electron-audio-loopback": "^1.0.6",
     "electron-updater": "~6.8.11",
-    "fast-xml-parser": "5.12.0",
-    "jose": "6.2.15",
+    "fast-xml-parser": "5.12.1",
+    "jose": "6.2.17",
     "jszip": "3.10.2",
     "mermaid": "^12.3.0",
     "node-pty": "^1.1.0",
-    "papaparse": "5.7.0",
+    "onnxruntime-node": "1.31.1",
+    "papaparse": "5.7.1",
     "pdfjs-dist": "6.4.299",
     "pino": "^10.4.0",
     "pino-pretty": "^13.2.0",
     "proper-lockfile": "^4.1.2",
     "sharp": "0.35.5",
     "sonic-boom": "^5.0.2",
-    "tar": "7.5.22",
-    "tldts": "7.4.19",
-    "undici": "^8.12.3",
+    "tar": "7.5.23",
+    "tldts": "7.5.4",
+    "umap-js": "1.4.0",
+    "undici": "^8.12.4",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
     "yaml": "^2.9.1",
     "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@ai-sdk/devtools": "^1.0.65",
-    "@asamuzakjp/css-color": "7.1.8",
-    "@biomejs/biome": "2.6.5",
+    "@ai-sdk/devtools": "^1.0.79",
+    "@asamuzakjp/css-color": "7.2.0",
+    "@biomejs/biome": "2.6.8",
     "@dnd-kit/core": "6.3.1",
-    "@electron/asar": "4.3.1",
+    "@electron/asar": "4.3.2",
     "@electron/rebuild": "^4.2.1",
-    "@playwright/test": "^1.64.1",
-    "@tailwindcss/cli": "^4.3.4",
-    "@tailwindcss/postcss": "^4.3.4",
+    "@playwright/test": "^1.65.1",
+    "@tailwindcss/cli": "^4.3.5",
+    "@tailwindcss/postcss": "^4.3.5",
     "@tailwindcss/typography": "^0.5.20",
     "@testing-library/dom": "^10.4.2",
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.3",
-    "@testing-library/user-event": "^14.6.8",
+    "@testing-library/user-event": "^14.6.12",
     "@types/adm-zip": "^0.6.0",
     "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^26.6.6",
@@ -190,30 +194,30 @@
     "@types/proper-lockfile": "^4.1.4",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
-    "@vitest/coverage-v8": "^5.1.0",
+    "@vitest/coverage-v8": "^5.1.1",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-search": "^0.16.0",
     "@xterm/addon-unicode11": "^0.9.0",
     "@xterm/addon-web-links": "^0.12.0",
     "@xterm/xterm": "6.0.0",
     "app-builder-lib": "26.18.0",
-    "baseline-browser-mapping": "^2.11.35",
-    "caniuse-lite": "^1.0.30001820",
+    "baseline-browser-mapping": "^2.11.38",
+    "caniuse-lite": "^1.0.30001826",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "date-fns": "^4.4.0",
-    "electron": "^45.2.2",
+    "electron": "^45.3.4",
     "electron-builder": "26.18.0",
     "eruda": "^3.4.3",
     "esbuild": "^0.28.2",
     "esbuild-loader": "^4.5.0",
     "highlight.js": "11.12.0",
-    "jsdom": "^30.1.3",
-    "knip": "6.44.1",
+    "jsdom": "^31.0.1",
+    "knip": "6.45.1",
     "lowlight": "3.3.0",
-    "lucide-react": "^1.68.0",
-    "playwright": "^1.64.1",
-    "postcss": "^8.5.32",
+    "lucide-react": "^1.75.0",
+    "playwright": "^1.65.1",
+    "postcss": "^8.5.33",
     "radix-ui": "^1.8.1",
     "react": "^19.3.1",
     "react-data-grid": "7.0.0-beta.64",
@@ -223,13 +227,13 @@
     "remark-gfm": "^4.0.1",
     "shadcn": "^4.23.0",
     "tailwind-merge": "^3.7.0",
-    "tailwindcss": "^4.3.4",
+    "tailwindcss": "^4.3.5",
     "ts-json-schema-generator": "2.9.0",
     "tsx": "^4.23.15",
     "tw-animate-css": "^1.4.0",
     "typescript": "^7.0.2",
-    "vite": "^8.3.5",
-    "vitest": "^5.1.0",
+    "vite": "^8.3.8",
+    "vitest": "^5.1.1",
     "webpack": "^5.112.1",
     "webpack-cli": "^7.3.1"
   },
@@ -273,6 +277,7 @@
       "!node_modules/node-pty/third_party{,/**/*}",
       "!node_modules/node-pty/node_modules/node-addon-api{,/**/*}",
       "!node_modules/node-addon-api{,/**/*}",
+      "!node_modules/onnxruntime-node/bin/napi-v6/*/!(${arch}){,/**/*}",
       "!node_modules/node-pty/prebuilds/win32-*/**/*.pdb",
       "!node_modules/better-sqlite3/deps{,/**/*}",
       "!node_modules/better-sqlite3/src{,/**/*}",
@@ -314,9 +319,12 @@
       "node_modules/@img/**",
       "node_modules/@microsoft/mxc-sdk/**",
       "node_modules/koffi/**",
-      "node_modules/@koromix/koffi-win32-*/**"
+      "node_modules/@koromix/koffi-win32-*/**",
+      "node_modules/onnxruntime-node/bin/**"
     ],
-    "electronFuses": { "runAsNode": true },
+    "electronFuses": {
+      "runAsNode": true
+    },
     "directories": {
       "output": "release"
     },
@@ -416,7 +424,10 @@
       {
         "from": "dist/skill-scripts",
         "to": "skill-scripts",
-        "filter": ["*.cjs", "manifest.json"]
+        "filter": [
+          "*.cjs",
+          "manifest.json"
+        ]
       },
       {
         "from": "resources/prompts",
@@ -424,9 +435,14 @@
         "filter": [
           "*.md"
         ]
+      },
+      {
+        "from": "resources/licenses/memory",
+        "to": "licenses/memory"
       }
     ],
     "mac": {
+      "files": ["!node_modules/onnxruntime-node/bin/napi-v6/!(darwin){,/**/*}"],
       "category": "public.app-category.productivity",
       "target": [
         "dmg",
@@ -463,6 +479,7 @@
       ]
     },
     "linux": {
+      "files": ["!node_modules/onnxruntime-node/bin/napi-v6/!(linux){,/**/*}"],
       "category": "Office",
       "icon": "build/icons",
       "target": [
@@ -506,7 +523,18 @@
       ]
     },
     "win": {
-      "signExts": ["!srt-win.exe", "!wxc-exec.exe", "!mxc_ffi.dll", "!wslcsdk.dll", "!koffi.node", "!OpenConsole.exe", "!winpty-agent.exe", "!conpty.dll", "!winpty.dll"],
+      "files": ["!node_modules/onnxruntime-node/bin/napi-v6/!(win32){,/**/*}"],
+      "signExts": [
+        "!srt-win.exe",
+        "!wxc-exec.exe",
+        "!mxc_ffi.dll",
+        "!wslcsdk.dll",
+        "!koffi.node",
+        "!OpenConsole.exe",
+        "!winpty-agent.exe",
+        "!conpty.dll",
+        "!winpty.dll"
+      ],
       "target": [
         "nsis"
       ],
@@ -514,7 +542,9 @@
         {
           "from": "node_modules/@microsoft/mxc-sdk/node_modules/semver",
           "to": "app.asar.unpacked/node_modules/@microsoft/mxc-sdk/node_modules/semver",
-          "filter": ["**/*"]
+          "filter": [
+            "**/*"
+          ]
         },
         {
           "from": "resources/windows-job/${arch}/ave-job.exe",
@@ -554,7 +584,7 @@
   "patchedDependencies": {
     "@anthropic-ai/sandbox-runtime@0.0.80": "patches/@anthropic-ai%2Fsandbox-runtime@0.0.80.patch",
     "app-builder-lib@26.18.0": "patches/app-builder-lib@26.18.0.patch",
-    "electron@45.2.2": "patches/electron@45.2.2.patch",
+    "electron@45.3.4": "patches/electron@45.3.4.patch",
     "node-pty@1.1.0": "patches/node-pty@1.1.0.patch"
   }
 }

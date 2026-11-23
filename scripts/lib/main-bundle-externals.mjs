@@ -1,6 +1,7 @@
 // Builds and child-entry smoke checks share this external boundary.
 export const MAIN_BUNDLE_EXTERNALS = [
   "electron",
+  "onnxruntime-node",
   "electron-updater",
   "better-sqlite3",
   // Keep native addons external so filesystem-relative binding resolution works.

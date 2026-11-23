@@ -1,7 +1,7 @@
 /** Bundle test entries through the shipped build boundary; importing another suite would register its tests twice. */
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { build } from "esbuild";
+import { build, type Plugin } from "esbuild";
 // Use the shipped external dependency boundary.
 import { MAIN_BUNDLE_EXTERNALS } from "../../../../scripts/lib/main-bundle-externals.mjs";
 
@@ -19,6 +19,7 @@ export async function buildMainBoundaryBundle(options: {
   readonly entryPoints: Record<string, string>;
   readonly outdir: string;
   readonly splitting: boolean;
+  readonly plugins?: Plugin[];
 }): Promise<void> {
   await build({
     absWorkingDir: repositoryRoot(),
@@ -31,6 +32,7 @@ export async function buildMainBoundaryBundle(options: {
     bundle: true,
     format: "esm",
     splitting: options.splitting,
+    plugins: options.plugins,
     preserveSymlinks: true,
     platform: "node",
     target: ["node22"],

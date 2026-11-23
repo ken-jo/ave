@@ -20,17 +20,18 @@ and fails closed when any limit is exceeded:
 | --- | ---: |
 | Entry file | 1,700,000 bytes |
 | Initial static closure | 8,000,000 bytes |
-| All emitted main-process JavaScript | Entry budget + initial budget + 4,300,000-byte lazy allowance |
+| All emitted main-process JavaScript | Entry budget + initial budget + 4,550,000-byte lazy allowance |
 
 `createMainBundleBudgets` in `scripts/lib/main-bundle-budget.mjs` derives the
 total ceiling from the two startup budgets and the fixed lazy allowance. With
-the current inputs it remains 14,000,000 bytes; changing either startup budget
-recalculates total automatically. The allowance preserves the existing total
-cap rather than increasing it to accommodate a build.
+the current inputs it is 14,250,000 bytes; changing either startup budget
+recalculates total automatically. The allowance was raised by 250,000 bytes for
+the memory embedding map (ml-matrix/umap-js/tokenizers in a lazy chunk and the
+inference child), whose startup code stays behind a dynamic import.
 
 Initial bytes already include the entry file. The additional entry budget plus
 the lazy allowance reserve headroom for deferred chunks and other process
-entrypoints outside the initial closure. The 4,300,000-byte allowance is an
+entrypoints outside the initial closure. The 4,550,000-byte allowance is an
 additive budget term, not a separate ceiling on measured lazy bytes. Actual
 total bytes count each emitted output once. A total failure reports entry,
 initial shared, and lazy/other output shares; CI also shows the ceiling formula.

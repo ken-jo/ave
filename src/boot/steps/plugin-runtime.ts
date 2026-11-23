@@ -9,6 +9,7 @@ import { noteConfinedProcessesMayRun } from "../../lib/confined-process-phase.js
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { aveHome } from "../../shared/ave-home.js";
+import { errorMessage } from "../../shared/error-message.js";
 import { registerBootPluginShutdown, registerShutdownHook } from "../../main/app-shutdown.js";
 import { emitEvent, onEvent as onHostEvent } from "../types.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
@@ -25,6 +26,8 @@ import {
   tamperedVarsAtBoot,
 } from "../dev-flags.js";
 import { resolvePluginPaths } from "../../plugins/plugin-paths.js";
+import { backgroundEffectApprovalsPath, PluginBackgroundEffectApprovals, registryInstallStamp } from "../../plugins/plugin-background-effects.js";
+import { vouchedInstalledPluginEntries } from "../../plugins/registry.js";
 import type {
   AuthWindowCookie,
   OpenAuthWindowBaseOptions,
@@ -147,6 +150,8 @@ export interface InitPluginRuntimeInput {
   refreshSandboxUnionDomains?: () => Promise<void>;
   /** Renderer authority revocation hook owned by the IPC layer. */
   onPluginUiRevisionChange?: (pluginId: string) => void;
+  /** Tests supply their own; production reads the protected approvals file. */
+  backgroundEffectApprovals?: PluginBackgroundEffectApprovals;
 }
 
 export interface InitPluginRuntimeOutput {
@@ -155,6 +160,8 @@ export interface InitPluginRuntimeOutput {
   lateBinding: LateBindingRefs;
   /** Share the marketplace deployment guard with the update detector. */
   pluginPaths: ReturnType<typeof resolvePluginPaths>;
+  /** The one store both the effect gate and the approval IPC read. */
+  backgroundEffectApprovals: PluginBackgroundEffectApprovals;
   /** Try plugin loopback hosts before external MCP clients when resolving UI resources. */
   loopbackManager: PluginLoopbackManager;
   /** Late-bind bundle projections after workflow, Hook, and MCP services exist. */
@@ -266,6 +273,8 @@ export async function initPluginRuntime(
   };
   /** The catcher registry must not outlive the runtime that owns its bound ports. */
   const authRedirectCatchers = new AuthRedirectCatchers();
+  const backgroundEffectApprovals = input.backgroundEffectApprovals
+    ?? new PluginBackgroundEffectApprovals(backgroundEffectApprovalsPath(pluginPaths.cacheRoot));
   const leaseDenialAudit = new LeaseDenialAudit(bootAuditLogger);
   const createHostApi = createHostApiFactory({
     host: input.host,
@@ -295,6 +304,7 @@ export async function initPluginRuntime(
     routinesStore,
     getAlertsService,
     stageInSuggestionsSession: () => stageInSuggestionsSession(input.memoryManager),
+    backgroundEffectApprovals,
   });
   const { preparePluginStart, onDisable, onActiveStateChange, onEnable } =
     createLifecycleCallbacks({
@@ -337,6 +347,25 @@ export async function initPluginRuntime(
     getAllWindows: () => input.host.desktop?.getAppWindows() ?? [],
   }));
 
+  // A removal whose write failed must not leave an approval that a reinstall would inherit, so each approval is kept only for
+  // the install stamp its plugin has now. A registry that cannot vouch for its plugins prunes nothing, and neither does one
+  // with an entry that did not load, since only a loaded manifest names the id its approval is keyed by.
+  const pruneBackgroundEffectApprovals = async (): Promise<void> => {
+    try {
+      const entries = await vouchedInstalledPluginEntries(pluginPaths.registryPath);
+      if (!entries) return;
+      const installs = new Map<string, string | null>();
+      for (const entry of entries) {
+        const pluginId = pluginRuntime.resolvePluginId(entry.id);
+        if (!pluginRuntime.getPluginManifest(pluginId)) return;
+        const installedAt = registryInstallStamp(entry);
+        installs.set(entry.id, installedAt).set(pluginId, installedAt);
+      }
+      backgroundEffectApprovals.retain(installs);
+    } catch (error) {
+      log.warn("boot: background effect approvals were not pruned: %s", errorMessage(error));
+    }
+  };
   const preStartPhase = new PluginRuntimePreStartPhase();
   const startPluginsOnce = async (): Promise<void> => {
     // After plugin processes may start, delete plugin trees only during boot.
@@ -345,6 +374,7 @@ export async function initPluginRuntime(
     if (input.deferStart) await refreshRegistryEntryCache();
     // Load manifests before activation so confinement domains cover every declared server.
     await pluginRuntime.load();
+    await pruneBackgroundEffectApprovals();
     // Refresh confinement domains from loaded manifests before any child can spawn.
     await input.refreshSandboxUnionDomains?.();
     await pluginRuntime.startAll();
@@ -387,6 +417,7 @@ export async function initPluginRuntime(
     deploymentGuard,
     lateBinding,
     pluginPaths,
+    backgroundEffectApprovals,
     loopbackManager,
     setBundleLifecycleHandler: (handler) => {
       bundleLifecycle = handler;

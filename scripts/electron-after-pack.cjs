@@ -301,6 +301,9 @@ function assertBetterSqlite3Binary(context) {
 
 module.exports = async function afterPack(context) {
   assertBundledRendererNotices(electronResourcesDir(context));
+  const { assertMemoryRuntimeFiles, assertMemoryNotices } = require('./lib/memory-runtime-files.cjs');
+  assertMemoryRuntimeFiles(join(electronResourcesDir(context), 'app.asar.unpacked', 'node_modules'), context.electronPlatformName, ARCH_DIR_BY_ENUM[context.arch]);
+  assertMemoryNotices(electronResourcesDir(context));
   assertBundledUvResource(context);
   assertSandboxVendorBinaries(context);
   assertNodePtyBinary(context);

@@ -749,8 +749,8 @@ the checker as it is now and cite `9c56ec148`; the M1 subsection and decision 39
     `src/mcp/plugin-mcp-server.ts:233-252`), which is why no golden noticed. The key names
     are constants already (`src/mcp/protocol-constants.ts:18`, `:41-43`), and the
     in-process loopback host stamps all three (`src/mcp/plugin-mcp-host.ts:310-320`).
-17. **Provisioning and bundling facts behind P5 and E2′.** The app's development uv is
-    **0.7.3** (`scripts/fetch-uv.mjs:28`; `resources/uv/darwin-arm64/uv --version`). Its
+17. **Provisioning and bundling facts behind P5 and E2′.** The development binary used
+    for the migration was **0.7.3**. See the [current pin](../../scripts/fetch-uv.mjs). Its
     `uv python install` takes `--install-dir` / `UV_PYTHON_INSTALL_DIR`, and its `uv python
     find` takes `--managed-python` (help output of that binary, 2026-10-01). uv searches
     managed installations in `UV_PYTHON_INSTALL_DIR` and **then `PATH`**
@@ -2283,18 +2283,16 @@ marketplace DTO tests (`src/shared/git-marketplace.ts`) unchanged because no DTO
     the interpreter it provisioned, below; that one leaves it unset and takes the uv
     path);
   - otherwise the app's own development uv (`resolveBundledUvBinaryPath`,
-    `main/uv-runtime.ts:34`; `resources/uv/<platform>-<arch>/uv`, uv 0.7.3, fact 17),
+    `main/uv-runtime.ts:34`; `resources/uv/<platform>-<arch>/uv`, fact 17),
     with **one environment for every uv invocation**: `UV_PYTHON_INSTALL_DIR=<cache>/python`,
     `UV_PYTHON_BIN_DIR=<cache>/bin`, `UV_PYTHON_INSTALL_BIN=0` and
     `UV_CACHE_DIR=<cache>/uv`, where `<cache>` is `node_modules/.cache/ave-python-smoke`.
     Discovery is `uv python find --managed-python '>=3.10'` — managed installations in
     that directory only, so the first `python3` on `PATH` is **not** consulted (uv's
     default discovery would fall through to `PATH`, fact 17); on a miss, `uv python
-    install 3.12` under the same environment and then the same `find`. The install
-    directory, the discovery directory and the executable-link directory are therefore
-    one tree under `<cache>`: uv 0.7.3 links no executable, a later uv with 0.8.0's
-    default links it into `<cache>/bin` (or not at all), and the harness writes nothing
-    into the user's home.
+    install 3.12 --no-bin --no-registry` under the same environment and then the same
+    `find`. The install and discovery use the same cache tree. The install skips
+    executable links and Windows registry registration.
 
   It then **verifies the resolved executable before anything else**: `<python> -c
   'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)'` (the `mcp` 2.2.0

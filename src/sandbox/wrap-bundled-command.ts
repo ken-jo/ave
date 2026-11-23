@@ -1,7 +1,7 @@
 import { shellQuote } from "../lib/shell-resolver.js";
 import {
   getDefaultSensitiveReadDenyPaths,
-  getDefaultSensitiveWriteDenyPaths,
+  getDefaultSensitiveWriteDenyEntries,
   cleanupAsrtSandboxAfterCommand,
   ensureSandboxTempPrincipalDir,
   sandboxTempEnvLaunch,
@@ -88,7 +88,7 @@ export async function wrapBundledCommand(input: BundledWrapInput): Promise<{ arg
           ...(tmpDir && input.tempPrincipal.kind !== "hook" ? [tmpDir] : [])],
         ...(input.tempPrincipal.kind === "hook" ? { floorPierces: input.ownPluginReads } : {}),
         denyRead: boundarySnapshot.run(() => getDefaultSensitiveReadDenyPaths()),
-        denyWrite: getDefaultSensitiveWriteDenyPaths(),
+        denyWrite: getDefaultSensitiveWriteDenyEntries(),
         // Bundled hooks and MCP stdio servers are plugin-owned (or third-party) code, and every root they
         // write into is one the host created: a plugin's data root, a server's sandbox root, the process HOME.
         pinWriteRoots: true,

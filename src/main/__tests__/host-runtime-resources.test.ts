@@ -1,12 +1,19 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
 import { configureHostResources } from "../host-resources.js";
+import { probeHostRuntimeResources } from "../host-runtime-probe.js";
 import { currentUvTarget, resolveBundledUvBinaryPath } from "../uv-runtime.js";
 import { resolveStdioSpawnCommand } from "../../mcp/mcp-client.js";
+
+vi.mock("node:child_process", async (importOriginal) => ({
+  ...await importOriginal<typeof import("node:child_process")>(),
+  execFileSync: vi.fn(),
+}));
 
 const fixtures: string[] = [];
 afterEach(() => { for (const path of fixtures.splice(0)) rmSync(path, { recursive: true, force: true }); });
@@ -31,6 +38,21 @@ describe("host-owned packaged tool resources", () => {
     expect(readFileSync(binary)).toEqual(fixture.bytes);
     expect(binary.startsWith(fixture.uvRuntimeDir)).toBe(true);
     expect(resolveStdioSpawnCommand("uvx", ["--help"], { uvRuntimeDir: fixture.uvRuntimeDir })).toEqual({ command: binary, args: ["tool", "run", "--help"] });
+  });
+
+  it("probes the packaged tool version and help and removes its temporary cache", () => {
+    const fixture = packagedResources();
+    const exec = vi.mocked(execFileSync);
+    exec.mockReturnValueOnce("uv 0.13.9\n").mockReturnValueOnce("tool run help\n");
+
+    const result = probeHostRuntimeResources({ resourcePath: join(fixture.root, "resources"), isPackaged: true });
+
+    expect(result.uv.version).toBe("uv 0.13.9");
+    expect(result.uv.sha256).toBe(createHash("sha256").update(fixture.bytes).digest("hex"));
+    expect(exec).toHaveBeenNthCalledWith(1, result.uv.executable, ["--version"], expect.anything());
+    expect(exec).toHaveBeenNthCalledWith(2, result.uv.executable, ["tool", "run", "--help"], expect.anything());
+    expect(result.uvx).toEqual({ executable: result.uv.executable, args: ["tool", "run", "--help"], ok: true });
+    expect(existsSync(result.uv.executable)).toBe(false);
   });
 
   it("refuses a missing or altered packaged archive instead of selecting a host install", () => {

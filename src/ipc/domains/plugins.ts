@@ -5,7 +5,7 @@ import { stripMcpErrorCode } from "../../shared/mcp-error-code.js";
 import { createPluginRetirementPort, type PluginConfigRetention } from "../../plugins/retired-config.js";
 import { ContributionTrustReviewStaleError } from "../../plugins/plugin-contribution-trust.js";
 import { getAveAppVersion } from "../../shared/app-version.js";
-import { dialog, ipcMain } from "electron";
+import { dialog, ipcMain, type WebContents } from "electron";
 import { t } from "../../i18n/index.js";
 import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
@@ -260,7 +260,11 @@ export function pluginLifecycleServices(deps: IpcDeps) {
         drainPluginInstallLockOperations,
       emitHostEvent,
       // Its MCP sign-ins go the moment the registry stops naming it, whatever is reinstalled under the same id later.
-      onRegistryRemovalCommitted: (removed) => void deps.mcpManager.reconcileBundledCredentials("plugin", { removed }),
+      onRegistryRemovalCommitted: (removed) => {
+        void deps.mcpManager.reconcileBundledCredentials("plugin", { removed });
+        // A reinstall under the same id, from any source, asks again.
+        deps.pluginBackgroundEffects?.revoke(removed);
+      },
       log,
     }, retain);
   return { ensureInstallStateReady, uninstall, retirement };
@@ -452,6 +456,97 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
       if (error instanceof ContributionTrustReviewStaleError) return { ok: false, error: "contribution-trust-review-stale", message: errMessage(error) };
       return { ok: false, error: "contribution-trust-update-failed", message: errMessage(error) };
     }
+  });
+
+  ipcMain.handle(CHANNELS.plugins.backgroundEffectsGet, async (e, pluginId: unknown) => {
+    if (!validateHostRendererSender(e)) {
+      auditUnauthorized(auditLogger, CHANNELS.plugins.backgroundEffectsGet, e);
+      return UNAUTHORIZED_FRAME;
+    }
+    if (typeof pluginId !== "string" || pluginId.length === 0) return { ok: false, error: "invalid-plugin-id" };
+    const manifest = deps.pluginRuntime.getPluginManifest(pluginId);
+    if (!manifest) return { ok: false, error: "no-such-plugin" };
+    const store = deps.pluginBackgroundEffects;
+    const subject = await store?.currentSubject(pluginId);
+    if (!store || !subject) return { ok: false, error: "background-effects-unavailable" };
+    return {
+      ok: true, pluginId, name: manifest.name,
+      reviewSha256: subject.declared && subject.source !== null ? store.reviewSha256(subject) : null,
+      declared: subject.declared,
+      approved: store.isApproved(subject),
+      effects: subject.effects,
+    };
+  });
+
+  // The renderer names the review it showed; approval binds only if the running plugin's source and scope still match it.
+  ipcMain.handle(CHANNELS.plugins.backgroundEffectsApprove, async (e, input: unknown) => {
+    if (!validateHostRendererSender(e)) {
+      auditUnauthorized(auditLogger, CHANNELS.plugins.backgroundEffectsApprove, e);
+      return UNAUTHORIZED_FRAME;
+    }
+    const { pluginId, reviewSha256 } = asPlainRecord(input);
+    if (typeof pluginId !== "string" || !pluginId || typeof reviewSha256 !== "string" || !/^[a-f0-9]{64}$/u.test(reviewSha256)) {
+      return { ok: false, error: "invalid-background-effects-request" };
+    }
+    if (!deps.pluginRuntime.getPluginManifest(pluginId)) return { ok: false, error: "no-such-plugin" };
+    const store = deps.pluginBackgroundEffects;
+    const subject = await store?.currentSubject(pluginId);
+    if (!store || !subject) return { ok: false, error: "background-effects-unavailable" };
+    if (store.reviewSha256(subject) !== reviewSha256) return { ok: false, error: "background-effects-review-stale" };
+    try {
+      store.approve(subject);
+    } catch (error) {
+      log.error(`background effect approval failed (${pluginId}): %s`, errMessage(error));
+      return { ok: false, error: "background-effects-update-failed" };
+    }
+    return { ok: true, pluginId, reviewSha256 };
+  });
+
+  // Boot starts installed plugins with no runtime event, so the first interactive launch lists every unapproved one at once.
+  // The first window that lists the card holds it until that window goes away, so a second window shows no copy.
+  let upgradeHolder: WebContents | undefined;
+  ipcMain.handle(CHANNELS.plugins.backgroundEffectsUpgradeGet, async (e) => {
+    if (!validateHostRendererSender(e)) {
+      auditUnauthorized(auditLogger, CHANNELS.plugins.backgroundEffectsUpgradeGet, e);
+      return UNAUTHORIZED_FRAME;
+    }
+    const store = deps.pluginBackgroundEffects;
+    if (!store) return { ok: false, error: "background-effects-unavailable" };
+    if (!store.upgradeReviewOwed()) return { ok: true, reviews: [] };
+    if (upgradeHolder && upgradeHolder.id !== e.sender.id && !upgradeHolder.isDestroyed()) {
+      return { ok: false, error: "background-effects-upgrade-elsewhere" };
+    }
+    upgradeHolder = e.sender;
+    const reviews = [];
+    // A plugin whose subject cannot be read is not known to need no card, so the renderer must not answer this list.
+    let incomplete = false;
+    for (const pluginId of deps.pluginRuntime.listPluginIds()) {
+      const manifest = deps.pluginRuntime.getPluginManifest(pluginId);
+      if (!manifest || !deps.pluginRuntime.isPluginEnabled(pluginId)) continue;
+      const subject = await store.currentSubject(pluginId).catch(() => null);
+      if (!subject) {
+        incomplete = true;
+        continue;
+      }
+      if (!subject.declared || store.isApproved(subject)) continue;
+      reviews.push({
+        pluginId, name: manifest.name,
+        reviewSha256: subject.source === null ? null : store.reviewSha256(subject),
+        effects: subject.effects,
+      });
+    }
+    return { ok: true, reviews, ...(incomplete ? { incomplete: true } : {}) };
+  });
+
+  ipcMain.handle(CHANNELS.plugins.backgroundEffectsUpgradeDone, (e) => {
+    if (!validateHostRendererSender(e)) {
+      auditUnauthorized(auditLogger, CHANNELS.plugins.backgroundEffectsUpgradeDone, e);
+      return UNAUTHORIZED_FRAME;
+    }
+    const store = deps.pluginBackgroundEffects;
+    if (!store) return { ok: false, error: "background-effects-unavailable" };
+    store.finishUpgradeReview();
+    return { ok: true };
   });
 
   ipcMain.handle(CHANNELS.runtime.counts, (e) => {

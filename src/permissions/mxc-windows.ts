@@ -538,7 +538,7 @@ const PROXY_ENV_KEYS = new Set(["http_proxy", "https_proxy", "all_proxy", "no_pr
 // MXC refuses a caller-owned environment block without these (schema.md, "Environment").
 const REQUIRED_ENV_KEYS = ["SYSTEMROOT", "LOCALAPPDATA"] as const;
 
-// Never inherit host env or permit ACL-mutating fallback; pin proxy-only egress to one listener. GUI support is needed by shell runtimes but permits spoofed windows, which are never trusted; clipboard/input injection stay closed. Proxy mode forces ingress capability, so host firewall controls inbound reachability; DNS uses the host resolver.
+// Never inherit host env or permit ACL-mutating fallback. Request default-deny egress and scope the proxy endpoint to one listener. GUI support is needed by shell runtimes but permits spoofed windows, which are never trusted; clipboard/input injection stay closed. Proxy mode forces ingress capability, so host firewall controls inbound reachability.
 export function buildMxcShellRequest(input: MxcShellRequestInput): MxcContainerRequest {
   if (!/^http:\/\/127\.0\.0\.1:\d{1,5}$/.test(input.proxyUrl)) {
     throw new Error(`MXC proxy must be an http://127.0.0.1:<port> URL, got ${input.proxyUrl}`);
@@ -626,7 +626,8 @@ export async function openMxcRequestTransport(request: MxcContainerRequest, laun
   try {
     return { args, ...await openMxcPolicyPipe(Buffer.from(json, "utf8"), pipe) };
   } catch (error) {
-    throw new Error(`Windows sandbox policy pipe could not be opened: ${errorMessage(error)}`, { cause: error });
+    // The cause is read only by whoever reports the failure, after its resources are released.
+    throw new Error("Windows sandbox policy pipe could not be opened", { cause: error });
   }
 }
 

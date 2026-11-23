@@ -30,37 +30,81 @@ function ownerOf(node: ts.Node): string {
   return names.join(">");
 }
 
-/** Each file's syntax, parsed once: a parse starts a compiler session, and most queries ask about the same few files. */
-const syntaxOf = new Map<string, unknown>();
+function createSearch(sourceTexts: ReadonlyMap<string, string>) {
+  const syntaxByFile = new Map<string, ts.SourceFile>();
 
-/** Every node that `pick` matches in the non-test files `where` takes, as "file#owner". */
-function find(where: (file: string, text: string) => boolean, pick: (node: ts.Node) => boolean): string[] {
-  const files = [...sources].filter(([file, text]) => where(file, text)).map(([file]) => file);
-  const unparsed = new Map(files.filter(file => !syntaxOf.has(file)).map(file => [file, sources.get(file) as string]));
-  for (const [file, syntax] of parseSourceTexts(unparsed)) syntaxOf.set(file, syntax);
-  expect(files.filter(file => !syntaxOf.has(file))).toEqual([]);
-  const found: string[] = [];
-  for (const file of files) {
-    const syntax = syntaxOf.get(file);
-    const visit = (node: ts.Node): void => {
-      if (pick(node)) found.push(`${file}#${ownerOf(node)}`);
-      node.forEachChild(visit);
-    };
-    visit(syntax as ts.SourceFile);
+  /** Every node that `pick` matches in the files `where` takes, as "file#owner". */
+  function find(where: (file: string, text: string) => boolean, pick: (node: ts.Node) => boolean): string[] {
+    const files = [...sourceTexts].filter(([file, text]) => where(file, text));
+    const missing = new Map(files.filter(([file]) => !syntaxByFile.has(file)));
+    if (missing.size > 0) {
+      const parsed = parseSourceTexts(missing);
+      expect([...parsed.keys()].sort()).toEqual([...missing.keys()].sort());
+      for (const [file, syntax] of parsed) syntaxByFile.set(file, syntax as ts.SourceFile);
+    }
+    const found: string[] = [];
+    for (const [file] of files) {
+      const syntax = syntaxByFile.get(file);
+      if (!syntax) throw new Error(`Missing syntax for ${file}`);
+      const visit = (node: ts.Node): void => {
+        if (pick(node)) found.push(`${file}#${ownerOf(node)}`);
+        node.forEachChild(visit);
+      };
+      visit(syntax);
+    }
+    return found.sort();
   }
-  return found.sort();
+
+  function callsOf(name: string, file?: string): string[] {
+    // The path filter preserves the matches presented to assertions, while narrowing parse inputs.
+    return find((path, text) => {
+      if (file !== undefined) return path === file;
+      // An identifier or string-literal key can differ from its raw spelling only through an
+      // escape or line continuation, both of which contain a backslash.
+      // Computed non-literal keys never yield a static callee name here.
+      return text.includes(name) || text.includes("\\");
+    }, (node) => {
+      if (!ts.isCallExpression(node)) return false;
+      const callee = node.expression;
+      return (ts.isIdentifier(callee) ? callee.text : ts.isPropertyAccessExpression(callee) ? callee.name.text : ts.isElementAccessExpression(callee) && ts.isStringLiteral(callee.argumentExpression) ? callee.argumentExpression.text : undefined) === name;
+    });
+  }
+
+  return { find, callsOf };
 }
 
-/** Every call of `name`, as `name(...)` or `x.name(...)`, in every file or in `only`. */
-const callsOf = (name: string, only?: string): string[] => find((file, text) => (only === undefined || file === only) && text.includes(name), (node) => {
-  if (!ts.isCallExpression(node)) return false;
-  const callee = node.expression;
-  return (ts.isIdentifier(callee) ? callee.text : ts.isPropertyAccessExpression(callee) ? callee.name.text : ts.isElementAccessExpression(callee) && ts.isStringLiteral(callee.argumentExpression) ? callee.argumentExpression.text : undefined) === name;
-});
+const { find, callsOf } = createSearch(sources);
 const ENGINE = "work-board/workflow/stage-run-engine.ts";
 const RUN_STATE = "work-board/workflow/run-state.ts";
 const STORE = "main/work-board-store.ts";
-const inFile = (file: string, found: string[]): string[] => found.filter(entry => entry.startsWith(`${file}#`)).map(entry => entry.slice(file.length + 1));
+const callsIn = (file: string, name: string): string[] => callsOf(name, file).map(entry => entry.slice(file.length + 1));
+
+it("finds calls whose names are spelled only with escapes", () => {
+  const unicodeFile = "unicode-calls.ts";
+  const escapedCalls = createSearch(new Map([
+    [unicodeFile, String.raw`
+      function dot() { xs.p\u0075t(); }
+      function bracket() { xs["p\u0075t"](); }
+    `],
+    ["hex-calls.ts", String.raw`function hex() { xs[/* key */ "p\x75t"](); }`],
+  ]));
+  expect(escapedCalls.callsOf("put")).toEqual(["hex-calls.ts#hex", `${unicodeFile}#bracket`, `${unicodeFile}#dot`]);
+  expect(escapedCalls.callsOf("put", unicodeFile)).toEqual([`${unicodeFile}#bracket`, `${unicodeFile}#dot`]);
+});
+
+it.each([
+  ["U+0085 bracket trivia", 'function owner() { xs[\u0085"settleR\\x75n"](); }'],
+  ["U+200B bracket trivia", 'function owner() { xs[\u200B"settleR\\x75n"](); }'],
+  ["a line continuation", 'function owner() { xs["settleR\\\nun"](); }'],
+])("finds an escaped key with %s", (_spelling, text) => {
+  const file = "escaped-calls.ts";
+  const name = "settleRun";
+  expect(text).not.toContain(name);
+  expect(text).not.toContain("\\u");
+  const { callsOf } = createSearch(new Map([[file, text]]));
+  expect(callsOf(name, file)).toEqual([`${file}#owner`]);
+  expect(callsOf(name)).toEqual([`${file}#owner`]);
+});
 
 it("classifies a run in one place, which every consumer reads through the store", () => {
   expect(callsOf("classifyRun")).toEqual([`${STORE}#classOn`]);
@@ -90,17 +134,17 @@ it("writes how a run ended only in the run store's one settle write, which the s
   expect(find(runModules, node => (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken || ts.isDeleteExpression(node))
     && isSettledAccess(ts.isBinaryExpression(node) ? node.left : node.expression))).toEqual([]);
   expect(callsOf("settleRun")).toEqual([`${STORE}#WorkBoardStore>settleRemovedRun`, `${STORE}#WorkBoardStore>settleUnstarted`, `${STORE}#WorkBoardStore>updateRun`]);
-  expect(inFile(RUN_STATE, callsOf("settleRemovedRun", RUN_STATE))).toEqual(["boardRunState>update"]);
-  for (const name of ["put", "update"]) expect(inFile(STORE, callsOf(name, STORE))).not.toContain("WorkBoardStore>updateRun");
+  expect(callsIn(RUN_STATE, "settleRemovedRun")).toEqual(["boardRunState>update"]);
+  for (const name of ["put", "update"]) expect(callsIn(STORE, name)).not.toContain("WorkBoardStore>updateRun");
 });
 
 it("ends a run with its row removed only from its class or a due intent", () => {
-  expect(inFile(ENGINE, callsOf("classes", ENGINE)).sort()).toEqual(["createStageRunEngine>checkRows", "createStageRunEngine>confirmSettles", "createStageRunEngine>drain", "createStageRunEngine>writeRun"]);
-  expect(inFile(ENGINE, callsOf("deleted", ENGINE))).toEqual(["createStageRunEngine>takeOverIntents"]);
-  expect(inFile(ENGINE, callsOf("adoption", ENGINE))).toEqual(["createStageRunEngine>adoptRuns"]);
-  expect(inFile(ENGINE, callsOf("rowRemoved", ENGINE))).toEqual(["createStageRunEngine>byClass", "createStageRunEngine>byClass", "createStageRunEngine>removedHeld", "createStageRunEngine>takeOverDeleted"]);
-  expect(inFile(ENGINE, callsOf("byClass", ENGINE))).toEqual(["createStageRunEngine>checkRows", "createStageRunEngine>writeRun"]);
-  expect(inFile(ENGINE, callsOf("removedHeld", ENGINE))).toEqual(["createStageRunEngine>takeOverDeleted", "createStageRunEngine>takeOverIntents"]);
+  expect(callsIn(ENGINE, "classes").sort()).toEqual(["createStageRunEngine>checkRows", "createStageRunEngine>confirmSettles", "createStageRunEngine>drain", "createStageRunEngine>writeRun"]);
+  expect(callsIn(ENGINE, "deleted")).toEqual(["createStageRunEngine>takeOverIntents"]);
+  expect(callsIn(ENGINE, "adoption")).toEqual(["createStageRunEngine>adoptRuns"]);
+  expect(callsIn(ENGINE, "rowRemoved")).toEqual(["createStageRunEngine>byClass", "createStageRunEngine>byClass", "createStageRunEngine>removedHeld", "createStageRunEngine>takeOverDeleted"]);
+  expect(callsIn(ENGINE, "byClass")).toEqual(["createStageRunEngine>checkRows", "createStageRunEngine>writeRun"]);
+  expect(callsIn(ENGINE, "removedHeld")).toEqual(["createStageRunEngine>takeOverDeleted", "createStageRunEngine>takeOverIntents"]);
 });
 
 it("never adopts an unsettled named candidate without classifying it", async () => {

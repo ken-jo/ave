@@ -2,7 +2,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { findInstallerGit, installerGitRoot, installerRunnerOptions } from "../installer-git.js";
+import { findInstallerGit, installerGitRoot } from "../../../shared/host-git-executable.js";
+import { installerRunnerOptions } from "../installer-git.js";
 
 let dir: string;
 
@@ -25,7 +26,7 @@ describe("findInstallerGit", () => {
     const root = join(dir, "git");
     mkdirSync(join(root, "cmd"), { recursive: true });
     mkdirSync(join(root, prefix, "libexec", "git-core"), { recursive: true });
-    writeFileSync(join(root, "cmd", "git.exe"), "");
+    writeFileSync(join(root, "cmd", "git.exe"), "", { mode: 0o755 });
     expect(findInstallerGit(root)).toEqual({ path: join(root, "cmd", "git.exe"), root, prefix });
   });
 
@@ -36,7 +37,7 @@ describe("findInstallerGit", () => {
     expect(findInstallerGit(join(dir, "empty"))).toBeNull();
     const noToolchain = join(dir, "no-toolchain");
     mkdirSync(join(noToolchain, "cmd"), { recursive: true });
-    writeFileSync(join(noToolchain, "cmd", "git.exe"), "");
+    writeFileSync(join(noToolchain, "cmd", "git.exe"), "", { mode: 0o755 });
     expect(findInstallerGit(noToolchain)).toBeNull();
   });
 });
@@ -44,9 +45,11 @@ describe("findInstallerGit", () => {
 describe("installerRunnerOptions", () => {
   it("uses schannel and the copy's own toolchain tools", () => {
     const root = "C:\\Ave\\git";
-    const options = installerRunnerOptions({ path: join(root, "cmd", "git.exe"), root, prefix: "ucrt64" });
+    const systemRoot = "D:\\Windows";
+    const systemDirectory = `${systemRoot}\\System32`;
+    const options = installerRunnerOptions({ path: join(root, "cmd", "git.exe"), root, prefix: "ucrt64", systemDirectory, systemRoot });
     expect(options.installerConfig).toEqual({ "http.sslBackend": "schannel" });
-    expect(options.installerEnv).toEqual({ GIT_EXEC_PATH: join(root, "ucrt64", "libexec", "git-core") });
-    expect(options.installerPathPrefix?.split(";")).toEqual([join(root, "ucrt64", "bin"), join(root, "usr", "bin")]);
+    expect(options.installerEnv).toEqual({ GIT_EXEC_PATH: join(root, "ucrt64", "libexec", "git-core"), SystemRoot: systemRoot, WINDIR: systemRoot });
+    expect(options.installerPathPrefix?.split(";")).toEqual([join(root, "ucrt64", "bin"), join(root, "usr", "bin"), systemDirectory, systemRoot]);
   });
 });

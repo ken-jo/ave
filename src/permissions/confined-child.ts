@@ -1,5 +1,5 @@
 // Per-command deny arrays replace the shared boot floor, even when empty; this primitive always restates it so children cannot regain secret reads. Callers provide allow paths only.
-import { spawn, type ChildProcess, type StdioOptions } from "node:child_process";
+import { spawn, type ChildProcess, type SpawnOptions, type StdioOptions } from "node:child_process";
 import { assertSrtWinSpawnIntegrity } from "./srt-win-integrity.js";
 import { win32SystemBinary } from "../shared/windows-system-path.js";
 import { existsSync, realpathSync, statSync } from "node:fs";
@@ -10,13 +10,15 @@ import type { Readable, Writable } from "node:stream";
 import {
   ensureSandboxTempPrincipalDir,
   getDefaultSensitiveReadDenyPaths,
-  getDefaultSensitiveWriteDenyPaths,
+  getDefaultSensitiveWriteDenyEntries,
+  isOfflineProcessConfinementActive,
   isPluginWorkerConfinementActive,
   assertExtensionStartAllowed,
   admitMxcExtensionFilesystem,
   appOwnedSandboxHomeRoot,
   appOwnedSandboxTempRoot,
   appOwnedTerminalHandoffRoot,
+  runWithSandboxWritePreflight,
   sandboxTempEnvLaunch,
   wrapWorkerCommand,
   type SandboxTempPrincipal,
@@ -51,6 +53,7 @@ import { assertMxcHolderPrivateDirectories, type MxcExtensionFilesystemOwnership
 import { buildSandboxedChildEnv, isSandboxWrapperEnvKey } from "../tools/safe-env.js";
 import {
   assertManagedChildProcessAdmissionOpen,
+  spawnGatedManagedProcess,
   trackManagedChildProcess,
 } from "../main/managed-child-processes.js";
 import { shellQuote } from "../lib/shell-resolver.js";
@@ -94,7 +97,7 @@ export function srtWinTargetEnv(
 
 const SRT_WIN_OWN_ENV = new Set(["path", "pathext", "tmpdir", "electron_run_as_node", "username"]);
 
-// How the child's filesystem access is granted. `allow-list` puts the paths in the ASRT command itself (macOS seatbelt, Linux bwrap `--bind`). `deny-only` is Windows, where reachability is an ACL question decided outside the wrap — a grant against a holder process the caller owns for the process's lifetime (`windows-acl-grant-holder.ts`; a worker in `worker-spawn.ts`, a plugin child in `spawnConfinedPluginChild`) — so the wrap carries the deny floor and nothing else: passing allow paths there would imply a confinement the wrap does not perform.
+// How the child's filesystem access is granted. `allow-list` puts the paths in the ASRT command itself (macOS seatbelt, Linux bwrap `--bind`). `deny-only` is Windows, where reachability is an ACL question decided outside the wrap — a grant against a holder process the caller owns for the process's lifetime (`windows-acl-grant-holder.ts`; a worker in `worker-spawn.ts`, a plugin child in `spawnConfinedPluginChild`) — so the wrap carries the deny floor and nothing else: passing allow paths there would imply a confinement the wrap does not perform. An offline service uses it on every platform, with no write roots.
 type ConfinementGrantMode = "allow-list" | "deny-only";
 
 export interface ConfinedChildSpec {
@@ -105,6 +108,8 @@ export interface ConfinedChildSpec {
   // Whose plugin-owned code this is, for egress attribution: while the sandbox is active the wrap carries an egress token (`egress-invocations.ts`) minted for this owner, and every proxy deny of the child is audited under it. The token lives as long as the child.
   readonly egressOwner: WorkerEgressOwner;
   readonly grantMode: ConfinementGrantMode;
+  readonly requireWrap?: boolean;
+  readonly requireProcessGroupReaper?: boolean;
   // Ignored under `deny-only`, where ACLs grant reachability instead.
   readonly allowRead?: readonly string[];
   readonly allowWrite?: readonly string[];
@@ -297,11 +302,11 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
   spec.assertStillValid?.();
   assertManagedChildProcessAdmissionOpen(spec.label);
   // The floor and the admission share one Ave home boundary snapshot.
-  const admitted = createAveHomeBoundarySnapshot().run(() => admitMxcExtensionFilesystem({
+  const admitted = await runWithSandboxWritePreflight(spec.signal, () => createAveHomeBoundarySnapshot().run(() => admitMxcExtensionFilesystem({
     allowRead: [...(spec.allowRead ?? [])], allowWrite: [...(spec.allowWrite ?? [])],
-    denyRead: getDefaultSensitiveReadDenyPaths(), denyWrite: getDefaultSensitiveWriteDenyPaths(),
+    denyRead: getDefaultSensitiveReadDenyPaths(), denyWrite: getDefaultSensitiveWriteDenyEntries(),
     floorPierces: spec.floorPierces, denyPluginsRoot: true, pinWriteRoots: true,
-  }, spec.filesystemOwnership));
+  }, spec.filesystemOwnership)));
   const grants = rankMxcFilesystem(admitted.policy, existsSync);
   assertWritesInsideEnvelope(grants, spec.filesystemOwnership);
   assertMxcHolderPrivateDirectories({ home: spec.home, temp: spec.temp, ownership: spec.filesystemOwnership,
@@ -435,12 +440,25 @@ export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<Confi
 
   const { executable, args, wrappedEnv, confinement, relayRequest, egress } = await resolveSpawnLine(spec);
   let child: ChildProcess;
-  try {
-    if (spec.refreshStillValid) await spec.refreshStillValid();
+  const assertStillValid = (): void => {
     spec.assertStillValid?.();
     assertManagedChildProcessAdmissionOpen(spec.label);
+    if (spec.requireWrap && !isPluginWorkerConfinementActive()) {
+      throw new Error(`[confined-child] ${spec.label}: child requires active confinement`);
+    }
+  };
+  const noteSpawn = (running: ChildProcess): void => {
+    if (egress === undefined) return;
+    if (process.platform !== "win32" && running.pid !== undefined) egress.noteProcessGroup(running.pid);
+    running.once("exit", () => egress.release());
+    running.once("close", () => egress.release());
+    running.once("error", () => { if (running.pid === undefined) egress.release(); });
+  };
+  try {
+    if (spec.refreshStillValid) await spec.refreshStillValid();
+    assertStillValid();
     if (confinement !== "unconfined") assertSrtWinSpawnIntegrity(executable);
-    child = spawn(executable, args, {
+    const options: SpawnOptions = {
       stdio,
       shell: false,
       windowsHide: true,
@@ -449,21 +467,21 @@ export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<Confi
       env: composeConfinedEnv(spec.baseEnv, wrappedEnv, spec.extraEnv ?? {}),
       // On the relay the program's directory also travels in its request; srt-win itself still starts in it.
       ...(spec.cwd !== undefined ? { cwd: spec.cwd } : {}),
-    });
+    };
+    if (spec.requireProcessGroupReaper) {
+      if (confinement !== "linux-bubblewrap" && confinement !== "macos-sandbox") {
+        throw new Error(`[confined-child] ${spec.label}: process group launch requires POSIX confinement`);
+      }
+      child = await spawnGatedManagedProcess(executable, args, options, { label: spec.label, onSpawn: noteSpawn, assertStillValid });
+    } else {
+      child = spawn(executable, args, options);
+      noteSpawn(child);
+      trackManagedChildProcess(child, { label: spec.label, killProcessGroup: egress !== undefined && process.platform !== "win32" });
+    }
   } catch (error) {
     egress?.release();
     throw error;
   }
-  if (egress !== undefined) {
-    // Detached (POSIX), the child leads its own process group: the sandbox keeps the ended invocation's listener port while that group lives.
-    if (process.platform !== "win32" && child.pid !== undefined) egress.noteProcessGroup(child.pid);
-    // The token outlives neither the process nor a spawn that never started.
-    const running = child;
-    running.once("exit", () => egress.release());
-    running.once("close", () => egress.release());
-    running.once("error", () => { if (running.pid === undefined) egress.release(); });
-  }
-  trackManagedChildProcess(child, { label: spec.label, killProcessGroup: egress !== undefined && process.platform !== "win32" });
   if (relayRequest === undefined) {
     return { child, confinement, stdin: child.stdin, stdout: child.stdout };
   }
@@ -569,7 +587,11 @@ async function resolveSpawnLine(
   egress?: EgressInvocation;
 }> {
   assertExtensionStartAllowed();
-  if (!isPluginWorkerConfinementActive()) {
+  // An offline owner's refusal is enforced by the wrap, so it never runs without one; it follows the offline-service gate, not the extension setting.
+  const offline = isOfflineOwner(spec);
+  if (offline ? !isOfflineProcessConfinementActive() : !isPluginWorkerConfinementActive()) {
+    if (offline) throw new Error(`[confined-child] ${spec.label}: an offline process needs the OS sandbox, which is not active`);
+    if (spec.requireWrap) throw new Error(`[confined-child] ${spec.label}: child requires active confinement`);
     return { executable: spec.command, args: [...spec.args], wrappedEnv: {}, confinement: "unconfined" };
   }
   const confinement = wrapConfinement(spec.label);
@@ -589,12 +611,13 @@ async function resolveSpawnLine(
   let argv: string[];
   let env: NodeJS.ProcessEnv;
   try {
-    ({ argv, env } = await wrapWorkerCommand(cmdline, {
+    ({ argv, env } = await runWithSandboxWritePreflight(undefined, () => wrapWorkerCommand(cmdline, {
       filesystem: boundarySnapshot.run(() => buildFilesystemConfinement(spec, temp)),
       boundarySnapshot,
       ...(binShell !== undefined ? { binShell } : {}),
       commandId: egress.token,
-    }));
+      ...(offline ? { denyUnixSockets: true } : {}),
+    })));
   } catch (error) {
     egress.release();
     throw error;
@@ -620,6 +643,10 @@ async function resolveSpawnLine(
   };
 }
 
+function isOfflineOwner(spec: ConfinedChildSpec): boolean {
+  return spec.egressOwner.network === "offline";
+}
+
 function requireTempPrincipal(spec: ConfinedChildSpec): SandboxTempPrincipal {
   if (spec.tempPrincipal === undefined) {
     throw new Error(`[confined-child] ${spec.label}: an allow-list confinement needs the temp principal it belongs to`);
@@ -632,20 +659,21 @@ function buildFilesystemConfinement(spec: ConfinedChildSpec, temp: { dir: string
   allowRead?: string[];
   allowWrite?: string[];
   denyRead: string[];
-  denyWrite: string[];
+  denyWrite: ReturnType<typeof getDefaultSensitiveWriteDenyEntries>;
   pinWriteRoots?: boolean;
   floorPierces?: readonly string[];
   denyPluginsRoot?: boolean;
 } {
   const floor = {
     denyRead: getDefaultSensitiveReadDenyPaths(),
-    denyWrite: getDefaultSensitiveWriteDenyPaths(),
+    denyWrite: getDefaultSensitiveWriteDenyEntries(),
   };
   if (spec.grantMode === "deny-only") {
     if (spec.denyPluginsRoot === true) {
       throw new Error(`[confined-child] ${spec.label}: denyPluginsRoot needs an allow-list confinement to re-allow the child's own directories`);
     }
-    return floor;
+    // An offline service writes nothing. Without the empty list, macOS and Linux would apply the session's write roots.
+    return isOfflineOwner(spec) && process.platform !== "win32" ? { ...floor, allowWrite: [] } : floor;
   }
   if (temp === undefined) throw new Error(`[confined-child] ${spec.label}: an allow-list confinement was built without its temp directory`);
   // The temp directory is granted here for the same reason the deny floor is restated here: no caller should have to remember it, and one that forgot would produce a child whose `os.tmpdir` names a directory it cannot write — a failure with no obvious cause, arriving inside whatever library wanted a temp file. It is the principal's OWN directory, read and write; the shared root above it is read-denied by the floor, with the sandbox HOME root beside it, and ASRT's reads are deny-only, so that deny is what keeps one plugin from reading another's temp files or HOME.

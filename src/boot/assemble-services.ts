@@ -51,6 +51,7 @@ export function assembleAppServices(ctx: ReadyBootContext): AppServices {
     mcpManager: ctx.mcpManager,
     pluginLoopbackManager: ctx.pluginLoopbackManager,
     pluginBundleLifecycle: ctx.pluginBundleLifecycle,
+    pluginBackgroundEffects: ctx.pluginBackgroundEffects,
     getPluginToolInvoker: () => ctx.lateBinding.pluginToolInvokerRef.fn,
     requestPluginOperationGrant: ctx.requestPluginOperationGrant,
     revokePluginOperationSession: ctx.revokePluginOperationSession,

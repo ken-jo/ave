@@ -1,4 +1,5 @@
 import { t } from "../../../../i18n/runtime.js";
+import { ok as assertPresent } from "node:assert/strict";
 import { SavedToastProvider } from "../../context/SavedToastContext.js";
 /** Escape must skip the synchronous blur commit via escapingRef; a batched state reset alone leaves the blur closure
  * holding the typed draft. */
@@ -81,9 +82,15 @@ it("renders code presets in their saved typeface", () => {
  const buttons = within(screen.getByTestId("code-font-presets")).getAllByRole("radio");
  expect(buttons).toHaveLength(6);
  expect(buttons[0]?.style.fontFamily).toBe(DEFAULT_APPEARANCE.terminalFont.family);
+ const expectedStyle = document.createElement("span").style;
  for (const button of buttons) {
    fireEvent.click(button);
-   expect(api.updateSettings).toHaveBeenLastCalledWith({ appearance: { terminalFont: { family: button.style.fontFamily } } });
+   const patch = api.updateSettings.mock.lastCall?.[0];
+   const family = (patch as { appearance?: { terminalFont?: { family?: string } } })?.appearance?.terminalFont?.family;
+   assertPresent(family);
+   expect(patch).toEqual({ appearance: { terminalFont: { family } } });
+   expectedStyle.fontFamily = family;
+   expect(button.style.fontFamily).toBe(expectedStyle.fontFamily);
  }
 });
 
@@ -123,7 +130,7 @@ it("steps code metrics, disables at bounds and rolls back failed saves", async (
  api.updateSettings.mockRejectedValueOnce(new Error("save-failed"));
  fireEvent.click(size.getByRole("button", { name: /−/ }));
  await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(t("appearanceTab.fontSaveFailed")));
- expect(screen.getByTestId("terminal-font-preview")).toHaveStyle({ fontFamily: "monospace", fontSize: savedSize, lineHeight: savedHeight });
+ expect(screen.getByTestId("terminal-font-preview").style).toMatchObject({ fontFamily: "monospace", fontSize: savedSize, lineHeight: savedHeight });
  expect(notifySaved).not.toHaveBeenCalled();
 });
 

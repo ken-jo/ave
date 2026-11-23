@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AskpassBroker } from "../../git/askpass.js";
-import { detectGitRuntime, type GitExecutable, nodeGitDetectionDeps } from "../../git/detect.js";
+import { detectGitRuntime, type GitExecutable } from "../../git/detect.js";
 import { GitRunner, type GitRunnerOptions } from "../../git/run-git.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 
@@ -17,7 +17,7 @@ export interface TestGitRunner {
 }
 
 export async function hostGitExecutable(): Promise<GitExecutable> {
-  const detection = await detectGitRuntime(nodeGitDetectionDeps(null));
+  const detection = await detectGitRuntime(null);
   if (detection.state !== "ready") throw new Error(`host git is not usable for tests: ${detection.state}`);
   return detection.git;
 }

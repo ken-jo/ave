@@ -167,6 +167,12 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: node scripts/check-srt-win-integrity.cjs --upstream --inputs
+      - name: Verify bundled runtime archive attestations
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: ave
+        run: node scripts/fetch-uv.mjs --verify-attestation
       # `typecheck` covers production sources only — both tsconfigs exclude
       # `src/**/__tests__/**`, so before this step a test could reference an unimported
       # symbol and reach CI green. This is the ratchet for the rest: new test files are
@@ -1045,6 +1051,8 @@ jobs:
         run: >
           bun run test --
           src/plugins/isolation/__tests__/confined-plugin-child.test.ts
+          src/plugins/isolation/__tests__/process-plugin-host-death.test.ts
+          src/main/__tests__/process-group-reaper.test.ts
           src/plugins/isolation/__tests__/adversarial-escapes.test.ts
           src/hooks/__tests__/bundled-hook-asrt.smoke.test.ts
           src/tools/__tests__/session-read-shell.test.ts
@@ -1057,6 +1065,7 @@ jobs:
           src/permissions/__tests__/egress-deny-native.test.ts
           src/permissions/__tests__/egress-token-isolation-native.test.ts
           src/main/terminal/__tests__/terminal-egress-native.test.ts
+          src/main/memory-map/__tests__/inference-child-native.test.ts
           test/scripts/asrt-patched-symbols.test.ts
           src/permissions/__tests__/allowed-directories.test.ts
           src/permissions/__tests__/asrt-sandbox.test.ts
@@ -1243,6 +1252,8 @@ jobs:
           src/permissions/__tests__/linux-sandbox-wrap.test.ts
           src/permissions/__tests__/asrt-sandbox.test.ts
           src/plugins/isolation/__tests__/confined-plugin-child.test.ts
+          src/plugins/isolation/__tests__/process-plugin-host-death.test.ts
+          src/main/__tests__/process-group-reaper.test.ts
           src/plugins/isolation/__tests__/adversarial-escapes.test.ts
           src/hooks/__tests__/bundled-hook-asrt.smoke.test.ts
           src/tools/__tests__/session-read-shell.test.ts
@@ -1251,6 +1262,7 @@ jobs:
           src/permissions/__tests__/egress-deny-native.test.ts
           src/permissions/__tests__/egress-token-isolation-native.test.ts
           src/main/terminal/__tests__/terminal-egress-native.test.ts
+          src/main/memory-map/__tests__/inference-child-native.test.ts
           test/scripts/asrt-patched-symbols.test.ts
           src/main/terminal/__tests__/pty-manager-linux-sandbox.test.ts
           src/permissions/__tests__/sandbox-control-writes.integration.test.ts

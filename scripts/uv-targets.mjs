@@ -5,7 +5,7 @@ export const UV_TARGETS = Object.freeze([
     arch: "arm64",
     bin: "uv",
     archive: "uv-aarch64-apple-darwin.tar.gz",
-    archiveSha256: "162b328fc63e0075d4267688201de91356e1c1b81db50419fa4466cfe2dfdebc",
+    archiveSha256: "5aeca67f2283f75235de40d0bd9c0a5bbc5fce23b6d48b3bf9fa1b2db08382ca",
     type: "tar.gz",
   }),
   Object.freeze({
@@ -14,7 +14,7 @@ export const UV_TARGETS = Object.freeze([
     arch: "x64",
     bin: "uv.exe",
     archive: "uv-x86_64-pc-windows-msvc.zip",
-    archiveSha256: "20d3a420abbf2af9699cd9a02225d9325344046af8deb15563cc451e3c4fd059",
+    archiveSha256: "edd61f7f5728a56cc62455386661860bdfc7bab65872f39b0c25bdcc1d8e1beb",
     type: "zip",
   }),
   Object.freeze({
@@ -23,7 +23,7 @@ export const UV_TARGETS = Object.freeze([
     arch: "x64",
     bin: "uv",
     archive: "uv-x86_64-unknown-linux-gnu.tar.gz",
-    archiveSha256: "17fc118ba4d7e9303f84fcabdc0a593fc3480ba76eb6980668fdbbb96fe88562",
+    archiveSha256: "a7fbaff2b9a271d85c1bdb540941090fd1ce011797b4abeb48e4dcd39c2471d5",
     type: "tar.gz",
   }),
   Object.freeze({
@@ -32,7 +32,7 @@ export const UV_TARGETS = Object.freeze([
     arch: "arm64",
     bin: "uv",
     archive: "uv-aarch64-unknown-linux-gnu.tar.gz",
-    archiveSha256: "2c2be8bbb83e9bc722f2013de8bb7506cfe6521d0e30b4ad046849d036b3eea6",
+    archiveSha256: "0797542018e541a9288855df555c8077eed06f7a47d206362030480e8ecc9f3d",
     type: "tar.gz",
   }),
 ]);

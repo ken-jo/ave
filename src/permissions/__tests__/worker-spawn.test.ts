@@ -99,6 +99,7 @@ vi.mock("../asrt-sandbox.js", async (importOriginal) => ({
   }),
   isAsrtSandboxActive: () => gateActive,
   isPluginWorkerConfinementActive: () => gateActive,
+  runWithSandboxWritePreflight: async (_signal: AbortSignal | undefined, compose: () => unknown) => compose(),
   wrapWorkerCommand: (command: string, options?: unknown) =>
     wrapWorkerCommandMock(command, options),
   cleanupAsrtSandboxAfterCommand: () => cleanupMock(),
@@ -114,7 +115,7 @@ vi.mock("../asrt-sandbox.js", async (importOriginal) => ({
     "/home/u/.ave/sandbox/home",
   ],
   // The persistence-vector write floor restated on the worker wrap SOT).
-  getDefaultSensitiveWriteDenyPaths: () => [
+  getDefaultSensitiveWriteDenyEntries: () => [
     "/home/u/.ave/secrets",
     "/home/u/.ssh",
     "/home/u/.zshrc",
@@ -1046,6 +1047,7 @@ describe("spawnWorker — Windows with gate ON", () => {
       holderPid: 5101,
       allowRead: [SANDBOX_HOME, stateDir, pythonExecutable, workerScript],
       allowWrite: [SANDBOX_HOME, stateDir, indexDir],
+      assertStillValid: expect.any(Function),
     });
 
     expect(wrapWorkerCommandMock).toHaveBeenCalledTimes(1);
@@ -1233,6 +1235,39 @@ describe("spawnWorker — Windows with gate ON", () => {
     expect(grantReleaseMock).toHaveBeenCalledTimes(1);
     expect(isPluginWorkerWrapped("local-indexer", "embed")).toBe(false);
   });
+
+  it.each(["Windows sandbox session was reset", "Windows deny DACL verification failed"])(
+    "stops the Windows holder without spawning a worker after %s",
+    async message => {
+      setProcessPlatform("win32");
+      gateActive = true;
+      const holder = new StubWorkerChild();
+      holder.pid = 5101;
+      spawnMock.mockReturnValueOnce(holder);
+      let refuseGrant!: (error: Error) => void;
+      const grant = new Promise<never>((_, reject) => { refuseGrant = reject; });
+      grantWindowsWorkerFilesystemAccessMock.mockReturnValueOnce(grant);
+      const spawning = spawnWorker({
+        pluginId: "local-indexer",
+        workerId: "embed",
+        command: "C:/Python/python.exe",
+        control: "output-only-v1",
+      });
+      const refused = expect(spawning).rejects.toThrow(message);
+      try {
+        await vi.waitFor(() => expect(grantWindowsWorkerFilesystemAccessMock).toHaveBeenCalledOnce());
+        await new Promise<void>(resolve => setImmediate(resolve));
+        expect(spawnMock).toHaveBeenCalledTimes(1);
+        expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
+      } finally {
+        refuseGrant(new Error(message));
+        await refused;
+      }
+      expect(holder.killCalls).toEqual(["SIGTERM"]);
+      expect(spawnMock).toHaveBeenCalledTimes(1);
+      expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
+    },
+  );
 
   it("consumes the Windows holder spawn error when no holder pid is published", async () => {
     setProcessPlatform("win32");

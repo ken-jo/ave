@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { DOWNLOAD_ATTEMPTS, fetchBytesWithRetry } from "../../scripts/lib/fetch-with-retry.mjs";
 
-const URL = "https://github.com/astral-sh/uv/releases/download/0.7.3/uv-aarch64-unknown-linux-gnu.tar.gz";
+const URL = "https://github.com/astral-sh/uv/releases/download/0.13.9/uv-aarch64-unknown-linux-gnu.tar.gz";
 
 const STATUS_TEXT: Record<number, string> = {
   200: "OK", 404: "Not Found", 429: "Too Many Requests", 503: "Service Unavailable", 504: "Gateway Time-out",

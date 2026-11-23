@@ -57,8 +57,8 @@ function runConfig(gitPath: string, args: string[], env: Record<string, string>)
 
 /** Read the entries the generated file keeps. A level that does not exist or cannot be read contributes
  * nothing: an unreadable user config must not stop the marketplace, it only means no credential helper answers. */
-export async function readCopiedCredentialConfig(gitPath: string): Promise<CopiedConfigEntry[]> {
-  const env = buildSafeChildEnv({ LC_ALL: "C", GIT_TERMINAL_PROMPT: "0" });
+export async function readCopiedCredentialConfig(gitPath: string, installerEnv?: Record<string, string>): Promise<CopiedConfigEntry[]> {
+  const env = buildSafeChildEnv({ LC_ALL: "C", GIT_TERMINAL_PROMPT: "0", ...installerEnv });
   if (process.env.XDG_CONFIG_HOME) env.XDG_CONFIG_HOME = process.env.XDG_CONFIG_HOME;
   const entries: GitConfigEntry[] = [];
   for (const level of ["--system", "--global"]) {

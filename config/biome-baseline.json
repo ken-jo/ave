@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "biomeVersion": "2.6.5",
+  "biomeVersion": "2.6.8",
   "entries": [
     {
       "file": "scripts/bench-hook-matchers.ts",

@@ -837,7 +837,7 @@ function assertWithinWireBytesMax(byteLength: number, label: string): void {
  * from the contract).
  *
  * WHY THE KEYS ARE A LITERAL UNION. `as const satisfies` makes
- * {@link HostApiPath} the exact set of 38 members rather than `string`, so the
+ * {@link HostApiPath} the exact set of contract keys rather than `string`, so the
  * host dispatch table is `Record<HostApiPath, …>` and a MISSING handler is a
  * compile error. The complementary direction — a member added to
  * `HOSTAPI_EFFECT_BY_PATH` without a contract here — is not expressible in the

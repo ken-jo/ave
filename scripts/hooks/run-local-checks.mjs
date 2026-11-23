@@ -66,7 +66,7 @@ import {
   isCanonicalGitPath,
 } from "./pre-push-markdown-policy.mjs";
 import { selectCommentOnlyAveAppFiles } from "./pre-push-comment-policy.mjs";
-import { selectTargetedAveAppVitestFiles } from "./pre-push-test-policy.mjs";
+import { selectPrePushRegressionTests, selectTargetedAveAppVitestFiles } from "./pre-push-test-policy.mjs";
 import {
   AVE_APP_LOCK_SUITES,
   boundRelatedTests,
@@ -857,7 +857,7 @@ function classifyPrePushChanges(repoRoot, parsedUpdates, remoteLocation, forceGl
     tier,
     tierReasons,
     lockSuites: selectTriggeredLockSuites([...changedFiles]),
-    testFiles: [...new Set([...scoped.testFiles, ...(messageCatalog?.testFiles ?? [])])].sort(),
+    testFiles: [...new Set([...scoped.testFiles, ...selectPrePushRegressionTests([...changedFiles]), ...(messageCatalog?.testFiles ?? [])])].sort(),
     relatedFiles: scoped.relatedFiles,
     droppedRelatedFiles: scoped.droppedRelatedFiles,
     namedPaths: scoped.namedPaths,
