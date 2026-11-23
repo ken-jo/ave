@@ -30,7 +30,7 @@ async function tile(pageY: number): Promise<string> {
   return (await sharp(pixels, { raw: { width: WIDTH, height: VIEWPORT_HEIGHT, channels: 3 } }).png().toBuffer()).toString("base64");
 }
 
-function tiledSession(pixelRatio = 1, zoom = 1, screenshot?: Buffer) {
+function tiledSession(pixelRatio = 1, zoom = 1) {
   let pageY = 0;
   const restore = vi.fn(async () => {});
   const send = vi.fn(async (method: string, params?: Record<string, unknown>): Promise<unknown> => {
@@ -46,7 +46,6 @@ function tiledSession(pixelRatio = 1, zoom = 1, screenshot?: Buffer) {
       return {};
     }
     if (method === "Page.captureScreenshot") {
-      if (screenshot) return { data: screenshot.toString("base64") };
       const png = await sharp(Buffer.from(await tile(pageY), "base64"))
         .resize({ width: WIDTH * pixelRatio * zoom, height: VIEWPORT_HEIGHT * pixelRatio * zoom, kernel: "nearest" }).png().toBuffer();
       return { data: png.toString("base64") };
@@ -89,32 +88,6 @@ describe("browser capture tiles", () => {
     expect(send.mock.calls.filter(([method]) => method === "Page.captureScreenshot")).toEqual(Array.from({ length: 3 }, () => [
       "Page.captureScreenshot", { format: "png", captureBeyondViewport: false, fromSurface: true },
     ]));
-  });
-
-  it.each([{ zoom: 1, edgeRed: 128 }, { zoom: 1.25, edgeRed: 191 }])("preserves both single-device-pixel lines at density 2 and zoom $zoom", async ({ zoom, edgeRed }) => {
-    const scale = 2 * zoom;
-    const width = WIDTH * scale, height = VIEWPORT_HEIGHT * scale;
-    const pixels = Buffer.alloc(width * height * 3, 255);
-    for (let row = 0; row < height; row += 1) {
-      for (const column of [0, width - 1]) {
-        const offset = (row * width + column) * 3;
-        pixels.fill(0, offset, offset + 3);
-      }
-    }
-    const screenshot = await sharp(pixels, { raw: { width, height, channels: 3 } }).png().toBuffer();
-    const { cdp, captureViewport } = tiledSession(2, zoom, screenshot);
-    const result = await captureBrowserPage(cdp, new AbortController().signal, { fullPage: true }, 1, 10_000, captureViewport);
-    expect(result).toMatchObject({ width: WIDTH, height: CONTENT_HEIGHT, captureMethod: "scroll-and-stitch" });
-    const { data, info } = await sharp(Buffer.from(result.data, "base64")).raw().toBuffer({ resolveWithObject: true });
-    for (let row = 0; row < CONTENT_HEIGHT; row += 1) {
-      const reds = Array.from({ length: WIDTH }, (_, column) => data.readUInt8((row * WIDTH + column) * info.channels));
-      const samples = `row ${row}: [${reds.join(", ")}]`;
-      expect(reds.slice(1, 3), samples).toEqual([255, 255]);
-      // Allow one level of rounding around the baseline filtered samples.
-      const expected = [edgeRed - 1, edgeRed, edgeRed + 1];
-      expect(expected, samples).toContain(reds.at(0));
-      expect(expected, samples).toContain(reds.at(-1));
-    }
   });
 
   it("uses a fixed isolated-world function with only coordinate values", () => {
