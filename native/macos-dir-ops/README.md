@@ -91,15 +91,22 @@ holds the chosen folder anew and checks it is the bound one. A file put at
 written, or one that removal fails on, is put back at `part`'s name if that
 is still free (a hard link, which never replaces), or left under the hidden
 name, and logged. A folder without hard links (FAT, exFAT), where a rename
-gives the file another id, is found by a link probe once per volume; there
-`part` is known by its content instead (size, last change, and digests of its
-first and last 64 KiB, read through an open descriptor), checked again at the
-hidden name, and put back by a rename only while nothing is at its name. A
+gives the file another id, is found by a link probe; only a definitive answer
+(a link seen through, or a refusal that says the file system has no hard
+links) is kept for the volume, and any other failure answers for that
+cleanup alone. There `part` is known by its content instead (size, last
+change, and digests of its first and last 64 KiB, read through an open
+descriptor), checked again at the hidden name, and put back as a new file
+created exclusively at its name, which fails rather than replacing a file put
+there; the hidden name is removed only once the copy holds the same bytes. A
 file left where it can still be found, under either name, is recorded for the
-next start with the name it has and how it is known. A `part` never seen
+next start with the name it has and how it is known, and recorded again when
+the next start leaves it. A `part` never seen
 while it was written has no identity and is left, as is one whose rename
 still fails once a brief lock was waited out. A copy the helper reports failed
-has its `part` cleaned the same way. The download is reported as
+has its `part` cleaned the same way. So does the Linux copy, which the host
+runs itself, when it is cancelled or fails: it takes `part`'s identity
+through the handle it creates it with. The download is reported as
 failed, and the log records whether `part` was removed. It also remains,
 logged as possibly left, when the app quits during a copy: shutdown kills the
 helper with every other owned process and starts no new one, so nothing
