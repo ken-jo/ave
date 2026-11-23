@@ -18,6 +18,7 @@ import {
   PUBLIC_ROOT_PEM,
 } from "../../__tests__/support/corp-ca-fixtures.js";
 import { DEFAULT_CORP_CA_COMMON_NAME } from "../../shared/corp-ca-common-name.js";
+import { withPlantedProgram } from "../../__tests__/support/planted-program.js";
 
 const CORP_CN = DEFAULT_CORP_CA_COMMON_NAME;
 // The distinctive first line of CORP_CA_PEM's base64, for identity checks.
@@ -197,5 +198,14 @@ describe("extractCorporateCa", () => {
   it("returns null on a platform with no reader instead of throwing", async () => {
     // Boot must survive an OS this build has no lookup for; the caller keeps the default verification and says so.
     expect(await extractCorporateCa(lookup, "aix")).toBeNull();
+  });
+});
+
+describe.runIf(process.platform !== "win32")("trust store tool lookup", () => {
+  it("never runs a trust store tool planted in the cwd or reached through an empty or relative PATH entry", async () => {
+    await withPlantedProgram(["security"], async (planted) => {
+      expect(await extractCorporateCa({ commonName: DEFAULT_CORP_CA_COMMON_NAME }, "darwin")).toBeNull();
+      expect(planted.ran()).toBe(false);
+    });
   });
 });
