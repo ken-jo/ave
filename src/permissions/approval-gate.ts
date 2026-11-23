@@ -436,6 +436,15 @@ function markHostApprovalRejectedDecision(
   return decision;
 }
 
+function hostCancellationDecision(requestId: string, reason?: "caller-abort" | "session-close"): ApprovalDecision {
+  const decision = markHostApprovalRejectedDecision({
+    requestId, choice: "deny-once",
+    ...(reason === undefined ? {} : { rememberPattern: `approval cancelled: ${reason}` }),
+  });
+  cancelledApprovalDecisions.add(decision);
+  return decision;
+}
+
 // Renderer-visible approval decisions are ordinary objects. This private map records the exact object that completed an HMAC-verified, explicit, one-shot Plan-B approval, so a structural `{ choice: "allow-once" }` cannot mint a plain-shell capability.
 const hostApprovedOneShotExecutionBindings = new WeakMap<
   ApprovalDecision,
@@ -1030,7 +1039,7 @@ export class ApprovalGate {
       return markHostApprovalRejectedDecision({ requestId: req.id, choice: "deny-once" });
     }
     if (this.lifetime.signal.aborted) {
-      return markHostApprovalRejectedDecision({ requestId: req.id, choice: "deny-once" });
+      return hostCancellationDecision(req.id);
     }
     const {
       forceExplicit: requestedForceExplicit = false,
@@ -1345,12 +1354,7 @@ export class ApprovalGate {
         type: "approval",
         output: `[approval:cancelled] ${fullReq.id} ${auditFieldsFor(fullReq, executionPlanAudit)} reason=turn-abort cause=${JSON.stringify(abortCause())} → deny-once`,
       });
-      const decision = markHostApprovalRejectedDecision({
-        requestId: fullReq.id,
-        choice: "deny-once",
-      });
-      cancelledApprovalDecisions.add(decision);
-      return decision;
+      return hostCancellationDecision(fullReq.id);
     };
     // Above the away answer, the OS notification and the renderer send, all for one reason: none of them should happen on behalf of a turn that is already over. An away grant in particular has a finite budget, and spending a unit of it to answer a dead turn spends it on nothing.
     if (this.lifetime.signal.aborted || abortSignal?.aborted) return denyForAbortedTurn();
@@ -1984,13 +1988,7 @@ export class ApprovalGate {
       type: "approval",
       output: `[approval:cancelled] ${requestId} ${formatApprovalAuditFields(entry, entry.executionPlan)} reason=${reason} → deny-once`,
     });
-    entry.resolve(
-      markHostApprovalRejectedDecision({
-        requestId,
-        choice: "deny-once",
-        rememberPattern: `approval cancelled: ${reason}`,
-      }),
-    );
+    entry.resolve(hostCancellationDecision(requestId, reason));
     return true;
   }
   // server-side ApprovalRequest snapshot lookup. The userApprovalRecord IPC handler binds to an in-flight request by id and reads the canonical `trustOrigin` / `approvalCacheKey` / `toolName` / `source` from the main-process pending entry rather than trusting the renderer payload. Eliminates the "renderer pretends a different trustOrigin" attack class — a renderer XSS that spoofs `trustOrigin: "user-keyboard"` for an `llm-tool-arg` request can no longer fool the user-approval-store cache identity. Returns `null` when no pending entry exists for `requestId` (e.g. the approval already resolved or timed out).
@@ -2103,14 +2101,9 @@ export class ApprovalGate {
     this.lifetime.abort(new Error("approval gate shutdown"));
     for (const [id, entry] of this.pending) {
       clearTimeout(entry.timer);
-      entry.resolve(
-        markHostApprovalRejectedDecision({
-          requestId: id,
-          choice: "deny-once",
-        }),
-      );
+      this.pending.delete(id);
+      entry.resolve(hostCancellationDecision(id));
     }
-    this.pending.clear();
   }
 
   // Current pending request count (for tests).
