@@ -246,7 +246,8 @@ describe("ToolExecutor admission across the quit seal", () => {
     } as unknown as PluginRuntimeGenerationAccess;
     const { ledger, executor, executes, audit, rows, hostShutdownRows, toolUses } = await freshExecutor(2, [], { generationAccess: access });
     executes[0].mockImplementationOnce(async () => { await blocker; return "done 0"; });
-    const running = executor.executeAll(toolUses, { sessionId: "sess-generation", permissionContext: userPermissionContext() });
+    const onToolEnd = vi.fn();
+    const running = executor.executeAll(toolUses, { sessionId: "sess-generation", permissionContext: userPermissionContext(), callbacks: { onToolEnd } });
     await vi.waitFor(() => expect(executes[0]).toHaveBeenCalledOnce(), { timeout: 10_000 });
     ledger.sealToolInvocations();
     let rowsAtClose: Array<Record<string, unknown>> = [];
@@ -258,6 +259,8 @@ describe("ToolExecutor admission across the quit seal", () => {
     expect(executes[1]).not.toHaveBeenCalled();
     expect(hostShutdownRows(rowsAtClose, "tu-queued-1")).toHaveLength(1);
     expect((await running)[1].is_error).toBe(true);
+    expect(onToolEnd).toHaveBeenCalledWith("queued_probe_1", expect.any(String), true,
+      expect.objectContaining({ source: "plugin", category: "write", pluginId: "probe-plugin" }), undefined, expect.any(Number));
   });
 
   it("refuses a queued tool without an audit failure when the force-kill path closes the audit in the seal's tick", async () => {

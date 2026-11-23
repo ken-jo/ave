@@ -552,9 +552,15 @@ async function runToolInvocationAttempt(
     let generationLease: PluginGenerationLease<HostPluginGenerationState> | undefined;
     // A pending generation transition must not hold an aborted call (and the quit join) on the lease.
     if (tool.pluginGeneration && abortSignal?.aborted) {
+      const abortedCategory = resolveInvocationCategory(tool, toolUse.input, sessionId);
+      meta.source = tool.source;
+      meta.category = abortedCategory;
+      if (tool.pluginId) meta.pluginId = tool.pluginId;
+      if (tool.workerId) meta.workerId = tool.workerId;
+      if (tool.mcpServerId) meta.mcpServerId = tool.mcpServerId;
       return withHostShellExecutionPlan(await returnUserAbort({
         input: toolUse.input, toolUse, meta, callbacks, source: tool.source, trust: trustFromSource(tool.source),
-        invocationCategory: resolveInvocationCategory(tool, toolUse.input, sessionId), sessionId, permissionContext,
+        invocationCategory: abortedCategory, sessionId, permissionContext,
         executionCwd, startTime, auditWriter: services.auditWriter, abortSignal, audit: currentAuditMetadata(toolUse.input),
       }));
     }
