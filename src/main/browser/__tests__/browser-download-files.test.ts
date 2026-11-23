@@ -65,6 +65,10 @@ const boundary = vi.hoisted(() => ({
   links: [] as [string, string][],
   // A folder like FAT or exFAT: no hard links, and a rename gives a file another id.
   linkless: false,
+  // The code the next hard link fails with, or null to make it.
+  linkFault: null as (() => string | null) | null,
+  // The code a removal of a path fails with, or null to remove it.
+  unlinkFault: null as ((path: string) => string | null) | null,
 }));
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
@@ -82,7 +86,8 @@ vi.mock("node:fs", async (importOriginal) => {
   };
   const linkSync: typeof actual.linkSync = (existing, path) => {
     boundary.links.push([String(existing), String(path)]);
-    if (boundary.linkless) throw Object.assign(new Error("operation not permitted, link"), { code: "EPERM" });
+    const fault = boundary.linkFault?.() ?? (boundary.linkless ? "ENOTSUP" : null);
+    if (fault !== null) throw Object.assign(new Error(`${fault}: simulated, link`), { code: fault });
     actual.linkSync(existing, path);
   };
   const lstatSync = ((path: string, ...rest: unknown[]) => {
@@ -90,7 +95,12 @@ vi.mock("node:fs", async (importOriginal) => {
     boundary.afterLstat?.(String(path));
     return info;
   }) as typeof actual.lstatSync;
-  const replaced = { renameSync, linkSync, lstatSync };
+  const unlinkSync: typeof actual.unlinkSync = (path) => {
+    const fault = boundary.unlinkFault?.(String(path)) ?? null;
+    if (fault !== null) throw Object.assign(new Error(`${fault}: simulated, unlink`), { code: fault });
+    actual.unlinkSync(path);
+  };
+  const replaced = { renameSync, linkSync, lstatSync, unlinkSync };
   return { ...actual, default: { ...actual, ...replaced }, ...replaced };
 });
 // The host's own renames go through the promise API: the same hook and the same folder without hard links.
@@ -159,6 +169,8 @@ beforeEach(() => {
   boundary.afterLstat = null;
   boundary.links = [];
   boundary.linkless = false;
+  boundary.linkFault = null;
+  boundary.unlinkFault = null;
   _forgetLinkSupportForTest();
 });
 afterEach(() => {
@@ -1227,6 +1239,65 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
     expect(removed).toEqual({ outcome: "removed" });
     expect(probes()).toHaveLength(1);
     expect(fs.readdirSync(chosen)).toEqual([]);
+  });
+
+  describe("the hard-link probe", () => {
+    const name = ".0123456789abcdef0123456789abcdef.part";
+    const probes = () => boundary.links.filter(([, link]) => /\.probe$/u.test(link)).map(([, link]) => link);
+    // Write a temporary file in a fresh folder and remove it through the probe and the check by id.
+    const removeOne = async (folderName: string) => {
+      const { removeOwnFile } = await import("../browser-download-files.js");
+      const chosen = join(base, folderName);
+      fs.mkdirSync(chosen);
+      fs.writeFileSync(join(chosen, name), "partial copy");
+      const info = fs.statSync(chosen, { bigint: true });
+      const file = fs.statSync(join(chosen, name), { bigint: true });
+      const result = await removeOwnFile({ path: chosen, dev: info.dev, ino: info.ino }, name, name,
+        { kind: "fileId", file: { dev: file.dev, ino: file.ino, birthtimeNs: file.birthtimeNs } },
+        async (directory, at) => { fs.unlinkSync(join(directory.path, at)); return "removed"; });
+      return { chosen, result };
+    };
+
+    it("does not keep a probe that failed for a passing reason, and probes again at the next cleanup", async () => {
+      let faults = 1;
+      boundary.linkFault = () => (faults-- > 0 ? "EBUSY" : null);
+      const first = await removeOne("first");
+      expect(first.result).toEqual({ outcome: "removed" });
+      expect(fs.readdirSync(first.chosen)).toEqual([]);
+      expect(boundary.warn).toHaveBeenCalledWith(expect.objectContaining({ code: "EBUSY" }), expect.stringContaining("could not be probed"));
+      await removeOne("second");
+      await removeOne("third");
+      // The failed probe, then one that answers for the volume, then none.
+      expect(probes()).toHaveLength(2);
+    });
+
+    it("keeps a probe whose failure says the file system has no hard links", async () => {
+      boundary.linkFault = () => "ENOTSUP";
+      expect((await removeOne("first")).result).toEqual({ outcome: "removed" });
+      expect((await removeOne("second")).result).toEqual({ outcome: "removed" });
+      expect(probes()).toHaveLength(1);
+    });
+
+    it("says distinctly when the probe's name cannot be removed", async () => {
+      boundary.unlinkFault = (path) => (/\.probe$/u.test(path) ? "EIO" : null);
+      const { chosen, result } = await removeOne("first");
+      expect(result).toEqual({ outcome: "removed" });
+      const [probe] = probes();
+      expect(fs.readdirSync(chosen)).toEqual([basename(probe ?? "")]);
+      expect(boundary.warn).toHaveBeenCalledWith({ path: join(chosen, name), probe, code: "EIO" }, expect.stringContaining("probe's name for a temporary download file is left"));
+    });
+
+    it.runIf(process.platform === "win32")("removes the probe's name after another program's brief lock", async () => {
+      let locks = 1;
+      boundary.unlinkFault = (path) => (/\.probe$/u.test(path) && locks-- > 0 ? "EBUSY" : null);
+      const removing = follow(removeOne("first"));
+      await until(() => locks === 0);
+      await advance(BACKGROUND_BUDGET_MS);
+      await until(() => removing.settled);
+      expect(removing.value?.result).toEqual({ outcome: "removed" });
+      expect(fs.readdirSync(removing.value?.chosen ?? "")).toEqual([]);
+      expect(boundary.warn).not.toHaveBeenCalledWith(expect.anything(), expect.stringContaining("probe's name"));
+    });
   });
 
   it.runIf(process.platform === "win32")("moves the copy's file aside after another program's brief lock, and removes it", async () => {

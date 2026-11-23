@@ -181,30 +181,41 @@ function contentAt(folder: HeldDirectory, name: string): Exclude<Found, "same"> 
   }
 }
 
-// Whether a volume keeps a file's id across a rename and can link a file back, probed once per volume in this process by linking the
-// file at `name` to a fresh hidden name and checking it there. A failed probe is read as no hard links: the content check still holds.
+// Whether a volume keeps a file's id across a rename and can link a file back, probed in this process by linking the file at `name` to a
+// fresh hidden name and checking it there. Only a definitive answer is kept for the volume: a link made and seen as the same file, or a
+// link refused with a code that says the file system has no hard links. ENOTSUP and EOPNOTSUPP say so everywhere; EPERM says so on
+// macOS and Linux, but on Windows it is a lock or access denial; EISDIR is how Windows reports a file system that cannot link a file.
+// Any other failure (a lock, an access denial, no space) answers no hard links for this cleanup only, where the content check still
+// holds, and the next cleanup probes again.
 const linkSupport = new Map<bigint, boolean>();
-function linksIn(folder: HeldDirectory, name: string): boolean {
+const NO_LINKS: ReadonlySet<string> = new Set(process.platform === "win32" ? ["ENOTSUP", "EOPNOTSUPP", "EISDIR"] : ["ENOTSUP", "EOPNOTSUPP", "EPERM"]);
+async function linksIn(folder: HeldDirectory, name: string): Promise<boolean> {
   const known = linkSupport.get(folder.dev);
   if (known !== undefined) return known;
   const path = join(folder.path, name);
   const probe = join(folder.path, `.${randomBytes(16).toString("hex")}.probe`);
-  let supported = false;
   try {
     linkSync(path, probe);
-    try {
-      const linked = lstatSync(probe, { bigint: true });
-      supported = linked.nlink >= 2n && sameFile(linked, lstatSync(path, { bigint: true }));
-    } finally {
-      try {
-        unlinkSync(probe);
-      } catch (error) {
-        log.warn({ path, alsoAt: probe, code: codeOf(error) }, "a temporary download file is also left under a hard-link probe's name");
-      }
-    }
-  } catch {
-    supported = false;
+  } catch (error) {
+    const definitive = NO_LINKS.has(codeOf(error) ?? "");
+    if (definitive) linkSupport.set(folder.dev, false);
+    else log.warn({ path, code: codeOf(error) }, "a folder's hard-link support could not be probed; this cleanup checks the file by its content");
+    return false;
   }
+  let supported: boolean | null = null;
+  try {
+    const linked = lstatSync(probe, { bigint: true });
+    supported = linked.nlink >= 2n && sameFile(linked, lstatSync(path, { bigint: true }));
+  } catch {
+    // Not seen through: answered for this cleanup only.
+  }
+  try {
+    // A brief lock by another program is waited out: the probe's name is ours alone.
+    await retryOnFileLock(async () => { removeIfPresent(probe); });
+  } catch (error) {
+    log.warn({ path, probe, code: codeOf(error) }, "a hard-link probe's name for a temporary download file is left, and could not be removed");
+  }
+  if (supported === null) return false;
   linkSupport.set(folder.dev, supported);
   return supported;
 }
@@ -229,7 +240,7 @@ export async function removeOwnFile(
   if (identity.kind === "fingerprint") return removeByContent(folder, original, at, identity.content, remove);
   const found = compareFile(folder, at, identity.file);
   if (found !== "same") return notMoved(found, path, { name: at, identity });
-  if (linksIn(folder, at)) return removeByFileId(folder, original, at, identity, remove);
+  if (await linksIn(folder, at)) return removeByFileId(folder, original, at, identity, remove);
   // No hard links: a rename may give the file another id, so it is known by its content from here on.
   const now = contentAt(folder, at);
   if (typeof now === "string") return notMoved(now, path, { name: at, identity });
