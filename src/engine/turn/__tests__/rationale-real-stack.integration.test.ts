@@ -349,6 +349,8 @@ describe("foreground rationale real-stack integration", () => {
           decision: "deny", trustOrigin: "llm-tool-arg",
           denyReasons: [expect.objectContaining({ reason: "Permission policy changed while approval was pending" })],
         })]);
+        expect(projectionRecords.map((projection) => projection.terminalReason)).toEqual([null, "host-denied"]);
+        expect(invocationRecords).toEqual([]);
         return;
       }
       expect(terminalRows).toEqual([expect.objectContaining({ decision: "allow", trustOrigin: "user-keyboard" })]);

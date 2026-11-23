@@ -1124,10 +1124,19 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
           approvalGate: this.#approvalGate,
         });
         if (!transition) {
-          // Another change than this card's own save voids the allow; the attempt still ends with its deny row.
-          await this.#recordTerminalDenial(context, "Permission policy changed while approval was pending");
+          // Another change than this card's own save voids the allow; end it like any policy deny.
+          const reason = "Permission policy changed while approval was pending";
+          const denied = this.#ticketStore.denyByPolicy(expectation, decidedAt);
+          if (!denied) return null;
+          context.snapshot = denied;
+          context.terminalTicket = denied.ticket;
+          const projection = createRationaleUiAuditProjection({ control: context.control,
+            response: context.response, reevaluation: context.reevaluation, ticket: denied.ticket, now: decidedAt });
+          this.#commitProjectionAudit(context.sessionId, projection, decidedAt);
+          context.projection = projection;
+          await this.#recordTerminalDenial(context, reason);
           this.#deleteContext(ticketId);
-          return null;
+          return { outcome: "denied", reason, ticket: denied.ticket, projection };
         }
         context.policyTransition = transition;
         context.approvedDecision = decision;
