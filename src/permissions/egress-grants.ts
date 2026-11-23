@@ -12,7 +12,7 @@ import {
 } from "@anthropic-ai/sandbox-runtime/dist/sandbox/address.js";
 import { BlockList, isIP } from "node:net";
 import { openFeatureNamespace, preparePrivateFileDirectory, writeFileAtomicAtPath } from "../main/storage/feature-namespace.js";
-import { assertAveHomeInputWritable, readAveHomeInput } from "../shared/ave-home-trust.js";
+import { assertAveHomeInputWritable, readAveHomeInput, readAveHomeInputSync } from "../shared/ave-home-trust.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { createSerialQueue } from "../lib/with-file-lock.js";
 import { isPersistedPolicyVersionCurrent, StalePermissionPolicyError } from "./persisted-policy-version.js";
@@ -296,6 +296,11 @@ function parseDestinationKey(key: string): EgressGrantDestination {
   return { host, port: Number(port), network };
 }
 
+function grantFileBody(grants: readonly PersistentEgressGrant[]): string {
+  const file: GrantFile = { version: FILE_VERSION, grants: [...grants] };
+  return `${JSON.stringify(file, null, 2)}\n`;
+}
+
 export class EgressGrantStore {
   private readonly once = new Map<string, Set<string>>();
   // Session id to destination key to the time it was granted.
@@ -498,19 +503,21 @@ export class EgressGrantStore {
   }
 
   // Revoke one grant of any revocable scope. Resolves whether it existed and the live invocation tokens it had let through, whose open connections to that destination the caller closes.
-  async revoke(target: RevocableEgressGrant): Promise<{ readonly removed: boolean; readonly tokens: readonly string[] }> {
+  // A persistent removal whose rename landed resolves with `durabilitySyncFailed` when the write failed afterwards: the grant is gone, so its connections still close.
+  async revoke(target: RevocableEgressGrant): Promise<{ readonly removed: boolean; readonly tokens: readonly string[]; readonly durabilitySyncFailed?: true }> {
     let removed: boolean;
+    let durabilitySyncFailed = false;
     if (target.scope === "session") {
       removed = removeGrant(this.session, target.sessionId, destinationKey(target));
     } else if (target.scope === "tab") {
       removed = removeGrant(this.tab, target.tabId, destinationKey(target));
     } else {
-      removed = await this.revokePersistent(target);
+      ({ removed, durabilitySyncFailed } = await this.revokePersistent(target));
     }
     const key = grantUseKey(target);
     const tokens = [...(this.uses.get(key) ?? [])];
     this.uses.delete(key);
-    return { removed, tokens };
+    return { removed, tokens, ...(durabilitySyncFailed ? { durabilitySyncFailed: true as const } : {}) };
   }
 
   // The project and always grants, for Settings.
@@ -518,22 +525,42 @@ export class EgressGrantStore {
     return [...(this.persistent?.grants ?? await this.writes(() => this.loadPersistent()))];
   }
 
-  // Remove one persistent grant. Resolves true when it existed.
-  private async revokePersistent(target: Pick<PersistentEgressGrant, "scope" | "origin" | "host" | "port" | "network" | "projectRoot">): Promise<boolean> {
+  // Remove one persistent grant. Resolves whether it existed, and whether its landed removal failed to be made durable.
+  private async revokePersistent(
+    target: Pick<PersistentEgressGrant, "scope" | "origin" | "host" | "port" | "network" | "projectRoot">,
+  ): Promise<{ removed: boolean; durabilitySyncFailed: boolean }> {
     const key = grantUseKey(target);
     this.pendingPersistentRevocations.set(key, (this.pendingPersistentRevocations.get(key) ?? 0) + 1);
     try {
       let removed = false;
-      await this.mutatePersistent((grants) => {
-        const kept = grants.filter(grant => grantUseKey(grant) !== key);
-        removed = kept.length < grants.length;
-        return kept;
-      });
-      return removed;
+      let body: string | undefined;
+      try {
+        await this.mutatePersistent((grants) => {
+          const kept = grants.filter(grant => grantUseKey(grant) !== key);
+          removed = kept.length < grants.length;
+          body = grantFileBody(kept);
+          return kept;
+        });
+      } catch (error) {
+        // The rename landed when the file now holds exactly the body without the grant; only a later step (the directory sync) failed.
+        // Its bytes are compared whatever their trust: a failed write never vouches for what it left behind.
+        if (!removed || body === undefined || !this.fileHolds(body)) throw error;
+        return { removed, durabilitySyncFailed: true };
+      }
+      return { removed, durabilitySyncFailed: false };
     } finally {
       const pending = this.pendingPersistentRevocations.get(key) ?? 0;
       if (pending > 1) this.pendingPersistentRevocations.set(key, pending - 1);
       else this.pendingPersistentRevocations.delete(key);
+    }
+  }
+
+  private fileHolds(body: string): boolean {
+    try {
+      const input = readAveHomeInputSync(this.filePath, { requireRegularFile: true });
+      return input.status !== "absent" && input.bytes.equals(Buffer.from(body));
+    } catch {
+      return false;
     }
   }
 
@@ -578,7 +605,7 @@ export class EgressGrantStore {
       signal?.throwIfAborted();
       const next = [...mutate(current)];
       const file: GrantFile = { version: FILE_VERSION, grants: next };
-      const body = `${JSON.stringify(file, null, 2)}\n`;
+      const body = grantFileBody(next);
       this.landingDigest = sha256Hex(body);
       try {
         if (authority || signal) {

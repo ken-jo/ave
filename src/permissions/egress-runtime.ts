@@ -58,9 +58,10 @@ export function releaseEgressSessions(ended: (sessionId: string) => boolean): vo
 }
 
 // Revoke one grant and close the connections it had let through that are still open. Resolves whether it existed and how many connections closed.
-export async function revokeEgressGrant(target: RevocableEgressGrant): Promise<{ readonly removed: boolean; readonly closed: number }> {
-  const { removed, tokens } = await egressGrantStore().revoke(target);
-  return { removed, closed: closeEgressConnections(tokens, target.host, target.port) };
+// A removal that landed on disk but whose sync failed still closes them, and says so with `durabilitySyncFailed`.
+export async function revokeEgressGrant(target: RevocableEgressGrant): Promise<{ readonly removed: boolean; readonly closed: number; readonly durabilitySyncFailed?: true }> {
+  const { removed, tokens, durabilitySyncFailed } = await egressGrantStore().revoke(target);
+  return { removed, closed: closeEgressConnections(tokens, target.host, target.port), ...(durabilitySyncFailed ? { durabilitySyncFailed } : {}) };
 }
 
 // Refresh extension domains and configured model endpoints at boot, plugin load and endpoint changes.

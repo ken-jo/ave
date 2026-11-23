@@ -3,12 +3,15 @@ vi.mock("../../shared/windows-configuration-handles.js", async original => (awai
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
 
 // The shell egress grant store (egress-grants.ts), the per-extension worker lists (egress-runtime.ts) and the identity strength that caps the scopes (egress-identity.ts).
-import { mkdirSync, mkdtempSync, promises as fs, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, promises as fs, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { connect, createServer, type AddressInfo } from "node:net";
+import { once } from "node:events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   canonicalEgressHost,
+  egressGrantFilePath,
   egressDestinationNetwork,
   egressScopesForNetwork,
   egressGrantScopesFor,
@@ -24,10 +27,15 @@ import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js
 import { canonicalizePathForMatch } from "../sensitive-paths.js";
 import { PermissionManager } from "../permission-manager.js";
 import { EGRESS_GRANT_SCOPE_LADDERS } from "../../shared/egress-grant-scopes.js";
-import { _resetAveHomePrivacyForTest, AveHomeConfigurationRefusedWriteError, setAveHomeConfigurationRefusedAtBoot } from "../../shared/ave-home.js";
+import { _resetAveHomePrivacyForTest, AveHomeConfigurationRefusedWriteError, ensureAveHomePrivate, setAveHomeConfigurationRefusedAtBoot } from "../../shared/ave-home.js";
+import { migrateAveHomeConfiguration } from "../../shared/ave-home-configuration.js";
+import { setAveHomeConfigurationOwner } from "../../shared/ave-home-configuration-access.js";
+import { configureHostResources } from "../../main/host-resources.js";
+import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
 import * as homeTrust from "../../shared/ave-home-trust.js";
 import { deferred } from "../../__tests__/support/deferred.js";
 import * as featureNamespace from "../../main/storage/feature-namespace.js";
+import * as asrtSandbox from "../asrt-sandbox.js";
 
 const ALL = ["once", "session", "project", "always"] as const;
 const matchingScopes = Object.values(EGRESS_GRANT_SCOPE_LADDERS).flat();
@@ -364,8 +372,68 @@ describe("EgressGrantStore", () => {
       await pending;
       writer.mockRestore();
     }
-    expect(await pending).toBe(failure);
+    // A removal whose rename landed is a completed revoke that reports its failed durability step; otherwise the failure stands.
+    expect(await pending).toEqual(committed ? { removed: true, tokens: [], durabilitySyncFailed: true } : failure);
     expect(store.matchingLoadedScope(subject, github, ALL)).toBe(committed ? undefined : "always");
+  });
+
+  it("still rejects a failed write that removed nothing, although the file already holds its unchanged body", async () => {
+    const store = new EgressGrantStore(file);
+    await store.grant("always", ALL, subject, github);
+    const failure = new Error("could not write grants");
+    const writer = vi.spyOn(featureNamespace, "writeFileAtomicAtPath").mockRejectedValueOnce(failure);
+    try {
+      expect(await store.revoke({ ...github, host: "example.com", scope: "always", origin: "shell" }).catch(error => error)).toBe(failure);
+    } finally {
+      writer.mockRestore();
+    }
+    expect(store.matchingLoadedScope(subject, github, ALL)).toBe("always");
+  });
+
+  it("returns a revoked grant's uses when its rename landed in a gated home but the sync failed", async () => {
+    const home = join(realpathSync(dir), ".ave");
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+    setAveHomeConfigurationOwner({ hasSingleInstanceLock: () => true });
+    setFixtureOwner(dir);
+    vi.stubEnv("AVE_HOME", home);
+    const rename = fs.rename;
+    const open = fs.open;
+    let syncFailure: { mockRestore(): void } | undefined;
+    try {
+      const privacy = ensureAveHomePrivate(home);
+      expect(privacy.enforcement).not.toBe("none");
+      migrateAveHomeConfiguration(home, privacy);
+      homeTrust.evaluateAveHomeTrustAtBoot(home);
+      const path = egressGrantFilePath();
+      const store = new EgressGrantStore(path);
+      await store.grant("always", ALL, subject, github);
+      expect(homeTrust.readAveHomeInputSync(path).status).toBe("trusted");
+      store.noteUse("always", subject, github);
+      // POSIX fails the parent-directory sync after the rename. Windows syncs no directory, so its rename reports a failure after landing.
+      syncFailure = process.platform === "win32"
+        ? vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+          await rename(from, to);
+          if (to === path) throw new Error("rename reported a failure after landing");
+        })
+        : vi.spyOn(fs, "open").mockImplementation(async (...args: Parameters<typeof open>) => {
+          if (args[0] === dirname(path) && args[1] === "r") throw new Error("directory sync failed");
+          return open(...args);
+        });
+      const result = await store.revoke({ ...github, scope: "always", origin: "shell" }).catch(error => error);
+      syncFailure.mockRestore();
+      syncFailure = undefined;
+      // The failed write cleared its own intent, so the landed bytes read as changed: landing is proved from the bytes, not their trust.
+      expect(homeTrust.readAveHomeInputSync(path)).toMatchObject({ status: "untrusted", reason: "changed" });
+      expect(JSON.parse(readFileSync(path, "utf8")).grants).toEqual([]);
+      expect(result).toEqual({ removed: true, tokens: [subject.token], durabilitySyncFailed: true });
+      expect(await store.matchingScope(subject, github, ALL)).toBeUndefined();
+    } finally {
+      syncFailure?.mockRestore();
+      setAveHomeConfigurationOwner(undefined);
+      homeTrust._resetAveHomeTrustForTest();
+      _resetAveHomePrivacyForTest();
+      vi.unstubAllEnvs();
+    }
   });
 
   it.each([
@@ -655,6 +723,67 @@ describe("shell domain grants in the running process", () => {
     } finally {
       await revokeEgressGrant(target);
       first.release(); second.release(); terminal.release();
+    }
+  });
+
+  it("closes a socket when a revoke fails after its rename removed the grant", async () => {
+    const { openEgressInvocation } = await import("../egress-invocations.js");
+    const { createEgressAskRuntimeCallback, listEgressGrants, revokeEgressGrant } = await import("../egress-runtime.js");
+    const destination = { host: "sync-failure.example.com", port: 443 };
+    const target = { ...destination, scope: "always", origin: "shell", network: "public" } as const;
+    const permissionManager = new PermissionManager(join(dir, "permissions.json"));
+    const callback = createEgressAskRuntimeCallback({
+      permissionManager, shellAskEnabled: () => true,
+      approvalGate: { requestAndWait: async request => ({ requestId: request.id, choice: "allow-once", egressScope: "always" }) },
+    });
+    const invocation = openEgressInvocation({ kind: "shell", toolName: "bash", toolUseId: undefined,
+      context: { sessionId: "domain-session", workspaceRoot: dir, approvalSurface: "interactive" } });
+    const server = createServer();
+    const listening = once(server, "listening");
+    server.listen(0, "127.0.0.1");
+    await listening;
+    const peer = once(server, "connection");
+    const socket = connect((server.address() as AddressInfo).port, "127.0.0.1");
+    const closed = once(socket, "close");
+    const [serverSocket] = await peer;
+    const close = vi.spyOn(asrtSandbox, "closeEgressConnections").mockImplementation((tokens, host, port) => {
+      if (!tokens.includes(invocation.token) || host !== destination.host || port !== destination.port) return 0;
+      socket.destroy();
+      return 1;
+    });
+    const path = egressGrantFilePath();
+    const open = fs.open;
+    try {
+      expect(await callback(destination, { attributionKey: invocation.token, identity: "listener", phase: "resolved",
+        addresses: ["93.184.215.14"], resolution: "pinned" })).toBe(true);
+      // POSIX fails the parent-directory sync after the rename. Windows syncs no directory, so its rename reports a failure after landing.
+      const rename = fs.rename;
+      const syncFailure = process.platform === "win32"
+        ? vi.spyOn(fs, "rename").mockImplementation(async (from, to) => {
+          await rename(from, to);
+          if (to === path) throw new Error("rename reported a failure after landing");
+        })
+        : vi.spyOn(fs, "open").mockImplementation(async (...args: Parameters<typeof open>) => {
+          if (args[0] === dirname(path) && args[1] === "r") throw new Error("directory sync failed");
+          return open(...args);
+        });
+      let result: unknown;
+      try {
+        result = await revokeEgressGrant(target).catch(error => error);
+      } finally {
+        syncFailure.mockRestore();
+      }
+      expect(JSON.parse(readFileSync(path, "utf8")).grants).not.toContainEqual(expect.objectContaining(target));
+      expect(close).toHaveBeenCalledWith([invocation.token], destination.host, destination.port);
+      await closed;
+      expect(result).toEqual({ removed: true, closed: 1, durabilitySyncFailed: true });
+      expect(await listEgressGrants()).not.toContainEqual(expect.objectContaining(target));
+    } finally {
+      close.mockRestore();
+      socket.destroy();
+      serverSocket.destroy();
+      server.close();
+      invocation.release();
     }
   });
 });

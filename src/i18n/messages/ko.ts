@@ -4349,6 +4349,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "permissionsTab.networkGrantsLoadFailed": "허용한 호스트를 읽지 못했습니다.",
   "permissionsTab.networkGrantsRefresh": "새로 고침",
   "permissionsTab.networkGrantRevokeFailed": "호스트 허용을 취소하지 못했습니다.",
+  "permissionsTab.networkGrantRevokeSyncFailed": "허용을 취소했지만 디스크 동기화에 실패했습니다.",
   "permissionsTab.networkDenialsHeading": "최근 차단 (24시간)",
   "permissionsTab.networkDenialsRefresh": "새로 고침",
   "permissionsTab.networkDenialsLoading": "불러오는 중…",
