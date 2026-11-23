@@ -644,12 +644,13 @@ const APPROVAL_ANSWERER_AUDIT_TOKENS = {
   "headless-exec": "headless-exec",
 } as const;
 
-// The trust origin of each answerer's decision. The headless runner's deny is the host's, not a person's.
-const APPROVAL_ANSWERER_TRUST_ORIGINS: Record<keyof typeof APPROVAL_ANSWERER_AUDIT_TOKENS, TrustOriginWithUnknown> = {
+// The trust origin of each answerer's decision, exhaustive over ApprovalAnswerer: a new answerer does not compile until it names one.
+// The headless runner's deny is the host's, not a person's.
+const APPROVAL_ANSWERER_TRUST_ORIGINS = {
   desk: "user-keyboard",
   "platform-bridge": "platform-bridge",
   "headless-exec": "unknown",
-};
+} as const satisfies Record<ApprovalAnswerer, TrustOriginWithUnknown>;
 
 // Who answered an approval. Host-derived at answer time from the code path that received the answer. It is never read out of the ApprovalDecision payload, out of the request, out of a provider's output, or inferred from the localizable free-text `reason` — a value any of those can influence is not attribution.
 export type ApprovalAnswerer = keyof typeof APPROVAL_ANSWERER_AUDIT_TOKENS;
