@@ -15,6 +15,7 @@ import {
   GATED_EFFECT_PATHS,
   pathReadEffectPaths,
   runWithEffectGateContext,
+  sameEffectAuthority,
 } from "../../permissions/effect-enforcement.js";
 import { ManifestIntegrityError } from "../../permissions/manifest-integrity.js";
 import { methodEffect } from "../../permissions/effect-kind.js";
@@ -97,7 +98,10 @@ import {
 const log = createLogger("host-api-dispatcher");
 const MISSING_INVOCATION_TOKEN = "missing-invocation-token";
 const SETTLED_INVOCATION_TOKEN = "settled-invocation-token";
-const INVOCATION_REFUSALS: ReadonlySet<unknown> = new Set([MISSING_INVOCATION_TOKEN, SETTLED_INVOCATION_TOKEN]);
+const AMBIGUOUS_INVOCATION_TOKEN = "ambiguous-invocation-token";
+const INVOCATION_REFUSALS: ReadonlySet<unknown> = new Set([
+  MISSING_INVOCATION_TOKEN, SETTLED_INVOCATION_TOKEN, AMBIGUOUS_INVOCATION_TOKEN,
+]);
 
 /** Paths whose host implementation authorizes against the invocation's effect-gate frame. */
 function readsEffectFrame(path: HostApiPath): boolean {
@@ -1355,6 +1359,8 @@ export interface HostApiDispatcherOptions {
 interface HostInvocationTable {
   /** Resolve both live and retained invocation contexts; missing or evicted tokens refuse without weaker gating. */
   resolve(token: string): { readonly run: InvocationContextRunner; readonly live: boolean } | undefined;
+  /** Context runners of the tool calls still in flight. */
+  live(): Iterable<InvocationContextRunner>;
   toolCallsInFlight(): number;
 }
 
@@ -1487,6 +1493,19 @@ export class HostApiDispatcher {
         `[host-api-dispatcher] '${path}' names a tool call that has already settled`,
         { reason: SETTLED_INVOCATION_TOKEN },
       );
+    }
+    if (invocation.live && readsEffectFrame(path)) {
+      // The child picks the token, so a gated effect runs only when every live call would authorize it alike.
+      const named = invocation.run(currentEffectGateContext);
+      for (const other of this.options.invocations?.live() ?? []) {
+        if (!sameEffectAuthority(named, other(currentEffectGateContext))) {
+          throw new HostApiBoundaryError(
+            "argument-marshalling-rejected",
+            `[host-api-dispatcher] '${path}' names one of several active tool calls with different permission contexts`,
+            { reason: AMBIGUOUS_INVOCATION_TOKEN },
+          );
+        }
+      }
     }
     return invocation.run(invoke);
   }

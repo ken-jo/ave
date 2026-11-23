@@ -5,6 +5,7 @@ import { PassThrough } from "node:stream";
 import { frameMessage, StdioFrameDecoder } from "../../../mcp/stdio-framing.js";
 import { INVOCATION_META, RPC_METHOD_NOT_FOUND } from "../../../mcp/protocol-constants.js";
 import { evaluateHostFetch } from "../../../main/host-fetch-guard.js";
+import { runWithEffectGateContext } from "../../../permissions/effect-enforcement.js";
 import { servePluginChild } from "../plugin-child-main.js";
 import {
   defineHostApiPath,
@@ -386,6 +387,21 @@ function invocationCounts(transport: PluginChildTransport): { live: number; sett
   return { live: tables.liveInvocations.size, settled: tables.settledInvocations.size };
 }
 
+/** Issue one tools/call from inside an executor-style effect-gate frame. */
+async function callToolIn(
+  rig: InvocationRig,
+  label: string,
+  frame: Omit<Parameters<typeof runWithEffectGateContext>[0], "toolName">,
+): Promise<{ frame: Frame; reply: Promise<unknown> }> {
+  const before = rig.sent.length;
+  const reply = marker.run(label, () => runWithEffectGateContext({ ...frame, toolName: "speak" },
+    () => rig.transport.requestMcp("tools/call", { name: "speak", arguments: {} })));
+  await settle();
+  const sent = rig.sent.slice(before).filter((candidate) => candidate.method === "tools/call");
+  expect(sent).toHaveLength(1);
+  return { frame: sent[0]!, reply };
+}
+
 function tokenOf(frame: Frame): string {
   return ((frame.params as Record<string, unknown>)._meta as Record<string, string>)[INVOCATION_META]!;
 }
@@ -433,6 +449,48 @@ describe("a tools/call's invocation, as the child's hostApi requests reach it", 
     expect(rig.seen).toEqual(["call-0"]);
     expect(rig.audit).toHaveBeenCalledWith(expect.objectContaining({ method: "raiseAlert", reason: "settled-invocation-token" }));
     rig.transport.close("case over");
+  });
+
+  it.each([
+    ["headless and interactive", { headless: true, sessionId: "session-1" }, { headless: false, sessionId: "session-1" }],
+    ["different sessions", { headless: false, sessionId: "session-1" }, { headless: false, sessionId: "session-2" }],
+    ["a floor and none", { headless: false, permissionContext: { floor: { code: "other-principal" as const, reason: "x" } } }, { headless: false }],
+  ])("makes the token choice impossible between live calls with %s contexts", async (_label, first, second) => {
+    const rig = invocationRig();
+    const a = await callToolIn(rig, "call-a", first);
+    const b = await callToolIn(rig, "call-b", second);
+    const pending = Promise.allSettled([a.reply, b.reply]);
+    try {
+      const viaA = await raiseAlertFromChild(rig, "via-a", tokenOf(a.frame));
+      const viaB = await raiseAlertFromChild(rig, "via-b", tokenOf(b.frame));
+      for (const reply of [viaA, viaB]) expect(reply.error).toMatchObject({ data: { code: "argument-marshalling-rejected" } });
+      expect(rig.audit).toHaveBeenCalledWith(expect.objectContaining({ method: "raiseAlert", reason: "ambiguous-invocation-token" }));
+      await expect(probeFromChild(rig, "read-a", tokenOf(a.frame))).resolves.toMatchObject({ result: false });
+      expect(rig.seen).toEqual(["call-a"]);
+      rig.deliver({ jsonrpc: "2.0", id: b.frame.id as string, result: { content: [] } });
+      await b.reply;
+      await expect(raiseAlertFromChild(rig, "alone", tokenOf(a.frame))).resolves.toMatchObject({ result: { status: "raised" } });
+      expect(rig.seen).toEqual(["call-a", "call-a"]);
+    } finally {
+      rig.transport.close("case over");
+      await pending;
+    }
+  });
+
+  it("lets either of two live calls with equivalent contexts carry a gated request", async () => {
+    const rig = invocationRig();
+    const frame = { headless: false, sessionId: "session-1", permissionContext: { floor: { code: "other-principal" as const, reason: "x" } } };
+    const a = await callToolIn(rig, "call-a", frame);
+    const b = await callToolIn(rig, "call-b", { ...frame, permissionContext: { floor: { ...frame.permissionContext.floor } } });
+    const pending = Promise.allSettled([a.reply, b.reply]);
+    try {
+      await expect(raiseAlertFromChild(rig, "via-b", tokenOf(b.frame))).resolves.toMatchObject({ result: { status: "raised" } });
+      await expect(raiseAlertFromChild(rig, "via-a", tokenOf(a.frame))).resolves.toMatchObject({ result: { status: "raised" } });
+      expect(rig.seen).toEqual(["call-b", "call-a"]);
+    } finally {
+      rig.transport.close("case over");
+      await pending;
+    }
   });
 
   it("runs a request that names no invocation in none, not in the context the child was spawned in", async () => {

@@ -154,6 +154,7 @@ export class PluginChildTransport {
           const settled = this.settledInvocations.get(token);
           return settled === undefined ? undefined : { run: settled, live: false };
         },
+        live: () => this.liveInvocations.values(),
         toolCallsInFlight: () => this.liveInvocations.size,
       },
       notifications: {
