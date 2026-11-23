@@ -435,3 +435,4 @@ src/plugins/runtime/__tests__/sandbox-withdrawal.test.ts
 src/shared/__tests__/ave-home-host-ownership.test.ts
 src/tools/__tests__/file-tools.test.ts
 src/tools/__tests__/shell-interruption-cleanup.test.ts
+src/work-board/workflow/__tests__/stage-run-harness.test.ts
