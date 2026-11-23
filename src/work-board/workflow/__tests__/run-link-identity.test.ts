@@ -1,4 +1,5 @@
 import { expect, it, vi } from "vitest";
+import { deferred } from "../../../__tests__/support/deferred.js";
 import { boardRunState } from "../run-state.js";
 import { stageOf } from "./stage-fixtures.js";
 import { stageRunHarness } from "./stage-run-harness.js";
@@ -6,6 +7,7 @@ import { stageRunHarness } from "./stage-run-harness.js";
 it.each(["held", "mutation"] as const)("an obsolete link keeps its original attempt at the %s boundary", async boundary => {
   let linked = false;
   let moved = false;
+  const moveWritten = deferred<void>();
   let refusing = false;
   const messages = vi.spyOn(console, "log");
   const h = await stageRunHarness({
@@ -18,6 +20,7 @@ it.each(["held", "mutation"] as const)("an obsolete link keeps its original atte
           const { childSessionId: _childSessionId, ...rest } = stage;
           return stage.stageId === "a" ? { ...rest, attempt: 2 } : stage;
         }) }));
+        moveWritten.resolve();
       };
       return { runs: { ...records,
         get: async (...args) => {
@@ -36,9 +39,10 @@ it.each(["held", "mutation"] as const)("an obsolete link keeps its original atte
     const id = await h.addItem(version);
     void h.start(id, h.local(version));
     const [child] = await h.untilLive(1);
-    await vi.waitFor(() => expect(moved).toBe(true));
+    await moveWritten.promise;
+    expect(moved).toBe(true);
     const runId = (await h.item(id)).runId ?? "";
-    if (boundary === "held") await vi.waitFor(async () => expect(await h.board.runs.heldEvents({ itemId: id, runId })).toEqual([
+    if (boundary === "held") await h.untilRunFile(async () => expect(await h.board.runs.heldEvents({ itemId: id, runId })).toEqual([
       { itemId: id, runId, stage: "a", attempt: 1, kind: "stage_linked" },
     ]));
     refusing = false;

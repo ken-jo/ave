@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
+import { deferred } from "../../../__tests__/support/deferred.js";
 import type { RunRecord } from "../shipped-shapes.js";
 import { boardRunState } from "../run-state.js";
 import { autoStageOf, stageOf } from "./stage-fixtures.js";
@@ -18,6 +19,7 @@ it.each(["human", "auto"] as const)(
   async gate => {
     let restarted = false;
     let crashReached = false;
+    const crashed = deferred<void>();
     let receiptRoot = "";
     const sealWrites: string[] = [];
     const missingAtIntegration: string[][] = [];
@@ -80,6 +82,7 @@ it.each(["human", "auto"] as const)(
               );
               if (stored.ok && passedA && !restarted) {
                 crashReached = true;
+                crashed.resolve();
                 return new Promise<never>(() => undefined);
               }
               return stored;
@@ -120,7 +123,8 @@ it.each(["human", "auto"] as const)(
         await h.untilStage(id, "a", "awaiting_gate");
         void h.decide(id, "a", "approve").catch(() => undefined);
       }
-      await vi.waitFor(() => expect(crashReached).toBe(true));
+      await crashed.promise;
+      expect(crashReached).toBe(true);
 
       const disk = JSON.parse(
         readFileSync(join(h.dir, "workflow-runs.json"), "utf8"),

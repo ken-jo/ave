@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
+import { deferred } from "../../../__tests__/support/deferred.js";
 import { boardRunState } from "../run-state.js";
 import { createPassConditionRegistry } from "../stage-gates.js";
 import { autoStageOf } from "./stage-fixtures.js";
@@ -9,6 +10,7 @@ import { stageRunHarness } from "./stage-run-harness.js";
 it("a new engine consumes a durably applied gate once when the old write never returns", async () => {
   let abandoned = false;
   let crashReached = false;
+  const crashed = deferred<void>();
   let gateWrites = 0;
   const conditions = createPassConditionRegistry();
   const evaluate = vi.spyOn(conditions, "evaluate");
@@ -29,6 +31,7 @@ it("a new engine consumes a durably applied gate once when the old write never r
           gateWrites += 1;
           if (!abandoned) {
             crashReached = true;
+            crashed.resolve();
             // The real file write landed. Never return to the engine: no receipt, notification or cleanup can run.
             return new Promise<never>(() => undefined);
           }
@@ -42,7 +45,8 @@ it("a new engine consumes a durably applied gate once when the old write never r
     const id = await h.addItem(version);
     void h.start(id, h.local(version));
     (await h.untilLive(1))[0].finish();
-    await vi.waitFor(() => expect(crashReached).toBe(true));
+    await crashed.promise;
+    expect(crashReached).toBe(true);
     const disk = JSON.parse(readFileSync(join(h.dir, "workflow-runs.json"), "utf8"));
     const before = disk.runs[0];
     expect(before.stageRuns[0]).toMatchObject({ status: "passed", gate: { type: "auto", passed: true } });

@@ -1,4 +1,5 @@
 import { expect, it, vi } from "vitest";
+import { deferred } from "../../../__tests__/support/deferred.js";
 import { boardRunState } from "../run-state.js";
 import { createPassConditionRegistry } from "../stage-gates.js";
 import { autoStageOf } from "./stage-fixtures.js";
@@ -21,10 +22,12 @@ it("concurrent readers preserve held arrival order and finish after evaluation r
     releaseEvaluation = resolve;
   });
   const order: string[] = [];
+  const evaluatedA = deferred<void>();
   const conditions = createPassConditionRegistry();
   conditions.register("stage_ok", {
     evaluate: async facts => {
       order.push(facts.stage.id);
+      if (facts.stage.id === "a") evaluatedA.resolve();
       if (facts.stage.id === "a") await evaluation;
       return { passed: true, evidence: "checked", judgedBy: "host" };
     },
@@ -71,12 +74,12 @@ it("concurrent readers preserve held arrival order and finish after evaluation r
 
     refusing = true;
     a.finish();
-    await vi.waitFor(async () => {
+    await h.untilRunFile(async () => {
       expect(await h.board.runs.heldEvents({ itemId: id, runId }))
         .toMatchObject([{ stage: "a", attempt: 1, kind: "stage_ended" }]);
     });
     b.finish();
-    await vi.waitFor(async () => {
+    await h.untilRunFile(async () => {
       expect(await h.board.runs.heldEvents({ itemId: id, runId }))
         .toMatchObject([
           { stage: "a", attempt: 1, kind: "stage_ended" },
@@ -86,7 +89,8 @@ it("concurrent readers preserve held arrival order and finish after evaluation r
 
     refusing = false;
     await permittedRead(h);
-    await vi.waitFor(() => expect(order).toEqual(["a"]));
+    await evaluatedA.promise;
+    expect(order).toEqual(["a"]);
     await Promise.all(
       Array.from({ length: 8 }, () => permittedRead(h)),
     );

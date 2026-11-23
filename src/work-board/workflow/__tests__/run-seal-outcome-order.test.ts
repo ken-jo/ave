@@ -1,4 +1,5 @@
-import { expect, it, vi } from "vitest";
+import { expect, it } from "vitest";
+import { deferred } from "../../../__tests__/support/deferred.js";
 import { autoStageOf, stageOf } from "./stage-fixtures.js";
 import { stageRunHarness } from "./stage-run-harness.js";
 
@@ -15,6 +16,7 @@ it.each(["human", "auto"] as const)(
   async gate => {
     const pending = latch();
     let entered = false;
+    const sealEntered = deferred<void>();
     let seals = 0;
     let integrations = 0;
 
@@ -24,6 +26,7 @@ it.each(["human", "auto"] as const)(
           seals += 1;
           if (seals === 1) {
             entered = true;
+            sealEntered.resolve();
             await pending.ready;
             return { ok: false, code: "identity-missing" };
           }
@@ -57,7 +60,8 @@ it.each(["human", "auto"] as const)(
         approved = h.decide(id, "a", "approve");
       }
 
-      await vi.waitFor(() => expect(entered).toBe(true));
+      await sealEntered.promise;
+      expect(entered).toBe(true);
 
       // This read queues recovery before the pending failure is posted.
       await h.engine.adoptParkedTemplateRuns();
@@ -97,6 +101,7 @@ it.each(["human", "auto"] as const)(
 it("a reader queued during a successful seal reuses its attempt cache", async () => {
   const pending = latch();
   let entered = false;
+  const sealEntered = deferred<void>();
   let seals = 0;
   let integrations = 0;
 
@@ -105,6 +110,7 @@ it("a reader queued during a successful seal reuses its attempt cache", async ()
       seal: async () => {
         seals += 1;
         entered = true;
+        sealEntered.resolve();
         await pending.ready;
         return { ok: true };
       },
@@ -128,7 +134,8 @@ it("a reader queued during a successful seal reuses its attempt cache", async ()
     await started;
 
     approved = h.decide(id, "a", "approve");
-    await vi.waitFor(() => expect(entered).toBe(true));
+    await sealEntered.promise;
+    expect(entered).toBe(true);
     await h.engine.adoptParkedTemplateRuns();
     pending.release();
 

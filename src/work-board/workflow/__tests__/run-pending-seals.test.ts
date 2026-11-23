@@ -1,6 +1,7 @@
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { expect, it, vi } from "vitest";
+import { expect, it } from "vitest";
+import { deferred } from "../../../__tests__/support/deferred.js";
 import { boardRunState } from "../run-state.js";
 import { autoStageOf, stageOf } from "./stage-fixtures.js";
 import { stageRunHarness } from "./stage-run-harness.js";
@@ -8,6 +9,7 @@ import { stageRunHarness } from "./stage-run-harness.js";
 it.each(["human", "auto"] as const)("a pending %s seal recovers without restarting on a read or decision", async gate => {
   for (const recovery of ["read", "decision"] as const) {
     let withheld = false;
+    const withholding = deferred<void>();
     const h = await stageRunHarness({
       wiring: store => {
         const records = boardRunState(store);
@@ -15,6 +17,7 @@ it.each(["human", "auto"] as const)("a pending %s seal recovers without restarti
           const stored = await records.update(...args);
           if (stored.ok && !withheld && stored.run.stageRuns.some(stage => stage.stageId === "a" && stage.status === "passed")) {
             withheld = true;
+            withholding.resolve();
             return { ok: false, reason: "board-unread" };
           }
           return stored;
@@ -37,14 +40,15 @@ it.each(["human", "auto"] as const)("a pending %s seal recovers without restarti
         await h.untilStage(id, "a", "awaiting_gate");
         expect(await h.decide(id, "a", "approve")).toMatchObject({ ok: false });
       }
-      await vi.waitFor(() => expect(withheld).toBe(true));
+      await withholding.promise;
+      expect(withheld).toBe(true);
       expect((await h.stageRun(id, "a")).status).toBe("passed");
       expect((await h.item(id)).stageJoins).toEqual([]);
       expect(h.workspaceCalls.filter(call => call === "seal:a")).toHaveLength(0);
       if (recovery === "read") {
         await engine.adoptParkedTemplateRuns();
       } else expect(await h.decide(id, "a", "approve")).toMatchObject({ ok: false });
-      await vi.waitFor(() => expect(h.workspaceCalls.filter(call => call === "seal:a")).toHaveLength(1));
+      await h.untilWorkspaceCalls(() => expect(h.workspaceCalls.filter(call => call === "seal:a")).toHaveLength(1));
       b.finish();
       await h.untilStage(id, "b", "awaiting_gate");
       expect(await h.decide(id, "b", "approve")).toMatchObject({ ok: true });
@@ -129,9 +133,11 @@ it("an integration seals every member first and never collects a failed seal", a
 it("reopening a sealed partial step returns the provider receipt without another freeze", async () => {
   let receiptRoot = "";
   const calls: string[] = [];
+  const resealed = deferred<void>();
   const freezes: string[] = [];
   const h = await stageRunHarness({ workspace: { seal: async (_run, stageId) => {
     calls.push(stageId);
+    if (calls.length === 2) resealed.resolve();
     const receipt = join(receiptRoot, `${stageId}-1.seal`);
     if (!existsSync(receipt)) {
       writeFileSync(receipt, "immutable result", { flag: "wx" });
@@ -153,7 +159,8 @@ it("reopening a sealed partial step returns the provider receipt without another
     expect(calls).toEqual(["a"]);
     h.makeEngine();
     await h.engine.adoptParkedTemplateRuns();
-    await vi.waitFor(() => expect(calls).toEqual(["a", "a"]));
+    await resealed.promise;
+    expect(calls).toEqual(["a", "a"]);
     expect(freezes).toEqual(["a"]);
     expect((await h.stageRun(id, "a")).gate).toMatchObject({ passed: true });
     expect(await h.decide(id, "b", "approve")).toMatchObject({ ok: true });
