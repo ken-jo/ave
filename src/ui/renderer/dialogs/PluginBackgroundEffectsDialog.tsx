@@ -12,10 +12,12 @@ export interface PluginBackgroundEffectsReview {
 
 export interface PluginBackgroundEffectsDialogProps {
   review: PluginBackgroundEffectsReview | null;
+  /** Why the last Allow was not saved; the card stays open so it can be retried. */
+  error?: string | null;
   onDecide: (allowed: boolean) => void;
 }
 
-export function PluginBackgroundEffectsDialog({ review, onDecide }: PluginBackgroundEffectsDialogProps) {
+export function PluginBackgroundEffectsDialog({ review, error, onDecide }: PluginBackgroundEffectsDialogProps) {
   const { t } = useTranslation();
   const groups = review
     ? ([
@@ -44,6 +46,7 @@ export function PluginBackgroundEffectsDialog({ review, onDecide }: PluginBackgr
             </li>
           ))}
         </ul>
+        {error && <p role="alert" className="text-dense text-destructive">{error}</p>}
         <DialogFooter>
           <Button variant="secondary" onClick={() => onDecide(false)}>{t("pluginBackgroundEffectsDialog.cancelButton")}</Button>
           <Button onClick={() => onDecide(true)}>{t("pluginBackgroundEffectsDialog.allowButton")}</Button>

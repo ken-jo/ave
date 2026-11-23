@@ -2,6 +2,7 @@ import "../../../../test/renderer/setup.js";
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { act, render, screen, waitFor, fireEvent, within } from "@testing-library/react";
 import { PluginConfigTab } from "../tabs/PluginConfigTab.js";
+import { PluginBackgroundEffectsPrompt } from "../dialogs/PluginBackgroundEffectsPrompt.js";
 import { PluginConfigSchemaForm } from "../tabs/PluginConfigSchemaForm.js";
 import { takeUpdateReview } from "../tabs/git-marketplace/update-review-request.js";
 import { makePluginCard } from "./support/plugin-card.js";
@@ -1233,9 +1234,10 @@ describe("PluginConfigTab — auth UI", () => {
     });
   });
 
-  it("asks for the background effects at enable and enables only after Allow", async () => {
+  it("enables without a card of its own, then the shared card follows the running plugin and the Review row reopens it", async () => {
     let enabled = false;
     let approved = false;
+    let started: ((payload: { pluginId: string }) => void) | undefined;
     const hash = "c".repeat(64);
     const cards = vi.fn(async () => [makePluginCard({
       id: "digest-plugin",
@@ -1249,12 +1251,15 @@ describe("PluginConfigTab — auth UI", () => {
       enabled = next;
       return { ok: true as const };
     });
-    const getPluginBackgroundEffects = vi.fn(async (pluginId: string) => ({
-      ok: true as const, pluginId, reviewSha256: hash, declared: true, approved,
-      effects: {
-        ownStorage: true as const, networkDestinations: ["api.example.test"], alertKinds: ["digest"], suggestionSources: [], llm: false, workers: false,
-      },
-    }));
+    // Like the host: no subject is bound until the plugin runs.
+    const getPluginBackgroundEffects = vi.fn(async (pluginId: string) => enabled
+      ? {
+        ok: true as const, pluginId, name: "Digest Plugin", reviewSha256: hash, declared: true, approved,
+        effects: {
+          ownStorage: true as const, networkDestinations: ["api.example.test"], alertKinds: ["digest"], suggestionSources: [], llm: false, workers: false,
+        },
+      }
+      : { ok: false as const, error: "background-effects-unavailable" });
     const approvePluginBackgroundEffects = vi.fn(async (input: { pluginId: string; reviewSha256: string }) => {
       approved = true;
       return { ok: true as const, ...input };
@@ -1273,6 +1278,7 @@ describe("PluginConfigTab — auth UI", () => {
     Object.defineProperty(window, "aveApi", {
       value: {
         onPluginEnabledChanged: vi.fn(() => () => undefined),
+        onPluginRuntimeUpdated: vi.fn((listener: (payload: { pluginId: string }) => void) => { started = listener; return () => undefined; }),
         setPluginEnabled,
         getPluginBackgroundEffects,
         approvePluginBackgroundEffects,
@@ -1288,24 +1294,24 @@ describe("PluginConfigTab — auth UI", () => {
       configurable: true,
     });
 
-    render(<PluginConfigTab />);
+    render(<><PluginBackgroundEffectsPrompt /><PluginConfigTab /></>);
 
-    expect(await screen.findByTestId("plugin-config:background-effects:digest-plugin")).toBeInTheDocument();
     fireEvent.click(await screen.findByTestId("plugin-config:enabled-toggle:digest-plugin"));
+    await waitFor(() => expect(setPluginEnabled).toHaveBeenCalledWith("digest-plugin", true));
+    expect(screen.queryByTestId("plugin-background-effects-dialog")).toBeNull();
+    act(() => started?.({ pluginId: "digest-plugin" }));
     let dialog = await screen.findByTestId("plugin-background-effects-dialog");
     expect(within(dialog).getByText("api.example.test")).toBeInTheDocument();
     expect(within(dialog).getByText("digest")).toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole("button", { name: "취소" }));
     await waitFor(() => expect(screen.queryByTestId("plugin-background-effects-dialog")).toBeNull());
-    expect(setPluginEnabled).not.toHaveBeenCalled();
     expect(approvePluginBackgroundEffects).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByTestId("plugin-config:enabled-toggle:digest-plugin"));
+    const row = await screen.findByTestId("plugin-config:background-effects:digest-plugin");
+    fireEvent.click(within(row).getByRole("button", { name: "검토" }));
     dialog = await screen.findByTestId("plugin-background-effects-dialog");
     fireEvent.click(within(dialog).getByRole("button", { name: "허용" }));
-    await waitFor(() => expect(setPluginEnabled).toHaveBeenCalledWith("digest-plugin", true));
-    expect(approvePluginBackgroundEffects).toHaveBeenCalledWith({ pluginId: "digest-plugin", reviewSha256: hash });
-    expect(approvePluginBackgroundEffects.mock.invocationCallOrder[0]).toBeLessThan(setPluginEnabled.mock.invocationCallOrder[0] ?? 0);
+    await waitFor(() => expect(approvePluginBackgroundEffects).toHaveBeenCalledWith({ pluginId: "digest-plugin", reviewSha256: hash }));
     await waitFor(() => expect(screen.queryByTestId("plugin-config:background-effects:digest-plugin")).toBeNull());
   });
 

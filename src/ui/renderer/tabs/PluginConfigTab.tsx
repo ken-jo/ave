@@ -18,7 +18,7 @@ import type {
 import { PluginAuthSection } from "../components/PluginAuthSection.js";
 import { usePluginAuthStatuses } from "../hooks/use-plugin-auth-status.js";
 import { PluginUninstallDialog } from "../dialogs/PluginUninstallDialog.js";
-import { PluginBackgroundEffectsDialog, type PluginBackgroundEffectsReview } from "../dialogs/PluginBackgroundEffectsDialog.js";
+import { onPluginBackgroundEffectsAnswered, requestPluginBackgroundEffectsReview } from "../dialogs/PluginBackgroundEffectsPrompt.js";
 import {
   getPluginDoctorInstallKey,
   repairPluginFromMarketplace,
@@ -231,8 +231,6 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
   const [contributionTrustError, setContributionTrustError] = useState<string | null>(null);
   const contributionTrustRefreshRef = useRef(0);
   const [trustUpdating, setTrustUpdating] = useState<string | null>(null);
-  const [backgroundReview, setBackgroundReview] = useState<PluginBackgroundEffectsReview | null>(null);
-  const backgroundDecisionRef = useRef<((allowed: boolean) => void) | null>(null);
   const [backgroundPending, setBackgroundPending] = useState<string | null>(null);
   const backgroundRefreshRef = useRef(0);
   useEffect(() => {
@@ -337,43 +335,10 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
     void refreshBackgroundEffects(plugins.some((plugin) => plugin.id === selectedId) ? selectedId : null);
   }, [plugins, refreshBackgroundEffects, selectedId]);
 
-  /** Asks for the current manifest's background effects when they are not yet approved; false when cancelled or not saved. */
-  const reviewBackgroundEffects = useCallback(async (pluginId: string, name: string): Promise<boolean> => {
-    let review: PluginBackgroundEffectsReview;
-    try {
-      const result = await getApi().getPluginBackgroundEffects(pluginId);
-      if (!result.ok || result.approved || !result.reviewSha256) return true;
-      review = { pluginId, name, reviewSha256: result.reviewSha256, effects: result.effects };
-    } catch {
-      return true;
-    }
-    const allowed = await new Promise<boolean>((resolve) => {
-      backgroundDecisionRef.current?.(false);
-      backgroundDecisionRef.current = resolve;
-      setBackgroundReview(review);
-    });
-    if (!allowed) return false;
-    try {
-      const approval = await getApi().approvePluginBackgroundEffects({ pluginId, reviewSha256: review.reviewSha256 });
-      if (approval.ok) return true;
-      showBanner("error", approval.error === "background-effects-review-stale"
-        ? t("gitMarketplace.error.planExpired.packageChanged")
-        : t("pluginConfigTab.backgroundEffectsError"));
-      return false;
-    } catch (error) {
-      showBanner("error", errorMessage(error) || t("pluginConfigTab.backgroundEffectsError"));
-      return false;
-    } finally {
-      void refreshBackgroundEffects(pluginId);
-    }
-  }, [refreshBackgroundEffects, showBanner, t]);
-
-  const decideBackgroundEffects = useCallback((allowed: boolean) => {
-    const decide = backgroundDecisionRef.current;
-    backgroundDecisionRef.current = null;
-    setBackgroundReview(null);
-    decide?.(allowed);
-  }, []);
+  // The app-level card owner reports each closed card, so the Review row re-reads after Allow or Cancel.
+  useEffect(() => onPluginBackgroundEffectsAnswered((pluginId) => {
+    if (pluginId === selectedId) void refreshBackgroundEffects(pluginId);
+  }), [refreshBackgroundEffects, selectedId]);
 
   // Refresh cards on install/uninstall results; only the latest read may replace visible state, while callers still receive
   // their own result.
@@ -417,8 +382,6 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
     async (pluginId: string, nextEnabled: boolean) => {
       setToggling({ pluginId, enabled: nextEnabled });
       try {
-        const name = plugins.find((plugin) => plugin.id === pluginId)?.name ?? pluginId;
-        if (nextEnabled && !(await reviewBackgroundEffects(pluginId, name))) return { ok: false as const };
         const res = await getApi().setPluginEnabled(pluginId, nextEnabled);
         if (!res.ok) {
           showBanner("error", res.message ?? t("pluginConfigTab.errorToggleEnabled"));
@@ -433,7 +396,7 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
         setToggling(null);
       }
     },
-    [plugins, refreshPlugins, reviewBackgroundEffects, showBanner, t],
+    [refreshPlugins, showBanner, t],
   );
 
   useEffect(() => {
@@ -866,7 +829,6 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
         }}
         onConfirm={(id) => handleUninstall(id, uninstallTarget?.name ?? id)}
       />
-      <PluginBackgroundEffectsDialog review={backgroundReview} onDecide={decideBackgroundEffects} />
       <NoticeLiveRegion toast={banner} />
       {(configRead.error || Object.values(otherSettings).some((snapshot) => snapshot.error)) && (
         <p role="alert" className="text-xs text-destructive">{t("pluginConfigTab.errorLoadConfig")}
@@ -1264,7 +1226,7 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                       <Button
                         size="sm"
                         className="h-7 px-2 text-xs"
-                        onClick={() => void reviewBackgroundEffects(selectedPlugin.id, selectedPlugin.name)}
+                        onClick={() => requestPluginBackgroundEffectsReview(selectedPlugin.id)}
                       >
                         {t("pluginConfigTab.backgroundEffectsReview")}
                       </Button>

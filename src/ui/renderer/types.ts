@@ -895,7 +895,7 @@ export type AvePreloadApi = {
   >;
   /** What the running plugin may do outside a tool call; `reviewSha256` is null when there is nothing a card could approve. */
   getPluginBackgroundEffects: (pluginId: string) => Promise<
-    | { ok: true; pluginId: string; reviewSha256: string | null; declared: boolean; approved: boolean; effects: PluginBackgroundEffects }
+    | { ok: true; pluginId: string; name: string; reviewSha256: string | null; declared: boolean; approved: boolean; effects: PluginBackgroundEffects }
     | { ok: false; error: string }
   >;
   /** Approve the reviewed background effects; a source or scope that changed since review answers `background-effects-review-stale`. */

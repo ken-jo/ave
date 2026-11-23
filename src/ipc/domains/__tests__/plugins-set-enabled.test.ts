@@ -75,6 +75,7 @@ async function setup() {
   // Declare apiKey secret so secret-write tests reach the intended handler gate.
   const pluginManifest = {
     id: "plugin-config",
+    name: "Config",
     configSchema: {
       properties: {
         apiKey: { type: "string", format: "secret" },
@@ -276,7 +277,7 @@ describe("plugin background effects IPC", () => {
     const { deps, state } = await running(["api.example.test"]);
     const shown = await invoke("ave:plugins:background-effects:get", "plugin-config") as { reviewSha256: string };
     expect(shown).toEqual({
-      ok: true, pluginId: "plugin-config", reviewSha256: expect.stringMatching(/^[a-f0-9]{64}$/u), declared: true, approved: false,
+      ok: true, pluginId: "plugin-config", name: "Config", reviewSha256: expect.stringMatching(/^[a-f0-9]{64}$/u), declared: true, approved: false,
       effects: {
         ownStorage: true, networkDestinations: ["api.example.test"], alertKinds: [], suggestionSources: [], llm: false, workers: false,
       },

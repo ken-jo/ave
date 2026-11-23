@@ -464,12 +464,13 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
       return UNAUTHORIZED_FRAME;
     }
     if (typeof pluginId !== "string" || pluginId.length === 0) return { ok: false, error: "invalid-plugin-id" };
-    if (!deps.pluginRuntime.getPluginManifest(pluginId)) return { ok: false, error: "no-such-plugin" };
+    const manifest = deps.pluginRuntime.getPluginManifest(pluginId);
+    if (!manifest) return { ok: false, error: "no-such-plugin" };
     const store = deps.pluginBackgroundEffects;
     const subject = await store?.currentSubject(pluginId);
     if (!store || !subject) return { ok: false, error: "background-effects-unavailable" };
     return {
-      ok: true, pluginId,
+      ok: true, pluginId, name: manifest.name,
       reviewSha256: subject.declared && subject.source !== null ? subject.reviewSha256 : null,
       declared: subject.declared,
       approved: store.isApproved(subject),
