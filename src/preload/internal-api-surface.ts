@@ -487,7 +487,7 @@ export function buildInternalApiSurface() {
   }) => ipcRenderer.invoke(CHANNELS.plugins.contributionTrustSet, input),
   getPluginBackgroundEffects: async (pluginId: string) =>
     ipcRenderer.invoke(CHANNELS.plugins.backgroundEffectsGet, pluginId),
-  approvePluginBackgroundEffects: async (input: { pluginId: string; manifestSha256: string }) =>
+  approvePluginBackgroundEffects: async (input: { pluginId: string; reviewSha256: string }) =>
     ipcRenderer.invoke(CHANNELS.plugins.backgroundEffectsApprove, input),
   callPluginMethod: async (
     method: string,

@@ -51,7 +51,12 @@ import {
 } from "../../../plugins/capabilities.js";
 import { appVersionSatisfiesMin } from "../../../shared/semver-compare.js";
 import { manifestDocumentSha256 } from "../../../plugins/runtime/manifest-validation.js";
-import { backgroundEffectPaths, type PluginBackgroundEffectApprovals } from "../../../plugins/plugin-background-effects.js";
+import {
+  backgroundEffectSubject,
+  declaredBackgroundEffects,
+  withinBackgroundScope,
+  type PluginBackgroundEffectApprovals,
+} from "../../../plugins/plugin-background-effects.js";
 import { canonicalJSON } from "../../../plugins/secret-access/canonical-json.js";
 import { effectivePluginConfig } from "../../../plugins/effective-config.js";
 import { shouldRestartAfterPluginConfigWrite } from "../../../plugins/config-restart-policy.js";
@@ -238,7 +243,7 @@ export interface CreateHostApiFactoryDeps {
   /** Host-secret evidence contract: marketplace design, host-secret grant conditions. */
   grantEvidence: GrantEvidenceReader;
   /** Absent approvals deny every standalone effect. */
-  backgroundEffectApprovals?: Pick<PluginBackgroundEffectApprovals, "isApproved">;
+  backgroundEffectApprovals?: Pick<PluginBackgroundEffectApprovals, "isApproved" | "bindSubject">;
 }
 
 /** Invoked once per plugin during startAll. */
@@ -481,10 +486,15 @@ export function createHostApiFactory(
       );
       // Compare the parsed manifest document digest to the install pin; projections and unparsed manifests cannot match.
       const manifestSha256 = manifestDocumentSha256(manifest);
-      const backgroundPaths = backgroundEffectPaths(manifest);
-      // Looked up per effect, so an approval given or replaced while the plugin runs applies at once.
-      const standaloneScope = (methodPath: string): boolean =>
-        backgroundPaths.has(methodPath) && deps.backgroundEffectApprovals?.isApproved(pluginId, manifestSha256) === true;
+      const backgroundEffects = declaredBackgroundEffects(manifest);
+      // The card review reads this same subject, so an approval given, replaced or revoked while the plugin runs applies at once.
+      const backgroundSubject = async () => backgroundEffectSubject(manifest, await readRegistryEntry());
+      deps.backgroundEffectApprovals?.bindSubject(pluginId, backgroundSubject);
+      const standaloneScope = async (methodPath: string, target: string | undefined): Promise<boolean> => {
+        if (!withinBackgroundScope(backgroundEffects, methodPath, target)) return false;
+        const approvals = deps.backgroundEffectApprovals;
+        return approvals !== undefined && approvals.isApproved(await backgroundSubject());
+      };
       let boundApi: PluginHostApi;
       const credentialPayloadInits = new WeakSet<HostFetchInit>();
       const deviceAuthFetch = (credentialPayload: boolean): typeof fetch => (async (input: RequestInfo | URL, init?: RequestInit) => {

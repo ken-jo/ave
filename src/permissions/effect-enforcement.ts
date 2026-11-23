@@ -1,4 +1,4 @@
-import { refreshRemoteControllerBoundToSession, isRemoteControllerBoundToSession, remoteControllerOriginOf } from "../shared/chat-origin.js";
+import { refreshRemoteControllerBoundToSession, isRemoteControllerBoundToSession, remoteControllerOriginOf, type RemoteControllerAuthority } from "../shared/chat-origin.js";
 // Actual host effects enter the common permission pipeline before recording and execution.
 // Authorize before recording and execution; network audit also records denied attempts. Invalid input snapshots never reach implementation.
 import { createHash, randomUUID } from "node:crypto";
@@ -115,10 +115,25 @@ export function sameEffectAuthority(a: EffectGateContext | undefined, b: EffectG
   const pb = b.permissionContext ?? {};
   return a.headless === b.headless && a.approvalSurface === b.approvalSurface && a.sessionId === b.sessionId
     && a.unattributedApproval === b.unattributedApproval && a.executionCwd === b.executionCwd
-    && pa.admissionDenial?.code === pb.admissionDenial?.code && pa.floor?.code === pb.floor?.code
-    && (pa.exfiltration === undefined) === (pb.exfiltration === undefined)
+    && sameReason(pa.admissionDenial, pb.admissionDenial) && sameReason(pa.floor, pb.floor)
+    && sameReason(pa.exfiltration, pb.exfiltration)
     && pa.manualRerun === pb.manualRerun && pa.ownerUnattended === pb.ownerUnattended
-    && pa.remoteControllerAuthority === pb.remoteControllerAuthority && pa.permissionStoreError === pb.permissionStoreError;
+    && sameRemoteController(pa.remoteControllerAuthority, pb.remoteControllerAuthority) && pa.permissionStoreError === pb.permissionStoreError;
+}
+
+function sameReason(a: { code?: string; reason: string } | undefined, b: { code?: string; reason: string } | undefined): boolean {
+  return a === b || a !== undefined && b !== undefined && a.code === b.code && a.reason === b.reason;
+}
+
+// Per-turn authority objects compare by binding; the host-private guards must be the same instance.
+function sameRemoteController(a: RemoteControllerAuthority | undefined, b: RemoteControllerAuthority | undefined): boolean {
+  if (a === b) return true;
+  if (a === undefined || b === undefined || a.kind !== b.kind || a.actorId !== b.actorId) return false;
+  if (a.kind === "tailnet-controller" && b.kind === "tailnet-controller") {
+    return a.pairedShareGuard === b.pairedShareGuard && canonicalStringify(a.pairedShare ?? null) === canonicalStringify(b.pairedShare ?? null);
+  }
+  return a.kind === "platform-bridge" && b.kind === "platform-bridge"
+    && a.bridgeGuard === b.bridgeGuard && canonicalStringify(a.bridgeBinding) === canonicalStringify(b.bridgeBinding);
 }
 
 // Process-local grants bind the complete payload and physical paths; session and invocation scopes never cross their boundaries.
@@ -274,8 +289,18 @@ export interface EffectEnforcementDeps {
   readonly resolveStoragePath?: (relativePath: string) => string;
   // Revalidate the exact HostApi incarnation after an async approval wait and immediately before the approved effect executes.
   readonly assertActive: () => void;
-  /** Whether a standalone effect on this path is inside the background scope approved for the running manifest. */
-  readonly standaloneScope?: (methodPath: string) => boolean;
+  /** Whether a standalone effect on this path and target is inside the background scope approved for the running plugin. */
+  readonly standaloneScope?: StandaloneScope;
+}
+
+export type StandaloneScope = (methodPath: string, target: string | undefined) => boolean | Promise<boolean>;
+
+// The enable-time card is the explicit allow for these category asks; floors, guardrails, secret reads, ask rules and unknown reasons still need a person.
+const CARD_ANSWERED_ASKS: ReadonlySet<string> = new Set(["file-write", "shell-approval", "network-approval", "review-required"]);
+
+function cardAnswersAsk(permission: { decision: string; reasonCode?: string; forceModal?: boolean }): boolean {
+  return permission.decision === "ask" && permission.forceModal !== true
+    && permission.reasonCode !== undefined && CARD_ANSWERED_ASKS.has(permission.reasonCode);
 }
 
 // Standalone lifecycle work is outside tool policy. Tool effects are evaluated independently of their enclosing tool's approval.
@@ -291,7 +316,7 @@ export async function gateMutatingEffect(params: {
   resolveStoragePath?: (relativePath: string) => string;
   approvalGate: ApprovalGate;
   permissionManager?: PermissionManager;
-  standaloneScope?: (methodPath: string) => boolean;
+  standaloneScope?: StandaloneScope;
 }): Promise<void> {
   if (params.effect !== "write" && params.methodPath !== "hostFetch" && !pathReadEffectPaths.has(params.methodPath)) return;
   const ctx = currentEffectGateContext();
@@ -335,11 +360,13 @@ export async function gateMutatingEffect(params: {
     ...(remembered === "deny-always" ? { admissionDenial: { code: "effect-denied", reason: "The user denied this exact effect." } } : {}),
   });
   if (ctx.standalone) {
-    // A policy deny still wins; remembered grants and asks never widen the approved background scope.
-    if (permission.decision === "deny" || params.standaloneScope?.(params.methodPath) !== true) {
-      throw new EffectBoundaryDeniedError(params.pluginId, params.methodPath, params.target, "denied",
-        permission.decision === "deny" ? permission.reason : "outside the background effects approved when the plugin was enabled");
-    }
+    // Storage reads need no card but keep admission, floors and rules; remembered grants never widen the approved scope.
+    const storageRead = params.effect === "read" && pathReadEffectPaths.has(params.methodPath);
+    const denial = permission.decision === "deny" ? permission.reason
+      : permission.decision !== "allow" && (storageRead || !cardAnswersAsk(permission)) ? "needs an approval that work outside a tool call cannot ask for"
+        : !storageRead && await params.standaloneScope?.(params.methodPath, params.target) !== true
+          ? "outside the background effects approved when the plugin was enabled" : undefined;
+    if (denial !== undefined) throw new EffectBoundaryDeniedError(params.pluginId, params.methodPath, params.target, "denied", denial);
     assertEffectPaths(paths);
     return;
   }

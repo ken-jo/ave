@@ -1250,10 +1250,12 @@ describe("PluginConfigTab — auth UI", () => {
       return { ok: true as const };
     });
     const getPluginBackgroundEffects = vi.fn(async (pluginId: string) => ({
-      ok: true as const, pluginId, manifestSha256: hash, approved,
-      effects: { ownStorage: true as const, networkDestinations: ["api.example.test"], alertKinds: ["digest"], suggestionSources: [] },
+      ok: true as const, pluginId, reviewSha256: hash, declared: true, approved,
+      effects: {
+        ownStorage: true as const, networkDestinations: ["api.example.test"], alertKinds: ["digest"], suggestionSources: [], llm: false, workers: false,
+      },
     }));
-    const approvePluginBackgroundEffects = vi.fn(async (input: { pluginId: string; manifestSha256: string }) => {
+    const approvePluginBackgroundEffects = vi.fn(async (input: { pluginId: string; reviewSha256: string }) => {
       approved = true;
       return { ok: true as const, ...input };
     });
@@ -1302,7 +1304,7 @@ describe("PluginConfigTab — auth UI", () => {
     dialog = await screen.findByTestId("plugin-background-effects-dialog");
     fireEvent.click(within(dialog).getByRole("button", { name: "허용" }));
     await waitFor(() => expect(setPluginEnabled).toHaveBeenCalledWith("digest-plugin", true));
-    expect(approvePluginBackgroundEffects).toHaveBeenCalledWith({ pluginId: "digest-plugin", manifestSha256: hash });
+    expect(approvePluginBackgroundEffects).toHaveBeenCalledWith({ pluginId: "digest-plugin", reviewSha256: hash });
     expect(approvePluginBackgroundEffects.mock.invocationCallOrder[0]).toBeLessThan(setPluginEnabled.mock.invocationCallOrder[0] ?? 0);
     await waitFor(() => expect(screen.queryByTestId("plugin-config:background-effects:digest-plugin")).toBeNull());
   });
@@ -1312,8 +1314,10 @@ describe("PluginConfigTab — auth UI", () => {
     let refresh: (() => void) | undefined;
     const cards = vi.fn(async () => [makePluginCard({ id: "digest-plugin", name: "Digest Plugin", description: "Morning digest" })]);
     const getPluginBackgroundEffects = vi.fn(async (pluginId: string) => ({
-      ok: true as const, pluginId, manifestSha256: approved ? "a".repeat(64) : "b".repeat(64), approved,
-      effects: { ownStorage: true as const, networkDestinations: [], alertKinds: [], suggestionSources: [] },
+      ok: true as const, pluginId, reviewSha256: approved ? "a".repeat(64) : "b".repeat(64), declared: true, approved,
+      effects: {
+        ownStorage: true as const, networkDestinations: ["api.example.test"], alertKinds: [], suggestionSources: [], llm: false, workers: false,
+      },
     }));
     Object.defineProperty(window, "ave", {
       value: {

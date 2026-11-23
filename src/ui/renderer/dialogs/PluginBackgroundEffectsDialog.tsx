@@ -6,7 +6,7 @@ import type { PluginBackgroundEffects } from "../types.js";
 export interface PluginBackgroundEffectsReview {
   pluginId: string;
   name: string;
-  manifestSha256: string;
+  reviewSha256: string;
   effects: PluginBackgroundEffects;
 }
 

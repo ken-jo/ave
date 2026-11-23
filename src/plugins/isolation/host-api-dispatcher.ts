@@ -1466,7 +1466,7 @@ export class HostApiDispatcher {
       );
     }
     return runOutsideInvocation(() => {
-      if (!gatedWrite && path !== "hostFetch") return invoke();
+      if (!readsEffectFrame(path)) return invoke();
       return runWithEffectGateContext({ headless: false, standalone: true, toolName: path, abortSignal: signal }, invoke);
     });
   }

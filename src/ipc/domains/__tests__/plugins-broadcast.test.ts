@@ -127,6 +127,7 @@ async function setup(options: { appWindows?: ReturnType<typeof makeWindow>[] } =
     getMainWindow: vi.fn(() => appWindows[0]),
     getAppWindows: vi.fn(() => appWindows),
     mcpManager: { reconcileBundledCredentials: vi.fn(async () => undefined) },
+    pluginBackgroundEffects: { revoke: vi.fn() },
   };
   const runActivation = async (args: unknown[], pluginId: string): Promise<void> => {
     const options = args.find((arg): arg is {
@@ -255,6 +256,9 @@ describe("plugins IPC lifecycle broadcast", () => {
     expect(deps.mcpManager.reconcileBundledCredentials).toHaveBeenCalledWith("plugin", { removed: "samplehub" });
     expect(deps.mcpManager.reconcileBundledCredentials.mock.invocationCallOrder[0])
       .toBeGreaterThan(deps.pluginMarketplace.uninstall.mock.invocationCallOrder[0]!);
+    expect(deps.pluginBackgroundEffects.revoke).toHaveBeenCalledWith("samplehub");
+    expect(deps.pluginBackgroundEffects.revoke.mock.invocationCallOrder[0])
+      .toBeGreaterThan(deps.pluginMarketplace.uninstall.mock.invocationCallOrder[0]!);
     for (const win of appWindows) {
       expect(win.webContents.send).toHaveBeenCalledWith(
         "ave:plugins:uninstall-result",
@@ -301,6 +305,7 @@ describe("plugins IPC lifecycle broadcast", () => {
 
     expect(deps.pluginMarketplace.uninstall).not.toHaveBeenCalled();
     expect(deps.mcpManager.reconcileBundledCredentials).not.toHaveBeenCalled();
+    expect(deps.pluginBackgroundEffects.revoke).not.toHaveBeenCalled();
     for (const win of appWindows) {
       expect(win.webContents.send).toHaveBeenCalledWith(
         "ave:plugins:uninstall-result",

@@ -325,7 +325,7 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
     try {
       const result = await getApi().getPluginBackgroundEffects(pluginId);
       if (refreshId !== backgroundRefreshRef.current) return;
-      setBackgroundPending(result.ok && !result.approved && result.manifestSha256 ? pluginId : null);
+      setBackgroundPending(result.ok && !result.approved && result.reviewSha256 ? pluginId : null);
     } catch {
       // The host denies unapproved background effects, so a failed read only hides the prompt.
       if (refreshId === backgroundRefreshRef.current) setBackgroundPending(null);
@@ -342,8 +342,8 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
     let review: PluginBackgroundEffectsReview;
     try {
       const result = await getApi().getPluginBackgroundEffects(pluginId);
-      if (!result.ok || result.approved || !result.manifestSha256) return true;
-      review = { pluginId, name, manifestSha256: result.manifestSha256, effects: result.effects };
+      if (!result.ok || result.approved || !result.reviewSha256) return true;
+      review = { pluginId, name, reviewSha256: result.reviewSha256, effects: result.effects };
     } catch {
       return true;
     }
@@ -354,7 +354,7 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
     });
     if (!allowed) return false;
     try {
-      const approval = await getApi().approvePluginBackgroundEffects({ pluginId, manifestSha256: review.manifestSha256 });
+      const approval = await getApi().approvePluginBackgroundEffects({ pluginId, reviewSha256: review.reviewSha256 });
       if (approval.ok) return true;
       showBanner("error", approval.error === "background-effects-review-stale"
         ? t("gitMarketplace.error.planExpired.packageChanged")

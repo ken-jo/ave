@@ -893,14 +893,14 @@ export type AvePreloadApi = {
     | { ok: true; pluginId: string; localId: string; kind: "hook" | "mcpServer"; approved: boolean }
     | { ok: false; error: string; message?: string }
   >;
-  /** What the plugin may do outside a tool call, and whether that is approved for its current manifest. */
+  /** What the running plugin may do outside a tool call; `reviewSha256` is null when there is nothing a card could approve. */
   getPluginBackgroundEffects: (pluginId: string) => Promise<
-    | { ok: true; pluginId: string; manifestSha256: string | null; approved: boolean; effects: PluginBackgroundEffects }
+    | { ok: true; pluginId: string; reviewSha256: string | null; declared: boolean; approved: boolean; effects: PluginBackgroundEffects }
     | { ok: false; error: string }
   >;
-  /** Approve the reviewed manifest's background effects; a manifest that changed since review answers `background-effects-review-stale`. */
-  approvePluginBackgroundEffects: (input: { pluginId: string; manifestSha256: string }) => Promise<
-    | { ok: true; pluginId: string; manifestSha256: string }
+  /** Approve the reviewed background effects; a source or scope that changed since review answers `background-effects-review-stale`. */
+  approvePluginBackgroundEffects: (input: { pluginId: string; reviewSha256: string }) => Promise<
+    | { ok: true; pluginId: string; reviewSha256: string }
     | { ok: false; error: string }
   >;
   /**

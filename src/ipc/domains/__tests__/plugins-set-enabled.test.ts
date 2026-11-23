@@ -2,8 +2,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { makeAppIpcInvoker } from "./test-helpers.js";
 import { PluginDeploymentDeniedError } from "../../../plugins/deployment-guard.js";
 import { ContributionTrustReviewStaleError } from "../../../plugins/plugin-contribution-trust.js";
-import { PluginBackgroundEffectApprovals } from "../../../plugins/plugin-background-effects.js";
-import { manifestDocumentSha256, recordManifestDocument } from "../../../plugins/runtime/manifest-validation.js";
+import { backgroundEffectSubject, PluginBackgroundEffectApprovals } from "../../../plugins/plugin-background-effects.js";
+import type { PluginRegistryTrust } from "../../../plugins/types.js";
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 const hostEventMock = vi.hoisted(() => ({ emit: vi.fn() }));
@@ -255,39 +255,73 @@ describe("plugin bundled contribution trust IPC", () => {
 });
 
 describe("plugin background effects IPC", () => {
-  function recorded(networkAccess: { allowedDomains: string[] }) {
-    const manifest = { id: "plugin-config", networkAccess };
-    recordManifestDocument(manifest as never, structuredClone(manifest));
-    return { manifest, sha: manifestDocumentSha256(manifest as never) ?? "" };
+  const entry = (sourceId = "example-source"): PluginRegistryTrust => ({
+    installSource: "user",
+    origin: {
+      sourceId, sourceOrigin: "custom", commit: "a".repeat(40), packagePath: "plugins/sample", version: "1.0.0",
+      rung: "release", artifactSha256: "b".repeat(64), installedAt: "2026-11-01T00:00:00.000Z",
+    },
+  });
+  const manifestWith = (allowedDomains: string[]) =>
+    ({ id: "plugin-config", name: "Config", version: "1.0.0", entry: "plugin.mjs", tools: [], networkAccess: { allowedDomains } }) as never;
+
+  async function running(allowedDomains: string[], source = entry()) {
+    const context = await setup();
+    const state = { manifest: manifestWith(allowedDomains), source };
+    context.deps.pluginBackgroundEffects.bindSubject("plugin-config", async () => backgroundEffectSubject(state.manifest, state.source));
+    return { ...context, state };
   }
 
-  it("shows the declared effects and approves only the manifest that was reviewed", async () => {
-    const { deps } = await setup();
-    const first = recorded({ allowedDomains: ["api.example.test"] });
-    deps.pluginRuntime.getPluginManifest.mockReturnValue(first.manifest as never);
-    expect(await invoke("ave:plugins:background-effects:get", "plugin-config")).toEqual({
-      ok: true, pluginId: "plugin-config", manifestSha256: first.sha, approved: false,
-      effects: { ownStorage: true, networkDestinations: ["api.example.test"], alertKinds: [], suggestionSources: [] },
+  it("shows the running plugin's declared effects and approves only the review it showed", async () => {
+    const { deps, state } = await running(["api.example.test"]);
+    const shown = await invoke("ave:plugins:background-effects:get", "plugin-config") as { reviewSha256: string };
+    expect(shown).toEqual({
+      ok: true, pluginId: "plugin-config", reviewSha256: expect.stringMatching(/^[a-f0-9]{64}$/u), declared: true, approved: false,
+      effects: {
+        ownStorage: true, networkDestinations: ["api.example.test"], alertKinds: [], suggestionSources: [], llm: false, workers: false,
+      },
     });
-    const updated = recorded({ allowedDomains: ["api.example.test", "upload.example.test"] });
-    deps.pluginRuntime.getPluginManifest.mockReturnValue(updated.manifest as never);
-    expect(await invoke("ave:plugins:background-effects:approve", { pluginId: "plugin-config", manifestSha256: first.sha }))
+    state.manifest = manifestWith(["api.example.test", "upload.example.test"]);
+    expect(await invoke("ave:plugins:background-effects:approve", { pluginId: "plugin-config", reviewSha256: shown.reviewSha256 }))
       .toEqual({ ok: false, error: "background-effects-review-stale" });
-    expect(deps.pluginBackgroundEffects.isApproved("plugin-config", first.sha)).toBe(false);
-    expect(deps.pluginBackgroundEffects.isApproved("plugin-config", updated.sha)).toBe(false);
-    expect(await invoke("ave:plugins:background-effects:approve", { pluginId: "plugin-config", manifestSha256: updated.sha }))
-      .toEqual({ ok: true, pluginId: "plugin-config", manifestSha256: updated.sha });
+    const updated = await invoke("ave:plugins:background-effects:get", "plugin-config") as { reviewSha256: string };
+    expect(updated).toMatchObject({ ok: true, approved: false });
+    expect(updated.reviewSha256).not.toBe(shown.reviewSha256);
+    expect(await invoke("ave:plugins:background-effects:approve", { pluginId: "plugin-config", reviewSha256: updated.reviewSha256 }))
+      .toEqual({ ok: true, pluginId: "plugin-config", reviewSha256: updated.reviewSha256 });
+    const subject = await deps.pluginBackgroundEffects.currentSubject("plugin-config");
+    expect(subject && deps.pluginBackgroundEffects.isApproved(subject)).toBe(true);
     expect(await invoke("ave:plugins:background-effects:get", "plugin-config")).toMatchObject({ ok: true, approved: true });
   });
 
-  it("refuses malformed requests and an unparsed manifest", async () => {
+  it("re-asks when the same id now comes from another source", async () => {
+    const { state } = await running(["api.example.test"]);
+    const shown = await invoke("ave:plugins:background-effects:get", "plugin-config") as { reviewSha256: string };
+    await invoke("ave:plugins:background-effects:approve", { pluginId: "plugin-config", reviewSha256: shown.reviewSha256 });
+    state.source = entry("other-source");
+    const after = await invoke("ave:plugins:background-effects:get", "plugin-config") as { reviewSha256: string };
+    expect(after).toMatchObject({ ok: true, declared: true, approved: false });
+    expect(after.reviewSha256).not.toBe(shown.reviewSha256);
+    expect(await invoke("ave:plugins:background-effects:approve", { pluginId: "plugin-config", reviewSha256: shown.reviewSha256 }))
+      .toEqual({ ok: false, error: "background-effects-review-stale" });
+  });
+
+  it("offers no review for an empty scope or an unpinned source", async () => {
+    const empty = await running([]);
+    expect(await invoke("ave:plugins:background-effects:get", "plugin-config")).toMatchObject({ ok: true, reviewSha256: null, declared: false, approved: false });
+    empty.state.manifest = manifestWith(["api.example.test"]);
+    empty.state.source = { installSource: "user" };
+    expect(await invoke("ave:plugins:background-effects:get", "plugin-config")).toMatchObject({ ok: true, reviewSha256: null, declared: true, approved: false });
+  });
+
+  it("refuses malformed requests, a plugin with no running subject and an unknown plugin", async () => {
     const { deps } = await setup();
-    for (const invalid of [undefined, { pluginId: "plugin-config" }, { pluginId: "plugin-config", manifestSha256: "x" }]) {
+    for (const invalid of [undefined, { pluginId: "plugin-config" }, { pluginId: "plugin-config", reviewSha256: "x" }]) {
       expect(await invoke("ave:plugins:background-effects:approve", invalid)).toEqual({ ok: false, error: "invalid-background-effects-request" });
     }
-    expect(await invoke("ave:plugins:background-effects:get", "plugin-config")).toMatchObject({ ok: true, manifestSha256: null, approved: false });
-    expect(await invoke("ave:plugins:background-effects:approve", { pluginId: "plugin-config", manifestSha256: "a".repeat(64) }))
-      .toEqual({ ok: false, error: "background-effects-review-stale" });
+    expect(await invoke("ave:plugins:background-effects:get", "plugin-config")).toEqual({ ok: false, error: "background-effects-unavailable" });
+    expect(await invoke("ave:plugins:background-effects:approve", { pluginId: "plugin-config", reviewSha256: "a".repeat(64) }))
+      .toEqual({ ok: false, error: "background-effects-unavailable" });
     deps.pluginRuntime.getPluginManifest.mockReturnValue(undefined as never);
     expect(await invoke("ave:plugins:background-effects:get", "plugin-config")).toEqual({ ok: false, error: "no-such-plugin" });
   });
