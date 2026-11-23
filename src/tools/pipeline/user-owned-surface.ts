@@ -53,6 +53,7 @@ export async function resolveUserOwnedSurfaceApproval(input: {
     ...(permission.forceModal ? { forceExplicit: true, allowedChoices: ["allow-once", "deny-once"], durableApprovalRecordAllowed: false } : {}),
   };
   decision = await gate.requestAndWait(fallback);
+  if (request.abortSignal?.aborted && decision.choice.startsWith("deny")) return { permission, decision, humanApproved: false };
   request.abortSignal?.throwIfAborted();
   if (epoch !== manager.getPolicyEpoch() && !gate.allowsPolicyTransition(decision, epoch, manager.getPolicyEpoch())) throw new Error("Permission policy changed while approval was pending.");
   permission = manager.recheckPermission(permission);

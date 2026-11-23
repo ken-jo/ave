@@ -70,7 +70,7 @@ import {
   refreshApprovalPersistence,
 } from "../permissions/approval-persistence-guard.js";
 import { isRationaleEligible, RationaleHumanApprovalDeniedError } from "./pipeline/rationale-control.js";
-import { approvalReasonFields, approvalTargetFor, type ApprovalDecision } from "../permissions/approval-gate.js";
+import { approvalReasonFields, approvalTargetFor, isHostApprovalCancelledDecision, type ApprovalDecision } from "../permissions/approval-gate.js";
 import { approvalFailureOutcome } from "./pipeline/approval-outcome.js";
 import {
   buildPermissionEvaluationContext,
@@ -1448,12 +1448,11 @@ async function runToolInvocationAttempt(
       approvalSignal && abortSignal ? AbortSignal.any([approvalSignal, abortSignal]) : approvalSignal ?? abortSignal;
     const directoryGrantGuard = (signal?: AbortSignal) =>
       invocationApprovalPersistenceGuard(invocationPermissionContext.remoteControllerAuthority, sessionId, signal);
+    const cancelDirectoryGrant = async (): Promise<ToolResult> => withHostShellExecutionPlan(await returnUserAbort({
+      ...abortDeps(finalInput), permissionContext: invocationPermissionContext,
+    }));
     const denyDirectoryGrant = async (signal?: AbortSignal): Promise<ToolResult> => {
-      if (signal?.aborted) {
-        return withHostShellExecutionPlan(await returnUserAbort({
-          ...abortDeps(finalInput), permissionContext: invocationPermissionContext,
-        }));
-      }
+      if (signal?.aborted) return cancelDirectoryGrant();
       const reason = "remote-controller-revoked";
       const msg = t("be_executor.permBlockDeny", { name: toolUse.name, source, trust, reason });
       const durationMs = Date.now() - startTime;
@@ -1715,10 +1714,13 @@ async function runToolInvocationAttempt(
           return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: reason, is_error: true, durationMs: Date.now() - startTime }) };
         }
         const finishDirectoryDenial = async (decision: ApprovalDecision) => {
+          if (isHostApprovalCancelledDecision(decision)) {
+            return { allowed: false as const, result: await cancelDirectoryGrant() };
+          }
           const hostFailure = approvalFailureOutcome(decision, toolUse.name, dirLayerResult);
           // A settled desk refusal remains the answer even if authority is later lost.
-          if (hostFailure && grantGuard && !grantGuard.isCurrent()) {
-            return { allowed: false as const, result: await denyDirectoryGrant(directorySignal) };
+          if (hostFailure && !isRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)) {
+            return { allowed: false as const, result: await denyDirectoryGrant() };
           }
           const msg = hostFailure?.content ?? (
             t("be_executor.dirPolicyUserDenied", { name: toolUse.name, filePath: outOfAllowedTarget.filePath })
@@ -1768,13 +1770,11 @@ async function runToolInvocationAttempt(
         }
 
 
-        // As on the tool-ask path: the gate's deny-once on an abort is the
-        // right permission answer but the wrong transcript entry. The user
-        // stopped the turn; they did not refuse this directory.
+        // Keep a settled refusal even if Stop overtakes the runner's continuation.
+        if (decision.choice.startsWith("deny")) return finishDirectoryDenial(decision);
         if (directorySignal?.aborted) {
           return { allowed: false, result: await denyDirectoryGrant(directorySignal) };
         }
-        if (decision.choice.startsWith("deny")) return finishDirectoryDenial(decision);
         if (grantGuard && !grantGuard.isCurrent()) {
           return { allowed: false, result: await denyDirectoryGrant(directorySignal) };
         }

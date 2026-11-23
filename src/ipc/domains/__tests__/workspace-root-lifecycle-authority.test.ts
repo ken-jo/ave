@@ -263,6 +263,40 @@ describe("workspace-root lifecycle authority", () => {
     expectRemoteDenial(entries, "This write requires approval.");
   });
 
+  it.each(["desk first", "stop first"] as const)("records the terminal directory denial with %s", async order => {
+    const entries = vi.spyOn(audit, "appendPermissionAuditEntry");
+    const call = startDirectoryApproval();
+    const arrived = deferred<void>();
+    const release = deferred<void>();
+    const waitingForCard = deferred<void>();
+    const request = call.gate.requestAndWait.bind(call.gate);
+    vi.spyOn(call.gate, "requestAndWait").mockImplementationOnce(async input => {
+      const answer = request(input);
+      waitingForCard.resolve();
+      const decision = await answer;
+      arrived.resolve();
+      await release.promise;
+      return decision;
+    });
+    try {
+      if (order === "desk first") {
+        await call.answer("deny-once");
+        await arrived.promise;
+        call.abort.abort();
+      } else {
+        await waitingForCard.promise;
+        call.abort.abort();
+        await arrived.promise;
+      }
+    } finally {
+      release.resolve();
+    }
+    expect((await call.result)[0].is_error).toBe(true);
+    expect(persistedRoots()).toEqual([]);
+    expect(call.execute).not.toHaveBeenCalled();
+    expectRemoteDenial(entries, order === "desk first" ? "This write requires approval." : "user aborted turn");
+  });
+
   it("refuses the root if the fresh owner observation at the settings write fails", async () => {
     const entries = vi.spyOn(audit, "appendPermissionAuditEntry");
     const call = startDirectoryApproval();

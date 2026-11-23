@@ -378,6 +378,11 @@ export function isHostApprovalTimeoutDecision(
 
 // Host-generated fail-closed denials are not user-authored deny choices.
 const hostRejectedApprovalDecisions = new WeakSet<ApprovalDecision>();
+const cancelledApprovalDecisions = new WeakSet<ApprovalDecision>();
+
+export function isHostApprovalCancelledDecision(decision: ApprovalDecision): boolean {
+  return cancelledApprovalDecisions.has(decision);
+}
 
 export function isHostApprovalRejectedDecision(
   decision: ApprovalDecision | null | undefined,
@@ -1340,10 +1345,12 @@ export class ApprovalGate {
         type: "approval",
         output: `[approval:cancelled] ${fullReq.id} ${auditFieldsFor(fullReq, executionPlanAudit)} reason=turn-abort cause=${JSON.stringify(abortCause())} → deny-once`,
       });
-      return markHostApprovalRejectedDecision({
+      const decision = markHostApprovalRejectedDecision({
         requestId: fullReq.id,
         choice: "deny-once",
       });
+      cancelledApprovalDecisions.add(decision);
+      return decision;
     };
     // Above the away answer, the OS notification and the renderer send, all for one reason: none of them should happen on behalf of a turn that is already over. An away grant in particular has a finite budget, and spending a unit of it to answer a dead turn spends it on nothing.
     if (this.lifetime.signal.aborted || abortSignal?.aborted) return denyForAbortedTurn();
