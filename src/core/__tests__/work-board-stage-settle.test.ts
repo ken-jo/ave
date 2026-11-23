@@ -811,21 +811,12 @@ for (const how of ["a Stop", "an unconfirmed end written again"] as const) {
     expect(h.events.slice(before).filter(event => event.itemId === id && (event.phase === "cancelled" || event.phase === "error"))).toEqual([]);
 
     // The delete did not land: its intent is taken back, the run is an orphan, and the next start, or the board write it makes, ends it.
-    const settled = deferred<void>();
-    const unsubscribe = h.board.runs.runChanged.subscribe(async changed => {
-      if (changed === runId && (await h.runOf(runId))?.settled !== undefined) settled.resolve();
-    });
-    try {
-      intents([]);
-      const started = h.start(other, h.local(version));
-      await h.untilLive(1);
-      await settled.promise;
-      expect((await h.runOf(runId))?.settled?.status).toBe("cancelled");
-      expect(h.engine.cancelRun(other)).toEqual({ ok: true });
-      await started;
-    } finally {
-      unsubscribe();
-    }
+    intents([]);
+    const started = h.start(other, h.local(version));
+    await h.untilLive(1);
+    await h.untilRunFile(async () => expect((await h.runOf(runId))?.settled?.status).toBe("cancelled"));
+    expect(h.engine.cancelRun(other)).toEqual({ ok: true });
+    await started;
   }));
 }
 
