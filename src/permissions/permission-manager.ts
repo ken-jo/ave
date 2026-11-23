@@ -14,7 +14,7 @@ import { runWithCeiling } from "../tools/executor-ceiling.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { isRemoteControllerBoundToSession, isUntaintedToolTrustOrigin } from "../shared/chat-origin.js";
 import type { AnsweredProvenance, DecisionProvenance } from "./approval-gate.js";
-import { RULE_PROVENANCE } from "./decision-provenance.js";
+import { HOST_PROVENANCE, RULE_PROVENANCE } from "./decision-provenance.js";
 import { isCurrentShellRule, withCurrentShellRuleVersion, type ShellRuleVersion } from "../shared/shell-rule-version.js";
 
 
@@ -1465,7 +1465,8 @@ export class PermissionManager {
     });
     const decision = decidePermission(request);
     const result: PermissionCheckResult = {
-      provenance: RULE_PROVENANCE,
+      // Nobody able to answer is the host's refusal, not a policy that forbids the action.
+      provenance: decision.reasonCode === "no-approver" ? HOST_PROVENANCE : RULE_PROVENANCE,
       decision: decision.outcome === "sandbox-auto" ? "allow" : decision.outcome === "ask-forced" ? "ask" : decision.outcome,
       reason: decision.reason,
       reasonCode: decision.reasonCode,

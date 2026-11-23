@@ -126,7 +126,7 @@ export function permissionAuditEntryFromToolCall(args: {
   source: ToolSource;
   category: AuditToolCategory;
   input: Record<string, unknown>;
-  permission: PermissionCheckResult | undefined;
+  permission: PermissionCheckResult;
   rateLimitRemaining: number;
   trustOrigin: HookTrustOrigin;
   cwd: string | undefined;
@@ -135,13 +135,16 @@ export function permissionAuditEntryFromToolCall(args: {
   audit?: ToolExecutionAuditMetadata;
 }): PermissionAuditEntryInput {
   // An ask nobody settled is never an allow: it ends as the host's refusal.
-  const permission: PermissionCheckResult | undefined = args.permission?.decision === "ask"
+  const permission: PermissionCheckResult = args.permission.decision === "ask"
     ? { decision: "deny", reason: args.permission.reason, provenance: HOST_PROVENANCE }
     : args.permission;
+  // An answer is recorded only for the action and the decision it settled; any other is a broken binding, and throws.
+  if (permission.provenance?.kind === "answered") answeredRecordForAction(permission.provenance, permission.decision === "deny" ? "deny" : "allow", args.toolName, args.audit?.toolUseId);
+  if (permission.decision === "deny" && permission.answer) answeredRecordForAction(permission.answer, "allow", args.toolName, args.audit?.toolUseId);
   // The row records who decided, from the decision's provenance.
-  const trustOrigin = provenanceTrustOrigin(permission?.provenance ?? RULE_PROVENANCE, permission?.decision ?? "allow", args.trustOrigin);
+  const trustOrigin = provenanceTrustOrigin(permission.provenance, permission.decision, args.trustOrigin);
   const base = permissionAuditBase({ ...args, trustOrigin });
-  if (permission?.decision === "deny") {
+  if (permission.decision === "deny") {
     const denyReasons = permission.denyReasons?.length
       ? permission.denyReasons
       : [{
@@ -162,7 +165,7 @@ export function permissionAuditEntryFromToolCall(args: {
     ...base,
     decision: "allow",
     };
-  if (permission?.reviewer?.verdict) {
+  if (permission.reviewer?.verdict) {
     allowEntry.reviewer = permission.reviewer.verdict;
   }
   if (auditDirectory) {

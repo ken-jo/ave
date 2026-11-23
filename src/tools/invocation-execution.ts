@@ -1098,7 +1098,7 @@ export async function executeAuthorizedToolInvocation(
     if (lateApprovalPolicyEpoch !== currentEpoch &&
         (lateApprovalPolicyEpoch === undefined || currentEpoch === undefined ||
           !services.approvalGate!.allowsPolicyTransition(decision, lateApprovalPolicyEpoch, currentEpoch))) {
-      permissionResult = { ...permissionResult, decision: "deny", reason: "Permission policy changed before execution." };
+      permissionResult = refusal("Permission policy changed before execution.", RULE_PROVENANCE);
       throw new Error(permissionResult.reason);
     }
     const surfaceResolution = services.permissionManager ? await resolveUserOwnedSurfaceApproval({

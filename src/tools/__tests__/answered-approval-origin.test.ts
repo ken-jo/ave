@@ -59,6 +59,10 @@ async function auditRows(): Promise<Array<Record<string, unknown>>> {
   return (await readFile(audit.getPermissionAuditLogFile(), "utf8")).trim().split("\n").map(line => JSON.parse(line));
 }
 
+async function ledger(toolUseId: string): Promise<Array<Record<string, unknown>>> {
+  return (await auditRows()).filter(row => row.toolUseId === toolUseId && row.decision !== "ask");
+}
+
 describe("plugin-emitted invocations answered at the desk", () => {
   it("records the tool allow as the desk's", async () => {
     const requestAndWait = answeringRequestAndWait(() => ({ choice: "allow-once" as const }));
@@ -278,5 +282,75 @@ describe("one terminal row per plugin-emitted invocation answered at the desk", 
     });
     expect(result.is_error).toBe(true);
     expect(await ledger("plugin-dir-gate-error")).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "unknown" })]);
+  });
+});
+
+describe("refusals nobody answered", () => {
+
+  it("records a PreToolUse block as the policy's deny, never as an allow", async () => {
+    const hooks = new HookRunner();
+    vi.spyOn(hooks, "runPreHooks").mockResolvedValue({ action: "deny", reason: "blocked by hook" } as never);
+    const requestAndWait = answeringRequestAndWait(() => ({ choice: "allow-once" as const }));
+    const executor = new ToolExecutor(registry, hooks, manager, undefined, { requestAndWait } as never, undefined, audit);
+    const [result] = await executor.executeAll([{ id: "hook-blocked", name: "write_file", input: { path: join(project, "hook.txt"), content: "hook" } }], {
+      sessionId: randomUUID(), executionCwd: project,
+      permissionContext: { trustOrigin: "plugin-emitted", additionalDirectories: [project] },
+    });
+    expect(result.is_error).toBe(true);
+    await expect(readFile(join(project, "hook.txt"))).rejects.toThrow();
+    expect(await ledger("hook-blocked")).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "plugin-emitted" })]);
+  });
+
+  it("records a deny nobody could approve as the host's", async () => {
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, undefined, undefined, audit);
+    const [result] = await executor.executeAll([{ id: "no-approver", name: "write_file", input: { path: join(project, "unattended.txt"), content: "unattended" } }], {
+      sessionId: randomUUID(), executionCwd: project,
+      permissionContext: { trustOrigin: "plugin-emitted", additionalDirectories: [project], headless: true },
+    });
+    expect(result.is_error).toBe(true);
+    await expect(readFile(join(project, "unattended.txt"))).rejects.toThrow();
+    expect(await ledger("no-approver")).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "unknown" })]);
+  });
+
+  it("leaves the host's refusal row when a folder card has no gate to ask", async () => {
+    const outside = join(root, "outside");
+    await mkdir(outside);
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, undefined, undefined, audit);
+    const [result] = await executor.executeAll([{ id: "no-folder-gate", name: "write_file", input: { path: join(outside, "gateless.txt"), content: "gateless" } }], {
+      sessionId: randomUUID(), executionCwd: project,
+      permissionContext: { trustOrigin: "plugin-emitted", additionalDirectories: [project] },
+    });
+    const reason = "Nobody can approve this request; do not retry.";
+    expect(result).toMatchObject({ is_error: true, content: reason });
+    await expect(readFile(join(outside, "gateless.txt"))).rejects.toThrow();
+    expect(await ledger("no-folder-gate")).toEqual([expect.objectContaining({
+      decision: "deny", trustOrigin: "unknown", denyReasons: [{ reason, source: "tool-executor" }],
+    })]);
+  });
+});
+
+describe("the deny row's working directory", () => {
+  const deny = (cwd: string | undefined) => permissionAuditEntryFromToolCall({
+    toolName: "write_file", source: "builtin", category: "write", input: { path: "notes.txt" },
+    permission: { decision: "deny", reason: "refused by rule", provenance: RULE_PROVENANCE },
+    rateLimitRemaining: Infinity, trustOrigin: "plugin-emitted", cwd,
+  });
+
+  it("persists the cwd home-redacted, or unknown when none was resolved", () => {
+    const home = join(homedir(), "alice-project");
+    expect(deny(home)).toMatchObject({ decision: "deny", cwd: redactFsPath(home) });
+    expect(JSON.stringify(deny(home))).not.toContain(homedir().replaceAll("\\", "\\\\"));
+    expect(deny(undefined)).toMatchObject({ decision: "deny", cwd: "unknown" });
+  });
+
+  it("keeps both rows readable through the chain verifier", async () => {
+    await audit.appendPermissionAuditEntry(deny(join(homedir(), "alice-project")));
+    await audit.appendPermissionAuditEntry(deny(undefined));
+    await audit.close();
+    const reader = new AuditLogger(join(root, "audit"));
+    await reader.setupPermissionAuditChain("aa".repeat(32));
+    expect(reader.isPermissionAuditChainReady()).toBe(true);
+    await reader.close();
+    expect((await auditRows()).map(row => row.cwd)).toEqual([redactFsPath(join(homedir(), "alice-project")), "unknown"]);
   });
 });

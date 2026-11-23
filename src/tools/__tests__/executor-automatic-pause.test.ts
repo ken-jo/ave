@@ -21,6 +21,7 @@ import { ToolExecutor } from "../executor.js";
 import { BashTool } from "../shell-tools.js";
 import * as invocationExecution from "../invocation-execution.js";
 import * as hostShellPermits from "../../permissions/host-shell-execution-permit.js";
+import * as preparedShell from "../prepared-shell-invocation.js";
 import * as userOwnedSurface from "../pipeline/user-owned-surface.js";
 import { HostExitAbortError } from "../../shared/host-exit-abort.js";
 import { WriteFileTool } from "../file-tools.js";
@@ -862,6 +863,29 @@ describe("executor automated approval pause", () => {
     expect(rows.at(-1)).toMatchObject({ decision: "deny", toolUseId: "late-host-shutdown", denyReasons: [{ reason: "host-shutdown" }], trustOrigin: "unknown" });
   });
 
+  it("records a shell preparation failure as the host's deny, never as the rule's allow", async () => {
+    const f = await subject();
+    const command = "printf prep-failure";
+    await f.manager.addRulePersist({ pattern: `Bash(${command})`, action: "allow" }, { kind: "user" });
+    const registry = new ToolRegistry();
+    const shell = new BashTool();
+    const execute = vi.spyOn(shell, "execute");
+    registry.register(shell);
+    vi.spyOn(preparedShell, "prepareShellInvocation").mockImplementation(() => { throw new Error("snapshot unavailable"); });
+    const { gate } = denyingGate();
+    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, undefined, f.audit);
+    const [result] = await executor.executeAll([{ id: "shell-prep-failure", name: "bash", input: { command, executionMode: "host", justification: "Read fixture output" } }], {
+      sessionId: SESSION_ID, executionCwd: f.root,
+      permissionContext: userPermissionContext({ trustOrigin: "llm-tool-arg", additionalDirectories: [f.root] }),
+    });
+    expect(result.is_error).toBe(true);
+    expect(result.content).toContain("Shell preparation failed: snapshot unavailable");
+    expect(execute).not.toHaveBeenCalled();
+    const rows = readFileSync(f.audit.getPermissionAuditLogFile(), "utf8").trimEnd().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>)
+      .filter(row => row.toolUseId === "shell-prep-failure" && row.decision !== "ask");
+    expect(rows).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "unknown" })]);
+  });
+
   it("preserves a rule-issued host permit when the reviewer pauses before the handler", async () => {
     const f = await subject();
     const command = "printf rule-permit";
@@ -900,7 +924,7 @@ describe("executor automated approval pause", () => {
     const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, undefined, f.audit);
     const pending = executor.executeAll([{ id: "normal-human-policy-race", name: "write_probe", input: { path: join(f.root, "approved.txt") } }], {
       sessionId: SESSION_ID, executionCwd: f.root,
-      permissionContext: userPermissionContext({ additionalDirectories: [f.root] }),
+      permissionContext: userPermissionContext({ trustOrigin: "llm-tool-arg", additionalDirectories: [f.root] }),
     });
     await vi.waitFor(() => expect(cards).toHaveLength(1));
     approve(cards[0]);
@@ -913,6 +937,10 @@ describe("executor automated approval pause", () => {
     expect(result.content).toBe("Permission policy changed before execution.");
     expect(execute).not.toHaveBeenCalled();
     expect(cards).toHaveLength(1);
+    // The policy refused it, so the row carries the invocation's origin, never the answer's.
+    expect(readFileSync(f.audit.getPermissionAuditLogFile(), "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line) as Record<string, unknown>)
+      .filter(row => row.toolUseId === "normal-human-policy-race" && row.decision !== "ask" && row.grantLifetime === undefined))
+      .toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "llm-tool-arg" })]);
   });
 
   it("counts repeated classification of one invocation once after grant escalation", async () => {

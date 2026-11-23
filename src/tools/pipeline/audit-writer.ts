@@ -195,7 +195,7 @@ export class AuditWriter {
     output: string,
     isError: boolean,
     startTime: number,
-    permission: PermissionCheckResult | undefined,
+    permission: PermissionCheckResult,
     rateLimitRemaining: number,
     permissionContext?: ToolPermissionContext,
     category?: ToolCategory,

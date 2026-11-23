@@ -717,7 +717,8 @@ async function runToolInvocationAttempt(
         content,
         true,
         startTime,
-        refusal(reason, blockedPermission.provenance),
+        // A block of an answered allow is the policy's own refusal, never the answer's.
+        refusal(reason, blockedPermission.decision === "deny" ? blockedPermission.provenance : RULE_PROVENANCE),
         Infinity,
         permissionContext,
         invocationCategory,
@@ -880,7 +881,7 @@ async function runToolInvocationAttempt(
       const durationMs = Date.now() - startTime;
       emitToolStart(callbacks, toolUse.name, toolUse.input, meta);
       callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
-      await auditCurrentToolCall(sessionId, toolUse.name, source, trust, toolUse.input, msg, true, startTime, permissionResult, Infinity, permissionContext, invocationCategory, executionCwd);
+      await auditCurrentToolCall(sessionId, toolUse.name, source, trust, toolUse.input, msg, true, startTime, refusal(msg, RULE_PROVENANCE), Infinity, permissionContext, invocationCategory, executionCwd);
       return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs });
     }
 
@@ -2017,7 +2018,7 @@ async function runToolInvocationAttempt(
         const durationMs = Date.now() - startTime;
         emitToolStart(callbacks, toolUse.name, finalInput, meta);
         callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
-        await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, permissionResult, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
+        await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, refusal(msg, HOST_PROVENANCE), Infinity, invocationPermissionContext, invocationCategory, executionCwd);
         return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs });
       }
     }
