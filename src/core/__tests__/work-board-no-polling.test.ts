@@ -55,11 +55,31 @@ function isRecursive(fn: FunctionNode): boolean {
   return found;
 }
 
-/** A loop between the call and the function it runs in, or that function repeats itself. A test callback, like any function, starts afresh. */
+/** The nearest loop between a call and the function it runs in. A test callback, like any function, starts outside any loop. */
+function loopOf(call: ts.CallExpression): ts.Node | undefined {
+  const owner = ownerOf(call);
+  for (let at = call.parent; at && at !== owner; at = at.parent) if (isLoop(at)) return at;
+  return undefined;
+}
+
+/** Inside a loop, or in a function that repeats itself. */
 function inLoop(call: ts.CallExpression): boolean {
   const owner = ownerOf(call);
-  for (let at = call.parent; at && at !== owner; at = at.parent) if (isLoop(at)) return true;
-  return owner !== undefined && isRecursive(owner);
+  return loopOf(call) !== undefined || (owner !== undefined && isRecursive(owner));
+}
+
+/** The loop waits in each turn, in the function it belongs to rather than in a nested one. */
+function awaitsEachTurn(loop: ts.Node): boolean {
+  if (ts.isForOfStatement(loop) && loop.awaitModifier) return true;
+  const owner = ownerOf(loop);
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    if (found) return;
+    if (ts.isAwaitExpression(node) && ownerOf(node) === owner) found = true;
+    else node.forEachChild(visit);
+  };
+  loop.forEachChild(visit);
+  return found;
 }
 
 function allCalls(source: ts.SourceFile): ts.CallExpression[] {
@@ -148,8 +168,9 @@ function isDiscarded(node: ts.Node): boolean {
   return at.parent !== undefined && (ts.isVoidExpression(at.parent) || ts.isExpressionStatement(at.parent));
 }
 
-/** A timer that is the wait: a timers/promises call or a callback timer resolving a promise, either one waited on; or a callback timer that
- * reschedules its own function. */
+/** A timer that is the wait: a timers/promises call or a callback timer resolving a promise, either one waited on; a callback timer in a loop
+ * that awaits each turn (it settles what the turn awaits); or a callback timer that reschedules its own function. A callback timer armed
+ * in a loop that never awaits is not a wait. */
 function isTimerWait(scope: Scope, call: ts.CallExpression): boolean {
   const callee = call.expression;
   if ((ts.isIdentifier(callee) && scope.promiseTimers.has(callee.text)) || (ts.isPropertyAccessExpression(callee) &&
@@ -160,6 +181,8 @@ function isTimerWait(scope: Scope, call: ts.CallExpression): boolean {
   let fn: ts.Node | undefined = call.parent;
   while (fn && !isFunctionNode(fn)) fn = fn.parent;
   if (fn && isExecutor(fn) && fn.parent && !isDiscarded(fn.parent)) return true;
+  const loop = loopOf(call);
+  if (loop !== undefined && awaitsEachTurn(loop)) return true;
   const owner = ownerOf(call);
   return owner !== undefined && isRecursive(owner);
 }
@@ -317,11 +340,12 @@ it("finds intervals, polls, renamed and destructured waits, namespace, method an
       "  while (!ready()) await relay();",
       "  for (let i = 0; i < 3; i += 1) arm(() => undefined);",
       "  for (let i = 0; i < 3; i += 1) setImmediate(() => undefined);",
+      "  for (let i = 0; i < 3 && !ready(); i += 1) { const turn = Promise.withResolvers<void>(); setTimeout(turn.resolve, 5); await turn.promise; }",
       "  for (const name of [\"a\", \"b\"]) it(name, async () => { await new Promise(resolve => setTimeout(resolve, 1)); });",
       "}",
       "export function check(ready: () => boolean): void { if (!ready()) setTimeout(() => check(ready), 5); }",
       "export async function poll(ready: () => boolean): Promise<void> { if (ready()) return; await sleep(1); return poll(ready); }",
     ].join("\n")],
   ]);
-  expect(fixtureFinds(fixtures)).toEqual([9, 11, 12, 13, 14, 15, 16, 17, 22, 23].map(line => `src/fixture/__tests__/more.test.ts:${line}`));
+  expect(fixtureFinds(fixtures)).toEqual([9, 11, 12, 13, 14, 15, 16, 17, 20, 23, 24].map(line => `src/fixture/__tests__/more.test.ts:${line}`));
 });
