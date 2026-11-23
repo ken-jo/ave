@@ -130,15 +130,32 @@ function deleteRowOffline(h: Harness, id: number): void {
   writeFileSync(h.boardPath, JSON.stringify(file));
 }
 
-async function parkedRun(h: Harness) {
+async function parkedRun(h: Harness, projectRoot?: string) {
   const version = await h.confirm([stageOf("a"), stageOf("b", { inputs: ["a"] })]);
-  const id = await h.addItem(version);
-  void h.start(id, h.local(version));
+  const id = await h.addItem(version, projectRoot);
+  void h.start(id, h.local(version, projectRoot));
   (await h.untilLive(1))[0].finish();
   const runId = (await h.untilStage(id, "a", "awaiting_gate")).runId ?? "";
   const gate = await h.stageRun(id, "a");
   return { id, runId, version, gate };
 }
+
+it("the boot sweep is given the project the run file names for a run that ended only at boot, and no project for a run that has none", async () => {
+  const h = await stageRunHarness();
+  try {
+    const ended = await parkedRun(h, "/projects/a");
+    const plain = await parkedRun(h);
+    const kept = await parkedRun(h, "/projects/b");
+    deleteRowOffline(h, ended.id);
+    deleteRowOffline(h, plain.id);
+    await h.board.reconcileInterruptedRuns();
+    await h.makeEngine().adoptParkedTemplateRuns();
+    expect(h.sweeps.at(-1)).toEqual([kept.runId]);
+    expect(h.sweptProjects.at(-1)).toEqual(new Map([[ended.runId, "/projects/a"], [kept.runId, "/projects/b"]]));
+  } finally {
+    await h.cleanup();
+  }
+});
 
 it("a run whose row was deleted while the app was down is cancelled at boot and its record pruned", async () => {
   const h = await stageRunHarness();

@@ -52,9 +52,10 @@ export function realWithin(outer: string, inner: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
-/** One name inside a held folder: never a path. */
+/** One name inside a held folder: never a path, and on Windows never one that ends in a dot or a space, which is dropped there: such
+ * a name would be another entry, or the folder itself. */
 function entryName(name: string): string {
-  if (name === "" || name === "." || name === ".." || /[\\/\0]/u.test(name)) throw new OwnedFsError("not-plain", "not a single name");
+  if (name === "" || name === "." || name === ".." || /[\\/\0]/u.test(name) || (process.platform === "win32" && /[. ]$/u.test(name))) throw new OwnedFsError("not-plain", "not a single name");
   return name;
 }
 

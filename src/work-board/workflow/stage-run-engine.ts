@@ -1451,8 +1451,15 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       }
       releaseWorkspace(run.runId);
     }
+    // The run file is the host's own, closed to every confined process with the rest of the home: what it says of a run's project
+    // stands in for the open project of a run nothing has open any more.
+    const projects = new Map<string, string>();
+    for (const run of only === undefined ? found.runs : []) {
+      const root = await runProjectOf(run.runStartedBy).catch(() => undefined);
+      if (root !== undefined) projects.set(run.runId, root);
+    }
     await records.pruneSettled();
-    if (only === undefined && found.keepWorkspaces !== undefined) await workspace.sweep([...new Set(active)]).catch((error: unknown) => log.warn("stage workspace sweep failed: %s", errorMessage(error)));
+    if (only === undefined && found.keepWorkspaces !== undefined) await workspace.sweep([...new Set(active)], projects).catch((error: unknown) => log.warn("stage workspace sweep failed: %s", errorMessage(error)));
     const still = new Set(found.kept.map(run => run.runId));
     kept = only === undefined ? still : new Set([...kept].filter(runId => still.has(runId)));
     return { ok: true };

@@ -302,13 +302,14 @@ onWindows.each<Unverified>([
     expect(projectRoot).toBe(fx.repo);
     between.asked.length = 0;
     try {
-      // A stage's release, a new stage, a seal, a collection, the run's release and a sweep.
+      // A stage's release, a new stage, a seal, a collection, the run's release and a sweep. The sweep is given the project the host's
+      // own run state names for the run: an edited record's root is not that one, and is not taken for it.
       await expect(provider.release(run, ["s1"])).rejects.toThrow("project.root");
       expect(await provider.prepare(run, stageOf("s2"), 1)).toEqual({ ok: false, code: "workspace-unavailable" });
       expect(await provider.seal(run, "s1")).toEqual({ ok: false, code: "workspace-unavailable" });
       await expect(provider.integrate(run, "j1", ["s1"])).rejects.toThrow("the run has no integration worktree");
       await provider.release(run, "all");
-      await provider.sweep([]);
+      await provider.sweep([], rootAs === undefined ? undefined : new Map([[run.runId, fx.repo]]));
       expect(calls).toEqual([]);
       const paths = [record.project.root, local].map(path => path.toLowerCase());
       expect(between.asked.filter(path => paths.some(root => path.toLowerCase().startsWith(root)))).toEqual([]);
@@ -320,6 +321,28 @@ onWindows.each<Unverified>([
     } finally {
       if (rootAs !== undefined) rmSync(runRoot, { recursive: true, force: true });
     }
+  } finally {
+    await fx.done();
+  }
+});
+
+it("a record edited to name a registration's worktree outside the run folder is no record, and nothing is asked of that path", async () => {
+  const fx = gitFixture();
+  try {
+    const { provider, calls, handle, runRoot, record } = await found(fx);
+    const outside = join(fx.base, "outside");
+    mkdirSync(join(outside, "s1"), { recursive: true });
+    (record.registrations.s1 as { gitdir: string }).gitdir = join(outside, "s1", ".git");
+    writeFileSync(join(runRoot, RUN_FILE), JSON.stringify(record));
+    between.asked.length = 0;
+    await provider.release(handle.run, "all");
+    await provider.sweep([], new Map([[handle.run.runId, fx.repo]]));
+    await provider.discard();
+    expect(calls).toEqual([]);
+    expect(between.asked.filter(path => path.toLowerCase().startsWith(outside.toLowerCase()))).toEqual([]);
+    expect(existsSync(join(runRoot, "s1", ".git"))).toBe(true);
+    record.registrations.s1 = { ...record.registrations.s1, gitdir: join(runRoot, "s1", ".git") } as typeof record.registrations.s1;
+    writeFileSync(join(runRoot, RUN_FILE), JSON.stringify(record));
   } finally {
     await fx.done();
   }

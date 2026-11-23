@@ -35,6 +35,19 @@ describe("owned folders", () => {
     expect(readdirSync(outside)).toEqual(["victim.txt"]);
   });
 
+  it("on Windows a name that ends in a dot or a space is no entry: the system would read it as another name, or as the folder itself", async () => {
+    const run = holdDir(join(base, "home")).ensure("run");
+    run.ensure("s1");
+    const windows = process.platform === "win32";
+    for (const name of ["...", "s1.", "s1 ", " "]) {
+      expect(reasonOf(() => run.existing(name)), name).toBe(windows ? "not-plain" : "none");
+      expect(reasonOf(() => run.entryId(name)), name).toBe(windows ? "not-plain" : "none");
+      expect(await rejection(run.remove(name)), name).toBe(windows ? "not-plain" : "none");
+    }
+    expect(readdirSync(run.path)).toEqual(["s1"]);
+    expect(existsSync(run.path)).toBe(true);
+  });
+
   it("a level swapped after the chain was held stops every later make", () => {
     const run = holdDir(join(base, "home")).ensure("run");
     const stage = run.make("s1");

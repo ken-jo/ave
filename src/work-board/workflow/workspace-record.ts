@@ -112,57 +112,52 @@ function plainPath(path: string): string | undefined {
 /**
  * The run's folder for `key`, when a registration's `gitdir` names that folder's `.git` file; undefined when it names anything else.
  * Git writes that path as it really is on disk, which need not be the text the host reached the run folder by (a link above the
- * home). So the run folder is told by which directory it is, and only the folder's own name is compared; a path whose run folder
- * cannot be identified names nothing.
- *
- * A record is read from disk and may name any path, so a path on a network share is looked at only when its text puts it in the run
- * folder as that folder really is: a home on a share keeps its registrations, and no other share is ever asked anything. A device
- * path is refused the same way. Known limit, on the closed side: the same share under another spelling of its server (short name,
- * full name, address) is refused. Known limit, on the open side: a path whose text does not show the network, a drive letter that
- * stands for a share or a mount point, is looked up as any local path is.
+ * home): both spellings of the run folder are the host's own, and the record's text is matched against them before anything is asked
+ * of the disk. Only a spelling of the host's is then looked up, to see that it is still the run folder that is held.
  */
 export function runFolderOf(run: { path: string; id: NodeId }, key: string, gitdir: string): string | undefined {
-  const plain = plainPath(gitdir);
-  if (plain === undefined || basename(plain) !== ".git") return undefined;
-  const folder = dirname(plain);
-  if (foldName(basename(folder)) !== foldName(key === JOIN_DIR ? JOIN_DIR : stageDirName(key))) return undefined;
-  if (process.platform === "win32" && plain.startsWith("\\\\")) {
-    let real: string | undefined;
-    try {
-      real = plainPath(realpathSync.native(run.path));
-    } catch {
-      return undefined;
-    }
-    if (real === undefined || foldName(dirname(folder)) !== foldName(real)) return undefined;
-  }
-  return realDirId(dirname(folder)) === run.id ? folder : undefined;
+  let real: string;
+  try { real = realpathSync.native(run.path); } catch { return undefined; }
+  const folder = vetRecordPath("worktree", gitdir, { run: [run.path, real], name: key === JOIN_DIR ? JOIN_DIR : stageDirName(key) });
+  return folder !== undefined && realDirId(dirname(folder)) === run.id ? folder : undefined;
 }
 
 /** What the host resolved just now from the project its caller has open: the root as it is on disk and, once git was asked there, the
  * repository's common directory. None of it is record text. */
 export interface LiveRepo { root: string; gitDir?: string }
+/** The run folder as the host itself spells it, by the path it holds it at and as it really is on disk, and the name of one folder in it. */
+interface RunFolder { run: readonly string[]; name: string }
 type RecordPathKind = "project" | "gitDir" | "admin" | "link";
 
 /**
  * A path the record or a worktree link file gives, taken by its text alone before anything is asked of it: both may name any path, on
- * any share or device. It is made plain text and must then be, under the name fold, exactly what the open project gives: `project`
- * its root, `gitDir` its repository's common directory, `admin` a direct child of that directory's `worktrees`, `link` the content of
- * a `.git` file naming such a child. The answer is built from the open project's own text; undefined for every other path, and for
- * every path while no project is open. Known limit, on the closed side: a path that names the same place by another spelling (a
- * link above it, another name of the share's server) is refused.
+ * any share or device. It must be absolute with no `.` or `..` segment (git would follow a link under one that text cannot show), is
+ * made plain text and must then be, under the name fold, exactly what the host's own anchor gives. Against the open project:
+ * `project` its root, `gitDir` its repository's common directory, `admin` a direct child of that directory's `worktrees`, `link` the
+ * content of a `.git` file naming such a child. Against the run folder: `worktree` the `.git` file of the named folder in it. The
+ * answer is built from the anchor's own text; undefined for every other path, and for every project path while no project is open.
+ * Known limit, on the closed side: a path that names the same place by another spelling (a link above it, another name of the
+ * share's server) is refused; so is a relative link, which git writes under `worktree.useRelativePaths`.
  */
-export function vetRecordPath(kind: RecordPathKind, text: string, live: LiveRepo | undefined): string | undefined {
-  if (live === undefined) return undefined;
+export function vetRecordPath(kind: "worktree", text: string, folder: RunFolder): string | undefined;
+export function vetRecordPath(kind: RecordPathKind, text: string, live: LiveRepo | undefined): string | undefined;
+export function vetRecordPath(kind: RecordPathKind | "worktree", text: string, anchor: LiveRepo | RunFolder | undefined): string | undefined {
+  if (anchor === undefined) return undefined;
   const path = kind === "link" ? /^gitdir: (.+?)\r?\n?$/u.exec(text)?.[1] : text;
-  const plain = path === undefined || !isAbsolute(path) ? undefined : plainPath(path);
+  const plain = path === undefined || !isAbsolute(path) || /(?:^|[\\/])\.\.?(?:[\\/]|$)/u.test(path) ? undefined : plainPath(path);
   if (plain === undefined) return undefined;
   const same = (other: string | undefined): other is string => other !== undefined && foldName(plain) === foldName(other);
-  if (kind === "project") return same(plainPath(live.root)) ? live.root : undefined;
-  const gitDir = live.gitDir === undefined ? undefined : plainPath(live.gitDir);
+  if ("run" in anchor) {
+    const run = anchor.run.map(plainPath).find(run => run !== undefined && same(join(run, anchor.name, ".git")));
+    return run === undefined ? undefined : join(run, anchor.name);
+  }
+  if (kind === "project") return same(plainPath(anchor.root)) ? anchor.root : undefined;
+  const gitDir = anchor.gitDir === undefined ? undefined : plainPath(anchor.gitDir);
   if (gitDir === undefined) return undefined;
   if (kind === "gitDir") return same(gitDir) ? gitDir : undefined;
   const name = basename(plain);
-  if (name === "" || name === "." || name === ".." || /[\\/:]/u.test(name)) return undefined;
+  // A name the file system would read as another one (Windows drops a trailing dot or space) names nothing.
+  if (name === "" || /[\\/:]|[. ]$/u.test(name)) return undefined;
   return foldName(dirname(plain)) === foldName(join(gitDir, "worktrees")) ? join(gitDir, "worktrees", name) : undefined;
 }
 

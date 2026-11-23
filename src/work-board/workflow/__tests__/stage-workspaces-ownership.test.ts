@@ -76,10 +76,11 @@ async function scene(): Promise<Scene> {
 }
 
 /** As after a restart, with item 7 gone from the board and item 8 still on it. A discard and a sweep have no project open; a release
- * is item 7's, with its project open. */
-async function operate(operation: "discard" | "sweep" | "release", at?: Scene): Promise<void> {
+ * is item 7's, with its project open, and a `swept` sweep is given item 7's project as the host's run state names it. */
+async function operate(operation: "discard" | "sweep" | "release" | "swept", at?: Scene): Promise<void> {
   const provider = createStageWorkspaceProvider({ git: createHostGit({ env: fx.env }), removable: async () => run => run.itemId !== 8 });
   if (operation === "release") await provider.release((at as Scene).target.run, "all");
+  else if (operation === "swept") await provider.sweep([], new Map([[(at as Scene).target.run.runId, fx.repo]]));
   else await (operation === "discard" ? provider.discard() : provider.sweep([]));
 }
 
@@ -144,7 +145,14 @@ it.each(["discard", "sweep"] as const)("a %s has no project open: a git run stay
   expectLeftWhole(at, "project.root");
 });
 
-describe.each(["release"] as const)("what a %s with its project open may remove of a git run", (operation) => {
+it("a sweep leaves a git run whose project it is given under another run's id", async () => {
+  const at = await scene();
+  await createStageWorkspaceProvider({ git: createHostGit({ env: fx.env }) }).sweep([], new Map([[at.other.run.runId, fx.repo], [`${at.target.run.runId}-other`, fx.repo]]));
+  expectLeftWhole(at, "project.root");
+  expect(existsSync(at.otherRoot)).toBe(false);
+});
+
+describe.each(["release", "swept"] as const)("what a %s with its project open may remove of a git run", (operation) => {
   it("with every field as it was written, the run's folder, registration and branch go and nothing else", async () => {
     const at = await scene();
     await operate(operation, at);
@@ -448,4 +456,66 @@ it("a join folder whose worktree link was pointed at another worktree gets no me
   } finally {
     relink(written);
   }
+});
+
+it("a release that git gives no answer to about the repository leaves the run whole: no answer is not another repository", async () => {
+  const at = await scene();
+  const real = createHostGit({ env: fx.env });
+  const git: HostGit = {
+    drivers: cwd => real.drivers(cwd),
+    run: (cwd, args, call) => args.includes("--git-common-dir") ? Promise.reject(new HostGitError("timeout", "git gave no answer")) : real.run(cwd, args, call),
+  };
+  await createStageWorkspaceProvider({ git }).release(at.target.run, "all");
+  expectLeftWhole(at, "repo.gitDir");
+  await operate("release", at);
+  expect(existsSync(at.runRoot)).toBe(false);
+  expect(existsSync(at.admin)).toBe(false);
+});
+
+it("git in a folder of the run is given the registration the host checked: a link swapped after the check directs nothing", async () => {
+  const { repo, userGit } = fx;
+  const elsewhere = join(fx.base, "elsewhere");
+  mkdirSync(elsewhere);
+  userGit(elsewhere, "init", "-q");
+  userGit(elsewhere, "-c", "user.name=Bob Example", "-c", "user.email=bob@example.com", "commit", "-q", "--allow-empty", "-m", "first");
+  const decoy = join(fx.base, "decoy");
+  userGit(elsewhere, "worktree", "add", "-q", "--detach", decoy);
+  const decoyLink = `gitdir: ${adminOf(decoy)}\n`;
+  const real = createHostGit({ env: fx.env });
+  let runRoot = "";
+  let swaps = 0;
+  // Every git call in a folder of the run finds that folder's link pointing into the other repository, from after the host's check
+  // until the call is over.
+  const git: HostGit = {
+    drivers: cwd => real.drivers(cwd),
+    run: async (cwd, args, call) => {
+      if (runRoot === "" || !resolve(cwd).toLowerCase().startsWith(runRoot.toLowerCase())) return real.run(cwd, args, call);
+      const link = readFileSync(join(cwd, ".git"), "utf8");
+      const put = (text: string): void => { rmSync(join(cwd, ".git")); writeFileSync(join(cwd, ".git"), text); };
+      put(decoyLink);
+      swaps += 1;
+      try { return await real.run(cwd, args, call); } finally { put(link); }
+    },
+  };
+  const handle = fx.start({ git });
+  const open = await handle.provider.open(handle.run, repo);
+  if (!open.ok) throw new Error(open.code);
+  const stage = await stageRoot(handle, "s1");
+  // From here on: the seal and the collection.
+  runRoot = resolve(open.workspace.runRoot);
+  write(stage, "a.txt", "two\n");
+  write(stage, "new.txt", "new\n");
+  const result = await handle.provider.seal(handle.run, "s1");
+  // The other repository saw none of it: no entry staged, no commit.
+  expect(userGit(decoy, "diff", "--cached", "--name-only")).toBe("");
+  const seal = result.ok ? result.sealCommit : undefined;
+  expect(seal).toBeDefined();
+  expect(await handle.provider.integrate(handle.run, "j1", ["s1"])).toEqual({ ok: true });
+  expect(swaps).toBeGreaterThan(4);
+  const branch = runBranch(handle.run.runId);
+  expect(userGit(repo, "show", `${branch}:a.txt`)).toBe("two");
+  expect(userGit(repo, "show", `${seal}:new.txt`)).toBe("new");
+  expect(userGit(decoy, "diff", "--cached", "--name-only")).toBe("");
+  expect(userGit(elsewhere, "rev-list", "--all", "--count")).toBe("1");
+  expect(code(elsewhere, "cat-file", "-e", `${seal}^{commit}`)).not.toBe(0);
 });

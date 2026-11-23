@@ -84,6 +84,8 @@ export async function stageRunHarness(opts: {
   const workspaceCalls: string[] = [];
   /** The run ids each boot sweep kept. */
   const sweeps: string[][] = [];
+  /** The project roots each boot sweep was given, by run id. */
+  const sweptProjects: Map<string, string>[] = [];
   const registry = boardParentToolRegistry();
   const launches = new AsyncLocalStorage<ObservedLaunch>();
   const observeEngineWork = () => opts.observeRunWork ? observeRunWork(launches) : undefined;
@@ -146,7 +148,7 @@ export async function stageRunHarness(opts: {
     integrate: async (_run, joinId) => { workspaceCalls.push(`integrate:${joinId}`); return opts.integrate?.() ?? { ok: true }; },
     release: async () => undefined,
     discard: async () => undefined,
-    sweep: async (active) => { sweeps.push([...active]); },
+    sweep: async (active, projects) => { sweeps.push([...active]); sweptProjects.push(new Map(projects)); },
     ...opts.workspace,
   };
 
@@ -282,7 +284,7 @@ export async function stageRunHarness(opts: {
   const start = (itemId: number, source: RunAuthoritySource) => engine.runItem(itemId, { templateSource: source });
 
   return {
-    dir, boardPath, get board() { return board; }, templates, get engine() { return engine; }, makeEngine, editRow, runOf, events, children, interrupts, audits, unauthorised, workspaceCalls, sweeps,
+    dir, boardPath, get board() { return board; }, templates, get engine() { return engine; }, makeEngine, editRow, runOf, events, children, interrupts, audits, unauthorised, workspaceCalls, sweeps, sweptProjects,
     confirm: confirmTemplate, pinOf, addItem, local, attach, detach, item, stageRun, until, untilStage, untilLive, untilSpawned, settleEvent, waitForLive, waitForProgress, live, decide, statusOf, start,
     drainRunWork: async () => { await runWork?.drain(); },
     cleanup: () => cleanupTmpDir(dir),

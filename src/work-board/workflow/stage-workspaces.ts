@@ -195,7 +195,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     if (folder !== undefined && folder !== (key === JOIN_DIR ? at.file.joinDir : at.file.stages[key]?.dir)) throw new OwnedFsError("changed", "the registration points at a folder the run did not make");
     if (worktrees.entryId(name) === undefined) return undefined;
     const text = worktrees.child(name, registration.id)?.readFile("gitdir")?.toString("utf8");
-    if (text === undefined || !samePath(resolve(registration.admin, text.trimEnd()), registration.gitdir)) throw new OwnedFsError("changed", "the registration no longer points at the run's folder");
+    if (text === undefined || !samePath(resolve(admin, text.trimEnd()), registration.gitdir)) throw new OwnedFsError("changed", "the registration no longer points at the run's folder");
     return { worktrees, name };
   }
 
@@ -220,7 +220,8 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
   /**
    * Git in a folder of the run. Git writes where the folder's `.git` file points, and that file is text anyone could have put there:
    * before every call it must name, by its text, a registration in the repository found for the open project in this call, and that
-   * name must still be held by the admin folder the record names.
+   * name must still be held by the admin folder the record names. Git is then given that registration and the folder themselves, so
+   * it never reads the `.git` file: one swapped after this check directs nothing.
    */
   function gitIn(at: Held, key: string, folder: OwnedDir): (args: readonly string[], call?: Parameters<HostGit["run"]>[2]) => ReturnType<HostGit["run"]> {
     return async (args, call) => {
@@ -228,7 +229,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       const admin = vetRecordPath("link", folder.readFile(".git")?.toString("utf8") ?? "", at.live);
       const registration = at.file.registrations[key];
       if (admin === undefined || registration === undefined || repoWorktrees(at)?.child(basename(admin), registration.id) === undefined) throw new Error(`the ${key === JOIN_DIR ? "integration" : "stage"} worktree is not the run's own`);
-      return git.run(folder.path, args, call);
+      return git.run(folder.path, args, { ...call, worktree: { gitDir: admin, workTree: folder.path } });
     };
   }
 
@@ -314,7 +315,8 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     if (realDirId(live.root) !== project.id) return { field: "project.id", side: "repo" };
     const now = await commonDirOf(live.root).catch(() => undefined);
     at.run.check();
-    if (now === undefined) return { field: "repo.gitDir", side: "repo" };
+    // Git gave no answer: that says nothing of the repository, and a run is not taken apart on it.
+    if (now === undefined) return { field: "repo.gitDir", side: "unverified" };
     const gitDir = vetRecordPath("gitDir", repo.gitDir, { ...live, gitDir: now.gitDir });
     if (gitDir === undefined) return { field: "repo.gitDir", side: "unverified" };
     if (now.id !== repo.id) return { field: "repo.id", side: "repo" };
@@ -966,7 +968,7 @@ ${fields(side)}`;
     }
   }
 
-  async function sweep(activeRunIds: readonly string[]): Promise<void> {
+  async function sweep(activeRunIds: readonly string[], projects?: ReadonlyMap<string, string>): Promise<void> {
     const active = new Set(activeRunIds);
     // What a stop between a record's removal and the discard left behind goes here; an answer that could not be had keeps it.
     const selected = await options.removable?.().catch(() => undefined);
@@ -983,7 +985,7 @@ ${fields(side)}`;
       await serial(runId, async () => {
         const output = selected?.({ runId, itemId }) === true && await removableNow({ runId, itemId }).catch(() => false) ? "drop" : "keep";
         const current = heldStill(seen);
-        if (current !== null) await releaseIn(current, "all", output);
+        if (current !== null) await releaseIn({ ...current, ...liveOf(current.file, projects?.get(runId)) }, "all", output);
       }).catch(() => undefined);
       roots.delete(runSlug(itemId, runId));
     }

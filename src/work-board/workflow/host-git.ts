@@ -16,7 +16,8 @@ const HARDENED_CONFIG = [
 const DROPPED_ENV = /^(GIT_DIR|GIT_WORK_TREE|GIT_INDEX_FILE|GIT_COMMON_DIR|GIT_ASKPASS|SSH_ASKPASS|GIT_EXTERNAL_DIFF|GIT_EDITOR|GIT_SEQUENCE_EDITOR|GIT_PAGER|GIT_SSH|GIT_SSH_COMMAND|GIT_(AUTHOR|COMMITTER)_(NAME|EMAIL|DATE))$/iu;
 
 interface HostGitResult { code: number; stdout: string; stderr: string }
-interface HostGitCall { stdin?: string; drivers?: readonly string[]; isolated?: boolean }
+/** `worktree`: the registration and the folder git works on, given to it outright; it then reads no `.git` file to find them. */
+interface HostGitCall { stdin?: string; drivers?: readonly string[]; isolated?: boolean; worktree?: { gitDir: string; workTree: string } }
 export class HostGitError extends Error {
   constructor(readonly reason: "unavailable" | "held" | "timeout" | "output-limit" | "terminated" | "driver-name", message: string) { super(message); }
 }
@@ -52,7 +53,7 @@ export function createHostGit(options: { env?: NodeJS.ProcessEnv; timeoutMs?: nu
     if (!isHostGitWorkspaceAvailable(cwd)) return Promise.reject(new HostGitError("held", "the workspace is held by a sandboxed command"));
     const configArgs = [...HARDENED_CONFIG.flatMap(entry => ["-c", entry]), ...(call.drivers ?? [])];
     return new Promise((resolve, reject) => {
-      const child = spawn("git", buildHostGitArgs(args, { configArgs }), { cwd, env: call.isolated === true ? isolated : env, shell: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+      const child = spawn("git", buildHostGitArgs(call.worktree === undefined ? args : [`--git-dir=${call.worktree.gitDir}`, `--work-tree=${call.worktree.workTree}`, ...args], { configArgs }), { cwd, env: call.isolated === true ? isolated : env, shell: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
       const out: Buffer[] = [];
       const err: Buffer[] = [];
       let size = 0;
