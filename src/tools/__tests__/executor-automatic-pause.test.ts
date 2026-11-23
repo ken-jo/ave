@@ -6,7 +6,7 @@ import { AuditLogger } from "../../audit/audit-logger.js";
 import { verifyChain } from "../../audit/hmac-chain.js";
 import { ScriptHookManager } from "../../hooks/script-hook-manager.js";
 import { PermissionTestResources } from "../../permissions/__tests__/test-resources.js";
-import { ApprovalGate, type ApprovalRequest } from "../../permissions/approval-gate.js";
+import { ApprovalGate, answeredApprovalProvenance, answeredRecordForAction, type ApprovalDecision, type ApprovalRequest } from "../../permissions/approval-gate.js";
 import { JudgeContractError } from "../../permissions/judge/judge-contract.js";
 import { DEFAULT_JUDGE_SETTINGS } from "../../permissions/judge/judge-settings.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
@@ -381,6 +381,37 @@ describe("executor automated approval pause", () => {
     const rows = readFileSync(f.audit.getPermissionAuditLogFile(), "utf8").trimEnd().split("\n").map((line) => JSON.parse(line));
     const allowed = rows.filter((row) => row.toolUseId === "plugin-late-card" && row.decision === "allow");
     expect(allowed.at(-1)).toMatchObject({ trustOrigin: "user-keyboard" });
+  });
+
+  it("binds a late card's answer to its invocation, so another invocation of the tool cannot settle with it", async () => {
+    const f = await subject();
+    const registry = new ToolRegistry();
+    registry.register(makeWriteProbeTool(vi.fn(async () => "wrote")));
+    const held = heldHandlerFinalizers("bound-late-card", 1);
+    const { gate, cards, approve } = manualGate();
+    const answered: ApprovalDecision[] = [];
+    const requestAndWait = gate.requestAndWait.bind(gate);
+    vi.spyOn(gate, "requestAndWait").mockImplementation(async (request) => {
+      const decision = await requestAndWait(request);
+      answered.push(decision);
+      return decision;
+    });
+    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, undefined, f.audit);
+    const pending = executor.executeAll([{ id: "bound-late-card", name: "write_probe", input: { path: join(f.root, "held.txt") } }], {
+      sessionId: SESSION_ID, executionCwd: f.root,
+      permissionContext: userPermissionContext({ additionalDirectories: [f.root] }),
+    });
+    await held.waits[0].reached;
+    await f.pause();
+    held.waits[0].release();
+    await vi.waitFor(() => expect(cards).toHaveLength(1));
+    approve(cards[0]);
+    const [result] = await pending;
+    expect(result.is_error, result.content).not.toBe(true);
+    expect(answered).toHaveLength(1);
+    const provenance = answeredApprovalProvenance(answered[0]);
+    expect(answeredRecordForAction(provenance, "allow", "write_probe", "bound-late-card").toolUseId).toBe("bound-late-card");
+    expect(() => answeredRecordForAction(provenance, "allow", "write_probe", "other-invocation")).toThrow("does not settle this allow of write_probe");
   });
 
   it("settles caller cancellation while a late PermissionRequest hook is still held", async () => {

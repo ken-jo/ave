@@ -750,7 +750,7 @@ export async function executeAuthorizedToolInvocation(
             id: randomUUID(), category: "tool", toolName: tool.name, source: "builtin", toolCategory: "network", args: { url },
             reason: rules.decision === "ask" ? "A destination rule requires approval for this navigation." : "This navigation carries an exfiltration signal and requires human consent.", createdAt: Date.now(), sessionId, abortSignal: siteSignal,
             remoteControllerAuthority: invocationPermissionContext.remoteControllerAuthority, forceExplicit: true,
-            durableApprovalRecordAllowed: false, allowedChoices: ["allow-once", "deny-once"],
+            durableApprovalRecordAllowed: false, allowedChoices: ["allow-once", "deny-once"], invocationToolUseId: toolUse.id,
           });
           if (actionDecision.choice !== "allow-once" || isHostApprovalRejectedDecision(actionDecision)) throw new Error("Browser navigation denied");
           siteSignal.throwIfAborted();
@@ -763,7 +763,7 @@ export async function executeAuthorizedToolInvocation(
         }
         const decision = await gate.requestAndWait({
           id: randomUUID(), category: "tool", toolName: tool.name, source: "builtin", toolCategory: "network",
-          browserSite: origin, toolUseId: toolUse.id, args: { url }, reason: "Opening this site requires session consent.", createdAt: Date.now(),
+          browserSite: origin, toolUseId: toolUse.id, invocationToolUseId: toolUse.id, args: { url }, reason: "Opening this site requires session consent.", createdAt: Date.now(),
           sessionId, abortSignal: siteSignal, remoteControllerAuthority: invocationPermissionContext.remoteControllerAuthority,
           forceExplicit: true, durableApprovalRecordAllowed: false, allowedChoices: ["allow-once", "deny-once"],
         });
@@ -1076,7 +1076,7 @@ export async function executeAuthorizedToolInvocation(
       if (permissionResult.decision !== "ask") throw new Error(permissionResult.reason);
     }
     // The surface facts, the code of the decision that asked included, are the recheck's own: a card that is no longer a surface card carries none.
-    const liveRequest: ApprovalRequestInput = { ...request,
+    const liveRequest: ApprovalRequestInput = { ...request, invocationToolUseId: toolUse.id,
       userOwnedSurface: undefined, userOwnedSurfaceReviewFallback: undefined, reasonCode: undefined,
       ...browserApprovalCardFacts(tool, invocationPermissionContext.approvalMemory),
       reason: approvalReasonPrefix ? `${approvalReasonPrefix} ${permissionResult.reason}` : permissionResult.reason,
