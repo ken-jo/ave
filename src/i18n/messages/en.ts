@@ -4437,7 +4437,7 @@ export const en = {
   "pluginConfigTab.toolsHiddenFromModel": "Hidden from model",
   "pluginConfigTab.toolsHiddenNote": "While inactive, this extension's tools are not exposed to the model.",
   "pluginConfigTab.backgroundEffectsLabel": "Background effects",
-  "pluginConfigTab.backgroundEffectsPending": "Not approved for this version. Work outside a tool call is denied until you review it.",
+  "pluginConfigTab.backgroundEffectsPending": "Not approved yet. Work outside a tool call is denied until you review it.",
   "pluginConfigTab.backgroundEffectsReview": "Review",
   "pluginConfigTab.backgroundEffectsError": "Failed to save the background effects approval",
   "pluginConfigTab.contributionTrustLabel": "Bundled executable capabilities",
@@ -4544,11 +4544,13 @@ export const en = {
 
   // pluginUninstallDialog
   "pluginBackgroundEffectsDialog.title": "Allow background effects for '{name}'?",
-  "pluginBackgroundEffectsDialog.description": "Outside a tool call, this extension may do only the following. Anything else is denied, and you will be asked again when the extension changes.",
+  "pluginBackgroundEffectsDialog.description": "Outside a tool call, this extension may do only the following. Anything else is denied, and you will be asked again if what it declares changes.",
   "pluginBackgroundEffectsDialog.ownStorage": "Write to its own storage folder",
   "pluginBackgroundEffectsDialog.networkLabel": "Send requests to",
   "pluginBackgroundEffectsDialog.alertsLabel": "Raise alerts",
   "pluginBackgroundEffectsDialog.suggestionsLabel": "Suggest conversations from",
+  "pluginBackgroundEffectsDialog.llm": "Use the AI model in the background (may incur usage)",
+  "pluginBackgroundEffectsDialog.workers": "Run helper processes in the background",
   "pluginBackgroundEffectsDialog.cancelButton": "Cancel",
   "pluginBackgroundEffectsDialog.allowButton": "Allow",
   "pluginUninstallDialog.title": "Remove Extension",

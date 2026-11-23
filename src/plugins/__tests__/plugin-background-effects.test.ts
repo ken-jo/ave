@@ -85,6 +85,27 @@ describe("the background scope a manifest declares", () => {
   });
 });
 
+describe("background model and helper-process declarations", () => {
+  it("come only from the background capabilities and make a card on their own", () => {
+    expect(declaredBackgroundEffects(manifest({ capabilities: ["external-auth-consumer"] }))).toMatchObject({ llm: false, workers: false });
+    const llm = declaredBackgroundEffects(manifest({ capabilities: ["background:call-llm"] }));
+    expect(llm).toMatchObject({ llm: true, workers: false });
+    expect(backgroundEffectSubject(manifest({ capabilities: ["background:call-llm"] }), marketplaceEntry()).declared).toBe(true);
+    expect([...backgroundEffectPaths(manifest({ capabilities: ["background:spawn-worker"] }))]).toContain("spawnWorker");
+    expect(withinBackgroundScope(llm, "callLlm", undefined)).toBe(true);
+    expect(withinBackgroundScope(llm, "spawnWorker", undefined)).toBe(false);
+  });
+
+  it("re-ask when declared, dropped or swapped", () => {
+    const hash = (capabilities: string[]) => backgroundEffectScopeSha256(declaredBackgroundEffects(declaring({ capabilities })));
+    const none = hash([]);
+    expect(hash(["background:call-llm"])).not.toBe(none);
+    expect(hash(["background:spawn-worker"])).not.toBe(hash(["background:call-llm"]));
+    expect(hash(["background:spawn-worker", "background:call-llm"])).toBe(hash(["background:call-llm", "background:spawn-worker"]));
+    expect(hash(["external-auth-consumer"])).toBe(none);
+  });
+});
+
 describe("the scope hash", () => {
   it("ignores the version, unrelated manifest fields, order, case and duplicates", () => {
     const base = backgroundEffectSubject(declaring(), marketplaceEntry()).scopeSha256;

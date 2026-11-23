@@ -5,6 +5,7 @@ import { writeUtf8FileAtomicSync } from "../lib/atomic-file.js";
 import { createLogger } from "../lib/logger.js";
 import { normalizeHost, urlHostMatchesAllowList } from "../main/host-allow-list.js";
 import { readAveHomeInputSync } from "../shared/ave-home-trust.js";
+import { CAPABILITY_BACKGROUND_CALL_LLM, CAPABILITY_BACKGROUND_SPAWN_WORKER } from "./capabilities.js";
 import { getDeclaredAlertKinds, getDeclaredSuggestionSources } from "./runtime/manifest-validation.js";
 import type { PluginManifest, PluginRegistryTrust } from "./types.js";
 
@@ -33,8 +34,8 @@ export function declaredBackgroundEffects(manifest: PluginManifest): PluginBackg
     networkDestinations: canonicalList(manifest.networkAccess?.allowedDomains ?? [], normalizeHost),
     alertKinds: canonicalList(getDeclaredAlertKinds(manifest, manifest.id).map((kind) => kind.id)),
     suggestionSources: canonicalList(getDeclaredSuggestionSources(manifest, manifest.id) ?? []),
-    llm: false,
-    workers: false,
+    llm: manifest.capabilities?.includes(CAPABILITY_BACKGROUND_CALL_LLM) === true,
+    workers: manifest.capabilities?.includes(CAPABILITY_BACKGROUND_SPAWN_WORKER) === true,
   };
 }
 

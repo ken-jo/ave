@@ -34,6 +34,7 @@ import { PROCESS_ENTRY_FIRST_APP_VERSION } from "../process-entry.js";
 import { checkProcessEntryArgument, checkProcessEntryEnvironmentValue } from "../resolve-bundled-argv.js";
 import { isSafeMcpEnvironmentName } from "../../mcp/safe-names.js";
 import { compareSemver } from "../../shared/semver-compare.js";
+import { BACKGROUND_CAPABILITY_PREFIX, CAPABILITY_BACKGROUND_CALL_LLM, CAPABILITY_BACKGROUND_SPAWN_WORKER, KNOWN_CAPABILITIES } from "../capabilities.js";
 import {
   HOST_SECRET_READ_MAX_ITEMS,
   findHostSecretReadListViolation,
@@ -659,6 +660,16 @@ export async function parsePluginJson(
           `"networkAccess": { "authCookiePartition": "portal" }`,
         );
       }
+    }
+  }
+
+  for (const capability of Array.isArray(parsed.capabilities) ? parsed.capabilities : []) {
+    if (typeof capability === "string" && capability.startsWith(BACKGROUND_CAPABILITY_PREFIX) && !KNOWN_CAPABILITIES.has(capability)) {
+      fail(
+        "capabilities",
+        `unknown background capability "${capability}"; the known ones are ${CAPABILITY_BACKGROUND_CALL_LLM} and ${CAPABILITY_BACKGROUND_SPAWN_WORKER}`,
+        `"capabilities": ["${CAPABILITY_BACKGROUND_CALL_LLM}"]`,
+      );
     }
   }
 

@@ -33,6 +33,8 @@ export function PluginBackgroundEffectsDialog({ review, onDecide }: PluginBackgr
         </DialogHeader>
         <ul className="space-y-2 text-dense">
           <li>{t("pluginBackgroundEffectsDialog.ownStorage")}</li>
+          {review?.effects.llm && <li>{t("pluginBackgroundEffectsDialog.llm")}</li>}
+          {review?.effects.workers && <li>{t("pluginBackgroundEffectsDialog.workers")}</li>}
           {groups.map(([label, items]) => (
             <li key={label}>
               <p className="font-medium">{t(label)}</p>

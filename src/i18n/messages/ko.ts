@@ -4439,7 +4439,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "pluginConfigTab.toolsHiddenFromModel": "모델 미노출",
   "pluginConfigTab.toolsHiddenNote": "비활성 상태에서는 이 익스텐션의 도구가 모델에 노출되지 않습니다.",
   "pluginConfigTab.backgroundEffectsLabel": "백그라운드 작업",
-  "pluginConfigTab.backgroundEffectsPending": "이 버전에서는 아직 승인되지 않았습니다. 검토하기 전까지 도구 호출 밖의 작업은 거부됩니다.",
+  "pluginConfigTab.backgroundEffectsPending": "아직 승인되지 않았습니다. 검토하기 전까지 도구 호출 밖의 작업은 거부됩니다.",
   "pluginConfigTab.backgroundEffectsReview": "검토",
   "pluginConfigTab.backgroundEffectsError": "백그라운드 작업 승인을 저장하지 못했습니다",
   "pluginConfigTab.contributionTrustLabel": "번들 실행 기능",
@@ -4546,11 +4546,13 @@ export const ko: Record<MessageCatalogKey, string> = {
 
   // pluginUninstallDialog
   "pluginBackgroundEffectsDialog.title": "'{name}'의 백그라운드 작업을 허용할까요?",
-  "pluginBackgroundEffectsDialog.description": "도구 호출 밖에서 이 익스텐션은 아래 작업만 할 수 있습니다. 그 밖의 작업은 거부되며, 익스텐션이 바뀌면 다시 묻습니다.",
+  "pluginBackgroundEffectsDialog.description": "도구 호출 밖에서 이 익스텐션은 아래 작업만 할 수 있습니다. 그 밖의 작업은 거부되며, 선언한 내용이 바뀌면 다시 묻습니다.",
   "pluginBackgroundEffectsDialog.ownStorage": "자체 저장 폴더에 쓰기",
   "pluginBackgroundEffectsDialog.networkLabel": "요청을 보낼 대상",
   "pluginBackgroundEffectsDialog.alertsLabel": "알림 띄우기",
   "pluginBackgroundEffectsDialog.suggestionsLabel": "대화 제안 출처",
+  "pluginBackgroundEffectsDialog.llm": "백그라운드에서 AI 모델 사용 (사용량이 발생할 수 있음)",
+  "pluginBackgroundEffectsDialog.workers": "백그라운드에서 보조 프로세스 실행",
   "pluginBackgroundEffectsDialog.cancelButton": "취소",
   "pluginBackgroundEffectsDialog.allowButton": "허용",
   "pluginUninstallDialog.title": "익스텐션 제거",
