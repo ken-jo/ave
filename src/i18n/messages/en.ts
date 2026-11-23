@@ -4437,7 +4437,7 @@ export const en = {
   "pluginConfigTab.toolsHiddenFromModel": "Hidden from model",
   "pluginConfigTab.toolsHiddenNote": "While inactive, this extension's tools are not exposed to the model.",
   "pluginConfigTab.backgroundEffectsLabel": "Background effects",
-  "pluginConfigTab.backgroundEffectsPending": "Not approved yet. Work outside a tool call is denied until you review it.",
+  "pluginConfigTab.backgroundEffectsPending": "Not approved yet. Outside a tool call it can only write its own storage until you review it.",
   "pluginConfigTab.backgroundEffectsReview": "Review",
   "pluginConfigTab.backgroundEffectsError": "Failed to save the background effects approval",
   "pluginConfigTab.contributionTrustLabel": "Bundled executable capabilities",

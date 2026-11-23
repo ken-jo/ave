@@ -1538,6 +1538,29 @@ describe("HostApi incarnation authority", () => {
     expect(requestAndWait).not.toHaveBeenCalled();
   });
 
+  it.each(["strict", "default", "auto"] as const)("in %s mode writes a plugin's own storage outside a tool call with no card or approval, and nothing past it", async (mode) => {
+    const root = tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-background-own-storage-")));
+    const permissionManager = new PermissionManager(join(root, "permissions.json"));
+    permissionManager.setMode(mode);
+    const requestAndWait = vi.fn(async () => ({ choice: "allow-once" }));
+    const createHostApi = await initAndGetFactory(makeSettingsService(new Map()), { log: vi.fn() }, undefined, { requestAndWait }, {
+      permissionManager, backgroundEffectApprovals: new PluginBackgroundEffectApprovals(),
+    });
+    const manifest = {
+      id: "plugin-a", name: "Sample", version: "1.0.0", entry: "dist/plugin.js", description: "sample", tools: [], config: {}, capabilities: ["external-auth-consumer"],
+      networkAccess: { allowedDomains: ["93.184.216.34"] },
+    } as unknown as PluginManifest;
+    const api = createHostApi("plugin-a", manifest, pluginDataDirIn(root), activeIncarnation(), null, undefined) as unknown as Required<PluginHostApi>;
+    const background = <T>(run: () => Promise<T>) => runWithEffectGateContext({ headless: false, standalone: true, toolName: "background" }, run);
+
+    await background(() => api.storage.writeJson("state.json", { n: 1 }));
+    await background(() => api.storage.write("notes/a.txt", "x"));
+    await expect(background(() => api.storage.readJson("state.json"))).resolves.toEqual({ n: 1 });
+    await expect(background(() => api.storage.write("../escape.txt", "x"))).rejects.toThrow();
+    await expect(background(() => api.hostFetch("https://93.184.216.34/x"))).rejects.toBeInstanceOf(EffectBoundaryDeniedError);
+    expect(requestAndWait).not.toHaveBeenCalled();
+  });
+
   it("reviews the newest live HostApi's background scope, falling back when a candidate is discarded", async () => {
     const approvals = new PluginBackgroundEffectApprovals();
     const createHostApi = await initAndGetFactory(makeSettingsService(new Map()), { log: vi.fn() }, undefined, undefined, {

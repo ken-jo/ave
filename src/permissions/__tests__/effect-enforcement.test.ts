@@ -155,10 +155,22 @@ describe("standalone frames run only the approved background scope", () => {
     const { gate, requests } = makeGate("allow-once");
     const api = enforceMutatingEffects(makeApi(log), { ...deps(gate), ...(standaloneScope ? { standaloneScope } : {}) });
     await expect(runWithEffectGateContext(standalone, () => api.callLlm("hello"))).rejects.toBeInstanceOf(EffectBoundaryDeniedError);
-    if (!standaloneScope) {
-      await expect(runWithEffectGateContext(standalone, () => api.storage.write("a.txt", "x"))).rejects.toBeInstanceOf(EffectBoundaryDeniedError);
-    }
     expect(log).toEqual([]);
+    expect(requests).toHaveLength(0);
+  });
+
+  it("writes its own storage with no approved scope, but never a path just outside it", async () => {
+    const log: string[] = [];
+    const { gate, requests } = makeGate("allow-once");
+    const storage = join(tmpdir(), "effect-storage");
+    const resolveStoragePath = (rel: string) => join(storage, rel);
+    const unapproved = enforceMutatingEffects(makeApi(log), { ...deps(gate), resolveStoragePath, standaloneScope: () => false });
+    await runWithEffectGateContext(standalone, () => unapproved.storage.write("a.txt", "x"));
+    const approved = enforceMutatingEffects(makeApi(log), { ...deps(gate), resolveStoragePath, standaloneScope: () => true });
+    for (const outside of ["../effect-storage-other/a.txt", "../a.txt"]) {
+      await expect(runWithEffectGateContext(standalone, () => approved.storage.write(outside, "x"))).rejects.toBeInstanceOf(EffectBoundaryDeniedError);
+    }
+    expect(log).toEqual(["write"]);
     expect(requests).toHaveLength(0);
   });
 
@@ -177,9 +189,9 @@ describe("standalone frames run only the approved background scope", () => {
     const log: string[] = [];
     const { gate, requests } = makeGate("allow-always");
     const api = enforceMutatingEffects(makeApi(log), { ...deps(gate), standaloneScope: () => false });
-    await runWithEffectGateContext({ headless: false, toolName: "t" }, () => api.storage.write("a.txt", "x"));
-    await expect(runWithEffectGateContext(standalone, () => api.storage.write("a.txt", "x"))).rejects.toBeInstanceOf(EffectBoundaryDeniedError);
-    expect(log).toEqual(["write"]);
+    await runWithEffectGateContext({ headless: false, toolName: "t" }, () => api.callLlm("hello"));
+    await expect(runWithEffectGateContext(standalone, () => api.callLlm("hello"))).rejects.toBeInstanceOf(EffectBoundaryDeniedError);
+    expect(log).toEqual(["llm"]);
     expect(requests).toHaveLength(1);
   });
 });
@@ -264,7 +276,7 @@ describe("standalone frames take only the asks the enable card answers", () => {
     expect(requests).toHaveLength(0);
   });
 
-  it("writes the plugin storage in the app home, but not a protected entry inside it", async () => {
+  it("writes the plugin storage in the app home with or without an approval, but not a protected entry inside it", async () => {
     const log: string[] = [];
     const { gate, requests } = makeGate("allow-once");
     const storage = join(aveHome(), "plugins", "p1", "data", "storage");
@@ -273,9 +285,8 @@ describe("standalone frames take only the asks the enable card answers", () => {
     await expect(runWithEffectGateContext(standalone("storage.write"), () => approved.storage.write(".git/config", "x")))
       .rejects.toBeInstanceOf(EffectBoundaryDeniedError);
     const unapproved = enforceMutatingEffects(makeApi(log), { ...deps(gate), resolveStoragePath: (rel: string) => join(storage, rel), standaloneScope: () => false });
-    await expect(runWithEffectGateContext(standalone("storage.write"), () => unapproved.storage.write("state.json", "x")))
-      .rejects.toBeInstanceOf(EffectBoundaryDeniedError);
-    expect(log).toEqual(["write"]);
+    await runWithEffectGateContext(standalone("storage.write"), () => unapproved.storage.write("state.json", "x"));
+    expect(log).toEqual(["write", "write"]);
     expect(requests).toHaveLength(0);
   });
 

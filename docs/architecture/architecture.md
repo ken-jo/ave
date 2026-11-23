@@ -2278,9 +2278,10 @@ Key boundaries:
   long-lived worker treats EOF on stdin as the order to exit; that, not the
   shutdown sweep, is what keeps workers from outliving a crashed or killed host.
 - extension work outside a tool call (timers, events, startup) carries no
-  invocation token and may use only its **declared background effects**, after
-  the user approves them on the enable card (owner decision 2026-11-23). The
-  manifest fields define them: writes to the extension's own storage; `hostFetch`
+  invocation token. It may write its own storage with no card, and the gate
+  denies any storage path outside that folder. Every other gated effect needs a
+  **declared background effect** the user approved on the enable card (owner
+  decision 2026-11-23). The manifest fields define them: `hostFetch`
   to `networkAccess.allowedDomains`; `raiseAlert` for the declared `alerts.kinds`;
   `triggerConversation` for the declared `alerts.suggestions` sources; `callLlm`
   when `capabilities` lists `background:call-llm`; and `spawnWorker` when it lists

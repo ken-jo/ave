@@ -22,8 +22,6 @@ export interface PluginBackgroundEffects {
   readonly workers: boolean;
 }
 
-const OWN_STORAGE_WRITES = ["storage.write", "storage.writeJson", "storage.rm", "storage.mkdir", "storage.writeEncrypted"] as const;
-
 function canonicalList(values: readonly string[], normalize: (value: string) => string = (value) => value): string[] {
   return [...new Set(values.map(normalize).filter((value) => value.length > 0))].sort();
 }
@@ -39,8 +37,8 @@ export function declaredBackgroundEffects(manifest: PluginManifest): PluginBackg
   };
 }
 
-/** A plugin that declares nothing beyond its own storage gets no card and no background effects. */
-export function hasBackgroundEffects(effects: PluginBackgroundEffects): boolean {
+/** A plugin that declares nothing beyond its own storage gets no card; it still writes that storage. */
+function hasBackgroundEffects(effects: PluginBackgroundEffects): boolean {
   return effects.networkDestinations.length > 0 || effects.alertKinds.length > 0 || effects.suggestionSources.length > 0
     || effects.llm || effects.workers;
 }
@@ -60,7 +58,7 @@ export function backgroundEffectScopeSha256(effects: PluginBackgroundEffects): s
 }
 
 /** The install source the host pinned in the registry; commit and version are left out so an update keeps it. */
-export function backgroundEffectSource(entry: PluginRegistryTrust | undefined): string | null {
+function backgroundEffectSource(entry: PluginRegistryTrust | undefined): string | null {
   const origin = entry?.origin;
   if (origin) return JSON.stringify(["source", origin.sourceOrigin, origin.sourceId, origin.packagePath]);
   // A dev install pins no folder, only the manifest it installed, so each reinstalled manifest asks again.
@@ -93,12 +91,10 @@ export function backgroundEffectSubject(manifest: PluginManifest, entry: PluginR
   };
 }
 
-/** Gated paths a standalone effect may take; every other gated path is denied outside a tool call. */
+/** Gated paths an approval opens outside a tool call; own-storage writes need none, every other gated path is denied. */
 export function backgroundEffectPaths(manifest: PluginManifest): ReadonlySet<string> {
   const effects = declaredBackgroundEffects(manifest);
-  if (!hasBackgroundEffects(effects)) return new Set();
   return new Set<string>([
-    ...OWN_STORAGE_WRITES,
     ...(effects.networkDestinations.length > 0 ? ["hostFetch"] : []),
     ...(effects.alertKinds.length > 0 ? ["raiseAlert"] : []),
     ...(effects.suggestionSources.length > 0 ? ["triggerConversation"] : []),
@@ -107,10 +103,8 @@ export function backgroundEffectPaths(manifest: PluginManifest): ReadonlySet<str
   ]);
 }
 
-/** Whether a standalone effect's own target is one the manifest declares; storage containment stays with the storage resolver. */
+/** Whether a standalone effect's own target is one the manifest declares; the gate keeps own-storage writes inside that storage. */
 export function withinBackgroundScope(effects: PluginBackgroundEffects, methodPath: string, target: string | undefined): boolean {
-  if (!hasBackgroundEffects(effects)) return false;
-  if ((OWN_STORAGE_WRITES as readonly string[]).includes(methodPath)) return true;
   switch (methodPath) {
     case "hostFetch": {
       if (typeof target !== "string") return false;

@@ -73,7 +73,7 @@ describe("the background scope a manifest declares", () => {
       llm: false,
       workers: false,
     });
-    expect([...backgroundEffectPaths(declaring())].sort()).toEqual([...STORAGE_WRITES, "hostFetch", "raiseAlert", "triggerConversation"].sort());
+    expect([...backgroundEffectPaths(declaring())].sort()).toEqual(["hostFetch", "raiseAlert", "triggerConversation"]);
   });
 
   it("names only real gated paths, so every other gated path is denied outside a tool call", () => {
@@ -177,7 +177,7 @@ describe("standalone targets inside the declared scope", () => {
     expect(withinBackgroundScope(effects, "raiseAlert", "other")).toBe(false);
     expect(withinBackgroundScope(effects, "triggerConversation", "overlay:sample-routine")).toBe(true);
     expect(withinBackgroundScope(effects, "triggerConversation", "overlay:other")).toBe(false);
-    expect(withinBackgroundScope(effects, "storage.write", "notes/a.txt")).toBe(true);
+    expect(withinBackgroundScope(effects, "storage.write", "notes/a.txt")).toBe(false);
     expect(withinBackgroundScope(effects, "callLlm", undefined)).toBe(false);
     expect(withinBackgroundScope(effects, "spawnWorker", "worker")).toBe(false);
     expect(withinBackgroundScope(effects, "config.set", "key")).toBe(false);

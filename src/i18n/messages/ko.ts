@@ -4439,7 +4439,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "pluginConfigTab.toolsHiddenFromModel": "모델 미노출",
   "pluginConfigTab.toolsHiddenNote": "비활성 상태에서는 이 익스텐션의 도구가 모델에 노출되지 않습니다.",
   "pluginConfigTab.backgroundEffectsLabel": "백그라운드 작업",
-  "pluginConfigTab.backgroundEffectsPending": "아직 승인되지 않았습니다. 검토하기 전까지 도구 호출 밖의 작업은 거부됩니다.",
+  "pluginConfigTab.backgroundEffectsPending": "아직 승인되지 않았습니다. 검토하기 전까지 도구 호출 밖에서는 자체 저장 공간에만 쓸 수 있습니다.",
   "pluginConfigTab.backgroundEffectsReview": "검토",
   "pluginConfigTab.backgroundEffectsError": "백그라운드 작업 승인을 저장하지 못했습니다",
   "pluginConfigTab.contributionTrustLabel": "번들 실행 기능",

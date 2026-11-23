@@ -714,10 +714,11 @@ Rules:
     refused with `argument-marshalling-rejected`. It never runs with less gating than
     its invocation had.
   - A request without the token runs in the standalone context. It inherits no
-    tool or spawn context and never asks. A gated reverse write or host fetch hop runs
-    only when it falls in the plugin's declared background scope and the user approved
-    that scope at enable for the current install source and scope hash. The scope is
-    the plugin's own storage writes, host fetch to its declared network destinations,
+    tool or spawn context and never asks. A write to the plugin's own storage runs
+    with no approval, and only inside that storage. Any other gated reverse write or
+    host fetch hop runs only when it falls in the plugin's declared background scope
+    and the user approved that scope at enable for the current install source and
+    scope hash. The scope is host fetch to its declared network destinations,
     `raiseAlert` / `triggerConversation` for its declared alert kinds and suggestion
     sources, and `callLlm` / `spawnWorker` when its capabilities list
     `background:call-llm` / `background:spawn-worker` (the

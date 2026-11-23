@@ -6,7 +6,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { ApprovalGate, ApprovalChoice } from "./approval-gate.js";
 import type { PermissionCheckContext, PermissionCheckResult, PermissionManager } from "./permission-manager.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
-import { canonicalizePathForMatch } from "./sensitive-paths.js";
+import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
 import { decidePermission, NO_APPROVER_MESSAGE, type PermissionDecisionRequest } from "./decision-pipeline.js";
 import { issueHostNetworkSubject } from "./host-network-subject.js";
 import type { ApprovalSurface } from "../shared/authorization-required.js";
@@ -243,6 +243,16 @@ function effectPaths(methodPath: string, effect: Effect, args: readonly unknown[
   return paths;
 }
 
+function insideOwnStorage(paths: readonly EffectPath[], resolveStoragePath?: (relativePath: string) => string): boolean {
+  if (!resolveStoragePath || paths.length === 0) return false;
+  const root = caseFoldForMatch(canonicalizePathForMatch(resolveStoragePath(".")));
+  const prefix = root.endsWith("/") ? root : `${root}/`;
+  return paths.every(({ canonical }) => {
+    const path = caseFoldForMatch(canonical);
+    return path === root || path.startsWith(prefix);
+  });
+}
+
 function assertEffectPaths(paths: readonly EffectPath[]): void {
   if (paths.some((path) => canonicalizePathForMatch(path.lexical) !== path.canonical)) {
     throw new Error("Effect target changed during approval");
@@ -370,13 +380,14 @@ export async function gateMutatingEffect(params: {
     ...(remembered === "deny-always" ? { admissionDenial: { code: "effect-denied", reason: "The user denied this exact effect." } } : {}),
   });
   if (ctx.standalone) {
-    // Storage reads need no card but keep admission, floors and rules; remembered grants never widen the approved scope.
+    // Storage reads and own-storage writes need no card but keep admission, floors and rules; remembered grants never widen the approved scope.
     const storageRead = params.effect === "read" && pathReadEffectPaths.has(params.methodPath);
     const ownStorageWrite = params.effect === "write" && params.methodPath.startsWith("storage.");
     const denial = permission.decision === "deny" ? permission.reason
       : permission.decision !== "allow" && (storageRead || !cardAnswersAsk(permission, ownStorageWrite)) ? "needs an approval that work outside a tool call cannot ask for"
-        : !storageRead && await params.standaloneScope?.(params.methodPath, params.target) !== true
-          ? "outside the background effects approved when the plugin was enabled" : undefined;
+        : ownStorageWrite ? insideOwnStorage(paths, params.resolveStoragePath) ? undefined : "outside the plugin's own storage"
+          : !storageRead && await params.standaloneScope?.(params.methodPath, params.target) !== true
+            ? "outside the background effects approved when the plugin was enabled" : undefined;
     if (denial !== undefined) throw new EffectBoundaryDeniedError(params.pluginId, params.methodPath, params.target, "denied", denial);
     assertEffectPaths(paths);
     return;
