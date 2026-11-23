@@ -11,7 +11,7 @@ import {
   LOOPBACK_RANGES,
 } from "@anthropic-ai/sandbox-runtime/dist/sandbox/address.js";
 import { BlockList, isIP } from "node:net";
-import { openFeatureNamespace, writeFileAtomicAtPath, writeFileAtomicAtPathIf } from "../main/storage/feature-namespace.js";
+import { openFeatureNamespace, preparePrivateFileDirectory, writeFileAtomicAtPath } from "../main/storage/feature-namespace.js";
 import { assertAveHomeInputWritable, readAveHomeInput } from "../shared/ave-home-trust.js";
 import { createSerialQueue } from "../lib/with-file-lock.js";
 import { projectRuleRoot } from "./rules/project-rule-files.js";
@@ -20,8 +20,8 @@ import { maxEgressGrantScope, type EgressIdentityStrength } from "../shared/sand
 import { sessionAuthorityWithheld } from "../shared/turn-extension-policy.js";
 import { approvalConversationRoot } from "./user-approval-store.js";
 import {
-  ApprovalPersistenceError,
   assertApprovalPersistenceCurrent,
+  commitApprovalFile,
   refreshApprovalPersistence,
   type ApprovalPersistenceGuard,
 } from "./approval-persistence-guard.js";
@@ -528,15 +528,20 @@ export class EgressGrantStore {
       this.persistent = undefined;
       const current = await this.loadPersistent();
       signal?.throwIfAborted();
-      if (authority) await refreshApprovalPersistence(authority);
       const next = [...mutate(current)];
       const file: GrantFile = { version: FILE_VERSION, grants: next };
       if (authority || signal) {
-        const committed = await writeFileAtomicAtPathIf(this.filePath, `${JSON.stringify(file, null, 2)}\n`,
-          () => signal?.aborted !== true && (authority?.isCurrent() ?? true));
-        if (!committed) {
+        const isCurrent = () => signal?.aborted !== true && (authority?.isCurrent() ?? true);
+        await preparePrivateFileDirectory(this.filePath);
+        try {
           signal?.throwIfAborted();
-          throw new ApprovalPersistenceError();
+          await commitApprovalFile(this.filePath, `${JSON.stringify(file, null, 2)}\n`, {
+            refresh: async () => isCurrent() && (authority === undefined || await authority.refresh()),
+            isCurrent,
+          });
+        } catch (error) {
+          signal?.throwIfAborted();
+          throw error;
         }
       } else if (this.filePath === egressGrantFilePath()) await openFeatureNamespace("permissions").writeJson("shell-egress-hosts.json", file);
       else await writeFileAtomicAtPath(this.filePath, `${JSON.stringify(file, null, 2)}\n`);

@@ -3,7 +3,7 @@ vi.mock("../../shared/windows-configuration-handles.js", async original => (awai
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
 
 // The shell egress grant store (egress-grants.ts), the per-extension worker lists (egress-runtime.ts) and the identity strength that caps the scopes (egress-identity.ts).
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, promises as fs, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -50,6 +50,38 @@ afterEach(() => {
 });
 
 describe("EgressGrantStore", () => {
+  it("refuses a persistent grant when the owner changes during parent directory preparation", async () => {
+    const store = new EgressGrantStore(file);
+    await store.grant("always", ALL, subject, github);
+    const before = readFileSync(file, "utf8");
+    const arrived = deferred<void>();
+    const release = deferred<void>();
+    const mkdir = fs.mkdir;
+    const mkdirSpy = vi.spyOn(fs, "mkdir").mockImplementation(async (...args: Parameters<typeof mkdir>) => {
+      if (args[0] === dir) {
+        arrived.resolve();
+        await release.promise;
+      }
+      return mkdir(...args);
+    });
+    let ownerMatches = true;
+    const refresh = vi.fn(async () => ownerMatches);
+    const save = store.grant("always", ALL, subject, { host: "example.com", port: 443 },
+      undefined, undefined, { refresh, isCurrent: () => true });
+    const outcome = Promise.allSettled([save]);
+    try {
+      await arrived.promise;
+      ownerMatches = false;
+    } finally {
+      release.resolve();
+    }
+    const [result] = await outcome;
+    mkdirSpy.mockRestore();
+    expect(readFileSync(file, "utf8")).toBe(before);
+    expect(result.status).toBe("rejected");
+    expect(refresh).toHaveBeenCalledOnce();
+  });
+
   it("refuses a persistent grant when only the fresh owner probe fails after the queued reread", async () => {
     const store = new EgressGrantStore(file);
     await store.grant("always", ALL, subject, github);
