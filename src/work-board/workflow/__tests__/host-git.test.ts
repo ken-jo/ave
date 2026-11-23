@@ -187,6 +187,13 @@ describe("host git", () => {
     expect(await reasonOf(createHostGit({ env }).drivers(base))).toBe("unavailable");
   });
 
+  it("a driver name the call cannot carry is still told as that, whatever character makes it so", async () => {
+    for (const name of ["a\rb", "a=b"]) {
+      replying({ code: 0, stdout: `filter.${name}.clean\ncat\0` }, { code: 1 });
+      expect(await reasonOf(createHostGit({ env }).drivers(base)), JSON.stringify(name)).toBe("driver-name");
+    }
+  });
+
   it("drivers are read from the configuration every git command reads: a file an inherited variable names for the configuration command alone hides none, and one named through inherited variables is switched off too", async () => {
     const repo = repositoryWith('[filter "own"]\n\tclean = cat\n\trequired = true\n');
     writeFileSync(join(base, "other.cfg"), "");

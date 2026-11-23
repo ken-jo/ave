@@ -125,7 +125,7 @@ export function createHostGit(options: { env?: NodeJS.ProcessEnv; timeoutMs?: nu
     const merges = new Set<string>();
     const named = await listed("--get-regexp", "^(filter|merge)\\..*\\.(clean|smudge|process|required|driver)$");
     for (const [key] of named) {
-      if (!/^(filter|merge)\..*\.(clean|smudge|process|required|driver)$/iu.test(key)) throw unread();
+      if (!/^(filter|merge)\..*\.(clean|smudge|process|required|driver)$/isu.test(key)) throw unread();
       const name = nameOf(key);
       // A name `-c` cannot carry would stay active.
       if (name === "" || /[=\n\r\0]/u.test(name)) throw new HostGitError("driver-name", "a configured driver name cannot be switched off");
@@ -136,7 +136,7 @@ export function createHostGit(options: { env?: NodeJS.ProcessEnv; timeoutMs?: nu
     // their order, each with `true` or `false`: an answer that differs is of another configuration, or is none.
     const requiredFilters = new Set<string>();
     const required = await listed("--type=bool", "--get-regexp", "^filter\\..*\\.required$");
-    const asked = named.map(([key]) => key).filter(key => /^filter\..*\.required$/iu.test(key));
+    const asked = named.map(([key]) => key).filter(key => /^filter\..*\.required$/isu.test(key));
     if (required.length !== asked.length || required.some(([key, value], index) => key !== asked[index] || (value !== "true" && value !== "false"))) throw unread();
     for (const [key, value] of required) {
       if (value === "true") requiredFilters.add(nameOf(key));
