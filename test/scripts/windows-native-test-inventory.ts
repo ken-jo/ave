@@ -250,11 +250,32 @@ const WINDOWS_MODULE = /^src\/(?!.*\/__tests__\/)(?:.*\/)?(?:windows-|win32-)[^/
 const WINDOWS_EXTERNAL = /^(?:@?win32[-/]|winreg$|@microsoft\/mxc-sdk(?:\/|$)|@koromix\/koffi-win32-)/u;
 const WINDOWS_HELPER = /(?:^|[\\/])(?:wxc-exec|ave-(?:job|path-kind|acl-host)|srt-win|icacls|reg)(?:\.exe)?$/iu;
 
+// package.json `imports` such as "#lib/*" map to repository modules.
+const PACKAGE_IMPORTS: Readonly<Record<string, unknown>> =
+  JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).imports ?? {};
+
+function packageImportPath(specifier: string): string | undefined {
+  for (const [key, target] of Object.entries(PACKAGE_IMPORTS)) {
+    if (typeof target !== "string") continue;
+    const mapped = key === specifier ? target
+      : key.endsWith("*") && specifier.startsWith(key.slice(0, -1)) ? target.replace("*", specifier.slice(key.length - 1)) : undefined;
+    if (mapped !== undefined) return posix.normalize(mapped);
+  }
+  return undefined;
+}
+
+/** A `#` specifier that no package import resolves to a known module hides its target. */
+export function hasUnresolvedPackageImport(module: RuntimeModule, sources: ReadonlySet<string> | ReadonlyMap<string, unknown>): boolean {
+  return module.dependencies.some(dependency => dependency.specifier.startsWith("#") && !sources.has(dependency.file));
+}
+
 export function windowsImportGraph(sources: ReadonlyMap<string, string>, replyTimeoutMs = TRANSFORM_REPLY_TIMEOUT_MS) {
   const resolveImport = (file: string, specifier: string): string | undefined => {
-    if (!specifier.startsWith(".") && !specifier.startsWith("@/")) return undefined;
+    if (!specifier.startsWith(".") && !specifier.startsWith("@/") && !specifier.startsWith("#")) return undefined;
     const path = specifier.startsWith("@/") ? posix.join("src", specifier.slice(2))
-      : posix.normalize(posix.join(posix.dirname(file), specifier));
+      : specifier.startsWith("#") ? packageImportPath(specifier)
+        : posix.normalize(posix.join(posix.dirname(file), specifier));
+    if (path === undefined) return undefined;
     return [path, path.replace(/\.js$/, ".ts"), path.replace(/\.js$/, ".tsx"), path.replace(/\.mjs$/, ".mts"),
       path.replace(/\.cjs$/, ".cts"), ...[".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"]
         .flatMap(extension => [path + extension, `${path}/index${extension}`])].find(candidate => sources.has(candidate));

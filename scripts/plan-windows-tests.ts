@@ -3,7 +3,7 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, posix, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
-  callsReaderWithComputedPath, hasUnverifiedWindowsRuntimeInput, isInventorySource, readWindowsSources, windowsImportGraph, windowsRuntimeInputIndex,
+  callsReaderWithComputedPath, hasUnresolvedPackageImport, hasUnverifiedWindowsRuntimeInput, isInventorySource, readWindowsSources, windowsImportGraph, windowsRuntimeInputIndex,
 } from "../test/scripts/windows-native-test-inventory.js";
 import { WINDOWS_TEST_LISTS, WINDOWS_TEST_SHARDS, windowsTestFiles } from "./run-windows-test-list.mjs";
 import { parseGitRawDiff } from "./hooks/pre-push-ref-updates.mjs";
@@ -77,7 +77,8 @@ function affectedFiles(
     scope.readers?.length ? [[reader, new Set(scope.readers)] as const] : []);
   const unbounded = (file: string, tokens: readonly string[]) => {
     const module = graph.get(file);
-    if (module && pathReaders.some(([reader, names]) => callsReaderWithComputedPath(module, reader, names))) return true;
+    if (module && (hasUnresolvedPackageImport(module, graph)
+      || pathReaders.some(([reader, names]) => callsReaderWithComputedPath(module, reader, names)))) return true;
     return auditedInputs(file) === undefined && (inputScopes[file] !== undefined || hasUnverifiedWindowsRuntimeInput(tokens));
   };
   const indexInput = windowsRuntimeInputIndex(sources);

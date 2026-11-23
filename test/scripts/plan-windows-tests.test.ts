@@ -145,6 +145,18 @@ describe("Windows regression planning", () => {
     expect(selected(result)).toEqual([...core(), permissionSuite].sort());
   });
 
+  it("follows a package.json #lib import and fails closed on an unmapped # specifier", () => {
+    const target = "src/lib/test-package-import.ts";
+    const run = (suiteSource: string, file: string) => selected(planWindowsTests({
+      event: "pull_request", changes: [modified(file)], inventories,
+      readSources: () => new Map([[permissionSuite, suiteSource], [target, "export const value = 1;"], [changed, "export {};"]]),
+    }));
+    // The suite reaches the module only through the "#lib/*" package import.
+    expect(run('import { value } from "#lib/test-package-import";', target)).toEqual([...core(), permissionSuite].sort());
+    expect(run('import { value } from "#lib/test-package-import";', changed)).toEqual(core());
+    expect(run('import { value } from "#unmapped/test-package-import";', changed)).toEqual([...core(), permissionSuite].sort());
+  });
+
   it("does not count a literal dynamic import as a computed module load", () => {
     const runtimeSources = () => new Map([[permissionSuite, 'await import("../other.js");'], [changed, "export const value = 1;"]]);
     const result = planWindowsTests({ event: "pull_request", changes: [modified(changed)], inventories, readSources: runtimeSources });
