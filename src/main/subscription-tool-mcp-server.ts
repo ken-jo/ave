@@ -1,6 +1,6 @@
 // Expose only tools/list and tools/call through the ephemeral authenticated loopback bridge; this child never executes tools. Main validates against the
 // active schema set and emits at most one sanitized call per provider round.
-import "./windows-program-lookup.js";
+import "./bare-program-lookup.js";
 import { request as httpRequest, type RequestOptions } from "node:http";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";

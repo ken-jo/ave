@@ -1,4 +1,4 @@
-import "../../src/main/windows-program-lookup.js";
+import "../../src/main/bare-program-lookup.js";
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import path from "node:path";

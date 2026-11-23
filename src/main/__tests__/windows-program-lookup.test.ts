@@ -10,7 +10,7 @@ import { setProcessPlatform } from "../../__tests__/support/process-platform.js"
 const SWITCH = "NoDefaultCurrentDirectoryInExePath";
 const platform = process.platform;
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
-const LOOKUP = join(root, "src", "main", "windows-program-lookup.ts");
+const LOOKUP = join(root, "src", "main", "bare-program-lookup.ts");
 let saved: string | undefined;
 
 beforeEach(() => {
@@ -26,13 +26,13 @@ afterEach(() => {
 
 it("on Windows the host sets the variable that keeps the current folder out of a bare program name's lookup", async () => {
   setProcessPlatform("win32");
-  await import("../windows-program-lookup.js");
+  await import("../bare-program-lookup.js");
   expect(process.env[SWITCH]).toBe("1");
 });
 
 it("elsewhere the environment is left as it is", async () => {
   setProcessPlatform("linux");
-  await import("../windows-program-lookup.js");
+  await import("../bare-program-lookup.js");
   expect(process.env[SWITCH]).toBeUndefined();
 });
 

@@ -1,4 +1,4 @@
-import "../main/windows-program-lookup.js";
+import "../main/bare-program-lookup.js";
 import { Socket } from "node:net";
 import { bootstrapMxcSupervisor } from "./mxc-supervisor-bootstrap.js";
 import { MxcExtensionChannel } from "./mxc-extension-channel.js";

@@ -1,4 +1,4 @@
-import "../main/windows-program-lookup.js";
+import "../main/bare-program-lookup.js";
 import {
   PREVIEW_DOCUMENT_LIMITS,
   isPreviewTableWindow,

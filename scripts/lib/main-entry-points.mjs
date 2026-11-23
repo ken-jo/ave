@@ -1,7 +1,7 @@
 import { HEADLESS_CHILD_ENTRY_POINTS } from "./headless-bundle-boundary.mjs";
 
 /** Every entry of the host's esbuild graph but the verification probe, as paths from the repository root. Each imports
- * src/main/windows-program-lookup.ts before any other module. */
+ * src/main/bare-program-lookup.ts before any other module. */
 export const MAIN_ENTRY_POINTS = Object.freeze({
   main: "src/main.ts",
   headless: "src/headless.ts",
