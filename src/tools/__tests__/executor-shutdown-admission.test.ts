@@ -18,6 +18,9 @@ afterEach(async () => {
   for (const root of roots.splice(0)) await cleanupTmpDir(root);
 });
 
+/** Every row that ends an invocation; each terminal path must leave exactly one. */
+const terminalRows = (all: Array<Record<string, unknown>>, toolUseId: string) => all.filter((row) => row.toolUseId === toolUseId && row.decision !== "ask");
+
 /** Holds the batch inside one tool's result callback, as a pending turn journal would. */
 function holdResultOf(toolUseId: string) {
   let markDelivered!: () => void;
@@ -119,9 +122,10 @@ describe("ToolExecutor admission across the quit seal", () => {
     expect(result.is_error).toBe(true);
     expect(executes[0]).not.toHaveBeenCalled();
     expect(hostShutdownRows(rowsAtClose, "tu-queued-0")).toHaveLength(1);
+    expect(terminalRows(rowsAtClose, "tu-queued-0")).toHaveLength(1);
     // The host refused the call; the keyboard origin of the invocation does not carry over.
     expect(hostShutdownRows(rows(), "tu-queued-0")).toEqual([expect.objectContaining({ trustOrigin: "unknown" })]);
-    expect(rows().filter((row) => row.toolUseId === "tu-queued-0" && row.decision !== "ask")).toHaveLength(1);
+    expect(terminalRows(rows(), "tu-queued-0")).toHaveLength(1);
   });
 
   it("records a tool the seal interrupts mid-execution as a host-shutdown deny without the invocation origin", async () => {
@@ -140,6 +144,7 @@ describe("ToolExecutor admission across the quit seal", () => {
     expect(result.is_error).toBe(true);
     expect(executes[0]).toHaveBeenCalledOnce();
     expect(hostShutdownRows(rowsAtClose, "tu-queued-0")).toEqual([expect.objectContaining({ trustOrigin: "unknown" })]);
+    expect(terminalRows(rowsAtClose, "tu-queued-0")).toHaveLength(1);
   });
 
   it("keeps a user's answered deny when the seal lands before the executor resumes", async () => {
@@ -157,7 +162,7 @@ describe("ToolExecutor admission across the quit seal", () => {
     expect(executes[0]).not.toHaveBeenCalled();
     expect(hostShutdownRows(rowsAtClose, "tu-queued-0")).toEqual([]);
     // The user's row lands before the audit closes.
-    expect(rowsAtClose.filter((row) => row.toolUseId === "tu-queued-0" && row.decision === "deny")).toEqual([expect.objectContaining({
+    expect(terminalRows(rowsAtClose, "tu-queued-0")).toEqual([expect.objectContaining({
       denyReasons: [{ reason: "user denied approval request", source: "tool-executor" }],
       trustOrigin: "user-keyboard",
     })]);
@@ -175,6 +180,7 @@ describe("ToolExecutor admission across the quit seal", () => {
     expect(result.is_error).toBe(true);
     expect(executes[0]).not.toHaveBeenCalled();
     expect(hostShutdownRows(rowsAtClose, "tu-queued-0")).toEqual([expect.objectContaining({ trustOrigin: "unknown" })]);
+    expect(terminalRows(rowsAtClose, "tu-queued-0")).toHaveLength(1);
   });
 
   it.each(["executeAll", "executeConversationBatch"] as const)(
@@ -211,7 +217,9 @@ describe("ToolExecutor admission across the quit seal", () => {
         results = await running;
       }
       expect(hostShutdownRows(rowsAtClose, "tu-queued-1")).toHaveLength(1);
+      expect(terminalRows(rowsAtClose, "tu-queued-1")).toHaveLength(1);
       expect(hostShutdownRows(rows(), "tu-queued-1")).toHaveLength(1);
+      expect(terminalRows(rows(), "tu-queued-1")).toHaveLength(1);
       expect(executes[1]).not.toHaveBeenCalled();
       expect(results.map((result) => [result.tool_use_id, result.is_error === true])).toEqual([
         ["tu-queued-0", false],
@@ -327,6 +335,7 @@ describe("ToolExecutor admission across the quit seal", () => {
     expect(acquireExact).toHaveBeenCalledOnce();
     expect(executes[1]).not.toHaveBeenCalled();
     expect(hostShutdownRows(rowsAtClose, "tu-queued-1")).toHaveLength(1);
+    expect(terminalRows(rowsAtClose, "tu-queued-1")).toHaveLength(1);
     expect((await running)[1].is_error).toBe(true);
     expect(onToolEnd).toHaveBeenCalledWith("queued_probe_1", expect.any(String), true,
       expect.objectContaining({ source: "plugin", category: "write", pluginId: "probe-plugin" }), undefined, expect.any(Number));
@@ -422,6 +431,7 @@ describe("ToolExecutor admission across the quit seal", () => {
     expect(results[1]).toMatchObject({ tool_use_id: "tu-queued-1", is_error: true, content: cancelled });
     // The claim queues the row inside the seal, so the close drains it.
     expect(hostShutdownRows(rows(), "tu-queued-1")).toHaveLength(1);
+    expect(terminalRows(rows(), "tu-queued-1")).toHaveLength(1);
   });
 
   it("starts a claimed tool in the batch's async context when the seal comes from outside it", async () => {
@@ -454,6 +464,7 @@ describe("ToolExecutor admission across the quit seal", () => {
     }
     expect(executes[1]).not.toHaveBeenCalled();
     expect(hostShutdownRows(rowsAtClose, "tu-queued-1")).toEqual([expect.objectContaining({ tool: "queued_probe_1" })]);
+    expect(terminalRows(rowsAtClose, "tu-queued-1")).toHaveLength(1);
     expect(plainRows().filter((row) => JSON.stringify(row.toolCalls).includes("tu-queued-1"))).toEqual([expect.objectContaining({
       sessionId: "sess-batch-context",
       input: JSON.stringify({ value: "1" }),
@@ -475,7 +486,10 @@ describe("ToolExecutor admission across the quit seal", () => {
       await expect(ledger.closeToolInvocationAudit(async () => { rowsAtClose = rows(); await audit.close(); })).resolves.toBe(3);
       const results = await running;
       for (const execute of executes) expect(execute).not.toHaveBeenCalled();
-      for (const toolUse of toolUses) expect(hostShutdownRows(rowsAtClose, toolUse.id)).toHaveLength(1);
+      for (const toolUse of toolUses) {
+        expect(hostShutdownRows(rowsAtClose, toolUse.id)).toHaveLength(1);
+        expect(terminalRows(rowsAtClose, toolUse.id)).toHaveLength(1);
+      }
       expect(results.map((result) => [result.tool_use_id, result.content])).toEqual(toolUses.map((toolUse) => [toolUse.id, cancelled]));
     },
   );
@@ -504,7 +518,9 @@ describe("ToolExecutor admission across the quit seal", () => {
       expect(executes[1]).not.toHaveBeenCalled();
       expect(executes[2]).not.toHaveBeenCalled();
       expect(hostShutdownRows(rowsAtClose, "tu-queued-1")).toHaveLength(1);
+      expect(terminalRows(rowsAtClose, "tu-queued-1")).toHaveLength(1);
       expect(hostShutdownRows(rowsAtClose, "tu-queued-2")).toHaveLength(1);
+      expect(terminalRows(rowsAtClose, "tu-queued-2")).toHaveLength(1);
       expect(results.map((result) => result.content)).toEqual(["done 0", cancelled, cancelled]);
     },
   );
@@ -535,6 +551,7 @@ describe("ToolExecutor admission across the quit seal", () => {
     expect(handler).not.toHaveBeenCalled();
     expect(executes[1]).not.toHaveBeenCalled();
     expect(hostShutdownRows(rowsAtClose, "tu-queued-1")).toHaveLength(1);
+    expect(terminalRows(rowsAtClose, "tu-queued-1")).toHaveLength(1);
     expect(outcome.outcome).toBe("completed");
     if (outcome.outcome !== "completed") throw new Error("Expected a completed batch");
     expect(outcome.results.map((result) => [result.tool_use_id, result.content])).toEqual([
@@ -602,7 +619,6 @@ describe("ToolExecutor admission across the quit seal", () => {
 });
 
 describe("terminal rows of early refusals", () => {
-  const terminal = (all: Array<Record<string, unknown>>, toolUseId: string) => all.filter((row) => row.toolUseId === toolUseId && row.decision !== "ask");
 
   it("writes the host's categorized row before close for a generation acquisition pending when admission closes", async () => {
     const coordinator = new PluginGenerationCoordinator<{ runtime: object }>();
@@ -637,7 +653,7 @@ describe("terminal rows of early refusals", () => {
     await held;
     expect(result.is_error).toBe(true);
     expect(executes[0]).not.toHaveBeenCalled();
-    expect(terminal(rowsAtClose, "tu-queued-0")).toEqual([expect.objectContaining({ decision: "deny", category: "write", trustOrigin: "unknown" })]);
+    expect(terminalRows(rowsAtClose, "tu-queued-0")).toEqual([expect.objectContaining({ decision: "deny", category: "write", trustOrigin: "unknown" })]);
   });
 
   it("writes an unknown tool's refusal with an unknown category", async () => {
@@ -646,7 +662,7 @@ describe("terminal rows of early refusals", () => {
       sessionId: "sess-missing", permissionContext: userPermissionContext(),
     });
     expect(result.is_error).toBe(true);
-    expect(terminal(rows(), "tu-missing")).toEqual([expect.objectContaining({ decision: "deny", category: "unknown", tool: "missing_probe" })]);
+    expect(terminalRows(rows(), "tu-missing")).toEqual([expect.objectContaining({ decision: "deny", category: "unknown", tool: "missing_probe" })]);
   });
 
   it("writes a changed MCP owner's refusal with the tool's category", async () => {
@@ -656,7 +672,7 @@ describe("terminal rows of early refusals", () => {
     });
     expect(result).toMatchObject({ is_error: true, content: expect.stringContaining("MCP tool owner changed") });
     expect(executes[0]).not.toHaveBeenCalled();
-    expect(terminal(rows(), "tu-queued-0")).toEqual([expect.objectContaining({ decision: "deny", category: "write" })]);
+    expect(terminalRows(rows(), "tu-queued-0")).toEqual([expect.objectContaining({ decision: "deny", category: "write" })]);
   });
 });
 
@@ -679,7 +695,8 @@ describe("forced shutdown with parked executors", () => {
     for (const toolUse of toolUses) {
       expect(rowsAtClose.filter((row) => row.toolUseId === toolUse.id && row.decision === "ask")).toHaveLength(1);
       expect(hostShutdownRows(rowsAtClose, toolUse.id)).toEqual([expect.objectContaining({ trustOrigin: "unknown", category: "write" })]);
-      expect(rows().filter((row) => row.toolUseId === toolUse.id && row.decision !== "ask")).toHaveLength(1);
+      expect(terminalRows(rowsAtClose, toolUse.id)).toHaveLength(1);
+      expect(terminalRows(rows(), toolUse.id)).toHaveLength(1);
     }
     await expect(ledger.closeToolInvocationAudit(async () => {})).resolves.toBe(0);
   });
