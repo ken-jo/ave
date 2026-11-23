@@ -1737,26 +1737,6 @@ async function runToolInvocationAttempt(
           };
         }
 
-        // The directory prompt is also a local approval boundary. A revoked
-        // paired share may not retain even this invocation-scoped expansion.
-        if (!isRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)) {
-          const reason = "remote-controller-revoked";
-          const msg = t("be_executor.permBlockDeny", {
-            name: toolUse.name,
-            source,
-            trust,
-            reason,
-          });
-          const durationMs = Date.now() - startTime;
-          const blockedPermission: PermissionCheckResult = {
-            decision: "deny", provenance: RULE_PROVENANCE,
-            reason,
-            };
-          emitToolStart(callbacks, toolUse.name, finalInput, meta);
-          callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
-          await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, blockedPermission, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
-          return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs }) };
-        }
         // Every directory deny, from either card, ends here with exactly one terminal row.
         const denyDirectory = async (denied: PermissionCheckResult, msg: string) => {
           const durationMs = Date.now() - startTime;
@@ -1787,6 +1767,26 @@ async function runToolInvocationAttempt(
             })
           );
           return await denyDirectory(hostFailure?.permission ?? refusal(dirLayerResult.reason, answeredApprovalProvenance(decision)), msg);
+        }
+        // A settled deny above stays the answerer's; an affirmative answer is still a local approval boundary. A revoked
+        // paired share may not retain even this invocation-scoped expansion.
+        if (!isRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)) {
+          const reason = "remote-controller-revoked";
+          const msg = t("be_executor.permBlockDeny", {
+            name: toolUse.name,
+            source,
+            trust,
+            reason,
+          });
+          const durationMs = Date.now() - startTime;
+          const blockedPermission: PermissionCheckResult = {
+            decision: "deny", provenance: RULE_PROVENANCE,
+            reason,
+            };
+          emitToolStart(callbacks, toolUse.name, finalInput, meta);
+          callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
+          await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, blockedPermission, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
+          return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs }) };
         }
         if (directoryPolicyEpoch !== manager.getPolicyEpoch()) {
           const denied: PermissionCheckResult = { decision: "deny", reason: "Permission policy changed during approval.", provenance: RULE_PROVENANCE };

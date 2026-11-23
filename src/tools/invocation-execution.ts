@@ -11,7 +11,7 @@ import type { PermissionEvaluationContext } from "../permissions/evaluation-cont
 import type { ApprovalPurposeSuggestion } from "../shared/permission-review-status.js";
 import { classifyApprovalRuleVerdict } from "./pipeline/approval-memory-skip.js";
 import { createPluginReadjudicationBasis } from "../permissions/plugin-readjudication-evidence.js";
-import { abortSupersedesApprovalDecision, answeredPermission, approvalFailureOutcome, hostShutdownDenial, refusal } from "./pipeline/approval-outcome.js";
+import { abortSupersedesApprovalDecision, answeredPermission, approvalFailureOutcome, hostShutdownDenial, isSettledRefusal, refusal } from "./pipeline/approval-outcome.js";
 import { hostTerminalApprovalFacts } from "./pipeline/host-terminal-approval.js";
 import { disposableContainerCapability, resolveReviewerSandboxCapability } from "../permissions/sandbox-capability.js";
 import type { ToolOutputArtifactInfo, ToolOutputCapture } from "../shared/tool-output-artifact.js";
@@ -1082,6 +1082,12 @@ export async function executeAuthorizedToolInvocation(
     let decision = await services.approvalGate!.requestAndWait(liveRequest);
     lateApprovalDecision = decision;
     if (abortSupersedesApprovalDecision(abortSignal, decision)) abortSignal?.throwIfAborted();
+    // A settled refusal is terminal before the refreshed policy is consulted.
+    if (isSettledRefusal(decision)) {
+      const failure = approvalFailureOutcome(decision, toolUse.name);
+      permissionResult = failure?.permission ?? refusal(request.reason, answeredApprovalProvenance(decision));
+      throw new Error(failure?.content ?? request.reason);
+    }
     const currentEpoch = services.permissionManager?.getPolicyEpoch();
     if (lateApprovalPolicyEpoch !== currentEpoch &&
         (lateApprovalPolicyEpoch === undefined || currentEpoch === undefined ||

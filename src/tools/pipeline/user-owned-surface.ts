@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { ApprovalDecision, ApprovalGate, ApprovalRequestInput } from "../../permissions/approval-gate.js";
 import { isHostApprovalRejectedDecision, RULE_PROVENANCE, type RuleProvenance } from "../../permissions/approval-gate.js";
 import type { PermissionCheckResult, PermissionManager } from "../../permissions/permission-manager.js";
-import { abortSupersedesApprovalDecision } from "./approval-outcome.js";
+import { abortSupersedesApprovalDecision, isSettledRefusal } from "./approval-outcome.js";
 
 export function userOwnedSurfaceCardFacts(
   permission: PermissionCheckResult,
@@ -56,6 +56,8 @@ export async function resolveUserOwnedSurfaceApproval(input: {
   };
   decision = await gate.requestAndWait(fallback);
   if (abortSupersedesApprovalDecision(request.abortSignal, decision)) request.abortSignal?.throwIfAborted();
+  // A settled refusal is terminal: neither a policy change nor the refreshed permission reopens it.
+  if (isSettledRefusal(decision)) return { permission, decision };
   if (epoch !== manager.getPolicyEpoch() && !gate.allowsPolicyTransition(decision, epoch, manager.getPolicyEpoch())) throw new Error("Permission policy changed while approval was pending.");
   permission = manager.recheckPermission(permission);
   if (permission.decision === "deny") throw new Error(permission.reason);

@@ -489,4 +489,58 @@ describe("one terminal row per surface invocation", () => {
       expect(terminalRows(f.audit)).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "user-keyboard" })]);
     });
   });
+
+  it("keeps a late Deny on the second card terminal after the live surface preference turns to allow", async () => {
+    const f = await fixture({ surfaceChoice: "auto" });
+    await runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "late-deny-after-preference-turn" }, async () => {
+      const pending = f.run();
+      await f.reached;
+      await f.pause();
+      f.manager.setUserOwnedSurfaceChoice(SESSION_ID, "host-terminal", "ask");
+      f.release();
+      await vi.waitFor(() => expect(f.cards).toHaveLength(1));
+      f.approve(f.cards[0], true);
+      await vi.waitFor(() => expect(f.cards).toHaveLength(2));
+      f.manager.setUserOwnedSurfaceChoice(SESSION_ID, "host-terminal", "allow");
+      f.deny(f.cards[1]);
+      const [result] = await pending;
+      expect(result.is_error).toBe(true);
+      expect(f.typed).toEqual([]);
+      expect(terminalRows(f.audit)).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "user-keyboard" })]);
+    });
+  });
+
+  it("keeps a Deny on the ordinary card terminal when the policy moves while it is open", async () => {
+    const f = await fixture({ exactRule: false, holdFinalizer: false });
+    await runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "deny-across-policy-turn" }, async () => {
+      const pending = f.run();
+      await vi.waitFor(() => expect(f.cards).toHaveLength(1));
+      const epoch = f.manager.getPolicyEpoch();
+      vi.spyOn(f.manager, "getPolicyEpoch").mockReturnValue(epoch + 1);
+      f.deny(f.cards[0]);
+      const [result] = await pending;
+      expect(result.is_error).toBe(true);
+      expect(f.typed).toEqual([]);
+      expect(terminalRows(f.audit)).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "user-keyboard" })]);
+    });
+  });
+
+  it("keeps a late Deny on the first card terminal when the policy moves while it is open", async () => {
+    const f = await fixture({ surfaceChoice: "auto" });
+    await runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "late-deny-across-policy-turn" }, async () => {
+      const pending = f.run();
+      await f.reached;
+      await f.pause();
+      f.manager.setUserOwnedSurfaceChoice(SESSION_ID, "host-terminal", "ask");
+      f.release();
+      await vi.waitFor(() => expect(f.cards).toHaveLength(1));
+      const epoch = f.manager.getPolicyEpoch();
+      vi.spyOn(f.manager, "getPolicyEpoch").mockReturnValue(epoch + 1);
+      f.deny(f.cards[0]);
+      const [result] = await pending;
+      expect(result.is_error).toBe(true);
+      expect(f.typed).toEqual([]);
+      expect(terminalRows(f.audit)).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "user-keyboard" })]);
+    });
+  });
 });

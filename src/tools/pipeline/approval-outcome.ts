@@ -36,6 +36,11 @@ export function hostApprovalDenialReason(decision: ApprovalDecision): string | u
   return expired ? "approval request expired" : "approval rejected by host";
 }
 
+/** A card answer that is not an allow, or that the host rejected: terminal whatever the policy says afterwards. */
+export function isSettledRefusal(decision: ApprovalDecision): boolean {
+  return !decision.choice.startsWith("allow") || isHostApprovalRejectedDecision(decision);
+}
+
 /** An abort ends the call unless it is the quit seal landing after a person already answered deny: that deny stays theirs. */
 export function abortSupersedesApprovalDecision(
   abortSignal: AbortSignal | undefined,

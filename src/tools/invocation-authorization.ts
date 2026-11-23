@@ -38,7 +38,7 @@ import {
 } from "../shared/chat-origin.js";
 import type { ApprovalPurposeSuggestion } from "../shared/permission-review-status.js";
 import { t } from "../i18n/index.js";
-import { abortSupersedesApprovalDecision, answeredPermission, approvalFailureOutcome, refusal } from "./pipeline/approval-outcome.js";
+import { abortSupersedesApprovalDecision, answeredPermission, approvalFailureOutcome, isSettledRefusal, refusal } from "./pipeline/approval-outcome.js";
 import { createLogger } from "../lib/logger.js";
 import { AveHomeConfigurationRefusedWriteError } from "../shared/ave-home.js";
 import {
@@ -1167,14 +1167,16 @@ export async function authorizeToolInvocation(
         // share revoke that won while the modal was visible must beat the
         // newly returned allow-once before it can reach the execution stage.
         const currentPolicyEpoch = services.permissionManager?.getPolicyEpoch();
-        const policyChanged = approvalPolicyEpoch !== currentPolicyEpoch;
+        // A settled refusal is terminal; a newer policy or a revoked share invalidates only an affirmative answer.
+        const affirmative = !isSettledRefusal(decision);
+        const policyChanged = affirmative && approvalPolicyEpoch !== currentPolicyEpoch;
         const sameCardPolicyTransition = policyChanged && currentPolicyEpoch !== undefined &&
           services.approvalGate.allowsPolicyTransition(decision, approvalPolicyEpoch!, currentPolicyEpoch);
         // A saved rule decides this pending action too; a card answer cannot override its deny.
         if (sameCardPolicyTransition) permissionResult = checkCurrentPermission();
         const approvalInvalidationReason = policyChanged && !sameCardPolicyTransition
           ? "Permission policy changed while approval was pending"
-          : !isRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)
+          : affirmative && !isRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)
             ? "remote-controller-revoked"
             : sameCardPolicyTransition && permissionResult.decision === "deny" ? permissionResult.reason : undefined;
         if (approvalInvalidationReason !== undefined) {
