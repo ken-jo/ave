@@ -2,7 +2,9 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { isInventorySource, readWindowsSources, windowsImportGraph } from "../test/scripts/windows-native-test-inventory.js";
+import {
+  hasUnverifiedWindowsRuntimeInput, isInventorySource, readWindowsSources, windowsImportGraph, windowsRuntimeInputIndex,
+} from "../test/scripts/windows-native-test-inventory.js";
 import { WINDOWS_TEST_LISTS, WINDOWS_TEST_SHARDS, windowsTestFiles } from "./run-windows-test-list.mjs";
 
 const ALWAYS_RUN = [
@@ -42,19 +44,35 @@ export function pullRequestWindowsChanges(root: string, base: string, head: stri
   }
 }
 
-function affectedFiles(sources: ReadonlyMap<string, string>, changed: Iterable<string>): Set<string> {
+function affectedFiles(sources: ReadonlyMap<string, string>, changed: ReadonlySet<string>, eligible: ReadonlySet<string>) {
+  const graph = windowsImportGraph(sources);
+  const indexInput = windowsRuntimeInputIndex(sources);
   const importers = new Map<string, string[]>();
-  for (const [file, { dependencies }] of windowsImportGraph(sources)) {
-    // Both actual and mocked callers are relevant when the dependency changes.
-    for (const dependency of dependencies) {
-      const parents = importers.get(dependency.file) ?? [];
+  const forward = new Map<string, Set<string>>();
+  const directInputs = new Set<string>();
+  for (const [file, { dependencies, tokens }] of graph) {
+    const inputs = indexInput(tokens);
+    if (eligible.has(file) && [...inputs].some(input => changed.has(input))) directInputs.add(file);
+    // Mocked importers and code consumed outside module loading are relevant.
+    const targets = new Set([...dependencies.map(dependency => dependency.file), ...inputs]);
+    forward.set(file, targets);
+    for (const target of targets) {
+      const parents = importers.get(target) ?? [];
       parents.push(file);
-      importers.set(dependency.file, parents);
+      importers.set(target, parents);
     }
+  }
+  const reachable = new Set(eligible);
+  for (const file of reachable) {
+    const module = graph.get(file);
+    if (module && hasUnverifiedWindowsRuntimeInput(module.tokens)) {
+      throw new Error(`a runtime source input in ${file} could not be bounded`);
+    }
+    for (const target of forward.get(file) ?? []) reachable.add(target);
   }
   const affected = new Set(changed);
   for (const file of affected) for (const importer of importers.get(file) ?? []) affected.add(importer);
-  return affected;
+  return { affected, directInputs };
 }
 
 export function assertWindowsCoverage(required: Iterable<string>, planned: Iterable<string>): void {
@@ -74,19 +92,22 @@ export function planWindowsTests({
   const eligible = new Set(Object.values(inventories).flat());
   for (const file of ALWAYS_RUN) if (!eligible.has(file)) throw new Error(`Missing Windows core test: ${file}`);
   const global = changes?.find(({ file }) => GLOBAL_INPUT.test(file));
+  const fixture = changes?.find(({ file }) => /\/__tests__\/fixtures\//u.test(file));
   const unknown = changes?.find(({ file, status }) => !/^[AM]$/u.test(status) || !isInventorySource(file));
   let reason = event !== "pull_request" ? `full for ${event}`
     : changes === undefined ? "full because the PR diff is unavailable"
     : global ? `full because ${global.file} affects CI globally`
+    : fixture ? `full because ${fixture.file} may be launched as an executable fixture`
     : unknown ? `full because ${unknown.file} cannot be traced in the current import graph` : "affected imports and Windows core";
   let affected: Set<string> | undefined;
+  let directInputs = new Set<string>();
   if (reason === "affected imports and Windows core" && changes !== undefined) {
     try {
       if (changes.length === 0) affected = new Set();
       else {
         const sources = readSources();
         if (changes.some(({ file }) => !sources.has(file))) throw new Error("PR source is absent from the checkout");
-        affected = affectedFiles(sources, changes.map(({ file }) => file));
+        ({ affected, directInputs } = affectedFiles(sources, new Set(changes.map(({ file }) => file)), eligible));
       }
     } catch (error) {
       reason = `full because the import graph is unavailable (${error instanceof Error ? error.message.split("\n")[0] : String(error)})`;
@@ -99,7 +120,8 @@ export function planWindowsTests({
     [WINDOWS_TEST_LISTS[1]]: inventories[WINDOWS_TEST_LISTS[1]].filter(file => required.has(file)),
     [WINDOWS_TEST_LISTS[2]]: inventories[WINDOWS_TEST_LISTS[2]].filter(file => required.has(file)),
   };
-  assertWindowsCoverage(required, Object.values(lists).flat());
+  // Direct runtime witnesses are recorded before graph traversal.
+  assertWindowsCoverage([...required, ...directInputs], Object.values(lists).flat());
   return { mode: affected === undefined ? "full" : "affected", reason, lists,
     affectedCount: affected === undefined ? 0 : changedTests.length, shards: balanceWindowsTests(required, durations) };
 }

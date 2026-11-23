@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { assertWindowsCoverage, planWindowsTests, pullRequestWindowsChanges, windowsChecksRequired } from "../../scripts/plan-windows-tests.js";
 import { plannedWindowsFiles, WINDOWS_TEST_LISTS, WINDOWS_TEST_SHARDS, windowsTestFiles } from "../../scripts/run-windows-test-list.mjs";
+import { windowsImportGraph, windowsRuntimeInputIndex } from "./windows-native-test-inventory.js";
 
 const [permission, native, application] = WINDOWS_TEST_LISTS;
 const inventories = {
@@ -50,6 +51,55 @@ describe("Windows regression planning", () => {
     expect(result.mode).toBe("affected");
     expect(result.lists[permission]).toContain(permissionSuite);
     expect(result.lists[native]).toEqual(plan([]).lists[native]);
+  });
+
+  it.each([
+    'import { spawn as run } from "node:child_process"; run(process.execPath, ["--import=tsx", "../test-change.ts"]);',
+    'import { execFile as run } from "node:child_process"; run("node", ["--import=tsx", "../test-change.js"]);',
+    'import { buildSync as bundle } from "esbuild"; bundle({ entryPoints: ["src/shared/test-change.ts"], bundle: true });',
+    'import { readFileSync as read } from "node:fs"; read(new URL("../test-change.ts", import.meta.url), "utf8");',
+    'import { existsSync, readFileSync, statSync } from "node:fs"; readFileSync("../test-change.ts");',
+  ])("selects a suite that consumes changed code through %s", source => {
+    const runtimeSources = () => new Map([[permissionSuite, source], [changed, "export const value = 1;"]]);
+    const result = planWindowsTests({ event: "pull_request", changes: [{ status: "M", file: changed }], inventories, readSources: runtimeSources });
+    expect(result.mode).toBe("affected");
+    expect(result.lists[permission]).toContain(permissionSuite);
+  });
+
+  it.each([
+    'import { spawn } from "node:child_process"; spawn("bun", [process.env.RUNTIME_SOURCE]);',
+    'import { spawn } from "node:child_process"; const launch = spawn; launch("bun", [process.env.RUNTIME_SOURCE]);',
+    'import { buildSync } from "esbuild"; buildSync({ entryPoints: [process.env.RUNTIME_SOURCE] });',
+    'import { readFileSync } from "node:fs"; readFileSync(process.env.RUNTIME_SOURCE);',
+  ])("falls back to all lists when %s could reach a changed source", source => {
+    const runtimeSources = () => new Map([[permissionSuite, source], [changed, "export const value = 1;"]]);
+    const result = planWindowsTests({ event: "pull_request", changes: [{ status: "M", file: changed }], inventories, readSources: runtimeSources });
+    expect(result.mode).toBe("full");
+    expect(result.reason).toContain("runtime source input");
+  });
+
+  const runtimeContracts = [
+    ["src/plugins/__tests__/registry-atomicity.test.ts", "src/plugins/__tests__/fixtures/registry-process-child.ts"],
+    ["src/permissions/__tests__/srt-win-integrity.test.ts", "src/permissions/__tests__/fixtures/srt-win-exit-order-child.ts"],
+    ["src/shared/__tests__/ave-home-host-ownership.test.ts", "src/main/host-instance-lock.ts"],
+  ] as const;
+  it.each(runtimeContracts)("keeps %s when its real runtime input %s changes", (suite, target) => {
+    // Expected paths come from the child/bundle call sites. The graph cannot choose the expected suite.
+    const runtimeSources = new Map([suite, target].map(file => [file, readFileSync(file, "utf8")]));
+    const module = windowsImportGraph(runtimeSources).get(suite);
+    expect(module).toBeDefined();
+    expect(windowsRuntimeInputIndex(runtimeSources)(module?.tokens ?? [])).toContain(target);
+    expect(inventories[permission]).toContain(suite);
+    const result = planWindowsTests({
+      event: "pull_request", changes: [{ status: "M", file: target }], inventories, readSources: () => runtimeSources,
+    });
+    expect(result.lists[permission]).toContain(suite);
+    expect(result.shards.flatMap(shard => shard.files)).toContain(suite);
+  });
+
+  it("uses a full plan for executable source-tree fixtures even without a discovered caller", () => {
+    const file = "src/shared/__tests__/fixtures/computed.ts";
+    expect(plan([{ status: "M", file }])).toMatchObject({ mode: "full", reason: expect.stringContaining("executable fixture") });
   });
 
   it("requires Windows checks for full runs and PRs that touch a Windows test", () => {

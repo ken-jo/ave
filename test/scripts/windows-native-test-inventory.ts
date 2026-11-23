@@ -436,6 +436,122 @@ function declarationEnd(tokens: readonly string[], start: number): number {
   return tokens.length;
 }
 
+// Source paths can be passed through helpers, captured in a closure, or interpolated
+// into bundled code. Index their literals independently of import syntax.
+export function windowsRuntimeInputIndex(sources: ReadonlyMap<string, string>) {
+  const suffixes = new Map<string, string[]>();
+  for (const file of sources.keys()) {
+    const segments = file.split("/");
+    for (let i = 0; i < segments.length; i++) {
+      const suffix = segments.slice(i).join("/");
+      const runtimeSuffix = suffix.replace(/\.tsx?$/u, ".js").replace(/\.mts$/u, ".mjs").replace(/\.cts$/u, ".cjs");
+      for (const spelling of new Set([suffix, runtimeSuffix])) {
+        const paths = suffixes.get(spelling) ?? [];
+        paths.push(file);
+        suffixes.set(spelling, paths);
+      }
+    }
+  }
+  return (tokens: readonly string[]) => {
+    const files = new Set<string>();
+    for (const token of tokens) {
+      const value = literal(token)?.replaceAll("\\\\", "/").replace(/^--(?:require|import|loader)=/u, "")
+        .split(/[?#]/u)[0];
+      if (!value || !SOURCE_FILE.test(value)) continue;
+      const path = posix.normalize(value).replace(/^(?:\.\.\/)+|^\//u, "");
+      for (const file of suffixes.get(path) ?? []) files.add(file);
+    }
+    return files;
+  };
+}
+
+function callArguments(tokens: readonly string[], opening: number, closing = ")"): string[][] {
+  const args: string[][] = [];
+  let start = opening + 1;
+  let depth = 0;
+  for (let end = opening + 1; end < tokens.length; end++) {
+    const token = tokens[end] ?? "";
+    if (depth === 0 && (token === "," || token === closing)) {
+      if (end !== start) args.push(tokens.slice(start, end));
+      if (token === closing) return args;
+      start = end + 1;
+    }
+    if (["(", "[", "{"].includes(token)) depth++;
+    if ([")", "]", "}"].includes(token)) depth--;
+  }
+  return [];
+}
+
+const SOURCE_READS = new Set(["readFile", "readFileSync", "createReadStream"]);
+const SOURCE_BUILDS = new Set(["build", "buildSync", "context"]);
+
+export function hasUnverifiedWindowsRuntimeInput(tokens: readonly string[]): boolean {
+  if (!tokens.some(token => token === "Bun" || /^(?:node:)?(?:fs(?:\/promises)?|child_process|esbuild)$/u.test(literal(token) ?? ""))) {
+    return false;
+  }
+  const imports = (specifiers: string[]) => bindingsFor(tokens, new Set(), specifiers);
+  const fs = imports(["node:fs", "fs", "node:fs/promises", "fs/promises"]);
+  const children = imports(["node:child_process", "child_process"]);
+  const bundler = imports(["esbuild"]);
+  // A literal final component fixes the file name even when the parent is dynamic.
+  // Every matching repository path is already indexed by its suffix.
+  function fixedFilename(expression: readonly string[]): boolean {
+    if (expression.length === 1 && literal(expression[0]) !== undefined) return true;
+    const opening = expression.indexOf("(");
+    if (opening < 0 || expression.at(-1) !== ")") return false;
+    const name = expression[opening - 1] ?? "";
+    if (name === "URL" && expression[0] === "new") return literal(expression[opening + 1]) !== undefined;
+    if (name === "fileURLToPath") return fixedFilename(expression.slice(opening + 1, -1));
+    const basename = literal(expression.at(-2))?.split(/[\\/]/u).at(-1);
+    return (name === "join" || name === "resolve") && Boolean(basename && basename !== "." && basename !== "..");
+  }
+  function capturedReader(bindings: ReadonlyMap<string, string>, methods: ReadonlySet<string>, index: number): boolean {
+    const binding = bindings.get(tokens[index] ?? "");
+    const captured = ["=", "(", ",", "return"].includes(tokens[index - 1] ?? "");
+    if (binding === "*" || binding === "default" || binding === "promises") {
+      if (tokens[index + 1] === "[") return true;
+      if (tokens[index + 1] === ".") return captured && methods.has(tokens[index + 2] ?? "")
+        && !["(", "?."].includes(tokens[index + 3] ?? "");
+      return captured && !["from", "as", "}"].includes(tokens[index + 1] ?? "");
+    }
+    if (!methods.has(binding ?? "") || !captured || ["(", "?.", ":", "=", "as", "}"].includes(tokens[index + 1] ?? "")) return false;
+    const statement = tokens.lastIndexOf(";", index - 1) + 1;
+    return tokens[statement] !== "import" || ["(", "."].includes(tokens[statement + 1] ?? "");
+  }
+  const childMethods = new Set([...NATIVE_COMMANDS, "fork"]);
+  for (let i = 0; i < tokens.length; i++) {
+    if (capturedReader(fs, SOURCE_READS, i) || capturedReader(children, childMethods, i) || capturedReader(bundler, SOURCE_BUILDS, i)) return true;
+    const read = memberCall(tokens, fs, i);
+    if (read && SOURCE_READS.has(read.member) && !fixedFilename(callArguments(tokens, read.opening)[0] ?? [])) return true;
+    const filesystem = fs.get(tokens[i] ?? "");
+    if ((filesystem === "*" || filesystem === "default") && tokens[i + 1] === "." && tokens[i + 2] === "promises"
+      && tokens[i + 3] === "." && SOURCE_READS.has(tokens[i + 4] ?? "") && tokens[i + 5] === "("
+      && !fixedFilename(callArguments(tokens, i + 5)[0] ?? [])) return true;
+    const bundled = memberCall(tokens, bundler, i);
+    if (bundled && SOURCE_BUILDS.has(bundled.member)) {
+      const options = callArguments(tokens, bundled.opening)[0] ?? [];
+      const entries = options.findIndex((token, index) => (token === "entryPoints" || literal(token) === "entryPoints")
+        && options[index + 1] === ":" && options[index + 2] === "[");
+      if (options[0] !== "{" || entries < 0 || options.some(token => ["...", "stdin", "plugins", "inject", "tsconfig"]
+        .includes(literal(token) ?? token)) || !callArguments(options, entries + 2, "]").every(arg => fixedFilename(arg))) return true;
+    }
+    const child = memberCall(tokens, children, i);
+    if (child && childMethods.has(child.member)) {
+      const [command = [], args = []] = callArguments(tokens, child.opening);
+      if (child.member === "exec" || child.member === "execSync") return true;
+      if (child.member === "fork") {
+        if (!fixedFilename(command)) return true;
+      } else if (args[0] !== "[" || args.at(-1) !== "]"
+        || !(fixedFilename(command) || command.join("") === "process.execPath")
+        || args.some(token => /^(?:-e|-p|-c|--eval|--print|--command)(?:=|$)/u.test(literal(token) ?? ""))
+        || !callArguments(args, 0, "]").every(arg => fixedFilename(arg))) return true;
+    }
+    if (tokens[i] === "Bun" && tokens[i + 1] === "." && ["spawn", "spawnSync", "build", "file"].includes(tokens[i + 2] ?? "")
+      && tokens[i + 3] === "(") return true;
+  }
+  return false;
+}
+
 function forwardsNative(module: RuntimeModule, member: string, native: Edge): boolean {
   const { tokens } = module;
   const imports = tokens.flatMap((token, index) => {
