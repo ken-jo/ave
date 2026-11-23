@@ -1,4 +1,3 @@
-import "./main/windows-program-lookup.js";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { createNodeBootHost } from "./boot/node-host-runtime.js";

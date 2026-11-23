@@ -1,3 +1,4 @@
+import '../windows-program-lookup.js';
 import { errorMessage } from '../../shared/error-message.js';
 import { createLocalEmbedder } from './embedding.js';
 import { serveInferenceChild } from './inference-child-serve.js';
