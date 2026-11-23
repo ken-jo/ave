@@ -107,7 +107,7 @@ async function freshExecutor(
     .filter((name) => name.endsWith(".jsonl") && !name.includes("permission-audit"))
     .flatMap((name) => readFileSync(join(audit.getAuditDir(), name), "utf8").split("\n").filter(Boolean))
     .map((line) => JSON.parse(line) as Record<string, unknown>);
-  return { ledger, executor, executes, audit, rows, plainRows, hostShutdownRows, toolUses, cancelled, gate, asked: asked.promise, cards };
+  return { ledger, executor, executes, audit, manager, rows, plainRows, hostShutdownRows, toolUses, cancelled, gate, asked: asked.promise, cards };
 }
 
 describe("ToolExecutor admission across the quit seal", () => {
@@ -421,11 +421,10 @@ describe("ToolExecutor admission across the quit seal", () => {
     });
     await delivered;
     ledger.sealToolInvocations();
-    ledger.markToolInvocationAuditClosed();
-    const closed = audit.close();
+    const closed = ledger.drainToolInvocationAuditForExit(() => audit.close(), 2_000);
     releaseJournal();
     const results = await running;
-    await closed;
+    await expect(closed).resolves.toBe("committed");
     await expect(ledger.closeToolInvocationAudit(async () => {})).resolves.toBe(0);
     expect(executes[1]).not.toHaveBeenCalled();
     expect(results[1]).toMatchObject({ tool_use_id: "tu-queued-1", is_error: true, content: cancelled });
@@ -684,14 +683,12 @@ describe("forced shutdown with parked executors", () => {
     // The force-kill path: seal, cancel parked cards, then close the sink in the same tick.
     ledger.sealToolInvocations();
     gate?.disposeAll();
-    ledger.commitParkedHostTerminals();
-    ledger.markToolInvocationAuditClosed();
-    const closed = audit.close();
-    await closed;
+    await expect(ledger.drainToolInvocationAuditForExit(() => audit.close(), 2_000)).resolves.toBe("committed");
     const rowsAtClose = rows();
+    // Each late continuation meets the closed sink: a refused claim, not a write.
     const results = (await Promise.all(running)).flat();
-    for (const execute of executes) expect(execute).not.toHaveBeenCalled();
     expect(results.every((result) => result.is_error)).toBe(true);
+    for (const execute of executes) expect(execute).not.toHaveBeenCalled();
     for (const toolUse of toolUses) {
       expect(rowsAtClose.filter((row) => row.toolUseId === toolUse.id && row.decision === "ask")).toHaveLength(1);
       expect(hostShutdownRows(rowsAtClose, toolUse.id)).toEqual([expect.objectContaining({ trustOrigin: "unknown", category: "write" })]);

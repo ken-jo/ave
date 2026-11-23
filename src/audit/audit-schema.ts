@@ -56,6 +56,8 @@ interface AuditCommon {
   ts: string;
   auditId: string;
   toolUseId?: string;
+  /** A retry of the same tool use is its own attempt (2, 3, ...) with its own terminal row; the first attempt omits it. */
+  attempt?: number;
   /** Public shell metadata must exclude arguments, paths, approvals, permits, nonces, HMACs, and capability reasons. */
   executionPlan?: HostShellExecutionPlanAuditProjection;
   /** A shadow decision proves neither authorization nor spawn. */
@@ -84,6 +86,7 @@ interface AuditCommon {
 /** Host-owned correlation metadata must never carry renderer data or approval material. */
 export interface ToolExecutionAuditMetadata {
   readonly toolUseId?: string;
+  readonly attempt?: number;
   readonly executionPlan?: HostShellExecutionPlanAuditProjection;
   readonly executionRoute?: ExecutionPlanAuditProjection;
   readonly workloadBrokerCorrelation?: Readonly<{

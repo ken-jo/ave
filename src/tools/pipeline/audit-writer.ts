@@ -210,27 +210,6 @@ export class AuditWriter {
     const auditSafeOutput = governedTool
       ? (isError ? "governed operation failed" : "governed operation completed")
       : output;
-    // Emit ordinary denials once; exclude cancellations and governed operations whose lease/proof cannot include effect-capable hooks.
-    // Preserve the finalized denial reason for forensic discrimination.
-    if (
-      permission?.decision === "deny" &&
-      permissionContext !== undefined &&
-      terminationReason !== "user-abort" &&
-      terminationReason !== "host-shutdown" &&
-      !governedTool &&
-      !suppressPermissionDeniedLifecycle
-    ) {
-      await this.fireLifecycleEvent(
-        "PermissionDenied",
-        sessionId,
-        permissionContext,
-        {
-          toolName,
-          denyReason: { source: "tool-executor", reason: permission.reason },
-        },
-        abortSignal,
-      );
-    }
     try {
       const inputText = JSON.stringify(auditSafeInput);
       // The privacy toggle governs audit PII masking; credentials are always scrubbed.
@@ -280,16 +259,40 @@ export class AuditWriter {
       ...(hookChain ? { hookChain } : {}),
       audit,
     });
-    if (!this.auditLogger.isPermissionAuditChainReady()) {
-      if (this.requirePermissionAuditChain) {
-        const error = new Error("permission audit chain is not initialized");
-        recordToolInvocationAuditFailure(error);
-        throw error;
-      }
-      return;
+    // The row is enqueued before the first await; PermissionDenied runs after it and cannot lose it.
+    let appended: Promise<unknown> | undefined;
+    if (this.auditLogger.isPermissionAuditChainReady()) {
+      appended = appendToolInvocationAudit(this.auditLogger, entry);
+      appended.catch(() => {});
+    } else if (this.requirePermissionAuditChain) {
+      const error = new Error("permission audit chain is not initialized");
+      recordToolInvocationAuditFailure(error);
+      throw error;
     }
+    // Emit ordinary denials once; exclude cancellations and governed operations whose lease/proof cannot include effect-capable hooks.
+    // Preserve the finalized denial reason for forensic discrimination.
+    if (
+      permission?.decision === "deny" &&
+      permissionContext !== undefined &&
+      terminationReason !== "user-abort" &&
+      terminationReason !== "host-shutdown" &&
+      !governedTool &&
+      !suppressPermissionDeniedLifecycle
+    ) {
+      await this.fireLifecycleEvent(
+        "PermissionDenied",
+        sessionId,
+        permissionContext,
+        {
+          toolName,
+          denyReason: { source: "tool-executor", reason: permission.reason },
+        },
+        abortSignal,
+      );
+    }
+    if (appended === undefined) return;
     try {
-      await appendToolInvocationAudit(this.auditLogger, entry);
+      await appended;
     } catch (err) {
       if (this.requirePermissionAuditChain) {
         throw err;

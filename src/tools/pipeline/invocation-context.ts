@@ -23,6 +23,7 @@ import type {
   ToolUseBlock,
 } from "../executor.js";
 import type { AuditWriter } from "./audit-writer.js";
+import type { InvocationTerminal } from "../invocation-ledger.js";
 import { hostShutdownDenial } from "./approval-outcome.js";
 import { emitToolStart } from "./display-mask.js";
 
@@ -98,8 +99,8 @@ export interface UserAbortDeps {
   auditWriter: AuditWriter;
   abortSignal?: AbortSignal;
   audit?: ToolExecutionAuditMetadata;
-  /** False when a forced shutdown already wrote this invocation's terminal row. */
-  claimTerminal?: () => boolean;
+  /** The attempt's terminal ledger; its claim refuses a row the host already wrote. */
+  terminal?: InvocationTerminal;
 }
 
 // Emit cancellation result and fixed denial audit without participating in containment relaxation.
@@ -128,7 +129,7 @@ export async function returnUserAbort(deps: UserAbortDeps): Promise<ToolResult> 
     : { decision: "deny", reason: "user aborted turn", provenance: RULE_PROVENANCE };
   emitToolStart(callbacks, toolUse.name, input, meta);
   callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
-  if (deps.claimTerminal?.() !== false) await auditWriter.auditToolCall(
+  const write = () => auditWriter.auditToolCall(
     sessionId,
     toolUse.name,
     source,
@@ -147,5 +148,6 @@ export async function returnUserAbort(deps: UserAbortDeps): Promise<ToolResult> 
     undefined,
     audit,
   );
+  await (deps.terminal ? deps.terminal.commit(write) : write());
   return { tool_use_id: toolUse.id, content: msg, is_error: true, durationMs };
 }

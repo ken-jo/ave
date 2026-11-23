@@ -66,7 +66,7 @@ import {
 } from "../shared/chat-origin.js";
 import { isRationaleEligible, RationaleHumanApprovalDeniedError } from "./pipeline/rationale-control.js";
 import { answeredApprovalProvenance, approvalReasonFields, approvalTargetFor, HOST_PROVENANCE, provenanceTrustOrigin, RULE_PROVENANCE, type ApprovalDecision, type DecisionProvenance } from "../permissions/approval-gate.js";
-import { abortSupersedesApprovalDecision, answeredPermission, approvalFailureOutcome, hostRefusalOfApproval, hostShutdownDenial, refusal } from "./pipeline/approval-outcome.js";
+import { abortSupersedesApprovalDecision, answeredPermission, approvalFailureOutcome, hostRefusalOfApproval, hostShutdownDenial, isSelectedRefusal, refusal } from "./pipeline/approval-outcome.js";
 import {
   buildPermissionEvaluationContext,
   type PermissionEvaluationContext,
@@ -469,6 +469,7 @@ async function runToolInvocationAttempt(
       input: Record<string, unknown> = toolUse.input,
     ): ToolExecutionAuditMetadata => ({
       toolUseId: toolUse.id,
+      ...(services.invocationTerminal !== undefined && services.invocationTerminal.attempt > 1 ? { attempt: services.invocationTerminal.attempt } : {}),
       ...(hostShellExecutionPlanAudit !== undefined
         ? { executionPlan: hostShellExecutionPlanAudit }
         : {}),
@@ -501,42 +502,56 @@ async function runToolInvocationAttempt(
     });
     let denialRecorded = false;
     const auditCurrentToolCall = async (...args: AuditToolCallArgs): Promise<void> => {
-      // A forced shutdown already wrote this invocation's terminal row; a late resume writes nothing.
-      if (services.invocationTerminal?.claimTerminal() === false) return;
+      args[16] = currentAuditMetadata(args[4]);
+      args[18] = abortSignal;
+      // The row is claimed and enqueued before anything else awaits; a refused claim (a late resume after the host
+      // wrote the row, or a closed sink) rejects without writing.
+      const terminal = services.invocationTerminal;
+      const before = terminal?.state;
+      const written = terminal ? terminal.commit(() => services.auditWriter.auditToolCall(...args)) : services.auditWriter.auditToolCall(...args);
+      if (terminal && (before !== "open" || terminal.state === "open")) return written;
+      written.catch(() => {});
       const denied = args[8];
       const history = services.permissionManager?.getRecentlyDenied();
       if (denied?.decision === "deny" && history && !denialRecorded) {
         denialRecorded = true;
-        const registeredTool = services.toolRegistry.findByName(toolUse.name);
-        const invocationRef = registeredTool && permissionContext?.trustOrigin && makeRecentlyDeniedInvocationRef(toolUse.input, {
-          cwd: executionCwd, toolUseId: toolUse.id,
-          pluginId: registeredTool.pluginId, mcpServerId: registeredTool.mcpServerId,
-          replayOrigin: { trustOrigin: permissionContext.trustOrigin, remoteController: permissionContext.remoteControllerAuthority !== undefined,
-            otherPrincipal: permissionContext.otherPrincipal === true || approvalReasonPrefix !== undefined || permissionContext.floor?.code === "other-principal" || isStagedTurnSource(overlayTriggerOrigin),
-            ...(isStagedTurnSource(overlayTriggerOrigin) ? { overlayTriggerOrigin: overlayTriggerOrigin! } : {}),
-          },
-        });
-        const inputSnapshot = invocationRef ? structuredClone(toolUse.input) : undefined;
-        await history.append({
-          sessionId, toolName: toolUse.name, source: args[2], category: meta.category ?? "write",
-          inputSummary: JSON.stringify(auditSafeToolInput(args[4], currentAuditMetadata(args[4]))), reason: denied.reason,
-          ...(invocationRef ? { invocationRef } : {}),
-          ...(inputSnapshot && invocationRef ? { rerun: async () => {
-            const replayRootBinding = issueReplayRootBinding(executionCwd, invocationRef.rootDigest);
-            if (!replayRootBinding) throw new Error("The replay project root changed");
-            const result = await services.executeReplay({ ...toolUse, id: randomUUID(), input: structuredClone(inputSnapshot) }, {
-              sessionId, executionCwd, replayRootBinding, approvalReasonPrefix,
-              ...(invocationRef.replayOrigin!.overlayTriggerOrigin === undefined ? {} : { overlayTriggerOrigin: invocationRef.replayOrigin!.overlayTriggerOrigin }),
-              permissionContext: { ...permissionContext!, trustOrigin: invocationRef.replayOrigin!.trustOrigin, otherPrincipal: invocationRef.replayOrigin!.otherPrincipal, headless: false, ownerUnattended: false, approvalSurface: undefined, manualRerun: true },
-            });
-            if ("is_error" in result && result.is_error) throw new Error("The manual rerun was denied or failed");
-            return result;
-          } } : {}),
-        });
+        try { await recordRecentlyDenied(history, denied, args); } catch (error) {
+          log.warn("recently denied history failed for %s: %s", toolUse.name, errorMessage(error));
+        }
       }
-      args[16] = currentAuditMetadata(args[4]);
-      args[18] = abortSignal;
-      return services.auditWriter.auditToolCall(...args);
+      return written;
+    };
+    const recordRecentlyDenied = async (
+      history: NonNullable<ReturnType<NonNullable<InvocationRunnerServices["permissionManager"]>["getRecentlyDenied"]>>,
+      denied: PermissionCheckResult,
+      args: AuditToolCallArgs,
+    ): Promise<void> => {
+      const registeredTool = services.toolRegistry.findByName(toolUse.name);
+      const invocationRef = registeredTool && permissionContext?.trustOrigin && makeRecentlyDeniedInvocationRef(toolUse.input, {
+        cwd: executionCwd, toolUseId: toolUse.id,
+        pluginId: registeredTool.pluginId, mcpServerId: registeredTool.mcpServerId,
+        replayOrigin: { trustOrigin: permissionContext.trustOrigin, remoteController: permissionContext.remoteControllerAuthority !== undefined,
+          otherPrincipal: permissionContext.otherPrincipal === true || approvalReasonPrefix !== undefined || permissionContext.floor?.code === "other-principal" || isStagedTurnSource(overlayTriggerOrigin),
+          ...(isStagedTurnSource(overlayTriggerOrigin) ? { overlayTriggerOrigin: overlayTriggerOrigin! } : {}),
+        },
+      });
+      const inputSnapshot = invocationRef ? structuredClone(toolUse.input) : undefined;
+      await history.append({
+        sessionId, toolName: toolUse.name, source: args[2], category: meta.category ?? "write",
+        inputSummary: JSON.stringify(auditSafeToolInput(args[4], currentAuditMetadata(args[4]))), reason: denied.reason,
+        ...(invocationRef ? { invocationRef } : {}),
+        ...(inputSnapshot && invocationRef ? { rerun: async () => {
+          const replayRootBinding = issueReplayRootBinding(executionCwd, invocationRef.rootDigest);
+          if (!replayRootBinding) throw new Error("The replay project root changed");
+          const result = await services.executeReplay({ ...toolUse, id: randomUUID(), input: structuredClone(inputSnapshot) }, {
+            sessionId, executionCwd, replayRootBinding, approvalReasonPrefix,
+            ...(invocationRef.replayOrigin!.overlayTriggerOrigin === undefined ? {} : { overlayTriggerOrigin: invocationRef.replayOrigin!.overlayTriggerOrigin }),
+            permissionContext: { ...permissionContext!, trustOrigin: invocationRef.replayOrigin!.trustOrigin, otherPrincipal: invocationRef.replayOrigin!.otherPrincipal, headless: false, ownerUnattended: false, approvalSurface: undefined, manualRerun: true },
+          });
+          if ("is_error" in result && result.is_error) throw new Error("The manual rerun was denied or failed");
+          return result;
+        } } : {}),
+      });
     };
     const auditCurrentPermissionAsk = (
       ...args: AuditPermissionAskArgs
@@ -554,10 +569,14 @@ async function runToolInvocationAttempt(
       return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: t("be_executor.toolNotFound", { name: toolUse.name }), is_error: true, durationMs });
     }
     governedTool = tool.operationPolicy !== undefined;
-    services.invocationTerminal?.hostTerminal(() => {
-      void services.auditWriter.auditToolCall(sessionId, toolUse.name, tool.source, trustFromSource(tool.source), toolUse.input, "host-shutdown", true, startTime,
-        hostShutdownDenial(), Infinity, permissionContext, tool.category, executionCwd, undefined, "host-shutdown", undefined, currentAuditMetadata(toolUse.input))
-        .catch((error: unknown) => { log.error("host-shutdown terminal audit failed for %s: %s", toolUse.name, errorMessage(error)); });
+    services.invocationTerminal?.hostTerminal((cause, detail, selected) => {
+      // A human outcome accepted before the host ended the attempt stays the row's outcome.
+      const denial = isSelectedRefusal(selected) ? selected
+        : cause === "host-shutdown" ? hostShutdownDenial()
+        : cause === "user-abort" ? refusal("user aborted turn", RULE_PROVENANCE)
+        : refusal(detail, HOST_PROVENANCE);
+      return services.auditWriter.auditToolCall(sessionId, toolUse.name, tool.source, trustFromSource(tool.source), toolUse.input, detail, true, startTime,
+        denial, Infinity, permissionContext, tool.category, executionCwd, undefined, cause, undefined, currentAuditMetadata(toolUse.input));
     });
     let generationAccess: ReturnType<
       InvocationRunnerServices["pluginGenerationAccessProvider"]
@@ -765,7 +784,7 @@ async function runToolInvocationAttempt(
       auditWriter: services.auditWriter,
       abortSignal,
       audit: currentAuditMetadata(input),
-      claimTerminal: () => services.invocationTerminal?.claimTerminal() !== false,
+      terminal: services.invocationTerminal,
     });
 
     if (abortSignal?.aborted) {
@@ -2493,7 +2512,7 @@ async function runToolInvocationAttempt(
       approvalCacheKey,
       executionCwd,
       auditCurrentToolCall,
-      hasRecordedDenial: () => denialRecorded,
+      terminalClaimed: () => services.invocationTerminal !== undefined ? services.invocationTerminal.state !== "open" : denialRecorded,
       auditCurrentPermissionAsk,
       withHostShellExecutionPlan,
       abortDeps,
@@ -2650,7 +2669,9 @@ async function runToolInvocationAttempt(
       && executedResult.is_error === true && blockedSandbox.command === finalInput.command && !abortSignal?.aborted
       && rationaleResumeContext === undefined) {
       // A recorded filesystem refusal creates a new exact host request. Every permission stage runs again.
-      const retryResult = await runToolInvocation(services, {
+      // The retry is its own attempt with its own terminal row; this attempt already wrote one.
+      const retryServices = services.invocationTerminal ? { ...services, invocationTerminal: services.invocationTerminal.nextAttempt() } : services;
+      const retryResult = await runToolInvocation(retryServices, {
         ...toolUse, id: rationaleBatchContext === undefined ? randomUUID() : toolUse.id,
         input: { ...structuredClone(finalInput), cwd: blockedSandbox.cwd, executionMode: "host",
           justification: "The filesystem sandbox blocked this command. It may already have performed part of the operation; this approval retries the same command without filesystem isolation." },
