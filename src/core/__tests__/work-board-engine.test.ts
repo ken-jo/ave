@@ -6,6 +6,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { WorkBoardStore } from "../../main/work-board-store.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { deferred } from "../../__tests__/support/deferred.js";
+import { untilAsserted } from "../../__tests__/support/signal-wait.js";
 import { createWorkBoardEngine } from "../work-board-engine.js";
 import type {
   SubAgentRunner,
@@ -437,7 +439,7 @@ describe("WorkBoardEngine — execute child id is exposed when it links (WB-1)",
       const linkedEvent = events.find((e) => e.phase === "executing" && e.runSessionId !== undefined);
       expect(linkedEvent?.runSessionId).toBe(execChild);
       // The plan child id stored at approval time must be replaced by the execute child id mid-run.
-      await vi.waitFor(async () => {
+      await untilAsserted(wake => store.boardChanged.subscribe(wake), async () => {
         const got = await store.get(id);
         if (got.status !== "found") throw new Error("missing item");
         expect(got.item.runStatus).toBe("executing");
@@ -949,6 +951,7 @@ describe("WorkBoardEngine — plan decisions (work approvals)", () => {
         return write(rel, data);
       };
       let early: Promise<Awaited<ReturnType<typeof engine.decidePlan>>> | null = null;
+      const decisionSent = deferred<void>();
       const engine = createWorkBoardEngine({
         store,
         getRunner: () => runner,
@@ -961,10 +964,12 @@ describe("WorkBoardEngine — plan decisions (work approvals)", () => {
             if (got.status !== "found") throw new Error("missing");
             return engine.decidePlan(created.itemId, { runId: got.item.runId!, planHash: got.item.planApproval!.planHash, decision: "approve" });
           })();
+          decisionSent.resolve();
         },
       });
       const run = engine.runItem(created.itemId);
-      await vi.waitFor(() => expect(early).not.toBeNull());
+      await decisionSent.promise;
+      expect(early).not.toBeNull();
       expect((await early!).result).toEqual({ ok: false, reason: "plan_settling" });
       releaseFlush();
       expect((await run).status).toBe("awaiting_approval");
