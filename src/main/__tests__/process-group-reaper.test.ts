@@ -1,6 +1,7 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter, once } from "node:events";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { access, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough, Writable } from "node:stream";
@@ -142,8 +143,9 @@ const GATED_HOST = String.raw`
 describe.runIf(process.platform === "darwin" || process.platform === "linux")("process group launch handoff", () => {
   it.each(["before-registration", "registration-written", "acknowledged", "released"])(
     "leaves no live group when the host is killed at %s", async (boundary) => {
-      const dir = mkdtempSync(join(tmpdir(), "ave-launch-gate-"));
+      const dir = await mkdtemp(join(tmpdir(), "ave-launch-gate-"));
       const marker = join(dir, "executed");
+      const markerExists = (): Promise<boolean> => access(marker).then(() => true, () => false);
       let activeHost: ChildProcess | undefined;
       let pgid: number | undefined;
       let companion: number | undefined;
@@ -171,7 +173,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("p
         if (pgid === undefined || pgid <= 1) throw new Error("No launch group reported");
         const group = pgid;
         expect(groupAlive(group)).toBe(true);
-        expect(existsSync(marker)).toBe(boundary === "released");
+        expect(await markerExists()).toBe(boundary === "released");
         if (boundary === "registration-written") {
           if (companion === undefined || companion <= 1) throw new Error("No companion group reported");
           expect(groupAlive(companion)).toBe(true);
@@ -181,7 +183,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("p
         expect(host.signalCode).toBe("SIGKILL");
         await waitForFixture("group reaping", () =>
           !groupAlive(group) && (companion === undefined || !groupAlive(companion)) ? true : undefined, deadline);
-        expect(existsSync(marker)).toBe(boundary === "released");
+        expect(await markerExists()).toBe(boundary === "released");
         pgid = undefined;
         companion = undefined;
       }, [

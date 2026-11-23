@@ -1,5 +1,5 @@
-import { execFileSync, type ChildProcess } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import childProcess, { type ChildProcess } from "node:child_process";
+import { access, chmod, mkdir, mkdtemp, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -90,19 +90,24 @@ const ROLES = ["leader", "same-group", "new-session"] as const;
 type Role = (typeof ROLES)[number];
 const PLUGIN_ID = "heartbeat";
 
-function heartbeatProcesses(script: string, outsidePath: string, deadline: number): Map<Role, number> {
+async function heartbeatProcesses(script: string, outsidePath: string, deadline: number): Promise<Map<Role, number>> {
   // The Linux sandbox's process IDs are local to its PID namespace. Match the host's IDs to this fixture's exact argv.
   const processes = new Map<Role, number>();
   const timeout = Math.ceil(deadline - performance.now());
   const timeoutMessage = "Fixture watchdog expired during heartbeat process inventory";
   if (timeout <= 0) throw new Error(timeoutMessage);
-  let listing: string;
-  try {
-    listing = execFileSync("/bin/ps", ["-axww", "-o", "pid=,command="], { encoding: "utf8", timeout, killSignal: "SIGKILL" });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ETIMEDOUT") throw new Error(timeoutMessage, { cause: error });
-    throw error;
-  }
+  const listing = await new Promise<string>((resolve, reject) => {
+    childProcess.execFile("/bin/ps", ["-axww", "-o", "pid=,command="], { encoding: "utf8", timeout, killSignal: "SIGKILL" }, (error, stdout) => {
+      if (error?.killed && error.signal === "SIGKILL" && error.code == null) {
+        reject(new Error(timeoutMessage, { cause: error }));
+      } else if (error) {
+        reject(error);
+      } else {
+        resolve(stdout);
+      }
+    });
+  });
+  if (performance.now() >= deadline) throw new Error(timeoutMessage);
   for (const line of listing.split("\n")) {
     const match = /^\s*([1-9]\d*)\s+(.+)$/u.exec(line);
     if (!match) continue;
@@ -113,6 +118,39 @@ function heartbeatProcesses(script: string, outsidePath: string, deadline: numbe
   }
   return processes;
 }
+
+async function reapHeartbeatProcesses(script: string, outsidePath: string, deadline: number): Promise<void> {
+  const processes = await heartbeatProcesses(script, outsidePath, deadline);
+  if (performance.now() >= deadline) throw new Error("Fixture watchdog expired during heartbeat process inventory");
+  await stopFixtureProcesses([...processes.values()], deadline);
+}
+
+it("reports stalled heartbeat process reaping and attempts fixture directory removal", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+  const inventory = vi.spyOn(childProcess, "execFile").mockReturnValue(new childProcess.ChildProcess());
+  try {
+    const failure = new Error("Fixture assertion failed");
+    const reportFailure = vi.fn();
+    const removeDirectory = vi.fn();
+    void withFixtureCleanup(async () => { throw failure; }, [
+      { phase: "heartbeat process reaping", run: (deadline) => reapHeartbeatProcesses("/fixture/heartbeat.mjs", "/fixture/host-owned", deadline) },
+      { phase: "fixture directory removal", run: removeDirectory },
+    ]).catch(reportFailure);
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(removeDirectory).toHaveBeenCalledOnce();
+    expect(reportFailure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      errors: [failure, expect.objectContaining({ message: "Fixture cleanup timed out during heartbeat process reaping" })],
+    }));
+    expect(inventory).toHaveBeenCalledExactlyOnceWith(
+      "/bin/ps", ["-axww", "-o", "pid=,command="],
+      { encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL" }, expect.any(Function),
+    );
+  } finally {
+    inventory.mockRestore();
+    vi.useRealTimers();
+  }
+});
 
 it("reports the stalled phase at the shared fixture deadline and runs teardown", async () => {
   const clock = vi.spyOn(performance, "now").mockReturnValue(0);
@@ -153,7 +191,7 @@ describe.runIf(process.platform === "win32")("direct process plugin admission", 
 
 describe.runIf(process.platform === "linux" || process.platform === "darwin")("process plugin host death", () => {
   it("reaps the confined group on host SIGKILL and measures the new session", async () => {
-    const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-plugin-heartbeat-")));
+    const root = await realpath(await mkdtemp(join(tmpdir(), "ave-plugin-heartbeat-")));
     const home = join(root, "home");
     const pluginRoot = join(home, "plugins", PLUGIN_ID);
     const pluginDataDir = join(pluginRoot, "data");
@@ -162,18 +200,31 @@ describe.runIf(process.platform === "linux" || process.platform === "darwin")("p
     const launcher = join(pluginRoot, "launch");
     const outsidePath = join(root, "host-owned");
     const mac = process.platform === "darwin";
-    const heartbeat = (role: Role): number => statSync(path(role), { throwIfNoEntry: false })?.size ?? 0;
-    const readResult = <T>(name: string): T | undefined =>
-      existsSync(path(name)) ? JSON.parse(readFileSync(path(name), "utf8")) as T : undefined;
+    const heartbeat = async (role: Role): Promise<number> => {
+      try {
+        return (await stat(path(role))).size;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
+        throw error;
+      }
+    };
+    const readResult = async <T>(name: string): Promise<T | undefined> => {
+      try {
+        return JSON.parse(await readFile(path(name), "utf8")) as T;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+        throw error;
+      }
+    };
     let activeHost: ChildProcess | undefined;
     let pgid: number | undefined;
     await withFixtureCleanup(async (deadline) => {
-      mkdirSync(pluginDataDir, { recursive: true, mode: 0o700 });
-      writeFileSync(outsidePath, "original");
-      writeFileSync(script, HEARTBEAT);
+      await mkdir(pluginDataDir, { recursive: true, mode: 0o700 });
+      await writeFile(outsidePath, "original");
+      await writeFile(script, HEARTBEAT);
       const node = process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath;
-      writeFileSync(launcher, `#!/bin/sh\nexec ${shellQuote(node)} ${shellQuote(script)} leader ${shellQuote(outsidePath)}\n`);
-      chmodSync(launcher, 0o700);
+      await writeFile(launcher, `#!/bin/sh\nexec ${shellQuote(node)} ${shellQuote(script)} leader ${shellQuote(outsidePath)}\n`);
+      await chmod(launcher, 0o700);
 
       const host = spawnSacrificialHost(HOST, [
         new URL("../out-of-process-plugin.ts", import.meta.url).href,
@@ -198,20 +249,21 @@ describe.runIf(process.platform === "linux" || process.platform === "darwin")("p
       }, deadline);
       expect(launch.confinement).toBe(mac ? "macos-sandbox" : "linux-bubblewrap");
       expect(launch.pgid).toBeGreaterThan(1);
-      const ready = await waitForFixture("plugin readiness", () => {
+      const ready = await waitForFixture("plugin readiness", async () => {
         assertHostRunning();
-        const spawnError = readResult<string>("spawn-error");
+        const spawnError = await readResult<string>("spawn-error");
         if (spawnError !== undefined) throw new Error(spawnError);
-        return ROLES.every((role) => existsSync(path(`ready-${role}`))) ? true : undefined;
+        const markers = await Promise.all(ROLES.map((role) => access(path(`ready-${role}`)).then(() => true, () => false)));
+        return markers.every(Boolean) ? true : undefined;
       }, deadline);
       expect(ready).toBe(true);
-      for (const role of ROLES) expect(heartbeat(role), role).toBeGreaterThan(0);
-      const visible = heartbeatProcesses(script, outsidePath, deadline);
+      for (const role of ROLES) expect(await heartbeat(role), role).toBeGreaterThan(0);
+      const visible = await heartbeatProcesses(script, outsidePath, deadline);
       expect(visible.size).toBe(ROLES.length);
       const newSession = visible.get("new-session");
       if (newSession === undefined) throw new Error("Missing host-visible new-session PID");
       if (mac) {
-        expect(readResult("ready-new-session")).toEqual({ pid: newSession, proxy: 403 });
+        expect(await readResult("ready-new-session")).toEqual({ pid: newSession, proxy: 403 });
         expect(posixProcessExists(-newSession)).toBe(true);
       }
       expect(posixProcessExists(-launch.pgid)).toBe(true);
@@ -237,25 +289,25 @@ describe.runIf(process.platform === "linux" || process.platform === "darwin")("p
         return true;
       }, deadline);
       pgid = undefined;
-      const stopped = reaped.map(heartbeat);
+      const stopped = await Promise.all(reaped.map(heartbeat));
       if (mac) {
         expect(posixProcessExists(newSession)).toBe(true);
-        const surviving = heartbeat("new-session");
-        writeFileSync(path("probe-after"), "");
+        const surviving = await heartbeat("new-session");
+        await writeFile(path("probe-after"), "");
         const result = await waitForFixture("surviving session probe", () => {
           if (!posixProcessExists(newSession)) throw new Error("New session exited before its probe");
           return readResult<{ write: string; proxy: string }>("probe-result");
         }, deadline);
         expect(result.write).toMatch(/^(EPERM|EACCES)$/);
         expect(result.proxy).toBe("ECONNREFUSED");
-        expect(readFileSync(outsidePath, "utf8")).toBe("original");
-        await waitForFixture("surviving heartbeat", () => heartbeat("new-session") > surviving ? true : undefined, deadline);
+        expect(await readFile(outsidePath, "utf8")).toBe("original");
+        await waitForFixture("surviving heartbeat", async () => await heartbeat("new-session") > surviving ? true : undefined, deadline);
       }
-      expect(reaped.map(heartbeat)).toEqual(stopped);
+      expect(await Promise.all(reaped.map(heartbeat))).toEqual(stopped);
     }, [
       { phase: "sacrificial host shutdown", run: async (deadline) => { if (activeHost) await stopSacrificialHost(activeHost, deadline); } },
       { phase: "plugin group reaping", run: (deadline) => stopFixtureProcesses(pgid !== undefined && pgid > 1 ? [-pgid] : [], deadline) },
-      { phase: "heartbeat process reaping", run: (deadline) => stopFixtureProcesses([...heartbeatProcesses(script, outsidePath, deadline).values()], deadline) },
+      { phase: "heartbeat process reaping", run: (deadline) => reapHeartbeatProcesses(script, outsidePath, deadline) },
       { phase: "fixture directory removal", run: () => cleanupTmpDir(root) },
     ]);
   });

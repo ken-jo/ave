@@ -13,10 +13,10 @@ export function spawnSacrificialHost(source: string, args: readonly string[], en
   });
 }
 
-export async function waitForFixture<T>(phase: string, probe: () => T | undefined, deadline: number): Promise<T> {
+export async function waitForFixture<T>(phase: string, probe: () => T | undefined | Promise<T | undefined>, deadline: number): Promise<T> {
   let remaining = deadline - performance.now();
   while (remaining > 0) {
-    const result = probe();
+    const result = await probe();
     remaining = deadline - performance.now();
     if (remaining <= 0) break;
     if (result !== undefined) return result;
