@@ -139,13 +139,13 @@ describe("skill_load — plugin skills obey the turn's plugin scope", () => {
 
 
 describe("skill body approval controller authority", () => {
-  it("records no grant when the host observes revocation while approval persistence waits in the write queue", async () => {
+  it.each(["revocation", "owner change"] as const)("records no grant after %s while skill approval waits in the write queue", async interruption => {
     const sessionId = "skill-persistence-owner";
     let current = true;
     let ownerAvailable = true;
     const authority = bindRemoteControllerToSession({ kind: "tailnet-controller", actorId: "tailnet:skill-owner",
       pairedShare: { pairingId: "pair", pairingEpoch: 1, shareId: "share", shareEpoch: 1, scope: "scope" },
-      pairedShareGuard: { isCurrent: () => current, refreshCurrent: async () => { current = ownerAvailable; return current; } },
+      pairedShareGuard: { isCurrent: () => current, refreshCurrent: async () => ownerAvailable },
     }, sessionId);
     const file = approvalPath();
     const approvals = new SkillApprovalsStore(file);
@@ -165,10 +165,12 @@ describe("skill body approval controller authority", () => {
     try {
       await vi.waitFor(() => expect(wc.send).toHaveBeenCalled());
       const request = wc.send.mock.calls[0]?.[1] as ApprovalRequest;
-      await gate.resolveWithFreshIdentity(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac });
+      const accepted = await gate.resolveFromDesktopRendererWithFreshIdentity(request.id, {
+        requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac,
+      }, wc as never);
+      expect(accepted?.choice).toBe("allow-once");
       await vi.waitFor(() => expect(approve).toHaveBeenCalledOnce());
-      // The fresh probe ran before the queue; the synchronous commit fence sees a revocation recorded during the wait.
-      current = false;
+      if (interruption === "revocation") current = false;
       ownerAvailable = false;
     } finally { release(); await held; }
     expect((await pending).isError).toBe(true);

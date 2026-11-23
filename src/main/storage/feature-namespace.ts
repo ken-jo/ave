@@ -200,9 +200,14 @@ export async function writeJsonAtomic<T>(dir: string, name: string, value: T): P
   await writeFileAtomicAtPath(join(dir, name), `${JSON.stringify(value, null, 2)}\n`);
 }
 
-/** Finish directory preparation, then check authority and commit without yielding. Callers probe authority before entering their write queue. */
+/** Prepare a private parent directory before the caller's guarded commit. */
+export function preparePrivateFileDirectory(filePath: string): Promise<void> {
+  return ensureDir(dirname(filePath));
+}
+
+/** Finish directory preparation, then check authority and commit without yielding. */
 export async function writeFileAtomicAtPathIf(filePath: string, body: string, canCommit: () => boolean): Promise<boolean> {
-  await ensureDir(dirname(filePath));
+  await preparePrivateFileDirectory(filePath);
   return replaceUtf8FileAtomicSyncIf(filePath, body, canCommit);
 }
 

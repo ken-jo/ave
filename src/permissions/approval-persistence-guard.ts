@@ -1,3 +1,4 @@
+import { replaceUtf8FileAtomicSyncIf } from "../lib/atomic-file.js";
 import {
   isRemoteControllerBoundToSession,
   refreshRemoteControllerBoundToSession,
@@ -38,4 +39,12 @@ export async function refreshApprovalPersistence(guard: ApprovalPersistenceGuard
 
 export function assertApprovalPersistenceCurrent(guard: ApprovalPersistenceGuard | undefined): void {
   if (guard && !guard.isCurrent()) throw new ApprovalPersistenceError();
+}
+
+/** Call under the write queue after all asynchronous file preparation. */
+export async function commitApprovalFile(filePath: string, body: string, authority: ApprovalPersistenceGuard): Promise<void> {
+  await refreshApprovalPersistence(authority);
+  if (!replaceUtf8FileAtomicSyncIf(filePath, body, () => authority.isCurrent())) {
+    throw new ApprovalPersistenceError();
+  }
 }
