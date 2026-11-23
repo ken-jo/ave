@@ -773,8 +773,7 @@ async function openSession(shellPath: string, rig: Rig, promptTokens?: string): 
 const BASH = TERMINAL_TEST_MODERN_BASH;
 const ZSH = TERMINAL_TEST_ZSH;
 const SHELLS = [ZSH, BASH].filter((path): path is string => path !== undefined);
-// Overlap the typing protocol's editor polls while bounding concurrent PTYs to eight.
-const SESSIONS_PER_SHELL = 4;
+const SESSIONS_PER_SHELL = 1;
 
 function hasBackgroundJob(command: string): boolean {
   const analysis = analyzeShell(command, "bash");
