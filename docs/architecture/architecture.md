@@ -2293,8 +2293,8 @@ Key boundaries:
   install the manifest it installed) and the hash of the canonical declared set.
   A version-only update keeps it; a scope or source change asks again. Uninstall
   drops it and disable keeps it; boot also drops any approval whose extension the
-  registry no longer names, so a removal that failed to save is not inherited by a
-  reinstall. An install with no pinned source (admin, bundled
+  registry no longer names, and a removal that failed to save is retried at the
+  next save or start, so a reinstall does not inherit it. An install with no pinned source (admin, bundled
   or a legacy row) cannot be approved, and its Review row says the source is not
   pinned and asks for a reinstall from the marketplace. A missing or unreadable
   approvals file loads as empty. Within the approved scope a deny or a forced floor still
@@ -2305,8 +2305,12 @@ Key boundaries:
   also passes the application-home floor, because extension storage sits in the
   app home and the host confines the path. Any other ask is denied. The card
   appears when an extension starts running unapproved after an install, update
-  or enable; an extension loaded at boot shows a Review badge in its settings
-  instead.
+  or enable. Boot starts installed extensions without such an event, so the
+  first interactive launch of this version shows one card listing every enabled
+  extension with a declared scope and no approval, each with its own Allow, and
+  a Later that leaves the Review badge in its settings. Answering it is saved
+  with the approvals, so later launches show no such card; a headless launch has
+  no window and leaves it owed.
 
 ### Extension alerts and scheduled routines
 

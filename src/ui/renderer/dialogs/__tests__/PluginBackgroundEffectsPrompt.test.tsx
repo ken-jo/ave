@@ -12,8 +12,10 @@ const ID = "digest-plugin";
 const A = "a".repeat(64);
 const B = "b".repeat(64);
 
+interface UpgradeRow { pluginId: string; name: string; reviewSha256: string | null; effects: Record<string, unknown> }
+
 /** A host that answers like the IPC handler: unavailable until the plugin runs, approval only for the review it shows. */
-function fakeHost() {
+function fakeHost(upgrade?: { reviews: UpgradeRow[] } | "fails") {
   const runtime = new Set<(payload: { pluginId: string }) => void>();
   const enabled = new Set<(payload: { pluginId: string; enabled: boolean }) => void>();
   const uninstalled = new Set<(payload: { slug: string; success: boolean }) => void>();
@@ -40,6 +42,11 @@ function fakeHost() {
     state.approved.add(input.reviewSha256);
     return { ok: true as const, ...input };
   });
+  const getPluginBackgroundEffectsUpgrade = vi.fn(async () => {
+    if (upgrade === "fails") throw new Error("host unavailable");
+    return { ok: true as const, reviews: upgrade?.reviews ?? [] };
+  });
+  const finishPluginBackgroundEffectsUpgrade = vi.fn(async () => ({ ok: true as const }));
   const subscribe = <T,>(set: Set<T>) => (handler: T) => {
     set.add(handler);
     return () => { set.delete(handler); };
@@ -48,6 +55,7 @@ function fakeHost() {
     value: {
       getPluginBackgroundEffects,
       approvePluginBackgroundEffects,
+      ...(upgrade === undefined ? {} : { getPluginBackgroundEffectsUpgrade, finishPluginBackgroundEffectsUpgrade }),
       onPluginRuntimeUpdated: subscribe(runtime),
       onPluginEnabledChanged: subscribe(enabled),
       onPluginUninstallResult: subscribe(uninstalled),
@@ -60,7 +68,7 @@ function fakeHost() {
     await act(async () => { await Promise.resolve(); });
   };
   return {
-    state, getPluginBackgroundEffects, approvePluginBackgroundEffects, settle,
+    state, getPluginBackgroundEffects, approvePluginBackgroundEffects, getPluginBackgroundEffectsUpgrade, finishPluginBackgroundEffectsUpgrade, settle,
     started: () => act(() => { for (const handler of runtime) handler({ pluginId: ID }); }),
     enabledChanged: (value: boolean) => act(() => { for (const handler of enabled) handler({ pluginId: ID, enabled: value }); }),
     uninstalled: () => act(() => {
@@ -200,5 +208,93 @@ describe("the background effects card owner", () => {
 
     act(() => requestPluginBackgroundEffectsReview(ID));
     await card();
+  });
+});
+
+describe("the first-launch background effects card", () => {
+  const UPGRADE = "plugin-background-effects-upgrade-dialog";
+  const effects = { ownStorage: true, networkDestinations: ["api.example.test"], alertKinds: [], suggestionSources: [], llm: false, workers: false };
+  const upgradeCard = () => screen.findByTestId(UPGRADE);
+  const upgradeClosed = () => waitFor(() => expect(screen.queryByTestId(UPGRADE)).toBeNull());
+
+  it("shows one card from mount alone for every unapproved plugin, allows each from its row and says why an unpinned one cannot be", async () => {
+    const host = fakeHost({ reviews: [
+      { pluginId: ID, name: "Digest Plugin", reviewSha256: A, effects },
+      { pluginId: "unpinned-plugin", name: "Unpinned Plugin", reviewSha256: null, effects },
+    ] });
+    const answered = vi.fn();
+    const stop = onPluginBackgroundEffectsAnswered(answered);
+    render(<PluginBackgroundEffectsPrompt />);
+
+    const dialog = await upgradeCard();
+    noCard();
+    const row = within(dialog).getByTestId(`plugin-background-effects-upgrade-row-${ID}`);
+    const unpinned = within(dialog).getByTestId("plugin-background-effects-upgrade-row-unpinned-plugin");
+    expect(within(row).getByText("Digest Plugin")).toBeInTheDocument();
+    expect(within(row).getByText("api.example.test")).toBeInTheDocument();
+    expect(within(unpinned).getByText("출처가 고정되지 않았습니다. 마켓플레이스에서 다시 설치하세요.")).toBeInTheDocument();
+    expect(within(unpinned).queryByRole("button")).toBeNull();
+    fireEvent.click(within(row).getByRole("button", { name: "허용" }));
+    await waitFor(() => expect(within(row).getByText("허용됨")).toBeInTheDocument());
+    expect(host.approvePluginBackgroundEffects).toHaveBeenCalledExactlyOnceWith({ pluginId: ID, reviewSha256: A });
+    expect(answered).toHaveBeenCalledWith(ID);
+    expect(host.finishPluginBackgroundEffectsUpgrade).not.toHaveBeenCalled();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "나중에" }));
+    await upgradeClosed();
+    expect(host.finishPluginBackgroundEffectsUpgrade).toHaveBeenCalledTimes(1);
+    expect(answered).toHaveBeenCalledWith("unpinned-plugin");
+    expect(host.getPluginBackgroundEffectsUpgrade).toHaveBeenCalledTimes(1);
+    stop();
+  });
+
+  it("holds per-plugin cards while it is open, and Later leaves each listed review to its Review row", async () => {
+    const host = fakeHost({ reviews: [{ pluginId: ID, name: "Digest Plugin", reviewSha256: A, effects }] });
+    render(<PluginBackgroundEffectsPrompt />);
+    const dialog = await upgradeCard();
+    host.started();
+    await act(async () => { await Promise.resolve(); });
+    noCard();
+    expect(host.getPluginBackgroundEffects).not.toHaveBeenCalled();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "나중에" }));
+    await upgradeClosed();
+    await host.settle(1);
+    noCard();
+    host.started();
+    await host.settle(2);
+    noCard();
+    expect(host.approvePluginBackgroundEffects).not.toHaveBeenCalled();
+    expect(host.finishPluginBackgroundEffectsUpgrade).toHaveBeenCalledTimes(1);
+
+    act(() => requestPluginBackgroundEffectsReview(ID));
+    await card();
+  });
+
+  it("closes once every listed plugin is answered, and hands a review that changed to its own card", async () => {
+    const host = fakeHost({ reviews: [{ pluginId: ID, name: "Digest Plugin", reviewSha256: A, effects }] });
+    render(<PluginBackgroundEffectsPrompt />);
+    const dialog = await upgradeCard();
+    host.state.sha = B;
+    fireEvent.click(within(dialog).getByRole("button", { name: "허용" }));
+    await upgradeClosed();
+    expect(host.finishPluginBackgroundEffectsUpgrade).toHaveBeenCalledTimes(1);
+    await answer("허용");
+    expect(host.approvePluginBackgroundEffects.mock.calls).toEqual([[{ pluginId: ID, reviewSha256: A }], [{ pluginId: ID, reviewSha256: B }]]);
+  });
+
+  it.each([
+    ["nothing is owed", { reviews: [] }, 1],
+    ["the list cannot be read", "fails", 0],
+  ] as const)("asks per plugin as before when %s", async (_label, upgrade, finished) => {
+    const host = fakeHost(upgrade);
+    render(<PluginBackgroundEffectsPrompt />);
+    await waitFor(() => expect(host.getPluginBackgroundEffectsUpgrade).toHaveBeenCalledTimes(1));
+    await act(async () => { await Promise.resolve(); });
+    expect(host.finishPluginBackgroundEffectsUpgrade).toHaveBeenCalledTimes(finished);
+    expect(screen.queryByTestId(UPGRADE)).toBeNull();
+    host.started();
+    await answer("허용");
+    expect(host.approvePluginBackgroundEffects).toHaveBeenCalledExactlyOnceWith({ pluginId: ID, reviewSha256: A });
   });
 });
