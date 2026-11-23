@@ -20,6 +20,7 @@ const wrapWorkerCommandMock = vi.fn<
 const spawnMock = vi.fn();
 const trackMock = vi.fn();
 const admissionMock = vi.fn();
+const reaperAdmissionMock = vi.fn();
 // Whether the host runs under the OS sandbox. The primitive follows this one answer: wrap while it is true, spawn the caller's command as given while it is false. Defaults to true so the composition cases below see the wrap.
 const sandboxActiveMock = vi.fn<() => boolean>();
 
@@ -49,6 +50,7 @@ vi.mock("../asrt-sandbox.js", async (importOriginal) => ({
 }));
 vi.mock("../../main/managed-child-processes.js", () => ({
   assertManagedChildProcessAdmissionOpen: (label: string) => admissionMock(label),
+  assertProcessGroupReaperAvailable: () => reaperAdmissionMock(),
   trackManagedChildProcess: (child: unknown, opts: unknown) => trackMock(child, opts),
 }));
 vi.mock("node:child_process", () => ({ spawn: (...args: unknown[]) => spawnMock(...args) }));
@@ -73,6 +75,7 @@ beforeEach(() => {
   spawnMock.mockImplementation(() => fakeChild());
   trackMock.mockReset();
   admissionMock.mockReset();
+  reaperAdmissionMock.mockReset();
 });
 
 // The filesystem config the primitive handed ASRT on the last wrap.
@@ -495,6 +498,18 @@ describe("spawnConfinedChild reports the wrap it applied", () => {
       onWrapped: () => sandboxActiveMock.mockReturnValue(false),
     };
     await expect(spawnConfinedChild(spec)).rejects.toThrow(/requires active confinement/);
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(liveEgressInvocationCount()).toBe(before);
+  });
+
+  it("refuses a protected group before spawn if the reaper is unavailable", async () => {
+    setProcessPlatform("linux");
+    reaperAdmissionMock.mockImplementation(() => { throw new Error("Process group reaper is unavailable"); });
+    const before = liveEgressInvocationCount();
+    await expect(spawnConfinedChild({
+      command: "/usr/bin/example", args: [], label: "plugin-child:x", grantMode: "allow-list",
+      tempPrincipal: PRINCIPAL, baseEnv: {}, egressOwner: EGRESS_OWNER, requireWrap: true, requireProcessGroupReaper: true,
+    })).rejects.toThrow(/reaper is unavailable/);
     expect(spawnMock).not.toHaveBeenCalled();
     expect(liveEgressInvocationCount()).toBe(before);
   });

@@ -1709,7 +1709,7 @@ describe("the factory's launch reaches the spawn as decided", () => {
   });
 });
 
-it("stops a confined POSIX group even when the leader exits before its descendants", async () => {
+it.each([false, true])("stops a confined POSIX group after leader exit (clean EOF: %s)", async (cleanEof) => {
   const roots = spawnableRoots();
   const input = new PassThrough();
   const stdout = new PassThrough();
@@ -1728,10 +1728,10 @@ it("stops a confined POSIX group even when the leader exits before its descendan
       launch: { kind: "entry", childEntryPath: join(roots.context.pluginRoot!, "plugin.mjs") },
       envelope: { read: [], write: [] },
     });
-    plugin.link.terminate("explicit stop");
-    expect(kill).toHaveBeenCalledWith(-child.pid, "SIGTERM");
+    if (!cleanEof) plugin.link.terminate("explicit stop");
     child.exitCode = 0;
     child.emit("exit", 0, null);
+    expect(kill).toHaveBeenCalledWith(-child.pid, "SIGTERM");
     vi.advanceTimersByTime(TOOL_TIMEOUT_POLICY.pluginChildForceKillMs);
     expect(kill).toHaveBeenLastCalledWith(-child.pid, "SIGKILL");
     expect(child.kill).not.toHaveBeenCalled();

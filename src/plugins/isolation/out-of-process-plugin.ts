@@ -566,6 +566,7 @@ export async function spawnConfinedPluginChild(
       egressOwner: { kind: "worker", role: "plugin-child", pluginId: spec.pluginId },
       grantMode: process.platform === "win32" ? "deny-only" : "allow-list",
       requireWrap: processLaunch,
+      requireProcessGroupReaper: processLaunch,
       // The plugin's own temp directory, shared with its workers and bundled hooks and with no other principal.
       tempPrincipal: { kind: "plugin", id: spec.pluginId },
       allowRead: [...spec.envelope.read, sandboxHome.path],
@@ -636,23 +637,31 @@ export async function spawnConfinedPluginChild(
     });
     let terminated = false;
     const processGroup = confinement === "macos-sandbox" || confinement === "linux-bubblewrap";
+    const hasRemainingProcessGroup = (): boolean => {
+      const pid = child.pid;
+      if (!processGroup || pid === undefined || pid <= 1) return false;
+      try {
+        return process.kill(-pid, 0);
+      } catch (error) {
+        return (error as NodeJS.ErrnoException).code !== "ESRCH";
+      }
+    };
     const terminateChild = (): void => {
       if (terminated) return;
       terminated = true;
       const forceTimer = terminateChildProcess(child, TOOL_TIMEOUT_POLICY.pluginChildForceKillMs, { processGroup });
       child.once("exit", () => {
-        const pid = child.pid;
-        if (!processGroup || pid === undefined || pid <= 1) {
-          clearTimeout(forceTimer);
-          return;
-        }
-        try {
-          process.kill(-pid, 0);
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === "ESRCH") clearTimeout(forceTimer);
-        }
+        if (!hasRemainingProcessGroup()) clearTimeout(forceTimer);
       });
     };
+    const terminateRemainingGroup = (): void => {
+      if (!terminated && hasRemainingProcessGroup()) terminateChild();
+    };
+    // Clean stdin EOF can end the leader before the transport would signal it.
+    if (processGroup) {
+      if (alreadyExited) terminateRemainingGroup();
+      else child.once("exit", terminateRemainingGroup);
+    }
     // A holder that dies takes the grant's guarantee with it; the child it served stops rather than run on a grant nobody holds.
     grant?.onLost(terminateChild);
     let input: Readable = child.stdout;

@@ -29,6 +29,7 @@ export const PROCESS_GROUP_REAPER_SCRIPT = [
 ].join("\n");
 
 export interface ProcessGroupReaper {
+  assertAvailable(): void;
   retain(processGroupId: number): void;
   release(processGroupId: number): void;
   /** Close the reaper's stdin, which makes it kill every group still registered and exit. */
@@ -57,6 +58,7 @@ export const PROCESS_GROUP_REAPER_RESPAWN_MIN_INTERVAL_MS = 1_000;
 
 interface ProcessGroupReaperOptions {
   now?: () => number;
+  onUnavailable?: () => void;
 }
 
 /** Counts registrations per group, so a child handed from one tracker to another (foreground shell to background) stays covered. */
@@ -68,6 +70,12 @@ export function createProcessGroupReaper(
   const counts = new Map<number, number>();
   let reaper: ChildProcess | undefined;
   let lastRespawnAt = Number.NEGATIVE_INFINITY;
+  let recovering = false;
+  let respawnTimer: NodeJS.Timeout | undefined;
+
+  const isRunning = (child: ChildProcess): boolean =>
+    child.pid !== undefined && child.exitCode === null && child.signalCode === null
+    && child.stdin?.writable === true && !child.stdin.destroyed;
 
   const send = (line: string): void => {
     const stdin = reaper?.stdin;
@@ -77,42 +85,91 @@ export function createProcessGroupReaper(
     stdin.write(`${line}\n`);
   };
 
-  // True when it had to spawn a reaper, which has then been sent every registered group.
-  const ensureRunning = (): boolean => {
-    if (reaper !== undefined && reaper.exitCode === null && reaper.signalCode === null && reaper.stdin?.writable === true) return false;
+  function forget(current: ChildProcess, reason: string): void {
+    if (reaper !== current) return;
     reaper = undefined;
+    current.stdin?.destroy();
+    if (counts.size !== 0) beginRecovery(reason);
+  }
+
+  function start(): void {
     const next = spawnReaper();
+    next.once("error", (err) => forget(next, errorMessage(err)));
     if (!next.stdin) throw new Error("[process-group-reaper] reaper was spawned without a stdin pipe");
+    next.once("exit", (code, signal) => forget(next, `exit code=${code ?? "null"} signal=${signal ?? "null"}`));
+    next.stdin.on("error", (err) => forget(next, errorMessage(err)));
+    next.stdin.once("close", () => forget(next, "stdin closed"));
+    if (!isRunning(next)) {
+      next.stdin.destroy();
+      throw new Error("[process-group-reaper] reaper did not start with a writable stdin pipe");
+    }
     // The pipe and the reaper must not keep a headless host alive; the host's exit is what the reaper waits for.
     next.unref();
     (next.stdin as { unref?: () => void }).unref?.();
-    const forget = (reason: string): void => {
-      if (reaper !== next) return;
+    reaper = next;
+    try {
+      for (const id of counts.keys()) send(`+${id}`);
+    } catch (error) {
       reaper = undefined;
-      if (counts.size === 0) return;
-      // Until a reaper runs again nothing kills these groups if the host dies, so replace it now rather than at the next registration.
-      const at = now();
-      if (at - lastRespawnAt < PROCESS_GROUP_REAPER_RESPAWN_MIN_INTERVAL_MS) {
-        log.warn({ reason, groups: counts.size }, "process-group-reaper: reaper ended again within the respawn interval; next registration retries");
-        return;
-      }
-      lastRespawnAt = at;
-      log.warn({ reason, groups: counts.size }, "process-group-reaper: reaper ended while groups were registered; respawning");
+      next.stdin.destroy();
+      throw error;
+    }
+  }
+
+  function scheduleRespawn(): void {
+    const respawn = (): void => {
+      respawnTimer = undefined;
+      lastRespawnAt = now();
       try {
-        ensureRunning();
-      } catch (error) {
-        log.error({ err: errorMessage(error), groups: counts.size }, "process-group-reaper: respawn failed; next registration retries");
+        start();
+        recovering = false;
+      } catch {
+        scheduleRespawn();
       }
     };
-    next.once("error", (err) => forget(errorMessage(err)));
-    next.once("exit", (code, signal) => forget(`exit code=${code ?? "null"} signal=${signal ?? "null"}`));
-    next.stdin.on("error", (err) => forget(errorMessage(err)));
-    reaper = next;
-    for (const id of counts.keys()) send(`+${id}`);
+    const delay = PROCESS_GROUP_REAPER_RESPAWN_MIN_INTERVAL_MS - (now() - lastRespawnAt);
+    if (delay <= 0) {
+      respawn();
+      return;
+    }
+    respawnTimer = setTimeout(respawn, delay);
+    respawnTimer.unref();
+  }
+
+  function beginRecovery(reason: string): void {
+    recovering = true;
+    log.warn({ reason, groups: counts.size }, "process-group-reaper: protection lost; process plugin launches paused until recovery");
+    try {
+      options.onUnavailable?.();
+    } finally {
+      scheduleRespawn();
+    }
+  }
+
+  // A replacement receives every retained group before registration resumes.
+  const ensureRunning = (): boolean => {
+    if (reaper !== undefined) {
+      if (isRunning(reaper)) return false;
+      forget(reaper, "reaper is no longer writable");
+      if (reaper !== undefined) return true;
+    }
+    if (recovering) throw new Error("Process group reaper is unavailable");
+    start();
     return true;
   };
 
   return {
+    assertAvailable() {
+      try {
+        ensureRunning();
+      } catch (error) {
+        if (!recovering) {
+          lastRespawnAt = now();
+          beginRecovery(errorMessage(error));
+        }
+        throw new Error("Process group reaper is unavailable", { cause: error });
+      }
+    },
     retain(processGroupId) {
       if (!Number.isSafeInteger(processGroupId) || processGroupId <= 1) {
         throw new Error(`[process-group-reaper] invalid process group id ${processGroupId}`);
@@ -135,9 +192,12 @@ export function createProcessGroupReaper(
         return;
       }
       counts.delete(processGroupId);
-      if (reaper !== undefined && reaper.stdin?.writable === true) send(`-${processGroupId}`);
+      if (reaper !== undefined && isRunning(reaper)) send(`-${processGroupId}`);
     },
     shutdown() {
+      clearTimeout(respawnTimer);
+      respawnTimer = undefined;
+      recovering = false;
       counts.clear();
       const current = reaper;
       reaper = undefined;

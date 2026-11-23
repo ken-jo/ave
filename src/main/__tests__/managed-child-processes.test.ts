@@ -4,6 +4,7 @@ vi.mock("node:fs", async original => (await import("../../__tests__/support/simu
 
 import { EventEmitter } from "node:events";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 
@@ -30,6 +31,7 @@ vi.mock("node:child_process", async (importOriginal) => {
 import {
   __resetManagedChildProcessesForTest,
   assertManagedChildProcessAdmissionOpen,
+  assertProcessGroupReaperAvailable,
   forceKillAndDrainManagedChildProcesses,
   forceKillManagedChildProcesses,
   forceKillManagedChildProcess,
@@ -37,6 +39,7 @@ import {
   sealManagedChildProcessAdmission,
   trackManagedChildProcess,
 } from "../managed-child-processes.js";
+import { PROCESS_GROUP_REAPER_RESPAWN_MIN_INTERVAL_MS } from "../process-group-reaper.js";
 
 class FakeChildProcess extends EventEmitter {
   pid = -1;
@@ -60,6 +63,40 @@ afterEach(() => {
 const itPosix = process.platform === "win32" ? it.skip : it;
 
 describe("managed child process tracking", () => {
+  it("stops protected plugins on each reaper loss and refuses their launch until the timer restores protection", () => {
+    Object.defineProperty(process, "platform", { value: "linux" });
+    vi.useFakeTimers();
+    const signal = vi.spyOn(process, "kill").mockReturnValue(true);
+    const reapers = Array.from({ length: 3 }, (_, index) => Object.assign(new EventEmitter(), {
+      pid: 4_000 + index, exitCode: null, signalCode: null, stdin: new PassThrough(), unref: vi.fn(),
+    }));
+    const launchReaper = vi.mocked(spawn);
+    launchReaper.mockClear();
+    for (const reaper of reapers) launchReaper.mockReturnValueOnce(reaper as unknown as ChildProcess);
+    const track = (pid: number, requireProcessGroupReaper: boolean) => {
+      const child = Object.assign(makeChild(), { pid, spawnfile: "fixture", signalCode: null });
+      trackManagedChildProcess(child, { killProcessGroup: true, requireProcessGroupReaper });
+    };
+
+    track(5001, true);
+    track(6001, false);
+    reapers[0]!.emit("exit", 1, null);
+    expect(signal).toHaveBeenCalledWith(-5001, "SIGKILL");
+    expect(launchReaper).toHaveBeenCalledTimes(2);
+    assertProcessGroupReaperAvailable();
+    track(5002, true);
+    vi.advanceTimersByTime(100);
+    reapers[1]!.emit("exit", 1, null);
+    expect(signal).toHaveBeenCalledWith(-5002, "SIGKILL");
+    expect(signal).not.toHaveBeenCalledWith(-6001, "SIGKILL");
+    expect(() => assertProcessGroupReaperAvailable()).toThrow(/reaper is unavailable/);
+    expect(launchReaper).toHaveBeenCalledTimes(2);
+
+    vi.advanceTimersByTime(PROCESS_GROUP_REAPER_RESPAWN_MIN_INTERVAL_MS - 100);
+    expect(launchReaper).toHaveBeenCalledTimes(3);
+    expect(() => assertProcessGroupReaperAvailable()).not.toThrow();
+  });
+
   it.each([false, true])("never searches PATH for tree termination without a system root, asynchronous=%s", async asynchronous => {
     Object.defineProperty(process, "platform", { value: "win32" });
     for (const key of ["SystemRoot", "SYSTEMROOT", "windir", "WINDIR"]) vi.stubEnv(key, undefined);

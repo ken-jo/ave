@@ -52,6 +52,7 @@ import { assertMxcHolderPrivateDirectories, type MxcExtensionFilesystemOwnership
 import { buildSandboxedChildEnv, isSandboxWrapperEnvKey } from "../tools/safe-env.js";
 import {
   assertManagedChildProcessAdmissionOpen,
+  assertProcessGroupReaperAvailable,
   trackManagedChildProcess,
 } from "../main/managed-child-processes.js";
 import { shellQuote } from "../lib/shell-resolver.js";
@@ -107,6 +108,7 @@ export interface ConfinedChildSpec {
   readonly egressOwner: WorkerEgressOwner;
   readonly grantMode: ConfinementGrantMode;
   readonly requireWrap?: boolean;
+  readonly requireProcessGroupReaper?: boolean;
   // Ignored under `deny-only`, where ACLs grant reachability instead.
   readonly allowRead?: readonly string[];
   readonly allowWrite?: readonly string[];
@@ -445,6 +447,7 @@ export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<Confi
       throw new Error(`[confined-child] ${spec.label}: child requires active confinement`);
     }
     if (confinement !== "unconfined") assertSrtWinSpawnIntegrity(executable);
+    if (spec.requireProcessGroupReaper) assertProcessGroupReaperAvailable();
     child = spawn(executable, args, {
       stdio,
       shell: false,
@@ -468,7 +471,11 @@ export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<Confi
     running.once("close", () => egress.release());
     running.once("error", () => { if (running.pid === undefined) egress.release(); });
   }
-  trackManagedChildProcess(child, { label: spec.label, killProcessGroup: egress !== undefined && process.platform !== "win32" });
+  trackManagedChildProcess(child, {
+    label: spec.label,
+    killProcessGroup: egress !== undefined && process.platform !== "win32",
+    ...(spec.requireProcessGroupReaper ? { requireProcessGroupReaper: true } : {}),
+  });
   if (relayRequest === undefined) {
     return { child, confinement, stdin: child.stdin, stdout: child.stdout };
   }

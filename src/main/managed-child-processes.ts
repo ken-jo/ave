@@ -14,6 +14,7 @@ interface ManagedChildProcess {
   child: ChildProcess;
   label: string;
   killProcessGroup: boolean;
+  requireProcessGroupReaper?: boolean;
   processGroupId?: number;
   disposeTimer?: NodeJS.Timeout;
   disposalStartedAt?: number;
@@ -44,6 +45,7 @@ export function assertManagedChildProcessAdmissionOpen(label: string): void {
 export interface TrackManagedChildProcessOptions {
   label?: string;
   killProcessGroup?: boolean;
+  requireProcessGroupReaper?: boolean;
 }
 
 // Spawn and track together to preserve quit cleanup; detached POSIX children default to group-kill unless an external supervisor owns them.
@@ -55,13 +57,14 @@ export function spawnManaged(
 ): ChildProcess {
   const label = trackOptions.label ?? "child-process";
   assertManagedChildProcessAdmissionOpen(label);
+  if (trackOptions.requireProcessGroupReaper) assertProcessGroupReaperAvailable();
   // ESLint-style guardrail: callers MUST go through this helper. Direct `spawn()` imports outside of `managed-child-processes.ts` should be flagged by a
   // future lint rule (`no-restricted-imports` allowlisting this module only).
   const child = spawn(command, args, { windowsHide: true, ...spawnOptions });
   const inferredGroupKill =
     spawnOptions.detached === true && process.platform !== "win32";
   trackManagedChildProcess(child, {
-    label: trackOptions.label,
+    ...trackOptions,
     killProcessGroup: trackOptions.killProcessGroup ?? inferredGroupKill,
   });
   return child;
@@ -79,6 +82,7 @@ export function trackManagedChildProcess(
     child,
     label: options.label ?? "child-process",
     killProcessGroup: options.killProcessGroup === true,
+    requireProcessGroupReaper: options.requireProcessGroupReaper,
     processGroupId: resolveProcessGroupId(child, options),
     dispose: () => {},
     onSettled: () => {},
@@ -403,8 +407,18 @@ export function forceKillManagedChildProcess(child: ChildProcess, reason: string
 }
 
 function hostDeathReaper(): ProcessGroupReaper {
-  processGroupReaper ??= createProcessGroupReaper();
+  processGroupReaper ??= createProcessGroupReaper(undefined, {
+    onUnavailable: () => {
+      for (const entry of managedChildren) {
+        if (entry.requireProcessGroupReaper) void forceKillManagedChildProcess(entry.child, "process group reaper unavailable");
+      }
+    },
+  });
   return processGroupReaper;
+}
+
+export function assertProcessGroupReaperAvailable(): void {
+  hostDeathReaper().assertAvailable();
 }
 
 export function _closeProcessGroupReaperPipeForTest(): void {

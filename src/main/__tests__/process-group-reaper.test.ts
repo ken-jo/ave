@@ -106,6 +106,7 @@ describe.skipIf(process.platform === "win32")("process group reaper", () => {
 });
 
 class FakeReaper extends EventEmitter {
+  pid = 4000;
   exitCode: number | null = null;
   signalCode: NodeJS.Signals | null = null;
   readonly lines: string[] = [];
@@ -152,26 +153,26 @@ describe("process group reaper bookkeeping", () => {
     expect(fakes[0].unref).toHaveBeenCalled();
   });
 
-  it("replaces a reaper that ended while groups are registered, at most once per interval", () => {
-    let clock = 10_000;
+  it("replaces a reaper that dies twice within the interval without waiting for another registration", () => {
+    vi.useFakeTimers();
     const { fakes, spawnReaper } = fakeReapers();
-    const reaper = createProcessGroupReaper(spawnReaper, { now: () => clock });
-    reaper.retain(5001);
-    fakes[0].die();
-    expect(fakes).toHaveLength(2);
-    expect(fakes[1].lines).toEqual(["+5001"]);
-
-    // Ending again inside the interval trips the guard; the next registration brings a reaper back with every group.
-    fakes[1].die();
-    expect(fakes).toHaveLength(2);
-    reaper.retain(5002);
-    expect(fakes).toHaveLength(3);
-    expect(fakes[2].lines).toEqual(["+5001", "+5002"]);
-
-    clock += PROCESS_GROUP_REAPER_RESPAWN_MIN_INTERVAL_MS;
-    fakes[2].die();
-    expect(fakes).toHaveLength(4);
-    expect(fakes[3].lines).toEqual(["+5001", "+5002"]);
+    const reaper = createProcessGroupReaper(spawnReaper);
+    try {
+      reaper.retain(5001);
+      fakes[0]!.die();
+      expect(fakes).toHaveLength(2);
+      expect(fakes[1]!.lines).toEqual(["+5001"]);
+      vi.advanceTimersByTime(100);
+      fakes[1]!.die();
+      vi.advanceTimersByTime(PROCESS_GROUP_REAPER_RESPAWN_MIN_INTERVAL_MS - 101);
+      expect(fakes).toHaveLength(2);
+      vi.advanceTimersByTime(1);
+      expect(fakes).toHaveLength(3);
+      expect(fakes[2]!.lines).toEqual(["+5001"]);
+    } finally {
+      reaper.shutdown();
+      vi.useRealTimers();
+    }
   });
 
   it("does not replace a reaper that ended with no group registered", () => {
@@ -181,6 +182,28 @@ describe("process group reaper bookkeeping", () => {
     reaper.release(6001);
     fakes[0].die();
     expect(fakes).toHaveLength(1);
+  });
+
+  it("refuses initial admission when spawning returns no pid, then recovers without new registrations", () => {
+    vi.useFakeTimers();
+    const failed = Object.assign(new FakeReaper(), { pid: undefined });
+    const spawnReaper = vi.fn<() => ChildProcess>()
+      .mockReturnValueOnce(failed as unknown as ChildProcess)
+      .mockReturnValueOnce(new FakeReaper() as unknown as ChildProcess);
+    const onUnavailable = vi.fn();
+    const reaper = createProcessGroupReaper(spawnReaper, { onUnavailable });
+    try {
+      expect(() => reaper.assertAvailable()).toThrow(/reaper is unavailable/);
+      expect(() => reaper.assertAvailable()).toThrow(/reaper is unavailable/);
+      expect(spawnReaper).toHaveBeenCalledTimes(1);
+      expect(onUnavailable).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(PROCESS_GROUP_REAPER_RESPAWN_MIN_INTERVAL_MS);
+      expect(spawnReaper).toHaveBeenCalledTimes(2);
+      expect(() => reaper.assertAvailable()).not.toThrow();
+    } finally {
+      reaper.shutdown();
+      vi.useRealTimers();
+    }
   });
 
   it("undoes a registration whose reaper could not be started", () => {
