@@ -30,6 +30,7 @@ const options = opts(() => { if (!made.h) throw new Error("harness not ready"); 
     await run(h);
   } finally {
     for (const child of h.children) child.finish();
+    await h.drainAllRunWork();
     await h.cleanup();
   }
 }
@@ -1563,15 +1564,22 @@ it.each(["a reader", "an adoption", "a start"] as const)("a delete intent left w
   expect(ended()).toBeUndefined();
   const { archive: _, ...unheld } = JSON.parse(readFileSync(h.boardPath, "utf8")) as Record<string, unknown>;
   writeFileSync(h.boardPath, JSON.stringify(unheld));
+  let started: { itemId: number; run: ReturnType<Harness["start"]> } | undefined;
   if (event === "a reader") await h.engine.projectTemplateRuns([]);
   else if (event === "an adoption") await h.engine.adoptParkedTemplateRuns();
   else {
     const version = await h.confirm([stageOf("b")]);
-    void h.start(await h.addItem(version), h.local(version));
+    const itemId = await h.addItem(version);
+    started = { itemId, run: h.start(itemId, h.local(version)) };
   }
   await waitForRunEnd(h, before, id);
   expect(ended()).toEqual({ itemId: id, phase: "cancelled", message: "item-removed", at: expect.any(String) });
   expect(intentsOf(h)).toEqual([]);
+  // The start's own run ends here, so none of its board writes outlive the test.
+  if (started) {
+    (await h.untilLive(1, started.itemId))[0].finish();
+    expect(await started.run).toMatchObject({ status: "awaiting_approval" });
+  }
 }));
 
 for (const [how, input, code] of runFileRefusal) {
