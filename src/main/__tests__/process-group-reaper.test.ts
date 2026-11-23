@@ -1,10 +1,11 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter, once } from "node:events";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { posixProcessExists, spawnSacrificialHost, stopSacrificialHost, waitForFixture } from "../../__tests__/support/sacrificial-host.js";
 import {
   createProcessGroupReaper,
   PROCESS_GROUP_REAPER_RESPAWN_MIN_INTERVAL_MS,
@@ -15,15 +16,7 @@ import {
 const node = process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath;
 const started: number[] = [];
 
-function groupAlive(pgid: number): boolean {
-  try {
-    process.kill(-pgid, 0);
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
-    throw error;
-  }
-}
+const groupAlive = (pgid: number): boolean => posixProcessExists(-pgid);
 
 afterEach(() => {
   for (const pgid of started.splice(0)) {
@@ -103,6 +96,100 @@ describe.skipIf(process.platform === "win32")("process group reaper", () => {
     reaper.shutdown();
     await vi.waitFor(() => expect(groupAlive(child.pid!)).toBe(false), { timeout: 3_000, interval: 50 });
   });
+});
+
+const GATED_HOST = String.raw`
+  import { spawn } from "node:child_process";
+  import { once } from "node:events";
+  const [managedPath, reaperPath, target, marker] = process.argv.slice(1);
+  const { _spawnGatedManagedProcessForTest } = await import(managedPath);
+  const { createProcessGroupReaper, PROCESS_GROUP_REAPER_SPAWN } = await import(reaperPath);
+  const reaper = createProcessGroupReaper(target === "registration-written" ? () => {
+    const { command, args, options } = PROCESS_GROUP_REAPER_SPAWN;
+    const waitBeforeAck = 'printf() { IFS= read -r unused <&3; command printf "$@"; }\n';
+    return spawn(command, ["-c", waitBeforeAck + args[1]], { ...options, stdio: [...options.stdio, "pipe"] });
+  } : undefined);
+  if (target === "registration-written") {
+    const running = spawn("/bin/sleep", ["60"], { detached: true, stdio: "ignore" });
+    reaper.retain(running.pid);
+    process.send({ companion: running.pid });
+  }
+  let running;
+  await _spawnGatedManagedProcessForTest(
+    "/bin/sh", ["-c", 'printf running > "$1"; printf running; exec /bin/sleep 60', "payload", marker],
+    { stdio: ["ignore", "pipe", "ignore"] },
+    {
+      label: "gated-host-death-fixture",
+      onSpawn(child) {
+        process.send({ pgid: child.pid });
+        running = once(child.stdout, "data");
+      },
+      assertStillValid() {},
+    },
+    {
+      reaper,
+      async onBoundary(boundary) {
+        if (boundary !== target) return;
+        if (boundary === "released") await running;
+        process.send({ boundary });
+        await new Promise(() => {});
+      },
+    },
+  );
+`;
+
+describe.runIf(process.platform === "darwin" || process.platform === "linux")("process group launch handoff", () => {
+  it.each(["before-registration", "registration-written", "acknowledged", "released"])(
+    "leaves no live group when the host is killed at %s", async (boundary) => {
+      const dir = mkdtempSync(join(tmpdir(), "ave-launch-gate-"));
+      const marker = join(dir, "executed");
+      const host = spawnSacrificialHost(GATED_HOST, [
+        new URL("../managed-child-processes.ts", import.meta.url).href,
+        new URL("../process-group-reaper.ts", import.meta.url).href,
+        boundary, marker,
+      ]);
+      let pgid: number | undefined;
+      let companion: number | undefined;
+      let reached: string | undefined;
+      let hostError: Error | undefined;
+      host.on("error", (error) => { hostError = error; });
+      host.on("message", (message: { pgid?: number; companion?: number; boundary?: string }) => {
+        if (message.pgid !== undefined) pgid = message.pgid;
+        if (message.companion !== undefined) companion = message.companion;
+        if (message.boundary !== undefined) reached = message.boundary;
+      });
+      try {
+        await waitForFixture(boundary, () => {
+          if (hostError) throw hostError;
+          if (host.exitCode !== null || host.signalCode !== null) throw new Error("Sacrificial host exited before the launch boundary");
+          return reached;
+        });
+        expect(reached).toBe(boundary);
+        if (pgid === undefined) throw new Error("No launch group reported");
+        const group = pgid;
+        expect(groupAlive(group)).toBe(true);
+        expect(existsSync(marker)).toBe(boundary === "released");
+        if (boundary === "registration-written") {
+          if (companion === undefined) throw new Error("No companion group reported");
+          expect(groupAlive(companion)).toBe(true);
+        }
+        host.kill("SIGKILL");
+        await waitForFixture("host SIGKILL", () => host.signalCode ?? undefined);
+        expect(host.signalCode).toBe("SIGKILL");
+        await waitForFixture("group reaping", () =>
+          !groupAlive(group) && (companion === undefined || !groupAlive(companion)) ? true : undefined);
+        expect(existsSync(marker)).toBe(boundary === "released");
+        pgid = undefined;
+        companion = undefined;
+      } finally {
+        await stopSacrificialHost(host);
+        for (const group of [pgid, companion]) {
+          if (group !== undefined && groupAlive(group)) process.kill(-group, "SIGKILL");
+        }
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 class FakeReaper extends EventEmitter {

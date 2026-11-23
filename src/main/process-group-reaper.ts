@@ -15,7 +15,8 @@ const log = createLogger("ave");
 // terminal's Ctrl-C or Ctrl-\) cannot take it down with the host; HUP, INT and TERM sent to it directly are ignored as well. Plain POSIX sh, so it
 // needs no Electron runtime and costs one small shell per host.
 export const PROCESS_GROUP_REAPER_SCRIPT = [
-  "trap '' HUP INT TERM",
+  // Host death can close stdout during an ack. Keep reading stdin through EOF to reap the retained groups.
+  "trap '' HUP INT TERM PIPE",
   "groups=' '",
   "while IFS= read -r line; do",
   "  id=${line#?}",
