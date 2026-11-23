@@ -12,11 +12,12 @@ import { openEgressInvocation, type EgressInvocationOwner } from "../egress-invo
 import { egressIdentityStrength } from "../egress-identity.js";
 import { startEgressDenyMonitor } from "../egress-deny-monitor.js";
 import { openHostEgressListener } from "../egress-host-listener.js";
-import { prepareMxcShellLaunch } from "../../tools/mxc-shell-launch.js";
+import { prepareOwnedMxcShellLaunch } from "../../__tests__/support/contained-shell-launch.js";
 import type { SandboxEgressDecisionAuditEntry, SandboxEgressDenyAuditEntry, SandboxEgressFailureAuditEntry } from "../../audit/sandbox-audit.js";
 import { createUpstreamProxyRouter } from "../upstream-proxy.js";
 import { DEFAULT_UPSTREAM_PROXY, type UpstreamProxySettings } from "../../shared/upstream-proxy.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { registerMxcShellLaunchAdmissionFixture } from "../../__tests__/support/mxc-shell-launch-admission.js";
 import { sandboxCasesRun } from "../../plugins/isolation/__tests__/sandbox-cases.js";
 
 vi.mock("../asrt-sandbox.js", async (importOriginal) => ({
@@ -215,12 +216,14 @@ describe.runIf(process.platform === "win32")("egress grant class on Windows with
 });
 
 describe.runIf(process.platform === "win32")("egress grant class through the container lane", () => {
+  registerMxcShellLaunchAdmissionFixture(TOKEN, "fedcba9876543210fedcba9876543210");
+
   async function initializeProxy(callback: SandboxAskCallback) {
     await SandboxManager.initialize(proxyOnlyConfig(), callback);
   }
 
   async function launchFor(token: string) {
-    return prepareMxcShellLaunch({
+    const launch = await prepareOwnedMxcShellLaunch({
       egressToken: token,
       commandLine: "cmd.exe /d /c echo hi",
       cwd: String.raw`C:\work\repo`,
@@ -229,6 +232,8 @@ describe.runIf(process.platform === "win32")("egress grant class through the con
       timeoutMs: 5_000,
       exists: () => true,
     });
+    launch.activate();
+    return launch;
   }
 
   function laneFor(port: number) {
@@ -260,7 +265,7 @@ describe.runIf(process.platform === "win32")("egress grant class through the con
   });
 
   it("records a listener refusal in invocation output and network denials", async () => {
-    const invocation = openEgressInvocation(SHELL);
+    const invocation = openEgressInvocation({ ...SHELL, requiresListener: true });
     const approval = approvalFixture("shell", invocation.token);
     const rows: (SandboxEgressDenyAuditEntry | SandboxEgressDecisionAuditEntry | SandboxEgressFailureAuditEntry)[] = [];
     const store = SandboxManager.getSandboxViolationStore();

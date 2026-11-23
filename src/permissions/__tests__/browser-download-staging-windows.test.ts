@@ -9,6 +9,7 @@ import { PassThrough } from "node:stream";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, inject, it, vi } from "vitest";
 import { checkSandboxStampTargets } from "../../__tests__/support/ave-home-isolation-guard.js";
 import { withProvidedContext } from "../../__tests__/support/provided-context.js";
+import { registerMxcShellLaunchAdmissionFixture } from "../../__tests__/support/mxc-shell-launch-admission.js";
 import { claimRunDir, STALE_RUN_DIR_AGE_MS, sweepStaleRunDirs } from "../../__tests__/support/test-run-dirs.js";
 import { createTmpDirTracker } from "../../__tests__/support/tmp-dir-teardown.js";
 import { configureHostResources, getHostResources } from "../../main/host-resources.js";
@@ -423,7 +424,7 @@ const { TEST_WORKER_EGRESS_OWNER } = await import("../../__tests__/support/egres
 const { buildMandatorySandboxWritePolicy } = await import("../sandbox-write-policy.js");
 const { pinWindowsPaths, windowsPathKey } = await import("../../shared/windows-path-facts.js");
 const { assertWindowsGrantGrammar, pinWindowsGrantTargets } = await import("../windows-grant-targets.js");
-const { prepareMxcShellLaunch } = await import("../../tools/mxc-shell-launch.js");
+const { prepareOwnedMxcShellLaunch } = await import("../../__tests__/support/contained-shell-launch.js");
 const { existsSync, mkdirSync, mkdtempSync, rmdirSync } = await import("node:fs");
 const { tmpdir } = await import("node:os");
 const { join: hostJoin } = await vi.importActual<typeof import("node:path")>("node:path");
@@ -553,6 +554,8 @@ function containerAccess(filesystem: { readwritePaths: string[]; readonlyPaths: 
 
 type ContainerFilesystem = { readwritePaths: string[]; readonlyPaths: string[]; deniedPaths: string[] };
 
+registerMxcShellLaunchAdmissionFixture("staging-probe");
+
 /** The filesystem a container shell command is launched with, composed as `spawnPowerShellInMxc` composes it (the shell read
  * policy, the write floor and the mandatory write policy), ranked and encoded by the real launch preparation, and decoded from the
  * launcher's own arguments. */
@@ -563,7 +566,7 @@ async function containerShellRequest(input: { cwd: string; writePaths: readonly 
   const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy([input.cwd, ...sandboxWritePaths, ...(input.readPaths ?? [])], profileRoot, sandboxHome);
   const sensitiveDenyWrite = getDefaultSensitiveWriteDenyPaths();
   const mandatory = buildMandatorySandboxWritePolicy(sandboxWritePaths, undefined, sensitiveDenyWrite);
-  const launch = await prepareMxcShellLaunch({
+  const launch = await prepareOwnedMxcShellLaunch({
     egressToken: "staging-probe",
     commandLine: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -EncodedCommand AA==",
     cwd: input.cwd,

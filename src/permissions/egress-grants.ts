@@ -326,12 +326,14 @@ export class EgressGrantStore {
   }
 
   // Record a grant. `allowedScopes` is what the ask offered; a scope outside it, or one the subject cannot hold (a session grant without a conversation, a tab grant without a tab, a project grant without a project root), is an error, not a narrower grant.
+  // An aborted `signal` commits nothing and throws its reason. The commit is the in-memory insert, or for a persistent grant the file write inside the write queue, after the re-read; an abort after that does not undo it.
   async grant(
     scope: EgressGrantScope,
     allowedScopes: readonly EgressGrantScope[],
     subject: EgressGrantSubject,
     destination: EgressGrantDestination,
     now: Date = new Date(),
+    signal?: AbortSignal,
   ): Promise<void> {
     if (!isEgressGrantScope(scope)) throw new Error(`egress grant: unknown scope ${String(scope)}`);
     if (!allowedScopes.includes(scope)) throw new Error(`egress grant: scope ${scope} was not offered`);
@@ -340,6 +342,7 @@ export class EgressGrantStore {
     const network = grantNetwork(destination);
     if (egressScopesForNetwork([scope], network).length === 0) throw new Error("egress grant: scope cannot cover this network class");
     const key = destinationKey(destination);
+    signal?.throwIfAborted();
     switch (scope) {
       case "once":
         // A terminal's "Allow once" lets one connection through and is never held.
@@ -361,7 +364,7 @@ export class EgressGrantStore {
         await this.mutatePersistent((grants) => {
           if (grants.some((g) => g.scope === "project" && g.origin === "shell" && g.projectRoot === projectRoot && destinationKey(g) === key)) return grants;
           return [...grants, { scope: "project", origin: "shell", projectRoot, host: destination.host, port: destination.port, network: grantNetwork(destination), grantedAt: now.toISOString() }];
-        });
+        }, signal);
         return;
       }
       case "always": {
@@ -369,7 +372,7 @@ export class EgressGrantStore {
         await this.mutatePersistent((grants) => {
           if (grants.some((g) => g.scope === "always" && g.origin === origin && destinationKey(g) === key)) return grants;
           return [...grants, { scope: "always", origin, host: destination.host, port: destination.port, network: grantNetwork(destination), grantedAt: now.toISOString() }];
-        });
+        }, signal);
         return;
       }
     }
@@ -500,14 +503,16 @@ export class EgressGrantStore {
     return this.persistent;
   }
 
-  private mutatePersistent(mutate: (grants: readonly PersistentEgressGrant[]) => readonly PersistentEgressGrant[]): Promise<void> {
+  private mutatePersistent(mutate: (grants: readonly PersistentEgressGrant[]) => readonly PersistentEgressGrant[], signal?: AbortSignal): Promise<void> {
     // The store reads as absent in a refused home; rewriting it from that view would erase the user's file.
     try { assertAveHomeInputWritable(this.filePath); }
     catch (error) { return Promise.reject(error); }
     return this.writes(async () => {
       // Re-read under the queue so a second window's write is not lost.
       this.persistent = undefined;
-      const next = [...mutate(await this.loadPersistent())];
+      const current = await this.loadPersistent();
+      signal?.throwIfAborted();
+      const next = [...mutate(current)];
       const file: GrantFile = { version: FILE_VERSION, grants: next };
       if (this.filePath === egressGrantFilePath()) await openFeatureNamespace("permissions").writeJson("shell-egress-hosts.json", file);
       else await writeFileAtomicAtPath(this.filePath, `${JSON.stringify(file, null, 2)}\n`);

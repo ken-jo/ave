@@ -7,6 +7,8 @@ import type { EffectGateContext } from "./effect-enforcement.js";
 export interface ShellEgressOwner {
   readonly kind: "shell";
   readonly toolName: "bash" | "powershell";
+  /** The invocation was issued for a shell route with its own egress listener. */
+  readonly requiresListener?: true;
   // The provider's tool-use id, when the call carried one. Never the key.
   readonly toolUseId: string | undefined;
   // What an egress ask for this call needs to know. Required: a shell call that cannot say whether anyone can answer is treated as one nobody can.
@@ -77,10 +79,13 @@ export interface EgressInvocationRelease {
 
 interface LiveInvocation {
   readonly owner: EgressInvocationOwner;
-  readonly abortSignal: AbortSignal | undefined;
+  readonly abortSignal: AbortSignal;
+  readonly release: () => void;
 }
 
 const live = new Map<string, LiveInvocation>();
+// Released tokens are never drawn again, so a key names one invocation for the life of the process. Grows by one token per invocation.
+const retired = new Set<string>();
 const releaseListeners = new Set<(token: string, release: EgressInvocationRelease) => void>();
 
 // The token length in characters: 16 random bytes, hex-encoded.
@@ -89,10 +94,28 @@ export const EGRESS_INVOCATION_TOKEN_LENGTH = 32;
 export function openEgressInvocation(owner: EgressInvocationOwner, options: EgressInvocationOptions = {}): EgressInvocation {
   let token = randomBytes(EGRESS_INVOCATION_TOKEN_LENGTH / 2).toString("hex");
   // 128 random bits do not collide in practice; a collision would silently merge two owners, so it is re-drawn rather than assumed away.
-  while (live.has(token)) token = randomBytes(EGRESS_INVOCATION_TOKEN_LENGTH / 2).toString("hex");
-  live.set(token, { owner, abortSignal: options.abortSignal });
-  let released = false;
+  while (live.has(token) || retired.has(token)) token = randomBytes(EGRESS_INVOCATION_TOKEN_LENGTH / 2).toString("hex");
   let processGroup: number | undefined;
+  const ended = new AbortController();
+  const abortSignal = options.abortSignal === undefined ? ended.signal : AbortSignal.any([options.abortSignal, ended.signal]);
+  // Every observer runs; their failures are thrown together afterwards.
+  const release = (): void => {
+    if (live.get(token)?.release !== release) return;
+    live.delete(token);
+    retired.add(token);
+    ended.abort(new Error("Egress invocation was released"));
+    const failures: unknown[] = [];
+    for (const listener of [...releaseListeners]) {
+      try {
+        listener(token, { owner, processGroup });
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "egress invocation release observers failed");
+  };
+  live.set(token, { owner, abortSignal, release });
   return {
     token,
     owner,
@@ -100,13 +123,12 @@ export function openEgressInvocation(owner: EgressInvocationOwner, options: Egre
       if (!Number.isInteger(pgid) || pgid <= 1) throw new Error(`egress invocation: invalid process group ${String(pgid)}`);
       processGroup = pgid;
     },
-    release: () => {
-      if (released) return;
-      released = true;
-      live.delete(token);
-      for (const listener of releaseListeners) listener(token, { owner, processGroup });
-    },
+    release,
   };
+}
+
+export function releaseEgressInvocation(token: string): void {
+  live.get(token)?.release();
 }
 
 // The live owner of a token, or undefined for a released or foreign key.
@@ -114,7 +136,7 @@ export function egressInvocationOwner(token: string): EgressInvocationOwner | un
   return live.get(token)?.owner;
 }
 
-// The abort signal a live invocation was opened with, if any.
+// A live invocation's signal: aborted with the signal it was opened with, or when its token is released.
 export function egressInvocationAbortSignal(token: string): AbortSignal | undefined {
   return live.get(token)?.abortSignal;
 }
