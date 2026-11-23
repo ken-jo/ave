@@ -15,8 +15,6 @@ export async function captureBrowserTiles(
   const { createCanvas, loadImage } = await import("@napi-rs/canvas");
   throwIfAborted(signal);
   const canvas = createCanvas(width, height), context = canvas.getContext("2d");
-  // Keep neighboring screenshot rows from blending when the device scale is fractional.
-  context.imageSmoothingEnabled = false;
   let copied = 0;
   let initialScale: number | undefined;
   while (copied < height) {
@@ -50,7 +48,11 @@ export async function captureBrowserTiles(
     initialScale = scale;
     const rows = Math.min(height - copied, Math.floor(viewport.clientHeight - skip));
     if (!Number.isFinite(scale) || scale <= 0 || rows < 1 || image.height <= skip * scale) throw new BrowserActionError("screenshot-unavailable", "the tile has no valid capture scale");
-    context.drawImage(image, 0, skip * scale, Math.min(image.width, width * scale), Math.min(image.height - skip * scale, rows * scale), 0, copied, width, rows);
+    // Decoded images can be prefiltered across row boundaries during fractional downsampling.
+    // Copy at device size so the stitch applies its filter directly to the source pixels.
+    const raster = scale > 1 && !Number.isInteger(scale) ? createCanvas(image.width, image.height) : undefined;
+    raster?.getContext("2d").drawImage(image, 0, 0);
+    context.drawImage(raster ?? image, 0, skip * scale, Math.min(image.width, width * scale), Math.min(image.height - skip * scale, rows * scale), 0, copied, width, rows);
     copied += rows;
   }
   const bytes = await canvas.encode("png");

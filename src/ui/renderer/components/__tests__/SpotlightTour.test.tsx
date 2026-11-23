@@ -726,6 +726,7 @@ describe("SpotlightTour ring", () => {
     const backdrop = await findByTestId("spotlight-tour:backdrop");
     expect(backdrop.getAttribute("data-dimming")).toBe("false");
     expect(backdrop.style.backgroundColor).toBe("transparent");
+    expect(backdrop.style.backgroundImage).toBe("none");
     const styles = readStyles();
     const ringRule = ruleBody(styles, ".ave-tour-ring");
     expect(ringRule).toContain("100vmax hsl(var(--overlay) / var(--opacity-emphatic))");
