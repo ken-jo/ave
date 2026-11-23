@@ -119,6 +119,8 @@ const refused: Row[] = [
   ["registrations._join.gitdir", ["registrations", "_join", "gitdir"], at => join(at.otherRoot, JOIN_DIR, ".git")],
   // A commit the record would hand to git, written as an option that names a file to write.
   ...[["stages", "s1", "base"], ["stages", "s1", "sealCommit"], ["merging"]].map((path): Row => [path.join("."), path, () => `--output=${keptFile()}`]),
+  ["baseCommit, as such an option,", ["baseCommit"], () => `--output=${keptFile()}`],
+  ["refs[0].oid, as such an option,", ["refs", 0, "oid"], () => `--output=${keptFile()}`],
 ];
 
 /** A field that names the project or its repository: the run folder is still the run's and goes; the repository is left as it is. */
