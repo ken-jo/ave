@@ -67,7 +67,7 @@ it("the production parts give a discard the project of each run whose record wen
   const atOnce: { removed: readonly RemovedRun[]; projects: Map<string, string> | undefined }[] = [];
   const h = await stageRunHarness({ wiring: (store, harness) => {
     const parts = workflowEngineExtensions(store, harness.templates);
-    vi.spyOn(parts.workspace, "discard").mockImplementation(async (projects) => { given.push(new Map(projects)); });
+    vi.spyOn(parts.workspace, "discard").mockImplementation(async (projects) => { given.push(new Map(projects)); return []; });
     // A row's removal asks for a discard as soon as its record's has been announced.
     const announce = store.runs.onRunsRemoved;
     store.runs.onRunsRemoved = (removed) => {
@@ -101,3 +101,43 @@ it("the production parts give a discard the project of each run whose record wen
     await h.cleanup();
   }
 });
+
+/** The production parts with a provider whose discards are noted and take in hand the runs `taken` names; `announce` is a removal
+ * the run store tells of, and resolves to what the discard it asked for was given, once that discard's answer is taken in. */
+async function withNotedDiscards(run: (announce: (runs: [runId: string, projectRoot: string][]) => Promise<Map<string, string> | undefined>, taken: string[]) => Promise<void>): Promise<void> {
+  const given: Map<string, string>[] = [];
+  const taken: string[] = [];
+  const h = await stageRunHarness({ wiring: (store, harness) => {
+    const parts = workflowEngineExtensions(store, harness.templates);
+    vi.spyOn(parts.workspace, "discard").mockImplementation(async (projects) => { given.push(new Map(projects)); return [...taken]; });
+    return { ...parts, workspace: harness.workspace, workspaceBinding: undefined };
+  } });
+  try {
+    const pin = h.pinOf(await h.confirm([stageOf("a")]));
+    await run(async (runs) => {
+      const asked = given.length;
+      h.board.runs.onRunsRemoved?.(runs.map(([runId, projectRoot]): RemovedRun => ({ runId, itemId: 1, runStartedBy: { kind: "local-create-and-run", pin, projectRoot } })));
+      await vi.waitFor(() => expect(given.length).toBeGreaterThan(asked), { timeout: 5000 });
+      await new Promise(resolve => setImmediate(resolve));
+      return given.at(-1);
+    }, taken);
+  } finally {
+    await h.cleanup();
+  }
+}
+
+it("the production parts keep a removed record's project only until a discard has taken its run in hand", () => withNotedDiscards(async (announce, taken) => {
+  // The provider took the first two in hand, one taken apart and one left whole: it tells them alike. The third's row is still listed.
+  taken.push("cleaned", "left-whole");
+  expect(await announce([["cleaned", "/projects/a"], ["left-whole", "/projects/b"], ["waiting", "/projects/c"]]))
+    .toEqual(new Map([["cleaned", "/projects/a"], ["left-whole", "/projects/b"], ["waiting", "/projects/c"]]));
+  taken.length = 0;
+  expect(await announce([["next", "/projects/d"]])).toEqual(new Map([["waiting", "/projects/c"], ["next", "/projects/d"]]));
+}));
+
+it("the production parts keep the projects of the newest 256 removed records that wait, and no older one", () => withNotedDiscards(async (announce) => {
+  await announce([["stale", "/projects/a"], ["kept", "/projects/b"]]);
+  const later = await announce(Array.from({ length: 255 }, (_, index): [string, string] => [`later-${index}`, "/projects/c"]));
+  expect(later?.size).toBe(256);
+  expect([later?.has("stale"), later?.get("kept"), later?.has("later-254")]).toEqual([false, "/projects/b", true]);
+}));

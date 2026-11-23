@@ -161,10 +161,11 @@ it("a run whose release was refused for want of its project goes at a discard gi
   const provider = createStageWorkspaceProvider({ git: createHostGit({ env: fx.env }), removable: async () => run => run.itemId !== 8 });
   await provider.release(closed, "all");
   expectLeftWhole(at, "project.root");
-  // An entry the run file held with no project carries none.
-  await provider.discard(new Map());
+  // An entry the run file held with no project carries none. Left whole or taken apart, the run was taken in hand: what the caller
+  // held for it has been used.
+  expect(await provider.discard(new Map())).toEqual([at.target.run.runId]);
   expectLeftWhole(at, "project.root");
-  await provider.discard(new Map([[at.target.run.runId, fx.repo]]));
+  expect(await provider.discard(new Map([[at.target.run.runId, fx.repo]]))).toEqual([at.target.run.runId]);
   expect(existsSync(at.runRoot)).toBe(false);
   expect(existsSync(at.admin)).toBe(false);
   expect(fx.userGit(fx.repo, "branch", "--list", at.branch)).toBe("");

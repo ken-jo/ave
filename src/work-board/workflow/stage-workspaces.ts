@@ -952,20 +952,24 @@ ${fields(side)}`;
     return (await options.removable?.())?.(run) === true;
   }
 
-  async function discard(projects: ReadonlyMap<string, string>): Promise<void> {
+  async function discard(projects: ReadonlyMap<string, string>): Promise<readonly string[]> {
+    const taken: string[] = [];
     // A first selection only, so that the stores are read again for the few runs it names and not for every folder.
     const selected = await options.removable?.();
-    if (selected === undefined) return;
+    if (selected === undefined) return taken;
     for (const seen of recordedRuns()) {
       const { runId, itemId } = seen.file;
       if (!selected({ runId, itemId })) continue;
       await serial(runId, async () => {
         if (!(await removableNow({ runId, itemId }))) return;
         const current = heldStill(seen);
-        if (current !== null) await releaseIn({ ...current, ...liveOf(current.file, projects.get(runId)) }, "all", "drop");
+        if (current === null) return;
+        taken.push(runId);
+        await releaseIn({ ...current, ...liveOf(current.file, projects.get(runId)) }, "all", "drop");
       });
       roots.delete(runSlug(itemId, runId));
     }
+    return taken;
   }
 
   async function sweep(activeRunIds: readonly string[], projects?: ReadonlyMap<string, string>): Promise<void> {
