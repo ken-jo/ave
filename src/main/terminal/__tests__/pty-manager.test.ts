@@ -1690,31 +1690,27 @@ describe("pty-manager typing an approved agent command", () => {
       expect(vi.getTimerCount()).toBe(0);
     });
 
-    it.each(["empty report", "confirmed report"] as const)("latches the %s published before its listener attaches", async (wait) => {
-      const { pty, prompt, shell, report } = await zshTerminal(3);
-      pty.emitData(prompt());
+    it.each(["empty report", "confirmed report"] as const)("requires a new %s after writing its query", async (wait) => {
+      const { pty, through, emit } = await pauseAt(wait);
       const tracker = getTerminalBlockTracker(TAB);
       if (!tracker) throw new Error("Missing terminal tracker");
       const subscribe = tracker.subscribe.bind(tracker);
-      const beforeQuery = wait === "empty report" ? writes.slice(0, 1) : writes.slice(0, 3);
-      // For the confirmed report, delay the echo until its own listener is already attached.
-      if (wait === "confirmed report") shell.shows = () => "";
-      const typing = typeTerminalCommand(TAB, 3, line, "/w");
-      if (wait === "confirmed report") {
-        await flushEvents();
-        expect(pty.written).toEqual(beforeQuery);
-      }
-      const publish = vi.fn(() => report(wait === "empty report" ? "" : line));
-      const subscription = vi.spyOn(tracker, "subscribe").mockImplementation((...args) => {
-        if (pty.written.length === beforeQuery.length) publish();
-        return subscribe(...args);
+      const publish = vi.fn(emit);
+      const subscription = vi.spyOn(tracker, "subscribe").mockImplementation((listener, options) => {
+        if (!options?.includeEditLineOutput && pty.written.length === through - 1) publish();
+        return subscribe(listener, options);
       });
       try {
-        if (wait === "confirmed report") pty.emitData(line);
+        const typing = typeTerminalCommand(TAB, 3, line, "/w");
         await flushEvents();
         expect(publish).toHaveBeenCalledTimes(1);
-        expect(pty.written).toEqual(writes.filter((_, index) => index !== beforeQuery.length));
+        expect(pty.written).toEqual(writes.slice(0, through));
+        expect(tracker.editLineReport()?.line).toBe(wait === "empty report" ? "" : line);
+        emit();
+        await flushEvents();
+        expect(pty.written).toEqual(writes);
         await expect(typing).resolves.toEqual({ ok: true, firstBlockId: 1 });
+        expect(vi.getTimerCount()).toBe(0);
       } finally {
         subscription.mockRestore();
       }

@@ -1881,6 +1881,7 @@ function waitForEditorState<T>(
     if (done) return;
     expiresAt = Date.now() + EDIT_LINE_TIMEOUT_MS;
     timer = setTimeout(stop, EDIT_LINE_TIMEOUT_MS);
+    if (write) check();
   });
 }
 
@@ -1895,13 +1896,17 @@ async function requestEditLine(
   if (!blocks.supportsEditLineQuery() || !target.isLive() || interrupted()
     || blocks.promptEndCount() !== prompt || blocks.typedSincePromptEnd()
     || (state !== "ready" && state !== "pending-input")) return null;
-  const generation = blocks.editLineReportGeneration();
+  let generationAtQuery: number | undefined;
   return waitForEditorState(blocks, target.signal, () => {
     if (!target.isLive() || interrupted() || blocks.promptEndCount() !== prompt
       || !blocks.supportsEditLineQuery() || blocks.typedSincePromptEnd()) return null;
+    if (generationAtQuery === undefined) return undefined;
     const report = blocks.editLineReport();
-    return report && report.generation > generation ? report : undefined;
-  }, { write: () => target.write(TERMINAL_EDIT_LINE_QUERY) });
+    return report && report.generation > generationAtQuery ? report : undefined;
+  }, { write: () => {
+    generationAtQuery = blocks.editLineReportGeneration();
+    target.write(TERMINAL_EDIT_LINE_QUERY);
+  } });
 }
 
 /** Wait until the prompt typed at (`prompt`, its end count) shows exactly `line` in its edit line,
