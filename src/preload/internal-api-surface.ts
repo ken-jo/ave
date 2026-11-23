@@ -1153,10 +1153,11 @@ export function buildInternalApiSurface() {
     ipcRenderer.on(WORK_BOARD.runStarted, listener);
     return () => ipcRenderer.removeListener(WORK_BOARD.runStarted, listener);
   },
-  // Coarse marker: a run finished for `itemId` with a terminal status (renderer clears the running flag). `status` mirrors WorkItemRunResult.status.
+  // Coarse marker: a run for `itemId` returned its result (renderer clears the running flag). `status` mirrors WorkItemRunResult.status.
   onWorkBoardRunFinished: (
     handler: (payload: {
       itemId: number;
+      /** For a template run: the state it went quiet in, which may already be past a gate. Gate state comes from events. */
       status: import("../shared/work-board-types.js").WorkItemRunResult["status"];
       at: string;
     }) => void,

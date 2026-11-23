@@ -1203,6 +1203,7 @@ export type AvePreloadApi = {
   onWorkBoardRunFinished: (
     handler: (payload: {
       itemId: number;
+      /** For a template run: the state it went quiet in, which may already be past a gate. Gate state comes from events. */
       status: import("../../shared/work-board-types.js").WorkItemRunResult["status"];
       at: string;
     }) => void,
