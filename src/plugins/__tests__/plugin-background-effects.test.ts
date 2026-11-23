@@ -439,6 +439,31 @@ describe("an approval and the install it was given for", () => {
     expect(restarted.isApproved(local(T2))).toBe(false);
     expect(local(T1).installedAt).toBe(T1);
   });
+
+  it("never lets a stampless candidate inherit an unsaved removal of a stampless local approval", async () => {
+    const entry = { installSource: "local-dev" as const, manifestSha256: "d".repeat(64) };
+    const unstamped = (committed: boolean) => backgroundEffectSubject(declaring(), entry, committed);
+    const path = approvalsFile();
+    const session = new PluginBackgroundEffectApprovals(path);
+    session.approve(unstamped(true));
+    atomicWrites.fail = true;
+    session.revoke("sample");
+    atomicWrites.fail = false;
+    const before = readFileSync(path, "utf8");
+
+    const restarted = new PluginBackgroundEffectApprovals(path);
+    let read = unstamped(false);
+    restarted.bindSubject("sample", async () => read);
+    await settleMacrotask();
+    expect(restarted.isApproved(read)).toBe(false);
+    read = backgroundEffectSubject(declaring(), { ...entry, installedAt: T2 }, true);
+    restarted.followInstall("sample");
+    await settleMacrotask();
+    expect(restarted.isApproved(read)).toBe(false);
+    expect(readFileSync(path, "utf8")).toBe(before);
+    // A stampless install the registry has committed is still the one it was approved for.
+    expect(new PluginBackgroundEffectApprovals(path).isApproved(unstamped(true))).toBe(true);
+  });
 });
 
 describe("the subject a running plugin binds for its review", () => {

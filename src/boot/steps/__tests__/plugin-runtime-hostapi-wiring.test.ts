@@ -1538,6 +1538,30 @@ describe("HostApi incarnation authority", () => {
     }
   });
 
+  it("binds a local development install's background approval to the stamp its committed registry entry carries", async () => {
+    const dir = tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-background-local-")));
+    runtimeTestState.registryPath = join(dir, "registry.json");
+    try {
+      const manifest = {
+        id: "plugin-a", name: "Sample", version: "1.0.0", entry: "dist/plugin.js", description: "sample", tools: [], config: {},
+        networkAccess: { allowedDomains: ["api.openai.com"] },
+      } as PluginManifest;
+      const local: PluginRegistryTrust = { installSource: "local-dev", manifestSha256: "c".repeat(64) };
+      runtimeTestState.readPluginRegistry.mockResolvedValue({
+        version: 1, plugins: [{ id: "plugin-a", manifestPath: "plugin-a/plugin.json", ...local, installedAt: "2026-11-01T00:00:00.000Z" }],
+      });
+      writeFileSync(runtimeTestState.registryPath, "local install committed");
+      const approvals = new PluginBackgroundEffectApprovals(join(dir, "approvals.json"));
+      const createHostApi = await initAndGetFactory(makeSettingsService(new Map()), undefined, undefined, undefined, {
+        backgroundEffectApprovals: approvals,
+      });
+      createHostApi("plugin-a", manifest, pluginDataDirIn(dir), activeIncarnation(), "plugin-a", local);
+      expect(await approvals.currentSubject("plugin-a")).toMatchObject({ installedAt: "2026-11-01T00:00:00.000Z", committed: true });
+    } finally {
+      runtimeTestState.registryPath = fixture.path("registry.json");
+    }
+  });
+
   it.each(["strict", "default"] as const)("in %s mode keeps approved background effects to their declared targets", async (mode) => {
     const transport = vi.fn(async (input: string | URL | Request) => String(input).includes("/hop")
       ? new Response(null, { status: 302, headers: { location: "https://93.184.216.35/landing" } })

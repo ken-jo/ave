@@ -166,6 +166,11 @@ function approvalRecord(pluginId: string, source: string, scopeSha256: string, i
   return { pluginId, source, scopeSha256, ...(installedAt === null ? {} : { installedAt }) };
 }
 
+/** The install a record was given for; with no stamp on either side only a committed install counts, never an update candidate. */
+function sameInstall(record: ApprovalRecord, subject: PluginBackgroundEffectSubject): boolean {
+  return record.installedAt === (subject.installedAt ?? undefined) && (subject.installedAt !== null || subject.committed);
+}
+
 /**
  * One approval per plugin, bound to its install source, declared scope and the install it was given for; an unreadable file
  * approves nothing and never stops boot. A removal whose write failed leaves the old record on disk, and its older install stamp
@@ -233,7 +238,7 @@ export class PluginBackgroundEffectApprovals {
     const record = this.approvals.get(subject.pluginId);
     return subject.declared && subject.source !== null
       && record?.source === subject.source && record.scopeSha256 === subject.scopeSha256
-      && (record.installedAt === (subject.installedAt ?? undefined) || this.current.has(subject.pluginId));
+      && (sameInstall(record, subject) || this.current.has(subject.pluginId));
   }
 
   approve(subject: PluginBackgroundEffectSubject): void {
@@ -299,7 +304,7 @@ export class PluginBackgroundEffectApprovals {
     if (this.subjects.get(pluginId)?.at(-1) !== read) return;
     const record = this.approvals.get(subject.pluginId);
     if (!record || record.source !== subject.source || record.scopeSha256 !== subject.scopeSha256) return;
-    if (record.installedAt === (subject.installedAt ?? undefined)) {
+    if (sameInstall(record, subject)) {
       this.current.add(subject.pluginId);
       return;
     }
