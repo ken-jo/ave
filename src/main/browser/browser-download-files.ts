@@ -1,10 +1,10 @@
 import { closeSync, constants, existsSync, fstatSync, linkSync, lstatSync, openSync, readdirSync, readSync, unlinkSync, type BigIntStats } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
-import { open, type FileHandle } from "node:fs/promises";
+import { copyFile, open, type FileHandle } from "node:fs/promises";
 import { join } from "node:path";
 import { replaceStagedFile } from "../../lib/atomic-file.js";
 import { createLogger } from "../../lib/logger.js";
-import { renameFile, renameFileOnce } from "../../lib/transient-fs-lock-retry.js";
+import { renameFile, retryOnFileLock } from "../../lib/transient-fs-lock-retry.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { forceKillManagedChildProcess, spawnManaged } from "../managed-child-processes.js";
 import { windowsPathKindHelperIn } from "../windows-path-kind-launcher.js";
@@ -311,8 +311,8 @@ function linkBack(hiddenPath: string, path: string, why: string): boolean {
   return true;
 }
 
-// A folder without hard links: the file is checked by content at the hidden name, read through a new descriptor, and put back by a rename
-// only while nothing is at its name. Between that check and the rename a file put there could be replaced; only such folders take that.
+// A folder without hard links: the file is checked by content at the hidden name, read through a new descriptor, and put back as a new
+// file at its name, which never replaces one put there meanwhile.
 async function removeByContent(
   folder: HeldDirectory, original: string, at: string, content: Fingerprint,
   remove: (folder: HeldDirectory, name: string) => Promise<"removed" | "absent" | "cancelled">,
@@ -324,42 +324,54 @@ async function removeByContent(
     if (typeof moved !== "string") return moved;
     hidden = moved;
   }
-  const hiddenPath = join(folder.path, hidden);
-  const path = join(folder.path, original);
   const there = contentAt(folder, hidden);
   if (there === "absent") return { outcome: "absent" };
+  const keep: LeftPart = { name: hidden, identity };
   if (typeof there !== "string" && sameContent(there.content, content)) {
     const removed = await removeMoved(folder, hidden, remove);
     if (removed === "removed" || removed === "absent") return { outcome: removed };
-    return { outcome: "left", at: { name: await renameBack(hiddenPath, path, removed) ? original : hidden, identity } };
+    return { outcome: "left", at: await copyBack(folder, hidden, original, removed) ?? keep };
   }
   const why = typeof there !== "string" || there === "other" ? "it is not the file that was written"
     : there === "unheld" ? "its folder is no longer the chosen one" : "it could not be read";
-  const back = await renameBack(hiddenPath, path, why);
-  if (typeof there !== "string" || there === "other") return { outcome: "left", at: back ? null : { name: hidden, identity } };
-  return { outcome: "left", at: { name: back ? original : hidden, identity } };
+  const back = await copyBack(folder, hidden, original, why);
+  if (typeof there !== "string" || there === "other") return { outcome: "left", at: back === null ? keep : null };
+  return { outcome: "left", at: back ?? keep };
 }
 
-// Rename a file moved aside back to its own name only while nothing is at that name; true once it is there. Logs where it is left.
-async function renameBack(hiddenPath: string, path: string, why: string): Promise<boolean> {
+// Copy a file moved aside back to its own name as a new file, which fails on anything at that name rather than replacing it, and remove it
+// under the hidden name only once the copy is seen to hold the same bytes. Returns where it then is and how it is known there (a copy has
+// its own last change), or null when it stays under the hidden name. Logs where it is left.
+async function copyBack(folder: HeldDirectory, hidden: string, original: string, why: string): Promise<LeftPart | null> {
+  const hiddenPath = join(folder.path, hidden);
+  const path = join(folder.path, original);
   try {
-    lstatSync(path);
-    log.warn({ path, movedTo: hiddenPath, why }, "a temporary download file is left under another name: something is at its own name");
-    return false;
+    await copyFile(hiddenPath, path, constants.COPYFILE_EXCL);
   } catch (error) {
-    if (codeOf(error) !== "ENOENT") {
-      log.warn({ path, movedTo: hiddenPath, why, code: codeOf(error) }, "a temporary download file is left under another name: its own name could not be checked");
-      return false;
-    }
+    const message = codeOf(error) === "EEXIST" ? "a temporary download file is left under another name: something is at its own name"
+      : "a temporary download file is left under another name, and could not be put back";
+    log.warn({ path, movedTo: hiddenPath, why, code: codeOf(error) }, message);
+    return null;
   }
+  const copied = contentAt(folder, original);
+  const source = contentAt(folder, hidden);
+  if (typeof copied === "string" || typeof source === "string" || !sameBytes(copied.content, source.content)) {
+    log.warn({ path, alsoAt: hiddenPath, why }, "a temporary download file is left under another name: its copy at its own name could not be checked");
+    return null;
+  }
+  const back: LeftPart = { name: original, identity: { kind: "fingerprint", content: copied.content } };
   try {
-    await renameFileOnce(hiddenPath, path);
+    await retryOnFileLock(async () => { unlinkSync(hiddenPath); });
   } catch (error) {
-    log.warn({ path, movedTo: hiddenPath, why, code: codeOf(error) }, "a temporary download file is left under another name, and could not be put back");
-    return false;
+    log.warn({ path, alsoAt: hiddenPath, why, code: codeOf(error) }, "a temporary download file is left, put back, but also still under another name");
+    return back;
   }
   log.warn({ path, why }, "a temporary download file is left, put back at its name");
-  return true;
+  return back;
+}
+
+function sameBytes(a: Fingerprint, b: Fingerprint): boolean {
+  return a.size === b.size && a.head === b.head && a.tail === b.tail;
 }
 
 // The identity of the ordinary file `name` in `folder` while `folder` is still the held one, or null.

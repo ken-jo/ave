@@ -57,6 +57,8 @@ const boundary = vi.hoisted(() => ({
   warn: vi.fn(),
   // Runs just before every rename through node:fs, and may throw in its place.
   beforeRename: null as ((from: string, to: string) => void) | null,
+  // Runs just before every file copy through node:fs/promises.
+  beforeCopy: null as ((from: string, to: string) => void) | null,
   // Runs just after every lstat through node:fs.
   afterLstat: null as ((path: string) => void) | null,
   // Every hard link made through node:fs, as [existing, new].
@@ -96,7 +98,11 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   const { renameSync } = await import("node:fs");
   const rename: typeof actual.rename = async (from, to) => { renameSync(from, to); };
-  return { ...actual, default: { ...actual, rename }, rename };
+  const copyFile: typeof actual.copyFile = async (from, to, mode) => {
+    boundary.beforeCopy?.(String(from), String(to));
+    await actual.copyFile(from, to, mode);
+  };
+  return { ...actual, default: { ...actual, rename, copyFile }, rename, copyFile };
 });
 vi.mock("../../../lib/logger.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../lib/logger.js")>();
@@ -149,6 +155,7 @@ beforeEach(() => {
   boundary.info.mockClear();
   boundary.warn.mockClear();
   boundary.beforeRename = null;
+  boundary.beforeCopy = null;
   boundary.afterLstat = null;
   boundary.links = [];
   boundary.linkless = false;
@@ -804,10 +811,11 @@ describe("the outcome a staged download's removal reports", () => {
 // A cross-volume copy whose helper writes its temporary file in the chosen folder, stalls, and is not ended by its kill. The stand-ins act
 // on real folders: the copy creates its temporary file, and removals and the sweep unlink what they name.
 const fs = await import("node:fs");
-const { join } = await import("node:path");
+const { basename, join } = await import("node:path");
 const { tmpdir } = await import("node:os");
 const { stageBrowserDownload, sweepBrowserDownloadStaging } = await import("../browser-download-staging.js");
 const arg = (helper: FakeHelper, index: number): string => helper.args[index] ?? "";
+const MOVED_ASIDE = /^\.[0-9a-f]{32}\.removing$/u;
 describe("a stalled copy's temporary file in the chosen folder", () => {
   interface Faults {
     readonly copyDiesWhenKilled: boolean;
@@ -893,8 +901,13 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
     if (copy === undefined) throw new Error("no copy was started");
     return { root, staging, chosen, copy, part: join(chosen, arg(copy, 9)), done };
   };
+  // Wait until `ready` holds, without moving the fake clock: a file copy completes on the file system's own threads, in real time.
+  const until = async (ready: () => boolean): Promise<void> => {
+    for (const end = Date.now() + 5_000; !ready() && Date.now() < end;) await new Promise<void>((resolve) => { setImmediate(resolve); });
+  };
   const removalsIn = (folder: string) => helpers().filter((helper) => helper.args[0] === "--dir-remove" && helper.args[1] === folder);
   const records = (staging: string) => fs.readdirSync(staging).filter((name) => /^[0-9a-f]{32}\.cleanup\.json$/u.test(name));
+  const recordedAt = (staging: string) => records(staging).map((name) => (JSON.parse(fs.readFileSync(join(staging, name), "utf8")) as { at: string }).at);
 
   it("never removes a file put over the temporary file's name before a helper that is seen to end was killed", async () => {
     const { staging, chosen, part, done } = await stalledCopy({
@@ -1097,6 +1110,7 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
           };
         },
       });
+      await until(() => done.settled);
       expect(fs.readdirSync(chosen)).toEqual([part.slice(chosen.length + 1)]);
       expect(fs.readFileSync(part, "utf8")).toBe("the user's file");
       expect(removalsIn(chosen)).toEqual([]);
@@ -1122,8 +1136,7 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
       });
       expect(copied.done).toMatchObject({ settled: true, value: ["interrupted", "part-left"] });
       copied.copy.exit(null, "SIGKILL");
-      await flush();
-      await flush();
+      await until(() => records(copied.staging).length === 1 && MOVED_ASIDE.test(recordedAt(copied.staging)[0] ?? ""));
       expect(refused).toBe(true);
       return { ...copied, original };
     };
@@ -1138,11 +1151,57 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
       expect(kept).toEqual([expect.objectContaining({ part: original, at: hidden, identity: expect.objectContaining({ kind: "fingerprint" }) })]);
     });
 
+    it("never replaces a file put at the temporary file's name while the copy's file is being put back", async () => {
+      let folder = "";
+      let original = "";
+      let putThere = 0;
+      const putUsersFile = (to: string): void => {
+        if (to !== join(folder, original) || putThere > 0) return;
+        putThere += 1;
+        fs.writeFileSync(to, "the user's file");
+      };
+      const copied = await stalledCopy({
+        beforeRemove: (helper) => (arg(helper, 1) === folder ? "refuse" : undefined),
+        beforeStall: (chosenFolder) => {
+          folder = chosenFolder;
+          original = fs.readdirSync(chosenFolder)[0] ?? "";
+          // Whichever way the file is put back, the user's file lands at its name right before.
+          boundary.beforeRename = (from, to) => { if (MOVED_ASIDE.test(basename(from))) putUsersFile(to); };
+          boundary.beforeCopy = (_from, to) => { putUsersFile(to); };
+        },
+      });
+      copied.copy.exit(null, "SIGKILL");
+      await until(() => records(copied.staging).length === 1 && MOVED_ASIDE.test(recordedAt(copied.staging)[0] ?? ""));
+      expect(putThere).toBe(1);
+      expect(fs.readFileSync(join(folder, original), "utf8")).toBe("the user's file");
+      const hidden = fs.readdirSync(folder).find((name) => name !== original) ?? "";
+      expect(hidden).toMatch(MOVED_ASIDE);
+      expect(fs.readFileSync(join(folder, hidden), "utf8")).toBe("partial copy");
+      const kept = records(copied.staging).map((name) => JSON.parse(fs.readFileSync(join(copied.staging, name), "utf8")) as { part: string; at: string });
+      expect(kept).toEqual([expect.objectContaining({ part: original, at: hidden })]);
+    });
+
+    it("puts the copy's file back as a new file, known by the copy's own content, when its removal fails", async () => {
+      let folder = "";
+      const copied = await stalledCopy({
+        beforeRemove: (helper) => (arg(helper, 1) === folder ? "refuse" : undefined),
+        beforeStall: (chosenFolder) => { folder = chosenFolder; },
+      });
+      const original = basename(copied.part);
+      copied.copy.exit(null, "SIGKILL");
+      await until(() => fs.readdirSync(folder).join() === original && records(copied.staging).length === 1
+        && fs.readFileSync(join(copied.staging, records(copied.staging)[0] ?? ""), "utf8").includes("\"fingerprint\""));
+      expect(fs.readdirSync(folder)).toEqual([original]);
+      expect(fs.readFileSync(copied.part, "utf8")).toBe("partial copy");
+      const kept = records(copied.staging).map((name) => JSON.parse(fs.readFileSync(join(copied.staging, name), "utf8")) as { at: string; identity: { mtimeNs: string } });
+      const mtimeNs = fs.statSync(copied.part, { bigint: true }).mtimeNs.toString();
+      expect(kept).toEqual(expect.arrayContaining([expect.objectContaining({ at: original, identity: expect.objectContaining({ mtimeNs }) })]));
+    });
+
     it("finds that file by its hidden name at the next start, and removes only it", async () => {
       const { root, staging, chosen, original } = await leftUnderHiddenName();
       const swept = follow(sweepBrowserDownloadStaging(root));
-      await flush();
-      await flush();
+      await until(() => swept.settled);
       expect(fs.readdirSync(chosen)).toEqual([original]);
       expect(fs.readFileSync(join(chosen, original), "utf8")).toBe("the user's file");
       expect(swept).toMatchObject({ settled: true, value: 1 });
