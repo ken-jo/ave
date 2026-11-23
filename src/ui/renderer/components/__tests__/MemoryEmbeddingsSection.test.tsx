@@ -1,6 +1,6 @@
 import '../../../../../test/renderer/setup.js';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { IpcMainInvokeEvent } from 'electron';
 import type { IpcDeps } from '../../../../ipc/types.js';
 import { registerMemoryMapHandlers } from '../../../../ipc/domains/memory-map.js';
@@ -21,6 +21,8 @@ const { handlers } = vi.hoisted(() => ({
 vi.mock('electron', () => ({ ipcMain: { handle: (channel: string, handler: never) => handlers.set(channel, handler) } }));
 
 const previousLocale = getLocale();
+// The handlers load their runtime on the first request; load it here so its module graph is not transformed inside a waitFor.
+beforeAll(async () => { await import('../../../../ipc/domains/memory-map-runtime.js'); });
 afterEach(() => { setLocale(previousLocale); });
 
 describe('memory embeddings settings', () => {
