@@ -57,6 +57,23 @@ if (mode === "overflow") process.stdout.write("x".repeat(5000));
 if (mode !== "exit") setInterval(() => {}, 60000);
 `;
 
+function readPid(pidFile: string): number {
+  try {
+    const pid = Number(readFileSync(pidFile, "utf8"));
+    return pid > 0 ? pid : 0;
+  } catch {
+    return 0;
+  }
+}
+
+// Holds spawn until the helper pid exists, so the probe deadline never races the wrapper's cold start.
+function waitForPidSync(pidFile: string): void {
+  const until = Date.now() + 5_000;
+  while (readPid(pidFile) === 0 && Date.now() < until) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+  }
+}
+
 function alive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -74,21 +91,23 @@ it.each([
   { mode: "exit", reaped: false },
 ])("settles as unavailable when a helper holds stdout open ($mode)", async ({ mode, reaped }) => {
   const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
-  vi.mocked(spawn).mockImplementation(actual.spawn);
   const fixture = mkdtempSync(join(tmpdir(), "ave-held-probe-"));
   const pidFile = join(fixture, "helper.pid");
+  const wrapper = join(fixture, "wrapper.cjs");
+  vi.mocked(spawn).mockImplementation(((command: string, args: string[], options: object) => {
+    const child = actual.spawn(command, args, options);
+    if (args[0] === wrapper) waitForPidSync(pidFile);
+    return child;
+  }) as typeof spawn);
   let helperPid = 0;
   try {
-    const wrapper = join(fixture, "wrapper.cjs");
     writeFileSync(wrapper, HELD_HELPER);
+    const probe = runGitProbeAsync(process.execPath, [wrapper, mode, pidFile], {});
     const startedAt = Date.now();
-    await expect(runGitProbeAsync(process.execPath, [wrapper, mode, pidFile], {})).resolves.toEqual({ stdout: "" });
+    await expect(probe).resolves.toEqual({ stdout: "" });
     expect(Date.now() - startedAt).toBeLessThan(TEST_DEADLINE_MS + 1_000);
-    helperPid = await vi.waitFor(() => {
-      const pid = Number(readFileSync(pidFile, "utf8"));
-      if (!(pid > 0)) throw new Error("helper pid not written yet");
-      return pid;
-    }, { timeout: 5_000, interval: 50 });
+    helperPid = readPid(pidFile);
+    expect(helperPid).toBeGreaterThan(0);
     if (reaped) await vi.waitFor(() => expect(alive(helperPid)).toBe(false), { timeout: 5_000, interval: 50 });
   } finally {
     if (helperPid > 0 && alive(helperPid)) process.kill(helperPid, "SIGKILL");
