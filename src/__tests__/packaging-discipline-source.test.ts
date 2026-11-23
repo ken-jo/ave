@@ -1565,16 +1565,27 @@ describe("installer smoke and packaging discipline", () => {
       expect(workflow.jobs[job]!.concurrency).toBeUndefined();
     }
     const scopes = [
-      ["windows-native-preparation", "windows-prepare"],
-      ["windows-permission-tests", "windows"],
       ["macos-permission-tests", "macos"],
       ["linux-confinement-tests", "linux"],
     ];
     for (const [job, platform] of scopes) {
       const concurrency = workflow.jobs[job!]!.concurrency!;
-      expect(concurrency.group).toBe("ci-platform-${{ github.workflow }}-" + platform + "-${{ github.event_name }}-${{ github.ref }}-${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'latest' || github.run_id }}" + (job === "windows-permission-tests" ? "-${{ matrix.shard }}" : ""));
+      expect(concurrency.group).toBe("ci-platform-${{ github.workflow }}-" + platform + "-${{ github.event_name }}-${{ github.ref }}-${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'latest' || github.run_id }}");
       expect(concurrency["cancel-in-progress"]).toBe("${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}");
     }
+  });
+
+  it("keeps one Windows run per main push and replaces only superseded PR runs", () => {
+    const { jobs } = parseYaml(readRepoFile(".github/workflows/ci.yml"));
+    const prefix = `ci-platform-${githubExpression("github.workflow")}-windows`;
+    const scope = `${githubExpression("github.event_name")}-${githubExpression("github.event_name == 'pull_request' && github.ref || github.run_id")}`;
+    const cancel = githubExpression("github.event_name == 'pull_request'");
+    expect(jobs["windows-native-preparation"].concurrency).toEqual({
+      group: `${prefix}-prepare-${scope}`, "cancel-in-progress": cancel,
+    });
+    expect(jobs["windows-permission-tests"].concurrency).toEqual({
+      group: `${prefix}-${scope}-${githubExpression("matrix.shard")}`, "cancel-in-progress": cancel,
+    });
   });
 
   it.runIf(process.platform !== "win32").each([

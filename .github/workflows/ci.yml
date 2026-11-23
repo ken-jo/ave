@@ -620,8 +620,8 @@ jobs:
   windows-native-preparation:
     name: Prepare Windows native tests
     concurrency:
-      group: ci-platform-${{ github.workflow }}-windows-prepare-${{ github.event_name }}-${{ github.ref }}-${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'latest' || github.run_id }}
-      cancel-in-progress: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      group: ci-platform-${{ github.workflow }}-windows-prepare-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     needs: build
     if: needs.build.outputs.docs_only == 'false'
     # GitHub-hosted runner, as every job is; see workflow-runner-policy.ts.
@@ -876,8 +876,8 @@ jobs:
     name: Windows permission path tests (${{ matrix.shard }})
     concurrency:
       # Each matrix copy needs its own group, including on the same run.
-      group: ci-platform-${{ github.workflow }}-windows-${{ github.event_name }}-${{ github.ref }}-${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'latest' || github.run_id }}-${{ matrix.shard }}
-      cancel-in-progress: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      group: ci-platform-${{ github.workflow }}-windows-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}-${{ matrix.shard }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     needs: [build, windows-native-preparation]
     if: needs.build.outputs.docs_only == 'false' && needs.windows-native-preparation.result == 'success'
     runs-on: windows-2025
