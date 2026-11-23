@@ -572,11 +572,12 @@ describe("cleanup and publication after the staging folder is swapped", () => {
     const root = prepare();
     const item = fakeItem();
     const staged = stageBrowserDownload(item, { root, askSavePath: dialogs().askSavePath }, new Promise(() => {}));
-    const done = doneState(staged.download);
+    const done = doneOutcome(staged.download);
     writeFileSync(item.path, "partial");
     const lookalike = swapStaging(swap, basename(item.path));
     expect(() => staged.download.cancel()).not.toThrow();
-    expect(await done).toBe("cancelled");
+    // The file is left in the folder that was verified, and `done` does not claim it removed.
+    expect(await done).toEqual({ state: "cancelled", cleanup: "remove-failed" });
     expect(readFileSync(lookalike, "utf8")).toBe("the user's file");
   });
 
