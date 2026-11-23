@@ -1123,7 +1123,12 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
           actionDigest: context.control.action.actionDigest, requestId: ticketId,
           approvalGate: this.#approvalGate,
         });
-        if (!transition) return null;
+        if (!transition) {
+          // Another change than this card's own save voids the allow; the attempt still ends with its deny row.
+          await this.#recordTerminalDenial(context, "Permission policy changed while approval was pending");
+          this.#deleteContext(ticketId);
+          return null;
+        }
         context.policyTransition = transition;
         context.approvedDecision = decision;
       }

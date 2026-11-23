@@ -159,7 +159,9 @@ const createPermissionManager = (directory: string): PermissionManager =>
   );
 
 describe("foreground rationale real-stack integration", () => {
-  it.each(["once", "session", "persistent"] as const)("runs query, native %s approval, sealed resume, and audit with a real policy snapshot", async (scope) => {
+  it.each([
+    ["once", false], ["session", false], ["persistent", false], ["session", true], ["persistent", true],
+  ] as const)("runs query, native %s approval, sealed resume, and audit with a real policy snapshot (competing rule save: %s)", async (scope, competing) => {
     const directory = mkdtempSync(join(tmpdir(), "ave-rationale-real-stack-"));
     vi.stubEnv("AVE_HOME", join(directory, "profile"));
     __resetSessionStoreForTest();
@@ -210,6 +212,12 @@ describe("foreground rationale real-stack integration", () => {
               approvalCacheKey: approvalCacheKeyIdentity(snapshot.approvalCacheKey, snapshot.approvalMemory),
             });
             approvalGate.completeExactApprovalSave(saveToken, getUserApprovalGeneration(), scope);
+            if (competing) await recordApproval("write_fixture", canonicalStringify({ payload: "another update" }), snapshot.source, {
+              scope, ...(scope === "session" ? { sessionId: snapshot.sessionId } : { projectCwd: snapshot.projectCwd }),
+              verdictAtApproval: snapshot.verdictAtApproval, nlJustification: null, trustOrigin: snapshot.trustOrigin,
+              workingDirectoryIdentity: snapshot.workingDirectoryIdentity,
+              approvalCacheKey: approvalCacheKeyIdentity(snapshot.approvalCacheKey, snapshot.approvalMemory),
+            });
           }
           approvalGate.resolveFromDesktopRenderer(request.id, {
             requestId: request.id,
@@ -221,6 +229,7 @@ describe("foreground rationale real-stack integration", () => {
       },
     };
     const auditLogger = new AuditLogger(join(directory, "audit"));
+    await auditLogger.setupPermissionAuditChain("cd".repeat(32));
     approvalGate = new ApprovalGate(
       webContents as never,
       undefined,
@@ -329,6 +338,20 @@ describe("foreground rationale real-stack integration", () => {
             "perform the approved action for " + RAW_ANCHOR_SECRET,
         },
       );
+      const permissionRows = readFileSync(auditLogger.getPermissionAuditLogFile(), "utf8").split("\n").filter(Boolean)
+        .map((line) => JSON.parse(line) as Record<string, unknown>).filter((row) => row.tool === "write_fixture");
+      const terminalRows = permissionRows.filter((row) => row.decision !== "ask");
+      expect(permissionRows.filter((row) => row.decision === "ask").map((row) => row.trustOrigin)).not.toContain("user-keyboard");
+      if (competing) {
+        // A rule the card did not save voids its allow; the attempt still ends with exactly one deny row.
+        expect(write).not.toHaveBeenCalled();
+        expect(terminalRows).toEqual([expect.objectContaining({
+          decision: "deny", trustOrigin: "llm-tool-arg",
+          denyReasons: [expect.objectContaining({ reason: "Permission policy changed while approval was pending" })],
+        })]);
+        return;
+      }
+      expect(terminalRows).toEqual([expect.objectContaining({ decision: "allow", trustOrigin: "user-keyboard" })]);
 
       expect(write, JSON.stringify({ results: result.toolCalls, projections: projectionRecords.map((entry) => ({ reason: entry.terminalReason, status: entry.rationaleStatus })), invocations: invocationRecords.map((entry) => entry.state) })).toHaveBeenCalledTimes(1);
       expect(result.toolCalls.map((call) => call.name)).toEqual([
