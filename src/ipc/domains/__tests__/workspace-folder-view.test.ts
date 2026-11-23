@@ -1,10 +1,10 @@
 // Folder view main-side contract: widened listDir entries and the user-gesture open-in-default-app channel.
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import fsModule, { type Dirent } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import { EventEmitter } from "node:events";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 
@@ -122,10 +122,12 @@ function useHostResources(resourcePath: string, onTestFinished: TestFinished): v
   configureHostResources({ resourcePath, isPackaged: true });
   onTestFinished(() => configureHostResources({ resourcePath: join(root, "no-host-resources"), isPackaged: true }));
 }
-// Runs `change` once the listing of `dir` has classified its first `rows` entries in name order.
+// Runs `change` once the listing of `dir` has classified its first `rows` entries in name order. The returned check rethrows
+// a failed `change`, which the listing would otherwise absorb.
 function changeDuringListing(dir: string, rows: number, change: () => void, onTestFinished: TestFinished): () => boolean {
   const readdir = fsModule.promises.readdir.bind(fsModule.promises) as (path: string, options: { withFileTypes: true }) => Promise<Dirent[]>;
   let changed = false;
+  let failure: { error: unknown } | undefined;
   const spy = vi.spyOn(fsModule.promises, "readdir").mockImplementation((async (path: string, options: { withFileTypes: true }) => {
     const entries = await readdir(path, options);
     if (path !== dir || changed) return entries;
@@ -136,14 +138,53 @@ function changeDuringListing(dir: string, rows: number, change: () => void, onTe
     entry.isFile = () => {
       if (!changed) {
         changed = true;
-        change();
+        try {
+          change();
+        } catch (error) {
+          failure = { error };
+        }
       }
       return isFile();
     };
     return entries;
   }) as never);
   onTestFinished(() => spy.mockRestore());
-  return () => changed;
+  return () => {
+    if (failure !== undefined) throw failure.error;
+    return changed;
+  };
+}
+// After the first `rows` entries, models sibling writes that move `bumped`'s change time, and runs `change` right after the
+// row's first read of `watched`, between two policy-root lookups of that row. The modeled change time moves again then.
+// The returned check rethrows a failed `change`, which the policy read that ran it would otherwise swallow.
+function changeWithinRow(dir: string, rows: number, bumped: string, watched: string, change: () => void, onTestFinished: TestFinished): () => boolean {
+  const armed = changeDuringListing(dir, rows, () => {}, onTestFinished);
+  const at = (path: unknown, expected: string) => typeof path === "string" && relative(path, expected) === "";
+  let changed = false;
+  let failure: { error: unknown } | undefined;
+  const statPath = fsModule.lstatSync;
+  const lstat = vi.spyOn(fsModule, "lstatSync").mockImplementation((...args) => {
+    const stat = statPath(...args);
+    if (armed() && at(args[0], bumped) && stat && "ctimeNs" in stat) stat.ctimeNs += changed ? 2n : 1n;
+    if (armed() && !changed && at(args[0], watched)) {
+      changed = true;
+      try {
+        change();
+      } catch (error) {
+        failure = { error };
+      }
+    }
+    return stat;
+  });
+  syncBuiltinESMExports();
+  onTestFinished(() => {
+    lstat.mockRestore();
+    syncBuiltinESMExports();
+  });
+  return () => {
+    if (failure !== undefined) throw failure.error;
+    return changed;
+  };
 }
 
 beforeAll(() => {
@@ -229,7 +270,21 @@ describe("workspace.listDir folder-view entries", () => {
     useHostResources(join(scratch, "resources"), onTestFinished);
     writeFileSync(join(dir, "first.txt"), "");
     const realpath = vi.spyOn(fsModule.realpathSync, "native");
-    const lstat = vi.spyOn(fsModule, "lstatSync");
+    const rows: Array<{ name: string; realpaths: number; lstats: number }> = [];
+    // Record where a path's own change time moved during a listing, so a red count names its cause.
+    const ctimes = new Map<string, bigint>();
+    const moved = new Map<string, string>();
+    const statPath = fsModule.lstatSync;
+    const lstat = vi.spyOn(fsModule, "lstatSync").mockImplementation((...args) => {
+      const stat = statPath(...args);
+      if (typeof args[0] !== "string" || !stat || !("ctimeNs" in stat)) return stat;
+      const first = ctimes.get(args[0]);
+      if (first === undefined) ctimes.set(args[0], stat.ctimeNs);
+      else if (first !== stat.ctimeNs && !moved.has(args[0])) moved.set(args[0], rows.at(-1)?.name ?? "the listing setup");
+      // Model sibling writes to the common ancestor while the listing yields between rows.
+      if (args[0] === scratch) stat.ctimeNs += BigInt(rows.length);
+      return stat;
+    });
     syncBuiltinESMExports();
     onTestFinished(() => {
       realpath.mockRestore();
@@ -237,7 +292,6 @@ describe("workspace.listDir folder-view entries", () => {
       syncBuiltinESMExports();
     });
 
-    const rows: Array<{ name: string; realpaths: number; lstats: number }> = [];
     const readdir = fsModule.promises.readdir.bind(fsModule.promises) as (path: string, options: { withFileTypes: true }) => Promise<Dirent[]>;
     const readEntries = vi.spyOn(fsModule.promises, "readdir").mockImplementation((async (path: string, options: { withFileTypes: true }) => {
       const entries = await readdir(path, options);
@@ -262,6 +316,8 @@ describe("workspace.listDir folder-view entries", () => {
       realpath.mockClear();
       lstat.mockClear();
       rows.length = 0;
+      ctimes.clear();
+      moved.clear();
       expect((await listDir(dir)).entries).toHaveLength(entries);
       expect(rows).toHaveLength(entries);
       return realpath.mock.calls.length;
@@ -270,17 +326,31 @@ describe("workspace.listDir folder-view entries", () => {
     await resolutions(1);
     const one = await resolutions(1);
     for (let i = 1; i < 33; i += 1) writeFileSync(join(dir, `sibling-${i}.txt`), "");
-    const perEntry = (await resolutions(33) - one) / 32;
+    const many = await resolutions(33);
+    const perEntry = (many - one) / 32;
+    const perRow = rows.map((row, index) => ({
+      name: row.name,
+      realpaths: realpath.mock.calls.slice(row.realpaths, rows[index + 1]?.realpaths),
+      lstats: lstat.mock.calls.slice(row.lstats, rows[index + 1]?.lstats),
+    }));
+    const [ancestor] = [...moved].sort(([a], [b]) => a.split(sep).length - b.split(sep).length);
+    const cause = ancestor === undefined ? "no unmodeled change" : `${ancestor[0]} changed in ${ancestor[1]}`;
+    const costs = perRow.map(({ realpaths, lstats }) => `${realpaths.length}/${lstats.length}`).join(" ");
+    const diagnosis = `${cause}; realpaths/lstats per row: ${costs}`;
     // An entry may pay a few checks of its own (about 8 here); resolving the policy roots again costs over a hundred.
-    expect(perEntry).toBeLessThanOrEqual(20);
+    expect(perEntry, diagnosis).toBeLessThanOrEqual(20);
     // Include cold resolutions and witness seeding in the row budgets.
-    for (const [index, row] of rows.entries()) {
-      const next = rows[index + 1];
-      const realpaths = realpath.mock.calls.slice(row.realpaths, next?.realpaths).filter(isPolicyRoot).length;
-      const lstats = lstat.mock.calls.slice(row.lstats, next?.lstats).filter(isPolicyRoot).length;
-      expect(realpaths, `${row.name} policy-root realpaths`).toBeLessThanOrEqual(64);
-      expect(lstats, `${row.name} policy-root lstats`).toBeLessThanOrEqual(192);
+    const later: number[] = [];
+    for (const [index, { name, realpaths, lstats }] of perRow.entries()) {
+      expect(realpaths.filter(isPolicyRoot).length, `${name} policy-root realpaths`).toBeLessThanOrEqual(64);
+      expect(lstats.filter(isPolicyRoot).length, `${name} policy-root lstats`).toBeLessThanOrEqual(192);
+      if (index >= 2) later.push(lstats.length);
     }
+    // Later rows reread each changed route in full, about 40 lstats per component of the scratch path (477 at ten). The
+    // median skips a row that seeds again because a temp ancestor changed while the previous row seeded.
+    const depth = scratch.split(sep).length;
+    later.sort((a, b) => a - b);
+    expect(later[later.length >> 1], `median lstats after seeding, ${depth}-component scratch path; ${diagnosis}`).toBeLessThanOrEqual(50 * depth + 100);
   });
 
   it("hides a folder that becomes the host's script resources partway through a listing", async ({ onTestFinished }) => {
@@ -330,6 +400,128 @@ describe("workspace.listDir folder-view entries", () => {
     expect(changed()).toBe(true);
     expect(isSensitivePath(target, "write", "person")).toBe("ave-home:certs");
     expect({ ok: res.ok, listed: listedNames(res), hidden: res.hidden }).toEqual({ ok: true, listed: ["a-1.txt", "a-2.txt", "a-3.txt"], hidden: 1 });
+  });
+
+  // Each row looks up `packages/ledger.json` just before `packages/mcp-installs.json`; the third row reuses the second's witnesses.
+  async function listWhilePackagesBecomesLink(bumped: "home" | "scratch", name: "ledger.json" | "mcp-installs.json", onTestFinished: TestFinished): Promise<void> {
+    const scratch = mkdtempSync(join(root, "row-route-"));
+    onTestFinished(() => rmSync(scratch, { recursive: true, force: true }));
+    const dir = join(scratch, "list");
+    const home = join(scratch, "home");
+    for (const path of [dir, home]) mkdirSync(path);
+    for (const entry of ["a-1.txt", "a-2.txt", name]) writeFileSync(join(dir, entry), "");
+    vi.stubEnv("AVE_HOME", home);
+    onTestFinished(() => { vi.unstubAllEnvs(); });
+    const target = join(dir, name);
+    const packages = join(home, "packages");
+    expect(isSensitivePath(target, "write", "person")).toBeNull();
+    const changed = changeWithinRow(dir, 2, bumped === "home" ? home : scratch, packages, () => symlinkSync(dir, packages, directoryLink), onTestFinished);
+    const res = await listDir(dir);
+    expect(changed()).toBe(true);
+    expect(isSensitivePath(target, "write", "person")).toBe(`ave-home:packages/${name}`);
+    expect({ ok: res.ok, listed: listedNames(res), hidden: res.hidden }).toEqual({ ok: true, listed: ["a-1.txt", "a-2.txt"], hidden: 1 });
+  }
+
+  it("hides an entry that a missing Ave home component starts routing to within one row", async ({ onTestFinished }) => {
+    // The home's own change time moved, so confirming the home's spelling says nothing about its missing child.
+    await listWhilePackagesBecomesLink("home", "mcp-installs.json", onTestFinished);
+  });
+
+  it("hides that entry within one row when a common ancestor's change time moved", async ({ onTestFinished }) => {
+    // The resolution count regression's case: one recheck of the ancestor's child serves the row.
+    await listWhilePackagesBecomesLink("scratch", "mcp-installs.json", onTestFinished);
+  });
+
+  it("hides the entry that the first lookup through a missing child of a changed Ave home routes to", async ({ onTestFinished }) => {
+    // That lookup reads the child itself just before the child starts routing, so only refusing the home's own spelling sees it.
+    await listWhilePackagesBecomesLink("home", "ledger.json", onTestFinished);
+  });
+
+  // The third row's `packages/ledger.json` lookup reads the home's missing `packages` first; `replace` runs right after.
+  async function listWhileHomeIsReplaced(replace: (home: string, next: string) => void, onTestFinished: TestFinished): Promise<void> {
+    const scratch = mkdtempSync(join(root, "row-home-"));
+    onTestFinished(() => rmSync(scratch, { recursive: true, force: true }));
+    const dir = join(scratch, "list");
+    const home = join(scratch, "home");
+    const next = join(scratch, "next");
+    for (const path of [dir, home, next]) mkdirSync(path);
+    for (const name of ["a-1.txt", "a-2.txt", "mcp-installs.json"]) writeFileSync(join(dir, name), "");
+    symlinkSync(dir, join(next, "packages"), directoryLink);
+    vi.stubEnv("AVE_HOME", home);
+    onTestFinished(() => { vi.unstubAllEnvs(); });
+    const target = join(dir, "mcp-installs.json");
+    expect(isSensitivePath(target, "write", "person")).toBeNull();
+    const changed = changeWithinRow(dir, 2, scratch, join(home, "packages"), () => replace(home, next), onTestFinished);
+    const res = await listDir(dir);
+    expect(changed()).toBe(true);
+    expect(isSensitivePath(target, "write", "person")).toBe("ave-home:packages/mcp-installs.json");
+    expect({ ok: res.ok, listed: listedNames(res), hidden: res.hidden }).toEqual({ ok: true, listed: ["a-1.txt", "a-2.txt"], hidden: 1 });
+  }
+
+  it("hides an entry that the Ave home routes to once it becomes a link within one row", async ({ onTestFinished }) => {
+    await listWhileHomeIsReplaced((home, next) => {
+      rmdirSync(home);
+      symlinkSync(next, home, directoryLink);
+    }, onTestFinished);
+  });
+
+  it("hides an entry that the Ave home routes to once another directory is renamed into its place within one row", async ({ onTestFinished }) => {
+    await listWhileHomeIsReplaced((home, next) => {
+      renameSync(home, `${home}-old`);
+      renameSync(next, home);
+    }, onTestFinished);
+  });
+
+  it("refuses an Ave home that another directory is renamed into before confirming any spelling below it", async ({ onTestFinished }) => {
+    // Live resolution gives the same entries, so only the realpath of the home's child shows that its identity was checked.
+    // POSIX limit: if a change to the shared /tmp stops the second row from seeding, this passes without reaching that check.
+    const scratch = mkdtempSync(join(root, "row-identity-"));
+    onTestFinished(() => rmSync(scratch, { recursive: true, force: true }));
+    const dir = join(scratch, "list");
+    const home = join(scratch, "home");
+    const next = join(scratch, "next");
+    const packages = join(home, "packages");
+    for (const path of [dir, packages, join(next, "packages")]) mkdirSync(path, { recursive: true });
+    for (const name of ["a-1.txt", "a-2.txt", "a-3.txt"]) writeFileSync(join(dir, name), "");
+    // Both package records exist after the rename, so live resolution of their roots never walks up through `packages`.
+    for (const name of ["ledger.json", "mcp-installs.json"]) writeFileSync(join(next, "packages", name), "");
+    vi.stubEnv("AVE_HOME", home);
+    onTestFinished(() => { vi.unstubAllEnvs(); });
+    const realpath = vi.spyOn(fsModule.realpathSync, "native");
+    onTestFinished(() => realpath.mockRestore());
+    let replaced = Number.POSITIVE_INFINITY;
+    const changed = changeWithinRow(dir, 2, scratch, join(packages, "ledger.json"), () => {
+      replaced = realpath.mock.calls.length;
+      renameSync(home, `${home}-old`);
+      renameSync(next, home);
+    }, onTestFinished);
+    const res = await listDir(dir);
+    const spellings = realpath.mock.calls.slice(replaced).filter(([path]) => relative(String(path), packages) === "").length;
+    expect(changed()).toBe(true);
+    expect({ ok: res.ok, listed: listedNames(res), hidden: res.hidden }).toEqual({ ok: true, listed: ["a-1.txt", "a-2.txt", "a-3.txt"], hidden: 0 });
+    expect(spellings).toBe(0);
+  });
+
+  it("confirms a changed ancestor's child again when the ancestor's change time moves between two lookups of one row", async ({ onTestFinished }) => {
+    // No route changes, so only the realpath of the ancestor's child shows that the earlier confirmation was not reused.
+    // POSIX limit: if the shared /tmp changes while a row seeds, live walk-ups also realpath the home and can hide a reuse.
+    const scratch = mkdtempSync(join(root, "row-spelling-"));
+    onTestFinished(() => rmSync(scratch, { recursive: true, force: true }));
+    const dir = join(scratch, "list");
+    const home = join(scratch, "home");
+    for (const path of [dir, home]) mkdirSync(path);
+    for (const name of ["a-1.txt", "a-2.txt", "a-3.txt"]) writeFileSync(join(dir, name), "");
+    vi.stubEnv("AVE_HOME", home);
+    onTestFinished(() => { vi.unstubAllEnvs(); });
+    const realpath = vi.spyOn(fsModule.realpathSync, "native");
+    onTestFinished(() => realpath.mockRestore());
+    let moved = Number.POSITIVE_INFINITY;
+    const changed = changeWithinRow(dir, 2, scratch, join(home, "packages"), () => { moved = realpath.mock.calls.length; }, onTestFinished);
+    const res = await listDir(dir);
+    const confirmations = realpath.mock.calls.slice(moved).filter(([path]) => relative(String(path), home) === "").length;
+    expect(changed()).toBe(true);
+    expect(confirmations).toBeGreaterThan(0);
+    expect({ ok: res.ok, listed: listedNames(res), hidden: res.hidden }).toEqual({ ok: true, listed: ["a-1.txt", "a-2.txt", "a-3.txt"], hidden: 0 });
   });
 
   it("hides exactly the entries a separate sensitivity check of each one hides", async ({ onTestFinished }) => {
