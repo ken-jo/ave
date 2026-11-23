@@ -185,7 +185,7 @@ it("a run a discard left whole on the root it was given is not judged again by a
   const real = createHostGit({ env: fx.env });
   let answers = false;
   const git: HostGit = {
-    drivers: real.drivers,
+    drivers: real.drivers, floorHolds: real.floorHolds,
     run: (cwd, args, call) => !answers && args.includes("--git-common-dir") ? Promise.reject(new HostGitError("timeout", "git gave no answer")) : real.run(cwd, args, call),
   };
   const provider = createStageWorkspaceProvider({ git, removable: async () => run => run.itemId !== 8 });
@@ -205,7 +205,7 @@ it("a run a discard left whole on the root it was given is not judged again by a
 it("a run left whole on the root it was given is still checked by a later discard given none: a stage folder replaced since is told once", async () => {
   const at = await scene();
   const real = createHostGit({ env: fx.env });
-  const git: HostGit = { drivers: real.drivers, run: (cwd, args, call) => args.includes("--git-common-dir") ? Promise.reject(new HostGitError("timeout", "git gave no answer")) : real.run(cwd, args, call) };
+  const git: HostGit = { drivers: real.drivers, floorHolds: real.floorHolds, run: (cwd, args, call) => args.includes("--git-common-dir") ? Promise.reject(new HostGitError("timeout", "git gave no answer")) : real.run(cwd, args, call) };
   const provider = createStageWorkspaceProvider({ git, removable: async () => run => run.itemId !== 8 });
   await provider.discard(new Map([named(at.target)]));
   renameSync(at.stage, `${at.stage}-away`);
@@ -421,7 +421,7 @@ describe("the run branch", () => {
       }
       return real.run(cwd, args, call);
     };
-    const handle = fx.start({ git: { run, drivers: real.drivers } });
+    const handle = fx.start({ git: { run, drivers: real.drivers, floorHolds: real.floorHolds } });
     const base = userGit(repo, "rev-parse", "HEAD");
     expect(await handle.provider.open(handle.run, repo)).toEqual({ ok: false, code: "git-unavailable" });
     expect(raced).toBe(true);
@@ -437,7 +437,7 @@ describe("the run branch", () => {
       if (makesBranch(args)) throw new HostGitError("terminated", "fixture: no answer");
       return result;
     };
-    const handle = fx.start({ git: { run, drivers: real.drivers } });
+    const handle = fx.start({ git: { run, drivers: real.drivers, floorHolds: real.floorHolds } });
     const base = userGit(repo, "rev-parse", "HEAD");
     expect(await handle.provider.open(handle.run, repo)).toEqual({ ok: false, code: "git-unavailable" });
     // Whether git made the branch is not known, so it is not the run's to delete.
@@ -633,7 +633,7 @@ it("a stage's commit that the record gives as an option is no record: a join con
 it("every commit and ref git is given comes after the end of its options", async () => {
   const real = createHostGit({ env: fx.env });
   const calls: (readonly string[])[] = [];
-  const { handle } = await conflicting({ drivers: real.drivers, run: (cwd, args, call) => { calls.push(args); return real.run(cwd, args, call); } });
+  const { handle } = await conflicting({ drivers: real.drivers, floorHolds: real.floorHolds, run: (cwd, args, call) => { calls.push(args); return real.run(cwd, args, call); } });
   expect(await handle.provider.integrate(handle.run, "j1", ["s1", "s2"])).toMatchObject({ ok: false });
   await handle.provider.release(handle.run, "all");
   const branch = runBranch(handle.run.runId);
@@ -648,7 +648,7 @@ it("a release that git gives no answer to about the repository leaves the run wh
   const at = await scene();
   const real = createHostGit({ env: fx.env });
   const git: HostGit = {
-    drivers: real.drivers,
+    drivers: real.drivers, floorHolds: real.floorHolds,
     run: (cwd, args, call) => args.includes("--git-common-dir") ? Promise.reject(new HostGitError("timeout", "git gave no answer")) : real.run(cwd, args, call),
   };
   await createStageWorkspaceProvider({ git }).release(at.target.run, "all");
@@ -673,7 +673,7 @@ it("git in a folder of the run is given the registration the host checked: a lin
   // Every git call in a folder of the run finds that folder's link pointing into the other repository, from after the host's check
   // until the call is over.
   const git: HostGit = {
-    drivers: real.drivers,
+    drivers: real.drivers, floorHolds: real.floorHolds,
     run: async (cwd, args, call) => {
       if (runRoot === "" || !resolve(cwd).toLowerCase().startsWith(runRoot.toLowerCase())) return real.run(cwd, args, call);
       const link = readFileSync(join(cwd, ".git"), "utf8");

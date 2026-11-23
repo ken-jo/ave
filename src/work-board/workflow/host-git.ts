@@ -1,11 +1,13 @@
 import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, isAbsolute, join } from "node:path";
+import { isAbsolute, join } from "node:path";
+import { getIsPackaged, isConfigured, isPackagedElectronProcess } from "../../boot/dev-flags.js";
 import { createLogger } from "../../lib/logger.js";
 import { forceKillManagedChildProcess } from "../../main/managed-child-processes.js";
 import { buildHostGitArgs, HOOK_EVENTS, HOOK_EVENTS_VALIDATED, isHostGitWorkspaceAvailable } from "../../shared/host-git.js";
 import { parseGitVersion } from "../../shared/git-version.js";
+import { installerGitRoot, withHostGitRecovery } from "../../shared/host-git-executable.js";
 
 const log = createLogger("work-board-host-git");
 
@@ -22,7 +24,7 @@ const HARDENED_CONFIG = [
 ] as const;
 /**
  * What git is given of the host's environment, the name taken in upper case on Windows where case does not tell variables apart: what
- * starts a process here, where the user's own configuration files are, the temporary folder, the language and the time zone. Every other
+ * starts a process here and how a program is looked up, where the user's own configuration files are, the temporary folder, the language and the time zone. Every other
  * variable would choose for git a program, a transport, a repository, a way of matching paths or settings of the host's, and the git
  * variables a call carries besides are the host's own: no transport at all, no object fetched on demand, no prompt.
  *
@@ -31,7 +33,7 @@ const HARDENED_CONFIG = [
  * Settings an inherited variable gives at the command line's level are not taken.
  */
 const INHERITED_ENV = new Set([
-  "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "SYSTEMDRIVE", "PROGRAMDATA",
+  "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "SYSTEMDRIVE", "PROGRAMDATA", "NODEFAULTCURRENTDIRECTORYINEXEPATH",
   "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "XDG_CONFIG_HOME", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM",
   "TEMP", "TMP", "TMPDIR", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "LC_MESSAGES", "TZ",
 ]);
@@ -46,8 +48,23 @@ interface HostGitCall { stdin?: string; drivers?: readonly string[]; isolated?: 
 /** Bytes as the text they are and nothing else: no byte replaced, no leading mark dropped. Throws for bytes that are no text. */
 const STRICT_TEXT = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 export class HostGitError extends Error {
-  constructor(readonly reason: "unavailable" | "held" | "timeout" | "output-limit" | "terminated" | "driver-name" | "not-text", message: string) { super(message); }
+  constructor(readonly reason: "unavailable" | "held" | "timeout" | "output-limit" | "terminated" | "driver-name" | "not-text", message: string, options?: ErrorOptions) { super(message, options); }
 }
+
+/** The git a host call starts: an absolute program and, for the installation the app bundles, the search path and system folder its
+ * discovery probed it with. */
+export interface HostGitProgram { path: string; bundled?: { searchPath: string; systemRoot: string } }
+/** Runs `use` with the git the host resolved, or null when it resolved none; a program that could not be started is resolved again. */
+export type HostGitResolver = <T>(use: (git: HostGitProgram | null) => Promise<T>) => Promise<T>;
+
+/** The host's own discovery: never a name looked up from the folder a call runs in. */
+const discoveredGit: HostGitResolver = (use) => {
+  const packaged = isConfigured() ? getIsPackaged() : isPackagedElectronProcess();
+  return withHostGitRecovery(installerGitRoot(packaged), ({ git }) => use(git === null ? null : {
+    path: git.path,
+    ...git.installer === undefined ? {} : { bundled: { searchPath: git.options.env.PATH ?? "", systemRoot: git.installer.systemRoot } },
+  }));
+};
 
 export interface HostGit {
   /** Runs one hardened git process. A non-zero exit is returned, never thrown; only a process that could not run or finish throws: one
@@ -58,6 +75,8 @@ export interface HostGit {
    * required. With `worktree`, the configuration is read as a call given that worktree reads it: a file included for that
    * registration or its branch, and the worktree's own, name drivers that git in the project root never sees. */
   drivers(cwd: string, worktree?: HostGitCall["worktree"]): Promise<{ config: string[]; requiredFilters: string[] }>;
+  /** Whether the host floor holds on the very program these calls start (`floorHoldsOn`); no program resolved is no. */
+  floorHolds(): Promise<boolean>;
 }
 
 function gitEnv(base: NodeJS.ProcessEnv, kept: (name: string) => boolean): NodeJS.ProcessEnv {
@@ -71,10 +90,21 @@ function isolatedEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return { ...gitEnv(base, name => INHERITED_ENV.has(name) && !name.startsWith("GIT_")), GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null" };
 }
 
-/** Every git call of a stage workspace goes through here: an argument vector with no shell, a timeout and a bounded output. */
-export function createHostGit(options: { env?: NodeJS.ProcessEnv; timeoutMs?: number; maxOutputBytes?: number; teardownMs?: number } = {}): HostGit {
-  const env = gitEnv(options.env ?? process.env, name => INHERITED_ENV.has(name));
-  const isolated = isolatedEnv(options.env ?? process.env);
+/** A bundled installation runs on the search path and system folder it was probed with, the rest of the environment as for any git. */
+function programEnv(env: NodeJS.ProcessEnv, git: HostGitProgram): NodeJS.ProcessEnv {
+  if (git.bundled === undefined) return env;
+  const own = new Set(["PATH", "SYSTEMROOT", "WINDIR"]);
+  const kept = Object.fromEntries(Object.entries(env).filter(([key]) => !own.has(key.toUpperCase())));
+  return { ...kept, PATH: git.bundled.searchPath, SystemRoot: git.bundled.systemRoot, WINDIR: git.bundled.systemRoot };
+}
+
+/** Every git call of a stage workspace goes through here: the absolute program `resolve` gives, an argument vector with no shell, a
+ * timeout and a bounded output. No program resolved refuses the call as `unavailable`. */
+export function createHostGit(options: { env?: NodeJS.ProcessEnv; resolve?: HostGitResolver; timeoutMs?: number; maxOutputBytes?: number; teardownMs?: number } = {}): HostGit {
+  const base = options.env ?? process.env;
+  const resolve = options.resolve ?? discoveredGit;
+  const env = gitEnv(base, name => INHERITED_ENV.has(name));
+  const isolated = isolatedEnv(base);
   const timeoutMs = options.timeoutMs ?? GIT_TIMEOUT_MS;
   const maxOutputBytes = options.maxOutputBytes ?? GIT_MAX_OUTPUT_BYTES;
   const teardownMs = options.teardownMs ?? GIT_TEARDOWN_MS;
@@ -89,8 +119,14 @@ export function createHostGit(options: { env?: NodeJS.ProcessEnv; timeoutMs?: nu
       ...args,
       ...call.paths === undefined ? [] : ["--", ...call.paths.map(path => `:(literal)${path}`)],
     ];
+    return resolve(git => start(git, cwd, buildHostGitArgs(full, { configArgs }), call));
+  }
+
+  function start(git: HostGitProgram | null, cwd: string, args: string[], call: HostGitCall): Promise<{ code: number; stdout: Buffer; stderr: Buffer }> {
+    if (git === null || !isAbsolute(git.path)) return Promise.reject(new HostGitError("unavailable", "no git installation was found"));
+    const program = git.path;
     return new Promise((resolve, reject) => {
-      const child = spawn("git", buildHostGitArgs(full, { configArgs }), { cwd, env: call.isolated === true ? isolated : env, shell: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+      const child = spawn(program, args, { cwd, env: programEnv(call.isolated === true ? isolated : env, git), shell: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
       const out: Buffer[] = [];
       const err: Buffer[] = [];
       let size = 0;
@@ -126,7 +162,7 @@ export function createHostGit(options: { env?: NodeJS.ProcessEnv; timeoutMs?: nu
       };
       child.stdout.on("data", collect(out));
       child.stderr.on("data", collect(err));
-      child.on("error", (error) => settle(() => reject(new HostGitError("unavailable", error.message))));
+      child.on("error", (error) => settle(() => reject(new HostGitError("unavailable", error.message, { cause: error }))));
       child.on("exit", abandon);
       child.on("close", (code) => settle(() => {
         if (failure) reject(failure);
@@ -201,69 +237,45 @@ export function createHostGit(options: { env?: NodeJS.ProcessEnv; timeoutMs?: nu
     };
   }
 
-  return { run, drivers };
-}
-
-/** The git `spawn` starts in `env`: the first `git` program on its PATH, as an absolute path. A PATH entry that is not absolute would be
- * read against the folder a call runs in, so one met first leaves the program unknown. */
-function resolvedGit(env: NodeJS.ProcessEnv): string | undefined {
-  const windows = process.platform === "win32";
-  const path = Object.entries(env).find(([key]) => (windows ? key.toUpperCase() : key) === "PATH")?.[1] ?? "";
-  for (const raw of path.split(delimiter)) {
-    const dir = windows ? raw.replace(/^"(.*)"$/u, "$1") : raw;
-    if (windows && dir === "") continue;
-    if (!isAbsolute(dir)) return undefined;
-    for (const name of windows ? ["git.com", "git.exe"] : ["git"]) {
-      const program = join(dir, name);
-      try { if (statSync(program).isFile()) return program; } catch { /* not here */ }
-    }
-  }
-  return undefined;
+  return { run, drivers, floorHolds: () => resolve(git => git === null || !isAbsolute(git.path) ? Promise.resolve(false) : floorHoldsOn(git, base)).catch(() => false) };
 }
 
 const floorProbes = new Map<string, Promise<boolean>>();
 let unprovenLogged = false;
 
 /**
- * Whether the host floor keeps every event `HOOK_EVENTS` lists from running a configured hook on the git `env` starts, asked once per
- * program and its modification time. In a scratch repository, through the same calls every host git process makes, a hook is
+ * Whether the host floor keeps every event `HOOK_EVENTS` lists from running a configured hook on `git`, the program a call starts, asked
+ * once per program and its modification time. In a scratch repository, through the same calls every host git process makes, a hook is
  * configured ahead of the floor and run: one for an event the floor leaves alone must run, or nothing tells whether one ran at all,
  * and none for a listed event may. Anything else, a failed call or a timeout among them, is no.
  */
-export function hostGitFloorHolds(env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
-  const program = resolvedGit(env);
-  if (program === undefined) return Promise.resolve(false);
+function floorHoldsOn(git: HostGitProgram, env: NodeJS.ProcessEnv): Promise<boolean> {
   let key: string;
-  try { key = `${program}\0${statSync(program).mtimeMs}`; } catch { return Promise.resolve(false); }
-  let probe = floorProbes.get(key);
-  if (probe === undefined) {
-    probe = probeFloor(env).catch(() => false);
-    floorProbes.set(key, probe);
-  }
-  return probe;
+  try { key = `${git.path}\0${statSync(git.path).mtimeMs}`; } catch { return Promise.resolve(false); }
+  const known = floorProbes.get(key);
+  if (known !== undefined) return known;
+  let scratch: string;
+  try { scratch = mkdtempSync(join(tmpdir(), "ave-git-floor-")); } catch { return Promise.resolve(false); }
+  const verdict = probeFloor(createHostGit({ env, resolve: use => use(git) }), scratch).finally(() => rmSync(scratch, { recursive: true, force: true })).catch(() => false);
+  floorProbes.set(key, verdict);
+  return verdict;
 }
 
-async function probeFloor(env: NodeJS.ProcessEnv): Promise<boolean> {
-  const git = createHostGit({ env });
-  const scratch = mkdtempSync(join(tmpdir(), "ave-git-floor-"));
-  try {
-    const version = await git.run(scratch, ["--version"], { isolated: true });
-    if (version.code !== 0 || (await git.run(scratch, ["init", "-q"], { isolated: true })).code !== 0) return false;
-    const marker = join(scratch, "ran");
-    const quoted = `'${marker.split("\\").join("/").split("'").join("'\\''")}'`;
-    const hooked = async (event: string, exit: number, unlisted: string[] = []): Promise<number> => (await git.run(scratch, ["hook", "run", ...unlisted, "--ignore-missing", event], {
-      isolated: true, drivers: ["-c", `hook.ave-floor-probe.event=${event}`, "-c", `hook.ave-floor-probe.command=echo ran >> ${quoted}; exit ${exit}`],
-    })).code;
-    if (await hooked("ave-floor-probe", 0, ["--allow-unknown-hook-name"]) !== 0 || !existsSync(marker)) return false;
-    rmSync(marker);
-    for (const event of HOOK_EVENTS) if (await hooked(event, 3) !== 0 || existsSync(marker)) return false;
-    const { major = 0, minor = 0 } = parseGitVersion(version.stdout) ?? {};
-    if (!unprovenLogged && (major > HOOK_EVENTS_VALIDATED[0] || (major === HOOK_EVENTS_VALIDATED[0] && minor > HOOK_EVENTS_VALIDATED[1]))) {
-      unprovenLogged = true;
-      log.warn("git %s is newer than %s, the release the hook events were listed from: an event added since is not switched off", version.stdout.trim(), HOOK_EVENTS_VALIDATED.join("."));
-    }
-    return true;
-  } finally {
-    rmSync(scratch, { recursive: true, force: true });
+async function probeFloor(git: HostGit, scratch: string): Promise<boolean> {
+  const version = await git.run(scratch, ["--version"], { isolated: true });
+  if (version.code !== 0 || (await git.run(scratch, ["init", "-q"], { isolated: true })).code !== 0) return false;
+  const marker = join(scratch, "ran");
+  const quoted = `'${marker.split("\\").join("/").split("'").join("'\\''")}'`;
+  const hooked = async (event: string, exit: number, unlisted: string[] = []): Promise<number> => (await git.run(scratch, ["hook", "run", ...unlisted, "--ignore-missing", event], {
+    isolated: true, drivers: ["-c", `hook.ave-floor-probe.event=${event}`, "-c", `hook.ave-floor-probe.command=echo ran >> ${quoted}; exit ${exit}`],
+  })).code;
+  if (await hooked("ave-floor-probe", 0, ["--allow-unknown-hook-name"]) !== 0 || !existsSync(marker)) return false;
+  rmSync(marker);
+  for (const event of HOOK_EVENTS) if (await hooked(event, 3) !== 0 || existsSync(marker)) return false;
+  const { major = 0, minor = 0 } = parseGitVersion(version.stdout) ?? {};
+  if (!unprovenLogged && (major > HOOK_EVENTS_VALIDATED[0] || (major === HOOK_EVENTS_VALIDATED[0] && minor > HOOK_EVENTS_VALIDATED[1]))) {
+    unprovenLogged = true;
+    log.warn("git %s is newer than %s, the release the hook events were listed from: an event added since is not switched off", version.stdout.trim(), HOOK_EVENTS_VALIDATED.join("."));
   }
+  return true;
 }

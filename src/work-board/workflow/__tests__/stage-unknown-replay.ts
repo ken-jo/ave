@@ -101,6 +101,7 @@ async function lifecycle(name: LifecycleName, fails: (call: string) => boolean, 
     let failing = true;
     const thrown = (): HostGitError => new HostGitError(reason, "fixture: no answer");
     const git: HostGit = {
+      floorHolds: real.floorHolds,
       drivers: (cwd, worktree) => failing && fails(call("drivers")) ? Promise.reject(kind === "thrown" ? thrown() : new HostGitError("unavailable", "fixture: no answer")) : real.drivers(cwd, worktree),
       run: (cwd, args, options) => {
         if (!failing || !fails(call(signatureOf(args)))) return real.run(cwd, args, options);

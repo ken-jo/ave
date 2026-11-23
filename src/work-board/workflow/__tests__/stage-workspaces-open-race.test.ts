@@ -412,7 +412,7 @@ const slashed = (path: string, volume: string): string => path.slice(volume.leng
 function countedGit(fx: GitFixture): { git: HostGit; calls: string[] } {
   const real = createHostGit({ env: fx.env });
   const calls: string[] = [];
-  return { calls, git: { run: (cwd, args, call) => { calls.push(resolve(cwd).toLowerCase()); return real.run(cwd, args, call); }, drivers: (cwd) => { calls.push(resolve(cwd).toLowerCase()); return real.drivers(cwd); } } };
+  return { calls, git: { run: (cwd, args, call) => { calls.push(resolve(cwd).toLowerCase()); return real.run(cwd, args, call); }, drivers: (cwd) => { calls.push(resolve(cwd).toLowerCase()); return real.drivers(cwd); }, floorHolds: real.floorHolds } };
 }
 
 onWindows("a project on a share keeps the registration a stage folder names by the share's path", async () => {
@@ -629,6 +629,7 @@ async function collectWithLink(fx: GitFixture, linkTo: (admin: string) => string
   let replaced = false;
   const handle = fx.start({
     git: {
+      floorHolds: git.floorHolds,
       drivers: (cwd, worktree) => git.drivers(cwd, worktree),
       run: async (cwd, args, call) => {
         if (replaced && resolve(cwd).toLowerCase() === joinDir.toLowerCase()) throw new Error("git was run in a folder whose link is not the run's");

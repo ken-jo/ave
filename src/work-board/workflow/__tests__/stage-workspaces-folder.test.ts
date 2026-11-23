@@ -75,7 +75,7 @@ function watchedGit(broken?: (args: readonly string[]) => "fails" | HostGitError
     const result = await real.run(cwd, args, call);
     return how === "fails" ? { ...result, code: 128 } : result;
   };
-  return { made, matched, git: { run, drivers: real.drivers } };
+  return { made, matched, git: { run, drivers: real.drivers, floorHolds: real.floorHolds } };
 }
 
 /** Runs `work` with the home at `home`, a folder of the test's own. */
@@ -222,7 +222,7 @@ describe("folder stage workspaces", () => {
 
   it("a work tree whose top level git names cannot be found is not thereby a plain folder: it gets no workspace", async () => {
     const real = createHostGit({ env });
-    const git: HostGit = { drivers: real.drivers, run: async (cwd, args, call) => args.includes("--show-toplevel") ? { code: 0, stdout: `${join(base, "gone")}\n`, stderr: "" } : real.run(cwd, args, call) };
+    const git: HostGit = { drivers: real.drivers, floorHolds: real.floorHolds, run: async (cwd, args, call) => args.includes("--show-toplevel") ? { code: 0, stdout: `${join(base, "gone")}\n`, stderr: "" } : real.run(cwd, args, call) };
     const run: RunRef = { itemId: 7, runId: `run-folder-${process.pid}-gone`, runKey: "key", projectRoot: project };
     expect(await createStageWorkspaceProvider({ git }).open(run, project)).toEqual({ ok: false, code: "git-unavailable" });
   });
@@ -234,7 +234,7 @@ describe("folder stage workspaces", () => {
     const real = createHostGit({ env });
     const asked: boolean[] = [];
     // What a name that is no text has git answer, once the answer is asked for as it was written.
-    const git: HostGit = { drivers: real.drivers, run: async (cwd, args, call) => {
+    const git: HostGit = { drivers: real.drivers, floorHolds: real.floorHolds, run: async (cwd, args, call) => {
       if (!args.includes("check-ignore")) return real.run(cwd, args, call);
       asked.push(call?.exact === true);
       if (call?.exact === true) throw new HostGitError("not-text", "fixture: a name that is no text");
@@ -591,7 +591,7 @@ describe("folder stage workspaces", () => {
     write(project, "build/out.js", "built\n");
     write(project, "debug.log", "log\n");
     const unavailable = async (): Promise<never> => { throw new HostGitError("unavailable", "no git on this machine"); };
-    const handle = await start(project, { git: { run: unavailable, drivers: unavailable } });
+    const handle = await start(project, { git: { run: unavailable, drivers: unavailable, floorHolds: unavailable } });
     expect(tree(await stageRoot(handle, "s1", { inputFiles: [fromProject("**")] }))).toEqual(["build/out.js", "debug.log", "docs/guide.md", "notes.txt", "src/a.ts", "src/deep/b.ts"]);
     expect(tree(await stageRoot(handle, "s2", { inputFiles: [fromProject("build/out.js", "debug.log")] }))).toEqual(["build/out.js", "debug.log"]);
 

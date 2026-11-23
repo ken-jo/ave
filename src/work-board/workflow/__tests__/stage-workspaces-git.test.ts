@@ -70,7 +70,7 @@ describe("git stage workspaces", () => {
       symlinkSync(swap === "stage" ? outside : join(outside, "conf"), target, "junction");
       return result;
     };
-    const handle = fx.start({ git: { run, drivers: real.drivers }, sensitive: path => basename(path) === ".env" });
+    const handle = fx.start({ git: { run, drivers: real.drivers, floorHolds: real.floorHolds }, sensitive: path => basename(path) === ".env" });
     expect(await handle.provider.open(handle.run, repo)).toMatchObject({ ok: true });
     for (swap of ["stage", "folder"] as const) {
       expect(await handle.provider.prepare(handle.run, stageOf(`s-${swap}`), 1), swap).toEqual({ ok: false, code: "git-unavailable" });
@@ -177,7 +177,7 @@ describe("git stage workspaces", () => {
   async function conflicting(fails: (args: readonly string[]) => boolean): Promise<{ handle: ReturnType<typeof start>; joinDir: string; record: string; failing: { on: boolean } }> {
     const real = createHostGit({ env });
     const failing = { on: false };
-    const git: HostGit = { drivers: real.drivers, run: (cwd, args, call) => failing.on && fails(args) ? Promise.resolve({ code: 128, stdout: "", stderr: "fatal: fixture" }) : real.run(cwd, args, call) };
+    const git: HostGit = { drivers: real.drivers, floorHolds: real.floorHolds, run: (cwd, args, call) => failing.on && fails(args) ? Promise.resolve({ code: 128, stdout: "", stderr: "fatal: fixture" }) : real.run(cwd, args, call) };
     const handle = fx.start({ git });
     const open = await handle.provider.open(handle.run, repo);
     if (!open.ok) throw new Error(open.code);
@@ -487,7 +487,7 @@ describe("git stage workspaces", () => {
   it("a secret path stays out of a seal as the one file it names, whatever its name reads as to git, and every name git tells the host is asked for as text", async () => {
     const calls: { args: readonly string[]; exact: boolean }[] = [];
     const real = createHostGit({ env });
-    const git: HostGit = { drivers: real.drivers, run: (cwd, args, call) => { calls.push({ args, exact: call?.exact === true }); return real.run(cwd, args, call); } };
+    const git: HostGit = { drivers: real.drivers, floorHolds: real.floorHolds, run: (cwd, args, call) => { calls.push({ args, exact: call?.exact === true }); return real.run(cwd, args, call); } };
     // The secret's name is, read as a pattern, the other file's.
     const handle = fx.start({ git, sensitive: path => basename(path) === "[n]ew.txt" });
     await handle.provider.open(handle.run, repo);
@@ -511,7 +511,7 @@ describe("git stage workspaces", () => {
     const real = createHostGit({ env });
     let broken = false;
     // What a name that is no text has git answer, once the answer is asked for as it was written.
-    const git: HostGit = { drivers: real.drivers, run: (cwd, args, call) => broken && args.includes(kind) && call?.exact === true ? Promise.reject(new HostGitError("not-text", "fixture: a name that is no text")) : real.run(cwd, args, call) };
+    const git: HostGit = { drivers: real.drivers, floorHolds: real.floorHolds, run: (cwd, args, call) => broken && args.includes(kind) && call?.exact === true ? Promise.reject(new HostGitError("not-text", "fixture: a name that is no text")) : real.run(cwd, args, call) };
     const handle = fx.start({ git });
     broken = step === "open";
     const open = await handle.provider.open(handle.run, repo);
@@ -611,7 +611,7 @@ describe("git stage workspaces", () => {
       return real.run(cwd, args, call);
     };
     try {
-      await createStageWorkspaceProvider({ git: { run, drivers: real.drivers } }).release(handle.run, "all").catch(() => undefined);
+      await createStageWorkspaceProvider({ git: { run, drivers: real.drivers, floorHolds: real.floorHolds } }).release(handle.run, "all").catch(() => undefined);
       expect(readFileSync(join(restored, "s2", "sentinel.txt"), "utf8")).toBe("outside\n");
       expect(existsSync(join(restored, "s2", "a.txt"))).toBe(true);
       expect(existsSync(join(restored, JOIN_DIR, "a.txt"))).toBe(true);
@@ -649,7 +649,7 @@ describe("git stage workspaces", () => {
       return args[0] === "worktree" && args[1] === "add" ? { ...result, code: 128 } : result;
     };
     const failed = start();
-    expect(await createStageWorkspaceProvider({ git: { run, drivers: real.drivers } }).open(failed.run, repo)).toEqual({ ok: false, code: "git-unavailable" });
+    expect(await createStageWorkspaceProvider({ git: { run, drivers: real.drivers, floorHolds: real.floorHolds } }).open(failed.run, repo)).toEqual({ ok: false, code: "git-unavailable" });
     expect(userGit(repo, "branch", "--list", runBranch(failed.run.runId))).toBe("");
     expect(userGit(repo, "worktree", "list", "--porcelain").match(/^worktree /gmu)).toHaveLength(1);
   });

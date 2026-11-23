@@ -1,22 +1,24 @@
 import { type ChildProcess, execFileSync, type spawn as spawnType } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join, relative, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { PassThrough } from "node:stream";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { HOOK_EVENTS, holdSandboxGitWrites } from "../../../shared/host-git.js";
-import { createHostGit, HostGitError, hostGitFloorHolds } from "../host-git.js";
+import { discoverHostGitAsync } from "../../../shared/host-git-executable.js";
+import { createHostGit, HostGitError, type HostGitProgram } from "../host-git.js";
 import { removeTree } from "./stage-fixtures.js";
 
-/** `env`: the environment the last git process was started with. A fake is given the arguments git would have been. */
-const spawned = vi.hoisted(() => ({ fake: undefined as ((args: readonly string[]) => unknown) | undefined, calls: 0, env: undefined as NodeJS.ProcessEnv | undefined }));
+/** `env` and `program`: the environment and the program the last git process was started with. A fake is given the arguments git would have been. */
+const spawned = vi.hoisted(() => ({ fake: undefined as ((args: readonly string[]) => unknown) | undefined, calls: 0, env: undefined as NodeJS.ProcessEnv | undefined, program: undefined as string | undefined }));
 vi.mock("node:child_process", async (original) => {
   const real = await original<typeof import("node:child_process")>();
   const spawn = ((...args: Parameters<typeof spawnType>) => {
     spawned.calls += 1;
     spawned.env = (args[2] as { env?: NodeJS.ProcessEnv } | undefined)?.env;
+    spawned.program = String(args[0]);
     return spawned.fake ? spawned.fake(args[1] as readonly string[]) : real.spawn(...args);
   }) as typeof spawnType;
   return { ...real, spawn };
@@ -41,6 +43,10 @@ function hangingChild(): { child: ChildProcess; killed: () => number } {
   return { child: child as unknown as ChildProcess, killed: () => kills };
 }
 
+// The host's discovery asks the installed git once, before any fake process stands in for git; a call then starts the program it found.
+beforeAll(async () => {
+  expect((await discoverHostGitAsync(null)).git).not.toBeNull();
+});
 beforeEach(() => {
   base = mkdtempSync(join(tmpdir(), "hg-"));
   writeFileSync(join(base, "gitconfig"), "[core]\n\tautocrlf = false\n");
@@ -86,7 +92,10 @@ describe("host git", () => {
     // It exits with a status, and something it started keeps the pipes: what was read is not known to be whole.
     const exited = deaf();
     spawned.fake = () => exited.child;
+    spawned.calls = 0;
     const run = reasonOf(createHostGit({ env, teardownMs: 20 }).run(base, ["status"]));
+    // The program is started once the host has resolved it.
+    await vi.waitFor(() => expect(spawned.calls).toBe(1));
     exited.child.stdout?.emit("data", Buffer.from("partial"));
     exited.child.emit("exit", 0);
     expect(await run).toBe("terminated");
@@ -95,7 +104,9 @@ describe("host git", () => {
     // One that closes in time after its exit is read as before.
     const closing = deaf();
     spawned.fake = () => closing.child;
+    spawned.calls = 0;
     const whole = createHostGit({ env, teardownMs: 1_000 }).run(base, ["status"]);
+    await vi.waitFor(() => expect(spawned.calls).toBe(1));
     closing.child.stdout?.emit("data", Buffer.from("whole"));
     closing.child.emit("exit", 0);
     closing.child.emit("close", 0);
@@ -318,7 +329,9 @@ describe("host git", () => {
     expect(starting.map(file => relative(board, file).split(sep).join("/"))).toEqual(["workflow/host-git.ts"]);
     const text = readFileSync(join(board, "workflow", "host-git.ts"), "utf8");
     expect(text.match(/\bspawn\(/gu)).toHaveLength(1);
-    expect(text).toMatch(/\bspawn\("git", buildHostGitArgs\(/u);
+    // The program is the one the host resolved, never a name looked up where the call runs.
+    expect(text).toMatch(/\bspawn\(program, args, /u);
+    expect(text).not.toMatch(/\bspawn\(\s*["'`]/u);
   });
 
   it("a path reaches git only as a literal pathspec the call gives apart: an argument list that carries one is refused before git starts", async () => {
@@ -360,10 +373,29 @@ describe("host git on the installed git", () => {
   const plain = (cwd: string, ...args: string[]): string => execFileSync("git", args, { cwd, env, encoding: "utf8", stdio: "pipe" }).trim();
   const identity = "[user]\n\tname = Alice Example\n\temail = alice@example.com\n";
 
+  it.runIf(process.platform === "win32")("a git program planted in the folder a call runs in never runs, even with the host's lookup switch off; the resolved git answers", async () => {
+    const switchName = "NoDefaultCurrentDirectoryInExePath";
+    const saved = process.env[switchName];
+    delete process.env[switchName];
+    try {
+      const folder = join(base, "planted");
+      mkdirSync(folder);
+      // Any program that is no git: its answer is not git's.
+      for (const name of ["git.com", "git.exe"]) copyFileSync(join(process.env.SystemRoot ?? "C:\\Windows", "System32", "hostname.exe"), join(folder, name));
+      const callEnv = Object.fromEntries(Object.entries(env).filter(([key]) => key.toUpperCase() !== switchName.toUpperCase()));
+      const answer = await createHostGit({ env: callEnv }).run(folder, ["--version"]);
+      expect(answer).toMatchObject({ code: 0, stdout: expect.stringMatching(/^git version /u) });
+      expect(isAbsolute(spawned.program ?? "")).toBe(true);
+      expect(dirname(spawned.program ?? "").toLowerCase()).not.toBe(folder.toLowerCase());
+    } finally {
+      if (saved !== undefined) process.env[switchName] = saved;
+    }
+  });
+
   const hookSwitch = configHooksSwitchable();
   it(`no hook runs for any host call, whether the repository, the user's file or a file it includes configures it; git without the floor runs them (${hookSwitch.version}: ${hookSwitch.switchable ? "an event's hooks switch off, the floor holds" : "no event switch, the floor is refused"})`, async () => {
     // Without an event switch the floor cannot be proven, so the host refuses that git; the hooks directory is still never read.
-    expect(await hostGitFloorHolds(env)).toBe(hookSwitch.switchable);
+    expect(await createHostGit({ env }).floorHolds()).toBe(hookSwitch.switchable);
     const marker = join(base, "fired.txt");
     const hooks = join(base, "hooks");
     mkdirSync(hooks);
@@ -484,19 +516,22 @@ describe("the hook floor's probe", () => {
       return child;
     };
   }
-  /** The probe as a process starting afresh: nothing asked yet, nothing told yet. */
-  async function freshProbe(): Promise<typeof hostGitFloorHolds> {
+  /** The probe as a process starting afresh, nothing asked yet and nothing told yet, on the git `program` names as the host resolved it. */
+  async function freshProbe(): Promise<(program: string | null, probeEnv?: NodeJS.ProcessEnv) => Promise<boolean>> {
     vi.resetModules();
-    return (await import("../host-git.js")).hostGitFloorHolds;
+    const fresh = await import("../host-git.js");
+    return (program, probeEnv = env) => fresh.createHostGit({ env: probeEnv, resolve: use => use(program === null ? null : { path: program } satisfies HostGitProgram) }).floorHolds();
   }
-  /** `env` with `dir` alone on its PATH, holding a program named as git. */
-  function onPath(dir: string): NodeJS.ProcessEnv {
+  /** A program file at `dir`, named as git. */
+  function planted(dir: string): string {
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, process.platform === "win32" ? "git.exe" : "git"), "", { mode: 0o755 });
-    return { ...Object.fromEntries(Object.entries(env).filter(([key]) => key.toUpperCase() !== "PATH")), PATH: dir };
+    const program = join(dir, process.platform === "win32" ? "git.exe" : "git");
+    writeFileSync(program, "", { mode: 0o755 });
+    return program;
   }
 
   it("holds only when the probe hook runs for an event the floor leaves alone and for no listed one; any other answer refuses git", async () => {
+    const program = planted(join(base, "first"));
     const outcomes: Record<string, boolean> = {};
     const cases: Record<string, (args: readonly string[]) => Reply> = {
       "switch known": holding,
@@ -508,18 +543,21 @@ describe("the hook floor's probe", () => {
     };
     for (const [name, answer] of Object.entries(cases)) {
       fakeGit(answer);
-      outcomes[name] = await (await freshProbe())(env);
+      outcomes[name] = await (await freshProbe())(program);
+      // The program probed is the program a call starts.
+      expect.soft(spawned.program, name).toBe(program);
     }
     expect(outcomes).toEqual({ "switch known": true, "listed hook ran": false, "listed hook failed": false, "no configured hook runs": false, "no such switch": false, "no scratch repository": false });
   });
 
   it("a probe call that does not finish in time refuses git", async () => {
+    const program = planted(join(base, "first"));
     fakeGit(args => args.at(-1) === "update" ? "hang" : holding(args));
     const probe = await freshProbe();
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
       let answer: boolean | undefined;
-      void probe(env).then(holds => { answer = holds; });
+      void probe(program).then(holds => { answer = holds; });
       while (answer === undefined) await vi.advanceTimersByTimeAsync(10_000);
       expect(answer).toBe(false);
     } finally {
@@ -530,20 +568,23 @@ describe("the hook floor's probe", () => {
   it("is asked once per program until the program changes, and a git newer than the release the events were listed from is told of once", async () => {
     fakeGit(args => args.includes("--version") ? { code: 0, stdout: "git version 2.99.1\n" } : holding(args));
     const probe = await freshProbe();
-    const first = onPath(join(base, "first"));
+    const first = planted(join(base, "first"));
     warned.lines = [];
     expect(await probe(first)).toBe(true);
     const asked = spawned.calls;
     expect(await probe(first)).toBe(true);
     expect(spawned.calls).toBe(asked);
-    const program = join(base, "first", process.platform === "win32" ? "git.exe" : "git");
-    utimesSync(program, new Date(), new Date(Date.now() + 60_000));
+    utimesSync(first, new Date(), new Date(Date.now() + 60_000));
     expect(await probe(first)).toBe(true);
     expect(spawned.calls).toBe(asked * 2);
-    expect(await probe(onPath(join(base, "second")))).toBe(true);
+    expect(await probe(planted(join(base, "second")))).toBe(true);
     expect(warned.lines.filter(line => line.includes("newer"))).toHaveLength(1);
-    // A PATH that names no git, or a folder read against wherever a call runs, gives no program to vouch for.
-    expect(await probe({ ...first, PATH: join(base, "none") })).toBe(false);
-    expect(await probe({ ...first, PATH: ["relative", join(base, "first")].join(delimiter) })).toBe(false);
+    // No program resolved, or one that is not an absolute path, gives nothing to vouch for, and nothing is started.
+    spawned.calls = 0;
+    expect(await probe(null)).toBe(false);
+    expect(await probe(join("relative", "git"))).toBe(false);
+    expect(await probe(join(base, "none", "git"))).toBe(false);
+    expect(spawned.calls).toBe(0);
   });
+
 });
