@@ -16,6 +16,7 @@ import {
   type EgressApprovalAnswer,
 } from "../egress-ask.js";
 import { createEgressAskCallback, type EgressAskDeps } from "../../__tests__/support/egress-permission.js";
+import { fixtureSecret } from "../../audit/__tests__/secret-fixtures.js";
 import { EgressGrantStore, egressDestinationNetwork } from "../egress-grants.js";
 import type { EgressIdentityStrength } from "../../shared/sandbox-capability-info.js";
 import type { EgressInvocationOwner, ShellEgressOwner } from "../egress-invocations.js";
@@ -977,12 +978,15 @@ describe("egress ask callback — shell calls", () => {
     expect(audit.at(-1)).toMatchObject({ invocation: { kind: "unattributed" }, decision: "deny" });
   });
 
+  const ASK_SECRET = fixtureSecret("gh", "p_", "1234567890abcdefghijklmnopqrstuv");
+  const ASK_FAILURE = String.raw`approval surface failed with ${ASK_SECRET} at C:\Users\alice\private\approval.sock`;
+
   it.each(["denied answer", "failed ask"] as const)("does not attribute a %s to a call that ended while it was asked", async (path) => {
     const controller = new AbortController();
     signals.set(SHELL_TOKEN, controller.signal);
     answer = async () => {
       controller.abort();
-      if (path === "failed ask") throw new Error("approval surface failed");
+      if (path === "failed ask") throw new Error(ASK_FAILURE);
       return { allow: false, reason: "denied by the user" };
     };
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -992,9 +996,29 @@ describe("egress ask callback — shell calls", () => {
       expect(asked).toHaveLength(1);
       expect(result).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
       expect(audit.at(-1)).toMatchObject({ invocation: { kind: "unattributed" }, decision: "deny", reason: EGRESS_DENY_REASONS.unattributed });
-      // The failure the refusal no longer names is still kept for diagnosis.
+      // The failure the refusal no longer names is still kept for diagnosis, with its secret and home path masked.
       const failureLogs = warn.mock.calls.filter(([message]) => message === "[egress-ask] egress decision failed after its invocation ended");
-      expect(failureLogs).toEqual(path === "failed ask" ? [[expect.any(String), { reason: "approval surface failed" }]] : []);
+      expect(failureLogs).toEqual(path === "failed ask"
+        ? [[expect.any(String), { reason: String.raw`approval surface failed with [REDACTED:TOKEN] at [home]\private\approval.sock` }]] : []);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("keeps the unattributed refusal and its audit row when the ended call's failure log throws", async () => {
+    const controller = new AbortController();
+    signals.set(SHELL_TOKEN, controller.signal);
+    answer = async () => {
+      controller.abort();
+      throw new Error(ASK_FAILURE);
+    };
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => { throw new Error("log sink failed"); });
+    try {
+      const result = await rawCallback()({ host: "github.com", port: 443 },
+        { attributionKey: SHELL_TOKEN, identity: "listener", phase: "resolved", addresses: ["140.82.112.3"], resolution: "pinned" });
+      expect(warn).toHaveBeenCalledWith("[egress-ask] egress decision failed after its invocation ended", expect.anything());
+      expect(result).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
+      expect(audit.at(-1)).toMatchObject({ invocation: { kind: "unattributed" }, decision: "deny", reason: EGRESS_DENY_REASONS.unattributed });
     } finally {
       warn.mockRestore();
     }

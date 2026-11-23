@@ -1226,11 +1226,14 @@ describe("builtin shell — Windows MXC containers", () => {
       expect.objectContaining({ label: "tool:powershell:mxc", err: error.message }));
   });
 
-  it("reports a system error raised after its job ended by its code alone and logs its redacted full text", async () => {
+  it.each([
+    ["a working", () => {}],
+    ["a throwing", () => { throw new Error("log sink failed"); }],
+  ] as const)("reports a system error raised after its job ended by its code alone and logs its redacted full text to %s sink", async (_name, sink) => {
     bootMxcShells();
     const failure = helperSystemError("EPERM");
     const command = captureCommandLaunch(() => { throw failure; });
-    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const log = vi.spyOn(console, "error").mockImplementation(sink);
     const result = await executePowerShell(context("ps-mxc-ended-system-error"));
     expect(result).toMatchObject({ isError: true, metadata: { sandboxed: false, isolation: "unavailable" } });
     expect(result.output).toBe("PowerShell spawn failed: host system error EPERM");

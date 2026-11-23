@@ -7,7 +7,7 @@ import { NO_APPROVER_MESSAGE } from "./decision-pipeline.js";
 import type { SandboxAskCallback } from "@anthropic-ai/sandbox-runtime";
 import { matchesDomainPatternWithPort } from "@anthropic-ai/sandbox-runtime/dist/sandbox/domain-pattern.js";
 import type { SandboxEgressDecisionAuditEntry, EgressDecisionBasis } from "../audit/sandbox-audit.js";
-import { maskSensitiveData } from "../audit/dlp-filter.js";
+import { maskSensitiveData, redactHomePathsInText } from "../audit/dlp-filter.js";
 import { errorMessage } from "../shared/error-message.js";
 import { createLogger } from "../lib/logger.js";
 import type { EgressIdentityStrength } from "../shared/sandbox-capability-info.js";
@@ -498,7 +498,11 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
     } catch (error) {
       if (verified.invocation?.live() === false) {
         // The refusal names nobody once the call ended; its failure is still kept for diagnosis.
-        log.warn({ reason: maskSensitiveData(errorMessage(error)).masked }, "egress decision failed after its invocation ended");
+        try {
+          log.warn({ reason: redactHomePathsInText(maskSensitiveData(errorMessage(error)).masked) }, "egress decision failed after its invocation ended");
+        } catch {
+          // A failing log sink leaves the refusal and its audit row unchanged.
+        }
         decision = unattributed();
       } else {
         decision = deny("policy", `${EGRESS_DENY_REASONS.failed}: ${errorMessage(error)}`);

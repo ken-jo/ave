@@ -125,6 +125,7 @@ describe("sandbox runtime release at exit", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(sink);
     try {
       await expect(resetAsrtSandbox()).resolves.toBeUndefined();
+      expect(warn.mock.calls.flat().map(String).join("\n")).toContain("the dropped ACE rows could not be logged");
       expect(isSrtWinRuntimeReleasePending()).toBe(false);
     } finally {
       warn.mockRestore();
@@ -139,6 +140,7 @@ describe("sandbox runtime release at exit", () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
     try {
       await expect(initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true })).rejects.toThrow("runtime probe failed");
+      expect(warn.mock.calls.flat().map(String).join("\n")).toContain("the dropped ACE rows could not be logged");
       expect(isSrtWinRuntimeReleasePending()).toBe(false);
       expect(error.mock.calls.flat().map(String).join("\n")).not.toContain("sandbox runtime reset failed");
     } finally {
