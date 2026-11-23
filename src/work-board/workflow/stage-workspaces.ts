@@ -695,8 +695,9 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
           continue;
         }
         if (known !== item.path) {
-          // Two spellings one stage holds side by side are two files: its volume keeps apart what the fold joined.
-          if (held.stageId === stageId && own.has(known)) {
+          // A composed and a decomposed spelling one stage holds side by side are two files: its volume keeps them apart. A pair that
+          // differs by case stays contested: the output folder may fold what a folder of the stage does not.
+          if (held.stageId === stageId && own.has(known) && item.path.normalize("NFC") === known.normalize("NFC")) {
             next.set(item.path, { sha256: item.sha256, size: item.size, stageId });
             copies.push({ stageId, ...item });
             continue;
