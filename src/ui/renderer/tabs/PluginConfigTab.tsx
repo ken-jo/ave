@@ -18,6 +18,7 @@ import type {
 import { PluginAuthSection } from "../components/PluginAuthSection.js";
 import { usePluginAuthStatuses } from "../hooks/use-plugin-auth-status.js";
 import { PluginUninstallDialog } from "../dialogs/PluginUninstallDialog.js";
+import { PluginBackgroundEffectsDialog, type PluginBackgroundEffectsReview } from "../dialogs/PluginBackgroundEffectsDialog.js";
 import {
   getPluginDoctorInstallKey,
   repairPluginFromMarketplace,
@@ -230,6 +231,10 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
   const [contributionTrustError, setContributionTrustError] = useState<string | null>(null);
   const contributionTrustRefreshRef = useRef(0);
   const [trustUpdating, setTrustUpdating] = useState<string | null>(null);
+  const [backgroundReview, setBackgroundReview] = useState<PluginBackgroundEffectsReview | null>(null);
+  const backgroundDecisionRef = useRef<((allowed: boolean) => void) | null>(null);
+  const [backgroundPending, setBackgroundPending] = useState<string | null>(null);
+  const backgroundRefreshRef = useRef(0);
   useEffect(() => {
     setToolsExpanded(false);
   }, [selectedId]);
@@ -311,6 +316,60 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
     }
   }, [refreshContributionTrust, showBanner]);
 
+  const refreshBackgroundEffects = useCallback(async (pluginId: string | null): Promise<void> => {
+    const refreshId = ++backgroundRefreshRef.current;
+    setBackgroundPending(null);
+    if (!pluginId) return;
+    try {
+      const result = await getApi().getPluginBackgroundEffects(pluginId);
+      if (refreshId === backgroundRefreshRef.current && result.ok && !result.approved && result.manifestSha256) setBackgroundPending(pluginId);
+    } catch {
+      // The host denies unapproved background effects, so a failed read only hides the prompt.
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshBackgroundEffects(selectedId);
+  }, [refreshBackgroundEffects, selectedId]);
+
+  /** Asks for the current manifest's background effects when they are not yet approved; false when cancelled or not saved. */
+  const reviewBackgroundEffects = useCallback(async (pluginId: string, name: string): Promise<boolean> => {
+    let review: PluginBackgroundEffectsReview;
+    try {
+      const result = await getApi().getPluginBackgroundEffects(pluginId);
+      if (!result.ok || result.approved || !result.manifestSha256) return true;
+      review = { pluginId, name, manifestSha256: result.manifestSha256, effects: result.effects };
+    } catch {
+      return true;
+    }
+    const allowed = await new Promise<boolean>((resolve) => {
+      backgroundDecisionRef.current?.(false);
+      backgroundDecisionRef.current = resolve;
+      setBackgroundReview(review);
+    });
+    if (!allowed) return false;
+    try {
+      const approval = await getApi().approvePluginBackgroundEffects({ pluginId, manifestSha256: review.manifestSha256 });
+      if (approval.ok) return true;
+      showBanner("error", approval.error === "background-effects-review-stale"
+        ? t("gitMarketplace.error.planExpired.packageChanged")
+        : t("pluginConfigTab.backgroundEffectsError"));
+      return false;
+    } catch (error) {
+      showBanner("error", errorMessage(error) || t("pluginConfigTab.backgroundEffectsError"));
+      return false;
+    } finally {
+      void refreshBackgroundEffects(pluginId);
+    }
+  }, [refreshBackgroundEffects, showBanner, t]);
+
+  const decideBackgroundEffects = useCallback((allowed: boolean) => {
+    const decide = backgroundDecisionRef.current;
+    backgroundDecisionRef.current = null;
+    setBackgroundReview(null);
+    decide?.(allowed);
+  }, []);
+
   // Refresh cards on install/uninstall results; only the latest read may replace visible state, while callers still receive
   // their own result.
   const cardsReadTokenRef = useRef(0);
@@ -353,6 +412,8 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
     async (pluginId: string, nextEnabled: boolean) => {
       setToggling({ pluginId, enabled: nextEnabled });
       try {
+        const name = plugins.find((plugin) => plugin.id === pluginId)?.name ?? pluginId;
+        if (nextEnabled && !(await reviewBackgroundEffects(pluginId, name))) return { ok: false as const };
         const res = await getApi().setPluginEnabled(pluginId, nextEnabled);
         if (!res.ok) {
           showBanner("error", res.message ?? t("pluginConfigTab.errorToggleEnabled"));
@@ -367,7 +428,7 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
         setToggling(null);
       }
     },
-    [refreshPlugins, showBanner, t],
+    [plugins, refreshPlugins, reviewBackgroundEffects, showBanner, t],
   );
 
   useEffect(() => {
@@ -800,6 +861,7 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
         }}
         onConfirm={(id) => handleUninstall(id, uninstallTarget?.name ?? id)}
       />
+      <PluginBackgroundEffectsDialog review={backgroundReview} onDecide={decideBackgroundEffects} />
       <NoticeLiveRegion toast={banner} />
       {(configRead.error || Object.values(otherSettings).some((snapshot) => snapshot.error)) && (
         <p role="alert" className="text-xs text-destructive">{t("pluginConfigTab.errorLoadConfig")}
@@ -1181,6 +1243,27 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                       state={authStatuses.get(selectedPlugin.id) ?? { kind: "loading" }}
                       onRefresh={() => refreshAuthStatus(selectedPlugin.id)}
                     />
+                  </>
+                )}
+
+                {backgroundPending === selectedPlugin.id && (
+                  <>
+                    <Separator />
+                    <div className="flex items-center justify-between gap-3" data-testid={`plugin-config:background-effects:${selectedPlugin.id}`}>
+                      <div className="min-w-0">
+                        <p className="text-tiny font-medium uppercase tracking-wide text-muted-foreground">
+                          {t("pluginConfigTab.backgroundEffectsLabel")}
+                        </p>
+                        <p className="text-dense text-muted-foreground">{t("pluginConfigTab.backgroundEffectsPending")}</p>
+                      </div>
+                      <Button
+                        size="sm"
+                        className="h-7 px-2 text-xs"
+                        onClick={() => void reviewBackgroundEffects(selectedPlugin.id, selectedPlugin.name)}
+                      >
+                        {t("pluginConfigTab.backgroundEffectsReview")}
+                      </Button>
+                    </div>
                   </>
                 )}
 

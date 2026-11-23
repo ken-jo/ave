@@ -1233,6 +1233,80 @@ describe("PluginConfigTab — auth UI", () => {
     });
   });
 
+  it("asks for the background effects at enable and enables only after Allow", async () => {
+    let enabled = false;
+    let approved = false;
+    const hash = "c".repeat(64);
+    const cards = vi.fn(async () => [makePluginCard({
+      id: "digest-plugin",
+      name: "Digest Plugin",
+      description: "Morning digest",
+      loadStatus: enabled ? ("loaded" as const) : ("disabled" as const),
+      active: enabled,
+      runtimeLoaded: enabled,
+    })]);
+    const setPluginEnabled = vi.fn(async (_id: string, next: boolean) => {
+      enabled = next;
+      return { ok: true as const };
+    });
+    const getPluginBackgroundEffects = vi.fn(async (pluginId: string) => ({
+      ok: true as const, pluginId, manifestSha256: hash, approved,
+      effects: { ownStorage: true as const, networkDestinations: ["api.example.test"], alertKinds: ["digest"], suggestionSources: [] },
+    }));
+    const approvePluginBackgroundEffects = vi.fn(async (input: { pluginId: string; manifestSha256: string }) => {
+      approved = true;
+      return { ok: true as const, ...input };
+    });
+    Object.defineProperty(window, "ave", {
+      value: {
+        pluginConfig: {
+          get: vi.fn(async () => ({ ok: true as const, config: {} })),
+          set: vi.fn(async () => ({ ok: true as const, config: {} })),
+          listSecretKeys: vi.fn(async () => ({ ok: true as const, keys: [] })),
+        },
+      },
+      writable: true,
+      configurable: true,
+    });
+    Object.defineProperty(window, "aveApi", {
+      value: {
+        onPluginEnabledChanged: vi.fn(() => () => undefined),
+        setPluginEnabled,
+        getPluginBackgroundEffects,
+        approvePluginBackgroundEffects,
+        listPluginUiExtensions: vi.fn(async () => []),
+      },
+      writable: true,
+      configurable: true,
+    });
+    stubPluginCards(cards);
+    Object.defineProperty(window, "aveHost", {
+      value: { takePluginMarketplaceApi: () => null },
+      writable: true,
+      configurable: true,
+    });
+
+    render(<PluginConfigTab />);
+
+    expect(await screen.findByTestId("plugin-config:background-effects:digest-plugin")).toBeInTheDocument();
+    fireEvent.click(await screen.findByTestId("plugin-config:enabled-toggle:digest-plugin"));
+    let dialog = await screen.findByTestId("plugin-background-effects-dialog");
+    expect(within(dialog).getByText("api.example.test")).toBeInTheDocument();
+    expect(within(dialog).getByText("digest")).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "취소" }));
+    await waitFor(() => expect(screen.queryByTestId("plugin-background-effects-dialog")).toBeNull());
+    expect(setPluginEnabled).not.toHaveBeenCalled();
+    expect(approvePluginBackgroundEffects).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId("plugin-config:enabled-toggle:digest-plugin"));
+    dialog = await screen.findByTestId("plugin-background-effects-dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "허용" }));
+    await waitFor(() => expect(setPluginEnabled).toHaveBeenCalledWith("digest-plugin", true));
+    expect(approvePluginBackgroundEffects).toHaveBeenCalledWith({ pluginId: "digest-plugin", manifestSha256: hash });
+    expect(approvePluginBackgroundEffects.mock.invocationCallOrder[0]).toBeLessThan(setPluginEnabled.mock.invocationCallOrder[0] ?? 0);
+    await waitFor(() => expect(screen.queryByTestId("plugin-config:background-effects:digest-plugin")).toBeNull());
+  });
+
   it("keeps the switch for a disabled plugin whose runtime is retired, so it can be re-enabled", async () => {
     // What the runtime reports after a disable: the generation is retired, so nothing is loaded (`runtimeLoaded: false`), and
     // the card is `disabled`. The switch is the only way back to enabled.
