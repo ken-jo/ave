@@ -61,6 +61,7 @@ it("spawns only the pinned version's stages with the stage's tool scope", () => 
 it("a gate decision taken before the launch call settles is part of its result, and each stage still passes only by its own approval", async () => {
   // Each write that opens a gate returns only once the test has read that gate from the run file and the event loop has turned: a
   // reader that decides on the run file before the engine's write returns. A gate the test read before the hold began is not held.
+  // Invariant: from that read to the engine's `enqueue` in `decide` only microtasks run, so the decision is queued before the write returns.
   let held: { stageId: string; release: () => void } | null = null;
   const seen = new Set<string>();
   await withHarness(async (h) => {
