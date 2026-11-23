@@ -414,6 +414,8 @@ export async function stageRunHarness(opts: {
         pendingRunIds?: Set<string>;
       };
       let active: ItemCheck | undefined;
+      let reads = 0;
+      let yielding = false;
       const onStoreChanged = () => wake();
       function onRunChanged(runId: string): void {
         if (active?.pendingRunIds) active.pendingRunIds.add(runId);
@@ -430,38 +432,42 @@ export async function stageRunHarness(opts: {
         settle();
         reject(error);
       }
+      function checkPending(): void {
+        if (!active?.changed || active.checking || yielding || !itemWaits.has(wake)) return;
+        if (reads === ITEM_RECHECK_BURST) {
+          yielding = true;
+          void setImmediate().then(() => {
+            reads = 0;
+            yielding = false;
+            checkPending();
+          });
+          return;
+        }
+        reads += 1;
+        void recheck(active);
+      }
       async function recheck(source: ItemCheck): Promise<void> {
         source.checking = true;
-        let reads = 0;
+        source.changed = false;
+        const pendingRunIds = new Set<string>();
+        source.pendingRunIds = pendingRunIds;
         try {
-          while (source.changed && active === source && itemWaits.has(wake)) {
-            if (reads === ITEM_RECHECK_BURST) {
-              reads = 0;
-              await setImmediate();
-              continue;
-            }
-            reads += 1;
-            source.changed = false;
-            const pendingRunIds = new Set<string>();
-            source.pendingRunIds = pendingRunIds;
-            try {
-              const current = await item(itemId, source.store, runId => {
-                source.runId = runId;
-                source.pendingRunIds = undefined;
-                if (runId !== undefined && pendingRunIds.has(runId)) source.changed = true;
-              });
-              // A wake can invalidate the board or run part of this snapshot.
-              if (source.changed || active !== source || !itemWaits.has(wake)) continue;
-              if (check(current) && active === source && itemWaits.has(wake)) {
-                settle();
-                resolve(current);
-              }
-            } catch (error) {
-              if (active === source && itemWaits.has(wake)) fail(error);
-            }
+          const current = await item(itemId, source.store, runId => {
+            source.runId = runId;
+            source.pendingRunIds = undefined;
+            if (runId !== undefined && pendingRunIds.has(runId)) source.changed = true;
+          });
+          // A wake can invalidate the board or run part of this snapshot.
+          if (source.changed || active !== source || !itemWaits.has(wake)) return;
+          if (check(current) && active === source && itemWaits.has(wake)) {
+            settle();
+            resolve(current);
           }
+        } catch (error) {
+          if (active === source && itemWaits.has(wake)) fail(error);
         } finally {
           source.checking = false;
+          checkPending();
         }
       }
       function wake(changedItemId?: number): void {
@@ -477,7 +483,7 @@ export async function stageRunHarness(opts: {
           };
         }
         active.changed = true;
-        if (!active.checking) void recheck(active);
+        checkPending();
       }
       runWaits.add(onRunChanged);
       itemWaits.add(wake);

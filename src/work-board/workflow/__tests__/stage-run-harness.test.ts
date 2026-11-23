@@ -1,4 +1,4 @@
-import { expect, it, vi } from "vitest";
+import { expect, it, type MockInstance, vi } from "vitest";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { setImmediate } from "node:timers/promises";
@@ -304,6 +304,72 @@ it("yields with a pending wake so continuous invalidations cannot starve the dea
     expect(vi.getTimerCount()).toBe(0);
   } finally {
     vi.useRealTimers();
+    await h.cleanup();
+  }
+});
+
+async function replaceOnRead(
+  h: Awaited<ReturnType<typeof stageRunHarness>>,
+  read: MockInstance<WorkBoardStore["get"]>,
+  limit: number,
+): Promise<number> {
+  const { id, row } = await waitSnapshots(h);
+  read.mockClear().mockImplementation(async () => {
+    const count = read.mock.calls.length;
+    if (count < limit) queueMicrotask(() => h.makeEngine());
+    return { ...row, item: { ...row.item, runId: undefined, title: `Read ${count}` } };
+  });
+  return id;
+}
+
+it("bounds a burst of replacement reads and resumes from the active source", async () => {
+  const h = await stageRunHarness();
+  const read = vi.spyOn(WorkBoardStore.prototype, "get");
+  try {
+    const id = await replaceOnRead(h, read, 12);
+    const result = h.until(id, item => item.title === "Read 12");
+    void result.catch(() => {});
+
+    await setImmediate();
+    expect(read).toHaveBeenCalledTimes(8);
+    h.makeEngine();
+    const active = h.board;
+    expect(read).toHaveBeenCalledTimes(8);
+
+    await expect(result).resolves.toMatchObject({ title: "Read 12" });
+    expect(read).toHaveBeenCalledTimes(12);
+    expect(read.mock.contexts[8]).toBe(active);
+  } finally {
+    read.mockRestore();
+    await h.cleanup();
+  }
+});
+
+it("delivers the deadline during continued replacement churn", async () => {
+  const h = await stageRunHarness();
+  const read = vi.spyOn(WorkBoardStore.prototype, "get");
+  try {
+    const limit = 100;
+    const id = await replaceOnRead(h, read, limit);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const result = h.until(id, () => false);
+    void result.catch(() => {});
+
+    await setImmediate();
+    const firstTurn = read.mock.calls.length;
+    await setImmediate();
+    const secondTurn = read.mock.calls.length;
+    expect(secondTurn).toBeLessThan(limit);
+    expect(secondTurn).toBeGreaterThan(firstTurn);
+
+    vi.advanceTimersByTime(30_000);
+    await expect(result).rejects.toThrow(`timed out waiting for item ${id} to satisfy its predicate`);
+    await setImmediate();
+    expect(read).toHaveBeenCalledTimes(secondTurn);
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    vi.useRealTimers();
+    read.mockRestore();
     await h.cleanup();
   }
 });
