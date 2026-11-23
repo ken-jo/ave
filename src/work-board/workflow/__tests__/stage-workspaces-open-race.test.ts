@@ -14,14 +14,16 @@ const between = vi.hoisted(() => ({
   /** Runs right after an entry of a held folder was removed, with the entry's path. */
   removed: undefined as ((path: string) => void) | undefined,
   /** A home on a share: the run folder as the host reached it, the volume it is really on, and the share that stands for that volume. */
-  share: undefined as { run: string; volume: string; root: string } | undefined,
+  share: undefined as { run: string; volume: string; root: string; git?: string } | undefined,
+  /** Every path off this machine the disk was asked about; none of them is really asked. */
+  foreign: [] as string[],
 }));
 
 vi.mock("node:fs", async (original) => {
   const real = await original<typeof import("node:fs")>();
   const native = (path: string): string => {
     const found = real.realpathSync.native(path);
-    return between.share?.run === path ? between.share.root + found.slice(between.share.volume.length) : found;
+    return between.share !== undefined && (between.share.run === path || between.share.git === found) ? between.share.root + found.slice(between.share.volume.length) : found;
   };
   return { ...real, realpathSync: Object.assign((path: string) => real.realpathSync(path), { native }) };
 });
@@ -43,7 +45,23 @@ vi.mock("../owned-fs.js", async (original) => {
     const share = between.share;
     return share !== undefined && path.toLowerCase().startsWith(share.root) ? share.volume + path.slice(share.root.length) : path;
   };
-  return { ...real, holdDir: (path: string, id?: string) => held(real.holdDir(path, id), 0), nodeIdOf: (path: string) => real.nodeIdOf(local(path)), realDirId: (path: string) => real.realDirId(local(path)) };
+  const asked = (path: string): string | undefined => {
+    const at = local(path);
+    if (!/^[\\/]{2}/u.test(at)) return at;
+    between.foreign.push(path);
+    return undefined;
+  };
+  const answer = <T>(path: string, ask: (path: string) => T): T | undefined => { const at = asked(path); return at === undefined ? undefined : ask(at); };
+  return {
+    ...real,
+    holdDir: (path: string, id?: string) => {
+      const at = asked(path);
+      if (at === undefined) throw new real.OwnedFsError("not-plain", "not on this machine");
+      return held(real.holdDir(at, id), 0);
+    },
+    nodeIdOf: (path: string) => answer(path, real.nodeIdOf),
+    realDirId: (path: string) => answer(path, real.realDirId),
+  };
 });
 
 let base: string;
@@ -60,6 +78,7 @@ afterEach(() => {
   between.act = undefined;
   between.removed = undefined;
   between.share = undefined;
+  between.foreign.length = 0;
   rmSync(base, { recursive: true, force: true, maxRetries: 3 });
 });
 
@@ -150,6 +169,88 @@ it.skipIf(process.platform !== "win32")("a home on a share keeps the registratio
     expect(existsSync(admin)).toBe(false);
   } finally {
     between.share = undefined;
+    await fx.done();
+  }
+});
+
+interface Recorded { repo: { gitDir: string }; registrations: Record<string, { admin: string }> }
+const onWindows = it.skipIf(process.platform !== "win32");
+/** Git hides the link file, and a hidden file is not written over: it is put there anew. */
+const relink = (stage: string, link: string): void => { rmSync(join(stage, ".git")); writeFileSync(join(stage, ".git"), link); };
+const slashed = (path: string, volume: string): string => path.slice(volume.length).replaceAll("\\", "/");
+
+onWindows("a project on a share keeps the registration a stage folder names by the share's path", async () => {
+  const fx = gitFixture();
+  try {
+    const handle = fx.start();
+    const open = await handle.provider.open(handle.run, fx.repo);
+    if (!open.ok) throw new Error("expected a workspace");
+    const stage = await stageRoot(handle, "s1");
+    const recordPath = join(open.workspace.runRoot, RUN_FILE);
+    const record = JSON.parse(readFileSync(recordPath, "utf8")) as Recorded;
+    const admin = record.registrations.s1?.admin as string;
+    const git = record.repo.gitDir;
+    const volume = parse(git).root;
+    between.share = { run: "", volume, root: "\\\\server\\share\\", git };
+    // The repository as the host finds it on a share, with a stop before the host recorded the stage's registration.
+    record.repo.gitDir = `\\\\server\\share\\${git.slice(volume.length)}`;
+    delete record.registrations.s1;
+    writeFileSync(recordPath, JSON.stringify(record));
+    relink(stage, `gitdir: //SERVER/Share/${slashed(admin, volume)}\n`);
+    await handle.provider.release(handle.run, ["s1"]);
+    expect(existsSync(stage)).toBe(false);
+    expect(existsSync(admin)).toBe(false);
+    expect(between.foreign).toEqual([]);
+  } finally {
+    try { await fx.done(); } finally { between.share = undefined; }
+  }
+});
+
+onWindows("a stage folder that names an admin folder on another share or a device records nothing, and nothing off this machine is asked", async () => {
+  const fx = gitFixture();
+  try {
+    const handle = fx.start();
+    const open = await handle.provider.open(handle.run, fx.repo);
+    if (!open.ok) throw new Error("expected a workspace");
+    const stages = [await stageRoot(handle, "s1"), await stageRoot(handle, "s2")];
+    const recordPath = join(open.workspace.runRoot, RUN_FILE);
+    const record = JSON.parse(readFileSync(recordPath, "utf8")) as Recorded;
+    const admins = [record.registrations.s1?.admin as string, record.registrations.s2?.admin as string];
+    const volume = parse(admins[0] as string).root;
+    record.registrations = {};
+    writeFileSync(recordPath, JSON.stringify(record));
+    relink(stages[0] as string, `gitdir: //other/share/${slashed(admins[0] as string, volume)}\n`);
+    relink(stages[1] as string, `gitdir: //./${(admins[1] as string).replaceAll("\\", "/")}\n`);
+    await handle.provider.release(handle.run, ["s1", "s2"]);
+    expect(stages.map(stage => existsSync(stage))).toEqual([false, false]);
+    // Neither admin folder was taken as the run's.
+    expect(admins.map(admin => existsSync(admin))).toEqual([true, true]);
+    expect(between.foreign).toEqual([]);
+  } finally {
+    await fx.done();
+  }
+});
+
+onWindows("a record edited to name an admin folder on another share or a device is refused, and nothing off this machine is asked", async () => {
+  const fx = gitFixture();
+  try {
+    const handle = fx.start();
+    const open = await handle.provider.open(handle.run, fx.repo);
+    if (!open.ok) throw new Error("expected a workspace");
+    await stageRoot(handle, "s1");
+    await stageRoot(handle, "s2");
+    const recordPath = join(open.workspace.runRoot, RUN_FILE);
+    const record = JSON.parse(readFileSync(recordPath, "utf8")) as Recorded;
+    const admins = [record.registrations.s1?.admin as string, record.registrations.s2?.admin as string];
+    const volume = parse(admins[0] as string).root;
+    // The record's shape and its own folder still fit: only the admin paths were changed.
+    (record.registrations.s1 as { admin: string }).admin = `\\\\other\\share\\${(admins[0] as string).slice(volume.length)}`;
+    (record.registrations.s2 as { admin: string }).admin = `\\\\.\\${admins[1] as string}`;
+    writeFileSync(recordPath, JSON.stringify(record));
+    for (const stageId of ["s1", "s2"]) await expect(handle.provider.release(handle.run, [stageId])).rejects.toThrow("not in the run's repository");
+    expect(admins.map(admin => existsSync(admin))).toEqual([true, true]);
+    expect(between.foreign).toEqual([]);
+  } finally {
     await fx.done();
   }
 });

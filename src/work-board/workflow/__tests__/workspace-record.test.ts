@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import { beforeEach, expect, it, vi } from "vitest";
-import { runFolderOf } from "../workspace-record.js";
+import { adminNameIn, runFolderOf } from "../workspace-record.js";
 
 const disk = vi.hoisted(() => ({ asked: [] as string[], resolved: [] as string[], real: undefined as string | undefined }));
 
@@ -64,4 +64,47 @@ onShares("a run folder whose real path is a device path keeps no share registrat
   disk.real = String.raw`\\.\C:\run`;
   expect(runFolderOf(run(HOME_RUN), "_join", String.raw`${HOME_RUN}\_join\.git`)).toBeUndefined();
   expect(disk.asked).toEqual([]);
+});
+
+const SHARE_GIT = String.raw`\\server\share\project\.git`;
+
+it("an admin folder on a local path is named when its parent is the repository's worktrees folder, which is looked up on disk", () => {
+  expect(adminNameIn(resolve("/project/.git"), "1:1", resolve("/project/.git/worktrees/s1"))).toBe("s1");
+  expect(adminNameIn(resolve("/project/.git"), "2:2", resolve("/project/.git/worktrees/s1"))).toBeUndefined();
+  expect(disk.asked).toEqual([resolve("/project/.git/worktrees"), resolve("/project/.git/worktrees")]);
+  expect(disk.resolved).toEqual([]);
+});
+
+it("an admin path whose last part is no plain name names nothing, and nothing is asked of it", () => {
+  for (const admin of [resolve("/"), resolve("/project/.git/worktrees/s1:stream")]) expect(adminNameIn(resolve("/project/.git"), "1:1", admin), admin).toBeUndefined();
+  expect(disk.asked).toEqual([]);
+});
+
+it("an admin path that only passes through the worktrees folder is asked about where it ends", () => {
+  expect(adminNameIn(resolve("/project/.git"), "1:1", `${resolve("/project/.git/worktrees")}/../../other/x`)).toBe("x");
+  expect(disk.asked).toEqual([resolve("/project/other")]);
+});
+
+onShares("an admin folder in the worktrees folder of a repository on a share is named, however the share path is spelled", () => {
+  const spellings = ["//server/share/project/.git/worktrees/s1", String.raw`\\SERVER\Share\Project\.GIT\Worktrees\s1`, String.raw`\\?\UNC\server\share\project\.git\worktrees\s1`,
+    String.raw`\\server\share\project\.git\worktrees\other\..\s1`, "//server/share/project/.git/worktrees/s1/"];
+  for (const admin of spellings) expect(adminNameIn(SHARE_GIT, "1:1", admin), admin).toBe("s1");
+  // Only the worktrees folder of the repository's own directory is ever asked about.
+  expect(new Set(disk.asked.map(path => path.toLowerCase()))).toEqual(new Set([String.raw`${SHARE_GIT}\worktrees`]));
+  expect(disk.resolved).toEqual([]);
+});
+
+onShares("a share or device admin path outside the repository's worktrees folder names nothing, and nothing is asked of it", () => {
+  const outside = [String.raw`\\other\share\project\.git\worktrees\x`, "//server/other/project/.git/worktrees/x", String.raw`\\server\share\project\.git\x`, String.raw`\\server\share\project\.git\worktrees\deeper\x`,
+    String.raw`\\server\share\project\.git\worktrees\..\x`, String.raw`\\server\share\project\.git\worktrees\x\..`, String.raw`\\server\share\project\.git\worktrees\.`, String.raw`\\server\share\project\.git\worktrees\x:stream`,
+    String.raw`\\?\UNC\other\share\project\.git\worktrees\x`, String.raw`\\.\C:\project\.git\worktrees\x`, String.raw`\\.\UNC\server\share\project\.git\worktrees\x`, String.raw`\\?\GLOBALROOT\Device\X\project\.git\worktrees\x`,
+    String.raw`\\?\Volume{1}\project\.git\worktrees\x`, "//./pipe/project/.git/worktrees/x"];
+  for (const gitDir of [SHARE_GIT, String.raw`C:\project\.git`]) for (const admin of outside) expect(adminNameIn(gitDir, "1:1", admin), admin).toBeUndefined();
+  expect(disk.asked).toEqual([]);
+  expect(disk.resolved).toEqual([]);
+});
+
+onShares("a drive path under the long-path prefix names the admin folder of a repository on that drive", () => {
+  expect(adminNameIn(String.raw`C:\project\.git`, "1:1", String.raw`\\?\C:\project\.git\worktrees\s1`)).toBe("s1");
+  expect(disk.asked).toEqual([String.raw`C:\project\.git\worktrees`]);
 });

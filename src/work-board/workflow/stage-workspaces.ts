@@ -12,7 +12,7 @@ import { holdDir, type NodeId, nodeIdOf, type OwnedDir, OwnedFsError, realDirId,
 import type { JoinConflict } from "./shipped-shapes.js";
 import type { RunRef, StageWorkspaceProvider, WORKSPACE_REFUSALS } from "./stage-workspace.js";
 import { IGNORE_PREFIX, isIgnoreFolder, JOIN_DIR, OUT_DIR, RUN_FILE, runBranch, runRootOf, runSlug, stageDirName, WORKTREES_DIR } from "./workspace-layout.js";
-import { isWorkspaceRecord, type OutputFile, ownerOf, recordFits, type Registration, runFolderOf, type StageEntry, samePath, type WorkspaceRecord } from "./workspace-record.js";
+import { adminNameIn, isWorkspaceRecord, type OutputFile, ownerOf, recordFits, type Registration, runFolderOf, type StageEntry, samePath, type WorkspaceRecord } from "./workspace-record.js";
 import { copySeedFiles, hashSeedFile, listSeedFiles, MAX_SEED_BYTES, MAX_SEED_FILES, type SeedRules } from "./workspace-seed.js";
 
 const log = createLogger("work-board-stage-workspace");
@@ -136,8 +136,9 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       if (named?.[1] === undefined) return undefined;
       const admin = resolve(folder.path, named[1]);
       const worktrees = holdDir(repo.gitDir, repo.id).existing("worktrees");
-      if (worktrees === undefined || realDirId(dirname(admin)) !== worktrees.id) return undefined;
-      const held = worktrees.existing(basename(admin));
+      const name = worktrees === undefined ? undefined : adminNameIn(repo.gitDir, worktrees.id, admin);
+      if (worktrees === undefined || name === undefined) return undefined;
+      const held = worktrees.existing(name);
       const text = held?.readFile("gitdir")?.toString("utf8");
       if (held === undefined || text === undefined) return undefined;
       const gitdir = resolve(admin, text.trimEnd());
@@ -170,12 +171,12 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     if (repo === undefined) throw new OwnedFsError("changed", "the record names no repository");
     const worktrees = holdDir(repo.gitDir, repo.id).existing("worktrees");
     if (worktrees === undefined) return undefined;
-    const name = basename(registration.admin);
     const own = runFolderOf(at.run, key, registration.gitdir);
     if (own === undefined) throw new OwnedFsError("changed", "the registration points outside the run's folder");
     const folder = nodeIdOf(own);
     if (folder !== undefined && folder !== (key === JOIN_DIR ? at.file.joinDir : at.file.stages[key]?.dir)) throw new OwnedFsError("changed", "the registration points at a folder the run did not make");
-    if (realDirId(dirname(registration.admin)) !== worktrees.id) throw new OwnedFsError("changed", "the registration is not in the run's repository");
+    const name = adminNameIn(repo.gitDir, worktrees.id, registration.admin);
+    if (name === undefined) throw new OwnedFsError("changed", "the registration is not in the run's repository");
     if (worktrees.entryId(name) === undefined) return undefined;
     const text = worktrees.child(name, registration.id)?.readFile("gitdir")?.toString("utf8");
     if (text === undefined || !samePath(resolve(registration.admin, text.trimEnd()), registration.gitdir)) throw new OwnedFsError("changed", "the registration no longer points at the run's folder");

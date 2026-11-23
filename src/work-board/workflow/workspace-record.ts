@@ -1,5 +1,5 @@
 import { realpathSync } from "node:fs";
-import { basename, dirname, isAbsolute, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { isStageId } from "../template-graph.js";
 import { type NodeId, realDirId } from "./owned-fs.js";
 import { JOIN_DIR, runBranch, runRootOf, stageDirName } from "./workspace-layout.js";
@@ -135,6 +135,27 @@ export function runFolderOf(run: { path: string; id: NodeId }, key: string, gitd
     if (real === undefined || foldName(dirname(folder)) !== foldName(real)) return undefined;
   }
   return realDirId(dirname(folder)) === run.id ? folder : undefined;
+}
+
+/**
+ * The name of a registration's admin folder, when its path puts it right inside the repository's `worktrees`; undefined for any other.
+ * The path comes from a stage folder's `.git` file or from the record, and either may name anything. So it is made plain text first,
+ * and its last part must be one plain name. A network path is then taken only when its text is `worktrees` of the directory the record
+ * gives as the repository's, so this path asks nothing of any other share; a device path names nothing. The directory is asked which
+ * one it is only after that. The record's own repository path is the caller's to check. Known limit, on the closed side: another
+ * spelling of the share's server is refused, and so is a share path when the repository was reached by a drive letter.
+ */
+export function adminNameIn(gitDir: string, worktrees: NodeId, admin: string): string | undefined {
+  const plain = plainPath(admin);
+  if (plain === undefined) return undefined;
+  const name = basename(plain);
+  if (name === "" || name === "." || name === ".." || /[\\/:]/u.test(name)) return undefined;
+  const parent = dirname(plain);
+  if (process.platform === "win32" && plain.startsWith("\\\\")) {
+    const own = plainPath(join(gitDir, "worktrees"));
+    if (own === undefined || foldName(parent) !== foldName(own)) return undefined;
+  }
+  return realDirId(parent) === worktrees ? name : undefined;
 }
 
 /**
