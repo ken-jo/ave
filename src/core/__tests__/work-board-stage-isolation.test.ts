@@ -15,7 +15,7 @@ type Harness = Awaited<ReturnType<typeof stageRunHarness>>;
 /** The provider the production wiring chose for the engine now running. */
 let production: StageWorkspaceProvider;
 async function withProductionParts(run: (h: Harness) => Promise<void>): Promise<void> {
-  const h = await stageRunHarness({ wiring: (store) => { const parts = workflowEngineExtensions(store); production = parts.workspace; return parts; } });
+  const h = await stageRunHarness({ wiring: (store, { templates }) => { const parts = workflowEngineExtensions(store, templates); production = parts.workspace; return parts; } });
   try {
     await run(h);
   } finally {
@@ -226,7 +226,7 @@ it("a delete of a live run's item keeps the output folder until the run has sett
   const settleRun = h.board.runs.settleRun.bind(h.board.runs);
   vi.spyOn(h.board.runs, "settleRun").mockImplementation(async (...args) => {
     // The row is gone and the run still has its record: a discard now takes nothing of it.
-    await production.discard();
+    await production.discard(new Map());
     note("recorded");
     const settled = await settleRun(...args);
     note("settled");
@@ -260,7 +260,7 @@ it("a discard whose first read of the stores is older than an item keeps the wor
     await held;
     return answer;
   });
-  const discarding = production.discard();
+  const discarding = production.discard(new Map());
   await vi.waitFor(() => expect(taken).toBe(true), { timeout: 5000 });
 
   // An unrelated item is added and started; its start is held where the folder is published and no record is stored yet.
@@ -321,7 +321,7 @@ it("a start refused because its row was deleted while its workspace was opened l
       const removeRow = async (): Promise<void> => {
         expect(await h.board.remove(id)).toMatchObject({ status: "deleted" });
         // The discard that removal asks for has run its course.
-        await production.discard();
+        await production.discard(new Map());
       };
       if (deleted === "before the folder is published") await removeRow();
       const opened = await open(...args);

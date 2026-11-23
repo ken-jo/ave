@@ -295,7 +295,7 @@ async function found(fx: GitFixture, rootAs?: (root: string) => string): Promise
     writeFileSync(join(runRoot, RUN_FILE), JSON.stringify(record));
   }
   const { git, calls } = countedGit(fx);
-  return { provider: createStageWorkspaceProvider({ git }), calls, handle, runRoot, record, local };
+  return { provider: createStageWorkspaceProvider({ git, removable: async () => () => true }), calls, handle, runRoot, record, local };
 }
 
 type Unverified = [what: string, rootAs: ((root: string) => string) | undefined, open: boolean];
@@ -312,14 +312,15 @@ onWindows.each<Unverified>([
     expect(projectRoot).toBe(fx.repo);
     between.asked.length = 0;
     try {
-      // A stage's release, a new stage, a seal, a collection, the run's release and a sweep. The sweep is given the project the host's
-      // own run state names for the run: an edited record's root is not that one, and is not taken for it.
+      // A stage's release, a new stage, a seal, a collection, the run's release, a sweep and a discard. The last two are given the
+      // project the host's own run state names for the run: an edited record's root is not that one, and is not taken for it.
       await expect(provider.release(run, ["s1"])).rejects.toThrow("project.root");
       expect(await provider.prepare(run, stageOf("s2"), 1)).toEqual({ ok: false, code: "workspace-unavailable" });
       expect(await provider.seal(run, "s1")).toEqual({ ok: false, code: "workspace-unavailable" });
       await expect(provider.integrate(run, "j1", ["s1"])).rejects.toThrow("the run has no integration worktree");
       await provider.release(run, "all");
       await provider.sweep([], rootAs === undefined ? undefined : new Map([[run.runId, fx.repo]]));
+      await provider.discard(new Map(rootAs === undefined ? [] : [[run.runId, fx.repo]]));
       expect(calls).toEqual([]);
       const paths = [record.project.root, local].map(path => path.toLowerCase());
       expect(between.asked.filter(path => paths.some(root => path.toLowerCase().startsWith(root)))).toEqual([]);
@@ -347,7 +348,7 @@ it("a record edited to name a registration's worktree outside the run folder is 
     between.asked.length = 0;
     await provider.release(handle.run, "all");
     await provider.sweep([], new Map([[handle.run.runId, fx.repo]]));
-    await provider.discard();
+    await provider.discard(new Map([[handle.run.runId, fx.repo]]));
     expect(calls).toEqual([]);
     expect(between.asked.filter(path => path.toLowerCase().startsWith(outside.toLowerCase()))).toEqual([]);
     expect(existsSync(join(runRoot, "s1", ".git"))).toBe(true);

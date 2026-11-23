@@ -321,7 +321,7 @@ describe("git stage workspaces", () => {
     try {
       const restarted = createStageWorkspaceProvider({ git: createHostGit({ env }), removable: async () => () => true });
       await restarted.sweep([handle.run.runId]);
-      await restarted.discard();
+      await restarted.discard(new Map());
       await restarted.release(handle.run, "all");
       expect(existsSync(join(copy, "s1", "kept.txt"))).toBe(true);
       expect(existsSync(join(copy, RUN_FILE))).toBe(true);

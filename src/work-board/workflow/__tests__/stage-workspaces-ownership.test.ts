@@ -76,12 +76,14 @@ async function scene(): Promise<Scene> {
 }
 
 /** As after a restart, with item 7 gone from the board and item 8 still on it. A discard and a sweep have no project open; a release
- * is item 7's, with its project open, and a `swept` sweep is given item 7's project as the host's run state names it. */
-async function operate(operation: "discard" | "sweep" | "release" | "swept", at?: Scene): Promise<void> {
+ * is item 7's, with its project open, and a `swept` sweep and a `discarded` discard are given item 7's project as the host's run
+ * state names it. */
+async function operate(operation: "discard" | "sweep" | "release" | "swept" | "discarded", at?: Scene): Promise<void> {
   const provider = createStageWorkspaceProvider({ git: createHostGit({ env: fx.env }), removable: async () => run => run.itemId !== 8 });
   if (operation === "release") await provider.release((at as Scene).target.run, "all");
   else if (operation === "swept") await provider.sweep([], new Map([[(at as Scene).target.run.runId, fx.repo]]));
-  else await (operation === "discard" ? provider.discard() : provider.sweep([]));
+  else if (operation === "discarded") await provider.discard(new Map([[(at as Scene).target.run.runId, fx.repo]]));
+  else await (operation === "discard" ? provider.discard(new Map()) : provider.sweep([]));
 }
 
 function expectUsersOwn(at: Scene): void {
@@ -152,7 +154,24 @@ it("a sweep leaves a git run whose project it is given under another run's id", 
   expect(existsSync(at.otherRoot)).toBe(false);
 });
 
-describe.each(["release", "swept"] as const)("what a %s with its project open may remove of a git run", (operation) => {
+it("a run whose release was refused for want of its project goes at a discard given the root its removed record named, and stays at one given none", async () => {
+  const at = await scene();
+  const { projectRoot, ...closed } = at.target.run;
+  expect(projectRoot).toBe(fx.repo);
+  const provider = createStageWorkspaceProvider({ git: createHostGit({ env: fx.env }), removable: async () => run => run.itemId !== 8 });
+  await provider.release(closed, "all");
+  expectLeftWhole(at, "project.root");
+  // An entry the run file held with no project carries none.
+  await provider.discard(new Map());
+  expectLeftWhole(at, "project.root");
+  await provider.discard(new Map([[at.target.run.runId, fx.repo]]));
+  expect(existsSync(at.runRoot)).toBe(false);
+  expect(existsSync(at.admin)).toBe(false);
+  expect(fx.userGit(fx.repo, "branch", "--list", at.branch)).toBe("");
+  expectUsersOwn(at);
+});
+
+describe.each(["release", "swept", "discarded"] as const)("what a %s with its project open may remove of a git run", (operation) => {
   it("with every field as it was written, the run's folder, registration and branch go and nothing else", async () => {
     const at = await scene();
     await operate(operation, at);

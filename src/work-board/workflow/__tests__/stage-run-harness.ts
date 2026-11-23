@@ -65,7 +65,7 @@ export async function stageRunHarness(opts: {
   script?: (input: SubAgentSpawnInput) => Partial<SubAgentSpawnResult> | undefined;
   workflow?: Partial<WorkflowDeps>;
   /** Parts chosen for the board store the engine runs on (the production wiring is chosen this way); they replace the harness's own. */
-  wiring?: (store: WorkBoardStore, harness: { workspace: StageWorkspaceProvider }) => Partial<WorkflowDeps>;
+  wiring?: (store: WorkBoardStore, harness: { workspace: StageWorkspaceProvider; templates: WorkflowTemplateStore }) => Partial<WorkflowDeps>;
   integrate?: () => IntegrateResult | Promise<IntegrateResult>;
   /** Replaces a part of the workspace provider. */
   workspace?: Partial<StageWorkspaceProvider>;
@@ -159,7 +159,7 @@ export async function stageRunHarness(opts: {
       resolveProjectRoot: (root: string) => unauthorised.has(root) ? null : root,
       audit: (event: (typeof audits)[number]) => { audits.push(event); },
       ...opts.workflow,
-      ...opts.wiring?.(store, { workspace }),
+      ...opts.wiring?.(store, { workspace, templates }),
       ...(runWork ? { _observeDetachedWorkForTest: runWork.observe } : {}),
     } satisfies WorkflowDeps;
     return createWorkBoardEngine({

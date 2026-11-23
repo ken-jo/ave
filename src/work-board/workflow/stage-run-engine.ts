@@ -1243,7 +1243,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     await workspace.release(ref, "all").catch(() => undefined);
     // The row may have gone while the workspace was opened, before there was a folder for that removal's discard to find. The release
     // keeps a run's output for its row, so the stores are asked once more whether this one still has a row or a record.
-    await workspace.discard().catch(() => undefined);
+    await workspace.discard(new Map(ref.projectRoot === undefined ? [] : [[ref.runId, ref.projectRoot]])).catch(() => undefined);
     return result;
   }
 

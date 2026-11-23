@@ -225,17 +225,17 @@ it.each([
 });
 
 it("announces the settled runs a write's retention removed once that write is on disk, and none for a write that stored nothing", async () => {
-  const seen: { runIds: string[]; onDisk: string[] }[] = [];
+  const seen: { runIds: string[]; roots: (string | undefined)[]; onDisk: string[] }[] = [];
   const listening = (): WorkflowRunStore => {
     const store = new WorkflowRunStore(file);
-    store.onRunsRemoved = (runIds) => {
-      seen.push({ runIds: [...runIds], onDisk: (JSON.parse(readFileSync(file, "utf8")) as { runs: { runId: string }[] }).runs.map(entry => entry.runId) });
+    store.onRunsRemoved = (removed) => {
+      seen.push({ runIds: removed.map(entry => entry.runId), roots: removed.map(entry => entry.runStartedBy.kind === "local-create-and-run" ? entry.runStartedBy.projectRoot : undefined), onDisk: (JSON.parse(readFileSync(file, "utf8")) as { runs: { runId: string }[] }).runs.map(entry => entry.runId) });
     };
     return store;
   };
   const drop = (): null => null;
   let store = listening();
-  await store.put(run());
+  await store.put(run({ runStartedBy: { kind: "local-create-and-run", pin, projectRoot: "/projects/a" } }));
   expect(await store.settleRun("run-1", value => ({ run: value, ends: "stopped", at: "2026-01-02T00:00:00.000Z" }), () => true)).toMatchObject({ status: "stored" });
   await store.put(run({ runId: "run-2", itemId: 2 }));
   // A write whose retention keeps every run announces none.
@@ -260,7 +260,8 @@ it("announces the settled runs a write's retention removed once that write is on
   await writeFile(file, small);
   store = listening();
   expect(await store.put(run({ runId: "run-4", itemId: 4 }), drop)).toMatchObject({ status: "stored" });
-  expect(seen).toEqual([{ runIds: ["run-1"], onDisk: ["run-2", "run-3", "run-4"] }]);
+  // What authorised the run goes with its id: the file's last word on the run's project.
+  expect(seen).toEqual([{ runIds: ["run-1"], roots: ["/projects/a"], onDisk: ["run-2", "run-3", "run-4"] }]);
   expect(await store.get("run-1")).toEqual({ status: "not-found" });
 });
 

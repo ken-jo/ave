@@ -27,9 +27,10 @@ export interface StageWorkspaceProvider {
    * with its project open (`run.projectRoot`): without it nothing of the run is touched. */
   release(run: RunRef, stageIds: readonly string[] | "all"): Promise<void>;
   /** Everything left under the run root, the output folder included, of each run that has no record and whose item is gone. A run
-   * whose item is still listed keeps its output folder whether or not its record stays. The run branch stays. No project is open
-   * for this call, and the run has no record left to name one: a git run that still has a folder is left whole, with a warning. */
-  discard(): Promise<void>;
+   * whose item is still listed keeps its output folder whether or not its record stays. The run branch stays. `projects` gives,
+   * by run id, the project root the host's run file named for a run when its record went; a git run is taken apart only against
+   * that root, as in `sweep`, and one with none is left whole, with a warning. */
+  discard(projects: ReadonlyMap<string, string>): Promise<void>;
   /** Boot: drop what no active run owns, and with it what `discard` would remove. An active run loses only what a stop during a
    * seeding left of its ignore matcher. `projects` gives, by run id, the project root the host's own run state names for a run; a
    * git run is taken apart only against that root, and one with none is left whole, with a warning. Nothing a run folder holds is

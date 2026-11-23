@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { expect, it, vi } from "vitest";
 import { aveHome } from "../../shared/ave-home.js";
 import { workflowEngineExtensions } from "../../boot/steps/workflow-engine-extensions.js";
+import type { RemovedRun } from "../workflow-run-store.js";
 import { stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
 import { stageRunHarness } from "../../work-board/workflow/__tests__/stage-run-harness.js";
 
@@ -11,7 +12,7 @@ const auto = (id: string, inputs: string[] = []) => stageOf(id, { inputs, gate: 
 
 it("with the production parts and a workspace provider, an authorised template run starts, is stored in the run file and completes", async () => {
   // Only the workspace provider is the harness's, and with it no session is bound: its folders are not under the home (the real ones are, below).
-  const h = await stageRunHarness({ wiring: (store, harness) => ({ ...workflowEngineExtensions(store), workspace: harness.workspace, workspaceBinding: undefined }) });
+  const h = await stageRunHarness({ wiring: (store, harness) => ({ ...workflowEngineExtensions(store, harness.templates), workspace: harness.workspace, workspaceBinding: undefined }) });
   try {
     const version = await h.confirm([auto("a"), auto("b", ["a"])]);
     const id = await h.addItem(version);
@@ -40,7 +41,7 @@ it("with the production parts and a workspace provider, an authorised template r
 });
 
 it("with the production parts alone a run works in stage folders under the home and leaves its output folder", async () => {
-  const h = await stageRunHarness({ wiring: store => workflowEngineExtensions(store) });
+  const h = await stageRunHarness({ wiring: (store, harness) => workflowEngineExtensions(store, harness.templates) });
   try {
     const version = await h.confirm([auto("a"), auto("b", ["a"])]);
     const id = await h.addItem(version);
@@ -56,6 +57,46 @@ it("with the production parts alone a run works in stage folders under the home 
     if (row.status !== "found") throw new Error("item not found");
     expect((await h.runOf(row.item.runId ?? ""))?.runWorkspace).toMatchObject({ kind: "folder", runRoot: dirname(stageRoot) });
     await vi.waitFor(() => expect(existsSync(stageRoot)).toBe(false), { timeout: 5000 });
+  } finally {
+    await h.cleanup();
+  }
+});
+
+it("the production parts give a discard the project of each run whose record went: a card's root at once, a schedule's approved one once read", async () => {
+  const given: Map<string, string>[] = [];
+  const atOnce: { removed: readonly RemovedRun[]; projects: Map<string, string> | undefined }[] = [];
+  const h = await stageRunHarness({ wiring: (store, harness) => {
+    const parts = workflowEngineExtensions(store, harness.templates);
+    vi.spyOn(parts.workspace, "discard").mockImplementation(async (projects) => { given.push(new Map(projects)); });
+    // A row's removal asks for a discard as soon as its record's has been announced.
+    const announce = store.runs.onRunsRemoved;
+    store.runs.onRunsRemoved = (removed) => {
+      announce?.(removed);
+      const asked = given.length;
+      store.onItemRemoved?.();
+      atOnce.push({ removed, projects: given[asked] });
+    };
+    return { ...parts, workspace: harness.workspace, workspaceBinding: undefined };
+  } });
+  try {
+    const A = "/projects/a";
+    const B = "/projects/b";
+    const version = await h.confirm([stageOf("a")]);
+    const onB = await h.confirm([stageOf("a")], { scope: { kind: "project", projectRoot: B } });
+    const attachment = await h.attach(onB, { kind: "project", projectRoot: B });
+    const card = await h.addItem(version, A);
+    const scheduled = await h.addItem(onB, B);
+    const plain = await h.addItem(version);
+    void h.start(card, h.local(version, A));
+    void h.start(scheduled, attachment.source);
+    void h.start(plain, h.local(version));
+    await h.untilLive(3);
+    const [cardRun, scheduledRun, plainRun] = await Promise.all([card, scheduled, plain].map(async id => (await h.item(id)).runId ?? ""));
+    for (const id of [card, scheduled, plain]) expect(await h.board.remove(id)).toMatchObject({ status: "deleted" });
+    await vi.waitFor(() => expect(atOnce.flatMap(entry => entry.removed.map(run => run.runId)).sort()).toEqual([cardRun, scheduledRun, plainRun].sort()), { timeout: 5000 });
+    expect(atOnce.find(entry => entry.removed.some(run => run.runId === cardRun))?.projects?.get(cardRun)).toBe(A);
+    // A run with no project has none to give, and is left to the provider as one.
+    await vi.waitFor(() => expect(given.at(-1)).toEqual(new Map([[cardRun, A], [scheduledRun, B]])), { timeout: 5000 });
   } finally {
     await h.cleanup();
   }

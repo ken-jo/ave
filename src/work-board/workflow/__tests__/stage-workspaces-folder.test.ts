@@ -345,7 +345,7 @@ describe("folder stage workspaces", () => {
     if (!opened.ok) throw new Error(opened.code);
     expect(opened.workspace.runRoot).not.toBe(handle.runRoot);
     await handle.provider.release(other, "all");
-    await createStageWorkspaceProvider({ git: createHostGit({ env }), removable: async () => run => run.itemId === 8 }).discard();
+    await createStageWorkspaceProvider({ git: createHostGit({ env }), removable: async () => run => run.itemId === 8 }).discard(new Map());
     expect(existsSync(opened.workspace.runRoot)).toBe(false);
     expect(read(stage, "plan.md")).toBe("the plan\n");
   });
@@ -754,8 +754,8 @@ describe("folder stage workspaces", () => {
 
     // As after a restart: a provider that never saw the run finds it by its id.
     // With nothing to say which runs are removable, and with an answer that could not be had, nothing goes.
-    await createStageWorkspaceProvider({ git: createHostGit({ env }) }).discard();
-    await createStageWorkspaceProvider({ git: createHostGit({ env }), removable: async () => undefined }).discard();
+    await createStageWorkspaceProvider({ git: createHostGit({ env }) }).discard(new Map());
+    await createStageWorkspaceProvider({ git: createHostGit({ env }), removable: async () => undefined }).discard(new Map());
     expect(read(handle.out, "plan.md")).toBe("the plan\n");
     // What a stop during a seeding left, under the name of this build and under the one an earlier build used, goes with the run.
     write(handle.runRoot, "_ignore-Ab12Cd/.git/HEAD", "ref: refs/heads/main\n");
@@ -763,12 +763,12 @@ describe("folder stage workspaces", () => {
     // As after a restart: a provider that never saw the run finds it by its record.
     const asked: { runId: string; itemId: number }[] = [];
     const restarted = createStageWorkspaceProvider({ git: createHostGit({ env }), removable: async () => (run) => { asked.push(run); return run.runId === handle.run.runId; } });
-    await restarted.discard();
+    await restarted.discard(new Map());
     expect(existsSync(handle.runRoot)).toBe(false);
     expect(asked).toEqual(expect.arrayContaining([{ runId: handle.run.runId, itemId: handle.run.itemId }, { runId: other.run.runId, itemId: other.run.itemId }]));
     // Another run of the same project is untouched, and a second pass is a no-op.
     expect(existsSync(other.out)).toBe(true);
-    await restarted.discard();
+    await restarted.discard(new Map());
     expect(read(project, "notes.txt")).toBe("notes\n");
   });
 
@@ -806,7 +806,7 @@ describe("folder stage workspaces", () => {
       if (!first && fails) throw new Error("the stores cannot be read");
       return run => run.runId === handle.run.runId && first;
     } });
-    await restarted.discard();
+    await restarted.discard(new Map());
     expect(reads).toBe(2);
     reads = 0;
     await restarted.sweep([]);
@@ -814,7 +814,7 @@ describe("folder stage workspaces", () => {
     // A second read that cannot be had removes nothing either.
     fails = true;
     reads = 0;
-    await expect(restarted.discard()).rejects.toThrow("the stores cannot be read");
+    await expect(restarted.discard(new Map())).rejects.toThrow("the stores cannot be read");
     reads = 0;
     await restarted.sweep([]);
     expect(readdirSync(handle.runRoot).sort()).toEqual(["_out", "_run.json"]);
@@ -853,7 +853,7 @@ describe("folder stage workspaces", () => {
       rmSync(elsewhere, { force: true });
       plant();
       const restarted = createStageWorkspaceProvider({ git: createHostGit({ env }), removable: async () => () => true });
-      await restarted.discard();
+      await restarted.discard(new Map());
       await restarted.sweep([]);
       expect(readdirSync(handle.runRoot).sort(), name).toEqual(["_out", "_run.json", "s1"]);
       expect(read(handle.out, "result.md"), name).toBe("collected\n");
@@ -872,7 +872,7 @@ describe("folder stage workspaces", () => {
     rmSync(handle.runRoot, { recursive: true });
     cpSync(away, handle.runRoot, { recursive: true });
     const restarted = createStageWorkspaceProvider({ git: createHostGit({ env }), removable: async () => () => true });
-    await restarted.discard();
+    await restarted.discard(new Map());
     await restarted.sweep([]);
     expect(readdirSync(handle.runRoot).sort()).toEqual(["_out", "_run.json"]);
     expect(read(handle.out, "result.md")).toBe("collected\n");
@@ -897,7 +897,7 @@ describe("folder stage workspaces", () => {
       const record = join(target.runRoot, RUN_FILE);
       const operate = async (): Promise<void> => {
         const provider = createStageWorkspaceProvider({ git: createHostGit({ env }), removable: async () => run => run.itemId !== 8 });
-        await (operation === "discard" ? provider.discard() : provider.sweep([]));
+        await (operation === "discard" ? provider.discard(new Map()) : provider.sweep([]));
       };
       return { target, stage, other, record, written: readFileSync(record, "utf8"), operate };
     }
@@ -971,7 +971,7 @@ describe("folder stage workspaces", () => {
         }
         return mine !== undefined;
       } });
-      await restarted.discard();
+      await restarted.discard(new Map());
       await restarted.sweep([]);
       if (swapped === undefined) throw new Error("no folder was swapped");
       const kept = level === "run" ? restored : join(restored, relative(dirname(swapped.runRoot), swapped.runRoot));
