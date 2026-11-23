@@ -22,6 +22,7 @@ const LIST_INVOCATION = new RegExp(
 const CONTAINED_JOB = "windows-permission-tests";
 const PREPARATION_JOB = "windows-native-preparation";
 const CONTAINED_JOBS = [PREPARATION_JOB, CONTAINED_JOB];
+const WINDOWS_PLAN_PATH = "${{ runner.temp }}/windows-ci/windows-plan.json";
 const TEST_LINE_RE = /\bbun[ \t]+run[ \t]+test(?::[\w-]+)?(?=[ \t]|$)|\bnode[ \t]+scripts\/test-|[ \t]--test(?:-native)?(?=[ \t]|$)|\brun-windows-test-list\b/u;
 const CONTAINED_LINE_RE = new RegExp(String.raw`^[ \t]*${CONTAINED}\S`, "u");
 
@@ -297,6 +298,15 @@ export function checkWindowsWorkflow(workflow, inspect) {
   const inventories = regressions.map(step => LIST_INVOCATION.exec(step.run.trim())?.[1]);
   if (inventories.length !== WINDOWS_TEST_LISTS.length || !WINDOWS_TEST_LISTS.every(list => inventories.includes(list))) {
     throw new Error("The Windows shard must run every regression inventory");
+  }
+  for (const step of job.steps ?? []) {
+    if (!REGRESSION_STEP.test(step.name ?? "")) continue;
+    if (Object.hasOwn(step.env ?? {}, "AVE_WINDOWS_TEST_SHARD")) {
+      throw new Error(`${step.name}: Windows regression steps must inherit the matrix shard ID`);
+    }
+    if (step.env?.AVE_WINDOWS_TEST_PLAN !== WINDOWS_PLAN_PATH) {
+      throw new Error(`${step.name}: Windows regression steps must use the matrix plan artifact`);
+    }
   }
   // Matrix copies share this exact template and receive distinct shard IDs.
   const failures = [

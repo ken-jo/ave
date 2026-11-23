@@ -338,6 +338,26 @@ it("rejects dropping a shard or its shard ID", () => {
   assert.throws(() => checkWindowsWorkflow(stringify(parsed), parsedLines), /must run every contained shard/);
 });
 
+it("rejects reusing shard one for every regression step", () => {
+  const changed = changedWorkflow(steps => {
+    for (const step of steps.filter(step => step.run?.includes("run-windows-test-list.mjs"))) {
+      step.env.AVE_WINDOWS_TEST_SHARD = "1";
+    }
+  }, "windows-permission-tests");
+  assert.throws(() => checkWindowsWorkflow(changed, parsedLines), /must inherit the matrix shard ID/);
+});
+
+for (const plan of [undefined, "config/alternate.json"]) {
+  it(`rejects a regression step with a changed plan binding (${plan})`, () => {
+    const changed = changedWorkflow((_steps, get) => {
+      const { env } = get("Run Windows native import regressions");
+      if (plan === undefined) delete env.AVE_WINDOWS_TEST_PLAN;
+      else env.AVE_WINDOWS_TEST_PLAN = plan;
+    }, "windows-permission-tests");
+    assert.throws(() => checkWindowsWorkflow(changed, parsedLines), /must use the matrix plan artifact/);
+  });
+}
+
 it("rejects a contained test step allowed to fail", () => {
   const changed = changedWorkflow((_steps, get) => {
     get("Run Windows permission regressions")["continue-on-error"] = true;
