@@ -166,9 +166,9 @@ it("derives one receipt per contained workflow invocation", async () => {
     "verify-both-windows-native-payload-packages-1", "verify-both-windows-native-payload-packages-2",
     "verify-windows-folder-classification-1",
     "build-and-test-patched-windows-sandbox-helper-1", "build-and-test-patched-windows-sandbox-helper-2",
-    "run-script-tests-1", "run-windows-appearance-regressions-1", "run-windows-session-persistence-regressions-1",
+    "run-script-tests-1",
     "run-windows-permission-regressions-1", "run-windows-native-import-regressions-1",
-    "run-native-workbook-and-control-file-confinement-1",
+    "run-windows-application-regressions-1", "run-native-workbook-and-control-file-confinement-1",
   ]);
   const lines = windowsRunSteps(workflow).filter(({ jobId }) => jobId === "windows-permission-tests")
     .flatMap(({ lines }) => lines).filter(line => line.includes("run-in-job.mjs"))

@@ -207,6 +207,21 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/ci-plan"
           node scripts/run-ci-suite.mjs --write-plan "$RUNNER_TEMP/ci-plan/ci-plan.json"
+      - name: Plan Windows regressions
+        if: steps.plan.outputs.platform_checks == 'true'
+        working-directory: ave
+        env:
+          AVE_WINDOWS_PR_BASE: ${{ github.event.pull_request.base.sha }}
+          AVE_WINDOWS_PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: bun run scripts/plan-windows-tests.ts "$RUNNER_TEMP/windows-ci/windows-plan.json"
+      - name: Upload the Windows regression plan
+        if: steps.plan.outputs.platform_checks == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-ci-plan
+          path: ${{ runner.temp }}/windows-ci/windows-plan.json
+          if-no-files-found: error
+          retention-days: 1
       - name: Upload the build for the Vitest shards
         if: steps.docs-impact.outputs.docs_only != 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -651,6 +666,12 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           bun-version-file: ave/.bun-version
+      - name: Download the Windows regression plan
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: windows-ci-plan
+          path: ${{ runner.temp }}/windows-ci
       # Native fixtures need system-volume aliases and trusted root ownership.
       # The unique job directory remains outside the account profile.
       - name: Isolate home and temp directories on the system volume
@@ -789,53 +810,6 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: node .github/scripts/run-in-job.mjs bun run test:scripts
-      - name: Run Windows appearance regressions
-        if: steps.docs-impact.outputs.docs_only != 'true'
-        working-directory: ave
-        run: >
-          node .github/scripts/run-in-job.mjs bun run test:vitest --
-          src/ui/renderer/__tests__/appearance-tab.test.tsx
-          src/ui/renderer/tabs/__tests__/AppearanceTab.font-escape.test.tsx
-          src/ui/renderer/theme/__tests__/ThemeProvider-initial-theme.test.tsx
-          src/shared/__tests__/appearance-font.test.ts
-          src/shared/__tests__/appearance-settings.test.ts
-          src/shared/__tests__/app-zoom.test.ts
-          src/main/browser/__tests__/browser-guest-tracking.test.ts
-          src/main/browser/__tests__/browser-workspace.test.ts
-          src/ui/renderer/components/__tests__/BrowserWorkspacePanel.test.tsx
-          src/main/__tests__/app-zoom.test.ts
-          src/__tests__/preload-shape.test.ts
-          src/main/browser/__tests__/browser-workspace-desktop.test.ts
-          src/shared/__tests__/shortcuts.test.ts
-          src/ui/renderer/tabs/__tests__/StartupTab.test.tsx
-          src/data/__tests__/settings-store.test.ts
-          src/main/__tests__/global-shortcuts.test.ts
-          src/main/__tests__/app-menu-accelerators.test.ts
-          src/ui/renderer/tabs/__tests__/ShortcutsTab.test.tsx
-          src/ui/renderer/components/__tests__/panel-commands.test.ts
-          src/main/__tests__/app-menu-zoom.test.ts
-          src/main/__tests__/main-window-multi.test.ts
-          src/main/__tests__/main-window-bounds.test.ts
-          src/__tests__/app-menu-edit-shortcuts-source.test.ts
-          src/ui/renderer/__tests__/MainToolbar.test.tsx
-          src/data/__tests__/settings-documents.test.ts
-          src/main/browser/__tests__/browser-upload.test.ts
-          src/main/browser/__tests__/browser-workspace-store.test.ts
-          src/ui/renderer/tabs/__tests__/PermissionsTab.test.tsx
-      - name: Run Windows session persistence regressions
-        if: steps.docs-impact.outputs.docs_only != 'true'
-        working-directory: ave
-        run: >
-          node .github/scripts/run-in-job.mjs bun run test:vitest --
-          src/memory/__tests__/session-repository.test.ts
-          src/memory/__tests__/session-turn-journal.test.ts
-          src/engine/__tests__/conversation-loop-resume.test.ts
-          src/memory/__tests__/code-checkpoints-recovery.test.ts
-          src/memory/__tests__/code-checkpoints-transient-rename.test.ts
-          src/memory/__tests__/code-checkpoints.test.ts
-          src/memory/__tests__/memory-usage-log.test.ts
-          src/memory/__tests__/tool-output-artifact-store.test.ts
-          src/engine/__tests__/conversation-loop-permission-mode.test.ts
       - name: Prepare authenticated interpreter mirror
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -844,16 +818,25 @@ jobs:
         run: node .github/scripts/python-download-mirror.mjs
       - name: Run Windows permission regressions
         env:
+          AVE_WINDOWS_TEST_PLAN: ${{ runner.temp }}/windows-ci/windows-plan.json
           UV_PYTHON_CACHE_DIR: ${{ runner.temp }}/python-archives
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: node .github/scripts/run-in-job.mjs bun run scripts/run-windows-test-list.mjs config/windows-permission-tests.txt
       - name: Run Windows native import regressions
         env:
+          AVE_WINDOWS_TEST_PLAN: ${{ runner.temp }}/windows-ci/windows-plan.json
           UV_PYTHON_CACHE_DIR: ${{ runner.temp }}/python-archives
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: node .github/scripts/run-in-job.mjs bun run scripts/run-windows-test-list.mjs config/windows-native-tests.txt
+      - name: Run Windows application regressions
+        env:
+          AVE_WINDOWS_TEST_PLAN: ${{ runner.temp }}/windows-ci/windows-plan.json
+          UV_PYTHON_CACHE_DIR: ${{ runner.temp }}/python-archives
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        run: node .github/scripts/run-in-job.mjs bun run scripts/run-windows-test-list.mjs config/windows-application-tests.txt
       - name: Run native workbook and control-file confinement
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave

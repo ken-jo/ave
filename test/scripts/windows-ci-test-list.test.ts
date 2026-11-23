@@ -13,7 +13,7 @@ const EMPTY_WINDOWS_WORKFLOW = "jobs: { windows-permission-tests: { runs-on: win
 const TEST_FILE_RE = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
 const NATIVE_TEST_LIST = "config/windows-native-tests.txt";
 const PERMISSION_TEST_LIST = "config/windows-permission-tests.txt";
-const windowsTestLists = new Map([NATIVE_TEST_LIST, PERMISSION_TEST_LIST]
+const windowsTestLists = new Map([NATIVE_TEST_LIST, PERMISSION_TEST_LIST, "config/windows-application-tests.txt"]
   .map(file => [file, readFileSync(join(root, file), "utf8")]));
 const REQUIRED_SECURITY_SUITES = [
   // Boot, settings and transport callers reach native stores without platform guards.

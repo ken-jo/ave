@@ -13,7 +13,7 @@ const CONTAINED = String.raw`node[ \t]+\.github\/scripts\/run-in-job\.mjs[ \t]+`
 const TEST_COMMAND_RE = new RegExp(
   String.raw`^(?:${CONTAINED})?bun[ \t]+run[ \t]+(?:test[ \t]+--|test:vitest[ \t]+--(?:[ \t]+run)?)((?:[ \t]+${TEST_PATH})+)$`,
 );
-const REGRESSION_STEP = /^Run Windows (?:permission|appearance|session persistence|native import) regressions$/u;
+const REGRESSION_STEP = /^Run Windows (?:permission|appearance|session persistence|native import|application) regressions$/u;
 const REGRESSION_CONDITION = "steps.docs-impact.outputs.docs_only != 'true'";
 const LIST_INVOCATION = new RegExp(
   String.raw`^(?:${CONTAINED})?bun[ \t]+run[ \t]+scripts\/run-windows-test-list\.mjs[ \t]+(config\/[\w-]+\.txt)$`, "u",
