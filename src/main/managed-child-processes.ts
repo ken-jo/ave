@@ -1,6 +1,7 @@
 import { spawn, spawnSync, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { Writable } from "node:stream";
 import { win32SystemBinary } from "../shared/windows-system-path.js";
+import { findHostProgram } from "../shared/host-program-path.js";
 import { createLogger } from "../lib/logger.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { errorMessage } from "../shared/error-message.js";
@@ -754,7 +755,9 @@ function collectDescendantPids(rootPid: number): number[] {
 }
 
 function listDirectChildPids(pid: number): number[] {
-  const result = spawnSync("pgrep", ["-P", String(pid)], {
+  const pgrep = findHostProgram("pgrep");
+  if (pgrep === null) return [];
+  const result = spawnSync(pgrep, ["-P", String(pid)], {
     encoding: "utf-8",
     stdio: ["ignore", "pipe", "ignore"],
     timeout: PROCESS_TREE_KILL_TIMEOUT_MS,
