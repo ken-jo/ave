@@ -3604,13 +3604,30 @@ that row. Whoever ends the call writes it through the ledger's row writer: the
 rule, the unknown-tool check, a human answer, a hook input mutation, the host
 on an integrity failure, cancellation, or the shutdown deadline. Records beside
 the outcome, such as asks, plugin operation rows, mode changes, and directory
-grants, use their own writers, and those writers refuse a terminal row.
+grants, use their own writers, and those writers refuse a terminal row. They
+also refuse any deny that is not a plugin operation record. The one exception
+has its own writer: the quit's refusal of a permission mode change, which
+belongs to no invocation.
 
-The ledger fires one `PermissionDenied` lifecycle event for each deny row it
-commits, whatever the source. Governed tools are the exception: a tool with an
-operation policy, or a call under a plugin authorization lifecycle, still
-gets its deny row but no event. No call site emits
-`PermissionDenied` itself; a source guard test enforces this.
+Every deny row has a terminal kind, `denied` or `cancelled`. The writer that
+builds the row sets the kind, and the row type will not accept a deny without
+one. A permission denial is `denied`. Its sources are a rule, the unknown-tool
+check, a human refusal, a hook input mutation, a host policy check, and the
+host on an invocation or integrity failure. A cancellation is a stop that no
+permission decided, and it is `cancelled`. Its sources are a user abort, the
+host shutdown seal, the shutdown deadline drain, an abort during execution,
+plugin generation admission ended by runtime shutdown, and a stopped rationale
+card. A human refusal the invocation already accepted keeps its `denied` kind,
+even when the host writes the row.
+
+The ledger fires one `PermissionDenied` lifecycle event for each `denied` row
+it commits, whatever the source. A `cancelled` row fires none. Governed tools
+fire none either: a tool with an operation policy, or a call under a plugin
+authorization lifecycle, still gets its deny row but no event. This one rule
+lives in the ledger's row writer and reads only the kind, never the reason.
+No call site emits `PermissionDenied` itself. The audit writer fires the event
+only for a denial that the ledger created. A source guard test enforces both
+rules, and it also flags any lifecycle dispatch whose event is not a literal.
 
 ### Permission audit during shutdown
 
