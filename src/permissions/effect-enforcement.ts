@@ -4,10 +4,10 @@ import { refreshRemoteControllerBoundToSession, isRemoteControllerBoundToSession
 import { createHash, randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { ApprovalGate, ApprovalChoice } from "./approval-gate.js";
-import type { PermissionCheckContext, PermissionManager } from "./permission-manager.js";
+import type { PermissionCheckContext, PermissionCheckResult, PermissionManager } from "./permission-manager.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
 import { canonicalizePathForMatch } from "./sensitive-paths.js";
-import { NO_APPROVER_MESSAGE } from "./decision-pipeline.js";
+import { decidePermission, NO_APPROVER_MESSAGE, type PermissionDecisionRequest } from "./decision-pipeline.js";
 import { issueHostNetworkSubject } from "./host-network-subject.js";
 import type { ApprovalSurface } from "../shared/authorization-required.js";
 import {
@@ -292,13 +292,25 @@ export interface EffectEnforcementDeps {
 export type StandaloneScope = (methodPath: string, target: string | undefined) => boolean | Promise<boolean>;
 
 // The enable-time card is the explicit allow for these category asks; floors, guardrails, secret reads, ask rules and unknown reasons still need a person.
-const CARD_ANSWERED_ASKS: ReadonlySet<string> = new Set(["file-write", "shell-approval", "network-approval", "review-required"]);
+const CARD_ANSWERED_ASKS: ReadonlySet<string> = new Set(["file-write", "shell-approval", "network-approval"]);
 
-function cardAnswersAsk(permission: { decision: string; reasonCode?: string; reason?: string; forceModal?: boolean }, ownStorageWrite: boolean): boolean {
+function cardAnswersAsk(permission: Pick<PermissionCheckResult, "decision" | "reasonCode" | "reason" | "forceModal" | "pipelineRequest">, ownStorageWrite: boolean): boolean {
   if (permission.decision !== "ask") return false;
-  // Plugin storage sits in the app home, so every own-storage write meets that floor; the host already confines the path to that storage.
-  if (permission.forceModal === true) return ownStorageWrite && permission.reasonCode === "protected-path" && permission.reason === "application-home";
+  const request = permission.pipelineRequest;
+  if (permission.forceModal === true) {
+    // Plugin storage sits in the app home, so every own-storage write meets that floor; the rest of the policy still decides.
+    if (!ownStorageWrite || permission.reasonCode !== "protected-path" || permission.reason !== "application-home" || !request) return false;
+    const { floor: _floor, floorSessionEligible: _eligible, ...unfloored } = request;
+    return ordinaryUnderReview(unfloored);
+  }
+  if (permission.reasonCode === "review-required") return request !== undefined && ordinaryUnderReview(request);
   return permission.reasonCode !== undefined && CARD_ANSWERED_ASKS.has(permission.reasonCode);
+}
+
+// Automatic review stands in for every ask, so decide without it to see whether a person would face only a category ask.
+function ordinaryUnderReview(request: PermissionDecisionRequest): boolean {
+  const decided = decidePermission({ ...request, mode: request.mode === "auto" ? "default" : request.mode });
+  return decided.outcome === "allow" || decided.outcome === "sandbox-auto" || decided.outcome === "ask" && CARD_ANSWERED_ASKS.has(decided.reasonCode);
 }
 
 // Standalone lifecycle work is outside tool policy. Tool effects are evaluated independently of their enclosing tool's approval.

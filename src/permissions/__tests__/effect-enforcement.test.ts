@@ -220,6 +220,50 @@ describe("standalone frames take only the asks the enable card answers", () => {
     expect(requests).toHaveLength(0);
   });
 
+  it.each(["auto", "default", "strict"] as const)("in %s mode denies a user ask rule even where automatic review would carry it", async (mode) => {
+    permissionManager.setMode(mode);
+    const log: string[] = [];
+    const { gate, requests } = makeGate("allow-once");
+    const api = enforceMutatingEffects(makeApi(log), { ...deps(gate), standaloneScope: () => true });
+    await runWithEffectGateContext(standalone("callLlm"), () => api.callLlm("hello"));
+    permissionManager.setRules([{ pattern: "effect_callLlm", source: "plugin", action: "ask" }]);
+    await expect(runWithEffectGateContext(standalone("callLlm"), () => api.callLlm("hello"))).rejects.toBeInstanceOf(EffectBoundaryDeniedError);
+    expect(log).toEqual(["llm"]);
+    expect(requests).toHaveLength(0);
+  });
+
+  it.each([
+    ["the exfiltration guardrail", { exfiltration: { reason: "sends a secret" } }],
+    ["a secret read", { secretRead: true }],
+  ])("denies an automatic review that stands for %s", async (_label, evidence) => {
+    permissionManager.setMode("auto");
+    const real = permissionManager.checkDetailed.bind(permissionManager);
+    vi.spyOn(permissionManager, "checkDetailed").mockImplementation((...args) => {
+      const result = real(...args);
+      return { ...result, decision: "ask", reasonCode: "review-required", pipelineRequest: { ...result.pipelineRequest!, ...evidence } } as never;
+    });
+    const log: string[] = [];
+    const { gate, requests } = makeGate("allow-once");
+    const api = enforceMutatingEffects(makeApi(log), { ...deps(gate), standaloneScope: () => true });
+    await expect(runWithEffectGateContext(standalone("callLlm"), () => api.callLlm("hello"))).rejects.toBeInstanceOf(EffectBoundaryDeniedError);
+    expect(log).toEqual([]);
+    expect(requests).toHaveLength(0);
+  });
+
+  it.each(["auto", "default", "strict"] as const)("in %s mode denies a user ask rule on own storage that the app-home floor would hide", async (mode) => {
+    permissionManager.setMode(mode);
+    const log: string[] = [];
+    const { gate, requests } = makeGate("allow-once");
+    const storage = join(aveHome(), "plugins", "p1", "data", "storage");
+    const api = enforceMutatingEffects(makeApi(log), { ...deps(gate), resolveStoragePath: (rel: string) => join(storage, rel), standaloneScope: () => true });
+    await runWithEffectGateContext(standalone("storage.write"), () => api.storage.write("state.json", "x"));
+    permissionManager.setRules([{ pattern: "effect_storage_write", source: "plugin", action: "ask" }]);
+    await expect(runWithEffectGateContext(standalone("storage.write"), () => api.storage.write("state.json", "x")))
+      .rejects.toBeInstanceOf(EffectBoundaryDeniedError);
+    expect(log).toEqual(["write"]);
+    expect(requests).toHaveLength(0);
+  });
+
   it("writes the plugin storage in the app home, but not a protected entry inside it", async () => {
     const log: string[] = [];
     const { gate, requests } = makeGate("allow-once");
