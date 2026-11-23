@@ -258,7 +258,7 @@ describe("plugins IPC lifecycle broadcast", () => {
       .toBeGreaterThan(deps.pluginMarketplace.uninstall.mock.invocationCallOrder[0]!);
     expect(deps.pluginBackgroundEffects.revoke).toHaveBeenCalledWith("samplehub");
     expect(deps.pluginBackgroundEffects.revoke.mock.invocationCallOrder[0])
-      .toBeGreaterThan(deps.pluginMarketplace.uninstall.mock.invocationCallOrder[0]!);
+      .toBeGreaterThan(deps.pluginMarketplace.uninstall.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY);
     for (const win of appWindows) {
       expect(win.webContents.send).toHaveBeenCalledWith(
         "ave:plugins:uninstall-result",

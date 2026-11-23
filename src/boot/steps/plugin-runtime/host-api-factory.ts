@@ -493,8 +493,7 @@ export function createHostApiFactory(
       if (unbindBackgroundSubject) hostIncarnation.registerDisposer(unbindBackgroundSubject);
       const standaloneScope = async (methodPath: string, target: string | undefined): Promise<boolean> => {
         if (!withinBackgroundScope(backgroundEffects, methodPath, target)) return false;
-        const approvals = deps.backgroundEffectApprovals;
-        return approvals !== undefined && approvals.isApproved(await backgroundSubject());
+        return deps.backgroundEffectApprovals?.isApproved(await backgroundSubject()) === true;
       };
       let boundApi: PluginHostApi;
       const credentialPayloadInits = new WeakSet<HostFetchInit>();

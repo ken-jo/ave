@@ -1516,7 +1516,7 @@ describe("HostApi incarnation authority", () => {
         rung: "release", artifactSha256: "b".repeat(64), installedAt: "2026-11-01T00:00:00.000Z",
       },
     };
-    const api = createHostApi("plugin-a", manifest, pluginDataDirIn(root), activeIncarnation(), null, entry) as unknown as PluginHostApi;
+    const api = createHostApi("plugin-a", manifest, pluginDataDirIn(root), activeIncarnation(), null, entry) as unknown as Required<PluginHostApi>;
     approvals.approve(backgroundEffectSubject(manifest, entry));
     const background = <T>(run: () => Promise<T>) => runWithEffectGateContext({ headless: false, standalone: true, toolName: "background" }, run);
     const refused = async (run: () => Promise<unknown>) => {
@@ -1593,13 +1593,13 @@ describe("HostApi incarnation authority", () => {
         id: "plugin-a", name: "Sample", version: "1.0.0", entry: "dist/plugin.js", description: "sample", tools: [], config: {},
         networkAccess: { allowedDomains: ["api.example.test"] }, capabilities,
       } as unknown as PluginManifest;
-      const api = createHostApi("plugin-a", manifest, pluginDataDirIn(tmpDirs.track(mkdtempSync(join(root, "data-")))), activeIncarnation(), null, entry) as unknown as PluginHostApi;
+      const api = createHostApi("plugin-a", manifest, pluginDataDirIn(tmpDirs.track(mkdtempSync(join(root, "data-")))), activeIncarnation(), null, entry) as unknown as Required<PluginHostApi>;
       approvals.approve(backgroundEffectSubject(manifest, entry));
       return api;
     };
     const outcome = (run: () => Promise<unknown>) => runWithEffectGateContext({ headless: false, standalone: true, toolName: "background" }, run)
       .then(() => "ran", (caught: unknown) => caught instanceof EffectBoundaryDeniedError ? "denied" : "ran");
-    const spawn = (api: PluginHostApi) => () => api.spawnWorker!({ workerId: "w", command: "node", control: "output-only-v1" } as never);
+    const spawn = (api: Required<PluginHostApi>) => () => api.spawnWorker({ workerId: "w", command: "node", control: "output-only-v1" } as never);
 
     const neither = approvedApi([]);
     expect(await outcome(() => neither.callLlm("hello"))).toBe("denied");
