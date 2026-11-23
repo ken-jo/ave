@@ -102,6 +102,17 @@ describe("hook replacement permission reentry", () => {
     }
   });
 
+  it("ends bounded replacements through the ledger when the audit chain is not set up, so no host row replaces the rule's", async () => {
+    const probe = setup("PreToolUse", "loop");
+    const lifecycle = vi.spyOn(probe.manager, "runLifecycleEvent");
+    const [result] = await probe.run();
+    expect(result).toMatchObject({ is_error: true, content: expect.stringContaining("could not safely restart") });
+    await new Promise<void>((done) => setImmediate(done));
+    expect(lifecycle.mock.calls.filter(([event]) => event === "PermissionDenied").map(([, , , payload]) => payload)).toEqual([
+      { toolName: "mutation_probe", denyReason: { source: "tool-executor", reason: "Hook input mutation could not safely restart permission classification" } },
+    ]);
+  });
+
   it("restarts pre-hooks and classification after permission-hook mutation before showing the changed approval", async () => {
     const probe = setup("PermissionRequest");
     const [result] = await probe.run();

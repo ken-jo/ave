@@ -387,16 +387,17 @@ export async function runToolInvocation(
           services.auditLogger.log({ timestamp: new Date().toISOString(), sessionId: opts.sessionId ?? "unknown", type: "info",
             input: JSON.stringify({ type: "hook_input_reclassified", toolUseId: toolUse.id, hookChain }), output: reason,
             toolCalls: [{ name: toolUse.name, isError: false, trust: "high" }] });
-        } else if (services.auditLogger.isPermissionAuditChainReady()) {
+        } else {
+          const ready = services.auditLogger.isPermissionAuditChainReady();
+          if (!ready && services.requirePermissionAuditChain) throw new Error("Hook mutation requires the permission audit chain");
           const common = { auditId: randomUUID(), ts: new Date().toISOString(), toolUseId: toolUse.id,
             trustOrigin: provenanceTrustOrigin(RULE_PROVENANCE, "deny", opts.permissionContext?.trustOrigin ?? "unknown" as const), tool: toolUse.name,
             source: services.toolRegistry.findByName(toolUse.name)?.source ?? "builtin" as const,
             category: services.toolRegistry.findByName(toolUse.name)?.category ?? "meta" as const, hookChain };
-          // The rule's deny is the attempt's one terminal row; the admission's settle then finds it claimed.
-          await commitTerminalRow(services.invocationTerminal, toolUse.name, (row) => row({ logger: services.auditLogger,
+          // The rule's deny is the attempt's one terminal row, written with no logger when the chain is neither set up nor
+          // required; the admission's settle then finds it claimed.
+          await commitTerminalRow(services.invocationTerminal, toolUse.name, (row) => row({ ...(ready ? { logger: services.auditLogger } : {}),
             entry: { ...common, decision: "deny", denyReasons: [{ reason, source: "hook-input-mutation" }] } }));
-        } else if (services.requirePermissionAuditChain) {
-          throw new Error("Hook mutation requires the permission audit chain");
         }
         if (denied) {
           const result = { tool_use_id: toolUse.id, content: appendContext(reason), is_error: true, durationMs: Date.now() - startedAt };
