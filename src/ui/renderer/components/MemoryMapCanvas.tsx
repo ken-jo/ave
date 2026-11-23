@@ -25,7 +25,7 @@ export function MemoryMapCanvas({ snapshot, visible, selected, matched, onSelect
   return <section className="absolute inset-0 overflow-hidden" aria-label={t('memoryMap.canvas')}>
     <div ref={container} className="absolute inset-0" aria-hidden="true" />
     {failed ? <p role="alert" className="absolute inset-x-4 top-4 rounded-md border bg-background p-4 text-sm">{t('memoryMap.webglFailed')}</p> : <>
-      {labels.map(label => <span key={label.id} className="pointer-events-none absolute max-w-40 truncate rounded bg-background/80 px-2 py-1 text-xs text-muted-foreground" style={{ left: label.x, top: label.y }}>{label.text}</span>)}
+      {labels.map(label => <span key={label.id} className="pointer-events-none absolute max-w-40 truncate rounded bg-background/(--opacity-intense) px-2 py-1 text-xs text-muted-foreground" style={{ left: label.x, top: label.y }}>{label.text}</span>)}
       {hover && <div role="tooltip" className="pointer-events-none absolute max-w-60 break-words rounded-md border bg-popover p-2 text-xs text-popover-foreground" style={{ left: Math.max(8, Math.min(hover.x + 12, (container.current?.clientWidth ?? 300) - 240)), top: Math.max(8, hover.y - 32) }}>{hover.title}</div>}
       <div className="absolute right-3 top-3 flex gap-1 rounded-md border bg-background p-1">
         <Button size="sm" variant="ghost" aria-label={t('memoryMap.zoomIn')} onClick={() => renderer.current?.zoom(1.5)}>+</Button>
