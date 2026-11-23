@@ -98,6 +98,7 @@ export async function stageRunHarness(opts: {
   let runWork = observeEngineWork();
   /** `recheck` is set when a call closed refused: a failure it held off stands again, as if the wait were created now. */
   const childChanges = new Set<(pulse?: ChildWaitPulse, recheck?: boolean) => void>();
+  const itemWaits = new Set<(itemId?: number) => void>();
   const progressChanges = new Set<() => void>();
   let closed = false;
   let lastRequestedOrigin: string | undefined;
@@ -268,7 +269,13 @@ export async function stageRunHarness(opts: {
         own.push(event);
         for (const changed of progressChanges) changed();
       },
-      workflow,
+      workflow: {
+        ...workflow,
+        itemChanged: (itemId) => {
+          if (board === store) for (const wake of itemWaits) wake(itemId);
+          workflow.itemChanged?.(itemId);
+        },
+      },
     });
     /** A user call on an item's run: it starts the item only if the engine accepts it. */
     function accepted<T extends { ok: boolean }>(itemId: number, call: () => Promise<T>): Promise<T> {
@@ -332,6 +339,7 @@ export async function stageRunHarness(opts: {
     board = new WorkBoardStore(boardPath);
     runWork = observeEngineWork();
     engine = engineOn(board);
+    for (const wake of itemWaits) wake();
     return engine;
   };
   /** Hand-edit a row of the board file, as nothing in the app would. A loaded store keeps its copy: the next `makeEngine` reads it. */
@@ -363,14 +371,14 @@ export async function stageRunHarness(opts: {
   }
   const detach = (id: string): Promise<boolean> => templates.detachSchedule(id, mintHostDecisionProof("local-desktop"));
   /** The stored run, read by its id from the run file whether or not a row still names it. */
-  async function runOf(runId: string): Promise<RunRecord | null> {
-    const read = await board.runs.get(runId);
+  async function runOf(runId: string, store = board): Promise<RunRecord | null> {
+    const read = await store.runs.get(runId);
     return read.status === "found" ? read.run : null;
   }
-  async function item(itemId: number): Promise<StageRunView> {
-    const got = await board.get(itemId);
+  async function item(itemId: number, store = board): Promise<StageRunView> {
+    const got = await store.get(itemId);
     if (got.status !== "found") throw new Error("item not found");
-    const record = got.item.runId === undefined ? null : await runOf(got.item.runId);
+    const record = got.item.runId === undefined ? null : await runOf(got.item.runId, store);
     return { ...got.item, stageRuns: record?.stageRuns ?? [], stageJoins: record?.stageJoins ?? [], record };
   }
   async function stageRun(itemId: number, stageId: string): Promise<WorkItemStageRun> {
@@ -378,18 +386,73 @@ export async function stageRunHarness(opts: {
     if (!run) throw new Error(`no stage run ${stageId}`);
     return run;
   }
-  /** Poll until the stored item satisfies `check`; the engine works through its own queue, so a test never sleeps a fixed time. */
-  async function until(itemId: number, check: (item: StageRunView) => boolean): Promise<StageRunView> {
-    for (let i = 0; i < 400; i += 1) {
-      const current = await item(itemId);
-      if (check(current)) return current;
-      await new Promise(resolve => setTimeout(resolve, 5));
-    }
-    throw new Error(`timed out: ${JSON.stringify((await item(itemId)).stageRuns)}`);
+  function until(itemId: number, check: (item: StageRunView) => boolean, description = `item ${itemId} to satisfy its predicate`): Promise<StageRunView> {
+    const closedError = () => new Error(`Wait for ${description} ended: harness cleaned up`);
+    if (closed) return Promise.reject(closedError());
+    return new Promise((resolve, reject) => {
+      let store: WorkBoardStore | undefined;
+      let unsubscribe = () => {};
+      let checking = false;
+      let changed = false;
+      const onStoreChanged = () => wake();
+      const clearBound = diagnosticBound(() => description, fail);
+      function settle(): void {
+        itemWaits.delete(wake);
+        unsubscribe();
+        clearBound();
+      }
+      function fail(error: unknown): void {
+        settle();
+        reject(error);
+      }
+      async function recheck(): Promise<void> {
+        checking = true;
+        // A signal during an async read queues a fresh read if the snapshot does not satisfy the wait.
+        try {
+          while (changed && itemWaits.has(wake)) {
+            changed = false;
+            const source = store;
+            const current = await item(itemId, source);
+            if (itemWaits.has(wake) && source === store && check(current)) {
+              settle();
+              resolve(current);
+            }
+          }
+        } catch (error) {
+          fail(error);
+        } finally {
+          checking = false;
+        }
+      }
+      function wake(changedItemId?: number): void {
+        if (closed) {
+          fail(closedError());
+          return;
+        }
+        if (changedItemId !== undefined && changedItemId !== itemId) return;
+        if (store !== board) {
+          unsubscribe();
+          store = board;
+          const stopBoard = store.boardChanged.subscribe(onStoreChanged);
+          const stopRuns = store.runs.runChanged.subscribe(onStoreChanged);
+          unsubscribe = () => { stopBoard(); stopRuns(); };
+        }
+        changed = true;
+        if (!checking) void recheck();
+      }
+      itemWaits.add(wake);
+      wake();
+    });
   }
   const statusOf = (current: StageRunView, stageId: string) => current.stageRuns.find(run => run.stageId === stageId)?.status;
-  const untilStage = (itemId: number, stageId: string, status: WorkItemStageRun["status"]) => until(itemId, current => statusOf(current, stageId) === status);
+  const untilStage = (itemId: number, stageId: string, status: WorkItemStageRun["status"]) =>
+    until(itemId, current => statusOf(current, stageId) === status, `item ${itemId} stage ${stageId} to reach ${status}`);
   const live = () => [...liveChildren];
+  function diagnosticBound(waitingFor: () => string, onTimeout: (error: Error) => void): () => void {
+    const timeout = setTimeout(() => onTimeout(new Error(`timed out waiting for ${waitingFor()}`)), 30_000);
+    timeout.unref();
+    return () => clearTimeout(timeout);
+  }
   function waitForSignal<T>(listeners: Set<() => void>, get: () => T | undefined, description?: string): Promise<T> {
     const current = get();
     if (current !== undefined) return Promise.resolve(current);
@@ -453,15 +516,13 @@ export async function stageRunHarness(opts: {
     if (failedAtCreation) return Promise.reject(failedAtCreation);
     return new Promise((resolve, reject) => {
       // Bounded below the test timeout, so a stuck wait names what it was waiting on; a slow preparation stays inside it.
-      const timeout = setTimeout(() => {
+      const clearBound = diagnosticBound(() => `children; in flight: ${inFlight().join(", ") || "none"}`, error => {
         childChanges.delete(changed);
-        reject(new Error(`timed out waiting for children; in flight: ${inFlight().join(", ") || "none"}`));
-      }, 30_000);
-      // The bound never keeps the process alive by itself.
-      timeout.unref();
+        reject(error);
+      });
       function settle(): void {
         childChanges.delete(changed);
-        clearTimeout(timeout);
+        clearBound();
       }
       function changed(pulse?: ChildWaitPulse, recheck = false) {
         const value = get();
@@ -503,6 +564,7 @@ export async function stageRunHarness(opts: {
     drainRunWork: async () => { await runWork?.drain(); },
     cleanup: () => {
       closed = true;
+      for (const wake of itemWaits) wake();
       pulse("harness cleaned up");
       return cleanupTmpDir(dir);
     },

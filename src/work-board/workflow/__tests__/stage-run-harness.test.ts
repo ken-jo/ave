@@ -9,6 +9,75 @@ import { workBoardOriginSessionId } from "../../../shared/work-board-types.js";
 import type { StageWorkspaceProvider } from "../stage-workspace.js";
 import { stageRunHarness } from "./stage-run-harness.js";
 
+it("checks board and run changes without advancing timers", { timeout: 5_000 }, async () => {
+  const h = await stageRunHarness();
+  try {
+    const version = await h.confirm([autoStageOf("a")]);
+    const id = await h.addItem(version);
+    const runId = "run-1";
+    expect(await h.board.beginRun(id, runId, "2026-11-16T00:00:00.000Z", {
+      ...h.pinOf(version), source: h.local(version), stageRuns: [{ stageId: "a", attempt: 1, status: "waiting" }],
+    })).toMatchObject({ status: "updated" });
+    const initial = deferred<void>();
+    const boardWake = deferred<void>();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const current = h.until(id, item => {
+      if (item.title === "Work") initial.resolve();
+      if (item.title === "Renamed") boardWake.resolve();
+      return h.statusOf(item, "a") === "running";
+    });
+    const stage = h.untilStage(id, "a", "running");
+    const settled = vi.fn();
+    void Promise.all([current, stage]).then(settled, settled);
+    await initial.promise;
+    expect(await h.board.update(id, { title: "Renamed" })).toMatchObject({ status: "updated" });
+    await boardWake.promise;
+    expect(settled).not.toHaveBeenCalled();
+    expect(await h.board.runs.update(runId, run => ({ ...run, stageRuns: [{ ...run.stageRuns[0], status: "running" }] })))
+      .toMatchObject({ status: "stored" });
+    for (const item of await Promise.all([current, stage])) {
+      expect(item.title).toBe("Renamed");
+      expect(h.statusOf(item, "a")).toBe("running");
+    }
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    vi.useRealTimers();
+    await h.cleanup();
+  }
+});
+
+it("checks state already committed before a wait attaches", async () => {
+  const h = await stageRunHarness();
+  try {
+    const id = await h.addItem(await h.confirm([autoStageOf("a")]));
+    expect(await h.board.update(id, { title: "Renamed" })).toMatchObject({ status: "updated" });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    await expect(h.until(id, item => item.title === "Renamed")).resolves.toMatchObject({ title: "Renamed" });
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    vi.useRealTimers();
+    await h.cleanup();
+  }
+});
+
+it("names the item, stage and status when no signal arrives within the bound", async () => {
+  const h = await stageRunHarness();
+  try {
+    const id = await h.addItem(await h.confirm([autoStageOf("a")]));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const result = h.untilStage(id, "a", "passed").catch((error: Error) => error.message);
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(await Promise.race([result, setImmediate("still pending")])).toBe("still pending");
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await Promise.race([result, setImmediate("still pending")]))
+      .toBe(`timed out waiting for item ${id} stage a to reach passed`);
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    vi.useRealTimers();
+    await h.cleanup();
+  }
+});
+
 it.each(["refused", "failed", "ended", "cancelled"] as const)("settles child waits when the expected run is %s", async outcome => {
   const preparing = deferred<void>();
   const release = deferred<void>();

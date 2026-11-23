@@ -8,6 +8,7 @@ import * as homeTrust from "../../shared/ave-home-trust.js";
 import * as namespace from "../storage/feature-namespace.js";
 import type { WorkflowRunRecord } from "../../shared/workflow-template-types.js";
 import { contentHash as sha } from "../../__tests__/support/content-hash.js";
+import { deferred } from "../../__tests__/support/deferred.js";
 
 let dir: string;
 let file: string;
@@ -21,6 +22,47 @@ const run = (patch: Partial<WorkflowRunRecord> = {}): WorkflowRunRecord => ({
   ...patch,
 });
 const stored = async (): Promise<{ version: number; runs: unknown[] }> => JSON.parse(await readFile(file, "utf8"));
+
+it("signals each run commit after persistence and stays silent on failure", async () => {
+  const store = new WorkflowRunStore(file);
+  const reads: ReturnType<typeof store.get>[] = [];
+  const changed = vi.fn((runId: string) => { reads.push(store.get(runId)); });
+  store.runChanged?.subscribe(changed);
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  const persist = namespace.writeFileAtomicAtPath;
+  const write = vi.spyOn(namespace, "writeFileAtomicAtPath").mockImplementationOnce(async (...args) => {
+    entered.resolve();
+    await release.promise;
+    await persist(...args);
+  });
+  const putting = store.put(run());
+  try {
+    await entered.promise;
+    expect(changed).not.toHaveBeenCalled();
+    expect(await store.get("run-1")).toEqual({ status: "not-found" });
+  } finally {
+    release.resolve();
+    await putting;
+  }
+  expect(changed.mock.calls).toEqual([["run-1"]]);
+  expect(await reads[0]).toEqual({ status: "found", run: run() });
+
+  const changedRun = run({ stageRuns: [] });
+  expect(await store.update("run-1", () => changedRun)).toMatchObject({ status: "stored" });
+  expect(changed.mock.calls).toEqual([["run-1"], ["run-1"]]);
+  expect(await reads[1]).toEqual({ status: "found", run: changedRun });
+
+  write.mockRejectedValueOnce(new Error("persist failed"));
+  await expect(store.update("run-1", () => run())).rejects.toThrow("persist failed");
+  expect(changed).toHaveBeenCalledTimes(2);
+  expect(await store.get("run-1")).toEqual({ status: "found", run: changedRun });
+
+  const at = "2026-01-02T00:00:00.000Z";
+  expect(await store.settleRun("run-1", value => ({ run: value, ends: "stopped", at }), () => true)).toMatchObject({ status: "stored" });
+  expect(changed.mock.calls).toEqual([["run-1"], ["run-1"], ["run-1"]]);
+  expect(await reads[2]).toMatchObject({ status: "found", run: { settled: { status: "cancelled", at } } });
+});
 
 it("stores a run by runId and returns copies", async () => {
   const store = new WorkflowRunStore(file);

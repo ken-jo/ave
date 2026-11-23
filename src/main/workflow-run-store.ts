@@ -3,6 +3,8 @@ import { join } from "node:path";
 import { openFeatureNamespace } from "./storage/feature-namespace.js";
 import { repeatsKey, rewriteKeepingBytes, WorkBoardWriteRefusal } from "./storage/rewrite-keeping-bytes.js";
 import { AVE_HOME_INPUT_MAX_BYTES, AveHomeInputSizeLimitError, readAveHomeInput } from "../shared/ave-home-trust.js";
+import { ChangeSignal } from "../lib/change-signal.js";
+import { createLogger } from "../lib/logger.js";
 import { withInProcessFileQueue } from "../lib/with-file-lock.js";
 import { isRecord } from "../shared/is-record.js";
 import { canonicalWorkflowJson } from "../shared/workflow-template-output.js";
@@ -10,6 +12,8 @@ import { requireTemplate, WorkflowTemplateError } from "../work-board/template-g
 import { assertWorkflowRunRecord } from "../work-board/template-run-fields.js";
 import type { WorkflowRunListResult, WorkflowRunReadResult, WorkflowRunRecord, WorkflowRunWriteResult } from "../shared/workflow-template-types.js";
 import type { MarkerOp, RunClass, RunFileFacts } from "./run-classification.js";
+
+const log = createLogger("ave");
 
 /** `rowIdFloor`: the highest board row id ever issued or seen. A file without it reads as 0; the floor read is never below any stored run's
  * itemId, and every write stores it, so it never goes down. */
@@ -71,10 +75,10 @@ function lookup(file: RunsFile, runId: string): { result: WorkflowRunReadResult;
 }
 
 // Applies `retain` to every readable entry. An unreadable or repeated entry is never offered and always stays as it is.
-function retainRuns(file: RunsFile, retain: WorkflowRunRetention): boolean {
+function retainRuns(file: RunsFile, retain: WorkflowRunRetention): string[] {
   const count = new Map<unknown, number>();
   for (const entry of file.runs) if (isRecord(entry)) count.set(entry.runId, (count.get(entry.runId) ?? 0) + 1);
-  let changed = false;
+  const changed: string[] = [];
   const kept: unknown[] = [];
   for (const entry of file.runs) {
     if (!isRecord(entry) || count.get(entry.runId) !== 1) { kept.push(entry); continue; }
@@ -82,12 +86,12 @@ function retainRuns(file: RunsFile, retain: WorkflowRunRetention): boolean {
     catch (error) { if (error instanceof WorkflowTemplateError) { kept.push(entry); continue; } throw error; }
     const next = retain(structuredClone(entry));
     if (next === null) {
-      if (entry.settled === undefined) kept.push(entry); else changed = true;
+      if (entry.settled === undefined) kept.push(entry); else changed.push(entry.runId);
       continue;
     }
     assertWorkflowRunRecord(next);
     requireTemplate(bindingOf(next) === bindingOf(entry) && sameEnd(next.settled, entry.settled), "invalid-template-run");
-    if (canonicalWorkflowJson(next) !== canonicalWorkflowJson(entry)) changed = true;
+    if (canonicalWorkflowJson(next) !== canonicalWorkflowJson(entry)) changed.push(entry.runId);
     kept.push(next);
   }
   file.runs = kept;
@@ -201,6 +205,8 @@ function bindingOf(run: WorkflowRunRecord): string {
 
 /** Template-run state in the covered `work-board/workflow-runs.json`, keyed by runId. */
 export class WorkflowRunStore {
+  readonly runChanged = new ChangeSignal<string>((err) => log.warn("[workflow-runs] change listener threw: %s", (err as Error).message));
+
   // Deletes whose outcome is unknown and whose marker the file may not hold: a write or read of it failed (see markUnknown).
   private unknown: DeleteMarker[] = [];
 
@@ -330,9 +336,11 @@ export class WorkflowRunStore {
     return withInProcessFileQueue(this.filePath, async () => {
       const read = await this.load();
       if (!read?.bytes || !unreadableEntries(read.file).some(entry => entry.position === target.position && entry.hash === target.hash)) return "changed";
-      if (!(await allowed(read.file.runs[target.position]))) return "refused";
+      const entry = read.file.runs[target.position];
+      if (!(await allowed(entry))) return "refused";
+      const runIds = isRecord(entry) && typeof entry.runId === "string" ? [entry.runId] : [];
       read.file.runs.splice(target.position, 1);
-      return (await this.commit(read.file, true)) ? "discarded" : "too-large";
+      return (await this.commit(read.file, { discard: true, runIds })) ? "discarded" : "too-large";
     });
   }
 
@@ -545,7 +553,9 @@ export class WorkflowRunStore {
   async prune(retain: WorkflowRunRetention): Promise<void> {
     return withInProcessFileQueue(this.filePath, async () => {
       const file = await this.read();
-      if (file !== undefined && retainRuns(file, retain)) await this.commit(file);
+      if (file === undefined) return;
+      const runIds = retainRuns(file, retain);
+      if (runIds.length > 0) await this.commit(file, { runIds });
     });
   }
 
@@ -574,7 +584,7 @@ export class WorkflowRunStore {
     return withInProcessFileQueue(this.filePath, async (): Promise<WorkflowRunWriteResult | { status: "cause-refused" }> => {
       const file = await this.read();
       if (file === undefined) return { status: "pending-review" };
-      if (retain) retainRuns(file, retain);
+      const retainedChanges = retain ? retainRuns(file, retain) : [];
       const { result, index } = lookup(file, runId);
       if (result.status === "invalid" || result.status === "pending-review") return result;
       const stored = result.status === "found" ? result.run.settled : undefined;
@@ -594,19 +604,20 @@ export class WorkflowRunStore {
         assertWorkflowRunRecord(run);
       }
       if (index === -1) file.runs.push(run); else file.runs[index] = run;
-      if (!(await this.commit(file))) return { status: "too-large" };
+      if (!(await this.commit(file, { runIds: [runId, ...retainedChanges] }))) return { status: "too-large" };
       return { status: "stored", run: structuredClone(run) };
     });
   }
 
   // A file past the read limit could not be read again, so nothing could shrink it afterwards: such a write is refused and the file stays as it is.
   // Bytes it would not give back, and the file before a discard, are copied beside it first.
-  private async commit(file: RunsFile, discard = false): Promise<boolean> {
+  private async commit(file: RunsFile, { discard = false, runIds = [] }: { discard?: boolean; runIds?: readonly string[] } = {}): Promise<boolean> {
     file.rowIdFloor = floorOver(file.runs, file.rowIdFloor);
     keepOpenIntents(file);
     const text = fileText(file);
     if (Buffer.byteLength(text, "utf8") > AVE_HOME_INPUT_MAX_BYTES) return false;
     await rewriteKeepingBytes(this.filePath, text, { tag: "invalid-runs", ...(discard ? {} : { unchanged: file.unchanged }) });
+    for (const runId of runIds) this.runChanged.emit(runId);
     return true;
   }
 }
