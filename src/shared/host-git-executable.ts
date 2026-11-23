@@ -69,6 +69,11 @@ function isFullyQualified(path: string, platform: NodeJS.Platform): boolean {
   return platform === "win32" ? /^[A-Za-z]:[\\/]/u.test(path) : posix.isAbsolute(path);
 }
 
+/** A POSIX search path with only its absolute entries: an empty or relative one is read against the folder a call runs in. */
+export function absolutePosixSearchPath(searchPath: string): string {
+  return searchPath.split(":").filter((entry) => isFullyQualified(entry, "linux")).join(":");
+}
+
 function windowsPathEntries(searchPath: string): string[] {
   const entries: string[] = [];
   for (let start = 0; start < searchPath.length;) {
@@ -271,6 +276,7 @@ function systemGitEnvironment(): NodeJS.ProcessEnv {
   const gitVariable = process.platform === "win32" ? /^GIT_/iu : /^GIT_/u;
   for (const key of Object.keys(env)) if (gitVariable.test(key)) delete env[key];
   env.GIT_ALLOW_PROTOCOL = "";
+  if (process.platform !== "win32" && env.PATH !== undefined) env.PATH = absolutePosixSearchPath(env.PATH);
   return env;
 }
 

@@ -309,7 +309,7 @@ describe("resolveHostGit", () => {
   it("does not launch a macOS shim alias without the command line tools", async () => {
     const { resolveHostGit } = await import("../host-git-executable.js");
     setProcessPlatform("darwin");
-    vi.stubEnv("PATH", "/alias:/toolchain");
+    vi.stubEnv("PATH", "/alias::.:/toolchain:bin");
     vi.mocked(statSync).mockImplementation((file) => ({
       isFile: () => true, dev: 1n, ino: file === "/toolchain/git" ? 2n : 1n,
     }) as ReturnType<typeof statSync>);
@@ -319,6 +319,8 @@ describe("resolveHostGit", () => {
     });
     expect(resolveHostGit({ packaged: false })?.path).toBe("/toolchain/git");
     expect(vi.mocked(execFileSync).mock.calls.map(([file]) => file)).toEqual(["/usr/bin/xcode-select", "/toolchain/git"]);
+    // An empty or relative entry would be read against the folder git runs in.
+    expect(resolveHostGit({ packaged: false })?.options.env?.PATH).toBe("/alias:/toolchain");
   });
 
   it("rediscovers after the cached macOS shim guard fails", async () => {

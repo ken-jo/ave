@@ -7,7 +7,7 @@ import { createLogger } from "../../lib/logger.js";
 import { forceKillManagedChildProcess } from "../../main/managed-child-processes.js";
 import { buildHostGitArgs, HOOK_EVENTS, HOOK_EVENTS_VALIDATED, spawnHostGitIfWorkspaceFree } from "../../shared/host-git.js";
 import { parseGitVersion } from "../../shared/git-version.js";
-import { installerGitRoot, withHostGitRecovery } from "../../shared/host-git-executable.js";
+import { absolutePosixSearchPath, installerGitRoot, withHostGitRecovery } from "../../shared/host-git-executable.js";
 
 const log = createLogger("work-board-host-git");
 
@@ -82,6 +82,7 @@ export interface HostGit {
 function gitEnv(base: NodeJS.ProcessEnv, kept: (name: string) => boolean): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(base)) if (kept(process.platform === "win32" ? key.toUpperCase() : key)) env[key] = value;
+  if (process.platform !== "win32" && env.PATH !== undefined) env.PATH = absolutePosixSearchPath(env.PATH);
   return { ...env, ...OWN_ENV };
 }
 

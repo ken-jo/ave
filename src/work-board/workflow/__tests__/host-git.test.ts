@@ -9,6 +9,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { HOOK_EVENTS, holdSandboxGitWrites } from "../../../shared/host-git.js";
 import { discoverHostGitAsync } from "../../../shared/host-git-executable.js";
 import { createHostGit, HostGitError, type HostGitProgram } from "../host-git.js";
+import { setProcessPlatform } from "../../../__tests__/support/process-platform.js";
 import { removeTree } from "./stage-fixtures.js";
 
 /** `env` and `program`: the environment and the program the last git process was started with. A fake is given the arguments git would have been. */
@@ -310,6 +311,18 @@ describe("host git", () => {
     expect.soft(() => plain(repo, ["cat-file", "-p", "HEAD:a.txt"])).not.toThrow();
   });
 
+  it("on POSIX git is given only the absolute entries of the host's search path, as an empty or relative one is read against the folder git runs in", async () => {
+    const platform = process.platform;
+    replying({ code: 0 });
+    setProcessPlatform("linux");
+    try {
+      await createHostGit({ env: { PATH: ":.:./bin:bin:/usr/local/bin::/usr/bin:" }, resolve: use => use({ path: "/usr/bin/git" }) }).run(base, ["--version"]);
+    } finally {
+      setProcessPlatform(platform);
+    }
+    expect(spawned.env?.PATH).toBe("/usr/local/bin:/usr/bin");
+  });
+
   it("git is given of the host's environment only what starts it and finds the user's configuration files, whatever a name's case, and the host's own git variables", async () => {
     // On Windows a name is one variable however it is spelled.
     const started = [...process.platform === "win32" ? ["Path", "SystemRoot", "userprofile"] : ["PATH", "USERPROFILE"], "HOME", "XDG_CONFIG_HOME", "TEMP", "LANG", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM"];
@@ -321,15 +334,17 @@ describe("host git", () => {
       "GIT_TRACE2_EVENT", "GIT_LITERAL_PATHSPECS", "GIT_ATTR_SOURCE", "GIT_TEMPLATE_DIR", "GIT_TERMINAL_PROMPT", "EDITOR", "VISUAL", "PAGER", "EMAIL",
       "SSH_AUTH_SOCK", "HTTPS_PROXY", "NODE_OPTIONS", "AVE_HOME",
     ];
-    const inherited = Object.fromEntries([...started, ...others].map(name => [name, "inherited"]));
+    // A POSIX search path keeps only its absolute entries.
+    const value = (name: string): string => name === "PATH" ? "/usr/bin" : "inherited";
+    const inherited = Object.fromEntries([...started, ...others].map(name => [name, value(name)]));
     const own = { GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", GIT_ALLOW_PROTOCOL: "", GIT_NO_LAZY_FETCH: "1" };
     replying({ code: 0 });
     await createHostGit({ env: inherited }).run(base, ["--version"]);
-    expect(spawned.env).toEqual({ ...Object.fromEntries(started.map(name => [name, "inherited"])), ...own });
+    expect(spawned.env).toEqual({ ...Object.fromEntries(started.map(name => [name, value(name)])), ...own });
     replying({ code: 0 });
     await createHostGit({ env: inherited }).run(base, ["--version"], { isolated: true });
     expect(spawned.env).toEqual({
-      ...Object.fromEntries(started.filter(name => !name.startsWith("GIT_")).map(name => [name, "inherited"])), ...own,
+      ...Object.fromEntries(started.filter(name => !name.startsWith("GIT_")).map(name => [name, value(name)])), ...own,
       GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null",
     });
   });
