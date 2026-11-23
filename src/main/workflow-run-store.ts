@@ -205,7 +205,7 @@ function bindingOf(run: WorkflowRunRecord): string {
 
 /** Template-run state in the covered `work-board/workflow-runs.json`, keyed by runId. */
 export class WorkflowRunStore {
-  readonly runChanged = new ChangeSignal<string>((err) => log.warn("[workflow-runs] change listener threw: %s", (err as Error).message));
+  readonly runChanged = new ChangeSignal<string>((err) => log.warn("[workflow-runs] change listener failed: %s", err instanceof Error ? err.message : String(err)));
 
   // Deletes whose outcome is unknown and whose marker the file may not hold: a write or read of it failed (see markUnknown).
   private unknown: DeleteMarker[] = [];

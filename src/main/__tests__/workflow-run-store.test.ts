@@ -9,6 +9,7 @@ import * as namespace from "../storage/feature-namespace.js";
 import type { WorkflowRunRecord } from "../../shared/workflow-template-types.js";
 import { contentHash as sha } from "../../__tests__/support/content-hash.js";
 import { deferred } from "../../__tests__/support/deferred.js";
+import { ChangeSignal } from "../../lib/change-signal.js";
 
 let dir: string;
 let file: string;
@@ -62,6 +63,56 @@ it("signals each run commit after persistence and stays silent on failure", asyn
   expect(await store.settleRun("run-1", value => ({ run: value, ends: "stopped", at }), () => true)).toMatchObject({ status: "stored" });
   expect(changed.mock.calls).toEqual([["run-1"], ["run-1"], ["run-1"]]);
   expect(await reads[2]).toMatchObject({ status: "found", run: { settled: { status: "cancelled", at } } });
+});
+
+it.each([null, undefined, new Error("listener failed")])("isolates a run listener throwing %s across a commit and queued write", async error => {
+  const store = new WorkflowRunStore(file);
+  await store.put(run());
+  store.runChanged.subscribe(() => { throw error; });
+  const changed = vi.fn();
+  store.runChanged.subscribe(changed);
+
+  const putting = store.put(run({ runId: "run-2", itemId: 2 }), value => ({ ...value, stageRuns: [] }));
+  const updating = store.update("run-2", value => ({ ...value, stageRuns: [] }));
+  const results = await Promise.allSettled([putting, updating]);
+
+  expect(await store.get("run-1")).toEqual({ status: "found", run: run({ stageRuns: [] }) });
+  expect(await store.get("run-2")).toEqual({ status: "found", run: run({ runId: "run-2", itemId: 2, stageRuns: [] }) });
+  expect(results).toEqual([
+    { status: "fulfilled", value: { status: "stored", run: run({ runId: "run-2", itemId: 2 }) } },
+    { status: "fulfilled", value: { status: "stored", run: run({ runId: "run-2", itemId: 2, stageRuns: [] }) } },
+  ]);
+  expect(changed.mock.calls).toEqual([["run-2"], ["run-1"], ["run-2"]]);
+});
+
+it("isolates a change signal when its error reporter throws", () => {
+  const report = vi.fn(() => { throw new Error("report failed"); });
+  const signal = new ChangeSignal<string>(report);
+  const later = vi.fn();
+  signal.subscribe(() => { throw null; });
+  signal.subscribe(later);
+
+  expect(() => signal.emit("run-1")).not.toThrow();
+  expect(report).toHaveBeenCalledWith(null);
+  expect(later).toHaveBeenCalledWith("run-1");
+});
+
+it("reports an asynchronous change listener rejection without waiting on delivery", async () => {
+  const report = vi.fn();
+  const signal = new ChangeSignal<string>(report);
+  const release = deferred<void>();
+  const later = vi.fn();
+  const error = new Error("async listener failed");
+  const result = release.promise.then(() => { throw error; });
+  void result.catch(() => {});
+  signal.subscribe(() => result);
+  signal.subscribe(later);
+
+  signal.emit("run-1");
+  expect(later).toHaveBeenCalledWith("run-1");
+  release.resolve();
+  await result.catch(() => {});
+  expect(report).toHaveBeenCalledWith(error);
 });
 
 it("stores a run by runId and returns copies", async () => {
