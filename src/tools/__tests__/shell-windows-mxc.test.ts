@@ -15,7 +15,7 @@ const childProcessMock = vi.hoisted(() => ({
   execFileSync: vi.fn(),
 }));
 const installationMock = vi.hoisted(() => ({ resolve: vi.fn() }));
-const sandboxHomeMock = vi.hoisted(() => ({ onCleanup: vi.fn<(home: string) => void>() }));
+const sandboxHomeMock = vi.hoisted(() => ({ onCreate: vi.fn<() => void>(), onCleanup: vi.fn<(home: string) => void>() }));
 vi.mock("../../shared/powershell-executable.js", () => ({ resolveTrustedPowerShellExecutable: installationMock.resolve }));
 const mxcLaunchMock = vi.hoisted(() => ({
   prepare: vi.fn(),
@@ -41,6 +41,7 @@ vi.mock("../../permissions/sandbox-process-home.js", async (importOriginal) => {
   return {
     ...actual,
     createSandboxProcessHome: () => {
+      sandboxHomeMock.onCreate();
       const home = mkdtempSync(join(tmpdir(), "ave-mxc-test-home-"));
       return {
         path: home,
@@ -98,6 +99,8 @@ const WXC_EXEC = String.raw`C:\Program Files\Ave\resources\mxc\x64\wxc-exec.exe`
 const FIXTURE_WORKSPACE = String.raw`C:\ave-fixture\workspace`;
 const CONTAINER_OUTPUT = "output relayed from the container";
 const PARSER_REQUEST = "eyJwYXJzZXIiOnRydWV9";
+// The verdict of every contained PowerShell failure before or at its launcher's start.
+const UNAVAILABLE = { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" };
 
 function isParserLaunch(input: { commandLine: string }): boolean {
   const encoded = input.commandLine.split(" ").at(-1)!;
@@ -223,6 +226,22 @@ describe("builtin shell — Windows MXC containers", () => {
     expect(mxcLaunchMock.release).toHaveBeenCalledOnce();
   });
 
+  it("refuses the command at admission, as an unavailable spawn, when consent is disabled while its parser runs", async () => {
+    bootMxcShells();
+    const spawn = childProcessMock.spawn.getMockImplementation();
+    if (spawn === undefined) throw new Error("Missing child spawn fixture");
+    childProcessMock.spawn.mockImplementation((file: string, args: readonly string[], options: unknown) => {
+      if (args.includes(PARSER_REQUEST)) setWindowsShellLocalNetworkAccess(false);
+      return spawn(file, args, options);
+    });
+    const result = await executePowerShell(context("local-network-disabled-at-command-admission"));
+    expect(result).toMatchObject({ isError: true, metadata: UNAVAILABLE });
+    expect(result.output).toBe("PowerShell spawn failed: container shell route is no longer available");
+    // Only the parser was prepared: the command stopped before allocating anything.
+    expect(mxcLaunchMock.prepare).toHaveBeenCalledOnce();
+    expect(sandboxHomeMock.onCreate).toHaveBeenCalledOnce();
+  });
+
   beforeEach(() => {
     configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     vi.stubEnv("SystemRoot", "C:\\Windows");
@@ -257,6 +276,7 @@ describe("builtin shell — Windows MXC containers", () => {
     childProcessMock.execFileSync.mockReset();
     mxcLaunchMock.prepare.mockReset();
     mxcLaunchMock.release.mockClear();
+    sandboxHomeMock.onCreate.mockReset();
     sandboxHomeMock.onCleanup.mockReset();
     installationMock.resolve.mockReset();
     vi.restoreAllMocks();
@@ -425,8 +445,8 @@ describe("builtin shell — Windows MXC containers", () => {
     bootMxcShells();
     installationMock.resolve.mockReturnValue(null);
     const result = await executePowerShell(context("missing-trusted-image"));
-    expect(result.isError).toBe(true);
-    expect(result.output).toContain("trusted system installation is unavailable");
+    expect(result).toMatchObject({ isError: true, metadata: UNAVAILABLE });
+    expect(result.output).toBe("PowerShell spawn failed: trusted system installation is unavailable");
     expect(mxcLaunchMock.prepare).not.toHaveBeenCalled();
     expect(childProcessMock.spawn).not.toHaveBeenCalled();
   });
@@ -480,9 +500,19 @@ describe("builtin shell — Windows MXC containers", () => {
     bootMxcShells();
     mxcLaunchMock.prepare.mockRejectedValueOnce(new Error("the sandbox proxy is not running"));
     const result = await executePowerShell(context("ps-mxc-2"));
-    expect(result).toMatchObject({ isError: true, metadata: { sandboxed: false, isolation: "unavailable" } });
-    expect(result.output).toContain("the sandbox proxy is not running");
+    expect(result).toMatchObject({ isError: true, metadata: UNAVAILABLE });
+    expect(result.output).toBe("PowerShell spawn failed: the sandbox proxy is not running");
     expect(childProcessMock.spawn.mock.calls.some((call) => call[0] === WXC_EXEC)).toBe(false);
+  });
+
+  it("reports an isolated HOME that cannot be created as an unavailable spawn and prepares nothing", async () => {
+    bootMxcShells();
+    sandboxHomeMock.onCreate.mockImplementationOnce(() => { throw new Error("profile directory failed"); });
+    const result = await executePowerShell(context("ps-mxc-home-create-throws"));
+    expect(result).toMatchObject({ isError: true, metadata: UNAVAILABLE });
+    expect(result.output).toBe("PowerShell spawn failed: could not create isolated HOME: profile directory failed");
+    expect(mxcLaunchMock.prepare).not.toHaveBeenCalled();
+    expect(childProcessMock.spawn).not.toHaveBeenCalled();
   });
 
   it.each([false, true])("fails closed on policy delivery failure with headless=%s", async (headless) => {
@@ -531,7 +561,7 @@ describe("builtin shell — Windows MXC containers", () => {
       return childWithSpawnError(spawnError());
     });
     const result = await executePowerShell(context(`ps-mxc-enoent-${failure}`));
-    expect(result).toMatchObject({ isError: true, metadata: { sandboxed: false, isolation: "unavailable" } });
+    expect(result).toMatchObject({ isError: true, metadata: UNAVAILABLE });
     expect(result.output).toBe("PowerShell spawn failed: container launcher error ENOENT");
     expect(mxcLaunchMock.release).toHaveBeenCalledTimes(2);
   });
@@ -689,7 +719,7 @@ describe("builtin shell — Windows MXC containers", () => {
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
     const result = await executePowerShell(context("ps-mxc-bind-child-throws"));
     expect(kills).toEqual([{ revoked: true, egressLive: false, launchReleases: 1, homeExists: true }]);
-    expect(result).toMatchObject({ isError: true, metadata: { sandboxed: false, isolation: "unavailable" } });
+    expect(result).toMatchObject({ isError: true, metadata: UNAVAILABLE });
     expect(result.output).toBe("PowerShell spawn failed: failure details unavailable");
     expect(log).toHaveBeenCalledWith("[shell-tasks] contained shell failed while its job was live",
       expect.objectContaining({ label: "tool:powershell:mxc", err: "child binding failed" }));

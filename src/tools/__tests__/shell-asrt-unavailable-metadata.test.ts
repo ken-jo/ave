@@ -65,9 +65,7 @@ describe("ASRT unavailable metadata", () => {
     expect(start).toBeGreaterThanOrEqual(0);
     expect(end).toBeGreaterThan(start);
     const implementation = source.slice(start, end);
-    // Consent admission, image admission, sandbox HOME or launch preparation, and a spawn throw or child error (details shown or withheld).
-    expect(implementation.match(/\bmxcSpawnFailure\(/gu)).toHaveLength(5);
-    // No result before the job starts carries a confinement verdict of its own.
+    // shell-windows-mxc.test.ts drives each failure path to this helper's result; here, none builds a verdict of its own.
     expect(metadataObjects(implementation).filter((metadata) => /\bsandboxAttempted\s*:/.test(metadata))).toEqual([]);
   });
 
