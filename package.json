@@ -130,7 +130,7 @@
     "@ai-sdk/otel": "^1.0.176",
     "@anthropic-ai/sandbox-runtime": "0.0.80",
     "@ave/shell-parser-runtime": "file:resources/shell-parser",
-    "@microsoft/mxc-sdk": "1.1.0",
+    "@microsoft/mxc-sdk": "1.0.1",
     "@modelcontextprotocol/client": "2.4.0",
     "@modelcontextprotocol/ext-apps": "2.0.4",
     "@modelcontextprotocol/sdk": "1.32.2",
@@ -554,7 +554,7 @@
   "patchedDependencies": {
     "@anthropic-ai/sandbox-runtime@0.0.80": "patches/@anthropic-ai%2Fsandbox-runtime@0.0.80.patch",
     "app-builder-lib@26.18.0": "patches/app-builder-lib@26.18.0.patch",
-    "electron@45.2.2": "patches/electron@45.2.2.patch",
+    "electron@45.3.4": "patches/electron@45.3.4.patch",
     "node-pty@1.1.0": "patches/node-pty@1.1.0.patch"
   }
 }

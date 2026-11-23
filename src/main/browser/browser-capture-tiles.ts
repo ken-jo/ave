@@ -15,6 +15,8 @@ export async function captureBrowserTiles(
   const { createCanvas, loadImage } = await import("@napi-rs/canvas");
   throwIfAborted(signal);
   const canvas = createCanvas(width, height), context = canvas.getContext("2d");
+  // Keep neighboring screenshot rows from blending when the device scale is fractional.
+  context.imageSmoothingEnabled = false;
   let copied = 0;
   let initialScale: number | undefined;
   while (copied < height) {

@@ -3,7 +3,7 @@ import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { requirePersistedResult } from "../hooks/use-settings-persistence.js";
 import type { AppSettings } from "../types.js";
 import { useAppSettingsControls, useSettingsDocumentRead, useSettingsEditor } from "../context/SettingsEditorContext.js";
-import { Button } from "../../../components/ui/button.js";
+import { Button } from "#components/ui/button";
 import { ZoomControls } from "../components/ZoomControls.js";
 import { HOST_FONT_STACK } from "../../../shared/host-font-stack.js";
 import { useTheme } from "../theme/index.js";
