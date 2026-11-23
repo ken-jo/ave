@@ -180,7 +180,6 @@ export interface ExecutionStageContext {
     input: Record<string, unknown>,
     blockedPermission?: PermissionCheckResult,
     hookChain?: import("../audit/audit-schema.js").HookResult[],
-    suppressPermissionDeniedLifecycle?: boolean,
   ) => Promise<ToolResult>;
   startTime: number;
   callbacks: ToolExecutorCallbacks | undefined;
@@ -424,8 +423,6 @@ export async function executeAuthorizedToolInvocation(
         `governed operation admission failed: ${msg}`,
         finalInput,
         permissionResult,
-        undefined,
-        true,
       );
     }
     const durationMs = Date.now() - startTime;
@@ -454,9 +451,6 @@ export async function executeAuthorizedToolInvocation(
       executionCwd,
       undefined,
       "error",
-      undefined,
-      undefined,
-      true,
     );
     return withHostShellExecutionPlan({
       tool_use_id: toolUse.id,

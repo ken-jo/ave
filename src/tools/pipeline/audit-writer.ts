@@ -1,6 +1,6 @@
 import { appendToolInvocationAudit, recordToolInvocationAuditFailure, type TerminalLifecycleEvent, type TerminalRowWriter } from "../invocation-ledger.js";
 import type { ToolAuditTerminationReason } from "../../audit/audit-logger.js";
-// Every ordinary tool denial finalizes through auditToolCall, whose row writer the ledger hands out and fires the denial lifecycle once.
+// Tool terminal rows finalize through auditToolCall with a row writer only the ledger hands out; the ledger fires PermissionDenied.
 import { randomUUID } from "node:crypto";
 import type { ToolRegistry } from "../registry.js";
 import type { ToolSource, ToolCategory, TrustLevel } from "../types.js";
@@ -54,7 +54,7 @@ export class AuditWriter {
   async fireLifecycleEvent(
     event: "PostToolUseFailure" | TerminalLifecycleEvent,
     sessionId: string | undefined,
-    context: ToolPermissionContext,
+    context: { readonly trustOrigin: HookTrustOrigin },
     payload: LifecycleEventPayload,
     abortSignal?: AbortSignal,
   ): Promise<LifecycleDispatchObservation> {
@@ -63,7 +63,7 @@ export class AuditWriter {
       const result = await this.scriptHookManager.runLifecycleEvent(
         event,
         sessionId ?? "unknown",
-        context.trustOrigin as HookTrustOrigin,
+        context.trustOrigin,
         payload,
         { cwd: currentToolExecutionCwd() ?? process.cwd(), abortSignal },
       );
@@ -204,8 +204,6 @@ export class AuditWriter {
     terminationReason?: ToolAuditTerminationReason,
     hookChain?: HookResult[],
     audit?: ToolExecutionAuditMetadata,
-    suppressPermissionDeniedLifecycle = false,
-    abortSignal?: AbortSignal,
     row?: TerminalRowWriter,
   ): Promise<void> {
     if (!row) throw new Error(`terminal row of ${toolName} has no ledger writer`);
@@ -269,23 +267,8 @@ export class AuditWriter {
       recordToolInvocationAuditFailure(error);
       throw error;
     }
-    // Emit ordinary denials once; exclude cancellations and governed operations whose lease/proof cannot include effect-capable hooks.
-    let denied: ((event: TerminalLifecycleEvent) => Promise<unknown>) | undefined;
-    if (
-      permission?.decision === "deny" &&
-      permissionContext !== undefined &&
-      terminationReason !== "user-abort" &&
-      terminationReason !== "host-shutdown" &&
-      !governedTool &&
-      !suppressPermissionDeniedLifecycle
-    ) {
-      const context = permissionContext;
-      // Preserve the finalized denial reason for forensic discrimination.
-      const denyReason = { source: "tool-executor" as const, reason: permission.reason };
-      denied = (event) => this.fireLifecycleEvent(event, sessionId, context, { toolName, denyReason }, abortSignal);
-    }
-    // The writer enqueues the row before its first await; the denial lifecycle runs after it and cannot lose it.
-    const appended = row({ entry, ...(ready ? { logger: this.auditLogger } : {}), ...(denied ? { denied } : {}) });
+    // The writer enqueues the row before its first await; the ledger's denial lifecycle runs after it and cannot lose it.
+    const appended = row({ entry, ...(ready ? { logger: this.auditLogger } : {}), ...(permission?.decision === "deny" ? { reason: permission.reason } : {}) });
     try {
       await appended;
     } catch (err) {

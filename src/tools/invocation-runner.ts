@@ -1,4 +1,4 @@
-import { commitTerminalRow } from "./invocation-ledger.js";
+import { commitTerminalRow, type TerminalDenialLifecycle } from "./invocation-ledger.js";
 import { agentBrowserScopeOf, browserApprovalCardFacts, userOwnedBrowserScopeOf } from "./browser-tools.js";
 import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pipeline/user-owned-surface.js";
 import { issueReplayRootBinding } from "../permissions/reviewer/replay-root-binding.js";
@@ -504,13 +504,12 @@ async function runToolInvocationAttempt(
     let denialRecorded = false;
     const auditCurrentToolCall = async (...args: AuditToolCallArgs): Promise<void> => {
       args[16] = currentAuditMetadata(args[4]);
-      args[18] = abortSignal;
       // The row is claimed and enqueued before anything else awaits; a refused claim (a late resume after the host
       // wrote the row, or a closed sink) resolves without writing.
       const terminal = services.invocationTerminal;
       const before = terminal?.state;
       const written = commitTerminalRow(terminal, toolUse.name, (row) => {
-        args[19] = row;
+        args[17] = row;
         return services.auditWriter.auditToolCall(...args);
       });
       if (terminal && (before !== "open" || terminal.state === "open")) return written;
@@ -573,6 +572,11 @@ async function runToolInvocationAttempt(
       return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: t("be_executor.toolNotFound", { name: toolUse.name }), is_error: true, durationMs });
     }
     governedTool = tool.operationPolicy !== undefined;
+    const denialLifecycle: TerminalDenialLifecycle = {
+      governed: () => governedTool || pluginAuthLifecycle !== undefined,
+      fire: (event, reason) => services.auditWriter.fireLifecycleEvent(event, sessionId, { trustOrigin: permissionContext?.trustOrigin ?? "unknown" },
+        { toolName: toolUse.name, denyReason: { source: "tool-executor", reason } }, abortSignal),
+    };
     services.invocationTerminal?.hostTerminal((cause, detail, selected, row) => {
       // A human outcome accepted before the host ended the attempt stays the row's outcome.
       const denial = isSelectedRefusal(selected) ? selected
@@ -580,9 +584,8 @@ async function runToolInvocationAttempt(
         : cause === "user-abort" ? refusal("user aborted turn", RULE_PROVENANCE)
         : refusal(detail, HOST_PROVENANCE);
       return services.auditWriter.auditToolCall(sessionId, toolUse.name, tool.source, trustFromSource(tool.source), toolUse.input, detail, true, startTime,
-        denial, Infinity, permissionContext, tool.category, executionCwd, undefined, cause, undefined, currentAuditMetadata(toolUse.input),
-        undefined, undefined, row);
-    });
+        denial, Infinity, permissionContext, tool.category, executionCwd, undefined, cause, undefined, currentAuditMetadata(toolUse.input), row);
+    }, denialLifecycle);
     let generationAccess: ReturnType<
       InvocationRunnerServices["pluginGenerationAccessProvider"]
     >;
@@ -708,7 +711,6 @@ async function runToolInvocationAttempt(
         reason,
         },
       hookChain?: HookResult[],
-      suppressPermissionDeniedLifecycle = false,
     ): Promise<ToolResult> => {
       const content = "Rationale resume blocked: " + reason;
       const durationMs = Date.now() - startTime;
@@ -731,8 +733,6 @@ async function runToolInvocationAttempt(
         undefined,
         undefined,
         hookChain,
-        undefined,
-        suppressPermissionDeniedLifecycle,
       );
       return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content, is_error: true, durationMs });
     };

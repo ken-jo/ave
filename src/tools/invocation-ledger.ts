@@ -34,14 +34,23 @@ type HostTerminalCause = "host-shutdown" | "user-abort" | "error";
 /** The lifecycle event only the ledger emits, once, after an invocation's deny row is enqueued. */
 export type TerminalLifecycleEvent = "PermissionDenied";
 /**
+ * How an attempt reports its denial. The ledger fires it once for every deny row it commits, from any writer; a governed
+ * tool's lease and proof cannot include effect-capable hooks, so a governed attempt's rows fire nothing.
+ */
+export type TerminalDenialLifecycle = {
+  governed(): boolean;
+  fire(event: TerminalLifecycleEvent, reason: string): Promise<unknown>;
+};
+/**
  * Writes the attempt's terminal row; only the ledger hands one out. The call claims the attempt and enqueues the row
  * synchronously, so a writer that throws first leaves the attempt open. `logger` is absent when the chain is neither
- * set up nor required; `denied` fires the denial lifecycle. A refused claim writes and fires nothing.
+ * set up nor required; `reason` is the finalized denial reason, defaulting to the row's first. A refused claim writes
+ * and fires nothing.
  */
 export type TerminalRowWriter = (row: {
   logger?: Pick<AuditLogger, "appendPermissionAuditEntry">;
   entry: PermissionAuditEntryInput;
-  denied?: (event: TerminalLifecycleEvent) => Promise<unknown>;
+  reason?: string;
 }) => Promise<void>;
 type HostTerminalWrite = (cause: HostTerminalCause, detail: string, selected: unknown, row: TerminalRowWriter) => Promise<unknown>;
 
@@ -58,8 +67,9 @@ export interface InvocationTerminal {
   readonly attempt: number;
   readonly owner: TerminalOwner;
   readonly state: TerminalState;
-  /** The host's writer: it ends the attempt when a forced quit, a held card's abort or an invocation failure finds it unclaimed. */
-  hostTerminal(write: HostTerminalWrite): void;
+  /** The host's writer, which ends the attempt when a forced quit, a held card's abort or an invocation failure finds it
+   * unclaimed, and the attempt's denial lifecycle. */
+  hostTerminal(write: HostTerminalWrite, lifecycle: TerminalDenialLifecycle): void;
   /** Records a human outcome accepted before the next yield, so a host write in that window keeps it. */
   select(outcome: unknown): void;
   /** Runs `enqueue` with the owner's row writer, to be called before its first await. A refused claim runs nothing and
@@ -74,19 +84,23 @@ class TerminalLedger implements InvocationTerminal {
   #state: TerminalState = "open";
   #owner: TerminalOwner = "invocation";
   #write: HostTerminalWrite | undefined;
+  #lifecycle: TerminalDenialLifecycle | undefined;
   #selected: unknown;
   #releaseAbort: (() => void) | undefined;
   #key: string | undefined;
   #integrityFailure = false;
 
-  constructor(readonly tool: string, readonly attempt: number, readonly signal: AbortSignal) {}
+  constructor(readonly tool: string, readonly attempt: number, readonly signal: AbortSignal, lifecycle?: TerminalDenialLifecycle) {
+    this.#lifecycle = lifecycle;
+  }
 
   get owner(): TerminalOwner { return this.#owner; }
   get state(): TerminalState { return this.#state; }
   get key(): string | undefined { return this.#key; }
 
-  hostTerminal(write: HostTerminalWrite): void {
+  hostTerminal(write: HostTerminalWrite, lifecycle: TerminalDenialLifecycle): void {
     this.#write = write;
+    this.#lifecycle = lifecycle;
     if (this.#state === "open") openTerminals.add(this);
   }
 
@@ -121,13 +135,16 @@ class TerminalLedger implements InvocationTerminal {
 
   #commitAs<T>(by: TerminalOwner | "host", enqueue: (row: TerminalRowWriter) => Promise<T>): Promise<T | undefined> {
     if (this.#refusal(by)) return Promise.resolve(undefined);
-    const row: TerminalRowWriter = ({ logger, entry, denied }) => {
+    const row: TerminalRowWriter = ({ logger, entry, reason }) => {
       if (this.#refusal(by)) return Promise.resolve();
       this.#take();
       const append = logger ? appendTerminalRow(logger, entry) : Promise.resolve();
       this.#track(append);
+      const lifecycle = this.#lifecycle;
       return (async () => {
-        if (entry.decision === "deny" && denied) await denied("PermissionDenied");
+        if (entry.decision === "deny" && lifecycle !== undefined && !lifecycle.governed()) {
+          await lifecycle.fire("PermissionDenied", reason ?? entry.denyReasons[0]?.reason ?? "");
+        }
         await append;
       })();
     };
@@ -204,7 +221,7 @@ class TerminalLedger implements InvocationTerminal {
 
   nextAttempt(): InvocationTerminal {
     if (this.#state === "open") throw new TerminalClaimError(`attempt ${this.attempt} of ${this.tool} has no terminal row yet`, "already-claimed");
-    return new TerminalLedger(this.tool, this.attempt + 1, this.signal);
+    return new TerminalLedger(this.tool, this.attempt + 1, this.signal, this.#lifecycle);
   }
 }
 
@@ -240,7 +257,7 @@ export function admitToolInvocation(tool: string, parent?: AbortSignal, resumeOf
     get attempt() { return ledger.attempt; },
     get owner() { return ledger.owner; },
     get state() { return ledger.state; },
-    hostTerminal: (write) => { ledger.hostTerminal(write); },
+    hostTerminal: (write, lifecycle) => { ledger.hostTerminal(write, lifecycle); },
     select: (outcome) => { ledger.select(outcome); },
     commit: (enqueue) => ledger.commit(enqueue),
     nextAttempt: () => {

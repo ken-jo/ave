@@ -467,7 +467,7 @@ describe("ToolExecutor sealed rationale resume", () => {
     }
   });
 
-  it("ends a script-hook mutation during the resume with the rule's one deny row and no host row", async () => {
+  it("ends a script-hook mutation during the resume with the rule's one deny row, its one denial and no host row", async () => {
     const realAudit = async (directory: string) => {
       const logger = new AuditLogger(join(directory, "audit"));
       await logger.setupPermissionAuditChain("ef".repeat(32));
@@ -486,7 +486,7 @@ describe("ToolExecutor sealed rationale resume", () => {
         .map((line) => JSON.parse(line) as Record<string, unknown>).filter((row) => row.toolUseId === "sealed-use" && row.decision !== "ask");
       expect(rows).toEqual([expect.objectContaining({ decision: "deny",
         denyReasons: [{ reason: "Hook input mutation could not safely restart permission classification", source: "hook-input-mutation" }] })]);
-      expect(vi.mocked(f.scriptHooks.runLifecycleEvent).mock.calls.filter(([event]) => event === "PermissionDenied")).toEqual([]);
+      expect(vi.mocked(f.scriptHooks.runLifecycleEvent).mock.calls.filter(([event]) => event === "PermissionDenied")).toHaveLength(1);
     } finally {
       await audit.close();
       await cleanupTmpDir(f.directory);

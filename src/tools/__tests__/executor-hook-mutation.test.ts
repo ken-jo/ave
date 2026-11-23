@@ -79,7 +79,7 @@ describe("hook replacement permission reentry", () => {
     expect(probe.requestAndWait).not.toHaveBeenCalled();
   });
 
-  it("ends bounded replacements with the rule's one deny row and no host row or second denial", async () => {
+  it("ends bounded replacements with the rule's one deny row and its one denial, and no host row", async () => {
     const root = mkdtempSync(join(tmpdir(), "ave-hook-mutation-audit-"));
     roots.push(root);
     const audit = new AuditLogger(join(root, "audit"));
@@ -94,7 +94,9 @@ describe("hook replacement permission reentry", () => {
         .map((line) => JSON.parse(line) as Record<string, unknown>).filter((row) => row.toolUseId === "mutated-call" && row.decision !== "ask");
       expect(rows).toEqual([expect.objectContaining({ decision: "deny",
         denyReasons: [{ reason: "Hook input mutation could not safely restart permission classification", source: "hook-input-mutation" }] })]);
-      expect(lifecycle.mock.calls.filter(([event]) => event === "PermissionDenied")).toEqual([]);
+      expect(lifecycle.mock.calls.filter(([event]) => event === "PermissionDenied")).toEqual([["PermissionDenied", "mutation-session", "user-keyboard",
+        { toolName: "mutation_probe", denyReason: { source: "tool-executor", reason: "Hook input mutation could not safely restart permission classification" } },
+        expect.anything()]]);
     } finally {
       await audit.close();
     }

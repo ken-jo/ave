@@ -147,8 +147,6 @@ export async function returnUserAbort(deps: UserAbortDeps): Promise<ToolResult> 
     hostShutdown ? "host-shutdown" : "user-abort",
     undefined,
     audit,
-    undefined,
-    undefined,
     row,
   );
   await commitTerminalRow(deps.terminal, toolUse.name, write);

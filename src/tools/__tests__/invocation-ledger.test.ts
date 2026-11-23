@@ -9,6 +9,7 @@ const ENTRY = { decision: "deny", ts: "2026-11-24T00:00:00.000Z", auditId: "row"
 // The writer is called before the first await, as the audit writer does.
 const rowOf = <T>(value?: T) => async (row: TerminalRowWriter) => { await row({ entry: ENTRY }); return value; };
 const hostRow = async (_cause: string, _detail: string, _selected: unknown, row: TerminalRowWriter) => { await row({ entry: ENTRY }); };
+const NO_DENIAL = { governed: () => false, fire: async () => {} };
 
 beforeEach(() => {
   vi.resetModules();
@@ -168,10 +169,10 @@ it("gives an attempt the host's row only while it is unclaimed, keeping a select
   const ledger = await import("../invocation-ledger.js");
   const write = vi.fn(hostRow);
   const unclaimed = ledger.admitToolInvocation("unclaimed");
-  unclaimed.terminal.hostTerminal(write);
+  unclaimed.terminal.hostTerminal(write, NO_DENIAL);
   unclaimed.terminal.select("accepted deny");
   const claimed = ledger.admitToolInvocation("claimed");
-  claimed.terminal.hostTerminal(write);
+  claimed.terminal.hostTerminal(write, NO_DENIAL);
   await claimed.terminal.commit(rowOf());
   unclaimed.settle(new Error("boom"));
   claimed.settle(new Error("boom"));
@@ -183,7 +184,7 @@ it("moves ownership to a suspended rationale card and back at its sealed start",
   const ledger = await import("../invocation-ledger.js");
   const write = vi.fn(hostRow);
   const first = ledger.admitToolInvocation("held");
-  first.terminal.hostTerminal(write);
+  first.terminal.hostTerminal(write, NO_DENIAL);
   first.suspend("tu-held");
   first.settle();
   expect(write).not.toHaveBeenCalled();
@@ -201,11 +202,11 @@ it("ends a suspended attempt with the host's row when its card is stopped or the
   const parent = new AbortController();
   const write = vi.fn(hostRow);
   const stopped = ledger.admitToolInvocation("stopped", parent.signal);
-  stopped.terminal.hostTerminal(write);
+  stopped.terminal.hostTerminal(write, NO_DENIAL);
   stopped.suspend("tu-stopped");
   stopped.settle();
   const quit = ledger.admitToolInvocation("quit");
-  quit.terminal.hostTerminal(write);
+  quit.terminal.hostTerminal(write, NO_DENIAL);
   quit.suspend("tu-quit");
   quit.settle();
   parent.abort();
@@ -233,7 +234,7 @@ it("drains enqueued rows before the sink closes, then fences late claims", async
   const order: string[] = [];
   const parked = ledger.admitToolInvocation("parked");
   parked.terminal.hostTerminal((cause, _detail, _selected, row) => row({ entry: ENTRY,
-    logger: { appendPermissionAuditEntry: async () => { await Promise.resolve(); order.push(`row:${cause}`); return {} as never; } } }));
+    logger: { appendPermissionAuditEntry: async () => { await Promise.resolve(); order.push(`row:${cause}`); return {} as never; } } }), NO_DENIAL);
   ledger.sealToolInvocations();
   const outcome = ledger.drainToolInvocationAuditForExit(async () => { await Promise.resolve(); await Promise.resolve(); order.push("close"); }, 50);
   await expect(outcome).resolves.toBe("committed");
@@ -252,7 +253,7 @@ it("leaves the claim open when a writer fails before its row, so the host writes
   const admission = ledger.admitToolInvocation("integrity");
   const host = vi.fn((_cause: string, detail: string, _selected: unknown, row: TerminalRowWriter) =>
     row({ logger, entry: { ...ENTRY, auditId: "host", denyReasons: [{ reason: detail, source: "tool-executor" }] } }));
-  admission.terminal.hostTerminal(host);
+  admission.terminal.hostTerminal(host, NO_DENIAL);
   const integrity = new Error("answer belongs to another invocation");
   await expect(admission.terminal.commit(async () => { throw integrity; })).rejects.toBe(integrity);
   await vi.waitFor(() => expect(admission.terminal.state).toBe("failed"));
@@ -285,7 +286,41 @@ it("reports a drain whose host row failed to commit", async () => {
   const ledger = await import("../invocation-ledger.js");
   ledger.beginToolInvocationAuditShutdown();
   const parked = ledger.admitToolInvocation("failing");
-  parked.terminal.hostTerminal(async () => { throw new Error("append refused"); });
+  parked.terminal.hostTerminal(async () => { throw new Error("append refused"); }, NO_DENIAL);
   await expect(ledger.drainToolInvocationAuditForExit(async () => {}, 50)).resolves.toBe("failed");
   parked.settle();
+});
+
+it.each([false, true])("fires one denial for every deny row it commits, from any source, unless governed (governed: %s)", async (governed) => {
+  const ledger = await import("../invocation-ledger.js");
+  const fired: string[] = [];
+  const lifecycle = { governed: () => governed, fire: async (_event: string, reason: string) => { fired.push(reason); } };
+  const appended: string[] = [];
+  const logger = { appendPermissionAuditEntry: async (entry: { auditId: string }) => { appended.push(entry.auditId); return {} as never; } };
+  const deny = (auditId: string) => ({ ...ENTRY, auditId, denyReasons: [{ reason: auditId, source: "tool-executor" }] });
+  const { denyReasons: _reasons, ...base } = ENTRY;
+  const admit = (tool: string) => {
+    const admission = ledger.admitToolInvocation(tool);
+    admission.terminal.hostTerminal((cause, _detail, _selected, row) => row({ logger, entry: deny(`host:${cause}`) }), lifecycle);
+    return admission;
+  };
+  for (const source of ["rule", "human", "hook-mutation"]) {
+    const admission = admit(source);
+    await admission.terminal.commit(async (row) => { await row({ logger, entry: deny(source) }); });
+    admission.settle();
+  }
+  const allowed = admit("allowed");
+  await allowed.terminal.commit(async (row) => { await row({ logger, entry: { ...base, decision: "allow", auditId: "allow" } }); });
+  allowed.settle();
+  admit("host").settle(new Error("boom"));
+  const integrity = admit("integrity");
+  await integrity.terminal.commit(async () => { throw new Error("record of another invocation"); }).catch(() => undefined);
+  integrity.settle();
+  const parked = admit("deadline");
+  await expect(ledger.drainToolInvocationAuditForExit(close, 50)).resolves.toBe("committed");
+  await expect(parked.terminal.commit(async (row) => { await row({ logger, entry: deny("late") }); })).resolves.toBeUndefined();
+  parked.settle();
+  const rows = ["rule", "human", "hook-mutation", "allow", "host:error", "host:error", "host:host-shutdown"];
+  expect(appended).toEqual(rows);
+  expect(fired).toEqual(governed ? [] : rows.filter((row) => row !== "allow"));
 });

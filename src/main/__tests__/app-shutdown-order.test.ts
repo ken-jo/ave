@@ -9,6 +9,7 @@ import { afterQueuedCallbacks, deferred } from "../../__tests__/support/deferred
 
 const PROBE_ROW = { decision: "deny", ts: "2026-11-24T00:00:00.000Z", auditId: "probe", tool: "probe", source: "builtin",
   category: "meta", trustOrigin: "unknown", toolUseId: "tu-probe", denyReasons: [{ reason: "probe", source: "host" }] } as const;
+const NO_DENIAL = { governed: () => false, fire: async () => {} };
 const calls: string[] = [];
 const hostExit = vi.fn();
 
@@ -315,7 +316,7 @@ describe("OS sandbox release at quit", () => {
         calls.push("rowCommitted");
         return {} as never;
       } } });
-    });
+    }, NO_DENIAL);
     getServices.mockReturnValue(makeServices());
     const shutdown = await configuredShutdown();
     hardTimeoutFires = true;
@@ -341,9 +342,9 @@ describe("OS sandbox release at quit", () => {
     const ledger = await import("../../tools/invocation-ledger.js");
     const parked = ledger.admitToolInvocation("stuck-probe");
     const stuckLogger = { appendPermissionAuditEntry: () => new Promise<never>(() => {}) };
-    parked.terminal.hostTerminal((_cause, _detail, _selected, row) => row({ logger: stuckLogger, entry: { ...PROBE_ROW, tool: "stuck-probe" } }));
+    parked.terminal.hostTerminal((_cause, _detail, _selected, row) => row({ logger: stuckLogger, entry: { ...PROBE_ROW, tool: "stuck-probe" } }), NO_DENIAL);
     const unwritten = ledger.admitToolInvocation("unwritten-probe");
-    unwritten.terminal.hostTerminal(() => new Promise(() => {}));
+    unwritten.terminal.hostTerminal(() => new Promise(() => {}), NO_DENIAL);
     const services = makeServices();
     services.auditLogger.close = vi.fn(() => new Promise<void>(() => {}));
     getServices.mockReturnValue(services);

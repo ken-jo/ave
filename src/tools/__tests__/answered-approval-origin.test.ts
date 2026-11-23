@@ -166,10 +166,11 @@ describe("the answerer contract", () => {
     const writer = new AuditWriter(audit, registry, undefined, true);
     const call = (permission: PermissionCheckResult, cause?: "error") => (row: TerminalRowWriter) => writer.auditToolCall(
       "integrity-session", "write_file", "builtin", "medium", { path: "notes.txt" }, "refused", true, Date.now(), permission, Infinity,
-      { trustOrigin: "plugin-emitted" }, "write", project, undefined, cause, undefined, { toolUseId: "integrity-call" }, false, undefined, row);
+      { trustOrigin: "plugin-emitted" }, "write", project, undefined, cause, undefined, { toolUseId: "integrity-call" }, row);
     const admission = admitToolInvocation("write_file");
+    const NO_DENIAL = { governed: () => false, fire: async () => {} };
     admission.terminal.hostTerminal((cause, detail, _selected, row) =>
-      call({ decision: "deny", reason: detail, provenance: HOST_PROVENANCE }, cause === "error" ? cause : undefined)(row));
+      call({ decision: "deny", reason: detail, provenance: HOST_PROVENANCE }, cause === "error" ? cause : undefined)(row), NO_DENIAL);
     await expect(admission.terminal.commit(call({ decision: "allow", reason: "answered", provenance: other })))
       .rejects.toThrow("does not settle this allow of write_file");
     await vi.waitFor(() => expect(admission.terminal.state).toBe("failed"));
