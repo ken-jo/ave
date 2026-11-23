@@ -91,18 +91,6 @@ export function backgroundEffectSubject(manifest: PluginManifest, entry: PluginR
   };
 }
 
-/** Gated paths an approval opens outside a tool call; own-storage writes need none, every other gated path is denied. */
-export function backgroundEffectPaths(manifest: PluginManifest): ReadonlySet<string> {
-  const effects = declaredBackgroundEffects(manifest);
-  return new Set<string>([
-    ...(effects.networkDestinations.length > 0 ? ["hostFetch"] : []),
-    ...(effects.alertKinds.length > 0 ? ["raiseAlert"] : []),
-    ...(effects.suggestionSources.length > 0 ? ["triggerConversation"] : []),
-    ...(effects.llm ? ["callLlm"] : []),
-    ...(effects.workers ? ["spawnWorker"] : []),
-  ]);
-}
-
 /** Whether a standalone effect's own target is one the manifest declares; the gate keeps own-storage writes inside that storage. */
 export function withinBackgroundScope(effects: PluginBackgroundEffects, methodPath: string, target: string | undefined): boolean {
   switch (methodPath) {

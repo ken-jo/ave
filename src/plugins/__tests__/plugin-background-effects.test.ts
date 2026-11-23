@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GATED_EFFECT_PATHS } from "../../permissions/effect-enforcement.js";
 import {
-  backgroundEffectPaths,
   backgroundEffectScopeSha256,
   backgroundEffectSubject,
   declaredBackgroundEffects,
@@ -69,12 +68,11 @@ function approvalsFile(): string {
 }
 
 describe("the background scope a manifest declares", () => {
-  it("is empty, with no gated path, when the manifest declares nothing beyond its own storage", () => {
+  it("is empty when the manifest declares nothing beyond its own storage", () => {
     expect(declaredBackgroundEffects(manifest())).toEqual({
       ownStorage: true, networkDestinations: [], alertKinds: [], suggestionSources: [], llm: false, workers: false,
     });
     expect(backgroundEffectSubject(manifest(), marketplaceEntry()).declared).toBe(false);
-    expect([...backgroundEffectPaths(manifest())]).toEqual([]);
   });
 
   it("adds each declared destination, alert kind and suggestion source", () => {
@@ -86,7 +84,6 @@ describe("the background scope a manifest declares", () => {
       llm: false,
       workers: false,
     });
-    expect([...backgroundEffectPaths(declaring())].sort()).toEqual(["hostFetch", "raiseAlert", "triggerConversation"]);
   });
 
   it("names only real gated paths, so every other gated path is denied outside a tool call", () => {
@@ -104,7 +101,6 @@ describe("background model and helper-process declarations", () => {
     const llm = declaredBackgroundEffects(manifest({ capabilities: ["background:call-llm"] }));
     expect(llm).toMatchObject({ llm: true, workers: false });
     expect(backgroundEffectSubject(manifest({ capabilities: ["background:call-llm"] }), marketplaceEntry()).declared).toBe(true);
-    expect([...backgroundEffectPaths(manifest({ capabilities: ["background:spawn-worker"] }))]).toContain("spawnWorker");
     expect(withinBackgroundScope(llm, "callLlm", undefined)).toBe(true);
     expect(withinBackgroundScope(llm, "spawnWorker", undefined)).toBe(false);
   });
