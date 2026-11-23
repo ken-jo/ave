@@ -1,6 +1,7 @@
 import { RULE_PROVENANCE } from "../../../permissions/decision-provenance.js";
 import { describe, expect, it } from "vitest";
 import { deferred } from "../../../__tests__/support/deferred.js";
+import { abortSupersedesApprovalDecision } from "../approval-outcome.js";
 import {
   ApprovalGate,
   IPC_APPROVAL_REQUEST,
@@ -68,7 +69,10 @@ describe("user-owned surface approval across the quit seal", () => {
     await asked;
     answer.resolve({ requestId: "fallback-card", choice: "deny-once" });
     quit.abort(new HostExitAbortError());
-    await expect(resolution).rejects.toBeInstanceOf(HostExitAbortError);
+    // The cancellation comes back for the caller to end as a stop, so its terminal writer still runs.
+    const resolved = await resolution;
+    expect(abortSupersedesApprovalDecision(quit.signal, resolved.decision)).toBe(true);
+    expect(resolved.provenance).toBeUndefined();
   });
 
   it("still ends on the quit when the fallback card was allowed", async () => {
@@ -76,7 +80,8 @@ describe("user-owned surface approval across the quit seal", () => {
     await asked;
     answer.resolve({ requestId: "fallback-card", choice: "allow-once" });
     quit.abort(new HostExitAbortError());
-    await expect(resolution).rejects.toBeInstanceOf(HostExitAbortError);
+    const resolved = await resolution;
+    expect(abortSupersedesApprovalDecision(quit.signal, resolved.decision)).toBe(true);
   });
 
   it("marks a policy recheck's deny as the host's, not a person's answer", async () => {

@@ -22,6 +22,7 @@ import { ToolRegistry } from "../registry.js";
 import type { ToolResult } from "../executor.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
 import { shellQuote } from "../../lib/shell-resolver.js";
+import { HostExitAbortError } from "../../shared/host-exit-abort.js";
 
 const resources = new PermissionTestResources();
 const loggers: AuditLogger[] = [];
@@ -120,7 +121,8 @@ async function fixture(options: { outside?: boolean; mode?: "default" | "strict"
     },
   }));
   const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined, audit);
-  const run = () => executor.executeAll([{ id: "late-terminal-command", name: "terminal_run", input: { command, waitSeconds: 0 } }], {
+  const run = (abortSignal?: AbortSignal) => executor.executeAll([{ id: "late-terminal-command", name: "terminal_run", input: { command, waitSeconds: 0 } }], {
+    ...(abortSignal ? { abortSignal } : {}),
     sessionId: SESSION_ID, executionCwd: root, permissionContext: userPermissionContext({ trustOrigin: "llm-tool-arg", userIntent: "Print ready in the selected terminal.", currentTaskStep: "Run the requested terminal status command.", ...(options.headless ? { headless: true } : {}), ...(options.turnGrant ? { onTurnDirectoryGrant: vi.fn() } : {}) }),
   });
   return { manager, pause, typed, cards, request, approve, deny, gate, reached, release, run, command, audit };
@@ -406,6 +408,43 @@ describe("one terminal row per surface invocation", () => {
   it("records the host's refusal of the outside directory's second card as the host's", async () => {
     const f = await fixture({ outside: true, mode: "strict", exactRule: false, holdFinalizer: false, surfaceChoice: "auto", logicalReview: inconsistent });
     await runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "fallback-host-turn" }, async () => {
+      const pending = f.run();
+      await vi.waitFor(() => expect(f.cards).toHaveLength(1));
+      f.approve(f.cards[0], true);
+      await vi.waitFor(() => expect(f.cards).toHaveLength(2));
+      f.gate.disposeAll();
+      const [result] = await pending;
+      expect(result.is_error).toBe(true);
+      expect(f.typed).toEqual([]);
+      expect(terminalRows(f.audit)).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "unknown" })]);
+    });
+  });
+
+  it.each([
+    [false, "stop"], [true, "stop"], [false, "quit"], [true, "quit"],
+  ] as const)("records one row when the review fallback card ends (outside directory: %s) by a %s, even if it is answered allow", async (outside, end) => {
+    const f = await fixture({ outside, ...(outside ? { mode: "strict" as const } : {}), exactRule: false, holdFinalizer: false, surfaceChoice: "auto", logicalReview: inconsistent });
+    const controller = new AbortController();
+    await runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: `fallback-${end}-turn` }, async () => {
+      const pending = f.run(controller.signal);
+      await vi.waitFor(() => expect(f.cards).toHaveLength(1));
+      f.approve(f.cards[0], true);
+      await vi.waitFor(() => expect(f.cards).toHaveLength(2));
+      controller.abort(end === "quit" ? new HostExitAbortError() : new Error("stopped"));
+      f.approve(f.cards[1], true);
+      const settled = await pending.then(results => results.map(result => result.is_error), (error: unknown) => error);
+      expect(Array.isArray(settled) ? settled : [settled instanceof Error]).toEqual([true]);
+      expect(f.typed).toEqual([]);
+      // A stop is the invocation's own refusal; a quit is the host's. Neither is the desk's allow.
+      expect(terminalRows(f.audit)).toEqual([expect.objectContaining(end === "quit"
+        ? { decision: "deny", trustOrigin: "unknown", denyReasons: [expect.objectContaining({ reason: "host-shutdown" })] }
+        : { decision: "deny", trustOrigin: "llm-tool-arg" })]);
+    });
+  });
+
+  it("records the host's refusal of the ordinary review fallback card as the host's", async () => {
+    const f = await fixture({ exactRule: false, holdFinalizer: false, surfaceChoice: "auto", logicalReview: inconsistent });
+    await runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "fallback-quit-turn" }, async () => {
       const pending = f.run();
       await vi.waitFor(() => expect(f.cards).toHaveLength(1));
       f.approve(f.cards[0], true);

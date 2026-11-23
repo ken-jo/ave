@@ -38,9 +38,9 @@ import {
 } from "../shared/chat-origin.js";
 import type { ApprovalPurposeSuggestion } from "../shared/permission-review-status.js";
 import { t } from "../i18n/index.js";
-import { abortSupersedesApprovalDecision, answeredPermission, approvalFailureOutcome, isSettledRefusal, refusal } from "./pipeline/approval-outcome.js";
+import { abortSupersedesApprovalDecision, answeredPermission, approvalFailureOutcome, hostShutdownDenial, isSettledRefusal, refusal } from "./pipeline/approval-outcome.js";
+import { toolInvocationShutdownStarted } from "./invocation-ledger.js";
 import { createLogger } from "../lib/logger.js";
-import { AveHomeConfigurationRefusedWriteError } from "../shared/ave-home.js";
 import {
   hookChainFromDispatch } from "./pipeline/audit-entries.js";
 import {
@@ -126,7 +126,8 @@ export interface AuthorizationStageContext {
   approvalCacheKey: string | undefined;
   executionCwd: string;
   auditCurrentToolCall: AuditToolCall;
-  hasRecordedDenial?: () => boolean;
+  /** True once this attempt claimed its terminal row. */
+  terminalClaimed?: () => boolean;
   auditCurrentPermissionAsk: AuditPermissionAsk;
   withHostShellExecutionPlan: (result: ToolResult) => ToolResult;
   abortDeps: (input: Record<string, unknown>) => UserAbortDeps;
@@ -573,11 +574,14 @@ export async function authorizeToolInvocation(
             (target) => target.canonicalPath,
           ),
           ...(approvalCacheKey === undefined ? {} : { approvalCacheKey }),
-          recordTerminalDenial: async (reason) => {
-            if (abortSignal?.aborted || context.hasRecordedDenial?.()) return;
+          recordTerminalDenial: async (reason, stopped) => {
+            if (abortSignal?.aborted || context.terminalClaimed?.()) return;
+            // A card stopped by the quit is the host's refusal; any other stop is the user's, as on the ordinary path.
+            const quit = stopped === true && toolInvocationShutdownStarted();
             await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, reason, true,
-              startTime, refusal(reason, RULE_PROVENANCE), Infinity,
-              invocationPermissionContext, invocationCategory, executionCwd);
+              startTime, quit ? hostShutdownDenial() : refusal(reason, RULE_PROVENANCE), Infinity,
+              invocationPermissionContext, invocationCategory, executionCwd, undefined,
+              stopped === true ? quit ? "host-shutdown" : "user-abort" : undefined);
           },
           requestHumanApproval: context.directoryAuthorization?.requestHumanApproval ?? (async ({ requestId, abortSignal: cardAbortSignal }) => {
             let humanDecision: import("../permissions/approval-gate.js").ApprovalDecision | undefined;
@@ -1209,6 +1213,10 @@ export async function authorizeToolInvocation(
           request: { ...approvalRequest, abortSignal }, sessionId,
           review: async permission => await dispatchReviewerForInteractiveAutoImpl(services.permissionManager, toolUse.name, source, invocationCategory, tool.pathFields ?? [], finalInput, invocationAllowedScope.directories, sensitivePathPattern ? [sensitivePathPattern] : [], invocationPermissionContext, evaluationContext, sandboxAttestation, callbacks, meta, approvalPurpose, hostShellExecutionPlan, abortSignal, auditInput, sessionId, permission) ?? permission,
         }) : { permission: permissionResult, decision, provenance: undefined };
+        // A stop or quit while the surface step was pending ends this attempt as a stop, whatever the first card said.
+        if (abortSupersedesApprovalDecision(abortSignal, surfaceResolution.decision)) {
+          return withHostShellExecutionPlan(await returnUserAbort(abortDeps(finalInput)));
+        }
         permissionResult = surfaceResolution.permission;
         decision = surfaceResolution.decision;
         context.onHumanDecision?.(decision);
@@ -1216,6 +1224,14 @@ export async function authorizeToolInvocation(
           !isHostApprovalRejectedDecision(decision);
 
         if (decision.choice.startsWith("deny")) {
+          const hostFailure = approvalFailureOutcome(
+            decision, toolUse.name,
+          );
+          const deniedPermission = hostFailure?.permission ?? (surfaceResolution.provenance === undefined
+            ? refusal("user denied approval request", answeredApprovalProvenance(decision))
+            : refusal(permissionResult.decision === "deny" ? permissionResult.reason : "user denied approval request", surfaceResolution.provenance));
+          // The accepted deny is this attempt's outcome from here; a host row written during the save below keeps it.
+          services.invocationTerminal?.select(deniedPermission);
           // deny-always: 영구 거부 규칙 추가
           if (
             decision.choice === "deny-always" &&
@@ -1226,18 +1242,11 @@ export async function authorizeToolInvocation(
             try {
               await services.permissionManager.addAlwaysDeniedPersist(pattern);
             } catch (error) {
-              // The rule store refuses writes while boot refuses the home folder. This call is denied; a legacy pattern's deny was
-              // already added in memory and lasts this session, while a rules-language deny is not kept.
-              if (!(error instanceof AveHomeConfigurationRefusedWriteError)) throw error;
-              log.warn(`deny-always for ${toolUse.name} was not saved; it lasts at most this session: ${error.message}`);
+              // The rule store refuses writes while boot refuses the home folder, and the save can fail on I/O. This call
+              // stays denied; a legacy pattern's deny was already added in memory and lasts this session.
+              log.warn(`deny-always for ${toolUse.name} was not saved; it lasts at most this session: ${errorMessage(error)}`);
             }
           }
-          const hostFailure = approvalFailureOutcome(
-            decision, toolUse.name,
-          );
-          const deniedPermission = hostFailure?.permission ?? (surfaceResolution.provenance === undefined
-            ? refusal("user denied approval request", answeredApprovalProvenance(decision))
-            : refusal(permissionResult.decision === "deny" ? permissionResult.reason : "user denied approval request", surfaceResolution.provenance));
           const msg = hostFailure?.content ?? (permissionResult.decision === "deny" ? permissionResult.reason : t("be_executor.approvalDeniedByUser", {
             name: toolUse.name,
           }));

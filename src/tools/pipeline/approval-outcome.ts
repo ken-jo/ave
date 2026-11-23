@@ -18,6 +18,11 @@ export function hostShutdownDenial(): PermissionCheckResult {
   return { decision: "deny", reason: "host-shutdown", provenance: HOST_PROVENANCE };
 }
 
+/** A refusal an invocation selected for its terminal row before the host ended it. */
+export function isSelectedRefusal(selected: unknown): selected is PermissionCheckResult {
+  return typeof selected === "object" && selected !== null && (selected as PermissionCheckResult).decision === "deny";
+}
+
 /** A fresh refusal with its own reason and provenance; nothing an earlier result carried, such as its deny reasons, survives into it. */
 export function refusal(reason: string, provenance: DecisionProvenance): PermissionCheckResult {
   return { decision: "deny", reason, provenance };

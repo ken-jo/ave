@@ -28,12 +28,12 @@ export function userOwnedSurfaceCardFacts(
 
 /** Selection receipts change session policy only after this live native card authorizes them. The result marks a decision the
  * current policy made in place of the card with the rule's provenance, and a failure of the host with the host's; any other decision is
- * one the gate returned, with its own. Only an abort is thrown. */
+ * one the gate returned, with its own. An abort returns the caller's decision for the caller to end as a stop. */
 export async function resolveUserOwnedSurfaceApproval(input: SurfaceInput): Promise<SurfaceResolution> {
   try {
     return await resolveSurface(input);
   } catch (error) {
-    if (input.request.abortSignal?.aborted) throw error;
+    if (input.request.abortSignal?.aborted) return { permission: input.permission, decision: input.decision };
     return refused(input.decision, errorMessage(error), HOST_PROVENANCE);
   }
 }
@@ -74,7 +74,7 @@ async function resolveSurface(input: SurfaceInput): Promise<SurfaceResolution> {
     ...(permission.forceModal ? { forceExplicit: true, allowedChoices: ["allow-once", "deny-once"], durableApprovalRecordAllowed: false } : {}),
   };
   decision = await gate.requestAndWait(fallback);
-  if (abortSupersedesApprovalDecision(request.abortSignal, decision)) request.abortSignal?.throwIfAborted();
+  if (abortSupersedesApprovalDecision(request.abortSignal, decision)) return { permission, decision };
   // A settled refusal is terminal: neither a policy change nor the refreshed permission reopens it.
   if (isSettledRefusal(decision)) return { permission, decision };
   if (epoch !== manager.getPolicyEpoch() && !gate.allowsPolicyTransition(decision, epoch, manager.getPolicyEpoch())) return refused(decision, "Permission policy changed while approval was pending.", RULE_PROVENANCE);
