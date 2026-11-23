@@ -3506,6 +3506,25 @@ Security-sensitive areas are intentionally centralized:
 Changes spanning these areas merit proportionate cross-cutting review. That
 review is advisory, never a merge gate.
 
+### Query credential masking
+
+Both scrubbers in `src/shared/dlp.ts` mask credential query values, signed-URL
+signatures and session tokens, by the credential detector contract in
+[multi-source-git-marketplace.md](../design/multi-source-git-marketplace.md).
+A value ends before the delimiters of the text that carries it, so a scrubbed
+JSON log line in a diagnostics bundle stays one valid object. The value is
+masked up to `&` or whitespace. A quote, backtick or `>` ends it earlier only
+where it closes an opener still open before the value (an odd count of that
+quote at the same escape depth, or an unclosed `<`) and a delimiter follows;
+any other quote is masked with the value. The count covers the whole text
+before the value, so an unrelated quote there, such as an apostrophe in
+prose, can open the span that a later quote closes. An opaque signature is
+masked in a signed query, identified by its other parameters, and elsewhere
+only by a digest or mixed-case base64 shape, so a digest option such as
+`?sig=sha256` stays readable. Query syntax is read through up to three
+percent-encoding layers and three layers of JSON `\u00XX` escapes; a fourth
+layer is outside the contract.
+
 ### Home path redaction
 
 The redactor identifies tokens in the original audit or display text. It
@@ -3535,6 +3554,36 @@ For supported homes the redactor matches both the configured spelling, with
 trailing separators removed, and the normalized spelling. Platform path
 normalization collapses dot segments and duplicate separators without
 consulting the working directory.
+
+The generic users/home rules redact any account's profile in display text and
+in audit path values (`redactFsPath`), after the configured home's own forms,
+with `[home]` or `file://[home]`, under a drive (also after a `\\?\` or `\\.\`
+device prefix, which is kept), a UNC server and optional share (both kept), a
+`/users/` or a `/home/` root. A profile name is letters,
+marks, digits, `._-` and apostrophes before a letter or digit, each also
+percent-encoded up to the same three layers or written as a JSON `\u` escape,
+whose backslashes double with each serialization. An escape-like run followed
+by the same run of backslashes before a folder name is a separator, so
+`C:\Users\bob\uface\x` keeps the folder `uface`. Its separators may be
+encoded either way too. Encodings deeper than three
+layers are outside the contract. Words after a space join the name in a path
+value, before a separator, a quote, the value's end, or a query or fragment. In display
+text they join only inside a quoted or backtick span that starts with the home,
+before a separator or the closing quote. Elsewhere in text a name stops at
+whitespace, a JSON-escaped space (`\u0020`) included, so a following command
+argument stays visible, and the rest of an
+unquoted spaced name of another account (`/home/Demo Smith` as `[home] Smith`)
+is a known residual. Command text inside a JSON string value is unquoted shell
+text too, so `{"command":"cat /home/Demo Smith/x"}` becomes
+`cat [home] Smith/x`, while a quoted path inside it, as in
+`cat \"/home/Demo Smith/x\"`, is masked in full. The configured home matches
+literally, spaces included.
+A name stops where a drive profile joins it directly, so the joined home is
+redacted too. A home path right after a URL authority, plain or percent-encoded
+and with escaped host bytes, keeps the separator that ends the authority, for
+the configured home and the generic rules alike. An escaped byte joined
+directly to a configured home, as in `/home/bob%C3%A9`, keeps the base literal
+boundary and stays after the marker.
 
 ### Windows object ownership
 

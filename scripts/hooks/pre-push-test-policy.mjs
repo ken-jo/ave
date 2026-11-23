@@ -3,6 +3,23 @@ import { isCanonicalGitPath } from "./pre-push-markdown-policy.mjs";
 const MAX_TARGETED_VITEST_FILES = 64;
 const MAX_TARGETED_VITEST_ARGUMENT_CHARS = 16_384;
 
+const BROWSER_DOWNLOAD_STAGING_TEST = "src/permissions/__tests__/browser-download-staging-windows.test.ts";
+const BROWSER_DOWNLOAD_STAGING_TRIGGERS = new Set([
+  "src/main/__tests__/app-shutdown-order.test.ts",
+  "src/main/app-shutdown.ts",
+  "src/permissions/__tests__/asrt-background-initialization.test.ts",
+  "src/permissions/__tests__/asrt-deny-absent.test.ts",
+  "src/permissions/__tests__/asrt-windows-grant-paths.test.ts",
+  "src/permissions/__tests__/worker-spawn.test.ts",
+  "src/permissions/asrt-sandbox.ts",
+  "src/permissions/worker-spawn.ts",
+]);
+
+// Keep native-path admission covered even when a push changes only sibling tests.
+export function selectPrePushRegressionTests(changedPaths) {
+  return changedPaths.some((path) => BROWSER_DOWNLOAD_STAGING_TRIGGERS.has(path)) ? [BROWSER_DOWNLOAD_STAGING_TEST] : [];
+}
+
 const deniedPathSegments = new Set([
   "__fixtures__",
   "__snapshots__",
@@ -125,7 +142,7 @@ export function selectTargetedAveAppVitestFiles(changes) {
     };
   }
 
-  const sortedFiles = [...files].sort();
+  const sortedFiles = [...new Set([...files, ...selectPrePushRegressionTests([...files])])].sort();
   const sortedSupportFiles = [...supportFiles].sort();
   const sortedSupportTestFiles = [
     ...new Set(
@@ -165,8 +182,8 @@ export function selectTargetedAveAppVitestFiles(changes) {
   return {
     eligible: true,
     reason:
-      `${sortedFiles.length} Vitest file(s) and ` +
-      `${sortedSupportFiles.length} support file(s) changed`,
+      `${files.size} Vitest file(s) and ${sortedSupportFiles.length} support file(s) changed` +
+      (sortedFiles.length > files.size ? `, plus ${sortedFiles.length - files.size} targeted regression test file(s)` : ""),
     files: sortedFiles,
     supportFiles: sortedSupportFiles,
     supportTestFiles: sortedSupportTestFiles,
