@@ -6,7 +6,7 @@ import { aveHome } from "../../../shared/ave-home.js";
 import { createHostGit, type HostGit } from "../host-git.js";
 import type { OwnedDir } from "../owned-fs.js";
 import { createStageWorkspaceProvider } from "../stage-workspaces.js";
-import { JOIN_DIR, RUN_FILE, runRootOf, runSlug } from "../workspace-layout.js";
+import { JOIN_DIR, OUT_DIR, RUN_FILE, runRootOf, runSlug } from "../workspace-layout.js";
 import { removeLink, stageOf } from "./stage-fixtures.js";
 import { type GitFixture, type GitHandle, gitFixture, sealed, stageRoot } from "./stage-git-fixture.js";
 
@@ -27,6 +27,10 @@ const between = vi.hoisted(() => ({
   unlisted: undefined as string | undefined,
   /** Runs right after a held folder was listed, with its path. */
   listed: undefined as ((path: string) => void) | undefined,
+  /** Runs right after a held folder gave one of its folders by the identity recorded for it, with that folder's path. */
+  child: undefined as ((path: string | undefined) => void) | undefined,
+  /** A path the disk gives no answer about. */
+  unread: undefined as string | undefined,
 }));
 
 vi.mock("../../../shared/ave-home.js", async (original) => {
@@ -40,7 +44,11 @@ vi.mock("node:fs", async (original) => {
     const found = real.realpathSync.native(path);
     return between.share !== undefined && (between.share.run === path || between.share.git === found) ? between.share.root + found.slice(between.share.volume.length) : found;
   };
-  return { ...real, realpathSync: Object.assign((path: string) => real.realpathSync(path), { native }) };
+  const lstatSync = ((path: string, options?: object) => {
+    if (between.unread !== undefined && String(path).toLowerCase() === between.unread.toLowerCase()) throw Object.assign(new Error("fixture: the path cannot be read"), { code: "EACCES" });
+    return real.lstatSync(path, options as never);
+  }) as typeof real.lstatSync;
+  return { ...real, lstatSync, realpathSync: Object.assign((path: string) => real.realpathSync(path), { native }) };
 });
 
 vi.mock("../owned-fs.js", async (original) => {
@@ -52,6 +60,7 @@ vi.mock("../owned-fs.js", async (original) => {
       if (key === "remove") return async (name: string, expect?: string) => { await target.remove(name, expect); between.removed?.(join(target.path, name)); };
       if (key === "make" && depth === 2) return (name: string) => { between.act?.(target.path); return target.make(name); };
       if (key === "list" && between.unlisted === basename(target.path)) return () => { throw Object.assign(new Error("fixture: the folder cannot be listed"), { code: "EACCES" }); };
+      if (key === "child") return (name: string, id: string) => { const found = target.child(name, id); between.child?.(found?.path); return found; };
       if (key === "list") return () => { const names = target.list(); between.listed?.(target.path); return names; };
       const value = Reflect.get(target, key) as unknown;
       return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
@@ -78,7 +87,7 @@ vi.mock("../owned-fs.js", async (original) => {
       return held(real.holdDir(at, id), 0);
     },
     nodeIdOf: (path: string) => answer(path, real.nodeIdOf),
-    realDirId: (path: string) => answer(path, real.realDirId),
+    realDirId: (path: string, unread?: "known") => answer(path, at => real.realDirId(at, unread)),
   };
 });
 
@@ -99,6 +108,8 @@ afterEach(() => {
   between.home = undefined;
   between.unlisted = undefined;
   between.listed = undefined;
+  between.child = undefined;
+  between.unread = undefined;
   between.foreign.length = 0;
   between.asked.length = 0;
   rmSync(base, { recursive: true, force: true, maxRetries: 3 });
@@ -214,6 +225,39 @@ it.each(["worktrees", "fixture-project"])("a %s that is no longer the folder tha
   }
 });
 
+it("an output folder that is no longer the one the run made tells nothing of a file in it: a path two stages answer is not told as left open there", async () => {
+  const provider = createStageWorkspaceProvider({ git: hostGit() });
+  const opening = run();
+  const open = await provider.open(opening, join(base, "project"));
+  if (!open.ok) throw new Error(open.code);
+  const out = join(open.workspace.runRoot, OUT_DIR);
+  const away = join(base, "away-out");
+  try {
+    for (const stageId of ["s1", "s2"]) {
+      const prepared = await provider.prepare(opening, stageOf(stageId), 1);
+      if (!prepared.ok) throw new Error(prepared.code);
+      writeFileSync(join(prepared.workspace.root, "report.md"), `from ${stageId}`);
+      expect(await provider.seal(opening, stageId)).toEqual({ ok: true });
+    }
+    let swaps = 0;
+    between.child = (path) => {
+      if (path === undefined || basename(path) !== OUT_DIR || swaps++ > 0) return;
+      renameSync(path, away);
+      mkdirSync(path);
+    };
+    // The user's own file at the path would settle it; whether the folder the run made holds one is not known.
+    expect(await provider.integrate(opening, "j1", ["s1", "s2"]).then(result => result.ok ? "collected" : result.conflict.reason, () => "refused")).toBe("refused");
+    expect(swaps).toBe(1);
+  } finally {
+    between.child = undefined;
+    if (existsSync(away)) {
+      rmdirSync(out);
+      renameSync(away, out);
+    }
+    await provider.release(opening, "all");
+  }
+});
+
 it("a project's folder that cannot be listed keeps every root, and the runs of the other projects still go", async () => {
   const first = run();
   const runs = [first, { ...first, runId: `${first.runId}-second` }];
@@ -241,6 +285,25 @@ it("a project's folder that cannot be listed keeps every root, and the runs of t
   } finally {
     between.unlisted = undefined;
     for (const one of runs) await provider.release(one, "all");
+  }
+});
+
+it("a project root the disk gives no answer about may still be the recorded one: a release then leaves the whole run, and takes it apart once the root is read", async () => {
+  const fx = gitFixture();
+  try {
+    const handle = fx.start();
+    const open = await handle.provider.open(handle.run, fx.repo);
+    if (!open.ok) throw new Error("expected a workspace");
+    const stage = await stageRoot(handle, "s1");
+    between.unread = realpathSync.native(fx.repo);
+    await handle.provider.release(handle.run, "all");
+    between.unread = undefined;
+    expect([existsSync(stage), existsSync(join(open.workspace.runRoot, RUN_FILE))]).toEqual([true, true]);
+    await handle.provider.release(handle.run, "all");
+    expect(existsSync(open.workspace.runRoot)).toBe(false);
+  } finally {
+    between.unread = undefined;
+    await fx.done();
   }
 });
 

@@ -35,12 +35,14 @@ export function nodeIdOf(path: string): NodeId | undefined {
   return stat === undefined ? undefined : idOf(stat);
 }
 
-/** Which directory a path is, when it is a real one; a link, a file or a path that cannot be read is none. */
-export function realDirId(path: string): NodeId | undefined {
+/** Which directory a path is, when it is a real one; a link, a file or a path that cannot be read is none. With "known", a path that
+ * cannot be read is a throw instead: it may be any directory. */
+export function realDirId(path: string, unread?: "known"): NodeId | undefined {
   try {
     const stat = stats(path);
     return realDir(stat) ? idOf(stat) : undefined;
-  } catch {
+  } catch (error) {
+    if (unread === "known") throw error;
     return undefined;
   }
 }

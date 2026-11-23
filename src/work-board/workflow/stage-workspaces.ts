@@ -1,4 +1,4 @@
-import { lstatSync, realpathSync } from "node:fs";
+import { realpathSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { createLogger } from "../../lib/logger.js";
 import { isSensitivePath } from "../../permissions/sensitive-paths.js";
@@ -266,9 +266,8 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       throw error;
     }
     if (top.code !== 0) return { inWorkTree: false };
-    let topLevel: string;
-    try { topLevel = realpathSync.native(top.stdout.replace(/\r?\n$/u, "")); } catch { return { inWorkTree: false }; }
-    if (!samePath(topLevel, root)) return { inWorkTree: true };
+    // A top level that cannot be found says nothing of the folder: it is not thereby a plain one, whose ignore rules nobody asks.
+    if (!samePath(realpathSync.native(top.stdout.replace(/\r?\n$/u, "")), root)) return { inWorkTree: true };
     const head = await git.run(root, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]);
     return head.code === 0 ? { baseCommit: head.stdout.trim() } : { inWorkTree: true };
   }
@@ -335,7 +334,10 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     if (live === undefined) return { field: "project.root", side: "unverified" };
     delete live.gitDir;
     // `live.root` is the caller's open project as `liveOf` (or `open`) read it from disk, not record text.
-    if (realDirId(live.root) !== project.id) return { field: "project.id", side: "repo" };
+    let rootId: NodeId | undefined;
+    // A root that cannot be read may still be the recorded one: nothing of the run is taken apart on that.
+    try { rootId = realDirId(live.root, "known"); } catch { return { field: "project.id", side: "unverified" }; }
+    if (rootId !== project.id) return { field: "project.id", side: "repo" };
     const now = await commonDirOf(live.root).catch(() => undefined);
     at.run.check();
     // Git gave no answer: that says nothing of the repository, and a run is not taken apart on it.
@@ -754,7 +756,17 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     if (stageIds.some(stageId => file.stages[stageId]?.sealed !== true)) throw new Error("a stage of the join is not sealed");
     const out = outOf(at);
     if (out === undefined) throw new Error("the run has no output folder");
-    const outDir = out.path;
+    // Whether a file is at a path of the output folder, asked of the held folder level by level: a level that is no real folder holds
+    // none, and an output folder that is no longer the one the run made is not asked at all.
+    const fileInOut = (path: string): boolean => {
+      const segments = path.split("/");
+      try {
+        return out.walk(segments.slice(0, -1))?.isFile(segments.at(-1) as string) === true;
+      } catch (error) {
+        if (error instanceof OwnedFsError && error.reason === "not-plain") return false;
+        throw error;
+      }
+    };
     const stageDir = (stageId: string): OwnedDir => {
       const id = file.stages[stageId]?.dir;
       const dir = id === undefined ? undefined : at.run.child(stageDirName(stageId), id);
@@ -809,8 +821,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     const files: ConflictFile[] = [];
     for (const [path, stages] of [...contested].sort(([a], [b]) => a < b ? -1 : 1)) {
       // A file the user put at the contested path is the resolution: it stays, and no stage's copy replaces it.
-      const placed = join(outDir, path);
-      const onDisk = lstatSync(placed, { throwIfNoEntry: false })?.isFile() === true ? await hashSeedFile(out, path) : undefined;
+      const onDisk = fileInOut(path) ? await hashSeedFile(out, path) : undefined;
       const recorded = file.out[path]?.sha256;
       if (onDisk !== undefined && onDisk.sha256 !== recorded) next.set(path, { ...onDisk, stageId: [...stages].at(-1) as string });
       else files.push({ path, stageIds: [...stages] });
@@ -821,8 +832,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     for (const copy of copies) {
       if (contested.has(copy.path)) continue;
       if ((await hashSeedFile(stageDir(copy.stageId), copy.path)).sha256 !== copy.sha256) throw new Error("a sealed stage file changed before it was collected");
-      const target = join(outDir, copy.path);
-      const there = lstatSync(target, { throwIfNoEntry: false })?.isFile() === true ? await hashSeedFile(out, copy.path) : undefined;
+      const there = fileInOut(copy.path) ? await hashSeedFile(out, copy.path) : undefined;
       if (there !== undefined && there.sha256 !== copy.sha256 && there.sha256 !== file.out[copy.path]?.sha256) next.set(copy.path, { ...there, stageId: copy.stageId });
       else wanted.push(copy);
     }

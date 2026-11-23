@@ -190,6 +190,31 @@ describe("folder stage workspaces", () => {
     expect(tree(await stageRoot(handle, "s2", { inputFiles: [fromProject("linked/private.txt", "linked/**", ".env", "keys/id_rsa", "build/out.js", "debug.log")] }))).toEqual([]);
   });
 
+  it("a work tree whose top level git names cannot be found is not thereby a plain folder: it gets no workspace", async () => {
+    const real = createHostGit({ env });
+    const git: HostGit = { drivers: real.drivers, run: async (cwd, args, call) => args.includes("--show-toplevel") ? { code: 0, stdout: `${join(base, "gone")}\n`, stderr: "" } : real.run(cwd, args, call) };
+    const run: RunRef = { itemId: 7, runId: `run-folder-${process.pid}-gone`, runKey: "key", projectRoot: project };
+    expect(await createStageWorkspaceProvider({ git }).open(run, project)).toEqual({ ok: false, code: "git-unavailable" });
+  });
+
+  it.each(["a work tree with no commit", "a plain folder"])("in %s, an ignore answer that holds a name that is no text seeds nothing: no name is asked about under another", async (kind) => {
+    write(project, "debug.log", "log\n");
+    write(project, ".gitignore", "*.log\n");
+    if (kind !== "a plain folder") execFileSync("git", ["init", "-q"], { cwd: project, env });
+    const real = createHostGit({ env });
+    const asked: boolean[] = [];
+    // What a name that is no text has git answer, once the answer is asked for as it was written.
+    const git: HostGit = { drivers: real.drivers, run: async (cwd, args, call) => {
+      if (!args.includes("check-ignore")) return real.run(cwd, args, call);
+      asked.push(call?.exact === true);
+      if (call?.exact === true) throw new HostGitError("not-text", "fixture: a name that is no text");
+      return real.run(cwd, args, call);
+    } };
+    const handle = await start(project, { git });
+    expect(await handle.provider.prepare(handle.run, stageOf("s1", { inputFiles: [fromProject("**")] }), 1)).toEqual({ ok: false, code: "seed-unreadable" });
+    expect(asked).toEqual([true]);
+  });
+
   it("a plain folder outside any git work tree honours its own ignore files: an ignored declared input is not copied", async () => {
     write(project, "build/out.js", "built\n");
     write(project, "debug.log", "log\n");

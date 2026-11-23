@@ -2,7 +2,7 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renam
 import { basename, dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { aveHome } from "../../../shared/ave-home.js";
-import { createHostGit, type HostGit } from "../host-git.js";
+import { createHostGit, type HostGit, HostGitError } from "../host-git.js";
 import { createStageWorkspaceProvider } from "../stage-workspaces.js";
 import { JOIN_DIR, RUN_FILE, runBranch } from "../workspace-layout.js";
 import { removeLink, stageOf, writeUnder as write } from "./stage-fixtures.js";
@@ -353,6 +353,29 @@ describe("git stage workspaces", () => {
     const names = calls.filter(({ args }) => !args.includes("--diff-filter=U") && kinds.some(kind => args.includes(kind)));
     expect.soft(names.filter(call => !call.exact).map(call => call.args.join(" "))).toEqual([]);
     expect.soft(kinds.filter(kind => names.some(({ args }) => args.includes(kind)))).toEqual(["ls-files", "--show-toplevel", "--git-common-dir", "--name-only"]);
+  });
+
+  it.each([
+    ["--show-toplevel", "open", "git-unavailable"],
+    ["--git-common-dir", "open", "git-unavailable"],
+    ["ls-files", "prepare", "git-unavailable"],
+    ["--name-only", "seal", "workspace-unavailable"],
+  ])("an answer to %s that holds a name that is no text ends the %s as %s: no name is acted on under another", async (kind, step, code) => {
+    const real = createHostGit({ env });
+    let broken = false;
+    // What a name that is no text has git answer, once the answer is asked for as it was written.
+    const git: HostGit = { drivers: real.drivers, run: (cwd, args, call) => broken && args.includes(kind) && call?.exact === true ? Promise.reject(new HostGitError("not-text", "fixture: a name that is no text")) : real.run(cwd, args, call) };
+    const handle = fx.start({ git });
+    broken = step === "open";
+    const open = await handle.provider.open(handle.run, repo);
+    if (step === "open") return expect(open).toEqual({ ok: false, code });
+    broken = step === "prepare";
+    const prepared = await handle.provider.prepare(handle.run, stageOf("s1"), 1);
+    if (step === "prepare") return expect(prepared).toEqual({ ok: false, code });
+    if (!prepared.ok) throw new Error(prepared.code);
+    write(prepared.workspace.root, "new.txt", "new\n");
+    broken = true;
+    expect(await handle.provider.seal(handle.run, "s1")).toEqual({ ok: false, code });
   });
 
   it("release removes worktrees and keeps the run branch", async () => {
