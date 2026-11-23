@@ -707,4 +707,47 @@ describe("the outcome a staged download's removal reports", () => {
       expect(helpers()[0]?.args[0]).toBe("--dir-remove");
     } finally { rmSync(directory, { recursive: true, force: true }); }
   });
+
+  // A silent helper killed at the stall bound whose exit is seen: on its close, or at the kill bound when its pipes stay open.
+  it.each([
+    ["dies when killed", false],
+    ["exits when killed but keeps its pipes open", true],
+  ] as const)("reports a closed dialog's staged file as not removed when a silent removal helper %s", async (_case, pipesOpen) => {
+    const { mkdtempSync, realpathSync, statSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { stageBrowserDownload } = await import("../browser-download-staging.js");
+    const { forceKillManagedChildProcess } = await import("../../managed-child-processes.js");
+    if (pipesOpen) {
+      vi.mocked(forceKillManagedChildProcess).mockImplementationOnce((child) => {
+        const helper = child as unknown as FakeHelper;
+        helper.killed += 1;
+        helper.signalCode = "SIGKILL";
+        helper.emit("exit", null, "SIGKILL");
+      });
+    }
+    const directory = realpathSync(mkdtempSync(join(tmpdir(), "download-outcome-")));
+    try {
+      const info = statSync(directory, { bigint: true });
+      script(() => {});
+      const item = Object.assign(new EventEmitter(), {
+        getFilename: () => "report.pdf", getURL: () => "https://site.example/report", getURLChain: () => ["https://site.example/report"],
+        hasUserGesture: () => true, getReceivedBytes: () => 8, getTotalBytes: () => 8, getState: () => "progressing" as const,
+        pause: vi.fn(), resume: vi.fn(), cancel: vi.fn(), setSavePath: vi.fn(),
+      });
+      const staged = stageBrowserDownload(item, { root: { path: directory, dev: info.dev, ino: info.ino, files }, askSavePath: async () => null }, Promise.resolve());
+      const done = follow(new Promise<[string, string]>((resolve) => staged.download.once("done", (_event, state, outcome) => resolve([state, outcome]))));
+      await staged.answered;
+      await flush();
+      await advance(BOUNDS.stallMs);
+      expect(helpers()[0]?.killed).toBe(1);
+      expect(done.settled).toBe(!pipesOpen);
+      await advance(BOUNDS.killMs);
+      expect(done).toMatchObject({ settled: true, value: ["cancelled", "remove-failed"] });
+      expect(helpers()).toHaveLength(1);
+    } finally {
+      for (const helper of helpers()) { helper.stdout.end(); helper.stderr.end(); }
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
 });

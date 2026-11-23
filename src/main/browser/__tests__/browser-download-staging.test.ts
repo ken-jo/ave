@@ -488,6 +488,21 @@ describe("what `done` reports when the staged file cannot be removed", () => {
     ["its helper is killed but not seen to end", () => new HeldFileHelperStalledError("/helper", "said nothing for 1 ms", true), "helper-still-running"],
   ] as const;
 
+  // The helper may answer `cancelled` though it was let proceed; nothing is claimed removed.
+  it("reports a closed dialog's staged file as not removed when its removal answers cancelled", async () => {
+    const prepared = prepare();
+    const { asked, askSavePath } = dialogs();
+    const item = fakeItem();
+    const root = withFiles(prepared, () => ({ remove: async () => "cancelled" as const }));
+    const staged = stageBrowserDownload(item, { root, askSavePath }, Promise.resolve());
+    const done = doneOutcome(staged.download);
+    writeFileSync(item.path, "partial");
+    await settled();
+    asked[0]?.answer(null);
+    expect(await done).toEqual({ state: "cancelled", cleanup: "remove-failed" });
+    expect(readdirSync(prepared.path)).toEqual([basename(item.path)]);
+  });
+
   it.each(faults)("reports a closed dialog's staged file as not removed when %s", async (_case, fault, cleanup) => {
     const prepared = prepare();
     const { asked, askSavePath } = dialogs();
