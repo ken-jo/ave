@@ -515,6 +515,8 @@ function holdingSync<T>(directory: HeldDirectory, use: (fd: number) => T): T {
 }
 
 const inHeld = (fd: number, name: string): string => `/proc/self/fd/${fd}/${name}`;
+// `directory`, held as `fd`, named through that descriptor: the trailing separator resolves its /proc/self/fd entry to the directory.
+const heldThrough = (fd: number, directory: HeldDirectory): HeldDirectory => ({ path: `/proc/self/fd/${fd}/`, dev: directory.dev, ino: directory.ino });
 
 // The chosen name may hold nothing yet, or an ordinary file the user agreed to replace; never a link or anything else.
 function assertReplaceable(path: string): void {
@@ -544,15 +546,35 @@ async function writeFully(target: FileHandle, buffer: Buffer, length: number): P
   }
 }
 
-// A stopped copy's temporary file, removed from the held folder; one that cannot be removed is reported left on the error that says so.
-function removeStoppedPart(path: string, part: string): void {
-  try {
-    removeIfPresent(path);
-  } catch (error) {
-    log.warn({ part, code: codeOf(error) }, "a stopped download copy's temporary file is left: it could not be removed");
-    markStoppedCopy(error, { outcome: "left", at: null });
-    throw error;
+/**
+ * A stopped copy's temporary file `part` in `folder`, which the copy created as the file `written` (null when it was never seen), removed
+ * only while it is still that file, as {@link removeOwnFile} does; one never seen is left. What became of it is reported on `failure`, the
+ * error the copy ends with, or, for a copy ending `cancelled` (`failure` null) whose file is left, on an error thrown instead.
+ */
+export async function cleanStoppedPart(folder: HeldDirectory, part: string, written: FileIdentity | null, failure: { readonly error: unknown } | null): Promise<void> {
+  let result: OwnFileResult;
+  if (written === null) {
+    log.warn({ path: join(folder.path, part) }, "a stopped download copy's temporary file is left: it was never seen while the copy wrote it");
+    result = { outcome: "left", at: null };
+  } else {
+    result = await removeOwnFile(folder, part, part, { kind: "fileId", file: written }, async (directory, name) => {
+      try {
+        unlinkSync(join(directory.path, name));
+      } catch (error) {
+        if (codeOf(error) === "ENOENT") return "absent";
+        throw error;
+      }
+      return "removed";
+    });
   }
+  if (failure !== null) {
+    markStoppedCopy(failure.error, result);
+    return;
+  }
+  if (result.outcome !== "left") return;
+  const left = new Error("a stopped download copy's temporary file is left in the chosen folder");
+  markStoppedCopy(left, result);
+  throw left;
 }
 
 function removeIfPresent(path: string): void {
@@ -586,6 +608,9 @@ function descriptorFileOperations(): HeldFileOperations {
         throw error;
       }
       let created = false;
+      // The temporary file as the copy created it, taken through its own handle.
+      let written: FileIdentity | null = null;
+      let failure: { readonly error: unknown } | null = null;
       try {
         const sourceInfo = await source.stat();
         if (!sourceInfo.isFile()) throw new HeldDirectoryRefusedError("source");
@@ -595,6 +620,8 @@ function descriptorFileOperations(): HeldFileOperations {
         const copy = await open(inHeld(toFd, part), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, sourceInfo.mode & 0o777);
         created = true;
         try {
+          const info = await copy.stat({ bigint: true });
+          written = { dev: info.dev, ino: info.ino, birthtimeNs: info.birthtimeNs };
           const buffer = Buffer.alloc(COPY_CHUNK);
           for (let position = 0; ;) {
             if (stop.aborted) return "cancelled";
@@ -612,10 +639,13 @@ function descriptorFileOperations(): HeldFileOperations {
         replaceStagedFile(inHeld(toFd, part), inHeld(toFd, target));
         created = false;
         return "committed";
+      } catch (error) {
+        failure = { error };
+        throw error;
       } finally {
         await source.close();
-        // A copy that did not reach its commit leaves nothing behind, and is removed only from the held folder.
-        if (created) removeStoppedPart(inHeld(toFd, part), part);
+        // A copy that did not reach its commit leaves nothing behind: its own file is removed, only from the held folder.
+        if (created) await cleanStoppedPart(heldThrough(toFd, to), part, written, failure);
       }
     }),
     remove: (directory, name, proceed, stop) => holding(directory, null, (fd) => {

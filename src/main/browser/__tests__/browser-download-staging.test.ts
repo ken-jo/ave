@@ -1127,7 +1127,8 @@ describe.runIf(process.platform === "linux")("a Linux copy whose temporary file 
     const item = fakeItem();
     let download!: Observed;
     const root = atStep(prepared, "copy", "ready", () => {
-      hooks.unlinkFault = /.part$/u;
+      // The copy's file is moved aside to be checked and removed; that removal fails, and so does the hidden name's after it is put back.
+      hooks.unlinkFault = /.removing$/u;
       download.cancel();
     });
     const staged = stageBrowserDownload(item, { root, askSavePath }, Promise.resolve());
@@ -1140,6 +1141,53 @@ describe.runIf(process.platform === "linux")("a Linux copy whose temporary file 
     await settled();
     item.complete("x".repeat(3 * 1024 * 1024));
     expect(await done).toEqual({ state: "interrupted", cleanup: "part-left" });
-    expect(readdirSync(chosen)).toEqual([expect.stringMatching(/^.[0-9a-f]{32}.part$/u)]);
+    const left = readdirSync(chosen);
+    expect(left).toHaveLength(2);
+    expect(left).toEqual(expect.arrayContaining([expect.stringMatching(/^.[0-9a-f]{32}.part$/u), expect.stringMatching(/^.[0-9a-f]{32}.removing$/u)]));
+  });
+
+  // A file put at the temporary file's name once the copy has written it, as a user or another program may.
+  const swapAt = (chosen: string, part: string): void => {
+    moveAside(join(chosen, part), join(chosen, "elsewhere"));
+    writeFileSync(join(chosen, part), "the user's file");
+  };
+  const copyInto = () => {
+    const root = prepare();
+    writeFileSync(join(root.path, "0123456789abcdef0123456789abcdef"), "staged");
+    const chosen = join(home, "chosen");
+    mkdirSync(chosen);
+    const info = statSync(chosen, { bigint: true });
+    return { root, chosen, folder: { path: chosen, dev: info.dev, ino: info.ino } };
+  };
+  const part = ".0123456789abcdef0123456789abcdef.part";
+
+  it("never removes a file put at the temporary file's name when the copy is cancelled", async () => {
+    const { root, chosen, folder } = copyInto();
+    const proceed = (step: Step): boolean => {
+      if (step !== "copied") return true;
+      swapAt(chosen, part);
+      return false;
+    };
+    await expect(root.files.copy(root, "0123456789abcdef0123456789abcdef", folder, "report.pdf", part, proceed, new AbortController().signal))
+      .rejects.toThrow(/temporary file is left/u);
+    expect(readFileSync(join(chosen, part), "utf8")).toBe("the user's file");
+    expect(readdirSync(chosen).sort()).toEqual([part, "elsewhere"]);
+    expectOnlyHeldPathOperations();
+  });
+
+  it("never removes a file put at the temporary file's name when the copy fails", async () => {
+    const { root, chosen, folder } = copyInto();
+    const proceed = (step: Step): boolean => {
+      if (step !== "copied") return true;
+      swapAt(chosen, part);
+      // The chosen name now holds a folder, which the commit refuses to replace.
+      mkdirSync(join(chosen, "report.pdf"));
+      return true;
+    };
+    await expect(root.files.copy(root, "0123456789abcdef0123456789abcdef", folder, "report.pdf", part, proceed, new AbortController().signal))
+      .rejects.toMatchObject({ refusal: "target" });
+    expect(readFileSync(join(chosen, part), "utf8")).toBe("the user's file");
+    expect(readdirSync(chosen).sort()).toEqual([part, "elsewhere", "report.pdf"]);
+    expectOnlyHeldPathOperations();
   });
 });

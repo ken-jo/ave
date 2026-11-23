@@ -1267,6 +1267,64 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
     expect(recordedAt(staging)).toEqual([hidden]);
   });
 
+  // The host's own cleanup of a copy it stopped (the Linux copy), on a real folder.
+  describe("a stopped copy's own temporary file", () => {
+    const part = ".0123456789abcdef0123456789abcdef.part";
+    const written = async () => {
+      const chosen = join(base, "chosen");
+      fs.mkdirSync(chosen);
+      fs.writeFileSync(join(chosen, part), "partial copy");
+      const info = fs.statSync(chosen, { bigint: true });
+      const file = fs.statSync(join(chosen, part), { bigint: true });
+      return { chosen, folder: { path: chosen, dev: info.dev, ino: info.ino }, file: { dev: file.dev, ino: file.ino, birthtimeNs: file.birthtimeNs } };
+    };
+    // Another file put at the temporary file's name, as a user or another program may.
+    const swapped = (chosen: string): void => {
+      fs.renameSync(join(chosen, part), join(chosen, "elsewhere"));
+      fs.writeFileSync(join(chosen, part), "the user's file");
+    };
+
+    it("never removes a file put at its name when the copy is cancelled, and reports it left", async () => {
+      const { cleanStoppedPart, stoppedCopyOf } = await import("../browser-download-files.js");
+      const { chosen, folder, file } = await written();
+      swapped(chosen);
+      const cleaned = cleanStoppedPart(folder, part, file, null);
+      await expect(cleaned).rejects.toThrow(/temporary file is left/u);
+      expect(stoppedCopyOf(await cleaned.catch((error: unknown) => error))).toEqual({ partialCopy: "left", partLeftAt: null });
+      expect(fs.readFileSync(join(chosen, part), "utf8")).toBe("the user's file");
+    });
+
+    it("never removes a file put at its name when the copy fails, and reports it left on the failure", async () => {
+      const { cleanStoppedPart, stoppedCopyOf } = await import("../browser-download-files.js");
+      const { chosen, folder, file } = await written();
+      swapped(chosen);
+      const failure = new Error("the copy failed");
+      await cleanStoppedPart(folder, part, file, { error: failure });
+      expect(stoppedCopyOf(failure)).toEqual({ partialCopy: "left", partLeftAt: null });
+      expect(fs.readFileSync(join(chosen, part), "utf8")).toBe("the user's file");
+    });
+
+    it("removes the file the copy wrote", async () => {
+      const { cleanStoppedPart, stoppedCopyOf } = await import("../browser-download-files.js");
+      const { chosen, folder, file } = await written();
+      await cleanStoppedPart(folder, part, file, null);
+      const failure = new Error("the copy failed");
+      fs.writeFileSync(join(chosen, part), "partial copy");
+      const again = fs.statSync(join(chosen, part), { bigint: true });
+      await cleanStoppedPart(folder, part, { dev: again.dev, ino: again.ino, birthtimeNs: again.birthtimeNs }, { error: failure });
+      expect(stoppedCopyOf(failure)).toEqual({ partialCopy: "removed", partLeftAt: null });
+      expect(fs.readdirSync(chosen)).toEqual([]);
+    });
+
+    it("leaves a file it never saw the copy write", async () => {
+      const { cleanStoppedPart } = await import("../browser-download-files.js");
+      const { chosen, folder } = await written();
+      await expect(cleanStoppedPart(folder, part, null, null)).rejects.toThrow(/temporary file is left/u);
+      expect(fs.readFileSync(join(chosen, part), "utf8")).toBe("partial copy");
+      expect(boundary.warn).toHaveBeenCalledWith({ path: join(chosen, part) }, expect.stringContaining("never seen while the copy wrote it"));
+    });
+  });
+
   it("says a file known by its content is left because its folder is gone, not that it could not be moved aside", async () => {
     const { removeOwnFile } = await import("../browser-download-files.js");
     const chosen = join(base, "chosen");
