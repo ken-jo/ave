@@ -149,7 +149,7 @@ describe("host git", () => {
   });
 
   /** Git processes that write what each reply holds, in turn, and end with its code. */
-  function replying(...replies: { code: number; stdout?: string; stderr?: string }[]): void {
+  function replying(...replies: { code: number; stdout?: string | Buffer; stderr?: string }[]): void {
     spawned.fake = () => {
       const reply = replies.shift() ?? { code: 1 };
       const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill: () => true });
@@ -187,6 +187,33 @@ describe("host git", () => {
   ])("a configuration command that %s gave no answer: the drivers are not known", async (_what, replies) => {
     replying(...replies);
     expect(await reasonOf(createHostGit({ env }).drivers(base))).toBe("unavailable");
+  });
+
+  it.each(["Filter.a.clean", "filter.a.Clean", "FILTER.a.required", "Merge.a.driver", "merge.a.DRIVER"])("a key in a spelling the configuration command never writes (%s) is no answer: a section and a variable are told in lower case alone", async (key) => {
+    replying({ code: 0, stdout: `${key}\ncat\0` }, { code: 1 });
+    expect(await reasonOf(createHostGit({ env }).drivers(base))).toBe("unavailable");
+  });
+
+  it("a driver's name is taken as the bytes git wrote: one that is no text is not switched off under another name, and a value's bytes are of no account", async () => {
+    const key = (...name: number[]): Buffer => Buffer.concat([Buffer.from("filter."), Buffer.from(name), Buffer.from(".clean\n"), Buffer.from([0xff, 0]), Buffer.from("merge.Up.driver\ntrue\0")]);
+    // A byte no text holds, a sequence cut short, and one that spells a character the long way.
+    for (const name of [[0x78, 0xff, 0x79], [0xed, 0x95], [0xc0, 0xaf]]) {
+      replying({ code: 0, stdout: key(...name) }, { code: 1 });
+      expect.soft(await reasonOf(createHostGit({ env }).drivers(base)), String(name)).toBe("driver-name");
+    }
+    // Text, in mixed case, and text that begins with a byte order mark: each is the name, whole.
+    for (const text of [[0x4d, 0xed, 0x95, 0x9c], [0xef, 0xbb, 0xbf, 0x61]]) {
+      replying({ code: 0, stdout: key(...text) }, { code: 1 });
+      const config = (await createHostGit({ env }).drivers(base)).config;
+      expect.soft(config.map(entry => Buffer.from(entry).toString("hex")), String(text)).toContain(Buffer.concat([Buffer.from("filter."), Buffer.from(text), Buffer.from(".clean=")]).toString("hex"));
+      expect.soft(config).toContain("merge.Up.driver=exit 1");
+    }
+    // As git itself writes them, from a file whose section and variable are in mixed case and one whose name is no text.
+    spawned.fake = undefined;
+    const repo = repositoryWith('[Filter "Mixed"]\n\tClean = cat\n\tReQuired\n[MERGE "Up"]\n\tDriver = true\n');
+    expect.soft(await createHostGit({ env }).drivers(repo)).toEqual({ config: expect.arrayContaining(["filter.Mixed.clean=", "merge.Up.driver=exit 1"]), requiredFilters: ["Mixed"] });
+    appendFileSync(join(repo, ".git", "config"), Buffer.concat([Buffer.from('[filter "x'), Buffer.from([0xff]), Buffer.from('y"]\n\tclean = cat\n')]));
+    expect(await reasonOf(createHostGit({ env }).drivers(repo))).toBe("driver-name");
   });
 
   it("a driver name the call cannot carry is still told as that, whatever character makes it so", async () => {

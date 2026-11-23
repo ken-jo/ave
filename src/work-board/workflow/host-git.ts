@@ -72,7 +72,8 @@ export function createHostGit(options: { env?: NodeJS.ProcessEnv; timeoutMs?: nu
   const maxOutputBytes = options.maxOutputBytes ?? GIT_MAX_OUTPUT_BYTES;
   const teardownMs = options.teardownMs ?? GIT_TEARDOWN_MS;
 
-  function run(cwd: string, args: readonly string[], call: HostGitCall = {}): Promise<HostGitResult> {
+  /** What git wrote, as the bytes it wrote. */
+  function raw(cwd: string, args: readonly string[], call: HostGitCall = {}): Promise<{ code: number; stdout: Buffer; stderr: Buffer }> {
     if (!isHostGitWorkspaceAvailable(cwd)) return Promise.reject(new HostGitError("held", "the workspace is held by a sandboxed command"));
     const configArgs = [...HARDENED_CONFIG.flatMap(entry => ["-c", entry]), ...(call.drivers ?? [])];
     return new Promise((resolve, reject) => {
@@ -118,48 +119,64 @@ export function createHostGit(options: { env?: NodeJS.ProcessEnv; timeoutMs?: nu
         if (failure) reject(failure);
         // Ended by something other than the host: what it wrote is not a whole answer.
         else if (code === null) reject(new HostGitError("terminated", "git ended without an exit code"));
-        else resolve({ code, stdout: Buffer.concat(out).toString("utf8"), stderr: Buffer.concat(err).toString("utf8") });
+        else resolve({ code, stdout: Buffer.concat(out), stderr: Buffer.concat(err) });
       }));
       child.stdin.on("error", () => undefined);
       child.stdin.end(call.stdin ?? "");
     });
   }
 
+  async function run(cwd: string, args: readonly string[], call: HostGitCall = {}): Promise<HostGitResult> {
+    const { code, stdout, stderr } = await raw(cwd, args, call);
+    return { code, stdout: stdout.toString("utf8"), stderr: stderr.toString("utf8") };
+  }
+
   async function drivers(cwd: string, worktree?: HostGitCall["worktree"]): Promise<{ config: string[]; requiredFilters: string[] }> {
     const unread = (): HostGitError => new HostGitError("unavailable", "git configuration could not be read");
     // An answer is taken only in the form the command writes it: each entry ended by NUL, its key first and, after a line break, its
     // value, or the key alone where the configuration gives it none. Nothing configured is exit 1 with nothing written at all. Any
-    // other failure is a configuration git itself does not take, and any other form is no answer.
+    // other failure is a configuration git itself does not take, and any other form is no answer. It is read byte for byte, each
+    // byte one character here: a name is a file's bytes, and read as text first, one that is no text would come out as another.
     const listed = async (...args: string[]): Promise<[key: string, value: string | undefined][]> => {
-      const read = await run(cwd, ["config", "--null", ...args], worktree === undefined ? {} : { worktree });
-      if (read.code === 1 && read.stdout === "" && read.stderr === "") return [];
-      if (read.code !== 0 || !read.stdout.endsWith("\0")) throw unread();
-      return read.stdout.slice(0, -1).split("\0").map((entry) => {
+      const read = await raw(cwd, ["config", "--null", ...args], worktree === undefined ? {} : { worktree });
+      if (read.code === 1 && read.stdout.length === 0 && read.stderr.length === 0) return [];
+      const bytes = read.stdout.toString("latin1");
+      if (read.code !== 0 || !bytes.endsWith("\0")) throw unread();
+      return bytes.slice(0, -1).split("\0").map((entry) => {
         const at = entry.indexOf("\n");
         return at < 0 ? [entry, undefined] : [entry.slice(0, at), entry.slice(at + 1)];
       });
     };
-    const nameOf = (key: string): string => key.slice(key.indexOf(".") + 1, key.lastIndexOf("."));
+    // The name a key holds, as the text a `-c` entry carries; undefined for bytes that are no text. A leading byte order mark is
+    // part of the name.
+    const strict = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+    const nameOf = (key: string): string | undefined => {
+      try { return strict.decode(Buffer.from(key.slice(key.indexOf(".") + 1, key.lastIndexOf(".")), "latin1")); } catch { return undefined; }
+    };
     const filters = new Set<string>();
     const merges = new Set<string>();
+    const names = new Map<string, string>();
     const named = await listed("--get-regexp", "^(filter|merge)\\..*\\.(clean|smudge|process|required|driver)$");
     for (const [key] of named) {
-      if (!/^(filter|merge)\..*\.(clean|smudge|process|required|driver)$/isu.test(key)) throw unread();
+      // Git writes a section and a variable in lower case, and a name between them as the configuration spells it.
+      if (!/^(filter|merge)\..*\.(clean|smudge|process|required|driver)$/su.test(key)) throw unread();
       const name = nameOf(key);
       // A name `-c` cannot carry would stay active.
-      if (name === "" || /[=\n\r\0]/u.test(name)) throw new HostGitError("driver-name", "a configured driver name cannot be switched off");
-      (key.slice(0, key.indexOf(".")).toLowerCase() === "merge" ? merges : filters).add(name);
+      if (name === undefined || name === "" || /[=\n\r\0]/u.test(name)) throw new HostGitError("driver-name", "a configured driver name cannot be switched off");
+      (key.startsWith("merge.") ? merges : filters).add(name);
+      names.set(key, name);
     }
     // Asked of git as the boolean it reads there: a key with no value and a number other than 0 are true, an empty value is false, the
     // last one given decides, and a value that is neither fails the call. It answers for the very keys the first listing named, in
     // their order, each with `true` or `false`: an answer that differs is of another configuration, or is none.
     const requiredFilters = new Set<string>();
     const required = await listed("--type=bool", "--get-regexp", "^filter\\..*\\.required$");
-    const asked = named.map(([key]) => key).filter(key => /^filter\..*\.required$/isu.test(key));
+    const asked = named.map(([key]) => key).filter(key => /^filter\..*\.required$/su.test(key));
     if (required.length !== asked.length || required.some(([key, value], index) => key !== asked[index] || (value !== "true" && value !== "false"))) throw unread();
     for (const [key, value] of required) {
-      if (value === "true") requiredFilters.add(nameOf(key));
-      else requiredFilters.delete(nameOf(key));
+      const name = names.get(key) as string;
+      if (value === "true") requiredFilters.add(name);
+      else requiredFilters.delete(name);
     }
     return {
       config: [
