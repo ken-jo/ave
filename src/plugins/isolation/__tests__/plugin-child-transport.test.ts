@@ -399,7 +399,9 @@ async function callToolIn(
   await settle();
   const sent = rig.sent.slice(before).filter((candidate) => candidate.method === "tools/call");
   expect(sent).toHaveLength(1);
-  return { frame: sent[0]!, reply };
+  const [frame0] = sent;
+  if (frame0 === undefined) throw new Error("tools/call was not sent");
+  return { frame: frame0, reply };
 }
 
 function tokenOf(frame: Frame): string {
@@ -437,12 +439,13 @@ describe("a tools/call's invocation, as the child's hostApi requests reach it", 
     const { frames, replies } = await callTools(rig, 1);
     rig.deliver({ jsonrpc: "2.0", id: frames[0]!.id as string, result: { content: [] } });
     await replies[0];
-    await expect(probeFromChild(rig, "late-read", tokenOf(frames[0]!))).resolves.toMatchObject({ result: false });
-    const write = await raiseAlertFromChild(rig, "late", tokenOf(frames[0]!));
+    const settled = tokenOf(frames[0]!);
+    await expect(probeFromChild(rig, "late-read", settled)).resolves.toMatchObject({ result: false });
+    const write = await raiseAlertFromChild(rig, "late", settled);
     expect(write.error).toMatchObject({ data: { code: "argument-marshalling-rejected" } });
     rig.deliver({
       jsonrpc: "2.0", id: "late-fetch", method: hostApiMethodOf("hostFetch"),
-      params: { input: "https://example.test", _meta: { [INVOCATION_META]: tokenOf(frames[0]!) } },
+      params: { input: "https://example.test", _meta: { [INVOCATION_META]: settled } },
     });
     await settle();
     expect(rig.sent.find((frame) => frame.id === "late-fetch")?.error).toMatchObject({ data: { code: "argument-marshalling-rejected" } });
@@ -481,7 +484,7 @@ describe("a tools/call's invocation, as the child's hostApi requests reach it", 
     const rig = invocationRig();
     const frame = { headless: false, sessionId: "session-1", permissionContext: { floor: { code: "other-principal" as const, reason: "x" } } };
     const a = await callToolIn(rig, "call-a", frame);
-    const b = await callToolIn(rig, "call-b", { ...frame, permissionContext: { floor: { ...frame.permissionContext.floor } } });
+    const b = await callToolIn(rig, "call-b", { ...frame, permissionContext: { floor: { code: "other-principal", reason: "per-call text" } } });
     const pending = Promise.allSettled([a.reply, b.reply]);
     try {
       await expect(raiseAlertFromChild(rig, "via-b", tokenOf(b.frame))).resolves.toMatchObject({ result: { status: "raised" } });

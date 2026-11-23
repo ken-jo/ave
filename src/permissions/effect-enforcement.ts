@@ -105,17 +105,16 @@ export function currentEffectGateContext(): EffectGateContext | undefined {
   return gateContextStorage.getStore();
 }
 
-/** Whether two frames authorize an effect alike; display fields and once-grants are not compared. */
+/** Whether two frames authorize an effect alike; display text, display fields and once-grants are not compared. */
 export function sameEffectAuthority(a: EffectGateContext | undefined, b: EffectGateContext | undefined): boolean {
   if (a === b) return true;
   if (a === undefined || b === undefined) return false;
   const pa = a.permissionContext ?? {};
   const pb = b.permissionContext ?? {};
-  const same = (x?: { code?: string; reason: string }, y?: { code?: string; reason: string }) =>
-    x?.code === y?.code && x?.reason === y?.reason;
   return a.headless === b.headless && a.approvalSurface === b.approvalSurface && a.sessionId === b.sessionId
     && a.unattributedApproval === b.unattributedApproval && a.executionCwd === b.executionCwd
-    && same(pa.admissionDenial, pb.admissionDenial) && same(pa.floor, pb.floor) && same(pa.exfiltration, pb.exfiltration)
+    && pa.admissionDenial?.code === pb.admissionDenial?.code && pa.floor?.code === pb.floor?.code
+    && (pa.exfiltration === undefined) === (pb.exfiltration === undefined)
     && pa.manualRerun === pb.manualRerun && pa.ownerUnattended === pb.ownerUnattended
     && pa.remoteControllerAuthority === pb.remoteControllerAuthority && pa.permissionStoreError === pb.permissionStoreError;
 }
