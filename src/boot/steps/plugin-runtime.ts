@@ -26,7 +26,7 @@ import {
 } from "../dev-flags.js";
 import { resolvePluginPaths } from "../../plugins/plugin-paths.js";
 import { backgroundEffectApprovalsPath, PluginBackgroundEffectApprovals } from "../../plugins/plugin-background-effects.js";
-import { vouchedInstalledPluginIds } from "../../plugins/registry.js";
+import { vouchedInstalledPluginEntries } from "../../plugins/registry.js";
 import type {
   AuthWindowCookie,
   OpenAuthWindowBaseOptions,
@@ -346,16 +346,21 @@ export async function initPluginRuntime(
     getAllWindows: () => input.host.desktop?.getAppWindows() ?? [],
   }));
 
-  // A removal whose write failed must not leave an approval that a reinstall from the same source would inherit. A registry
-  // that cannot vouch for its plugins prunes nothing, and neither does one with an entry that did not load, since only a
-  // loaded manifest names the id its approval is keyed by.
+  // A removal whose write failed must not leave an approval that a reinstall would inherit, so each approval is kept only for
+  // the install stamp its plugin has now. A registry that cannot vouch for its plugins prunes nothing, and neither does one
+  // with an entry that did not load, since only a loaded manifest names the id its approval is keyed by.
   const pruneBackgroundEffectApprovals = async (): Promise<void> => {
     try {
-      const installed = await vouchedInstalledPluginIds(pluginPaths.registryPath);
-      if (!installed) return;
-      const pluginIds = [...installed].map((id) => [id, pluginRuntime.resolvePluginId(id)] as const);
-      if (pluginIds.some(([, pluginId]) => !pluginRuntime.getPluginManifest(pluginId))) return;
-      backgroundEffectApprovals.retain(new Set(pluginIds.flat()));
+      const entries = await vouchedInstalledPluginEntries(pluginPaths.registryPath);
+      if (!entries) return;
+      const installs = new Map<string, string | null>();
+      for (const entry of entries) {
+        const pluginId = pluginRuntime.resolvePluginId(entry.id);
+        if (!pluginRuntime.getPluginManifest(pluginId)) return;
+        const installedAt = entry.origin?.installedAt ?? null;
+        installs.set(entry.id, installedAt).set(pluginId, installedAt);
+      }
+      backgroundEffectApprovals.retain(installs);
     } catch (error) {
       log.warn("boot: background effect approvals were not pruned: %s", error instanceof Error ? error.message : String(error));
     }

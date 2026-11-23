@@ -2290,11 +2290,15 @@ Key boundaries:
   `openExternalUrl` and the auth methods. Storage reads need no approval.
   The approval is keyed by the extension id, the install source pinned at
   install (the marketplace source and package path, or for a local development
-  install the manifest it installed) and the hash of the canonical declared set.
-  A version-only update keeps it; a scope or source change asks again. Uninstall
-  drops it and disable keeps it; boot also drops any approval whose extension the
-  registry no longer names (none while any entry fails to load), and a removal that failed to save is retried at the
-  next save or start, so a reinstall does not inherit it. An install with no pinned source (admin, bundled
+  install the manifest it installed) and the hash of the canonical declared set,
+  and it is bound to the registry install stamp it was given for. A version-only
+  update keeps it and moves it to the update's new stamp; a scope or source change
+  asks again. Uninstall drops it and disable keeps it; boot also drops any approval
+  whose extension the registry no longer names or names for another install (none
+  while any entry fails to load). An approval for an earlier install never approves
+  a reinstall, so a removal that failed to save is not inherited; a local
+  development install has no stamp, so for it that removal is retried at the next
+  save or start. An install with no pinned source (admin, bundled
   or a legacy row) cannot be approved, and its Review row says the source is not
   pinned and asks for a reinstall from the marketplace. A missing or unreadable
   approvals file loads as empty. Within the approved scope a deny or a forced floor still

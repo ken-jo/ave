@@ -75,6 +75,8 @@ export interface PluginBackgroundEffectSubject {
   readonly declared: boolean;
   /** Names the source and scope a card showed, so an approval binds only if both are still current. */
   readonly reviewSha256: string;
+  /** The registry stamp of this install; a reinstall writes a new one, and so does an update. */
+  readonly installedAt: string | null;
 }
 
 export function backgroundEffectSubject(manifest: PluginManifest, entry: PluginRegistryTrust | undefined): PluginBackgroundEffectSubject {
@@ -88,6 +90,7 @@ export function backgroundEffectSubject(manifest: PluginManifest, entry: PluginR
     effects,
     declared: hasBackgroundEffects(effects),
     reviewSha256: createHash("sha256").update(JSON.stringify([manifest.id, source, scopeSha256])).digest("hex"),
+    installedAt: entry?.origin?.installedAt ?? null,
   };
 }
 
@@ -118,6 +121,7 @@ interface ApprovalRecord {
   pluginId: string;
   source: string;
   scopeSha256: string;
+  installedAt?: string;
 }
 
 interface ApprovalsFile {
@@ -137,21 +141,32 @@ function parseApprovals(value: unknown): Map<string, ApprovalRecord> | null {
   const approvals = new Map<string, ApprovalRecord>();
   for (const record of value.approvals) {
     if (!isPlainObject(record)) return null;
-    const { pluginId, source, scopeSha256 } = record;
+    const { pluginId, source, scopeSha256, installedAt } = record;
     if (typeof pluginId !== "string" || !pluginId || typeof source !== "string" || !source
-      || typeof scopeSha256 !== "string" || !SHA256.test(scopeSha256)) return null;
-    approvals.set(pluginId, { pluginId, source, scopeSha256 });
+      || typeof scopeSha256 !== "string" || !SHA256.test(scopeSha256)
+      || (installedAt !== undefined && (typeof installedAt !== "string" || !installedAt))) return null;
+    approvals.set(pluginId, approvalRecord(pluginId, source, scopeSha256, installedAt ?? null));
   }
   return approvals;
 }
 
-/** One approval per plugin, bound to its install source and declared scope; an unreadable file approves nothing and never stops boot. */
+function approvalRecord(pluginId: string, source: string, scopeSha256: string, installedAt: string | null): ApprovalRecord {
+  return { pluginId, source, scopeSha256, ...(installedAt === null ? {} : { installedAt }) };
+}
+
+/**
+ * One approval per plugin, bound to its install source, declared scope and the install it was given for; an unreadable file
+ * approves nothing and never stops boot. A removal whose write failed leaves the old record on disk, and its older install stamp
+ * keeps it from approving a reinstall.
+ */
 export class PluginBackgroundEffectApprovals {
   private approvals = new Map<string, ApprovalRecord>();
   private readonly subjects = new Map<string, Array<() => Promise<PluginBackgroundEffectSubject>>>();
   private readonly uninstalls = new Map<string, number>();
   private unsaved = false;
   private upgradeReviewed = false;
+  /** Plugins whose record this process gave or matched to a live install, so an update may move it to the new stamp. */
+  private readonly current = new Set<string>();
 
   constructor(private readonly path?: string) {
     if (!path) return;
@@ -181,6 +196,7 @@ export class PluginBackgroundEffectApprovals {
     const reads = this.subjects.get(pluginId) ?? [];
     const own = () => read();
     this.subjects.set(pluginId, [...reads, own]);
+    void this.carry(pluginId, own);
     return () => {
       const rest = (this.subjects.get(pluginId) ?? []).filter((candidate) => candidate !== own);
       if (rest.length > 0) this.subjects.set(pluginId, rest);
@@ -200,27 +216,30 @@ export class PluginBackgroundEffectApprovals {
     return createHash("sha256").update(JSON.stringify([subject.reviewSha256, uninstalls])).digest("hex");
   }
 
+  /** Another install stamp is approved only for a record this process already matched, so an update is not denied before it moves. */
   isApproved(subject: PluginBackgroundEffectSubject): boolean {
     const record = this.approvals.get(subject.pluginId);
     return subject.declared && subject.source !== null
-      && record?.source === subject.source && record.scopeSha256 === subject.scopeSha256;
+      && record?.source === subject.source && record.scopeSha256 === subject.scopeSha256
+      && (record.installedAt === (subject.installedAt ?? undefined) || this.current.has(subject.pluginId));
   }
 
   approve(subject: PluginBackgroundEffectSubject): void {
     if (!subject.pluginId || !subject.declared || subject.source === null || !SHA256.test(subject.scopeSha256)) {
       throw new Error("A background effect approval needs a declared scope from a pinned install source");
     }
-    const next = new Map(this.approvals).set(subject.pluginId, {
-      pluginId: subject.pluginId, source: subject.source, scopeSha256: subject.scopeSha256,
-    });
+    const next = new Map(this.approvals).set(subject.pluginId,
+      approvalRecord(subject.pluginId, subject.source, subject.scopeSha256, subject.installedAt));
     this.persist(next);
     this.approvals = next;
     this.unsaved = false;
+    this.current.add(subject.pluginId);
   }
 
   /** Uninstall drops the approval and renames the review; a failed write is logged and retried at the next save, bind or boot prune. */
   revoke(pluginId: string): void {
     this.uninstalls.set(pluginId, (this.uninstalls.get(pluginId) ?? 0) + 1);
+    this.current.delete(pluginId);
     if (!this.approvals.has(pluginId)) return;
     const next = new Map(this.approvals);
     next.delete(pluginId);
@@ -240,12 +259,36 @@ export class PluginBackgroundEffectApprovals {
     this.save(this.approvals, "background effect first-launch review was not saved");
   }
 
-  /** Boot drops approvals for plugins the registry no longer names, so a removal whose write failed is not honoured on reinstall. */
-  retain(pluginIds: ReadonlySet<string>): void {
-    const next = new Map([...this.approvals].filter(([pluginId]) => pluginIds.has(pluginId)));
+  /** Boot keeps only approvals for the install each plugin id has now (id -> install stamp); the kept ones may follow an update. */
+  retain(installs: ReadonlyMap<string, string | null>): void {
+    const next = new Map([...this.approvals].filter(([pluginId, record]) =>
+      installs.has(pluginId) && record.installedAt === (installs.get(pluginId) ?? undefined)));
+    for (const pluginId of next.keys()) this.current.add(pluginId);
     if (next.size === this.approvals.size) return;
     this.approvals = next;
     this.save(next, "background effect approval prune was not saved");
+  }
+
+  /** An update writes a new install stamp; a record this process matched moves to it, one only read from disk never does. */
+  private async carry(pluginId: string, read: () => Promise<PluginBackgroundEffectSubject>): Promise<void> {
+    let subject: PluginBackgroundEffectSubject;
+    try {
+      subject = await read();
+    } catch {
+      return;
+    }
+    if (this.subjects.get(pluginId)?.at(-1) !== read) return;
+    const record = this.approvals.get(subject.pluginId);
+    if (!record || record.source !== subject.source || record.scopeSha256 !== subject.scopeSha256) return;
+    if (record.installedAt === (subject.installedAt ?? undefined)) {
+      this.current.add(subject.pluginId);
+      return;
+    }
+    if (!this.current.has(subject.pluginId)) return;
+    const next = new Map(this.approvals).set(subject.pluginId,
+      approvalRecord(record.pluginId, record.source, record.scopeSha256, subject.installedAt));
+    this.approvals = next;
+    this.save(next, "background effect approval was not moved to the updated install");
   }
 
   /** A write that failed is retried when a plugin next binds, so a reinstall before restart cannot revive a removed approval. */

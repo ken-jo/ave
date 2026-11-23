@@ -100,12 +100,17 @@ function migrateLegacyEntry(
   return migrated;
 }
 
-/** Prune from installed IDs only when the registry can vouch for them; malformed or replaced files return undefined. */
-export async function vouchedInstalledPluginIds(registryPath: string): Promise<ReadonlySet<string> | undefined> {
+/** Prune from installed entries only when the registry can vouch for them; malformed or replaced files return undefined. */
+export async function vouchedInstalledPluginEntries(registryPath: string): Promise<readonly PluginRegistryEntry[] | undefined> {
   if (!existsSync(registryPath)) return undefined;
   const registry = await readPluginRegistry(registryPath);
   if (registry.pendingReview || registry.plugins.some((entry) => entry.pendingUpdate)) return undefined;
-  return new Set(registry.plugins.map((entry) => entry.id));
+  return registry.plugins;
+}
+
+export async function vouchedInstalledPluginIds(registryPath: string): Promise<ReadonlySet<string> | undefined> {
+  const entries = await vouchedInstalledPluginEntries(registryPath);
+  return entries && new Set(entries.map((entry) => entry.id));
 }
 
 export async function readPluginRegistry(registryPath: string): Promise<PluginRegistry> {

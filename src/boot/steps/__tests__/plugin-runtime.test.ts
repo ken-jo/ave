@@ -28,7 +28,7 @@ const runtimeTestState = vi.hoisted(() => ({
   }>,
   capturedRuntimeOptions: null as Record<string, unknown> | null,
   readPluginRegistry: vi.fn(async (): Promise<{ version: number; plugins: unknown[] }> => ({ version: 1, plugins: [] })),
-  vouchedInstalledPluginIds: vi.fn(async (): Promise<ReadonlySet<string> | undefined> => undefined),
+  vouchedInstalledPluginEntries: vi.fn(async (): Promise<readonly PluginRegistryEntry[] | undefined> => undefined),
   officialPins: vi.fn(async () => ["a".repeat(64)]),
   runtime: {
     load: vi.fn(async () => {}),
@@ -108,7 +108,7 @@ vi.mock("../../../plugins/plugin-paths.js", () => ({
 
 vi.mock("../../../plugins/registry.js", () => ({
   readPluginRegistry: runtimeTestState.readPluginRegistry,
-  vouchedInstalledPluginIds: runtimeTestState.vouchedInstalledPluginIds,
+  vouchedInstalledPluginEntries: runtimeTestState.vouchedInstalledPluginEntries,
 }));
 
 vi.mock("../plugin-runtime/grant-evidence.js", () => ({
@@ -146,7 +146,7 @@ import { _resetConfinedProcessPhaseForTests, confinedProcessesMayBeRunning } fro
 import { canonicalJSON } from "../../../plugins/secret-access/canonical-json.js";
 import { recordManifestDocument } from "../../../plugins/runtime/manifest-validation.js";
 import { agentPluginsDocument, pluginDataDirIn } from "../../../plugins/__tests__/test-helpers.js";
-import type { PluginHostApi, PluginManifest } from "../../../plugins/types.js";
+import type { PluginHostApi, PluginManifest, PluginRegistryEntry, PluginRegistryEntryOrigin } from "../../../plugins/types.js";
 import { backgroundEffectSubject, PluginBackgroundEffectApprovals } from "../../../plugins/plugin-background-effects.js";
 
 /** Bind the installer pin to the original manifest document. */
@@ -1344,13 +1344,18 @@ describe("initPluginRuntime sandbox union ordering", () => {
 });
 
 describe("initPluginRuntime background effect approvals", () => {
+  const originOf = (id: string, installedAt = "2026-11-01T00:00:00.000Z"): PluginRegistryEntryOrigin => ({
+    sourceId: "example-source", sourceOrigin: "custom", commit: "a".repeat(40), packagePath: `plugins/${id}`, version: "1.0.0",
+    rung: "release", artifactSha256: "b".repeat(64), installedAt,
+  });
   const subjectOf = (id: string) => backgroundEffectSubject(
     { id, name: id, version: "1.0.0", entry: "plugin.mjs", description: id, tools: [], capabilities: ["background:call-llm"] } as unknown as PluginManifest,
-    { installSource: "user", origin: {
-      sourceId: "example-source", sourceOrigin: "custom", commit: "a".repeat(40), packagePath: `plugins/${id}`, version: "1.0.0",
-      rung: "release", artifactSha256: "b".repeat(64), installedAt: "2026-11-01T00:00:00.000Z",
-    } },
+    { installSource: "user", origin: originOf(id) },
   );
+  const entriesOf = (ids: readonly string[], reinstalled: readonly string[] = []): PluginRegistryEntry[] => ids.map((id) => ({
+    id, manifestPath: `${id}/plugin.json`, installSource: "user",
+    origin: originOf(id === "install-alias" ? "aliased" : id, reinstalled.includes(id) ? "2026-11-02T00:00:00.000Z" : undefined),
+  }));
 
   afterEach(() => {
     runtimeTestState.runtime.getPluginManifest.mockImplementation(() => null);
@@ -1358,16 +1363,17 @@ describe("initPluginRuntime background effect approvals", () => {
 
   // An entry that did not load has no manifest id to match its approval by, so nothing is pruned.
   it.each([
-    ["a vouched registry", new Set(["kept", "install-alias"]), ["kept", "aliased"]],
+    ["a vouched registry", entriesOf(["kept", "install-alias"]), ["kept", "aliased"]],
     ["a registry that cannot vouch", undefined, ["kept", "aliased", "removed"]],
-    ["a registry with an entry that did not load", new Set(["kept", "install-alias", "broken-alias"]), ["kept", "aliased", "removed"]],
+    ["a registry with an entry that did not load", entriesOf(["kept", "install-alias", "broken-alias"]), ["kept", "aliased", "removed"]],
+    ["a registry whose entry was reinstalled since its approval", entriesOf(["kept", "install-alias", "removed"], ["removed"]), ["kept", "aliased"]],
   ] as const)("keeps after load only the approvals %s still names", async (_label, vouched, approved) => {
     runtimeTestState.capturedRuntimeOptions = null;
     runtimeTestState.runtime.listPluginIds.mockReturnValue([]);
     runtimeTestState.runtime.listPluginManifests.mockReturnValue([]);
     runtimeTestState.runtime.getPluginManifest.mockImplementation(((pluginId: string) =>
-      ["kept", "aliased"].includes(pluginId) ? { id: pluginId } : null) as never);
-    runtimeTestState.vouchedInstalledPluginIds.mockResolvedValueOnce(vouched);
+      ["kept", "aliased", "removed"].includes(pluginId) ? { id: pluginId } : null) as never);
+    runtimeTestState.vouchedInstalledPluginEntries.mockResolvedValueOnce(vouched);
     const path = join(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-background-prune-"))), "background-effects.json");
     const seeded = new PluginBackgroundEffectApprovals(path);
     for (const id of ["kept", "aliased", "removed"]) seeded.approve(subjectOf(id));

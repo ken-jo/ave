@@ -240,7 +240,7 @@ describe("background effect approvals", () => {
     expect(approvals.isApproved(removed)).toBe(false);
     const restarted = new PluginBackgroundEffectApprovals(path);
     expect(restarted.isApproved(removed)).toBe(true);
-    restarted.retain(new Set(["kept"]));
+    restarted.retain(new Map([["kept", origin().installedAt]]));
     expect(restarted.isApproved(removed)).toBe(false);
     for (const fresh of [restarted, new PluginBackgroundEffectApprovals(path)]) {
       expect(fresh.isApproved(removed)).toBe(false);
@@ -271,10 +271,10 @@ describe("background effect approvals", () => {
     const subject = backgroundEffectSubject(declaring(), marketplaceEntry());
     const approvals = new PluginBackgroundEffectApprovals(path);
     approvals.approve(subject);
-    approvals.retain(new Set(["sample"]));
+    approvals.retain(new Map([["sample", origin().installedAt]]));
     expect(new PluginBackgroundEffectApprovals(path).isApproved(subject)).toBe(true);
     atomicWrites.fail = true;
-    expect(() => approvals.retain(new Set())).not.toThrow();
+    expect(() => approvals.retain(new Map())).not.toThrow();
     expect(approvals.isApproved(subject)).toBe(false);
   });
 
@@ -283,10 +283,14 @@ describe("background effect approvals", () => {
     const subject = backgroundEffectSubject(declaring(), marketplaceEntry());
     new PluginBackgroundEffectApprovals(path).approve(subject);
     expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({
-      version: 2, approvals: [{ pluginId: "sample", source: subject.source, scopeSha256: subject.scopeSha256 }],
+      version: 2, approvals: [{ pluginId: "sample", source: subject.source, scopeSha256: subject.scopeSha256, installedAt: origin().installedAt }],
     });
     expect(new PluginBackgroundEffectApprovals(path).isApproved(subject)).toBe(true);
-    for (const body of ["{", JSON.stringify({ version: 1, approvals: [] }), JSON.stringify({ version: 2, approvals: [{ pluginId: "sample", source: subject.source, scopeSha256: "x" }] })]) {
+    const record = { pluginId: "sample", source: subject.source, scopeSha256: subject.scopeSha256 };
+    for (const body of [
+      "{", JSON.stringify({ version: 1, approvals: [] }), JSON.stringify({ version: 2, approvals: [{ ...record, scopeSha256: "x" }] }),
+      JSON.stringify({ version: 2, approvals: [{ ...record, installedAt: 7 }] }), JSON.stringify({ version: 2, approvals: [record] }),
+    ]) {
       writeFileSync(path, body);
       expect(new PluginBackgroundEffectApprovals(path).isApproved(subject)).toBe(false);
     }
@@ -298,7 +302,7 @@ describe("background effect approvals", () => {
     const approvals = new PluginBackgroundEffectApprovals(path);
     expect(approvals.upgradeReviewOwed()).toBe(true);
     approvals.approve(subject);
-    approvals.retain(new Set());
+    approvals.retain(new Map());
     expect(new PluginBackgroundEffectApprovals(path).upgradeReviewOwed()).toBe(true);
     approvals.finishUpgradeReview();
     expect(approvals.upgradeReviewOwed()).toBe(false);
@@ -320,6 +324,53 @@ describe("background effect approvals", () => {
     expect(new PluginBackgroundEffectApprovals(failing).upgradeReviewOwed()).toBe(true);
     session.bindSubject(subject.pluginId, async () => subject);
     expect(new PluginBackgroundEffectApprovals(failing).upgradeReviewOwed()).toBe(false);
+  });
+});
+
+describe("an approval and the install it was given for", () => {
+  const T1 = "2026-11-01T00:00:00.000Z";
+  const T2 = "2026-11-02T00:00:00.000Z";
+  const at = (installedAt: string) => backgroundEffectSubject(declaring(), marketplaceEntry({ installedAt }));
+  const settled = () => new Promise((resolve) => setImmediate(resolve));
+
+  it("is not honoured for a reinstall after a removal whose write failed, across restarts and with no boot prune", async () => {
+    const path = approvalsFile();
+    const session = new PluginBackgroundEffectApprovals(path);
+    session.approve(at(T1));
+    atomicWrites.fail = true;
+    session.revoke("sample");
+    session.bindSubject("sample", async () => at(T2));
+    await settled();
+    atomicWrites.fail = false;
+    for (let restart = 0; restart < 2; restart += 1) {
+      const restarted = new PluginBackgroundEffectApprovals(path);
+      restarted.bindSubject("sample", async () => at(T2));
+      await settled();
+      expect(restarted.isApproved(at(T2))).toBe(false);
+    }
+    new PluginBackgroundEffectApprovals(path).retain(new Map([["sample", T2]]));
+    expect(new PluginBackgroundEffectApprovals(path).isApproved(at(T2))).toBe(false);
+  });
+
+  it("moves to an update's new stamp once this process matched or gave it, and keeps that across a restart", async () => {
+    expect(at(T2).reviewSha256).toBe(at(T1).reviewSha256);
+    const matchedBy = [
+      (store: PluginBackgroundEffectApprovals) => store.retain(new Map([["sample", T1]])),
+      (store: PluginBackgroundEffectApprovals) => { store.bindSubject("sample", async () => at(T1)); },
+      (store: PluginBackgroundEffectApprovals) => store.approve(at(T1)),
+    ];
+    for (const match of matchedBy) {
+      const path = approvalsFile();
+      new PluginBackgroundEffectApprovals(path).approve(at(T1));
+      const session = new PluginBackgroundEffectApprovals(path);
+      match(session);
+      await settled();
+      session.bindSubject("sample", async () => at(T2));
+      // Approved at once, before the move is saved.
+      expect(session.isApproved(at(T2))).toBe(true);
+      await vi.waitFor(() => expect(new PluginBackgroundEffectApprovals(path).isApproved(at(T2))).toBe(true));
+      expect(new PluginBackgroundEffectApprovals(path).isApproved(at(T1))).toBe(false);
+    }
   });
 });
 

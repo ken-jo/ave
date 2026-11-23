@@ -1408,11 +1408,11 @@ describe("HostApi incarnation authority", () => {
       capabilities: ["external-auth-consumer"],
       networkAccess: { allowedDomains },
     }) as PluginManifest;
-    const entryFrom = (sourceId: string): PluginRegistryTrust => ({
+    const entryFrom = (sourceId: string, installedAt = "2026-11-01T00:00:00.000Z"): PluginRegistryTrust => ({
       installSource: "user",
       origin: {
         sourceId, sourceOrigin: "custom", commit: "a".repeat(40), packagePath: "plugins/a", version: "1.0.0",
-        rung: "release", artifactSha256: "b".repeat(64), installedAt: "2026-11-01T00:00:00.000Z",
+        rung: "release", artifactSha256: "b".repeat(64), installedAt,
       },
     });
     const source = entryFrom("example-source");
@@ -1467,8 +1467,9 @@ describe("HostApi incarnation authority", () => {
     // The approval covers the declared destinations only.
     await expect(child.hostApi.hostFetch?.("https://refused.example.test")).rejects.toThrow("Host request failed.");
     expect(transport).toHaveBeenCalledOnce();
-    // A version-only update keeps the approval.
-    await expect(fetchWithLease(await childFor(manifestOf("1.1.0")))).resolves.toBe("ok");
+    // A version-only update keeps the approval, though it writes a new install stamp.
+    await expect(fetchWithLease(await childFor(manifestOf("1.1.0"), entryFrom("example-source", "2026-11-02T00:00:00.000Z"))))
+      .resolves.toBe("ok");
     expect(transport).toHaveBeenCalledTimes(2);
     // A changed scope or another source under the same id is not covered until approved itself.
     const widened = manifestOf("1.2.0", ["api.openai.com", "upload.example.test"]);
