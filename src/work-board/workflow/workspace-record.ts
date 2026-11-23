@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, resolve } from "node:path";
 import { isStageId } from "../template-graph.js";
 import { type NodeId, realDirId } from "./owned-fs.js";
@@ -94,20 +95,46 @@ export function isWorkspaceRecord(value: unknown): value is WorkspaceRecord {
     && optional(entry.dir, isNodeId) && (entry.ready !== true || entry.dir !== undefined));
 }
 
-/** A path that starts with two separators: a network share or a device. Looking at one reaches off this machine. */
-export const offMachine = (path: string): boolean => /^[\\/]{2}/u.test(path);
+const foldName = (name: string): string => process.platform === "win32" ? name.toLowerCase() : name;
 
 /**
- * Whether a registration's `gitdir` names the `.git` file of the run's folder for `key`. Git writes that path as it really is on disk,
- * which need not be the text the host reached the run folder by (a link above the home). So the run folder is told by which directory
- * it is, and only the folder's own name is compared; a path whose run folder cannot be identified names nothing. Neither does a network
- * or device path, which is refused before anything is asked of it: a record is read from disk and may name any path.
+ * A path as plain text: separators one way, the long-path prefix of a drive or share path taken off, then resolved. A device path and
+ * every other prefixed form have none. Nothing is asked of the path.
  */
-export function registeredIn(run: NodeId, key: string, gitdir: string): boolean {
-  if (offMachine(gitdir)) return false;
-  const folder = dirname(gitdir);
-  const fold = (name: string): string => process.platform === "win32" ? name.toLowerCase() : name;
-  return basename(gitdir) === ".git" && fold(basename(folder)) === fold(key === JOIN_DIR ? JOIN_DIR : stageDirName(key)) && realDirId(dirname(folder)) === run;
+function plainPath(path: string): string | undefined {
+  if (process.platform !== "win32") return resolve(path);
+  let text = path.replaceAll("/", "\\");
+  const long = /^\\\\\?\\(?:UNC(\\)|(?=[A-Za-z]:\\))/iu.exec(text);
+  if (long !== null) text = (long[1] === undefined ? "" : "\\\\") + text.slice(long[0].length);
+  return /^\\\\[?.](?:\\|$)/u.test(text) ? undefined : resolve(text);
+}
+
+/**
+ * The run's folder for `key`, when a registration's `gitdir` names that folder's `.git` file; undefined when it names anything else.
+ * Git writes that path as it really is on disk, which need not be the text the host reached the run folder by (a link above the
+ * home). So the run folder is told by which directory it is, and only the folder's own name is compared; a path whose run folder
+ * cannot be identified names nothing.
+ *
+ * A record is read from disk and may name any path, so a path on a network share is looked at only when its text puts it in the run
+ * folder as that folder really is: a home on a share keeps its registrations, and no other share is ever asked anything. A device
+ * path is refused the same way. Known limit, on the closed side: the same share under another spelling of its server (short name,
+ * full name, address) is refused.
+ */
+export function runFolderOf(run: { path: string; id: NodeId }, key: string, gitdir: string): string | undefined {
+  const plain = plainPath(gitdir);
+  if (plain === undefined || basename(plain) !== ".git") return undefined;
+  const folder = dirname(plain);
+  if (foldName(basename(folder)) !== foldName(key === JOIN_DIR ? JOIN_DIR : stageDirName(key))) return undefined;
+  if (process.platform === "win32" && plain.startsWith("\\\\")) {
+    let real: string | undefined;
+    try {
+      real = plainPath(realpathSync.native(run.path));
+    } catch {
+      return undefined;
+    }
+    if (real === undefined || foldName(dirname(folder)) !== foldName(real)) return undefined;
+  }
+  return realDirId(dirname(folder)) === run.id ? folder : undefined;
 }
 
 /**
@@ -123,7 +150,7 @@ export function recordFits(home: string, run: { path: string; id: NodeId }, file
     if (file.branch !== runBranch(file.runId) || !OBJECT_ID.test(file.baseCommit ?? "")) return false;
     if (!file.refs.every(ref => ref.name === `refs/heads/${file.branch}` && ref.oid === file.baseCommit)) return false;
   }
-  return Object.entries(file.registrations).every(([key, entry]) => registeredIn(run.id, key, entry.gitdir));
+  return Object.entries(file.registrations).every(([key, entry]) => runFolderOf(run, key, entry.gitdir) !== undefined);
 }
 
 /** The fields that name the owner: a record that differs in one of them from the one seen earlier is another run's. */

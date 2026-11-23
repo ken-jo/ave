@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, parse } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createHostGit, type HostGit } from "../host-git.js";
 import type { OwnedDir } from "../owned-fs.js";
@@ -13,7 +13,18 @@ const between = vi.hoisted(() => ({
   act: undefined as ((projectFolder: string) => void) | undefined,
   /** Runs right after an entry of a held folder was removed, with the entry's path. */
   removed: undefined as ((path: string) => void) | undefined,
+  /** A home on a share: the run folder as the host reached it, the volume it is really on, and the share that stands for that volume. */
+  share: undefined as { run: string; volume: string; root: string } | undefined,
 }));
+
+vi.mock("node:fs", async (original) => {
+  const real = await original<typeof import("node:fs")>();
+  const native = (path: string): string => {
+    const found = real.realpathSync.native(path);
+    return between.share?.run === path ? between.share.root + found.slice(between.share.volume.length) : found;
+  };
+  return { ...real, realpathSync: Object.assign((path: string) => real.realpathSync(path), { native }) };
+});
 
 vi.mock("../owned-fs.js", async (original) => {
   const real = await original<typeof import("../owned-fs.js")>();
@@ -27,7 +38,12 @@ vi.mock("../owned-fs.js", async (original) => {
       return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
     },
   });
-  return { ...real, holdDir: (path: string, id?: string) => held(real.holdDir(path, id), 0) };
+  // What is asked of the share is answered by the volume behind it.
+  const local = (path: string): string => {
+    const share = between.share;
+    return share !== undefined && path.toLowerCase().startsWith(share.root) ? share.volume + path.slice(share.root.length) : path;
+  };
+  return { ...real, holdDir: (path: string, id?: string) => held(real.holdDir(path, id), 0), nodeIdOf: (path: string) => real.nodeIdOf(local(path)), realDirId: (path: string) => real.realDirId(local(path)) };
 });
 
 let base: string;
@@ -43,6 +59,7 @@ beforeEach(() => {
 afterEach(() => {
   between.act = undefined;
   between.removed = undefined;
+  between.share = undefined;
   rmSync(base, { recursive: true, force: true, maxRetries: 3 });
 });
 
@@ -107,6 +124,32 @@ it("a registration whose stage name another folder took after the removal stays,
     expect(record().registrations.s1).toBeUndefined();
   } finally {
     between.removed = undefined;
+    await fx.done();
+  }
+});
+
+it.skipIf(process.platform !== "win32")("a home on a share keeps the registration git wrote with the share's path", async () => {
+  const fx = gitFixture();
+  try {
+    const handle = fx.start();
+    const open = await handle.provider.open(handle.run, fx.repo);
+    if (!open.ok) throw new Error("expected a workspace");
+    const stage = await stageRoot(handle, "s1");
+    const recordPath = join(open.workspace.runRoot, RUN_FILE);
+    const record = JSON.parse(readFileSync(recordPath, "utf8")) as { registrations: Record<string, { admin: string }> };
+    const admin = record.registrations.s1?.admin as string;
+    const real = realpathSync.native(stage);
+    const volume = parse(real).root;
+    between.share = { run: open.workspace.runRoot, volume, root: "\\\\server\\share\\" };
+    // As git leaves it on a share, with a stop before the host recorded it: the admin folder names the stage by the share's path.
+    writeFileSync(join(admin, "gitdir"), `//server/share/${real.slice(volume.length).replaceAll("\\", "/")}/.git\n`);
+    delete record.registrations.s1;
+    writeFileSync(recordPath, JSON.stringify(record));
+    await handle.provider.release(handle.run, ["s1"]);
+    expect(existsSync(stage)).toBe(false);
+    expect(existsSync(admin)).toBe(false);
+  } finally {
+    between.share = undefined;
     await fx.done();
   }
 });

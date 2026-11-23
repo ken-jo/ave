@@ -12,7 +12,7 @@ import { holdDir, type NodeId, nodeIdOf, type OwnedDir, OwnedFsError, realDirId,
 import type { JoinConflict } from "./shipped-shapes.js";
 import type { RunRef, StageWorkspaceProvider, WORKSPACE_REFUSALS } from "./stage-workspace.js";
 import { IGNORE_PREFIX, isIgnoreFolder, JOIN_DIR, OUT_DIR, RUN_FILE, runBranch, runRootOf, runSlug, stageDirName, WORKTREES_DIR } from "./workspace-layout.js";
-import { isWorkspaceRecord, type OutputFile, offMachine, ownerOf, recordFits, type Registration, registeredIn, type StageEntry, samePath, type WorkspaceRecord } from "./workspace-record.js";
+import { isWorkspaceRecord, type OutputFile, ownerOf, recordFits, type Registration, runFolderOf, type StageEntry, samePath, type WorkspaceRecord } from "./workspace-record.js";
 import { copySeedFiles, hashSeedFile, listSeedFiles, MAX_SEED_BYTES, MAX_SEED_FILES, type SeedRules } from "./workspace-seed.js";
 
 const log = createLogger("work-board-stage-workspace");
@@ -128,7 +128,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
    * identity: the admin folder lies in this repository's `worktrees`, and its `gitdir` file points into this very folder of this very run
    * folder. Any other is not the run's.
    */
-  function captureRegistration(at: Held, folder: OwnedDir): Registration | undefined {
+  function captureRegistration(at: Held, key: string, folder: OwnedDir): Registration | undefined {
     const repo = at.file.repo;
     if (repo === undefined) return undefined;
     try {
@@ -142,8 +142,8 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       if (held === undefined || text === undefined) return undefined;
       const gitdir = resolve(admin, text.trimEnd());
       // A registration no later call would take is not recorded.
-      const own = !offMachine(gitdir) && basename(gitdir) === ".git" && realDirId(dirname(gitdir)) === folder.id && realDirId(dirname(dirname(gitdir))) === at.run.id;
-      return own ? { admin, id: held.id, gitdir } : undefined;
+      const own = runFolderOf(at.run, key, gitdir);
+      return own !== undefined && realDirId(own) === folder.id ? { admin, id: held.id, gitdir } : undefined;
     } catch {
       return undefined;
     }
@@ -154,7 +154,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
   function recordRegistration(at: Held, key: string, folder: OwnedDir | undefined): Registration | undefined {
     const known = at.file.registrations[key];
     if (known !== undefined || folder === undefined) return known;
-    const registration = captureRegistration(at, folder);
+    const registration = captureRegistration(at, key, folder);
     if (registration !== undefined) {
       at.file.registrations[key] = registration;
       writeRunFile(at, at.file);
@@ -171,8 +171,9 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     const worktrees = holdDir(repo.gitDir, repo.id).existing("worktrees");
     if (worktrees === undefined) return undefined;
     const name = basename(registration.admin);
-    if (!registeredIn(at.run.id, key, registration.gitdir)) throw new OwnedFsError("changed", "the registration points outside the run's folder");
-    const folder = nodeIdOf(dirname(registration.gitdir));
+    const own = runFolderOf(at.run, key, registration.gitdir);
+    if (own === undefined) throw new OwnedFsError("changed", "the registration points outside the run's folder");
+    const folder = nodeIdOf(own);
     if (folder !== undefined && folder !== (key === JOIN_DIR ? at.file.joinDir : at.file.stages[key]?.dir)) throw new OwnedFsError("changed", "the registration points at a folder the run did not make");
     if (realDirId(dirname(registration.admin)) !== worktrees.id) throw new OwnedFsError("changed", "the registration is not in the run's repository");
     if (worktrees.entryId(name) === undefined) return undefined;
