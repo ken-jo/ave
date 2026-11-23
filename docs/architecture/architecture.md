@@ -2280,12 +2280,24 @@ Key boundaries:
 
 ### Process plugin lifecycle
 
-On Linux and macOS, a `process` plugin launches in a detached process group
-under mandatory OS confinement. It requires a live process-group reaper before
-spawn. If the reaper goes away, the host stops the process plugins it tracks and
-refuses new process-plugin launches until the reaper recovers. On host death the
-reaper reads EOF and kills the registered groups. Explicit stop also signals the
-group, including descendants still running after the leader exits.
+On Linux and macOS, the host starts a trusted launch wrapper as the leader of a
+detached process group. The wrapper waits on a dedicated release pipe. The host
+registers the PGID with the reaper and waits for both the queued write to flush
+and a matching framed acknowledgment from that reaper. Only then does the host
+send the release byte. The wrapper closes its release descriptor and executes
+the mandatory sandbox command. EOF before the release byte makes the wrapper
+exit without executing the command, including when the host dies during
+registration or immediately after acknowledgment.
+
+Once released, the group is registered with the reaper. If the host dies while
+the reaper is live, the reaper reads EOF on its host-liveness pipe and kills the
+registered groups. If the host observes reaper loss, it stops the process
+plugins it tracks and refuses new launches until recovery. Simultaneous loss
+of the host and reaper can leave a released group without either cleanup path.
+Explicit stop and leader exit also trigger termination of a still-owned group.
+The tracker cancels pending force-kill escalation when it releases the group
+after observing its disappearance. A group that disappears and has its PGID
+reused between observations retains the platform's PGID-reuse risk.
 
 Linux tears down the sandbox PID namespace, including descendants in new process
 groups or sessions. On macOS, a descendant that moves to a different process group
@@ -2293,12 +2305,16 @@ with `setsid()` or `setpgid()` can survive host death. This is an accepted limit
 of macOS process cleanup. The descendant remains bound by its original Seatbelt
 profile, and its host-owned proxy listener goes away with the host.
 
-The [host-death heartbeat test](../../src/plugins/isolation/__tests__/process-plugin-host-death.test.ts)
-closes the plugin's stdin and then the reaper pipe. It checks that every Linux
-heartbeat stops within two seconds, including the new-session grandchild. On
-macOS it checks that the original group's heartbeats stop and that the surviving
-grandchild cannot write outside its granted roots or use its plugin proxy after
-the host's proxy listeners close.
+The [launch handoff tests](../../src/main/__tests__/process-group-reaper.test.ts)
+kill a sacrificial host before registration, after the registration write
+without an acknowledgment, after acknowledgment without release, and after
+release. Each checks that the OS reports the group gone. The
+[host-death heartbeat test](../../src/plugins/isolation/__tests__/process-plugin-host-death.test.ts)
+waits for readiness and stdin EOF acknowledgments before killing a sacrificial
+host that launched the confined plugin. It verifies that the original group is
+gone and checks the processes that wrote the heartbeats. On Linux the new session
+is also gone. On macOS it survives, acknowledges a probe, and cannot write
+outside its granted roots or use the former host's plugin proxy.
 
 ### Extension alerts and scheduled routines
 
