@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { requireMxcCapability } from "../../__tests__/support/mxc-capability.js";
+import { registerMxcShellLaunchAdmissionFixture } from "../../__tests__/support/mxc-shell-launch-admission.js";
 import { resetFixtureAcls } from "../../__tests__/support/fixture-owner.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { quotePowerShell } from "../../__tests__/support/powershell-literal.js";
@@ -11,7 +12,7 @@ import { configureHostResources } from "../../main/host-resources.js";
 import { win32SystemBinary, windowsSystemRoot } from "../../shared/windows-system-path.js";
 import { ensureAveHomePrivate } from "../../shared/ave-home.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
-import { prepareMxcShellLaunch } from "../../tools/mxc-shell-launch.js";
+import { prepareOwnedMxcShellLaunch } from "../../__tests__/support/contained-shell-launch.js";
 import { initializeAsrtSandbox, resetAsrtSandbox } from "../asrt-sandbox.js";
 import { openEgressInvocation } from "../egress-invocations.js";
 import { powerShellMxcCommandLine } from "../mxc-windows.js";
@@ -20,6 +21,8 @@ import * as policyHome from "../../shared/policy-home.js";
 
 // Exercise native filesystem policy directly so argument analysis cannot cause the refusal.
 describe.runIf(process.platform === "win32")("container control-file write boundary", () => {
+  registerMxcShellLaunchAdmissionFixture();
+
   it("blocks opaque control writes and permits ordinary repository commits", {
     timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs + TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs,
   }, async (testContext) => {
@@ -48,12 +51,12 @@ describe.runIf(process.platform === "win32")("container control-file write bound
         join(project, ".bash_profile"), join(configuration, "future-control.json")];
       for (const target of targets) if (!existsSync(target)) writeFileSync(target, "original");
       async function run(command: string, target: string): Promise<{ status: number | null; output: string }> {
-        const invocation = openEgressInvocation({ kind: "shell", toolName: "powershell", toolUseId: undefined,
+        const invocation = openEgressInvocation({ kind: "shell", toolName: "powershell", toolUseId: undefined, requiresListener: true,
           context: { sessionId: undefined, workspaceRoot: project, approvalSurface: "unavailable" } });
         const policy = buildMandatorySandboxWritePolicy([project, configuration]);
-        let launch: Awaited<ReturnType<typeof prepareMxcShellLaunch>> | undefined;
+        let launch: Awaited<ReturnType<typeof prepareOwnedMxcShellLaunch>> | undefined;
         try {
-          launch = await prepareMxcShellLaunch({
+          launch = await prepareOwnedMxcShellLaunch({
           egressToken: invocation.token, commandLine: powerShellMxcCommandLine(windowsSystemRoot(), command), cwd: project,
           filesystem: { allowRead: [windowsSystemRoot(), gitRoot, project, configuration], allowWrite: policy.allowWrite,
             denyRead: [], denyWrite: policy.denyWrite.map(entry => typeof entry === "string" ? entry : entry.path) },
@@ -61,6 +64,7 @@ describe.runIf(process.platform === "win32")("container control-file write bound
           timeoutMs: TOOL_TIMEOUT_POLICY.shellDefaultMs, exists: existsSync,
           });
           const prepared = launch;
+          prepared.activate();
           return await new Promise<{ status: number | null; output: string }>((resolveRun, reject) => {
             const child = spawn(prepared.argv[0]!, prepared.argv.slice(1), { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
             prepared.bindChild(child);

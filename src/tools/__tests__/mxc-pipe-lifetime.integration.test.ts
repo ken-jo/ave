@@ -4,15 +4,18 @@ import { tmpdir } from "node:os";
 import { join, resolve, win32 } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { requireMxcCapability } from "../../__tests__/support/mxc-capability.js";
+import { registerMxcShellLaunchAdmissionFixture } from "../../__tests__/support/mxc-shell-launch-admission.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { getDefaultSensitiveWriteDenyPaths, getProtectedReadDenyFloor, initializeAsrtSandbox, resetAsrtSandbox } from "../../permissions/asrt-sandbox.js";
 import { openEgressInvocation } from "../../permissions/egress-invocations.js";
 import * as policyHome from "../../shared/policy-home.js";
 import { resolveTrustedPowerShellExecutable } from "../../shared/powershell-executable.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
-import { prepareMxcShellLaunch } from "../mxc-shell-launch.js";
+import { prepareOwnedMxcShellLaunch } from "../../__tests__/support/contained-shell-launch.js";
 
 describe.runIf(process.platform === "win32")("native pipe policy lifetime", () => {
+  registerMxcShellLaunchAdmissionFixture();
+
   it("keeps a pipe-launched command alive beyond the delivery deadline", async (context) => {
     configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     await requireMxcCapability(context.skip);
@@ -22,14 +25,14 @@ describe.runIf(process.platform === "win32")("native pipe policy lifetime", () =
     const readonly = Array.from({ length: 100 }, (_, index) => join(home, `example-${index}`));
     for (const path of readonly) mkdirSync(path);
     vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([home]);
-    let launch: Awaited<ReturnType<typeof prepareMxcShellLaunch>> | undefined;
+    let launch: Awaited<ReturnType<typeof prepareOwnedMxcShellLaunch>> | undefined;
     let egress: ReturnType<typeof openEgressInvocation> | undefined;
     try {
       await initializeAsrtSandbox({ allowedDomains: [], windows: { externalConfinement: true } });
-      egress = openEgressInvocation({ kind: "shell", toolName: "powershell", toolUseId: undefined,
+      egress = openEgressInvocation({ kind: "shell", toolName: "powershell", toolUseId: undefined, requiresListener: true,
         context: { sessionId: undefined, workspaceRoot: directory, approvalSurface: "unavailable" } });
       const executable = resolveTrustedPowerShellExecutable()!.executable;
-      launch = await prepareMxcShellLaunch({
+      launch = await prepareOwnedMxcShellLaunch({
         egressToken: egress.token, cwd: directory,
         commandLine: `"${executable}" -NoProfile -NonInteractive -Command "Start-Sleep -Seconds 20; Write-Output done"`,
         filesystem: { allowWrite: [directory], allowRead: [home, ...readonly], denyRead: getProtectedReadDenyFloor(), denyWrite: getDefaultSensitiveWriteDenyPaths() },
@@ -39,6 +42,7 @@ describe.runIf(process.platform === "win32")("native pipe policy lifetime", () =
       expect(launch.argv[1]).toBe("--config");
       expect(launch.argv[2]).toMatch(/^\\\\\.\\pipe\\ave-mxc-[a-f0-9]{32}$/);
       const started = performance.now();
+      launch.activate();
       const result = await new Promise<{ stdout: string; stderr: string }>((resolveRun, reject) => {
         const child = execFile(launch!.argv[0]!, [...launch!.argv.slice(1)], {
           cwd: win32.dirname(launch!.argv[0]!), windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs,
