@@ -289,6 +289,22 @@ describe("last Windows lane removal", () => {
     expect(() => assertWindowsRemovalRecords(windowsCoverageDepartures(readVersion), readVersion)).toThrow(file);
   });
 
+  it("accepts a revised record when a restored suite leaves again", () => {
+    // A base record for a departing suite means the suite had returned to a base lane.
+    const prior = recordFor({ reason: "Previously removed coverage" });
+    const readVersion = versions(recordFor({ reason: "The restored suite moved to the canonicalization audit" }), prior);
+    expect(() => assertWindowsRemovalRecords(windowsCoverageDepartures(readVersion), readVersion)).not.toThrow();
+  });
+
+  it.each([
+    ["unchanged", "Previously removed coverage"],
+    ["padded", "  Previously removed coverage "],
+    ["zero-width-marked", "Previously​ removed coverage⁠"],
+  ])("rejects an %s historical reason for a suite that leaves again", (_name, revised) => {
+    const readVersion = versions(recordFor({ reason: revised }), recordFor({ reason: "Previously removed coverage" }));
+    expect(() => assertWindowsRemovalRecords(windowsCoverageDepartures(readVersion), readVersion)).toThrow(file);
+  });
+
   it("accepts a replacement that a surviving Windows lane collects at head", () => {
     expect(surviving).not.toBe("");
     const readVersion = versions(recordFor({ reason, replacement: surviving }));

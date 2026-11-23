@@ -162,11 +162,12 @@ export function assertWindowsRemovalRecords(departures, readVersion) {
     if (!record || !/[\p{L}\p{N}]/u.test(reason)
       || (record.replacement !== undefined && (typeof record.replacement !== "string"
         || !surviving.has(record.replacement) || !isCollectedVitestFile(record.replacement)))
-      || Object.hasOwn(before, file)) {
+      // A suite that returned to a lane may leave again under a revised reason.
+      || (Object.hasOwn(before, file) && typeof before[file]?.reason === "string" && visibleReason(before[file].reason) === reason)) {
       problems.push(file);
     }
   }
   if (problems.length) {
-    throw new Error(`Last Windows lane removal needs a new record in ${WINDOWS_TEST_REMOVALS} with a visible reason, and any replacement must be a suite that a surviving Windows lane collects:\n${problems.join("\n")}`);
+    throw new Error(`Last Windows lane removal needs a new or revised record in ${WINDOWS_TEST_REMOVALS} with a visible reason that differs from any base record, and any replacement must be a suite that a surviving Windows lane collects:\n${problems.join("\n")}`);
   }
 }
