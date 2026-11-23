@@ -1,10 +1,13 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter, once } from "node:events";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { access, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Writable } from "node:stream";
+import { PassThrough, Writable } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { posixProcessExists, spawnSacrificialHost, stopFixtureProcesses, stopSacrificialHost, waitForFixture, withFixtureCleanup } from "../../__tests__/support/sacrificial-host.js";
+import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import {
   createProcessGroupReaper,
   PROCESS_GROUP_REAPER_RESPAWN_MIN_INTERVAL_MS,
@@ -15,15 +18,7 @@ import {
 const node = process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath;
 const started: number[] = [];
 
-function groupAlive(pgid: number): boolean {
-  try {
-    process.kill(-pgid, 0);
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
-    throw error;
-  }
-}
+const groupAlive = (pgid: number): boolean => posixProcessExists(-pgid);
 
 afterEach(() => {
   for (const pgid of started.splice(0)) {
@@ -105,15 +100,115 @@ describe.skipIf(process.platform === "win32")("process group reaper", () => {
   });
 });
 
+const GATED_HOST = String.raw`
+  import { spawn } from "node:child_process";
+  import { once } from "node:events";
+  const [managedPath, reaperPath, target, marker] = process.argv.slice(1);
+  const { _spawnGatedManagedProcessForTest } = await import(managedPath);
+  const { createProcessGroupReaper, PROCESS_GROUP_REAPER_SPAWN } = await import(reaperPath);
+  const reaper = createProcessGroupReaper(target === "registration-written" ? () => {
+    const { command, args, options } = PROCESS_GROUP_REAPER_SPAWN;
+    const waitBeforeAck = 'printf() { IFS= read -r unused <&3; command printf "$@"; }\n';
+    return spawn(command, ["-c", waitBeforeAck + args[1]], { ...options, stdio: [...options.stdio, "pipe"] });
+  } : undefined);
+  if (target === "registration-written") {
+    const running = spawn("/bin/sleep", ["60"], { detached: true, stdio: "ignore" });
+    reaper.retain(running.pid);
+    process.send({ companion: running.pid });
+  }
+  let running;
+  await _spawnGatedManagedProcessForTest(
+    "/bin/sh", ["-c", 'printf running > "$1"; printf running; exec /bin/sleep 60', "payload", marker],
+    { stdio: ["ignore", "pipe", "ignore"] },
+    {
+      label: "gated-host-death-fixture",
+      onSpawn(child) {
+        process.send({ pgid: child.pid });
+        running = once(child.stdout, "data");
+      },
+      assertStillValid() {},
+    },
+    {
+      reaper,
+      async onBoundary(boundary) {
+        if (boundary !== target) return;
+        if (boundary === "released") await running;
+        process.send({ boundary });
+        await new Promise(() => {});
+      },
+    },
+  );
+`;
+
+describe.runIf(process.platform === "darwin" || process.platform === "linux")("process group launch handoff", () => {
+  it.each(["before-registration", "registration-written", "acknowledged", "released"])(
+    "leaves no live group when the host is killed at %s", async (boundary) => {
+      const dir = await mkdtemp(join(tmpdir(), "ave-launch-gate-"));
+      const marker = join(dir, "executed");
+      const markerExists = (): Promise<boolean> => access(marker).then(() => true, () => false);
+      let activeHost: ChildProcess | undefined;
+      let pgid: number | undefined;
+      let companion: number | undefined;
+      await withFixtureCleanup(async (deadline) => {
+        const host = spawnSacrificialHost(GATED_HOST, [
+          new URL("../managed-child-processes.ts", import.meta.url).href,
+          new URL("../process-group-reaper.ts", import.meta.url).href,
+          boundary, marker,
+        ]);
+        activeHost = host;
+        let reached: string | undefined;
+        let hostError: Error | undefined;
+        host.on("error", (error) => { hostError = error; });
+        host.on("message", (message: { pgid?: number; companion?: number; boundary?: string }) => {
+          if (message.pgid !== undefined) pgid = message.pgid;
+          if (message.companion !== undefined) companion = message.companion;
+          if (message.boundary !== undefined) reached = message.boundary;
+        });
+        await waitForFixture(boundary, () => {
+          if (hostError) throw hostError;
+          if (host.exitCode !== null || host.signalCode !== null) throw new Error("Sacrificial host exited before the launch boundary");
+          return reached;
+        }, deadline);
+        expect(reached).toBe(boundary);
+        if (pgid === undefined || pgid <= 1) throw new Error("No launch group reported");
+        const group = pgid;
+        expect(groupAlive(group)).toBe(true);
+        expect(await markerExists()).toBe(boundary === "released");
+        if (boundary === "registration-written") {
+          if (companion === undefined || companion <= 1) throw new Error("No companion group reported");
+          expect(groupAlive(companion)).toBe(true);
+        }
+        host.kill("SIGKILL");
+        await waitForFixture("host SIGKILL", () => host.signalCode ?? undefined, deadline);
+        expect(host.signalCode).toBe("SIGKILL");
+        await waitForFixture("group reaping", () =>
+          !groupAlive(group) && (companion === undefined || !groupAlive(companion)) ? true : undefined, deadline);
+        expect(await markerExists()).toBe(boundary === "released");
+        pgid = undefined;
+        companion = undefined;
+      }, [
+        { phase: "sacrificial host shutdown", run: async (deadline) => { if (activeHost) await stopSacrificialHost(activeHost, deadline); } },
+        { phase: "launch group reaping", run: (deadline) => stopFixtureProcesses([pgid, companion].flatMap((group) => group !== undefined && group > 1 ? [-group] : []), deadline) },
+        { phase: "fixture directory removal", run: () => cleanupTmpDir(dir) },
+      ]);
+    },
+  );
+});
+
 class FakeReaper extends EventEmitter {
+  pid = 4000;
   exitCode: number | null = null;
   signalCode: NodeJS.Signals | null = null;
   readonly lines: string[] = [];
+  readonly stdout = new PassThrough();
+  completeWrite?: () => void;
   // Records each write as it is made, so assertions need no event-loop turn.
   readonly stdin = new Writable({
+    highWaterMark: 1,
     write: (chunk: Buffer, _encoding, done) => {
       this.lines.push(...chunk.toString().split("\n").filter(Boolean));
-      done();
+      if (chunk[0] === 64) this.completeWrite = done;
+      else done();
     },
   });
   unref = vi.fn();
@@ -137,6 +232,84 @@ function fakeReapers(): { fakes: FakeReaper[]; spawnReaper: () => ChildProcess }
 }
 
 describe("process group reaper bookkeeping", () => {
+  it("runs later cleanup steps and preserves the original fixture failure", async () => {
+    const failure = new Error("Fixture assertion failed");
+    const cleanupFailure = new Error("Fixture cleanup failed");
+    const laterCleanup = vi.fn();
+    await expect(withFixtureCleanup(async () => { throw failure; }, [
+      { phase: "failing cleanup", run: () => { throw cleanupFailure; } },
+      { phase: "remaining cleanup", run: laterCleanup },
+    ])).rejects.toMatchObject({ errors: [failure, cleanupFailure] });
+    expect(laterCleanup).toHaveBeenCalledOnce();
+  });
+
+  it("reports a stalled cleanup phase within the teardown allowance and preserves the fixture failure", async () => {
+    vi.useFakeTimers();
+    try {
+      const failure = new Error("Fixture assertion failed");
+      const reportFailure = vi.fn();
+      const laterCleanup = vi.fn();
+      void withFixtureCleanup(async () => { throw failure; }, [
+        { phase: "fixture directory removal", run: () => new Promise<void>(() => {}) },
+        { phase: "remaining cleanup", run: laterCleanup },
+      ]).catch(reportFailure);
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(laterCleanup).toHaveBeenCalledOnce();
+      expect(reportFailure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        errors: [failure, expect.objectContaining({ message: "Fixture cleanup timed out during fixture directory removal" })],
+      }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["fulfills", "rejects"])("reports a timeout when cleanup %s after its slice", async (settlement) => {
+    const clock = vi.spyOn(performance, "now").mockReturnValue(0);
+    try {
+      await expect(withFixtureCleanup(async () => {}, [{
+        phase: "fixture directory removal",
+        run: async (deadline) => {
+          clock.mockReturnValue(deadline + 1);
+          if (settlement === "rejects") throw new Error("Directory removal failed");
+        },
+      }])).rejects.toThrow("Fixture cleanup timed out during fixture directory removal");
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("requires a complete matching ack and the queued write callback", async () => {
+    const fake = new FakeReaper();
+    const reaper = createProcessGroupReaper(() => fake as unknown as ChildProcess);
+    const written = vi.fn();
+    const accepted = vi.fn();
+    reaper.retain(4242);
+    const ack = reaper.acknowledge(4242, new AbortController().signal, written).then(accepted);
+    expect(fake.stdin.writableNeedDrain).toBe(true);
+    fake.stdout.write("@2\n@");
+    fake.stdout.write("1");
+    fake.completeWrite?.();
+    await vi.waitFor(() => expect(written).toHaveBeenCalledOnce());
+    expect(accepted).not.toHaveBeenCalled();
+    fake.stdout.write("\n");
+    await ack;
+    expect(accepted).toHaveBeenCalledOnce();
+    reaper.shutdown();
+  });
+
+  it("rejects a pending ack when the reaper is lost", async () => {
+    const { fakes, spawnReaper } = fakeReapers();
+    const reaper = createProcessGroupReaper(spawnReaper);
+    reaper.retain(4242);
+    const [first] = fakes;
+    if (!first) throw new Error("Missing reaper");
+    const ack = reaper.acknowledge(4242, new AbortController().signal);
+    first.die();
+    await expect(ack).rejects.toThrow(/reaper is unavailable/);
+    reaper.shutdown();
+  });
+
   it("spawns one reaper lazily and counts registrations per group", () => {
     const { fakes, spawnReaper } = fakeReapers();
     const reaper = createProcessGroupReaper(spawnReaper);
@@ -152,26 +325,32 @@ describe("process group reaper bookkeeping", () => {
     expect(fakes[0].unref).toHaveBeenCalled();
   });
 
-  it("replaces a reaper that ended while groups are registered, at most once per interval", () => {
-    let clock = 10_000;
+  it("replaces a reaper that dies twice within the interval without waiting for another registration", () => {
+    vi.useFakeTimers();
     const { fakes, spawnReaper } = fakeReapers();
-    const reaper = createProcessGroupReaper(spawnReaper, { now: () => clock });
-    reaper.retain(5001);
-    fakes[0].die();
-    expect(fakes).toHaveLength(2);
-    expect(fakes[1].lines).toEqual(["+5001"]);
-
-    // Ending again inside the interval trips the guard; the next registration brings a reaper back with every group.
-    fakes[1].die();
-    expect(fakes).toHaveLength(2);
-    reaper.retain(5002);
-    expect(fakes).toHaveLength(3);
-    expect(fakes[2].lines).toEqual(["+5001", "+5002"]);
-
-    clock += PROCESS_GROUP_REAPER_RESPAWN_MIN_INTERVAL_MS;
-    fakes[2].die();
-    expect(fakes).toHaveLength(4);
-    expect(fakes[3].lines).toEqual(["+5001", "+5002"]);
+    const reaper = createProcessGroupReaper(spawnReaper);
+    try {
+      reaper.retain(5001);
+      const [first] = fakes;
+      if (!first) throw new Error("Missing initial reaper");
+      first.die();
+      expect(fakes).toHaveLength(2);
+      const second = fakes[1];
+      if (!second) throw new Error("Missing first replacement");
+      expect(second.lines).toEqual(["+5001"]);
+      vi.advanceTimersByTime(100);
+      second.die();
+      vi.advanceTimersByTime(PROCESS_GROUP_REAPER_RESPAWN_MIN_INTERVAL_MS - 101);
+      expect(fakes).toHaveLength(2);
+      vi.advanceTimersByTime(1);
+      expect(fakes).toHaveLength(3);
+      const third = fakes[2];
+      if (!third) throw new Error("Missing second replacement");
+      expect(third.lines).toEqual(["+5001"]);
+    } finally {
+      reaper.shutdown();
+      vi.useRealTimers();
+    }
   });
 
   it("does not replace a reaper that ended with no group registered", () => {
@@ -181,6 +360,28 @@ describe("process group reaper bookkeeping", () => {
     reaper.release(6001);
     fakes[0].die();
     expect(fakes).toHaveLength(1);
+  });
+
+  it("refuses initial admission when spawning returns no pid, then recovers without new registrations", () => {
+    vi.useFakeTimers();
+    const failed = Object.assign(new FakeReaper(), { pid: undefined });
+    const spawnReaper = vi.fn<() => ChildProcess>()
+      .mockReturnValueOnce(failed as unknown as ChildProcess)
+      .mockReturnValueOnce(new FakeReaper() as unknown as ChildProcess);
+    const onUnavailable = vi.fn();
+    const reaper = createProcessGroupReaper(spawnReaper, { onUnavailable });
+    try {
+      expect(() => reaper.assertAvailable()).toThrow(/reaper is unavailable/);
+      expect(() => reaper.assertAvailable()).toThrow(/reaper is unavailable/);
+      expect(spawnReaper).toHaveBeenCalledTimes(1);
+      expect(onUnavailable).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(PROCESS_GROUP_REAPER_RESPAWN_MIN_INTERVAL_MS);
+      expect(spawnReaper).toHaveBeenCalledTimes(2);
+      expect(() => reaper.assertAvailable()).not.toThrow();
+    } finally {
+      reaper.shutdown();
+      vi.useRealTimers();
+    }
   });
 
   it("undoes a registration whose reaper could not be started", () => {
