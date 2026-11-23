@@ -133,6 +133,11 @@ export function windowsCoverageDepartures(readVersion) {
   return new Map([...before].filter(([file]) => !after.has(file)).sort(([a], [b]) => a.localeCompare(b, "en")));
 }
 
+// Invisible and spacing characters cannot explain a removal.
+function visibleReason(reason) {
+  return reason.replace(/\p{Default_Ignorable_Code_Point}/gu, "").replace(/[\s\p{Z}]+/gu, " ").trim();
+}
+
 export function assertWindowsRemovalRecords(departures, readVersion) {
   const parse = side => {
     const text = readVersion(WINDOWS_TEST_REMOVALS, side);
@@ -144,16 +149,24 @@ export function assertWindowsRemovalRecords(departures, readVersion) {
   };
   const before = parse("before");
   const after = parse("after");
+  // A replacement claims coverage, so it must be a suite a Windows lane still runs.
+  const surviving = new Set();
+  for (const list of WINDOWS_TEST_LISTS) {
+    const text = readVersion(list, "after");
+    for (const file of text === null ? [] : windowsTestFiles(text)) surviving.add(file);
+  }
   const problems = [];
   for (const file of departures.keys()) {
     const record = Object.hasOwn(after, file) ? after[file] : undefined;
-    if (Object.hasOwn(before, file) || !record || typeof record.reason !== "string" || !record.reason.trim()
+    const reason = typeof record?.reason === "string" ? visibleReason(record.reason) : "";
+    if (!record || !/[\p{L}\p{N}]/u.test(reason)
       || (record.replacement !== undefined && (typeof record.replacement !== "string"
-        || !record.replacement.trim() || record.replacement === file))) {
+        || !surviving.has(record.replacement) || !isCollectedVitestFile(record.replacement)))
+      || Object.hasOwn(before, file)) {
       problems.push(file);
     }
   }
   if (problems.length) {
-    throw new Error(`Last Windows lane removal needs a new record with a reason in ${WINDOWS_TEST_REMOVALS}:\n${problems.join("\n")}`);
+    throw new Error(`Last Windows lane removal needs a new record in ${WINDOWS_TEST_REMOVALS} with a visible reason, and any replacement must be a suite that a surviving Windows lane collects:\n${problems.join("\n")}`);
   }
 }

@@ -267,6 +267,45 @@ describe("last Windows lane removal", () => {
     expect(() => assertWindowsRemovalRecords(departures, versions(reused, reused))).toThrow(file);
   });
 
+  const recordFor = (record: Record<string, unknown>) => JSON.stringify({ [file]: record });
+  const reason = "An equivalent canonicalization suite covers the boundary";
+  const surviving = inventories[native][0] ?? "";
+  it.each([
+    ["an empty reason", { reason: "" }],
+    ["a whitespace reason", { reason: " \t 　" }],
+    ["a zero-width reason", { reason: "​" }],
+    ["a format-character reason", { reason: "‍⁠﻿" }],
+    ["a Hangul filler reason", { reason: "ㅤ" }],
+    ["a blank Braille reason", { reason: "⠀" }],
+    ["a wildcard replacement", { reason, replacement: "*" }],
+    ["a nonexistent replacement", { reason, replacement: "src/permissions/__tests__/missing-canonicalize.test.ts" }],
+    ["a replacement outside every lane", { reason, replacement: "src/core/__tests__/route-input.test.ts" }],
+    ["a padded replacement", { reason, replacement: ` ${surviving}` }],
+    ["a dotted replacement", { reason, replacement: `./${surviving}` }],
+    ["the departing suite as its own replacement", { reason, replacement: file }],
+  ])("rejects a record with %s", (_name, record) => {
+    expect(Object.values(inventories).flat()).not.toContain("src/core/__tests__/route-input.test.ts");
+    const readVersion = versions(recordFor(record));
+    expect(() => assertWindowsRemovalRecords(windowsCoverageDepartures(readVersion), readVersion)).toThrow(file);
+  });
+
+  it("accepts a replacement that a surviving Windows lane collects at head", () => {
+    expect(surviving).not.toBe("");
+    const readVersion = versions(recordFor({ reason, replacement: surviving }));
+    expect(() => assertWindowsRemovalRecords(windowsCoverageDepartures(readVersion), readVersion)).not.toThrow();
+  });
+
+  it("accepts every committed record against the lanes at head", () => {
+    const records = JSON.parse(readFileSync(WINDOWS_TEST_REMOVALS, "utf8")) as Record<string, unknown>;
+    const departures = new Map(Object.keys(records).map(path => [path, permission] as const));
+    const head: ReadWindowsVersion = (path, side) => {
+      if (path === WINDOWS_TEST_REMOVALS) return side === "after" ? JSON.stringify(records) : "{}";
+      return WINDOWS_TEST_LISTS.includes(path as typeof permission) ? readFileSync(path, "utf8") : null;
+    };
+    expect(departures.size).toBeGreaterThan(0);
+    expect(() => assertWindowsRemovalRecords(departures, head)).not.toThrow();
+  });
+
   it.each([false, true])("runs the departing suite once with a new record (full=%s)", full => {
     const readVersion = versions(JSON.stringify({ [file]: { reason: "An equivalent canonicalization suite covers the boundary" } }));
     const departures = windowsCoverageDepartures(readVersion);
