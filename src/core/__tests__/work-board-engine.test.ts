@@ -444,7 +444,7 @@ describe("WorkBoardEngine — execute child id is exposed when it links (WB-1)",
         if (got.status !== "found") throw new Error("missing item");
         expect(got.item.runStatus).toBe("executing");
         expect(got.item.runSessionId).toBe(execChild);
-      });
+      }, "the row to show the execute child");
 
       release();
       expect((await run).status).toBe("completed");

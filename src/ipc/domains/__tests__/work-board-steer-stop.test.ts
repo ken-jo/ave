@@ -200,7 +200,7 @@ describe("work-board decide-plan IPC", () => {
     expect(sent.find(([channel]) => channel === WORK_BOARD.runStarted)?.[1]).toMatchObject({ itemId: 7, resumed: true });
     expect(sent.some(([channel]) => channel === WORK_BOARD.runFinished)).toBe(false);
     settle({ status: "completed" });
-    await untilAsserted(onSend, () => expect(sent.find(([channel]) => channel === WORK_BOARD.runFinished)?.[1]).toMatchObject({ itemId: 7, status: "completed" }));
+    await untilAsserted(onSend, () => expect(sent.find(([channel]) => channel === WORK_BOARD.runFinished)?.[1]).toMatchObject({ itemId: 7, status: "completed" }), "the completed run-finished send");
   });
 
   it.each([

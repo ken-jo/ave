@@ -255,7 +255,7 @@ describe("WorkBoardEngine — the planning child is recorded as it links", () =>
         if (got.status !== "found") throw new Error("missing item");
         expect(got.item.runStatus).toBe("planning");
         expect(got.item.runSessionId).toBe(`work-board:${id}::plan`);
-      });
+      }, "the row to show the plan child");
       releasePlan();
       expect((await run).status).toBe("denied");
     } finally {

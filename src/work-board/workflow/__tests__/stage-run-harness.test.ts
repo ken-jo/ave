@@ -1519,7 +1519,7 @@ it("cleanup ends every pending wait at once and leaves no listener or timer behi
     const outcome = (wait: Promise<unknown>) => wait.then(() => "resolved", (error: unknown) => String(error));
     const never = () => expect("waiting").toBe("passed");
     const waits = Promise.all([outcome(h.settleEvent()), outcome(h.untilLive(1)), outcome(h.until(id, () => false, "a predicate that never holds")),
-      outcome(h.untilRunFile(never)), outcome(h.untilObserved(never)), outcome(h.untilWorkspaceCalls(never))]);
+      outcome(h.untilRunFile(never, "the stage to pass")), outcome(h.untilObserved(never)), outcome(h.untilWorkspaceCalls(never))]);
     expect(h.pendingWaits()).toBe(6);
     expect(vi.getTimerCount()).toBe(6);
     cleaned = h.cleanup();
@@ -1528,9 +1528,12 @@ it("cleanup ends every pending wait at once and leaves no listener or timer behi
     // Past every bound before the directory removal can schedule anything: no wait fails late.
     vi.advanceTimersByTime(30_000);
     vi.useRealTimers();
-    const unmet = "AssertionError: expected 'waiting' to be 'passed' // Object.is equality";
+    // An assertion wait names what it waited for, says cleanup ended it, and keeps the assertion's last failure.
+    const unmet = (what: string) => `Error: the harness was cleaned up while waiting for ${what}; last failure: expected 'waiting' to be 'passed' // Object.is equality`;
     expect(await waits).toEqual(["Error: Progress wait ended: harness cleaned up", "Error: Child wait ended: harness cleaned up",
-      "Error: Wait for a predicate that never holds ended: harness cleaned up", unmet, unmet, unmet]);
+      "Error: Wait for a predicate that never holds ended: harness cleaned up", unmet("the stage to pass"),
+      unmet("a run-file commit or progress event that passes the assertion"), unmet("a workspace call or sweep that passes the assertion")]);
+    expect(await outcome(h.untilRunFile(never, "a late wait"))).toBe("Error: the harness was cleaned up before waiting for a late wait");
     expect(await outcome(h.settleEvent())).toBe("Error: Progress wait ended: harness cleaned up");
   } finally {
     vi.useRealTimers();
