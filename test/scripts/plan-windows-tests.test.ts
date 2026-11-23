@@ -147,10 +147,10 @@ describe("Windows regression planning", () => {
     expect(run(changed)).toMatchObject({ mode: "full", reason: expect.stringContaining("no known suite owners") });
   });
 
-  const readerDigest = (file: string, source: string) => {
-    const tokens = windowsImportGraph(new Map([[file, source]])).get(file)?.tokens;
-    if (!tokens) throw new Error(`No runtime tokens for ${file}`);
-    return windowsReaderDigest(tokens);
+  const readerDigest = (file: string, source: string, others: ReadonlyMap<string, string> = new Map()) => {
+    const digest = windowsReaderDigest(file, windowsImportGraph(new Map([...others, [file, source]])));
+    if (!digest) throw new Error(`No runtime tokens for ${file}`);
+    return digest;
   };
 
   it.each([true, false])("uses a shared bundler's declared input only for its audited source (audited=%s)", audited => {
@@ -196,17 +196,56 @@ describe("Windows regression planning", () => {
     expect(selected(result)).toEqual([...core(), suite].sort());
   });
 
-  it("binds every declared runtime input scope to the audited reader source", () => {
+  it("binds every declared runtime input scope to the audited reader and helper sources", () => {
     const files = Object.keys(windowsRuntimeInputScopes);
     expect(files.length).toBeGreaterThan(0);
-    const graph = windowsImportGraph(new Map(files.map(file => [file, readFileSync(file, "utf8")])));
-    // Re-audit what a changed reader can read, then record the digest printed here.
+    const graph = windowsImportGraph(readWindowsSources(process.cwd()));
+    // Re-audit what a changed reader or one of its helpers can read, then record the digest printed here.
     const drifted = files.flatMap(file => {
-      const tokens = graph.get(file)?.tokens;
-      const digest = tokens ? windowsReaderDigest(tokens) : "missing";
+      const digest = windowsReaderDigest(file, graph) ?? "missing";
       return digest === windowsRuntimeInputScopes[file]?.digest ? [] : [`${file}: ${digest}`];
     });
     expect(drifted).toEqual([]);
+    for (const [file, scope] of Object.entries(windowsRuntimeInputScopes)) {
+      for (const name of scope.readers ?? []) expect(readFileSync(file, "utf8")).toMatch(new RegExp(`export (?:async )?function ${name}\\b`, "u"));
+    }
+  }, 45_000);
+
+  it("invalidates a declared scope when a helper two imports away changes", () => {
+    const reader = "src/__tests__/support/test-reader.ts";
+    const middle = "src/__tests__/support/test-paths.ts";
+    const leaf = "src/__tests__/support/test-names.ts";
+    const sources = new Map(readSources())
+      .set(permissionSuite, 'import "../../__tests__/support/test-reader.js";')
+      .set(reader, 'import { paths } from "./test-paths.js"; export const read = () => paths;')
+      .set(middle, 'export { names as paths } from "./test-names.js";')
+      .set(leaf, 'export const names = ["a"];');
+    const inputScopes = { [reader]: { digest: readerDigest(reader, sources.get(reader) ?? "", sources), inputs: [] } };
+    const run = () => selected(planWindowsTests({
+      event: "pull_request", changes: [modified(changed)], inventories, inputScopes, readSources: () => sources,
+    }));
+    expect(run()).toEqual(core());
+    sources.set(leaf, 'export const names = ["a", "b"];');
+    expect(run()).toEqual([...core(), permissionSuite].sort());
+  });
+
+  it.each([
+    ["a computed argument", 'import { readRepoFile } from "../../__tests__/test-helpers.js"; const n = "format"; readRepoFile(["src/shared/test", n].join("-"));', true],
+    ["the reader passed as a value", 'import { readRepoFile } from "../../__tests__/test-helpers.js"; ["src/shared/test-change.ts"].map(readRepoFile);', true],
+    ["a namespace call with a computed argument", 'import * as helpers from "../../__tests__/test-helpers.js"; helpers.readRepoFile(process.env.TARGET);', true],
+    ["a literal argument", 'import { readRepoFile } from "../../__tests__/test-helpers.js"; readRepoFile("src/shared/test-change.ts");', false],
+  ])("treats a caller of a bounded helper with %s as an unbounded reader", (_name, source, unbounded) => {
+    const helper = "src/__tests__/test-helpers.ts";
+    const helperSource = readFileSync(helper, "utf8");
+    const other = "src/shared/test-other.ts";
+    const sources = new Map(readSources()).set(helper, helperSource).set(permissionSuite, source).set(other, "export {};");
+    const graph = windowsImportGraph(sources);
+    const inputScopes = { [helper]: { digest: windowsReaderDigest(helper, graph) ?? "", inputs: [], readers: ["readRepoFile", "inspectFile"] } };
+    const result = planWindowsTests({
+      event: "pull_request", changes: [modified(other)], inventories, inputScopes, readSources: () => sources,
+    });
+    expect(result.mode).toBe("affected");
+    expect(selected(result).includes(permissionSuite)).toBe(unbounded);
   });
 
   it.each([

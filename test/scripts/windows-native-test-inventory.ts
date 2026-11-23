@@ -487,6 +487,55 @@ function callArguments(tokens: readonly string[], opening: number, closing = ")"
   return [];
 }
 
+// A literal final component fixes the file name even when the parent is dynamic.
+// Every matching repository path is already indexed by its suffix.
+function fixedFilename(expression: readonly string[]): boolean {
+  if (expression.length === 1 && literal(expression[0]) !== undefined) return true;
+  const opening = expression.indexOf("(");
+  if (opening < 0 || expression.at(-1) !== ")") return false;
+  const name = expression[opening - 1] ?? "";
+  if (name === "URL" && expression[0] === "new") return literal(expression[opening + 1]) !== undefined;
+  if (name === "fileURLToPath") return fixedFilename(expression.slice(opening + 1, -1));
+  // `[...].join("-")` is not a path join: only a bare or path-module call counts.
+  // `require.resolve("pkg/file")` names one module path; lockfile changes are global inputs.
+  if (name === "resolve" && opening === 3 && expression[0] === "require" && expression[1] === ".") {
+    return expression.length === 6 && literal(expression[4]) !== undefined;
+  }
+  const receivers = expression.slice(0, opening - 1);
+  if (!receivers.every((token, index) => index % 2 === 1 ? token === "." : ["path", "posix", "win32", "nodePath"].includes(token))
+    || (receivers.length > 0 && receivers.at(-1) !== ".")) return false;
+  const basename = literal(expression.at(-2))?.split(/[\\/]/u).at(-1);
+  return (name === "join" || name === "resolve") && Boolean(basename && basename !== "." && basename !== "..");
+}
+
+/**
+ * A declared reader's scope holds only for literal paths. Calling one of its
+ * path readers with a computed argument, or passing the reader on as a value,
+ * lets the caller read any repository path through it.
+ */
+export function callsReaderWithComputedPath(module: RuntimeModule, reader: string, names: ReadonlySet<string>): boolean {
+  const specifiers = module.dependencies.filter(dependency => dependency.file === reader).map(dependency => dependency.specifier);
+  if (specifiers.length === 0) return false;
+  const { tokens } = module;
+  const bindings = bindingsFor(tokens, new Set(), specifiers);
+  for (let i = 0; i < tokens.length; i++) {
+    const call = memberCall(tokens, bindings, i);
+    if (call && names.has(call.member)) {
+      if (!fixedFilename(callArguments(tokens, call.opening)[0] ?? [])) return true;
+      continue;
+    }
+    const binding = bindings.get(tokens[i] ?? "");
+    const namespace = binding === "*" || binding === "default";
+    const member = namespace && tokens[i + 1] === "." ? tokens[i + 2] : binding;
+    if (!member || !names.has(member)) continue;
+    const statement = tokens.lastIndexOf(";", i - 1) + 1;
+    if (tokens[statement] === "import" && !["(", "."].includes(tokens[statement + 1] ?? "")) continue;
+    // Referenced without a call: the reader escapes as a value.
+    return true;
+  }
+  return false;
+}
+
 const SOURCE_READS = new Set(["readFile", "readFileSync", "createReadStream"]);
 const SOURCE_BUILDS = new Set(["build", "buildSync", "context"]);
 
@@ -498,18 +547,6 @@ export function hasUnverifiedWindowsRuntimeInput(tokens: readonly string[]): boo
   const fs = imports(["node:fs", "fs", "node:fs/promises", "fs/promises"]);
   const children = imports(["node:child_process", "child_process"]);
   const bundler = imports(["esbuild"]);
-  // A literal final component fixes the file name even when the parent is dynamic.
-  // Every matching repository path is already indexed by its suffix.
-  function fixedFilename(expression: readonly string[]): boolean {
-    if (expression.length === 1 && literal(expression[0]) !== undefined) return true;
-    const opening = expression.indexOf("(");
-    if (opening < 0 || expression.at(-1) !== ")") return false;
-    const name = expression[opening - 1] ?? "";
-    if (name === "URL" && expression[0] === "new") return literal(expression[opening + 1]) !== undefined;
-    if (name === "fileURLToPath") return fixedFilename(expression.slice(opening + 1, -1));
-    const basename = literal(expression.at(-2))?.split(/[\\/]/u).at(-1);
-    return (name === "join" || name === "resolve") && Boolean(basename && basename !== "." && basename !== "..");
-  }
   function capturedReader(bindings: ReadonlyMap<string, string>, methods: ReadonlySet<string>, index: number): boolean {
     const binding = bindings.get(tokens[index] ?? "");
     const captured = ["=", "(", ",", "return"].includes(tokens[index - 1] ?? "");

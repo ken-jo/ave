@@ -3,7 +3,7 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, posix, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
-  hasUnverifiedWindowsRuntimeInput, isInventorySource, readWindowsSources, windowsImportGraph, windowsRuntimeInputIndex,
+  callsReaderWithComputedPath, hasUnverifiedWindowsRuntimeInput, isInventorySource, readWindowsSources, windowsImportGraph, windowsRuntimeInputIndex,
 } from "../test/scripts/windows-native-test-inventory.js";
 import { WINDOWS_TEST_LISTS, WINDOWS_TEST_SHARDS, windowsTestFiles } from "./run-windows-test-list.mjs";
 import { parseGitRawDiff } from "./hooks/pre-push-ref-updates.mjs";
@@ -71,11 +71,15 @@ function affectedFiles(
   // edit the reader may read anything, so it is unbounded until re-audited.
   const auditedInputs = (file: string) => {
     const scope = inputScopes[file];
-    const tokens = graph.get(file)?.tokens;
-    return scope && tokens && windowsReaderDigest(tokens) === scope.digest ? scope.inputs : undefined;
+    return scope && windowsReaderDigest(file, graph) === scope.digest ? scope.inputs : undefined;
   };
-  const unbounded = (file: string, tokens: readonly string[]) => auditedInputs(file) === undefined
-    && (inputScopes[file] !== undefined || hasUnverifiedWindowsRuntimeInput(tokens));
+  const pathReaders = Object.entries(inputScopes).flatMap(([reader, scope]) =>
+    scope.readers?.length ? [[reader, new Set(scope.readers)] as const] : []);
+  const unbounded = (file: string, tokens: readonly string[]) => {
+    const module = graph.get(file);
+    if (module && pathReaders.some(([reader, names]) => callsReaderWithComputedPath(module, reader, names))) return true;
+    return auditedInputs(file) === undefined && (inputScopes[file] !== undefined || hasUnverifiedWindowsRuntimeInput(tokens));
+  };
   const indexInput = windowsRuntimeInputIndex(sources);
   const importers = new Map<string, string[]>();
   const runtimeCalls = new Map<string, Set<string>>();
