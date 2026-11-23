@@ -150,6 +150,7 @@ export function permissionAuditEntryFromToolCall(args: {
       ...base,
       decision: "deny",
       denyReasons,
+      ...(permission.answer ? { answerTrustOrigin: provenanceTrustOrigin(permission.answer, "allow", args.trustOrigin) } : {}),
       ...(args.hookChain ? { hookChain: args.hookChain } : {}),
     };
   }

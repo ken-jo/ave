@@ -13,6 +13,18 @@ import { ToolRegistry } from "../registry.js";
 import { permissionAuditEntryFromToolCall } from "../pipeline/audit-entries.js";
 import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 
+const sessionRegistration = vi.hoisted(() => ({ error: undefined as string | undefined }));
+vi.mock("../../permissions/permission-slash.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("../../permissions/permission-slash.js")>();
+  return {
+    ...actual,
+    dispatchPermissionDirCommand: (...args: Parameters<typeof actual.dispatchPermissionDirCommand>) =>
+      args[0].verb === "allow" && args[0].session && sessionRegistration.error !== undefined
+        ? Promise.resolve({ ok: false as const, error: sessionRegistration.error })
+        : actual.dispatchPermissionDirCommand(...args),
+  };
+});
+
 let root: string;
 let project: string;
 let audit: AuditLogger;
@@ -32,6 +44,7 @@ beforeEach(async () => {
   registry.register(new WriteFileTool());
 });
 afterEach(async () => {
+  sessionRegistration.error = undefined;
   await audit.close();
   vi.unstubAllEnvs();
   await rm(root, { recursive: true, force: true });
@@ -145,6 +158,26 @@ describe("one terminal row per plugin-emitted invocation answered at the desk", 
     expect(rows.map(row => [row.decision, row.grantLifetime])).toEqual(expected);
     // A durable grant whose folder rule cannot be saved ends in the host's save failure, not in the desk's answer.
     expect(rows.map(row => row.trustOrigin)).toEqual(expected.map(([, lifetime]) => choice === "allow-always" && lifetime === undefined ? "unknown" : "user-keyboard"));
+  });
+
+  it.each([
+    ["allow-always", "folder rule save failed: workspace lifecycle unavailable", [["allow", "always"], ["deny", undefined]]],
+    ["allow-session", "session folder registration failed: session scope unavailable", [["deny", undefined]]],
+  ] as const)("keeps the desk's %s on the host's refusal when the folder grant cannot be kept", async (choice, reason, expected) => {
+    sessionRegistration.error = "session scope unavailable";
+    const outside = join(root, "outside");
+    await mkdir(outside);
+    const requestAndWait = answeringRequestAndWait((request: ApprovalRequestInput) => ({ choice: request.kind === "out-of-allowed-dir" ? choice : "allow-once" as const }));
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
+    const [result] = await executor.executeAll([{ id: "plugin-dir-unkept", name: "write_file", input: { path: join(outside, "unkept.txt"), content: "unkept" } }], {
+      sessionId: randomUUID(), executionCwd: project,
+      permissionContext: { trustOrigin: "plugin-emitted", additionalDirectories: [project], onTurnDirectoryGrant: vi.fn(), onSessionDirectoryGrant: vi.fn() },
+    });
+    expect(result.is_error).toBe(true);
+    await expect(readFile(join(outside, "unkept.txt"))).rejects.toThrow();
+    const rows = await ledger("plugin-dir-unkept");
+    expect(rows.map(row => [row.decision, row.grantLifetime])).toEqual(expected);
+    expect(rows.at(-1)).toMatchObject({ trustOrigin: "unknown", answerTrustOrigin: "user-keyboard", denyReasons: [{ reason }] });
   });
 
   it("records a failing tool card as the host's refusal", async () => {

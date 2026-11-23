@@ -23,6 +23,11 @@ export function refusal(reason: string, provenance: DecisionProvenance): Permiss
   return { decision: "deny", reason, provenance };
 }
 
+/** The host's refusal of an approved call; an answered approval stays on the row as the answer the host overrode. */
+export function hostRefusalOfApproval(reason: string, approved: DecisionProvenance): PermissionCheckResult {
+  return { ...refusal(reason, HOST_PROVENANCE), ...(approved.kind === "answered" ? { answer: approved } : {}) };
+}
+
 /** A result an answerer decided: it carries the gate's record of who answered, and throws when the gate kept none. */
 export function answeredPermission(permission: PermissionCheckResult, decision: ApprovalDecision): PermissionCheckResult {
   return { ...permission, provenance: answeredApprovalProvenance(decision) };

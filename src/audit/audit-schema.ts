@@ -134,6 +134,8 @@ interface AuditDeny extends AuditCommon {
   source: ToolSource;
   category: AuditToolCategory;
   denyReasons: ReadonlyArray<{ reason: string; source: string }>;
+  /** Who answered the allow this host refusal overrode; trustOrigin stays the host's. */
+  answerTrustOrigin?: HookTrustOrigin;
   hookChain?: HookResult[];
 }
 

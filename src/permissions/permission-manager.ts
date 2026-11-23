@@ -13,7 +13,7 @@ import { UserOwnedSurfaceReviewError, type UserOwnedSurfaceReviewInput } from ".
 import { runWithCeiling } from "../tools/executor-ceiling.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { isRemoteControllerBoundToSession, isUntaintedToolTrustOrigin } from "../shared/chat-origin.js";
-import type { DecisionProvenance } from "./approval-gate.js";
+import type { AnsweredProvenance, DecisionProvenance } from "./approval-gate.js";
 import { RULE_PROVENANCE } from "./decision-provenance.js";
 import { isCurrentShellRule, withCurrentShellRuleVersion, type ShellRuleVersion } from "../shared/shell-rule-version.js";
 
@@ -206,9 +206,10 @@ export interface PermissionCheckResult {
     reason: string;
     source: string;
   }>;
-  // Who made this decision; audit rows record it. Unset is the policy's own decision, recorded under the invocation's origin. A step that
-  // changes the decision sets it again.
+  // Who made this decision; audit rows record it. A step that changes the decision sets it again.
   provenance: DecisionProvenance;
+  // The answered allow a host refusal overrode; the deny row keeps its answerer beside the host's own origin.
+  answer?: AnsweredProvenance;
 }
 
 export interface PermissionCheckContext {
