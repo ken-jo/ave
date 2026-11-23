@@ -333,6 +333,14 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     return within(root, aveHome()) || within(worktreesRoot(), root);
   }
 
+  /** The repository keeps its refs in its own directory: its format names no store but plain `files` or `reftable`. Git reads the
+   * format from the repository's own configuration file alone, so that file alone is asked. */
+  async function ownRefStore(root: string, gitDir: string): Promise<boolean> {
+    const read = await git.run(root, ["config", "--file", join(gitDir, "config"), "--get-all", "extensions.refStorage"], { isolated: true, exact: true });
+    if (read.code === 1 && read.stdout === "") return true;
+    return read.code === 0 && read.stdout.endsWith("\n") && read.stdout.slice(0, -1).split("\n").every(value => value === "files" || value === "reftable");
+  }
+
   /** The repository's common directory as it really is on disk, and which directory it is. */
   async function commonDirOf(cwd: string): Promise<NonNullable<WorkspaceRecord["repo"]>> {
     const gitDir = realpathSync.native((await gitOut(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"], { exact: true })).replace(/\r?\n$/u, ""));
@@ -402,6 +410,8 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
         // A filter the repository requires for checkout is never run, so such a repository gets no git workspace.
         if (drivers.requiredFilters.length > 0 && await usesFilter(project.root, drivers.requiredFilters)) return refused("git-unavailable");
         const repo = await commonDirOf(project.root);
+        // Refs a format keeps in a folder of its own choosing, a worktree's among them, are out of reach of the run's cleanup.
+        if (!(await ownRefStore(project.root, repo.gitDir))) return refused("git-unavailable");
         // A repository directory that is no plain path gets no git workspace: no later call would take the record's path for it.
         if (vetRecordPath("gitDir", repo.gitDir, { root: project.root, gitDir: repo.gitDir }) === undefined) return refused("git-unavailable");
         gitRun = { baseCommit: found.baseCommit, branch: runBranch(run.runId), drivers, repo };

@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { aveHome } from "../../../shared/ave-home.js";
@@ -177,6 +177,23 @@ describe("git stage workspaces", () => {
     expect((JSON.parse(readFileSync(record, "utf8")) as { merging?: string }).merging).toBeDefined();
     expect(await handle.provider.integrate(handle.run, "j1", ["s1", "s2"])).toMatchObject({ ok: false, conflict: { files: [{ path: "a.txt", stageIds: ["s1", "s2"] }] } });
     expect(() => userGit(joinDir, "rev-parse", "--verify", "--quiet", "MERGE_HEAD")).toThrow();
+  });
+
+  it("a repository whose refs are kept in a folder its format names elsewhere gets no git workspace; one keeping them in its own folder does", async () => {
+    userGit(repo, "refs", "migrate", "--ref-format=reftable");
+    const store = join(base, "ref-store");
+    mkdirSync(store);
+    cpSync(join(repo, ".git", "reftable"), join(store, "reftable"), { recursive: true });
+    userGit(repo, "config", "extensions.refStorage", `reftable://${store.split("\\").join("/")}`);
+    expect(userGit(repo, "rev-parse", "--verify", "HEAD")).toMatch(/^[0-9a-f]{40}$/u);
+    const refused = start();
+    expect(await refused.provider.open(refused.run, repo)).toEqual({ ok: false, code: "git-unavailable" });
+    // Refused before anything was made: no branch, no registration, in either folder.
+    expect(userGit(repo, "for-each-ref", "--format=%(refname)", "refs/heads/")).toBe("refs/heads/main");
+    expect([existsSync(join(repo, ".git", "worktrees")), existsSync(join(store, "worktrees"))]).toEqual([false, false]);
+    userGit(repo, "config", "extensions.refStorage", "reftable");
+    const handle = start();
+    expect(await handle.provider.open(handle.run, repo)).toMatchObject({ ok: true, workspace: { kind: "git" } });
   });
 
   it("a merge state git gave no answer about is not taken for none", async () => {
