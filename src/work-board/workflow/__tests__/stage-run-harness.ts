@@ -395,7 +395,7 @@ export async function stageRunHarness(opts: {
       let checking = false;
       let changed = false;
       const onStoreChanged = () => wake();
-      const clearBound = diagnosticBound(() => description, fail);
+      const clearBound = boundWait(() => fail(new Error(`timed out waiting for ${description}`)));
       function settle(): void {
         itemWaits.delete(wake);
         unsubscribe();
@@ -451,8 +451,8 @@ export async function stageRunHarness(opts: {
   const untilStage = (itemId: number, stageId: string, status: WorkItemStageRun["status"]) =>
     until(itemId, current => statusOf(current, stageId) === status, `item ${itemId} stage ${stageId} to reach ${status}`);
   const live = () => [...liveChildren];
-  function diagnosticBound(waitingFor: () => string, onTimeout: (error: Error) => void): () => void {
-    const timeout = setTimeout(() => onTimeout(new Error(`timed out waiting for ${waitingFor()}`)), 30_000);
+  function boundWait(expire: () => void): () => void {
+    const timeout = setTimeout(expire, 30_000);
     timeout.unref();
     return () => clearTimeout(timeout);
   }
@@ -519,9 +519,9 @@ export async function stageRunHarness(opts: {
     if (failedAtCreation) return Promise.reject(failedAtCreation);
     return new Promise((resolve, reject) => {
       // Bounded below the test timeout, so a stuck wait names what it was waiting on; a slow preparation stays inside it.
-      const clearBound = diagnosticBound(() => `children; in flight: ${inFlight().join(", ") || "none"}`, error => {
+      const clearBound = boundWait(() => {
         childChanges.delete(changed);
-        reject(error);
+        reject(new Error(`timed out waiting for children; in flight: ${inFlight().join(", ") || "none"}`));
       });
       function settle(): void {
         childChanges.delete(changed);
