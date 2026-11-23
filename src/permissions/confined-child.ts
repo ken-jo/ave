@@ -1,6 +1,7 @@
 // Per-command deny arrays replace the shared boot floor, even when empty; this primitive always restates it so children cannot regain secret reads. Callers provide allow paths only.
 import { spawn, type ChildProcess, type SpawnOptions, type StdioOptions } from "node:child_process";
 import { assertSrtWinSpawnIntegrity } from "./srt-win-integrity.js";
+import { resolveHostProgram } from "../shared/host-program-path.js";
 import { win32SystemBinary } from "../shared/windows-system-path.js";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -458,13 +459,16 @@ export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<Confi
     if (spec.refreshStillValid) await spec.refreshStillValid();
     assertStillValid();
     if (confinement !== "unconfined") assertSrtWinSpawnIntegrity(executable);
+    const env = composeConfinedEnv(spec.baseEnv, wrappedEnv, spec.extraEnv ?? {});
+    // An unconfined child is a plain host spawn, so a bare name resolves on PATH only, never in a current directory.
+    const program = confinement === "unconfined" ? resolveHostProgram(executable, env) : executable;
     const options: SpawnOptions = {
       stdio,
       shell: false,
       windowsHide: true,
       // A wrapped child starts its own process session, so the sandbox profile's refusal to read other processes' arguments and environment (the carried ASRT patch) covers this process group too: Seatbelt only refuses it across sessions.
       ...(egress !== undefined && process.platform !== "win32" ? { detached: true } : {}),
-      env: composeConfinedEnv(spec.baseEnv, wrappedEnv, spec.extraEnv ?? {}),
+      env,
       // On the relay the program's directory also travels in its request; srt-win itself still starts in it.
       ...(spec.cwd !== undefined ? { cwd: spec.cwd } : {}),
     };
@@ -472,9 +476,9 @@ export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<Confi
       if (confinement !== "linux-bubblewrap" && confinement !== "macos-sandbox") {
         throw new Error(`[confined-child] ${spec.label}: process group launch requires POSIX confinement`);
       }
-      child = await spawnGatedManagedProcess(executable, args, options, { label: spec.label, onSpawn: noteSpawn, assertStillValid });
+      child = await spawnGatedManagedProcess(program, args, options, { label: spec.label, onSpawn: noteSpawn, assertStillValid });
     } else {
-      child = spawn(executable, args, options);
+      child = spawn(program, args, options);
       noteSpawn(child);
       trackManagedChildProcess(child, { label: spec.label, killProcessGroup: egress !== undefined && process.platform !== "win32" });
     }
