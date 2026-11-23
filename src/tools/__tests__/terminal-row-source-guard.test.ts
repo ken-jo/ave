@@ -24,6 +24,17 @@ const NON_INVOCATION_WRITERS = new Set([
   "permissions/judge/judge-engine.ts",
   "permissions/manifest-integrity.ts",
 ]);
+// The typed dispatchers, which pass an event parameter through; PermissionDenied reaches them only as a ledger denial.
+const LIFECYCLE_DISPATCHERS = new Set([
+  "engine/conversation-loop.ts",
+  "engine/turn/lifecycle-hooks.ts",
+  "hooks/script-hook-manager.ts",
+  "tools/pipeline/audit-writer.ts",
+]);
+// A lifecycle dispatch and its event argument, across newlines; a function or async method declaration is not one.
+const LIFECYCLE_DISPATCH = /(?<!\b(?:function|async)\s+)\b(?:fireLifecycleEvent|runLifecycleEvent)\s*\(\s*([^,)]*)/g;
+// A string literal or a named hook event constant.
+const LITERAL_EVENT = /^(?:"[^"]*"|'[^']*'|`[^`$]*`|HOOK_EVENT_TYPES\.\w+)\s*$/;
 // A direct sink append: a method access, a bracketed access outside a type, or a destructured method.
 const DIRECT_APPEND = /\.appendPermissionAuditEntry\b|\[\s*["'`]appendPermissionAuditEntry["'`]\s*\](?!\s*>)|\{[^{}]*\bappendPermissionAuditEntry\b[^{}]*\}\s*=(?![=>])/;
 
@@ -49,6 +60,9 @@ function violations(file: string, source: string): string[] {
   if (/\bappendToolInvocationAudit\s*\(/.test(code) && !SIDE_RECORD_WRITERS.has(file)) found.push(`${file}: invocation audit append`);
   if (/\bappendDirectoryGrantRecord\s*\(/.test(code) && file !== DIRECTORY_GRANT_WRITER) found.push(`${file}: directory grant append`);
   if (DIRECT_APPEND.test(code) && !NON_INVOCATION_WRITERS.has(file)) found.push(`${file}: direct permission audit append`);
+  if (!LIFECYCLE_DISPATCHERS.has(file) && [...code.matchAll(LIFECYCLE_DISPATCH)].some((match) => !LITERAL_EVENT.test(match[1] ?? ""))) {
+    found.push(`${file}: lifecycle event by variable`);
+  }
   return found;
 }
 
@@ -56,6 +70,11 @@ describe("terminal row source guard", () => {
   it("leaves the ledger as the only writer of an invocation's terminal row and its denial", () => {
     const found = productFiles(SRC).flatMap((path) => violations(relative(SRC, path).split(sep).join("/"), readFileSync(path, "utf8")));
     expect(found).toEqual([]);
+  });
+
+  it("does not flag a literal lifecycle event or a dispatcher's declaration", () => {
+    expect(violations("engine/turn/run-turn.ts", "await self.fireLifecycleEvent(\n  \"Stop\", payload);\nvoid hooks.runLifecycleEvent(HOOK_EVENT_TYPES.Stop, id);\n")).toEqual([]);
+    expect(violations("engine/turn/session.ts", "async function fireLifecycleEvent(event: string) {}\n")).toEqual([]);
   });
 
   it("does not flag a type that names the sink method", () => {
@@ -74,6 +93,9 @@ describe("terminal row source guard", () => {
     ["engine/turn/run-turn.ts", "const append = logger.appendPermissionAuditEntry.bind(logger);", "direct permission audit append"],
     ["audit/audit-chain-export.ts", "void logger.appendPermissionAuditEntry(entry);", "direct permission audit append"],
     ["tools/invocation-runner.ts", "await appendDirectoryGrantRecord(services.auditLogger, entry);", "directory grant append"],
+    ["tools/invocation-runner.ts", "fire: (event, reason) => services.auditWriter.fireLifecycleEvent(event, sessionId, context, payload),", "lifecycle event by variable"],
+    ["tools/invocation-execution.ts", "await services.auditWriter.fireLifecycleEvent(\n    events[kind], sessionId, context, payload);", "lifecycle event by variable"],
+    ["engine/turn/run-turn.ts", "void hooks.runLifecycleEvent(denied ? DENIED : \"Stop\", sessionId, \"unknown\", {});", "lifecycle event by variable"],
   ])("flags a planted call in %s", (file, line, kind) => {
     expect(violations(file, `export function planted() {\n  ${line}\n}\n`)).toEqual([`${file}: ${kind}`]);
   });
