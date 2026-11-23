@@ -407,19 +407,22 @@ export async function stageRunHarness(opts: {
       }
       async function recheck(): Promise<void> {
         checking = true;
-        // A signal during an async read queues a fresh read if the snapshot does not satisfy the wait.
         try {
           while (changed && itemWaits.has(wake)) {
             changed = false;
             const source = store;
-            const current = await item(itemId, source);
-            if (itemWaits.has(wake) && source === store && check(current)) {
-              settle();
-              resolve(current);
+            try {
+              const current = await item(itemId, source);
+              // A wake can invalidate the board or run part of this snapshot.
+              if (changed || !itemWaits.has(wake)) continue;
+              if (check(current)) {
+                settle();
+                resolve(current);
+              }
+            } catch (error) {
+              if (source === store && itemWaits.has(wake)) fail(error);
             }
           }
-        } catch (error) {
-          fail(error);
         } finally {
           checking = false;
         }

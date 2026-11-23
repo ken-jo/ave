@@ -46,6 +46,68 @@ it("checks board and run changes without advancing timers", { timeout: 5_000 }, 
   }
 });
 
+it("discards a matching snapshot read across board and run wakes", async () => {
+  const h = await stageRunHarness();
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  try {
+    const version = await h.confirm([autoStageOf("a")]);
+    const id = await h.addItem(version);
+    const runId = "run-1";
+    expect(await h.board.beginRun(id, runId, "2026-11-16T00:00:00.000Z", {
+      ...h.pinOf(version), source: h.local(version), stageRuns: [{ stageId: "a", attempt: 1, status: "waiting" }],
+    })).toMatchObject({ status: "updated" });
+    const runs = h.board.runs;
+    const getRun = runs.get.bind(runs);
+    const read = vi.spyOn(runs, "get").mockImplementationOnce(async key => {
+      entered.resolve();
+      await release.promise;
+      return getRun(key);
+    });
+    const matches = vi.fn((item: Awaited<ReturnType<typeof h.item>>) => h.statusOf(item, "a") === "running");
+    const waiting = h.until(id, matches);
+    void waiting.catch(() => {});
+    await entered.promise;
+    expect(await h.board.update(id, { title: "Renamed" })).toMatchObject({ status: "updated" });
+    expect(await runs.update(runId, run => ({ ...run, stageRuns: [{ ...run.stageRuns[0], status: "running" }] })))
+      .toMatchObject({ status: "stored" });
+    expect(matches).not.toHaveBeenCalled();
+    release.resolve();
+
+    await expect(waiting).resolves.toMatchObject({ title: "Renamed" });
+    expect(read.mock.calls).toEqual([[runId], [runId]]);
+    expect(matches.mock.calls).toEqual([[expect.objectContaining({ title: "Renamed" })]]);
+  } finally {
+    release.resolve();
+    await h.cleanup();
+  }
+});
+
+it("ignores a late read rejection from a replaced wait source", async () => {
+  const h = await stageRunHarness();
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  try {
+    const id = await h.addItem(await h.confirm([autoStageOf("a")]));
+    vi.spyOn(h.board, "get").mockImplementationOnce(async () => {
+      entered.resolve();
+      await release.promise;
+      throw new Error("retired board read failed");
+    });
+    const waiting = h.until(id, item => item.title === "Renamed");
+    void waiting.catch(() => {});
+    await entered.promise;
+    h.editRow(id, row => ({ ...row, title: "Renamed" }));
+    h.makeEngine();
+    release.resolve();
+
+    await expect(waiting).resolves.toMatchObject({ title: "Renamed" });
+  } finally {
+    release.resolve();
+    await h.cleanup();
+  }
+});
+
 it("checks state already committed before a wait attaches", async () => {
   const h = await stageRunHarness();
   try {
