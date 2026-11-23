@@ -1650,6 +1650,132 @@ describe("pty-manager typing an approved agent command", () => {
     expect(pty.written.filter((data) => data === "\r")).toHaveLength(1);
   });
 
+  describe("editor waits", () => {
+    const line = "echo approved";
+    const writes = ["\u0003", TERMINAL_EDIT_LINE_QUERY, PASTE(line), TERMINAL_EDIT_LINE_QUERY, "\r"];
+    const nextTurn = setImmediate;
+    const flushEvents = (): Promise<void> => new Promise((resolve) => nextTurn(resolve));
+    type Wait = "empty report" | "paste echo" | "confirmed report";
+
+    async function pauseAt(wait: Wait) {
+      const terminal = await zshTerminal(3);
+      const { pty, prompt, shell, report } = terminal;
+      pty.emitData(prompt());
+      shell.shows = () => "";
+      shell.acknowledges = () => false;
+      const through = wait === "empty report" ? 2 : wait === "paste echo" ? 3 : 4;
+      const respond = pty.respond;
+      pty.respond = (data) => {
+        respond?.(data);
+        if (pty.written.length === through) return;
+        if (data === PASTE(line)) pty.emitData(line);
+        if (data === TERMINAL_EDIT_LINE_QUERY) report(pty.written.length === 2 ? "" : line);
+      };
+      const emit = () => wait === "paste echo" ? pty.emitData(line) : report(wait === "empty report" ? "" : line);
+      return { ...terminal, through, emit };
+    }
+
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    it.each<Wait>(["empty report", "paste echo", "confirmed report"])("settles the %s on its event", async (wait) => {
+      const { pty, through, emit } = await pauseAt(wait);
+      const typing = typeTerminalCommand(TAB, 3, line, "/w");
+      await flushEvents();
+      expect(pty.written).toEqual(writes.slice(0, through));
+      emit();
+      await flushEvents();
+      expect(pty.written).toEqual(writes);
+      await expect(typing).resolves.toEqual({ ok: true, firstBlockId: 1 });
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it.each(["empty report", "confirmed report"] as const)("latches the %s published before its listener attaches", async (wait) => {
+      const { pty, prompt, shell, report } = await zshTerminal(3);
+      pty.emitData(prompt());
+      const tracker = getTerminalBlockTracker(TAB);
+      if (!tracker) throw new Error("Missing terminal tracker");
+      const subscribe = tracker.subscribe.bind(tracker);
+      const beforeQuery = wait === "empty report" ? writes.slice(0, 1) : writes.slice(0, 3);
+      // For the confirmed report, delay the echo until its own listener is already attached.
+      if (wait === "confirmed report") shell.shows = () => "";
+      const typing = typeTerminalCommand(TAB, 3, line, "/w");
+      if (wait === "confirmed report") {
+        await flushEvents();
+        expect(pty.written).toEqual(beforeQuery);
+      }
+      const publish = vi.fn(() => report(wait === "empty report" ? "" : line));
+      const subscription = vi.spyOn(tracker, "subscribe").mockImplementation((...args) => {
+        if (pty.written.length === beforeQuery.length) publish();
+        return subscribe(...args);
+      });
+      try {
+        if (wait === "confirmed report") pty.emitData(line);
+        await flushEvents();
+        expect(publish).toHaveBeenCalledTimes(1);
+        expect(pty.written).toEqual(writes.filter((_, index) => index !== beforeQuery.length));
+        await expect(typing).resolves.toEqual({ ok: true, firstBlockId: 1 });
+      } finally {
+        subscription.mockRestore();
+      }
+    });
+
+    it("latches paste echo published synchronously inside the paste write", async () => {
+      const { pty, prompt, shell } = await zshTerminal(3);
+      pty.emitData(prompt());
+      shell.shows = () => "";
+      const respond = pty.respond;
+      pty.respond = (data) => {
+        respond?.(data);
+        if (data === PASTE(line)) pty.emitData(line);
+      };
+      const typing = typeTerminalCommand(TAB, 3, line, "/w");
+      await flushEvents();
+      expect(pty.written).toEqual(writes);
+      await expect(typing).resolves.toEqual({ ok: true, firstBlockId: 1 });
+    });
+
+    it.each<Wait>(["empty report", "paste echo", "confirmed report"])("abandons the pending %s on abort", async (wait) => {
+      const { pty, through, emit } = await pauseAt(wait);
+      const controller = new AbortController();
+      const typing = typeTerminalCommand(TAB, 3, line, "/w", controller.signal);
+      await flushEvents();
+      expect(pty.written).toEqual(writes.slice(0, through));
+      controller.abort();
+      await flushEvents();
+      expect(vi.getTimerCount()).toBe(0);
+      await expect(typing).resolves.toMatchObject({ ok: false, reason: "aborted" });
+      emit();
+      expect(pty.written).toEqual(writes.slice(0, through));
+    });
+
+    it("shares the deadline between both editor reports and the paste echo", async () => {
+      const { pty, prompt, shell, report } = await zshTerminal(3);
+      pty.emitData(prompt());
+      shell.shows = () => "";
+      shell.acknowledges = () => false;
+      const typing = typeTerminalCommand(TAB, 3, line, "/w");
+      await flushEvents();
+      expect(pty.written).toEqual(writes.slice(0, 2));
+      expect(vi.getTimerCount()).toBe(1);
+      await vi.advanceTimersByTimeAsync(1_000);
+      report("");
+      await flushEvents();
+      expect(pty.written).toEqual(writes.slice(0, 3));
+      expect(vi.getTimerCount()).toBe(1);
+      await vi.advanceTimersByTimeAsync(999);
+      pty.emitData(line);
+      await flushEvents();
+      expect(pty.written).toEqual(writes.slice(0, 4));
+      expect(vi.getTimerCount()).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(vi.getTimerCount()).toBe(0);
+      await expect(typing).resolves.toMatchObject({ ok: false, reason: "edit-line-mismatch" });
+      report(line);
+      expect(pty.written).toEqual([...writes.slice(0, 4), "\u0003"]);
+    });
+  });
+
   it("does not paste into an editor that reports an existing buffer", async () => {
     const { pty, prompt, shell } = await zshTerminal(3);
     pty.emitData(prompt());

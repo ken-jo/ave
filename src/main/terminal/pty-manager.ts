@@ -1732,51 +1732,60 @@ export async function typeLineAtPrompt(
   const beforeWrite = await safeToWrite() ?? check();
   if (beforeWrite) return beforeWrite;
   const prompt = blocks.promptEndCount();
-  const empty = await requestEditLine(blocks, target, prompt, interrupted);
-  if (target.signal?.aborted) return notTyped("aborted", "terminal command preparation was cancelled; no further input was sent");
-  if (!empty || empty.line !== "" || interrupted()) {
-    if (target.isLive() && !await safeToWrite()) target.write("\u0003");
-    return notTyped("edit-line-mismatch", "the terminal did not confirm an empty editable command buffer; no command was pasted");
+  const expiresAt = Date.now() + EDIT_LINE_TIMEOUT_MS;
+  const timeout = new AbortController();
+  const signal = target.signal ? AbortSignal.any([target.signal, timeout.signal]) : timeout.signal;
+  const deadline = { signal, expired: () => signal.aborted || Date.now() >= expiresAt };
+  const timer = setTimeout(() => timeout.abort(), EDIT_LINE_TIMEOUT_MS);
+  try {
+    const empty = await requestEditLine(blocks, target, prompt, interrupted, deadline);
+    if (target.signal?.aborted) return notTyped("aborted", "terminal command preparation was cancelled; no further input was sent");
+    if (!empty || empty.line !== "" || interrupted()) {
+      if (target.isLive() && !await safeToWrite()) target.write("\u0003");
+      return notTyped("edit-line-mismatch", "the terminal did not confirm an empty editable command buffer; no command was pasted");
+    }
+    const beforePaste = await safeToWrite() ?? check();
+    if (beforePaste) return beforePaste;
+    if (deadline.expired() || blocks.promptEndCount() !== prompt || blocks.editLineReport()?.generation !== empty.generation) {
+      return notTyped("edit-line-mismatch", "the terminal prompt or editable buffer changed before pasting");
+    }
+    target.write(`\u001b[200~${line}\u001b[201~`);
+    // A cancellation or a refused final effect check from here on leaves the pasted line at the prompt; the target may clear it.
+    const cancelledAfterPaste = (result: TypeTerminalCommandResult): TypeTerminalCommandResult => {
+      if (!result.ok && (result.reason === "aborted" || result.reason === "effect-refused")) target.clearAfterAbort?.();
+      return result;
+    };
+    // 5. Confirm both the display and the editor's actual buffer before Enter.
+    const shown = await waitForEditLine(blocks, prompt, line, deadline);
+    if (target.signal?.aborted) return cancelledAfterPaste(notTyped("aborted", "terminal command preparation was cancelled; Enter was not pressed"));
+    if (!shown || !target.isLive() || interrupted()) {
+      if (target.isLive() && !await safeToWrite()) target.write("\u0003");
+      return notTyped("edit-line-mismatch", "the terminal's line editor did not show exactly the approved line after it was pasted, so Enter was not pressed");
+    }
+    const beforeQuery = await safeToWrite();
+    if (beforeQuery) return cancelledAfterPaste(beforeQuery);
+    const confirmed = await requestEditLine(blocks, target, prompt, interrupted, deadline);
+    if (target.signal?.aborted) return cancelledAfterPaste(notTyped("aborted", "terminal command preparation was cancelled; Enter was not pressed"));
+    if (!confirmed || confirmed.line !== line || interrupted()) {
+      if (target.isLive() && !await safeToWrite()) target.write("\u0003");
+      return notTyped("edit-line-mismatch", "the terminal's editable command buffer did not match the approved line; Enter was not pressed");
+    }
+    // No other process may share the terminal when Enter is pressed: whatever it writes would land in the agent's command output.
+    const beforeEnter = await safeToWrite({ exclusive: true });
+    if (beforeEnter) return cancelledAfterPaste(beforeEnter);
+    // The query widget can repaint the display without changing its buffer. Echo was checked before the query; the fresh report is the buffer proof.
+    if (deadline.expired() || blocks.promptEndCount() !== prompt || blocks.typedSincePromptEnd()
+      || blocks.editLineReport()?.generation !== confirmed.generation || blocks.editLineReport()?.line !== line) {
+      return notTyped("edit-line-mismatch", "the terminal prompt or editor acknowledgement changed before Enter; no further input was sent");
+    }
+    const firstBlockId = blocks.nextBlockId();
+    target.onBeforeEnter?.(firstBlockId);
+    target.write("\r");
+    onTyped();
+    return { ok: true, firstBlockId };
+  } finally {
+    clearTimeout(timer);
   }
-  const beforePaste = await safeToWrite() ?? check();
-  if (beforePaste) return beforePaste;
-  if (blocks.promptEndCount() !== prompt || blocks.editLineReport()?.generation !== empty.generation) {
-    return notTyped("edit-line-mismatch", "the terminal prompt or editable buffer changed before pasting");
-  }
-  target.write(`\u001b[200~${line}\u001b[201~`);
-  // A cancellation or a refused final effect check from here on leaves the pasted line at the prompt; the target may clear it.
-  const cancelledAfterPaste = (result: TypeTerminalCommandResult): TypeTerminalCommandResult => {
-    if (!result.ok && (result.reason === "aborted" || result.reason === "effect-refused")) target.clearAfterAbort?.();
-    return result;
-  };
-  // 5. Confirm both the display and the editor's actual buffer before Enter.
-  const shown = await waitForEditLine(blocks, prompt, line, EDIT_LINE_TIMEOUT_MS, target.signal);
-  if (target.signal?.aborted) return cancelledAfterPaste(notTyped("aborted", "terminal command preparation was cancelled; Enter was not pressed"));
-  if (!shown || !target.isLive() || interrupted()) {
-    if (target.isLive() && !await safeToWrite()) target.write("\u0003");
-    return notTyped("edit-line-mismatch", "the terminal's line editor did not show exactly the approved line after it was pasted, so Enter was not pressed");
-  }
-  const beforeQuery = await safeToWrite();
-  if (beforeQuery) return cancelledAfterPaste(beforeQuery);
-  const confirmed = await requestEditLine(blocks, target, prompt, interrupted);
-  if (target.signal?.aborted) return cancelledAfterPaste(notTyped("aborted", "terminal command preparation was cancelled; Enter was not pressed"));
-  if (!confirmed || confirmed.line !== line || interrupted()) {
-    if (target.isLive() && !await safeToWrite()) target.write("\u0003");
-    return notTyped("edit-line-mismatch", "the terminal's editable command buffer did not match the approved line; Enter was not pressed");
-  }
-  // No other process may share the terminal when Enter is pressed: whatever it writes would land in the agent's command output.
-  const beforeEnter = await safeToWrite({ exclusive: true });
-  if (beforeEnter) return cancelledAfterPaste(beforeEnter);
-  // The query widget can repaint the display without changing its buffer. Echo was checked before the query; the fresh report is the buffer proof.
-  if (blocks.promptEndCount() !== prompt || blocks.typedSincePromptEnd()
-    || blocks.editLineReport()?.generation !== confirmed.generation || blocks.editLineReport()?.line !== line) {
-    return notTyped("edit-line-mismatch", "the terminal prompt or editor acknowledgement changed before Enter; no further input was sent");
-  }
-  const firstBlockId = blocks.nextBlockId();
-  target.onBeforeEnter?.(firstBlockId);
-  target.write("\r");
-  onTyped();
-  return { ok: true, firstBlockId };
 }
 
 /** How long typing waits for a fresh prompt after one Ctrl-C before it sends another, and how long the prompts must then stay still. */
@@ -1835,8 +1844,53 @@ async function resetToFreshPrompt(
   return null;
 }
 
-/** How long typing waits for the pasted line to show in the line editor. */
+/** Time allowed for the editor checks after the fresh prompt. */
 const EDIT_LINE_TIMEOUT_MS = 2_000;
+
+interface EditLineDeadline {
+  signal: AbortSignal;
+  expired(): boolean;
+}
+
+/** The reader returns undefined while pending, null on refusal, or the editor evidence. */
+function waitForEditorState<T>(
+  blocks: TerminalBlockTracker,
+  deadline: EditLineDeadline,
+  read: () => T | null | undefined,
+  { includeEditLineOutput, write }: { includeEditLineOutput?: boolean; write?: () => void } = {},
+): Promise<T | null> {
+  return new Promise((resolve, reject) => {
+    let done = false;
+    const cleanup = (): void => {
+      done = true;
+      unsubscribe();
+      deadline.signal.removeEventListener("abort", onAbort);
+    };
+    const onAbort = (): void => {
+      cleanup();
+      resolve(null);
+    };
+    const check = (writeIfPending?: () => void): void => {
+      if (done) return;
+      try {
+        const value = deadline.expired() ? null : read();
+        if (value === undefined) {
+          writeIfPending?.();
+          return;
+        }
+        cleanup();
+        resolve(value);
+      } catch (error) {
+        cleanup();
+        reject(error);
+      }
+    };
+    // Marker callbacks can run mid-chunk. Read once the tracker has processed the full chunk.
+    const unsubscribe = blocks.subscribe(() => queueMicrotask(check), { includeEditLineOutput });
+    deadline.signal.addEventListener("abort", onAbort, { once: true });
+    check(write);
+  });
+}
 
 /** Ask the owned shell editor for its buffer, rather than infer it from display echo. */
 async function requestEditLine(
@@ -1844,35 +1898,28 @@ async function requestEditLine(
   target: PromptTypingTarget,
   prompt: number,
   interrupted: () => TypeTerminalCommandResult | null,
+  deadline: EditLineDeadline,
 ): Promise<{ readonly generation: number; readonly line: string } | null> {
   const state = blocks.promptState();
   if (!blocks.supportsEditLineQuery() || !target.isLive() || interrupted()
     || blocks.promptEndCount() !== prompt || blocks.typedSincePromptEnd()
     || (state !== "ready" && state !== "pending-input")) return null;
   const generation = blocks.editLineReportGeneration();
-  target.write(TERMINAL_EDIT_LINE_QUERY);
-  const deadline = Date.now() + EDIT_LINE_TIMEOUT_MS;
-  for (;;) {
+  return waitForEditorState(blocks, deadline, () => {
     if (!target.isLive() || interrupted() || blocks.promptEndCount() !== prompt
       || !blocks.supportsEditLineQuery() || blocks.typedSincePromptEnd()) return null;
     const report = blocks.editLineReport();
-    if (report && report.generation > generation) return report;
-    if (Date.now() >= deadline) return null;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
+    return report && report.generation > generation ? report : undefined;
+  }, { write: () => target.write(TERMINAL_EDIT_LINE_QUERY) });
 }
 
 /** Wait until the prompt typed at (`prompt`, its end count) shows exactly `line` in its edit line,
  * with no key from the user since it was drawn. False on timeout, or when that prompt goes away. */
-async function waitForEditLine(blocks: TerminalBlockTracker, prompt: number, line: string, timeoutMs: number, signal?: AbortSignal): Promise<boolean> {
-  // Echoed text does not notify subscribers (only markers do), so poll.
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    if (signal?.aborted || blocks.promptEndCount() !== prompt || blocks.hasExited() || blocks.typedSincePromptEnd()) return false;
-    if (blocks.editLineText() === line) return true;
-    if (Date.now() >= deadline) return false;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
+async function waitForEditLine(blocks: TerminalBlockTracker, prompt: number, line: string, deadline: EditLineDeadline): Promise<boolean> {
+  return await waitForEditorState(blocks, deadline, () => {
+    if (blocks.promptEndCount() !== prompt || blocks.hasExited() || blocks.typedSincePromptEnd()) return null;
+    return blocks.editLineText() === line ? true : undefined;
+  }, { includeEditLineOutput: true }) === true;
 }
 
 const TERMINAL_NOT_READY_MESSAGES: Record<Exclude<TerminalPromptState, "ready">, string> = {
