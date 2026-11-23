@@ -48,6 +48,11 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   return {
     ...actual,
+    // The host's own renames, seen like those through node:fs.
+    rename: async (from: string, to: string) => {
+      hooks.pathOperations.push(from, to);
+      return actual.rename(from, to);
+    },
     open: async (path: string, ...rest: unknown[]) => {
       hooks.pathOperations.push(String(path));
       const handle = await (actual.open as (...args: unknown[]) => Promise<import("node:fs/promises").FileHandle>)(path, ...rest);
