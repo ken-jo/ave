@@ -463,8 +463,11 @@ export class WorkflowRunStore {
   async markUnknown(intent: DeleteIntent, operation: MarkerOp = { op: "row", ownIntent: true }): Promise<void> {
     const marker: DeleteMarker = { itemId: intent.itemId, runId: intent.runId, operation };
     const matches = sameMarker(marker);
-    if (!this.unknown.some(entry => !this.stagedUnknownRemovals?.has(entry) && matches(entry))) {
+    const existing = this.unknown.find(matches);
+    if (existing === undefined) {
       this.unknown = [...this.unknown, marker];
+    } else if (this.stagedUnknownRemovals?.has(existing)) {
+      this.unknown = this.unknown.map(entry => entry === existing ? marker : entry);
     }
     await withInProcessFileQueue(this.filePath, async () => {
       const file = await this.read();

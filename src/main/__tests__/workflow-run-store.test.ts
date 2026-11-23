@@ -212,6 +212,57 @@ it.each(["row", "card"] as const)("delivers a successful delete commit and keeps
   }
 });
 
+it("keeps one renewed marker through repeated failed delete writes", async () => {
+  const store = new WorkflowRunStore(file);
+  const pair = { runId: "run-1", itemId: 1 };
+  await store.put(run());
+  await store.markUnknown(pair);
+  const before = await readFile(file, "utf8");
+  const write = vi.spyOn(namespace, "writeFileAtomicAtPath");
+  const resolverCounts: number[] = [];
+  const markerCounts: number[] = [];
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const previous = (await store.markersOf(pair)).at(-1);
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const error = new Error("delete persist refused");
+    write.mockImplementationOnce(async () => {
+      entered.resolve();
+      await release.promise;
+      throw error;
+    });
+    const deleting = store.markDeleted(pair, () => true);
+    const rejected = expect(deleting).rejects.toBe(error);
+    let adding: Promise<void> | undefined;
+    try {
+      await entered.promise;
+      adding = store.markUnknown(pair);
+      const renewed = (await store.markersOf(pair)).at(-1);
+      expect(renewed).toEqual(previous);
+      expect(renewed).not.toBe(previous);
+      release.resolve();
+      await rejected;
+      await adding;
+
+      const outcome = vi.fn((_marker: DeleteMarker) => "held" as const);
+      await store.resolveUnknown(outcome);
+      expect(outcome.mock.calls.at(-1)?.[0]).toBe(renewed);
+      resolverCounts.push(outcome.mock.calls.length);
+      markerCounts.push((await store.markersOf(pair)).length);
+      expect((await store.runFacts())?.of(pair)).toEqual({ readable: true, intent: false, unknown: true });
+    } finally {
+      release.resolve();
+      await Promise.allSettled([rejected, adding]);
+    }
+  }
+
+  expect(resolverCounts).toEqual([1, 1, 1]);
+  expect(markerCounts).toEqual([2, 2, 2]); // One stored marker and one in memory.
+  expect(write).toHaveBeenCalledTimes(3);
+  expect(await readFile(file, "utf8")).toBe(before);
+});
+
 it("signals keyed metadata when an intent and its unknown marker are withdrawn", async () => {
   const store = new WorkflowRunStore(file);
   const pair = { runId: "run-1", itemId: 1 };
