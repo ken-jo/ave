@@ -2504,6 +2504,7 @@ input.on("data", (chunk) => {
       headerBytes = 0;
       consumed = 0;
       remaining = header.readUInt32BE(16);
+      if (remaining === 0) throw new Error("unix probe: empty input write");
       continue;
     }
     const count = Math.min(remaining, chunk.length - offset);
@@ -2549,15 +2550,24 @@ await reset();
       pending.get(frame.id)?.resolve(frame.result);
     }
   });
+  // Once the child is gone, a request fails at once instead of waiting out its timer.
+  let dead: Error | undefined;
   const failPending = (error: Error): void => {
+    dead ??= error;
     for (const request of pending.values()) request.reject(error);
   };
-  child.link.input.on("end", () => failPending(new Error(`the unix probe exited without reporting; stdout was: ${stdout}`)));
+  const gone = (): void => failPending(new Error(`the unix probe exited without reporting; stdout was: ${stdout}`));
+  child.link.input.on("end", gone);
+  child.link.input.on("close", gone);
   child.link.input.on("error", failPending);
   return {
     request(operation, socketPath) {
       const id = ++sequence;
       return new Promise<Result>((resolve, reject) => {
+        if (dead) {
+          reject(dead);
+          return;
+        }
         const timer = setTimeout(() => {
           pending.delete(id);
           reject(new Error(`the unix probe never reported; stdout was: ${stdout}`));
