@@ -56,7 +56,10 @@ describe("user-owned surface approval across the quit seal", () => {
     // The person's answer settles the card; the quit lands before the awaiting resolution runs again.
     answer.resolve(await answeredDeny());
     quit.abort(new HostExitAbortError());
-    await expect(resolution).resolves.toMatchObject({ decision: { choice: "deny-once" }, humanApproved: false });
+    // The deny is the gate's own answer, not one the policy put in its place.
+    const resolved = await resolution;
+    expect(resolved.decision.choice).toBe("deny-once");
+    expect(resolved.provenance).toBeUndefined();
   });
 
   it("ends on the quit for a deny no person answered through the gate", async () => {
@@ -87,6 +90,7 @@ describe("user-owned surface approval across the quit seal", () => {
     });
     expect(resolution.decision.choice).toBe("deny-once");
     expect(isAnsweredApprovalDenial(resolution.decision)).toBe(false);
+    expect(resolution.provenance).toEqual({ kind: "rule" });
   });
 
   it.each([

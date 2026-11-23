@@ -1,8 +1,11 @@
 import { hasRationaleUserQuote } from "../../shared/rationale-user-quote.js";
 import {
+  answeredApprovalProvenance,
   isHostApprovalRejectedDecision,
   isHostApprovalTimeoutDecision,
+  RULE_PROVENANCE,
   type ApprovalDecision,
+  type DecisionProvenance,
   type ApprovalGate,
 } from "../../permissions/approval-gate.js";
 import { NO_APPROVER_MESSAGE } from "../../permissions/decision-pipeline.js";
@@ -331,6 +334,8 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
   readonly #now: () => number;
   readonly #isCurrent: () => boolean;
   readonly #contexts = new Map<string, TicketContext>();
+  // Who authorized each minted receipt, copied at mint and read only through the receipt.
+  readonly #receiptProvenance = new WeakMap<HostConsumedAllowOnceReceipt, DecisionProvenance>();
   readonly #retiringContexts = new Map<string, TicketContext>();
 
   constructor(options: RationaleHostCoordinatorOptions) {
@@ -560,6 +565,11 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
     )
       ? context.receipt
       : null;
+  };
+
+  readonly loadHostResumeProvenance = (request: SealedRationaleResumeRequest): DecisionProvenance | null => {
+    const receipt = this.loadHostConsumedAllowOnceReceipt(request);
+    return receipt === null ? null : this.#receiptProvenance.get(receipt) ?? null;
   };
 
   readonly isAuthenticConsumedAllowOnceReceipt = (
@@ -886,6 +896,7 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
       context.snapshot = resolved;
       context.response = autoResponse;
       context.reevaluation = reevaluation;
+      this.#receiptProvenance.set(receipt, RULE_PROVENANCE);
       context.receipt = receipt;
       context.reviewerAuthorized = true;
       context.terminalTicket = receipt.ticket;
@@ -1099,6 +1110,7 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
       (decision.choice === "allow-once" || decision.choice === "allow-session" || decision.choice === "allow-always") &&
       !isHostApprovalRejectedDecision(decision)
     ) {
+      const provenance = answeredApprovalProvenance(decision);
       const afterPolicy = this.#getRationalePolicySnapshot?.();
       if (beforePolicy && afterPolicy && beforePolicy.epoch !== afterPolicy.epoch) {
         const transition = issueRationaleApprovalPolicyTransition({
@@ -1128,6 +1140,7 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
         now: decidedAt,
       });
       this.#commitProjectionAudit(context.sessionId, projection, decidedAt);
+      this.#receiptProvenance.set(receipt, provenance);
       context.receipt = receipt;
       context.terminalTicket = receipt.ticket;
       context.projection = projection;

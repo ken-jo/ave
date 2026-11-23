@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { Tool } from "../base.js";
 import type { ToolSource, ToolCategory } from "../types.js";
 import type { PermissionCheckResult } from "../../permissions/permission-manager.js";
+import { provenanceTrustOrigin, RULE_PROVENANCE } from "../../permissions/approval-gate.js";
 import type { PermissionAuditEntryInput, HookResult, ToolExecutionAuditMetadata } from "../../audit/audit-schema.js";
 import { hookInvocationFailureReason, type HookTrustOrigin, type ScriptHookType } from "../../hooks/script-hook-types.js";
 import type { HookDispatchResult } from "../../hooks/script-hook-manager.js";
@@ -131,12 +132,8 @@ export function permissionAuditEntryFromToolCall(args: {
   hookChain?: HookResult[];
   audit?: ToolExecutionAuditMetadata;
 }): PermissionAuditEntryInput {
-  // The row records who decided: an answered decision carries who answered, a host decision its own origin, and a rule or
-  // automatic decision the invocation's.
-  const answer = args.permission?.answer;
-  const trustOrigin = answer !== undefined && answer.decision === args.permission?.decision
-    ? answer.trustOrigin
-    : args.permission?.trustOrigin ?? args.trustOrigin;
+  // The row records who decided, from the decision's provenance.
+  const trustOrigin = provenanceTrustOrigin(args.permission?.provenance ?? RULE_PROVENANCE, args.permission?.decision ?? "allow", args.trustOrigin);
   const base = permissionAuditBase({ ...args, trustOrigin });
   if (args.permission?.decision === "deny") {
     const denyReasons = args.permission.denyReasons?.length

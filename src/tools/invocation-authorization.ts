@@ -893,6 +893,7 @@ export async function authorizeToolInvocation(
           ...permissionResult,
           decision: "allow",
           reason: "host-authentic rationale allow-once receipt consumed",
+          provenance: authorized.value.provenance,
           };
       } else if (invocationPermissionContext.approvalSurface === "unavailable") {
         return returnAuthorizationRequired(permissionResult);
@@ -1211,7 +1212,7 @@ export async function authorizeToolInvocation(
           manager: services.permissionManager, gate: services.approvalGate, permission: permissionResult, decision,
           request: { ...approvalRequest, abortSignal }, sessionId,
           review: async permission => await dispatchReviewerForInteractiveAutoImpl(services.permissionManager, toolUse.name, source, invocationCategory, tool.pathFields ?? [], finalInput, invocationAllowedScope.directories, sensitivePathPattern ? [sensitivePathPattern] : [], invocationPermissionContext, evaluationContext, sandboxAttestation, callbacks, meta, approvalPurpose, hostShellExecutionPlan, abortSignal, auditInput, sessionId, permission) ?? permission,
-        }) : { permission: permissionResult, decision, humanApproved: undefined };
+        }) : { permission: permissionResult, decision, provenance: undefined };
         permissionResult = surfaceResolution.permission;
         decision = surfaceResolution.decision;
         context.onHumanDecision?.(decision);
@@ -1238,11 +1239,10 @@ export async function authorizeToolInvocation(
           const hostFailure = approvalFailureOutcome(
             decision, toolUse.name, permissionResult,
           );
-          // A deny the surface recheck substituted is the rule's; a deny the gate returned unchanged was answered.
           const userDenied = { ...permissionResult, decision: "deny" as const, reason: "user denied approval request" };
-          const deniedPermission = hostFailure?.permission ?? (surfaceResolution.humanApproved === false
-            ? (permissionResult.decision === "deny" ? permissionResult : userDenied)
-            : answeredPermission(userDenied, decision));
+          const deniedPermission = hostFailure?.permission ?? (surfaceResolution.provenance === undefined
+            ? answeredPermission(userDenied, decision)
+            : { ...(permissionResult.decision === "deny" ? permissionResult : userDenied), provenance: surfaceResolution.provenance });
           const msg = hostFailure?.content ?? (permissionResult.decision === "deny" ? permissionResult.reason : t("be_executor.approvalDeniedByUser", {
             name: toolUse.name,
           }));
@@ -1287,7 +1287,7 @@ export async function authorizeToolInvocation(
         // silently widen "this tool + this input" into tool-wide permission.
         // Out-of-directory approvals are handled earlier by invocation-runner
         // and retain their explicit reviewed-parent persistence contract.
-        humanApproved = surfaceResolution.humanApproved ?? manuallyApproved;
+        humanApproved = surfaceResolution.provenance === undefined && manuallyApproved;
         approvedPolicyEpoch = services.permissionManager?.getPolicyEpoch();
         if (humanApproved) permissionResult = answeredPermission({
           ...permissionResult,

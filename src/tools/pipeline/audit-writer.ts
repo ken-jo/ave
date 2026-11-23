@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import type { ToolRegistry } from "../registry.js";
 import type { ToolSource, ToolCategory, TrustLevel } from "../types.js";
 import type { PermissionCheckResult } from "../../permissions/permission-manager.js";
+import { provenanceTrustOrigin, type DecisionProvenance } from "../../permissions/approval-gate.js";
 import type { AuditLogger } from "../../audit/audit-logger.js";
 import type { PermissionAuditEntryInput, HookResult, ToolExecutionAuditMetadata } from "../../audit/audit-schema.js";
 import { isPiiRedactionEnabled, maskSensitiveData } from "../../audit/dlp-filter.js";
@@ -92,8 +93,8 @@ export class AuditWriter {
     grantLifetime?: "turn" | "session" | "always" | "degraded-to-turn";
     policyRule?: string;
     permissionContext?: ToolPermissionContext;
-    // Who answered a grant the gate recorded; a policy grant keeps the invocation origin.
-    answeredTrustOrigin?: HookTrustOrigin;
+    // Who made the grant: its answerer, or the policy under the invocation's origin.
+    provenance: DecisionProvenance;
     audit?: ToolExecutionAuditMetadata;
   }): Promise<void> {
     if (!this.auditLogger.isPermissionAuditChainReady()) {
@@ -118,7 +119,7 @@ export class AuditWriter {
       ...(args.audit?.toolUseId !== undefined ? { toolUseId: args.audit.toolUseId } : {}),
       ...(args.audit?.executionPlan !== undefined ? { executionPlan: args.audit.executionPlan } : {}),
       ...(args.audit?.executionRoute !== undefined ? { executionRoute: args.audit.executionRoute } : {}),
-      trustOrigin: args.answeredTrustOrigin ?? auditTrustOrigin(args.permissionContext),
+      trustOrigin: provenanceTrustOrigin(args.provenance, "allow", auditTrustOrigin(args.permissionContext)),
     };
     try {
       await appendToolInvocationAudit(this.auditLogger, entry);

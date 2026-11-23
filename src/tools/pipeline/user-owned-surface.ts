@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ApprovalDecision, ApprovalGate, ApprovalRequestInput } from "../../permissions/approval-gate.js";
-import { isHostApprovalRejectedDecision } from "../../permissions/approval-gate.js";
+import { isHostApprovalRejectedDecision, RULE_PROVENANCE, type RuleProvenance } from "../../permissions/approval-gate.js";
 import type { PermissionCheckResult, PermissionManager } from "../../permissions/permission-manager.js";
 import { abortSupersedesApprovalDecision } from "./approval-outcome.js";
 
@@ -19,7 +19,8 @@ export function userOwnedSurfaceCardFacts(
   };
 }
 
-/** Selection receipts change session policy only after this live native card authorizes them. */
+/** Selection receipts change session policy only after this live native card authorizes them. The result marks a decision the
+ * current policy made in place of the card with the rule's provenance; any other decision is one the gate returned, with its own. */
 export async function resolveUserOwnedSurfaceApproval(input: {
   manager: PermissionManager;
   gate: ApprovalGate;
@@ -28,22 +29,22 @@ export async function resolveUserOwnedSurfaceApproval(input: {
   request: ApprovalRequestInput;
   sessionId: string | undefined;
   review: (permission: PermissionCheckResult) => Promise<PermissionCheckResult>;
-}): Promise<{ permission: PermissionCheckResult; decision: ApprovalDecision; humanApproved?: boolean }> {
+}): Promise<{ permission: PermissionCheckResult; decision: ApprovalDecision; provenance?: RuleProvenance }> {
   const { manager, gate, request, sessionId } = input;
   let { permission, decision } = input;
   if (!request.userOwnedSurface || !sessionId || !decision.choice.startsWith("allow") || Boolean(isHostApprovalRejectedDecision(decision))) return { permission, decision };
   permission = manager.recheckPermission(permission);
-  if (permission.decision === "deny") return { permission, decision: { requestId: decision.requestId, choice: "deny-once" }, humanApproved: false };
-  if (permission.forceModal && !request.forceExplicit) return { permission, decision: { requestId: decision.requestId, choice: "deny-once" }, humanApproved: false };
-  if (request.userOwnedSurfaceReviewFallback) return { permission, decision, humanApproved: true };
+  if (permission.decision === "deny") return { permission, decision: { requestId: decision.requestId, choice: "deny-once" }, provenance: RULE_PROVENANCE };
+  if (permission.forceModal && !request.forceExplicit) return { permission, decision: { requestId: decision.requestId, choice: "deny-once" }, provenance: RULE_PROVENANCE };
+  if (request.userOwnedSurfaceReviewFallback) return { permission, decision };
   const choice = gate.consumeUserOwnedSurfaceChoice(decision, sessionId, request.userOwnedSurface);
   if (choice === undefined) throw new Error("User-owned surface approval receipt is unavailable.");
   manager.setUserOwnedSurfaceChoice(sessionId, request.userOwnedSurface, choice);
-  if (choice !== "auto") return { permission, decision, humanApproved: true };
+  if (choice !== "auto") return { permission, decision };
   permission = manager.recheckPermission(permission);
   if (permission.reviewer && permission.decision === "ask") permission = await input.review(permission);
   if (permission.decision === "deny") throw new Error(permission.reason);
-  if (permission.decision === "allow") return { permission, decision, humanApproved: false };
+  if (permission.decision === "allow") return { permission, decision, provenance: RULE_PROVENANCE };
   const epoch = manager.getPolicyEpoch();
   const fallback: ApprovalRequestInput = {
     ...request,
@@ -58,5 +59,5 @@ export async function resolveUserOwnedSurfaceApproval(input: {
   if (epoch !== manager.getPolicyEpoch() && !gate.allowsPolicyTransition(decision, epoch, manager.getPolicyEpoch())) throw new Error("Permission policy changed while approval was pending.");
   permission = manager.recheckPermission(permission);
   if (permission.decision === "deny") throw new Error(permission.reason);
-  return { permission, decision, humanApproved: decision.choice === "allow-once" && !isHostApprovalRejectedDecision(decision) };
+  return { permission, decision };
 }

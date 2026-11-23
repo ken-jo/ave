@@ -393,17 +393,47 @@ export function isHostApprovalRejectedDecision(
 
 // Who decided, stamped on a decision when the gate accepts an answer for it. Any decision without a stamp is the host's own
 // (timeout, rejection, disposal, an aborted turn, a policy recheck, or an object built outside the gate).
-const answeredDecisionOrigins = new WeakMap<ApprovalDecision, TrustOriginWithUnknown>();
+const answeredDecisionAnswerers = new WeakMap<ApprovalDecision, ApprovalAnswerer>();
+
+declare const answeredProvenanceBrand: unique symbol;
+/** Who answered, and which way, as the gate recorded it. Only this module mints one, from that record. */
+export type AnsweredProvenance = {
+  readonly kind: "answered";
+  readonly decision: "allow" | "deny";
+  readonly answerer: ApprovalAnswerer;
+  readonly trustOrigin: TrustOriginWithUnknown;
+  readonly [answeredProvenanceBrand]: true;
+};
+/** Who made a decision: an answerer, the policy for the invocation's own origin, or the host itself. */
+export type DecisionProvenance = AnsweredProvenance | RuleProvenance | { readonly kind: "host" };
+export type RuleProvenance = { readonly kind: "rule" };
+export const RULE_PROVENANCE: RuleProvenance = Object.freeze({ kind: "rule" });
+export const HOST_PROVENANCE: DecisionProvenance = Object.freeze({ kind: "host" });
 
 export function approvalDecisionTrustOrigin(decision: ApprovalDecision): TrustOriginWithUnknown {
-  return answeredDecisionOrigins.get(decision) ?? "unknown";
+  const answerer = answeredDecisionAnswerers.get(decision);
+  return answerer === undefined ? "unknown" : APPROVAL_ANSWERER_TRUST_ORIGINS[answerer];
 }
 
 /** The gate's record of who answered a decision a caller is treating as answered. A missing record breaks the gate's contract. */
-export function answeredApprovalTrustOrigin(decision: ApprovalDecision): TrustOriginWithUnknown {
-  const origin = answeredDecisionOrigins.get(decision);
-  if (origin === undefined) throw new Error("approval: an answered decision carries no record of who answered");
-  return origin;
+export function answeredApprovalProvenance(decision: ApprovalDecision): AnsweredProvenance {
+  const answerer = answeredDecisionAnswerers.get(decision);
+  if (answerer === undefined) throw new Error("approval: an answered decision carries no record of who answered");
+  return Object.freeze({ kind: "answered", decision: decision.choice.startsWith("allow") ? "allow" : "deny", answerer,
+    trustOrigin: APPROVAL_ANSWERER_TRUST_ORIGINS[answerer] }) as AnsweredProvenance;
+}
+
+/** The trust origin a row records for `decision` made with this provenance; `invocation` is the invocation's own. An answer
+ * covers only the decision it gave: a step that turned it into the other decision decided that one by policy. */
+export function provenanceTrustOrigin<Origin extends string>(
+  provenance: DecisionProvenance, decision: string, invocation: Origin,
+): Origin | TrustOriginWithUnknown {
+  switch (provenance.kind) {
+    case "answered": return provenance.decision === decision ? provenance.trustOrigin : invocation;
+    case "rule": return invocation;
+    case "host": return "unknown";
+    default: return provenance satisfies never;
+  }
 }
 
 export function isAnsweredApprovalDenial(decision: ApprovalDecision): boolean {
@@ -1988,7 +2018,7 @@ export class ApprovalGate {
       type: "approval",
       output: `[approval:decided] ${requestId} ${formatApprovalAuditFields({ ...entry, answeredBy }, entry.executionPlan)} choice=${resolvedDecision.choice} rememberPattern=${resolvedDecision.rememberPattern ?? "none"}${entry.kind === "egress-host" ? ` egressScope=${resolvedDecision.egressScope ?? "none"}` : ""}`,
     });
-    if (Object.hasOwn(APPROVAL_ANSWERER_TRUST_ORIGINS, answeredBy)) answeredDecisionOrigins.set(resolvedDecision, APPROVAL_ANSWERER_TRUST_ORIGINS[answeredBy]);
+    if (Object.hasOwn(APPROVAL_ANSWERER_TRUST_ORIGINS, answeredBy)) answeredDecisionAnswerers.set(resolvedDecision, answeredBy);
     entry.resolve(resolvedDecision);
     return resolvedDecision;
   }

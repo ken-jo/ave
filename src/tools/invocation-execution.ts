@@ -6,7 +6,7 @@ import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pi
 import { NO_APPROVER_MESSAGE, offersFloorSessionAllow } from "../permissions/decision-pipeline.js";
 import { checkReplayRootBinding, type ReplayRootBinding } from "../permissions/reviewer/replay-root-binding.js";
 import { attachSandboxBlock, sandboxBlockForResult, type SandboxBlock } from "../shared/sandbox-block.js";
-import { approvalReasonFields, approvalRequestTarget, isHostApprovalRejectedDecision } from "../permissions/approval-gate.js";
+import { approvalReasonFields, approvalRequestTarget, isHostApprovalRejectedDecision, provenanceTrustOrigin, RULE_PROVENANCE } from "../permissions/approval-gate.js";
 import type { PermissionEvaluationContext } from "../permissions/evaluation-context.js";
 import type { ApprovalPurposeSuggestion } from "../shared/permission-review-status.js";
 import { classifyApprovalRuleVerdict } from "./pipeline/approval-memory-skip.js";
@@ -582,7 +582,8 @@ export async function executeAuthorizedToolInvocation(
           tool: toolUse.name,
           source,
           category: invocationCategory,
-          trustOrigin: invocationPermissionContext.trustOrigin,
+          // A plugin operation grant is policy the principal holds; no person answered here.
+          trustOrigin: provenanceTrustOrigin(RULE_PROVENANCE, consumed.ok ? "allow" : "deny", invocationPermissionContext.trustOrigin),
           pluginOperation: {
             pluginId: pluginOperationPrincipal.ownerPluginId,
             operation: resolvedPluginOperation.operation,
@@ -1101,7 +1102,7 @@ export async function executeAuthorizedToolInvocation(
     const surfaceResolution = services.permissionManager ? await resolveUserOwnedSurfaceApproval({
       manager: services.permissionManager, gate: services.approvalGate!, permission: permissionResult, decision, request: liveRequest, sessionId,
       review: async permission => await dispatchReviewerForInteractiveAuto(services.permissionManager, toolUse.name, source, invocationCategory, tool.pathFields ?? [], finalInput, invocationAllowedScope.directories, sensitivePathPattern ? [sensitivePathPattern] : [], invocationPermissionContext, evaluationContext, { ...(ownerPluginSandboxRoot ? { ownerPluginSandboxRoot } : {}) }, callbacks, meta, approvalPurpose, hostShellExecutionPlan, abortSignal, undefined, sessionId, permission) ?? permission,
-    }) : { permission: permissionResult, decision, humanApproved: undefined };
+    }) : { permission: permissionResult, decision, provenance: undefined };
     permissionResult = surfaceResolution.permission;
     decision = surfaceResolution.decision;
     lateApprovalDecision = decision;
@@ -1111,11 +1112,10 @@ export async function executeAuthorizedToolInvocation(
       permissionResult = failure.permission;
       throw new Error(failure.content);
     }
-    humanApproved = surfaceResolution.humanApproved ?? (decision.choice.startsWith("allow") && !isHostApprovalRejectedDecision(decision));
+    humanApproved = surfaceResolution.provenance === undefined && decision.choice.startsWith("allow") && !isHostApprovalRejectedDecision(decision);
     if (!humanApproved && permissionResult.decision !== "allow") {
       const denied = { ...permissionResult, decision: "deny" as const, reason: request.reason };
-      // A recheck deny is the rule's; a deny the gate returned unchanged was answered.
-      permissionResult = surfaceResolution.humanApproved === false ? denied : answeredPermission(denied, decision);
+      permissionResult = surfaceResolution.provenance === undefined ? answeredPermission(denied, decision) : { ...denied, provenance: surfaceResolution.provenance };
       throw new Error(request.reason);
     }
     if (humanApproved) {
@@ -1473,7 +1473,7 @@ export async function executeAuthorizedToolInvocation(
         tool: toolUse.name,
         source,
         category: invocationCategory,
-        trustOrigin: invocationPermissionContext.trustOrigin,
+        trustOrigin: provenanceTrustOrigin(RULE_PROVENANCE, "allow", invocationPermissionContext.trustOrigin),
         pluginOperation: {
           pluginId,
           operation,

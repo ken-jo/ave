@@ -63,10 +63,9 @@ import { PermissionManager, requiredTier, type PermissionCheckResult } from "../
 import {
   isRemoteControllerBoundToSession,
   remoteControllerOriginOf,
-  type TrustOriginWithUnknown,
 } from "../shared/chat-origin.js";
 import { isRationaleEligible, RationaleHumanApprovalDeniedError } from "./pipeline/rationale-control.js";
-import { approvalReasonFields, approvalTargetFor, type ApprovalDecision } from "../permissions/approval-gate.js";
+import { approvalReasonFields, approvalTargetFor, HOST_PROVENANCE, provenanceTrustOrigin, RULE_PROVENANCE, type ApprovalDecision, type DecisionProvenance } from "../permissions/approval-gate.js";
 import { abortSupersedesApprovalDecision, answeredPermission, approvalFailureOutcome } from "./pipeline/approval-outcome.js";
 import {
   buildPermissionEvaluationContext,
@@ -384,7 +383,7 @@ export async function runToolInvocation(
             toolCalls: [{ name: toolUse.name, isError: false, trust: "high" }] });
         } else if (services.auditLogger.isPermissionAuditChainReady()) {
           const common = { auditId: randomUUID(), ts: new Date().toISOString(), toolUseId: toolUse.id,
-            trustOrigin: opts.permissionContext?.trustOrigin ?? "unknown" as const, tool: toolUse.name,
+            trustOrigin: provenanceTrustOrigin(RULE_PROVENANCE, "deny", opts.permissionContext?.trustOrigin ?? "unknown" as const), tool: toolUse.name,
             source: services.toolRegistry.findByName(toolUse.name)?.source ?? "builtin" as const,
             category: services.toolRegistry.findByName(toolUse.name)?.category ?? "meta" as const, hookChain };
           await appendToolInvocationAudit(services.auditLogger, { ...common, decision: "deny",
@@ -1590,7 +1589,7 @@ async function runToolInvocationAttempt(
             }
             if (resolution.approvalDecision === undefined) throw new Error("Directory approval did not produce an authenticated decision");
             if (resolution.allowed && resolution.scope !== "turn") {
-              await propagateGrantScope(resolution.approvedDirectory, resolution.scope, resolution.permissionResult?.answer?.trustOrigin);
+              await propagateGrantScope(resolution.approvedDirectory, resolution.scope, resolution.permissionResult?.provenance ?? RULE_PROVENANCE);
               const afterDirectories = [...(invocationPermissionContext.getAdditionalDirectories?.() ?? invocationPermissionContext.additionalDirectories ?? [])];
               if (canonicalStringify([...new Set(beforeDirectories)].sort()) !== canonicalStringify([...new Set(afterDirectories)].sort())) {
                 const approvedIdentity = caseFoldForMatch(canonicalizePathForMatch(resolution.approvedDirectory));
@@ -1692,7 +1691,7 @@ async function runToolInvocationAttempt(
             hookChainFromDispatch("perm", permissionHook));
           return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: reason, is_error: true, durationMs: Date.now() - startTime }) };
         }
-        let decision;
+        let decision: ApprovalDecision;
         try {
           await auditCurrentPermissionAsk(
             toolUse.name,
@@ -1752,6 +1751,14 @@ async function runToolInvocationAttempt(
           await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, blockedPermission, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
           return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs }) };
         }
+        // Every directory deny, from either card, ends here with exactly one terminal row.
+        const denyDirectory = async (denied: PermissionCheckResult, msg: string) => {
+          const durationMs = Date.now() - startTime;
+          emitToolStart(callbacks, toolUse.name, finalInput, meta);
+          callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
+          await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, denied, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
+          return { allowed: false as const, approvalDecision: decision, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs }) };
+        };
         if (decision.choice.startsWith("deny")) {
           // Reached both when a person declines and when an unattended session
           // auto-denies. Either way the same argument cannot succeed on its
@@ -1773,11 +1780,7 @@ async function runToolInvocationAttempt(
               readsUnfenced: !blockReadsOutsideWorkingDirectories,
             })
           );
-          const durationMs = Date.now() - startTime;
-          emitToolStart(callbacks, toolUse.name, finalInput, meta);
-          callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
-          await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, hostFailure?.permission ?? answeredPermission({ ...dirLayerResult, decision: "deny" }, decision), Infinity, invocationPermissionContext, invocationCategory, executionCwd);
-          return { allowed: false, approvalDecision: decision, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs }) };
+          return await denyDirectory(hostFailure?.permission ?? answeredPermission({ ...dirLayerResult, decision: "deny" }, decision), msg);
         }
         if (directoryPolicyEpoch !== manager.getPolicyEpoch()) {
           const denied: PermissionCheckResult = { decision: "deny", reason: "Permission policy changed during approval.", };
@@ -1790,9 +1793,16 @@ async function runToolInvocationAttempt(
         dirLayerResult = surfaceResolution.permission;
         decision = surfaceResolution.decision;
         if (abortSupersedesApprovalDecision(abortSignal, decision)) return { allowed: false, result: withHostShellExecutionPlan(await returnUserAbort(abortDeps(finalInput))) };
-        if (decision.choice.startsWith("deny")) return { allowed: false, approvalDecision: decision, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: dirLayerResult.reason, is_error: true, durationMs: Date.now() - startTime }) };
-        const approvedPermissionResult: PermissionCheckResult = surfaceResolution.humanApproved === false ? dirLayerResult
-          : answeredPermission({ ...dirLayerResult, decision: "allow", reason: "The user approved this exact invocation." }, decision);
+        if (decision.choice.startsWith("deny")) {
+          const hostFailure = approvalFailureOutcome(decision, toolUse.name, dirLayerResult);
+          const denied: PermissionCheckResult = { ...dirLayerResult, decision: "deny" };
+          return await denyDirectory(hostFailure?.permission ?? (surfaceResolution.provenance === undefined
+            ? answeredPermission(denied, decision) : { ...denied, provenance: surfaceResolution.provenance }), hostFailure?.content ?? dirLayerResult.reason);
+        }
+        // A policy allow is kept as issued: later rechecks look the result itself up.
+        const approvedPermissionResult: PermissionCheckResult = surfaceResolution.provenance === undefined
+          ? answeredPermission({ ...dirLayerResult, decision: "allow", reason: "The user approved this exact invocation." }, decision)
+          : dirLayerResult;
         // No remembered grant is kept while boot refuses the home folder (the card already answers once with a notice); an
         // allow-always that still arrives applies once, to the exact target.
         const persistRefused = decision.choice === "allow-always" && isAveHomeConfigurationRefused(aveHome());
@@ -1811,7 +1821,7 @@ async function runToolInvocationAttempt(
             directory: approvedDirectory,
             grantLifetime: "always",
             permissionContext: invocationPermissionContext,
-            ...(approvedPermissionResult.answer === undefined ? {} : { answeredTrustOrigin: approvedPermissionResult.answer.trustOrigin }),
+            provenance: approvedPermissionResult.provenance ?? RULE_PROVENANCE,
             audit: currentAuditMetadata(),
           });
           if (abortSignal?.aborted) return { allowed: false, result: withHostShellExecutionPlan(await returnUserAbort(abortDeps(finalInput))) };
@@ -1834,10 +1844,10 @@ async function runToolInvocationAttempt(
             const durationMs = Date.now() - startTime;
             emitToolStart(callbacks, toolUse.name, finalInput, meta);
             callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
-            await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, { ...dirLayerResult, decision: "deny" }, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
+            await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, { ...dirLayerResult, decision: "deny", provenance: HOST_PROVENANCE }, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
             return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs }) };
           }
-          return { allowed: true, approvalDecision: decision, approvedDirectory, scope: "always", permissionResult: approvedPermissionResult, humanApproved: surfaceResolution.humanApproved ?? true };
+          return { allowed: true, approvalDecision: decision, approvedDirectory, scope: "always", permissionResult: approvedPermissionResult, humanApproved: surfaceResolution.provenance === undefined };
         }
         if (decision.choice === "allow-session") {
           // Mirror allow-always' persist convention so the permission
@@ -1861,7 +1871,7 @@ async function runToolInvocationAttempt(
             const durationMs = Date.now() - startTime;
             emitToolStart(callbacks, toolUse.name, finalInput, meta);
             callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
-            await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, { ...dirLayerResult, decision: "deny" }, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
+            await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, { ...dirLayerResult, decision: "deny", provenance: HOST_PROVENANCE }, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
             return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs }) };
           }
           return { allowed: true, approvalDecision: decision, approvedDirectory: sessionScopePath, scope: "session", permissionResult: approvedPermissionResult, humanApproved: true };
@@ -1901,7 +1911,7 @@ async function runToolInvocationAttempt(
     // dropping a grant is exactly the bug class this refactor eliminates,
     // so we log and degrade conservatively (session → turn) rather than
     // pretending the propagation succeeded.
-    const propagateGrantScope = async (approvedDirectory: string, scope: "turn" | "session" | "always", answeredTrustOrigin: TrustOriginWithUnknown | undefined): Promise<void> => {
+    const propagateGrantScope = async (approvedDirectory: string, scope: "turn" | "session" | "always", provenance: DecisionProvenance): Promise<void> => {
       const emitGrantAudit = (lifetime: "turn" | "session" | "always" | "degraded-to-turn"): Promise<void> => {
         // Finish the grant audit before execution checks chain writability.
         return services.auditWriter.auditPermissionGrant({
@@ -1911,7 +1921,7 @@ async function runToolInvocationAttempt(
           directory: approvedDirectory,
           grantLifetime: lifetime,
           permissionContext: invocationPermissionContext,
-          ...(answeredTrustOrigin === undefined ? {} : { answeredTrustOrigin }),
+          provenance,
           audit: currentAuditMetadata(),
         });
       };
@@ -2063,7 +2073,7 @@ async function runToolInvocationAttempt(
               ...(resolution.pendingRationale ? { pendingRationale: true, requestHumanApproval: resolution.requestHumanApproval } : {}) };
           }
           applyApprovedDirectory(resolution.approvedDirectory);
-          if (!resolution.pendingRationale && resolution.permissionResult?.forceModal !== true && invocationPermissionContext.manualRerun !== true) await propagateGrantScope(resolution.approvedDirectory, resolution.scope, resolution.permissionResult?.answer?.trustOrigin);
+          if (!resolution.pendingRationale && resolution.permissionResult?.forceModal !== true && invocationPermissionContext.manualRerun !== true) await propagateGrantScope(resolution.approvedDirectory, resolution.scope, resolution.permissionResult?.provenance ?? RULE_PROVENANCE);
           for (const path of resolution.permissionResult?.pipelineRequest?.paths ?? []) applyApprovedDirectory(path.canonical);
           continue;
         }
@@ -2361,6 +2371,7 @@ async function runToolInvocationAttempt(
               directory: pathScope.readOutsideScope.filePath,
               policyRule: READ_ANYWHERE_AUDIT_RULE,
               permissionContext: invocationPermissionContext,
+              provenance: RULE_PROVENANCE,
               audit: currentAuditMetadata(finalInput),
             });
           }
@@ -2389,7 +2400,7 @@ async function runToolInvocationAttempt(
             ...(resolution.pendingRationale ? { pendingRationale: true, requestHumanApproval: resolution.requestHumanApproval } : {}) };
         }
         applyApprovedDirectory(resolution.approvedDirectory);
-        if (!resolution.pendingRationale && resolution.permissionResult?.forceModal !== true && invocationPermissionContext.manualRerun !== true) await propagateGrantScope(resolution.approvedDirectory, resolution.scope, resolution.permissionResult?.answer?.trustOrigin);
+        if (!resolution.pendingRationale && resolution.permissionResult?.forceModal !== true && invocationPermissionContext.manualRerun !== true) await propagateGrantScope(resolution.approvedDirectory, resolution.scope, resolution.permissionResult?.provenance ?? RULE_PROVENANCE);
         // The one card authorizes the complete sealed invocation; saved folders retain only the chosen scope.
         for (const target of canonicalTargets) applyApprovedDirectory(target.runtimePath);
         if (fileWritePolicy && !resolution.pendingRationale && invocationPermissionContext.headless !== true) fileWritePolicy.directoryApproved = true;

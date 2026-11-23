@@ -1,5 +1,5 @@
 // A permission row's trust origin records who decided, not when the row is written. The host's own refusal at the quit seal carries
-// "unknown" in the object that names it, and no origin is read off the seal or an abort, so a person's earlier answer is never
+// "unknown", or the host's provenance, in the object that names it, and no origin is read off the seal or an abort, so a person's earlier answer is never
 // relabeled. Checked on the compiler's syntax tree of every source file that mentions either.
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
@@ -27,9 +27,11 @@ const keyOf = (node: Node): string | undefined => {
 };
 const trustOriginOf = (object: Node): Node | undefined => {
   if (!ts.isObjectLiteralExpression(object)) return undefined;
-  const property = object.properties.find((member) => keyOf(member) === "trustOrigin");
+  const property = object.properties.find((member) => keyOf(member) === "trustOrigin" || keyOf(member) === "provenance");
   return property && ts.isPropertyAssignment(property) ? property.initializer : undefined;
 };
+const isHostOrigin = (origin: Node): boolean =>
+  ts.isStringLiteral(origin) && origin.text === "unknown" || ts.isIdentifier(origin) && origin.text === "HOST_PROVENANCE";
 const readsSealState = (node: Node): boolean => {
   let found = false;
   const visit = (current: Node) => {
@@ -56,7 +58,7 @@ function findings(source: Node): string[] {
         const owner = ancestors.slice(0, index).reverse().find((ancestor) => trustOriginOf(ancestor) !== undefined);
         const origin = owner && trustOriginOf(owner);
         const literal = origin && strip(origin);
-        if (!(literal && ts.isStringLiteral(literal) && literal.text === "unknown")) {
+        if (!(literal && isHostOrigin(literal))) {
           out.push("a host-shutdown deny without the host's origin");
         }
       }
@@ -88,6 +90,7 @@ describe("permission rows record who decided", () => {
   it.each([
     ["a shutdown deny with no origin of its own", `declare const shut: boolean; const p = { decision: "deny", reason: shut ? "host-shutdown" : "user aborted turn" };`],
     ["a shutdown deny keeping the invocation origin", `declare const o: string; const row = { trustOrigin: o, denyReasons: [{ reason: "host-shutdown", source: "x" }] };`],
+    ["a shutdown deny under the policy's provenance", `declare const RULE_PROVENANCE: object; const p = { decision: "deny", reason: "host-shutdown", provenance: RULE_PROVENANCE };`],
     ["an origin chosen by the seal", `declare const hostShutdown: boolean; const row = { trustOrigin: hostShutdown ? "unknown" : "user-keyboard" };`],
     ["an origin chosen by an abort", `declare const signal: AbortSignal; const row = { trustOrigin: signal.aborted ? "unknown" : "user-keyboard" };`],
   ])("flags %s", (_name, text) => {
@@ -96,6 +99,7 @@ describe("permission rows record who decided", () => {
 
   it.each([
     ["the host's shutdown deny", `const p = { decision: "deny", reason: "host-shutdown", trustOrigin: "unknown" };`],
+    ["the host's shutdown deny by provenance", `declare const HOST_PROVENANCE: object; const p = { decision: "deny", reason: "host-shutdown", provenance: HOST_PROVENANCE };`],
     ["a row whose deny reason sits under the host's origin", `declare const base: object; const row = { ...base, denyReasons: [{ reason: "host-shutdown", source: "x" }], trustOrigin: "unknown" as const };`],
     ["a termination reason, which is no decision", `declare function audit(reason: string): void; audit("host-shutdown");`],
   ])("accepts %s", (_name, text) => {

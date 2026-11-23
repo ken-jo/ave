@@ -7,7 +7,8 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import type { AuditLogger } from "../../audit/audit-logger.js";
 import { HookRunner } from "../../hooks/hook-runner.js";
 import type { ScriptHookManager } from "../../hooks/script-hook-manager.js";
-import type { ApprovalGate } from "../../permissions/approval-gate.js";
+import { answeredApprovalProvenance, type ApprovalGate } from "../../permissions/approval-gate.js";
+import { answeredApprovalDecision } from "../../__tests__/support/answering-approval-gate.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { makePermissionManager } from "./executor-reviewer-fixtures.js";
 import { createDynamicTool } from "../base.js";
@@ -240,6 +241,7 @@ async function fixture() {
     }),
   } as unknown as ApprovalGate;
   const scriptHooks = createScriptHooks(order);
+  const auditLogger = createAuditLogger(order, directory);
   const executor = new ToolExecutor(
     registry,
     hooks,
@@ -247,7 +249,7 @@ async function fixture() {
     undefined,
     approvalGate,
     scriptHooks,
-    createAuditLogger(order, directory),
+    auditLogger,
   );
 
   let reviewerRequestId: string | undefined;
@@ -297,6 +299,7 @@ async function fixture() {
     createRationaleTicketCasExpectation(snapshot),
   );
   if (!receipt) throw new Error("allow-once receipt failed");
+  const resumeAnswer = await answeredApprovalDecision({ choice: "allow-once" });
 
   const request = createSealedRationaleResumeRequest({
     control,
@@ -328,6 +331,7 @@ async function fixture() {
       ticketStore.isAuthenticConsumedAllowOnceReceipt(receipt),
     resolveCurrentActionIdentity: identity,
     loadHostConsumedAllowOnceReceipt: loadReceipt,
+    loadHostResumeProvenance: (candidate) => candidate.ticketId === request.ticketId ? answeredApprovalProvenance(resumeAnswer) : null,
     isAuthenticConsumedAllowOnceReceipt: authenticateReceipt,
     hostInvocationStartCas: tracedStartCas(order, startStore),
     onInvocationAudit: (record) => {
@@ -372,6 +376,7 @@ async function fixture() {
     loadReceipt,
     control,
     invocationAudits,
+    auditLogger,
   };
 }
 
@@ -416,6 +421,20 @@ describe("ToolExecutor sealed rationale resume", () => {
         "terminal-audit",
         "tool-end",
       ]);
+    } finally {
+      await cleanupTmpDir(f.directory);
+    }
+  });
+
+  it("records the resumed allow as the desk's answer with one terminal row", async () => {
+    const f = await fixture();
+    try {
+      const append = vi.mocked(f.auditLogger.appendPermissionAuditEntry);
+      const before = append.mock.calls.length;
+      const result = await resumeFixture(f);
+      expect(result.is_error).toBeUndefined();
+      const terminal = append.mock.calls.slice(before).map(([entry]) => entry).filter(entry => entry.decision !== "ask" && !("grantLifetime" in entry));
+      expect(terminal).toEqual([expect.objectContaining({ decision: "allow", trustOrigin: "user-keyboard" })]);
     } finally {
       await cleanupTmpDir(f.directory);
     }

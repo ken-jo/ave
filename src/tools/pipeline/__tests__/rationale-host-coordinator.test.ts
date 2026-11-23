@@ -1,6 +1,7 @@
 import { captureApprovalWorkingDirectory } from "../../../permissions/user-approval-store.js";
 import { createRationaleApprovalCallback } from "../../../__tests__/support/rationale-approval-callback.js";
 import { describe, expect, it, vi } from "vitest";
+import { answeredApprovalDecision } from "../../../__tests__/support/answering-approval-gate.js";
 import { HookRunner } from "../../../hooks/hook-runner.js";
 import { captureRationalePolicySnapshot, type RationalePolicySnapshot } from "../rationale-policy-epoch.js";
 import { ApprovalGate } from "../../../permissions/approval-gate.js";
@@ -212,7 +213,8 @@ function setup(options: SetupOptions = {}) {
     const resolve = pendingApprovals.get(requestId);
     if (!resolve) return false;
     pendingApprovals.delete(requestId);
-    resolve({ requestId, choice });
+    if (choice.startsWith("allow")) void answeredApprovalDecision({ requestId, choice }).then(resolve);
+    else resolve({ requestId, choice });
     return true;
   };
   const fallbackApprovalGate = {
@@ -225,10 +227,10 @@ function setup(options: SetupOptions = {}) {
           pendingApprovals.set(request.id, resolve);
         });
       }
-      return {
+      return await answeredApprovalDecision({
         requestId: request.id,
         choice: options.approvalChoice ?? "allow-once",
-      };
+      });
     }),
     cancelPendingRequest: vi.fn((requestId: string) =>
       resolvePendingApproval(requestId, "deny-once")
@@ -449,6 +451,8 @@ describe("RationaleHostCoordinator", () => {
       sealed!.hostConsumedAllowOnceReceipt,
       NOW + 3,
     )).toBe(true);
+    // The resume carries the answer the desk gave on the card, independently of any policy change.
+    expect(sealed && state.coordinator.loadHostResumeProvenance(sealed.resumeRequest)).toMatchObject({ kind: "answered", decision: "allow", answerer: "desk", trustOrigin: "user-keyboard" });
     expect(await state.coordinator.createSealedResume({
       ticketId: materialized.control.ticketId,
       currentEligibilityContext: eligibilityContext,
@@ -1110,6 +1114,8 @@ describe("RationaleHostCoordinator", () => {
       sealed!.hostConsumedAllowOnceReceipt,
       NOW + 3,
     )).toBe(true);
+    // The reviewer, not a person, authorized this resume.
+    expect(sealed && state.coordinator.loadHostResumeProvenance(sealed.resumeRequest)).toEqual({ kind: "rule" });
     expect(await state.coordinator.createSealedResume({
       ticketId: materialized.control.ticketId,
       currentEligibilityContext: eligibilityContext,
