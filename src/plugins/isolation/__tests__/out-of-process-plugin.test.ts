@@ -1709,6 +1709,43 @@ describe("the factory's launch reaches the spawn as decided", () => {
   });
 });
 
+it("stops a confined POSIX group even when the leader exits before its descendants", async () => {
+  const roots = spawnableRoots();
+  const input = new PassThrough();
+  const stdout = new PassThrough();
+  const child = Object.assign(new EventEmitter(), {
+    pid: 4242, exitCode: null as number | null, signalCode: null, stdio: [null, stdout, null, input], stdout, kill: vi.fn(),
+  });
+  const platform = process.platform;
+  vi.useFakeTimers();
+  setProcessPlatform("linux");
+  const kill = vi.spyOn(process, "kill").mockReturnValue(true);
+  spawnConfinedChild.mockResolvedValueOnce({ child, confinement: "linux-bubblewrap" });
+  try {
+    const plugin = await spawnConfinedPluginChild({
+      pluginId: "example",
+      socketDir: roots.context.pluginSocketDir!,
+      launch: { kind: "entry", childEntryPath: join(roots.context.pluginRoot!, "plugin.mjs") },
+      envelope: { read: [], write: [] },
+    });
+    plugin.link.terminate("explicit stop");
+    expect(kill).toHaveBeenCalledWith(-child.pid, "SIGTERM");
+    child.exitCode = 0;
+    child.emit("exit", 0, null);
+    vi.advanceTimersByTime(TOOL_TIMEOUT_POLICY.pluginChildForceKillMs);
+    expect(kill).toHaveBeenLastCalledWith(-child.pid, "SIGKILL");
+    expect(child.kill).not.toHaveBeenCalled();
+  } finally {
+    child.emit("close");
+    input.destroy();
+    stdout.destroy();
+    kill.mockRestore();
+    setProcessPlatform(platform);
+    vi.useRealTimers();
+    roots.remove();
+  }
+});
+
 /** Hold Windows grants against the holder process and record ordering; this suite does not measure effective ACLs. */
 describe("on Windows a confined child holds a grant on its own directories for exactly its lifetime", () => {
   type FakeChild = EventEmitter & {

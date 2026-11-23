@@ -635,11 +635,23 @@ export async function spawnConfinedPluginChild(
       });
     });
     let terminated = false;
+    const processGroup = confinement === "macos-sandbox" || confinement === "linux-bubblewrap";
     const terminateChild = (): void => {
       if (terminated) return;
       terminated = true;
-      const forceTimer = terminateChildProcess(child, TOOL_TIMEOUT_POLICY.pluginChildForceKillMs);
-      child.once("exit", () => clearTimeout(forceTimer));
+      const forceTimer = terminateChildProcess(child, TOOL_TIMEOUT_POLICY.pluginChildForceKillMs, { processGroup });
+      child.once("exit", () => {
+        const pid = child.pid;
+        if (!processGroup || pid === undefined || pid <= 1) {
+          clearTimeout(forceTimer);
+          return;
+        }
+        try {
+          process.kill(-pid, 0);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ESRCH") clearTimeout(forceTimer);
+        }
+      });
     };
     // A holder that dies takes the grant's guarantee with it; the child it served stops rather than run on a grant nobody holds.
     grant?.onLost(terminateChild);
