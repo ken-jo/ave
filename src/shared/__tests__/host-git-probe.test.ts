@@ -51,10 +51,10 @@ const HELD_HELPER = `
 const { spawn } = require("node:child_process");
 const { writeFileSync } = require("node:fs");
 const [mode, pidFile] = process.argv.slice(2);
-const helper = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { detached: true, stdio: ["ignore", "inherit", "ignore"], windowsHide: true });
+const helper = spawn(process.execPath, ["-e", "setTimeout(() => {}, 15000)"], { detached: true, stdio: ["ignore", "inherit", "ignore"], windowsHide: true });
 writeFileSync(pidFile, String(helper.pid));
 if (mode === "overflow") process.stdout.write("x".repeat(5000));
-if (mode !== "exit") setInterval(() => {}, 60000);
+if (mode !== "exit") setInterval(() => {}, 15000);
 `;
 
 function readPid(pidFile: string): number {
@@ -110,6 +110,7 @@ it.each([
     expect(helperPid).toBeGreaterThan(0);
     if (reaped) await vi.waitFor(() => expect(alive(helperPid)).toBe(false), { timeout: 5_000, interval: 50 });
   } finally {
+    helperPid = readPid(pidFile);
     if (helperPid > 0 && alive(helperPid)) process.kill(helperPid, "SIGKILL");
     await cleanupTmpDir(fixture);
   }
