@@ -1169,16 +1169,17 @@ export async function authorizeToolInvocation(
         const currentPolicyEpoch = services.permissionManager?.getPolicyEpoch();
         // A settled refusal is terminal; a newer policy or a revoked share invalidates only an affirmative answer.
         const affirmative = !isSettledRefusal(decision);
-        const policyChanged = affirmative && approvalPolicyEpoch !== currentPolicyEpoch;
+        const policyChanged = approvalPolicyEpoch !== currentPolicyEpoch;
         const sameCardPolicyTransition = policyChanged && currentPolicyEpoch !== undefined &&
           services.approvalGate.allowsPolicyTransition(decision, approvalPolicyEpoch!, currentPolicyEpoch);
-        // A saved rule decides this pending action too; a card answer cannot override its deny.
+        // A saved rule decides this pending action too; a card answer cannot override its deny. For a refusal it only words the message.
         if (sameCardPolicyTransition) permissionResult = checkCurrentPermission();
-        const approvalInvalidationReason = policyChanged && !sameCardPolicyTransition
-          ? "Permission policy changed while approval was pending"
-          : affirmative && !isRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)
-            ? "remote-controller-revoked"
-            : sameCardPolicyTransition && permissionResult.decision === "deny" ? permissionResult.reason : undefined;
+        const approvalInvalidationReason = !affirmative ? undefined
+          : policyChanged && !sameCardPolicyTransition
+            ? "Permission policy changed while approval was pending"
+            : !isRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)
+              ? "remote-controller-revoked"
+              : sameCardPolicyTransition && permissionResult.decision === "deny" ? permissionResult.reason : undefined;
         if (approvalInvalidationReason !== undefined) {
           const reason = approvalInvalidationReason;
           const msg = t("be_executor.permBlockDeny", {
