@@ -1,4 +1,4 @@
-import { deferred } from "../../__tests__/support/deferred.js";
+import { afterQueuedCallbacks, deferred } from "../../__tests__/support/deferred.js";
 import { spawn } from "node:child_process";
 import { promises as dns } from "node:dns";
 import { EventEmitter } from "node:events";
@@ -19,8 +19,6 @@ import { ToolRegistry } from "../../tools/registry.js";
 import { makeWriteProbeTool } from "../../tools/__tests__/approval-memory-test-fixtures.js";
 import { userPermissionContext } from "../../tools/__tests__/tool-context-fixture.js";
 import type { ReadyBootContext } from "../context.js";
-
-const nextMacrotask = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 class ObservedAuditLogger extends AuditLogger {
   readonly order: string[] = [];
@@ -122,14 +120,14 @@ describe("shutdown permission audit ordering", () => {
     const approvalGate = new ApprovalGate(wc as never, undefined, undefined, audit);
     gate = approvalGate;
     audit.beforeDeny = async () => {
-      await nextMacrotask();
+      await afterQueuedCallbacks();
       if (appendFails) throw new Error("terminal permission audit unavailable");
     };
     audit.beforeAppend = async (entry) => {
       if (queued && entry.decision === "ask") {
         askQueued.resolve();
         await quitStarted.promise;
-        await nextMacrotask();
+        await afterQueuedCallbacks();
       }
     };
     const execute = vi.fn(async () => "wrote");
@@ -189,7 +187,7 @@ describe("shutdown permission audit ordering", () => {
       const arrive = async (): Promise<"written" | "rejected"> => {
         const admission = ledger.admitToolInvocation("late_probe");
         try {
-          await nextMacrotask();
+          await afterQueuedCallbacks();
           await ledger.appendToolInvocationAudit(audit, {
             decision: "deny", ts: new Date().toISOString(), auditId: "late-probe", tool: "late_probe",
             source: "builtin", category: "write", trustOrigin: "user-keyboard",
@@ -214,7 +212,7 @@ describe("shutdown permission audit ordering", () => {
       const app = assembleAppServices(shutdownContext(audit, new ApprovalGate(null)));
       if (!app.shutdown) throw new Error("Shutdown handler missing");
       const shutdown = Promise.allSettled([app.shutdown()]);
-      await nextMacrotask();
+      await afterQueuedCallbacks();
       if (when !== "close") {
         let hop = Promise.resolve();
         for (let i = 0; i < when; i += 1) hop = hop.then(() => {});
