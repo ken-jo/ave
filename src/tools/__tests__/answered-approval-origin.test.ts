@@ -180,6 +180,20 @@ describe("the answerer contract", () => {
     })]);
   });
 
+  it("ends a selected deny whose record fails its integrity check with the host's own refusal row", async () => {
+    const requestAndWait = vi.fn(async (request: ApprovalRequestInput) =>
+      answeredApprovalDecision({ requestId: request.id, choice: "deny-once" }, "desk", request.toolName, "other-invocation"));
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
+    await executor.executeAll([{ id: "integrity-deny", name: "write_file", input: { path: join(project, "integrity.txt"), content: "x" } }], {
+      sessionId: randomUUID(), executionCwd: project,
+      permissionContext: { trustOrigin: "plugin-emitted", additionalDirectories: [project] },
+    }).catch(() => undefined);
+    await vi.waitFor(async () => expect(await ledger("integrity-deny")).toEqual([expect.objectContaining({
+      decision: "deny", trustOrigin: "unknown",
+      denyReasons: [expect.objectContaining({ reason: expect.stringContaining("the terminal row failed its integrity check") })],
+    })]));
+  });
+
   it("tells a host refusal from an allow without a record", () => {
     expect(approvalDecisionTrustOrigin(Object.freeze({ requestId: "host-refusal", choice: "deny-once" as const }))).toBe("unknown");
     expect(() => approvalDecisionTrustOrigin({ requestId: "forged", choice: "allow-once" })).toThrow("approval: an allow carries no record of who answered");

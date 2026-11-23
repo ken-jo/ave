@@ -156,6 +156,8 @@ class TerminalLedger implements InvocationTerminal {
       log.error("terminal row of %s failed before it was enqueued: %s", this.tool, errorMessage(error));
       recordToolInvocationAuditFailure(error);
       this.#integrityFailure = true;
+      // The host's own refusal: a selected answer whose record just failed would fail the host's row the same way.
+      this.#selected = undefined;
       void this.endByHost("error", `the terminal row failed its integrity check: ${errorMessage(error)}`)?.catch(() => {});
     });
     return written;
