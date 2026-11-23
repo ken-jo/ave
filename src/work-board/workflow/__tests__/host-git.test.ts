@@ -105,27 +105,33 @@ describe("host git", () => {
     expect([stopped.child.stdin?.destroyed, stopped.child.stdout?.destroyed, stopped.child.stderr?.destroyed]).toEqual([true, true, true]);
 
     // It exits with a status, and something it started keeps the pipes: what was read is not known to be whole.
+    // Each process reports only once the host, which listens as it starts it, has started it.
     const exited = deaf();
-    spawned.fake = () => exited.child;
+    spawned.fake = () => {
+      queueMicrotask(() => {
+        exited.child.stdout?.emit("data", Buffer.from("partial"));
+        exited.child.emit("exit", 0);
+      });
+      return exited.child;
+    };
     spawned.calls = 0;
-    const run = reasonOf(createHostGit({ env, teardownMs: 20 }).run(base, ["status"]));
-    // The program is started once the host has resolved it.
-    await vi.waitFor(() => expect(spawned.calls).toBe(1));
-    exited.child.stdout?.emit("data", Buffer.from("partial"));
-    exited.child.emit("exit", 0);
-    expect(await run).toBe("terminated");
+    expect(await reasonOf(createHostGit({ env, teardownMs: 20 }).run(base, ["status"]))).toBe("terminated");
+    expect(spawned.calls).toBe(1);
     expect(exited.child.stdout?.destroyed).toBe(true);
 
     // One that closes in time after its exit is read as before.
     const closing = deaf();
-    spawned.fake = () => closing.child;
+    spawned.fake = () => {
+      queueMicrotask(() => {
+        closing.child.stdout?.emit("data", Buffer.from("whole"));
+        closing.child.emit("exit", 0);
+        closing.child.emit("close", 0);
+      });
+      return closing.child;
+    };
     spawned.calls = 0;
-    const whole = createHostGit({ env, teardownMs: 1_000 }).run(base, ["status"]);
-    await vi.waitFor(() => expect(spawned.calls).toBe(1));
-    closing.child.stdout?.emit("data", Buffer.from("whole"));
-    closing.child.emit("exit", 0);
-    closing.child.emit("close", 0);
-    expect(await whole).toMatchObject({ code: 0, stdout: "whole" });
+    expect(await createHostGit({ env, teardownMs: 1_000 }).run(base, ["status"])).toMatchObject({ code: 0, stdout: "whole" });
+    expect(spawned.calls).toBe(1);
   });
 
   it("output past the bound kills the process and rejects; output within it is returned", async () => {
@@ -665,14 +671,22 @@ describe("the hook floor's probe", () => {
     removal.failures = 1;
     removal.scratch = undefined;
     warned.lines = [];
-    expect(await probe(program)).toBe(true);
-    const asked = spawned.calls;
-    expect(await probe(program)).toBe(true);
-    expect(spawned.calls).toBe(asked);
-    expect(removal.failures).toBe(0);
-    expect(warned.lines.filter(line => line.includes("scratch"))).toHaveLength(1);
-    const scratch = removal.scratch as string | undefined;
-    expect(scratch).toBeDefined();
-    await vi.waitFor(() => expect(existsSync(scratch as string)).toBe(false), { timeout: 10_000 });
+    // The later removal waits on a timer the test moves on itself.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      expect(await probe(program)).toBe(true);
+      const asked = spawned.calls;
+      expect(await probe(program)).toBe(true);
+      expect(spawned.calls).toBe(asked);
+      expect(removal.failures).toBe(0);
+      expect(warned.lines.filter(line => line.includes("scratch"))).toHaveLength(1);
+      const scratch = removal.scratch as string | undefined;
+      expect(scratch).toBeDefined();
+      expect(existsSync(scratch as string)).toBe(true);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(existsSync(scratch as string)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
