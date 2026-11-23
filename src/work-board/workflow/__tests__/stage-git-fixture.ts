@@ -25,6 +25,16 @@ let runs = 0;
 
 export function gitFixture(): GitFixture {
   const base = mkdtempSync(join(tmpdir(), "swg-"));
+  try {
+    return madeIn(base);
+  } catch (error) {
+    // No caller has the fixture yet, so what was made of it goes here. A removal that fails too is told along with the failure.
+    try { removeTree(base); } catch (cleanup) { throw new AggregateError([error, cleanup], `a git fixture could not be made, and what was made of it stays: ${base}`); }
+    throw error;
+  }
+}
+
+function madeIn(base: string): GitFixture {
   const repo = join(base, "project");
   mkdirSync(repo);
   writeFileSync(join(base, "gitconfig"), "[core]\n\tautocrlf = false\n[init]\n\tdefaultBranch = main\n");
