@@ -59,7 +59,7 @@ export function runGitProbeAsync(path: string, args: string[], options: ProbeOpt
       if (bytes > MAX_STDOUT_BYTES) stop();
       else chunks.push(chunk);
     });
-    child.once("error", () => settle({ stdout: "" }));
+    child.on("error", () => settle({ stdout: "" }));
     child.once("close", (code) => settle({ stdout: Buffer.concat(chunks).toString("utf8"), exitCode: code ?? undefined }));
   }).catch(() => ({ stdout: "" }));
 }

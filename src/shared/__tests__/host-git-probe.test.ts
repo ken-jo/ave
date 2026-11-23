@@ -47,6 +47,15 @@ it("rejects an asynchronous probe with oversized stdout", async () => {
   await expect(runGitProbeAsync("git", ["--version"], {})).resolves.toEqual({ stdout: "" });
 });
 
+it("keeps handling errors after the asynchronous probe has settled", async () => {
+  const child = gitProbeChild(() => {});
+  vi.mocked(spawn).mockReturnValue(child);
+  const probe = runGitProbeAsync("git", ["--version"], {});
+  child.emit("error", new Error("spawn failed"));
+  expect(() => child.emit("error", new Error("late failure"))).not.toThrow();
+  await expect(probe).resolves.toEqual({ stdout: "" });
+});
+
 const HELD_HELPER = `
 const { spawn } = require("node:child_process");
 const { writeFileSync } = require("node:fs");
