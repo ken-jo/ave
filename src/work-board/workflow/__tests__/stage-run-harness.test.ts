@@ -229,6 +229,85 @@ it("checks a shared run file commit made by the retired store after cutover", as
   }
 });
 
+async function waitSnapshots(h: Awaited<ReturnType<typeof stageRunHarness>>) {
+  const version = await h.confirm([autoStageOf("a")]);
+  const id = await h.addItem(version);
+  const runId = "run-1";
+  expect(await h.board.beginRun(id, runId, "2026-11-16T00:00:00.000Z", {
+    ...h.pinOf(version), source: h.local(version), stageRuns: [{ stageId: "a", attempt: 1, status: "waiting" }],
+  })).toMatchObject({ status: "updated" });
+  const row = await h.board.get(id);
+  const run = await h.board.runs.get(runId);
+  if (row.status !== "found" || run.status !== "found") throw new Error("Missing wait fixture");
+  return { id, runId, row, run };
+}
+
+it("makes progress through unrelated wakes and preserves a relevant wake before the row key is known", async () => {
+  const h = await stageRunHarness();
+  try {
+    const { id, runId, row, run } = await waitSnapshots(h);
+    const { runs } = h.board;
+    const readRow = vi.spyOn(h.board, "get").mockImplementation(async () => {
+      if (readRow.mock.calls.length <= 100) runs.runChanged.emit("other-before");
+      if (readRow.mock.calls.length === 1) runs.runChanged.emit(runId);
+      return row;
+    });
+    const readRun = vi.spyOn(runs, "get").mockImplementation(async () => {
+      if (readRun.mock.calls.length <= 100) runs.runChanged.emit("other-after");
+      const output = readRun.mock.calls.length === 1 ? "stale" : "fresh";
+      return { ...run, run: { ...run.run, stageRuns: [{ ...run.run.stageRuns[0], output }] } };
+    });
+    const matches = vi.fn(() => true);
+    const result = h.until(id, matches);
+    void result.catch(() => {});
+
+    expect(await Promise.race([result, setImmediate("still pending")]))
+      .toMatchObject({ stageRuns: [{ output: "fresh" }] });
+    expect(readRun.mock.calls).toEqual([[runId], [runId]]);
+    expect(matches).toHaveBeenCalledTimes(1);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+it("yields with a pending wake so continuous invalidations cannot starve the deadline", async () => {
+  const h = await stageRunHarness();
+  try {
+    const { id, runId, row, run } = await waitSnapshots(h);
+    const { runs } = h.board;
+    vi.spyOn(h.board, "get").mockResolvedValue(row);
+    const burstLimit = 100;
+    const readRun = vi.spyOn(runs, "get").mockImplementation(async () => {
+      runs.runChanged.emit("other-run");
+      // The cap lets a monopolized event loop recover and report a failed assertion.
+      if (readRun.mock.calls.length >= burstLimit) return new Promise<never>(() => {});
+      runs.runChanged.emit(runId);
+      return run;
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const matches = vi.fn(() => false);
+    const result = h.until(id, matches);
+    void result.catch(() => {});
+
+    await setImmediate();
+    const firstTurn = readRun.mock.calls.length;
+    await setImmediate();
+    const secondTurn = readRun.mock.calls.length;
+    expect(secondTurn).toBeLessThan(burstLimit);
+    expect(secondTurn).toBeGreaterThan(firstTurn);
+    expect(matches).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(30_000);
+    await expect(result).rejects.toThrow(`timed out waiting for item ${id} to satisfy its predicate`);
+    await setImmediate();
+    expect(readRun).toHaveBeenCalledTimes(secondTurn);
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    vi.useRealTimers();
+    await h.cleanup();
+  }
+});
+
 it("checks state already committed before a wait attaches", async () => {
   const h = await stageRunHarness();
   try {
