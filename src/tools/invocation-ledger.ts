@@ -13,6 +13,8 @@ const detached = new Map<object, () => Promise<unknown>>();
 const sealClaims = new Set<() => void>();
 // Every attempt whose terminal row is still unclaimed and that registered a host writer.
 const openTerminals = new Set<TerminalLedger>();
+// Attempts whose terminal row is enqueued and not yet committed.
+const enqueuedTerminals = new Set<TerminalLedger>();
 // Attempts a rationale card holds, by tool-use id, until its sealed start adopts them.
 const suspendedTerminals = new Map<string, TerminalLedger>();
 let closing: Promise<number> | undefined;
@@ -160,7 +162,8 @@ class TerminalLedger implements InvocationTerminal {
   }
 
   #track(append: Promise<unknown>): void {
-    const settled = append.then(
+    enqueuedTerminals.add(this);
+    const settled = append.finally(() => { enqueuedTerminals.delete(this); }).then(
       () => { this.#state = this.#integrityFailure ? "failed" : "committed"; },
       (error: unknown) => {
         this.#state = "failed";
@@ -296,6 +299,11 @@ export async function drainToolInvocationAuditForExit(
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** The tools whose terminal row is still unclaimed or still committing, for the record of a missed exit deadline. */
+export function unsettledTerminalTools(): { open: string[]; enqueued: string[] } {
+  return { open: [...openTerminals].map((ledger) => ledger.tool), enqueued: [...enqueuedTerminals].map((ledger) => ledger.tool) };
 }
 
 /** Admission unless the audit is closed; a closed refusal has no row left to write, so it fails nothing. */

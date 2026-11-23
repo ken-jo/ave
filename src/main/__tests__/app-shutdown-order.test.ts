@@ -340,7 +340,10 @@ describe("OS sandbox release at quit", () => {
     vi.resetModules();
     const ledger = await import("../../tools/invocation-ledger.js");
     const parked = ledger.admitToolInvocation("stuck-probe");
-    parked.terminal.hostTerminal((_cause, _detail, _selected, row) => row({ entry: { ...PROBE_ROW, tool: "stuck-probe" } }));
+    const stuckLogger = { appendPermissionAuditEntry: () => new Promise<never>(() => {}) };
+    parked.terminal.hostTerminal((_cause, _detail, _selected, row) => row({ logger: stuckLogger, entry: { ...PROBE_ROW, tool: "stuck-probe" } }));
+    const unwritten = ledger.admitToolInvocation("unwritten-probe");
+    unwritten.terminal.hostTerminal(() => new Promise(() => {}));
     const services = makeServices();
     services.auditLogger.close = vi.fn(() => new Promise<void>(() => {}));
     getServices.mockReturnValue(services);
@@ -352,8 +355,10 @@ describe("OS sandbox release at quit", () => {
     } finally {
       hardTimeoutFires = false;
       parked.settle();
+      unwritten.settle();
     }
-    expect(logError).toHaveBeenCalledWith({ outcome: "timed-out" }, "permission audit terminal rows did not commit before exit");
+    const deadlineRecords = logError.mock.calls.filter(([, message]) => message === "permission audit terminal rows did not commit before exit");
+    expect(deadlineRecords).toEqual([[{ outcome: "timed-out", open: ["unwritten-probe"], enqueued: ["stuck-probe"] }, "permission audit terminal rows did not commit before exit"]]);
     expect(calls).toContain("closeFileLogSink");
   });
 

@@ -1,4 +1,4 @@
-import { beginToolInvocationAuditShutdown, drainToolInvocationAuditForExit, pendingToolInvocationCount, sealToolInvocations } from "../tools/invocation-ledger.js";
+import { beginToolInvocationAuditShutdown, drainToolInvocationAuditForExit, pendingToolInvocationCount, sealToolInvocations, unsettledTerminalTools } from "../tools/invocation-ledger.js";
 import type { BootHost } from "../boot/host-runtime.js";
 import { browserTabRegistry } from "./browser/browser-tab-registry.js";
 // Ordered teardown runs under a hard deadline so a wedged subsystem cannot hang app.quit(). Unordered cleanup belongs in registerShutdownHook instead of
@@ -418,7 +418,7 @@ export async function runAppShutdownCleanup(options: {
         options.auditCommitReserveMs ?? FORCED_AUDIT_COMMIT_RESERVE_MS,
       );
       if (outcome !== "committed") {
-        log.error({ outcome }, "permission audit terminal rows did not commit before exit");
+        log.error({ outcome, ...unsettledTerminalTools() }, "permission audit terminal rows did not commit before exit");
       }
     };
 
