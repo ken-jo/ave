@@ -6,7 +6,7 @@ import { platform, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
-import { nativeBackedTestFiles } from "./windows-native-test-inventory.js";
+import { nativeBackedTestFiles, windowsImportGraph } from "./windows-native-test-inventory.js";
 
 const require = createRequire(import.meta.url);
 vi.mock("node:os", () => ({
@@ -21,11 +21,34 @@ function sources(test: string, store = 'export { read } from "../shared/windows-
   return new Map([[SUITE, test], [STORE, store], [NATIVE, "export const read = () => {};"]]);
 }
 
-describe("Windows native test inventory", () => {
+// Check the import parser independently of the evidence used to select Windows tests.
+function nativeImportChains(modules: Map<string, string>): Map<string, string[]> {
+  const graph = windowsImportGraph(modules);
+  const chains = new Map<string, string[]>();
+  for (const [file, suite] of graph) {
+    if (!file.endsWith(".test.ts")) continue;
+    const queue = [[file]];
+    const seen = new Set([file]);
+    for (const chain of queue) {
+      const current = chain.at(-1);
+      if (current === undefined) throw new Error("Empty import chain");
+      if (current.includes("/windows-")) { chains.set(file, chain); break; }
+      for (const { file: dependency, actual } of graph.get(current)?.dependencies ?? []) {
+        if (seen.has(dependency) || (!actual && suite.mocks.has(dependency))) continue;
+        seen.add(dependency);
+        queue.push([...chain, dependency]);
+      }
+    }
+  }
+  return chains;
+}
+
+describe("Windows runtime imports", () => {
+
   it("selects a mock flow that reaches the actual module through a loader property value", () => {
     expect(platform()).toBe(process.platform);
     const source = 'vi.mock("../../shared/windows-native-host.js", () => ({ read: () => Reflect.apply({ require }.require, null, ["../../shared/windows-native-host.js"]).read() })); import { read } from "../store.js"; read();';
-    expect(nativeBackedTestFiles(sources(source)).has(SUITE)).toBe(true);
+    expect(nativeImportChains(sources(source)).has(SUITE)).toBe(true);
   });
 
   it.each([
@@ -34,7 +57,7 @@ describe("Windows native test inventory", () => {
     'const { read } = await vi.importActual("../store.js"); read();',
     'const { read } = require("../store.js"); read();',
   ])("follows runtime imports and re-exports: %s", source => {
-    expect(nativeBackedTestFiles(sources(source)).get(SUITE)).toEqual([SUITE, STORE, NATIVE]);
+    expect(nativeImportChains(sources(source)).get(SUITE)).toEqual([SUITE, STORE, NATIVE]);
   });
   it.each([
     'require("../shared/windows-native-host.js")',
@@ -48,14 +71,14 @@ describe("Windows native test inventory", () => {
     'module?.[`require`]("../shared/windows-native-host.js")',
   ])("follows a transitive module-loading helper: %s", invocation => {
     const source = 'const { read } = require("../store.js"); read();';
-    expect(nativeBackedTestFiles(sources(source, `exports.read = () => ${invocation}.read();`)).get(SUITE)).toEqual([SUITE, STORE, NATIVE]);
+    expect(nativeImportChains(sources(source, `exports.read = () => ${invocation}.read();`)).get(SUITE)).toEqual([SUITE, STORE, NATIVE]);
   });
   it("erases type-only imports before walking dependencies", () => {
-    expect([...nativeBackedTestFiles(sources('import type { read } from "../store.js"; type Reader = typeof read;'))]).toEqual([]);
+    expect([...nativeImportChains(sources('import type { read } from "../store.js"; type Reader = typeof read;'))]).toEqual([]);
   });
   it("cuts a completely mocked native dependency even when its importer is indirect", () => {
     const source = 'vi.mock("../../shared/windows-native-host.js", () => ({ read: vi.fn() })); import { read } from "../store.js"; read();';
-    expect([...nativeBackedTestFiles(sources(source))]).toEqual([]);
+    expect([...nativeImportChains(sources(source))]).toEqual([]);
   });
   it.each([
     '() => ({ require: vi.fn(), read: vi.fn() })',
@@ -76,7 +99,7 @@ describe("Windows native test inventory", () => {
     '() => ({ read: vi.fn(), value: "require" /* require("../../shared/windows-native-host.js") */ })',
   ])("excludes a complete factory with only object keys or require text: %s", factory => {
     const source = `vi.mock("../../shared/windows-native-host.js", ${factory}); import { read } from "../store.js"; read();`;
-    expect(nativeBackedTestFiles(sources(source)).has(SUITE)).toBe(false);
+    expect(nativeImportChains(sources(source)).has(SUITE)).toBe(false);
   });
   it.each([
     '() => ({ read: vi.fn(), require })',
@@ -114,7 +137,7 @@ describe("Windows native test inventory", () => {
     '() => { {} { require: consume(); } return { read: vi.fn() }; }',
   ])("selects shorthand, member, binding and loader values with accepted over-selection: %s", factory => {
     const source = `vi.mock("../../shared/windows-native-host.js", ${factory}); import { read } from "../store.js"; read();`;
-    expect(nativeBackedTestFiles(sources(source)).has(SUITE)).toBe(true);
+    expect(nativeImportChains(sources(source)).has(SUITE)).toBe(true);
   });
   it.each([
     'require.call(null, moduleName)',
@@ -138,7 +161,7 @@ describe("Windows native test inventory", () => {
     'module?.["require"]?.(moduleName)',
   ])("retains a factory with a possible module-load invocation: %s", invocation => {
     const source = `vi.mock("../../shared/windows-native-host.js", () => ({ read: () => ${invocation}.read() })); import { read } from "../store.js"; read();`;
-    expect(nativeBackedTestFiles(sources(source)).has(SUITE)).toBe(true);
+    expect(nativeImportChains(sources(source)).has(SUITE)).toBe(true);
   });
   it.each([
     '() => { for ({ require: x } of xs) consume(x); return {}; }',
@@ -153,7 +176,7 @@ describe("Windows native test inventory", () => {
     '() => { let x; ([{ require: x }] = modules); return { read: x }; }',
   ])("retains destructuring targets regardless of loop body punctuation: %s", factory => {
     const source = `vi.mock("../../shared/windows-native-host.js", ${factory}); import { read } from "../store.js"; read();`;
-    expect(nativeBackedTestFiles(sources(source)).has(SUITE)).toBe(true);
+    expect(nativeImportChains(sources(source)).has(SUITE)).toBe(true);
   });
   it.each([
     '1["require"]',
@@ -169,9 +192,9 @@ describe("Windows native test inventory", () => {
     '1_000["require"]',
   ])("retains numeric computed loaders and records their literal edges: %s", loader => {
     const factory = `vi.mock("../../shared/windows-native-host.js", () => ({ read: () => ${loader}(moduleName).read() })); import { read } from "../store.js"; read();`;
-    expect(nativeBackedTestFiles(sources(factory)).has(SUITE)).toBe(true);
+    expect(nativeImportChains(sources(factory)).has(SUITE)).toBe(true);
     const call = `${loader}("../../shared/windows-native-host.js").read();`;
-    expect(nativeBackedTestFiles(sources(call)).get(SUITE)).toEqual([SUITE, NATIVE]);
+    expect(nativeImportChains(sources(call)).get(SUITE)).toEqual([SUITE, NATIVE]);
   });
   it.each([
     'vi.mock("../../shared/windows-native-host.js");',
@@ -182,23 +205,23 @@ describe("Windows native test inventory", () => {
     'vi.mock("../../shared/windows-native-host.js", () => ({})); vi.unmock("../../shared/windows-native-host.js");',
     'vi.doMock("../../shared/windows-native-host.js", () => ({}));',
   ])("retains native coverage when a mock does not replace every runtime path: %s", mock => {
-    expect(nativeBackedTestFiles(sources(`${mock} import { read } from "../store.js"; read();`)).has(SUITE)).toBe(true);
+    expect(nativeImportChains(sources(`${mock} import { read } from "../store.js"; read();`)).has(SUITE)).toBe(true);
   });
   it.each([
     'vi.mock("../../shared/windows-native-host.js", () => require("../../shared/windows-native-host.js"));',
     'vi.mock("../../shared/windows-native-host.js", () => ({ read: vi.fn() }));',
   ])("retains a real require edge alongside a module mock: %s", mock => {
     const source = `${mock} const { read } = require("../../shared/windows-native-host.js"); read();`;
-    expect(nativeBackedTestFiles(sources(source)).get(SUITE)).toEqual([SUITE, NATIVE]);
+    expect(nativeImportChains(sources(source)).get(SUITE)).toEqual([SUITE, NATIVE]);
   });
   it("ignores import-shaped comments, strings and regular expressions", () => {
     const source = '// import "../store.js";\nconst text = "import(\'../store.js\')"; const pattern = /import/;';
-    expect([...nativeBackedTestFiles(sources(source))]).toEqual([]);
+    expect([...nativeImportChains(sources(source))]).toEqual([]);
   });
   it("recognizes a new Windows module without extending a suite inventory", () => {
     const modules = sources('import "../store.js";', 'import "../shared/windows-new-boundary.js";');
     modules.set("src/shared/windows-new-boundary.ts", "export const enabled = true;");
-    expect(nativeBackedTestFiles(modules).get(SUITE)?.at(-1)).toBe("src/shared/windows-new-boundary.ts");
+    expect(nativeImportChains(modules).get(SUITE)?.at(-1)).toBe("src/shared/windows-new-boundary.ts");
   });
   it.each([0, 128])("keeps ordered shortest chains through cycles and suite mock cuts with %s extra modules", extra => {
     const first = "src/data/__tests__/first.test.ts";
@@ -212,7 +235,7 @@ describe("Windows native test inventory", () => {
       [NATIVE, "export const read = () => {};"],
     ]);
     for (let i = 0; i < extra; i++) modules.set(`src/data/unused-${i}.ts`, `export const value = ${i};`);
-    expect([...nativeBackedTestFiles(modules)]).toEqual([
+    expect([...nativeImportChains(modules)]).toEqual([
       [first, [first, alternate, NATIVE]],
       [second, [second, STORE, NATIVE]],
     ]);
@@ -359,7 +382,7 @@ threads.Worker = class extends BaseWorker {
   }
 };` },
         footer: { js: `
-const modules = new Map([["src/demo.test.ts", 'import "./windows-boundary";'], ["src/windows-boundary.ts", ""]]);
+const modules = new Map([["src/demo.test.ts", 'import { read } from "./windows-boundary"; read();'], ["src/windows-boundary.ts", "export function read() {}"]]);
 for (let i = 2; i < 260; i++) modules.set("src/pad" + i + ".ts", "");
 const started = performance.now();
 let error, result;
@@ -457,5 +480,43 @@ const elapsedMs = performance.now() - (armedAt ?? started);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("Windows native evidence", () => {
+  it.each([
+    'import { read } from "../../shared/windows-native-host.js"; read();',
+    'const { read: load } = await import("../../shared/windows-native-host.js"); await load();',
+    'import * as host from "../../shared/windows-native-host.js"; host.read();',
+    'import { read } from "../store.js"; read();',
+    'test.runIf(process.platform === "win32")("native case", () => run());',
+    'if (process.platform === "win32") run();',
+    'spawnSync("ave-path-kind.exe", ["--pin"]);',
+    'const helper = join(directory, "wxc-exec.exe"); execFileSync(helper, []);',
+    '// windows-native: the fixture launches the helper through the application\nrunFixture();',
+  ])("includes a concrete native witness %s", source => {
+    expect(nativeBackedTestFiles(sources(source)).has(SUITE)).toBe(true);
+  });
+
+  it.each([
+    'import { read } from "../../shared/windows-native-host.js"; expect(true).toBe(true);',
+    'import "../../shared/windows-native-host.js";',
+    'await import("../../shared/windows-native-host.js");',
+    'import { unrelated } from "../store.js"; unrelated();',
+    'vi.mock("../../shared/windows-native-host.js", () => ({ read: vi.fn() })); import { read } from "../store.js"; read();',
+    'Object.defineProperty(process, "platform", { value: "win32" }); if (process.platform === "win32") run();',
+    'setProcessPlatform("win32"); if (process.platform === "win32") run();',
+    'vi.mock("node:child_process", () => ({ spawnSync: vi.fn() })); spawnSync("ave-path-kind.exe");',
+    'const text = "if (process.platform === win32)"; const tool = "ave-path-kind.exe";',
+    'run();\n// windows-native',
+  ])("excludes an import, stub or mention without native evidence %s", source => {
+    expect(nativeBackedTestFiles(sources(source)).has(SUITE)).toBe(false);
+  });
+
+  it("matches the called one-hop wrapper and leaves other exports out", () => {
+    const wrapper = 'import { read } from "../shared/windows-native-host.js"; export function load() { return read(); } export function status() { return "ready"; }';
+    expect(nativeBackedTestFiles(sources('import { load } from "../store.js"; load();', wrapper)).get(SUITE))
+      .toEqual([SUITE, STORE, NATIVE]);
+    expect(nativeBackedTestFiles(sources('import { status } from "../store.js"; status();', wrapper)).has(SUITE)).toBe(false);
   });
 });

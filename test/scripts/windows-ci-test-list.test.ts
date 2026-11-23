@@ -1,11 +1,11 @@
 /** Windows-only test cases run in CI only when their file is named in the Windows permission job (.github/workflows/ci.yml); the Linux and macOS shards skip them. A file that gates
  * cases on win32 but is missing from that list never runs anywhere, so this pins the list against the tree. */
-import { readFileSync, readdirSync, statSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { windowsRegressionFiles } from "../../.github/scripts/check-windows-workflow.mjs";
 import { conditionalGates } from "./windows-test-gates.js";
-import { isInventorySource, nativeBackedTestFiles } from "./windows-native-test-inventory.js";
+import { nativeBackedTestFiles, readWindowsSources, windowsNativeInventory } from "./windows-native-test-inventory.js";
 
 const root = resolve(import.meta.dirname, "../..");
 const STEP_NAME = "Run Windows permission regressions";
@@ -54,15 +54,6 @@ const REQUIRED_SECURITY_SUITES = [
   // Its fixture home must stay under the test temp root, which only a restricted Windows lane checks.
   "src/boot/__tests__/bootstrap-integration.test.ts",
 ] as const;
-function sourceFiles(dir: string): string[] {
-  return readdirSync(dir).flatMap((name) => {
-    const path = join(dir, name);
-    if (name === "node_modules") return [];
-    if (statSync(path).isDirectory()) return sourceFiles(path);
-    const file = relative(root, path).split("\\").join("/");
-    return isInventorySource(file) ? [file] : [];
-  });
-}
 
 const nativeInventory = new WeakMap<ReadonlyMap<string, string>, Map<string, string[]>>();
 function listProblems(sources: Map<string, string>, workflow: string, inventories = windowsTestLists): string[] {
@@ -86,8 +77,11 @@ function listProblems(sources: Map<string, string>, workflow: string, inventorie
 describe("Windows CI test list", () => {
   const workflow = readFileSync(join(root, ".github/workflows/ci.yml"), "utf8");
   const listed = windowsRegressionFiles(workflow, windowsTestLists);
-  const sources = new Map(["src", "test", "scripts", "config", ".github"].flatMap((dir) => sourceFiles(join(root, dir)))
-    .map((file) => [file, readFileSync(join(root, file), "utf8")]));
+  const sources = readWindowsSources(root);
+
+  it("matches the generated native list in both directions", () => {
+    expect(windowsTestLists.get(NATIVE_TEST_LIST)).toBe(windowsNativeInventory(sources));
+  });
 
   it("names only files that exist", () => {
     expect(listed.filter((file) => !sources.has(file))).toEqual([]);
@@ -156,20 +150,21 @@ jobs:
     expect(REQUIRED_SECURITY_SUITES.filter((file) => !listed.includes(file))).toEqual([]);
   });
 
-  function withoutPermissionSuite(file: string) {
+  function withoutRegressionSuite(file: string) {
     const inventories = new Map(windowsTestLists);
-    inventories.set(PERMISSION_TEST_LIST, (inventories.get(PERMISSION_TEST_LIST) ?? "")
-      .split("\n").filter(line => line.trim() !== file).join("\n"));
+    for (const list of [PERMISSION_TEST_LIST, NATIVE_TEST_LIST]) {
+      inventories.set(list, (inventories.get(list) ?? "").split("\n").filter(line => line.trim() !== file).join("\n"));
+    }
     return listProblems(sources, workflow, inventories);
   }
 
   it.each(REQUIRED_SECURITY_SUITES)("rejects removal of an unconditional security suite: %s", (file) => {
-    expect(withoutPermissionSuite(file)).toEqual([`${file}: missing from ${STEP_NAME}`]);
+    expect(withoutRegressionSuite(file)).toEqual([`${file}: missing from ${STEP_NAME}`]);
   });
 
   it("rejects removal of the executable location tests from the workflow string", () => {
     const file = "src/main/__tests__/codex-executable-location.test.ts";
-    expect(withoutPermissionSuite(file))
+    expect(withoutRegressionSuite(file))
       .toEqual([`${file}: missing from ${STEP_NAME}`]);
   });
 });

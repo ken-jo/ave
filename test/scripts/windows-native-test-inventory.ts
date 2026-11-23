@@ -1,8 +1,10 @@
 import { transformSync } from "esbuild";
-import { posix } from "node:path";
+import { readFileSync, readdirSync } from "node:fs";
+import { join, posix } from "node:path";
 import { createRequire } from "node:module";
 import { MessageChannel, receiveMessageOnPort, Worker } from "node:worker_threads";
 import { createScanner } from "typescript/unstable/ast/scanner";
+import { conditionalGates } from "./windows-test-gates.js";
 
 const TEST_FILE = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
 const SOURCE_FILE = /\.[cm]?[jt]sx?$/;
@@ -17,10 +19,6 @@ function runtimeTokens(file: string, source: string, transformed?: string): stri
     loader: file.endsWith("x") ? "tsx" : "ts",
     tsconfigRaw: { compilerOptions: { verbatimModuleSyntax: true } },
   }).code;
-  // Without a factory, tokens after the final load statement cannot affect dependency discovery.
-  const lastLoad = code.includes("mock") ? code.length
-    : Math.max(...["import", "export", "require"].map(word => code.lastIndexOf(word)));
-  if (lastLoad < 0) return [];
   const scanner = createScanner(true, undefined, code);
   const tokens: string[] = [];
   const templates: number[] = [];
@@ -43,7 +41,6 @@ function runtimeTokens(file: string, source: string, transformed?: string): stri
     if (text === "}") braces--;
     tokens.push(text);
     if (text === "{") braces++;
-    if (text === ";" && scanner.getTokenEnd() > lastLoad) break;
   }
   return tokens;
 }
@@ -118,8 +115,7 @@ function isPossibleRequireLoad(tokens: readonly string[], index: number): boolea
   return false;
 }
 
-function runtimeImports(file: string, source: string, transformed?: string): { imports: string[]; actualImports: string[]; mocks: string[] } {
-  const tokens = runtimeTokens(file, source, transformed);
+function runtimeImports(tokens: readonly string[]): { imports: string[]; actualImports: string[]; mocks: string[] } {
   const imports = new Set<string>();
   const actualImports = new Set<string>();
   const mocks = new Set<string>();
@@ -246,71 +242,219 @@ function* transformedSources(sources: ReadonlyMap<string, string>, replyTimeoutM
   }
 }
 
-/** Conservative runtime reachability: lack of an observed native call is never an exclusion. */
+type Edge = { file: string; actual: boolean; specifier: string };
+type RuntimeModule = { dependencies: Edge[]; mocks: Set<string>; tokens: string[] };
+
+const WINDOWS_MODULE = /^src\/(?!.*\/__tests__\/)(?:.*\/)?(?:windows-|win32-)[^/]+\.[cm]?[jt]sx?$/u;
+const WINDOWS_EXTERNAL = /^(?:@?win32[-/]|winreg$|@microsoft\/mxc-sdk(?:\/|$)|@koromix\/koffi-win32-)/u;
+const WINDOWS_MARKER = /^[ \t]*\/\/ windows-native(?:[ \t]*$|:)/u;
+const WINDOWS_HELPER = /(?:^|[\\/])(?:wxc-exec|ave-(?:job|path-kind|acl-host)|srt-win|icacls|reg)(?:\.exe)?$/iu;
+
+export function windowsImportGraph(sources: ReadonlyMap<string, string>, replyTimeoutMs = TRANSFORM_REPLY_TIMEOUT_MS) {
+  const resolveImport = (file: string, specifier: string): string | undefined => {
+    if (!specifier.startsWith(".") && !specifier.startsWith("@/")) return undefined;
+    const path = specifier.startsWith("@/") ? posix.join("src", specifier.slice(2))
+      : posix.normalize(posix.join(posix.dirname(file), specifier));
+    return [path, path.replace(/\.js$/, ".ts"), path.replace(/\.js$/, ".tsx"), path.replace(/\.mjs$/, ".mts"),
+      path.replace(/\.cjs$/, ".cts"), ...[".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"]
+        .flatMap(extension => [path + extension, `${path}/index${extension}`])].find(candidate => sources.has(candidate));
+  };
+  const graph = new Map<string, RuntimeModule>();
+  for (const [file, source, transformed] of transformedSources(sources, replyTimeoutMs)) {
+    const tokens = runtimeTokens(file, source, transformed);
+    const parsed = runtimeImports(tokens);
+    const dependencies = parsed.imports.map(specifier => ({
+      file: resolveImport(file, specifier) ?? specifier, actual: parsed.actualImports.includes(specifier), specifier,
+    }));
+    const mocks = new Set(parsed.mocks.map(specifier => resolveImport(file, specifier) ?? specifier));
+    graph.set(file, { dependencies, mocks, tokens });
+  }
+  return graph;
+}
+
+function declarationBindings(tokens: readonly string[]): [string, string][] {
+  const entries: [string, string][] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const original = tokens[i] ?? "";
+    const aliased = tokens[i + 1] === "as" || tokens[i + 1] === ":";
+    const alias = aliased ? tokens[i + 2] ?? "" : original;
+    if (aliased) i += 2;
+    if (/^[$\w]+$/u.test(original) && /^[$\w]+$/u.test(alias)) entries.push([alias, original]);
+  }
+  return entries;
+}
+
+function usedMembers(tokens: readonly string[], specifier: string): Set<string> {
+  const members = new Set<string>();
+  const bindings = new Map<string, string>();
+  for (let i = 0; i < tokens.length; i++) {
+    if (literal(tokens[i]) !== specifier) continue;
+    if (tokens[i - 1] === "from") {
+      let start = i - 2;
+      while (start >= 0 && !["import", ";", "export"].includes(tokens[start] ?? "")) start--;
+      if (tokens[start] !== "import") continue;
+      const clause = tokens.slice(start + 1, i - 1);
+      if (clause[0] && /^[$\w]+$/u.test(clause[0])) bindings.set(clause[0], "default");
+      const brace = clause.indexOf("{");
+      if (brace >= 0) for (const [local, imported] of declarationBindings(clause.slice(brace + 1, -1))) bindings.set(local, imported);
+      const namespace = clause.indexOf("*");
+      const namespaceBinding = clause[namespace + 2];
+      if (namespace >= 0 && namespaceBinding) bindings.set(namespaceBinding, "*");
+      continue;
+    }
+    if (tokens[i - 1] !== "(" || !(["import", "require", "importActual"].includes(tokens[i - 2] ?? "")
+      || requireCallArgumentIndex(tokens, i - 4) === i || requireCallArgumentIndex(tokens, i - 5) === i)) continue;
+    const directMember = tokens[i + 3];
+    if (tokens[i + 2] === "." && directMember && ["(", "?."].includes(tokens[i + 4] ?? "")) members.add(directMember);
+    let start = i - 2;
+    while (start >= 0 && !["=", ";", "=>"].includes(tokens[start] ?? "")) start--;
+    if (tokens[start] !== "=") continue;
+    const lhs = tokens[start - 1];
+    if (lhs === "}") {
+      const brace = tokens.lastIndexOf("{", start - 1);
+      for (const [local, imported] of declarationBindings(tokens.slice(brace + 1, start - 1))) bindings.set(local, imported);
+    } else if (lhs) bindings.set(lhs, "*");
+  }
+  for (let i = 0; i < tokens.length; i++) {
+    const member = bindings.get(tokens[i] ?? "");
+    if (member === undefined) continue;
+    const property = tokens[i + 2];
+    if (member === "*" && [".", "?."].includes(tokens[i + 1] ?? "") && property
+      && ["(", "?.", "."].includes(tokens[i + 3] ?? "")) members.add(property);
+    if (["(", "?."].includes(tokens[i + 1] ?? "")) members.add(member);
+  }
+  return members;
+}
+
+function hasWindowsMarker(source: string): boolean {
+  for (const line of source.split(/\r?\n/u)) {
+    if (WINDOWS_MARKER.test(line)) return true;
+    if (line.trim() && !line.trimStart().startsWith("//")) return false;
+  }
+  return false;
+}
+
+function callsNativeHelper(tokens: readonly string[], mocks: ReadonlySet<string>): boolean {
+  if (mocks.has("node:child_process") || mocks.has("child_process")) return false;
+  const commands = new Set(["spawn", "spawnSync", "execFile", "execFileSync", "exec", "execSync"]);
+  function isHelper(start: number): boolean {
+    const direct = literal(tokens[start]);
+    if (direct !== undefined) return WINDOWS_HELPER.test(direct);
+    if (!["join", "resolve"].includes(tokens[start] ?? "") || tokens[start + 1] !== "(") return false;
+    for (let cursor = start + 2, depth = 1; cursor < tokens.length; cursor++) {
+      if (tokens[cursor] === "(") depth++;
+      if (tokens[cursor] === ")" && --depth === 0) return WINDOWS_HELPER.test(literal(tokens[cursor - 1]) ?? "");
+    }
+    return false;
+  }
+  for (let i = 0; i < tokens.length; i++) {
+    if (!commands.has(tokens[i] ?? "") || tokens[i + 1] !== "(") continue;
+    const argument = tokens[i + 2];
+    if (isHelper(i + 2)) return true;
+    const definition = tokens.findIndex((token, index) => token === argument && tokens[index - 1] === "const" && tokens[index + 1] === "=");
+    if (definition >= 0 && isHelper(definition + 2)) return true;
+  }
+  return false;
+}
+
+function checksWindowsPlatform(source: string, tokens: readonly string[], mocks: ReadonlySet<string>): boolean {
+  if (/\b(?:setProcessPlatform\s*\(|stubGlobal\s*\(\s*["']process|(?:defineProperty|replaceProperty|spyOn)\s*\(\s*process\s*,\s*["']platform|process\.platform\s*=(?!=))/u.test(source)) return false;
+  if (!mocks.has("node:os") && !mocks.has("os") && conditionalGates(source).some(gate => gate.classification === "win32-only")) return true;
+  if (!tokens.some(token => literal(token) === "win32")) return false;
+  const code = tokens.map(token => literal(token) === undefined ? token : literal(token) === "win32" ? "'win32'" : '""').join(" ");
+  const platform = String.raw`process \. platform${mocks.has("node:os") || mocks.has("os") ? "" : String.raw`|os \. platform \( \)`}`;
+  const compare = "(?:===|!==|==|!=)";
+  const guard = new RegExp(String.raw`(?:${platform}) ${compare} 'win32'|'win32' ${compare} (?:${platform})|switch \( (?:${platform}) \)[\s\S]*case 'win32'`, "u");
+  return guard.test(code);
+}
+
+function declarationEnd(tokens: readonly string[], start: number): number {
+  let depth = 0;
+  for (let i = start; i < tokens.length; i++) {
+    const token = tokens[i] ?? "";
+    if (depth === 0 && [";", "export"].includes(token)) return i;
+    if (["{", "(", "["].includes(token)) depth++;
+    if (["}", ")", "]"].includes(token) && --depth === 0 && token === "}" && tokens[start - 1] === "function") return i;
+  }
+  return tokens.length;
+}
+
+function forwardsNative(module: RuntimeModule, member: string, native: Edge): boolean {
+  const { tokens } = module;
+  const imports = tokens.flatMap((token, index) => {
+    if (token !== "import" || tokens[index + 1] === "(") return [];
+    const end = tokens.indexOf(";", index);
+    return end < 0 ? [] : tokens.slice(index, end + 1);
+  });
+  for (let i = 0; i < tokens.length; i++) {
+    if (tokens[i] !== "export") continue;
+    const start = tokens[i + 1] === "async" ? i + 2 : i + 1;
+    if (tokens[start] === "*" && literal(tokens[start + 2]) === native.specifier) return true;
+    if (["function", "const", "let", "var"].includes(tokens[start] ?? "") && tokens[start + 1] === member
+      && usedMembers([...imports, ...tokens.slice(start + 1, declarationEnd(tokens, start + 1))], native.specifier).size) return true;
+    if (tokens[start] !== "{") continue;
+    const end = tokens.indexOf("}", start + 1);
+    if (end < 0) continue;
+    const local = declarationBindings(tokens.slice(start + 1, end)).find(([name]) => name === member)?.[1];
+    if (!local) continue;
+    if (tokens[end + 1] === "from") {
+      if (literal(tokens[end + 2]) === native.specifier) return true;
+      continue;
+    }
+    const declaration = tokens.findIndex((token, index) => token === local && ["function", "const", "let", "var"].includes(tokens[index - 1] ?? ""));
+    if (declaration >= 0 && usedMembers([...imports, ...tokens.slice(declaration, declarationEnd(tokens, declaration))], native.specifier).size) return true;
+  }
+  return false;
+}
+
+/** Test-local evidence and calls across at most one forwarding module. */
 export function nativeBackedTestFiles(sources: ReadonlyMap<string, string>): Map<string, string[]> {
   return scanNativeBackedTestFiles(sources, TRANSFORM_REPLY_TIMEOUT_MS);
 }
 
 function scanNativeBackedTestFiles(sources: ReadonlyMap<string, string>, replyTimeoutMs: number): Map<string, string[]> {
-  const resolveImport = (file: string, specifier: string): string | undefined => {
-    if (!specifier.startsWith(".")) return undefined;
-    const path = posix.normalize(posix.join(posix.dirname(file), specifier));
-    return [path, path.replace(/\.js$/, ".ts"), path.replace(/\.js$/, ".tsx"), path.replace(/\.mjs$/, ".mts"),
-      path.replace(/\.cjs$/, ".cts"), `${path}.ts`, `${path}.tsx`, `${path}/index.ts`, `${path}/index.tsx`].find(candidate => sources.has(candidate));
-  };
-  const graph = new Map<string, { file: string; actual: boolean }[]>();
-  const mockedModules = new Map<string, Set<string>>();
-  for (const [file, source, transformed] of transformedSources(sources, replyTimeoutMs)) {
-    const parsed = runtimeImports(file, source, transformed);
-    graph.set(file, parsed.imports.flatMap(specifier => {
-      const dependency = resolveImport(file, specifier);
-      return dependency === undefined ? [] : [{ file: dependency, actual: parsed.actualImports.includes(specifier) }];
-    }));
-    mockedModules.set(file, new Set(parsed.mocks.flatMap(specifier => resolveImport(file, specifier) ?? [])));
-  }
-  const boundary = (file: string) => file.startsWith("src/") && !file.includes("/__tests__/")
-    && /\/(?:windows-|win32-)[^/]+\.[cm]?[jt]sx?$/.test(file);
-  // Reverse reachability is shared by every suite; mock cuts can only remove paths.
-  const importers = new Map<string, string[]>();
-  const reachable = new Set<string>();
-  for (const [file, dependencies] of graph) {
-    if (boundary(file)) reachable.add(file);
-    for (const dependency of dependencies) {
-      const parents = importers.get(dependency.file) ?? [];
-      parents.push(file);
-      importers.set(dependency.file, parents);
-      if (boundary(dependency.file)) reachable.add(dependency.file);
-    }
-  }
-  const pending = [...reachable];
-  for (const file of pending) {
-    for (const importer of importers.get(file) ?? []) {
-      if (reachable.has(importer)) continue;
-      reachable.add(importer);
-      pending.push(importer);
-    }
-  }
+  const graph = windowsImportGraph(sources, replyTimeoutMs);
   const required = new Map<string, string[]>();
-  for (const file of graph.keys()) {
-    if (!TEST_FILE.test(file) || !reachable.has(file)) continue;
-    const blocked = mockedModules.get(file) ?? new Set<string>();
-    const queue = [file];
-    const parents = new Map<string, string | undefined>([[file, undefined]]);
-    for (const current of queue) {
-      if (boundary(current)) {
-        const chain = [current];
-        let parent = parents.get(current);
-        while (parent !== undefined) { chain.push(parent); parent = parents.get(parent); }
-        required.set(file, chain.reverse());
+  for (const [file, module] of graph) {
+    if (!TEST_FILE.test(file) || !/\.(?:test|spec)\.tsx?$/u.test(file) || !/^(?:src|test)\//u.test(file)) continue;
+    const source = sources.get(file);
+    if (source === undefined) throw new Error(`Missing Windows test source: ${file}`);
+    if (hasWindowsMarker(source) || file.endsWith(".windows.test.ts")
+      || callsNativeHelper(module.tokens, module.mocks) || checksWindowsPlatform(source, module.tokens, module.mocks)) {
+      required.set(file, [file]);
+      continue;
+    }
+    const isActual = (edge: Edge) => edge.actual || !module.mocks.has(edge.file);
+    const isNative = (edge: Edge) => WINDOWS_MODULE.test(edge.file) || WINDOWS_EXTERNAL.test(edge.specifier);
+    for (const edge of module.dependencies.filter(isActual)) {
+      const importer = graph.get(edge.file);
+      if (!isNative(edge) && !importer?.dependencies.some(isNative)) continue;
+      const used = usedMembers(module.tokens, edge.specifier);
+      if (used.size === 0) continue;
+      const native = importer?.dependencies.find(candidate => isNative(candidate) && isActual(candidate) && (candidate.actual || !importer.mocks.has(candidate.file))
+        && [...used].some(member => forwardsNative(importer, member, candidate)));
+      if (isNative(edge) || native) {
+        required.set(file, native ? [file, edge.file, native.file] : [file, edge.file]);
         break;
-      }
-      for (const dependency of graph.get(current) ?? []) {
-        if (!reachable.has(dependency.file) || parents.has(dependency.file)
-          || (blocked.has(dependency.file) && !dependency.actual)) continue;
-        parents.set(dependency.file, current);
-        queue.push(dependency.file);
       }
     }
   }
   return required;
+}
+
+export function readWindowsSources(root: string): Map<string, string> {
+  const sources = new Map<string, string>();
+  function visit(dir: string): void {
+    for (const entry of readdirSync(join(root, dir), { withFileTypes: true })) {
+      const file = `${dir}/${entry.name}`;
+      if (entry.isDirectory() && entry.name !== "node_modules") visit(file);
+      if (entry.isFile() && isInventorySource(file)) sources.set(file, readFileSync(join(root, file), "utf8"));
+    }
+  }
+  for (const dir of ["src", "test", "scripts", "config", ".github"]) visit(dir);
+  return sources;
+}
+
+export function windowsNativeInventory(sources: ReadonlyMap<string, string>): string {
+  return `${[...nativeBackedTestFiles(sources).keys()].sort().join("\n")}\n`;
 }
