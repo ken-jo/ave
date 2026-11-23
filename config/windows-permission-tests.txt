@@ -91,7 +91,6 @@ src/permissions/__tests__/egress-ask.test.ts
 src/permissions/__tests__/execution-router.test.ts
 src/permissions/__tests__/scoped-rules.test.ts
 src/permissions/judge/__tests__/judge-dispatch.test.ts
-src/main/__tests__/document-open.test.ts
 src/permissions/__tests__/sensitive-paths-canonicalize.test.ts
 src/permissions/__tests__/canonicalizer-8dot3.test.ts
 src/permissions/__tests__/policy-home.test.ts
