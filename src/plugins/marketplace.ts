@@ -767,6 +767,7 @@ export class PluginMarketplaceService {
         existing.bundleRefs = this.mergeBundleRefs(existing.bundleRefs, null, plan.name);
         existing.approvedPluginAccess = approvedPluginAccess;
         existing.origin = origin;
+        existing.installedAt = undefined;
         existing.pendingUpdate = undefined;
         existing.pendingCleanup = pendingCleanup;
       } else {
@@ -1182,6 +1183,7 @@ export class PluginMarketplaceService {
                 existing.installSource = "local-dev";
                 existing.approvedPluginAccess = approvedPluginAccess;
                 existing.origin = undefined;
+                existing.installedAt ??= new Date().toISOString();
                 existing.pendingUpdate = undefined;
                 existing.pendingCleanup = pendingCleanup;
               } else {
@@ -1192,6 +1194,7 @@ export class PluginMarketplaceService {
                   enabled: true,
                   installSource: "local-dev",
                   approvedPluginAccess,
+                  installedAt: new Date().toISOString(),
                 });
               }
             });

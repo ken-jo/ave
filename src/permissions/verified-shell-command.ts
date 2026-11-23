@@ -2,8 +2,8 @@ import { execFileSync } from "node:child_process";
 import { lstatSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { isHostGitWorkspaceAvailable } from "../shared/host-git.js";
+import { resolveHostGit, supportsVerifiedHostGit } from "../shared/host-git-executable.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
-import { resolveVerifiedExecutable, type VerifiedExecutableCandidate } from "../shared/verified-executable.js";
 import { isPowerShellStartupPinned } from "../shared/powershell-startup-policy.js";
 import type { HostShellExecutionPlan } from "./host-shell-execution-plan.js";
 import { literalShellWord, parseShellFloorCommand } from "./rules/shell-exfiltration.js";
@@ -24,49 +24,38 @@ interface VerifiedState { readonly identity: VerifiedShellIdentity; readonly par
 const issued = new WeakMap<VerifiedShellCommand, VerifiedState>();
 const gitVersions = new Map<string, boolean>();
 const REPOSITORY_RESULT_REFUSAL = "Read-only Git output discarded: repository metadata changed during execution.";
-const GIT_INSTALLATIONS: Readonly<Partial<Record<NodeJS.Platform, readonly VerifiedExecutableCandidate[]>>> = Object.freeze({
-  darwin: Object.freeze([
-    { executable: "/Library/Developer/CommandLineTools/usr/bin/git", installationRoots: ["/Library/Developer/CommandLineTools"] },
-    { executable: "/opt/git/bin/git", installationRoots: ["/opt/git"] },
-  ]),
-  linux: Object.freeze([
-    { executable: "/usr/bin/git", installationRoots: ["/usr/bin/git"] },
-    { executable: "/opt/git/bin/git", installationRoots: ["/opt/git"] },
-  ]),
-});
 
 function proveNative(argv: readonly string[], cwd: string): VerifiedNativePlan | undefined {
   if (encodedPowerShellExecutionReason(argv) !== null) return undefined;
   const args = readOnlyGitArguments(argv);
   if (args !== null) {
-    const candidates = GIT_INSTALLATIONS[process.platform];
-    if (candidates === undefined || !isHostGitWorkspaceAvailable(cwd)) return undefined;
+    if (!supportsVerifiedHostGit() || !isHostGitWorkspaceAvailable(cwd)) return undefined;
     const repository = inspectGitRepository(cwd);
     if (repository === null) return undefined;
-    const installation = resolveVerifiedExecutable(candidates);
-    if (installation === null) return undefined;
+    const executable = resolveHostGit("verified");
+    if (executable === null) return undefined;
     // Even revision-only plumbing reads an index. Select a protected absent path
     // so shared-index readers cannot refresh a repository file timestamp.
-    const indexFile = join(dirname(installation.executable), ".ave-readonly-index");
+    const indexFile = join(dirname(executable), ".ave-readonly-index");
     try { lstatSync(indexFile); return undefined; } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") return undefined;
     }
-    let supported = gitVersions.get(installation.executable);
+    let supported = gitVersions.get(executable);
     if (supported === undefined) {
       try {
-        const version = execFileSync(installation.executable, ["--version"], {
-          encoding: "utf8", cwd: dirname(installation.executable),
+        const version = execFileSync(executable, ["--version"], {
+          encoding: "utf8", cwd: dirname(executable),
           env: gitReadOnlyEnvironment({ LANG: "C", LC_ALL: "C" }, repository, indexFile),
           timeout: TOOL_TIMEOUT_POLICY.windowsAclRequestMs, maxBuffer: 4096,
         });
         supported = isSupportedGitVersion(version);
       } catch { supported = false; }
-      gitVersions.set(installation.executable, supported);
+      gitVersions.set(executable, supported);
     }
     if (!supported) return undefined;
     const prepareEnvironment = (base: Readonly<Record<string, string>>): Record<string, string> => gitReadOnlyEnvironment(base, repository, indexFile);
     return Object.freeze({
-      executable: installation.executable,
+      executable,
       args: Object.freeze([`--git-dir=${repository.gitDirectory}`, `--work-tree=${repository.workTree}`, ...args]),
       environment: Object.freeze(prepareEnvironment({})), prepareEnvironment,
       available: () => isHostGitWorkspaceAvailable(repository.workTree),

@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { makeTestPluginRuntime } from "../../__tests__/test-helpers.js";
 import { createNoopHostApiForTests } from "../sandbox.js";
 import type { PluginRegistryTrust } from "../../types.js";
+import { PluginBackgroundEffectApprovals, backgroundEffectSubject } from "../../plugin-background-effects.js";
 import { canonicalJSON } from "../../secret-access/canonical-json.js";
 import { sha256Hex } from "../../../lib/hex-digest-equal.js";
 import { PluginBundleLifecycle } from "../../plugin-bundle-lifecycle.js";
@@ -335,6 +336,31 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
     await runtime.setPluginEnabled("se-plugin", true);
 
     expect(candidates).toEqual([{ installSource: "user", manifestSha256, origin }]);
+  });
+
+  it("binds the background review subject before the runtime reports an enable or restart", async () => {
+    const approvals = new PluginBackgroundEffectApprovals();
+    const atEnable: Array<Promise<unknown>> = [];
+    const runtime = makeTestPluginRuntime(
+      { rootDir: testDir, registryPath, pluginsRoot: installedDir },
+      {
+        installReceiptCacheRoot: testDir,
+        onEnable: (id) => { atEnable.push(approvals.currentSubject(id)); },
+        createHostApi: (...args) => {
+          const [pluginId, manifest, , incarnation, , entry] = args;
+          incarnation.registerDisposer(approvals.bindSubject(pluginId, async () => backgroundEffectSubject(manifest, entry)));
+          return createNoopHostApiForTests(args[0], args[1], args[2]);
+        },
+      },
+    );
+    await runtime.startAll();
+    await runtime.setPluginEnabled("se-plugin", false);
+    expect(await approvals.currentSubject("se-plugin")).toBeNull();
+    await runtime.setPluginEnabled("se-plugin", true);
+    await runtime.restartPlugin("se-plugin");
+
+    expect(atEnable).toHaveLength(2);
+    for (const subject of await Promise.all(atEnable)) expect(subject).toMatchObject({ pluginId: "se-plugin" });
   });
 
   it("re-enables a canonical manifest through its raw registry alias receipt", async () => {

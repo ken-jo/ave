@@ -647,6 +647,7 @@ export async function bootstrap(
     deploymentGuard,
     lateBinding,
     pluginPaths,
+    backgroundEffectApprovals,
     loopbackManager,
     setBundleLifecycleHandler,
     startPlugins,
@@ -880,6 +881,7 @@ export async function bootstrap(
     revokeOperationGeneration: ctx.revokePluginOperationGeneration,
   });
   ctx.pluginBundleLifecycle = pluginBundleLifecycle;
+  ctx.pluginBackgroundEffects = backgroundEffectApprovals;
   pluginRuntime.setGenerationAccess(pluginBundleLifecycle);
   ctx.mcpManager.setPluginGenerationAccess(pluginBundleLifecycle);
   // App-plugin OAuth servers authenticate and reconnect through their generation; the

@@ -2,6 +2,7 @@ import "../../../../test/renderer/setup.js";
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { act, render, screen, waitFor, fireEvent, within } from "@testing-library/react";
 import { PluginConfigTab } from "../tabs/PluginConfigTab.js";
+import { PluginBackgroundEffectsPrompt } from "../dialogs/PluginBackgroundEffectsPrompt.js";
 import { PluginConfigSchemaForm } from "../tabs/PluginConfigSchemaForm.js";
 import { takeUpdateReview } from "../tabs/git-marketplace/update-review-request.js";
 import { makePluginCard } from "./support/plugin-card.js";
@@ -1231,6 +1232,172 @@ describe("PluginConfigTab — auth UI", () => {
     await waitFor(() => {
       expect(callPluginMethod).toHaveBeenCalledWith("inactive_status");
     });
+  });
+
+  it("enables without a card of its own, then the shared card follows the running plugin and the Review row reopens it", async () => {
+    let enabled = false;
+    let approved = false;
+    let started: ((payload: { pluginId: string }) => void) | undefined;
+    const hash = "c".repeat(64);
+    const cards = vi.fn(async () => [makePluginCard({
+      id: "digest-plugin",
+      name: "Digest Plugin",
+      description: "Morning digest",
+      loadStatus: enabled ? ("loaded" as const) : ("disabled" as const),
+      active: enabled,
+      runtimeLoaded: enabled,
+    })]);
+    const setPluginEnabled = vi.fn(async (_id: string, next: boolean) => {
+      enabled = next;
+      return { ok: true as const };
+    });
+    // Like the host: no subject is bound until the plugin runs.
+    const getPluginBackgroundEffects = vi.fn(async (pluginId: string) => enabled
+      ? {
+        ok: true as const, pluginId, name: "Digest Plugin", reviewSha256: hash, declared: true, approved,
+        effects: {
+          ownStorage: true as const, networkDestinations: ["api.example.test"], alertKinds: ["digest"], suggestionSources: [], llm: false, workers: false,
+        },
+      }
+      : { ok: false as const, error: "background-effects-unavailable" });
+    const approvePluginBackgroundEffects = vi.fn(async (input: { pluginId: string; reviewSha256: string }) => {
+      approved = true;
+      return { ok: true as const, ...input };
+    });
+    Object.defineProperty(window, "ave", {
+      value: {
+        pluginConfig: {
+          get: vi.fn(async () => ({ ok: true as const, config: {} })),
+          set: vi.fn(async () => ({ ok: true as const, config: {} })),
+          listSecretKeys: vi.fn(async () => ({ ok: true as const, keys: [] })),
+        },
+      },
+      writable: true,
+      configurable: true,
+    });
+    Object.defineProperty(window, "aveApi", {
+      value: {
+        onPluginEnabledChanged: vi.fn(() => () => undefined),
+        onPluginRuntimeUpdated: vi.fn((listener: (payload: { pluginId: string }) => void) => { started = listener; return () => undefined; }),
+        setPluginEnabled,
+        getPluginBackgroundEffects,
+        approvePluginBackgroundEffects,
+        listPluginUiExtensions: vi.fn(async () => []),
+      },
+      writable: true,
+      configurable: true,
+    });
+    stubPluginCards(cards);
+    Object.defineProperty(window, "aveHost", {
+      value: { takePluginMarketplaceApi: () => null },
+      writable: true,
+      configurable: true,
+    });
+
+    render(<><PluginBackgroundEffectsPrompt /><PluginConfigTab /></>);
+
+    fireEvent.click(await screen.findByTestId("plugin-config:enabled-toggle:digest-plugin"));
+    await waitFor(() => expect(setPluginEnabled).toHaveBeenCalledWith("digest-plugin", true));
+    expect(screen.queryByTestId("plugin-background-effects-dialog")).toBeNull();
+    act(() => started?.({ pluginId: "digest-plugin" }));
+    let dialog = await screen.findByTestId("plugin-background-effects-dialog");
+    expect(within(dialog).getByText("api.example.test")).toBeInTheDocument();
+    expect(within(dialog).getByText("digest")).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "취소" }));
+    await waitFor(() => expect(screen.queryByTestId("plugin-background-effects-dialog")).toBeNull());
+    expect(approvePluginBackgroundEffects).not.toHaveBeenCalled();
+
+    const row = await screen.findByTestId("plugin-config:background-effects:digest-plugin");
+    fireEvent.click(within(row).getByRole("button", { name: "검토" }));
+    dialog = await screen.findByTestId("plugin-background-effects-dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "허용" }));
+    await waitFor(() => expect(approvePluginBackgroundEffects).toHaveBeenCalledWith({ pluginId: "digest-plugin", reviewSha256: hash }));
+    await waitFor(() => expect(screen.queryByTestId("plugin-config:background-effects:digest-plugin")).toBeNull());
+  });
+
+  it("shows the background effects review for the selected plugin once its manifest changes", async () => {
+    let approved = true;
+    let refresh: (() => void) | undefined;
+    const cards = vi.fn(async () => [makePluginCard({ id: "digest-plugin", name: "Digest Plugin", description: "Morning digest" })]);
+    const getPluginBackgroundEffects = vi.fn(async (pluginId: string) => ({
+      ok: true as const, pluginId, reviewSha256: approved ? "a".repeat(64) : "b".repeat(64), declared: true, approved,
+      effects: {
+        ownStorage: true as const, networkDestinations: ["api.example.test"], alertKinds: [], suggestionSources: [], llm: false, workers: false,
+      },
+    }));
+    Object.defineProperty(window, "ave", {
+      value: {
+        pluginConfig: {
+          get: vi.fn(async () => ({ ok: true as const, config: {} })),
+          set: vi.fn(async () => ({ ok: true as const, config: {} })),
+          listSecretKeys: vi.fn(async () => ({ ok: true as const, keys: [] })),
+        },
+      },
+      writable: true,
+      configurable: true,
+    });
+    Object.defineProperty(window, "aveApi", {
+      value: {
+        onPluginEnabledChanged: vi.fn((listener: () => void) => { refresh = listener; return () => undefined; }),
+        getPluginBackgroundEffects,
+        listPluginUiExtensions: vi.fn(async () => []),
+      },
+      writable: true,
+      configurable: true,
+    });
+    stubPluginCards(cards);
+    Object.defineProperty(window, "aveHost", {
+      value: { takePluginMarketplaceApi: () => null },
+      writable: true,
+      configurable: true,
+    });
+
+    render(<PluginConfigTab />);
+
+    await screen.findByTestId("plugin-config:enabled-toggle:digest-plugin");
+    await waitFor(() => expect(getPluginBackgroundEffects).toHaveBeenCalledWith("digest-plugin"));
+    expect(screen.queryByTestId("plugin-config:background-effects:digest-plugin")).toBeNull();
+    approved = false;
+    act(() => refresh?.());
+    expect(await screen.findByTestId("plugin-config:background-effects:digest-plugin")).toBeInTheDocument();
+  });
+
+  it("says why an unapproved plugin from an unpinned source cannot be reviewed, and offers no review", async () => {
+    const cards = vi.fn(async () => [makePluginCard({ id: "digest-plugin", name: "Digest Plugin", description: "Morning digest" })]);
+    const getPluginBackgroundEffects = vi.fn(async (pluginId: string) => ({
+      ok: true as const, pluginId, name: "Digest Plugin", reviewSha256: null, declared: true, approved: false,
+      effects: {
+        ownStorage: true as const, networkDestinations: ["api.example.test"], alertKinds: [], suggestionSources: [], llm: false, workers: false,
+      },
+    }));
+    Object.defineProperty(window, "ave", {
+      value: {
+        pluginConfig: {
+          get: vi.fn(async () => ({ ok: true as const, config: {} })),
+          set: vi.fn(async () => ({ ok: true as const, config: {} })),
+          listSecretKeys: vi.fn(async () => ({ ok: true as const, keys: [] })),
+        },
+      },
+      writable: true,
+      configurable: true,
+    });
+    Object.defineProperty(window, "aveApi", {
+      value: { getPluginBackgroundEffects, listPluginUiExtensions: vi.fn(async () => []) },
+      writable: true,
+      configurable: true,
+    });
+    stubPluginCards(cards);
+    Object.defineProperty(window, "aveHost", {
+      value: { takePluginMarketplaceApi: () => null },
+      writable: true,
+      configurable: true,
+    });
+
+    render(<PluginConfigTab />);
+
+    const row = await screen.findByTestId("plugin-config:background-effects:digest-plugin");
+    expect(row).toHaveTextContent("출처가 고정되지 않았습니다. 마켓플레이스에서 다시 설치하세요.");
+    expect(within(row).queryByRole("button")).toBeNull();
   });
 
   it("keeps the switch for a disabled plugin whose runtime is retired, so it can be re-enabled", async () => {

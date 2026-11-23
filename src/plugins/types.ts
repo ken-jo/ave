@@ -30,6 +30,8 @@ export interface PluginRegistryEntry {
   approvedPluginAccess?: PluginAccessSpec;
   installSource?: PluginRegistryEntryInstallSource;
   origin?: PluginRegistryEntryOrigin;
+  /** A local development install's stamp, set when it is first installed and kept by an in-place reinstall; origin carries the others'. */
+  installedAt?: string;
   /** Durable replacement marker; runtime discovery skips marked rows. */
   pendingUpdate?: {
     kind: "marketplace" | "local-dev";
@@ -46,7 +48,7 @@ export interface PluginRegistryEntry {
 }
 
 /** Trust provenance only from host-owned registry fields, never writable plugin.json. */
-export type PluginRegistryTrust = Pick<PluginRegistryEntry, "installSource" | "manifestSha256" | "origin">;
+export type PluginRegistryTrust = Pick<PluginRegistryEntry, "installSource" | "manifestSha256" | "origin" | "installedAt">;
 
 export interface PluginRegistry {
   version: number;

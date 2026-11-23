@@ -1,3 +1,4 @@
+import { normalizeMemoryEmbeddingConfig, type MemoryEmbeddingConfig } from '../shared/memory-embedding-config.js';
 import { isSubAgentMaxRounds } from "../shared/subagent-policy.js";
 import { isTelemetryLevel, telemetryLevel, telemetryLevelFlags, type TelemetryLevel } from "../shared/telemetry-policy.js";
 import { isZoomLevel } from "../shared/app-zoom.js";
@@ -512,6 +513,7 @@ export interface DiagnosticsSettings {
 }
 
 export interface AppSettings {
+  memoryEmbedding?: MemoryEmbeddingConfig;
   llm: LLMSettings;
   chat: ChatSettings;
   /** Host-owned P4-5 routing configuration. Secrets remain in SettingsService secret storage. */
@@ -976,7 +978,7 @@ export class SettingsService {
     partial: Partial<Omit<
       AppSettings,
       | "llm" | "chat" | "marketplace" | "shortcuts" | "telemetry" | "appliedMigrations"
-      | "alerts" | "retiredPluginConfigs" | "upstreamProxy" | "appearance" | "documents"
+      | "alerts" | "retiredPluginConfigs" | "upstreamProxy" | "appearance" | "documents" | "memoryEmbedding"
     >> & {
       // Each document setting is saved on its own.
       documents?: Partial<DocumentSettings>;
@@ -1801,6 +1803,7 @@ export class SettingsService {
         migrationWriteBack = true;
       }
       const result: AppSettings = {
+        memoryEmbedding: normalizeMemoryEmbeddingConfig(parsed.memoryEmbedding),
         llm,
         chat: normalizeChat(parsed.chat),
         a2aRemote: normalizeA2ARemote(parsed.a2aRemote),

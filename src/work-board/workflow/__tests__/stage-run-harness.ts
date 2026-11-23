@@ -116,7 +116,8 @@ export async function stageRunHarness(opts: {
   /** `recheck` is set when a call closed refused: a failure it held off stands again, as if the wait were created now. */
   const childChanges = new Set<(pulse?: ChildWaitPulse, recheck?: boolean) => void>();
   const itemWaits = new Set<(itemId?: number) => void>();
-  const progressChanges = new Set<() => void>();
+  /** Called with an error, a listener ends its wait with it. */
+  const progressChanges = new Set<(ended?: Error) => void>();
   let closed = false;
   let lastRequestedOrigin: string | undefined;
   /** The harness clock: every start, call and failure takes the next tick, so "newer" is a plain comparison. */
@@ -499,24 +500,33 @@ export async function stageRunHarness(opts: {
   const untilStage = (itemId: number, stageId: string, status: WorkItemStageRun["status"]) =>
     until(itemId, current => statusOf(current, stageId) === status, `item ${itemId} stage ${stageId} to reach ${status}`);
   const live = () => [...liveChildren];
+  /** The one bound on a signal wait: below the test timeout, so a stuck wait names what it was waiting on; a slow preparation stays
+   * inside it. It never keeps the process alive by itself. Returns what clears it. */
   function boundWait(expire: () => void): () => void {
     const timeout = setTimeout(expire, 30_000);
     timeout.unref();
     return () => clearTimeout(timeout);
   }
-  function waitForSignal<T>(listeners: Set<() => void>, get: () => T | undefined, description?: string): Promise<T> {
+  /** Resolves on the signal that makes `get` defined; rejects with `failure` once the bound expires, or with the error it is signalled. */
+  function waitForSignal<T>(listeners: Set<(ended?: Error) => void>, get: () => T | undefined, failure: string): Promise<T> {
     const current = get();
     if (current !== undefined) return Promise.resolve(current);
     return new Promise<T>((resolve, reject) => {
-      const timeout = description === undefined ? undefined : setTimeout(() => {
+      const clear = boundWait(() => {
         listeners.delete(changed);
-        reject(new Error(`timed out waiting for ${description}`));
-      }, 2_000);
-      function changed() {
+        reject(new Error(failure));
+      });
+      function changed(ended?: Error) {
+        if (ended) {
+          listeners.delete(changed);
+          clear();
+          reject(ended);
+          return;
+        }
         const value = get();
         if (value === undefined) return;
         listeners.delete(changed);
-        clearTimeout(timeout);
+        clear();
         resolve(value);
       }
       listeners.add(changed);
@@ -566,14 +576,13 @@ export async function stageRunHarness(opts: {
     const failedAtCreation = createdFailed();
     if (failedAtCreation) return Promise.reject(failedAtCreation);
     return new Promise((resolve, reject) => {
-      // Bounded below the test timeout, so a stuck wait names what it was waiting on; a slow preparation stays inside it.
-      const clearBound = boundWait(() => {
+      const clear = boundWait(() => {
         childChanges.delete(changed);
         reject(new Error(`timed out waiting for children; in flight: ${inFlight().join(", ") || "none"}`));
       });
       function settle(): void {
         childChanges.delete(changed);
-        clearBound();
+        clear();
       }
       function changed(pulse?: ChildWaitPulse, recheck = false) {
         const value = get();
@@ -598,9 +607,14 @@ export async function stageRunHarness(opts: {
   const untilLive = (count: number, itemId?: number) => waitForChildren(() => forItem(ofCurrentEngine(live()), itemId), active => active.length === count, true, itemId);
   const waitForLive = untilLive;
   const untilSpawned = (count: number, itemId?: number) => waitForChildren(() => forItem(ofCurrentEngine(children), itemId), spawned => spawned.length >= count, false, itemId);
-  const waitForProgress = (check: (event: WorkBoardRunEvent) => boolean) => waitForSignal(progressChanges, () => events.find(check), "run progress");
+  const progressEnded = () => new Error("Progress wait ended: harness cleaned up");
+  /** `what`: the event the wait names when its bound expires. */
+  const waitForProgress = (check: (event: WorkBoardRunEvent) => boolean, what: string) => closed
+    ? Promise.reject(progressEnded())
+    : waitForSignal(progressChanges, () => events.find(check), `progress signal never arrived for ${what}`);
   /** The event that ended the run; it follows the stored status, so a test waits for it. */
-  const settleEvent = () => waitForProgress(event => event.phase === "cancelled" || event.phase === "done" || event.phase === "denied" || event.phase === "error");
+  const settleEvent = () => waitForProgress(event => event.phase === "cancelled" || event.phase === "done" || event.phase === "denied" || event.phase === "error",
+    "a run's end (cancelled, done, denied or error)");
   /** The decision the board would send for the stored gate of the stage. */
   async function decide(itemId: number, stageId: string, decision: "approve" | "reject" | "request_changes", note?: string) {
     const current = await item(itemId);
@@ -614,11 +628,15 @@ export async function stageRunHarness(opts: {
     confirm: confirmTemplate, pinOf, addItem, local, attach, detach, item, stageRun, until, untilStage, untilLive, untilSpawned, settleEvent, waitForLive, waitForProgress, live, decide, statusOf, start,
     drainRunWork: async (options?: { includeLaunches?: boolean }) => { await runWorkObservers.at(-1)?.drain(options); },
     drainAllRunWork: async () => { await Promise.all(runWorkObservers.map(runWork => runWork.drain())); },
+    /** Listeners of the child and progress waits still pending. */
+    pendingWaits: () => childChanges.size + progressChanges.size,
     cleanup: () => {
       closed = true;
       for (const wake of itemWaits) wake();
       for (const stop of stopRunSources.splice(0)) stop();
       pulse("harness cleaned up");
+      const ended = progressEnded();
+      for (const changed of progressChanges) changed(ended);
       return cleanupTmpDir(dir);
     },
   };

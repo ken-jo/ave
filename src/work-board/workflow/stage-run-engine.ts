@@ -95,6 +95,8 @@ export interface StageRunEngineDeps {
 }
 
 export interface StageRunEngine {
+  /** Resolves with the run's first quiescent state, or with the start's refusal (error, already_running, not_found). That state may already
+   * be past a gate: a decision queued before then is part of it. Gate state comes from events, not from this value. */
   start(itemId: number, a: { source: RunAuthoritySource; approvalSurface: WebContents | null }): Promise<WorkItemRunResult>;
   decideGate(itemId: number, i: StageGateDecideInput, o: { approvalSurface: WebContents | null }): Promise<StageGateDecideResult>;
   decideJoin(itemId: number, i: StageJoinDecideInput, o: { approvalSurface: WebContents | null }): Promise<StageJoinDecideResult>;

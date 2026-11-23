@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { findInstallerGit } from "../../src/marketplace/git/installer-git.js";
+import { findInstallerGit } from "../../src/shared/host-git-executable.js";
 
 const SCRIPT = path.resolve("build", "install-windows-git.ps1");
 const NSH = path.resolve("build", "installer.nsh");

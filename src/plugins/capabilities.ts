@@ -7,6 +7,9 @@ const KNOWN_CAPABILITY_IDS = [
   // host:overlay stages conversation triggers through the overlay context.
   "host:overlay",
   "secrets:raw-api-key",
+  // background:* let work outside a tool call use the model or start helper processes once the enable card approves it.
+  "background:call-llm",
+  "background:spawn-worker",
 ] as const;
 
 export type CapabilityId = (typeof KNOWN_CAPABILITY_IDS)[number];
@@ -18,3 +21,7 @@ export const KNOWN_CAPABILITIES: ReadonlySet<string> = new Set(KNOWN_CAPABILITY_
 export const CAPABILITY_EXTERNAL_AUTH_CONSUMER: CapabilityId = "external-auth-consumer";
 export const CAPABILITY_HOST_OVERLAY: CapabilityId = "host:overlay";
 export const CAPABILITY_RAW_API_KEY: CapabilityId = "secrets:raw-api-key";
+export const CAPABILITY_BACKGROUND_CALL_LLM: CapabilityId = "background:call-llm";
+export const CAPABILITY_BACKGROUND_SPAWN_WORKER: CapabilityId = "background:spawn-worker";
+/** Unlike other declarations, an unknown id under this prefix is a manifest error, so a misspelling cannot pass as declared. */
+export const BACKGROUND_CAPABILITY_PREFIX = "background:";
