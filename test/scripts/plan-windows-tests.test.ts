@@ -133,6 +133,24 @@ describe("Windows regression planning", () => {
     expect(selected(result)).toEqual([...core(), permissionSuite].sort());
   });
 
+  it.each([
+    'const n = "change"; await import(["..", "test-"].join("/") + n);',
+    'const n = "change"; require(["..", "test-change.js"].join(n));',
+    'const modules = import.meta.glob("../*.ts");',
+    'const n = "../test-change.js"; await vi.importActual(n);',
+  ])("keeps the suite that loads a module by a computed specifier: %s", source => {
+    const runtimeSources = () => new Map([[permissionSuite, source], [changed, "export const value = 1;"]]);
+    const result = planWindowsTests({ event: "pull_request", changes: [modified(changed)], inventories, readSources: runtimeSources });
+    expect(result.mode).toBe("affected");
+    expect(selected(result)).toEqual([...core(), permissionSuite].sort());
+  });
+
+  it("does not count a literal dynamic import as a computed module load", () => {
+    const runtimeSources = () => new Map([[permissionSuite, 'await import("../other.js");'], [changed, "export const value = 1;"]]);
+    const result = planWindowsTests({ event: "pull_request", changes: [modified(changed)], inventories, readSources: runtimeSources });
+    expect(selected(result)).toEqual(core());
+  });
+
   it("keeps the known importers of a shared reader and falls back when ownership cannot be established", () => {
     const otherSuite = "src/permissions/__tests__/sensitive-paths-canonicalize.test.ts";
     const reader = 'import { readFileSync } from "node:fs"; readFileSync(process.env.RUNTIME_SOURCE);';

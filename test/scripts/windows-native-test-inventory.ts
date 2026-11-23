@@ -539,7 +539,26 @@ export function callsReaderWithComputedPath(module: RuntimeModule, reader: strin
 const SOURCE_READS = new Set(["readFile", "readFileSync", "createReadStream"]);
 const SOURCE_BUILDS = new Set(["build", "buildSync", "context"]);
 
+// A module loaded by a computed specifier is neither an import edge nor a
+// literal runtime input, so its target is unknown.
+function loadsComputedModule(tokens: readonly string[]): boolean {
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token === "import" && tokens[i + 1] === "." && tokens[i + 2] === "meta" && tokens[i + 3] === "." && tokens[i + 4] === "glob") return true;
+    if (token === "require" && tokens[i + 1] === "." && tokens[i + 2] === "context") return true;
+    if (isComputedRequireMember(tokens, i)) return true;
+    const loader = (token === "import" && tokens[i - 1] !== ".")
+      || (token === "require" && tokens[i - 1] !== ".")
+      || (tokens[i - 1] === "." && (token === "importActual" || token === "importMock"));
+    if (!loader || tokens[i + 1] !== "(") continue;
+    const [specifier = []] = callArguments(tokens, i + 1);
+    if (specifier.length !== 1 || literal(specifier[0]) === undefined) return true;
+  }
+  return false;
+}
+
 export function hasUnverifiedWindowsRuntimeInput(tokens: readonly string[]): boolean {
+  if (loadsComputedModule(tokens)) return true;
   if (!tokens.some(token => token === "Bun" || /^(?:node:)?(?:fs(?:\/promises)?|child_process|esbuild)$/u.test(literal(token) ?? ""))) {
     return false;
   }
