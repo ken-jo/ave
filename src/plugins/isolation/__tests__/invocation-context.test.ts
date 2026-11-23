@@ -31,6 +31,7 @@ const MANIFEST: PluginManifest = {
   tools: [
     { name: "raise", description: "raise", inputSchema: { type: "object", properties: {} } },
     { name: "raise_after_return", description: "raise later", inputSchema: { type: "object", properties: {} } },
+    { name: "raise_then_replay", description: "raise now and again later", inputSchema: { type: "object", properties: {} } },
     { name: "subscribe", description: "subscribe", inputSchema: { type: "object", properties: {} } },
   ],
 };
@@ -65,6 +66,16 @@ beforeAll(() => {
     raise_after_return: async () => {
       setTimeout(() => {
         context.hostApi.raiseAlert({ kind: "reply", key: "late" }).then(
+          () => globalThis.${LATE_OUTCOMES}.push("raised"),
+          (error) => globalThis.${LATE_OUTCOMES}.push(error.name),
+        );
+      }, 0);
+      return "returned";
+    },
+    raise_then_replay: async () => {
+      await context.hostApi.raiseAlert({ kind: "reply", key: "replay" });
+      setTimeout(() => {
+        context.hostApi.raiseAlert({ kind: "reply", key: "replay" }).then(
           () => globalThis.${LATE_OUTCOMES}.push("raised"),
           (error) => globalThis.${LATE_OUTCOMES}.push(error.name),
         );
@@ -126,7 +137,9 @@ interface Probe {
   onClosed: ReturnType<typeof vi.fn>;
 }
 
-async function openProbe(options: { watcherFailure?: boolean; subscriptionFailure?: boolean } = {}): Promise<Probe> {
+async function openProbe(options: {
+  watcherFailure?: boolean; subscriptionFailure?: boolean; allowMode?: boolean; standaloneScope?: (path: string) => boolean;
+} = {}): Promise<Probe> {
   const raised: Probe["raised"] = [];
   const requestAndWait = vi.fn(async () => ({ choice: "allow-once" as const }));
   let watcherFailure = options.watcherFailure === true;
@@ -150,13 +163,14 @@ async function openProbe(options: { watcherFailure?: boolean; subscriptionFailur
     },
   };
   const permissionManager = new PermissionManager(join(moduleDir, `permissions-${randomUUID()}.json`));
-  permissionManager.setMode("strict");
+  permissionManager.setMode(options.allowMode ? "allow" : "strict");
   // Wrap the implementation with the effect gate before binding dispatch.
   const hostApi = enforceMutatingEffects(plain, {
     pluginId: PLUGIN_ID,
     approvalGate: { requestAndWait } as unknown as ApprovalGate,
     permissionManager,
     assertActive: () => undefined,
+    ...(options.standaloneScope ? { standaloneScope: options.standaloneScope } : {}),
   }) as unknown as PluginHostApi;
   const context: PluginRuntimeContext = {
     pluginId: PLUGIN_ID,
@@ -219,16 +233,17 @@ describe("an out-of-process tool's hostApi call runs in its host invocation", ()
     }
   });
 
-  it("keeps a headless invocation's deny for a call made after the tool returned", async () => {
+  it.each<[string, Parameters<typeof runWithEffectGateContext>[0]]>([
+    ["headless", { headless: true, approvalSurface: "unavailable", toolName: "raise_after_return" }],
+    ["foreground", { headless: false, approvalSurface: "interactive", toolName: "raise_after_return", sessionId: "session-2" }],
+  ])("refuses a %s call's effect made after the tool returned", async (_label, invocation) => {
     const probe = await openProbe();
     try {
-      await expect(runWithEffectGateContext(
-        { headless: true, approvalSurface: "unavailable", toolName: "raise_after_return" },
-        async () => await probe.session.instance.handlers.raise_after_return!(),
-      )).resolves.toBe("returned");
+      await expect(runWithEffectGateContext(invocation, async () => await probe.session.instance.handlers.raise_after_return!()))
+        .resolves.toBe("returned");
       await vi.waitFor(() => expect(lateOutcomes()).toHaveLength(1));
       // A settled invocation token must preserve refusal of late work rather than reopen authority.
-      expect(lateOutcomes()).toEqual(["EffectBoundaryDeniedError"]);
+      expect(lateOutcomes()).toEqual(["HostApiBoundaryError"]);
       expect(probe.requestAndWait).not.toHaveBeenCalled();
       expect(probe.raised).toEqual([]);
     } finally {
@@ -236,39 +251,65 @@ describe("an out-of-process tool's hostApi call runs in its host invocation", ()
     }
   });
 
-  it("asks the user for a foreground call made after the tool returned, attributed to that tool", async () => {
+  it("refuses to replay an allow-once approval after its call settled", async () => {
     const probe = await openProbe();
     try {
       await expect(runWithEffectGateContext(
-        { headless: false, approvalSurface: "interactive", toolName: "raise_after_return", sessionId: "session-2" },
-        async () => await probe.session.instance.handlers.raise_after_return!(),
+        { headless: false, approvalSurface: "interactive", toolName: "raise_then_replay", sessionId: "session-4" },
+        async () => await probe.session.instance.handlers.raise_then_replay!(),
       )).resolves.toBe("returned");
       await vi.waitFor(() => expect(lateOutcomes()).toHaveLength(1));
-      expect(lateOutcomes()).toEqual(["raised"]);
+      expect(lateOutcomes()).toEqual(["HostApiBoundaryError"]);
       expect(probe.requestAndWait).toHaveBeenCalledTimes(1);
-      expect(probe.requestAndWait.mock.calls[0]![0]).toMatchObject({
-        toolName: "raise_after_return",
-        sessionId: "session-2",
-        approvalScope: expect.stringMatching(/^[a-f0-9]{64}$/u),
-      });
-      expect(probe.raised).toEqual([{ key: "late", toolName: "raise_after_return" }]);
+      expect(probe.raised).toEqual([{ key: "replay", toolName: "raise_then_replay" }]);
     } finally {
       await probe.session.teardown("case over");
     }
   });
 });
 
-describe("a request that names no invocation runs in none", () => {
-  // A restarted child can inherit a tool spawn context; lifecycle work must still run outside that invocation.
-  it.each<[string, Parameters<typeof runWithEffectGateContext>[0]]>([
+describe("standalone effects run only within the background scope approved at enable", () => {
+  const spawnContexts: Array<[string, Parameters<typeof runWithEffectGateContext>[0]]> = [
     ["headless", { headless: true, approvalSurface: "unavailable", toolName: "config_set" }],
     ["foreground", { headless: false, approvalSurface: "interactive", toolName: "config_set", sessionId: "session-3" }],
-  ])("ignores the %s invocation the child was spawned in", async (_label, spawnedIn) => {
-    const probe = await runWithEffectGateContext(spawnedIn, () => openProbe());
+  ];
+
+  it.each(spawnContexts)("runs an approved declared effect without asking, ignoring the %s invocation the child was spawned in", async (_label, spawnedIn) => {
+    const scoped: string[] = [];
+    const probe = await runWithEffectGateContext(spawnedIn, () => openProbe({
+      allowMode: true,
+      standaloneScope: (path) => { scoped.push(path); return path === "raiseAlert"; },
+    }));
     try {
+      await runWithEffectGateContext({ headless: false, toolName: "raise" }, async () => {
+        await probe.session.instance.handlers.raise?.();
+      });
       await probe.session.instance.start!();
       expect(probe.requestAndWait).not.toHaveBeenCalled();
-      expect(probe.raised).toEqual([{ key: "start", toolName: undefined }]);
+      expect(scoped).toEqual(["raiseAlert"]);
+      expect(probe.raised).toEqual([{ key: "now", toolName: "raise" }, { key: "start", toolName: "raiseAlert" }]);
+    } finally {
+      await probe.session.teardown("case over");
+    }
+  });
+
+  it.each(spawnContexts)("denies a standalone effect with no approval, without asking, under a %s spawn", async (_label, spawnedIn) => {
+    const probe = await runWithEffectGateContext(spawnedIn, () => openProbe({ allowMode: true }));
+    try {
+      await expect(probe.session.instance.start?.()).rejects.toThrow();
+      expect(probe.requestAndWait).not.toHaveBeenCalled();
+      expect(probe.raised).toEqual([]);
+    } finally {
+      await probe.session.teardown("case over");
+    }
+  });
+
+  it("denies an undeclared standalone effect even when other effects are approved", async () => {
+    const probe = await openProbe({ allowMode: true, standaloneScope: (path) => path === "storage.write" });
+    try {
+      await expect(probe.session.instance.start?.()).rejects.toThrow();
+      expect(probe.requestAndWait).not.toHaveBeenCalled();
+      expect(probe.raised).toEqual([]);
     } finally {
       await probe.session.teardown("case over");
     }

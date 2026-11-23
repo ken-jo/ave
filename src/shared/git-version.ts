@@ -1,4 +1,4 @@
-/** Git 2.45.1 is required for GIT_NO_LAZY_FETCH to prevent ungated missing-object downloads. */
+/** Git 2.45.1 is required to prevent ungated missing-object downloads. */
 export interface GitVersion {
   major: number;
   minor: number;

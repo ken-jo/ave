@@ -28,6 +28,7 @@ const runtimeTestState = vi.hoisted(() => ({
   }>,
   capturedRuntimeOptions: null as Record<string, unknown> | null,
   readPluginRegistry: vi.fn(async (): Promise<{ version: number; plugins: unknown[] }> => ({ version: 1, plugins: [] })),
+  vouchedInstalledPluginEntries: vi.fn(async (): Promise<readonly PluginRegistryEntry[] | undefined> => undefined),
   officialPins: vi.fn(async () => ["a".repeat(64)]),
   runtime: {
     load: vi.fn(async () => {}),
@@ -40,6 +41,7 @@ const runtimeTestState = vi.hoisted(() => ({
     ),
     getPluginManifest: vi.fn(() => null),
     resolvePluginInstallId: vi.fn((pluginId: string) => pluginId),
+    resolvePluginId: vi.fn((pluginId: string) => pluginId === "install-alias" ? "aliased" : pluginId),
     isPluginEnabled: vi.fn(() => true),
     getApprovedPluginAccess: vi.fn(() => undefined),
     registerDisposer: vi.fn(),
@@ -106,6 +108,7 @@ vi.mock("../../../plugins/plugin-paths.js", () => ({
 
 vi.mock("../../../plugins/registry.js", () => ({
   readPluginRegistry: runtimeTestState.readPluginRegistry,
+  vouchedInstalledPluginEntries: runtimeTestState.vouchedInstalledPluginEntries,
 }));
 
 vi.mock("../plugin-runtime/grant-evidence.js", () => ({
@@ -143,7 +146,8 @@ import { _resetConfinedProcessPhaseForTests, confinedProcessesMayBeRunning } fro
 import { canonicalJSON } from "../../../plugins/secret-access/canonical-json.js";
 import { recordManifestDocument } from "../../../plugins/runtime/manifest-validation.js";
 import { agentPluginsDocument, pluginDataDirIn } from "../../../plugins/__tests__/test-helpers.js";
-import type { PluginHostApi, PluginManifest } from "../../../plugins/types.js";
+import type { PluginHostApi, PluginManifest, PluginRegistryEntry, PluginRegistryEntryOrigin } from "../../../plugins/types.js";
+import { backgroundEffectSubject, PluginBackgroundEffectApprovals } from "../../../plugins/plugin-background-effects.js";
 
 /** Bind the installer pin to the original manifest document. */
 function pinDocument(manifest: object): string {
@@ -1336,5 +1340,105 @@ describe("initPluginRuntime sandbox union ordering", () => {
     // Plugin start begins the phase in which plugin trees are only tombstoned.
     expect(confinedProcessesMayBeRunning()).toBe(true);
     _resetConfinedProcessPhaseForTests();
+  });
+});
+
+describe("initPluginRuntime background effect approvals", () => {
+  const originOf = (id: string, installedAt = "2026-11-01T00:00:00.000Z"): PluginRegistryEntryOrigin => ({
+    sourceId: "example-source", sourceOrigin: "custom", commit: "a".repeat(40), packagePath: `plugins/${id}`, version: "1.0.0",
+    rung: "release", artifactSha256: "b".repeat(64), installedAt,
+  });
+  const subjectOf = (id: string) => backgroundEffectSubject(
+    { id, name: id, version: "1.0.0", entry: "plugin.mjs", description: id, tools: [], capabilities: ["background:call-llm"] } as unknown as PluginManifest,
+    { installSource: "user", origin: originOf(id) },
+  );
+  const entriesOf = (ids: readonly string[], reinstalled: readonly string[] = []): PluginRegistryEntry[] => ids.map((id) => ({
+    id, manifestPath: `${id}/plugin.json`, installSource: "user",
+    origin: originOf(id === "install-alias" ? "aliased" : id, reinstalled.includes(id) ? "2026-11-02T00:00:00.000Z" : undefined),
+  }));
+
+  afterEach(() => {
+    runtimeTestState.runtime.getPluginManifest.mockImplementation(() => null);
+  });
+  const bootWith = (approvals: PluginBackgroundEffectApprovals) => initPluginRuntime({
+    host: createRuntimeHost(),
+    projectRoot: fixture.path("project"),
+    settingsService: createRuntimeSettings() as never,
+    memoryManager: {} as never,
+    networkFetch: vi.fn() as never,
+    clearAuthPartitionService: vi.fn(),
+    toolRegistry: createRuntimeToolRegistry() as never,
+    pythonPath: undefined,
+    bootAuditLogger: { log: vi.fn() } as never,
+    mainWindow: {} as never,
+    openAuthWindowService: vi.fn(),
+    openLinkWindowService: vi.fn(),
+    openAuthPartitionViewerService: vi.fn(),
+    shellOpenExternal: vi.fn(),
+    approvalGate: {} as never,
+    routinesStore: { list: () => [] } as never,
+    getAlertsService: () => undefined,
+    deferStart: true,
+    backgroundEffectApprovals: approvals,
+  });
+  const startPlugins = async (output: Awaited<ReturnType<typeof bootWith>>): Promise<void> => {
+    _resetConfinedProcessPhaseForTests();
+    await output.startPlugins();
+    _resetConfinedProcessPhaseForTests();
+  };
+
+  // An entry that did not load has no manifest id to match its approval by, so nothing is pruned.
+  it.each([
+    ["a vouched registry", entriesOf(["kept", "install-alias"]), ["kept", "aliased"]],
+    ["a registry that cannot vouch", undefined, ["kept", "aliased", "removed"]],
+    ["a registry with an entry that did not load", entriesOf(["kept", "install-alias", "broken-alias"]), ["kept", "aliased", "removed"]],
+    ["a registry whose entry was reinstalled since its approval", entriesOf(["kept", "install-alias", "removed"], ["removed"]), ["kept", "aliased"]],
+  ] as const)("keeps after load only the approvals %s still names", async (_label, vouched, approved) => {
+    runtimeTestState.capturedRuntimeOptions = null;
+    runtimeTestState.runtime.listPluginIds.mockReturnValue([]);
+    runtimeTestState.runtime.listPluginManifests.mockReturnValue([]);
+    runtimeTestState.runtime.getPluginManifest.mockImplementation(((pluginId: string) =>
+      ["kept", "aliased", "removed"].includes(pluginId) ? { id: pluginId } : null) as never);
+    runtimeTestState.vouchedInstalledPluginEntries.mockResolvedValueOnce(vouched);
+    const path = join(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-background-prune-"))), "background-effects.json");
+    const seeded = new PluginBackgroundEffectApprovals(path);
+    for (const id of ["kept", "aliased", "removed"]) seeded.approve(subjectOf(id));
+    const approvals = new PluginBackgroundEffectApprovals(path);
+    const output = await bootWith(approvals);
+    expect(approvals.isApproved(subjectOf("removed"))).toBe(true);
+    await startPlugins(output);
+
+    for (const store of [approvals, new PluginBackgroundEffectApprovals(path)]) {
+      expect(["kept", "aliased", "removed"].filter((id) => store.isApproved(subjectOf(id)))).toEqual(approved);
+      // Boot alone never answers the first-launch card, so a launch with no window leaves it for the next interactive one.
+      expect(store.upgradeReviewOwed()).toBe(true);
+    }
+  });
+
+  // A local development install has no origin; its own stamp is what tells a byte-identical reinstall apart.
+  it.each([
+    ["kept for the install it was given for", "2026-11-01T00:00:00.000Z", true],
+    ["dropped once that install was removed and reinstalled", "2026-11-02T00:00:00.000Z", false],
+  ] as const)("a local development approval is %s", async (_label, installedAt, kept) => {
+    const local = (stamp: string): PluginRegistryEntry => ({
+      id: "local", manifestPath: "local/plugin.json", installSource: "local-dev", manifestSha256: "d".repeat(64), installedAt: stamp,
+    });
+    const subject = (stamp: string) => backgroundEffectSubject(
+      { id: "local", name: "local", version: "1.0.0", entry: "plugin.mjs", description: "local", tools: [], capabilities: ["background:call-llm"] } as unknown as PluginManifest,
+      local(stamp),
+      true,
+    );
+    runtimeTestState.capturedRuntimeOptions = null;
+    runtimeTestState.runtime.listPluginIds.mockReturnValue([]);
+    runtimeTestState.runtime.listPluginManifests.mockReturnValue([]);
+    runtimeTestState.runtime.getPluginManifest.mockImplementation(((pluginId: string) => pluginId === "local" ? { id: pluginId } : null) as never);
+    runtimeTestState.vouchedInstalledPluginEntries.mockResolvedValueOnce([local(installedAt)]);
+    const path = join(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-background-prune-local-"))), "background-effects.json");
+    new PluginBackgroundEffectApprovals(path).approve(subject("2026-11-01T00:00:00.000Z"));
+    const approvals = new PluginBackgroundEffectApprovals(path);
+    await startPlugins(await bootWith(approvals));
+
+    expect(new PluginBackgroundEffectApprovals(path).isApproved(subject("2026-11-01T00:00:00.000Z"))).toBe(kept);
+    expect(new PluginBackgroundEffectApprovals(path).isApproved(subject(installedAt))).toBe(kept);
   });
 });

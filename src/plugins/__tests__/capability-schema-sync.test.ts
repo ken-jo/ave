@@ -1,9 +1,12 @@
 /** Capability declarations are free-form format-validated strings; only KNOWN_CAPABILITIES grant runtime behavior. */
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { buildManifestValidator, parsePluginJson } from "../runtime/manifest-validation.js";
 import { KNOWN_CAPABILITIES } from "../capabilities.js";
-import { aveSchemaProperties } from "./test-helpers.js";
+import { aveSchemaProperties, pluginManifestWriter } from "./test-helpers.js";
 
 async function loadCapabilitiesItemsSchema(): Promise<{
   enum?: string[];
@@ -62,5 +65,23 @@ describe("capability schema contract (free-form, not a closed enum)", () => {
         true,
       );
     }
+  });
+});
+
+describe("background capability declarations", () => {
+  let workDir: string;
+  beforeEach(async () => { workDir = await mkdtemp(join(tmpdir(), "background-capabilities-")); });
+  afterEach(async () => { await rm(workDir, { recursive: true, force: true }); });
+  const writeManifest = pluginManifestWriter({ id: "background-test", name: "Background Test" }, () => workDir);
+
+  it("accepts the known background ids and keeps retired look-alikes harmless", async () => {
+    const path = await writeManifest({ capabilities: ["background:call-llm", "background:spawn-worker", "background-watcher"] });
+    const parsed = await parsePluginJson(path, await buildManifestValidator());
+    expect(parsed.capabilities).toEqual(["background:call-llm", "background:spawn-worker", "background-watcher"]);
+  });
+
+  it.each(["background:llm", "background:", "background:call-llm "])("refuses the unknown background id %j", async (capability) => {
+    const path = await writeManifest({ capabilities: [capability] });
+    await expect(parsePluginJson(path, await buildManifestValidator())).rejects.toThrow(/unknown background capability/);
   });
 });

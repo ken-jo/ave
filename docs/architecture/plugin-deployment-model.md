@@ -81,7 +81,9 @@ Older values are migrated when the registry is read (`dev-link` becomes
 `local-dev`). A marketplace install also records an `origin`
 (`PluginRegistryEntryOrigin`): `sourceId`, `sourceOrigin` (`official`,
 `managed`, `custom` or `direct`), `commit`, `packagePath`, `version`, the
-artifact `rung` and `artifactSha256`.
+artifact `rung`, `artifactSha256` and its `installedAt` stamp. A `local-dev`
+entry has no origin and carries its own `installedAt`, written when it is first
+installed and kept by an in-place reinstall.
 
 At boot the runtime ignores any entry whose manifest path resolves outside
 the plugins root (`isTrustedRegistryManifestPath` in

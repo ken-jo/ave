@@ -64,6 +64,12 @@ function sourceFiles(dir: string): string[] {
   });
 }
 
+/** The runner dedupes rows silently, so a repeated row would otherwise go unnoticed. */
+function duplicateRows(text: string): string[] {
+  const rows = text.split(/\r?\n/u).map(line => line.trim()).filter(Boolean);
+  return [...new Set(rows.filter((row, index) => rows.indexOf(row) !== index))];
+}
+
 const nativeInventory = new WeakMap<ReadonlyMap<string, string>, Map<string, string[]>>();
 function listProblems(sources: Map<string, string>, workflow: string, inventories = windowsTestLists): string[] {
   const listed = new Set(windowsRegressionFiles(workflow, inventories));
@@ -154,6 +160,15 @@ jobs:
   it("names every unconditional security suite", () => {
     expect(REQUIRED_SECURITY_SUITES.filter((file) => !sources.has(file))).toEqual([]);
     expect(REQUIRED_SECURITY_SUITES.filter((file) => !listed.includes(file))).toEqual([]);
+  });
+
+  it.each([...windowsTestLists])("lists each suite once in %s", (_file, text) => {
+    expect(duplicateRows(text)).toEqual([]);
+  });
+
+  it("rejects a list with a repeated row", () => {
+    const repeated = "src/alice.test.ts";
+    expect(duplicateRows(`${repeated}\r\nsrc/bob.test.ts\n  ${repeated}  \n\n${repeated}\n`)).toEqual([repeated]);
   });
 
   function withoutPermissionSuite(file: string) {

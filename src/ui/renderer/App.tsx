@@ -61,6 +61,7 @@ import { useSessionList, useTurnAttention, type SessionSummary } from "./hooks/u
 import { isInlineViewKey, isInstanceViewKey, parseInlineViewKey, type InlineViewKey, type InstanceViewKey, type PluginViewKey } from "../../shared/view-key.js";
 import { COLLAPSED_RAIL_RESERVE, CONTENT_TITLE_INSET, NARROW_DEAD_BAND_PX, RAIL_BAND_LEAD, SHELL_GUTTER, sidebarPushThreshold } from "../../shared/shell-geometry.js";
 import { RecentlyDeniedDialog } from "./dialogs/RecentlyDeniedDialog.js";
+import { PluginBackgroundEffectsPrompt } from "./dialogs/PluginBackgroundEffectsPrompt.js";
 import { SpotlightTour } from "./components/SpotlightTour.js";
 import { DevConsoleToggle } from "./components/DevConsoleToggle.js";
 import { ApprovalLaneCard, unattributedRequestLabel } from "./components/permissions/ApprovalDock.js";
@@ -2840,6 +2841,7 @@ export function App() {
             {/* App-level dialogs that remain available after removing setup flows. */}
             {openSubAgentSession && <SubAgentConversationDialog api={api} session={sessions.find((row) => row.id === openSubAgentSession.id) ?? openSubAgentSession} onClose={() => setOpenSubAgentSession(null)} />}
             <RecentlyDeniedDialog open={recentlyDeniedOpen} onOpenChange={setRecentlyDeniedOpen} />
+            <PluginBackgroundEffectsPrompt />
             <SpotlightTour
               api={api}
               onComplete={onTourComplete}

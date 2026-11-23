@@ -1,6 +1,7 @@
-import { execFile } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { join, win32 } from "node:path";
+import { access } from "node:fs/promises";
+import { dirname, join, win32 } from "node:path";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { decodeWindowsNativeReply } from "../shared/windows-native-host.js";
 import { getHostResources } from "./host-resources.js";
@@ -22,9 +23,14 @@ export function windowsPathKindHelperIn(resourcePath: string): string {
 export function resolveWindowsPathKindHelper(): string {
   const binary = windowsPathKindHelperIn(getHostResources().resourcePath);
   if (!existsSync(binary)) {
-    throw new Error(`Windows folder classifier is missing: ${binary}. Ave cannot tell whether a drive is on another computer, so it reads no folder on a drive. ${REPAIR}`);
+    throw missingWindowsPathKindHelper(binary);
   }
   return binary;
+}
+
+function missingWindowsPathKindHelper(binary: string): Error {
+  return new Error("Windows folder classifier is missing: " + binary
+    + ". Ave cannot tell whether a drive is on another computer, so it reads no folder on a drive. " + REPAIR);
 }
 
 export async function queryWindowsDocumentsDirectory(signal?: AbortSignal): Promise<string> {
@@ -85,33 +91,61 @@ export function queryDosDevice(drive: string): Promise<string | null> {
 }
 
 // The packaged helper asks the OS directly; environment variables cannot choose a system verifier.
-export async function queryWindowsSystemDirectory(): Promise<string> {
+export async function queryWindowsSystemDirectory(timeout: number = TOOL_TIMEOUT_POLICY.globalCeilingMs): Promise<string> {
   if (process.platform !== "win32") throw new Error("Windows system directory query requires Windows");
-  const helper = resolveWindowsPathKindHelper();
+  const helper = windowsPathKindHelperIn(getHostResources().resourcePath);
+  try {
+    await access(helper);
+  } catch {
+    throw missingWindowsPathKindHelper(helper);
+  }
   return new Promise((resolve, reject) => {
     execFile(helper, ["--system-directory"], {
-      windowsHide: true, shell: false, env: {}, encoding: "buffer",
-      timeout: TOOL_TIMEOUT_POLICY.globalCeilingMs, maxBuffer: 128 * 1024,
+      ...windowsSystemDirectorySpawnOptions(helper), timeout, encoding: "buffer",
     }, (error, stdout, stderr) => {
       if (error || stderr.length > 0) {
         reject(new Error(`Windows system directory query failed. ${REPAIR}`, { cause: error ?? undefined }));
         return;
       }
-      let directory: string;
       try {
-        directory = decodeWindowsNativeReply(stdout).replace(/\r?\n$/u, "");
+        resolve(parseWindowsSystemDirectory(stdout));
       } catch (cause) {
         reject(cause);
-        return;
       }
-      if (directory.length > 32767 || !/^[a-z]:\\/iu.test(directory)
-        || /[\u0000-\u001f\u007f<>"|?*]/u.test(directory) || directory.slice(2).includes(":")
-        || win32.normalize(directory) !== directory || win32.dirname(directory) === win32.parse(directory).root
-        || win32.dirname(directory).length > 512) {
-        reject(new Error(`Windows system directory query returned an invalid path. ${REPAIR}`));
-        return;
-      }
-      resolve(directory);
     });
   });
+}
+
+export function queryWindowsSystemDirectorySync(): string {
+  if (process.platform !== "win32") throw new Error("Windows system directory query requires Windows");
+  const helper = resolveWindowsPathKindHelper();
+  const result = spawnSync(helper, ["--system-directory"], windowsSystemDirectorySpawnOptions(helper));
+  if (result.error || result.status !== 0 || result.stderr.length > 0) {
+    throw new Error(`Windows system directory query failed. ${REPAIR}`, { cause: result.error });
+  }
+  return parseWindowsSystemDirectory(result.stdout);
+}
+
+export function windowsSystemDirectorySpawnOptions(helper: string) {
+  return {
+    cwd: dirname(helper), windowsHide: true, shell: false,
+    // Explicit values block parent defaults injected during child creation. NODE_OPTIONS is left alone: the helper is native and Ave never runs under Node's --permission model.
+    env: {
+      HOMEDRIVE: "", HOMEPATH: "", LOGONSERVER: "", PATH: "", SYSTEMDRIVE: "", SYSTEMROOT: "",
+      TEMP: "", USERDOMAIN: "", USERNAME: "", USERPROFILE: "", WINDIR: "", NODE_V8_COVERAGE: "",
+    },
+    timeout: TOOL_TIMEOUT_POLICY.projectGitQueryMs, maxBuffer: 128 * 1024,
+  };
+}
+
+function parseWindowsSystemDirectory(stdout: Uint8Array): string {
+  const directory = decodeWindowsNativeReply(stdout).replace(/\r?\n$/u, "");
+  const root = win32.dirname(directory);
+  if (directory.length > 32767 || !/^[a-z]:\\/iu.test(directory)
+    || /[\u0000-\u001f\u007f<>"|?*]/u.test(directory) || directory.slice(2).includes(":")
+    || win32.normalize(directory) !== directory || root === win32.parse(directory).root
+    || root.length > 512) {
+    throw new Error(`Windows system directory query returned an invalid path. ${REPAIR}`);
+  }
+  return directory;
 }

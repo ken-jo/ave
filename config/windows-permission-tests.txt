@@ -92,7 +92,6 @@ src/permissions/__tests__/egress-ask.test.ts
 src/permissions/__tests__/execution-router.test.ts
 src/permissions/__tests__/scoped-rules.test.ts
 src/permissions/judge/__tests__/judge-dispatch.test.ts
-src/main/__tests__/document-open.test.ts
 src/permissions/__tests__/sensitive-paths-canonicalize.test.ts
 src/permissions/__tests__/canonicalizer-8dot3.test.ts
 src/permissions/__tests__/policy-home.test.ts
@@ -340,6 +339,7 @@ src/plugins/__tests__/orphan-uninstall-sweeper.test.ts
 src/plugins/__tests__/plugin-file-identity.test.ts
 src/plugins/__tests__/plugin-host-storage-migration.test.ts
 src/plugins/__tests__/plugin-storage-layout.test.ts
+src/plugins/__tests__/plugin-background-effects.test.ts
 src/plugins/__tests__/resolve-bundled-argv.test.ts
 src/plugins/__tests__/storage-external-key.test.ts
 src/plugins/__tests__/storage-rejection-audit.test.ts
@@ -440,4 +440,9 @@ src/plugins/runtime/__tests__/sandbox-withdrawal.test.ts
 src/shared/__tests__/ave-home-host-ownership.test.ts
 src/tools/__tests__/file-tools.test.ts
 src/tools/__tests__/shell-interruption-cleanup.test.ts
+src/main/__tests__/windows-path-kind-launcher.windows.test.ts
+src/marketplace/git/__tests__/installer-git.test.ts
+src/marketplace/git/__tests__/marketplace-git.test.ts
+src/shared/__tests__/host-git-executable.test.ts
+src/shared/__tests__/host-git-probe.test.ts
 src/work-board/workflow/__tests__/stage-run-harness.test.ts

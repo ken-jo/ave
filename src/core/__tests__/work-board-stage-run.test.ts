@@ -37,6 +37,7 @@ it("spawns only the pinned version's stages with the stage's tool scope", () => 
   a.finish();
   await h.untilStage(id, "a", "awaiting_gate");
   expect(h.children).toHaveLength(1);
+  expect(await run).toMatchObject({ status: "awaiting_approval" });
   expect(await h.decide(id, "a", "approve")).toEqual({ ok: true, status: "approved" });
   const [b] = await h.untilLive(1);
   expect(b.input.title).toContain("Stage b");
@@ -50,7 +51,6 @@ it("spawns only the pinned version's stages with the stage's tool scope", () => 
   expect(done.output).toBe("output of child-2");
   expect(done.planApproval).toBeUndefined();
   expect(h.children).toHaveLength(2);
-  expect(await run).toMatchObject({ status: "awaiting_approval" });
 }));
 
 it("a run whose template gained v2 with the same scope mid-run still spawns v1 stages", () => withHarness(async (h) => {

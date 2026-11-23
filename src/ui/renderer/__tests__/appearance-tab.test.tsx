@@ -233,11 +233,18 @@ it("renders each interface preset in its saved stack with the host default", asy
  const view = renderAppearance();
  await waitFor(() => expect(view.getByTestId("appearance-font-controls")).not.toBeDisabled());
  const presets = within(view.getByTestId("font-family-presets")).getAllByRole("radio");
- expect(presets[0]?.style.fontFamily).toBe(HOST_FONT_STACK);
+ const expectedStyle = document.createElement("span").style;
+ expectedStyle.fontFamily = HOST_FONT_STACK;
+ expect(presets[0]?.style.fontFamily).toBe(expectedStyle.fontFamily);
  const api = (window as unknown as { aveApi: ReturnType<typeof makeMockAveApi>["api"] }).aveApi;
  for (const preset of presets.slice(1)) {
    fireEvent.click(preset);
-   expect(api.updateSettings).toHaveBeenLastCalledWith({ appearance: { font: { family: preset.style.fontFamily } } });
+   const patch = api.updateSettings.mock.lastCall?.[0];
+   const family = (patch as { appearance?: { font?: { family?: string } } })?.appearance?.font?.family;
+   assertPresent(family);
+   expect(patch).toEqual({ appearance: { font: { family } } });
+   expectedStyle.fontFamily = family;
+   expect(preset.style.fontFamily).toBe(expectedStyle.fontFamily);
  }
 });
 

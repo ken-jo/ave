@@ -1,17 +1,27 @@
 /** The transport owns framing, call settlement and one termination sequence; faults are not terminal exits. */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AsyncLocalStorage, AsyncResource } from "node:async_hooks";
+import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
 import { terminateChildProcess } from "../../../tools/terminate-child-process.js";
 import { frameMessage, StdioFrameDecoder } from "../../../mcp/stdio-framing.js";
 import { INVOCATION_META, RPC_METHOD_NOT_FOUND } from "../../../mcp/protocol-constants.js";
+import { evaluateHostFetch } from "../../../main/host-fetch-guard.js";
+import { currentEffectGateContext, gateMutatingEffect, runWithEffectGateContext } from "../../../permissions/effect-enforcement.js";
+import type { ApprovalGate } from "../../../permissions/approval-gate.js";
+import { PermissionManager } from "../../../permissions/permission-manager.js";
+import { backgroundEffectSubject, PluginBackgroundEffectApprovals, withinBackgroundScope } from "../../plugin-background-effects.js";
+import type { PluginManifest, PluginRegistryTrust } from "../../types.js";
 import { servePluginChild } from "../plugin-child-main.js";
 import {
   defineHostApiPath,
   createServiceHostApiPaths,
   HOSTAPI_DISPATCH_TABLE,
   HostApiDispatcher,
+  type HostApiPathHandler,
 } from "../host-api-dispatcher.js";
 import { encodeHostFetchInit, FRAME_BYTES_MAX, hostApiMethodOf } from "../host-api-wire.js";
 import {
@@ -22,20 +32,6 @@ import {
   type ChildLink,
 } from "../plugin-child-transport.js";
 import { observe, settle } from "./stream-turns.js";
-
-/** Capture dispatcher warnings for dropped frames. */
-const dispatcherWarn = vi.hoisted(() => vi.fn());
-vi.mock("../../../lib/logger.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../../lib/logger.js")>();
-  return {
-    ...actual,
-    createLogger: (module: string) => {
-      const logger = actual.createLogger(module);
-      if (module !== "host-api-dispatcher") return logger;
-      return Object.assign(Object.create(logger) as typeof logger, { warn: dispatcherWarn });
-    },
-  };
-});
 
 type Frame = Record<string, unknown>;
 
@@ -381,6 +377,7 @@ interface InvocationRig {
   transport: PluginChildTransport;
   sent: Frame[];
   seen: Array<string | undefined>;
+  audit: ReturnType<typeof vi.fn>;
   /** Deliver frames in link-creation context, matching real pipes. */
   deliver: (frame: Frame) => void;
   fireGone: (reason: string) => void;
@@ -388,34 +385,51 @@ interface InvocationRig {
 }
 
 /** Construct inside a marker to test spawn-context isolation. */
-function invocationRig(options: { pluginId?: string; teardown?: () => void; terminate?: () => void } = {}): InvocationRig {
+function invocationRig(options: {
+  pluginId?: string; teardown?: () => void; terminate?: () => void; table?: Record<string, HostApiPathHandler>;
+} = {}): InvocationRig {
   const { link, childToHost, sent, fireGone, fireFault } = recordedLink();
+  const pluginId = options.pluginId ?? "transportprobe";
   const seen: InvocationRig["seen"] = [];
+  const audit = vi.fn();
   return marker.run("spawned-in", () => {
     const transport = new PluginChildTransport({
-      pluginId: options.pluginId ?? "transportprobe",
+      pluginId,
+      reportBudgetAudit: audit,
       isActive: () => true,
       reportUnknownField: () => undefined,
       link: options.terminate === undefined ? link : { ...link, terminate: options.terminate },
       table: {
         ...HOSTAPI_DISPATCH_TABLE,
         raiseAlert: defineHostApiPath("raiseAlert", async () => {
-          seen.push(marker.getStore());
+          seen.push(marker.getStore() ?? (currentEffectGateContext()?.standalone ? "standalone" : undefined));
           return { status: "raised", alertId: "alert" } as never;
+        }),
+        hasRoutineBySource: defineHostApiPath("hasRoutineBySource", async () => {
+          seen.push(marker.getStore());
+          return false as never;
         }),
         "config.onChange": defineHostApiPath("config.onChange", async (_call, scope) => {
           scope.adopt("events", () => options.teardown?.());
           return { handleId: "events" };
         }),
         hostFetch: createServiceHostApiPaths(
-          { hostFetch: async () => new Response("ok") } as unknown as Parameters<typeof createServiceHostApiPaths>[0],
+          { hostFetch: async (rawUrl: string, init?: RequestInit) => {
+            const decision = await evaluateHostFetch({
+              pluginId, rawUrl, method: init?.method, allowedDomains: ["example.test"],
+              ensurePublicUrl: async (url) => new URL(url),
+            });
+            if (!decision.ok) throw new Error(decision.message);
+            return new Response("ok");
+          } } as unknown as Parameters<typeof createServiceHostApiPaths>[0],
           { read: [], write: [] },
         ).hostFetch,
+        ...options.table,
       },
     });
     transport.start();
     const deliver = AsyncResource.bind((frame: Frame) => void childToHost.write(frameMessage(frame)));
-    return { transport, sent, seen, deliver, fireGone, fireFault };
+    return { transport, sent, seen, audit, deliver, fireGone, fireFault };
   });
 }
 
@@ -439,8 +453,35 @@ function invocationCounts(transport: PluginChildTransport): { live: number; sett
   return { live: tables.liveInvocations.size, settled: tables.settledInvocations.size };
 }
 
+/** Issue one tools/call from inside an executor-style effect-gate frame. */
+async function callToolIn(
+  rig: InvocationRig,
+  label: string,
+  frame: Omit<Parameters<typeof runWithEffectGateContext>[0], "toolName">,
+): Promise<{ frame: Frame; reply: Promise<unknown> }> {
+  const before = rig.sent.length;
+  const reply = marker.run(label, () => runWithEffectGateContext({ ...frame, toolName: "speak" },
+    () => rig.transport.requestMcp("tools/call", { name: "speak", arguments: {} })));
+  await settle();
+  const sent = rig.sent.slice(before).filter((candidate) => candidate.method === "tools/call");
+  expect(sent).toHaveLength(1);
+  const [frame0] = sent;
+  if (frame0 === undefined) throw new Error("tools/call was not sent");
+  return { frame: frame0, reply };
+}
+
 function tokenOf(frame: Frame): string {
   return ((frame.params as Record<string, unknown>)._meta as Record<string, string>)[INVOCATION_META]!;
+}
+
+/** An ungated reverse request; it records the context it ran in. */
+async function probeFromChild(rig: InvocationRig, id: string, token: string): Promise<Frame> {
+  rig.deliver({
+    jsonrpc: "2.0", id, method: hostApiMethodOf("hasRoutineBySource"),
+    params: { source: id, _meta: { [INVOCATION_META]: token } },
+  });
+  await settle();
+  return rig.sent.find((frame) => frame.id === id)!;
 }
 
 async function raiseAlertFromChild(rig: InvocationRig, id: string, token?: string): Promise<Frame> {
@@ -459,22 +500,73 @@ async function raiseAlertFromChild(rig: InvocationRig, id: string, token?: strin
 }
 
 describe("a tools/call's invocation, as the child's hostApi requests reach it", () => {
-  it("still runs a request in its call's context after the call has settled", async () => {
+  it("runs an ungated request in its settled call's context and refuses a gated one", async () => {
     const rig = invocationRig();
     const { frames, replies } = await callTools(rig, 1);
     rig.deliver({ jsonrpc: "2.0", id: frames[0]!.id as string, result: { content: [] } });
     await replies[0];
-    const reply = await raiseAlertFromChild(rig, "late", tokenOf(frames[0]!));
-    expect(reply).toMatchObject({ result: { status: "raised" } });
+    const settled = tokenOf(frames[0]!);
+    await expect(probeFromChild(rig, "late-read", settled)).resolves.toMatchObject({ result: false });
+    const write = await raiseAlertFromChild(rig, "late", settled);
+    expect(write.error).toMatchObject({ data: { code: "argument-marshalling-rejected" } });
+    rig.deliver({
+      jsonrpc: "2.0", id: "late-fetch", method: hostApiMethodOf("hostFetch"),
+      params: { input: "https://example.test", _meta: { [INVOCATION_META]: settled } },
+    });
+    await settle();
+    expect(rig.sent.find((frame) => frame.id === "late-fetch")?.error).toMatchObject({ data: { code: "argument-marshalling-rejected" } });
     expect(rig.seen).toEqual(["call-0"]);
+    expect(rig.audit).toHaveBeenCalledWith(expect.objectContaining({ method: "raiseAlert", reason: "settled-invocation-token" }));
     rig.transport.close("case over");
+  });
+
+  it.each([
+    ["headless and interactive", { headless: true, sessionId: "session-1" }, { headless: false, sessionId: "session-1" }],
+    ["different sessions", { headless: false, sessionId: "session-1" }, { headless: false, sessionId: "session-2" }],
+    ["a floor and none", { headless: false, permissionContext: { floor: { code: "other-principal" as const, reason: "x" } } }, { headless: false }],
+  ])("makes the token choice impossible between live calls with %s contexts", async (_label, first, second) => {
+    const rig = invocationRig();
+    const a = await callToolIn(rig, "call-a", first);
+    const b = await callToolIn(rig, "call-b", second);
+    const pending = Promise.allSettled([a.reply, b.reply]);
+    try {
+      const viaA = await raiseAlertFromChild(rig, "via-a", tokenOf(a.frame));
+      const viaB = await raiseAlertFromChild(rig, "via-b", tokenOf(b.frame));
+      for (const reply of [viaA, viaB]) expect(reply.error).toMatchObject({ data: { code: "argument-marshalling-rejected" } });
+      expect(rig.audit).toHaveBeenCalledWith(expect.objectContaining({ method: "raiseAlert", reason: "ambiguous-invocation-token" }));
+      await expect(probeFromChild(rig, "read-a", tokenOf(a.frame))).resolves.toMatchObject({ result: false });
+      expect(rig.seen).toEqual(["call-a"]);
+      rig.deliver({ jsonrpc: "2.0", id: b.frame.id as string, result: { content: [] } });
+      await b.reply;
+      await expect(raiseAlertFromChild(rig, "alone", tokenOf(a.frame))).resolves.toMatchObject({ result: { status: "raised" } });
+      expect(rig.seen).toEqual(["call-a", "call-a"]);
+    } finally {
+      rig.transport.close("case over");
+      await pending;
+    }
+  });
+
+  it("lets either of two live calls with equivalent contexts carry a gated request", async () => {
+    const rig = invocationRig();
+    const frame = { headless: false, sessionId: "session-1", permissionContext: { floor: { code: "other-principal" as const, reason: "x" } } };
+    const a = await callToolIn(rig, "call-a", frame);
+    const b = await callToolIn(rig, "call-b", { ...frame, permissionContext: { floor: { code: "other-principal", reason: "per-call text" } } });
+    const pending = Promise.allSettled([a.reply, b.reply]);
+    try {
+      await expect(raiseAlertFromChild(rig, "via-b", tokenOf(b.frame))).resolves.toMatchObject({ result: { status: "raised" } });
+      await expect(raiseAlertFromChild(rig, "via-a", tokenOf(a.frame))).resolves.toMatchObject({ result: { status: "raised" } });
+      expect(rig.seen).toEqual(["call-b", "call-a"]);
+    } finally {
+      rig.transport.close("case over");
+      await pending;
+    }
   });
 
   it("runs a request that names no invocation in none, not in the context the child was spawned in", async () => {
     const rig = invocationRig();
     const reply = await raiseAlertFromChild(rig, "background");
     expect(reply).toMatchObject({ result: { status: "raised" } });
-    expect(rig.seen).toEqual([undefined]);
+    expect(rig.seen).toEqual(["standalone"]);
     rig.transport.close("case over");
   });
 
@@ -508,6 +600,29 @@ describe("a tools/call's invocation, as the child's hostApi requests reach it", 
     dispatcher.childGone();
   });
 
+  it("runs a tokenless storage read inside the standalone frame, so its admission, floors and rules still apply", async () => {
+    const frames: Array<boolean | undefined> = [];
+    const dispatcher = new HostApiDispatcher({
+      pluginId: "transportprobe",
+      isActive: () => true,
+      notifications: { deliver: () => undefined },
+      reportUnknownField: () => undefined,
+      table: {
+        ...HOSTAPI_DISPATCH_TABLE,
+        "storage.exists": defineHostApiPath("storage.exists", async () => {
+          frames.push(currentEffectGateContext()?.standalone);
+          return true;
+        }),
+      },
+    });
+    const reply = await dispatcher.handle({
+      jsonrpc: "2.0", id: "read", method: hostApiMethodOf("storage.exists"), params: { relPath: "state.json" },
+    } as never);
+    expect(reply).toMatchObject({ result: true });
+    expect(frames).toEqual([true]);
+    dispatcher.childGone();
+  });
+
   it("refuses a request naming a token the connection never issued", async () => {
     const rig = invocationRig();
     const reply = await raiseAlertFromChild(rig, "forged", "never-issued");
@@ -525,10 +640,10 @@ describe("a tools/call's invocation, as the child's hostApi requests reach it", 
       rig.deliver({ jsonrpc: "2.0", id: call.frames[0]!.id as string, result: { content: [] } });
       await call.replies[0];
     }
-    const evicted = await raiseAlertFromChild(rig, "evicted", tokenOf(frames[0]!));
+    const evicted = await probeFromChild(rig, "evicted", tokenOf(frames[0]!));
     expect(evicted.error).toMatchObject({ data: { code: "argument-marshalling-rejected" } });
-    const kept = await raiseAlertFromChild(rig, "kept", tokenOf(frames[1]!));
-    expect(kept).toMatchObject({ result: { status: "raised" } });
+    const kept = await probeFromChild(rig, "kept", tokenOf(frames[1]!));
+    expect(kept).toMatchObject({ result: false });
     expect(rig.seen).toEqual(["call-1"]);
     rig.transport.close("case over");
   });
@@ -661,10 +776,8 @@ describe("a tools/call's invocation, as the child's hostApi requests reach it", 
     }
   });
 
-  it("accepts older child metadata that does not use the host invocation key", async () => {
+  it("ignores older child metadata outside an active invocation", async () => {
     const rig = invocationRig();
-    const call = await callTools(rig, 1);
-    const pending = expect(call.replies[0]).rejects.toThrow();
     try {
       rig.deliver({
         jsonrpc: "2.0", id: "legacy", method: hostApiMethodOf("raiseAlert"),
@@ -672,72 +785,140 @@ describe("a tools/call's invocation, as the child's hostApi requests reach it", 
       });
       await vi.waitFor(() => expect(rig.sent.some((frame) => frame.id === "legacy")).toBe(true));
       expect(rig.sent.find((frame) => frame.id === "legacy")).toMatchObject({ result: { status: "raised" } });
-      expect(rig.seen).toEqual([undefined]);
+      expect(rig.seen).toEqual(["standalone"]);
     } finally {
       rig.transport.close("case over");
-      await pending;
     }
   });
 
-  it("bounds tokenless-write diagnostics per path and excludes argument values", async () => {
-    dispatcherWarn.mockClear();
+  it.each([1, 2])("runs an unattributed write beside %i live tool calls in the standalone frame, with no refusal", async (count) => {
     const rig = invocationRig();
-    const call = await callTools(rig, 1);
-    const pending = expect(call.replies[0]).rejects.toThrow();
+    const { frames, replies } = await callTools(rig, count);
     try {
-      for (let index = 0; index < 100; index += 1) {
-        const reply = await raiseAlertFromChild(rig, `secret-argument-${String(index)}`);
-        expect(reply).toMatchObject({ result: { status: "raised" } });
+      for (const id of ["omitted", "omitted-again"]) {
+        await expect(raiseAlertFromChild(rig, id)).resolves.toMatchObject({ result: { status: "raised" } });
       }
-      expect(dispatcherWarn).toHaveBeenCalledTimes(1);
-      expect(dispatcherWarn.mock.calls[0]![0]).toEqual({ pluginId: "transportprobe", path: "raiseAlert", toolCallsInFlight: 1 });
-      expect(JSON.stringify(dispatcherWarn.mock.calls)).not.toContain("secret-argument");
+      rig.deliver({ jsonrpc: "2.0", id: "unattributed-fetch", method: hostApiMethodOf("hostFetch"), params: { input: "https://example.test" } });
+      await settle();
+      expect(rig.sent.find((frame) => frame.id === "unattributed-fetch")).toMatchObject({ result: { status: 200 } });
+      for (const [index, frame] of frames.entries()) {
+        const reply = await raiseAlertFromChild(rig, `attributed-${index}`, tokenOf(frame));
+        expect(reply).toMatchObject({ result: { status: "raised" } });
+        rig.deliver({ jsonrpc: "2.0", id: frame.id, result: { content: [] } });
+      }
+      await Promise.all(replies);
+      expect(rig.seen).toEqual(["standalone", "standalone", ...frames.map((_, index) => `call-${index}`)]);
+      expect(rig.audit).not.toHaveBeenCalled();
     } finally {
       rig.transport.close("case over");
-      await pending;
+      await Promise.allSettled(replies);
     }
   });
 
-  it("records inline-gated fetch writes without logging their URL, headers or body", async () => {
-    dispatcherWarn.mockClear();
+  it("runs unattributed fetches of every verb beside a live call, and audits a settled-token fetch write with redacted diagnostics", async () => {
     const rig = invocationRig();
-    const call = await callTools(rig, 1);
-    const pending = expect(call.replies[0]).rejects.toThrow();
+    const { frames: [live = {}], replies } = await callTools(rig, 1);
+    const init = (method: string) => encodeHostFetchInit({ method, headers: { Authorization: "header-secret" }, body: "body-secret" }, "fetch approval");
     try {
       for (const method of ["GET", "HEAD", "OPTIONS", "post", "PATCH"]) {
         rig.deliver({
           jsonrpc: "2.0", id: method, method: hostApiMethodOf("hostFetch"),
-          params: { input: "https://example.test/?token=url-secret", init: await encodeHostFetchInit({ method, headers: { Authorization: "header-secret" }, body: "body-secret" }, "fetch diagnostic") },
+          params: { input: "https://example.test/?token=url-secret", init: await init(method) },
         });
-        await vi.waitFor(() => expect(rig.sent.some((frame) => frame.id === method)).toBe(true));
+        await settle();
         expect(rig.sent.find((frame) => frame.id === method)).toMatchObject({ result: { status: 200 } });
-        expect(dispatcherWarn).toHaveBeenCalledTimes(method === "post" || method === "PATCH" ? 1 : 0);
       }
-      expect(dispatcherWarn.mock.calls[0]![0]).toEqual({ pluginId: "transportprobe", path: "hostFetch", toolCallsInFlight: 1 });
-      expect(JSON.stringify(dispatcherWarn.mock.calls)).not.toMatch(/url-secret|header-secret|body-secret/);
+      expect(rig.audit).not.toHaveBeenCalled();
+      rig.deliver({ jsonrpc: "2.0", id: live.id as string, result: { content: [] } });
+      await replies[0];
+      rig.deliver({
+        jsonrpc: "2.0", id: "settled-post", method: hostApiMethodOf("hostFetch"),
+        params: { input: "https://example.test/?token=url-secret", init: await init("POST"), _meta: { [INVOCATION_META]: tokenOf(live) } },
+      });
+      await settle();
+      expect(rig.sent.find((frame) => frame.id === "settled-post")?.error).toMatchObject({ data: { code: "argument-marshalling-rejected" } });
+      expect(rig.audit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ method: "hostFetch", reason: "settled-invocation-token" }));
+      expect(JSON.stringify(rig.audit.mock.calls)).not.toMatch(/url-secret|header-secret|body-secret/);
     } finally {
       rig.transport.close("case over");
-      await pending;
+      await Promise.allSettled(replies);
     }
   });
 
-  it("records a gated write that names no invocation while a tool call is in flight", async () => {
-    dispatcherWarn.mockClear();
+  it.each([
+    ["declared and approved", ["background:call-llm"], true],
+    ["undeclared", [], false],
+  ] as const)("judges a background callLlm that is %s beside a long-running tool call by the standalone policy alone", async (_label, capabilities, allowed) => {
+    const permissionManager = new PermissionManager(join(tmpdir(), `transport-policy-${randomUUID()}.json`));
+    const manifest = {
+      id: "transportprobe", name: "Probe", version: "1.0.0", entry: "dist/plugin.js", description: "probe", tools: [], config: {},
+      capabilities: [...capabilities],
+    } as unknown as PluginManifest;
+    const entry: PluginRegistryTrust = {
+      installSource: "user",
+      origin: {
+        sourceId: "example-source", sourceOrigin: "custom", commit: "a".repeat(40), packagePath: "plugins/probe", version: "1.0.0",
+        rung: "release", artifactSha256: "b".repeat(64), installedAt: "2026-11-01T00:00:00.000Z",
+      },
+    };
+    const subject = backgroundEffectSubject(manifest, entry);
+    const approvals = new PluginBackgroundEffectApprovals();
+    if (subject.declared) approvals.approve(subject);
+    const asked = vi.fn();
+    const contexts: Array<boolean | undefined> = [];
+    const rig = invocationRig({ table: {
+      callLlm: defineHostApiPath("callLlm", async (call) => {
+        contexts.push(currentEffectGateContext()?.standalone);
+        await gateMutatingEffect({
+          pluginId: "transportprobe", methodPath: "callLlm", effect: "write", target: undefined, input: call.args,
+          approvalGate: { requestAndWait: asked } as unknown as ApprovalGate, permissionManager,
+          standaloneScope: async (path, target) => withinBackgroundScope(subject.effects, path, target) && approvals.isApproved(subject),
+        });
+        return "reply";
+      }),
+    } });
+    const { frames: [live = {}], replies } = await callTools(rig, 1);
+    try {
+      const replyTo = async (id: string) => {
+        await vi.waitFor(() => expect(rig.sent.some((frame) => frame.id === id)).toBe(true));
+        return rig.sent.find((frame) => frame.id === id);
+      };
+      rig.deliver({ jsonrpc: "2.0", id: "background-llm", method: hostApiMethodOf("callLlm"), params: { prompt: "hello", options: {} } });
+      const reply = await replyTo("background-llm");
+      if (allowed) expect(reply).toMatchObject({ result: "reply" });
+      else expect(reply?.error).toMatchObject({ data: { code: "effect-boundary-denied" } });
+      rig.deliver({
+        jsonrpc: "2.0", id: "tool-llm", method: hostApiMethodOf("callLlm"),
+        params: { prompt: "hello", options: {}, _meta: { [INVOCATION_META]: tokenOf(live) } },
+      });
+      expect(await replyTo("tool-llm")).toMatchObject({ result: "reply" });
+      expect(contexts).toEqual([true, undefined]);
+      expect(asked).not.toHaveBeenCalled();
+      if (allowed) expect(rig.audit).not.toHaveBeenCalled();
+      else expect(rig.audit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ method: "callLlm", code: "effect-boundary-denied" }));
+    } finally {
+      rig.transport.close("case over");
+      await Promise.allSettled(replies);
+    }
+  });
+
+  it.each([0, 1, 2])("checks the destination of admitted fetches with %i active calls", async (count) => {
     const rig = invocationRig();
-    await raiseAlertFromChild(rig, "idle");
-    expect(dispatcherWarn).not.toHaveBeenCalled();
-    const { frames, replies } = await callTools(rig, 1);
-    await raiseAlertFromChild(rig, "during");
-    expect(dispatcherWarn).toHaveBeenCalledTimes(1);
-    expect(dispatcherWarn.mock.calls[0]![0]).toEqual({
-      pluginId: "transportprobe",
-      path: "raiseAlert",
-      toolCallsInFlight: 1,
-    });
-    rig.deliver({ jsonrpc: "2.0", id: frames[0]!.id as string, result: { content: [] } });
-    await replies[0];
-    await raiseAlertFromChild(rig, "after");
-    expect(dispatcherWarn).toHaveBeenCalledTimes(1);
-    rig.transport.close("case over");
+    const { frames, replies } = await callTools(rig, count);
+    try {
+      rig.deliver({
+        jsonrpc: "2.0", id: "fetch", method: hostApiMethodOf("hostFetch"),
+        params: {
+          input: "https://unlisted.test",
+          ...(count === 0 ? {} : { _meta: { [INVOCATION_META]: tokenOf(frames[0]!) } }),
+        },
+      });
+      await settle();
+      expect(rig.sent.find((frame) => frame.id === "fetch")?.error)
+        .toMatchObject({ data: { code: "host-internal" } });
+    } finally {
+      rig.transport.close("case over");
+      await Promise.allSettled(replies);
+    }
   });
 });

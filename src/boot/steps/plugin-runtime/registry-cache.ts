@@ -45,6 +45,7 @@ export function createRegistryEntryCache(deps: {
             installSource: entry.installSource,
             manifestSha256: entry.manifestSha256,
             origin: entry.origin,
+            ...(entry.installedAt !== undefined ? { installedAt: entry.installedAt } : {}),
           });
         }
       }

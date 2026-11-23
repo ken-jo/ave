@@ -104,9 +104,10 @@ import type {
 // Plugin / hook trust rows and perf stats are the host row types.
 import type { PluginPerfStats } from "../../plugins/runtime/index.js";
 import type { PluginContributionTrustRow } from "../../plugins/plugin-bundle-lifecycle.js";
+import type { PluginBackgroundEffects } from "../../plugins/plugin-background-effects.js";
 import type { HookTrustRow } from "../../hooks/hook-trust-commands.js";
 import type { HookTrustListResult, HookTrustReviewRequest, HookTrustReviewResult } from "../../shared/hook-trust-review.js";
-export type { PluginPerfStats, PluginContributionTrustRow, HookTrustRow };
+export type { PluginPerfStats, PluginContributionTrustRow, PluginBackgroundEffects, HookTrustRow };
 
 // Usage aggregates come from the engine/IPC owners; only the renderer-side
 // derived shapes (UsagePerX, UsageTrendPt, UsageConv) are declared here.
@@ -892,6 +893,26 @@ export type AvePreloadApi = {
     | { ok: true; pluginId: string; localId: string; kind: "hook" | "mcpServer"; approved: boolean }
     | { ok: false; error: string; message?: string }
   >;
+  /** What the running plugin may do outside a tool call; `reviewSha256` is null when there is nothing a card could approve. */
+  getPluginBackgroundEffects: (pluginId: string) => Promise<
+    | { ok: true; pluginId: string; name: string; reviewSha256: string | null; declared: boolean; approved: boolean; effects: PluginBackgroundEffects }
+    | { ok: false; error: string }
+  >;
+  /** Approve the reviewed background effects; a source or scope that changed since review answers `background-effects-review-stale`. */
+  approvePluginBackgroundEffects: (input: { pluginId: string; reviewSha256: string }) => Promise<
+    | { ok: true; pluginId: string; reviewSha256: string }
+    | { ok: false; error: string }
+  >;
+  /**
+   * The first interactive launch's one card: every enabled plugin whose declared scope is not approved (`reviewSha256` is null
+   * for an unpinned source). Empty once the card was answered; `incomplete` when a plugin could not be read, so it is not answered.
+   */
+  getPluginBackgroundEffectsUpgrade: () => Promise<
+    | { ok: true; reviews: Array<{ pluginId: string; name: string; reviewSha256: string | null; effects: PluginBackgroundEffects }>; incomplete?: true }
+    | { ok: false; error: string }
+  >;
+  /** The first-launch card was answered (each Allow, or Later); later launches show no card. */
+  finishPluginBackgroundEffectsUpgrade: () => Promise<{ ok: true } | { ok: false; error: string }>;
   /**
    * Toggle a plugin active/inactive. Disable retires and unloads the active
    * generation; re-enable re-verifies the receipt and activates a fresh one.

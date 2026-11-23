@@ -2277,6 +2277,50 @@ Key boundaries:
   an orderly stop, otherwise it closes when the host process is gone, so a
   long-lived worker treats EOF on stdin as the order to exit; that, not the
   shutdown sweep, is what keeps workers from outliving a crashed or killed host.
+- extension work outside a tool call (timers, events, startup) carries no
+  invocation token. It may write its own storage with no card, and the gate
+  denies any storage path outside that folder. Every other gated effect needs a
+  **declared background effect** the user approved on the enable card (owner
+  decision 2026-11-23). The manifest fields define them: `hostFetch`
+  to `networkAccess.allowedDomains`; `raiseAlert` for the declared `alerts.kinds`;
+  `triggerConversation` for the declared `alerts.suggestions` sources; `callLlm`
+  when `capabilities` lists `background:call-llm`; and `spawnWorker` when it lists
+  `background:spawn-worker`. Any other `background:` capability is a manifest
+  error. Everything else is denied outside a tool call, including `config.set`,
+  `openExternalUrl` and the auth methods. Storage reads need no approval.
+  The approval is keyed by the extension id, the install source pinned at
+  install (the marketplace source and package path, or for a local development
+  install the manifest it installed) and the hash of the canonical declared set,
+  and it is bound to the registry install stamp it was given for (the origin's, or
+  for a local development install the stamp its entry gets when first installed
+  and keeps across an in-place reinstall). A version-only update keeps it and
+  moves it to the update's new stamp once the registry commits that stamp and the
+  update's generation publishes, so an update that rolls back keeps the old one; a
+  scope or source change asks again. Uninstall drops it and disable keeps it; boot
+  also drops any approval whose extension the registry no longer names or names
+  for another install (none while any entry fails to load). An approval for an
+  earlier install never approves a reinstall, so a removal that failed to save is
+  not inherited. An install with no pinned source (admin, bundled
+  or a legacy row) cannot be approved, and its Review row says the source is not
+  pinned and asks for a reinstall from the marketplace. A missing or unreadable
+  approvals file loads as empty. Within the approved scope a deny or a forced floor still
+  denies, and the card answers only ordinary asks (`file-write`,
+  `shell-approval`, `network-approval`, and `review-required` only when the ask
+  under the review is one of those, so a user ask rule, the exfiltration guard or
+  a secret read still denies). An own-storage write
+  also passes the application-home floor, because extension storage sits in the
+  app home and the host confines the path. Any other ask is denied. The card
+  appears when an extension starts running unapproved after an install, update
+  or enable. Boot starts installed extensions without such an event, so the
+  first interactive launch of this version shows one card listing every enabled
+  extension with a declared scope and no approval, each with its own Allow, and
+  a Later that leaves the Review badge in its settings. Only the first window
+  that lists it shows it while that window is open; if that window closes
+  unanswered, the next window focused shows it. Answering it is saved
+  with the approvals, so later launches show no such card; a headless launch has
+  no window and leaves it owed. If any enabled extension cannot be read, the
+  card lists the rest but answering it does not count, so the next launch asks
+  again.
 
 ### Process plugin lifecycle
 

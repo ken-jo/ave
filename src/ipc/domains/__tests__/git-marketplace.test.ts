@@ -59,9 +59,10 @@ vi.mock("electron", () => ({
 }));
 
 const shutdownHooks = new Map<string, () => void>();
+const lifecycleUninstall = vi.hoisted(() => vi.fn(async () => {}));
 vi.mock("../plugins.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../plugins.js")>()),
-  pluginLifecycleServices: () => ({ ensureInstallStateReady: async () => {}, uninstall: async () => {}, retirement: {} }),
+  pluginLifecycleServices: () => ({ ensureInstallStateReady: async () => {}, uninstall: lifecycleUninstall, retirement: {} }),
 }));
 vi.mock("../../../main/app-shutdown.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../main/app-shutdown.js")>()),
@@ -509,6 +510,42 @@ describe("git marketplace IPC boundary", () => {
     } finally {
       off();
     }
+  });
+
+  it("updates a plugin without the uninstall that revokes its background approval", async () => {
+    const { lifetime } = await setup();
+    const { pluginInstaller } = await import("../git-marketplace.js");
+    const { whileRunning } = await import("../../../marketplace/app/background.js");
+    const { backgroundEffectSubject, PluginBackgroundEffectApprovals } = await import("../../../plugins/plugin-background-effects.js");
+    const subject = backgroundEffectSubject(
+      { id: "calendar", name: "Calendar", version: "1.0.0", entry: "plugin.mjs", description: "calendar", tools: [], capabilities: ["background:call-llm"] } as never,
+      { installSource: "user", origin: {
+        sourceId: "example-source", sourceOrigin: "custom", commit: "a".repeat(40), packagePath: "plugins/calendar", version: "1.0.0",
+        rung: "release", artifactSha256: "b".repeat(64), installedAt: "2026-11-01T00:00:00.000Z",
+      } },
+    );
+    const store = new PluginBackgroundEffectApprovals();
+    store.approve(subject);
+    const revoke = vi.spyOn(store, "revoke");
+    lifecycleUninstall.mockClear();
+    const installGitPlugin = vi.fn(async () => ({ pluginId: "calendar", action: "update" as const, staged: false }));
+    const deps = {
+      pluginMarketplace: { installGitPlugin },
+      pluginBackgroundEffects: store,
+      pluginRuntime: {
+        resolvePluginId: (id: string) => id,
+        resolvePluginInstallIdIfKnown: () => "calendar",
+        cancelPendingRestart: vi.fn(),
+        listPluginIds: () => ["calendar"],
+        activatePreparedArtifact: vi.fn(),
+      },
+    };
+    const port = pluginInstaller(deps as never, whileRunning(lifetime.signal));
+    await expect(port.install({ name: "calendar" } as never, { stage: false, switchSource: false } as never)).resolves.toEqual({ action: "update", staged: false });
+    expect(installGitPlugin).toHaveBeenCalledTimes(1);
+    expect(lifecycleUninstall).not.toHaveBeenCalled();
+    expect(revoke).not.toHaveBeenCalled();
+    expect(store.isApproved(subject)).toBe(true);
   });
 
   it("reports the boot pass skipped in an isolated E2E run, and never builds the marketplace", async () => {
