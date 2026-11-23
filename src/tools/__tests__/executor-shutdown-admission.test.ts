@@ -697,4 +697,113 @@ describe("forced shutdown with parked executors", () => {
     }
     await expect(ledger.closeToolInvocationAudit(async () => {})).resolves.toBe(0);
   });
+
+  it.each(["held history", "failed history", "held hook"] as const)(
+    "commits the desk's deny before close with a %s, and the late continuation writes nothing",
+    async (sideEffect) => {
+      const { ledger, executor, executes, audit, manager, rows, toolUses, gate, cards } = await freshExecutor(1, [], { ask: true });
+      const { AuditWriter } = await import("../pipeline/audit-writer.js");
+      const order: string[] = [];
+      const appendRow = audit.appendPermissionAuditEntry.bind(audit);
+      vi.spyOn(audit, "appendPermissionAuditEntry").mockImplementation((entry) => {
+        if (entry.toolUseId === toolUses[0].id && entry.decision !== "ask") order.push("row");
+        return appendRow(entry);
+      });
+      const held = deferred<void>();
+      const sideEffectCall = vi.fn(() => {
+        order.push("side effect");
+        return sideEffect === "failed history" ? Promise.reject(new Error("history store unavailable")) : held.promise;
+      });
+      if (sideEffect === "held hook") {
+        vi.spyOn(AuditWriter.prototype, "fireLifecycleEvent").mockImplementation(sideEffectCall as never);
+      } else {
+        vi.spyOn(manager, "getRecentlyDenied").mockReturnValue({ append: sideEffectCall } as never);
+      }
+      const running = executor.executeAll([toolUses[0]], { sessionId: "sess-held-side-effect", permissionContext: userPermissionContext({ trustOrigin: "llm-tool-arg" }) });
+      await vi.waitFor(() => expect(cards).toHaveLength(1));
+      gate?.resolve(cards[0].id, { requestId: cards[0].id, choice: "deny-once", nonce: cards[0].nonce, hmac: cards[0].hmac });
+      await vi.waitFor(() => expect(sideEffectCall).toHaveBeenCalledOnce());
+      // The row is enqueued before the side effect starts.
+      expect(order).toEqual(["row", "side effect"]);
+      ledger.sealToolInvocations();
+      gate?.disposeAll();
+      await expect(ledger.drainToolInvocationAuditForExit(() => audit.close(), 2_000)).resolves.toBe("committed");
+      const rowsAtClose = rows();
+      expect(terminalRows(rowsAtClose, toolUses[0].id)).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "user-keyboard" })]);
+      held.resolve();
+      const [result] = await running;
+      expect(result.is_error).toBe(true);
+      expect(executes[0]).not.toHaveBeenCalled();
+      expect(rows()).toEqual(rowsAtClose);
+    },
+  );
+});
+
+describe("a rationale control suspended before its card", () => {
+  async function suspendedControl() {
+    vi.resetModules();
+    const ledger = await import("../invocation-ledger.js");
+    const { ToolExecutor } = await import("../executor.js");
+    const { ToolRegistry } = await import("../registry.js");
+    const { createDynamicTool } = await import("../base.js");
+    const { PermissionManager } = await import("../../permissions/permission-manager.js");
+    const { AuditLogger } = await import("../../audit/audit-logger.js");
+    const { createRationaleHostRuntime } = await import("../../__tests__/support/rationale-host-runtime.js");
+    const { setReviewerForTest } = await import("../../__tests__/support/reviewer-judge.js");
+    const { makeRecentlyDeniedStore } = await import("../../__tests__/support/recently-denied.js");
+    const { VerdictCache } = await import("../../permissions/reviewer/verdict-cache.js");
+    const root = mkdtempSync(join(tmpdir(), "ave-rationale-quit-"));
+    roots.push(root);
+    const manager = new PermissionManager(join(root, "permissions.json"));
+    manager.setMode("auto");
+    setReviewerForTest(manager, {
+      classifier: { classify: () => ({ level: "high" as const, reason: "requires rationale" }) },
+      cache: new VerdictCache(join(root, "reviewer-cache.jsonl")),
+      recentlyDenied: makeRecentlyDeniedStore(join(root, "recently-denied.jsonl")),
+    });
+    const audit = new AuditLogger(join(root, "audit"));
+    loggers.push(audit);
+    await audit.setupPermissionAuditChain(randomBytes(32).toString("hex"));
+    const execute = vi.fn(async () => "must-not-run");
+    const registry = new ToolRegistry();
+    registry.register(createDynamicTool({
+      name: "rationale_write", description: "rationale_write", source: "builtin", category: "write", isReadOnly: () => false,
+      jsonSchema: { type: "object", properties: { payload: { type: "string" } } },
+      execute: async () => ({ output: await execute(), isError: false }),
+    }));
+    const requestAndWait = vi.fn(async () => { throw new Error("The rationale control must suspend before the approval card"); });
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
+    const { runtime, materialize } = createRationaleHostRuntime();
+    const outcome = await executor.executeConversationBatch([{ id: "rationale-parked", name: "rationale_write", input: { payload: "requested" } }], {
+      executionCwd: root, sessionId: "session-rationale-quit", rationaleRuntime: runtime,
+      permissionContext: { trustOrigin: "llm-tool-arg" as const, userIntent: "Perform the requested operation." },
+    });
+    expect(outcome.outcome).toBe("rationale-required");
+    const candidate = materialize.mock.calls[0]?.[0];
+    const rows = (): Array<Record<string, unknown>> => existsSync(audit.getPermissionAuditLogFile())
+      ? readFileSync(audit.getPermissionAuditLogFile(), "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>)
+      : [];
+    return { ledger, audit, candidate, execute, rows: () => terminalRows(rows(), "rationale-parked") };
+  }
+
+  it("writes one host-shutdown row before close on a forced quit and nothing for the coordinator's later stop", async () => {
+    const { ledger, audit, candidate, execute, rows } = await suspendedControl();
+    expect(rows()).toEqual([]);
+    ledger.sealToolInvocations();
+    await expect(ledger.drainToolInvocationAuditForExit(() => audit.close(), 2_000)).resolves.toBe("committed");
+    const atClose = rows();
+    expect(atClose).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "unknown" })]);
+    expect(JSON.stringify(atClose[0]?.denyReasons)).toContain("host-shutdown");
+    await candidate.recordTerminalDenial?.("The permission request was stopped; the action was not executed.", true);
+    expect(rows()).toEqual(atClose);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("writes the stop as the invocation's refusal once when the card is stopped without a quit", async () => {
+    const { candidate, execute, rows } = await suspendedControl();
+    await candidate.recordTerminalDenial?.("The permission request was stopped; the action was not executed.", true);
+    await candidate.recordTerminalDenial?.("The permission request was stopped; the action was not executed.", true);
+    expect(rows()).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "llm-tool-arg" })]);
+    expect(execute).not.toHaveBeenCalled();
+  });
 });

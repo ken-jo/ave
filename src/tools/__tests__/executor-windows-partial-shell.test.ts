@@ -162,7 +162,7 @@ function recordingAuditLogger(): {
   return { auditLogger, telemetryEntries, permissionEntries };
 }
 
-function sessionSavingGate(pm: PermissionManager, beforeSave?: () => void, beforePersist?: () => Promise<void>) {
+function sessionSavingGate(pm: PermissionManager, beforeSave?: () => void, beforePersist?: () => Promise<void>, afterSave?: () => void) {
   let gate: ApprovalGate;
   const saves: Awaited<ReturnType<typeof saveApprovalCardRule>>[] = [];
   const errors: unknown[] = [];
@@ -177,6 +177,7 @@ function sessionSavingGate(pm: PermissionManager, beforeSave?: () => void, befor
         const saved = await saveApprovalCardRule(snapshot, { action: "allow", scope: "session" },
           { decision: "allow", scope: "session", displayedVerdictAtApproval: snapshot.verdictAtApproval }, pm, undefined, beforePersist);
         gate.completeApprovalRuleSave(token, pm.getPolicyEpoch(), saved.ok ? saved.scope : undefined);
+        afterSave?.();
         saves.push(saved);
         gate.resolveFromDesktopRenderer(request.id, {
           requestId: request.id, choice: saved.ok ? "allow-once" : "deny-once",
@@ -334,6 +335,32 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
       expect(execute).toHaveBeenCalledTimes(2);
     },
   );
+
+  // The card's own saved rule is the only policy change its allow may carry; another selector's change voids the allow.
+  it.each([
+    [false, "allow", "user-keyboard"],
+    [true, "deny", "llm-tool-arg"],
+  ] as const)("writes one terminal row for a card that saves its own session rule (competing selector: %s)", async (competing, decision, origin) => {
+    partialWindowsAsrt();
+    setWindowsShellLocalNetworkAccess(true);
+    const pm = new PermissionManager(join(testRoot, "card-rule-transition.json"));
+    pm.setMode("strict");
+    const execute = vi.fn();
+    const audit = recordingAuditLogger();
+    const first = sessionSavingGate(pm, undefined, undefined, competing ? () => pm.setMode("default") : undefined);
+    const [result] = await runWithToolExecutionCwd(testRoot, () =>
+      new ToolExecutor(shellProbeRegistry(execute), undefined, pm, undefined, first.gate, undefined, audit.auditLogger).executeAll(
+        [{ id: "card-rule", name: "bash", input: { command: "mkdir consent-output" } }],
+        { sessionId: "card-rule-transition", permissionContext: permissionContext({ trustOrigin: "llm-tool-arg" }) }));
+    expect(first.errors).toEqual([]);
+    expect(first.saves).toEqual([expect.objectContaining({ ok: true, scope: "session", pattern: "Bash(mkdir consent-output)" })]);
+    expect(first.cards()).toHaveLength(1);
+    expect(result?.is_error === true).toBe(competing);
+    expect(execute).toHaveBeenCalledTimes(competing ? 0 : 1);
+    const rows = audit.permissionEntries.filter((entry) => entry.toolUseId === "card-rule" && entry.decision !== "ask");
+    expect(rows).toEqual([expect.objectContaining({ decision, trustOrigin: origin })]);
+    if (competing) expect(JSON.stringify(rows[0])).toContain("Permission policy changed while approval was pending");
+  });
 
   it("does not create a reusable PowerShell rule from an unpinned host card before enabling consent", async () => {
     partialWindowsAsrt();
