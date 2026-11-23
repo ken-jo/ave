@@ -1,4 +1,4 @@
-import { accessSync, constants, statSync } from "node:fs";
+import { accessSync, constants, lstatSync, statSync } from "node:fs";
 import { posix, win32 } from "node:path";
 
 export class HostProgramNotFoundError extends Error {
@@ -35,6 +35,15 @@ function runnable(candidate: string, platform: NodeJS.Platform): boolean {
     if (!statSync(candidate).isFile()) return false;
     if (platform !== "win32") accessSync(candidate, constants.X_OK);
     return true;
+  } catch {
+    // Windows app execution aliases are links whose targets this account cannot stat, yet they launch.
+    return platform === "win32" && lstatExists(candidate);
+  }
+}
+
+function lstatExists(candidate: string): boolean {
+  try {
+    return lstatSync(candidate).isSymbolicLink();
   } catch {
     return false;
   }
