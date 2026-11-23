@@ -218,27 +218,37 @@ it("a delete of a live run's item keeps the output folder until the run has sett
   const runRoot = dirname(folderOf(first));
   const out = join(runRoot, "_out");
   const runId = (await h.item(id)).runId ?? "";
-  // What is on disk at each step of the delete: the intent stored, then the write that ends the run.
-  const seen: string[] = [];
-  const note = (step: string): void => { seen.push(`${step}:${existsSync(out) ? "out" : "gone"}`); };
+  // What is on disk at each step of the delete: the intent stored, then each run write, which says whether it ended the run and how. A
+  // live run keeps writing its progress meanwhile; only the write that ends it has to follow the intent.
+  type Step = { step: string; out: boolean; ends?: string };
+  const seen: Step[] = [];
+  const note = (step: string): Step => { const at = { step, out: existsSync(out) }; seen.push(at); return at; };
   const markDeleted = h.board.runs.markDeleted.bind(h.board.runs);
   vi.spyOn(h.board.runs, "markDeleted").mockImplementation(async (...args) => { const marked = await markDeleted(...args); note("intent"); return marked; });
   const settleRun = h.board.runs.settleRun.bind(h.board.runs);
-  vi.spyOn(h.board.runs, "settleRun").mockImplementation(async (...args) => {
+  vi.spyOn(h.board.runs, "settleRun").mockImplementation(async (runId, step, allowed) => {
     // The row is gone and the run still has its record: a discard now takes nothing of it.
     await production.discard(new Map());
-    note("recorded");
-    const settled = await settleRun(...args);
-    note("settled");
+    const recorded = note("recorded");
+    let ends: string | undefined;
+    const settled = await settleRun(runId, (record) => {
+      const next = step(record);
+      if (next !== null && "ends" in next) ends = next.ends;
+      return next;
+    }, allowed);
+    if (ends !== undefined) recorded.ends = ends;
+    note("settled").ends = ends;
     return settled;
   });
 
   expect(await h.board.remove(id)).toMatchObject({ status: "deleted" });
   expect(await run).toMatchObject({ status: "cancelled", reason: "item-removed" });
-  expect(seen[0]).toBe("intent:out");
-  expect(seen).toContain("recorded:out");
-  expect(seen).toContain("settled:out");
-  expect(seen.filter(step => step.endsWith(":gone"))).toEqual([]);
+  const ending = seen.findIndex(at => at.step === "recorded" && at.ends !== undefined);
+  expect(seen[ending]?.ends).toBe("item-removed");
+  expect(seen.findIndex(at => at.step === "intent")).toBeGreaterThanOrEqual(0);
+  expect(seen.findIndex(at => at.step === "intent")).toBeLessThan(ending);
+  expect(seen[ending + 1]).toEqual({ step: "settled", out: true, ends: "item-removed" });
+  expect(seen.filter(at => !at.out)).toEqual([]);
   await vi.waitFor(async () => expect(await h.runOf(runId)).toBeNull(), { timeout: 5000 });
   await vi.waitFor(() => expect(existsSync(runRoot)).toBe(false), { timeout: 5000 });
 }));
