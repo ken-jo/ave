@@ -527,6 +527,10 @@ export interface NetworkPermissionEvaluation {
   rule?: { decision: "deny" | "ask" | "allow"; pattern: string; scope: NetworkRuleScope };
 }
 
+type NetworkRuleDecision = NonNullable<NetworkPermissionEvaluation["rule"]>;
+type NetworkRuleSubject = { host: string; port: number; sessionId?: string; projectCwd?: string };
+type NetworkPermissionDestination = { host: string; port: number; source: ToolSource; network: "public" | "local" | "unverified"; ruleScopes?: readonly NetworkRuleScope[] };
+
 /** Whether a stored path grant falls under a removed root, sparing separately registered descendant roots. Shared by the prune and its preview. */
 function pathGrantRemovalMatcher(root: string, preserveRoots: readonly string[] = []): (pattern: string) => boolean {
   // Dual-form roots (item-5): canonical (realpath'd) and raw (pathResolve only).
@@ -1125,16 +1129,17 @@ export class PermissionManager {
 
   // The `Network(<host>[:port])` rule that decides a sandboxed shell's or terminal's connection, from the user rules, the project's rules (a shell call with a project) and the conversation's "This session" rules, with the precedence of every rule kind: deny, then ask (no grant is consulted and the card asks), then allow. Undefined when no rule matches; the grant store and the card then decide. The network card's "Always deny" and its edited rules are stored as these rules (owner 2026-10-25). A corrupt project rules file throws, which the egress callback turns into an audited deny.
   // `scope` names where the deciding rule is stored, so the egress callback can hold an allow to the lifetimes the connection's identity may use.
-  async networkRuleDecision(subject: { host: string; port: number; sessionId?: string; projectCwd?: string }): Promise<{ decision: "deny" | "ask" | "allow"; pattern: string; scope: NetworkRuleScope } | undefined> {
-    let projectRules: readonly PermissionRule[] = [];
-    if (subject.projectCwd !== undefined) {
-      const state = await this.projectRuleScopes.ensureLoaded(subject.projectCwd);
-      if (!state.ok) throw state.error;
-      projectRules = state.rules;
-    }
+  async networkRuleDecision(subject: NetworkRuleSubject): Promise<NetworkRuleDecision | undefined> {
+    if (subject.projectCwd !== undefined) await this.projectRuleScopes.ensureLoaded(subject.projectCwd);
+    return this.matchLoadedNetworkRule(subject);
+  }
+
+  private matchLoadedNetworkRule(subject: NetworkRuleSubject): NetworkRuleDecision | undefined {
+    const state = subject.projectCwd === undefined ? undefined : this.projectRuleScopes.stateFor(subject.projectCwd);
+    if (state?.ok === false) throw state.error;
     const sessionRules = this.sessionRulesInScope(subject.sessionId);
     const matched: { deny?: { pattern: string; scope: NetworkRuleScope }; ask?: { pattern: string; scope: NetworkRuleScope }; allow?: { pattern: string; scope: NetworkRuleScope } } = {};
-    const scoped: Array<[NetworkRuleScope, readonly PermissionRule[]]> = [["user", this.rules], ["project", projectRules], ["session", sessionRules]];
+    const scoped: Array<[NetworkRuleScope, readonly PermissionRule[]]> = [["user", this.rules], ["project", state?.rules ?? []], ["session", sessionRules]];
     for (const [scope, rules] of scoped) {
       for (const rule of rules) {
         if (rule.source || storedRuleInvalidReason(rule) !== null || !isRuleSpecifier(rule.pattern)) continue;
@@ -1152,26 +1157,50 @@ export class PermissionManager {
 
   // Every actual connection has its own request; an enclosing shell's rule or grant is not network consent.
   async checkNetworkPermission(
-    destination: { host: string; port: number; source: ToolSource; network: "public" | "local" | "unverified"; ruleScopes?: readonly NetworkRuleScope[] },
+    destination: NetworkPermissionDestination,
     context: PermissionCheckContext = {},
   ): Promise<NetworkPermissionEvaluation> {
-    const canonicalHost = canonicalEgressHost(destination.host);
-    const valid = canonicalHost !== undefined && isValidEgressPort(destination.port);
-    const host = canonicalHost ?? destination.host;
-    const exactDestination = Object.freeze({ host, port: destination.port });
+    const subject = this.networkRuleSubject(destination, context);
+    try {
+      const rule = subject === undefined ? undefined : await this.networkRuleDecision(subject);
+      return this.evaluateNetworkPermission(destination, context, subject, rule);
+    } catch (error) {
+      if (!(error instanceof PermissionRulesFileCorruptError)) throw error;
+      return this.evaluateNetworkPermission(destination, context, subject, undefined, error);
+    }
+  }
+
+  // Re-evaluate the live scopes at the resolved connection boundary, without another wait.
+  checkLoadedNetworkPermission(destination: NetworkPermissionDestination, context: PermissionCheckContext): NetworkPermissionEvaluation {
+    const subject = this.networkRuleSubject(destination, context);
+    try {
+      const rule = subject === undefined ? undefined : this.matchLoadedNetworkRule(subject);
+      return this.evaluateNetworkPermission(destination, context, subject, rule);
+    } catch (error) {
+      if (!(error instanceof PermissionRulesFileCorruptError)) throw error;
+      return this.evaluateNetworkPermission(destination, context, subject, undefined, error);
+    }
+  }
+
+  private networkRuleSubject(destination: NetworkPermissionDestination, context: PermissionCheckContext): NetworkRuleSubject | undefined {
+    const host = canonicalEgressHost(destination.host);
+    if (host === undefined || !isValidEgressPort(destination.port)) return undefined;
+    return { host, port: destination.port, sessionId: context.sessionId, projectCwd: context.projectRulesCwd };
+  }
+
+  private evaluateNetworkPermission(
+    destination: NetworkPermissionDestination,
+    context: PermissionCheckContext,
+    subject: NetworkRuleSubject | undefined,
+    matched: NetworkRuleDecision | undefined,
+    rulesError?: PermissionRulesFileCorruptError,
+  ): NetworkPermissionEvaluation {
+    const exactDestination = Object.freeze({ host: subject?.host ?? canonicalEgressHost(destination.host) ?? destination.host, port: destination.port });
     const identity = canonicalStringify({ kind: "network", ...exactDestination, source: destination.source });
     let admissionDenial = context.admissionDenial;
-    let rule: NetworkPermissionEvaluation["rule"];
-    if (!valid) admissionDenial ??= { code: "invalid-network-destination", reason: "Network destination is invalid" };
-    else {
-      try {
-        const matched = await this.networkRuleDecision({ host, port: destination.port, sessionId: context.sessionId, projectCwd: context.projectRulesCwd });
-        if (matched?.decision !== "allow" || destination.network === "public" && destination.ruleScopes?.includes(matched.scope)) rule = matched;
-      } catch (error) {
-        if (!(error instanceof PermissionRulesFileCorruptError)) throw error;
-        admissionDenial ??= { code: "policy-unreadable", reason: error.message };
-      }
-    }
+    if (subject === undefined) admissionDenial ??= { code: "invalid-network-destination", reason: "Network destination is invalid" };
+    if (rulesError) admissionDenial ??= { code: "policy-unreadable", reason: rulesError.message };
+    const rule = matched?.decision !== "allow" || destination.network === "public" && destination.ruleScopes?.includes(matched.scope) ? matched : undefined;
     const base = this.evaluatePermission("sandbox_network", destination.source, "network", undefined, {
       headless: context.headless, ownerUnattended: context.ownerUnattended, approvalSurface: context.approvalSurface,
       sessionId: context.sessionId, projectRulesCwd: context.projectRulesCwd, permissionStoreError: context.permissionStoreError,

@@ -315,6 +315,18 @@ export class EgressGrantStore {
     destination: EgressGrantDestination,
     eligibleScopes: readonly EgressGrantScope[],
   ): Promise<EgressGrantScope | undefined> {
+    const matched = this.matchingLoadedScope(subject, destination, eligibleScopes);
+    if (matched !== undefined || this.persistent !== undefined) return matched;
+    await this.writes(() => this.loadPersistent());
+    return this.matchingLoadedScope(subject, destination, eligibleScopes);
+  }
+
+  // Used at the connection boundary, where any persistent grants must already have been loaded.
+  matchingLoadedScope(
+    subject: EgressGrantSubject,
+    destination: EgressGrantDestination,
+    eligibleScopes: readonly EgressGrantScope[],
+  ): EgressGrantScope | undefined {
     const key = destinationKey(destination);
     if (eligibleScopes.includes("once") && this.once.get(subject.token)?.has(key)) return "once";
     // A scheduled wake turn does not inherit the conversation's session grants.
@@ -322,7 +334,7 @@ export class EgressGrantStore {
       && this.session.get(subject.sessionId)?.has(key)) return "session";
     if (eligibleScopes.includes("tab") && subject.tabId !== undefined && this.tab.get(subject.tabId)?.has(key)) return "tab";
     // Persistent grants of the subject's own origin only.
-    const persistent = (await this.loadPersistent()).filter((grant) =>
+    const persistent = (this.persistent ?? []).filter((grant) =>
       eligibleScopes.includes(grant.scope) && grant.origin === subject.origin && destinationKey(grant) === key
       && egressScopesForNetwork([grant.scope], grantNetwork(destination)).length > 0);
     const projectRoot = subject.projectRoot === undefined ? undefined : canonicalProjectRoot(subject.projectRoot);
@@ -476,7 +488,7 @@ export class EgressGrantStore {
 
   // The project and always grants, for Settings.
   async listPersistent(): Promise<readonly PersistentEgressGrant[]> {
-    return [...(await this.loadPersistent())];
+    return [...(this.persistent ?? await this.writes(() => this.loadPersistent()))];
   }
 
   // Remove one persistent grant. Resolves true when it existed.
@@ -530,6 +542,8 @@ export class EgressGrantStore {
       signal?.throwIfAborted();
       const next = [...mutate(current)];
       const file: GrantFile = { version: FILE_VERSION, grants: next };
+      // Until the write settles, a synchronous connection check cannot rely on the old file.
+      this.persistent = undefined;
       if (authority || signal) {
         const isCurrent = () => signal?.aborted !== true && (authority?.isCurrent() ?? true);
         await preparePrivateFileDirectory(this.filePath);

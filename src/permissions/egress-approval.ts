@@ -1,5 +1,6 @@
 // Egress scopes must be among those offered by the gate; terminal asks stay in the owning window/tab. Grants belong to the egress store, never user-decision memory.
-import type { NetworkRuleScope, PermissionManager } from "./permission-manager.js";
+import type { NetworkPermissionEvaluation, NetworkRuleScope, PermissionManager } from "./permission-manager.js";
+import type { EgressGrantScope } from "../shared/egress-grant-scopes.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
 import { NO_APPROVER_MESSAGE } from "./decision-pipeline.js";
 import { remoteControllerOriginOf } from "../shared/chat-origin.js";
@@ -37,19 +38,29 @@ export function createShellNetworkPermissionEvaluator(manager?: PermissionManage
     if (request.scopes.includes("always")) ruleScopes.push("user");
     if (request.scopes.includes("project")) ruleScopes.push("project");
     if (request.scopes.includes("session")) ruleScopes.push("session");
-    const evaluated = await manager.checkNetworkPermission({ ...request.destination, source: "builtin", network: request.network, ruleScopes }, {
+    const destination = { ...request.destination, source: "builtin" as const, network: request.network, ruleScopes };
+    const context = {
       ...request.context.permissionContext,
       headless: request.context.headless === true || request.context.approvalSurface === "unavailable",
       approvalSurface: request.context.approvalSurface,
       ownerUnattended: request.context.ownerUnattended ?? request.context.permissionContext?.ownerUnattended,
       projectRulesCwd: cwd, sessionId: request.context.sessionId,
-    });
-    const permission = request.rememberedGrant === undefined ? evaluated.permission
-      : manager.resolveRememberedPermission(evaluated.permission, "An existing destination grant covers this exact connection.");
-    if (!permission.pipelineRequest) throw new Error("Network permission request has no normalized evidence");
-    const { reviewer: _reviewer, ...identity } = permission.pipelineRequest;
-    return { ...evaluated, permission, reasonKey: permission.reasonCode ?? evaluated.reasonKey,
-      policyEpoch: manager.getPolicyEpoch(), approvalIdentity: canonicalStringify(identity) };
+    };
+    const snapshot = (evaluated: NetworkPermissionEvaluation, rememberedGrant: EgressGrantScope | undefined) => {
+      const permission = rememberedGrant === undefined ? evaluated.permission
+        : manager.resolveRememberedPermission(evaluated.permission, "An existing destination grant covers this exact connection.");
+      if (!permission.pipelineRequest) throw new Error("Network permission request has no normalized evidence");
+      const { reviewer: _reviewer, ...identity } = permission.pipelineRequest;
+      return { ...evaluated, permission, reasonKey: permission.reasonCode ?? evaluated.reasonKey,
+        policyEpoch: manager.getPolicyEpoch(), approvalIdentity: canonicalStringify(identity) };
+    };
+    const evaluated = await manager.checkNetworkPermission(destination, context);
+    return {
+      ...snapshot(evaluated, request.rememberedGrant),
+      recheck: (rememberedGrant, approvalSurface) => snapshot(manager.checkLoadedNetworkPermission(destination, {
+        ...context, approvalSurface, headless: request.context.headless === true || approvalSurface === "unavailable",
+      }), rememberedGrant),
+    };
   };
 }
 

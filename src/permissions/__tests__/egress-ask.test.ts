@@ -29,6 +29,7 @@ import { _resetAveHomePrivacyForTest, setAveHomeConfigurationRefusedAtBoot } fro
 import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
 import { createShellNetworkPermissionEvaluator } from "../egress-approval.js";
 import { PermissionManager } from "../permission-manager.js";
+import { deferred } from "../../__tests__/support/deferred.js";
 
 const matchingScopes = Object.values(EGRESS_GRANT_SCOPE_LADDERS).flat();
 
@@ -984,15 +985,15 @@ describe("egress ask callback — shell calls", () => {
     owners.set(SHELL_TOKEN, { ...interactiveShell, context: { ...interactiveShell.context, sessionId,
       permissionContext: { remoteControllerAuthority } } });
     const destination = { host: "github.com", port: 443 };
+    const manager = new PermissionManager(join(dir, "permissions.json"));
+    manager.setMode(basis === "mode" ? "allow" : "strict");
     if (basis === "remembered") {
       await grants.grant("always", ["always"],
         { token: SHELL_TOKEN, sessionId, tabId: undefined, projectRoot: PROJECT, origin: "shell" }, destination);
     } else if (basis === "rule") {
-      networkRule = async () => ({ decision: "allow", pattern: "Network(github.com)", scope: "user" });
+      manager.setRules([{ pattern: "Network(github.com)", action: "allow" }]);
     }
-    const manager = new PermissionManager(join(dir, "permissions.json"));
-    manager.setMode("allow");
-    const raw = rawCallback(undefined, basis === "mode" ? createShellNetworkPermissionEvaluator(manager) : undefined);
+    const raw = rawCallback(undefined, createShellNetworkPermissionEvaluator(manager));
     const resolved = { attributionKey: SHELL_TOKEN, identity: "listener" as const, phase: "resolved" as const,
       addresses: ["140.82.112.3"], resolution: "pinned" as const };
     expect(await raw(destination, resolved)).toBe(true);
@@ -1023,6 +1024,47 @@ describe("egress ask callback — shell calls", () => {
     expect(asked).toHaveLength(1);
     expect(refreshCurrent).toHaveBeenCalledTimes(2);
     expect(audit).toEqual([expect.objectContaining({ decision: "deny", reason: "remote-controller-revoked" })]);
+  });
+
+  it.each(["revoke destination", "save deny rule"] as const)("refuses a resolved connection when the desk can %s during the final probe", async mutation => {
+    const sessionId = "session-1";
+    const arrived = deferred<void>();
+    const release = deferred<void>();
+    const remoteControllerAuthority = bindRemoteControllerToSession({
+      kind: "tailnet-controller",
+      actorId: "tailnet:controller-digest",
+      pairedShare: { pairingId: "pairing", pairingEpoch: 1, shareId: "share", shareEpoch: 1, scope: "scope" },
+      pairedShareGuard: { isCurrent: () => true, refreshCurrent: async () => {
+        arrived.resolve();
+        await release.promise;
+        return true;
+      } },
+    }, sessionId);
+    owners.set(SHELL_TOKEN, { ...interactiveShell, context: { ...interactiveShell.context,
+      permissionContext: { remoteControllerAuthority } } });
+    const manager = new PermissionManager(join(dir, "permissions.json"));
+    manager.setMode("strict");
+    const destination = { host: "github.com", port: 443 };
+    const grant = { ...destination, scope: "always", network: "public", origin: "shell" } as const;
+    await grants.grant("always", ["always"], { token: SHELL_TOKEN, sessionId, projectRoot: PROJECT, tabId: undefined, origin: "shell" }, grant);
+    const noteUse = vi.spyOn(grants, "noteUse");
+    const pending = rawCallback(undefined, createShellNetworkPermissionEvaluator(manager))(destination, {
+      attributionKey: SHELL_TOKEN, identity: "listener", phase: "resolved", addresses: ["140.82.112.3"], resolution: "pinned",
+    });
+    try {
+      await arrived.promise;
+      if (mutation === "revoke destination") {
+        expect(await grants.revoke(grant)).toEqual({ removed: true, tokens: [] });
+      } else {
+        await manager.addRulePersist({ pattern: "Network(github.com:443)", action: "deny" }, { kind: "user" });
+      }
+    } finally {
+      release.resolve();
+    }
+    expect(await pending).toMatchObject({ allow: false, ...(mutation === "save deny rule" ? { reason: "denied by host rule Network(github.com:443)" } : {}) });
+    expect(noteUse).not.toHaveBeenCalled();
+    expect(asked).toHaveLength(0);
+    expect(audit).toEqual([expect.objectContaining({ decision: "deny" })]);
   });
 
   it.each(["prompt", "remembered grant"] as const)("does not act on a %s for a call that ended while its policy was evaluated", async (path) => {
