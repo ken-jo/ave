@@ -61,6 +61,12 @@ describe("systemGitCandidates", () => {
       "D:\\First\\git.exe", "D:\\Tools;Git\\cmd\\git.exe", "D:\\Last\\git.exe", "C:\\Program Files\\Git\\cmd\\git.exe",
     ]);
   });
+
+  it("never takes an empty or relative POSIX PATH entry, which would be read against the folder a call runs in", async () => {
+    const { systemGitCandidates } = await import("../host-git-executable.js");
+    expect(systemGitCandidates("linux", ":.:./bin:bin:/usr/local/bin:")).toEqual(["/usr/local/bin/git", "/usr/bin/git"]);
+    expect(systemGitCandidates("darwin", ".::/opt/git/bin")).toEqual(["/opt/git/bin/git", "/usr/bin/git", "/opt/homebrew/bin/git", "/usr/local/bin/git"]);
+  });
 });
 
 describe("resolveHostGit", () => {
