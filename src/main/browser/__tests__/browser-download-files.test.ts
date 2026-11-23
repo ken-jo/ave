@@ -776,8 +776,8 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
     readonly copyDiesWhenKilled: boolean;
     // The copy writes its temporary file but never says so.
     readonly quietCopy: boolean;
-    // Runs as a removal is let go, before it acts.
-    readonly beforeRemove: (helper: FakeHelper) => void;
+    // Runs as a removal is let go, before it acts; answering "refuse" ends it without an outcome.
+    readonly beforeRemove: (helper: FakeHelper) => "refuse" | undefined;
   }
   const actOnRealFolders = ({ copyDiesWhenKilled, quietCopy, beforeRemove }: Faults) => (helper: FakeHelper): void => {
     const [mode] = helper.args;
@@ -790,7 +790,10 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
       });
     } else if (mode === "--dir-remove") {
       helper.once("input", () => {
-        beforeRemove(helper);
+        if (beforeRemove(helper) === "refuse") {
+          helper.exit(1);
+          return;
+        }
         const path = join(arg(helper, 1), arg(helper, 4));
         const present = fs.existsSync(path);
         try {
@@ -817,7 +820,7 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
   afterEach(() => { fs.rmSync(base, { recursive: true, force: true }); });
 
   const stalledCopy = async ({
-    copyDiesWhenKilled = false, quietCopy = false, beforeRemove = (_helper: FakeHelper): void => {}, beforeStall = (_chosen: string): void => {},
+    copyDiesWhenKilled = false, quietCopy = false, beforeRemove = (_helper: FakeHelper): "refuse" | undefined => undefined, beforeStall = (_chosen: string): void => {},
   } = {}) => {
     const staging = join(base, "staging");
     const chosen = join(base, "chosen");
@@ -945,19 +948,46 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
     const { chosen, part, done } = await stalledCopy({
       copyDiesWhenKilled: true,
       beforeRemove: (helper) => {
-        if (arg(helper, 1) !== folder || original === "") return;
-        fs.writeFileSync(join(folder, original), "the user's file");
+        if (arg(helper, 1) === folder && original !== "") fs.writeFileSync(join(folder, original), "the user's file");
+        return undefined;
       },
       beforeStall: (chosenFolder) => {
         folder = chosenFolder;
         original = fs.readdirSync(chosenFolder)[0] ?? "";
       },
     });
+    expect(fs.readdirSync(chosen)).toEqual([original]);
+    expect(fs.readFileSync(part, "utf8")).toBe("the user's file");
     expect(done).toMatchObject({ settled: true, value: ["interrupted", "removed"] });
     const [removal] = removalsIn(chosen);
     expect(arg(removal as FakeHelper, 4)).toMatch(/^\.[0-9a-f]{32}\.removing$/u);
-    expect(fs.readdirSync(chosen)).toEqual([original]);
-    expect(fs.readFileSync(part, "utf8")).toBe("the user's file");
+  });
+
+  it("puts the copy's file back when its removal fails after it was moved aside, and the next start removes it", async () => {
+    let folder = "";
+    let refused = false;
+    const { root, staging, chosen, copy, part, done } = await stalledCopy({
+      beforeRemove: (helper) => {
+        if (arg(helper, 1) !== folder || refused) return undefined;
+        refused = true;
+        return "refuse";
+      },
+      beforeStall: (chosenFolder) => { folder = chosenFolder; },
+    });
+    expect(done).toMatchObject({ settled: true, value: ["interrupted", "part-left"] });
+    copy.exit(null, "SIGKILL");
+    await flush();
+    await flush();
+    expect(refused).toBe(true);
+    expect(fs.readdirSync(chosen)).toEqual([part.slice(chosen.length + 1)]);
+    expect(fs.readFileSync(part, "utf8")).toBe("partial copy");
+    expect(records(staging)).toHaveLength(1);
+    const swept = follow(sweepBrowserDownloadStaging(root));
+    await flush();
+    await flush();
+    expect(swept).toMatchObject({ settled: true, value: 1 });
+    expect(fs.readdirSync(chosen)).toEqual([]);
+    expect(fs.readdirSync(staging)).toEqual([]);
   });
 
   it("leaves the temporary file, and its record for the next start, when it cannot be moved aside", async () => {

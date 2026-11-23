@@ -81,22 +81,21 @@ error handler.
 
 A copy killed or answering invalidly after `ready` may leave `part` in the
 chosen folder. The next start sweeps only the
-staging folder, so the host removes `part` at once with a new `--dir-remove`
-run, which holds the chosen folder anew and checks it is the bound one. The
-download is reported as failed, and the log records whether `part` was
-removed. It remains, logged as possibly left, when the removal is refused or
-fails (the chosen folder was moved or replaced, or the helper is broken for
-every run), and when the app quits during a copy: shutdown kills the helper
-with every other owned process and starts no new one, so nothing removes
-`part`. The host removes `part` only as the file the helper wrote: it keeps
-the identity `part` had while the helper wrote it (taken at its first
-`progress` line or at `copied`), renames `part` to a fresh hidden name in the
-same folder, checks that identity there, and only then removes it under that
-name with a new `--dir-remove` run, so a file put at `part`'s name meanwhile is
-not touched. A file found not to be the one written is put back at `part`'s
-name if that is still free, or left under the hidden name, and logged; a
-rename that fails leaves `part`. A `part` never seen while it was written has
-no identity and is left. When the killed helper was not seen to exit, a
+staging folder, so the host removes `part` itself, at once, but only as the
+file the helper wrote: it keeps the identity `part` had while the helper
+wrote it (taken at its first `progress` line or at `copied`), renames `part`
+to a fresh hidden name in the same folder, checks that identity there, and
+only then removes it under that name with a new `--dir-remove` run, which
+holds the chosen folder anew and checks it is the bound one. A file put at
+`part`'s name meanwhile is not touched. A file found not to be the one
+written, or one that removal fails on, is put back at `part`'s name if that
+is still free (a hard link, which never replaces), or left under the hidden
+name, and logged. A `part` never seen while it was written has no identity
+and is left, as is one whose rename fails. The download is reported as
+failed, and the log records whether `part` was removed. It also remains,
+logged as possibly left, when the app quits during a copy: shutdown kills the
+helper with every other owned process and starts no new one, so nothing
+removes `part`. When the killed helper was not seen to exit, a
 removal could race it, so none starts then: the host records the folder, the
 name and the identity in the staging folder, and does the above once the
 helper is seen to end, or at the next start before the sweep. A run killed after `copied`, or a rename killed after

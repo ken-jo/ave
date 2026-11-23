@@ -1164,7 +1164,8 @@ Important rules:
   that says nothing for `browserDownloadHelperStallMs`, or does not end that
   long after a cancel, is killed and its exit awaited before the step fails;
   a killed copy's temporary file is removed through the chosen folder, held
-  anew, and the log names any that may remain (README in
+  anew, only after it is moved aside and checked to be the file the copy
+  wrote, and the log names any that may remain (README in
   `native/macos-dir-ops`). A closed dialog, a failed download or a failed
   move removes the staged file and is reported cancelled or failed.
   Staged files a crash left behind are removed at the next start. At most 4

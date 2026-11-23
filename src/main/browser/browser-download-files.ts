@@ -88,8 +88,9 @@ function compareFile(folder: HeldDirectory, name: string, expected: FileIdentity
 /**
  * Remove the file `name` in `folder` only if it is `expected`, never a file put at that name. It is first renamed to a fresh hidden name in
  * the same folder, checked there, and only then removed by `remove` under that name, so a file put at `name` meanwhile is not touched. A
- * file that turns out not to be `expected` goes back to `name` if that is still free, or stays at the hidden name, both logged. Anything
- * that cannot be done is logged and leaves the file. Never throws.
+ * file that turns out not to be `expected`, or that `remove` does not remove, goes back to `name` if that is still free, or stays at the
+ * hidden name, both logged; a later attempt by `name` can then find it again. Anything that cannot be done is logged and leaves the file.
+ * Never throws.
  */
 export async function removeOwnFile(
   folder: HeldDirectory, name: string, expected: FileIdentity,
@@ -113,25 +114,37 @@ export async function removeOwnFile(
   const moved = compareFile(folder, hidden, expected);
   if (moved === "absent") return "absent";
   if (moved === "other") {
-    try {
-      // A hard link fails rather than replace a file put at `name` since.
-      linkSync(hiddenPath, path);
-      unlinkSync(hiddenPath);
-      log.warn({ path }, "a temporary download file is left: what was at its name is not the file that was written, and was put back");
-    } catch (error) {
-      log.warn({ path, movedTo: hiddenPath, code: codeOf(error) }, "a temporary download file is left under another name: it is not the file that was written, and could not be put back");
-    }
+    putBack(hiddenPath, path, "it is not the file that was written");
     return "left";
   }
+  let why: string;
   try {
     const removed = await remove(folder, hidden);
     if (removed !== "cancelled") return removed;
+    why = "its removal was cancelled";
   } catch (error) {
-    log.warn({ path, movedTo: hiddenPath, error: (error as Error).message }, "a temporary download file could not be removed; it is left under another name");
-    return "left";
+    why = `it could not be removed: ${(error as Error).message}`;
   }
-  log.warn({ path, movedTo: hiddenPath }, "the removal of a temporary download file was cancelled; it is left under another name");
+  putBack(hiddenPath, path, why);
   return "left";
+}
+
+// Return a file moved aside to its own name, unless something is at that name now (a hard link fails rather than replace it). Logs where
+// the file is left.
+function putBack(hiddenPath: string, path: string, why: string): void {
+  try {
+    linkSync(hiddenPath, path);
+  } catch (error) {
+    log.warn({ path, movedTo: hiddenPath, why, code: codeOf(error) }, "a temporary download file is left under another name, and could not be put back");
+    return;
+  }
+  try {
+    unlinkSync(hiddenPath);
+  } catch (error) {
+    log.warn({ path, alsoAt: hiddenPath, why, code: codeOf(error) }, "a temporary download file is left, put back, but also still under another name");
+    return;
+  }
+  log.warn({ path, why }, "a temporary download file is left, put back at its name");
 }
 
 // The identity of the ordinary file `name` in `folder` while `folder` is still the held one, or null.
