@@ -1,7 +1,9 @@
 import type { RunWorkspace, TemplateStage } from "../../shared/workflow-template-types.js";
 import type { JoinConflict } from "./shipped-shapes.js";
 
-export interface RunRef { itemId: number; runId: string; runKey: string }
+/** `projectRoot`: the project the caller has the run open on, as the caller holds it now; none for a run of no project, and none
+ * when the call is made for a run nobody has open. A provider checks what its own record says of the project against it. */
+export interface RunRef { itemId: number; runId: string; runKey: string; projectRoot?: string }
 interface StageWorkspace { root: string; kind: "git" | "folder"; baseCommit?: string }
 /** Every code a workspace provider refuses with; each has its text in the catalogs. */
 export const WORKSPACE_REFUSALS = [

@@ -278,7 +278,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
 
   function openState(itemId: number, runId: string, projectRoot: string | undefined, surface: WebContents | null, parked = false): RunState {
     const state: RunState = {
-      itemId, runId, ref: { itemId, runId, runKey: runKeyOf(itemId, runId) }, projectRoot, surface, chain: Promise.resolve(), busy: 0, pendingStages: new Map(), waiters: new Set(),
+      itemId, runId, ref: { itemId, runId, runKey: runKeyOf(itemId, runId), ...(projectRoot !== undefined ? { projectRoot } : {}) }, projectRoot, surface, chain: Promise.resolve(), busy: 0, pendingStages: new Map(), waiters: new Set(),
       stopping: false, rowGone: false, removedAs: "item-removed", lost: false, faulted: null, refused: null, live: new Map(), due: new Set(), starting: new Set(), interruptAsked: new Set(),
       revoked: new Set(), results: new Map(), held: [], heldAgain: false, draining: false, boardUnread: false, parked, sealOutcomes: new Map(), integrating: new Set(),
     };
@@ -1174,7 +1174,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     if (!deps.outputs && version.stages.some(stage => (stage.requestedOutputs?.length ?? 0) > 0)) return refused("outputs-unavailable");
 
     const runId = randomUUID();
-    const ref: RunRef = { itemId, runId, runKey: runKeyOf(itemId, runId) };
+    const ref: RunRef = { itemId, runId, runKey: runKeyOf(itemId, runId), ...(projectRoot !== undefined ? { projectRoot } : {}) };
     const opened = await workspace.open(ref, projectRoot);
     if (!opened.ok) return refused(opened.code);
     const startedAt = new Date().toISOString();

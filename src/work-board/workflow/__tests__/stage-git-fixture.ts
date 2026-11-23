@@ -16,8 +16,8 @@ export interface GitFixture {
   /** Plain git, the way the user would run it: hooks and drivers active. */
   userGit(cwd: string, ...args: string[]): string;
   commitAll(message: string): string;
-  /** A provider and a run of its own; `release(run, "all")` follows in `done`. */
-  start(options?: StageWorkspaceOptions, itemId?: number): GitHandle;
+  /** A provider and a run of its own, open on `project` (the repository unless given); `release(run, "all")` follows in `done`. */
+  start(options?: StageWorkspaceOptions, itemId?: number, project?: string): GitHandle;
   done(): Promise<void>;
 }
 
@@ -40,9 +40,9 @@ export function gitFixture(): GitFixture {
   commitAll("first");
   return {
     base, repo, env, userGit, commitAll,
-    start: (options = {}, itemId = 7) => {
+    start: (options = {}, itemId = 7, project = repo) => {
       runs += 1;
-      const handle = { provider: createStageWorkspaceProvider({ git: createHostGit({ env }), ...options }), run: { itemId, runId: `run-git-${process.pid}-${Date.now()}-${runs}`, runKey: "key" } };
+      const handle = { provider: createStageWorkspaceProvider({ git: createHostGit({ env }), ...options }), run: { itemId, runId: `run-git-${process.pid}-${Date.now()}-${runs}`, runKey: "key", projectRoot: project } };
       opened.push(handle);
       return handle;
     },

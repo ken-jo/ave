@@ -290,7 +290,7 @@ describe("git stage workspaces", () => {
     expect(userGit(repo, "branch", "--list", runBranch(empty.run.runId))).toBe("");
   });
 
-  it("finds the run again after a restart and sweeps only runs that are not active", async () => {
+  it("finds the run again after a restart; a sweep has no project open and leaves a git run whole, a release with its project open takes it", async () => {
     const kept = start();
     const gone = start();
     const keptOpen = await kept.provider.open(kept.run, repo);
@@ -300,6 +300,8 @@ describe("git stage workspaces", () => {
     await stageRoot(gone, "s1");
     const restarted = createStageWorkspaceProvider({ git: createHostGit({ env }) });
     await restarted.sweep([kept.run.runId]);
+    expect(existsSync(join(goneOpen.workspace.runRoot, RUN_FILE))).toBe(true);
+    await restarted.release(gone.run, "all");
     expect(existsSync(goneOpen.workspace.runRoot)).toBe(false);
     expect(existsSync(root)).toBe(true);
     write(root, "new.txt", "new\n");
@@ -320,6 +322,7 @@ describe("git stage workspaces", () => {
       const restarted = createStageWorkspaceProvider({ git: createHostGit({ env }), removable: async () => () => true });
       await restarted.sweep([handle.run.runId]);
       await restarted.discard();
+      await restarted.release(handle.run, "all");
       expect(existsSync(join(copy, "s1", "kept.txt"))).toBe(true);
       expect(existsSync(join(copy, RUN_FILE))).toBe(true);
     } finally {

@@ -34,7 +34,7 @@ const fromProject = (...paths: string[]): StageInputDecl => ({ from: "project", 
 
 async function start(root: string | undefined, options: StageWorkspaceOptions = {}, itemId = 7): Promise<Handle> {
   runs += 1;
-  const run: RunRef = { itemId, runId: `run-folder-${process.pid}-${Date.now()}-${runs}`, runKey: "key" };
+  const run: RunRef = { itemId, runId: `run-folder-${process.pid}-${Date.now()}-${runs}`, runKey: "key", ...(root !== undefined ? { projectRoot: root } : {}) };
   const provider = createStageWorkspaceProvider({ git: createHostGit({ env }), ...options });
   const open = await provider.open(run, root);
   if (!open.ok || open.workspace.kind !== "folder" || open.workspace.outputDir === undefined) throw new Error("expected a folder workspace");
@@ -997,7 +997,7 @@ describe("folder stage workspaces", () => {
       return false;
     } });
     runs += 1;
-    const run: RunRef = { itemId: 7, runId: `run-folder-${process.pid}-${Date.now()}-${runs}`, runKey: "key" };
+    const run: RunRef = { itemId: 7, runId: `run-folder-${process.pid}-${Date.now()}-${runs}`, runKey: "key", projectRoot: project };
     const open = await provider.open(run, project);
     if (!open.ok) throw new Error(open.code);
     runRoot = open.workspace.runRoot;

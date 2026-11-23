@@ -6,8 +6,9 @@ import { aveHome } from "../../../shared/ave-home.js";
 import { createHostGit, type HostGit } from "../host-git.js";
 import type { OwnedDir } from "../owned-fs.js";
 import { createStageWorkspaceProvider } from "../stage-workspaces.js";
-import { JOIN_DIR, RUN_FILE } from "../workspace-layout.js";
-import { type GitFixture, gitFixture, sealed, stageRoot } from "./stage-git-fixture.js";
+import { JOIN_DIR, RUN_FILE, runRootOf } from "../workspace-layout.js";
+import { stageOf } from "./stage-fixtures.js";
+import { type GitFixture, type GitHandle, gitFixture, sealed, stageRoot } from "./stage-git-fixture.js";
 
 /** Runs before the run folder is made in its project folder, with that folder's path: where another process's release can come between. */
 const between = vi.hoisted(() => ({
@@ -186,13 +187,24 @@ it.skipIf(process.platform !== "win32")("a home on a share keeps the registratio
   }
 });
 
-interface Recorded { repo: { gitDir: string }; registrations: Record<string, { admin: string }> }
+interface Recorded {
+  project: { root: string };
+  repo: { gitDir: string };
+  registrations: Record<string, { admin: string; gitdir: string }>;
+  stages: Record<string, { link?: string }>;
+}
 const onWindows = it.skipIf(process.platform !== "win32");
 /** Git hides the link file, and a hidden file is not written over: it is put there anew. */
 const relink = (stage: string, link: string): void => { rmSync(join(stage, ".git")); writeFileSync(join(stage, ".git"), link); };
 const slashed = (path: string, volume: string): string => path.slice(volume.length).replaceAll("\\", "/");
+/** A host git that notes where each call was made. */
+function countedGit(fx: GitFixture): { git: HostGit; calls: string[] } {
+  const real = createHostGit({ env: fx.env });
+  const calls: string[] = [];
+  return { calls, git: { run: (cwd, args, call) => { calls.push(resolve(cwd).toLowerCase()); return real.run(cwd, args, call); }, drivers: (cwd) => { calls.push(resolve(cwd).toLowerCase()); return real.drivers(cwd); } } };
+}
 
-onWindows("a project on the home's own share keeps the registration a stage folder names by the share's path", async () => {
+onWindows("a project on a share keeps the registration a stage folder names by the share's path", async () => {
   const fx = gitFixture();
   try {
     const handle = fx.start();
@@ -210,67 +222,163 @@ onWindows("a project on the home's own share keeps the registration a stage fold
     delete record.registrations.s1;
     writeFileSync(recordPath, JSON.stringify(record));
     relink(stage, `gitdir: //SERVER/Share/${slashed(admin, volume)}\n`);
-    // The home as the host names it on that share; a provider that has not seen the run finds it there.
-    const home = aveHome();
-    expect(parse(home).root).toBe(volume);
-    between.home = `\\\\Server\\share\\${home.slice(volume.length)}`;
-    const onShare = createStageWorkspaceProvider({ git: createHostGit({ env: fx.env }) });
-    await onShare.release(handle.run, ["s1"]);
+    await handle.provider.release(handle.run, ["s1"]);
     expect(existsSync(stage)).toBe(false);
     expect(existsSync(admin)).toBe(false);
-    await onShare.release(handle.run, "all");
-    expect(existsSync(open.workspace.runRoot)).toBe(false);
     expect(between.foreign).toEqual([]);
   } finally {
-    between.home = undefined;
     try { await fx.done(); } finally { between.share = undefined; }
   }
 });
 
-onWindows("a record edited to name its repository on another share records no registration, and nothing off this machine is asked", async () => {
-  const fx = gitFixture();
-  try {
-    const handle = fx.start();
-    const open = await handle.provider.open(handle.run, fx.repo);
-    if (!open.ok) throw new Error("expected a workspace");
-    const stage = await stageRoot(handle, "s1");
-    const recordPath = join(open.workspace.runRoot, RUN_FILE);
-    const record = JSON.parse(readFileSync(recordPath, "utf8")) as Recorded;
-    const admin = record.registrations.s1?.admin as string;
-    // A stop before the host recorded the stage's registration; the record's shape and its own folder still fit.
-    record.repo.gitDir = `\\\\other\\share\\${record.repo.gitDir.slice(parse(record.repo.gitDir).root.length)}`;
-    delete record.registrations.s1;
-    writeFileSync(recordPath, JSON.stringify(record));
-    await handle.provider.release(handle.run, ["s1"]);
-    expect(existsSync(stage)).toBe(false);
-    expect(existsSync(admin)).toBe(true);
-    expect(between.foreign).toEqual([]);
-  } finally {
-    await fx.done();
-  }
-});
-
-onWindows("a release of a run whose record names its repository on another share or a device asks nothing off this machine", async () => {
+onWindows("a record edited to name its repository on another share or a device keeps the stage folder and its registration, and nothing is asked of that path", async () => {
   for (const moved of [(git: string) => `\\\\other\\share\\${git.slice(parse(git).root.length)}`, (git: string) => `\\\\.\\${git}`]) {
     const fx = gitFixture();
     try {
       const handle = fx.start();
       const open = await handle.provider.open(handle.run, fx.repo);
       if (!open.ok) throw new Error("expected a workspace");
-      await stageRoot(handle, "s1");
+      const stage = await stageRoot(handle, "s1");
       const recordPath = join(open.workspace.runRoot, RUN_FILE);
       const record = JSON.parse(readFileSync(recordPath, "utf8")) as Recorded;
       const admins = [record.registrations[JOIN_DIR]?.admin as string, record.registrations.s1?.admin as string];
+      // The record's shape and its own folder still fit: only the repository's path was changed.
       record.repo.gitDir = moved(record.repo.gitDir);
       writeFileSync(recordPath, JSON.stringify(record));
+      between.asked.length = 0;
+      // A stage is not half released: its folder stays while its registration cannot be taken out.
+      await expect(handle.provider.release(handle.run, ["s1"])).rejects.toThrow("repo.gitDir");
+      expect(existsSync(join(stage, ".git"))).toBe(true);
+      // The whole run stays, with the record that names what it left in the repository.
       await handle.provider.release(handle.run, "all");
-      // The run folder goes; the repository is left as it is.
-      expect(existsSync(open.workspace.runRoot)).toBe(false);
+      expect(existsSync(recordPath)).toBe(true);
+      expect(existsSync(join(stage, ".git"))).toBe(true);
       expect(admins.map(admin => existsSync(admin))).toEqual([true, true]);
+      expect(between.asked.filter(path => path.toLowerCase().startsWith(record.repo.gitDir.toLowerCase()))).toEqual([]);
       expect(between.foreign).toEqual([]);
+      rmSync(open.workspace.runRoot, { recursive: true, force: true });
     } finally {
       await fx.done();
     }
+  }
+});
+
+/**
+ * A run with a stage, as a provider that has not seen it finds it, with every git call noted. With `rootAs`, the record names its
+ * project by that path, and the run folder is where a record of such a project belongs: the record still fits its folder.
+ */
+async function found(fx: GitFixture, rootAs?: (root: string) => string): Promise<{ provider: ReturnType<typeof createStageWorkspaceProvider>; calls: string[]; handle: GitHandle; runRoot: string; record: Recorded; local: string }> {
+  const handle = fx.start();
+  const open = await handle.provider.open(handle.run, fx.repo);
+  if (!open.ok) throw new Error("expected a workspace");
+  await stageRoot(handle, "s1");
+  let runRoot = open.workspace.runRoot;
+  const record = JSON.parse(readFileSync(join(runRoot, RUN_FILE), "utf8")) as Recorded;
+  const local = record.project.root;
+  if (rootAs !== undefined) {
+    record.project.root = rootAs(local);
+    const fits = runRootOf(aveHome(), record.project.root.toLowerCase(), handle.run.itemId, handle.run.runId);
+    for (const [key, entry] of Object.entries(record.registrations)) entry.gitdir = join(fits, key, ".git");
+    mkdirSync(dirname(fits), { recursive: true });
+    renameSync(runRoot, fits);
+    runRoot = fits;
+    writeFileSync(join(runRoot, RUN_FILE), JSON.stringify(record));
+  }
+  const { git, calls } = countedGit(fx);
+  return { provider: createStageWorkspaceProvider({ git }), calls, handle, runRoot, record, local };
+}
+
+type Unverified = [what: string, rootAs: ((root: string) => string) | undefined, open: boolean];
+onWindows.each<Unverified>([
+  ["names its project on another share", root => `\\\\other\\share\\${root.slice(parse(root).root.length)}`, true],
+  ["names its project by a device path", root => `\\\\.\\${root}`, true],
+  ["is as it was written, with no project open", undefined, false],
+])("a record that %s directs nothing: no path of it is asked about, git is not run, and the run stays whole with its record", async (_what, rootAs, open) => {
+  const fx = gitFixture();
+  try {
+    const { provider, calls, handle, runRoot, record, local } = await found(fx, rootAs);
+    const { projectRoot, ...closed } = handle.run;
+    const run = open ? handle.run : closed;
+    expect(projectRoot).toBe(fx.repo);
+    between.asked.length = 0;
+    try {
+      // A stage's release, a new stage, a seal, a collection, the run's release and a sweep.
+      await expect(provider.release(run, ["s1"])).rejects.toThrow("project.root");
+      expect(await provider.prepare(run, stageOf("s2"), 1)).toEqual({ ok: false, code: "workspace-unavailable" });
+      expect(await provider.seal(run, "s1")).toEqual({ ok: false, code: "workspace-unavailable" });
+      await expect(provider.integrate(run, "j1", ["s1"])).rejects.toThrow("the run has no integration worktree");
+      await provider.release(run, "all");
+      await provider.sweep([]);
+      expect(calls).toEqual([]);
+      const paths = [record.project.root, local].map(path => path.toLowerCase());
+      expect(between.asked.filter(path => paths.some(root => path.toLowerCase().startsWith(root)))).toEqual([]);
+      expect(between.foreign).toEqual([]);
+      expect(existsSync(join(runRoot, RUN_FILE))).toBe(true);
+      expect(existsSync(join(runRoot, "s1", ".git"))).toBe(true);
+      expect(existsSync(join(runRoot, "s2"))).toBe(false);
+      expect(Object.values(record.registrations).map(entry => existsSync(entry.admin))).toEqual([true, true]);
+    } finally {
+      if (rootAs !== undefined) rmSync(runRoot, { recursive: true, force: true });
+    }
+  } finally {
+    await fx.done();
+  }
+});
+
+onWindows("a folder of the run whose link names another share, a device or a folder outside the repository has no git run in it", async () => {
+  const links = [(admin: string) => `gitdir: //other/share/${slashed(admin, parse(admin).root)}\n`, (admin: string) => `gitdir: //./${admin.replaceAll("\\", "/")}\n`, (admin: string) => `gitdir: ${admin}/../../../../other/x\n`];
+  for (const linkTo of links) {
+    const fx = gitFixture();
+    try {
+      mkdirSync(join(fx.base, "other", "x"), { recursive: true });
+      const { git, calls } = countedGit(fx);
+      const handle = fx.start({ git });
+      const open = await handle.provider.open(handle.run, fx.repo);
+      if (!open.ok) throw new Error("expected a workspace");
+      writeFileSync(join(await stageRoot(handle, "s1"), "a.txt"), "two\n");
+      await sealed(handle, "s1");
+      const stage = await stageRoot(handle, "s2");
+      const recordPath = join(open.workspace.runRoot, RUN_FILE);
+      const record = JSON.parse(readFileSync(recordPath, "utf8")) as Recorded;
+      const joinDir = join(open.workspace.runRoot, JOIN_DIR);
+      const written = [readFileSync(join(joinDir, ".git"), "utf8"), readFileSync(join(stage, ".git"), "utf8")];
+      relink(joinDir, linkTo(record.registrations[JOIN_DIR]?.admin as string));
+      // The stage's link as the record has it too: the record's text is no more the run's than the file's.
+      const link = linkTo(record.registrations.s2?.admin as string);
+      relink(stage, link);
+      (record.stages.s2 as { link?: string }).link = link;
+      writeFileSync(recordPath, JSON.stringify(record));
+      calls.length = 0;
+      await expect(handle.provider.integrate(handle.run, "j1", ["s1"])).rejects.toThrow("the integration worktree is not the run's own");
+      expect(await handle.provider.seal(handle.run, "s2")).toEqual({ ok: false, code: "workspace-unavailable" });
+      const inside = [joinDir, stage].map(path => resolve(path).toLowerCase());
+      expect(calls.filter(cwd => inside.includes(cwd))).toEqual([]);
+      expect(between.foreign).toEqual([]);
+      relink(joinDir, written[0] as string);
+      relink(stage, written[1] as string);
+    } finally {
+      await fx.done();
+    }
+  }
+});
+
+onWindows("a project or a repository directory that is really at a path with no plain form gets no workspace", async () => {
+  const fx = gitFixture();
+  try {
+    const real = realpathSync.native(fx.repo);
+    const volume = parse(real).root;
+    const root = "\\\\?\\volume{00000000-0000-0000-0000-000000000000}\\";
+    const shares: [NonNullable<typeof between.share>, string][] = [[{ run: "", volume, root, git: join(real, ".git") }, "git-unavailable"], [{ run: fx.repo, volume, root }, "workspace-unavailable"]];
+    for (const [share, code] of shares) {
+      const handle = fx.start();
+      between.share = share;
+      expect(await handle.provider.open(handle.run, fx.repo)).toEqual({ ok: false, code });
+      between.share = undefined;
+      expect(await handle.provider.prepare(handle.run, stageOf("s1"), 1)).toEqual({ ok: false, code: "workspace-unavailable" });
+    }
+  } finally {
+    between.share = undefined;
+    await fx.done();
   }
 });
 
@@ -303,7 +411,7 @@ async function collectWithLink(fx: GitFixture, linkTo: (admin: string) => string
   if (!open.ok) throw new Error("expected a workspace");
   writeFileSync(join(await stageRoot(handle, "s1"), "a.txt"), "two\n");
   await sealed(handle, "s1");
-  const record = JSON.parse(readFileSync(join(open.workspace.runRoot, RUN_FILE), "utf8")) as Recorded & { project: { root: string } };
+  const record = JSON.parse(readFileSync(join(open.workspace.runRoot, RUN_FILE), "utf8")) as Recorded;
   admin = record.registrations[JOIN_DIR]?.admin as string;
   joinDir = resolve(open.workspace.runRoot, JOIN_DIR);
   await expect(handle.provider.integrate(handle.run, "j1", ["s1"])).rejects.toThrow("the integration worktree is not the run's own");

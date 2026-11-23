@@ -75,10 +75,12 @@ async function scene(): Promise<Scene> {
   };
 }
 
-/** As after a restart, with item 7 gone from the board and item 8 still on it. */
-async function operate(operation: "discard" | "sweep"): Promise<void> {
+/** As after a restart, with item 7 gone from the board and item 8 still on it. A discard and a sweep have no project open; a release
+ * is item 7's, with its project open. */
+async function operate(operation: "discard" | "sweep" | "release", at?: Scene): Promise<void> {
   const provider = createStageWorkspaceProvider({ git: createHostGit({ env: fx.env }), removable: async () => run => run.itemId !== 8 });
-  await (operation === "discard" ? provider.discard() : provider.sweep([]));
+  if (operation === "release") await provider.release((at as Scene).target.run, "all");
+  else await (operation === "discard" ? provider.discard() : provider.sweep([]));
 }
 
 function expectUsersOwn(at: Scene): void {
@@ -116,16 +118,36 @@ const refused: Row[] = [
 /** A field that names the project or its repository: the run folder is still the run's and goes; the repository is left as it is. */
 const repositoryLeft: Row[] = [
   ["project.id", ["project", "id"], () => "1:1"],
-  ["repo.gitDir", ["repo", "gitDir"], at => join(at.elsewhere, ".git")],
   ["repo.id", ["repo", "id"], () => "1:1"],
   ["registrations._join.admin", ["registrations", "_join", "admin"], at => at.userAdmin],
   ["registrations._join.id", ["registrations", "_join", "id"], () => "1:1"],
 ];
 
-describe.each(["discard", "sweep"] as const)("what a %s may remove of a git run", (operation) => {
+/** A path of the record that is not the open project's by text: nothing is asked of it, and the run stays whole with its record. */
+const unverified: Row[] = [
+  ["repo.gitDir", ["repo", "gitDir"], at => join(at.elsewhere, ".git")],
+  ["registrations._join.admin", ["registrations", "_join", "admin"], at => join(at.elsewhere, ".git", "worktrees", "_join")],
+];
+
+function expectLeftWhole(at: Scene, field: string): void {
+  expect(existsSync(at.record)).toBe(true);
+  expect(existsSync(join(at.stage, "a.txt"))).toBe(true);
+  expect(existsSync(join(at.runRoot, JOIN_DIR, "a.txt"))).toBe(true);
+  expectRepositoryUntouched(at);
+  expectUsersOwn(at);
+  expect(warned.filter(line => line.includes("cleanup is unverified") && line.includes(at.target.run.runId))).toEqual([expect.stringContaining(field.split(".").slice(0, 2).join("."))]);
+}
+
+it.each(["discard", "sweep"] as const)("a %s has no project open: a git run stays whole with its record, its cleanup unverified", async (operation) => {
+  const at = await scene();
+  await operate(operation);
+  expectLeftWhole(at, "project.root");
+});
+
+describe.each(["release"] as const)("what a %s with its project open may remove of a git run", (operation) => {
   it("with every field as it was written, the run's folder, registration and branch go and nothing else", async () => {
     const at = await scene();
-    await operate(operation);
+    await operate(operation, at);
     expect(existsSync(at.runRoot)).toBe(false);
     expect(existsSync(at.admin)).toBe(false);
     expect(fx.userGit(fx.repo, "branch", "--list", at.branch)).toBe("");
@@ -149,7 +171,7 @@ describe.each(["discard", "sweep"] as const)("what a %s may remove of a git run"
     it.each(refused)("a record whose %s no longer matches stops it: nothing of the run goes", async (_field, path, value) => {
       setPath(at.record, path, value(at));
       try {
-        await operate(operation);
+        await operate(operation, at);
         expect(existsSync(join(at.stage, "a.txt"))).toBe(true);
         expect(existsSync(join(at.runRoot, JOIN_DIR, "a.txt"))).toBe(true);
         expectRepositoryUntouched(at);
@@ -163,11 +185,18 @@ describe.each(["discard", "sweep"] as const)("what a %s may remove of a git run"
   it.each(repositoryLeft)("a record whose %s no longer matches leaves the repository as it is: the run folder goes, and the field is named", async (field, path, value) => {
     const at = await scene();
     setPath(at.record, path, value(at));
-    await operate(operation);
+    await operate(operation, at);
     expect(existsSync(at.runRoot)).toBe(false);
     expectRepositoryUntouched(at);
     expectUsersOwn(at);
     expect(warned.filter(line => line.includes("repository is left as it is"))).toEqual([expect.stringContaining(field.split(".").slice(0, 2).join("."))]);
+  });
+
+  it.each(unverified)("a record whose %s is not the open project's by text leaves the run whole, its cleanup unverified", async (field, path, value) => {
+    const at = await scene();
+    setPath(at.record, path, value(at));
+    await operate(operation, at);
+    expectLeftWhole(at, field);
   });
 });
 
@@ -374,7 +403,7 @@ describe("the repository's identity", () => {
     const { repo, userGit } = fx;
     const child = join(repo, "child");
     userGit(repo, "clone", "-q", repo, child);
-    const handle = fx.start();
+    const handle = fx.start({}, 7, child);
     const open = await handle.provider.open(handle.run, child);
     const base = open.ok && open.workspace.kind === "git" ? open.workspace.baseCommit : undefined;
     if (!open.ok || base === undefined) throw new Error("expected a git workspace");
@@ -388,8 +417,10 @@ describe("the repository's identity", () => {
     await createStageWorkspaceProvider({ git: createHostGit({ env: fx.env }), removable: async () => () => true }).sweep([]);
     expect(userGit(repo, "rev-parse", `refs/heads/${branch}`)).toBe(base);
     expect(userGit(repo, "worktree", "list", "--porcelain")).toBe(listed);
-    expect(existsSync(open.workspace.runRoot)).toBe(false);
-    expect(warned.filter(line => line.includes("repository is left as it is"))).toEqual([expect.stringContaining("repo.gitDir")]);
+    // The repository git now gives for the project is not the record's by text: the run stays whole, with its record.
+    expect(existsSync(join(open.workspace.runRoot, RUN_FILE))).toBe(true);
+    // The sweep has no project open at all.
+    expect(warned.filter(line => line.includes("cleanup is unverified") && line.includes(handle.run.runId))).toEqual([expect.stringContaining("repo.gitDir"), expect.stringContaining("project.root")]);
   });
 });
 

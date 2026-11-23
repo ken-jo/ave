@@ -138,59 +138,32 @@ export function runFolderOf(run: { path: string; id: NodeId }, key: string, gitd
   return realDirId(dirname(folder)) === run.id ? folder : undefined;
 }
 
-/**
- * The name of a registration's admin folder, when its path puts it right inside the repository's `worktrees`; undefined for any other.
- * The path comes from a stage folder's `.git` file or from the record, and either may name anything. So it is made plain text first,
- * and its last part must be one plain name. A network path is then taken only when its text is `worktrees` of the directory the record
- * gives as the repository's, so this path asks nothing of any other share; a device path names nothing. The directory is asked which
- * one it is only after that. The record's own repository path is the caller's to check. Known limit, on the closed side: another
- * spelling of the share's server is refused, and so is a share path when the repository was reached by a drive letter. On the open
- * side, as for `runFolderOf`: a drive letter that stands for a share or a mount point is looked up as any local path is.
- */
-export function adminNameIn(gitDir: string, worktrees: NodeId, admin: string): string | undefined {
-  const leaf = leafOf(admin);
-  if (leaf === undefined) return undefined;
-  if (process.platform === "win32" && leaf.parent.startsWith("\\\\") && !inWorktrees(gitDir, leaf.parent)) return undefined;
-  return realDirId(leaf.parent) === worktrees ? leaf.name : undefined;
-}
+/** What the host resolved just now from the project its caller has open: the root as it is on disk and, once git was asked there, the
+ * repository's common directory. None of it is record text. */
+export interface LiveRepo { root: string; gitDir?: string }
+type RecordPathKind = "project" | "gitDir" | "admin" | "link";
 
-/** A path made plain text and split into its folder and its last part, when that part is one plain name. */
-function leafOf(path: string): { parent: string; name: string } | undefined {
-  const plain = plainPath(path);
+/**
+ * A path the record or a worktree link file gives, taken by its text alone before anything is asked of it: both may name any path, on
+ * any share or device. It is made plain text and must then be, under the name fold, exactly what the open project gives: `project`
+ * its root, `gitDir` its repository's common directory, `admin` a direct child of that directory's `worktrees`, `link` the content of
+ * a `.git` file naming such a child. The answer is built from the open project's own text; undefined for every other path, and for
+ * every path while no project is open. Known limit, on the closed side: a path that names the same place by another spelling (a
+ * link above it, another name of the share's server) is refused.
+ */
+export function vetRecordPath(kind: RecordPathKind, text: string, live: LiveRepo | undefined): string | undefined {
+  if (live === undefined) return undefined;
+  const path = kind === "link" ? /^gitdir: (.+?)\r?\n?$/u.exec(text)?.[1] : text;
+  const plain = path === undefined || !isAbsolute(path) ? undefined : plainPath(path);
   if (plain === undefined) return undefined;
+  const same = (other: string | undefined): other is string => other !== undefined && foldName(plain) === foldName(other);
+  if (kind === "project") return same(plainPath(live.root)) ? live.root : undefined;
+  const gitDir = live.gitDir === undefined ? undefined : plainPath(live.gitDir);
+  if (gitDir === undefined) return undefined;
+  if (kind === "gitDir") return same(gitDir) ? gitDir : undefined;
   const name = basename(plain);
-  return name === "" || name === "." || name === ".." || /[\\/:]/u.test(name) ? undefined : { parent: dirname(plain), name };
-}
-
-const inWorktrees = (gitDir: string, parent: string): boolean => {
-  const own = plainPath(join(gitDir, "worktrees"));
-  return own !== undefined && foldName(parent) === foldName(own);
-};
-
-/**
- * `adminNameIn` by text alone, for a path nothing at all is to be asked of: the name only when the plain text is a direct child of the
- * `worktrees` of the directory the record gives as the repository's. The caller looks the name up in that directory, never the path.
- */
-export function adminNameByText(gitDir: string, admin: string): string | undefined {
-  const leaf = leafOf(admin);
-  return leaf !== undefined && inWorktrees(gitDir, leaf.parent) ? leaf.name : undefined;
-}
-
-/**
- * The record's repository directory as the plain text to ask the disk about, settled before anything is asked: the record may name any
- * path. A device path names nothing. A network path is taken only on the server and share the home's own path names, so no other share
- * is ever asked anything; a drive path is looked up as any local path is. Known limits, on the closed side: another spelling of the
- * home's server is refused, and so is every share when the home is reached by a drive letter. On the open side, as for `runFolderOf`.
- */
-export function repoDirIn(home: string, gitDir: string): string | undefined {
-  const plain = plainPath(gitDir);
-  if (plain === undefined || process.platform !== "win32" || !plain.startsWith("\\\\")) return plain;
-  const share = (path: string | undefined): string | undefined => {
-    const found = /^\\\\[^\\]+\\[^\\]+/u.exec(path ?? "");
-    return found === null ? undefined : foldName(found[0]);
-  };
-  const own = share(plainPath(home));
-  return own !== undefined && own === share(plain) ? plain : undefined;
+  if (name === "" || name === "." || name === ".." || /[\\/:]/u.test(name)) return undefined;
+  return foldName(dirname(plain)) === foldName(join(gitDir, "worktrees")) ? join(gitDir, "worktrees", name) : undefined;
 }
 
 /**
