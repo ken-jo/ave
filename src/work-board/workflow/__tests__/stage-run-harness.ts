@@ -110,9 +110,19 @@ export async function stageRunHarness(opts: {
   const unauthorised = new Set<string>();
   const workspaceCalls: string[] = [];
   const callWaits = new Set<() => void>();
+  const wakeCalls = () => { for (const wake of callWaits) wake(); };
   function recordCall(call: string): void {
     workspaceCalls.push(call);
-    for (const wake of callWaits) wake();
+    wakeCalls();
+  }
+  /** A replaced workspace part wakes the workspace-call waits as the harness's own parts do, as its call begins and once it settles. */
+  function waking(call: (...args: never[]) => unknown): (...args: never[]) => unknown {
+    return (...args) => {
+      wakeCalls();
+      const result = call(...args);
+      void Promise.resolve(result).then(wakeCalls, wakeCalls);
+      return result;
+    };
   }
   /** The run ids each boot sweep kept. */
   const sweeps: string[][] = [];
@@ -124,6 +134,8 @@ export async function stageRunHarness(opts: {
   const itemWaits = new Set<(itemId?: number) => void>();
   /** Called with an error, a listener ends its wait with it. */
   const progressChanges = new Set<(ended?: Error) => void>();
+  /** Assertion waits woken by progress events; cleanup ends them through `assertionWaits`. */
+  const progressWakes = new Set<() => void>();
   let closed = false;
   let lastRequestedOrigin: string | undefined;
   /** The harness clock: every start, call and failure takes the next tick, so "newer" is a plain comparison. */
@@ -246,9 +258,9 @@ export async function stageRunHarness(opts: {
     release: async () => undefined,
     sweep: async (active) => {
       sweeps.push([...active]);
-      for (const wake of callWaits) wake();
+      wakeCalls();
     },
-    ...opts.workspace,
+    ...Object.fromEntries(Object.entries(opts.workspace ?? {}).map(([name, part]) => [name, typeof part === "function" ? waking(part) : part])) as Partial<StageWorkspaceProvider>,
   };
 
   function engineOn(store: WorkBoardStore): ReturnType<typeof createWorkBoardEngine> {
@@ -297,6 +309,7 @@ export async function stageRunHarness(opts: {
         events.push(event);
         own.push(event);
         for (const changed of progressChanges) changed();
+        for (const wake of progressWakes) wake();
       },
       workflow: {
         ...workflow,
@@ -630,7 +643,7 @@ export async function stageRunHarness(opts: {
   const untilRunFile = (assertion: () => void | Promise<void>) => untilPasses(signalOf(runWaits), assertion);
   /** Reruns `assertion` after each run-file commit or progress event until it passes. */
   const untilObserved = (assertion: () => void | Promise<void>) => untilPasses(wake => {
-    const stops = [signalOf(runWaits)(wake), signalOf(progressChanges)(wake)];
+    const stops = [signalOf(runWaits)(wake), signalOf(progressWakes)(wake)];
     return () => { for (const stop of stops) stop(); };
   }, assertion);
   /** Reruns `assertion` after each workspace call or sweep until it passes. */
@@ -651,8 +664,8 @@ export async function stageRunHarness(opts: {
     confirm: confirmTemplate, pinOf, addItem, local, attach, detach, item, stageRun, until, untilStage, untilLive, untilSpawned, settleEvent, waitForLive, waitForProgress, untilRunFile, untilObserved, untilWorkspaceCalls, live, decide, statusOf, start,
     drainRunWork: async (options?: { includeLaunches?: boolean }) => { await runWorkObservers.at(-1)?.drain(options); },
     drainAllRunWork: async () => { await Promise.all(runWorkObservers.map(runWork => runWork.drain())); },
-    /** Listeners of the child and progress waits still pending. */
-    pendingWaits: () => childChanges.size + progressChanges.size,
+    /** Child, progress, item and assertion waits still pending. */
+    pendingWaits: () => childChanges.size + progressChanges.size + itemWaits.size + assertionWaits.size,
     cleanup: () => {
       closed = true;
       for (const wake of itemWaits) wake();
