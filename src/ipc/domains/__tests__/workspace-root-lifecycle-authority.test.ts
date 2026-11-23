@@ -165,7 +165,7 @@ function startDirectoryApproval(remote = true) {
     expect(accepted?.choice).toBe(choice);
     expect(accepted?.nonce).toBe(nonce);
   };
-  return { answer, result, execute, gate, abort, onTurnDirectoryGrant, refreshController, revoke: () => { current = false; } };
+  return { answer, result, execute, gate, wc, abort, onTurnDirectoryGrant, refreshController, revoke: () => { current = false; } };
 }
 
 function persistedRoots() {
@@ -295,6 +295,32 @@ describe("workspace-root lifecycle authority", () => {
     expect(persistedRoots()).toEqual([]);
     expect(call.execute).not.toHaveBeenCalled();
     expectRemoteDenial(entries, order === "desk first" ? "This write requires approval." : "user aborted turn");
+  });
+
+  it("records one cancellation when Stop and owner-window close precede the card", async () => {
+    const arrived = deferred<void>();
+    const release = deferred<void>();
+    const append = audit.appendPermissionAuditEntry.bind(audit);
+    const entries = vi.spyOn(audit, "appendPermissionAuditEntry").mockImplementation(async entry => {
+      if (entry.decision === "ask") {
+        arrived.resolve();
+        await release.promise;
+      }
+      return append(entry);
+    });
+    const call = startDirectoryApproval();
+    try {
+      await arrivalBeforeCompletion(arrived.promise, call.result);
+      call.abort.abort();
+      call.wc.isDestroyed.mockReturnValue(true);
+    } finally {
+      release.resolve();
+    }
+    expect((await call.result)[0].is_error).toBe(true);
+    expect(call.wc.send).not.toHaveBeenCalled();
+    expect(call.execute).not.toHaveBeenCalled();
+    expect(persistedRoots()).toEqual([]);
+    expectRemoteDenial(entries, "user aborted turn");
   });
 
   it("refuses the root if the fresh owner observation at the settings write fails", async () => {

@@ -1034,13 +1034,30 @@ export class ApprovalGate {
 
   // Send an approval request to the renderer and wait for the response. ConversationLoop.executeOne awaits this and blocks the turn. The requireExplicit field controls renderer dismiss behavior.
   async requestAndWait(req: ApprovalRequestInput): Promise<ApprovalDecision> {
+    const auditFieldsFor = (fields: ApprovalAuditFields, executionPlan?: HostShellExecutionPlanAuditProjection): string =>
+      formatApprovalAuditFields({ ...fields, remoteControllerOrigin: req.remoteControllerOrigin }, executionPlan);
+    const isAborted = () => this.lifetime.signal.aborted || req.abortSignal?.aborted === true;
+    // Cancellation is a host outcome even before a card has an owner or a pending entry.
+    const denyForAbortedTurn = (fields: ApprovalAuditFields = req, plan?: HostShellExecutionPlanAuditProjection): ApprovalDecision => {
+      const reason: unknown = this.lifetime.signal.aborted ? this.lifetime.signal.reason : req.abortSignal?.reason;
+      const cause = reason instanceof Error ? reason.message : typeof reason === "string" ? reason : "unspecified";
+      this.auditLogger?.log({
+        timestamp: new Date().toISOString(),
+        sessionId: req.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
+        type: "approval",
+        output: `[approval:cancelled] ${req.id} ${auditFieldsFor(fields, plan)} reason=turn-abort cause=${JSON.stringify(cause)} → deny-once`,
+      });
+      return hostCancellationDecision(req.id);
+    };
+    const rejectBeforeAnswer = (rememberPattern?: string, fields?: ApprovalAuditFields, plan?: HostShellExecutionPlanAuditProjection): ApprovalDecision =>
+      isAborted() ? denyForAbortedTurn(fields, plan) : markHostApprovalRejectedDecision({
+        requestId: req.id, choice: "deny-once", ...(rememberPattern === undefined ? {} : { rememberPattern }),
+      });
     assertEgressHostRequestShape(req);
     if (req.browserSite !== undefined && (browserOrigin(req.browserSite) !== req.browserSite || !req.sessionId || req.source !== "builtin" || req.forceExplicit !== true || req.durableApprovalRecordAllowed !== false || req.evaluationContext?.headless === true)) {
-      return markHostApprovalRejectedDecision({ requestId: req.id, choice: "deny-once" });
+      return rejectBeforeAnswer();
     }
-    if (this.lifetime.signal.aborted) {
-      return hostCancellationDecision(req.id);
-    }
+    if (this.lifetime.signal.aborted) return hostCancellationDecision(req.id);
     const {
       forceExplicit: requestedForceExplicit = false,
       ownerUnattended = false,
@@ -1072,34 +1089,21 @@ export class ApprovalGate {
       ...request
     } = req as ApprovalRequestInput & { hostTerminalAfterExternalContent?: unknown; homeFolderRefused?: unknown; requestingAgentTitle?: unknown; readjudication?: unknown };
     if (toolApprovalWait !== undefined && !isIssuedToolApprovalWait(toolApprovalWait)) {
-      return markHostApprovalRejectedDecision({
-        requestId: req.id,
-        choice: "deny-once",
-        rememberPattern: "Approval execution budget was not issued by the host",
-      });
+      return rejectBeforeAnswer("Approval execution budget was not issued by the host");
     }
     if (!isRemoteControllerBoundToSession(remoteControllerAuthority, req.sessionId) || (remoteControllerOrigin !== undefined && remoteControllerOrigin !== remoteControllerAuthority?.kind)) {
-      return markHostApprovalRejectedDecision({ requestId: req.id, choice: "deny-once", rememberPattern: "Remote controller authentication or session binding is unavailable." });
+      return rejectBeforeAnswer("Remote controller authentication or session binding is unavailable.");
     }
     const forceExplicit = requestedForceExplicit || childProvenance !== undefined;
     if ((requestedUserOwnedSurface !== undefined && (!isUserOwnedSurface(requestedUserOwnedSurface) || !req.sessionId)) ||
       (requestedSurfaceReviewFallback !== undefined && (requestedSurfaceReviewFallback !== true || requestedUserOwnedSurface === undefined))) {
-      return markHostApprovalRejectedDecision({ requestId: req.id, choice: "deny-once", rememberPattern: "Invalid user-owned surface approval" });
+      return rejectBeforeAnswer("Invalid user-owned surface approval");
     }
     const userOwnedSurface = !forceExplicit && req.category === "tool" && (req.kind === undefined || req.kind === "tool" || req.kind === "out-of-allowed-dir")
       ? requestedUserOwnedSurface : undefined;
     if (requestedUserOwnedSurface !== undefined && req.evaluationContext?.headless === true) {
-      return markHostApprovalRejectedDecision({ requestId: req.id, choice: "deny-once", rememberPattern: NO_APPROVER_MESSAGE });
+      return rejectBeforeAnswer(NO_APPROVER_MESSAGE);
     }
-    // Strip bindings, controller authority, abort signals and child eligibility/provenance before spreading renderer requests; live host capability must not reach renderer or audit. Audit only allowlisted plan fields and inject origin into every row so absence cannot masquerade as desk provenance.
-    const auditFieldsFor = (
-      fields: ApprovalAuditFields,
-      executionPlan?: HostShellExecutionPlanAuditProjection,
-    ): string =>
-      formatApprovalAuditFields(
-        { ...fields, remoteControllerOrigin },
-        executionPlan,
-      );
     const suppliedExecutionPlan = requestedExecutionPlan === undefined
       ? undefined
       : isIssuedHostShellExecutionPlanAuditProjection(requestedExecutionPlan)
@@ -1113,11 +1117,7 @@ export class ApprovalGate {
         type: "approval",
         output: `[approval:execution-plan-invalid] ${req.id} ${auditFieldsFor(request)} -> deny-once`,
       });
-      return markHostApprovalRejectedDecision({
-        requestId: req.id,
-        choice: "deny-once",
-        rememberPattern: "execution plan projection was not issued by the host",
-      });
+      return rejectBeforeAnswer("execution plan projection was not issued by the host");
     }
 
     const requestedChoices = req.allowedChoices;
@@ -1170,11 +1170,7 @@ export class ApprovalGate {
         type: "approval",
         output: `[approval:host-shell-binding-mismatch] ${req.id} ${auditFieldsFor(request)} -> deny-once`,
       });
-      return markHostApprovalRejectedDecision({
-        requestId: req.id,
-        choice: "deny-once",
-        rememberPattern: "host shell approval binding did not match displayed request",
-      });
+      return rejectBeforeAnswer("host shell approval binding did not match displayed request");
     }
     const oneShotPermitBinding =
       hostShellExecutionPermitBinding !== undefined &&
@@ -1199,23 +1195,15 @@ export class ApprovalGate {
         type: "approval",
         output: `[approval:execution-plan-mismatch] ${req.id} ${auditFieldsFor(request, boundExecutionPlan)} -> deny-once`,
       });
-      return markHostApprovalRejectedDecision({
-        requestId: req.id,
-        choice: "deny-once",
-        rememberPattern: "execution plan did not match the host shell binding",
-      });
+      return rejectBeforeAnswer("execution plan did not match the host shell binding", request, boundExecutionPlan);
     }
     const executionPlanAudit = boundExecutionPlan ?? suppliedExecutionPlan;
     if (executionPlanAudit?.executionRequest === "host" &&
       (oneShotPermitBinding === undefined ||
         this.liveSurfaceFor(req.sessionId, req.egressHost?.terminalTabId) === null)) {
-      return markHostApprovalRejectedDecision({
-        requestId: req.id,
-        choice: "deny-once",
-        rememberPattern: this.liveSurfaceFor(req.sessionId, req.egressHost?.terminalTabId) === null
-          ? NO_APPROVER_MESSAGE
-          : "explicit host execution requires a local desktop approval",
-      });
+      return rejectBeforeAnswer(this.liveSurfaceFor(req.sessionId, req.egressHost?.terminalTabId) === null
+        ? NO_APPROVER_MESSAGE
+        : "explicit host execution requires a local desktop approval", request, executionPlanAudit);
     }
 
     // Sandbox capability injection is scoped to the tool-execution approval surface. Non-execution surfaces (out-of-allowed-dir directory confirm, agent-action/mode-change config asks) have no sandbox row in their DOM and showing "isolation: none" on a config change is misleading because no tool will run. The injection guard checks BOTH `kind` AND `toolCategory`: - `kind === "out-of-allowed-dir"` → no injection - `kind === "agent-action"` → no injection - `toolCategory === "meta"` → no injection (catches mode-change asks that default `kind` to "tool") - else (tool execution) → inject Caller-supplied capability is always preserved (`??` semantics).
@@ -1315,6 +1303,7 @@ export class ApprovalGate {
 
     // Missing or destroyed registered owners have the same fail-closed semantics as headless runs.
     if (this.liveSurfaceFor(fullReq.sessionId, fullReq.egressHost?.terminalTabId) === null) {
+      if (isAborted()) return denyForAbortedTurn(fullReq, executionPlanAudit);
       const headless = this.headlessDenied !== undefined;
       this.auditLogger?.log({
         timestamp: new Date().toISOString(),
@@ -1325,11 +1314,7 @@ export class ApprovalGate {
           : `[approval:send-failed] ${fullReq.id} ${auditFieldsFor(fullReq, executionPlanAudit)} — no approval surface → deny-once`,
       });
       try { this.headlessDenied?.(fullReq.id, fullReq.toolName); } catch { /* Notification cannot change a deny. */ }
-      return markHostApprovalRejectedDecision({
-        requestId: fullReq.id,
-        choice: "deny-once",
-        rememberPattern: NO_APPROVER_MESSAGE,
-      });
+      return rejectBeforeAnswer(NO_APPROVER_MESSAGE, fullReq, executionPlanAudit);
     }
 
     // phase: requested
@@ -1341,23 +1326,8 @@ export class ApprovalGate {
       input: `[approval:requested] ${fullReq.id} ${auditFieldsFor(fullReq, executionPlanAudit)}`,
     });
 
-    // Aborted turns receive host-rejected deny-once with no remembered pattern, never a user-authored denial. Share the cancelled audit marker with host retirement and retain the stop reason to distinguish owner Stop from host tile release.
-    const abortCause = (): string => {
-      const reason: unknown = this.lifetime.signal.aborted ? this.lifetime.signal.reason : abortSignal?.reason;
-      if (reason instanceof Error) return reason.message;
-      return typeof reason === "string" ? reason : "unspecified";
-    };
-    const denyForAbortedTurn = (): ApprovalDecision => {
-      this.auditLogger?.log({
-        timestamp: new Date().toISOString(),
-        sessionId: fullReq.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
-        type: "approval",
-        output: `[approval:cancelled] ${fullReq.id} ${auditFieldsFor(fullReq, executionPlanAudit)} reason=turn-abort cause=${JSON.stringify(abortCause())} → deny-once`,
-      });
-      return hostCancellationDecision(fullReq.id);
-    };
     // Above the away answer, the OS notification and the renderer send, all for one reason: none of them should happen on behalf of a turn that is already over. An away grant in particular has a finite budget, and spending a unit of it to answer a dead turn spends it on nothing.
-    if (this.lifetime.signal.aborted || abortSignal?.aborted) return denyForAbortedTurn();
+    if (isAborted()) return denyForAbortedTurn(fullReq, executionPlanAudit);
 
     if (oneShotPermitBinding !== undefined) {
       const displayedArgs = maskArgsForDisplay(fullReq.args, new Set<string>());
@@ -1372,7 +1342,7 @@ export class ApprovalGate {
           type: "approval",
           output: `[approval:host-display-inexact] ${fullReq.id} toolName=${fullReq.toolName} -> deny-once`,
         });
-        return markHostApprovalRejectedDecision({ requestId: fullReq.id, choice: "deny-once", rememberPattern: reason });
+        return rejectBeforeAnswer(reason, fullReq, executionPlanAudit);
       }
     }
 
@@ -1392,7 +1362,7 @@ export class ApprovalGate {
     }
     const retractToast = (): void => this.announceSettledToRenderer(fullReq.id, [toastSurface]);
 
-    if (this.lifetime.signal.aborted || abortSignal?.aborted) { retractToast(); return denyForAbortedTurn(); }
+    if (isAborted()) { retractToast(); return denyForAbortedTurn(fullReq, executionPlanAudit); }
 
     // Mint nonce + HMAC, attach to outgoing request (confused-deputy defense)
     const nonce = randomBytes(16).toString("hex");
@@ -1484,10 +1454,10 @@ export class ApprovalGate {
 
       if (abortSignal !== undefined) {
         const onAbort = (): void => {
-          clearTimeout(timer);
           // Drop the entry before resolving, so a renderer answer that crossed the abort in flight arrives as a harmless unknown-request replay instead of an answer to a turn that no longer exists.
-          this.pending.delete(fullReq.id);
-          settle(denyForAbortedTurn());
+          if (!this.pending.delete(fullReq.id)) return;
+          clearTimeout(timer);
+          settle(denyForAbortedTurn(fullReq, executionPlanAudit));
         };
         detachAbortListener = () =>
           abortSignal.removeEventListener("abort", onAbort);
@@ -1598,20 +1568,15 @@ export class ApprovalGate {
                 : {}),
             };
       } catch (sealErr) {
+        if (!this.pending.delete(fullReq.id)) return;
         clearTimeout(timer);
-        this.pending.delete(fullReq.id);
         this.auditLogger?.log({
           timestamp: new Date().toISOString(),
           sessionId: fullReq.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
           type: "approval",
           output: `[approval:seal-failed] ${fullReq.id} toolName=${fullReq.toolName} error=${errorMessage(sealErr)} → deny-once`,
         });
-        settle(
-          markHostApprovalRejectedDecision({
-            requestId: fullReq.id,
-            choice: "deny-once",
-          }),
-        );
+        settle(rejectBeforeAnswer(undefined, fullReq, executionPlanAudit));
         return;
       }
       if (dlpHits.size > 0) {
@@ -1642,7 +1607,7 @@ export class ApprovalGate {
             this.pending.delete(fullReq.id);
             this.auditLogger?.log({ timestamp: new Date().toISOString(), sessionId: UNATTRIBUTED_APPROVAL_SESSION_ID,
               type: "approval", output: `[approval:send-failed] ${fullReq.id} ${auditFieldsFor(fullReq, executionPlanAudit)} no successor approval surface → deny-once` });
-            settle(markHostApprovalRejectedDecision({ requestId: fullReq.id, choice: "deny-once", rememberPattern: NO_APPROVER_MESSAGE }));
+            settle(rejectBeforeAnswer(NO_APPROVER_MESSAGE, fullReq, executionPlanAudit));
           };
           const handoff = (previous: WebContents): void => {
             if (this.pending.get(fullReq.id) !== parked || parked.unattributedOwner !== previous) return;
@@ -1669,8 +1634,8 @@ export class ApprovalGate {
         sentTo = surface;
         surface.send(IPC_APPROVAL_REQUEST, maskedSignedReq);
       } catch (sendErr) {
+        if (!this.pending.delete(fullReq.id)) return;
         clearTimeout(timer);
-        this.pending.delete(fullReq.id);
         // phase: send-failed
         this.auditLogger?.log({
           timestamp: new Date().toISOString(),
@@ -1678,20 +1643,14 @@ export class ApprovalGate {
           type: "approval",
           output: `[approval:send-failed] ${fullReq.id} ${auditFieldsFor(fullReq, executionPlanAudit)} error=${errorMessage(sendErr)} → deny-once`,
         });
-        settle(
-          markHostApprovalRejectedDecision({
-            requestId: fullReq.id,
-            choice: "deny-once",
-            ...(surfaceUnavailable ? { rememberPattern: NO_APPROVER_MESSAGE } : {}),
-          }),
-        );
+        settle(rejectBeforeAnswer(surfaceUnavailable ? NO_APPROVER_MESSAGE : undefined, fullReq, executionPlanAudit));
       }
     });
     // The wait wrapper can throw before running the callback (a budget that cannot pause), so the catch sits outside it.
     return (toolApprovalWait ?? withToolApprovalWait)(() => {
-      if (this.lifetime.signal.aborted || abortSignal?.aborted) {
+      if (isAborted()) {
         retractToast();
-        return Promise.resolve(denyForAbortedTurn());
+        return Promise.resolve(denyForAbortedTurn(fullReq, executionPlanAudit));
       }
       return waitForHuman();
     }).catch((error: unknown) => { retractToast(); throw error; });
