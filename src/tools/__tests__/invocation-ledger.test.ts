@@ -140,3 +140,118 @@ it("fails the shutdown when the host-shutdown row of detached work cannot be wri
   await expect(ledger.closeToolInvocationAudit(close)).rejects.toThrow("shutdown invocation audit failed");
   expect(logError).toHaveBeenCalled();
 });
+
+it("claims an attempt's terminal row exactly once and refuses a second claim as an error", async () => {
+  const ledger = await import("../invocation-ledger.js");
+  const admission = ledger.admitToolInvocation("once");
+  const first = vi.fn(async () => "row");
+  const second = vi.fn(async () => "row");
+  const written = admission.terminal.commit(first);
+  // The claim is the synchronous enqueue: the state moved before any await.
+  expect(admission.terminal.state).toBe("enqueued");
+  expect(first).toHaveBeenCalledOnce();
+  await expect(written).resolves.toBe("row");
+  expect(admission.terminal.state).toBe("committed");
+  await expect(admission.terminal.commit(second)).resolves.toBeUndefined();
+  expect(second).not.toHaveBeenCalled();
+  expect(admission.terminal.claim("invocation")).toBe(false);
+  expect(logError).toHaveBeenCalledWith("%s", "terminal row of once claimed twice");
+  admission.settle();
+});
+
+it("gives an attempt the host's row only while it is unclaimed, keeping a selected outcome", async () => {
+  const ledger = await import("../invocation-ledger.js");
+  const write = vi.fn(async () => {});
+  const unclaimed = ledger.admitToolInvocation("unclaimed");
+  unclaimed.terminal.hostTerminal(write);
+  unclaimed.terminal.select("accepted deny");
+  const claimed = ledger.admitToolInvocation("claimed");
+  claimed.terminal.hostTerminal(write);
+  await claimed.terminal.commit(async () => {});
+  unclaimed.settle(new Error("boom"));
+  claimed.settle(new Error("boom"));
+  expect(write).toHaveBeenCalledOnce();
+  expect(write).toHaveBeenCalledWith("error", "the invocation failed: boom", "accepted deny");
+});
+
+it("moves ownership to a suspended rationale card and back at its sealed start", async () => {
+  const ledger = await import("../invocation-ledger.js");
+  const write = vi.fn(async () => {});
+  const first = ledger.admitToolInvocation("held");
+  first.terminal.hostTerminal(write);
+  first.suspend("tu-held");
+  first.settle();
+  expect(write).not.toHaveBeenCalled();
+  expect(first.terminal.owner).toBe("rationale");
+  // Only the owner, or the host, may claim.
+  expect(first.terminal.claim("invocation")).toBe(false);
+  const resumed = ledger.admitToolInvocation("held", undefined, "tu-held");
+  expect(resumed.terminal.owner).toBe("invocation");
+  expect(resumed.terminal.state).toBe("open");
+  await resumed.terminal.commit(async () => {});
+  resumed.settle();
+  expect(write).not.toHaveBeenCalled();
+});
+
+it("ends a suspended attempt with the host's row when its card is stopped or the host quits", async () => {
+  const ledger = await import("../invocation-ledger.js");
+  const parent = new AbortController();
+  const write = vi.fn(async (_cause: string) => {});
+  const stopped = ledger.admitToolInvocation("stopped", parent.signal);
+  stopped.terminal.hostTerminal(write);
+  stopped.suspend("tu-stopped");
+  stopped.settle();
+  const quit = ledger.admitToolInvocation("quit");
+  quit.terminal.hostTerminal(write);
+  quit.suspend("tu-quit");
+  quit.settle();
+  parent.abort();
+  ledger.sealToolInvocations();
+  await expect(ledger.closeToolInvocationAudit(close)).resolves.toBe(0);
+  expect(write.mock.calls.map(([cause]) => cause)).toEqual(["user-abort", "host-shutdown"]);
+  // The late sealed start adopts an attempt whose row is already written.
+  expect(stopped.terminal.state).toBe("committed");
+});
+
+it("gives a sandbox retry its own attempt only after the first attempt's row", async () => {
+  const ledger = await import("../invocation-ledger.js");
+  const admission = ledger.admitToolInvocation("retry");
+  expect(() => admission.terminal.nextAttempt()).toThrow("attempt 1 of retry has no terminal row yet");
+  await admission.terminal.commit(async () => {});
+  const retry = admission.terminal.nextAttempt();
+  expect(retry.attempt).toBe(2);
+  expect(retry.state).toBe("open");
+  await retry.commit(async () => {});
+  admission.settle();
+});
+
+it("drains enqueued rows before the sink closes, then fences late claims", async () => {
+  const ledger = await import("../invocation-ledger.js");
+  const order: string[] = [];
+  const parked = ledger.admitToolInvocation("parked");
+  parked.terminal.hostTerminal(async (cause) => { await Promise.resolve(); order.push(`row:${cause}`); });
+  ledger.sealToolInvocations();
+  const outcome = ledger.drainToolInvocationAuditForExit(async () => { await Promise.resolve(); await Promise.resolve(); order.push("close"); }, 50);
+  await expect(outcome).resolves.toBe("committed");
+  expect(order).toEqual(["row:host-shutdown", "close"]);
+  const late = vi.fn(async () => {});
+  await expect(parked.terminal.commit(late)).resolves.toBeUndefined();
+  expect(late).not.toHaveBeenCalled();
+  parked.settle();
+});
+
+it("reports a drain the sink cannot finish before the deadline", async () => {
+  const ledger = await import("../invocation-ledger.js");
+  const outcome = ledger.drainToolInvocationAuditForExit(() => new Promise<void>(() => {}), 50);
+  await vi.advanceTimersByTimeAsync(50);
+  await expect(outcome).resolves.toBe("timed-out");
+});
+
+it("reports a drain whose host row failed to commit", async () => {
+  const ledger = await import("../invocation-ledger.js");
+  ledger.beginToolInvocationAuditShutdown();
+  const parked = ledger.admitToolInvocation("failing");
+  parked.terminal.hostTerminal(async () => { throw new Error("append refused"); });
+  await expect(ledger.drainToolInvocationAuditForExit(async () => {}, 50)).resolves.toBe("failed");
+  parked.settle();
+});
