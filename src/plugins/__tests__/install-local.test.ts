@@ -239,17 +239,17 @@ describe("PluginMarketplaceService.installLocal", () => {
     const stamp = async (): Promise<unknown> =>
       (JSON.parse(await readFile(registryPath, "utf-8")) as { plugins: Array<{ installedAt?: unknown }> }).plugins[0]?.installedAt;
     const service = makeService();
-    await service.installLocal(sourceDir);
+    await service.installLocal(sourceDir, preparedActivationOptionsForTest);
     const first = await stamp();
     expect(typeof first).toBe("string");
     expect(first).not.toBe("");
 
-    await service.installLocal(sourceDir);
+    await service.installLocal(sourceDir, preparedActivationOptionsForTest);
     expect(await stamp()).toBe(first);
 
     await service.uninstall("test-plugin");
     await new Promise((resolve) => setTimeout(resolve, 2));
-    await service.installLocal(sourceDir);
+    await service.installLocal(sourceDir, preparedActivationOptionsForTest);
     const reinstalled = await stamp();
     expect(typeof reinstalled).toBe("string");
     expect(reinstalled).not.toBe(first);

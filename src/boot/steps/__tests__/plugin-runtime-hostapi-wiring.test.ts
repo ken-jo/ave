@@ -217,6 +217,7 @@ type CreateHostApi = (
     trackOperation: <T>(operation: Promise<T>) => Promise<T>;
     isActive: () => boolean;
     isLifecycleHookActive: () => boolean;
+    generationScope?: HostApiGenerationScope;
   },
   installPluginId: string | null,
   candidateRegistryEntry?: PluginRegistryTrust,
