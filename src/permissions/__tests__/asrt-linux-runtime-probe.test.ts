@@ -501,7 +501,8 @@ describe("initializeAsrtSandbox — Linux configured-wrapper runtime probe", () 
     expect(h.wrapWithSandboxArgv).toHaveBeenCalledTimes(1);
     const wrapCall = h.wrapWithSandboxArgv.mock.calls[0];
     expect(wrapCall?.[0]).toBe("true");
-    expect(wrapCall?.[1]).toBeUndefined();
+    // The shell is named absolutely so the wrapper never looks bash up in a current directory.
+    expect(wrapCall?.[1]).toMatch(/^\/.*\/bash$/u);
     expect(wrapCall?.[2]).toBeUndefined();
     expect(wrapCall?.[3]).toBeInstanceOf(AbortSignal);
     expect(wrapCall?.[4]).toBe(process.cwd());

@@ -53,6 +53,7 @@ import {
 } from "./sandbox-capability.js";
 import { defaultHooksDir } from "../hooks/hook-discovery.js";
 import { readWindowsReadDenyEvidence, recheckWindowsReadDenyEvidence, windowsReadDenyEvidence, windowsReadDenyKey, type WindowsReadDenyEvidence, type WindowsReadDenySnapshot } from "../shared/windows-read-deny-evidence.js";
+import { findHostProgram } from "../shared/host-program-path.js";
 import type { SandboxWindowsStatusInfo } from "../shared/sandbox-capability-info.js";
 import { readWindowsDenyAcls, WINDOWS_READ_DENY_MASK, WINDOWS_WRITE_DENY_MASK } from "./windows-deny-acl.js";
 
@@ -2008,6 +2009,17 @@ function buildSensitiveWriteFloor(userDataDir: string | undefined, resolveDocume
   return { entries: out, bounded: profiles?.bounded ?? true };
 }
 
+// The Linux wrapper starts these host programs itself; each is named by its PATH-only absolute path so the wrapper's own lookup never reaches a current directory. A missing program keeps a fixed path and fails the dependency check.
+function linuxWrapperPrograms(): Pick<SandboxRuntimeConfig, "bwrapPath" | "socatPath" | "ripgrep"> {
+  const at = (name: string) => findHostProgram(name) ?? `/usr/bin/${name}`;
+  return { bwrapPath: at("bwrap"), socatPath: at("socat"), ripgrep: { command: at("rg") } };
+}
+
+// Given no shell, the POSIX wrapper looks bash up itself, an empty PATH entry included; name it by its PATH-only absolute path.
+function posixWrapShell(): string | undefined {
+  return process.platform === "win32" ? undefined : findHostProgram("bash") ?? "/bin/bash";
+}
+
 // Build a fully-resolved SandboxRuntimeConfig from TRUSTED settings. Deny-by-default: when no `allowedDomains` are supplied the network section has an empty allow-list, which ASRT treats as "no egress". Weakening flags default to `false`/absent and are only set when explicitly present in the trusted `weakening` object. @internal Exported for unit tests only (the Windows-logic tests assert the win32 `windows.proxyPortRange` emission with `process.platform` forced). Not part of the module's runtime API — boot uses initializeAsrtSandbox.
 export function buildSandboxConfig(
   trustedSettings: TrustedSandboxSettings,
@@ -2127,6 +2139,7 @@ export function buildSandboxConfig(
     filesystem: finishFilesystemPolicy(filesystem, trustedSettings, trustedSettings.denyWrite ?? [], hasConfiguredDenies(trustedSettings)) as FilesystemConfig,
     ...(windows !== undefined ? { windows } : {}),
     ...(applySeccompPath !== undefined ? { seccomp: { applyPath: applySeccompPath } } : {}),
+    ...(process.platform === "linux" ? linuxWrapperPrograms() : {}),
     ...(process.platform === "darwin" || process.platform === "linux"
       ? { javaAgentJarPath: getVendoredJavaProxyAgentJarPath() }
       : {}),
@@ -2292,10 +2305,10 @@ async function verifyAsrtRuntime(
   try {
     await openEgressListener(SandboxManager, "sandbox runtime probe", invocation.token);
     listenerOpened = true;
-    // The probe covers the same attributed listener path as regular shells. No binShell/customConfig override: this is the exact initialized wrapper configuration used by regular tool execution, with the fixed `true` probe.
+    // The probe covers the same attributed listener path as regular shells. No customConfig override: this is the exact initialized wrapper configuration used by regular tool execution, with the fixed `true` probe and the shell a wrap without its own gets.
     const probe = await SandboxManager.wrapWithSandboxArgv(
       ASRT_LINUX_RUNTIME_PROBE_COMMAND,
-      undefined,
+      posixWrapShell(),
       undefined,
       abortController.signal,
       process.cwd(),
@@ -2605,7 +2618,7 @@ export async function wrapToolCommand(
     assertWindowsSession(session);
     const pendingWrap = SandboxManager.wrapWithSandboxArgv(
       command,
-      options.binShell,
+      options.binShell ?? posixWrapShell(),
       customConfig,
       options.abortSignal,
       undefined,
@@ -2801,7 +2814,7 @@ async function wrapLongLivedCommand(
     assertWindowsSession(session);
     const pendingWrap = SandboxManager.wrapWithSandboxArgv(
       command,
-      options.binShell,
+      options.binShell ?? posixWrapShell(),
       customConfig,
       options.abortSignal,
       undefined,
