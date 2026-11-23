@@ -431,25 +431,38 @@ function declarationEnd(tokens: readonly string[], start: number): number {
 // Source paths can be passed through helpers, captured in a closure, or interpolated
 // into bundled code. Index their literals independently of import syntax.
 export function windowsRuntimeInputIndex(sources: ReadonlyMap<string, string>) {
+  const runtimeSpelling = (path: string) => path.replace(/\.tsx?$/u, ".js").replace(/\.mts$/u, ".mjs").replace(/\.cts$/u, ".cjs");
   const suffixes = new Map<string, string[]>();
   for (const file of sources.keys()) {
     const segments = file.split("/");
     for (let i = 0; i < segments.length; i++) {
       const suffix = segments.slice(i).join("/");
-      const runtimeSuffix = suffix.replace(/\.tsx?$/u, ".js").replace(/\.mts$/u, ".mjs").replace(/\.cts$/u, ".cjs");
-      for (const spelling of new Set([suffix, runtimeSuffix])) {
+      for (const spelling of new Set([suffix, runtimeSpelling(suffix)])) {
         const paths = suffixes.get(spelling) ?? [];
         paths.push(file);
         suffixes.set(spelling, paths);
       }
     }
   }
-  return (tokens: readonly string[]) => {
+  return (tokens: readonly string[], importer?: string) => {
     const files = new Set<string>();
-    for (const token of tokens) {
+    for (const [index, token] of tokens.entries()) {
       const value = literal(token)?.replaceAll("\\\\", "/").replace(/^--(?:require|import|loader)=/u, "")
         .split(/[?#]/u)[0];
       if (!value || !SOURCE_FILE.test(value)) continue;
+      const previous = tokens[index - 1];
+      const callee = tokens[index - 2];
+      const relativeModule = previous === "from" || previous === "import"
+        || (previous === "(" && (callee === "import" || callee === "require"));
+      const relativeUrl = callee === "URL" && previous === "(" && tokens.slice(index + 1, index + 7).join("") === ",import.meta.url";
+      if (importer && (relativeModule || relativeUrl) && /^\.\.?\//u.test(value)) {
+        const relative = posix.join(posix.dirname(importer), value);
+        const resolved = suffixes.get(relative)?.filter(file => file === relative || runtimeSpelling(file) === relative);
+        if (resolved?.length) {
+          for (const file of resolved) files.add(file);
+          continue;
+        }
+      }
       const path = posix.normalize(value).replace(/^(?:\.\.\/)+|^\//u, "");
       for (const file of suffixes.get(path) ?? []) files.add(file);
     }

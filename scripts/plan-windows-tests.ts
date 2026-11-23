@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, posix, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   hasUnverifiedWindowsRuntimeInput, isInventorySource, readWindowsSources, windowsImportGraph, windowsRuntimeInputIndex,
@@ -8,6 +8,7 @@ import {
 import { WINDOWS_TEST_LISTS, WINDOWS_TEST_SHARDS, windowsTestFiles } from "./run-windows-test-list.mjs";
 import { parseGitRawDiff } from "./hooks/pre-push-ref-updates.mjs";
 import { isCollectedVitestFile } from "./lib/vitest-collection.mjs";
+import { windowsRuntimeInputScopes } from "./windows-runtime-input-scopes.js";
 import {
   assertWindowsRemovalRecords, windowsCoverageDepartures, windowsInventoryDiff, type ReadWindowsVersion, type WindowsInventoryPath,
 } from "./windows-test-inventory.mjs";
@@ -64,14 +65,20 @@ function affectedFiles(sources: ReadonlyMap<string, string>, changed: ReadonlySe
   const graph = windowsImportGraph(sources);
   const indexInput = windowsRuntimeInputIndex(sources);
   const importers = new Map<string, string[]>();
-  const forward = new Map<string, Set<string>>();
+  const runtimeCalls = new Map<string, Set<string>>();
+  const affected = new Set(changed);
   const directInputs = new Set<string>();
   for (const [file, { dependencies, tokens }] of graph) {
-    const inputs = indexInput(tokens);
-    if (eligible.has(file) && [...inputs].some(input => changed.has(input))) directInputs.add(file);
+    const inputs = indexInput(tokens, file);
+    const scope = windowsRuntimeInputScopes[file];
+    const matchesScope = scope?.some(pattern => [...changed].some(input => posix.matchesGlob(input, pattern)));
+    if ([...inputs].some(input => changed.has(input)) || matchesScope) {
+      affected.add(file);
+      if (eligible.has(file)) directInputs.add(file);
+    }
     // Mocked importers and code consumed outside module loading are relevant.
     const targets = new Set([...dependencies.map(dependency => dependency.file), ...inputs]);
-    forward.set(file, targets);
+    runtimeCalls.set(file, targets);
     for (const target of targets) {
       const parents = importers.get(target) ?? [];
       parents.push(file);
@@ -81,12 +88,20 @@ function affectedFiles(sources: ReadonlyMap<string, string>, changed: ReadonlySe
   const reachable = new Set(eligible);
   for (const file of reachable) {
     const module = graph.get(file);
-    if (module && hasUnverifiedWindowsRuntimeInput(module.tokens)) {
-      throw new Error(`a runtime source input in ${file} could not be bounded`);
+    if (module && windowsRuntimeInputScopes[file] === undefined && hasUnverifiedWindowsRuntimeInput(module.tokens)) {
+      // A reader discovered from a suite has known owners. Keep those suites
+      // without letting uncertainty in one reader schedule unrelated suites.
+      affected.add(file);
     }
-    for (const target of forward.get(file) ?? []) reachable.add(target);
+    for (const target of runtimeCalls.get(file) ?? []) reachable.add(target);
   }
-  const affected = new Set(changed);
+  for (const file of changed) {
+    const module = graph.get(file);
+    if (module && !reachable.has(file) && !isCollectedVitestFile(file)
+      && windowsRuntimeInputScopes[file] === undefined && hasUnverifiedWindowsRuntimeInput(module.tokens)) {
+      throw new Error(`a changed runtime reader in ${file} has no known suite owners`);
+    }
+  }
   for (const file of affected) for (const importer of importers.get(file) ?? []) affected.add(importer);
   return { affected, directInputs };
 }

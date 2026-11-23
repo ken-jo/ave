@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { assertWindowsCoverage, planWindowsTests, pullRequestWindowsChanges } from "../../scripts/plan-windows-tests.js";
 import { plannedWindowsFiles, WINDOWS_TEST_LISTS, WINDOWS_TEST_SHARDS, windowsTestFiles } from "../../scripts/run-windows-test-list.mjs";
-import { windowsImportGraph, windowsRuntimeInputIndex } from "./windows-native-test-inventory.js";
+import { readWindowsSources, windowsImportGraph, windowsRuntimeInputIndex } from "./windows-native-test-inventory.js";
 import {
   assertWindowsRemovalRecords, windowsCoverageDepartures, WINDOWS_TEST_REMOVALS, type ReadWindowsVersion,
 } from "../../scripts/windows-test-inventory.mjs";
@@ -125,12 +125,60 @@ describe("Windows regression planning", () => {
     'import { spawn } from "node:child_process"; const launch = spawn; launch("bun", [process.env.RUNTIME_SOURCE]);',
     'import { buildSync } from "esbuild"; buildSync({ entryPoints: [process.env.RUNTIME_SOURCE] });',
     'import { readFileSync } from "node:fs"; readFileSync(process.env.RUNTIME_SOURCE);',
-  ])("falls back to all lists when %s could reach a changed source", source => {
+  ])("keeps the owning suite when %s could reach a changed source", source => {
     const runtimeSources = () => new Map([[permissionSuite, source], [changed, "export const value = 1;"]]);
     const result = planWindowsTests({ event: "pull_request", changes: [{ status: "M", file: changed }], inventories, readSources: runtimeSources });
-    expect(result.mode).toBe("full");
-    expect(result.reason).toContain("runtime source input");
+    expect(result.mode).toBe("affected");
+    expect(selected(result)).toEqual([...core(), permissionSuite].sort());
   });
+
+  it("keeps the known importers of a shared reader and falls back when ownership cannot be established", () => {
+    const otherSuite = "src/permissions/__tests__/sensitive-paths-canonicalize.test.ts";
+    const reader = 'import { readFileSync } from "node:fs"; readFileSync(process.env.RUNTIME_SOURCE);';
+    const runtimeSources = new Map(readSources()).set(dependency, reader)
+      .set(otherSuite, 'import "../../shared/test-dependency.js";');
+    const run = (file: string) => planWindowsTests({
+      event: "pull_request", changes: [modified(file)], inventories, readSources: () => runtimeSources,
+    });
+    expect(run(changed).mode).toBe("affected");
+    expect(selected(run(changed))).toEqual([...core(), permissionSuite, otherSuite].sort());
+    runtimeSources.set(changed, reader);
+    expect(run(changed)).toMatchObject({ mode: "full", reason: expect.stringContaining("no known suite owners") });
+  });
+
+  it("uses a shared bundler's declared input before considering unresolved readers", () => {
+    const bundler = "src/plugins/isolation/__tests__/child-entry-bundle.ts";
+    const entry = "src/plugins/isolation/plugin-child-main.ts";
+    const runtimeSources = new Map(readSources()).set(entry, "export {};")
+      .set(permissionSuite, 'import "../../plugins/isolation/__tests__/child-entry-bundle.js";')
+      .set(bundler, 'import { build } from "esbuild"; build(options);');
+    const run = (file: string) => planWindowsTests({
+      event: "pull_request", changes: [modified(file)], inventories, readSources: () => runtimeSources,
+    });
+    expect(selected(run(changed))).toEqual(core());
+    expect(selected(run(entry))).toEqual([...core(), permissionSuite].sort());
+  });
+
+  it.each([
+    ["src/ui/renderer/types.ts", (source: string) => `${source}\n`],
+    ["src/permissions/__tests__/sensitive-paths-canonicalize.test.ts",
+      (source: string) => source.replace("path produces an absolute resolved string", "path is absolute")],
+  ] as const)("keeps a bounded edit to %s in affected mode with the committed inventories", (file, edit) => {
+    const sources = readWindowsSources(process.cwd());
+    const before = sources.get(file) ?? "";
+    const after = edit(before);
+    expect(before).not.toBe("");
+    expect(after).not.toBe(before);
+    const result = planWindowsTests({
+      event: "pull_request", changes: [modified(file)], inventories,
+      readVersion: (_path, side) => side === "before" ? before : after,
+      readSources: () => sources.set(file, after),
+    });
+    expect(result.mode).toBe("affected");
+    const files = selected(result);
+    expect(files.length).toBeLessThan(new Set(Object.values(inventories).flat()).size);
+    if (file.endsWith(".test.ts")) expect(files).toContain(file);
+  }, 45_000);
 
   const runtimeContracts = [
     ["src/plugins/__tests__/registry-atomicity.test.ts", "src/plugins/__tests__/fixtures/registry-process-child.ts"],
