@@ -3,7 +3,8 @@
 import { resolve } from "node:path";
 import { aveHome } from "../shared/ave-home.js";
 import { withInProcessFileQueue } from "../lib/with-file-lock.js";
-import { readJsonFileOrEmpty, writeFileAtomicAtPath, writeFileAtomicAtPathIf } from "./storage/feature-namespace.js";
+import { preparePrivateFileDirectory, readJsonFileOrEmpty, writeFileAtomicAtPath } from "./storage/feature-namespace.js";
+import { commitApprovalFile, type ApprovalPersistenceGuard } from "../permissions/approval-persistence-guard.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { readAveHomeInput } from "../shared/ave-home-trust.js";
 
@@ -93,7 +94,7 @@ export class SkillApprovalsStore {
   }
 
   // Bind current material to the same caller-derived key used by isApproved; mismatched derivation would re-prompt forever.
-  async approve(recordKey: string, currentMaterial: string, canCommit?: () => boolean): Promise<void> {
+  async approve(recordKey: string, currentMaterial: string, authority?: ApprovalPersistenceGuard): Promise<void> {
     return withInProcessFileQueue(this.filePath, async () => {
       const file = await readFileOrEmpty(this.filePath);
       const newHash = hashSkillMaterial(currentMaterial);
@@ -108,10 +109,9 @@ export class SkillApprovalsStore {
           approvedAt: new Date().toISOString(),
         });
       }
-      if (canCommit) {
-        if (!await writeFileAtomicAtPathIf(this.filePath, `${JSON.stringify(file, null, 2)}\n`, canCommit)) {
-          throw new Error("Skill approval authority is unavailable");
-        }
+      if (authority) {
+        await preparePrivateFileDirectory(this.filePath);
+        await commitApprovalFile(this.filePath, `${JSON.stringify(file, null, 2)}\n`, authority);
       } else {
         await writeAtomic(this.filePath, file);
       }

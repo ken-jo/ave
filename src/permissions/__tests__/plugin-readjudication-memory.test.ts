@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import type { PluginReadjudicationEvidence, UserApprovalScope } from "../../shared/permissions-events.js";
@@ -40,7 +40,7 @@ describe("exact plugin re-adjudication memory", () => {
   let previousAveHome: string | undefined;
 
   beforeEach(async () => {
-    root = await mkdtemp(join(homedir(), "ave-readjudication-memory-"));
+    root = await mkdtemp(join(tmpdir(), "ave-readjudication-memory-"));
     previousAveHome = process.env.AVE_HOME;
     process.env.AVE_HOME = join(root, "state");
     first = join(root, "first");

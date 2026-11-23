@@ -4,7 +4,7 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, statSyn
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { withFileLock } from "../../lib/with-file-lock.js";
-import { writeUtf8FileAtomicSync, replaceUtf8FileAtomicSyncIf, isMissingPathError, PRIVATE_DIR_MODE } from "../../lib/atomic-file.js";
+import { writeUtf8FileAtomicSync, isMissingPathError, PRIVATE_DIR_MODE } from "../../lib/atomic-file.js";
 import { captureApprovalWorkingDirectory } from "../user-approval-store.js";
 import { caseFoldForMatch } from "../sensitive-paths.js";
 import type { ScopedPermissionRuleError } from "../../shared/permissions-events.js";
@@ -13,7 +13,7 @@ import { PermissionRulesFileCorruptError, inertRulePatterns, invalidJsonDetail, 
 import { assertAveHomeInputWritable, readAveHomeInput } from "../../shared/ave-home-trust.js";
 import { withShellPolicyMutation } from "../shell-policy-handoff.js";
 
-import { refreshApprovalPersistence, type ApprovalPersistenceGuard } from "../approval-persistence-guard.js";
+import { commitApprovalFile, type ApprovalPersistenceGuard } from "../approval-persistence-guard.js";
 
 export interface ProjectRulesFile {
   version: 1;
@@ -190,8 +190,6 @@ export async function updateProjectRulesFile(
 ): Promise<ProjectRulesFile> {
   // The store reads as absent in a refused home; rewriting it from that view would erase the user's file.
   assertAveHomeInputWritable(location.filePath);
-  // Probe before the global policy queue and cross-process lock; inside them only the synchronous fence below guards the commit.
-  await refreshApprovalPersistence(authority);
   return withShellPolicyMutation(async () => {
     await mkdir(dirname(location.filePath), { recursive: true, mode: PRIVATE_DIR_MODE });
     return withFileLock(location.filePath, async () => {
@@ -207,7 +205,7 @@ export async function updateProjectRulesFile(
       file.rules = validateRuleList(location.filePath, file.rules, { specifiersOnly: true, keepInertWildcards: inert });
       file.updatedAt = new Date().toISOString();
       if (authority) {
-        if (!replaceUtf8FileAtomicSyncIf(location.filePath, `${JSON.stringify(file, null, 2)}\n`, authority.isCurrent)) throw new Error("Approval authority is unavailable");
+        await commitApprovalFile(location.filePath, `${JSON.stringify(file, null, 2)}\n`, authority);
       } else {
         writeUtf8FileAtomicSync(location.filePath, `${JSON.stringify(file, null, 2)}\n`, 0o600);
       }
