@@ -220,7 +220,7 @@ it("a delete of a live run's item keeps the output folder until the run has sett
   const runId = (await h.item(id)).runId ?? "";
   // What is on disk at each step of the delete: the intent stored, then each run write, which says whether it ended the run and how. A
   // live run keeps writing its progress meanwhile; only the write that ends it has to follow the intent.
-  type Step = { step: string; out: boolean; ends?: string };
+  type Step = { step: string; out: boolean; ends?: string; call?: number };
   const seen: Step[] = [];
   const note = (step: string): Step => { const at = { step, out: existsSync(out) }; seen.push(at); return at; };
   const markDeleted = h.board.runs.markDeleted.bind(h.board.runs);
@@ -229,7 +229,9 @@ it("a delete of a live run's item keeps the output folder until the run has sett
   vi.spyOn(h.board.runs, "settleRun").mockImplementation(async (runId, step, allowed) => {
     // The row is gone and the run still has its record: a discard now takes nothing of it.
     await production.discard(new Map());
+    const call = seen.filter(at => at.step === "recorded").length;
     const recorded = note("recorded");
+    recorded.call = call;
     let ends: string | undefined;
     const settled = await settleRun(runId, (record) => {
       const next = step(record);
@@ -237,7 +239,7 @@ it("a delete of a live run's item keeps the output folder until the run has sett
       return next;
     }, allowed);
     if (ends !== undefined) recorded.ends = ends;
-    note("settled").ends = ends;
+    Object.assign(note("settled"), { ends, call });
     return settled;
   });
 
@@ -247,7 +249,8 @@ it("a delete of a live run's item keeps the output folder until the run has sett
   expect(seen[ending]?.ends).toBe("item-removed");
   expect(seen.findIndex(at => at.step === "intent")).toBeGreaterThanOrEqual(0);
   expect(seen.findIndex(at => at.step === "intent")).toBeLessThan(ending);
-  expect(seen[ending + 1]).toEqual({ step: "settled", out: true, ends: "item-removed" });
+  // The same call's own settle, whatever other writes of the live run came in between.
+  expect(seen.slice(ending + 1).find(at => at.step === "settled" && at.call === seen[ending]?.call)).toEqual({ step: "settled", out: true, ends: "item-removed", call: seen[ending]?.call });
   expect(seen.filter(at => !at.out)).toEqual([]);
   await vi.waitFor(async () => expect(await h.runOf(runId)).toBeNull(), { timeout: 5000 });
   await vi.waitFor(() => expect(existsSync(runRoot)).toBe(false), { timeout: 5000 });
