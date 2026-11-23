@@ -526,6 +526,8 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:plugin-studio:parts:list",
         "ave:plugins:background-effects:approve",
         "ave:plugins:background-effects:get",
+        "ave:plugins:background-effects:upgrade-done",
+        "ave:plugins:background-effects:upgrade-get",
         "ave:plugins:call",
         "ave:plugins:cards",
         "ave:plugins:config:get",

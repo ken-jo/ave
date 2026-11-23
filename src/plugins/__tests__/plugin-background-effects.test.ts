@@ -295,6 +295,36 @@ describe("background effect approvals", () => {
       expect(new PluginBackgroundEffectApprovals(path).isApproved(subject)).toBe(false);
     }
   });
+
+  it("owe the first-launch review until it is answered, keep that through every save, and owe it again from a malformed file", () => {
+    const path = approvalsFile();
+    const subject = backgroundEffectSubject(declaring(), marketplaceEntry());
+    const approvals = new PluginBackgroundEffectApprovals(path);
+    expect(approvals.upgradeReviewOwed()).toBe(true);
+    approvals.approve(subject);
+    approvals.retain(new Set());
+    expect(new PluginBackgroundEffectApprovals(path).upgradeReviewOwed()).toBe(true);
+    approvals.finishUpgradeReview();
+    expect(approvals.upgradeReviewOwed()).toBe(false);
+    approvals.approve(subject);
+    approvals.revoke(subject.pluginId);
+    const restarted = new PluginBackgroundEffectApprovals(path);
+    expect(restarted.upgradeReviewOwed()).toBe(false);
+    restarted.approve(subject);
+    expect(new PluginBackgroundEffectApprovals(path).upgradeReviewOwed()).toBe(false);
+    writeFileSync(path, "{");
+    expect(new PluginBackgroundEffectApprovals(path).upgradeReviewOwed()).toBe(true);
+
+    const failing = approvalsFile();
+    const session = new PluginBackgroundEffectApprovals(failing);
+    atomicWrites.fail = true;
+    expect(() => session.finishUpgradeReview()).not.toThrow();
+    atomicWrites.fail = false;
+    expect(session.upgradeReviewOwed()).toBe(false);
+    expect(new PluginBackgroundEffectApprovals(failing).upgradeReviewOwed()).toBe(true);
+    session.bindSubject(subject.pluginId, async () => subject);
+    expect(new PluginBackgroundEffectApprovals(failing).upgradeReviewOwed()).toBe(false);
+  });
 });
 
 describe("the subject a running plugin binds for its review", () => {

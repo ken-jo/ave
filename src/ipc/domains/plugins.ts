@@ -502,6 +502,41 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     return { ok: true, pluginId, reviewSha256 };
   });
 
+  // Boot starts installed plugins with no runtime event, so the first interactive launch lists every unapproved one at once.
+  ipcMain.handle(CHANNELS.plugins.backgroundEffectsUpgradeGet, async (e) => {
+    if (!validateHostRendererSender(e)) {
+      auditUnauthorized(auditLogger, CHANNELS.plugins.backgroundEffectsUpgradeGet, e);
+      return UNAUTHORIZED_FRAME;
+    }
+    const store = deps.pluginBackgroundEffects;
+    if (!store) return { ok: false, error: "background-effects-unavailable" };
+    if (!store.upgradeReviewOwed()) return { ok: true, reviews: [] };
+    const reviews = [];
+    for (const pluginId of deps.pluginRuntime.listPluginIds()) {
+      const manifest = deps.pluginRuntime.getPluginManifest(pluginId);
+      if (!manifest || !deps.pluginRuntime.isPluginEnabled(pluginId)) continue;
+      const subject = await store.currentSubject(pluginId).catch(() => null);
+      if (!subject?.declared || store.isApproved(subject)) continue;
+      reviews.push({
+        pluginId, name: manifest.name,
+        reviewSha256: subject.source === null ? null : store.reviewSha256(subject),
+        effects: subject.effects,
+      });
+    }
+    return { ok: true, reviews };
+  });
+
+  ipcMain.handle(CHANNELS.plugins.backgroundEffectsUpgradeDone, (e) => {
+    if (!validateHostRendererSender(e)) {
+      auditUnauthorized(auditLogger, CHANNELS.plugins.backgroundEffectsUpgradeDone, e);
+      return UNAUTHORIZED_FRAME;
+    }
+    const store = deps.pluginBackgroundEffects;
+    if (!store) return { ok: false, error: "background-effects-unavailable" };
+    store.finishUpgradeReview();
+    return { ok: true };
+  });
+
   ipcMain.handle(CHANNELS.runtime.counts, (e) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.runtime.counts, e); return UNAUTHORIZED_FRAME; }
     return {

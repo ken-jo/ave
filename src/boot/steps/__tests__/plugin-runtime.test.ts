@@ -1393,6 +1393,8 @@ describe("initPluginRuntime background effect approvals", () => {
 
     for (const store of [approvals, new PluginBackgroundEffectApprovals(path)]) {
       expect(["kept", "aliased", "removed"].filter((id) => store.isApproved(subjectOf(id)))).toEqual(approved);
+      // Boot alone never answers the first-launch card, so a launch with no window leaves it for the next interactive one.
+      expect(store.upgradeReviewOwed()).toBe(true);
     }
   });
 });

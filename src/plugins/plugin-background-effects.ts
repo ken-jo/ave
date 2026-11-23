@@ -135,6 +135,7 @@ interface ApprovalRecord {
 interface ApprovalsFile {
   version: 2;
   approvals: ApprovalRecord[];
+  upgradeReviewed?: true;
 }
 
 const SHA256 = /^[a-f0-9]{64}$/;
@@ -162,6 +163,7 @@ export class PluginBackgroundEffectApprovals {
   private readonly subjects = new Map<string, Array<() => Promise<PluginBackgroundEffectSubject>>>();
   private readonly uninstalls = new Map<string, number>();
   private unsaved = false;
+  private upgradeReviewed = false;
 
   constructor(private readonly path?: string) {
     if (!path) return;
@@ -172,12 +174,14 @@ export class PluginBackgroundEffectApprovals {
         log.warn({ path, reason: input.reason }, "background effect approvals are not trusted; nothing is approved");
         return;
       }
-      const approvals = parseApprovals(JSON.parse(input.bytes.toString("utf8")));
+      const value: unknown = JSON.parse(input.bytes.toString("utf8"));
+      const approvals = parseApprovals(value);
       if (!approvals) {
         log.warn({ path }, "background effect approvals are malformed; nothing is approved");
         return;
       }
       this.approvals = approvals;
+      this.upgradeReviewed = isPlainObject(value) && value.upgradeReviewed === true;
     } catch (error) {
       log.warn({ path, err: error instanceof Error ? error.message : String(error) }, "background effect approvals are unreadable; nothing is approved");
     }
@@ -185,7 +189,7 @@ export class PluginBackgroundEffectApprovals {
 
   /** Each HostApi registers how its gate derives the subject, so the card review reads the newest live one; the returned call unbinds it. */
   bindSubject(pluginId: string, read: () => Promise<PluginBackgroundEffectSubject>): () => void {
-    if (this.unsaved) this.save(this.approvals, "background effect approval removal was not saved");
+    if (this.unsaved) this.save(this.approvals, "background effect approvals were not saved");
     const reads = this.subjects.get(pluginId) ?? [];
     const own = () => read();
     this.subjects.set(pluginId, [...reads, own]);
@@ -236,6 +240,18 @@ export class PluginBackgroundEffectApprovals {
     this.save(next, "background effect approval removal was not saved");
   }
 
+  /** Whether an interactive launch still owes the one card listing every unapproved plugin; boot never answers it. */
+  upgradeReviewOwed(): boolean {
+    return !this.upgradeReviewed;
+  }
+
+  /** The card was answered; a failed write is retried like a failed removal, and a restart before then shows the card again. */
+  finishUpgradeReview(): void {
+    if (this.upgradeReviewed) return;
+    this.upgradeReviewed = true;
+    this.save(this.approvals, "background effect first-launch review was not saved");
+  }
+
   /** Boot drops approvals for plugins the registry no longer names, so a removal whose write failed is not honoured on reinstall. */
   retain(pluginIds: ReadonlySet<string>): void {
     const next = new Map([...this.approvals].filter(([pluginId]) => pluginIds.has(pluginId)));
@@ -244,7 +260,7 @@ export class PluginBackgroundEffectApprovals {
     this.save(next, "background effect approval prune was not saved");
   }
 
-  /** A removal that failed to save is retried when a plugin next binds, so a reinstall before restart cannot revive it. */
+  /** A write that failed is retried when a plugin next binds, so a reinstall before restart cannot revive a removed approval. */
   private save(approvals: ReadonlyMap<string, ApprovalRecord>, failure: string): void {
     try {
       this.persist(approvals);
@@ -258,7 +274,7 @@ export class PluginBackgroundEffectApprovals {
   private persist(approvals: ReadonlyMap<string, ApprovalRecord>): void {
     if (!this.path) return;
     mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
-    const body: ApprovalsFile = { version: 2, approvals: [...approvals.values()] };
+    const body: ApprovalsFile = { version: 2, approvals: [...approvals.values()], ...(this.upgradeReviewed ? { upgradeReviewed: true } : {}) };
     writeUtf8FileAtomicSync(this.path, `${JSON.stringify(body, null, 2)}\n`, 0o600);
   }
 }

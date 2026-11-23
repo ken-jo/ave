@@ -1,9 +1,16 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { makeAppIpcInvoker } from "./test-helpers.js";
+import { afterEach, describe, it, expect, vi, beforeEach } from "vitest";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createTmpDirTracker } from "../../../__tests__/support/tmp-dir-teardown.js";
+import { invokeAppIpcHandlerFromFrame, makeAppIpcInvoker } from "./test-helpers.js";
+import type { ApprovalGate } from "../../../permissions/approval-gate.js";
+import { EffectBoundaryDeniedError, gateMutatingEffect, runWithEffectGateContext } from "../../../permissions/effect-enforcement.js";
+import { PermissionManager } from "../../../permissions/permission-manager.js";
 import { PluginDeploymentDeniedError } from "../../../plugins/deployment-guard.js";
 import { ContributionTrustReviewStaleError } from "../../../plugins/plugin-contribution-trust.js";
-import { backgroundEffectSubject, PluginBackgroundEffectApprovals } from "../../../plugins/plugin-background-effects.js";
-import type { PluginRegistryTrust } from "../../../plugins/types.js";
+import { backgroundEffectSubject, PluginBackgroundEffectApprovals, withinBackgroundScope } from "../../../plugins/plugin-background-effects.js";
+import type { PluginManifest, PluginRegistryTrust } from "../../../plugins/types.js";
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 const hostEventMock = vi.hoisted(() => ({ emit: vi.fn() }));
@@ -339,6 +346,103 @@ describe("plugin background effects IPC", () => {
       .toEqual({ ok: false, error: "background-effects-unavailable" });
     deps.pluginRuntime.getPluginManifest.mockReturnValue(undefined as never);
     expect(await invoke("ave:plugins:background-effects:get", "plugin-config")).toEqual({ ok: false, error: "no-such-plugin" });
+  });
+});
+
+describe("plugin background effects first-launch card IPC", () => {
+  const tmpDirs = createTmpDirTracker();
+  afterEach(() => tmpDirs.cleanup());
+  const GET = "ave:plugins:background-effects:upgrade-get";
+  const DONE = "ave:plugins:background-effects:upgrade-done";
+  const pinned = (packagePath: string): PluginRegistryTrust => ({
+    installSource: "user",
+    origin: {
+      sourceId: "example-source", sourceOrigin: "custom", commit: "a".repeat(40), packagePath, version: "1.0.0",
+      rung: "release", artifactSha256: "b".repeat(64), installedAt: "2026-11-01T00:00:00.000Z",
+    },
+  });
+  const manifestOf = (id: string, capabilities: string[]) =>
+    ({ id, name: `Plugin ${id}`, version: "1.0.0", entry: "plugin.mjs", tools: [], capabilities }) as unknown as PluginManifest;
+  const llm = { manifest: manifestOf("llm", ["background:call-llm"]), source: pinned("plugins/llm") };
+  const installed = new Map<string, { manifest: PluginManifest; source: PluginRegistryTrust }>([
+    ["llm", llm],
+    ["unpinned", { manifest: manifestOf("unpinned", ["background:call-llm"]), source: { installSource: "user" } }],
+    ["quiet", { manifest: manifestOf("quiet", []), source: pinned("plugins/quiet") }],
+    ["off", { manifest: manifestOf("off", ["background:call-llm"]), source: pinned("plugins/off") }],
+  ]);
+  const cardPath = (prefix: string) => join(tmpDirs.track(mkdtempSync(join(tmpdir(), prefix))), "background-effects.json");
+
+  /** A launch over plugins already installed: boot started and bound every enabled one, and no enable or update event fired. */
+  async function launch(path: string) {
+    const context = await setup();
+    const store = new PluginBackgroundEffectApprovals(path);
+    context.deps.pluginBackgroundEffects = store;
+    context.deps.pluginRuntime.listPluginIds.mockReturnValue([...installed.keys()]);
+    context.deps.pluginRuntime.isPluginEnabled.mockImplementation(((pluginId: string) => pluginId !== "off") as never);
+    context.deps.pluginRuntime.getPluginManifest.mockImplementation(((pluginId: string) => installed.get(pluginId)?.manifest) as never);
+    for (const [pluginId, { manifest, source }] of installed) store.bindSubject(pluginId, async () => backgroundEffectSubject(manifest, source));
+    return { ...context, store };
+  }
+
+  const asked = vi.fn();
+  const permissionManager = () => new PermissionManager(cardPath("ave-upgrade-policy-").replace(/background-effects\.json$/u, "permissions.json"));
+  /** A background callLlm through the standalone gate, with the scope check the HostApi factory wires to the same store. */
+  const backgroundLlm = (store: PluginBackgroundEffectApprovals, manager: PermissionManager) =>
+    runWithEffectGateContext({ headless: false, standalone: true, toolName: "background" }, () => gateMutatingEffect({
+      pluginId: "llm", methodPath: "callLlm", effect: "write", target: undefined, input: [{ prompt: "hello" }],
+      approvalGate: { requestAndWait: asked } as unknown as ApprovalGate, permissionManager: manager,
+      standaloneScope: async (methodPath, target) => {
+        const subject = backgroundEffectSubject(llm.manifest, llm.source);
+        return withinBackgroundScope(subject.effects, methodPath, target) && store.isApproved(subject);
+      },
+    }));
+
+  it("lists every enabled plugin with an unapproved declared scope once, and an allowed one resumes background effects", async () => {
+    const path = cardPath("ave-upgrade-card-");
+    const manager = permissionManager();
+    const { store } = await launch(path);
+    await expect(backgroundLlm(store, manager)).rejects.toBeInstanceOf(EffectBoundaryDeniedError);
+    const card = await invoke(GET) as { ok: true; reviews: Array<{ pluginId: string; reviewSha256: string | null }> };
+    expect(card).toEqual({ ok: true, reviews: [
+      { pluginId: "llm", name: "Plugin llm", reviewSha256: expect.stringMatching(/^[a-f0-9]{64}$/u), effects: expect.objectContaining({ llm: true }) },
+      { pluginId: "unpinned", name: "Plugin unpinned", reviewSha256: null, effects: expect.objectContaining({ llm: true }) },
+    ] });
+    expect(await invoke(GET)).toEqual(card);
+    expect(await invoke("ave:plugins:background-effects:approve", { pluginId: "llm", reviewSha256: card.reviews[0]?.reviewSha256 }))
+      .toMatchObject({ ok: true, pluginId: "llm" });
+    await expect(backgroundLlm(store, manager)).resolves.toBeUndefined();
+    expect(await invoke(DONE)).toEqual({ ok: true });
+    expect(await invoke(GET)).toEqual({ ok: true, reviews: [] });
+
+    const next = await launch(path);
+    expect(await invoke(GET)).toEqual({ ok: true, reviews: [] });
+    await expect(backgroundLlm(next.store, manager)).resolves.toBeUndefined();
+    expect(asked).not.toHaveBeenCalled();
+  });
+
+  it("leaves the Review badge after Later, and shows no card at the next launch", async () => {
+    const path = cardPath("ave-upgrade-later-");
+    const manager = permissionManager();
+    const { store } = await launch(path);
+    const card = await invoke(GET) as { reviews: Array<{ pluginId: string; reviewSha256: string | null }> };
+    expect(card.reviews.map(({ pluginId }) => pluginId)).toEqual(["llm", "unpinned"]);
+    expect(await invoke(DONE)).toEqual({ ok: true });
+    expect(await invoke(GET)).toEqual({ ok: true, reviews: [] });
+    expect(await invoke("ave:plugins:background-effects:get", "llm"))
+      .toMatchObject({ ok: true, declared: true, approved: false, reviewSha256: card.reviews[0]?.reviewSha256 });
+    await expect(backgroundLlm(store, manager)).rejects.toBeInstanceOf(EffectBoundaryDeniedError);
+    await launch(path);
+    expect(await invoke(GET)).toEqual({ ok: true, reviews: [] });
+    expect(await invoke("ave:plugins:background-effects:get", "llm")).toMatchObject({ ok: true, approved: false });
+  });
+
+  it("answers neither channel to a frame that is not the host renderer", async () => {
+    const { store } = await launch(cardPath("ave-upgrade-sender-"));
+    for (const channel of [GET, DONE]) {
+      expect(await invokeAppIpcHandlerFromFrame(handlers, channel, "ave-mcp-app://s-66697874757265/proxy.html?t=fixture"))
+        .toEqual({ ok: false, error: "unauthorized-frame" });
+    }
+    expect(store.upgradeReviewOwed()).toBe(true);
   });
 });
 

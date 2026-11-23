@@ -904,6 +904,16 @@ export type AvePreloadApi = {
     | { ok: false; error: string }
   >;
   /**
+   * The first interactive launch's one card: every enabled plugin whose declared scope is not approved (`reviewSha256` is null
+   * for an unpinned source). Empty once the card was answered.
+   */
+  getPluginBackgroundEffectsUpgrade: () => Promise<
+    | { ok: true; reviews: Array<{ pluginId: string; name: string; reviewSha256: string | null; effects: PluginBackgroundEffects }> }
+    | { ok: false; error: string }
+  >;
+  /** The first-launch card was answered (each Allow, or Later); later launches show no card. */
+  finishPluginBackgroundEffectsUpgrade: () => Promise<{ ok: true } | { ok: false; error: string }>;
+  /**
    * Toggle a plugin active/inactive. Disable retires and unloads the active
    * generation; re-enable re-verifies the receipt and activates a fresh one.
    */
