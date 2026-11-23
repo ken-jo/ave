@@ -5,6 +5,7 @@ import { writeUtf8FileAtomicSync } from "../lib/atomic-file.js";
 import { createLogger } from "../lib/logger.js";
 import { normalizeHost, urlHostMatchesAllowList } from "../main/host-allow-list.js";
 import { readAveHomeInputSync } from "../shared/ave-home-trust.js";
+import { errorMessage } from "../shared/error-message.js";
 import { CAPABILITY_BACKGROUND_CALL_LLM, CAPABILITY_BACKGROUND_SPAWN_WORKER } from "./capabilities.js";
 import { getDeclaredAlertKinds, getDeclaredSuggestionSources } from "./runtime/manifest-validation.js";
 import type { PluginManifest, PluginRegistryTrust } from "./types.js";
@@ -203,7 +204,7 @@ export class PluginBackgroundEffectApprovals {
       this.approvals = approvals;
       this.upgradeReviewed = isPlainObject(value) && value.upgradeReviewed === true;
     } catch (error) {
-      log.warn({ path, err: error instanceof Error ? error.message : String(error) }, "background effect approvals are unreadable; nothing is approved");
+      log.warn({ path, err: errorMessage(error) }, "background effect approvals are unreadable; nothing is approved");
     }
   }
 
@@ -322,7 +323,7 @@ export class PluginBackgroundEffectApprovals {
       this.unsaved = false;
     } catch (error) {
       this.unsaved = true;
-      log.warn({ err: error instanceof Error ? error.message : String(error) }, failure);
+      log.warn({ err: errorMessage(error) }, failure);
     }
   }
 

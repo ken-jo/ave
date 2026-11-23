@@ -9,6 +9,7 @@ import { noteConfinedProcessesMayRun } from "../../lib/confined-process-phase.js
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { aveHome } from "../../shared/ave-home.js";
+import { errorMessage } from "../../shared/error-message.js";
 import { registerBootPluginShutdown, registerShutdownHook } from "../../main/app-shutdown.js";
 import { emitEvent, onEvent as onHostEvent } from "../types.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
@@ -362,7 +363,7 @@ export async function initPluginRuntime(
       }
       backgroundEffectApprovals.retain(installs);
     } catch (error) {
-      log.warn("boot: background effect approvals were not pruned: %s", error instanceof Error ? error.message : String(error));
+      log.warn("boot: background effect approvals were not pruned: %s", errorMessage(error));
     }
   };
   const preStartPhase = new PluginRuntimePreStartPhase();
