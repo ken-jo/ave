@@ -160,6 +160,7 @@ import { TOOL_TIMEOUT_POLICY, windowsSrtPluginChildFactoryBudgetMs } from "../..
 import { setAveHomePrivacyAtBoot, approveExtensionsWithoutIsolation, _resetAveHomePrivacyForTest } from "../../../shared/ave-home.js";
 import { setPluginWorkerConfinementRequestedAtBoot, __resetSandboxRequestedAtBootForTest } from "../../../permissions/sandbox-capability.js";
 import { setProcessPlatform } from "../../../__tests__/support/process-platform.js";
+import { getManagedChildProcessCount, trackManagedChildProcess } from "../../../main/managed-child-processes.js";
 import { createBoundHostApiDispatchTable } from "../bound-host-api-table.js";
 import {
   acceptHostOverLoopback,
@@ -1709,7 +1710,7 @@ describe("the factory's launch reaches the spawn as decided", () => {
   });
 });
 
-it.each([false, true])("stops a confined POSIX group after leader exit (clean EOF: %s)", async (cleanEof) => {
+it.each(["explicit stop", "clean EOF", "PGID reuse"])("stops a confined POSIX group after leader exit (%s)", async (mode) => {
   const roots = spawnableRoots();
   const input = new PassThrough();
   const stdout = new PassThrough();
@@ -1719,7 +1720,15 @@ it.each([false, true])("stops a confined POSIX group after leader exit (clean EO
   const platform = process.platform;
   vi.useFakeTimers();
   setProcessPlatform("linux");
-  const kill = vi.spyOn(process, "kill").mockReturnValue(true);
+  let originalGroupGone = false;
+  const kill = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+    if (pid === -child.pid && signal === 0 && originalGroupGone) {
+      throw Object.assign(new Error("No such process"), { code: "ESRCH" });
+    }
+    return true;
+  });
+  const before = getManagedChildProcessCount();
+  const dispose = trackManagedChildProcess(child as unknown as ChildProcess, { killProcessGroup: true });
   spawnConfinedChild.mockResolvedValueOnce({ child, confinement: "linux-bubblewrap" });
   try {
     const plugin = await spawnConfinedPluginChild({
@@ -1728,14 +1737,26 @@ it.each([false, true])("stops a confined POSIX group after leader exit (clean EO
       launch: { kind: "entry", childEntryPath: join(roots.context.pluginRoot!, "plugin.mjs") },
       envelope: { read: [], write: [] },
     });
-    if (!cleanEof) plugin.link.terminate("explicit stop");
+    if (mode === "explicit stop") plugin.link.terminate("explicit stop");
     child.exitCode = 0;
     child.emit("exit", 0, null);
     expect(kill).toHaveBeenCalledWith(-child.pid, "SIGTERM");
-    vi.advanceTimersByTime(TOOL_TIMEOUT_POLICY.pluginChildForceKillMs);
-    expect(kill).toHaveBeenLastCalledWith(-child.pid, "SIGKILL");
+    if (mode === "PGID reuse") {
+      originalGroupGone = true;
+      vi.advanceTimersByTime(TOOL_TIMEOUT_POLICY.processGroupPollMs);
+      expect(getManagedChildProcessCount()).toBe(before);
+      originalGroupGone = false;
+      vi.advanceTimersByTime(TOOL_TIMEOUT_POLICY.pluginChildForceKillMs - TOOL_TIMEOUT_POLICY.processGroupPollMs);
+      expect(kill).not.toHaveBeenCalledWith(-child.pid, "SIGKILL");
+    } else {
+      vi.advanceTimersByTime(TOOL_TIMEOUT_POLICY.pluginChildForceKillMs);
+      expect(kill.mock.calls.filter(([, signal]) => signal !== 0)).toEqual([
+        [-child.pid, "SIGTERM"], [-child.pid, "SIGKILL"],
+      ]);
+    }
     expect(child.kill).not.toHaveBeenCalled();
   } finally {
+    dispose();
     child.emit("close");
     input.destroy();
     stdout.destroy();

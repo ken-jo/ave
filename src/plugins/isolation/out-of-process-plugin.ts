@@ -40,6 +40,7 @@ import {
 } from "../plugin-storage-layout.js";
 import { buildSafeChildEnv } from "../../tools/safe-env.js";
 import { terminateChildProcess } from "../../tools/terminate-child-process.js";
+import { terminateManagedProcessGroup } from "../../main/managed-child-processes.js";
 import {
   isPathAllowed,
   sanitizeAllowedDirectories,
@@ -637,30 +638,20 @@ export async function spawnConfinedPluginChild(
     });
     let terminated = false;
     const processGroup = confinement === "macos-sandbox" || confinement === "linux-bubblewrap";
-    const hasRemainingProcessGroup = (): boolean => {
-      const pid = child.pid;
-      if (!processGroup || pid === undefined || pid <= 1) return false;
-      try {
-        return process.kill(-pid, 0);
-      } catch (error) {
-        return (error as NodeJS.ErrnoException).code !== "ESRCH";
-      }
-    };
     const terminateChild = (): void => {
       if (terminated) return;
       terminated = true;
-      const forceTimer = terminateChildProcess(child, TOOL_TIMEOUT_POLICY.pluginChildForceKillMs, { processGroup });
-      child.once("exit", () => {
-        if (!hasRemainingProcessGroup()) clearTimeout(forceTimer);
-      });
-    };
-    const terminateRemainingGroup = (): void => {
-      if (!terminated && hasRemainingProcessGroup()) terminateChild();
+      if (processGroup) {
+        terminateManagedProcessGroup(child, TOOL_TIMEOUT_POLICY.pluginChildForceKillMs);
+        return;
+      }
+      const forceTimer = terminateChildProcess(child, TOOL_TIMEOUT_POLICY.pluginChildForceKillMs);
+      child.once("exit", () => clearTimeout(forceTimer));
     };
     // Clean stdin EOF can end the leader before the transport would signal it.
     if (processGroup) {
-      if (alreadyExited) terminateRemainingGroup();
-      else child.once("exit", terminateRemainingGroup);
+      if (alreadyExited) terminateChild();
+      else child.once("exit", terminateChild);
     }
     // A holder that dies takes the grant's guarantee with it; the child it served stops rather than run on a grant nobody holds.
     grant?.onLost(terminateChild);

@@ -19,6 +19,7 @@ interface ManagedChildProcess {
   requireProcessGroupReaper?: boolean;
   processGroupId?: number;
   disposeTimer?: NodeJS.Timeout;
+  groupForceTimer?: NodeJS.Timeout;
   disposalStartedAt?: number;
   retentionWarningEmitted?: boolean;
   retainedUntilExit?: boolean;
@@ -292,6 +293,7 @@ function disposeManagedChildProcess(entry: ManagedChildProcess, releaseGroup?: (
   if (entry.retainedUntilExit && !entry.exitObserved && child.exitCode == null && child.signalCode == null) return;
   const wasTracked = managedChildren.delete(entry);
   if (entry.disposeTimer) clearTimeout(entry.disposeTimer);
+  if (entry.groupForceTimer) clearTimeout(entry.groupForceTimer);
   child.off("exit", entry.onSettled);
   child.off("close", entry.onSettled);
   child.off("error", entry.onError);
@@ -309,7 +311,7 @@ function resolveProcessGroupId(
 ): number | undefined {
   if (options.killProcessGroup !== true) return undefined;
   if (process.platform === "win32") return undefined;
-  if (typeof child.pid !== "number" || child.pid <= 0) return undefined;
+  if (typeof child.pid !== "number" || child.pid <= 1) return undefined;
   return child.pid;
 }
 
@@ -546,6 +548,25 @@ export function __resetManagedChildProcessesForTest(): void {
 function isKillable(entry: ManagedChildProcess): boolean {
   if (entry.processGroupId !== undefined && processExists(-entry.processGroupId)) return true;
   return entry.child.exitCode === null && entry.child.signalCode == null;
+}
+
+export function terminateManagedProcessGroup(child: ChildProcess, forceAfterMs: number): void {
+  const entry = [...managedChildren].find((candidate) => candidate.child === child && candidate.processGroupId !== undefined);
+  const pgid = entry?.processGroupId;
+  if (!entry || pgid === undefined || entry.groupForceTimer) return;
+  try {
+    process.kill(-pgid, "SIGTERM");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") {
+      entry.dispose();
+      return;
+    }
+  }
+  entry.groupForceTimer = setTimeout(() => {
+    entry.groupForceTimer = undefined;
+    void forceKillManagedChildProcess(child, "process group did not terminate");
+  }, forceAfterMs);
+  entry.groupForceTimer.unref();
 }
 
 function scheduleProcessGroupDisposal(entry: ManagedChildProcess): void {
