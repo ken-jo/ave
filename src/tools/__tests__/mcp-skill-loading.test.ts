@@ -1,3 +1,4 @@
+import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { connectedSkillClient, skillBundle, SkillServerTransport } from "../../__tests__/support/mcp-skills-server.js";
 import { useTempPaths as registerTempPaths } from "../../__tests__/test-helpers.js";
@@ -278,7 +279,7 @@ describe("MCP skills use the existing skill and permission paths", () => {
     const h = await harness(); h.optIn(); await h.load.execute({ skillName: h.selector }, context());
     const code = vi.fn(async () => ({ output: "executed", isError: false }));
     h.registry.register(createDynamicTool({ name: "execute_code", description: "Execute code", category: "shell", source: "builtin", jsonSchema: { type: "object" }, execute: code }));
-    h.manager.checkDetailed = () => ({ decision: "allow", reason: "ordinary allow" });
+    h.manager.checkDetailed = () => ({ decision: "allow", provenance: RULE_PROVENANCE, reason: "ordinary allow" });
     h.server.files.set("skill://reports/references/guide.md", "EVIL!\n");
     expect((await h.read.execute({ skillName: h.selector, resourcePath: "references/guide.md" }, context())).isError).toBe(true);
     const invoke = () => h.executor.executeAll([{ id: "code", name: "execute_code", input: {} }], { sessionId: "skill-chat", permissionContext: { trustOrigin: "user-keyboard" } });

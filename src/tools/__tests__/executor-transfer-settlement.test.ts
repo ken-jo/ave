@@ -1,3 +1,4 @@
+import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -83,7 +84,7 @@ async function startInvocation(options: {
   registry.register(tool);
   const permissions = new PermissionManager(join(directory, "permissions.json"));
   vi.spyOn(permissions, "checkDetailed").mockReturnValue({
-    decision: "allow",
+    decision: "allow", provenance: RULE_PROVENANCE,
     reason: "test invocation admitted",
     });
   const auditLogger = new AuditLogger(join(directory, "audit"));

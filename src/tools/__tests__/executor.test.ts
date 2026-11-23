@@ -1,3 +1,4 @@
+import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import { _resetAveHomePrivacyForTest, aveHome, setAveHomeConfigurationRefusedAtBoot } from "../../shared/ave-home.js";
 import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
@@ -739,7 +740,7 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
 
     const permMgr = fixtureManager();
     permMgr.checkDetailed = () => ({
-      decision: "ask",
+      decision: "ask", provenance: RULE_PROVENANCE,
       reason: "trust-origin boundary test",
       });
     const approvalGate = {
@@ -1570,7 +1571,7 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
     permMgr.checkDetailed = (_toolName, _source, category) => {
       seenCategories.push(category);
       // Deny to isolate the category supplied to policy evaluation.
-      return { decision: "deny", reason: "test", };
+      return { decision: "deny", provenance: RULE_PROVENANCE, reason: "test", };
     };
 
     const wc = makeMockWebContents();
@@ -1610,7 +1611,7 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
     }));
 
     const permMgr = fixtureManager();
-    permMgr.checkDetailed = () => ({ decision: "allow", reason: "would otherwise allow", });
+    permMgr.checkDetailed = () => ({ decision: "allow", provenance: RULE_PROVENANCE, reason: "would otherwise allow", });
     const executor = new ToolExecutor(
       registry,
       hooks,
@@ -1851,7 +1852,7 @@ describe("ToolExecutor — sensitive-path and provenance authorization", () => {
 
     const permMgr = fixtureManager();
     permMgr.checkDetailed = () => ({
-      decision: "deny",
+      decision: "deny", provenance: RULE_PROVENANCE,
       reason: "receiver deny",
       });
     const approvalGate = { requestAndWait: vi.fn() };
@@ -1997,7 +1998,7 @@ describe("ToolExecutor — D4 ordered approval/execution (§4.5.3)", () => {
     registry.register(makeGenericTool("tool_b", spy2));
 
     const permMgr = fixtureManager();
-    permMgr.checkDetailed = () => ({ decision: "ask", reason: "ordered test", });
+    permMgr.checkDetailed = () => ({ decision: "ask", provenance: RULE_PROVENANCE, reason: "ordered test", });
 
     const wc = makeMockWebContents();
     const sent = captureRequests(wc);
@@ -2046,7 +2047,7 @@ describe("ToolExecutor — D4 ordered approval/execution (§4.5.3)", () => {
     registry.register(makeGenericTool("tool_d", spy2));
 
     const permMgr = fixtureManager();
-    permMgr.checkDetailed = () => ({ decision: "ask", reason: "ordered deny test", });
+    permMgr.checkDetailed = () => ({ decision: "ask", provenance: RULE_PROVENANCE, reason: "ordered deny test", });
 
     const wc = makeMockWebContents();
     const sent = captureRequests(wc);
@@ -2132,7 +2133,7 @@ describe("ToolExecutor — D4 ordered approval/execution (§4.5.3)", () => {
     registry.register(makeGenericTool("tool_f", spyDeny));
 
     const permMgr = fixtureManager();
-    permMgr.checkDetailed = () => ({ decision: "ask", reason: "selective test", });
+    permMgr.checkDetailed = () => ({ decision: "ask", provenance: RULE_PROVENANCE, reason: "selective test", });
 
     const wc = makeMockWebContents();
     const sent = captureRequests(wc);
@@ -2228,7 +2229,7 @@ describe("ToolExecutor — D4 ordered approval/execution (§4.5.3)", () => {
 
     const permMgr = fixtureManager();
     permMgr.checkDetailed = () => ({
-      decision: "ask",
+      decision: "ask", provenance: RULE_PROVENANCE,
       reason: "stop-while-parked probe",
       });
 
@@ -2275,7 +2276,7 @@ describe("ToolExecutor — D4 ordered approval/execution (§4.5.3)", () => {
     const registry = new ToolRegistry();
     registry.register(makeGenericTool("tool_result_probe", vi.fn(async () => "done")));
     const permMgr = fixtureManager();
-    permMgr.checkDetailed = () => ({ decision: "allow", reason: "result callback probe" });
+    permMgr.checkDetailed = () => ({ decision: "allow", provenance: RULE_PROVENANCE, reason: "result callback probe" });
     const executor = new ToolExecutor(registry, undefined, permMgr);
     let delivered!: () => void;
     const resultDelivered = new Promise<void>((resolve) => { delivered = resolve; });
@@ -3900,7 +3901,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     const permMgr = fixtureManager();
     const checkSpy = vi.spyOn(permMgr, "checkDetailed").mockImplementation(
       (_toolName, source, category) => ({
-        decision: "deny",
+        decision: "deny", provenance: RULE_PROVENANCE,
         reason: `blocked by unified policy: ${source}/${category}`,
         }),
     );
@@ -3969,7 +3970,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     const permMgr = fixtureManager();
     const checkSpy = vi.spyOn(permMgr, "checkDetailed").mockImplementation(
       (_toolName, source, category) => ({
-        decision: "deny",
+        decision: "deny", provenance: RULE_PROVENANCE,
         reason: `blocked by unified policy: ${source}/${category}`,
         }),
     );
@@ -4142,7 +4143,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     setShellSandboxRequestedAtBoot(false);
 
     const permMgr = new PermissionManager("/tmp/nonexistent-permissions-r2r4.json");
-    permMgr.checkDetailed = () => ({ decision: "ask", reason: "r2-r4 regression", });
+    permMgr.checkDetailed = () => ({ decision: "ask", provenance: RULE_PROVENANCE, reason: "r2-r4 regression", });
 
     const requestSpy = answeringRequestAndWait<{ id: string }>(() => ({ choice: "deny-once" as const }));
     const approvalGate = { requestAndWait: requestSpy };
@@ -4207,7 +4208,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       }));
 
       const permMgr = new PermissionManager("/tmp/nonexistent-permissions-worker-cap.json");
-      permMgr.checkDetailed = () => ({ decision: "ask", reason: "worker capability regression", });
+      permMgr.checkDetailed = () => ({ decision: "ask", provenance: RULE_PROVENANCE, reason: "worker capability regression", });
 
       const requestSpy = answeringRequestAndWait<{ id: string }>(() => ({ choice: "deny-once" as const }));
       const executor = new ToolExecutor(
@@ -4245,7 +4246,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     registry.register(new BashTool());
 
     const permMgr = new PermissionManager("/tmp/nonexistent-permissions-purpose.json");
-    permMgr.checkDetailed = () => ({ decision: "ask", reason: "purpose prefill regression", });
+    permMgr.checkDetailed = () => ({ decision: "ask", provenance: RULE_PROVENANCE, reason: "purpose prefill regression", });
 
     const requestSpy = answeringRequestAndWait<{ id: string }>(() => ({ choice: "deny-once" as const }));
     const executor = new ToolExecutor(
@@ -4295,7 +4296,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     }));
 
     const permMgr = new PermissionManager("/tmp/nonexistent-permissions-tool-purpose.json");
-    permMgr.checkDetailed = () => ({ decision: "ask", reason: "purpose spoof regression", });
+    permMgr.checkDetailed = () => ({ decision: "ask", provenance: RULE_PROVENANCE, reason: "purpose spoof regression", });
 
     const requestSpy = answeringRequestAndWait<{ id: string }>(() => ({ choice: "deny-once" as const }));
     const executor = new ToolExecutor(
@@ -4930,7 +4931,7 @@ describe("privacy toggle governs tool-output masking", () => {
 
     const permMgr = fixtureManager();
     permMgr.checkDetailed = () => ({
-      decision: "allow",
+      decision: "allow", provenance: RULE_PROVENANCE,
       reason: "privacy toggle probe",
       });
     const auditLogger = {

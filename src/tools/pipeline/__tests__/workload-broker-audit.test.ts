@@ -1,3 +1,4 @@
+import { RULE_PROVENANCE } from "../../../permissions/decision-provenance.js";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -39,7 +40,7 @@ describe("workload broker permission audit correlation", () => {
       source: "builtin",
       category: "read",
       input: { path: "notes.txt" },
-      permission: { decision: "allow", reason: "allowed" },
+      permission: { decision: "allow", provenance: RULE_PROVENANCE, reason: "allowed" },
       rateLimitRemaining: 9,
       trustOrigin: "llm-tool-arg",
       cwd: "/workspace",

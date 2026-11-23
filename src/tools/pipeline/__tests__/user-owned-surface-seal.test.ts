@@ -1,3 +1,4 @@
+import { RULE_PROVENANCE } from "../../../permissions/decision-provenance.js";
 import { describe, expect, it } from "vitest";
 import { deferred } from "../../../__tests__/support/deferred.js";
 import {
@@ -12,7 +13,7 @@ import type { PermissionCheckResult, PermissionManager } from "../../../permissi
 import { HostExitAbortError } from "../../../shared/host-exit-abort.js";
 import { resolveUserOwnedSurfaceApproval } from "../user-owned-surface.js";
 
-const ask: PermissionCheckResult = { decision: "ask", reason: "surface review fallback" };
+const ask: PermissionCheckResult = { decision: "ask", provenance: RULE_PROVENANCE, reason: "surface review fallback" };
 
 // A deny a person answered on a real gate, so it carries the gate's record of who decided.
 async function answeredDeny(answeredBy: "desk" | "platform-bridge" = "desk"): Promise<ApprovalDecision> {

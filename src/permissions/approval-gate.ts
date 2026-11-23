@@ -58,6 +58,7 @@ import { resolve as pathResolve } from "node:path";
 import { caseFoldForMatch, foldCanonicalPathSeparators } from "./sensitive-paths.js";
 import { isEgressGrantScope, type EgressGrantNetwork, type EgressGrantScope } from "../shared/egress-grant-scopes.js";
 import { isTerminalTabId } from "../shared/tab-id.js";
+import { HOST_PROVENANCE, RULE_PROVENANCE, type HostProvenance, type RuleProvenance } from "./decision-provenance.js";
 
 // Args DLP masking
 
@@ -391,36 +392,50 @@ export function isHostApprovalRejectedDecision(
   );
 }
 
-// Who decided, stamped on a decision when the gate accepts an answer for it. Any decision without a stamp is the host's own
-// (timeout, rejection, disposal, an aborted turn, a policy recheck, or an object built outside the gate).
-const answeredDecisionAnswerers = new WeakMap<ApprovalDecision, ApprovalAnswerer>();
-
-declare const answeredProvenanceBrand: unique symbol;
-/** Who answered, and which way, as the gate recorded it. Only this module mints one, from that record. */
-export type AnsweredProvenance = {
-  readonly kind: "answered";
+/** The gate's record of an accepted answer: which way it went, who gave it and the origin that answerer writes. */
+export interface AnsweredRecord {
   readonly decision: "allow" | "deny";
   readonly answerer: ApprovalAnswerer;
   readonly trustOrigin: TrustOriginWithUnknown;
-  readonly [answeredProvenanceBrand]: true;
-};
-/** Who made a decision: an answerer, the policy for the invocation's own origin, or the host itself. */
-export type DecisionProvenance = AnsweredProvenance | RuleProvenance | { readonly kind: "host" };
-export type RuleProvenance = { readonly kind: "rule" };
-export const RULE_PROVENANCE: RuleProvenance = Object.freeze({ kind: "rule" });
-export const HOST_PROVENANCE: DecisionProvenance = Object.freeze({ kind: "host" });
-
-export function approvalDecisionTrustOrigin(decision: ApprovalDecision): TrustOriginWithUnknown {
-  const answerer = answeredDecisionAnswerers.get(decision);
-  return answerer === undefined ? "unknown" : APPROVAL_ANSWERER_TRUST_ORIGINS[answerer];
 }
 
-/** The gate's record of who answered a decision a caller is treating as answered. A missing record breaks the gate's contract. */
+declare const answeredProvenanceBrand: unique symbol;
+/** An opaque handle the gate minted for one accepted answer. It carries no answer of its own: the record lives in the gate, keyed by
+ * this exact object, so a copy, a spread or an edit of the handle or of the decision cannot change what was answered. */
+export type AnsweredProvenance = { readonly kind: "answered"; readonly [answeredProvenanceBrand]: true };
+/** Who made a decision: an answerer, the policy for the invocation's own origin, or the host itself. */
+export type DecisionProvenance = AnsweredProvenance | RuleProvenance | HostProvenance;
+export { HOST_PROVENANCE, RULE_PROVENANCE, type HostProvenance, type RuleProvenance };
+
+// Written once, when the gate accepts an answer. Any decision without a handle is the host's own (timeout, rejection, disposal,
+// an aborted turn, a policy recheck, or an object built outside the gate).
+const answeredDecisionHandles = new WeakMap<ApprovalDecision, AnsweredProvenance>();
+const answeredRecords = new WeakMap<AnsweredProvenance, AnsweredRecord>();
+
+function mintAnsweredProvenance(decision: ApprovalDecision, answerer: ApprovalAnswerer): void {
+  const handle = Object.freeze({ kind: "answered" }) as AnsweredProvenance;
+  answeredRecords.set(handle, Object.freeze({ decision: decision.choice.startsWith("allow") ? "allow" : "deny",
+    answerer, trustOrigin: APPROVAL_ANSWERER_TRUST_ORIGINS[answerer] }));
+  answeredDecisionHandles.set(decision, handle);
+}
+
+/** The record behind a handle the gate minted. A handle the gate never minted is a forged or copied answer, and throws. */
+export function answeredProvenanceRecord(provenance: AnsweredProvenance): AnsweredRecord {
+  const record = answeredRecords.get(provenance);
+  if (record === undefined) throw new Error("approval: an answered provenance the gate did not mint");
+  return record;
+}
+
+export function approvalDecisionTrustOrigin(decision: ApprovalDecision): TrustOriginWithUnknown {
+  const handle = answeredDecisionHandles.get(decision);
+  return handle === undefined ? "unknown" : answeredProvenanceRecord(handle).trustOrigin;
+}
+
+/** The gate's handle for a decision a caller is treating as answered. A missing handle breaks the gate's contract. */
 export function answeredApprovalProvenance(decision: ApprovalDecision): AnsweredProvenance {
-  const answerer = answeredDecisionAnswerers.get(decision);
-  if (answerer === undefined) throw new Error("approval: an answered decision carries no record of who answered");
-  return Object.freeze({ kind: "answered", decision: decision.choice.startsWith("allow") ? "allow" : "deny", answerer,
-    trustOrigin: APPROVAL_ANSWERER_TRUST_ORIGINS[answerer] }) as AnsweredProvenance;
+  const handle = answeredDecisionHandles.get(decision);
+  if (handle === undefined) throw new Error("approval: an answered decision carries no record of who answered");
+  return handle;
 }
 
 /** The trust origin a row records for `decision` made with this provenance; `invocation` is the invocation's own. An answer
@@ -429,15 +444,22 @@ export function provenanceTrustOrigin<Origin extends string>(
   provenance: DecisionProvenance, decision: string, invocation: Origin,
 ): Origin | TrustOriginWithUnknown {
   switch (provenance.kind) {
-    case "answered": return provenance.decision === decision ? provenance.trustOrigin : invocation;
+    case "answered": {
+      const record = answeredProvenanceRecord(provenance);
+      return record.decision === decision ? record.trustOrigin : invocation;
+    }
     case "rule": return invocation;
     case "host": return "unknown";
     default: return provenance satisfies never;
   }
 }
 
+/** A deny a person answered, as the gate recorded it when it accepted the answer. */
 export function isAnsweredApprovalDenial(decision: ApprovalDecision): boolean {
-  return decision.choice.startsWith("deny") && approvalDecisionTrustOrigin(decision) !== "unknown";
+  const handle = answeredDecisionHandles.get(decision);
+  if (handle === undefined) return false;
+  const record = answeredProvenanceRecord(handle);
+  return record.decision === "deny" && record.trustOrigin !== "unknown";
 }
 
 // An `egress-host` request is fully specified or it is a bug: it carries its payload with at least one offered scope, offers exactly allow-once and deny-once, and is never recorded in the user-approval store. Any other kind carrying the payload is a bug too.
@@ -2018,7 +2040,7 @@ export class ApprovalGate {
       type: "approval",
       output: `[approval:decided] ${requestId} ${formatApprovalAuditFields({ ...entry, answeredBy }, entry.executionPlan)} choice=${resolvedDecision.choice} rememberPattern=${resolvedDecision.rememberPattern ?? "none"}${entry.kind === "egress-host" ? ` egressScope=${resolvedDecision.egressScope ?? "none"}` : ""}`,
     });
-    if (Object.hasOwn(APPROVAL_ANSWERER_TRUST_ORIGINS, answeredBy)) answeredDecisionAnswerers.set(resolvedDecision, answeredBy);
+    if (Object.hasOwn(APPROVAL_ANSWERER_TRUST_ORIGINS, answeredBy)) mintAnsweredProvenance(resolvedDecision, answeredBy);
     entry.resolve(resolvedDecision);
     return resolvedDecision;
   }

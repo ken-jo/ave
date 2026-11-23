@@ -1,3 +1,4 @@
+import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -4330,7 +4331,7 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
       execute: async () => { served += 1; return { output: "served", isError: false }; },
     }));
     const permissions = new PermissionManager(join(f.fixture.rootDir, "permissions.json"));
-    permissions.checkDetailed = () => ({ decision: "allow", reason: "fixture" });
+    permissions.checkDetailed = () => ({ decision: "allow", provenance: RULE_PROVENANCE, reason: "fixture" });
     const executor = new ToolExecutor(registry, undefined, permissions, undefined, undefined, undefined, undefined, undefined, undefined, undefined, () => lifecycle);
     let release!: () => void;
     const held = new Promise<void>((resolve) => { release = resolve; });

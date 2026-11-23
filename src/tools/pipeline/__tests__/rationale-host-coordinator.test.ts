@@ -1,10 +1,11 @@
+import { RULE_PROVENANCE } from "../../../permissions/decision-provenance.js";
 import { captureApprovalWorkingDirectory } from "../../../permissions/user-approval-store.js";
 import { createRationaleApprovalCallback } from "../../../__tests__/support/rationale-approval-callback.js";
 import { describe, expect, it, vi } from "vitest";
 import { answeredApprovalDecision } from "../../../__tests__/support/answering-approval-gate.js";
 import { HookRunner } from "../../../hooks/hook-runner.js";
 import { captureRationalePolicySnapshot, type RationalePolicySnapshot } from "../rationale-policy-epoch.js";
-import { ApprovalGate } from "../../../permissions/approval-gate.js";
+import { answeredProvenanceRecord, ApprovalGate } from "../../../permissions/approval-gate.js";
 import type {
   ApprovalChoice,
   ApprovalDecision,
@@ -59,7 +60,7 @@ const eligibilityContext = {
   approvalReasonPrefix: null,
 } as const;
 const permission = {
-  decision: "ask",
+  decision: "ask", provenance: RULE_PROVENANCE,
   reason: "Automatic review requires human approval.",
   reasonCode: "reviewer-human-required",
   reviewer: {
@@ -452,7 +453,9 @@ describe("RationaleHostCoordinator", () => {
       NOW + 3,
     )).toBe(true);
     // The resume carries the answer the desk gave on the card, independently of any policy change.
-    expect(sealed && state.coordinator.loadHostResumeProvenance(sealed.resumeRequest)).toMatchObject({ kind: "answered", decision: "allow", answerer: "desk", trustOrigin: "user-keyboard" });
+    const resumeProvenance = sealed ? state.coordinator.loadHostResumeProvenance(sealed.resumeRequest) : null;
+    expect(resumeProvenance?.kind).toBe("answered");
+    expect(resumeProvenance?.kind === "answered" && answeredProvenanceRecord(resumeProvenance)).toEqual({ decision: "allow", answerer: "desk", trustOrigin: "user-keyboard" });
     expect(await state.coordinator.createSealedResume({
       ticketId: materialized.control.ticketId,
       currentEligibilityContext: eligibilityContext,

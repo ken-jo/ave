@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { answeredApprovalDecision, answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
-import { answeredApprovalProvenance, type ApprovalRequestInput } from "../../permissions/approval-gate.js";
+import { answeredApprovalProvenance, answeredProvenanceRecord, isAnsweredApprovalDenial, provenanceTrustOrigin, type AnsweredProvenance, type ApprovalRequestInput } from "../../permissions/approval-gate.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { ToolExecutor } from "../executor.js";
 import { WriteFileTool } from "../file-tools.js";
@@ -74,7 +74,24 @@ describe("the answerer contract", () => {
   it("throws for an answered decision the gate kept no record of", async () => {
     expect(() => answeredApprovalProvenance({ requestId: "unrecorded", choice: "allow-once" }))
       .toThrow("approval: an answered decision carries no record of who answered");
-    expect(answeredApprovalProvenance(await answeredApprovalDecision({ choice: "allow-once" }))).toMatchObject({ kind: "answered", answerer: "desk", trustOrigin: "user-keyboard" });
+    expect(answeredProvenanceRecord(answeredApprovalProvenance(await answeredApprovalDecision({ choice: "allow-once" }))))
+      .toEqual({ decision: "allow", answerer: "desk", trustOrigin: "user-keyboard" });
+  });
+
+  it("fails closed on a copied or edited answer handle", async () => {
+    const handle = answeredApprovalProvenance(await answeredApprovalDecision({ choice: "deny-once" }));
+    const edited = { ...handle, decision: "allow" } as AnsweredProvenance;
+    expect(() => provenanceTrustOrigin(edited, "allow", "plugin-emitted")).toThrow("approval: an answered provenance the gate did not mint");
+    expect(() => provenanceTrustOrigin({ ...handle } as AnsweredProvenance, "deny", "plugin-emitted")).toThrow("approval: an answered provenance the gate did not mint");
+    expect(provenanceTrustOrigin(handle, "deny", "plugin-emitted")).toBe("user-keyboard");
+  });
+
+  it("keeps the recorded answer when the decision object is edited after the gate accepted it", async () => {
+    const decision = await answeredApprovalDecision({ choice: "deny-once" });
+    decision.choice = "allow-once";
+    expect(provenanceTrustOrigin(answeredApprovalProvenance(decision), "allow", "plugin-emitted")).toBe("plugin-emitted");
+    expect(provenanceTrustOrigin(answeredApprovalProvenance(decision), "deny", "plugin-emitted")).toBe("user-keyboard");
+    expect(isAnsweredApprovalDenial(decision)).toBe(true);
   });
 
   it("refuses a plugin-emitted write whose answer the gate never recorded", async () => {
@@ -118,5 +135,32 @@ describe("one terminal row per plugin-emitted invocation answered at the desk", 
     expect(rows.map(row => [row.decision, row.grantLifetime])).toEqual(expected);
     // A durable grant whose folder rule cannot be saved ends in the host's save failure, not in the desk's answer.
     expect(rows.map(row => row.trustOrigin)).toEqual(expected.map(([, lifetime]) => choice === "allow-always" && lifetime === undefined ? "unknown" : "user-keyboard"));
+  });
+
+  it("records a failing tool card as the host's refusal", async () => {
+    const requestAndWait = vi.fn(async () => { throw new Error("approval surface crashed"); });
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
+    const [result] = await executor.executeAll([{ id: "plugin-tool-gate-error", name: "write_file", input: { path: join(project, "gate.txt"), content: "gate" } }], {
+      sessionId: randomUUID(), executionCwd: project,
+      permissionContext: { trustOrigin: "plugin-emitted", additionalDirectories: [project] },
+    });
+    expect(result.is_error).toBe(true);
+    expect(await ledger("plugin-tool-gate-error")).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "unknown" })]);
+  });
+
+  it("records a failing directory card as the host's refusal and never as an allow", async () => {
+    const outside = join(root, "outside");
+    await mkdir(outside);
+    const requestAndWait = vi.fn(async (request: ApprovalRequestInput) => {
+      if (request.kind === "out-of-allowed-dir") throw new Error("approval surface crashed");
+      return { requestId: request.id, choice: "allow-once" as const };
+    });
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
+    const [result] = await executor.executeAll([{ id: "plugin-dir-gate-error", name: "write_file", input: { path: join(outside, "gate.txt"), content: "gate" } }], {
+      sessionId: randomUUID(), executionCwd: project,
+      permissionContext: { trustOrigin: "plugin-emitted", additionalDirectories: [project], onTurnDirectoryGrant: vi.fn(), onSessionDirectoryGrant: vi.fn() },
+    });
+    expect(result.is_error).toBe(true);
+    expect(await ledger("plugin-dir-gate-error")).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "unknown" })]);
   });
 });

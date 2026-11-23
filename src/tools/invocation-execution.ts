@@ -6,12 +6,12 @@ import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pi
 import { NO_APPROVER_MESSAGE, offersFloorSessionAllow } from "../permissions/decision-pipeline.js";
 import { checkReplayRootBinding, type ReplayRootBinding } from "../permissions/reviewer/replay-root-binding.js";
 import { attachSandboxBlock, sandboxBlockForResult, type SandboxBlock } from "../shared/sandbox-block.js";
-import { approvalReasonFields, approvalRequestTarget, isHostApprovalRejectedDecision, provenanceTrustOrigin, RULE_PROVENANCE } from "../permissions/approval-gate.js";
+import { answeredApprovalProvenance, approvalReasonFields, approvalRequestTarget, HOST_PROVENANCE, isHostApprovalRejectedDecision, provenanceTrustOrigin, RULE_PROVENANCE } from "../permissions/approval-gate.js";
 import type { PermissionEvaluationContext } from "../permissions/evaluation-context.js";
 import type { ApprovalPurposeSuggestion } from "../shared/permission-review-status.js";
 import { classifyApprovalRuleVerdict } from "./pipeline/approval-memory-skip.js";
 import { createPluginReadjudicationBasis } from "../permissions/plugin-readjudication-evidence.js";
-import { abortSupersedesApprovalDecision, answeredPermission, approvalFailureOutcome, hostShutdownDenial } from "./pipeline/approval-outcome.js";
+import { abortSupersedesApprovalDecision, answeredPermission, approvalFailureOutcome, hostShutdownDenial, refusal } from "./pipeline/approval-outcome.js";
 import { hostTerminalApprovalFacts } from "./pipeline/host-terminal-approval.js";
 import { disposableContainerCapability, resolveReviewerSandboxCapability } from "../permissions/sandbox-capability.js";
 import type { ToolOutputArtifactInfo, ToolOutputCapture } from "../shared/tool-output-artifact.js";
@@ -441,7 +441,7 @@ export async function executeAuthorizedToolInvocation(
       msg,
       true,
       startTime,
-      { decision: "deny", reason: msg, },
+      refusal(msg, RULE_PROVENANCE),
       rateResult.remaining,
       invocationPermissionContext,
       invocationCategory,
@@ -615,10 +615,7 @@ export async function executeAuthorizedToolInvocation(
           : consumed.reason;
         const msg = `Plugin operation denied: ${reason}`;
         const durationMs = Date.now() - startTime;
-        const denied: PermissionCheckResult = {
-          decision: "deny",
-          reason,
-          };
+        const denied = refusal(reason, grantAuditError === undefined ? RULE_PROVENANCE : HOST_PROVENANCE);
         callbacks?.onToolEnd?.(
           toolUse.name,
           msg,
@@ -689,13 +686,7 @@ export async function executeAuthorizedToolInvocation(
       msg,
       true,
       startTime,
-      permissionResult
-        ? {
-            ...permissionResult,
-            decision: "deny",
-            reason: msg,
-            }
-        : { decision: "deny", reason: msg, },
+      refusal(msg, RULE_PROVENANCE),
       rateResult.remaining,
       invocationPermissionContext,
       invocationCategory,
@@ -903,14 +894,13 @@ export async function executeAuthorizedToolInvocation(
       try {
         services.auditLogger.assertPermissionAuditWritable();
       } catch (error) {
-        permissionResult = {
-          decision: "deny", reason: "permission audit chain unavailable before execution", };
+        permissionResult = refusal("permission audit chain unavailable before execution", HOST_PROVENANCE);
         throw new Error(t("be_executor.auditChainBlock", { name: toolUse.name, error: errorMessage(error) }));
       }
     }
     if (humanApproved && services.permissionManager &&
         approvedPolicyEpoch !== services.permissionManager.getPolicyEpoch()) {
-      permissionResult = { ...permissionResult, decision: "deny", reason: "Permission policy changed before execution.", };
+      permissionResult = refusal("Permission policy changed before execution.", RULE_PROVENANCE);
       throw new Error(permissionResult.reason);
     }
     const recheckTarget = permissionRecheckResult ?? permissionResult;
@@ -983,14 +973,14 @@ export async function executeAuthorizedToolInvocation(
       if (!(error instanceof HookInputMutationRequest)) throw error;
       const reason = "Hook input mutation is not allowed after handler entry";
       latePermissionHookChain = hookChainFromDispatch("perm", { decision: "deny", reason, results: [...error.hooks] });
-      permissionResult = { ...permissionResult, decision: "deny", reason };
+      permissionResult = refusal(reason, RULE_PROVENANCE);
       throw new Error(reason);
     }
     signal.throwIfAborted();
     latePermissionHookChain = hookChainFromDispatch("perm", permHook);
     assertLateApprovalPolicyCurrent();
     if (permHook.decision === "deny") {
-      permissionResult = { ...permissionResult, decision: "deny", reason: permHook.reason };
+      permissionResult = refusal(permHook.reason, RULE_PROVENANCE);
       throw new Error(t("be_executor.hookPermissionBlock", { reason: permHook.reason }));
     }
     await services.auditWriter.auditPermissionAsk(
@@ -1107,15 +1097,14 @@ export async function executeAuthorizedToolInvocation(
     decision = surfaceResolution.decision;
     lateApprovalDecision = decision;
     if (abortSupersedesApprovalDecision(abortSignal, decision)) abortSignal?.throwIfAborted();
-    const failure = approvalFailureOutcome(decision, toolUse.name, permissionResult);
+    const failure = approvalFailureOutcome(decision, toolUse.name);
     if (failure) {
       permissionResult = failure.permission;
       throw new Error(failure.content);
     }
     humanApproved = surfaceResolution.provenance === undefined && decision.choice.startsWith("allow") && !isHostApprovalRejectedDecision(decision);
     if (!humanApproved && permissionResult.decision !== "allow") {
-      const denied = { ...permissionResult, decision: "deny" as const, reason: request.reason };
-      permissionResult = surfaceResolution.provenance === undefined ? answeredPermission(denied, decision) : { ...denied, provenance: surfaceResolution.provenance };
+      permissionResult = refusal(request.reason, surfaceResolution.provenance ?? answeredApprovalProvenance(decision));
       throw new Error(request.reason);
     }
     if (humanApproved) {
@@ -1705,11 +1694,7 @@ export async function executeAuthorizedToolInvocation(
     latePermissionHookChain,
   );
   const auditedPermissionResult = authorizationRequired || effectNoApprover
-    ? {
-        ...(permissionResult ?? { }),
-        decision: "deny" as const,
-        reason: effectNoApprover ? NO_APPROVER_MESSAGE : "authorization required but approval surface unavailable",
-      }
+    ? refusal(effectNoApprover ? NO_APPROVER_MESSAGE : "authorization required but approval surface unavailable", HOST_PROVENANCE)
     : permissionResult;
   await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, auditContent, isError, startTime, auditedPermissionResult, rateResult.remaining, invocationPermissionContext, invocationCategory, executionCwd, targetFilePath, terminationReason, successHookChain);
   if (rationaleResumeContext?.started) {

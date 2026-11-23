@@ -1,3 +1,4 @@
+import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
@@ -50,7 +51,7 @@ async function freshExecutor(
   const root = mkdtempSync(join(tmpdir(), "ave-executor-shutdown-"));
   roots.push(root);
   const manager = new PermissionManager(join(root, "permissions.json"));
-  manager.checkDetailed = () => ({ decision: ask ? "ask" : "allow", reason: "shutdown admission probe" });
+  manager.checkDetailed = () => ({ decision: ask ? "ask" : "allow", reason: "shutdown admission probe", provenance: RULE_PROVENANCE });
   const asked = deferred<ApprovalRequest>();
   const gate = ask && new ApprovalGate({
     isDestroyed: () => false,

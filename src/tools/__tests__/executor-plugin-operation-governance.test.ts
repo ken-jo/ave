@@ -1,3 +1,4 @@
+import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -132,7 +133,7 @@ function setup(options: {
     }),
   ]);
   const permissions = new PermissionManager("/tmp/nonexistent-operation-governance.json");
-  permissions.checkDetailed = () => ({ decision: "allow", reason: "test", });
+  permissions.checkDetailed = () => ({ decision: "allow", provenance: RULE_PROVENANCE, reason: "test", });
   const approvalGate = { requestAndWait: answeringRequestAndWait<{ id: string } & Record<string, unknown>>(() => ({ choice: "allow-once" })) };
   const scriptHookManager =
     options.wireHooks === false

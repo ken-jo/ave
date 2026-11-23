@@ -45,7 +45,7 @@ describe("explicit host shell authorization", () => {
       expect(webContents.send.mock.calls.some(([channel]) => channel === IPC_APPROVAL_REQUEST)).toBe(false);
       expect(gate.pendingCount).toBe(0);
       expect(mintHostShellExecutionPermit({ plan, binding, approvalDecision: decision })).toBeUndefined();
-      const outcome = approvalFailureOutcome(decision, "bash", { decision: "ask", reason: "host consent" });
+      const outcome = approvalFailureOutcome(decision, "bash");
       expect(outcome?.content).toContain("sensitive-data masking");
       expect(outcome?.content).not.toContain("live-abcdefgh");
       expect(outcome?.permission.reason).toBe("approval rejected by host");

@@ -1,5 +1,6 @@
 // Name-based structural analysis covers plugin and external shell-shaped tools; canonical identity only seals builtin plans.
 // Sandbox wrapping is builtin-only, while path containment covers every command-bearing input.
+import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import { describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { mkdtempSync } from "node:fs";
@@ -48,7 +49,7 @@ function allowingExecutor(toolName: string) {
   }));
 
   const permMgr = new PermissionManager(join(dir, "permissions.json"));
-  permMgr.checkDetailed = () => ({ decision: "allow", reason: "identity probe", });
+  permMgr.checkDetailed = () => ({ decision: "allow", provenance: RULE_PROVENANCE, reason: "identity probe", });
 
   const validator = new BashAstValidator({ mode: "deny" });
   const validateSpy = vi.spyOn(validator, "validate");

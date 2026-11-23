@@ -14,6 +14,7 @@ import { runWithCeiling } from "../tools/executor-ceiling.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { isRemoteControllerBoundToSession, isUntaintedToolTrustOrigin } from "../shared/chat-origin.js";
 import type { DecisionProvenance } from "./approval-gate.js";
+import { RULE_PROVENANCE } from "./decision-provenance.js";
 import { isCurrentShellRule, withCurrentShellRuleVersion, type ShellRuleVersion } from "../shared/shell-rule-version.js";
 
 
@@ -207,7 +208,7 @@ export interface PermissionCheckResult {
   }>;
   // Who made this decision; audit rows record it. Unset is the policy's own decision, recorded under the invocation's origin. A step that
   // changes the decision sets it again.
-  provenance?: DecisionProvenance;
+  provenance: DecisionProvenance;
 }
 
 export interface PermissionCheckContext {
@@ -1463,6 +1464,7 @@ export class PermissionManager {
     });
     const decision = decidePermission(request);
     const result: PermissionCheckResult = {
+      provenance: RULE_PROVENANCE,
       decision: decision.outcome === "sandbox-auto" ? "allow" : decision.outcome === "ask-forced" ? "ask" : decision.outcome,
       reason: decision.reason,
       reasonCode: decision.reasonCode,

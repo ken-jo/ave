@@ -1,5 +1,6 @@
 // Structural-ordering tests provide trusted startup and an independent native AST.
 // Actual executable admission and unavailable-install refusal have separate coverage.
+import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
@@ -50,7 +51,7 @@ function askingExecutor(toolName: string) {
   const originalCheck = permMgr.checkDetailed.bind(permMgr);
   permMgr.checkDetailed = (name: string, src, cat) =>
     name === toolName
-      ? { decision: "ask", reason: "structural-deny ordering test", }
+      ? { decision: "ask", provenance: RULE_PROVENANCE, reason: "structural-deny ordering test", }
       : originalCheck(name, src, cat);
 
   const wc = makeMockWebContents();

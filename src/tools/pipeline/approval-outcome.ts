@@ -7,6 +7,7 @@ import {
   isHostApprovalTimeoutDecision,
   isHostApprovalRejectedDecision,
   type ApprovalDecision,
+  type DecisionProvenance,
 } from "../../permissions/approval-gate.js";
 import type { PermissionCheckResult } from "../../permissions/permission-manager.js";
 import { isHostExitAbort } from "../../shared/host-exit-abort.js";
@@ -15,6 +16,11 @@ import { maskSensitiveData } from "../../shared/dlp.js";
 /** The host's refusal of a call the quit seal stopped; no person decided it. */
 export function hostShutdownDenial(): PermissionCheckResult {
   return { decision: "deny", reason: "host-shutdown", provenance: HOST_PROVENANCE };
+}
+
+/** A fresh refusal with its own reason and provenance; nothing an earlier result carried, such as its deny reasons, survives into it. */
+export function refusal(reason: string, provenance: DecisionProvenance): PermissionCheckResult {
+  return { decision: "deny", reason, provenance };
 }
 
 /** A result an answerer decided: it carries the gate's record of who answered, and throws when the gate kept none. */
@@ -43,7 +49,6 @@ export function abortSupersedesApprovalDecision(
 export function approvalFailureOutcome(
   decision: ApprovalDecision,
   toolName: string,
-  permission: PermissionCheckResult,
 ): { content: string; permission: PermissionCheckResult } | null {
   const reason = hostApprovalDenialReason(decision);
   if (reason === undefined) return null;
@@ -56,7 +61,6 @@ export function approvalFailureOutcome(
     content: autoSkipped ? NO_APPROVER_MESSAGE : expired ? t("be_executor.approvalExpired", { name: toolName })
       : t("be_executor.approvalRejectedByHost", { name: toolName, reason: detail }),
     permission: {
-      ...permission,
       decision: "deny",
       reason,
       // Denial audit must record why approval ended, not merely why it was requested.

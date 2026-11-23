@@ -11,6 +11,7 @@ import {
   type EffectLedger,
 } from "../../permissions/effect-ledger.js";
 import type { PermissionCheckResult } from "../../permissions/permission-manager.js";
+import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import type { ToolExecutionAuditMetadata } from "../../audit/audit-schema.js";
 import { t } from "../../i18n/index.js";
 import type { ToolSource, TrustLevel, ToolCategory } from "../types.js";
@@ -122,7 +123,7 @@ export async function returnUserAbort(deps: UserAbortDeps): Promise<ToolResult> 
   const hostShutdown = isHostExitAbort(abortSignal?.reason);
   const abortedPermission: PermissionCheckResult = hostShutdown
     ? hostShutdownDenial()
-    : { decision: "deny", reason: "user aborted turn" };
+    : { decision: "deny", reason: "user aborted turn", provenance: RULE_PROVENANCE };
   emitToolStart(callbacks, toolUse.name, input, meta);
   callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
   await auditWriter.auditToolCall(

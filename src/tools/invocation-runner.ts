@@ -65,8 +65,8 @@ import {
   remoteControllerOriginOf,
 } from "../shared/chat-origin.js";
 import { isRationaleEligible, RationaleHumanApprovalDeniedError } from "./pipeline/rationale-control.js";
-import { approvalReasonFields, approvalTargetFor, HOST_PROVENANCE, provenanceTrustOrigin, RULE_PROVENANCE, type ApprovalDecision, type DecisionProvenance } from "../permissions/approval-gate.js";
-import { abortSupersedesApprovalDecision, answeredPermission, approvalFailureOutcome } from "./pipeline/approval-outcome.js";
+import { answeredApprovalProvenance, approvalReasonFields, approvalTargetFor, HOST_PROVENANCE, provenanceTrustOrigin, RULE_PROVENANCE, type ApprovalDecision, type DecisionProvenance } from "../permissions/approval-gate.js";
+import { abortSupersedesApprovalDecision, answeredPermission, approvalFailureOutcome, refusal } from "./pipeline/approval-outcome.js";
 import {
   buildPermissionEvaluationContext,
   type PermissionEvaluationContext,
@@ -182,8 +182,14 @@ import type { PluginOperationPrincipal } from "../permissions/plugin-operation-g
 import type { HostPluginGenerationState } from "../plugins/plugin-host-generation.js";
 import type { PluginGenerationLease } from "../plugins/plugin-generation-coordinator.js";
 import { errorMessage } from "../shared/error-message.js";
+import { isRecord } from "../shared/is-record.js";
 
 const log = createLogger("executor");
+
+/** Host shutdown closed plugin generation admission; the runtime rejects with this code, and no policy decided the refusal. */
+function endedByPluginRuntimeShutdown(error: unknown): boolean {
+  return isRecord(error) && error.code === "plugin-runtime-shutdown";
+}
 
 /**
  * At most this many authorized directories are named in a denial message. A
@@ -541,7 +547,7 @@ async function runToolInvocationAttempt(
     const tool = services.toolRegistry.findByName(toolUse.name);
     if (!tool) {
       const durationMs = Date.now() - startTime;
-      await auditCurrentToolCall(sessionId, toolUse.name, "builtin", "high", toolUse.input, t("be_executor.toolNotFoundAudit"), true, startTime, { decision: "deny", reason: t("be_executor.toolNotFoundAudit"), }, Infinity, permissionContext);
+      await auditCurrentToolCall(sessionId, toolUse.name, "builtin", "high", toolUse.input, t("be_executor.toolNotFoundAudit"), true, startTime, { decision: "deny", reason: t("be_executor.toolNotFoundAudit"), provenance: RULE_PROVENANCE }, Infinity, permissionContext);
       callbacks?.onToolEnd?.(toolUse.name, t("be_executor.toolNotFound", { name: toolUse.name }), true, meta, undefined, durationMs);
       return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: t("be_executor.toolNotFound", { name: toolUse.name }), is_error: true, durationMs });
     }
@@ -568,7 +574,7 @@ async function runToolInvocationAttempt(
           errorMessage(error)
         }`;
         const denied: PermissionCheckResult = {
-          decision: "deny",
+          decision: "deny", provenance: endedByPluginRuntimeShutdown(error) ? HOST_PROVENANCE : RULE_PROVENANCE,
           reason,
           };
         await auditCurrentToolCall(
@@ -612,7 +618,7 @@ async function runToolInvocationAttempt(
         permissionContext.expectedMcpServerId
       }', got '${tool.mcpServerId ?? "unknown"}'`;
       const denied: PermissionCheckResult = {
-        decision: "deny",
+        decision: "deny", provenance: RULE_PROVENANCE,
         reason,
         };
       await auditCurrentToolCall(
@@ -663,7 +669,7 @@ async function runToolInvocationAttempt(
       reason: string,
       input: Record<string, unknown>,
       blockedPermission: PermissionCheckResult = {
-        decision: "deny",
+        decision: "deny", provenance: RULE_PROVENANCE,
         reason,
         },
       hookChain?: HookResult[],
@@ -681,7 +687,7 @@ async function runToolInvocationAttempt(
         content,
         true,
         startTime,
-        { ...blockedPermission, decision: "deny", reason },
+        refusal(reason, blockedPermission.provenance),
         Infinity,
         permissionContext,
         invocationCategory,
@@ -720,7 +726,7 @@ async function runToolInvocationAttempt(
         const durationMs = Date.now() - startTime;
         const modelFacing = t("be_executor.toolNotFound", { name: toolUse.name });
         const deny: PermissionCheckResult = {
-          decision: "deny",
+          decision: "deny", provenance: RULE_PROVENANCE,
           reason: `model-hidden tool '${toolUse.name}' is not model-callable (origin: ${invocationOrigin ?? "model"})`,
           };
         await auditCurrentToolCall(sessionId, toolUse.name, source, trust, toolUse.input, deny.reason, true, startTime, deny, Infinity, permissionContext, invocationCategory, executionCwd);
@@ -759,7 +765,7 @@ async function runToolInvocationAttempt(
       const msg = t("be_executor.permBlockCwdRoot", { name: toolUse.name, source });
       const durationMs = Date.now() - startTime;
       const blockedPermission: PermissionCheckResult = {
-        decision: "deny",
+        decision: "deny", provenance: RULE_PROVENANCE,
         reason: "execution cwd is filesystem root",
         };
       emitToolStart(callbacks, toolUse.name, toolUse.input, meta);
@@ -772,7 +778,7 @@ async function runToolInvocationAttempt(
       const msg = t("be_executor.permBlockTrustOriginMissing", { name: toolUse.name, source });
       const durationMs = Date.now() - startTime;
       const blockedPermission: PermissionCheckResult = {
-        decision: "deny",
+        decision: "deny", provenance: HOST_PROVENANCE,
         reason: "tool trust origin missing",
         };
       emitToolStart(callbacks, toolUse.name, toolUse.input, meta);
@@ -796,7 +802,7 @@ async function runToolInvocationAttempt(
       });
       const durationMs = Date.now() - startTime;
       const blockedPermission: PermissionCheckResult = {
-        decision: "deny",
+        decision: "deny", provenance: RULE_PROVENANCE,
         reason,
         };
       emitToolStart(callbacks, toolUse.name, toolUse.input, meta);
@@ -893,7 +899,7 @@ async function runToolInvocationAttempt(
         const msg = `Plugin operation denied: ${reason}`;
         const durationMs = Date.now() - startTime;
         const denied: PermissionCheckResult = {
-          decision: "deny",
+          decision: "deny", provenance: RULE_PROVENANCE,
           reason,
           };
         emitToolStart(callbacks, toolUse.name, finalInput, meta);
@@ -1002,7 +1008,7 @@ async function runToolInvocationAttempt(
       return returnRationaleResumeBlock(
         "script PreToolUse hook denied the sealed action: " + scriptPre.reason,
         finalInput,
-        { decision: "deny", reason: scriptPre.reason, },
+        { decision: "deny", reason: scriptPre.reason, provenance: RULE_PROVENANCE },
         hookChainFromDispatch("pre", scriptPre),
       );
     }
@@ -1010,7 +1016,7 @@ async function runToolInvocationAttempt(
     const durationMs = Date.now() - startTime;
     emitToolStart(callbacks, toolUse.name, finalInput, meta);
     callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
-    await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, { decision: "deny", reason: scriptPre.reason, }, Infinity, permissionContext, invocationCategory, executionCwd, undefined, undefined, hookChainFromDispatch("pre", scriptPre));
+    await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, { decision: "deny", reason: scriptPre.reason, provenance: RULE_PROVENANCE }, Infinity, permissionContext, invocationCategory, executionCwd, undefined, undefined, hookChainFromDispatch("pre", scriptPre));
     return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs });
   }
 
@@ -1146,7 +1152,7 @@ async function runToolInvocationAttempt(
         reason,
         true,
         startTime,
-        { decision: "deny", reason, },
+        { decision: "deny", reason, provenance: HOST_PROVENANCE },
         Infinity,
         permissionContext,
         invocationCategory,
@@ -1253,7 +1259,7 @@ async function runToolInvocationAttempt(
         true,
         startTime,
         {
-          decision: "deny",
+          decision: "deny", provenance: unavailable ? HOST_PROVENANCE : RULE_PROVENANCE,
           reason: t(unavailable ? "be_executor.toolUnavailableAudit" : "be_executor.invalidToolInputAudit"),
           },
         Infinity,
@@ -1355,7 +1361,7 @@ async function runToolInvocationAttempt(
 
       if (exactDecisionBlockReason) {
         const blockedPermission: PermissionCheckResult = {
-          decision: "deny",
+          decision: "deny", provenance: HOST_PROVENANCE,
           reason: exactDecisionBlockReason,
           };
         const msg = t("be_executor.permBlockDeny", {
@@ -1543,7 +1549,7 @@ async function runToolInvocationAttempt(
         const durationMs = Date.now() - startTime;
         emitToolStart(callbacks, toolUse.name, finalInput, meta);
         callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
-        await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, { ...dirLayerResult, decision: "deny" }, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
+        await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, refusal(dirLayerResult.reason, RULE_PROVENANCE), Infinity, invocationPermissionContext, invocationCategory, executionCwd);
         return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs }) };
       }
       // Detect whether the request path itself is a directory (e.g.
@@ -1685,7 +1691,7 @@ async function runToolInvocationAttempt(
           undefined, undefined, tool.pluginGeneration !== undefined, behavior?.abortSignal ?? abortSignal);
         if (permissionHook.decision === "deny") {
           const reason = permissionHook.reason;
-          const denied: PermissionCheckResult = { ...dirLayerResult, decision: "deny", reason };
+          const denied = refusal(reason, RULE_PROVENANCE);
           await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, reason, true, startTime,
             denied, Infinity, invocationPermissionContext, invocationCategory, executionCwd, undefined, undefined,
             hookChainFromDispatch("perm", permissionHook));
@@ -1713,7 +1719,7 @@ async function runToolInvocationAttempt(
           const durationMs = Date.now() - startTime;
           emitToolStart(callbacks, toolUse.name, finalInput, meta);
           callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
-          await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, dirLayerResult, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
+          await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, refusal(`approval failed: ${errorMessage(approvalErr)}`, HOST_PROVENANCE), Infinity, invocationPermissionContext, invocationCategory, executionCwd);
           return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs }) };
         }
 
@@ -1743,7 +1749,7 @@ async function runToolInvocationAttempt(
           });
           const durationMs = Date.now() - startTime;
           const blockedPermission: PermissionCheckResult = {
-            decision: "deny",
+            decision: "deny", provenance: RULE_PROVENANCE,
             reason,
             };
           emitToolStart(callbacks, toolUse.name, finalInput, meta);
@@ -1764,7 +1770,7 @@ async function runToolInvocationAttempt(
           // auto-denies. Either way the same argument cannot succeed on its
           // own, so the guidance points at authorization rather than a rewrite.
           const hostFailure = approvalFailureOutcome(
-            decision, toolUse.name, dirLayerResult,
+            decision, toolUse.name,
           );
           const msg = hostFailure?.content ?? (
             t("be_executor.dirPolicyUserDenied", {
@@ -1780,10 +1786,10 @@ async function runToolInvocationAttempt(
               readsUnfenced: !blockReadsOutsideWorkingDirectories,
             })
           );
-          return await denyDirectory(hostFailure?.permission ?? answeredPermission({ ...dirLayerResult, decision: "deny" }, decision), msg);
+          return await denyDirectory(hostFailure?.permission ?? refusal(dirLayerResult.reason, answeredApprovalProvenance(decision)), msg);
         }
         if (directoryPolicyEpoch !== manager.getPolicyEpoch()) {
-          const denied: PermissionCheckResult = { decision: "deny", reason: "Permission policy changed during approval.", };
+          const denied: PermissionCheckResult = { decision: "deny", reason: "Permission policy changed during approval.", provenance: RULE_PROVENANCE };
           await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, denied.reason, true, startTime, denied, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
           return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: denied.reason, is_error: true, durationMs: Date.now() - startTime }) };
         }
@@ -1794,10 +1800,9 @@ async function runToolInvocationAttempt(
         decision = surfaceResolution.decision;
         if (abortSupersedesApprovalDecision(abortSignal, decision)) return { allowed: false, result: withHostShellExecutionPlan(await returnUserAbort(abortDeps(finalInput))) };
         if (decision.choice.startsWith("deny")) {
-          const hostFailure = approvalFailureOutcome(decision, toolUse.name, dirLayerResult);
-          const denied: PermissionCheckResult = { ...dirLayerResult, decision: "deny" };
-          return await denyDirectory(hostFailure?.permission ?? (surfaceResolution.provenance === undefined
-            ? answeredPermission(denied, decision) : { ...denied, provenance: surfaceResolution.provenance }), hostFailure?.content ?? dirLayerResult.reason);
+          const hostFailure = approvalFailureOutcome(decision, toolUse.name);
+          return await denyDirectory(hostFailure?.permission ?? refusal(dirLayerResult.reason, surfaceResolution.provenance ?? answeredApprovalProvenance(decision)),
+            hostFailure?.content ?? dirLayerResult.reason);
         }
         // A policy allow is kept as issued: later rechecks look the result itself up.
         const approvedPermissionResult: PermissionCheckResult = surfaceResolution.provenance === undefined
@@ -1821,7 +1826,7 @@ async function runToolInvocationAttempt(
             directory: approvedDirectory,
             grantLifetime: "always",
             permissionContext: invocationPermissionContext,
-            provenance: approvedPermissionResult.provenance ?? RULE_PROVENANCE,
+            provenance: approvedPermissionResult.provenance,
             audit: currentAuditMetadata(),
           });
           if (abortSignal?.aborted) return { allowed: false, result: withHostShellExecutionPlan(await returnUserAbort(abortDeps(finalInput))) };
@@ -1844,7 +1849,7 @@ async function runToolInvocationAttempt(
             const durationMs = Date.now() - startTime;
             emitToolStart(callbacks, toolUse.name, finalInput, meta);
             callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
-            await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, { ...dirLayerResult, decision: "deny", provenance: HOST_PROVENANCE }, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
+            await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, refusal(`folder rule save failed: ${dirResult.ok ? "unexpected result" : dirResult.error}`, HOST_PROVENANCE), Infinity, invocationPermissionContext, invocationCategory, executionCwd);
             return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs }) };
           }
           return { allowed: true, approvalDecision: decision, approvedDirectory, scope: "always", permissionResult: approvedPermissionResult, humanApproved: surfaceResolution.provenance === undefined };
@@ -1871,7 +1876,7 @@ async function runToolInvocationAttempt(
             const durationMs = Date.now() - startTime;
             emitToolStart(callbacks, toolUse.name, finalInput, meta);
             callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
-            await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, { ...dirLayerResult, decision: "deny", provenance: HOST_PROVENANCE }, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
+            await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, refusal(`session folder registration failed: ${dirResult.ok ? "unexpected result" : dirResult.error}`, HOST_PROVENANCE), Infinity, invocationPermissionContext, invocationCategory, executionCwd);
             return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs }) };
           }
           return { allowed: true, approvalDecision: decision, approvedDirectory: sessionScopePath, scope: "session", permissionResult: approvedPermissionResult, humanApproved: true };
@@ -2051,7 +2056,7 @@ async function runToolInvocationAttempt(
           const realPath = resolvePathForPolicy(shellPathViolation.path);
           const canonicalPath = caseFoldForMatch(foldCanonicalPathSeparators(realPath));
           const dirLayerResult: PermissionCheckResult = {
-            decision: "ask",
+            decision: "ask", provenance: RULE_PROVENANCE,
             reason: `out-of-allowed-dir: ${shellPathViolation.path} (not in additionalDirectories)`,
             denyReasons: [
               {
@@ -2097,7 +2102,7 @@ async function runToolInvocationAttempt(
           });
         const durationMs = Date.now() - startTime;
         const blockedPermission: PermissionCheckResult = {
-          decision: "deny",
+          decision: "deny", provenance: RULE_PROVENANCE,
           reason: shellPathViolation.reason,
           denyReasons: [
             { reason: "shell-path-policy", source: "directory-policy" },
@@ -2128,7 +2133,7 @@ async function runToolInvocationAttempt(
       const durationMs = Date.now() - startTime;
       emitToolStart(callbacks, toolUse.name, finalInput, meta);
       callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
-      await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, { decision: "deny", reason: auditReason, }, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
+      await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, { decision: "deny", reason: auditReason, provenance: RULE_PROVENANCE }, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
       return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs });
     };
     if (
@@ -2195,7 +2200,7 @@ async function runToolInvocationAttempt(
         }
       } catch {
         const reason = "Cannot resolve write target";
-        const blocked: PermissionCheckResult = { decision: "deny", reason, };
+        const blocked: PermissionCheckResult = { decision: "deny", reason, provenance: RULE_PROVENANCE };
         const durationMs = Date.now() - startTime;
         emitToolStart(callbacks, toolUse.name, finalInput, meta);
         callbacks?.onToolEnd?.(toolUse.name, reason, true, meta, undefined, durationMs);
@@ -2266,7 +2271,7 @@ async function runToolInvocationAttempt(
         const msg = t("be_executor.permBlockPluginOutOfScope", { name: toolUse.name, pluginId: targetPluginId ?? "(unknown)" });
         const durationMs = Date.now() - startTime;
         const blockedPermission: PermissionCheckResult = {
-          decision: "deny",
+          decision: "deny", provenance: RULE_PROVENANCE,
           reason: `plugin ${pluginScopeTarget.surface} outside active allowed plugin scope`,
           };
         emitToolStart(callbacks, toolUse.name, finalInput, meta);
@@ -2289,7 +2294,7 @@ async function runToolInvocationAttempt(
         });
       const durationMs = Date.now() - startTime;
       const blockedPermission: PermissionCheckResult = {
-        decision: "deny",
+        decision: "deny", provenance: RULE_PROVENANCE,
         reason: `sensitive path hard-block: ${sensitivePathPattern}`,
         denyReasons: [
           { reason: "sensitive-path", source: "sensitive-paths" },
@@ -2378,7 +2383,7 @@ async function runToolInvocationAttempt(
           break;
         }
         const dirLayerResult: PermissionCheckResult = {
-          decision: "ask",
+          decision: "ask", provenance: RULE_PROVENANCE,
           reason: `out-of-allowed-dir: ${outOfAllowedTarget.filePath} (not in additionalDirectories)`,
           denyReasons: [
             {
