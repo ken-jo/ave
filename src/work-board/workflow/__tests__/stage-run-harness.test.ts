@@ -1116,9 +1116,15 @@ it("an accepted join decision puts its item back in flight for aggregate child w
 it.each(["accepted", "refused"] as const)("a late %s call that closes after its engine was replaced leaves the new engine's waits and flights alone", async outcome => {
   const held = deferred<void>();
   const release = deferred<void>();
+  const spawning = deferred<void>();
+  let armed = false;
   let holding = false;
   let engines = 0;
   const h = await stageRunHarness({
+    script: () => {
+      if (armed) spawning.resolve();
+      return undefined;
+    },
     wiring: store => {
       const engine = engines++;
       const runs = boardRunState(store);
@@ -1146,6 +1152,7 @@ it.each(["accepted", "refused"] as const)("a late %s call that closes after its 
     (await h.untilLive(1, id))[0].finish({ ok: false, summary: "failed", error: "failed" });
     expect(await runs[0]).toMatchObject({ status: "awaiting_approval" });
     const { runId = "" } = await h.item(id);
+    armed = true;
     holding = true;
     const late = h.engine.retryStage(id, { runId: outcome === "accepted" ? runId : "run-other", stageId: "a" });
     await held.promise;
@@ -1154,6 +1161,8 @@ it.each(["accepted", "refused"] as const)("a late %s call that closes after its 
     const waits = Promise.allSettled([h.untilLive(1, id), h.untilSpawned(2)]);
     release.resolve();
     expect(await late).toMatchObject({ ok: outcome === "accepted" });
+    if (outcome === "accepted") await spawning.promise;
+    expect(h.children).toHaveLength(outcome === "accepted" ? 2 : 1);
     expect(await Promise.race([waits, setImmediate("still pending")])).toBe("still pending");
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const timed = Promise.allSettled([h.untilSpawned(2)]);
