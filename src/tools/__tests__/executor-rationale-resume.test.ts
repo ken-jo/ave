@@ -1,10 +1,10 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
-import type { AuditLogger } from "../../audit/audit-logger.js";
+import { AuditLogger } from "../../audit/audit-logger.js";
 import { HookRunner } from "../../hooks/hook-runner.js";
 import type { ScriptHookManager } from "../../hooks/script-hook-manager.js";
 import { answeredApprovalProvenance, type ApprovalGate } from "../../permissions/approval-gate.js";
@@ -205,7 +205,7 @@ function tracedStartCas(
   };
 }
 
-async function fixture() {
+async function fixture(audit?: (directory: string) => Promise<AuditLogger>) {
   const directory = mkdtempSync(join(tmpdir(), "ave-rationale-resume-"));
   const order: string[] = [];
   const invocationAudits: InvocationAuditRecord[] = [];
@@ -241,7 +241,7 @@ async function fixture() {
     }),
   } as unknown as ApprovalGate;
   const scriptHooks = createScriptHooks(order);
-  const auditLogger = createAuditLogger(order, directory);
+  const auditLogger = audit ? await audit(directory) : createAuditLogger(order, directory);
   const executor = new ToolExecutor(
     registry,
     hooks,
@@ -463,6 +463,32 @@ describe("ToolExecutor sealed rationale resume", () => {
       }
       expect(f.approvalGate.requestAndWait).not.toHaveBeenCalled();
     } finally {
+      await cleanupTmpDir(f.directory);
+    }
+  });
+
+  it("ends a script-hook mutation during the resume with the rule's one deny row and no host row", async () => {
+    const realAudit = async (directory: string) => {
+      const logger = new AuditLogger(join(directory, "audit"));
+      await logger.setupPermissionAuditChain("ef".repeat(32));
+      return logger;
+    };
+    const f = await fixture(realAudit);
+    const audit = f.auditLogger as AuditLogger;
+    try {
+      vi.mocked(f.scriptHooks.runPreToolUse).mockResolvedValue({ decision: "allow", reason: "rewrites the payload",
+        updatedInput: { payload: "changed" }, results: [] });
+      const result = await resumeFixture(f);
+      expect(result).toMatchObject({ is_error: true, content: expect.stringContaining("could not safely restart") });
+      expect(f.execute).not.toHaveBeenCalled();
+      await audit.close();
+      const rows = readFileSync(audit.getPermissionAuditLogFile(), "utf8").split("\n").filter(Boolean)
+        .map((line) => JSON.parse(line) as Record<string, unknown>).filter((row) => row.toolUseId === "sealed-use" && row.decision !== "ask");
+      expect(rows).toEqual([expect.objectContaining({ decision: "deny",
+        denyReasons: [{ reason: "Hook input mutation could not safely restart permission classification", source: "hook-input-mutation" }] })]);
+      expect(vi.mocked(f.scriptHooks.runLifecycleEvent).mock.calls.filter(([event]) => event === "PermissionDenied")).toEqual([]);
+    } finally {
+      await audit.close();
       await cleanupTmpDir(f.directory);
     }
   });

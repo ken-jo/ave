@@ -7,6 +7,8 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { join, relative, resolve, sep } from "node:path";
 import { afterQueuedCallbacks, deferred } from "../../__tests__/support/deferred.js";
 
+const PROBE_ROW = { decision: "deny", ts: "2026-11-24T00:00:00.000Z", auditId: "probe", tool: "probe", source: "builtin",
+  category: "meta", trustOrigin: "unknown", toolUseId: "tu-probe", denyReasons: [{ reason: "probe", source: "host" }] } as const;
 const calls: string[] = [];
 const hostExit = vi.fn();
 
@@ -306,10 +308,13 @@ describe("OS sandbox release at quit", () => {
     vi.resetModules();
     const ledger = await import("../../tools/invocation-ledger.js");
     const parked = ledger.admitToolInvocation("parked-probe");
-    parked.terminal.hostTerminal(async (cause) => {
+    parked.terminal.hostTerminal((cause, _detail, _selected, row) => {
       calls.push(`hostTerminal:${cause}`);
-      await afterQueuedCallbacks();
-      calls.push("rowCommitted");
+      return row({ entry: { ...PROBE_ROW, tool: "parked-probe" }, logger: { appendPermissionAuditEntry: async () => {
+        await afterQueuedCallbacks();
+        calls.push("rowCommitted");
+        return {} as never;
+      } } });
     });
     getServices.mockReturnValue(makeServices());
     const shutdown = await configuredShutdown();
@@ -335,7 +340,7 @@ describe("OS sandbox release at quit", () => {
     vi.resetModules();
     const ledger = await import("../../tools/invocation-ledger.js");
     const parked = ledger.admitToolInvocation("stuck-probe");
-    parked.terminal.hostTerminal(async () => {});
+    parked.terminal.hostTerminal((_cause, _detail, _selected, row) => row({ entry: { ...PROBE_ROW, tool: "stuck-probe" } }));
     const services = makeServices();
     services.auditLogger.close = vi.fn(() => new Promise<void>(() => {}));
     getServices.mockReturnValue(services);

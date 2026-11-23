@@ -16,7 +16,9 @@ import { WriteFileTool } from "../file-tools.js";
 import { ToolRegistry } from "../registry.js";
 import { permissionAuditEntryFromToolCall } from "../pipeline/audit-entries.js";
 import { AuditWriter } from "../pipeline/audit-writer.js";
-import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
+import { HOST_PROVENANCE, RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
+import type { PermissionCheckResult } from "../../permissions/permission-manager.js";
+import type { TerminalRowWriter } from "../invocation-ledger.js";
 
 const sessionRegistration = vi.hoisted(() => ({ error: undefined as string | undefined }));
 vi.mock("../../permissions/permission-slash.js", async importOriginal => {
@@ -154,7 +156,28 @@ describe("the answerer contract", () => {
       permissionContext: { trustOrigin: "plugin-emitted", additionalDirectories: [project] },
     })).rejects.toThrow("does not settle this allow of write_file");
     await expect(readFile(join(project, "substituted.txt"))).rejects.toThrow();
-    expect((await auditRows()).filter(row => row.toolUseId === "plugin-substituted-write" && row.decision === "allow")).toEqual([]);
+    await vi.waitFor(async () => expect((await auditRows()).filter(row => row.toolUseId === "plugin-substituted-write" && row.decision !== "ask"))
+      .toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "unknown" })]));
+  });
+
+  it("keeps the claim open when the terminal writer refuses another invocation's allow, so the host writes the one row", async () => {
+    const other = answeredApprovalProvenance(await answeredApprovalDecision({ choice: "allow-once" }, "desk", "write_file", "other-invocation"));
+    const { admitToolInvocation } = await import("../invocation-ledger.js");
+    const writer = new AuditWriter(audit, registry, undefined, true);
+    const call = (permission: PermissionCheckResult, cause?: "error") => (row: TerminalRowWriter) => writer.auditToolCall(
+      "integrity-session", "write_file", "builtin", "medium", { path: "notes.txt" }, "refused", true, Date.now(), permission, Infinity,
+      { trustOrigin: "plugin-emitted" }, "write", project, undefined, cause, undefined, { toolUseId: "integrity-call" }, false, undefined, row);
+    const admission = admitToolInvocation("write_file");
+    admission.terminal.hostTerminal((cause, detail, _selected, row) =>
+      call({ decision: "deny", reason: detail, provenance: HOST_PROVENANCE }, cause === "error" ? cause : undefined)(row));
+    await expect(admission.terminal.commit(call({ decision: "allow", reason: "answered", provenance: other })))
+      .rejects.toThrow("does not settle this allow of write_file");
+    await vi.waitFor(() => expect(admission.terminal.state).toBe("failed"));
+    admission.settle(new Error("does not settle this allow of write_file"));
+    expect((await auditRows()).filter(row => row.toolUseId === "integrity-call")).toEqual([expect.objectContaining({
+      decision: "deny", trustOrigin: "unknown",
+      denyReasons: [expect.objectContaining({ reason: expect.stringContaining("the terminal row failed its integrity check") })],
+    })]);
   });
 
   it("tells a host refusal from an allow without a record", () => {

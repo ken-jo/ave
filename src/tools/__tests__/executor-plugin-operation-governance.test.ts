@@ -1,6 +1,6 @@
 import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -23,6 +23,7 @@ import { ToolRegistry } from "../registry.js";
 import type { ActivePluginGeneration } from "../../plugins/plugin-generation-coordinator.js";
 import type { HostPluginGenerationState } from "../../plugins/plugin-host-generation.js";
 import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
+import { AuditLogger } from "../../audit/audit-logger.js";
 
 const principal = {
   ownerPluginId: "sampleportal",
@@ -41,6 +42,7 @@ function setup(options: {
   useReadResultStatusContract?: boolean;
   scriptHookManager?: ScriptHookManager;
   requireAuditChain?: boolean;
+  audit?: AuditLogger;
 } = {}) {
   const configuredRawResult = Object.prototype.hasOwnProperty.call(
     options,
@@ -194,7 +196,7 @@ function setup(options: {
       undefined,
       approvalGate as never,
       scriptHookManager,
-      auditLogger as never,
+      (options.audit ?? auditLogger) as never,
       undefined,
       undefined,
       pluginOperationGrants,
@@ -549,6 +551,39 @@ describe("ToolExecutor plugin operation governance", () => {
     expect(queuedResult.content).toContain("domain is indeterminate");
     expect(directWrite).not.toHaveBeenCalled();
     expect(lifecycle).not.toHaveBeenCalled();
+  });
+
+  it("ends a permission-hook mutation of a governed auth lifecycle with the rule's one deny row and no host row", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "ave-governed-mutation-"));
+    const audit = new AuditLogger(join(directory, "audit"));
+    await audit.setupPermissionAuditChain("cd".repeat(32));
+    const scriptHookManager = new ScriptHookManager();
+    vi.spyOn(scriptHookManager, "runPermissionRequest").mockResolvedValue({ decision: "allow", reason: "rewrites the operation",
+      updatedInput: { operation: "status", target: "changed" }, results: [] });
+    const lifecycle = vi.spyOn(scriptHookManager, "runLifecycleEvent");
+    try {
+      const { executor, permissions, read } = setup({ scriptHookManager, audit });
+      permissions.checkDetailed = () => ({ decision: "ask", provenance: RULE_PROVENANCE, reason: "test ask" });
+      const completeFailure = vi.fn();
+      const pluginAuthLifecycle = {
+        binding: { pluginId: principal.ownerPluginId, generationId: principal.generationId, toolName: "domain_read",
+          appSessionId: principal.appSessionId, accountScopeHash: principal.accountScopeHash },
+        beforeHandler: vi.fn(), completeSuccess: vi.fn(), completeFailure,
+      };
+      const [result] = await runWithInvocationOrigin("ui", undefined, () => executor.executeAll(
+        [{ id: "mutated-call", name: "domain_read", input: { operation: "status" } }], { ...options(), pluginAuthLifecycle }));
+      expect(result).toMatchObject({ is_error: true, content: expect.stringContaining("could not safely restart") });
+      expect(read).not.toHaveBeenCalled();
+      await audit.close();
+      const rows = readFileSync(audit.getPermissionAuditLogFile(), "utf8").split("\n").filter(Boolean)
+        .map((line) => JSON.parse(line) as Record<string, unknown>).filter((row) => row.toolUseId === "mutated-call" && row.decision !== "ask");
+      expect(rows).toEqual([expect.objectContaining({ decision: "deny",
+        denyReasons: [{ reason: "Hook input mutation could not safely restart permission classification", source: "hook-input-mutation" }] })]);
+      expect(lifecycle.mock.calls.filter(([event]) => event === "PermissionDenied")).toEqual([]);
+    } finally {
+      await audit.close();
+      await cleanupTmpDir(directory);
+    }
   });
 
   it("settles a governed auth lifecycle after final audit and before queued work", async () => {

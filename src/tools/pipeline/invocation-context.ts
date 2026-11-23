@@ -23,7 +23,7 @@ import type {
   ToolUseBlock,
 } from "../executor.js";
 import type { AuditWriter } from "./audit-writer.js";
-import type { InvocationTerminal } from "../invocation-ledger.js";
+import { commitTerminalRow, type InvocationTerminal, type TerminalRowWriter } from "../invocation-ledger.js";
 import { hostShutdownDenial } from "./approval-outcome.js";
 import { emitToolStart } from "./display-mask.js";
 
@@ -129,7 +129,7 @@ export async function returnUserAbort(deps: UserAbortDeps): Promise<ToolResult> 
     : { decision: "deny", reason: "user aborted turn", provenance: RULE_PROVENANCE };
   emitToolStart(callbacks, toolUse.name, input, meta);
   callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
-  const write = () => auditWriter.auditToolCall(
+  const write = (row: TerminalRowWriter) => auditWriter.auditToolCall(
     sessionId,
     toolUse.name,
     source,
@@ -147,7 +147,10 @@ export async function returnUserAbort(deps: UserAbortDeps): Promise<ToolResult> 
     hostShutdown ? "host-shutdown" : "user-abort",
     undefined,
     audit,
+    undefined,
+    undefined,
+    row,
   );
-  await (deps.terminal ? deps.terminal.commit(write) : write());
+  await commitTerminalRow(deps.terminal, toolUse.name, write);
   return { tool_use_id: toolUse.id, content: msg, is_error: true, durationMs };
 }

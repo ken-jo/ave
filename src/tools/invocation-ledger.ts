@@ -9,8 +9,6 @@ const shutdown = new AbortController();
 const pending = new Set<Promise<unknown>>();
 // Enqueued terminal rows still committing; the close joins them without counting them as invocations.
 const commits = new Set<Promise<unknown>>();
-// Sink appends a terminal write enqueues synchronously; its row is durable once they settle, whatever side effects follow.
-let enqueuedRows: Promise<unknown>[] | undefined;
 const detached = new Map<object, () => Promise<unknown>>();
 const sealClaims = new Set<() => void>();
 // Every attempt whose terminal row is still unclaimed and that registered a host writer.
@@ -31,7 +29,19 @@ type TerminalOwner = "invocation" | "rationale";
 type TerminalState = "open" | "enqueued" | "committed" | "failed";
 /** Why the host ends an attempt itself; `selected` is a human outcome already accepted for it. */
 type HostTerminalCause = "host-shutdown" | "user-abort" | "error";
-type HostTerminalWrite = (cause: HostTerminalCause, detail: string, selected: unknown) => Promise<unknown>;
+/** The lifecycle event only the ledger emits, once, after an invocation's deny row is enqueued. */
+export type TerminalLifecycleEvent = "PermissionDenied";
+/**
+ * Writes the attempt's terminal row; only the ledger hands one out. The call claims the attempt and enqueues the row
+ * synchronously, so a writer that throws first leaves the attempt open. `logger` is absent when the chain is neither
+ * set up nor required; `denied` fires the denial lifecycle. A refused claim writes and fires nothing.
+ */
+export type TerminalRowWriter = (row: {
+  logger?: Pick<AuditLogger, "appendPermissionAuditEntry">;
+  entry: PermissionAuditEntryInput;
+  denied?: (event: TerminalLifecycleEvent) => Promise<unknown>;
+}) => Promise<void>;
+type HostTerminalWrite = (cause: HostTerminalCause, detail: string, selected: unknown, row: TerminalRowWriter) => Promise<unknown>;
 
 /** A refused terminal claim: a second claim of the same attempt, or a claim after the sink closed. */
 class TerminalClaimError extends Error {
@@ -52,9 +62,10 @@ export interface InvocationTerminal {
   select(outcome: unknown): void;
   /** True exactly once. A second claim, or one after the sink closed, is refused, recorded as an audit failure and false. */
   claim(by: TerminalOwner | "host"): boolean;
-  /** Claims for the owner and runs `enqueue`, which must enqueue the row before its first await. A refused claim writes
-   * nothing and resolves undefined: the refusal is already logged and recorded, and the late caller still returns its result. */
-  commit<T>(enqueue: () => Promise<T>): Promise<T | undefined>;
+  /** Runs `enqueue` with the owner's row writer, to be called before its first await. A refused claim runs nothing and
+   * resolves undefined: the refusal is already logged and recorded, and the late caller still returns its result. An
+   * `enqueue` that fails before its row is an integrity failure: the host writes the row and the attempt ends failed. */
+  commit<T>(enqueue: (row: TerminalRowWriter) => Promise<T>): Promise<T | undefined>;
   /** The sandbox retry: a new attempt of the same admission, after this one's row. */
   nextAttempt(): InvocationTerminal;
 }
@@ -66,6 +77,7 @@ class TerminalLedger implements InvocationTerminal {
   #selected: unknown;
   #releaseAbort: (() => void) | undefined;
   #key: string | undefined;
+  #integrityFailure = false;
 
   constructor(readonly tool: string, readonly attempt: number, readonly signal: AbortSignal) {}
 
@@ -83,7 +95,9 @@ class TerminalLedger implements InvocationTerminal {
   }
 
   claim(by: TerminalOwner | "host"): boolean {
-    return this.#refusal(by) === undefined;
+    if (this.#refusal(by)) return false;
+    this.#take();
+    return true;
   }
 
   #refusal(by: TerminalOwner | "host"): TerminalClaimError | undefined {
@@ -97,34 +111,57 @@ class TerminalLedger implements InvocationTerminal {
       if (this.#state === "open") recordToolInvocationAuditFailure(refused);
       return refused;
     }
+    return undefined;
+  }
+
+  #take(): void {
     this.#state = "enqueued";
     openTerminals.delete(this);
     this.#releaseAbort?.();
     if (suspendedTerminals.get(suspensionKey(this)) === this) suspendedTerminals.delete(suspensionKey(this));
-    return undefined;
   }
 
-  commit<T>(enqueue: () => Promise<T>): Promise<T | undefined> {
+  commit<T>(enqueue: (row: TerminalRowWriter) => Promise<T>): Promise<T | undefined> {
     return this.#commitAs(this.#owner, enqueue);
   }
 
-  #commitAs<T>(by: TerminalOwner | "host", enqueue: () => Promise<T>): Promise<T | undefined> {
+  #commitAs<T>(by: TerminalOwner | "host", enqueue: (row: TerminalRowWriter) => Promise<T>): Promise<T | undefined> {
     if (this.#refusal(by)) return Promise.resolve(undefined);
+    const row: TerminalRowWriter = ({ logger, entry, denied }) => {
+      if (this.#refusal(by)) return Promise.resolve();
+      this.#take();
+      const append = logger ? appendTerminalRow(logger, entry) : Promise.resolve();
+      this.#track(append);
+      return (async () => {
+        if (entry.decision === "deny" && denied) await denied("PermissionDenied");
+        await append;
+      })();
+    };
     let written: Promise<T>;
-    const rows: Promise<unknown>[] = [];
-    const outer = enqueuedRows;
-    enqueuedRows = rows;
     try {
-      written = enqueue();
+      written = enqueue(row);
     } catch (error) {
       written = Promise.reject(error);
-    } finally {
-      enqueuedRows = outer;
     }
-    const durable = rows.length > 0 ? Promise.all(rows) : written;
-    if (durable !== written) written.catch(() => {});
-    const settled = durable.then(
-      () => { this.#state = "committed"; },
+    void written.then(undefined, (error: unknown) => {
+      if (this.#state !== "open") return;
+      if (by === "host") {
+        // The host's own writer failed first; nothing is left to write the row.
+        log.error("host terminal row of %s failed before it was enqueued: %s", this.tool, errorMessage(error));
+        recordToolInvocationAuditFailure(error);
+        return;
+      }
+      log.error("terminal row of %s failed before it was enqueued: %s", this.tool, errorMessage(error));
+      recordToolInvocationAuditFailure(error);
+      this.#integrityFailure = true;
+      void this.endByHost("error", `the terminal row failed its integrity check: ${errorMessage(error)}`)?.catch(() => {});
+    });
+    return written;
+  }
+
+  #track(append: Promise<unknown>): void {
+    const settled = append.then(
+      () => { this.#state = this.#integrityFailure ? "failed" : "committed"; },
       (error: unknown) => {
         this.#state = "failed";
         log.error("terminal row of %s failed: %s", this.tool, errorMessage(error));
@@ -133,7 +170,6 @@ class TerminalLedger implements InvocationTerminal {
     );
     commits.add(settled);
     void settled.then(() => { commits.delete(settled); });
-    return written;
   }
 
   /** The host ends the attempt; false when it already has its row or no host writer. */
@@ -141,7 +177,7 @@ class TerminalLedger implements InvocationTerminal {
     const write = this.#write;
     if (this.#state !== "open" || write === undefined) return undefined;
     const selected = this.#selected;
-    return this.#commitAs("host", () => write(cause, detail, selected));
+    return this.#commitAs("host", (row) => write(cause, detail, selected, row));
   }
 
   /** The invocation returned a rationale card: the card owns the row until its sealed start, and a stop or quit ends it. */
@@ -263,6 +299,15 @@ export async function drainToolInvocationAuditForExit(
 }
 
 /** Admission unless the audit is closed; a closed refusal has no row left to write, so it fails nothing. */
+/** Commits through the admission's terminal, or a standalone one for a call run without an admission. */
+export function commitTerminalRow<T>(
+  terminal: InvocationTerminal | undefined,
+  tool: string,
+  enqueue: (row: TerminalRowWriter) => Promise<T>,
+): Promise<T | undefined> {
+  return (terminal ?? new TerminalLedger(tool, 1, shutdown.signal)).commit(enqueue);
+}
+
 export function admitToolInvocationWhileAuditOpen(tool: string, parent?: AbortSignal, resumeOf?: string): ToolInvocationAdmission | undefined {
   return auditClosed ? undefined : admitToolInvocation(tool, parent, resumeOf);
 }
@@ -293,12 +338,30 @@ export function trackToolInvocationSettlement(settlement: Promise<unknown>): voi
   );
 }
 
+/** An invocation's allow or deny outcome; a directory grant and a plugin operation's row are records beside it. */
+function isTerminalRow(entry: PermissionAuditEntryInput): boolean {
+  return (entry.decision === "allow" || entry.decision === "deny") && "toolUseId" in entry && entry.toolUseId !== undefined
+    && !("directory" in entry && entry.directory !== undefined) && !("pluginOperation" in entry && entry.pluginOperation !== undefined);
+}
+
+/** Records beside an invocation's outcome (asks, grants, plugin operations, mode changes); a terminal row is refused. */
 export async function appendToolInvocationAudit(
   logger: Pick<AuditLogger, "appendPermissionAuditEntry">,
   entry: PermissionAuditEntryInput,
 ): ReturnType<AuditLogger["appendPermissionAuditEntry"]> {
+  if (isTerminalRow(entry)) {
+    const error = new Error(`terminal row of ${"tool" in entry ? entry.tool : entry.decision} must be written through its invocation's ledger`);
+    recordToolInvocationAuditFailure(error);
+    throw error;
+  }
+  return appendTerminalRow(logger, entry);
+}
+
+async function appendTerminalRow(
+  logger: Pick<AuditLogger, "appendPermissionAuditEntry">,
+  entry: PermissionAuditEntryInput,
+): ReturnType<AuditLogger["appendPermissionAuditEntry"]> {
   const append = logger.appendPermissionAuditEntry(entry);
-  enqueuedRows?.push(append);
   try {
     return await append;
   } catch (error) {

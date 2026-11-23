@@ -1,6 +1,6 @@
-import { appendToolInvocationAudit, recordToolInvocationAuditFailure } from "../invocation-ledger.js";
+import { appendToolInvocationAudit, recordToolInvocationAuditFailure, type TerminalLifecycleEvent, type TerminalRowWriter } from "../invocation-ledger.js";
 import type { ToolAuditTerminationReason } from "../../audit/audit-logger.js";
-// Every ordinary tool denial must finalize through auditToolCall so PermissionDenied fires exactly once.
+// Every ordinary tool denial finalizes through auditToolCall, whose row writer the ledger hands out and fires the denial lifecycle once.
 import { randomUUID } from "node:crypto";
 import type { ToolRegistry } from "../registry.js";
 import type { ToolSource, ToolCategory, TrustLevel } from "../types.js";
@@ -52,7 +52,7 @@ export class AuditWriter {
 
   // Lifecycle hooks are observe-only: audit decisions but never alter tool control flow or propagate errors.
   async fireLifecycleEvent(
-    event: "PostToolUseFailure" | "PermissionDenied",
+    event: "PostToolUseFailure" | TerminalLifecycleEvent,
     sessionId: string | undefined,
     context: ToolPermissionContext,
     payload: LifecycleEventPayload,
@@ -206,7 +206,9 @@ export class AuditWriter {
     audit?: ToolExecutionAuditMetadata,
     suppressPermissionDeniedLifecycle = false,
     abortSignal?: AbortSignal,
+    row?: TerminalRowWriter,
   ): Promise<void> {
+    if (!row) throw new Error(`terminal row of ${toolName} has no ledger writer`);
     const governedTool = audit?.governedOperation !== undefined;
     const auditSafeInput = auditSafeToolInput(input, audit);
     const auditSafeOutput = governedTool
@@ -261,18 +263,14 @@ export class AuditWriter {
       ...(hookChain ? { hookChain } : {}),
       audit,
     });
-    // The row is enqueued before the first await; PermissionDenied runs after it and cannot lose it.
-    let appended: Promise<unknown> | undefined;
-    if (this.auditLogger.isPermissionAuditChainReady()) {
-      appended = appendToolInvocationAudit(this.auditLogger, entry);
-      appended.catch(() => {});
-    } else if (this.requirePermissionAuditChain) {
+    const ready = this.auditLogger.isPermissionAuditChainReady();
+    if (!ready && this.requirePermissionAuditChain) {
       const error = new Error("permission audit chain is not initialized");
       recordToolInvocationAuditFailure(error);
       throw error;
     }
     // Emit ordinary denials once; exclude cancellations and governed operations whose lease/proof cannot include effect-capable hooks.
-    // Preserve the finalized denial reason for forensic discrimination.
+    let denied: ((event: TerminalLifecycleEvent) => Promise<unknown>) | undefined;
     if (
       permission?.decision === "deny" &&
       permissionContext !== undefined &&
@@ -281,18 +279,13 @@ export class AuditWriter {
       !governedTool &&
       !suppressPermissionDeniedLifecycle
     ) {
-      await this.fireLifecycleEvent(
-        "PermissionDenied",
-        sessionId,
-        permissionContext,
-        {
-          toolName,
-          denyReason: { source: "tool-executor", reason: permission.reason },
-        },
-        abortSignal,
-      );
+      const context = permissionContext;
+      // Preserve the finalized denial reason for forensic discrimination.
+      const denyReason = { source: "tool-executor" as const, reason: permission.reason };
+      denied = (event) => this.fireLifecycleEvent(event, sessionId, context, { toolName, denyReason }, abortSignal);
     }
-    if (appended === undefined) return;
+    // The writer enqueues the row before its first await; the denial lifecycle runs after it and cannot lose it.
+    const appended = row({ entry, ...(ready ? { logger: this.auditLogger } : {}), ...(denied ? { denied } : {}) });
     try {
       await appended;
     } catch (err) {

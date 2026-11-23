@@ -1,4 +1,4 @@
-import { appendToolInvocationAudit } from "./invocation-ledger.js";
+import { commitTerminalRow } from "./invocation-ledger.js";
 import { agentBrowserScopeOf, browserApprovalCardFacts, userOwnedBrowserScopeOf } from "./browser-tools.js";
 import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pipeline/user-owned-surface.js";
 import { issueReplayRootBinding } from "../permissions/reviewer/replay-root-binding.js";
@@ -392,8 +392,9 @@ export async function runToolInvocation(
             trustOrigin: provenanceTrustOrigin(RULE_PROVENANCE, "deny", opts.permissionContext?.trustOrigin ?? "unknown" as const), tool: toolUse.name,
             source: services.toolRegistry.findByName(toolUse.name)?.source ?? "builtin" as const,
             category: services.toolRegistry.findByName(toolUse.name)?.category ?? "meta" as const, hookChain };
-          await appendToolInvocationAudit(services.auditLogger, { ...common, decision: "deny",
-            denyReasons: [{ reason, source: "hook-input-mutation" }] });
+          // The rule's deny is the attempt's one terminal row; the admission's settle then finds it claimed.
+          await commitTerminalRow(services.invocationTerminal, toolUse.name, (row) => row({ logger: services.auditLogger,
+            entry: { ...common, decision: "deny", denyReasons: [{ reason, source: "hook-input-mutation" }] } }));
         } else if (services.requirePermissionAuditChain) {
           throw new Error("Hook mutation requires the permission audit chain");
         }
@@ -505,10 +506,13 @@ async function runToolInvocationAttempt(
       args[16] = currentAuditMetadata(args[4]);
       args[18] = abortSignal;
       // The row is claimed and enqueued before anything else awaits; a refused claim (a late resume after the host
-      // wrote the row, or a closed sink) rejects without writing.
+      // wrote the row, or a closed sink) resolves without writing.
       const terminal = services.invocationTerminal;
       const before = terminal?.state;
-      const written = terminal ? terminal.commit(() => services.auditWriter.auditToolCall(...args)) : services.auditWriter.auditToolCall(...args);
+      const written = commitTerminalRow(terminal, toolUse.name, (row) => {
+        args[19] = row;
+        return services.auditWriter.auditToolCall(...args);
+      });
       if (terminal && (before !== "open" || terminal.state === "open")) return written;
       written.catch(() => {});
       const denied = args[8];
@@ -569,14 +573,15 @@ async function runToolInvocationAttempt(
       return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: t("be_executor.toolNotFound", { name: toolUse.name }), is_error: true, durationMs });
     }
     governedTool = tool.operationPolicy !== undefined;
-    services.invocationTerminal?.hostTerminal((cause, detail, selected) => {
+    services.invocationTerminal?.hostTerminal((cause, detail, selected, row) => {
       // A human outcome accepted before the host ended the attempt stays the row's outcome.
       const denial = isSelectedRefusal(selected) ? selected
         : cause === "host-shutdown" ? hostShutdownDenial()
         : cause === "user-abort" ? refusal("user aborted turn", RULE_PROVENANCE)
         : refusal(detail, HOST_PROVENANCE);
       return services.auditWriter.auditToolCall(sessionId, toolUse.name, tool.source, trustFromSource(tool.source), toolUse.input, detail, true, startTime,
-        denial, Infinity, permissionContext, tool.category, executionCwd, undefined, cause, undefined, currentAuditMetadata(toolUse.input));
+        denial, Infinity, permissionContext, tool.category, executionCwd, undefined, cause, undefined, currentAuditMetadata(toolUse.input),
+        undefined, undefined, row);
     });
     let generationAccess: ReturnType<
       InvocationRunnerServices["pluginGenerationAccessProvider"]
