@@ -1030,3 +1030,20 @@ it("an accepted decision that ends the run before it returns leaves the item out
     await h.cleanup();
   }
 });
+
+it("an aggregate wait created while a refused retry runs takes the failure that stands again after the refusal", async () => {
+  const { h, id } = await failedRelaunch();
+  try {
+    await expect(h.untilLive(1)).rejects.toThrow(/stage_failed/);
+    const refused = h.engine.retryStage(id, { runId: "run-other", stageId: "a" });
+    const wait = Promise.allSettled([h.untilLive(1)]);
+    expect(await refused).toMatchObject({ ok: false });
+    expect(await Promise.race([wait, setImmediate("still pending")])).toEqual([
+      { status: "rejected", reason: expect.objectContaining({ message: expect.stringMatching(/stage_failed/) }) },
+    ]);
+  } finally {
+    for (const child of h.live()) child.finish();
+    await h.drainRunWork();
+    await h.cleanup();
+  }
+});

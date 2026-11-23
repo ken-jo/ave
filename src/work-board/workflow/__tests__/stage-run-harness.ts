@@ -96,7 +96,8 @@ export async function stageRunHarness(opts: {
   const launches = new AsyncLocalStorage<ObservedLaunch>();
   const observeEngineWork = () => opts.observeRunWork ? observeRunWork(launches) : undefined;
   let runWork = observeEngineWork();
-  const childChanges = new Set<(pulse?: ChildWaitPulse) => void>();
+  /** `recheck` is set when a call closed refused: a failure it held off stands again, as if the wait were created now. */
+  const childChanges = new Set<(pulse?: ChildWaitPulse, recheck?: boolean) => void>();
   const progressChanges = new Set<() => void>();
   let closed = false;
   let lastRequestedOrigin: string | undefined;
@@ -124,7 +125,7 @@ export async function stageRunHarness(opts: {
     if (!flight || !isInFlight(flight)) return undefined;
     return Math.min(...flight.pending, ...(flight.startedAt > flight.endedAt ? [flight.startedAt] : []));
   }
-  const notify = (pulse?: ChildWaitPulse) => { for (const changed of childChanges) changed(pulse); };
+  const notify = (pulse?: ChildWaitPulse, recheck = false) => { for (const changed of childChanges) changed(pulse, recheck); };
   const pulse = (reason: string, originSessionId?: string) => notify({ error: new Error(`Child wait ended: ${reason}`), originSessionId });
   function fail(reason: string, origin: string, completed = false): Flight {
     const flight = flightOf(origin);
@@ -144,7 +145,7 @@ export async function stageRunHarness(opts: {
     return accepted => {
       flight.pending.splice(flight.pending.indexOf(at), 1);
       if (accepted) flight.startedAt = Math.max(flight.startedAt, at);
-      if (book === flights) notify();
+      if (book === flights) notify(undefined, !accepted);
     };
   }
 
@@ -437,15 +438,16 @@ export async function stageRunHarness(opts: {
       }
       return newest?.error;
     }
-    widen(current);
-    if (origin !== undefined) {
-      const failure = standing(origin);
-      if (failure) return Promise.reject(failure.error);
-    } else {
+    /** The creation rule: the item's standing failure, or for an aggregate wait one only when every candidate has a standing failure. */
+    function createdFailed(): Error | undefined {
+      if (origin !== undefined) return standing(origin)?.error;
       const flying = inFlight();
       const candidates = flying.length > 0 ? flying : lastRequestedOrigin !== undefined ? [lastRequestedOrigin] : [];
-      if (candidates.length > 0 && candidates.every(from => standing(from))) return Promise.reject(standing(candidates.at(-1) ?? "")?.error);
+      return candidates.length > 0 && candidates.every(from => standing(from)) ? standing(candidates.at(-1) ?? "")?.error : undefined;
     }
+    widen(current);
+    const failedAtCreation = createdFailed();
+    if (failedAtCreation) return Promise.reject(failedAtCreation);
     return new Promise((resolve, reject) => {
       // Bounded below the test timeout, so a stuck wait names what it was waiting on; a slow preparation stays inside it.
       const timeout = setTimeout(() => {
@@ -456,7 +458,7 @@ export async function stageRunHarness(opts: {
         childChanges.delete(changed);
         clearTimeout(timeout);
       }
-      function changed(pulse?: ChildWaitPulse) {
+      function changed(pulse?: ChildWaitPulse, recheck = false) {
         const value = get();
         widen(value);
         if (done(value)) {
@@ -466,7 +468,7 @@ export async function stageRunHarness(opts: {
         }
         const from = pulse?.originSessionId;
         const error = pulse && (from === undefined || (origin !== undefined ? from === origin : scope.size === 0 || scope.has(from)))
-          ? pulse.error : failed(value);
+          ? pulse.error : failed(value) ?? (recheck ? createdFailed() : undefined);
         if (!error) return;
         settle();
         reject(error);
