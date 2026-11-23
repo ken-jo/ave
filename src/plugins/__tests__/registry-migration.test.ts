@@ -5,7 +5,7 @@ import { readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { migratePluginRegistry, readPluginRegistry } from "../registry.js";
+import { migratePluginRegistry, readPluginRegistry, vouchedInstalledPluginIds } from "../registry.js";
 import * as lifecycleLog from "../lifecycle-log.js";
 
 describe("readPluginRegistry — legacy installedBy/_devLinked migration", () => {
@@ -460,5 +460,31 @@ describe("readPluginRegistry — legacy installedBy/_devLinked migration", () =>
       }],
     }));
     await expect(readPluginRegistry(registryPath)).rejects.toThrow(/pending cleanup/);
+  });
+});
+
+describe("vouchedInstalledPluginIds", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "ave-registry-vouched-"));
+  });
+
+  afterEach(async () => {
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  // The boot prune keeps only approvals these ids name, so a disabled or local-dev install must keep its approval.
+  it("vouches for every entry, enabled, disabled or local-dev", async () => {
+    const registryPath = join(tmpDir, "registry.json");
+    await writeFile(registryPath, JSON.stringify({
+      version: 1,
+      plugins: [
+        { id: "on", manifestPath: "on/plugin.json", enabled: true, installSource: "user" },
+        { id: "off", manifestPath: "off/plugin.json", enabled: false, installSource: "user" },
+        { id: "dev", manifestPath: "dev/plugin.json", manifestSha256: "c".repeat(64), installSource: "local-dev" },
+      ],
+    }), "utf-8");
+    expect([...(await vouchedInstalledPluginIds(registryPath)) ?? []].sort()).toEqual(["dev", "off", "on"]);
   });
 });
