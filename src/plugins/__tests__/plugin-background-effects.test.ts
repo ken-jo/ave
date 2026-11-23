@@ -331,7 +331,8 @@ describe("background effect approvals", () => {
 describe("an approval and the install it was given for", () => {
   const T1 = "2026-11-01T00:00:00.000Z";
   const T2 = "2026-11-02T00:00:00.000Z";
-  const at = (installedAt: string) => backgroundEffectSubject(declaring(), marketplaceEntry({ installedAt }));
+  const at = (installedAt: string, committed = true) =>
+    backgroundEffectSubject(declaring(), marketplaceEntry({ installedAt }), committed);
 
   it("is not honoured for a reinstall after a removal whose write failed, across restarts and with no boot prune", async () => {
     const path = approvalsFile();
@@ -371,6 +372,54 @@ describe("an approval and the install it was given for", () => {
       await vi.waitFor(() => expect(new PluginBackgroundEffectApprovals(path).isApproved(at(T2))).toBe(true));
       expect(new PluginBackgroundEffectApprovals(path).isApproved(at(T1))).toBe(false);
     }
+  });
+
+  it("is neither moved nor saved for an update the registry has not committed, so a rollback keeps it", async () => {
+    const path = approvalsFile();
+    new PluginBackgroundEffectApprovals(path).approve(at(T1));
+    const before = readFileSync(path, "utf8");
+    const session = new PluginBackgroundEffectApprovals(path);
+    session.retain(new Map([["sample", T1]]));
+    const unbind = session.bindSubject("sample", async () => at(T2, false));
+    await settleMacrotask();
+    expect(session.isApproved(at(T2, false))).toBe(true);
+    expect(readFileSync(path, "utf8")).toBe(before);
+    session.followInstall("sample");
+    await settleMacrotask();
+    unbind();
+    expect(readFileSync(path, "utf8")).toBe(before);
+    const restarted = new PluginBackgroundEffectApprovals(path);
+    restarted.retain(new Map([["sample", T1]]));
+    expect(restarted.isApproved(at(T1))).toBe(true);
+  });
+
+  it("moves once the update commits and its generation publishes, and keeps that across a restart", async () => {
+    const path = approvalsFile();
+    new PluginBackgroundEffectApprovals(path).approve(at(T1));
+    const session = new PluginBackgroundEffectApprovals(path);
+    session.retain(new Map([["sample", T1]]));
+    let committed = false;
+    session.bindSubject("sample", async () => at(T2, committed));
+    await settleMacrotask();
+    expect(new PluginBackgroundEffectApprovals(path).isApproved(at(T1))).toBe(true);
+    committed = true;
+    session.followInstall("sample");
+    session.followInstall("sample");
+    await vi.waitFor(() => expect(new PluginBackgroundEffectApprovals(path).isApproved(at(T2))).toBe(true));
+    expect(session.isApproved(at(T2))).toBe(true);
+    const restarted = new PluginBackgroundEffectApprovals(path);
+    restarted.retain(new Map([["sample", T2]]));
+    expect(restarted.isApproved(at(T2))).toBe(true);
+  });
+
+  it("refuses an empty install stamp and never moves to one, so the approvals file stays readable", async () => {
+    const path = approvalsFile();
+    const store = new PluginBackgroundEffectApprovals(path);
+    expect(() => store.approve(at(""))).toThrow();
+    store.approve(at(T1));
+    store.bindSubject("sample", async () => at(""));
+    await settleMacrotask();
+    expect(new PluginBackgroundEffectApprovals(path).isApproved(at(T1))).toBe(true);
   });
 });
 

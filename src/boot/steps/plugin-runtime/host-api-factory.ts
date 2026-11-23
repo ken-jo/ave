@@ -243,7 +243,7 @@ export interface CreateHostApiFactoryDeps {
   /** Host-secret evidence contract: marketplace design, host-secret grant conditions. */
   grantEvidence: GrantEvidenceReader;
   /** Absent approvals deny every standalone effect. */
-  backgroundEffectApprovals?: Pick<PluginBackgroundEffectApprovals, "isApproved" | "bindSubject">;
+  backgroundEffectApprovals?: Pick<PluginBackgroundEffectApprovals, "isApproved" | "bindSubject" | "followInstall">;
 }
 
 /** Invoked once per plugin during startAll. */
@@ -313,13 +313,16 @@ export function createHostApiFactory(
       throw new Error(`HostApi install provenance missing: ${pluginId}`);
     }
     // Refresh registry evidence; candidates may use only the same install’s origin, never another source’s.
-    const readRegistryEntry = async (): Promise<PluginRegistryTrust | undefined> => {
-      if (installPluginId === null) return candidateRegistryEntry;
+    const readRegistryEvidence = async (): Promise<{ entry: PluginRegistryTrust | undefined; committed: boolean }> => {
+      if (installPluginId === null) return { entry: candidateRegistryEntry, committed: false };
       await refreshRegistryEntryCacheIfChanged();
       const committed = getRegistryEntry(installPluginId);
-      if (!candidateRegistryEntry) return committed;
-      return committed && recordsCandidate(committed, candidateRegistryEntry) ? committed : candidateRegistryEntry;
+      if (!candidateRegistryEntry || (committed && recordsCandidate(committed, candidateRegistryEntry))) {
+        return { entry: committed, committed: committed !== undefined };
+      }
+      return { entry: candidateRegistryEntry, committed: false };
     };
+    const readRegistryEntry = async (): Promise<PluginRegistryTrust | undefined> => (await readRegistryEvidence()).entry;
     // Verify legacy receipts once per incarnation; updates create a new incarnation.
     let legacyReceiptSha256: string | null | undefined;
     const hostSecretGrantEvidence: HostSecretGrantEvidence = {
@@ -488,9 +491,17 @@ export function createHostApiFactory(
       const manifestSha256 = manifestDocumentSha256(manifest);
       const backgroundEffects = declaredBackgroundEffects(manifest);
       // The card review reads this same subject, so an approval given, replaced or revoked while the plugin runs applies at once.
-      const backgroundSubject = async () => backgroundEffectSubject(manifest, await readRegistryEntry());
-      const unbindBackgroundSubject = deps.backgroundEffectApprovals?.bindSubject(pluginId, backgroundSubject);
-      if (unbindBackgroundSubject) hostIncarnation.registerDisposer(unbindBackgroundSubject);
+      const backgroundSubject = async () => {
+        const { entry, committed } = await readRegistryEvidence();
+        return backgroundEffectSubject(manifest, entry, committed);
+      };
+      const backgroundApprovals = deps.backgroundEffectApprovals;
+      const unbindBackgroundSubject = backgroundApprovals?.bindSubject(pluginId, backgroundSubject);
+      if (unbindBackgroundSubject) {
+        hostIncarnation.registerDisposer(unbindBackgroundSubject);
+        // An update binds before its install commits, so its approval follows the committed stamp once this generation publishes.
+        hostEffects?.stagePublish(() => backgroundApprovals?.followInstall(pluginId));
+      }
       const standaloneScope = async (methodPath: string, target: string | undefined): Promise<boolean> => {
         if (!withinBackgroundScope(backgroundEffects, methodPath, target)) return false;
         return deps.backgroundEffectApprovals?.isApproved(await backgroundSubject()) === true;

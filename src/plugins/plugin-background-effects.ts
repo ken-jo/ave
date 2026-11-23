@@ -77,9 +77,15 @@ export interface PluginBackgroundEffectSubject {
   readonly reviewSha256: string;
   /** The registry stamp of this install; a reinstall writes a new one, and so does an update. */
   readonly installedAt: string | null;
+  /** Whether that stamp is the registry's committed install rather than an update candidate's; only a committed one moves an approval. */
+  readonly committed: boolean;
 }
 
-export function backgroundEffectSubject(manifest: PluginManifest, entry: PluginRegistryTrust | undefined): PluginBackgroundEffectSubject {
+export function backgroundEffectSubject(
+  manifest: PluginManifest,
+  entry: PluginRegistryTrust | undefined,
+  committed = false,
+): PluginBackgroundEffectSubject {
   const effects = declaredBackgroundEffects(manifest);
   const source = backgroundEffectSource(entry);
   const scopeSha256 = backgroundEffectScopeSha256(effects);
@@ -91,6 +97,7 @@ export function backgroundEffectSubject(manifest: PluginManifest, entry: PluginR
     declared: hasBackgroundEffects(effects),
     reviewSha256: createHash("sha256").update(JSON.stringify([manifest.id, source, scopeSha256])).digest("hex"),
     installedAt: entry?.origin?.installedAt ?? null,
+    committed,
   };
 }
 
@@ -228,6 +235,7 @@ export class PluginBackgroundEffectApprovals {
     if (!subject.pluginId || !subject.declared || subject.source === null || !SHA256.test(subject.scopeSha256)) {
       throw new Error("A background effect approval needs a declared scope from a pinned install source");
     }
+    if (subject.installedAt === "") throw new Error("A background effect approval needs a non-empty install stamp");
     const next = new Map(this.approvals).set(subject.pluginId,
       approvalRecord(subject.pluginId, subject.source, subject.scopeSha256, subject.installedAt));
     this.persist(next);
@@ -269,7 +277,13 @@ export class PluginBackgroundEffectApprovals {
     this.save(next, "background effect approval prune was not saved");
   }
 
-  /** An update writes a new install stamp; a record this process matched moves to it, one only read from disk never does. */
+  /** Re-reads the newest binding once its generation publishes, so an update's approval follows the stamp the registry committed. */
+  followInstall(pluginId: string): void {
+    const read = this.subjects.get(pluginId)?.at(-1);
+    if (read) void this.carry(pluginId, read);
+  }
+
+  /** A record this process matched moves to a committed update's stamp; a candidate's stamp, or a record only read from disk, never moves. */
   private async carry(pluginId: string, read: () => Promise<PluginBackgroundEffectSubject>): Promise<void> {
     let subject: PluginBackgroundEffectSubject;
     try {
@@ -284,7 +298,7 @@ export class PluginBackgroundEffectApprovals {
       this.current.add(subject.pluginId);
       return;
     }
-    if (!this.current.has(subject.pluginId)) return;
+    if (!this.current.has(subject.pluginId) || !subject.committed || !subject.installedAt) return;
     const next = new Map(this.approvals).set(subject.pluginId,
       approvalRecord(record.pluginId, record.source, record.scopeSha256, subject.installedAt));
     this.approvals = next;

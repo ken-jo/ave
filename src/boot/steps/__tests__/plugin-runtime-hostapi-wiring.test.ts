@@ -6,7 +6,7 @@ import { createBootHostFixture, createDesktopHostFixture } from "../../../__test
 import { directHostFetchTransport } from "../../../__tests__/support/host-fetch-transport.js";
 /** Drive the captured boot HostApi factory so config precedence and capability lifetimes are tested at their producer. */
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { aveHome } from "../../../shared/ave-home.js";
@@ -142,7 +142,9 @@ const OFFICIAL_ORIGIN = {
 
 import { initPluginRuntime } from "../plugin-runtime.js";
 import { withPluginInstallLock } from "../../../plugins/install-lifecycle.js";
-import type { PluginRegistryTrust } from "../../../plugins/types.js";
+import type { PluginRegistryEntry, PluginRegistryTrust } from "../../../plugins/types.js";
+import { HostApiGenerationScope } from "../../../plugins/plugin-host-effect-scope.js";
+import { settleMacrotask } from "../../../__tests__/test-helpers.js";
 import { canonicalJSON } from "../../../plugins/secret-access/canonical-json.js";
 import { recordManifestDocument } from "../../../plugins/runtime/manifest-validation.js";
 import { agentPluginsDocument, pluginDataDirIn } from "../../../plugins/__tests__/test-helpers.js";
@@ -1483,6 +1485,56 @@ describe("HostApi incarnation authority", () => {
     await expect(fetchWithLease(child)).rejects.toThrow();
     expect(transport).toHaveBeenCalledTimes(3);
     expect(requestAndWait).not.toHaveBeenCalled();
+  });
+
+  it("moves a background approval to an update's stamp only once the registry commits it and the generation publishes", async () => {
+    const dir = tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-background-update-")));
+    runtimeTestState.registryPath = join(dir, "registry.json");
+    try {
+      const manifest = {
+        id: "plugin-a", name: "Sample", version: "1.1.0", entry: "dist/plugin.js", description: "sample", tools: [], config: {},
+        networkAccess: { allowedDomains: ["api.openai.com"] },
+      } as PluginManifest;
+      const manifestSha256 = "c".repeat(64);
+      const trustAt = (installedAt: string): PluginRegistryTrust => ({
+        installSource: "user", manifestSha256,
+        origin: {
+          sourceId: "example-source", sourceOrigin: "custom", commit: "a".repeat(40), packagePath: "plugins/a", version: "1.1.0",
+          rung: "release", artifactSha256: "b".repeat(64), installedAt,
+        },
+      });
+      const registryAt = (installedAt: string, pendingUpdate?: PluginRegistryEntry["pendingUpdate"]) => ({
+        version: 1, plugins: [{ id: "plugin-a", manifestPath: "plugin-a/plugin.json", ...trustAt(installedAt), pendingUpdate }],
+      });
+      const approvalsPath = join(dir, "approvals.json");
+      const approvedAt = (installedAt: string) =>
+        new PluginBackgroundEffectApprovals(approvalsPath).isApproved(backgroundEffectSubject(manifest, trustAt(installedAt), true));
+      const approvals = new PluginBackgroundEffectApprovals(approvalsPath);
+      runtimeTestState.readPluginRegistry.mockResolvedValue(
+        registryAt("2026-11-01T00:00:00.000Z", { kind: "marketplace", previousManifestFileSha256: null, previousReceiptRaw: null }));
+      writeFileSync(runtimeTestState.registryPath, "update pending");
+      const createHostApi = await initAndGetFactory(makeSettingsService(new Map()), undefined, undefined, undefined, {
+        backgroundEffectApprovals: approvals,
+      });
+      approvals.approve(backgroundEffectSubject(manifest, trustAt("2026-11-01T00:00:00.000Z"), true));
+      const before = readFileSync(approvalsPath, "utf8");
+      const scope = new HostApiGenerationScope("plugin-a");
+      createHostApi("plugin-a", manifest, pluginDataDirIn(dir), { ...activeIncarnation(), generationScope: scope }, "plugin-a",
+        trustAt("2026-11-02T00:00:00.000Z"));
+      const candidate = await approvals.currentSubject("plugin-a");
+      for (let turn = 0; turn < 5; turn += 1) await settleMacrotask();
+      expect(readFileSync(approvalsPath, "utf8")).toBe(before);
+      expect(candidate).toMatchObject({ installedAt: "2026-11-02T00:00:00.000Z", committed: false });
+
+      runtimeTestState.readPluginRegistry.mockResolvedValue(registryAt("2026-11-02T00:00:00.000Z"));
+      writeFileSync(runtimeTestState.registryPath, "update committed");
+      scope.bindGeneration({} as never, "update");
+      scope.publish();
+      await vi.waitFor(() => expect(approvedAt("2026-11-02T00:00:00.000Z")).toBe(true));
+      expect(approvedAt("2026-11-01T00:00:00.000Z")).toBe(false);
+    } finally {
+      runtimeTestState.registryPath = fixture.path("registry.json");
+    }
   });
 
   it.each(["strict", "default"] as const)("in %s mode keeps approved background effects to their declared targets", async (mode) => {
