@@ -7,6 +7,7 @@ import {
 } from "../script-hook-runner.js";
 import type { ScriptHookStdin } from "../script-hook-types.js";
 import { hasExecutable } from "./test-helpers.js";
+import { withPlantedProgram } from "../../__tests__/support/planted-program.js";
 
 const FIXTURE_ROOT = resolve(__dirname, "..", "..", "..", "test", "fixtures", "hooks");
 
@@ -137,5 +138,17 @@ describe("#811 generalized runner — legacy .sh path preserved", () => {
     );
     expect(r.decision).toBe("allow");
     expect(r.reason).toContain("fixture allow");
+  });
+});
+
+describe("command hook program lookup", () => {
+  it("never runs a bare program planted in the hook cwd or reached through an empty or relative PATH entry", async () => {
+    await withPlantedProgram(["ave-planted-hook"], async (planted) => {
+      // The hook runs in its configuration directory, which a bare-name lookup would search first.
+      const r = await runOneHookScript(cmdHook({ command: ["ave-planted-hook"], configDir: planted.dir }), samplePayload);
+      expect(r.decision).toBe("deny");
+      expect(r.reason).toMatch(/'ave-planted-hook' was not found on PATH/u);
+      expect(planted.ran()).toBe(false);
+    });
   });
 });

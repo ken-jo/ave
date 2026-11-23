@@ -2,6 +2,7 @@
 // Generic argv never passes through an implicit shell; legacy scripts keep the resolved interpreter path.
 import { spawn, type ChildProcess } from "node:child_process";
 import { buildSafeChildEnv } from "../tools/safe-env.js";
+import { resolveHostProgram } from "../shared/host-program-path.js";
 import { t } from "../i18n/index.js";
 import { raceWithAbort } from "../shared/abortable-deadline.js";
 import { turnExtensionPolicyContext } from "../shared/turn-extension-policy.js";
@@ -324,6 +325,7 @@ export async function runOneHookScript(
   let cleanupWrap: (() => void) | undefined;
   let wrappedEgress: EgressInvocation | undefined;
   let windowsSpawn: WindowsBundledSpawn | undefined;
+  let sandboxArgv = false;
   let contained: MxcBundledHolder | undefined;
   // Bundled hooks require the worker-confinement gate; user hooks use the host-shell plan under which they were admitted, or its live plan.
   const sandboxEnabled = confinement
@@ -417,6 +419,7 @@ export async function runOneHookScript(
       wrappedEgress = wrapped.egress;
       wrappedAsrt = true;
       [spawnCmd, ...spawnArgs] = wrapped.argv;
+      sandboxArgv = true;
       spawnEnv = bundledWrappedEnv(childEnvBase, wrapped.env, sandboxHome.env);
       let cleaned = false;
       cleanupWrap = () => {
@@ -472,7 +475,8 @@ export async function runOneHookScript(
   return new Promise<ScriptHookInvocationResult>((resolve) => {
     let child: ChildProcess;
     try {
-      child = windowsSpawn?.child ?? spawn(spawnCmd, spawnArgs, {
+      // A bare host program resolves on PATH only; a path keeps its documented meaning relative to the sealed configuration directory.
+      child = windowsSpawn?.child ?? spawn(sandboxArgv || /[\\/]/u.test(spawnCmd) ? spawnCmd : resolveHostProgram(spawnCmd, spawnEnv), spawnArgs, {
         windowsHide: true,
         cwd,
         // Forward only the stripped environment and host-owned hook variables.

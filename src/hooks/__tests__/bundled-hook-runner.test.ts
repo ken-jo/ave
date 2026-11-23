@@ -69,6 +69,7 @@ vi.mock("../../sandbox/wrap-bundled-command.js", async (original) => {
   } };
 });
 
+import { resolveHostProgram } from "../../shared/host-program-path.js";
 import { runOneHookScript } from "../script-hook-runner.js";
 import { appOwnedSandboxPrivateRoots, cleanupAsrtSandboxAfterCommand, type SandboxTempPrincipal } from "../../permissions/asrt-sandbox.js";
 import {
@@ -161,9 +162,11 @@ describe("bundled hook runner", () => {
   it("does not wrap a user hook when ASRT runs only for plugin workers", async () => {
     writeFileSync(script, "process.stdout.write(JSON.stringify({action:'allow',reason:'unwrapped user hook'}))");
     sandboxActive = true;
-    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
     const { confinement: _confinement, ...userHook } = runnable();
-    const result = await runOneHookScript(userHook, payload, { cwd: dataDir });
+    // The platform is simulated, so the plain spawn gets an absolute program instead of a host PATH lookup.
+    const node = resolveHostProgram("node");
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const result = await runOneHookScript({ ...userHook, command: [node, script] }, payload, { cwd: dataDir });
     expect(result.decision, result.reason).toBe("allow");
     expect(wrap).not.toHaveBeenCalled();
   });
