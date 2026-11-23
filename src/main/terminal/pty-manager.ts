@@ -1859,16 +1859,16 @@ function waitForEditorState<T>(
       cleanup();
       resolve(null);
     };
-    const check = (writeIfPending?: () => void): void => {
+    const check = (writeIfPending?: () => void, deadlineReached = false): void => {
       if (done) return;
       try {
-        const value = signal?.aborted || Date.now() >= expiresAt ? null : read();
-        if (value === undefined) {
+        const value = signal?.aborted ? null : read();
+        if (value === undefined && !deadlineReached && Date.now() < expiresAt) {
           writeIfPending?.();
           return;
         }
         cleanup();
-        resolve(value);
+        resolve(value ?? null);
       } catch (error) {
         cleanup();
         reject(error);
@@ -1880,7 +1880,7 @@ function waitForEditorState<T>(
     check(write);
     if (done) return;
     expiresAt = Date.now() + EDIT_LINE_TIMEOUT_MS;
-    timer = setTimeout(stop, EDIT_LINE_TIMEOUT_MS);
+    timer = setTimeout(() => check(undefined, true), EDIT_LINE_TIMEOUT_MS);
     if (write) check();
   });
 }

@@ -1772,6 +1772,25 @@ describe("pty-manager typing an approved agent command", () => {
       expect(vi.getTimerCount()).toBe(0);
     });
 
+    it.each<Wait>(["empty report", "paste echo", "confirmed report"])("accepts the %s stored at the 2,000 ms deadline", async (wait) => {
+      const { pty, through, emit } = await pauseAt(wait);
+      const startedAt = Date.now();
+      // Schedule evidence first so it reaches the tracker before the wait's timer runs.
+      setTimeout(() => {
+        expect(Date.now() - startedAt).toBe(2_000);
+        expect(pty.written).toEqual(writes.slice(0, through));
+        emit();
+      }, 2_000);
+      const typing = typeTerminalCommand(TAB, 3, line, "/w");
+      await flushEvents();
+      expect(pty.written).toEqual(writes.slice(0, through));
+      expect(vi.getTimerCount()).toBe(2);
+      vi.advanceTimersByTime(2_000);
+      await expect(typing).resolves.toEqual({ ok: true, firstBlockId: 1 });
+      expect(pty.written).toEqual(writes);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
     it.each<Wait>(["empty report", "paste echo", "confirmed report"])("expires the pending %s at 2,000 ms", async (wait) => {
       const { pty, through, emit } = await pauseAt(wait);
       const typing = typeTerminalCommand(TAB, 3, line, "/w");
