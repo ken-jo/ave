@@ -760,11 +760,11 @@ const { tmpdir } = await import("node:os");
 const { stageBrowserDownload, sweepBrowserDownloadStaging } = await import("../browser-download-staging.js");
 const arg = (helper: FakeHelper, index: number): string => helper.args[index] ?? "";
 describe("a stalled copy's temporary file in the chosen folder", () => {
-  const actOnRealFolders = (helper: FakeHelper): void => {
+  const actOnRealFolders = (copyDiesWhenKilled: boolean) => (helper: FakeHelper): void => {
     const [mode] = helper.args;
     helper.say("ready");
     if (mode === "--dir-copy") {
-      helper.diesWhenKilled = false;
+      helper.diesWhenKilled = copyDiesWhenKilled;
       helper.once("input", () => {
         fs.writeFileSync(join(arg(helper, 5), arg(helper, 9)), "partial copy");
         helper.say("progress 1048576");
@@ -790,14 +790,14 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
   beforeEach(() => { base = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), "download-part-"))); });
   afterEach(() => { fs.rmSync(base, { recursive: true, force: true }); });
 
-  const stalledCopy = async () => {
+  const stalledCopy = async ({ copyDiesWhenKilled = false, beforeStall = (_chosen: string): void => {} } = {}) => {
     const staging = join(base, "staging");
     const chosen = join(base, "chosen");
     fs.mkdirSync(staging);
     fs.mkdirSync(chosen);
     const info = fs.statSync(staging, { bigint: true });
     const root = { path: staging, dev: info.dev, ino: info.ino, files: { ...files, move: async () => "cross-volume" as const } };
-    script(actOnRealFolders);
+    script(actOnRealFolders(copyDiesWhenKilled));
     const item = Object.assign(new EventEmitter(), {
       getFilename: () => "report.pdf", getURL: () => "https://site.example/report", getURLChain: () => ["https://site.example/report"],
       hasUserGesture: () => true, getReceivedBytes: () => 8, getTotalBytes: () => 8, getState: () => "completed" as const,
@@ -808,6 +808,7 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
     await staged.answered;
     item.emit("done", {}, "completed");
     await flush();
+    beforeStall(chosen);
     await advance(BOUNDS.stallMs);
     await advance(BOUNDS.killMs);
     await flush();
@@ -817,6 +818,21 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
     return { root, staging, chosen, copy, part: join(chosen, part ?? ""), done };
   };
   const records = (staging: string) => fs.readdirSync(staging).filter((name) => /^[0-9a-f]{32}\.cleanup\.json$/u.test(name));
+
+  it("never removes a file put over the temporary file's name before a helper that is seen to end was killed", async () => {
+    const { staging, chosen, part, done } = await stalledCopy({
+      copyDiesWhenKilled: true,
+      beforeStall: (folder) => {
+        const [name] = fs.readdirSync(folder);
+        fs.writeFileSync(join(folder, "mine.txt"), "the user's file");
+        fs.renameSync(join(folder, "mine.txt"), join(folder, name ?? ""));
+      },
+    });
+    expect(done).toMatchObject({ settled: true, value: ["interrupted", "part-left"] });
+    expect(fs.readFileSync(part, "utf8")).toBe("the user's file");
+    expect(helpers().filter((helper) => helper.args[0] === "--dir-remove").map((helper) => helper.args[1])).not.toContain(chosen);
+    expect(records(staging)).toEqual([]);
+  });
 
   it("reports the temporary file as left, and removes it once the helper is seen to end", async () => {
     const { staging, copy, part, done } = await stalledCopy();

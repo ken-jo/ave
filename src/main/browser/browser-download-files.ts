@@ -600,7 +600,13 @@ function helperFileOperations(helper: string, bounds: HelperBounds = POLICY_BOUN
       } catch (error) {
         if (error instanceof HeldFileHelperUnavailableError && error.passed !== null) {
           error.partFile = partFile;
-          error.partialCopy = await removePartialCopy(to, part, error);
+          // A file put at that name since the copy wrote it is not the copy's to remove.
+          if (partFile !== null && compareFile(to, part, partFile) === "other") {
+            log.warn({ path: join(to.path, part) }, "a stopped download copy's temporary file is left: what is there is not the file the copy wrote");
+            error.partialCopy = "left";
+          } else {
+            error.partialCopy = await removePartialCopy(to, part, error);
+          }
         }
         throw error;
       }
