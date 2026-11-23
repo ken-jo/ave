@@ -106,11 +106,12 @@ vi.mock("node:fs", async (importOriginal) => {
 // The host's own renames go through the promise API: the same hook and the same folder without hard links.
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
-  const { renameSync } = await import("node:fs");
+  const { copyFileSync, renameSync } = await import("node:fs");
   const rename: typeof actual.rename = async (from, to) => { renameSync(from, to); };
   const copyFile: typeof actual.copyFile = async (from, to, mode) => {
     boundary.beforeCopy?.(String(from), String(to));
-    await actual.copyFile(from, to, mode);
+    // Done at once, as the renames are, so a test sees it settle among the queued callbacks.
+    copyFileSync(from, to, mode);
   };
   return { ...actual, default: { ...actual, rename, copyFile }, rename, copyFile };
 });
@@ -913,10 +914,6 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
     if (copy === undefined) throw new Error("no copy was started");
     return { root, staging, chosen, copy, part: join(chosen, arg(copy, 9)), done };
   };
-  // Wait until `ready` holds, without moving the fake clock: a file copy completes on the file system's own threads, in real time.
-  const until = async (ready: () => boolean): Promise<void> => {
-    for (const end = Date.now() + 5_000; !ready() && Date.now() < end;) await new Promise<void>((resolve) => { setImmediate(resolve); });
-  };
   const removalsIn = (folder: string) => helpers().filter((helper) => helper.args[0] === "--dir-remove" && helper.args[1] === folder);
   const records = (staging: string) => fs.readdirSync(staging).filter((name) => /^[0-9a-f]{32}\.cleanup\.json$/u.test(name));
   const recordedAt = (staging: string) => records(staging).map((name) => (JSON.parse(fs.readFileSync(join(staging, name), "utf8")) as { at: string }).at);
@@ -1122,7 +1119,8 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
           };
         },
       });
-      await until(() => done.settled);
+      await flush();
+      await flush();
       expect(fs.readdirSync(chosen)).toEqual([part.slice(chosen.length + 1)]);
       expect(fs.readFileSync(part, "utf8")).toBe("the user's file");
       expect(removalsIn(chosen)).toEqual([]);
@@ -1148,7 +1146,8 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
       });
       expect(copied.done).toMatchObject({ settled: true, value: ["interrupted", "part-left"] });
       copied.copy.exit(null, "SIGKILL");
-      await until(() => records(copied.staging).length === 1 && MOVED_ASIDE.test(recordedAt(copied.staging)[0] ?? ""));
+      await flush();
+      await flush();
       expect(refused).toBe(true);
       return { ...copied, original };
     };
@@ -1183,7 +1182,8 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
         },
       });
       copied.copy.exit(null, "SIGKILL");
-      await until(() => records(copied.staging).length === 1 && MOVED_ASIDE.test(recordedAt(copied.staging)[0] ?? ""));
+      await flush();
+      await flush();
       expect(putThere).toBe(1);
       expect(fs.readFileSync(join(folder, original), "utf8")).toBe("the user's file");
       const hidden = fs.readdirSync(folder).find((name) => name !== original) ?? "";
@@ -1201,8 +1201,8 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
       });
       const original = basename(copied.part);
       copied.copy.exit(null, "SIGKILL");
-      await until(() => fs.readdirSync(folder).join() === original && records(copied.staging).length === 1
-        && fs.readFileSync(join(copied.staging, records(copied.staging)[0] ?? ""), "utf8").includes("\"fingerprint\""));
+      await flush();
+      await flush();
       expect(fs.readdirSync(folder)).toEqual([original]);
       expect(fs.readFileSync(copied.part, "utf8")).toBe("partial copy");
       const kept = records(copied.staging).map((name) => JSON.parse(fs.readFileSync(join(copied.staging, name), "utf8")) as { at: string; identity: { mtimeNs: string } });
@@ -1213,7 +1213,8 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
     it("finds that file by its hidden name at the next start, and removes only it", async () => {
       const { root, staging, chosen, original } = await leftUnderHiddenName();
       const swept = follow(sweepBrowserDownloadStaging(root));
-      await until(() => swept.settled);
+      await flush();
+      await flush();
       expect(fs.readdirSync(chosen)).toEqual([original]);
       expect(fs.readFileSync(join(chosen, original), "utf8")).toBe("the user's file");
       expect(swept).toMatchObject({ settled: true, value: 1 });
@@ -1241,6 +1242,19 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
     expect(fs.readdirSync(chosen)).toEqual([]);
   });
 
+  it("does not record a file again at a start whose sweep fails and keeps its record", async () => {
+    const { root, staging, chosen, part } = await stalledCopy();
+    fs.rmSync(chosen, { recursive: true, force: true });
+    const failing = { ...root, files: { ...root.files, sweep: async () => { throw new Error("the sweep failed"); } } };
+    for (let start = 0; start < 2; start += 1) {
+      const swept = follow(sweepBrowserDownloadStaging(failing));
+      await flush();
+      await flush();
+      expect(swept.error).toBeInstanceOf(Error);
+      expect(recordedAt(staging)).toEqual([basename(part)]);
+    }
+  });
+
   it("records anew, at the next start, a file the sweep left under another name", async () => {
     let chosenFolder = "";
     let original = "";
@@ -1258,7 +1272,8 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
     });
     expect(recordedAt(staging)).toEqual([original]);
     const swept = follow(sweepBrowserDownloadStaging(root));
-    await until(() => swept.settled);
+    await flush();
+    await flush();
     expect(swept.error).toBeUndefined();
     const hidden = fs.readdirSync(chosen).find((name) => name !== original) ?? "";
     expect(hidden).toMatch(MOVED_ASIDE);
@@ -1391,9 +1406,11 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
       let locks = 1;
       boundary.unlinkFault = (path) => (/\.probe$/u.test(path) && locks-- > 0 ? "EBUSY" : null);
       const removing = follow(removeOne("first"));
-      await until(() => locks === 0);
+      await flush();
+      await flush();
       await advance(BACKGROUND_BUDGET_MS);
-      await until(() => removing.settled);
+      await flush();
+      await flush();
       expect(removing.value?.result).toEqual({ outcome: "removed" });
       expect(fs.readdirSync(removing.value?.chosen ?? "")).toEqual([]);
       expect(boundary.warn).not.toHaveBeenCalledWith(expect.anything(), expect.stringContaining("probe's name"));
