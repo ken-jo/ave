@@ -1,5 +1,5 @@
 import { type BigIntStats, chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, parse, sep } from "node:path";
 import type { TemplateGraph, TemplateStage, TemplateVersion, WorkItemStageRun } from "../../../shared/workflow-template-types.js";
 import { graphHashOf } from "../../template-graph.js";
 
@@ -13,25 +13,39 @@ const entryAt = (path: string): BigIntStats | undefined => lstatSync(path, { big
 const realDir = (stat: BigIntStats | undefined): stat is BigIntStats => stat?.isDirectory() === true && !stat.isSymbolicLink();
 const sameDir = (stat: BigIntStats | undefined, held: BigIntStats): boolean => realDir(stat) && stat.ino !== 0n && stat.ino === held.ino && stat.dev === held.dev;
 
-/** Refuses a path that is not below `base` through real folders alone: `base` is a folder the fixture made, and each folder from the
- * path up to it is one itself and no link to one. They are told by which folder each is on disk, not by how the path spells them. */
-function below(base: string, path: string): void {
+/** The folders a path names from its root down, each as the very text the path gives it up to there; the last is the path itself.
+ * Refuses a path that can be read in more than one way: one that is not absolute, has a `.` or `..` part, an empty part (a doubled
+ * or closing separator) or the other system's separator, and on Windows a part the system would take for another name. What is
+ * checked of such a list is then what an action on the path reaches. */
+function levels(path: string): string[] {
+  const root = parse(path).root;
+  const parts = path.slice(root.length).split(sep);
+  const odd = (part: string): boolean => part === "" || part === "." || part === ".." || /[/\\]/u.test(part) || (sep === "\\" && /[. ]$|:/u.test(part));
+  if (!isAbsolute(path) || !root.endsWith(sep) || root.includes(sep === "/" ? "\\" : "/") || parts.some(odd)) throw new Error(`a fixture's path can be read in more than one way: ${path}`);
+  let at = root.slice(0, -1);
+  return parts.map(part => (at = `${at}${sep}${part}`));
+}
+
+/** Refuses a path that is not below `base` through real folders alone: `base` is a folder the fixture made, found among the folders
+ * the path names by which folder it is on disk, not by how it is spelled, and each folder from there down to the path is one itself
+ * and no link to one. Returns the path, which is the text every one of those checks was made on. */
+function below(base: string, path: string): string {
+  levels(base);
   const held = entryAt(base);
   if (!realDir(held)) throw new Error(`a fixture's base is no real folder: ${base}`);
-  for (let at = dirname(resolve(path)); ; at = dirname(at)) {
-    const stat = entryAt(at);
-    if (sameDir(stat, held)) return;
-    if (!realDir(stat) || dirname(at) === at) throw new Error(`not below the fixture's base through real folders: ${path}`);
-  }
+  const above = levels(path).slice(0, -1);
+  const from = above.findIndex(level => sameDir(entryAt(level), held));
+  if (from < 0 || !above.slice(from).every(level => realDir(entryAt(level)))) throw new Error(`not below the fixture's base through real folders: ${path}`);
+  return path;
 }
 
 /** Removes a link to a directory as the link it is: what it points at stays. A removal that takes a path for a file or a folder can
  * refuse one. `base`: a folder of the fixture's own that the link lies below; anything else at the path, or a path that is reached
  * through another link, is refused. */
 export function removeLink(path: string, base: string): void {
-  below(base, path);
-  if (entryAt(path)?.isSymbolicLink() !== true) throw new Error(`not a link: ${path}`);
-  unlinkSync(path);
+  const at = below(base, path);
+  if (entryAt(at)?.isSymbolicLink() !== true) throw new Error(`not a link: ${at}`);
+  unlinkSync(at);
 }
 
 /** Removes a fixture's folder with all it holds. A link in it goes as a link, and a file that cannot be written (git stores its objects
@@ -51,12 +65,12 @@ export function removeTree(root: string, base = root): void {
       else if ((stat.mode & 0o200n) === 0n) chmodSync(path, 0o666);
     }
   };
-  if (root !== base) below(base, root);
-  const held = entryAt(root);
+  const at = root === base ? levels(root).at(-1) as string : below(base, root);
+  const held = entryAt(at);
   if (held === undefined) return;
-  if (!realDir(held)) throw new Error(`not a real folder: ${root}`);
-  clear(root, held);
-  rmSync(root, { recursive: true, force: true, maxRetries: 3 });
+  if (!realDir(held)) throw new Error(`not a real folder: ${at}`);
+  clear(at, held);
+  rmSync(at, { recursive: true, force: true, maxRetries: 3 });
 }
 
 /** Sets one field of a JSON file in place, making what is missing on the way to it: an array before a number, an object otherwise. */

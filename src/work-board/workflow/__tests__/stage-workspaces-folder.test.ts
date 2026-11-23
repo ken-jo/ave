@@ -1071,4 +1071,30 @@ describe("what a fixture's own removal takes", () => {
     removeLink(join(sibling, "inner-link"), base);
     expect.soft(existsSync(sentinel)).toBe(true);
   });
+
+  it("nothing at a path that can be read in two ways: one that steps back through a link, names the folder it is in, or mixes its separators", () => {
+    const owned = join(base, "owned");
+    const sibling = join(base, "sibling");
+    const sentinel = join(sibling, "kept", "sentinel.txt");
+    mkdirSync(join(owned, "inner"), { recursive: true });
+    mkdirSync(join(sibling, "deep"), { recursive: true });
+    mkdirSync(join(sibling, "kept"));
+    writeFileSync(sentinel, "kept\n");
+    symlinkSync(join(sibling, "deep"), join(owned, "link"), "junction");
+    symlinkSync(join(sibling, "kept"), join(sibling, "inner-link"), "junction");
+    const other = sep === "\\" ? "/" : "\\";
+    // Written out, never joined: a join folds these away. Where the disk resolves `..`, the step back from the link's folder ends in
+    // `sibling`, at the folder with the sentinel, while the text reads as a path below the base; a system that folds `..` in the text
+    // (Windows) reads the same text as a path in `owned`, and there only the refusal shows.
+    const back = [owned, "link", "..", "kept"].join(sep);
+    for (const [how, path] of [["back", back], ["here", [owned, ".", "inner"].join(sep)], ["mixed", `${owned}${other}inner`], ["ended", `${owned}${sep}inner${sep}`], ["doubled", `${owned}${sep}${sep}inner`]] as const) {
+      expect.soft(() => removeTree(path, owned), how).toThrow();
+    }
+    expect.soft(() => removeLink([owned, "link", "..", "inner-link"].join(sep), owned)).toThrow();
+    expect.soft(() => removeLink(`${sibling}${other}inner-link`, base)).toThrow();
+    expect.soft(() => removeTree(`${owned}${sep}inner`, [owned, "inner", ".."].join(sep))).toThrow();
+    expect.soft([sentinel, join(owned, "inner"), join(sibling, "inner-link")].map(path => lstatSync(path, { throwIfNoEntry: false }) !== undefined)).toEqual([true, true, true]);
+    removeLink(join(sibling, "inner-link"), base);
+    removeTree(owned);
+  });
 });
