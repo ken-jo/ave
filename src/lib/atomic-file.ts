@@ -161,16 +161,19 @@ function syncParentDirectoryAfterRename(
     }
   }
 
-  if (syncError !== undefined) {
-    throw Object.assign(
-      new Error("atomic file rename committed but parent directory sync failed"),
-      {
-        code: DIRECTORY_SYNC_ERROR_CODE,
-        committed: true as const,
-        cause: syncError,
-      },
-    );
-  }
+  if (syncError !== undefined) throw committedDirectorySyncError(syncError);
+}
+
+/** The error a writer throws when its rename landed and only the parent-directory sync failed: the write is committed. */
+export function committedDirectorySyncError(cause: unknown): Error & { committed: true } {
+  return Object.assign(
+    new Error("atomic file rename committed but parent directory sync failed"),
+    {
+      code: DIRECTORY_SYNC_ERROR_CODE,
+      committed: true as const,
+      cause,
+    },
+  );
 }
 
 /** Whether `error` is the one thrown above: the rename landed, only the parent-directory sync did not. A caller that can verify the bytes on disk treats it as a commit; every other error is a failed write. Strict

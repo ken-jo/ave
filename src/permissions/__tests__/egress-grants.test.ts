@@ -406,7 +406,9 @@ describe("EgressGrantStore", () => {
       homeTrust.evaluateAveHomeTrustAtBoot(home);
       const path = egressGrantFilePath();
       const store = new EgressGrantStore(path);
+      const other = { host: "example.com", port: 443 };
       await store.grant("always", ALL, subject, github);
+      await store.grant("always", ALL, subject, other);
       expect(homeTrust.readAveHomeInputSync(path).status).toBe("trusted");
       store.noteUse("always", subject, github);
       // POSIX fails the parent-directory sync after the rename. Windows syncs no directory, so its rename reports a failure after landing.
@@ -422,11 +424,21 @@ describe("EgressGrantStore", () => {
       const result = await store.revoke({ ...github, scope: "always", origin: "shell" }).catch(error => error);
       syncFailure.mockRestore();
       syncFailure = undefined;
-      // The failed write cleared its own intent, so the landed bytes read as changed: landing is proved from the bytes, not their trust.
-      expect(homeTrust.readAveHomeInputSync(path)).toMatchObject({ status: "untrusted", reason: "changed" });
-      expect(JSON.parse(readFileSync(path, "utf8")).grants).toEqual([]);
+      expect(JSON.parse(readFileSync(path, "utf8")).grants).toEqual([expect.objectContaining(other)]);
       expect(result).toEqual({ removed: true, tokens: [subject.token], durabilitySyncFailed: true });
       expect(await store.matchingScope(subject, github, ALL)).toBeUndefined();
+      if (process.platform === "win32") {
+        // A rename that reports failure cannot say whether it landed, so the write stays uncommitted and the file awaits review.
+        expect(homeTrust.readAveHomeInputSync(path)).toMatchObject({ status: "untrusted", reason: "changed" });
+      } else {
+        // The rename landed and only the directory sync failed: the write is committed, so the rest of the store keeps working.
+        expect(await store.listPersistent()).toEqual([expect.objectContaining({ ...other, scope: "always" })]);
+        expect(await store.matchingScope(subject, other, ALL)).toBe("always");
+        expect(homeTrust.readAveHomeInputSync(path).status).toBe("trusted");
+        const later = { host: "pypi.org", port: 443 };
+        await store.grant("always", ALL, subject, later);
+        expect(await store.matchingScope(subject, later, ALL)).toBe("always");
+      }
     } finally {
       syncFailure?.mockRestore();
       setAveHomeConfigurationOwner(undefined);
