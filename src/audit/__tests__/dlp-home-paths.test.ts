@@ -588,7 +588,8 @@ it.each([
   const { redactFsPath } = await import("../dlp-filter.js");
   const paths = platform === "win32" ? win32 : posix;
   const absolute = paths.resolve(configured, "file");
-  expect(redactFsPath(absolute)).toBe(absolute);
+  // The working directory may itself hold any account's home, which is still redacted.
+  expect(redactFsPath(absolute)).not.toContain("<home>");
   for (const home of [configured, normalized]) expect(redactFsPath(`${home}/file`)).toBe("<home>/file");
 });
 

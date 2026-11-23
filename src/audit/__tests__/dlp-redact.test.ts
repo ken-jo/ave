@@ -397,6 +397,124 @@ describe("scrubSecretsForLLM — credential-class SOT (#1499 E2 M1)", () => {
   });
 });
 
+describe("query credentials — signed URLs, encoded keys and serialization delimiters", () => {
+  const hexSignature = "4f9c1e7d2b8a6c3e5f0a9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a";
+  const base64Signature = "Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5MGFiY2RlZmdoaWo%3D";
+  const sessionToken = "IQoJb3JpZ2luX2VjEXAMPLEsessionTOKENvalue0123456789";
+  const bothScrubbers = [["scrubSecretsForLLM", scrubSecretsForLLM], ["scrubDiagnosticSecrets", scrubDiagnosticSecrets]] as const;
+
+  it.each([
+    [`https://objects.example/report.csv?X-Example-Date=20261122T000000Z&X-Example-SignedHeaders=host&X-Example-Signature=${hexSignature}`,
+      "https://objects.example/report.csv?X-Example-Date=20261122T000000Z&X-Example-SignedHeaders=host&X-Example-Signature=[REDACTED:TOKEN]"],
+    [`https://objects.example/report.csv?X-Example-Security-Token=${sessionToken}&X-Example-Signature=${hexSignature}`,
+      "https://objects.example/report.csv?X-Example-Security-Token=[REDACTED:TOKEN]&X-Example-Signature=[REDACTED:TOKEN]"],
+    [`https://media.example/clip.mp4?Expires=1795000000&Signature=${hexSignature}&Key-Pair-Id=K2EXAMPLE`,
+      "https://media.example/clip.mp4?Expires=1795000000&Signature=[REDACTED:TOKEN]&Key-Pair-Id=K2EXAMPLE"],
+    [`https://blobs.example/c/a.txt?sv=2026-01-01&sp=r&sig=${base64Signature}`, "https://blobs.example/c/a.txt?sv=2026-01-01&sp=r&sig=[REDACTED:TOKEN]"],
+    [`https://blobs.example/c/a.txt?sv=2026-01-01&sp=r&%73ig=${base64Signature}`, "https://blobs.example/c/a.txt?sv=2026-01-01&sp=r&%73ig=[REDACTED:TOKEN]"],
+    [`https://blobs.example/c/a.txt?sv=2026-01-01&sp=r&%2573ig=${base64Signature}`, "https://blobs.example/c/a.txt?sv=2026-01-01&sp=r&%2573ig=[REDACTED:TOKEN]"],
+    [`https://objects.example/r?X-Example%2DSignature=${hexSignature}`, "https://objects.example/r?X-Example%2DSignature=[REDACTED:TOKEN]"],
+    ["https://x.example/?%74oken=abc123", "https://x.example/?%74oken=[REDACTED:TOKEN]"],
+    [`https://login.example/cb?next=https%3A%2F%2Fobjects.example%2Fr%3FX-Example-Signature%3D${hexSignature}%26a%3D1&state=1`,
+      "https://login.example/cb?next=https%3A%2F%2Fobjects.example%2Fr%3FX-Example-Signature%3D[REDACTED:TOKEN]%26a%3D1&state=1"],
+  ])("masks the signature or session token of %s and keeps its other parameters", (url, masked) => {
+    expect(scrubSecretsForLLM(url)).toBe(masked);
+    const diagnostic = scrubDiagnosticSecrets(url);
+    for (const secret of [hexSignature, base64Signature, sessionToken, "abc123"]) expect(diagnostic).not.toContain(secret);
+    expect(holdsCredential(url)).toBe(true);
+  });
+
+  it.each(bothScrubbers)("%s keeps a signature name used as an ordinary option", (_name, scrub) => {
+    for (const text of [
+      "use ?sig=sha256 to select the digest",
+      "?signature=on&sig=hmac",
+      "https://docs.example/search?q=signature&signatures=on&design=sig",
+      "https://docs.example/a?sig=0123456789abcdef",
+      "Set ?x-example-signature=sha256 to pick the digest.",
+      JSON.stringify({ a: "https://x.example/?Expires=1&b=2", c: "https://y.example/?sig=abcdefghijklmnopqrstuv" }),
+    ]) expect(scrub(text)).toBe(text);
+  });
+
+  it.each(bothScrubbers)("%s masks an opaque signature in a signed query", (_name, scrub) => {
+    for (const [text, masked] of [
+      ["https://example.test/?Expires=123&Key-Pair-Id=EXAMPLE&Signature=abcdefghijklmnopqrstuvwx",
+        "https://example.test/?Expires=123&Key-Pair-Id=EXAMPLE&Signature=[REDACTED:TOKEN]"],
+      ["https://blobs.example/a.txt?sv=2026-01-01&sp=r&sig=lowercaseonlysignature", "https://blobs.example/a.txt?sv=2026-01-01&sp=r&sig=[REDACTED:TOKEN]"],
+      ["https://login.example/cb?next=https%3A%2F%2Fobjects.example%2Fr%3FX-Example-Date%3D1%26X-Example-Signature%3Dlowercasesig%26a%3D1&state=1",
+        "https://login.example/cb?next=https%3A%2F%2Fobjects.example%2Fr%3FX-Example-Date%3D1%26X-Example-Signature%3D[REDACTED:TOKEN]%26a%3D1&state=1"],
+    ]) expect(scrub(text)).toBe(masked);
+  });
+
+  it.each(bothScrubbers)("%s reads query syntax escaped in a JSON string", (_name, scrub) => {
+    const line = '{"url":"https://example.test/?\\u0073ig=0123456789abcdef0123456789abcdef","next":1}';
+    expect(scrub(line)).toBe('{"url":"https://example.test/?\\u0073ig=[REDACTED:TOKEN]","next":1}');
+  });
+
+  it("keeps a quote inside a credential value masked", () => {
+    expect(scrubSecretsForLLM('https://x.example/?token=abc"def&x=1')).toBe("https://x.example/?token=[REDACTED:TOKEN]&x=1");
+    expect(scrubSecretsForLLM("see ?token=abc\", next")).toBe("see ?token=[REDACTED:TOKEN] next");
+    for (const tail of ['",cd', '")cd', "':cd"]) {
+      expect(scrubSecretsForLLM(`"'https://x.example/?token=ab${tail}&x=1`)).toBe("\"'https://x.example/?token=[REDACTED:TOKEN]&x=1");
+    }
+    const line = JSON.stringify({ msg: 'GET https://x.example/?token=abc"def&x=1', next: 1 });
+    expect(JSON.parse(scrubSecretsForLLM(line))).toEqual({ msg: "GET https://x.example/?token=[REDACTED:TOKEN]&x=1", next: 1 });
+    for (const text of ['https://x.example/?token=abc"def&x=1', line]) expect(scrubDiagnosticSecrets(text)).not.toContain("def");
+  });
+
+  it.each(bothScrubbers)("%s keeps a quote masked when its opener is already closed", (_name, scrub) => {
+    for (const [text, masked] of [
+      ['see "x" ?token=abc">rest', 'see "x" ?token=[REDACTED:TOKEN]'],
+      ["say 'a' and ?token=abc' rest", "say 'a' and ?token=[REDACTED:TOKEN] rest"],
+      ["<b>x</b> ?token=abc>rest", "<b>x</b> ?token=[REDACTED:TOKEN]"],
+      ['{"m":"see \\"x\\" ?token=abc\\" rest"}', '{"m":"see \\"x\\" ?token=[REDACTED:TOKEN] rest"}'],
+    ]) expect(scrub(text)).toBe(masked);
+  });
+
+  it("ends a credential value at a quote whose opener is still open", () => {
+    for (const [text, masked] of [
+      ['{"url":"https://x.example/?token=abc","next":1}', '{"url":"https://x.example/?token=[REDACTED:TOKEN]","next":1}'],
+      ['<a href="https://x.example/?token=abc">link</a>', '<a href="https://x.example/?token=[REDACTED:TOKEN]">link</a>'],
+      ["curl 'https://x.example/?token=abc' -o out", "curl 'https://x.example/?token=[REDACTED:TOKEN]' -o out"],
+      ['{"dir":"C:\\\\","url":"https://x.example/?token=abc","next":1}', '{"dir":"C:\\\\","url":"https://x.example/?token=[REDACTED:TOKEN]","next":1}'],
+      ['{"url":"https://x.example/?token=abc\\\\","next":1}', '{"url":"https://x.example/?token=[REDACTED:TOKEN]","next":1}'],
+      ["<img src=https://x.example/?token=abc\\>", "<img src=https://x.example/?token=[REDACTED:TOKEN]>"],
+      ["curl 'https://x.example/?token=abc\\' -o out", "curl 'https://x.example/?token=[REDACTED:TOKEN]' -o out"],
+    ]) expect(scrubSecretsForLLM(text)).toBe(masked);
+    const nested = JSON.stringify(JSON.stringify({ command: 'curl "https://x.example/?token=abc" -o out' }));
+    expect(JSON.parse(JSON.parse(scrubSecretsForLLM(nested)))).toEqual({ command: 'curl "https://x.example/?token=[REDACTED:TOKEN]" -o out' });
+  });
+
+  it("keeps the parameters after a JSON-escaped ampersand", () => {
+    const line = '{"url":"https://example.test/?token=abc\\u0026next=1","next":1}';
+    expect(scrubSecretsForLLM(line)).toBe('{"url":"https://example.test/?token=[REDACTED:TOKEN]\\u0026next=1","next":1}');
+    expect(JSON.parse(scrubSecretsForLLM(line))).toEqual({ url: "https://example.test/?token=[REDACTED:TOKEN]&next=1", next: 1 });
+    expect(scrubDiagnosticSecrets(line)).not.toContain("abc");
+  });
+
+  it.each(bothScrubbers)("%s masks a bare signature before the punctuation that follows it", (_name, scrub) => {
+    for (const [text, masked] of [
+      [`[clip](https://media.example/c?Expires=1&Signature=${hexSignature})`, "[clip](https://media.example/c?Expires=1&Signature=[REDACTED:TOKEN])"],
+      [`see https://blobs.example/a?sv=1&sig=${base64Signature}. Next`, "see https://blobs.example/a?sv=1&sig=[REDACTED:TOKEN]. Next"],
+      [`https://blobs.example/a?sig=${hexSignature}, next`, "https://blobs.example/a?sig=[REDACTED:TOKEN], next"],
+      [`https://media.example/c?Signature=${hexSignature}#t=10`, "https://media.example/c?Signature=[REDACTED:TOKEN]#t=10"],
+      [`https://media.example/c?Signature=${hexSignature};x`, "https://media.example/c?Signature=[REDACTED:TOKEN];x"],
+    ]) expect(scrub(text)).toBe(masked);
+  });
+
+  it("ends a query value at the quotes, escaped quotes and whitespace of its serialization", () => {
+    const line = JSON.stringify({ msg: `GET https://objects.example/r?X-Example-Signature=${hexSignature}`, url: "https://x.example/mcp?api_key=SECRETVALUE123", next: 1 });
+    expect(JSON.parse(scrubSecretsForLLM(line))).toEqual({
+      msg: "GET https://objects.example/r?X-Example-Signature=[REDACTED:TOKEN]",
+      url: "https://x.example/mcp?api_key=[REDACTED:TOKEN]",
+      next: 1,
+    });
+    const nested = JSON.stringify(line);
+    expect(JSON.parse(JSON.parse(scrubSecretsForLLM(nested)) as string)).toEqual(JSON.parse(scrubSecretsForLLM(line)));
+    expect(scrubSecretsForLLM("curl 'https://x.example/?token=abc123' -o out")).toBe("curl 'https://x.example/?token=[REDACTED:TOKEN]' -o out");
+    expect(scrubSecretsForLLM("<a href=\"https://x.example/?access_token=abc123\">x</a>")).toBe("<a href=\"https://x.example/?access_token=[REDACTED:TOKEN]\">x</a>");
+  });
+});
+
 describe("scrubDiagnosticSecrets — marketplace diagnostics behind Copy details", () => {
   it("redacts a password in any scheme's userinfo, up to the authority's last @", () => {
     const out = scrubDiagnosticSecrets(
@@ -916,6 +1034,9 @@ describe("scrubDiagnosticSecrets — marketplace diagnostics behind Copy details
         `"${fill("authorization\\u003a")}`, `\\"${fill("authorization\n")}\\": x`, fill('"x" authorization '),
         // Read long backslash runs once per key window rather than once per step.
         `${"authorization ".repeat(18)}${fill("\\")}`, `${"authorization ".repeat(18)}${fill("\\", "u0041")}`,
+        fill("?a%26"), fill("&a%41"), fill("%253f"), fill("&sig=a1B"), `&sig=${fill("a1B%3D")}`, `?token=${fill("\\")}`, `?token=a${fill("%2526")}`,
+        fill("\\u0026token=a"), fill("?\\u0073ig=a1B"), fill('?token=a"'), `"?token=${fill('a\\"')}`, fill("&Expires=1&sig=a"), `?token=${fill("\\\\u0026")}`,
+        fill('"?token=a\\\\\\"'), fill("<?token=a>"), fill("`?token=a'"), `${fill('\\\\"')}?token=a\\"`,
       ];
     };
     const small = familiesAt(SMALL);
