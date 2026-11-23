@@ -88,16 +88,18 @@ removed. It remains, logged as possibly left, when the removal is refused or
 fails (the chosen folder was moved or replaced, or the helper is broken for
 every run), and when the app quits during a copy: shutdown kills the helper
 with every other owned process and starts no new one, so nothing removes
-`part`. When the killed helper was not seen to exit, a removal could race it,
-so none starts then: the host keeps the identity `part` had while the helper
-wrote it (taken at its first `progress` line or at `copied`) and records the
-folder, the name and that identity in the staging folder. Once the helper is
-seen to end, or at the next start before the sweep, `part` is removed with a
-new `--dir-remove` run only while the file at that name still has that
-identity; anything else there is left and logged. The host checks the
-identity just before the run, and the helper does not check it again, so a
-file put at that name in between could still be removed. A `part` never seen
-while it was written has no identity and is left. A run killed after `copied`, or a rename killed after
+`part`. The host removes `part` only as the file the helper wrote: it keeps
+the identity `part` had while the helper wrote it (taken at its first
+`progress` line or at `copied`), renames `part` to a fresh hidden name in the
+same folder, checks that identity there, and only then removes it under that
+name with a new `--dir-remove` run, so a file put at `part`'s name meanwhile is
+not touched. A file found not to be the one written is put back at `part`'s
+name if that is still free, or left under the hidden name, and logged; a
+rename that fails leaves `part`. A `part` never seen while it was written has
+no identity and is left. When the killed helper was not seen to exit, a
+removal could race it, so none starts then: the host records the folder, the
+name and the identity in the staging folder, and does the above once the
+helper is seen to end, or at the next start before the sweep. A run killed after `copied`, or a rename killed after
 `ready`, may have reached the chosen path; the log says so instead of claiming
 the file was not saved.
 

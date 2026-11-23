@@ -55,7 +55,17 @@ const boundary = vi.hoisted(() => ({
   script: (_helper: never) => {},
   info: vi.fn(),
   warn: vi.fn(),
+  // Runs just before every rename through node:fs, and may throw in its place.
+  beforeRename: null as ((from: string, to: string) => void) | null,
 }));
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  const renameSync: typeof actual.renameSync = (from, to) => {
+    boundary.beforeRename?.(String(from), String(to));
+    actual.renameSync(from, to);
+  };
+  return { ...actual, default: { ...actual, renameSync }, renameSync };
+});
 vi.mock("../../../lib/logger.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../lib/logger.js")>();
   return { ...actual, createLogger: (name: string) => ({ ...actual.createLogger(name), info: boundary.info, warn: boundary.warn }) };
@@ -105,6 +115,7 @@ beforeEach(() => {
   boundary.helpers = [];
   boundary.info.mockClear();
   boundary.warn.mockClear();
+  boundary.beforeRename = null;
 });
 afterEach(() => {
   vi.useRealTimers();
@@ -180,15 +191,13 @@ describe("a copy whose helper ignores the end of its input", () => {
     expect(run.settled).toBe(true);
     expect(run.error).toBeInstanceOf(HeldFileHelperStalledError);
     expect(String((run.error as Error).message)).toMatch(/did not end within 1000 ms of being stopped/);
-    // Let past `ready` only, so its commit was never allowed; its temporary file is removed through the chosen folder, held anew.
+    // Let past `ready` only, so its commit was never allowed. Its temporary file was never seen while written, so nothing removes it by name.
     expect(copy?.input).toBe("c");
-    expect(run.error).toMatchObject({ passed: "ready", partialCopy: "removed", stillRunning: false });
-    const [, removal] = helpers();
-    expect(removal?.args).toEqual(["--dir-remove", "/chosen", "1", "3", ".0123.part"]);
-    expect(helpers()).toHaveLength(2);
+    expect(run.error).toMatchObject({ passed: "ready", partialCopy: "left", partFile: null, stillRunning: false });
+    expect(helpers()).toHaveLength(1);
   });
 
-  it("kills it at the stall bound after it is told no at `copied`, and removes its temporary file", async () => {
+  it("kills it at the stall bound after it is told no at `copied`, and leaves a temporary file it never saw", async () => {
     script((helper) => {
       ignoresEof(helper);
       if (helper.args[0] === "--dir-copy") helper.once("input", () => helper.say("progress 8", "copied"));
@@ -202,8 +211,9 @@ describe("a copy whose helper ignores the end of its input", () => {
     await advance(1);
     expect(copy?.killed).toBe(1);
     await flush();
-    expect(run.error).toMatchObject({ passed: "ready", partialCopy: "removed", stillRunning: false });
+    expect(run.error).toMatchObject({ passed: "ready", partialCopy: "left", partFile: null, stillRunning: false });
     expect(copy?.input).toBe("c");
+    expect(helpers()).toHaveLength(1);
   });
 
   it("reports the temporary file as left, and starts nothing more, when a kill does not end the helper within the kill bound", async () => {
@@ -565,9 +575,10 @@ describe("a helper that does not keep to its protocol", () => {
       await flush();
       await advance(BOUNDS.stallMs + BOUNDS.killMs);
       expect(done).toMatchObject({ settled: true, value: "interrupted" });
-      expect(helpers()[1]?.args).toEqual(["--dir-remove", directory, info.dev.toString(), info.ino.toString(), expect.stringMatching(/^\.[0-9a-f]{32}\.part$/u)]);
+      // The copy wrote no temporary file, so there is nothing to remove and no removal of it is started.
+      expect(helpers().filter((helper) => /\.part$/u.test(helper.args[4] ?? ""))).toEqual([]);
       expect(boundary.warn).toHaveBeenCalledWith({ path: join(directory, "report.pdf") }, expect.stringContaining("commit was allowed"));
-      expect(boundary.info).toHaveBeenCalledWith({ path: expect.stringMatching(/\.part$/u), partialCopy: "removed" }, expect.stringContaining("left no temporary file"));
+      expect(boundary.info).toHaveBeenCalledWith({ path: expect.stringMatching(/\.part$/u), partialCopy: "absent" }, expect.stringContaining("left no temporary file"));
     } finally { rmSync(directory, { recursive: true, force: true }); }
   });
 
@@ -590,8 +601,9 @@ describe("a helper that does not keep to its protocol", () => {
     await flush();
     await advance(BOUNDS.stallMs + BOUNDS.killMs);
     expect(helpers()[0]?.killed).toBe(1);
-    expect(run.error).toMatchObject({ passed: lastStep, partialCopy: "removed" });
-    expect(helpers()[1]?.args).toEqual(["--dir-remove", "/chosen", "1", "3", ".0123.part"]);
+    // No temporary file was seen while written, so none is removed by name.
+    expect(run.error).toMatchObject({ passed: lastStep, partialCopy: "left", partFile: null });
+    expect(helpers()).toHaveLength(1);
   });
 
   it("bounds a sweep even when both the kill promise and termination remain unconfirmed", async () => {
@@ -760,20 +772,34 @@ const { tmpdir } = await import("node:os");
 const { stageBrowserDownload, sweepBrowserDownloadStaging } = await import("../browser-download-staging.js");
 const arg = (helper: FakeHelper, index: number): string => helper.args[index] ?? "";
 describe("a stalled copy's temporary file in the chosen folder", () => {
-  const actOnRealFolders = (copyDiesWhenKilled: boolean) => (helper: FakeHelper): void => {
+  interface Faults {
+    readonly copyDiesWhenKilled: boolean;
+    // The copy writes its temporary file but never says so.
+    readonly quietCopy: boolean;
+    // Runs as a removal is let go, before it acts.
+    readonly beforeRemove: (helper: FakeHelper) => void;
+  }
+  const actOnRealFolders = ({ copyDiesWhenKilled, quietCopy, beforeRemove }: Faults) => (helper: FakeHelper): void => {
     const [mode] = helper.args;
     helper.say("ready");
     if (mode === "--dir-copy") {
       helper.diesWhenKilled = copyDiesWhenKilled;
       helper.once("input", () => {
         fs.writeFileSync(join(arg(helper, 5), arg(helper, 9)), "partial copy");
-        helper.say("progress 1048576");
+        if (!quietCopy) helper.say("progress 1048576");
       });
     } else if (mode === "--dir-remove") {
       helper.once("input", () => {
+        beforeRemove(helper);
         const path = join(arg(helper, 1), arg(helper, 4));
         const present = fs.existsSync(path);
-        if (present) fs.unlinkSync(path);
+        try {
+          if (present) fs.unlinkSync(path);
+        } catch {
+          // A removal the file system refuses ends without an outcome.
+          helper.exit(1);
+          return;
+        }
         helper.say(present ? "removed" : "absent");
         helper.exit(0);
       });
@@ -790,14 +816,16 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
   beforeEach(() => { base = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), "download-part-"))); });
   afterEach(() => { fs.rmSync(base, { recursive: true, force: true }); });
 
-  const stalledCopy = async ({ copyDiesWhenKilled = false, beforeStall = (_chosen: string): void => {} } = {}) => {
+  const stalledCopy = async ({
+    copyDiesWhenKilled = false, quietCopy = false, beforeRemove = (_helper: FakeHelper): void => {}, beforeStall = (_chosen: string): void => {},
+  } = {}) => {
     const staging = join(base, "staging");
     const chosen = join(base, "chosen");
     fs.mkdirSync(staging);
     fs.mkdirSync(chosen);
     const info = fs.statSync(staging, { bigint: true });
     const root = { path: staging, dev: info.dev, ino: info.ino, files: { ...files, move: async () => "cross-volume" as const } };
-    script(actOnRealFolders(copyDiesWhenKilled));
+    script(actOnRealFolders({ copyDiesWhenKilled, quietCopy, beforeRemove }));
     const item = Object.assign(new EventEmitter(), {
       getFilename: () => "report.pdf", getURL: () => "https://site.example/report", getURLChain: () => ["https://site.example/report"],
       hasUserGesture: () => true, getReceivedBytes: () => 8, getTotalBytes: () => 8, getState: () => "completed" as const,
@@ -814,9 +842,9 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
     await flush();
     const copy = helpers().find((helper) => helper.args[0] === "--dir-copy");
     if (copy === undefined) throw new Error("no copy was started");
-    const [part] = fs.readdirSync(chosen);
-    return { root, staging, chosen, copy, part: join(chosen, part ?? ""), done };
+    return { root, staging, chosen, copy, part: join(chosen, arg(copy, 9)), done };
   };
+  const removalsIn = (folder: string) => helpers().filter((helper) => helper.args[0] === "--dir-remove" && helper.args[1] === folder);
   const records = (staging: string) => fs.readdirSync(staging).filter((name) => /^[0-9a-f]{32}\.cleanup\.json$/u.test(name));
 
   it("never removes a file put over the temporary file's name before a helper that is seen to end was killed", async () => {
@@ -883,5 +911,84 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
     expect(swept).toMatchObject({ settled: true, value: 1 });
     expect(fs.readFileSync(part, "utf8")).toBe("the user's file");
     expect(fs.readdirSync(staging)).toEqual([]);
+  });
+
+  it("never removes by name a temporary file it never saw while the copy wrote it", async () => {
+    const { chosen, part, done } = await stalledCopy({ copyDiesWhenKilled: true, quietCopy: true });
+    expect(done).toMatchObject({ settled: true, value: ["interrupted", "part-left"] });
+    expect(fs.readFileSync(part, "utf8")).toBe("partial copy");
+    expect(removalsIn(chosen)).toEqual([]);
+    expect(boundary.warn).toHaveBeenCalledWith({ path: part }, expect.stringContaining("never seen while the copy wrote it"));
+  });
+
+  it("puts back, and never removes, a file put at the temporary file's name just before it is moved aside", async () => {
+    const { chosen, part, done } = await stalledCopy({
+      copyDiesWhenKilled: true,
+      beforeStall: (folder) => {
+        boundary.beforeRename = (from) => {
+          if (from !== join(folder, fs.readdirSync(folder)[0] ?? "")) return;
+          boundary.beforeRename = null;
+          fs.unlinkSync(from);
+          fs.writeFileSync(from, "the user's file");
+        };
+      },
+    });
+    expect(done).toMatchObject({ settled: true, value: ["interrupted", "part-left"] });
+    expect(fs.readdirSync(chosen)).toEqual([part.slice(chosen.length + 1)]);
+    expect(fs.readFileSync(part, "utf8")).toBe("the user's file");
+    expect(removalsIn(chosen)).toEqual([]);
+  });
+
+  it("removes the copy's file, moved aside, and never touches a file put at its name after that", async () => {
+    let original = "";
+    let folder = "";
+    const { chosen, part, done } = await stalledCopy({
+      copyDiesWhenKilled: true,
+      beforeRemove: (helper) => {
+        if (arg(helper, 1) !== folder || original === "") return;
+        fs.writeFileSync(join(folder, original), "the user's file");
+      },
+      beforeStall: (chosenFolder) => {
+        folder = chosenFolder;
+        original = fs.readdirSync(chosenFolder)[0] ?? "";
+      },
+    });
+    expect(done).toMatchObject({ settled: true, value: ["interrupted", "removed"] });
+    const [removal] = removalsIn(chosen);
+    expect(arg(removal as FakeHelper, 4)).toMatch(/^\.[0-9a-f]{32}\.removing$/u);
+    expect(fs.readdirSync(chosen)).toEqual([original]);
+    expect(fs.readFileSync(part, "utf8")).toBe("the user's file");
+  });
+
+  it("leaves the temporary file, and its record for the next start, when it cannot be moved aside", async () => {
+    const { staging, chosen, copy, part, done } = await stalledCopy();
+    expect(done).toMatchObject({ settled: true, value: ["interrupted", "part-left"] });
+    boundary.beforeRename = () => { throw Object.assign(new Error("operation not permitted"), { code: "EPERM" }); };
+    copy.exit(null, "SIGKILL");
+    await flush();
+    await flush();
+    expect(fs.readFileSync(part, "utf8")).toBe("partial copy");
+    expect(records(staging)).toHaveLength(1);
+    expect(removalsIn(chosen)).toEqual([]);
+    expect(boundary.warn).toHaveBeenCalledWith({ path: part, code: "EPERM" }, expect.stringContaining("could not be moved aside"));
+  });
+
+  it.runIf(process.platform === "win32")("leaves the temporary file while another process holds it without sharing", async () => {
+    let held: number | null = null;
+    try {
+      const { chosen, part, done } = await stalledCopy({
+        copyDiesWhenKilled: true,
+        beforeStall: (folder) => {
+          // libuv's UV_FS_O_EXLOCK, which node:fs does not name: the file is opened with no sharing, as another program may hold it.
+          held = fs.openSync(join(folder, fs.readdirSync(folder)[0] ?? ""), fs.constants.O_RDONLY | 0x10000000);
+        },
+      });
+      expect(done).toMatchObject({ settled: true, value: ["interrupted", "part-left"] });
+      expect(fs.readdirSync(chosen)).toEqual([part.slice(chosen.length + 1)]);
+      expect(removalsIn(chosen)).toEqual([]);
+      expect(boundary.warn).toHaveBeenCalledWith({ path: part, code: "EBUSY" }, expect.stringContaining("could not be moved aside"));
+    } finally {
+      if (held !== null) fs.closeSync(held);
+    }
   });
 });

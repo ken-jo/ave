@@ -11,7 +11,7 @@ import { createLogger } from "../../lib/logger.js";
 import { retryOnFileLock } from "../../lib/transient-fs-lock-retry.js";
 import { openFeatureNamespace } from "../storage/feature-namespace.js";
 import {
-  compareFile,
+  removeOwnFile,
   heldFileOperations,
   HeldDirectoryRefusedError,
   HeldFileHelperStalledError,
@@ -383,22 +383,8 @@ function readPartRecord(text: string): PartRecord | null {
 }
 
 // Remove a recorded temporary file only while it is the file the copy wrote, through its folder held anew; anything else is left. Never throws.
-async function removeRecordedPart(root: BrowserDownloadStagingRoot, record: PartRecord): Promise<"removed" | "absent" | "left"> {
-  const path = join(record.folder.path, record.part);
-  const found = compareFile(record.folder, record.part, record.file);
-  if (found === "absent") return "absent";
-  if (found === "other") {
-    log.warn({ path }, "a stopped browser download copy's temporary file is left: what is there is not the file the copy wrote");
-    return "left";
-  }
-  try {
-    const removed = await root.files.remove(record.folder, record.part, proceedAlways, UNSTOPPED);
-    if (removed !== "cancelled") return removed;
-    log.warn({ path }, "the removal of a stopped browser download copy's temporary file was cancelled; it is left");
-  } catch (error) {
-    log.warn({ path, error: (error as Error).message }, "a stopped browser download copy's temporary file could not be removed; it is left");
-  }
-  return "left";
+function removeRecordedPart(root: BrowserDownloadStagingRoot, record: PartRecord): Promise<"removed" | "absent" | "left"> {
+  return removeOwnFile(record.folder, record.part, record.file, (folder, name) => root.files.remove(folder, name, proceedAlways, UNSTOPPED));
 }
 
 // At start, before the sweep removes the records with every other file in the staging folder, act on each once. Never throws: a record
