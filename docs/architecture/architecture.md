@@ -2822,6 +2822,14 @@ worker grants until reset. Confinement stays marked active so callers cannot
 fall back to host execution. Previously issued commands are not revoked by this
 check.
 
+The in-process reference runtime (the child runtime that shares one JavaScript
+realm with plugin code) is not a boundary against plugin code; the host treats
+all child frames as untrusted. The boundary is the child process and its OS
+confinement. The reference child adds a worker thread that never runs plugin
+code: it owns the host pipe, decodes host input and ends the child 2 s after it
+observes host loss, even while plugin code blocks or misleads the main thread.
+A native-executable child has no such worker.
+
 Isolation between plugins is a macOS and Linux property. There every wrap of
 plugin-owned code — plugin child, delegated worker, bundled hook, bundled MCP
 stdio server — refuses the plugin roots (`<AVE_HOME>/plugins`,

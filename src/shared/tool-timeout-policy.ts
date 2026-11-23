@@ -79,6 +79,9 @@ export const TOOL_TIMEOUT_POLICY = {
   pluginRetirementDrainMs: 5_000,
   // Let stdin EOF cleanup finish before the host terminates a surviving child.
   pluginShutdownKillGraceMs: 1_000,
+  // The reference child can exit independently of its blocked plugin loop.
+  pluginChildHostLossMs: 2_000,
+  pluginChildForceKillMs: 3_000,
   // A stdio-control worker must answer the host's hello before spawnWorker resolves; cold interpreter start on Windows included.
   workerControlHelloMs: 60_000,
   // UI-resource hooks run on the render path with a tighter deadline than tools; expiry yields no card.
