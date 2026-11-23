@@ -987,7 +987,7 @@ ${fields(side)}`;
     return (await options.removable?.())?.(run) === true;
   }
 
-  async function discard(projects: ReadonlyMap<string, RemovedRunProject>): Promise<readonly string[]> {
+  async function discard(projects: ReadonlyMap<string, RemovedRunProject>, waits?: (runId: string) => boolean): Promise<readonly string[]> {
     const taken: string[] = [];
     // A first selection only, so that the stores are read again for the few runs it names and not for every folder.
     const selected = await options.removable?.();
@@ -996,14 +996,18 @@ ${fields(side)}`;
     for (const seen of listed.runs) {
       const { runId, itemId } = seen.file;
       if (!selected({ runId, itemId })) continue;
+      let waiting = false;
       await serial(runId, async () => {
         if (!(await removableNow({ runId, itemId }))) return;
+        // Asked after the last wait: what `projects` holds was read before the stores were, and the run's root may have come since.
+        waiting = waits?.(runId) === true;
+        if (waiting) return;
         const current = heldStill(seen);
         if (current === null) return;
         taken.push(runId);
         await releaseIn({ ...current, ...liveOf(current.file, projects.get(runId)?.projectRoot) }, "all", "drop");
       });
-      roots.delete(runSlug(itemId, runId));
+      if (!waiting) roots.delete(runSlug(itemId, runId));
     }
     // A run with no folder left has nothing a root could be used for. A folder that could not be read may be the run's whose name
     // it carries, under whichever project; a level that could not be listed may hold any run's.

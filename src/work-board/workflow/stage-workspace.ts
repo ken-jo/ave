@@ -34,8 +34,9 @@ export interface StageWorkspaceProvider {
    * by run id, what the host's run file named for a run when its record went; a git run is taken apart only against that root, as
    * in `sweep`, and one with none is left whole, with a warning. Resolves to the ids of the runs it took in hand, taken apart or
    * left whole, and of the runs in `projects` that have no folder left: what `projects` held for them has been used. A run has no
-   * folder left when every level was listed and no folder that could not be read carries the name its item and id give. */
-  discard(projects: ReadonlyMap<string, RemovedRunProject>): Promise<readonly string[]>;
+   * folder left when every level was listed and no folder that could not be read carries the name its item and id give.
+   * `waits` is asked of a run just before it would be taken in hand: a run it answers true for is left to a later discard, untold. */
+  discard(projects: ReadonlyMap<string, RemovedRunProject>, waits?: (runId: string) => boolean): Promise<readonly string[]>;
   /** Boot: drop what no active run owns, and with it what `discard` would remove. An active run loses only what a stop during a
    * seeding left of its ignore matcher. `projects` gives, by run id, the project root the host's own run state names for a run; a
    * git run is taken apart only against that root, and one with none is left whole, with a warning. Nothing a run folder holds is

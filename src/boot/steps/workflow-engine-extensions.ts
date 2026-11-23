@@ -38,11 +38,16 @@ export function workflowEngineExtensions(store: WorkBoardStore, attachments: Pic
       projects.delete(oldest);
     }
   };
+  // The runs whose schedule's approved project is still being read.
+  const unread = new Set<string>();
   // A row can also go when none of its runs has a record left to remove, so both a removed record and a removed row ask.
   const discard = (): void => {
     // Only what this discard was given is used up by it: a root noted while it ran waits for the next.
     const given = new Map(projects);
-    void workspace.discard(given)
+    // A discard reads the stores after it was given its roots, and can so come to a run whose record went since. Such a run's root
+    // is still being read, or was noted after: the run is left to the discard that removal asks for, which is given the root.
+    const waits = (runId: string): boolean => unread.has(runId) || (projects.has(runId) && projects.get(runId) !== given.get(runId));
+    void workspace.discard(given, waits)
       .then((taken) => { for (const runId of taken) if (projects.get(runId) === given.get(runId)) projects.delete(runId); })
       .catch((error: unknown) => log.warn("[workflow] a removed run's workspace was not discarded: %s", (error as Error).message));
   };
@@ -56,8 +61,10 @@ export function workflowEngineExtensions(store: WorkBoardStore, attachments: Pic
       const approved = attachment?.approvedScope;
       if (approved?.kind === "project") note(runId, itemId, approved.projectRoot);
       reading.delete(read);
+      unread.delete(runId);
     });
     reading.add(read);
+    unread.add(runId);
   };
   const ask = (): void => {
     if (reading.size === 0) discard();

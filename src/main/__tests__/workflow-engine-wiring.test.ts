@@ -1,11 +1,12 @@
 /** The stage scheduler on the parts boot chooses (`workflowEngineExtensions`): run state is the board store's run file. */
 import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { expect, it, vi } from "vitest";
+import { expect, it, type MockInstance, vi } from "vitest";
 import { aveHome } from "../../shared/ave-home.js";
 import { workflowEngineExtensions } from "../../boot/steps/workflow-engine-extensions.js";
 import type { RemovedRun } from "../workflow-run-store.js";
 import { stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
+import type { StageWorkspaceProvider } from "../../work-board/workflow/stage-workspace.js";
 import { gitFixture } from "../../work-board/workflow/__tests__/stage-git-fixture.js";
 import { stageRunHarness } from "../../work-board/workflow/__tests__/stage-run-harness.js";
 
@@ -148,11 +149,31 @@ it("the production parts keep the projects of the newest 256 removed records tha
   expect([later?.has("stale"), later?.get("kept"), later?.has("later-254")]).toEqual([false, "/projects/b", true]);
 }));
 
-it("a discard a row's removal asks for while a schedule's approved project is still being read waits for it: the git run goes, with no warning", async () => {
+interface GitRunScene {
+  h: Awaited<ReturnType<typeof stageRunHarness>>;
+  repo: string;
+  run: { itemId: number; runId: string };
+  runRoot: string;
+  /** The production provider's discards, as they were asked for. */
+  discard: MockInstance<StageWorkspaceProvider["discard"]>;
+  /** The removal of the run's record, as the run store tells of one a schedule or a card started. */
+  removed: (by: "schedule" | "card") => RemovedRun;
+  /** Lets the schedule's approved project be read. */
+  answer: () => void;
+  /** Holds the next read of the stores that a discard has not begun yet, until what it returns is called. */
+  hold: () => () => void;
+  /** The warnings that a run was left whole for want of its project. */
+  unverified: () => string[];
+}
+
+/** The production parts and their own provider on a repository of the test's, with a git run of a row that is not on the board and
+ * has no record left: only the root its removed record named lets it be taken apart. The run and the repository go with the test. */
+async function withGitRun(work: (scene: GitRunScene) => Promise<void>): Promise<void> {
   const fx = gitFixture();
   const said = vi.spyOn(console, "warn");
   let answer = (): void => undefined;
   const reading = new Promise<void>((resolve) => { answer = resolve; });
+  const gates: Promise<void>[] = [];
   let parts: ReturnType<typeof workflowEngineExtensions> | undefined;
   let h: Awaited<ReturnType<typeof stageRunHarness>> | undefined;
   let opened: (() => Promise<void>) | undefined;
@@ -160,28 +181,33 @@ it("a discard a row's removal asks for while a schedule's approved project is st
     vi.stubEnv("GIT_CONFIG_GLOBAL", fx.env.GIT_CONFIG_GLOBAL ?? "");
     vi.stubEnv("GIT_CONFIG_NOSYSTEM", "1");
     h = await stageRunHarness({ wiring: (store, harness) => {
+      const read = store.runsWithoutItem.bind(store);
+      vi.spyOn(store, "runsWithoutItem").mockImplementation(async () => { await gates.shift(); return read(); });
       parts = workflowEngineExtensions(store, { getAttachment: async (id) => { await reading; return { ...await harness.templates.getAttachment(id), approvedScope: { kind: "project", projectRoot: fx.repo } } as never; } });
       return { ...parts, workspace: harness.workspace, workspaceBinding: undefined };
     } });
     const version = await h.confirm([stageOf("a")]);
+    const pin = h.pinOf(version);
     await h.addItem(version);
     const workspace = parts?.workspace;
     if (workspace === undefined) throw new Error("the parts were not chosen");
-    // A git run of a row that is not on the board, with no record left: only the root its removed record named lets it be taken apart.
     const run = { itemId: 99, runId: `run-wiring-${process.pid}-${Date.now()}`, runKey: "key", projectRoot: fx.repo };
     const open = await workspace.open(run, fx.repo);
     if (!open.ok) throw new Error(open.code);
     // What a failed assertion leaves of the run goes before the repository does.
     opened = () => workspace.release(run, "all");
-    const discard = vi.spyOn(workspace, "discard");
-    h.board.runs.onRunsRemoved?.([{ runId: run.runId, itemId: run.itemId, runStartedBy: { kind: "schedule-attachment", attachmentId: "attachment", pin: h.pinOf(version), firedAt: "2026-11-16T00:00:00.000Z" } }]);
-    h.board.onItemRemoved?.();
-    await new Promise(resolve => setImmediate(resolve));
-    expect.soft(discard).not.toHaveBeenCalled();
-    answer();
-    await vi.waitFor(() => expect(existsSync(open.workspace.runRoot)).toBe(false), { timeout: 20_000 });
-    expect.soft(discard.mock.calls.map(([projects]) => projects.get(run.runId)?.projectRoot)).toEqual(discard.mock.calls.map(() => fx.repo));
-    expect.soft(said.mock.calls.map(line => line.join(" ")).filter(line => line.includes("cleanup is unverified"))).toEqual([]);
+    await work({
+      h, repo: fx.repo, run, runRoot: open.workspace.runRoot, answer, discard: vi.spyOn(workspace, "discard"),
+      removed: by => ({ runId: run.runId, itemId: run.itemId, runStartedBy: by === "card"
+        ? { kind: "local-create-and-run", pin, projectRoot: fx.repo }
+        : { kind: "schedule-attachment", attachmentId: "attachment", pin, firedAt: "2026-11-16T00:00:00.000Z" } }),
+      hold: () => {
+        let open = (): void => undefined;
+        gates.push(new Promise<void>((resolve) => { open = resolve; }));
+        return () => open();
+      },
+      unverified: () => said.mock.calls.map(line => line.join(" ")).filter(line => line.includes("cleanup is unverified")),
+    });
   } finally {
     said.mockRestore();
     try {
@@ -192,7 +218,39 @@ it("a discard a row's removal asks for while a schedule's approved project is st
       await fx.done();
     }
   }
-});
+}
+
+it("a discard a row's removal asks for while a schedule's approved project is still being read waits for it: the git run goes, with no warning", () => withGitRun(async ({ h, repo, run, runRoot, discard, removed, answer, unverified }) => {
+  h.board.runs.onRunsRemoved?.([removed("schedule")]);
+  h.board.onItemRemoved?.();
+  await new Promise(resolve => setImmediate(resolve));
+  expect.soft(discard).not.toHaveBeenCalled();
+  answer();
+  await vi.waitFor(() => expect(existsSync(runRoot)).toBe(false), { timeout: 20_000 });
+  expect.soft(discard.mock.calls.map(([projects]) => projects.get(run.runId)?.projectRoot)).toEqual(discard.mock.calls.map(() => repo));
+  expect.soft(unverified()).toEqual([]);
+}));
+
+it.each([
+  ["is still being read", "schedule"],
+  ["was noted after that discard was given its roots", "card"],
+] as const)("a discard already at its read of the stores leaves a git run whose project %s to the next one: the run goes, with no warning", (_when, by) => withGitRun(async ({ h, runRoot, discard, removed, answer, hold, unverified }) => {
+  const first = hold();
+  h.board.onItemRemoved?.();
+  expect(discard).toHaveBeenCalledTimes(1);
+  // The run's record goes while the first discard waits for the stores. A card's root is noted at once, and the discard that
+  // removal asks for is held at its own read; a schedule's is asked for only once its project was read.
+  const second = by === "card" ? hold() : (): void => undefined;
+  h.board.runs.onRunsRemoved?.([removed(by)]);
+  first();
+  await discard.mock.results[0]?.value;
+  expect.soft(existsSync(runRoot)).toBe(true);
+  expect.soft(unverified()).toEqual([]);
+  answer();
+  second();
+  await vi.waitFor(() => expect(existsSync(runRoot)).toBe(false), { timeout: 20_000 });
+  expect.soft(unverified()).toEqual([]);
+}));
 
 interface HeldDiscard { given: Map<string, string>; answer: (taken: readonly string[]) => void; fail: (error: Error) => void }
 
