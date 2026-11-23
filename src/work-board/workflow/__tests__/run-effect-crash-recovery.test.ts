@@ -1,12 +1,14 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { deferred } from "../../../__tests__/support/deferred.js";
 import { within } from "../../../__tests__/support/signal-wait.js";
 import { boardRunState } from "../run-state.js";
 import { createPassConditionRegistry } from "../stage-gates.js";
 import { autoStageOf } from "./stage-fixtures.js";
 import { stageRunHarness } from "./stage-run-harness.js";
+
+afterEach(() => { vi.restoreAllMocks(); });
 
 it("a new engine consumes a durably applied gate once when the old write never returns", async () => {
   let abandoned = false;
@@ -73,7 +75,6 @@ it("a new engine consumes a durably applied gate once when the old write never r
     expect(evaluate).toHaveBeenCalledTimes(1);
     expect(h.workspaceCalls.filter(call => call === "seal:a")).toHaveLength(1);
     expect(h.workspaceCalls.filter(call => call.startsWith("integrate:"))).toHaveLength(1);
-    vi.restoreAllMocks();
     // The first engine's effect write never returns: only the engines after it can drain.
   }, { drain: "latest" });
 });
