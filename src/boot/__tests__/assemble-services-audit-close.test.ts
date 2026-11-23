@@ -194,6 +194,7 @@ describe("shutdown permission audit ordering", () => {
             decision: "deny", ts: new Date().toISOString(), auditId: "late-probe", tool: "late_probe",
             source: "builtin", category: "write", trustOrigin: "unknown",
             denyReasons: [{ reason: "host-shutdown", source: "tool-executor" }],
+            pluginOperation: { pluginId: "probe-plugin", operation: "status", outcome: "denied" },
           });
           return "written";
         } catch {

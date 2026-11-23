@@ -392,12 +392,33 @@ function refuseSideRecord(message: string): never {
   throw error;
 }
 
-/** Records beside an invocation's outcome (asks, plugin operations, mode changes); a terminal row is refused. */
+function isPluginOperationRecord(entry: PermissionAuditEntryInput): boolean {
+  return "pluginOperation" in entry && entry.pluginOperation !== undefined;
+}
+
+/**
+ * Records beside an invocation's outcome (asks, plugin operations, mode changes); a terminal row is refused, and so is
+ * any deny that is not a plugin operation's record, with or without a tool-use id.
+ */
 export async function appendToolInvocationAudit(
   logger: Pick<AuditLogger, "appendPermissionAuditEntry">,
   entry: PermissionAuditEntryInput,
 ): ReturnType<AuditLogger["appendPermissionAuditEntry"]> {
   if (isTerminalRow(entry)) refuseSideRecord(`terminal row of ${"tool" in entry ? entry.tool : entry.decision} must be written through its invocation's ledger`);
+  if (entry.decision === "deny" && !isPluginOperationRecord(entry)) refuseSideRecord(`deny row of ${entry.tool} is no plugin operation record`);
+  return appendTerminalRow(logger, entry);
+}
+
+/** The quit's refusal of a permission mode change: a deny that belongs to no invocation, so it carries no tool-use id. */
+export type ModeChangeRefusal = Extract<PermissionAuditEntryInput, { decision: "deny" }> & { category: "meta"; toolUseId?: never; pluginOperation?: never };
+
+export async function appendModeChangeRefusal(
+  logger: Pick<AuditLogger, "appendPermissionAuditEntry">,
+  entry: ModeChangeRefusal,
+): ReturnType<AuditLogger["appendPermissionAuditEntry"]> {
+  if (entry.decision !== "deny" || "toolUseId" in entry || isPluginOperationRecord(entry)) {
+    refuseSideRecord(`mode change refusal of ${entry.tool} must belong to no invocation`);
+  }
   return appendTerminalRow(logger, entry);
 }
 

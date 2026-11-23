@@ -15,6 +15,8 @@ const SIDE_RECORD_WRITERS = new Set([
 ]);
 // The only writer of a directory grant beside an invocation's outcome.
 const DIRECTORY_GRANT_WRITER = "tools/pipeline/audit-writer.ts";
+// The only writer of the quit's refusal of a permission mode change, a deny that belongs to no invocation.
+const MODE_CHANGE_REFUSAL_WRITER = "permissions/permission-mode-apply.ts";
 // The sink itself, and rows that belong to no invocation: the audit self-test, hook quarantine at boot, judge records,
 // manifest violations.
 const NON_INVOCATION_WRITERS = new Set([
@@ -59,6 +61,7 @@ function violations(file: string, source: string): string[] {
   if (/["'`]PermissionDenied["'`]|\.PermissionDenied\b/.test(code) && !EVENT_DECLARATIONS.has(file)) found.push(`${file}: PermissionDenied emit`);
   if (/\bappendToolInvocationAudit\s*\(/.test(code) && !SIDE_RECORD_WRITERS.has(file)) found.push(`${file}: invocation audit append`);
   if (/\bappendDirectoryGrantRecord\s*\(/.test(code) && file !== DIRECTORY_GRANT_WRITER) found.push(`${file}: directory grant append`);
+  if (/\bappendModeChangeRefusal\s*\(/.test(code) && file !== MODE_CHANGE_REFUSAL_WRITER) found.push(`${file}: mode change refusal append`);
   if (DIRECT_APPEND.test(code) && !NON_INVOCATION_WRITERS.has(file)) found.push(`${file}: direct permission audit append`);
   if (!LIFECYCLE_DISPATCHERS.has(file) && [...code.matchAll(LIFECYCLE_DISPATCH)].some((match) => !LITERAL_EVENT.test(match[1] ?? ""))) {
     found.push(`${file}: lifecycle event by variable`);
@@ -93,6 +96,7 @@ describe("terminal row source guard", () => {
     ["engine/turn/run-turn.ts", "const append = logger.appendPermissionAuditEntry.bind(logger);", "direct permission audit append"],
     ["audit/audit-chain-export.ts", "void logger.appendPermissionAuditEntry(entry);", "direct permission audit append"],
     ["tools/invocation-runner.ts", "await appendDirectoryGrantRecord(services.auditLogger, entry);", "directory grant append"],
+    ["tools/invocation-runner.ts", "await appendModeChangeRefusal(services.auditLogger, { ...common, decision: \"deny\" });", "mode change refusal append"],
     ["tools/invocation-runner.ts", "fire: (event, reason) => services.auditWriter.fireLifecycleEvent(event, sessionId, context, payload),", "lifecycle event by variable"],
     ["tools/invocation-execution.ts", "await services.auditWriter.fireLifecycleEvent(\n    events[kind], sessionId, context, payload);", "lifecycle event by variable"],
     ["engine/turn/run-turn.ts", "void hooks.runLifecycleEvent(denied ? DENIED : \"Stop\", sessionId, \"unknown\", {});", "lifecycle event by variable"],

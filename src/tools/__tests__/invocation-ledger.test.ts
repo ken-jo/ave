@@ -271,6 +271,13 @@ it("refuses an invocation's outcome row outside its ledger and keeps the records
   const logger = { appendPermissionAuditEntry: async (entry: unknown) => { appended.push(entry); return {} as never; } };
   await expect(ledger.appendToolInvocationAudit(logger, ENTRY)).rejects.toThrow("terminal row of probe must be written through its invocation's ledger");
   await ledger.appendToolInvocationAudit(logger, { ...ENTRY, decision: "ask", reason: "asked" });
+  // A deny with no tool-use id is still no side record unless it is a plugin operation's.
+  const { toolUseId: _id, ...untracked } = ENTRY;
+  await expect(ledger.appendToolInvocationAudit(logger, untracked)).rejects.toThrow("deny row of probe is no plugin operation record");
+  await ledger.appendToolInvocationAudit(logger, { ...untracked, pluginOperation: { pluginId: "probe-plugin", operation: "status", outcome: "denied" } });
+  // The quit's refusal of a mode change belongs to no invocation and has its own writer.
+  await ledger.appendModeChangeRefusal(logger, untracked);
+  await expect(ledger.appendModeChangeRefusal(logger, ENTRY as never)).rejects.toThrow("mode change refusal of probe must belong to no invocation");
   const { denyReasons: _reasons, ...base } = ENTRY;
   const grant = { ...base, decision: "allow", directory: "/home/alice/work", directoryAllowed: true } as const;
   // An allow naming a folder is still the invocation's outcome unless it goes through the directory grant writer.
@@ -280,7 +287,7 @@ it("refuses an invocation's outcome row outside its ledger and keeps the records
   await expect(ledger.appendDirectoryGrantRecord(logger, grant)).rejects.toThrow("directory grant of probe must name its folder and exactly one lifetime or policy rule");
   await expect(ledger.appendDirectoryGrantRecord(logger, { ...grant, grantLifetime: "session", policyRule: "workspace-root" })).rejects.toThrow("exactly one lifetime");
   await expect(ledger.appendDirectoryGrantRecord(logger, { ...ENTRY, directory: "/home/alice/work", directoryAllowed: true } as never)).rejects.toThrow("exactly one lifetime");
-  expect(appended).toHaveLength(3);
+  expect(appended).toHaveLength(5);
 });
 
 it("reports a drain the sink cannot finish before the deadline", async () => {

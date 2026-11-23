@@ -1,4 +1,4 @@
-import { admitToolInvocationWhileAuditOpen, appendToolInvocationAudit } from "../tools/invocation-ledger.js";
+import { admitToolInvocationWhileAuditOpen, appendModeChangeRefusal, appendToolInvocationAudit } from "../tools/invocation-ledger.js";
 import { randomUUID } from "node:crypto";
 import type { AuditLogger } from "../audit/audit-logger.js";
 import { t } from "../i18n/index.js";
@@ -229,7 +229,7 @@ async function applyPermissionModeChange(
   if (signal.aborted) {
     // The mode_change row is written; record that quit refused it before anything is applied.
     if (deps.auditLogger) {
-      await appendToolInvocationAudit(deps.auditLogger, {
+      await appendModeChangeRefusal(deps.auditLogger, {
         decision: "deny",
         ts: new Date().toISOString(),
         auditId: randomUUID(),
