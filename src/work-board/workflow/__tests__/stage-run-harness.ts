@@ -14,7 +14,7 @@ import { mintHostDecisionProof } from "../../../main/workflow-template-decision.
 import { createWorkBoardEngine, type WorkBoardEngineDeps } from "../../../core/work-board-engine.js";
 import { deferred } from "../../../__tests__/support/deferred.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
-import { untilAsserted } from "../../../__tests__/support/signal-wait.js";
+import { boundWait, untilAsserted } from "../../../__tests__/support/signal-wait.js";
 import { boardParentToolRegistry } from "../../__tests__/board-test-fixtures.js";
 import { authoriseRunSource } from "../run-authority.js";
 import { boardRunState, type RunRecord } from "../run-state.js";
@@ -509,13 +509,6 @@ export async function stageRunHarness(opts: {
   const untilStage = (itemId: number, stageId: string, status: WorkItemStageRun["status"]) =>
     until(itemId, current => statusOf(current, stageId) === status, `item ${itemId} stage ${stageId} to reach ${status}`);
   const live = () => [...liveChildren];
-  /** The one bound on a signal wait: below the test timeout, so a stuck wait names what it was waiting on; a slow preparation stays
-   * inside it. It never keeps the process alive by itself. Returns what clears it. */
-  function boundWait(expire: () => void): () => void {
-    const timeout = setTimeout(expire, 30_000);
-    timeout.unref();
-    return () => clearTimeout(timeout);
-  }
   /** Resolves on the signal that makes `get` defined; rejects with `failure` once the bound expires, or with the error it is signalled. */
   function waitForSignal<T>(listeners: Set<(ended?: Error) => void>, get: () => T | undefined, failure: string): Promise<T> {
     const current = get();

@@ -2,6 +2,7 @@ import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, it } from "vitest";
 import { deferred } from "../../../__tests__/support/deferred.js";
+import { within } from "../../../__tests__/support/signal-wait.js";
 import { boardRunState } from "../run-state.js";
 import { autoStageOf, stageOf } from "./stage-fixtures.js";
 import { stageRunHarness } from "./stage-run-harness.js";
@@ -40,7 +41,7 @@ it.each(["human", "auto"] as const)("a pending %s seal recovers without restarti
         await h.untilStage(id, "a", "awaiting_gate");
         expect(await h.decide(id, "a", "approve")).toMatchObject({ ok: false });
       }
-      await withholding.promise;
+      await within(withholding.promise, "the withheld seal");
       expect(withheld).toBe(true);
       expect((await h.stageRun(id, "a")).status).toBe("passed");
       expect((await h.item(id)).stageJoins).toEqual([]);
@@ -159,7 +160,7 @@ it("reopening a sealed partial step returns the provider receipt without another
     expect(calls).toEqual(["a"]);
     h.makeEngine();
     await h.engine.adoptParkedTemplateRuns();
-    await resealed.promise;
+    await within(resealed.promise, "the reseal after adoption");
     expect(calls).toEqual(["a", "a"]);
     expect(freezes).toEqual(["a"]);
     expect((await h.stageRun(id, "a")).gate).toMatchObject({ passed: true });

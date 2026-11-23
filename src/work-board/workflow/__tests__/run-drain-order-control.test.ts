@@ -1,5 +1,6 @@
 import { expect, it, vi } from "vitest";
 import { deferred } from "../../../__tests__/support/deferred.js";
+import { within } from "../../../__tests__/support/signal-wait.js";
 import { boardRunState } from "../run-state.js";
 import { createPassConditionRegistry } from "../stage-gates.js";
 import { autoStageOf } from "./stage-fixtures.js";
@@ -89,7 +90,7 @@ it("concurrent readers preserve held arrival order and finish after evaluation r
 
     refusing = false;
     await permittedRead(h);
-    await evaluatedA.promise;
+    await within(evaluatedA.promise, "stage a's gate evaluation");
     expect(order).toEqual(["a"]);
     await Promise.all(
       Array.from({ length: 8 }, () => permittedRead(h)),

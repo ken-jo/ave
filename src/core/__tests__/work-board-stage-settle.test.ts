@@ -5,6 +5,7 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { deferred } from "../../__tests__/support/deferred.js";
+import { within } from "../../__tests__/support/signal-wait.js";
 import { en } from "../../i18n/messages/en.js";
 import { WorkBoardStore } from "../../main/work-board-store.js";
 import { ko } from "../../i18n/messages/ko.js";
@@ -567,7 +568,7 @@ it("while a run end is unconfirmed, starts are refused and nothing is pruned or 
     // A reader writes the end; nothing else is pruned or swept, and the held start's workspace is never touched.
     failing.mockRestore();
     await h.engine.projectTemplateRuns([await h.item(first)]);
-    await firstRelease.promise;
+    await within(firstRelease.promise, "the first start's workspace release");
     expect(prune).not.toHaveBeenCalled();
     expect(h.sweeps).toHaveLength(swept);
     expect(released).toEqual([firstRun]);
@@ -939,7 +940,7 @@ it("a start whose row write may not have landed, while the board file cannot be 
     // Readable again, with the row there but not naming the run: the start never landed, and the run ends error with no row showing it.
     writeFileSync(h.boardPath, before);
     await h.engine.projectTemplateRuns([]);
-    await release.promise;
+    await within(release.promise, "the run's workspace release");
     expect(released).toEqual([runId]);
     expect(await h.runOf(runId)).toBeNull();
   }, () => ({ workspace: { release: async (ref) => { released.push(ref.runId); release.resolve(); } } }));
@@ -968,7 +969,7 @@ it("a start whose row write landed unseen ends as its row removed once the user 
     expect(await h.board.remove(id, row.mutationRevision)).toEqual({ status: "deleted", itemId: id, runId });
     const ends = vi.spyOn(h.board.runs, "settleRun");
     await h.engine.projectTemplateRuns([]);
-    await release.promise;
+    await within(release.promise, "the run's workspace release");
     expect(released).toEqual([runId]);
     const stored = (await Promise.all(ends.mock.results.map(result => result.value)) as { status: string; run?: RunRecord }[])
       .flatMap(result => result.status === "stored" ? [result.run?.settled?.status] : []);
@@ -1298,7 +1299,7 @@ it("a user's delete of the listed row of a run a restart left parked waits while
   const before = h.events.length;
   const row = await h.item(id);
   expect(await h.board.remove(id, row.mutationRevision)).toEqual({ status: "deleted", itemId: id, runId });
-  await intentRead.promise;
+  await within(intentRead.promise, "the delete intents to be read");
   const reads = await Promise.all(split.mock.results.map(result => result.value));
   expect(reads.length).toBeGreaterThan(0);
   for (const read of reads) expect(read).toEqual({ due: [], waiting: [{ itemId: id, runId }] });
@@ -1338,7 +1339,7 @@ it("an adoption while a deleted row's parked run is being cancelled leaves that 
   const before = h.events.length;
   const row = await h.item(id);
   expect(await h.board.remove(id, row.mutationRevision)).toEqual({ status: "deleted", itemId: id, runId });
-  await entered.promise;
+  await within(entered.promise, "the held write or read to be entered");
   await h.engine.adoptParkedTemplateRuns();
   expect(update).toHaveBeenCalledOnce();
   held.resolve();
@@ -1371,7 +1372,7 @@ it("a delete while adoption reads a named row is classified before takeover and 
     return got;
   });
   const adopting = h.engine.adoptParkedTemplateRuns();
-  await listed.promise;
+  await within(listed.promise, "the adoption's board list");
   const viewGate = deferred<void>();
   const view = h.board.runs.view.bind(h.board.runs);
   const reads = vi.spyOn(h.board.runs, "view").mockImplementation(async () => {
@@ -1439,11 +1440,11 @@ it("an adoption between a delete's board write and its takeover leaves the delet
     });
     const before = h.events.length;
     expect(await h.board.remove(id, row.mutationRevision)).toEqual({ status: "deleted", itemId: id, runId });
-    await entered.promise;
+    await within(entered.promise, "the held write or read to be entered");
     // The adoption takes the runs over and sweeps, then reads the delete intents again behind the takeover's own read.
     nextSweep = deferred<void>();
     const adopting = h.engine.adoptParkedTemplateRuns();
-    await nextSweep.promise;
+    await within(nextSweep.promise, "the adoption's next sweep");
     expect(h.sweeps.at(-1)).toContain(runId);
     held.resolve();
     await adopting;

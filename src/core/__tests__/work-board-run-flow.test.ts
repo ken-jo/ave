@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { WorkBoardStore } from "../../main/work-board-store.js";
 import { deferred } from "../../__tests__/support/deferred.js";
+import { within } from "../../__tests__/support/signal-wait.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { createWorkBoardEngine } from "../work-board-engine.js";
 import type {
@@ -474,7 +475,7 @@ describe("WorkBoardEngine — run-flow contracts", () => {
 
       const firstRun = runThroughDecision(engine, store, id, "approve");
       // Wait for the first plan spawn before issuing the concurrent run.
-      await planSpawned.promise;
+      await within(planSpawned.promise, "the first run's plan spawn");
 
       const busy = await runThroughDecision(engine, store, id, "approve");
       expect(busy.status).toBe("already_running");

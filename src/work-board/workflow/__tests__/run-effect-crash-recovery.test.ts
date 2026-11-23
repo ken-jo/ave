@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
 import { deferred } from "../../../__tests__/support/deferred.js";
+import { within } from "../../../__tests__/support/signal-wait.js";
 import { boardRunState } from "../run-state.js";
 import { createPassConditionRegistry } from "../stage-gates.js";
 import { autoStageOf } from "./stage-fixtures.js";
@@ -45,7 +46,7 @@ it("a new engine consumes a durably applied gate once when the old write never r
     const id = await h.addItem(version);
     void h.start(id, h.local(version));
     (await h.untilLive(1))[0].finish();
-    await crashed.promise;
+    await within(crashed.promise, "the effect write that crashes");
     expect(crashReached).toBe(true);
     const disk = JSON.parse(readFileSync(join(h.dir, "workflow-runs.json"), "utf8"));
     const before = disk.runs[0];

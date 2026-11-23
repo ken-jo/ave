@@ -1,5 +1,6 @@
 import { expect, it, vi } from "vitest";
 import { deferred } from "../../../__tests__/support/deferred.js";
+import { within } from "../../../__tests__/support/signal-wait.js";
 import { boardRunState } from "../run-state.js";
 import { stageOf } from "./stage-fixtures.js";
 import { stageRunHarness } from "./stage-run-harness.js";
@@ -39,7 +40,7 @@ it.each(["held", "mutation"] as const)("an obsolete link keeps its original atte
     const id = await h.addItem(version);
     void h.start(id, h.local(version));
     const [child] = await h.untilLive(1);
-    await moveWritten.promise;
+    await within(moveWritten.promise, "the moved link write");
     expect(moved).toBe(true);
     const runId = (await h.item(id)).runId ?? "";
     if (boundary === "held") await h.untilRunFile(async () => expect(await h.board.runs.heldEvents({ itemId: id, runId })).toEqual([

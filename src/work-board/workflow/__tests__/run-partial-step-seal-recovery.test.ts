@@ -9,6 +9,7 @@ import {
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
 import { deferred } from "../../../__tests__/support/deferred.js";
+import { within } from "../../../__tests__/support/signal-wait.js";
 import type { RunRecord } from "../shipped-shapes.js";
 import { boardRunState } from "../run-state.js";
 import { autoStageOf, stageOf } from "./stage-fixtures.js";
@@ -123,7 +124,7 @@ it.each(["human", "auto"] as const)(
         await h.untilStage(id, "a", "awaiting_gate");
         void h.decide(id, "a", "approve").catch(() => undefined);
       }
-      await crashed.promise;
+      await within(crashed.promise, "the seal step that crashes");
       expect(crashReached).toBe(true);
 
       const disk = JSON.parse(

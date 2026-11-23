@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
 import { deferred } from "../../../__tests__/support/deferred.js";
+import { within } from "../../../__tests__/support/signal-wait.js";
 import * as classification from "../../../main/run-classification.js";
 import { stageOf } from "./stage-fixtures.js";
 import { stageRunHarness } from "./stage-run-harness.js";
@@ -39,7 +40,7 @@ it("a completion after a landed delete with an unknown marker keeps its item-rem
       return stored;
     });
     child.finish();
-    await removedWritten.promise;
+    await within(removedWritten.promise, "the item-removed end write");
     expect(causes).toContain("item-removed");
     expect(classify.mock.results.map(result => result.value), JSON.stringify(before)).toContain("due-delete");
     expect(causes).not.toContain("orphan");

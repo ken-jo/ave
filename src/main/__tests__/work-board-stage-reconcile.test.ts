@@ -4,6 +4,7 @@ import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, expect, it, vi, type MockInstance } from "vitest";
 import { deferred } from "../../__tests__/support/deferred.js";
+import { within } from "../../__tests__/support/signal-wait.js";
 import { en } from "../../i18n/messages/en.js";
 import { ko } from "../../i18n/messages/ko.js";
 import * as homeTrust from "../../shared/ave-home-trust.js";
@@ -85,7 +86,7 @@ it("resumes an intact join after restart without manufacturing a conflict", asyn
     void h.start(id, h.local(version));
     (await h.untilLive(1))[0].finish();
     await h.until(id, item => item.stageJoins[0]?.status === "integrating");
-    await integrating.promise;
+    await within(integrating.promise, "the join's integration to start");
     expect(held).toBe(true);
     hold = false;
     await restarted(h);

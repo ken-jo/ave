@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
 import { deferred } from "../../../__tests__/support/deferred.js";
+import { within } from "../../../__tests__/support/signal-wait.js";
 import { autoStageOf, stageOf } from "./stage-fixtures.js";
 import { stageRunHarness } from "./stage-run-harness.js";
 
@@ -60,7 +61,7 @@ it.each(["human", "auto"] as const)(
         approved = h.decide(id, "a", "approve");
       }
 
-      await sealEntered.promise;
+      await within(sealEntered.promise, "the seal to be entered");
       expect(entered).toBe(true);
 
       // This read queues recovery before the pending failure is posted.
@@ -134,7 +135,7 @@ it("a reader queued during a successful seal reuses its attempt cache", async ()
     await started;
 
     approved = h.decide(id, "a", "approve");
-    await sealEntered.promise;
+    await within(sealEntered.promise, "the seal to be entered");
     expect(entered).toBe(true);
     await h.engine.adoptParkedTemplateRuns();
     pending.release();

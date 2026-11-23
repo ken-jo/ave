@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { WorkBoardStore } from "../../main/work-board-store.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { deferred } from "../../__tests__/support/deferred.js";
-import { untilAsserted } from "../../__tests__/support/signal-wait.js";
+import { untilAsserted, within } from "../../__tests__/support/signal-wait.js";
 import { createWorkBoardEngine } from "../work-board-engine.js";
 import type {
   SubAgentRunner,
@@ -968,7 +968,7 @@ describe("WorkBoardEngine — plan decisions (work approvals)", () => {
         },
       });
       const run = engine.runItem(created.itemId);
-      await decisionSent.promise;
+      await within(decisionSent.promise, "the plan decision to be sent");
       expect(early).not.toBeNull();
       expect((await early!).result).toEqual({ ok: false, reason: "plan_settling" });
       releaseFlush();
