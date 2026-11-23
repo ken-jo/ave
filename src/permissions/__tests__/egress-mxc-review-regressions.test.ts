@@ -1,3 +1,4 @@
+import http from "node:http";
 import net, { type AddressInfo, type Socket } from "node:net";
 import { join, resolve } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -11,6 +12,7 @@ import { SandboxManager, type SandboxAskCallback, type ParentProxyRouter } from 
 import {
   closeAllEgressConnections,
   closeEgressConnections,
+  DEFAULT_WINDOWS_PROXY_PORT_RANGE,
   initializeAsrtSandbox,
   resetAsrtSandbox,
 } from "../asrt-sandbox.js";
@@ -101,42 +103,48 @@ async function localProxy() {
 const connectRequest = (host = DESTINATION.host, port = DESTINATION.port) =>
   `CONNECT ${host}:${port} HTTP/1.1\r\nHost: ${host}:${port}\r\n\r\n`;
 
-function forceFirstPort(port: number) {
-  const original = net.Server.prototype.listen;
-  const bound: number[] = [];
-  let injected = false;
-  const spy = vi.spyOn(net.Server.prototype, "listen").mockImplementation(function (this: net.Server, ...args: unknown[]) {
-    if (!injected && args[0] === 0) {
-      injected = true;
-      args[0] = port;
-    }
-    this.once("listening", () => bound.push((this.address() as AddressInfo).port));
-    return Reflect.apply(original, this, args);
-  } as typeof original);
-  return { bound, restore: () => spy.mockRestore() };
-}
+function forceFirstReportedPort([start, end]: readonly [number, number]) {
+  const originalAddress = http.Server.prototype.address;
+  const binds: Array<{ port: number; closed: boolean }> = [];
+  const spy = vi.spyOn(http.Server.prototype, "address").mockImplementation(function (this: http.Server) {
+    const address = originalAddress.call(this);
+    if (address === null || typeof address === "string") return address;
 
-async function expectPortClosed(port: number) {
-  const socket = track(net.connect(port, "127.0.0.1"));
-  const accepted = await new Promise<boolean>((resolve) => {
-    socket.once("connect", () => { socket.destroy(); resolve(true); });
-    socket.once("error", () => resolve(false));
+    // Let the OS assign every port, then put the first bound socket through the range check.
+    const port = binds.length === 0 ? start : address.port;
+    const bind = { port, closed: false };
+    binds.push(bind);
+    if (port >= start && port <= end) {
+      this.once("close", () => {
+        // The listener reuses this server for the next bind.
+        bind.closed = !this.listening && originalAddress.call(this) === null;
+      });
+    }
+    return { ...address, port };
   });
-  expect(accepted).toBe(false);
+
+  return {
+    verifyDiscardedBinds(): number[] {
+      spy.mockRestore();
+      expect(binds[0]?.port).toBe(start);
+      const keptPorts: number[] = [];
+      for (const { port, closed } of binds) {
+        if (port >= start && port <= end) expect(closed, `Bind reported on port ${port} stayed open`).toBe(true);
+        else keptPorts.push(port);
+      }
+      return keptPorts;
+    },
+  };
 }
 
 it("discards a frontend bind forced into the shared range before accepting requests", async () => {
   const proxy = await localProxy();
-  const forced = forceFirstPort(60088);
+  const forced = forceFirstReportedPort(DEFAULT_WINDOWS_PROXY_PORT_RANGE);
   const listener = await openInvocationProxyListener({
     upstream: () => ({ host: "127.0.0.1", port: proxy.port, proxyAuthorization: "Basic cmV2aWV3OnRlc3Q=" }),
   });
   listeners.push(listener);
-  forced.restore();
-  expect(forced.bound[0]).toBe(60088);
-  expect(forced.bound.length).toBeGreaterThanOrEqual(2);
-  expect(listener.port < 60080 || listener.port > 60089).toBe(true);
-  await expectPortClosed(60088);
+  expect(forced.verifyDiscardedBinds()).toEqual([listener.port]);
   expect(await exchange(track(net.connect(listener.port, "127.0.0.1")), connectRequest())).toMatch(/^HTTP\/1\.1 200/u);
 });
 
@@ -180,30 +188,23 @@ describe.skipIf(process.platform !== "win32")("container proxy regression covera
   registerMxcShellLaunchAdmissionFixture(TOKEN_A, TOKEN_B);
 
   it("excludes the configured range from relay binds and frontend registration", async () => {
-    await initializeAsrtSandbox({ allowedDomains: [], windows: { externalConfinement: true, proxyPortRange: [42000, 42009] } });
-    const forced = forceFirstPort(42008);
+    const proxyPortRange = [42000, 42009] as const;
+    await initializeAsrtSandbox({ allowedDomains: [], windows: { externalConfinement: true, proxyPortRange } });
+    const forced = forceFirstReportedPort(proxyPortRange);
     const relay = await openHostEgressListener(TOKEN_A);
     listeners.push(relay);
-    forced.restore();
-    expect(forced.bound[0]).toBe(42008);
-    expect(relay.port < 42000 || relay.port > 42009).toBe(true);
-    await expectPortClosed(42008);
+    expect(forced.verifyDiscardedBinds()).toEqual([relay.port]);
     expect(() => relay.registerPort(42005)).toThrow("shared proxy range");
   });
 
   it("discards a relay bind in the shared range and keeps both launcher ports outside it", async () => {
     const proxy = await localProxy();
     await initialize(async () => ({ routes: [{ kind: "http", host: "127.0.0.1", port: proxy.port }] }));
-    const forced = forceFirstPort(60088);
+    const forced = forceFirstReportedPort(DEFAULT_WINDOWS_PROXY_PORT_RANGE);
     const listener = await lane(TOKEN_A, "launcher");
-    forced.restore();
-    expect(forced.bound[0]).toBe(60088);
-    // Windows may hand out further ports in the range; each is discarded, so exactly the relay and frontend binds are kept.
-    const inRange = forced.bound.filter((port) => port >= 60080 && port <= 60089);
-    expect(forced.bound.length - inRange.length).toBe(2);
-    expect(listener.port).toBe(forced.bound.at(-1));
-    expect(listener.port < 60080 || listener.port > 60089).toBe(true);
-    for (const port of inRange) await expectPortClosed(port);
+    const keptPorts = forced.verifyDiscardedBinds();
+    expect(keptPorts).toHaveLength(2);
+    expect(keptPorts.at(-1)).toBe(listener.port);
     expect(await exchange(track(net.connect(listener.port, "127.0.0.1")), connectRequest())).toMatch(/^HTTP\/1\.1 200/u);
   });
 
