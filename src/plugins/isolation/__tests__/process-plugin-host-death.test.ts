@@ -1,29 +1,52 @@
+import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
+import { posixProcessExists, spawnSacrificialHost, stopSacrificialHost, waitForFixture } from "../../../__tests__/support/sacrificial-host.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { shellQuote } from "../../../lib/shell-resolver.js";
-import { _closeProcessGroupReaperPipeForTest, __resetManagedChildProcessesForTest } from "../../../main/managed-child-processes.js";
-import { initializeAsrtSandbox, resetAsrtSandbox } from "../../../permissions/asrt-sandbox.js";
-import { __resetSandboxRequestedAtBootForTest, setPluginWorkerConfinementRequestedAtBoot } from "../../../permissions/sandbox-capability.js";
-import { aveHome, ensureAveHomePrivate } from "../../../shared/ave-home.js";
-import { resolvePluginSocketDir } from "../../plugin-storage-layout.js";
 import { ProcessEntryUnconfinedError } from "../../process-entry.js";
-import { type ConfinedPluginChild, derivePluginChildEnvelope, spawnConfinedPluginChild } from "../out-of-process-plugin.js";
+import { spawnConfinedPluginChild } from "../out-of-process-plugin.js";
+
+const HOST = `
+  const [pluginModule, sandboxModule, capabilityModule, homeModule, storageModule, pluginId, pluginRoot, pluginDataDir, launcher] = process.argv.slice(1);
+  const { spawnConfinedPluginChild, derivePluginChildEnvelope } = await import(pluginModule);
+  const { initializeAsrtSandbox } = await import(sandboxModule);
+  const { setPluginWorkerConfinementRequestedAtBoot } = await import(capabilityModule);
+  const { aveHome, ensureAveHomePrivate } = await import(homeModule);
+  const { resolvePluginSocketDir } = await import(storageModule);
+  if (ensureAveHomePrivate(aveHome()).enforcement === "none") throw new Error("Fixture home is not private");
+  setPluginWorkerConfinementRequestedAtBoot(true);
+  await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+  const child = await spawnConfinedPluginChild({
+    pluginId,
+    socketDir: resolvePluginSocketDir(pluginDataDir),
+    envelope: derivePluginChildEnvelope({ pluginId, pluginRoot, pluginDataDir, configValue: () => undefined }),
+    launch: { kind: "process", command: launcher, args: [], env: { PLUGIN_ROOT: pluginRoot, PLUGIN_DATA: pluginDataDir } },
+  });
+  process.send({ pgid: child.pid, confinement: child.confinement });
+  process.on("message", (message) => {
+    if (message === "close-plugin-input") child.link.output.end();
+  });
+`;
 
 const HEARTBEAT = `
 import { spawn } from "node:child_process";
-import { appendFileSync, existsSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, renameSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const [role, outsidePath] = process.argv.slice(2);
 const path = (name) => join(process.env.PLUGIN_DATA, name);
+function report(name, data) {
+  writeFileSync(path(name + ".pending"), JSON.stringify(data));
+  renameSync(path(name + ".pending"), path(name));
+}
 function child(nextRole, detached) {
-  spawn(process.execPath, [fileURLToPath(import.meta.url), nextRole, outsidePath], { detached, stdio: "ignore" });
+  const spawned = spawn(process.execPath, [fileURLToPath(import.meta.url), nextRole, outsidePath], { detached, stdio: "ignore" });
+  spawned.on("error", (error) => report("spawn-error", error.message));
 }
 
 function requestThroughProxy() {
@@ -35,38 +58,52 @@ function requestThroughProxy() {
         decodeURIComponent(proxy.username) + ":" + decodeURIComponent(proxy.password),
       ).toString("base64") },
     }, (res) => { res.resume(); resolve(res.statusCode); });
-    req.setTimeout(1000, () => req.destroy());
     req.on("error", (error) => resolve(error.code));
     req.end();
   });
 }
 
+let proxy;
 if (role === "leader") {
-  process.stdin.on("end", () => writeFileSync(path("stdin-eof"), ""));
+  process.stdin.on("end", () => report("stdin-eof", process.pid));
   process.stdin.resume();
   child("same-group", false);
 } else if (role === "same-group") {
   child("new-session", true);
-} else {
-  writeFileSync(path("new-session-pid"), String(process.pid));
-  if (process.platform === "darwin") {
-    writeFileSync(path("proxy-before"), String(await requestThroughProxy()));
-    const probe = setInterval(async () => {
-      if (!existsSync(path("probe-after"))) return;
-      clearInterval(probe);
-      let write = "succeeded";
-      try { writeFileSync(outsidePath, "changed"); } catch (error) { write = error.code; }
-      writeFileSync(path("probe-result"), JSON.stringify({ write, proxy: await requestThroughProxy() }));
-    }, 50);
-  }
+} else if (process.platform === "darwin") {
+  proxy = await requestThroughProxy();
+  const probe = setInterval(async () => {
+    if (!existsSync(path("probe-after"))) return;
+    clearInterval(probe);
+    let write = "succeeded";
+    try { writeFileSync(outsidePath, "changed"); } catch (error) { write = error.code; }
+    report("probe-result", { write, proxy: await requestThroughProxy() });
+  }, 50);
 }
 
+appendFileSync(path(role), ".");
+report("ready-" + role, { pid: process.pid, proxy });
 setInterval(() => appendFileSync(path(role), "."), 50);
-setTimeout(() => process.exit(1), 15_000);
 `;
 
 const ROLES = ["leader", "same-group", "new-session"] as const;
+type Role = (typeof ROLES)[number];
 const PLUGIN_ID = "heartbeat";
+
+function heartbeatProcesses(script: string, outsidePath: string): Map<Role, number> {
+  // The Linux sandbox's process IDs are local to its PID namespace. Match the host's IDs to this fixture's exact argv.
+  const processes = new Map<Role, number>();
+  const listing = execFileSync("/bin/ps", ["-axww", "-o", "pid=,command="], { encoding: "utf8" });
+  for (const line of listing.split("\n")) {
+    const match = /^\s*([1-9]\d*)\s+(.+)$/u.exec(line);
+    if (!match) continue;
+    const [, pid, command] = match;
+    for (const role of ROLES) {
+      if (command?.endsWith(` ${script} ${role} ${outsidePath}`) && Number(pid) > 1) processes.set(role, Number(pid));
+    }
+  }
+  return processes;
+}
 
 describe.runIf(process.platform === "win32")("direct process plugin admission", () => {
   it("refuses a Windows process launch before validating its command or roots", async () => {
@@ -81,93 +118,108 @@ describe.runIf(process.platform === "win32")("direct process plugin admission", 
 });
 
 describe.runIf(process.platform === "linux" || process.platform === "darwin")("process plugin host death", () => {
-  it("reaps the confined group on host EOF and measures the new session", async () => {
+  it("reaps the confined group on host SIGKILL and measures the new session", async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-plugin-heartbeat-")));
-    const pluginRoot = join(aveHome(), "plugins", PLUGIN_ID);
+    const home = join(root, "home");
+    const pluginRoot = join(home, "plugins", PLUGIN_ID);
     const pluginDataDir = join(pluginRoot, "data");
     const path = (name: string): string => join(pluginDataDir, name);
+    const script = join(pluginRoot, "heartbeat.mjs");
+    const launcher = join(pluginRoot, "launch");
     const outsidePath = join(root, "host-owned");
     const mac = process.platform === "darwin";
-    let child: ConfinedPluginChild | undefined;
-    const heartbeat = (name: string): number => statSync(path(name), { throwIfNoEntry: false })?.size ?? 0;
-    try {
-      expect(ensureAveHomePrivate(aveHome()).enforcement).not.toBe("none");
-      mkdirSync(pluginDataDir, { recursive: true });
-      writeFileSync(outsidePath, "original");
-      const script = join(pluginRoot, "heartbeat.mjs");
-      const launcher = join(pluginRoot, "launch");
-      const node = process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath;
-      writeFileSync(script, HEARTBEAT);
-      writeFileSync(launcher, `#!/bin/sh\nexec ${shellQuote(node)} ${shellQuote(script)} leader ${shellQuote(outsidePath)}\n`);
-      chmodSync(launcher, 0o700);
-      setPluginWorkerConfinementRequestedAtBoot(true);
-      await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
-      child = await spawnConfinedPluginChild({
-        pluginId: PLUGIN_ID,
-        socketDir: resolvePluginSocketDir(pluginDataDir),
-        envelope: derivePluginChildEnvelope({ pluginId: PLUGIN_ID, pluginRoot, pluginDataDir, configValue: () => undefined }),
-        launch: { kind: "process", command: launcher, args: [], env: { PLUGIN_ROOT: pluginRoot, PLUGIN_DATA: pluginDataDir } },
-      });
-      expect(child.confinement).toBe(mac ? "macos-sandbox" : "linux-bubblewrap");
-      await vi.waitFor(() => {
-        for (const role of ROLES) expect(heartbeat(role), role).toBeGreaterThan(1);
-      }, { timeout: 2_000 });
-      if (mac) expect(readFileSync(path("proxy-before"), "utf8")).toBe("403");
+    const heartbeat = (role: Role): number => statSync(path(role), { throwIfNoEntry: false })?.size ?? 0;
+    const readResult = <T>(name: string): T | undefined =>
+      existsSync(path(name)) ? JSON.parse(readFileSync(path(name), "utf8")) as T : undefined;
+    mkdirSync(pluginDataDir, { recursive: true, mode: 0o700 });
+    writeFileSync(outsidePath, "original");
+    writeFileSync(script, HEARTBEAT);
+    const node = process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath;
+    writeFileSync(launcher, `#!/bin/sh\nexec ${shellQuote(node)} ${shellQuote(script)} leader ${shellQuote(outsidePath)}\n`);
+    chmodSync(launcher, 0o700);
 
-      child.link.output.end();
-      await vi.waitFor(() => expect(existsSync(path("stdin-eof"))).toBe(true), { timeout: 2_000 });
-      const beforeClose = ROLES.map(heartbeat);
-      await vi.waitFor(() => {
-        ROLES.forEach((role, index) => expect(heartbeat(role), role).toBeGreaterThan(beforeClose[index]!));
-      }, { timeout: 2_000 });
+    const host = spawnSacrificialHost(HOST, [
+      new URL("../out-of-process-plugin.ts", import.meta.url).href,
+      new URL("../../../permissions/asrt-sandbox.ts", import.meta.url).href,
+      new URL("../../../permissions/sandbox-capability.ts", import.meta.url).href,
+      new URL("../../../shared/ave-home.ts", import.meta.url).href,
+      new URL("../../plugin-storage-layout.ts", import.meta.url).href,
+      PLUGIN_ID, pluginRoot, pluginDataDir, launcher,
+    ], { AVE_HOME: home });
+    let started: { pgid: number; confinement: string } | undefined;
+    let pgid: number | undefined;
+    let hostError: Error | undefined;
+    host.on("message", (message: { pgid: number; confinement: string }) => { started = message; pgid = message.pgid; });
+    host.on("error", (error) => { hostError = error; });
+    const assertHostRunning = (): void => {
+      if (hostError) throw hostError;
+      if (host.exitCode !== null || host.signalCode !== null) throw new Error("Sacrificial host exited before SIGKILL");
+    };
+    try {
+      const launch = await waitForFixture("confined host launch", () => {
+        assertHostRunning();
+        return started;
+      });
+      expect(launch.confinement).toBe(mac ? "macos-sandbox" : "linux-bubblewrap");
+      expect(launch.pgid).toBeGreaterThan(1);
+      const ready = await waitForFixture("plugin readiness", () => {
+        assertHostRunning();
+        const spawnError = readResult<string>("spawn-error");
+        if (spawnError !== undefined) throw new Error(spawnError);
+        return ROLES.every((role) => existsSync(path(`ready-${role}`))) ? true : undefined;
+      });
+      expect(ready).toBe(true);
+      for (const role of ROLES) expect(heartbeat(role), role).toBeGreaterThan(0);
+      const visible = heartbeatProcesses(script, outsidePath);
+      expect(visible.size).toBe(ROLES.length);
+      const newSession = visible.get("new-session");
+      if (newSession === undefined) throw new Error("Missing host-visible new-session PID");
+      if (mac) {
+        expect(readResult("ready-new-session")).toEqual({ pid: newSession, proxy: 403 });
+        expect(posixProcessExists(-newSession)).toBe(true);
+      }
+      expect(posixProcessExists(-launch.pgid)).toBe(true);
+
+      host.send("close-plugin-input");
+      await waitForFixture("plugin stdin EOF acknowledgment", () => {
+        assertHostRunning();
+        return readResult<number>("stdin-eof");
+      });
+      for (const pid of visible.values()) expect(posixProcessExists(pid)).toBe(true);
+      host.kill("SIGKILL");
+      await waitForFixture("host SIGKILL", () => host.signalCode ?? undefined);
+      expect(host.signalCode).toBe("SIGKILL");
 
       const reaped = mac ? ROLES.slice(0, 2) : ROLES;
-      let last = reaped.map(heartbeat);
-      let lastChangeAt = performance.now();
-      let leaderExited = false;
-      void child.waitForExit?.().then(() => { leaderExited = true; });
-      _closeProcessGroupReaperPipeForTest();
-      await vi.waitFor(() => {
-        const current = reaped.map(heartbeat);
-        if (current.some((count, index) => count !== last[index])) lastChangeAt = performance.now();
-        last = current;
-        expect(leaderExited).toBe(true);
-        expect(performance.now() - lastChangeAt).toBeGreaterThanOrEqual(300);
-      }, { timeout: 2_000, interval: 50 });
-      await delay(100);
-      expect(reaped.map(heartbeat)).toEqual(last);
-      if (!mac) return;
-
-      // The host owns the proxy listeners. Close them as host exit would, then exercise the surviving child.
-      await resetAsrtSandbox();
-      const surviving = heartbeat("new-session");
-      writeFileSync(path("probe-after"), "");
-      await vi.waitFor(() => {
-        expect(heartbeat("new-session")).toBeGreaterThan(surviving);
-        const result = JSON.parse(readFileSync(path("probe-result"), "utf8")) as { write: string; proxy: string };
+      await waitForFixture("plugin processes reaped", () => {
+        if (posixProcessExists(-launch.pgid)) return undefined;
+        for (const role of reaped) {
+          const pid = visible.get(role);
+          if (pid === undefined) throw new Error(`Missing PID for ${role}`);
+          if (posixProcessExists(pid)) return undefined;
+        }
+        return true;
+      });
+      pgid = undefined;
+      const stopped = reaped.map(heartbeat);
+      if (mac) {
+        expect(posixProcessExists(newSession)).toBe(true);
+        const surviving = heartbeat("new-session");
+        writeFileSync(path("probe-after"), "");
+        const result = await waitForFixture("surviving session probe", () => {
+          if (!posixProcessExists(newSession)) throw new Error("New session exited before its probe");
+          return readResult<{ write: string; proxy: string }>("probe-result");
+        });
         expect(result.write).toMatch(/^(EPERM|EACCES)$/);
         expect(result.proxy).toBe("ECONNREFUSED");
-      }, { timeout: 2_000 });
-      expect(readFileSync(outsidePath, "utf8")).toBe("original");
-      expect(reaped.map(heartbeat)).toEqual(last);
+        expect(readFileSync(outsidePath, "utf8")).toBe("original");
+        await waitForFixture("surviving heartbeat", () => heartbeat("new-session") > surviving ? true : undefined);
+      }
+      expect(reaped.map(heartbeat)).toEqual(stopped);
     } finally {
-      if (mac && existsSync(path("new-session-pid"))) {
-        const pid = Number(readFileSync(path("new-session-pid"), "utf8"));
-        if (Number.isSafeInteger(pid) && pid > 1) {
-          try { process.kill(pid, "SIGKILL"); } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-          }
-        }
-      }
-      if (child?.pid !== undefined) {
-        try { process.kill(-child.pid, "SIGKILL"); } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-        }
-        await child.waitForExit?.();
-      }
-      __resetManagedChildProcessesForTest();
-      await resetAsrtSandbox();
-      __resetSandboxRequestedAtBootForTest();
+      await stopSacrificialHost(host);
+      if (pgid !== undefined && pgid > 1 && posixProcessExists(-pgid)) process.kill(-pgid, "SIGKILL");
+      for (const pid of heartbeatProcesses(script, outsidePath).values()) process.kill(pid, "SIGKILL");
       await cleanupTmpDir(root);
     }
   });
