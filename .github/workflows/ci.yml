@@ -302,16 +302,10 @@ jobs:
       # namespace — rather than inside a test.
       - name: Prove the sandbox backend
         run: bwrap --version && socat -V | head -1 && rg --version | head -1 && bwrap --unshare-all --ro-bind / / --dev /dev --proc /proc /bin/true
-      # The stage workspaces refuse a git older than the release whose hook
-      # events they were validated against; fail here rather than in a test.
-      - name: Require git 2.56 or newer
-        run: |
-          git --version
-          set -- $(git --version | sed -nE 's/^git version ([0-9]+)\.([0-9]+)(\..*)?$/\1 \2/p')
-          if [ $# -ne 2 ] || [ "$1" -lt 2 ] || { [ "$1" -eq 2 ] && [ "$2" -lt 56 ]; }; then
-            echo "::error::git older than 2.56, or a version this cannot read"
-            exit 1
-          fi
+      # The stage-workspace regressions run on the git release their hook
+      # events were validated against; any other fails here, not in a test.
+      - name: Require the validated git release
+        run: node ave/.github/scripts/require-validated-git.mjs
       - uses: ./ave/.github/actions/setup-bun
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -661,10 +655,12 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           bun-version-file: ave/.bun-version
-      # Before job-root setup: the guard contains every later step.
-      - name: Show the git the regressions run against
+      # Before job-root setup: the guard contains every later step. The
+      # stage-workspace regressions run on the git release their hook events
+      # were validated against; any other fails here, not in a test.
+      - name: Require the validated git release
         shell: bash
-        run: git --version
+        run: node ave/.github/scripts/require-validated-git.mjs
       # Native fixtures need system-volume aliases and trusted root ownership.
       # The unique job directory remains outside the account profile.
       - name: Isolate home and temp directories on the system volume
@@ -1058,6 +1054,12 @@ jobs:
           src/tools/__tests__/session-read-shell.test.ts
           src/tools/__tests__/host-script-policy.test.ts
           src/tools/__tests__/xlsx-edit-sandbox.integration.test.ts
+          src/work-board/workflow/__tests__/host-git.test.ts
+          src/work-board/workflow/__tests__/host-git-discovery.test.ts
+          src/work-board/workflow/__tests__/stage-workspaces-git.test.ts
+          src/work-board/workflow/__tests__/stage-workspaces-folder.test.ts
+          src/work-board/workflow/__tests__/stage-workspaces-open-race.test.ts
+          src/work-board/workflow/__tests__/stage-workspaces-ownership.test.ts
           src/permissions/__tests__/sandbox-control-writes.integration.test.ts
           src/permissions/__tests__/sandbox-shell-sockets.integration.test.ts
           src/permissions/__tests__/sandbox-git-controls.integration.test.ts
