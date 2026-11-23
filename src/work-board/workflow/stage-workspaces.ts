@@ -685,15 +685,22 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     const copies: { stageId: string; path: string; sha256: string; size: number }[] = [];
     for (const stageId of stageIds) {
       const entry = file.stages[stageId] as StageEntry;
+      const own = new Set((entry.manifest ?? []).map(item => item.path));
       for (const item of entry.manifest ?? []) {
         const folded = fold(item.path);
-        const known = spelled.get(folded) ?? item.path;
+        const known = next.has(item.path) ? item.path : spelled.get(folded) ?? item.path;
         const held = next.get(known);
         if (held === undefined || (known === item.path && held.sha256 === item.sha256)) {
           if (held === undefined) { next.set(item.path, { sha256: item.sha256, size: item.size, stageId }); spelled.set(folded, item.path); copies.push({ stageId, ...item }); }
           continue;
         }
         if (known !== item.path) {
+          // Two spellings one stage holds side by side are two files: its volume keeps apart what the fold joined.
+          if (held.stageId === stageId && own.has(known)) {
+            next.set(item.path, { sha256: item.sha256, size: item.size, stageId });
+            copies.push({ stageId, ...item });
+            continue;
+          }
           // The same file under another spelling: two answers for one name, whatever each holds.
           contested.set(known, (contested.get(known) ?? new Set([held.stageId])).add(stageId));
           continue;

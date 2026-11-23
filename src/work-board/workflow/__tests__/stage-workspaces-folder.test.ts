@@ -652,6 +652,23 @@ describe("folder stage workspaces", () => {
     expect(tree(handle.out)).toEqual([]);
   });
 
+  it("two spellings one stage holds side by side are two outputs, and another stage's answer for either is a conflict", async () => {
+    const nameReader: NameReader = { list: directory => readdirSync(directory), id: path => `1:${path.toLowerCase()}` };
+    const handle = await start(project, { nameReader });
+    const [composed, decomposed] = ["é.md", "é.md"] as const;
+    const root = await stageRoot(handle, "s1");
+    write(root, composed, "one\n");
+    write(root, decomposed, "two\n");
+    // Where the volume itself joins the two spellings the stage holds one file, and one output is all there is.
+    const made = readdirSync(root).filter(name => name.endsWith(".md")).sort();
+    expect(await handle.provider.seal(handle.run, "s1")).toEqual({ ok: true });
+    expect(await handle.provider.integrate(handle.run, "j1", ["s1"])).toEqual({ ok: true });
+    expect(tree(handle.out).sort()).toEqual(made);
+    write(await stageRoot(handle, "s2"), decomposed, "other\n");
+    expect(await handle.provider.seal(handle.run, "s2")).toEqual({ ok: true });
+    expect(await handle.provider.integrate(handle.run, "j2", ["s2"])).toMatchObject({ ok: false, conflict: { reason: "same-path", files: [{ stageIds: ["s1", "s2"] }] } });
+  });
+
   it("collects outputs into _out and reports the same path from two stages as a conflict", async () => {
     const handle = await start(project);
     const first = await stageRoot(handle, "s1", { outputs: ["report/**"] });
