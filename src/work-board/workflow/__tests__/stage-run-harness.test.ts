@@ -3,6 +3,8 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { setImmediate } from "node:timers/promises";
 import { deferred } from "../../../__tests__/support/deferred.js";
+import * as namespace from "../../../main/storage/feature-namespace.js";
+import { WorkBoardStore } from "../../../main/work-board-store.js";
 import { boardRunState } from "../run-state.js";
 import { autoStageOf, stageOf } from "./stage-fixtures.js";
 import { workBoardOriginSessionId } from "../../../shared/work-board-types.js";
@@ -128,6 +130,101 @@ it("ignores a late read rejection from a replaced wait source", async () => {
     await expect(waiting).resolves.toMatchObject({ title: "Renamed" });
   } finally {
     release.resolve();
+    await h.cleanup();
+  }
+});
+
+it("checks the replacement while a retired board read is held", async () => {
+  const h = await stageRunHarness();
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  try {
+    const id = await h.addItem(await h.confirm([autoStageOf("a")]));
+    const snapshot = await h.board.get(id);
+    if (snapshot.status !== "found") throw new Error("Missing wait fixture");
+    vi.spyOn(h.board, "get").mockImplementationOnce(async () => {
+      entered.resolve();
+      await release.promise;
+      return snapshot;
+    });
+    const matches = vi.fn(() => true);
+    const waiting = h.until(id, matches);
+    void waiting.catch(() => {});
+    await entered.promise;
+
+    const replacement = vi.spyOn(WorkBoardStore.prototype, "get").mockResolvedValueOnce({
+      ...snapshot, item: { ...snapshot.item, title: "Replacement" },
+    });
+    try {
+      h.makeEngine();
+      expect(await Promise.race([waiting, setImmediate("still pending")]))
+        .toMatchObject({ title: "Replacement" });
+      release.resolve();
+      await setImmediate();
+      expect(matches.mock.calls).toHaveLength(1);
+    } finally {
+      replacement.mockRestore();
+    }
+  } finally {
+    release.resolve();
+    await h.cleanup();
+  }
+});
+
+it("checks a shared run file commit made by the retired store after cutover", async () => {
+  const h = await stageRunHarness();
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  let writing: Promise<unknown> | undefined;
+  try {
+    const version = await h.confirm([autoStageOf("a")]);
+    const id = await h.addItem(version);
+    const runId = "run-1";
+    const oldBoard = h.board;
+    expect(await oldBoard.beginRun(id, runId, "2026-11-16T00:00:00.000Z", {
+      ...h.pinOf(version), source: h.local(version), stageRuns: [{ stageId: "a", attempt: 1, status: "waiting" }],
+    })).toMatchObject({ status: "updated" });
+    const row = await oldBoard.get(id);
+    const persist = namespace.writeFileAtomicAtPath;
+    const write = vi.spyOn(namespace, "writeFileAtomicAtPath").mockImplementationOnce(async (...args) => {
+      entered.resolve();
+      await release.promise;
+      await persist(...args);
+    });
+    try {
+      writing = oldBoard.runs.update(runId, run => ({
+        ...run, stageRuns: [{ ...run.stageRuns[0], status: "running" }],
+      }));
+      await entered.promise;
+      const initial = deferred<void>();
+      const replacement = deferred<void>();
+      const waiting = h.until(id, item => {
+        if (h.statusOf(item, "a") === "running") return true;
+        (h.board === oldBoard ? initial : replacement).resolve();
+        return false;
+      });
+      void waiting.catch(() => {});
+      await initial.promise;
+      // Bootstrapping the row-id floor also takes the run file queue held by the write.
+      const firstRead = vi.spyOn(WorkBoardStore.prototype, "get").mockResolvedValueOnce(row);
+      try {
+        h.makeEngine();
+        await replacement.promise;
+      } finally {
+        firstRead.mockRestore();
+      }
+      const read = vi.spyOn(h.board, "get");
+
+      release.resolve();
+      expect(await writing).toMatchObject({ status: "stored" });
+      expect(read.mock.calls).toEqual([[id]]);
+      await expect(waiting).resolves.toMatchObject({ stageRuns: [{ stageId: "a", status: "running" }] });
+    } finally {
+      release.resolve();
+      await writing;
+      write.mockRestore();
+    }
+  } finally {
     await h.cleanup();
   }
 });

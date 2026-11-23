@@ -13,6 +13,7 @@ import { mintHostDecisionProof } from "../../../main/workflow-template-decision.
 import { createWorkBoardEngine, type WorkBoardEngineDeps } from "../../../core/work-board-engine.js";
 import { deferred } from "../../../__tests__/support/deferred.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
+import { ChangeSignal } from "../../../lib/change-signal.js";
 import { boardParentToolRegistry } from "../../__tests__/board-test-fixtures.js";
 import { authoriseRunSource } from "../run-authority.js";
 import { boardRunState, type RunRecord } from "../run-state.js";
@@ -81,7 +82,15 @@ export async function stageRunHarness(opts: {
 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ave-stage-run-"));
   const boardPath = join(dir, "board.json");
-  let board = new WorkBoardStore(boardPath);
+  const runChanges = new ChangeSignal<string>();
+  const stopRunSources: (() => void)[] = [];
+  function openBoard(): WorkBoardStore {
+    const store = new WorkBoardStore(boardPath);
+    // Retired stores can still commit to the shared run file.
+    stopRunSources.push(store.runs.runChanged.subscribe(runId => runChanges.emit(runId)));
+    return store;
+  }
+  let board = openBoard();
   const templates = new WorkflowTemplateStore(join(dir, "templates.json"));
   const events: WorkBoardRunEvent[] = [];
   const children: FakeChild[] = [];
@@ -336,7 +345,7 @@ export async function stageRunHarness(opts: {
     lastRequestedOrigin = undefined;
     flights = new Map();
     generation += 1;
-    board = new WorkBoardStore(boardPath);
+    board = openBoard();
     runWork = observeEngineWork();
     engine = engineOn(board);
     for (const wake of itemWaits) wake();
@@ -390,41 +399,40 @@ export async function stageRunHarness(opts: {
     const closedError = () => new Error(`Wait for ${description} ended: harness cleaned up`);
     if (closed) return Promise.reject(closedError());
     return new Promise((resolve, reject) => {
-      let store: WorkBoardStore | undefined;
-      let unsubscribe = () => {};
-      let checking = false;
-      let changed = false;
+      type ItemCheck = { store: WorkBoardStore; stopBoard: () => void; checking: boolean; changed: boolean };
+      let active: ItemCheck | undefined;
       const onStoreChanged = () => wake();
+      const stopRuns = runChanges.subscribe(onStoreChanged);
       const clearBound = boundWait(() => fail(new Error(`timed out waiting for ${description}`)));
       function settle(): void {
         itemWaits.delete(wake);
-        unsubscribe();
+        active?.stopBoard();
+        stopRuns();
         clearBound();
       }
       function fail(error: unknown): void {
         settle();
         reject(error);
       }
-      async function recheck(): Promise<void> {
-        checking = true;
+      async function recheck(source: ItemCheck): Promise<void> {
+        source.checking = true;
         try {
-          while (changed && itemWaits.has(wake)) {
-            changed = false;
-            const source = store;
+          while (source.changed && active === source && itemWaits.has(wake)) {
+            source.changed = false;
             try {
-              const current = await item(itemId, source);
+              const current = await item(itemId, source.store);
               // A wake can invalidate the board or run part of this snapshot.
-              if (changed || !itemWaits.has(wake)) continue;
-              if (check(current)) {
+              if (source.changed || active !== source || !itemWaits.has(wake)) continue;
+              if (check(current) && active === source && itemWaits.has(wake)) {
                 settle();
                 resolve(current);
               }
             } catch (error) {
-              if (source === store && itemWaits.has(wake)) fail(error);
+              if (active === source && itemWaits.has(wake)) fail(error);
             }
           }
         } finally {
-          checking = false;
+          source.checking = false;
         }
       }
       function wake(changedItemId?: number): void {
@@ -433,15 +441,14 @@ export async function stageRunHarness(opts: {
           return;
         }
         if (changedItemId !== undefined && changedItemId !== itemId) return;
-        if (store !== board) {
-          unsubscribe();
-          store = board;
-          const stopBoard = store.boardChanged.subscribe(onStoreChanged);
-          const stopRuns = store.runs.runChanged.subscribe(onStoreChanged);
-          unsubscribe = () => { stopBoard(); stopRuns(); };
+        if (active?.store !== board) {
+          active?.stopBoard();
+          active = {
+            store: board, stopBoard: board.boardChanged.subscribe(onStoreChanged), checking: false, changed: false,
+          };
         }
-        changed = true;
-        if (!checking) void recheck();
+        active.changed = true;
+        if (!active.checking) void recheck(active);
       }
       itemWaits.add(wake);
       wake();
@@ -568,6 +575,7 @@ export async function stageRunHarness(opts: {
     cleanup: () => {
       closed = true;
       for (const wake of itemWaits) wake();
+      for (const stop of stopRunSources.splice(0)) stop();
       pulse("harness cleaned up");
       return cleanupTmpDir(dir);
     },
