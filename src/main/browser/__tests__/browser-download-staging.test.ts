@@ -1120,6 +1120,62 @@ describe("the native helper", () => {
   });
 });
 
+// The macOS helper removes a copy's temporary file only while it is the file the copy wrote: a file put at its name before the copy is
+// cancelled, fails, or finds its target refused is left there, and the download reports its temporary file as left. Each case is proven
+// against the helper's own file too, which is removed.
+describe.runIf(process.platform === "darwin")("a stopped native copy's temporary file swapped for another file", () => {
+  type Ending = "cancelled" | "failed" | "refused";
+  const stoppedCopy = async (ending: Ending, swap: boolean) => {
+    const chosen = join(home, "chosen");
+    mkdirSync(chosen);
+    const target = join(chosen, "report.pdf");
+    // A target that cannot be replaced fails the commit rename (EPERM) and nothing before it.
+    if (ending === "failed") {
+      writeFileSync(target, "the user's report");
+      execFileSync("chflags", ["uchg", target]);
+    }
+    let download!: import("../browser-download-staging.js").ObservedDownload;
+    let swapped = "";
+    const root = atStep(acrossVolumes(prepare()), "copy", "copied", ({ part }) => {
+      if (swap) {
+        swapped = join(chosen, part ?? "");
+        moveAside(swapped, join(home, "the copy's own file"));
+        writeFileSync(swapped, "the user's file");
+      }
+      if (ending === "refused") mkdirSync(target);
+      if (ending === "cancelled") download.cancel();
+    });
+    const { asked, askSavePath } = dialogs();
+    const item = fakeItem();
+    const staged = stageBrowserDownload(item, { root, askSavePath }, Promise.resolve());
+    download = staged.download;
+    const done = doneOutcome(staged.download);
+    await settled();
+    asked[0]?.answer(target);
+    await settled();
+    item.complete("page data");
+    try {
+      return { outcome: await done, chosen, swapped };
+    } finally {
+      if (ending === "failed") execFileSync("chflags", ["nouchg", target]);
+    }
+  };
+  const theTarget: Record<Ending, string[]> = { cancelled: [], failed: ["report.pdf"], refused: ["report.pdf"] };
+
+  it.each(["cancelled", "failed", "refused"] as const)("leaves a file put at the temporary file's name when the copy is %s", async (ending) => {
+    const { outcome, chosen, swapped } = await stoppedCopy(ending, true);
+    expect(readFileSync(swapped, "utf8")).toBe("the user's file");
+    expect(readdirSync(chosen).sort()).toEqual([basename(swapped), ...theTarget[ending]].sort());
+    expect(outcome).toEqual({ state: "interrupted", cleanup: "part-left" });
+  });
+
+  it.each(["cancelled", "failed", "refused"] as const)("removes its own temporary file when the copy is %s", async (ending) => {
+    const { outcome, chosen } = await stoppedCopy(ending, false);
+    expect(readdirSync(chosen)).toEqual(theTarget[ending]);
+    expect(outcome).toEqual({ state: ending === "cancelled" ? "cancelled" : "interrupted", cleanup: "removed" });
+  });
+});
+
 describe.runIf(process.platform === "linux")("a Linux copy whose temporary file cannot be removed when it stops", () => {
   it("reports the temporary file as left", async () => {
     const prepared = acrossVolumes(prepare());

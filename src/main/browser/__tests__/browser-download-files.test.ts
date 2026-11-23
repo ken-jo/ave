@@ -133,7 +133,7 @@ vi.mock("../../managed-child-processes.js", () => ({
   }),
 }));
 
-const { _forgetLinkSupportForTest, _helperFileOperationsForTest, HeldDirectoryRefusedError, HeldFileHelperStalledError, HeldFileHelperUnavailableError } =
+const { _forgetLinkSupportForTest, _helperFileOperationsForTest, HeldDirectoryRefusedError, HeldFileHelperStalledError, HeldFileHelperUnavailableError, stoppedCopyOf } =
   await import("../browser-download-files.js");
 
 const { BACKGROUND_BUDGET_MS } = await import("../../../lib/transient-fs-lock-retry.js");
@@ -742,6 +742,81 @@ describe("a helper that does not keep to its protocol", () => {
     const swept = follow(files.sweep(from));
     await flush();
     expect(swept).toMatchObject({ settled: true, value: 2 });
+  });
+});
+
+// A copy's helper that stops after creating its temporary file says when it did not remove what is at that name (native/macos-dir-ops/README.md):
+// the copy then reports the file as left, records nothing for the next start, and starts no removal of its own.
+describe("a copy whose helper says it left its temporary file", () => {
+  const HIDDEN = ".0123456789abcdef0123456789abcdef.removing";
+  const SUFFIXES = [["left", null], [`left ${HIDDEN}`, HIDDEN]] as const;
+  const expectLeftByHelper = (error: unknown, hidden: string | null): void => {
+    expect(stoppedCopyOf(error)).toEqual({ partialCopy: "left", partLeftAt: null });
+    expect(boundary.warn).toHaveBeenCalledWith({ path: "/chosen/.0123.part", leftAs: hidden ?? undefined }, expect.stringMatching(/did not find it to be its own/));
+    expect(helpers()).toHaveLength(1);
+  };
+
+  it.each(SUFFIXES)("reports a cancel answered `cancelled %s` as a failure", async (suffix, hidden) => {
+    script((helper) => helper.say("ready"));
+    const stop = new AbortController();
+    const run = follow(files.copy(from, "staged", to, "report.pdf", ".0123.part", () => true, stop.signal));
+    await flush();
+    const [copy] = helpers();
+    stop.abort();
+    await flush();
+    copy?.say(`cancelled ${suffix}`);
+    copy?.exit(0);
+    await flush();
+    expect(run.error).toBeInstanceOf(Error);
+    expect(run.error).not.toBeInstanceOf(HeldFileHelperUnavailableError);
+    expect(copy?.killed).toBe(0);
+    expectLeftByHelper(run.error, hidden);
+  });
+
+  it.each(SUFFIXES)("keeps the errno of a failure answered `failed EIO %s`", async (suffix, hidden) => {
+    script((helper) => {
+      helper.say("ready");
+      helper.once("input", () => { helper.say("progress 8", `failed EIO ${suffix}`); helper.exit(4); });
+    });
+    const run = follow(files.copy(from, "staged", to, "report.pdf", ".0123.part", () => true, UNSTOPPED));
+    await flush();
+    expect(run.error).toMatchObject({ code: "EIO" });
+    expect(run.error).not.toBeInstanceOf(HeldFileHelperUnavailableError);
+    expectLeftByHelper(run.error, hidden);
+  });
+
+  it.each(SUFFIXES)("keeps the refusal of a commit answered `refused target %s`, also through an error that wraps it", async (suffix, hidden) => {
+    script((helper) => {
+      helper.say("ready");
+      helper.once("input", () => {
+        helper.say("progress 8", "copied");
+        helper.once("input", () => { helper.say(`refused target ${suffix}`); helper.exit(3); });
+      });
+    });
+    const run = follow(files.copy(from, "staged", to, "report.pdf", ".0123.part", () => true, UNSTOPPED));
+    await flush();
+    expect(run.error).toBeInstanceOf(HeldDirectoryRefusedError);
+    expect(run.error).toMatchObject({ refusal: "target" });
+    expectLeftByHelper(run.error, hidden);
+    expect(stoppedCopyOf(new Error("wrapped", { cause: run.error }))).toEqual({ partialCopy: "left", partLeftAt: null });
+  });
+
+  it.each([
+    ["a removal", () => files.remove(from, "staged", () => true, UNSTOPPED), "ready", "absent left"],
+    ["a copy before `ready`", () => files.copy(from, "staged", to, "report.pdf", ".0123.part", () => true, UNSTOPPED), null, "failed EIO left"],
+    ["a copy's refusal before `copied`", () => files.copy(from, "staged", to, "report.pdf", ".0123.part", () => true, UNSTOPPED), "ready", "refused target left"],
+    ["a copy's cancel nobody asked for", () => files.copy(from, "staged", to, "report.pdf", ".0123.part", () => true, UNSTOPPED), "ready", "cancelled left"],
+    ["a copy, with a hidden name of another shape", () => files.copy(from, "staged", to, "report.pdf", ".0123.part", () => true, UNSTOPPED), "ready", "failed EIO left .0123.removing"],
+  ] as const)("treats a left answer from %s as a protocol violation", async (_case, start, first, answer) => {
+    script((helper) => {
+      if (first === null) { helper.say(answer); return; }
+      helper.say(first);
+      helper.once("input", () => helper.say(answer));
+    });
+    const run = follow<unknown>(start());
+    await flush();
+    expect(run.error).toBeInstanceOf(HeldFileHelperUnavailableError);
+    expect(String((run.error as Error).message)).toMatch(/outside its mode or phase/);
   });
 });
 
