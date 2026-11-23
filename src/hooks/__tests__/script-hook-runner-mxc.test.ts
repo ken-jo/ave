@@ -1,3 +1,4 @@
+// windows-permission
 /** Hooks as extension container holders (design row 5): the user-hook shell-plan selector, bash-incompatible before admission, hook JSON in,
  * stdout/status out, admitted cwd/env and teardown. The holder adapter is mocked; its layout has its own tests. */
 import { PassThrough } from "node:stream";

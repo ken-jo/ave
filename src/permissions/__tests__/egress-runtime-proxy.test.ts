@@ -1,3 +1,4 @@
+// windows-permission
 import { randomUUID } from "node:crypto";
 import net, { type AddressInfo, type Socket } from "node:net";
 import { join, resolve } from "node:path";

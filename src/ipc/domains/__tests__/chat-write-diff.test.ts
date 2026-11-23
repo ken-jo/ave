@@ -1,3 +1,4 @@
+// windows-permission
 import type { MemorySaveNotices } from "../../../memory/memory-save-notices.js";
 import { installNativeChatWindow, invokeNativeChatHandler as invokeRegisteredHandler, nativeChatFrameEvent as hostFrameEvent } from "../../../__tests__/support/native-chat-window.js";
 import { beforeAll, describe, it, expect, vi, beforeEach } from "vitest";

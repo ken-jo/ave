@@ -1,3 +1,4 @@
+// windows-permission
 import { afterEach, describe, expect, it } from "vitest";
 import { makeMockWebContents, sentApprovalCards } from "../../__tests__/test-helpers.js";
 import { ApprovalGate, type ApprovalRequest } from "../approval-gate.js";

@@ -1,3 +1,4 @@
+// windows-permission
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";

@@ -1,3 +1,4 @@
+// windows-permission
 import { describe, expect, it } from "vitest";
 import { literalShellBodies } from "../shell-literal-bodies.js";
 import { sep } from "node:path";

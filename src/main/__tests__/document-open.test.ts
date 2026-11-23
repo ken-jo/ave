@@ -1,3 +1,4 @@
+// windows-permission
 import { EventEmitter } from "node:events";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";

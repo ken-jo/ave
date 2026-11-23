@@ -1,3 +1,4 @@
+// windows-permission
 import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 // Boot copies eligible values from child-writable data/ into host-only storage/ without following links.
 // The copy must be atomic, idempotent and complete before any confined process starts.

@@ -1,3 +1,4 @@
+// windows-permission
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useChromiumRuntime } from "../../__tests__/support/chromium-runtime.js";
 import { afterQueuedCallbacks } from "../../__tests__/support/deferred.js";

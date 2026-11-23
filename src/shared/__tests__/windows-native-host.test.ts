@@ -1,3 +1,4 @@
+// windows-permission
 import { getBuiltinModule } from "node:process";
 import { execFileSync } from "node:child_process";
 import { openSync } from "node:fs";

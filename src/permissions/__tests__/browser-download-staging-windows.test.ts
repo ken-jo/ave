@@ -1,3 +1,4 @@
+// windows-permission
 /** The browser's download staging folder through the Windows launch projections of every confined lane: the container shell request
  * handed to its launcher, the srt-win session floor and worker wrap handed to the runtime, the ACL holder's grant turn, and the
  * container holder's request handed to its native entry. A foreign host uses an in-memory drive; win32 uses real scratch directories

@@ -1,3 +1,4 @@
+// windows-permission
 import { cleanupAfterClosing } from "../../../__tests__/support/fixture-cleanup.js";
 import { issueUserOwnedBrowserScope } from "../../../permissions/user-owned-browser-scope.js";
 import { randomBytes } from "node:crypto";

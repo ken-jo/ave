@@ -1,3 +1,4 @@
+// windows-permission
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { areProjectWriteTargetsInside } from "../project-write-scope.js";

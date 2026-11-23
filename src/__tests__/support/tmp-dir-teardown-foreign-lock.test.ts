@@ -1,3 +1,4 @@
+// windows-permission
 /** A foreign process holds a non-share-delete Windows handle beyond the retry budget. */
 import { describe, it, expect } from "vitest";
 import { windowsPowerShellEnv } from "../../shared/windows-powershell-env.js";

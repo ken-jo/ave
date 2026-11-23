@@ -1,3 +1,4 @@
+// windows-permission
 import { installNativeChatWindow, invokeNativeChatHandler as invokeRegisteredHandler } from "../../../__tests__/support/native-chat-window.js";
 import { afterAll, afterEach, beforeAll, describe, it, expect, vi, beforeEach } from "vitest";
 import { configureHostResources } from "../../../main/host-resources.js";

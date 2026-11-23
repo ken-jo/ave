@@ -1,3 +1,4 @@
+// windows-permission
 // Policy refusals must name the rule, state whether retries can help, and identify legitimate alternative directories.
 import { describe, it, expect } from "vitest";
 import { mkdtempSync } from "node:fs";

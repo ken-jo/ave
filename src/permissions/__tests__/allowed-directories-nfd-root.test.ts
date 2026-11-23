@@ -1,3 +1,4 @@
+// windows-permission
 // A project root whose name the filesystem keeps in NFD (a Korean folder made on macOS, copied to ext4) must stay listable.
 // ext4 keeps bytes as written, so the NFC spelling names nothing there; this suite simulates that on any host by refusing the
 // NFC spelling at the fs seam, the way Linux CI meets it for real.

@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { MessageChannel, receiveMessageOnPort, Worker } from "node:worker_threads";
 import { createScanner } from "typescript/unstable/ast/scanner";
 import { conditionalGates } from "./windows-test-gates.js";
+import { hasWindowsInventoryMarker } from "../../scripts/windows-test-inventory.mjs";
 
 const TEST_FILE = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
 const SOURCE_FILE = /\.[cm]?[jt]sx?$/;
@@ -247,7 +248,6 @@ type RuntimeModule = { dependencies: Edge[]; mocks: Set<string>; tokens: string[
 
 const WINDOWS_MODULE = /^src\/(?!.*\/__tests__\/)(?:.*\/)?(?:windows-|win32-)[^/]+\.[cm]?[jt]sx?$/u;
 const WINDOWS_EXTERNAL = /^(?:@?win32[-/]|winreg$|@microsoft\/mxc-sdk(?:\/|$)|@koromix\/koffi-win32-)/u;
-const WINDOWS_MARKER = /^[ \t]*\/\/ windows-native(?:[ \t]*$|:)/u;
 const WINDOWS_HELPER = /(?:^|[\\/])(?:wxc-exec|ave-(?:job|path-kind|acl-host)|srt-win|icacls|reg)(?:\.exe)?$/iu;
 
 export function windowsImportGraph(sources: ReadonlyMap<string, string>, replyTimeoutMs = TRANSFORM_REPLY_TIMEOUT_MS) {
@@ -339,14 +339,6 @@ function usedMembers(tokens: readonly string[], specifier: string): Set<string> 
     if (["(", "?."].includes(tokens[i + 1] ?? "")) members.add(member);
   }
   return members;
-}
-
-function hasWindowsMarker(source: string): boolean {
-  for (const line of source.split(/\r?\n/u)) {
-    if (WINDOWS_MARKER.test(line)) return true;
-    if (line.trim() && !line.trimStart().startsWith("//")) return false;
-  }
-  return false;
 }
 
 const NATIVE_COMMANDS = new Set(["spawn", "spawnSync", "execFile", "execFileSync", "exec", "execSync"]);
@@ -592,7 +584,7 @@ function scanNativeBackedTestFiles(sources: ReadonlyMap<string, string>, replyTi
     if (!TEST_FILE.test(file) || !/\.(?:test|spec)\.tsx?$/u.test(file) || !/^(?:src|test)\//u.test(file)) continue;
     const source = sources.get(file);
     if (source === undefined) throw new Error(`Missing Windows test source: ${file}`);
-    if (hasWindowsMarker(source) || file.endsWith(".windows.test.ts")
+    if (hasWindowsInventoryMarker(source, "windows-native") || file.endsWith(".windows.test.ts")
       || callsNativeHelper(module.tokens, module.mocks) || exercisesFilesystemLinks(module.tokens, module.mocks) || checksWindowsPlatform(source, module.tokens, module.mocks)) {
       required.set(file, [file]);
       continue;

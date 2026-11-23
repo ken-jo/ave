@@ -1,3 +1,4 @@
+// windows-permission
 import { execFile, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

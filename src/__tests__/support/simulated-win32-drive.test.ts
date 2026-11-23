@@ -1,3 +1,4 @@
+// windows-permission
 import * as childProcess from "node:child_process";
 import * as filesystem from "node:fs";
 import { isAbsolute, join } from "node:path";

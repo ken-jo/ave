@@ -1,3 +1,4 @@
+// windows-permission
 import { win32 as winPath } from "node:path";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";

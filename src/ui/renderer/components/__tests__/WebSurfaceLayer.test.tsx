@@ -1,3 +1,4 @@
+// windows-permission
 // @vitest-environment jsdom
 /** Move slots without recreating guests; placement must clip, hide and avoid occluders while retaining page state. */
 import "../../../../../test/renderer/setup.js";

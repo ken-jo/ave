@@ -1,3 +1,4 @@
+// windows-permission
 import { configureHostResources } from "../../main/host-resources.js";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";

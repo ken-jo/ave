@@ -1,3 +1,4 @@
+// windows-permission
 import childProcess, { type ChildProcess } from "node:child_process";
 import { access, chmod, mkdir, mkdtemp, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";

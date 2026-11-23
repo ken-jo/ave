@@ -1,3 +1,4 @@
+// windows-permission
 import "../../__tests__/support/trusted-powershell.js";
 import type { ToolOutputCapture } from "../../shared/tool-output-artifact.js";
 import { ChildProcess, spawn } from "node:child_process";

@@ -27,6 +27,7 @@ import {
 } from "../../scripts/run-ci-suite.mjs";
 import { parseGitRawDiff } from "../../scripts/hooks/pre-push-ref-updates.mjs";
 import { isCollectedVitestFile } from "../../scripts/hooks/pre-push-source-policy.mjs";
+import { WINDOWS_INVENTORY_LOCK, WINDOWS_TEST_LISTS } from "../../scripts/windows-test-inventory.mjs";
 import { modifiedEntry as modified } from "../../src/__tests__/support/git-diff-entry.js";
 
 vi.mock("node:child_process", async (importOriginal) => {
@@ -111,6 +112,56 @@ function discoverRelated(paths: string[]): { source: string; tests: string[] }[]
 function select(changes: ReturnType<typeof modified>[], discover = discoverRelated) {
   return selectCiTests({ changes, trackedTests, mustRunTests, readText, discoverRelated: discover });
 }
+
+describe("Windows inventory metadata in CI plans", () => {
+  const added = "src/shared/__tests__/escape-html.test.ts";
+  const removed = "src/core/__tests__/route-input.test.ts";
+  const unaffected = "src/shared/__tests__/tool-result-trim.test.ts";
+  const expected = (...files: string[]) => [...new Set([...files, WINDOWS_INVENTORY_LOCK, ...mustRunTests])].sort();
+
+  it.each(WINDOWS_TEST_LISTS.slice(0, 2))("runs the membership delta and must-run set for %s", list => {
+    const discovery = vi.fn(() => null);
+    const plan = selectCiTests({
+      changes: [modified(list)], trackedTests, mustRunTests, readText, discoverRelated: discovery,
+      readVersion: (file, side) => file === list ? `${unaffected}\n${side === "before" ? removed : added}\n` : null,
+    });
+    expect(plan.mode).toBe("affected");
+    expect(plan.tests).toEqual(expected(added, removed));
+    expect(discovery).not.toHaveBeenCalled();
+  });
+
+  it("keeps regular global inputs global beside a Windows inventory", () => {
+    const list = WINDOWS_TEST_LISTS[0];
+    const plan = selectCiTests({
+      changes: [modified(list), modified(".github/workflows/ci.yml")],
+      trackedTests, mustRunTests, readText, discoverRelated,
+      readVersion: (file, side) => file === list ? `${side === "before" ? removed : added}\n` : null,
+    });
+    expect(plan).toMatchObject({ mode: "full", reason: ".github/workflows/ci.yml is a global test or build input" });
+  });
+
+  it("runs metadata-only marker additions and removals without general source tracing", () => {
+    const source = "import './support.js';\n";
+    const plan = selectCiTests({
+      changes: [modified(added), modified(removed)], trackedTests, mustRunTests, readText,
+      discoverRelated: vi.fn(() => null),
+      readVersion: (file, side) => (file === added) === (side === "after") ? `// windows-permission\n${source}` : source,
+    });
+    expect(plan.mode).toBe("affected");
+    expect(plan.tests).toEqual(expected(added, removed));
+  });
+
+  it("keeps regular code handling for a list edit with executable changes", () => {
+    const list = WINDOWS_TEST_LISTS[0];
+    const standardPlan = select([modified("src/core/route-input.ts")]);
+    const plan = selectCiTests({
+      changes: [modified(list), modified("src/core/route-input.ts")], trackedTests, mustRunTests, readText, discoverRelated,
+      readVersion: (file, side) => file === list ? `${side === "before" ? removed : added}\n` : null,
+    });
+    expect(plan.mode).toBe("affected");
+    expect(plan.tests).toEqual([...new Set([...standardPlan.tests, ...expected(added, removed)])].sort());
+  });
+});
 
 describe("CI test selection over the real import graph", () => {
   it("selects a leaf module's own tests, plus the must-run set", () => {
@@ -335,7 +386,7 @@ describe("event rules over the pull request merge and the whole push", () => {
   const isAncestor = { stdout: "", status: 0 };
 
   it("selects a test-only category merge over the merge commit's first parent", () => {
-    withGitOutputs(["head first second\n", `:100644 100644 aaaa bbbb M\0${changedTest}\0`, trackedTests.join("\0")], () => {
+    withGitOutputs(["head first second\n", `:100644 100644 aaaa bbbb M\0${changedTest}\0`, trackedTests.join("\0"), "export {};", "export const after = true;"], () => {
       const plan = planCiSuite("pull_request", { headRef: "integration/test-speed", baseRef: "main" });
       expect(plan.mode).toBe("affected");
       expect(plan.reason).toContain("test-only category merge");
@@ -345,8 +396,37 @@ describe("event rules over the pull request merge and the whole push", () => {
     });
   });
 
+  it("reads both list versions from the planned Git tree", () => {
+    const list = WINDOWS_TEST_LISTS[0];
+    const removed = "src/shared/__tests__/escape-html.test.ts";
+    withGitOutputs([
+      "head first second\n", `:100644 100644 aaaa bbbb M\0${list}\0`, trackedTests.join("\0"), `${removed}\n`, `${changedTest}\n`,
+    ], () => {
+      const plan = planCiSuite("pull_request", { headRef: "test/windows", baseRef: "main" });
+      const mustRun = expandMustRunTests(mustRunDocument, trackedTests, [list]);
+      expect(plan.mode).toBe("affected");
+      expect(plan.tests).toEqual([...new Set([changedTest, removed, WINDOWS_INVENTORY_LOCK, ...mustRun])].sort());
+      expect(vi.mocked(spawnSync).mock.calls.slice(3).map(call => call[1])).toEqual([["show", `first:${list}`], ["show", `HEAD:${list}`]]);
+    });
+  });
+
+  it("keeps a header-only change out of the containing domain's code triggers", () => {
+    const file = "src/shared/__tests__/tool-result-trim.test.ts";
+    const source = "export {};\n";
+    const core = expandMustRunTests(mustRunDocument, trackedTests, []);
+    expect(expandMustRunTests(mustRunDocument, trackedTests, [file]).length).toBeGreaterThan(core.length);
+    withGitOutputs([
+      "head first second\n", `:100644 100644 aaaa bbbb M\0${file}\0`, trackedTests.join("\0"),
+      source, `// windows-permission\n${source}`,
+    ], () => {
+      const plan = planCiSuite("pull_request", { headRef: "test/windows", baseRef: "main" });
+      expect(plan.mode).toBe("affected");
+      expect(plan.tests).toEqual([...new Set([file, WINDOWS_INVENTORY_LOCK, ...core])].sort());
+    });
+  });
+
   it("selects a test-only main push over before..HEAD", () => {
-    withGitOutputs([isAncestor, `:100644 100644 aaaa bbbb M\0${changedTest}\0`, trackedTests.join("\0")], () => {
+    withGitOutputs([isAncestor, `:100644 100644 aaaa bbbb M\0${changedTest}\0`, trackedTests.join("\0"), "export {};", "export const after = true;"], () => {
       const plan = planCiSuite("push", mainPush);
       expect(plan.mode).toBe("affected");
       expect(plan.reason).toContain("main push: trusted selection over before..HEAD");
@@ -365,7 +445,7 @@ describe("event rules over the pull request merge and the whole push", () => {
     expect(trackedTests).toContain(guideTest);
     const coverage = [{ source, tests: [guideTest] }];
     const diff = `:100644 100644 aaaa bbbb M\0${source}\0:100644 100644 cccc dddd M\0${changedTest}\0`;
-    withGitOutputs([isAncestor, diff, trackedTests.join("\0"), JSON.stringify(coverage)], () => {
+    withGitOutputs([isAncestor, diff, trackedTests.join("\0"), "export {};", "export const after = true;", JSON.stringify(coverage)], () => {
       const plan = planCiSuite("push", mainPush);
       expect(plan.mode).toBe("affected");
       expect(plan.reason).not.toContain("test-only diff");

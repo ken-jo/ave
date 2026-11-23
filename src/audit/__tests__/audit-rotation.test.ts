@@ -1,3 +1,4 @@
+// windows-permission
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { gunzipSync } from "node:zlib";

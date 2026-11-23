@@ -1,3 +1,4 @@
+// windows-permission
 import { execFile, spawn, type ChildProcess, type ExecException, type ExecFileOptions } from "node:child_process";
 import { createHash } from "node:crypto";
 import {

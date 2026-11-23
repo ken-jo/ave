@@ -1,3 +1,4 @@
+// windows-permission
 import { once } from "node:events";
 import { spawnSync, type SpawnOptions } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";

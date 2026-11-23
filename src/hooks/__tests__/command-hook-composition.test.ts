@@ -1,3 +1,4 @@
+// windows-permission
 // Trusted script and config hooks share deny precedence; later allows cannot upgrade a deny (docs/architecture/hook-runtime-expansion-design.md).
 import { describe, expect, it } from "vitest";
 import { resolve } from "node:path";

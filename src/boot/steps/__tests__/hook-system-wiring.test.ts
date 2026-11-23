@@ -1,3 +1,4 @@
+// windows-permission
 /** Hook trust policy: docs/architecture/permission-policy-design.md, Layer 6. */
 import { describe, expect, it, beforeAll, beforeEach, afterEach, vi } from "vitest";
 import {

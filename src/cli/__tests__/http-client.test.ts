@@ -1,3 +1,4 @@
+// windows-permission
 /**
  * cli/http-client — #1436 HTTP transport + discovery-file reader tests.
  *

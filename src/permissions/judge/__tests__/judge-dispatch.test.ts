@@ -1,3 +1,4 @@
+// windows-permission
 import { bindRemoteControllerToSession } from "../../../shared/chat-origin.js";
 import { randomUUID } from "node:crypto";
 import { setReviewerForTest } from "../../../__tests__/support/reviewer-judge.js";

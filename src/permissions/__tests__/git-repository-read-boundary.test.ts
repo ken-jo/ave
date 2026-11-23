@@ -1,3 +1,4 @@
+// windows-permission
 import { stabilizeFixtureAncestorStats } from "../../__tests__/support/fixture-ancestor-stats.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";

@@ -1,3 +1,4 @@
+// windows-permission
 import { tsxChildEnv } from "../../__tests__/support/tsx-child-env.js";
 import { createHash, randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";

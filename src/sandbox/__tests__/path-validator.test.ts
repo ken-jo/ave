@@ -1,3 +1,4 @@
+// windows-permission
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 import {

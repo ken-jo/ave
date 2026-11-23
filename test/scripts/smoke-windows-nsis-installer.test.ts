@@ -1,3 +1,4 @@
+// windows-permission
 import { spawnSync } from "node:child_process";
 import { windowsPowerShellEnv } from "../../src/shared/windows-powershell-env.js";
 import { randomUUID } from "node:crypto";

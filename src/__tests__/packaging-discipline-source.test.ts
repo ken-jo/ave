@@ -1,3 +1,4 @@
+// windows-permission
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, statSync } from "node:fs";

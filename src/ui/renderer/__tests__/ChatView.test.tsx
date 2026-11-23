@@ -1,3 +1,4 @@
+// windows-permission
 /** Render through App because ChatView requires its chat context. */
 import "../../../../test/renderer/setup.js";
 import { describe, it, expect, vi, afterEach } from "vitest";

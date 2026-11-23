@@ -55,6 +55,7 @@
     "test:prepare": "bun run build:icons && node scripts/prepare-windows-job.mjs && node scripts/build-macos-dir-ops.mjs --if-stale --test-builds",
     "test:vitest": "node scripts/run-vitest-under-electron.mjs",
     "generate:windows-native-tests": "bun run scripts/generate-windows-native-tests.ts",
+    "generate:windows-permission-tests": "bun run scripts/generate-windows-permission-tests.ts",
     "test": "bun run test:prepare && bun run test:vitest -- run",
     "test:a2a": "bun run check:a2a-p4-5-contract && bun run test:prepare && bun run test:vitest -- run a2a subagent parent-child-directive agent-send",
     "check:i18n-catalog": "node --import tsx scripts/i18n-validate-catalog.ts",

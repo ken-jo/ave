@@ -1,3 +1,4 @@
+// windows-permission
 import { allowedCommandCase, deniedCommandCase } from "./support/bash-validation-cases.js";
 import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";

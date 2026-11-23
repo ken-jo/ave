@@ -1,3 +1,4 @@
+// windows-permission
 /** HMAC chains follow docs/architecture/permission-policy-design.md, Layer 7. */
 import { tsxChildEnv } from "../../__tests__/support/tsx-child-env.js";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";

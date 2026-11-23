@@ -1,3 +1,4 @@
+// windows-permission
 /** A host tab's output kept across a restart: what is written to disk, who may read it, and what a new shell in the tab continues from.
  * A fake PTY stands for the shell; the store is the real one, on a real directory. */
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";

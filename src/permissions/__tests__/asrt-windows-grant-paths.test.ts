@@ -1,3 +1,4 @@
+// windows-permission
 import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
 import { dirname, join, parse, resolve, sep } from "node:path";

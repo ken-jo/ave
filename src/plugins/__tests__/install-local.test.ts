@@ -1,3 +1,4 @@
+// windows-permission
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, statSync } from "node:fs";

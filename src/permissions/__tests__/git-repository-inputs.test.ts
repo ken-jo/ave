@@ -1,3 +1,4 @@
+// windows-permission
 import { stabilizeFixtureAncestorStats } from "../../__tests__/support/fixture-ancestor-stats.js";
 import * as fs from "node:fs";
 import * as childProcess from "node:child_process";

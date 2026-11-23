@@ -1,3 +1,4 @@
+// windows-permission
 import { describe, expect, it, vi } from "vitest";
 
 const runtime = vi.hoisted(() => ({ initialize: vi.fn(), active: false }));

@@ -1,3 +1,4 @@
+// windows-permission
 import { captureApprovalWorkingDirectory } from "../../../permissions/user-approval-store.js";
 import { createRationaleApprovalCallback } from "../../../__tests__/support/rationale-approval-callback.js";
 import { describe, expect, it, vi } from "vitest";

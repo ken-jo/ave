@@ -1,3 +1,4 @@
+// windows-permission
 /** The bun patch on @anthropic-ai/sandbox-runtime is dist JavaScript edited by hand. A version bump that re-rolls it can apply cleanly and still drop a piece, and nothing else notices: the terminal's own-tty grant degrades to a plain deny, the ask callback loses
  * the attribution key that tells a plugin worker's connection from a shell's, or an invocation loses the listener that identifies it. So each symbol the patch adds is asserted on the INSTALLED package, the bytes Ave actually loads, on every OS the suite runs on. */
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";

@@ -1,3 +1,4 @@
+// windows-permission
 import { reviewerJudgeOutcomeForTest } from "../../__tests__/support/reviewer-judge.js";
 import { lstatSync, mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";

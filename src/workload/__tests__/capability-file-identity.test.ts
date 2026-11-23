@@ -1,3 +1,4 @@
+// windows-permission
 import type { BigIntStats, PathLike } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 

@@ -1,3 +1,4 @@
+// windows-permission
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { posix, join } from "node:path";

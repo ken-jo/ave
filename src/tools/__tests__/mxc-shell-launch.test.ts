@@ -1,3 +1,4 @@
+// windows-permission
 import net from "node:net";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerMxcShellLaunchAdmissionFixture } from "../../__tests__/support/mxc-shell-launch-admission.js";

@@ -1,3 +1,4 @@
+// windows-permission
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useTempPaths as configureTempPaths } from "../../../__tests__/test-helpers.js";
 import { useConfigurationOwner as configureTestOwner } from "../../../__tests__/support/configuration-owner.js";

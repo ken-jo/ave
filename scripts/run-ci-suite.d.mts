@@ -1,4 +1,5 @@
 import type { GitRawDiffEntry } from "./hooks/pre-push-ref-updates.mjs";
+import type { ReadWindowsVersion } from "./windows-test-inventory.mjs";
 
 export const MUST_RUN_TESTS_PATH: string;
 export const AFFECTED_TEST_LIMIT: number;
@@ -19,8 +20,9 @@ export declare function selectCiTests(input: {
   baseRef?: string;
   changes: GitRawDiffEntry[];
   trackedTests: readonly string[];
-  mustRunTests: readonly string[];
+  mustRunTests: readonly string[] | ((changedPaths: string[]) => readonly string[]);
   readText: (path: string) => string | null;
+  readVersion?: ReadWindowsVersion;
   discoverRelated: (paths: string[]) => { source: string; tests: string[] }[] | null;
 }): CiSuitePlan;
 export declare function runsRepoCodeOutOfProcess(text: string): boolean;

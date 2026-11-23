@@ -1,3 +1,4 @@
+// windows-permission
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { resolve, win32 } from "node:path";
 import { aveHome } from "../../shared/ave-home.js";

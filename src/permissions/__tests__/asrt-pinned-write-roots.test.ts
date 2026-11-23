@@ -1,3 +1,4 @@
+// windows-permission
 import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
 // Pin newly created write roots before the first wrap; computing pins before creation silently drops them and permits replacement.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";

@@ -1,3 +1,4 @@
+// windows-permission
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { registerBuiltinTools, registerRequestPluginMetaTool, registerToolSearchMetaTool } from "../tools.js";
 import { bootstrapCoreServices } from "../services.js";

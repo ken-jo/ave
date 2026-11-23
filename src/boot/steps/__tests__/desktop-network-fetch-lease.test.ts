@@ -1,3 +1,4 @@
+// windows-permission
 import { tsxChildEnv } from "../../../__tests__/support/tsx-child-env.js";
 import { useConfigurationOwner } from "../../../__tests__/support/configuration-owner.js";
 

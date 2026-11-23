@@ -1,3 +1,4 @@
+// windows-permission
 import type { IpcDeps } from "../../types.js";
 // Every settings path that changes a provider address must refresh sandbox network configuration.
 import { describe, it, expect, vi, beforeEach } from "vitest";

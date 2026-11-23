@@ -1,3 +1,4 @@
+// windows-permission
 // Host guards and sandbox floors project one sensitive-path table; no secret may be readable through either. Saved history deliberately permits builtin reads only. Put the test target inside allowed scope so directory policy cannot hide a missing hard deny.
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";

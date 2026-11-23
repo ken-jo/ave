@@ -1,3 +1,4 @@
+// windows-permission
 import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";

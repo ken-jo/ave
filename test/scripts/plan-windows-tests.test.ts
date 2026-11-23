@@ -24,6 +24,45 @@ function plan(changes?: { status: string; file: string }[], event = "pull_reques
 }
 
 describe("Windows regression planning", () => {
+  const modified = (file: string) => ({ file, status: "M", oldMode: "100644", newMode: "100644" });
+  const removed = "src/core/__tests__/route-input.test.ts";
+  const selected = (result: ReturnType<typeof planWindowsTests>) => result.shards.flatMap(shard => shard.files).sort();
+  const core = () => selected(plan([]));
+
+  it.each([permission, native])("runs the exact membership delta of %s and the core", list => {
+    expect(Object.values(inventories).flat()).not.toContain(removed);
+    const added = inventories[list][0] ?? "";
+    const result = planWindowsTests({
+      event: "pull_request", changes: [modified(list)], inventories,
+      readSources: () => { throw new Error("inventory-only changes should not scan the source graph"); },
+      readVersion: (file, side) => file === list ? `${side === "before" ? removed : added}\n` : "export {};\n",
+    });
+    expect(result.mode).toBe("affected");
+    expect(selected(result)).toEqual([...new Set([...core(), added, removed])].sort());
+    const scheduled = WINDOWS_TEST_SHARDS.flatMap(shard => plannedWindowsFiles(list, inventories[list].join("\n"), result, shard));
+    expect(scheduled).toContain(removed);
+    expect(() => plannedWindowsFiles(list, inventories[list].join("\n"), { ...result, mode: "full" }, 1))
+      .toThrow("Invalid Windows supplemental tests");
+  });
+
+  it("selects marker-only changes before a general source fallback", () => {
+    const result = planWindowsTests({
+      event: "pull_request", changes: [modified(removed), modified(permissionSuite)], inventories,
+      readSources: () => { throw new Error("marker-only changes should not scan the source graph"); },
+      readVersion: (file, side) => (file === removed) === (side === "after") ? "// windows-permission\nexport {};\n" : "export {};\n",
+    });
+    expect(result.mode).toBe("affected");
+    expect(selected(result)).toEqual([...new Set([...core(), removed, permissionSuite])].sort());
+  });
+
+  it("retains full selection when a CI input changes with a list", () => {
+    const result = planWindowsTests({
+      event: "pull_request", changes: [modified(permission), modified(".github/workflows/ci.yml")], inventories, readSources,
+      readVersion: (file, side) => file === permission ? `${side === "before" ? removed : permissionSuite}\n` : null,
+    });
+    expect(result).toMatchObject({ mode: "full", reason: "full because .github/workflows/ci.yml affects CI globally", lists: inventories });
+  });
+
   it.each(["push", "schedule", "workflow_dispatch"])("runs both complete inventories for %s", event => {
     expect(plan([], event)).toMatchObject({ mode: "full", lists: inventories });
   });

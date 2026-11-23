@@ -1,3 +1,4 @@
+// windows-permission
 // External callers must clear both the public-channel allowlist and the gesture gate.
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";

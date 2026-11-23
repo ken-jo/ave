@@ -1,3 +1,4 @@
+// windows-permission
 // Run generated startup files in temporary homes through real interactive shells to cover marker encoding and parsing together.
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";

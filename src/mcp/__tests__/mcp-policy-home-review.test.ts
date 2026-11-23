@@ -1,3 +1,4 @@
+// windows-permission
 // An organization policy file that exists in the Ave folder but still waits for home content review has no authority yet. Its
 // unread rules may forbid user trust, so user servers stay blocked until it is approved, and only an absent file keeps the default.
 import { useConfigurationOwner as configureTestOwner } from "../../__tests__/support/configuration-owner.js";

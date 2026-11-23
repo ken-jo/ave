@@ -1,3 +1,4 @@
+// windows-permission
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { join, basename } from "node:path";

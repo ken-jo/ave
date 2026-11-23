@@ -1,3 +1,4 @@
+// windows-permission
 /** Exercise real approval, permission, store, and audit boundaries with an isolated home.
  * Deny and forced-modal rules outrank remembered approval; persistent matching tuples skip ordinary asks, while identity changes re-prompt. */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";

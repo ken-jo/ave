@@ -1,3 +1,4 @@
+// windows-permission
 /** Windows-only test cases run in CI only when their file is named in the Windows permission job (.github/workflows/ci.yml); the Linux and macOS shards skip them. A file that gates
  * cases on win32 but is missing from that list never runs anywhere, so this pins the list against the tree. */
 import { readFileSync } from "node:fs";
@@ -6,6 +7,8 @@ import { describe, expect, it } from "vitest";
 import { windowsRegressionFiles } from "../../.github/scripts/check-windows-workflow.mjs";
 import { conditionalGates } from "./windows-test-gates.js";
 import { nativeBackedTestFiles, readWindowsSources, windowsNativeInventory } from "./windows-native-test-inventory.js";
+import { isCollectedVitestFile } from "../../scripts/hooks/pre-push-source-policy.mjs";
+import { windowsPermissionInventory } from "../../scripts/windows-test-inventory.mjs";
 
 const root = resolve(import.meta.dirname, "../..");
 const STEP_NAME = "Run Windows permission regressions";
@@ -81,6 +84,21 @@ describe("Windows CI test list", () => {
 
   it("matches the generated native list in both directions", () => {
     expect(windowsTestLists.get(NATIVE_TEST_LIST)).toBe(windowsNativeInventory(sources));
+  });
+
+  it("matches the permission declarations in both directions", () => {
+    expect(windowsTestLists.get(PERMISSION_TEST_LIST)).toBe(windowsPermissionInventory(sources, isCollectedVitestFile));
+  });
+
+  it("collects only permission declarations in the header of runnable suites", () => {
+    const files = new Map([
+      ["src/main/__tests__/declared.test.ts", "// windows-native\n// windows-permission: exercise permission checks\nimport './fixture.js';"],
+      ["src/main/__tests__/body.test.ts", "import './fixture.js';\n// windows-permission"],
+      ["src/main/__tests__/native.test.ts", "// windows-native"],
+      ["src/main/__tests__/support.ts", "// windows-permission"],
+      ["test/e2e/declared.spec.ts", "// windows-permission"],
+    ]);
+    expect(windowsPermissionInventory(files, isCollectedVitestFile)).toBe("src/main/__tests__/declared.test.ts\n");
   });
 
   it("keeps the real junction, symlink, reparse-point and ACL regressions in the native inventory", () => {

@@ -1,3 +1,4 @@
+// windows-permission
 import "../../__tests__/support/trusted-powershell.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { checkShellPermission, distinctPathArguments } from "../../__tests__/support/permission-lane.js";

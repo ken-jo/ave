@@ -1,3 +1,4 @@
+// windows-permission
 import "../../../../test/renderer/setup.js";
 import { act, fireEvent } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";

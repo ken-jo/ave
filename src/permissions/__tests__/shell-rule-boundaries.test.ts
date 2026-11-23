@@ -1,3 +1,4 @@
+// windows-permission
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";

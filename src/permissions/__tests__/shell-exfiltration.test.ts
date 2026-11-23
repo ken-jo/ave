@@ -1,3 +1,4 @@
+// windows-permission
 // Exfiltration floors cover every sender and compound-command path; ordinary downloads, local copies and repository pushes remain negative controls.
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import * as shellAnalysis from "../../shared/shell-analysis.js";

@@ -1,3 +1,4 @@
+// windows-permission
 import { writePermissionSettingsFixture } from "../../../__tests__/support/permission-settings-fixture.js";
 /** Validation grants only the base envelope, never saved user approvals; delegated workers face the same bound. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";

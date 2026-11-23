@@ -1,3 +1,4 @@
+// windows-permission
 import "../../__tests__/support/trusted-powershell.js";
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 // Unsandboxed shell rules compare complete raw literal words; network card saves remain destination host rules.

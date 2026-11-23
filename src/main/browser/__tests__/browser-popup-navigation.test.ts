@@ -1,3 +1,4 @@
+// windows-permission
 import { describe, expect, it, vi } from "vitest";
 import { _browserPopupNavigationStateForTest, awaitBrowserPopupNavigation, handleAgentBrowserPopup, retireBrowserPopupNavigation, setBrowserPopupNavigation } from "../browser-popup-navigation.js";
 import { deferred } from "../../../__tests__/support/deferred.js";

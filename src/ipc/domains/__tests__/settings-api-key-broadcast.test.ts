@@ -1,3 +1,4 @@
+// windows-permission
 import { requiredFixture } from "../../../__tests__/support/required-fixture.js";
 import type { IpcDeps } from "../../types.js";
 import { writePermissionSettingsFixture } from "../../../__tests__/support/permission-settings-fixture.js";

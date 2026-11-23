@@ -1,3 +1,4 @@
+// windows-permission
 /** Locks serialize writes; plain reads may still observe the pre-write value. */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, existsSync, realpath, rmSync, symlinkSync } from "node:fs";

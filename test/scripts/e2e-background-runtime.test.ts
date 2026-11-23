@@ -1,3 +1,4 @@
+// windows-permission
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { basename, dirname, join } from "node:path";
 import { createRequire } from "node:module";

@@ -1,3 +1,4 @@
+// windows-permission
 // Only the host may attach child provenance from a tracked run; runs without a local parent get none.
 import { describe, it, expect, vi } from "vitest";
 import {

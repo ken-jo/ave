@@ -1,3 +1,4 @@
+// windows-permission
 /** Stop-path holder ordering: a stopped child's grant holders are released only after its process has really exited.
  * The child process, its loopback channel and the grant holder are in-memory stand-ins; no socket, process or wall-clock wait. */
 import { EventEmitter } from "node:events";

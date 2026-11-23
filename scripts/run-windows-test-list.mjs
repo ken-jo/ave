@@ -2,21 +2,10 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { runCommand, splitArgumentsWithinBudget } from "./hooks/spawn-command.mjs";
+import { WINDOWS_TEST_LISTS, windowsTestFiles } from "./windows-test-inventory.mjs";
 
 export const WINDOWS_TEST_SHARDS = [1, 2, 3];
-export const WINDOWS_TEST_LISTS = ["config/windows-permission-tests.txt", "config/windows-native-tests.txt", "config/windows-application-tests.txt"];
-
-export function windowsTestFiles(text) {
-  const files = [...new Set(text.replace(/^\uFEFF/u, "").split(/\r?\n/u).map(line => line.trim()).filter(Boolean))];
-  if (files.length === 0) throw new Error("Windows test list is empty");
-  for (const file of files) {
-    if (!/^(?:src|test)\/[\w./-]+\.(?:test|spec)\.[cm]?[jt]sx?$/u.test(file)
-      || file.split("/").some(part => part === "." || part === "..") || /^test\/(?:e2e|screenshots|smoke)\//u.test(file)) {
-      throw new Error(`Invalid unit test path: ${file}`);
-    }
-  }
-  return files;
-}
+export { WINDOWS_TEST_LISTS, windowsTestFiles } from "./windows-test-inventory.mjs";
 
 /** Keep every selected suite while respecting the native command-line bound. */
 export function windowsTestCommands(text, bun = "bun.exe") {
@@ -28,6 +17,18 @@ export function windowsTestCommands(text, bun = "bun.exe") {
 export function plannedWindowsFiles(inventory, text, plan, shard) {
   const full = new Set(windowsTestFiles(text));
   const selected = plan.lists?.[inventory];
+  const supplemental = plan.supplemental?.[inventory];
+  if (supplemental !== undefined) {
+    // A membership diff can name a collected suite outside the current list,
+    // such as a removed entry that still needs its regression run.
+    if (plan.mode !== "affected" || !WINDOWS_TEST_LISTS.slice(0, 2).includes(inventory)
+      || !Array.isArray(supplemental) || !supplemental.every(file => typeof file === "string")
+      || JSON.stringify(windowsTestFiles(supplemental.join("\n"))) !== JSON.stringify(supplemental)
+      || supplemental.some(file => full.has(file) || !selected?.includes(file))) {
+      throw new Error(`Invalid Windows supplemental tests for ${inventory}`);
+    }
+    for (const file of supplemental) full.add(file);
+  }
   if (!Array.isArray(selected) || (plan.mode !== "full" && plan.mode !== "affected")
     || new Set(selected).size !== selected.length || selected.some(file => !full.has(file))
     || (plan.mode === "full" && selected.length !== full.size)) {

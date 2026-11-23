@@ -6,6 +6,9 @@ import {
   hasUnverifiedWindowsRuntimeInput, isInventorySource, readWindowsSources, windowsImportGraph, windowsRuntimeInputIndex,
 } from "../test/scripts/windows-native-test-inventory.js";
 import { WINDOWS_TEST_LISTS, WINDOWS_TEST_SHARDS, windowsTestFiles } from "./run-windows-test-list.mjs";
+import { parseGitRawDiff } from "./hooks/pre-push-ref-updates.mjs";
+import { isCollectedVitestFile } from "./hooks/pre-push-source-policy.mjs";
+import { windowsInventoryDiff, type ReadWindowsVersion } from "./windows-test-inventory.mjs";
 
 const ALWAYS_RUN = [
   "src/main/__tests__/windows-acl-host.test.ts",
@@ -16,10 +19,10 @@ const ALWAYS_RUN = [
   "src/tools/__tests__/xlsx-edit-sandbox.integration.test.ts",
 ] as const;
 const GLOBAL_INPUT = /^(?:\.github\/|config\/|scripts\/|test\/(?:scripts|fixtures)\/|patches\/|native\/|resources\/|src\/(?:__tests__|i18n\/testing)\/vitest-|(?:package\.json|bun\.lock|\.bun-version|(?:vitest|tsconfig)[^/]*)$)/u;
-type Change = { status: string; file: string };
+type Change = { status: string; file: string; oldMode?: string; newMode?: string };
 type Inventory = Record<(typeof WINDOWS_TEST_LISTS)[number], string[]>;
 
-export function pullRequestWindowsChanges(root: string, base: string, head: string): Change[] | undefined {
+export function pullRequestWindowsChanges(root: string, base: string, head: string) {
   function git(...args: string[]) {
     return execFileSync("git", ["-C", root, ...args], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
   }
@@ -29,16 +32,12 @@ export function pullRequestWindowsChanges(root: string, base: string, head: stri
     if (!base || !head) return undefined;
     const target = commit(head);
     const ancestor = git("merge-base", commit(base), target).trim();
-    const raw = git("diff", "--no-renames", "--name-status", "-z", ancestor, target, "--");
-    const fields = raw.split("\0");
-    if (fields.pop() !== "" || fields.length % 2 !== 0) return undefined;
-    const changes: Change[] = [];
-    for (let index = 0; index < fields.length; index += 2) {
-      const [status, file] = fields.slice(index, index + 2);
-      if (!status || !file) return undefined;
-      changes.push({ status, file });
-    }
-    return changes;
+    const entries = parseGitRawDiff(git("diff", "--no-renames", "--raw", "-z", ancestor, target, "--"));
+    if (!entries) return undefined;
+    const readVersion: ReadWindowsVersion = (file, side) => {
+      try { return git("show", `${side === "before" ? ancestor : target}:${file}`); } catch { return null; }
+    };
+    return { changes: entries.map(({ status, path: file, oldMode, newMode }) => ({ status, file, oldMode, newMode })), readVersion };
   } catch {
     return undefined;
   }
@@ -81,19 +80,22 @@ export function assertWindowsCoverage(required: Iterable<string>, planned: Itera
 }
 
 export function planWindowsTests({
-  event, inventories, changes, readSources, durations = {},
+  event, inventories, changes, readVersion, readSources, durations = {},
 }: {
   event: string;
   inventories: Inventory;
   changes?: Change[] | undefined;
+  readVersion?: ReadWindowsVersion | undefined;
   readSources: () => ReadonlyMap<string, string>;
   durations?: Record<string, number>;
 }) {
   const eligible = new Set(Object.values(inventories).flat());
   for (const file of ALWAYS_RUN) if (!eligible.has(file)) throw new Error(`Missing Windows core test: ${file}`);
-  const global = changes?.find(({ file }) => GLOBAL_INPUT.test(file));
-  const fixture = changes?.find(({ file }) => /\/__tests__\/fixtures\//u.test(file));
-  const unknown = changes?.find(({ file, status }) => !/^[AM]$/u.test(status) || !isInventorySource(file));
+  const inventoryDiff = windowsInventoryDiff((changes ?? []).map(entry => ({ ...entry, path: entry.file })), readVersion, isCollectedVitestFile);
+  const ordinary = inventoryDiff.ordinary;
+  const global = ordinary.find(({ file }) => GLOBAL_INPUT.test(file));
+  const fixture = ordinary.find(({ file }) => /\/__tests__\/fixtures\//u.test(file));
+  const unknown = ordinary.find(({ file, status }) => !/^[AM]$/u.test(status) || !isInventorySource(file));
   let reason = event !== "pull_request" ? `full for ${event}`
     : changes === undefined ? "full because the PR diff is unavailable"
     : global ? `full because ${global.file} affects CI globally`
@@ -103,26 +105,43 @@ export function planWindowsTests({
   let directInputs = new Set<string>();
   if (reason === "affected imports and Windows core" && changes !== undefined) {
     try {
-      if (changes.length === 0) affected = new Set();
+      if (ordinary.length === 0) affected = new Set();
       else {
         const sources = readSources();
-        if (changes.some(({ file }) => !sources.has(file))) throw new Error("PR source is absent from the checkout");
-        ({ affected, directInputs } = affectedFiles(sources, new Set(changes.map(({ file }) => file)), eligible));
+        if (ordinary.some(({ file }) => !sources.has(file))) throw new Error("PR source is absent from the checkout");
+        ({ affected, directInputs } = affectedFiles(sources, new Set(ordinary.map(({ file }) => file)), eligible));
       }
     } catch (error) {
       reason = `full because the import graph is unavailable (${error instanceof Error ? error.message.split("\n")[0] : String(error)})`;
     }
   }
+  const supplemental: Partial<Inventory> = {};
+  if (affected && inventoryDiff.changed) {
+    const deleted = new Set(ordinary.filter(({ status }) => status === "D").map(({ file }) => file));
+    for (const [file, inventoriesChanged] of inventoryDiff.suites) {
+      if (deleted.has(file)) continue;
+      affected.add(file);
+      if (eligible.has(file)) continue;
+      const inventory = [...inventoriesChanged][0];
+      if (!inventory || !isCollectedVitestFile(file) || typeof readVersion?.(file, "after") !== "string") {
+        throw new Error(`Windows inventory names an unavailable test: ${file}`);
+      }
+      supplemental[inventory] ??= [];
+      supplemental[inventory].push(file);
+    }
+    if (ordinary.length === 0) reason = "Windows inventory membership changes and Windows core";
+  }
   const changedTests = [...eligible].filter(file => affected === undefined || affected.has(file));
-  const required = new Set([...ALWAYS_RUN, ...changedTests]);
+  const required = new Set([...ALWAYS_RUN, ...changedTests, ...Object.values(supplemental).flat()]);
   const lists = {
-    [WINDOWS_TEST_LISTS[0]]: inventories[WINDOWS_TEST_LISTS[0]].filter(file => required.has(file)),
-    [WINDOWS_TEST_LISTS[1]]: inventories[WINDOWS_TEST_LISTS[1]].filter(file => required.has(file)),
+    [WINDOWS_TEST_LISTS[0]]: [...inventories[WINDOWS_TEST_LISTS[0]].filter(file => required.has(file)), ...(supplemental[WINDOWS_TEST_LISTS[0]] ?? [])],
+    [WINDOWS_TEST_LISTS[1]]: [...inventories[WINDOWS_TEST_LISTS[1]].filter(file => required.has(file)), ...(supplemental[WINDOWS_TEST_LISTS[1]] ?? [])],
     [WINDOWS_TEST_LISTS[2]]: inventories[WINDOWS_TEST_LISTS[2]].filter(file => required.has(file)),
   };
   // Direct runtime witnesses are recorded before graph traversal.
   assertWindowsCoverage([...required, ...directInputs], Object.values(lists).flat());
   return { mode: affected === undefined ? "full" : "affected", reason, lists,
+    ...(Object.keys(supplemental).length ? { supplemental } : {}),
     shards: balanceWindowsTests(required, durations) };
 }
 
@@ -157,10 +176,10 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
   const root = resolve(import.meta.dirname, "..");
   const event = process.env.GITHUB_EVENT_NAME ?? "pull_request";
   const load = (file: string) => windowsTestFiles(readFileSync(resolve(root, file), "utf8"));
+  const diff = event === "pull_request" ? pullRequestWindowsChanges(root, base, head) : undefined;
   const plan = planWindowsTests({
-    event, readSources: () => readWindowsSources(root),
+    event, ...diff, readSources: () => readWindowsSources(root),
     durations: JSON.parse(readFileSync(resolve(root, "config/windows-test-times.json"), "utf8")).files,
-    changes: event === "pull_request" ? pullRequestWindowsChanges(root, base, head) : undefined,
     inventories: { [WINDOWS_TEST_LISTS[0]]: load(WINDOWS_TEST_LISTS[0]), [WINDOWS_TEST_LISTS[1]]: load(WINDOWS_TEST_LISTS[1]), [WINDOWS_TEST_LISTS[2]]: load(WINDOWS_TEST_LISTS[2]) },
   });
   const summary = windowsPlanSummary(plan);

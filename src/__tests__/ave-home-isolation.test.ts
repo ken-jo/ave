@@ -1,3 +1,4 @@
+// windows-permission
 /** Mock the account home so a broken isolation guard can only resolve scratch paths. */
 import { mkdirSync, realpathSync } from "node:fs";
 import { homedir, userInfo } from "node:os";

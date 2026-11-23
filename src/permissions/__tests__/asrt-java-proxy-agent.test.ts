@@ -1,3 +1,4 @@
+// windows-permission
 import { createRequire } from "node:module";
 import { cpSync, lstatSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

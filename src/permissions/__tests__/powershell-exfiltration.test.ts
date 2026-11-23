@@ -1,3 +1,4 @@
+// windows-permission
 import { reviewerJudgeOutcomeForTest } from "../../__tests__/support/reviewer-judge.js";
 import "../../__tests__/support/trusted-powershell.js";
 import { MAX_LITERAL_COMMAND_LENGTH } from "../rules/shell-prefix-values.js";

@@ -1,3 +1,4 @@
+// windows-permission
 import { AsyncResource } from "node:async_hooks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runWithInvocationOrigin } from "../../plugins/runtime/origin-chain.js";

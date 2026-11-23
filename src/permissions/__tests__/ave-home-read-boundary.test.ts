@@ -1,3 +1,4 @@
+// windows-permission
 const factsOverride = vi.hoisted(() => new Map<string, { reparseTag: number; attributes: number }>());
 // The first path of every native pin, so a test can count the helper calls one composition makes.
 const pinnedFirstPaths = vi.hoisted(() => [] as string[]);

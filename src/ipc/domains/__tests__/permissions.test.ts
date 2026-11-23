@@ -1,3 +1,4 @@
+// windows-permission
 import { useConfigurationOwner } from "../../../__tests__/support/configuration-owner.js";
 
 useConfigurationOwner();

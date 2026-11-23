@@ -1,3 +1,4 @@
+// windows-permission
 // [W] The runtime boundary's narrowed read grants, run for real: uv and a venv interpreter kept inside the owner-only
 // `<AVE_HOME>/runtime` start under srt-win with only `hostRuntimeReads` granted, crossing the boundary through bypass-traverse,
 // and the grant never lands on the boundary's own DACL (a grant entry left by a crash would otherwise refuse the next boot).

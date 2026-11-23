@@ -19,6 +19,7 @@ import {
   selectMessageCatalogChecks,
   selectTriggeredLockSuites,
 } from "./hooks/pre-push-source-policy.mjs";
+import { WINDOWS_INVENTORY_LOCK, windowsInventoryDiff } from "./windows-test-inventory.mjs";
 
 export const MUST_RUN_TESTS_PATH = "config/ci-must-run-tests.json";
 
@@ -214,7 +215,28 @@ function testNamesChangedPath(test, changedPaths, readText) {
 
 // Related-test discovery returns null on failure, not an empty successful result.
 // Integration bases retain the best traced selection when coverage is uncertain.
-export function selectCiTests({ changes, trackedTests, mustRunTests, readText, discoverRelated, selectCatalog, baseRef }) {
+export function selectCiTests({ changes, trackedTests, mustRunTests: requiredTests, readText, readVersion, discoverRelated, selectCatalog, baseRef }) {
+  const inventory = windowsInventoryDiff(changes, readVersion, isCollectedVitestFile);
+  // Header-only declarations have no code impact on their containing domain.
+  const mustRunTests = typeof requiredTests === "function"
+    ? requiredTests(inventory.ordinary.map(({ path }) => path)) : requiredTests;
+  const tracked = new Set(trackedTests);
+  const deleted = new Set(changes.filter(({ status }) => status === "D").map(({ path }) => path));
+  const inventoryTests = [...inventory.suites.keys()].filter(file => !deleted.has(file));
+  if (inventory.changed) inventoryTests.push(WINDOWS_INVENTORY_LOCK);
+  const invalidInventoryTest = inventoryTests.find(file => !tracked.has(file));
+  if (invalidInventoryTest) throw new Error(`Windows inventory names an uncollected test: ${invalidInventoryTest}`);
+  if (inventory.changed && inventory.ordinary.length === 0) {
+    if (mustRunTests.length === 0 || mustRunTests.some(file => !tracked.has(file))) {
+      throw new Error("Windows inventory-only diff requires a nonempty collected must-run set");
+    }
+    return {
+      mode: "affected",
+      reason: `Windows inventory-only diff; ${inventory.suites.size} membership change(s); drift check and ${mustRunTests.length} must-run file(s)`,
+      tests: [...new Set([...inventoryTests, ...mustRunTests])].sort(),
+    };
+  }
+  changes = inventory.ordinary;
   const integrationBase = typeof baseRef === "string" && baseRef.startsWith("integration/");
   const testOnly = isTestOnlyDiff(changes);
   const scoped = integrationBase || testOnly;
@@ -301,7 +323,7 @@ export function selectCiTests({ changes, trackedTests, mustRunTests, readText, d
     return matches;
   });
 
-  let tests = [...new Set([...traced, ...lockSuites, ...mustRunTests])].sort();
+  let tests = [...new Set([...traced, ...lockSuites, ...inventoryTests, ...mustRunTests])].sort();
   const missing = tests.filter((test) => !trackedTests.includes(test));
   if (missing.length > 0) {
     if (testOnly) throw new Error(`test-only selection names an uncollected test: ${missing[0]}`);
@@ -405,13 +427,16 @@ export function planCiSuite(eventName, { headRef, baseRef, ref, before } = {}) {
     return full(changes.reason);
   }
   const trackedTests = trackedVitestFiles();
-  const mustRunTests = expandMustRunTests(JSON.parse(readFileSync(MUST_RUN_TESTS_PATH, "utf8")), trackedTests, changes.entries.map(({ path }) => path));
+  const mustRunDocument = JSON.parse(readFileSync(MUST_RUN_TESTS_PATH, "utf8"));
   const textCache = new Map();
   const plan = selectCiTests({
     changes: changes.entries,
     baseRef: mainPush ? "main" : baseRef,
     trackedTests,
-    mustRunTests,
+    mustRunTests: (changedPaths) => expandMustRunTests(mustRunDocument, trackedTests, changedPaths),
+    readVersion: (path, side) => {
+      try { return git(["show", `${side === "before" ? changes.base : "HEAD"}:${path}`]); } catch { return null; }
+    },
     readText: (path) => {
       if (textCache.has(path)) return textCache.get(path);
       let text = null;

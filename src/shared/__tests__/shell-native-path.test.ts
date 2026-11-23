@@ -1,3 +1,4 @@
+// windows-permission
 import { describe, expect, it } from "vitest";
 import { modelShellPath } from "../shell-native-path.js";
 

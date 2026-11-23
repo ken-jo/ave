@@ -1,3 +1,4 @@
+// windows-permission
 // Generic argv uses the legacy runner's fail-closed, environment and timeout gates; interpreter-dependent cases skip when unavailable (docs/architecture/hook-runtime-expansion-design.md).
 import { describe, expect, it } from "vitest";
 import { resolve } from "node:path";

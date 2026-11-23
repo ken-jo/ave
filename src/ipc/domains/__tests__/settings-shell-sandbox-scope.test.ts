@@ -1,3 +1,4 @@
+// windows-permission
 import { requiredFixture } from "../../../__tests__/support/required-fixture.js";
 import { useConfigurationOwner } from "../../../__tests__/support/configuration-owner.js";
 

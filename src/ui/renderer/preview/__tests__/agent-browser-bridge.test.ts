@@ -1,3 +1,4 @@
+// windows-permission
 /** Each browser operation targets exactly one owning store; new tabs go beside the requesting conversation. */
 import { describe, expect, it, vi } from "vitest";
 import { agentDrivesBrowserTab, bindGuestToTab, reportGuestParking, closeBrowserTab, registerBrowserTabHost, navigateBrowserTabAsUser, routeBrowserTabOp, type BrowserTabHost } from "../agent-browser-bridge.js";

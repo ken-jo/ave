@@ -1,3 +1,4 @@
+// windows-permission
 import * as childProcess from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve, win32 } from "node:path";

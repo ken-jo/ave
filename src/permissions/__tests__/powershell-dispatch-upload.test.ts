@@ -1,3 +1,4 @@
+// windows-permission
 import "../../__tests__/support/trusted-powershell.js";
 import { describe, expect, it } from "vitest";
 import { POWERSHELL_COMMAND_POLICIES } from "../rules/powershell-command-policy.js";

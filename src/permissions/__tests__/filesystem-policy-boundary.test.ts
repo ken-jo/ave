@@ -1,3 +1,4 @@
+// windows-permission
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { join, sep } from "node:path";
 import childProcess, { type ChildProcess } from "node:child_process";

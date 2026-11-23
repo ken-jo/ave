@@ -1,3 +1,4 @@
+// windows-permission
 /** Invoke captured IPC handlers with mocked services. */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { fakeLlmSettings } from "../shared/__tests__/fake-llm-settings.js";

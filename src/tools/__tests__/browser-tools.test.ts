@@ -1,3 +1,4 @@
+// windows-permission
 import type { UserOwnedSurfaceChoice } from "../../shared/permissions-events.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 /** The agent browser tools through the real ToolExecutor, PermissionManager, ApprovalGate and approval store, over the real main-side tab registry with fake guests and fake page actions. Covers

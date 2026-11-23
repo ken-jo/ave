@@ -1,3 +1,4 @@
+// windows-permission
 import { requiredFixture } from "../../../__tests__/support/required-fixture.js";
 import { EventEmitter } from "node:events";
 import { securitySettingsGestures } from "../../security-settings-gesture.js";

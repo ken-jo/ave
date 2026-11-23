@@ -1,3 +1,4 @@
+// windows-permission
 import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";

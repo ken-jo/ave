@@ -1,3 +1,4 @@
+// windows-permission
 import { readFileSync } from "node:fs";
 import { resolve, win32 } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";

@@ -1,3 +1,4 @@
+// windows-permission
 import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";
 import { PassThrough } from "node:stream";

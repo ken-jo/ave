@@ -1,3 +1,4 @@
+// windows-permission
 // Run each escape against the real factory, permissions, audit sink and confinement; controls must prove the probe works.
 // Required sandbox cases fail if unavailable; unmeasured controls never count as passes.
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";

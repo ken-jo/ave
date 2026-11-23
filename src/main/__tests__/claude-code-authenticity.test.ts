@@ -1,3 +1,4 @@
+// windows-permission
 import { execFile, type ChildProcess, type ExecFileOptions } from "node:child_process";
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";

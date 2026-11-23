@@ -1,3 +1,4 @@
+// windows-permission
 /**
  * Host-only channels reject isolated app-resource origins and admit host renderer frames.
  * Each channel is driven from both to ensure a guard that refuses everyone cannot pass.

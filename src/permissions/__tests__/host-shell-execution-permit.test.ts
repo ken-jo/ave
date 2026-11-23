@@ -1,3 +1,4 @@
+// windows-permission
 import { withShellPolicyMutation } from "../shell-policy-handoff.js";
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";

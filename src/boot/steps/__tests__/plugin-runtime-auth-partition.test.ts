@@ -1,3 +1,4 @@
+// windows-permission
 import { createBootHostFixture } from "../../../__tests__/support/host-runtime.js";
 import { directHostFetchTransport } from "../../../__tests__/support/host-fetch-transport.js";
 /** Auth surfaces require capability checks; partition clearing is limited to the caller’s own partitions. */

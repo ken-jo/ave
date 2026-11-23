@@ -1,3 +1,4 @@
+// windows-permission
 // Packaged resource fixtures omit the native classifier; derive Windows path facts from host files.
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original(), "linux"));
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original(), "linux"));

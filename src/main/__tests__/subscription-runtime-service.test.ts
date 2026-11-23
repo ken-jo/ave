@@ -1,3 +1,4 @@
+// windows-permission
 import { deferred } from "../../__tests__/support/deferred.js";
 import { describe, expect, it, vi } from "vitest";
 import type { StreamEvent, ToolSchema } from "../../engine/llm/types.js";

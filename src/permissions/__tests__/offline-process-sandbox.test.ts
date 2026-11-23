@@ -1,3 +1,4 @@
+// windows-permission
 import { mkdtemp, mkdir, realpath, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";

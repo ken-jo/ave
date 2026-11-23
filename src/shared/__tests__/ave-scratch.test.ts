@@ -1,3 +1,4 @@
+// windows-permission
 import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

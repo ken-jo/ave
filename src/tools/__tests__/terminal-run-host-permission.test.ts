@@ -1,3 +1,4 @@
+// windows-permission
 import { ApprovalGate, type ApprovalRequest } from "../../permissions/approval-gate.js";
 /** terminal_run into a pane chat's own host terminal uses its native session surface choice through the real ToolExecutor and PermissionManager.
  * The physical directory, current user turn and final route remain independently enforced.

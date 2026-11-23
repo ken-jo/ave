@@ -1,3 +1,4 @@
+// windows-permission
 import { EventEmitter } from "node:events";
 import { afterEach, expect, it, vi } from "vitest";
 import { deferred } from "../../../__tests__/support/deferred.js";

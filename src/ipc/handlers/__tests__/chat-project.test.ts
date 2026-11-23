@@ -1,3 +1,4 @@
+// windows-permission
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { join, resolve } from "node:path";
 import { mkdtempSync, realpathSync, writeFileSync } from "node:fs";

@@ -1,3 +1,4 @@
+// windows-permission
 import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
 // Native sandbox temp isolation is covered in confined-plugin-child.test.ts; this suite checks principal naming, creation and boot cleanup.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
