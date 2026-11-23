@@ -106,6 +106,7 @@ export interface ConfinedChildSpec {
   // Whose plugin-owned code this is, for egress attribution: while the sandbox is active the wrap carries an egress token (`egress-invocations.ts`) minted for this owner, and every proxy deny of the child is audited under it. The token lives as long as the child.
   readonly egressOwner: WorkerEgressOwner;
   readonly grantMode: ConfinementGrantMode;
+  readonly requireWrap?: boolean;
   // Ignored under `deny-only`, where ACLs grant reachability instead.
   readonly allowRead?: readonly string[];
   readonly allowWrite?: readonly string[];
@@ -440,6 +441,9 @@ export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<Confi
     if (spec.refreshStillValid) await spec.refreshStillValid();
     spec.assertStillValid?.();
     assertManagedChildProcessAdmissionOpen(spec.label);
+    if (spec.requireWrap && !isPluginWorkerConfinementActive()) {
+      throw new Error(`[confined-child] ${spec.label}: child requires active confinement`);
+    }
     if (confinement !== "unconfined") assertSrtWinSpawnIntegrity(executable);
     child = spawn(executable, args, {
       stdio,
@@ -571,6 +575,7 @@ async function resolveSpawnLine(
 }> {
   assertExtensionStartAllowed();
   if (!isPluginWorkerConfinementActive()) {
+    if (spec.requireWrap) throw new Error(`[confined-child] ${spec.label}: child requires active confinement`);
     return { executable: spec.command, args: [...spec.args], wrappedEnv: {}, confinement: "unconfined" };
   }
   const confinement = wrapConfinement(spec.label);

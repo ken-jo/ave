@@ -474,6 +474,8 @@ export async function spawnConfinedPluginChild(
   spec: ConfinedPluginChildSpec,
 ): Promise<ConfinedPluginChild> {
   assertExtensionStartAllowed();
+  const processLaunch = spec.launch.kind === "process";
+  if (processLaunch && process.platform === "win32") throw new ProcessEntryUnconfinedError();
   spec.assertStillValid?.();
   // Decided before anything is created, so a refused line leaves nothing behind.
   const spawnLine = confinedSpawnLine(spec.pluginId, spec.launch);
@@ -563,6 +565,7 @@ export async function spawnConfinedPluginChild(
       label: `plugin-child:${spec.pluginId}`,
       egressOwner: { kind: "worker", role: "plugin-child", pluginId: spec.pluginId },
       grantMode: process.platform === "win32" ? "deny-only" : "allow-list",
+      requireWrap: processLaunch,
       // The plugin's own temp directory, shared with its workers and bundled hooks and with no other principal.
       tempPrincipal: { kind: "plugin", id: spec.pluginId },
       allowRead: [...spec.envelope.read, sandboxHome.path],
@@ -590,6 +593,10 @@ export async function spawnConfinedPluginChild(
         grant?.assertAlive();
       },
     });
+    if (processLaunch && confinement !== "macos-sandbox" && confinement !== "linux-bubblewrap") {
+      child.kill("SIGKILL");
+      throw new ProcessEntryUnconfinedError();
+    }
     const pipe = referenceStdio ? child.stdio[PLUGIN_CHILD_INPUT_FD] : child.stdin;
     if (!child.stdout || (!windowsLoopback && !(pipe instanceof Writable))) {
       child.kill("SIGKILL");

@@ -10,6 +10,7 @@ import { initializeAsrtSandbox, resetAsrtSandbox } from "../../../permissions/as
 import { __resetSandboxRequestedAtBootForTest, setPluginWorkerConfinementRequestedAtBoot } from "../../../permissions/sandbox-capability.js";
 import { aveHome, ensureAveHomePrivate } from "../../../shared/ave-home.js";
 import { resolvePluginSocketDir } from "../../plugin-storage-layout.js";
+import { ProcessEntryUnconfinedError } from "../../process-entry.js";
 import { type ConfinedPluginChild, derivePluginChildEnvelope, spawnConfinedPluginChild } from "../out-of-process-plugin.js";
 
 const HEARTBEAT = `
@@ -66,6 +67,18 @@ setTimeout(() => process.exit(1), 15_000);
 
 const ROLES = ["leader", "same-group", "new-session"] as const;
 const PLUGIN_ID = "heartbeat";
+
+describe.runIf(process.platform === "win32")("direct process plugin admission", () => {
+  it("refuses a Windows process launch before validating its command or roots", async () => {
+    const root = join(tmpdir(), "missing-process-plugin");
+    await expect(spawnConfinedPluginChild({
+      pluginId: PLUGIN_ID,
+      socketDir: join(root, "sockets"),
+      envelope: { read: [root], write: [root] },
+      launch: { kind: "process", command: join(root, "plugin.exe"), args: [], env: {} },
+    })).rejects.toBeInstanceOf(ProcessEntryUnconfinedError);
+  });
+});
 
 describe.runIf(process.platform === "linux" || process.platform === "darwin")("process plugin host death", () => {
   it("reaps the confined group on host EOF and measures the new session", async () => {

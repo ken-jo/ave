@@ -1565,8 +1565,10 @@ describe("the factory's launch reaches the spawn as decided", () => {
           args: string[];
           baseEnv: NodeJS.ProcessEnv;
           extraEnv: Record<string, string>;
+          requireWrap: boolean;
         };
         expect(spec.command).toBe("/usr/bin/env");
+        expect(spec.requireWrap).toBe(true);
         expect(spec.args).toEqual([
           `SMOKE_VENDOR_DIR=${join(root, "vendor")}`,
           `PLUGIN_ROOT=${root}`,
@@ -1609,6 +1611,29 @@ describe("the factory's launch reaches the spawn as decided", () => {
       roots.remove();
     }
   });
+
+  it.runIf(process.platform === "linux" || process.platform === "darwin")(
+    "kills a process launch that comes back unconfined before exposing it to the session",
+    async () => {
+      const roots = spawnableRoots();
+      const kill = vi.fn();
+      const stdin = new PassThrough();
+      const stdout = new PassThrough();
+      const child = Object.assign(new EventEmitter(), { exitCode: null, signalCode: null, stdin, stdout, stdio: [stdin, stdout], kill });
+      sandbox.active = true;
+      spawnConfinedChild.mockResolvedValueOnce({ child, confinement: "unconfined" });
+      try {
+        const refused = await attempt(processLaunch(roots.context.pluginRoot!), PROCESS_MANIFEST, roots);
+        expect(refused).toBeInstanceOf(ProcessEntryUnconfinedError);
+        expect(kill).toHaveBeenCalledWith("SIGKILL");
+      } finally {
+        stdin.destroy();
+        stdout.destroy();
+        sandbox.active = false;
+        roots.remove();
+      }
+    },
+  );
 
   it("refuses a process launch on Windows even with the sandbox on, before anything is spawned", async () => {
     const roots = spawnableRoots();

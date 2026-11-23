@@ -485,6 +485,20 @@ describe("spawnConfinedChild reports the wrap it applied", () => {
   const hostPlatform = process.platform;
   afterEach(() => setProcessPlatform(hostPlatform));
 
+  it.each(["before wrapping", "after wrapping"])("refuses a required wrap if confinement is lost %s", async (when) => {
+    setProcessPlatform("linux");
+    if (when === "before wrapping") sandboxActiveMock.mockReturnValue(false);
+    const before = liveEgressInvocationCount();
+    const spec = {
+      command: "/usr/bin/example", args: [], label: "plugin-child:x", grantMode: "allow-list" as const,
+      tempPrincipal: PRINCIPAL, baseEnv: {}, egressOwner: EGRESS_OWNER, requireWrap: true,
+      onWrapped: () => sandboxActiveMock.mockReturnValue(false),
+    };
+    await expect(spawnConfinedChild(spec)).rejects.toThrow(/requires active confinement/);
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(liveEgressInvocationCount()).toBe(before);
+  });
+
   it.each([
     ["darwin", "allow-list", "macos-sandbox"],
     ["linux", "allow-list", "linux-bubblewrap"],
