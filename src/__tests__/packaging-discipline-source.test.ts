@@ -1565,13 +1565,14 @@ describe("installer smoke and packaging discipline", () => {
       expect(workflow.jobs[job]!.concurrency).toBeUndefined();
     }
     const scopes = [
+      ["windows-native-preparation", "windows-prepare"],
       ["windows-permission-tests", "windows"],
       ["macos-permission-tests", "macos"],
       ["linux-confinement-tests", "linux"],
     ];
     for (const [job, platform] of scopes) {
       const concurrency = workflow.jobs[job!]!.concurrency!;
-      expect(concurrency.group).toBe("ci-platform-${{ github.workflow }}-" + platform + "-${{ github.event_name }}-${{ github.ref }}-${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'latest' || github.run_id }}");
+      expect(concurrency.group).toBe("ci-platform-${{ github.workflow }}-" + platform + "-${{ github.event_name }}-${{ github.ref }}-${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'latest' || github.run_id }}" + (job === "windows-permission-tests" ? "-${{ matrix.shard }}" : ""));
       expect(concurrency["cancel-in-progress"]).toBe("${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}");
     }
   });
@@ -1592,7 +1593,25 @@ describe("installer smoke and packaging discipline", () => {
     const command = workflow.jobs["build-and-test"].steps[0].run as string;
     const result = spawnSync("bash", ["-e", "-c", command], { encoding: "utf8", env: {
       ...process.env, GATE_CORE_RESULT: "success", MXC_PINS_RESULT: "success", BUILD_RESULT: build, VITEST_RESULT: vitest, DOCS_ONLY: docs,
-      PLATFORM_CHECKS: selected, WINDOWS_RESULT: native, MACOS_RESULT: native, LINUX_RESULT: native,
+      PLATFORM_CHECKS: selected, WINDOWS_CHECKS: selected, WINDOWS_PREPARATION_RESULT: native, WINDOWS_RESULT: native, MACOS_RESULT: native, LINUX_RESULT: native,
+    } });
+    expect(result.status, result.stderr + result.stdout).toBe(status);
+  });
+
+  it.runIf(process.platform !== "win32").each([
+    { preparation: "success", shards: "success", status: 0 },
+    { preparation: "failure", shards: "skipped", status: 1 },
+    { preparation: "cancelled", shards: "skipped", status: 1 },
+    { preparation: "success", shards: "failure", status: 1 },
+    { preparation: "success", shards: "cancelled", status: 1 },
+    { preparation: "success", shards: "skipped", status: 1 },
+  ])("gates Windows preparation ($preparation) and shard results ($shards) independently", ({ preparation, shards, status }) => {
+    const workflow = parseYaml(readRepoFile(".github/workflows/ci.yml"));
+    const command = workflow.jobs["build-and-test"].steps[0].run as string;
+    const result = spawnSync("bash", ["-e", "-c", command], { encoding: "utf8", env: {
+      ...process.env, GATE_CORE_RESULT: "success", MXC_PINS_RESULT: "success", BUILD_RESULT: "success", VITEST_RESULT: "success",
+      DOCS_ONLY: "false", PLATFORM_CHECKS: "false", WINDOWS_CHECKS: "true", WINDOWS_PREPARATION_RESULT: preparation,
+      WINDOWS_RESULT: shards, MACOS_RESULT: "skipped", LINUX_RESULT: "skipped",
     } });
     expect(result.status, result.stderr + result.stdout).toBe(status);
   });
@@ -1606,7 +1625,8 @@ describe("installer smoke and packaging discipline", () => {
       for (const result of ["failure", "cancelled", "skipped", ""]) {
         const run = spawnSync("bash", ["-e", "-c", command], { encoding: "utf8", env: {
           ...process.env, BUILD_RESULT: "success", VITEST_RESULT: docs === "true" ? "skipped" : "success",
-          DOCS_ONLY: docs, PLATFORM_CHECKS: "false", WINDOWS_RESULT: "skipped", MACOS_RESULT: "skipped", LINUX_RESULT: "skipped",
+          DOCS_ONLY: docs, PLATFORM_CHECKS: "false", WINDOWS_CHECKS: "false", WINDOWS_PREPARATION_RESULT: "skipped",
+          WINDOWS_RESULT: "skipped", MACOS_RESULT: "skipped", LINUX_RESULT: "skipped",
           GATE_CORE_RESULT: "success", MXC_PINS_RESULT: "success", [variable]: result,
         } });
         expect(run.status, run.stderr + run.stdout).toBe(1);
@@ -1675,7 +1695,7 @@ describe("installer smoke and packaging discipline", () => {
     const workflow = parseYaml(readRepoFile(".github/workflows/ci.yml")) as {
       jobs: Record<string, { "runs-on": string; env: Record<string, string>; steps: Record<string, unknown>[] }>;
     };
-    const job = workflow.jobs["windows-permission-tests"]!;
+    const job = workflow.jobs["windows-native-preparation"]!;
     expect(job["runs-on"]).toBe("windows-2025");
     const step = job.steps.find((entry) => entry.name === "Verify both Windows native payload packages")!;
     expect(step).toBeDefined();
@@ -1711,7 +1731,7 @@ describe("installer smoke and packaging discipline", () => {
     // a cancellation cannot skip either, fails unless both succeeded.
     // Independent gates must report success through the required aggregate.
     const body = verification as string;
-    expect(body).toMatch(/^ {4}needs: \[build, vitest, windows-permission-tests, macos-permission-tests, linux-confinement-tests, gate-core, mxc-pins\]$/mu);
+    expect(body).toMatch(/^ {4}needs: \[build, vitest, windows-native-preparation, windows-permission-tests, macos-permission-tests, linux-confinement-tests, gate-core, mxc-pins\]$/mu);
     expect(body).toMatch(/^ {4}if: always\(\)$/mu);
     expect(body).not.toContain("cancelled()");
     expect(body).toContain("      - name: Require the build and every Vitest shard\n        if: always()\n");
@@ -1724,11 +1744,19 @@ describe("installer smoke and packaging discipline", () => {
     expect(results).toContain('if [ "$PLATFORM_CHECKS" != "true" ] && [ "$PLATFORM_CHECKS" != "false" ]; then');
     expect(results).toContain('if [ "$PLATFORM_CHECKS" = "true" ]; then expected=success; fi');
     expect(results).toContain('if [ "$result" != "$expected" ]; then');
-    for (const platform of ["windows-permission-tests", "macos-permission-tests", "linux-confinement-tests"]) {
+    for (const platform of ["macos-permission-tests", "linux-confinement-tests"]) {
       const native = jobs.get(platform)!;
       expect(native).toContain("needs: build");
       expect(native).toContain("if: needs.build.outputs.platform_checks == 'true'");
     }
+    const windowsPreparation = jobs.get("windows-native-preparation") ?? "";
+    expect(windowsPreparation).toContain("needs: build");
+    expect(windowsPreparation).toContain("if: needs.build.outputs.windows_checks == 'true'");
+    const windows = jobs.get("windows-permission-tests") ?? "";
+    expect(windows).toContain("needs: [build, windows-native-preparation]");
+    expect(windows).toContain("if: needs.build.outputs.windows_checks == 'true' && needs.windows-native-preparation.result == 'success'");
+    expect(body).toContain("WINDOWS_PREPARATION_RESULT: ${{ needs.windows-native-preparation.result }}");
+    expect(body).toContain("WINDOWS_RESULT: ${{ needs.windows-permission-tests.result }}");
     expect(matched(commands, VERIFIES_THE_CODE)).toEqual([]);
     expect(shards).toMatch(/^ {4}needs: build$/mu);
     expect(shards).toContain("        shard: ${{ fromJSON(needs.build.outputs.shards || '[1]') }}");
@@ -2473,7 +2501,10 @@ it("builds the native path classifier before the Windows permission boundaries",
   };
   const steps = workflow.jobs["windows-permission-tests"]?.steps;
   if (steps === undefined) throw new Error("Windows permission path job is missing");
-  const classifier = steps.findIndex(step => step.run?.includes("-Helper path-kind"));
+  const preparation = workflow.jobs["windows-native-preparation"]?.steps;
+  expect(preparation?.some(step => step.run?.includes("-Helper path-kind"))).toBe(true);
+  expect(preparation?.some(step => step.name === "Upload the checked Windows native helpers")).toBe(true);
+  const classifier = steps.findIndex(step => step.name === "Verify and configure the shared test inputs");
   const stepName = "Run Windows permission regressions";
   const regressions = steps.findIndex(step => step.name === stepName);
   expect(classifier).toBeGreaterThan(-1);

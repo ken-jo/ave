@@ -64,10 +64,11 @@ describe("job home isolation", () => {
     assert.deepEqual(env, { AVE_CI_JOB_ROOT: root, AVE_CI_JOB_ROOT_IDENTITY: "unknown" });
 
     const workflow = parse(readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8"));
-    const cleanup = workflow.jobs["windows-permission-tests"].steps
-      .find(step => step.name === "Remove isolated system-volume job directory");
-    assert.equal(cleanup.if, "steps.docs-impact.outputs.docs_only != 'true' && always() && env.AVE_CI_JOB_ROOT != ''");
-    assert.equal(cleanup.run, "node ave/.github/scripts/isolate-job-home.mjs --cleanup");
+    for (const job of ["windows-native-preparation", "windows-permission-tests"]) {
+      const cleanup = workflow.jobs[job].steps.find(step => step.name === "Remove isolated system-volume job directory");
+      assert.equal(cleanup.if, "steps.docs-impact.outputs.docs_only != 'true' && always() && env.AVE_CI_JOB_ROOT != ''");
+      assert.equal(cleanup.run, "node ave/.github/scripts/isolate-job-home.mjs --cleanup");
+    }
 
     const readIdentity = mock.fn(() => fixtureIdentity(localRoot));
     const rename = mock.fn();
@@ -462,7 +463,7 @@ describe("Windows job root writer precondition", () => {
   it("accepts the receipt of every workflow manifest step", async t => {
     const job = fixture(t);
     const { containedStepManifest } = await import("../../.github/scripts/run-in-job.mjs");
-    const manifest = await containedStepManifest();
+    const manifest = await containedStepManifest("windows-permission-tests");
     assert.ok(manifest.length > 1);
     await cleanupJobRoot(root, { ...job.options, readReceipts: () => provenReceipts(job.options.identity, manifest), run: queryResult() });
     assert.deepEqual(readdirSync(job.parent), ["shared"]);

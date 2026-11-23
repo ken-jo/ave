@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parse } from "yaml";
-import { windowsTestCommands } from "../../scripts/run-windows-test-list.mjs";
+import { WINDOWS_TEST_LISTS, WINDOWS_TEST_SHARDS, windowsTestCommands } from "../../scripts/run-windows-test-list.mjs";
 import { windowsPowerShellEnv, windowsPowerShellPath } from "../../scripts/lib/windows-powershell-env.mjs";
 
 const TEST_PATH = String.raw`[\w./\\-]+\.(?:test|spec)\.[cm]?[jt]sx?`;
@@ -20,6 +20,8 @@ const LIST_INVOCATION = new RegExp(
 );
 // Test commands in the job that owns the isolated job root run inside the containment launcher.
 const CONTAINED_JOB = "windows-permission-tests";
+const PREPARATION_JOB = "windows-native-preparation";
+const CONTAINED_JOBS = [PREPARATION_JOB, CONTAINED_JOB];
 const TEST_LINE_RE = /\bbun[ \t]+run[ \t]+test(?::[\w-]+)?(?=[ \t]|$)|\bnode[ \t]+scripts\/test-|[ \t]--test(?:-native)?(?=[ \t]|$)|\brun-windows-test-list\b/u;
 const CONTAINED_LINE_RE = new RegExp(String.raw`^[ \t]*${CONTAINED}\S`, "u");
 
@@ -66,6 +68,7 @@ const UNCONTAINED_COMMANDS = new Map([
   ["& './node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/x64/srt-win.exe' user status", "reads the sandbox account"],
   ["ConvertFrom-Json", "parses in process"],
   ["node .github/scripts/python-download-mirror.mjs", "downloads an interpreter archive"],
+  ["node .github/scripts/restore-windows-ci-inputs.mjs", "restores the native helper artifacts and configures the mirror"],
   ["node ave/.github/scripts/isolate-job-home.mjs --cleanup", "removes the job root"],
 ]);
 
@@ -73,10 +76,11 @@ const UNCONTAINED_COMMANDS = new Map([
  * The contained-step manifest that run-in-job.mjs registers against: one
  * receipt per contained invocation, named from its step and its position.
  */
-export function containedSteps(workflow) {
+export function containedSteps(workflow, job = CONTAINED_JOB) {
+  if (!CONTAINED_JOBS.includes(job)) throw new Error(`Unknown contained Windows job: ${job}`);
   const manifest = [];
   for (const { jobId, name, stepName, condition, lines } of windowsRunSteps(workflow)) {
-    if (jobId !== CONTAINED_JOB) continue;
+    if (jobId !== job) continue;
     const slug = (stepName ?? "").toLowerCase().replace(/[^a-z0-9]+/gu, "-").replace(/^-|-$/gu, "");
     let position = 0;
     for (const line of lines) {
@@ -92,7 +96,7 @@ export function containedSteps(workflow) {
       manifest.push({ id, receipt: `${id}.receipt`, invocation });
     }
   }
-  if (manifest.length === 0) throw new Error(`${CONTAINED_JOB}: no contained test steps`);
+  if (manifest.length === 0) throw new Error(`${job}: no contained test steps`);
   return manifest;
 }
 
@@ -198,7 +202,7 @@ export function directCommandProblems(steps) {
     for (const line of lines) {
       const path = BARE_TEST_PATH_RE.exec(line)?.[0].trim();
       if (path !== undefined) problems.push(`${name}: bare test path ${path}`);
-      if (jobId === CONTAINED_JOB && TEST_LINE_RE.test(line) && !CONTAINED_LINE_RE.test(line)) {
+      if (CONTAINED_JOBS.includes(jobId) && TEST_LINE_RE.test(line) && !CONTAINED_LINE_RE.test(line)) {
         problems.push(`${name}: test command runs outside the job containment launcher: ${line.trim()}`);
       }
     }
@@ -235,7 +239,7 @@ function containedCommandProblems(commands, manifest, wrapped) {
   });
 }
 
-export function powerShellCommandProblems(steps, inspect = inspectPowerShell, manifest = []) {
+export function powerShellCommandProblems(steps, inspect = inspectPowerShell, manifest = [], job = CONTAINED_JOB) {
   const failures = [];
   const wrapped = [];
   for (const shell of ["pwsh", "powershell"]) {
@@ -259,7 +263,7 @@ export function powerShellCommandProblems(steps, inspect = inspectPowerShell, ma
   if (steps.some(step => step.contained)) {
     for (const { id, invocation } of manifest) {
       if (wrapped.filter(entry => entry === invocation).length !== 1) {
-        failures.push(`${CONTAINED_JOB}: manifest step ${id} is not exactly one contained command after job-root setup`);
+        failures.push(`${job}: manifest step ${id} is not exactly one contained command after job-root setup`);
       }
     }
   }
@@ -267,23 +271,45 @@ export function powerShellCommandProblems(steps, inspect = inspectPowerShell, ma
 }
 
 // Every run step after job-root setup in the contained job is checked command by command.
-function scopeContainedSteps(steps) {
-  const setup = steps.findIndex(({ jobId, run }) => jobId === CONTAINED_JOB && run.trim() === SETUP_COMMAND);
-  if (setup < 0) throw new Error(`${CONTAINED_JOB}: no job-root setup step`);
-  return steps.map((step, index) => index > setup && step.jobId === CONTAINED_JOB ? { ...step, contained: true } : step);
+function scopeContainedSteps(steps, job) {
+  const setup = steps.findIndex(({ run }) => run.trim() === SETUP_COMMAND);
+  if (setup < 0) throw new Error(`${job}: no job-root setup step`);
+  return steps.map((step, index) => index > setup ? { ...step, contained: true } : step);
 }
 
 export function checkWindowsWorkflow(workflow, inspect) {
-  const steps = scopeContainedSteps(windowsRunSteps(workflow));
-  if (!windowsRegressionSteps(steps).some(step => step.stepName === "Run Windows permission regressions"
-    && POWERSHELL_SHELL_RE.test(step.shell))) {
-    throw new Error("The Windows permission step requires a PowerShell parser");
+  const { jobs } = parse(workflow);
+  const job = jobs[CONTAINED_JOB];
+  const strategy = job?.strategy;
+  if (strategy?.["fail-fast"] !== false || Object.keys(strategy.matrix ?? {}).length !== 1
+    || JSON.stringify(strategy.matrix.shard) !== JSON.stringify(WINDOWS_TEST_SHARDS)
+    || job.env?.AVE_WINDOWS_TEST_SHARD !== "${{ matrix.shard }}") {
+    throw new Error("The Windows test job must run every contained shard");
   }
-  const manifest = containedSteps(workflow);
+  for (const id of CONTAINED_JOBS) {
+    const contained = jobs[id];
+    if (contained?.["continue-on-error"] !== undefined || contained?.steps?.some(step => step["continue-on-error"] !== undefined)) {
+      throw new Error(`${id}: contained Windows failures must fail the job`);
+    }
+  }
+  const steps = windowsRunSteps(workflow);
+  const regressions = windowsRegressionSteps(steps);
+  const inventories = regressions.map(step => LIST_INVOCATION.exec(step.run.trim())?.[1]);
+  if (inventories.length !== WINDOWS_TEST_LISTS.length || !WINDOWS_TEST_LISTS.every(list => inventories.includes(list))) {
+    throw new Error("The Windows shard must run every regression inventory");
+  }
+  // Matrix copies share this exact template and receive distinct shard IDs.
   const failures = [
-    ...steps.filter(step => step.contained && !POWERSHELL_SHELL_RE.test(step.shell))
-      .map(({ name }) => `${name}: steps after job-root setup need a PowerShell shell`),
-    ...directCommandProblems(steps), ...powerShellCommandProblems(steps, inspect, manifest),
+    ...directCommandProblems(steps),
+    ...CONTAINED_JOBS.flatMap(jobId => {
+      const scoped = scopeContainedSteps(steps.filter(step => step.jobId === jobId), jobId);
+      return [
+        ...scoped.filter(step => step.contained && !POWERSHELL_SHELL_RE.test(step.shell))
+          .map(({ name }) => `${name}: steps after job-root setup need a PowerShell shell`),
+        ...powerShellCommandProblems(scoped, inspect, containedSteps(workflow, jobId), jobId),
+      ];
+    }),
+    ...powerShellCommandProblems(steps.filter(step => !CONTAINED_JOBS.includes(step.jobId)), inspect),
   ];
   if (failures.length) throw new Error(failures.join("\n"));
 }
