@@ -233,19 +233,15 @@ export async function stageRunHarness(opts: {
   const statusOf = (current: StageRunView, stageId: string) => current.stageRuns.find(run => run.stageId === stageId)?.status;
   const untilStage = (itemId: number, stageId: string, status: WorkItemStageRun["status"]) => until(itemId, current => statusOf(current, stageId) === status);
   const live = () => children.filter(child => !child.ended);
-  function waitForSignal<T>(listeners: Set<() => void>, get: () => T | undefined, description: string): Promise<T> {
+  /** Resolves on the signal that makes `get` defined; only the test's own timeout bounds the wait. */
+  function waitForSignal<T>(listeners: Set<() => void>, get: () => T | undefined): Promise<T> {
     const current = get();
     if (current !== undefined) return Promise.resolve(current);
-    return new Promise<T>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        listeners.delete(changed);
-        reject(new Error(`timed out waiting for ${description}`));
-      }, 2_000);
+    return new Promise<T>((resolve) => {
       function changed() {
         const value = get();
         if (value === undefined) return;
         listeners.delete(changed);
-        clearTimeout(timeout);
         resolve(value);
       }
       listeners.add(changed);
@@ -254,7 +250,7 @@ export async function stageRunHarness(opts: {
   const waitForLive = (count: number) => waitForSignal(childChanges, () => {
     const active = live();
     return active.length === count ? active : undefined;
-  }, `${count} live children`);
+  });
   async function untilLive(count: number): Promise<FakeChild[]> {
     for (let i = 0; i < 400; i += 1) {
       if (live().length === count) return live();
@@ -269,7 +265,7 @@ export async function stageRunHarness(opts: {
     }
     throw new Error(`timed out waiting for ${count} children; have ${children.length}`);
   }
-  const waitForProgress = (check: (event: WorkBoardRunEvent) => boolean) => waitForSignal(progressChanges, () => events.find(check), "run progress");
+  const waitForProgress = (check: (event: WorkBoardRunEvent) => boolean) => waitForSignal(progressChanges, () => events.find(check));
   /** The event that ended the run; it follows the stored status, so a test waits for it. */
   const settleEvent = () => waitForProgress(event => event.phase === "cancelled" || event.phase === "done" || event.phase === "denied" || event.phase === "error");
   /** The decision the board would send for the stored gate of the stage. */
