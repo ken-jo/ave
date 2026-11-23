@@ -162,7 +162,7 @@ function recordingAuditLogger(): {
   return { auditLogger, telemetryEntries, permissionEntries };
 }
 
-function sessionSavingGate(pm: PermissionManager, beforeSave?: () => void, beforePersist?: () => Promise<void>, afterSave?: () => void) {
+function sessionSavingGate(pm: PermissionManager, beforeSave?: () => void, beforePersist?: () => Promise<void>) {
   let gate: ApprovalGate;
   const saves: Awaited<ReturnType<typeof saveApprovalCardRule>>[] = [];
   const errors: unknown[] = [];
@@ -177,7 +177,6 @@ function sessionSavingGate(pm: PermissionManager, beforeSave?: () => void, befor
         const saved = await saveApprovalCardRule(snapshot, { action: "allow", scope: "session" },
           { decision: "allow", scope: "session", displayedVerdictAtApproval: snapshot.verdictAtApproval }, pm, undefined, beforePersist);
         gate.completeApprovalRuleSave(token, pm.getPolicyEpoch(), saved.ok ? saved.scope : undefined);
-        afterSave?.();
         saves.push(saved);
         gate.resolveFromDesktopRenderer(request.id, {
           requestId: request.id, choice: saved.ok ? "allow-once" : "deny-once",
@@ -336,30 +335,60 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     },
   );
 
-  // The card's own saved rule is the only policy change its allow may carry; another selector's change voids the allow.
-  it.each([
-    [false, "allow", "user-keyboard"],
-    [true, "deny", "llm-tool-arg"],
-  ] as const)("writes one terminal row for a card that saves its own session rule (competing selector: %s)", async (competing, decision, origin) => {
+  // A card's own saved rule is the only policy change its allow may carry. A second card's save, approved
+  // while the first card is still pending, is a competing selector: it voids the first allow and keeps its own.
+  it.each([false, true])("writes one terminal row per card that saves its own session rule (competing card: %s)", async (competing) => {
     partialWindowsAsrt();
     setWindowsShellLocalNetworkAccess(true);
     const pm = new PermissionManager(join(testRoot, "card-rule-transition.json"));
     pm.setMode("strict");
     const execute = vi.fn();
     const audit = recordingAuditLogger();
-    const first = sessionSavingGate(pm, undefined, undefined, competing ? () => pm.setMode("default") : undefined);
-    const [result] = await runWithToolExecutionCwd(testRoot, () =>
-      new ToolExecutor(shellProbeRegistry(execute), undefined, pm, undefined, first.gate, undefined, audit.auditLogger).executeAll(
-        [{ id: "card-rule", name: "bash", input: { command: "mkdir consent-output" } }],
-        { sessionId: "card-rule-transition", permissionContext: permissionContext({ trustOrigin: "llm-tool-arg" }) }));
-    expect(first.errors).toEqual([]);
-    expect(first.saves).toEqual([expect.objectContaining({ ok: true, scope: "session", pattern: "Bash(mkdir consent-output)" })]);
-    expect(first.cards()).toHaveLength(1);
+    const saves: Array<Awaited<ReturnType<typeof saveApprovalCardRule>>> = [];
+    let firstSaved!: () => void;
+    const firstSave = new Promise<void>((resolve) => { firstSaved = resolve; });
+    let competingSaved!: () => void;
+    const competingSave = new Promise<void>((resolve) => { competingSaved = resolve; });
+    let gate!: ApprovalGate;
+    const webContents = { isDestroyed: () => false, send: (channel: string, request: ApprovalRequest) => {
+      if (channel !== "ave:approval:request") return;
+      void (async () => {
+        const snapshot = gate.getRequestSnapshot(request.id);
+        if (snapshot === null) throw new Error("Approval request snapshot is missing");
+        const token = gate.beginApprovalRuleSave(request.id, pm.getPolicyEpoch());
+        const saved = await saveApprovalCardRule(snapshot, { action: "allow", scope: "session" },
+          { decision: "allow", scope: "session", displayedVerdictAtApproval: snapshot.verdictAtApproval }, pm);
+        gate.completeApprovalRuleSave(token, pm.getPolicyEpoch(), saved.ok ? saved.scope : undefined);
+        saves.push(saved);
+        if (JSON.stringify(request.args).includes("consent-output")) {
+          firstSaved();
+          if (competing) await competingSave;
+        } else competingSaved();
+        gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac }, webContents as never);
+      })();
+    } };
+    gate = new ApprovalGate(webContents as never);
+    const run = (id: string, command: string) => runWithToolExecutionCwd(testRoot, () =>
+      new ToolExecutor(shellProbeRegistry(execute), undefined, pm, undefined, gate, undefined, audit.auditLogger).executeAll(
+        [{ id, name: "bash", input: { command } }],
+        { sessionId: `session-${id}`, permissionContext: permissionContext({ trustOrigin: "llm-tool-arg" }) }));
+    const first = run("card-rule", "mkdir consent-output");
+    await firstSave;
+    const second = competing ? await run("competing-card-rule", "mkdir competing-output") : [];
+    const [result] = await first;
+    expect(saves).toEqual([
+      expect.objectContaining({ ok: true, scope: "session", pattern: "Bash(mkdir consent-output)" }),
+      ...(competing ? [expect.objectContaining({ ok: true, scope: "session", pattern: "Bash(mkdir competing-output)" })] : []),
+    ]);
     expect(result?.is_error === true).toBe(competing);
-    expect(execute).toHaveBeenCalledTimes(competing ? 0 : 1);
-    const rows = audit.permissionEntries.filter((entry) => entry.toolUseId === "card-rule" && entry.decision !== "ask");
-    expect(rows).toEqual([expect.objectContaining({ decision, trustOrigin: origin })]);
-    if (competing) expect(JSON.stringify(rows[0])).toContain("Permission policy changed while approval was pending");
+    expect(second.map((entry) => entry.is_error === true)).toEqual(competing ? [false] : []);
+    expect(execute).toHaveBeenCalledTimes(1);
+    const rows = (id: string) => audit.permissionEntries.filter((entry) => entry.toolUseId === id && entry.decision !== "ask");
+    expect(rows("card-rule")).toEqual([expect.objectContaining({ decision: competing ? "deny" : "allow", trustOrigin: competing ? "llm-tool-arg" : "user-keyboard" })]);
+    if (competing) {
+      expect(JSON.stringify(rows("card-rule")[0])).toContain("Permission policy changed while approval was pending");
+      expect(rows("competing-card-rule")).toEqual([expect.objectContaining({ decision: "allow", trustOrigin: "user-keyboard" })]);
+    }
   });
 
   it("does not create a reusable PowerShell rule from an unpinned host card before enabling consent", async () => {

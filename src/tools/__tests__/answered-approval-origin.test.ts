@@ -174,12 +174,12 @@ describe("the answerer contract", () => {
 
 describe("one terminal row per plugin-emitted invocation answered at the desk", () => {
 
-  // The allow control proves the revoke is live: it vetoes an affirmative answer, never a settled deny.
-  it.each([
-    ["deny-once", "before", "user-keyboard", false],
-    ["deny-once", "after", "user-keyboard", false],
-    ["allow-once", "before", "tailnet-surface", true],
-  ] as const)("records the desk's %s with the remote share revoked %s it", async (choice, when, origin, vetoed) => {
+  // The allow control proves the revoke is live on each card: it vetoes an affirmative answer, never a settled deny.
+  it.each((["tool", "directory"] as const).flatMap(card => [
+    ["deny-once", "before", card, "user-keyboard", false],
+    ["deny-once", "after", card, "user-keyboard", false],
+    ["allow-once", "before", card, "tailnet-surface", true],
+  ] as const))("records the desk's %s with the remote share revoked %s the %s card", async (choice, when, card, origin, vetoed) => {
     let current = true;
     const sessionId = randomUUID();
     const remoteControllerAuthority = bindRemoteControllerToSession({
@@ -195,15 +195,18 @@ describe("one terminal row per plugin-emitted invocation answered at the desk", 
       return decision;
     });
     const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
-    const id = `revoked-${choice}-${when}`;
-    const [result] = await executor.executeAll([{ id, name: "write_file", input: { path: join(project, "revoked.txt"), content: "revoked" } }], {
+    const id = `revoked-${choice}-${when}-${card}`;
+    const folder = card === "tool" ? project : join(root, "outside");
+    await mkdir(folder, { recursive: true });
+    const [result] = await executor.executeAll([{ id, name: "write_file", input: { path: join(folder, "revoked.txt"), content: "revoked" } }], {
       sessionId, executionCwd: project,
       permissionContext: { trustOrigin: "tailnet-surface", additionalDirectories: [project], remoteControllerAuthority },
     });
     expect(requestAndWait).toHaveBeenCalledOnce();
+    expect(requestAndWait.mock.calls[0]?.[0].kind === "out-of-allowed-dir").toBe(card === "directory");
     expect(result.is_error).toBe(true);
     expect(String(result.content).includes("remote-controller-revoked")).toBe(vetoed);
-    await expect(readFile(join(project, "revoked.txt"))).rejects.toThrow();
+    await expect(readFile(join(folder, "revoked.txt"))).rejects.toThrow();
     const rows = await ledger(id);
     expect(rows).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: origin })]);
     expect(JSON.stringify(rows[0]?.denyReasons).includes("remote-controller-revoked")).toBe(vetoed);
