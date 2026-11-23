@@ -54,9 +54,10 @@ async function freshExecutor(
   const manager = new PermissionManager(join(root, "permissions.json"));
   manager.checkDetailed = () => ({ decision: ask ? "ask" : "allow", reason: "shutdown admission probe", provenance: RULE_PROVENANCE });
   const asked = deferred<ApprovalRequest>();
+  const cards: ApprovalRequest[] = [];
   const gate = ask && new ApprovalGate({
     isDestroyed: () => false,
-    send: (channel: string, request: ApprovalRequest) => { if (channel === IPC_APPROVAL_REQUEST) asked.resolve(request); },
+    send: (channel: string, request: ApprovalRequest) => { if (channel === IPC_APPROVAL_REQUEST) { cards.push(request); asked.resolve(request); } },
   } as never);
   const audit = new AuditLogger(join(root, "audit"));
   loggers.push(audit);
@@ -103,7 +104,7 @@ async function freshExecutor(
     .filter((name) => name.endsWith(".jsonl") && !name.includes("permission-audit"))
     .flatMap((name) => readFileSync(join(audit.getAuditDir(), name), "utf8").split("\n").filter(Boolean))
     .map((line) => JSON.parse(line) as Record<string, unknown>);
-  return { ledger, executor, executes, audit, rows, plainRows, hostShutdownRows, toolUses, cancelled, gate, asked: asked.promise };
+  return { ledger, executor, executes, audit, rows, plainRows, hostShutdownRows, toolUses, cancelled, gate, asked: asked.promise, cards };
 }
 
 describe("ToolExecutor admission across the quit seal", () => {
@@ -656,5 +657,30 @@ describe("terminal rows of early refusals", () => {
     expect(result).toMatchObject({ is_error: true, content: expect.stringContaining("MCP tool owner changed") });
     expect(executes[0]).not.toHaveBeenCalled();
     expect(terminal(rows(), "tu-queued-0")).toEqual([expect.objectContaining({ decision: "deny", category: "write" })]);
+  });
+});
+
+describe("forced shutdown with parked executors", () => {
+  it("writes one host terminal row per parked executor before the sink closes and none on a late resume", async () => {
+    const { ledger, executor, executes, audit, rows, hostShutdownRows, toolUses, gate, cards } = await freshExecutor(2, [], { ask: true });
+    const running = toolUses.map((toolUse) => executor.executeAll([toolUse], { sessionId: `sess-parked-${toolUse.id}`, permissionContext: userPermissionContext() }));
+    await vi.waitFor(() => expect(cards).toHaveLength(2));
+    // The force-kill path: seal, cancel parked cards, then close the sink in the same tick.
+    ledger.sealToolInvocations();
+    gate?.disposeAll();
+    ledger.commitParkedHostTerminals();
+    ledger.markToolInvocationAuditClosed();
+    const closed = audit.close();
+    await closed;
+    const rowsAtClose = rows();
+    const results = (await Promise.all(running)).flat();
+    for (const execute of executes) expect(execute).not.toHaveBeenCalled();
+    expect(results.every((result) => result.is_error)).toBe(true);
+    for (const toolUse of toolUses) {
+      expect(rowsAtClose.filter((row) => row.toolUseId === toolUse.id && row.decision === "ask")).toHaveLength(1);
+      expect(hostShutdownRows(rowsAtClose, toolUse.id)).toEqual([expect.objectContaining({ trustOrigin: "unknown", category: "write" })]);
+      expect(rows().filter((row) => row.toolUseId === toolUse.id && row.decision !== "ask")).toHaveLength(1);
+    }
+    await expect(ledger.closeToolInvocationAudit(async () => {})).resolves.toBe(0);
   });
 });

@@ -1,3 +1,4 @@
+import type { InvocationTerminal } from "./invocation-ledger.js";
 import { turnExtensionPolicyContext } from "../shared/turn-extension-policy.js";
 import { raceWithAbort } from "../shared/abortable-deadline.js";
 import { HookInputMutationRequest, recordHookContext } from "../hooks/hook-influence.js";
@@ -50,6 +51,7 @@ export interface InvocationRunnerServices {
   readonly pluginOperationGrants: PluginOperationGrantCoordinator;
   readonly pluginGenerationAccessProvider: () => PluginRuntimeGenerationAccess | undefined;
   readonly pluginOperationIdentityProvider: PluginOperationIdentityProvider;
+  readonly invocationTerminal?: InvocationTerminal;
 }
 
 export function resolveEnforcedCategory(

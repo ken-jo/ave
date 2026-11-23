@@ -740,6 +740,7 @@ export class ToolExecutor {
           pluginOperationGrants: this.pluginOperationGrants,
           pluginGenerationAccessProvider: this.pluginGenerationAccessProvider,
           pluginOperationIdentityProvider: this.pluginOperationIdentityProvider,
+          invocationTerminal: admission,
         },
         toolUse,
         groupId,

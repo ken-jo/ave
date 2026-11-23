@@ -301,6 +301,26 @@ describe("OS sandbox release at quit", () => {
     expect(calls.indexOf("sealClaim")).toBeLessThan(calls.indexOf("closeAudit"));
   });
 
+  it("writes a parked invocation's host terminal row before the force-kill closes the audit", async () => {
+    vi.resetModules();
+    const ledger = await import("../../tools/invocation-ledger.js");
+    const parked = ledger.admitToolInvocation("parked-probe");
+    parked.hostTerminal(() => { calls.push("hostTerminal"); });
+    getServices.mockReturnValue(makeServices());
+    const shutdown = await configuredShutdown();
+    hardTimeoutFires = true;
+    try {
+      expect(await shutdown.runAppShutdownCleanup({ reason: "before-quit", exitOnTimeout: false })).toBe("timed-out");
+    } finally {
+      hardTimeoutFires = false;
+      parked.settle();
+    }
+    expect(calls.filter((call) => call === "hostTerminal")).toHaveLength(1);
+    expect(calls.indexOf("hostTerminal")).toBeLessThan(calls.indexOf("closeAudit"));
+    // The late resume finds its row already written and writes nothing.
+    expect(parked.claimTerminal()).toBe(false);
+  });
+
   it("still cancels parked cards and closes the audit when the fallback seal throws", async () => {
     getServices.mockReturnValue(makeServices());
     vi.resetModules();

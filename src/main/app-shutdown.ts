@@ -1,4 +1,4 @@
-import { beginToolInvocationAuditShutdown, markToolInvocationAuditClosed, pendingToolInvocationCount, sealToolInvocations } from "../tools/invocation-ledger.js";
+import { beginToolInvocationAuditShutdown, commitParkedHostTerminals, markToolInvocationAuditClosed, pendingToolInvocationCount, sealToolInvocations } from "../tools/invocation-ledger.js";
 import type { BootHost } from "../boot/host-runtime.js";
 import { browserTabRegistry } from "./browser/browser-tab-registry.js";
 // Ordered teardown runs under a hard deadline so a wedged subsystem cannot hang app.quit(). Unordered cleanup belongs in registerShutdownHook instead of
@@ -408,6 +408,8 @@ export async function runAppShutdownCleanup(options: {
           log.warn("shutdown: parked card cancel failed: %s", errorMessage(error));
         }
       }
+      // Executors still parked cannot resume before the close below; the host writes their terminal rows now.
+      commitParkedHostTerminals();
       markToolInvocationAuditClosed();
       void (async () => { await auditLogger.close(); })().catch((error: unknown) => {
         log.warn("shutdown: audit logger close failed: %s", errorMessage(error));

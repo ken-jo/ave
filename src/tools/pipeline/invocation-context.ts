@@ -98,6 +98,8 @@ export interface UserAbortDeps {
   auditWriter: AuditWriter;
   abortSignal?: AbortSignal;
   audit?: ToolExecutionAuditMetadata;
+  /** False when a forced shutdown already wrote this invocation's terminal row. */
+  claimTerminal?: () => boolean;
 }
 
 // Emit cancellation result and fixed denial audit without participating in containment relaxation.
@@ -126,7 +128,7 @@ export async function returnUserAbort(deps: UserAbortDeps): Promise<ToolResult> 
     : { decision: "deny", reason: "user aborted turn", provenance: RULE_PROVENANCE };
   emitToolStart(callbacks, toolUse.name, input, meta);
   callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
-  await auditWriter.auditToolCall(
+  if (deps.claimTerminal?.() !== false) await auditWriter.auditToolCall(
     sessionId,
     toolUse.name,
     source,

@@ -9,12 +9,21 @@ const shutdown = new AbortController();
 const pending = new Set<Promise<unknown>>();
 const detached = new Map<object, () => Promise<unknown>>();
 const sealClaims = new Set<() => void>();
+const hostTerminals = new Map<object, () => void>();
 let closing: Promise<number> | undefined;
 let auditClosed = false;
 let shutdownStarted = false;
 let shutdownFailure: { error: unknown } | undefined;
 
-export function admitToolInvocation(tool: string, parent?: AbortSignal): {
+/** Exactly one of the invocation and the host writes an admitted invocation's terminal row. */
+export interface InvocationTerminal {
+  /** Registers the host's synchronous terminal row, written only if a forced shutdown finds the invocation still parked. */
+  hostTerminal(write: () => void): void;
+  /** False once the host wrote the terminal row: the invocation then writes nothing. */
+  claimTerminal(): boolean;
+}
+
+export function admitToolInvocation(tool: string, parent?: AbortSignal): InvocationTerminal & {
   signal: AbortSignal;
   settle(): void;
 } {
@@ -23,18 +32,44 @@ export function admitToolInvocation(tool: string, parent?: AbortSignal): {
     // Its denial can no longer be written, so refuse it and fail the shutdown.
     log.error("tool invocation admitted after audit close: %s", tool);
     recordToolInvocationAuditFailure(new Error(`tool invocation admitted after audit close: ${tool}`));
-    return { signal, settle() {} };
+    return { signal, settle() {}, hostTerminal() {}, claimTerminal: () => true };
   }
   let resolve!: () => void;
   const completion = new Promise<void>((done) => { resolve = done; });
   pending.add(completion);
+  const token = {};
+  let terminal: "open" | "invocation" | "host" = "open";
   return {
     signal,
     settle() {
+      hostTerminals.delete(token);
       pending.delete(completion);
       resolve();
     },
+    hostTerminal(write) {
+      if (terminal !== "open") return;
+      hostTerminals.set(token, () => {
+        if (terminal !== "open") return;
+        terminal = "host";
+        write();
+      });
+    },
+    claimTerminal() {
+      if (terminal === "host") return false;
+      terminal = "invocation";
+      hostTerminals.delete(token);
+      return true;
+    },
   };
+}
+
+/** Forced shutdown: before the sink closes, the host writes the terminal row of every admitted invocation that has not. */
+export function commitParkedHostTerminals(): void {
+  const writes = [...hostTerminals.values()];
+  hostTerminals.clear();
+  for (const write of writes) {
+    try { write(); } catch (error) { recordToolInvocationAuditFailure(error); }
+  }
 }
 
 /** Admission unless the audit is closed; a closed refusal has no row left to write, so it fails nothing. */

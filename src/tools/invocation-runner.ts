@@ -66,7 +66,7 @@ import {
 } from "../shared/chat-origin.js";
 import { isRationaleEligible, RationaleHumanApprovalDeniedError } from "./pipeline/rationale-control.js";
 import { answeredApprovalProvenance, approvalReasonFields, approvalTargetFor, HOST_PROVENANCE, provenanceTrustOrigin, RULE_PROVENANCE, type ApprovalDecision, type DecisionProvenance } from "../permissions/approval-gate.js";
-import { abortSupersedesApprovalDecision, answeredPermission, approvalFailureOutcome, refusal } from "./pipeline/approval-outcome.js";
+import { abortSupersedesApprovalDecision, answeredPermission, approvalFailureOutcome, hostShutdownDenial, refusal } from "./pipeline/approval-outcome.js";
 import {
   buildPermissionEvaluationContext,
   type PermissionEvaluationContext,
@@ -501,6 +501,8 @@ async function runToolInvocationAttempt(
     });
     let denialRecorded = false;
     const auditCurrentToolCall = async (...args: AuditToolCallArgs): Promise<void> => {
+      // A forced shutdown already wrote this invocation's terminal row; a late resume writes nothing.
+      if (services.invocationTerminal?.claimTerminal() === false) return;
       const denied = args[8];
       const history = services.permissionManager?.getRecentlyDenied();
       if (denied?.decision === "deny" && history && !denialRecorded) {
@@ -552,6 +554,11 @@ async function runToolInvocationAttempt(
       return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: t("be_executor.toolNotFound", { name: toolUse.name }), is_error: true, durationMs });
     }
     governedTool = tool.operationPolicy !== undefined;
+    services.invocationTerminal?.hostTerminal(() => {
+      void services.auditWriter.auditToolCall(sessionId, toolUse.name, tool.source, trustFromSource(tool.source), toolUse.input, "host-shutdown", true, startTime,
+        hostShutdownDenial(), Infinity, permissionContext, tool.category, executionCwd, undefined, "host-shutdown", undefined, currentAuditMetadata(toolUse.input))
+        .catch((error: unknown) => { log.error("host-shutdown terminal audit failed for %s: %s", toolUse.name, errorMessage(error)); });
+    });
     let generationAccess: ReturnType<
       InvocationRunnerServices["pluginGenerationAccessProvider"]
     >;
@@ -758,6 +765,7 @@ async function runToolInvocationAttempt(
       auditWriter: services.auditWriter,
       abortSignal,
       audit: currentAuditMetadata(input),
+      claimTerminal: () => services.invocationTerminal?.claimTerminal() !== false,
     });
 
     if (abortSignal?.aborted) {
