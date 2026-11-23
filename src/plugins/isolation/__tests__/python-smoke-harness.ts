@@ -117,7 +117,7 @@ function resolveInterpreter(uv: string, cache: string): { python: string; source
   run(
     `uv python install ${UV_INSTALL_PYTHON} failed (a cache miss needs network access)`,
     uv,
-    ["python", "install", UV_INSTALL_PYTHON],
+    ["python", "install", UV_INSTALL_PYTHON, "--no-bin", "--no-registry"],
     { env: uvEnvironment(cache), cwd: cache },
   );
   const installed = findManagedPython(uv, cache);

@@ -29,6 +29,7 @@ export const TOOL_TIMEOUT_POLICY = {
   browserDownloadHelperStallMs: 30_000,
   // A fresh local identity probe bounds synchronous remote authority checks.
   tailnetIdentityProbeMs: 5_000,
+  windowsDocumentsLookupMs: 5_000,
   // Cold native startup includes module loading, compilation and account-provider initialization before READY.
   windowsAclHostStartupMs: 120_000,
   // Bound each serial native-location ACL check so a stalled host releases queued admissions before the global ceiling.
@@ -78,6 +79,9 @@ export const TOOL_TIMEOUT_POLICY = {
   pluginRetirementDrainMs: 5_000,
   // Let stdin EOF cleanup finish before the host terminates a surviving child.
   pluginShutdownKillGraceMs: 1_000,
+  // The reference child can exit independently of its blocked plugin loop.
+  pluginChildHostLossMs: 2_000,
+  pluginChildForceKillMs: 3_000,
   // A stdio-control worker must answer the host's hello before spawnWorker resolves; cold interpreter start on Windows included.
   workerControlHelloMs: 60_000,
   // UI-resource hooks run on the render path with a tighter deadline than tools; expiry yields no card.

@@ -7,7 +7,7 @@ import { setProcessPlatform } from "../../__tests__/support/process-platform.js"
 vi.mock("../asrt-sandbox.js", () => ({
   isOfflineProcessConfinementActive: vi.fn(() => true),
   getDefaultSensitiveReadDenyPaths: () => ["/private-service-secrets"],
-  getDefaultSensitiveWriteDenyPaths: () => ["/private-service-control"],
+  getDefaultSensitiveWriteDenyEntries: () => ["/private-service-control"],
   buildPerCommandSandboxCustomConfig: vi.fn(policy => ({ filesystem: policy })),
 }));
 vi.mock("../sandbox-capability.js", () => ({ detectSandboxCapability: vi.fn(() => ({

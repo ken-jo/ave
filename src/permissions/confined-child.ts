@@ -10,13 +10,14 @@ import type { Readable, Writable } from "node:stream";
 import {
   ensureSandboxTempPrincipalDir,
   getDefaultSensitiveReadDenyPaths,
-  getDefaultSensitiveWriteDenyPaths,
+  getDefaultSensitiveWriteDenyEntries,
   isPluginWorkerConfinementActive,
   assertExtensionStartAllowed,
   admitMxcExtensionFilesystem,
   appOwnedSandboxHomeRoot,
   appOwnedSandboxTempRoot,
   appOwnedTerminalHandoffRoot,
+  runWithSandboxWritePreflight,
   sandboxTempEnvLaunch,
   wrapWorkerCommand,
   type SandboxTempPrincipal,
@@ -297,11 +298,11 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
   spec.assertStillValid?.();
   assertManagedChildProcessAdmissionOpen(spec.label);
   // The floor and the admission share one Ave home boundary snapshot.
-  const admitted = createAveHomeBoundarySnapshot().run(() => admitMxcExtensionFilesystem({
+  const admitted = await runWithSandboxWritePreflight(spec.signal, () => createAveHomeBoundarySnapshot().run(() => admitMxcExtensionFilesystem({
     allowRead: [...(spec.allowRead ?? [])], allowWrite: [...(spec.allowWrite ?? [])],
-    denyRead: getDefaultSensitiveReadDenyPaths(), denyWrite: getDefaultSensitiveWriteDenyPaths(),
+    denyRead: getDefaultSensitiveReadDenyPaths(), denyWrite: getDefaultSensitiveWriteDenyEntries(),
     floorPierces: spec.floorPierces, denyPluginsRoot: true, pinWriteRoots: true,
-  }, spec.filesystemOwnership));
+  }, spec.filesystemOwnership)));
   const grants = rankMxcFilesystem(admitted.policy, existsSync);
   assertWritesInsideEnvelope(grants, spec.filesystemOwnership);
   assertMxcHolderPrivateDirectories({ home: spec.home, temp: spec.temp, ownership: spec.filesystemOwnership,
@@ -589,12 +590,12 @@ async function resolveSpawnLine(
   let argv: string[];
   let env: NodeJS.ProcessEnv;
   try {
-    ({ argv, env } = await wrapWorkerCommand(cmdline, {
+    ({ argv, env } = await runWithSandboxWritePreflight(undefined, () => wrapWorkerCommand(cmdline, {
       filesystem: boundarySnapshot.run(() => buildFilesystemConfinement(spec, temp)),
       boundarySnapshot,
       ...(binShell !== undefined ? { binShell } : {}),
       commandId: egress.token,
-    }));
+    })));
   } catch (error) {
     egress.release();
     throw error;
@@ -632,14 +633,14 @@ function buildFilesystemConfinement(spec: ConfinedChildSpec, temp: { dir: string
   allowRead?: string[];
   allowWrite?: string[];
   denyRead: string[];
-  denyWrite: string[];
+  denyWrite: ReturnType<typeof getDefaultSensitiveWriteDenyEntries>;
   pinWriteRoots?: boolean;
   floorPierces?: readonly string[];
   denyPluginsRoot?: boolean;
 } {
   const floor = {
     denyRead: getDefaultSensitiveReadDenyPaths(),
-    denyWrite: getDefaultSensitiveWriteDenyPaths(),
+    denyWrite: getDefaultSensitiveWriteDenyEntries(),
   };
   if (spec.grantMode === "deny-only") {
     if (spec.denyPluginsRoot === true) {

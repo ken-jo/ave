@@ -2822,6 +2822,14 @@ worker grants until reset. Confinement stays marked active so callers cannot
 fall back to host execution. Previously issued commands are not revoked by this
 check.
 
+The in-process reference runtime (the child runtime that shares one JavaScript
+realm with plugin code) is not a boundary against plugin code; the host treats
+all child frames as untrusted. The boundary is the child process and its OS
+confinement. The reference child adds a worker thread that never runs plugin
+code: it owns the host pipe, decodes host input and ends the child 2 s after it
+observes host loss, even while plugin code blocks or misleads the main thread.
+A native-executable child has no such worker.
+
 Isolation between plugins is a macOS and Linux property. There every wrap of
 plugin-owned code — plugin child, delegated worker, bundled hook, bundled MCP
 stdio server — refuses the plugin roots (`<AVE_HOME>/plugins`,
@@ -3315,11 +3323,15 @@ in its directory.
   patched proxy starts, an srt-win wrap is refused, a container reaches an
   allowed host through its listener and the proxy, and a refused host is
   recorded under that invocation's token only. Without MXC, shells keep the
-  approved host route. Without either, the gate degrades as before. The
-  persistent conversation PTY never runs in MXC (its background descendants
-  outlive individual commands), including the side-chat terminal; it reads
-  only the process-wide capability. Extension holders and all MCP stdio
-  wraps keep their separate confinement selection and D2 local-network policy.
+  approved host route. Without either, the gate degrades as before. Extension
+  holders and all MCP stdio wraps keep their separate confinement selection
+  and D2 local-network policy. The persistent conversation PTY, including the
+  side-chat terminal, stays off MXC and reads the process-wide capability so
+  its background descendants can survive individual commands. An MXC shell,
+  its proxy listener, and its process tree are scoped to one invocation. There
+  is no managed MXC shell job, so background processes in that container end
+  with the invocation's containment.
+
 - **Filesystem.** The per-command ASRT lists are ranked for MXC
   (`rankMxcFilesystem`): the protected read floor drops grants not under a
   pierce, a write grant under a `denyWrite` path becomes read-only, a deny
@@ -3367,9 +3379,9 @@ in its directory.
   the server; teardown waits for helper close, and delivery failure also
   terminates a bound launcher.
 - **Outbound connections and identity.** Each command gets its own loopback
-  proxy listener (`egress-invocation-listener.ts`). The container's only
-  outbound connection path is that port: MXC's per-container WFP filter, with
-  `egress.default: "deny"` and `hostLoopback: "allow"`. The listener forwards
+  proxy listener (`egress-invocation-listener.ts`). The request scopes the
+  proxy endpoint to that port with `egress.default: "deny"` and
+  `hostLoopback: "allow"`. The listener forwards
   to ASRT's proxy and stamps the command's egress token on every request it
   forwards, replacing any `Proxy-Authorization` the client sent, so refusals
   are attributed to the command that made them. It refuses loopback and
@@ -3380,19 +3392,23 @@ in its directory.
   (`1.1.1.1:443`, `8.8.8.8:53`); a forged identity was replaced by the
   listener's; a container could not terminate a host process of the same user;
   and when its process timeout fires or `wxc-exec.exe` is killed, every process
-  in the container ends with it. Shell egress identity is therefore
-  `kernel-channel`; extension identity stays `shared`.
+  in the container ends with it. MXC shell egress identity is
+  `kernel-channel`, and extension identity follows the selected backend.
   `egressGrantScopesFor` applies `maxEgressGrantScope` (`kernel-channel` →
   `always`, `shared` → `conversation`) to both approval choices and grant
   reuse. Origin and destination class further limit the scopes; terminal
   tabs and extensions keep their own policy.
 - **DNS is not confined.** Name resolution goes through the host's DNS client
-  service, outside the container's WFP filter: inside a container
-  `example.com` resolved and an unknown name came back NXDOMAIN (measured), so
-  the query left the host. A command can therefore carry data out to an
-  external authoritative DNS server by looking up names it chooses under a
-  domain that server answers for, without touching the proxy: an exfiltration
-  channel the proxy never sees. Settings says so.
+  service, outside the container's WFP filter. Inside a container, `example.com`
+  resolved and an unknown name returned NXDOMAIN. The host DNS client cache can
+  answer both lookups, so these results establish access to the host resolver.
+  The resolver remains a potential egress path outside the proxy. MXC shell
+  and extension plans report `dns: "host-resolver"` and `rawIp: "unknown"`.
+  The direct port 53 refusal above lacks protocol attribution. Direct UDP port
+  53 and ICMP blocking remain unverified. Host-side WFP observation can identify
+  filtering decisions, and receiver-side evidence can confirm traffic arrival.
+  Plan coverage is reporting metadata. Settings uses it to disclose both limits.
+  Launch and admission policies do not enforce this coverage metadata.
 - **Inbound.** Proxy mode requires `ingress.default: "allow"`, which grants
   the container `privateNetworkClientServer`. The pinned SDK describes
   host-loopback allow as stateful outbound connectivity at baseline; native
@@ -3436,10 +3452,10 @@ in its directory.
   confined. Every closed reason maps to a catalog key. A ready MXC plan is
   described as a selection, not proof that a process runs contained (a
   plugin's Doctor card shows its own `windows-mxc` confinement, labelled
-  "Windows container (MXC)"). Only that selection lists what a container does
-  not hide or block: egress only through the holder's own proxy endpoint, whose
-  owner Windows does not verify (D2); loopback requested in both directions,
-  inbound left to Windows Firewall, DNS through the host resolver; untrusted
+  "Windows container (MXC)"). That selection discloses the holder's dedicated
+  proxy endpoint and its unverified owner (D2), the requested bidirectional
+  loopback, the host firewall's role in inbound protection, and the protocol
+  limits reported by the plan. It also discloses untrusted
   windows with clipboard and input injection off (D3); ancestor
   query/enumerate grants that expose names and metadata, cascading into nested
   folders, including profile and `AVE_HOME` sibling names and other plugin IDs
@@ -3498,6 +3514,25 @@ Security-sensitive areas are intentionally centralized:
 Changes spanning these areas merit proportionate cross-cutting review. That
 review is advisory, never a merge gate.
 
+### Query credential masking
+
+Both scrubbers in `src/shared/dlp.ts` mask credential query values, signed-URL
+signatures and session tokens, by the credential detector contract in
+[multi-source-git-marketplace.md](../design/multi-source-git-marketplace.md).
+A value ends before the delimiters of the text that carries it, so a scrubbed
+JSON log line in a diagnostics bundle stays one valid object. The value is
+masked up to `&` or whitespace. A quote, backtick or `>` ends it earlier only
+where it closes an opener still open before the value (an odd count of that
+quote at the same escape depth, or an unclosed `<`) and a delimiter follows;
+any other quote is masked with the value. The count covers the whole text
+before the value, so an unrelated quote there, such as an apostrophe in
+prose, can open the span that a later quote closes. An opaque signature is
+masked in a signed query, identified by its other parameters, and elsewhere
+only by a digest or mixed-case base64 shape, so a digest option such as
+`?sig=sha256` stays readable. Query syntax is read through up to three
+percent-encoding layers and three layers of JSON `\u00XX` escapes; a fourth
+layer is outside the contract.
+
 ### Home path redaction
 
 The redactor identifies tokens in the original audit or display text. It
@@ -3527,6 +3562,36 @@ For supported homes the redactor matches both the configured spelling, with
 trailing separators removed, and the normalized spelling. Platform path
 normalization collapses dot segments and duplicate separators without
 consulting the working directory.
+
+The generic users/home rules redact any account's profile in display text and
+in audit path values (`redactFsPath`), after the configured home's own forms,
+with `[home]` or `file://[home]`, under a drive (also after a `\\?\` or `\\.\`
+device prefix, which is kept), a UNC server and optional share (both kept), a
+`/users/` or a `/home/` root. A profile name is letters,
+marks, digits, `._-` and apostrophes before a letter or digit, each also
+percent-encoded up to the same three layers or written as a JSON `\u` escape,
+whose backslashes double with each serialization. An escape-like run followed
+by the same run of backslashes before a folder name is a separator, so
+`C:\Users\bob\uface\x` keeps the folder `uface`. Its separators may be
+encoded either way too. Encodings deeper than three
+layers are outside the contract. Words after a space join the name in a path
+value, before a separator, a quote, the value's end, or a query or fragment. In display
+text they join only inside a quoted or backtick span that starts with the home,
+before a separator or the closing quote. Elsewhere in text a name stops at
+whitespace, a JSON-escaped space (`\u0020`) included, so a following command
+argument stays visible, and the rest of an
+unquoted spaced name of another account (`/home/Demo Smith` as `[home] Smith`)
+is a known residual. Command text inside a JSON string value is unquoted shell
+text too, so `{"command":"cat /home/Demo Smith/x"}` becomes
+`cat [home] Smith/x`, while a quoted path inside it, as in
+`cat \"/home/Demo Smith/x\"`, is masked in full. The configured home matches
+literally, spaces included.
+A name stops where a drive profile joins it directly, so the joined home is
+redacted too. A home path right after a URL authority, plain or percent-encoded
+and with escaped host bytes, keeps the separator that ends the authority, for
+the configured home and the generic rules alike. An escaped byte joined
+directly to a configured home, as in `/home/bob%C3%A9`, keeps the base literal
+boundary and stays after the marker.
 
 ### Windows object ownership
 
@@ -3670,6 +3735,24 @@ with its own owner rule:
     plugin lockfiles when a plugin next needs them. Until a rebuild
     succeeds, the plugin reports "Python runtime rebuild needed" and does
     not start. There is no offline fallback to older contents.
+    A venv rebuild passes `uv venv --clear` only for a path whose realpath
+    stays inside the managed `runtime` directory. Residual: a path component
+    swapped between that check and the clear. Swapping one requires write
+    access to Ave's own `runtime` directory or its ancestors, so the attacker
+    would be the same user. That is outside Ave's threat model, the same scope
+    as the CI cleanup decision. uv 0.13.9 also canonicalizes the path again
+    before it removes anything.
+    Python provisioning sets `UV_SYSTEM_CERTS=1` so the bundled platform
+    verifier uses the OS trust store and certificate policy. Certificate chains
+    can be accepted or rejected differently from the earlier combination of
+    native roots and WebPKI. See the [0.11.0 changelog](https://github.com/astral-sh/uv/releases/tag/0.11.0#breaking-changes).
+    Real provisioning with uv 0.13.9 passed on Windows over a direct route
+    with system trust, and on macOS through an HTTPS CONNECT proxy.
+    Residual: a TLS-inspecting corporate proxy was not available to test.
+  - CI's interpreter mirror falls back to the GitHub release URL. That fetch
+    keeps the default redirect behaviour: the final host is not pinned, and the
+    auth header is dropped on a cross-origin redirect. uv's digest check still
+    applies to the downloaded archive.
   - No sandbox grant names `runtime` itself, so a grant entry left by a
     crash never lands on the boundary's own DACL. The sandbox account
     crosses the owner-only boundary through bypass-traverse.

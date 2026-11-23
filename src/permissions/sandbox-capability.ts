@@ -1,6 +1,6 @@
 // Reviewer relaxation requires live OS isolation; none forbids intent-only downgrades from MEDIUM/HIGH to LOW. Inactive gates publish verified none; audit stores the resulting verdict rather than the full capability (docs/architecture/permission-policy-design.md).
 
-import { assertSandboxWindowsExtensionPlan } from "../shared/sandbox-capability-info.js";
+import { assertSandboxWindowsExtensionPlan, egressProtocolCoverageFor } from "../shared/sandbox-capability-info.js";
 import { isAveHomeBoundaryUnverifiedAtBoot } from "../shared/ave-home.js";
 import { t } from "../i18n/index.js";
 import type { ToolCategory, ToolSource } from "../tools/types.js";
@@ -227,9 +227,13 @@ export function setWindowsSandboxSubstrate(
   // Admissions and live MXC parents are bound to the plan object. Republishing the substrate for an unrelated
   // change (the shell probe settling) keeps an identical plan's identity; only changed content invalidates them.
   const previousPlan = _windowsSubstrate?.extensionPlan;
-  const extensionPlan = info.extensionPlan === undefined ? undefined
-    : previousPlan !== undefined && sameExtensionPlan(previousPlan, info.extensionPlan) ? previousPlan
-      : Object.freeze({ ...info.extensionPlan });
+  const plan = info.extensionPlan === undefined ? undefined : {
+    ...info.extensionPlan,
+    egressProtocolCoverage: egressProtocolCoverageFor(info.extensionPlan.selectedBackend),
+  };
+  const extensionPlan = plan === undefined ? undefined
+    : previousPlan !== undefined && sameExtensionPlan(previousPlan, plan) ? previousPlan
+      : Object.freeze(plan);
   _windowsSubstrate = Object.freeze({ ...info, mxc: Object.freeze({ ...info.mxc }),
     ...(extensionPlan ? { extensionPlan } : {}),
   });
@@ -240,7 +244,7 @@ export function setWindowsSandboxSubstrate(
   notifySandboxStatusChanged();
 }
 
-// Every plan field is a closed primitive (validated above), so field equality is content equality.
+// The nested protocol coverage value is interned for the selected backend before comparison.
 function sameExtensionPlan(left: SandboxWindowsExtensionPlan, right: SandboxWindowsExtensionPlan): boolean {
   const keys = Object.keys(left) as (keyof SandboxWindowsExtensionPlan)[];
   return keys.length === Object.keys(right).length && keys.every((key) => left[key] === right[key]);

@@ -348,6 +348,7 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
         holderPid,
         allowRead: [sandboxHome.path, ...stateGrant, ...(spec.allowReadPaths ?? [])],
         allowWrite: [sandboxHome.path, ...stateGrant, ...(spec.allowWritePaths ?? [])],
+        assertStillValid: assertHolderAlive,
       });
       assertHolderAlive();
 

@@ -11,6 +11,7 @@ import { makeTestPluginRuntime, servedAgentPluginsDocument } from "../../__tests
 import { admittedMxcChild, nativePluginLaunch } from "../../../__tests__/support/mxc-plugin-launch.js";
 import { MxcProcessCleanupError } from "../../../permissions/mxc-extension-errors.js";
 import { createOutOfProcessPluginFactory } from "../../isolation/out-of-process-plugin.js";
+import { consumePluginChildInput } from "../../../__tests__/support/plugin-child-input.js";
 import { servePluginChild } from "../../isolation/plugin-child-main.js";
 import type { PluginManifest } from "../../types.js";
 import { MxcProcessContractError } from "../../../permissions/mxc-extension-errors.js";
@@ -31,7 +32,7 @@ const PLUGIN_ID = "nativequarantine";
  * with `disposeAfterMs`, verifies termination after that long. */
 function ownedChild(disposeAfterMs?: number) {
   const hostToChild = new PassThrough(), childToHost = new PassThrough();
-  const service = servePluginChild(hostToChild, childToHost);
+  const service = servePluginChild(consumePluginChildInput(hostToChild, childToHost), childToHost);
   let failCompletion!: (error: Error) => void, finish!: (result: { exitCode: number; timedOut: boolean }) => void;
   const completion = new Promise<{ exitCode: number; timedOut: boolean }>((resolve, reject) => { finish = resolve; failCompletion = reject; });
   // A healthy process exits on stdin EOF; the supervisor still disposes it before releasing ownership.

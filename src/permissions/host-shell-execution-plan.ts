@@ -2,7 +2,7 @@
 
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import type { DisposableSubstrate, SandboxCapability } from "./sandbox-capability.js";
-import type { SandboxConfinement } from "../shared/sandbox-capability-info.js";
+import { egressProtocolCoverageFor, type EgressProtocolCoverage, type SandboxConfinement } from "../shared/sandbox-capability-info.js";
 import { isRecord } from "../shared/is-record.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { isPowerShellStartupPinned } from "../shared/powershell-startup-policy.js";
@@ -13,7 +13,7 @@ export type HostShellExecutionRequest = "default" | "host";
 
 export type HostShellExecutionMode = "asrt" | "plain" | "blocked";
 
-// What confines a sandboxed (`mode: "asrt"`) shell child: the ASRT wrap (Seatbelt, bubblewrap), or — on Windows hosts that offer it — a Microsoft Execution Containers container per command (`mxc-windows.ts`), whose network reaches only the invocation's own proxy port. `none` for every other mode.
+// What confines the shell child: a runtime wrap, a per-command container, or no sandbox.
 type HostShellSubstrate = "asrt" | "mxc" | "none";
 
 // Machine-readable, host-owned fallback state. Never derive authority from UI text.
@@ -38,6 +38,7 @@ export interface HostShellExecutionPlan {
   readonly sandboxed: boolean;
   // What confines the child when `mode` is `asrt`; `none` otherwise.
   readonly substrate: HostShellSubstrate;
+  readonly egressProtocolCoverage: EgressProtocolCoverage;
   // Honest capability of the child selected by this plan.
   readonly capability: SandboxCapability;
   readonly fallbackReason: HostShellFallbackReason;
@@ -214,6 +215,7 @@ export function buildHostShellExecutionPlan(input: {
       mode: "plain" as const,
       sandboxed: false,
       substrate: "none" as const,
+      egressProtocolCoverage: egressProtocolCoverageFor("none"),
       capability: noneCapability(input.platform, "Explicit host execution runs as the current user without OS confinement."),
       fallbackReason: "none" as const,
       requiresExplicitUserApproval: true,
@@ -233,6 +235,7 @@ export function buildHostShellExecutionPlan(input: {
       mode: "plain" as const,
       sandboxed: false,
       substrate: "none" as const,
+      egressProtocolCoverage: egressProtocolCoverageFor("none"),
       capability: noneCapability(input.platform, "The OS shell sandbox is disabled for this host."),
       fallbackReason,
       // Worker-only confinement can publish the boundary state with the shell scope off; that plain child asks every command too.
@@ -256,6 +259,7 @@ export function buildHostShellExecutionPlan(input: {
       mode: "plain" as const,
       sandboxed: false,
       substrate: "none" as const,
+      egressProtocolCoverage: egressProtocolCoverageFor("none"),
       capability,
       fallbackReason,
       requiresExplicitUserApproval: askEveryCommand,
@@ -273,6 +277,7 @@ export function buildHostShellExecutionPlan(input: {
       mode: "asrt" as const,
       sandboxed: true,
       substrate: shellSubstrate,
+      egressProtocolCoverage: egressProtocolCoverageFor(shellSubstrate),
       capability,
       fallbackReason: "none" as const,
       requiresExplicitUserApproval: false,
@@ -299,6 +304,7 @@ export function buildHostShellExecutionPlan(input: {
       mode: "plain" as const,
       sandboxed: false,
       substrate: "none" as const,
+      egressProtocolCoverage: egressProtocolCoverageFor("none"),
       capability,
       fallbackReason,
       requiresExplicitUserApproval: true,
@@ -320,6 +326,7 @@ export function buildHostShellExecutionPlan(input: {
     mode: "blocked" as const,
     sandboxed: false,
     substrate: "none" as const,
+    egressProtocolCoverage: egressProtocolCoverageFor("none"),
     capability,
     fallbackReason,
     requiresExplicitUserApproval: false,

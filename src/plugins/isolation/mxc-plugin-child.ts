@@ -10,6 +10,7 @@ import type { DelegatedWorkerConfinement } from "./host-api-dispatcher.js";
 import { windowsCommandLine } from "../../shared/windows-command-line.js";
 import { aveHome } from "../../shared/ave-home.js";
 import { capturePluginStderr } from "./plugin-stderr.js";
+import { pacePluginChildInput } from "./plugin-child-credit.js";
 import { createLogger } from "../../lib/logger.js";
 import { errorMessage } from "../../shared/error-message.js";
 
@@ -40,7 +41,7 @@ export interface MxcPluginChild {
   onTerminating(handler: () => void): void;
 }
 
-/** Adapt owned streams directly; neither the supervisor PID nor stream payloads select the recipient. */
+/** Adapt the owned streams without letting stream payloads or the supervisor PID select the recipient. */
 export function attachMxcPluginChild(owned: OwnedMxcExtensionProcess, launch: Pick<MxcPluginChildLaunch, "signal" | "release">, pluginId: string): MxcPluginChild {
   // Always take diagnostics, even when protocol construction has not begun.
   capturePluginStderr(owned.stderr, pluginId);
@@ -99,8 +100,7 @@ export function attachMxcPluginChild(owned: OwnedMxcExtensionProcess, launch: Pi
       if (terminating) handler();
     },
     link: {
-      input: owned.stdout,
-      output: owned.stdin,
+      ...pacePluginChildInput(owned.stdout, owned.stdin),
       terminate: (reason) => { void stop(reason); },
       onGone: (handler) => { void exited.then(handler).catch(() => {}); },
       onFault: (handler) => {

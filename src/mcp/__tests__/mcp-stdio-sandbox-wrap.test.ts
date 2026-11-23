@@ -67,6 +67,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
     assertExtensionStartAllowed: actual.assertExtensionStartAllowed,
     isAsrtSandboxActive: () => gateActive,
     isPluginWorkerConfinementActive: () => gateActive,
+    runWithSandboxWritePreflight: async (_signal: AbortSignal | undefined, compose: () => unknown) => compose(),
     wrapWorkerCommand: (command: string, options?: unknown) =>
       wrapWorkerCommandMock(command, options),
     cleanupAsrtSandboxAfterCommand: () => cleanupMock(),
@@ -78,6 +79,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
     sandboxTempEnvLaunch: actual.sandboxTempEnvLaunch,
     sandboxTempPrincipalDirName: actual.sandboxTempPrincipalDirName,
     getDefaultSensitiveReadDenyPaths: actual.getDefaultSensitiveReadDenyPaths,
+    getDefaultSensitiveWriteDenyEntries: actual.getDefaultSensitiveWriteDenyEntries,
     getDefaultSensitiveWriteDenyPaths: actual.getDefaultSensitiveWriteDenyPaths,
     appOwnedSandboxPrivateRoots: actual.appOwnedSandboxPrivateRoots,
   };

@@ -35,10 +35,9 @@ export const POWERSHELL_MODULE_PRELUDE = [
   "} catch { [System.Console]::Error.WriteLine('Shell module initialization failed'); exit 197 };\n",
 ].join(" ");
 
-// Windows PowerShell's web cmdlets, WebClient and HttpClient take the system proxy, never HTTPS_PROXY, and a sandboxed command
-// reaches the network only through the egress proxy that variable names. Route them through it; with no proxy named nothing
-// changes. Credentials in the proxy URL are not carried over (a 407, fail-closed), and .NET still sends loopback direct, where
-// the sandbox fence refuses it as before. A host shell opts out: its proxy is the user's own.
+// The web cmdlets and HTTP clients use the system proxy by default. Route them to the invocation proxy when set.
+// These clients omit proxy URL credentials and receive a 407 when authentication is required. They send loopback directly.
+// A host shell keeps the user's proxy.
 export const POWERSHELL_EGRESS_PROXY_PRELUDE =
   "& { $proxy = $env:HTTPS_PROXY; if (-not $proxy) { $proxy = $env:HTTP_PROXY }; if ($proxy) { [System.Net.WebRequest]::DefaultWebProxy = [System.Net.WebProxy]::new($proxy) } };\n";
 

@@ -4,30 +4,42 @@ import { appendFileSync } from "node:fs";
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { fetchBytesWithRetry } from "../../scripts/lib/fetch-with-retry.mjs";
+import { DownloadHttpError, fetchBytesWithRetry, isTransientNetworkError } from "../../scripts/lib/fetch-with-retry.mjs";
 import { resolveUvTarget } from "../../scripts/uv-targets.mjs";
 import { PYTHON_VERSION } from "./python-archive-cache.mjs";
 
-const RELEASE_BASE = "https://github.com/astral-sh/python-build-standalone/releases/download/";
+const PREFERRED_RELEASE_BASE = "https://releases.astral.sh/github/python-build-standalone/releases/download/";
+const FALLBACK_RELEASE_BASE = "https://github.com/astral-sh/python-build-standalone/releases/download/";
+const RELEASE_BASES = [PREFERRED_RELEASE_BASE, FALLBACK_RELEASE_BASE];
 
 // The install command keeps distribution selection and checksum verification.
-// A local mirror supplies the selected archive after an authenticated download.
+// A local mirror supplies the selected archive.
 export async function preparePythonDownloadMirror({ uv, mirrorRoot, listDownloads, download = fetchBytesWithRetry }) {
   if (!(process.env.GITHUB_TOKEN || process.env.GH_TOKEN) || process.env.UV_PYTHON_INSTALL_MIRROR) return null;
   const output = listDownloads ? listDownloads() : execFileSync(uv, [
     "python", "list", "--only-downloads", "--show-urls", "--output-format", "json", PYTHON_VERSION,
   ], { encoding: "utf8", windowsHide: true, env: { ...process.env, UV_CACHE_DIR: join(mirrorRoot, "uv-cache") } });
   const candidates = JSON.parse(output).filter((entry) => entry.implementation === "cpython" && entry.variant === "default");
-  if (candidates.length !== 1 || !candidates[0].url?.startsWith(RELEASE_BASE)) {
+  const url = candidates[0]?.url;
+  const releaseBase = typeof url === "string" ? RELEASE_BASES.find((base) => url.startsWith(base)) : undefined;
+  if (candidates.length !== 1 || !releaseBase) {
     throw new Error("Cannot identify the managed interpreter release");
   }
-  const url = candidates[0].url;
-  const suffix = url.slice(RELEASE_BASE.length);
-  if (!/^\d+\/[^/]+\.tar\.gz$/.test(suffix) || decodeURIComponent(suffix).includes("..")) {
+  const suffix = url.slice(releaseBase.length);
+  const relativePath = decodeURIComponent(suffix);
+  if (!/^\d+\/[^/]+\.tar\.gz$/.test(suffix) || !/^\d+\/[\w.+-]+\.tar\.gz$/.test(relativePath) || relativePath.includes("..")) {
     throw new Error("Invalid managed interpreter release path");
   }
-  const bytes = await download(url, { httpError: (response) => `Interpreter archive download failed with HTTP ${response.status}` });
-  const destination = join(mirrorRoot, decodeURIComponent(suffix));
+  const downloadOptions = { httpError: (response) => `Interpreter archive download failed with HTTP ${response.status}` };
+  let bytes;
+  try {
+    bytes = await download(url, downloadOptions);
+  } catch (error) {
+    const notFound = error instanceof DownloadHttpError && error.status === 404;
+    if (releaseBase !== PREFERRED_RELEASE_BASE || (!notFound && !isTransientNetworkError(error))) throw error;
+    bytes = await download(`${FALLBACK_RELEASE_BASE}${suffix}`, downloadOptions);
+  }
+  const destination = join(mirrorRoot, relativePath);
   await mkdir(dirname(destination), { recursive: true });
   const temporary = `${destination}.${randomUUID()}.tmp`;
   await writeFile(temporary, bytes);

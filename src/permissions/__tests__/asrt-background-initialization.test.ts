@@ -54,15 +54,19 @@ const manager = vi.hoisted(() => ({
 }));
 const nativeWorker = vi.hoisted(() => ({
   grantWindowsAcl: vi.fn(),
-  stampWindowsAcl: vi.fn(),
   revokeWindowsAcl: vi.fn(() => []),
   resolveSrtWin: vi.fn(({ path }: { path: string }) => ({ exe: path, prependArgs: [] })),
   getWindowsSandboxUserStatus: vi.fn(() => ({ provisioned: true, credPresent: true, sid: "S-1-5-21-123" })),
 }));
+const stampWindowsAclAsync = vi.hoisted(() => vi.fn(async () => undefined));
 vi.mock("@anthropic-ai/sandbox-runtime", async original => ({
   ...(await original<typeof import("@anthropic-ai/sandbox-runtime")>()),
   ...nativeWorker,
   SandboxManager: manager,
+}));
+vi.mock("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js", async original => ({
+  ...(await original<typeof import("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js")>()),
+  stampWindowsAclAsync,
 }));
 vi.mock("../srt-win-integrity.js", async original => ({
   ...(await original<typeof import("../srt-win-integrity.js")>()),
@@ -155,7 +159,7 @@ describe("background session isolation", () => {
     const grant = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [root] });
     try {
       expect(read.mock.calls.map(([targets]) => targets)).toEqual([paths, paths]);
-      expect(nativeWorker.stampWindowsAcl).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ denyRead: paths, denyWrite: paths }));
+      expect(stampWindowsAclAsync).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ denyRead: paths, denyWrite: paths }));
       expect(nativeWorker.grantWindowsAcl).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ write: [root] }));
     } finally { grant.release(); }
   });
@@ -172,7 +176,7 @@ describe("background session isolation", () => {
     const grant = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [root] });
     try {
       expect(read.mock.calls.map(([targets]) => targets)).toEqual([paths, paths]);
-      expect(nativeWorker.stampWindowsAcl).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ denyWrite: paths, denyRead: [] }));
+      expect(stampWindowsAclAsync).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ denyWrite: paths, denyRead: [] }));
       expect(nativeWorker.grantWindowsAcl).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ write: [root] }));
     } finally { grant.release(); }
   });
