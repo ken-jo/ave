@@ -1173,6 +1173,16 @@ export class PermissionManager {
   // Re-evaluate the live scopes at the resolved connection boundary, without another wait.
   checkLoadedNetworkPermission(destination: NetworkPermissionDestination, context: PermissionCheckContext): NetworkPermissionEvaluation {
     const subject = this.networkRuleSubject(destination, context);
+    if (subject !== undefined) {
+      const versions = [this.userRulesVersion];
+      if (subject.projectCwd !== undefined) versions.push(this.projectRuleScopes.policyVersionFor(subject.projectCwd));
+      if (versions.some(version => version === undefined || !isPersistedPolicyVersionCurrent(version))) {
+        return this.evaluateNetworkPermission(destination, {
+          ...context,
+          admissionDenial: context.admissionDenial ?? { code: "policy-changed", reason: "Permission policy changed before execution." },
+        }, subject, undefined);
+      }
+    }
     try {
       const rule = subject === undefined ? undefined : this.matchLoadedNetworkRule(subject);
       return this.evaluateNetworkPermission(destination, context, subject, rule);

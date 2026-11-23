@@ -3,7 +3,7 @@ vi.mock("../../shared/windows-configuration-handles.js", async original => (awai
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
 
 // The egress ask callback's decision table (egress-ask.ts): who opened the connection decides whether it is allowed outright, refused, or asked about, and every answer is the literal `true` or a deny with a reason, with one audit row each.
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -30,6 +30,7 @@ import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
 import { createShellNetworkPermissionEvaluator } from "../egress-approval.js";
 import { PermissionManager } from "../permission-manager.js";
 import { deferred } from "../../__tests__/support/deferred.js";
+import * as projectRuleFiles from "../rules/project-rule-files.js";
 
 const matchingScopes = Object.values(EGRESS_GRANT_SCOPE_LADDERS).flat();
 
@@ -1066,6 +1067,71 @@ describe("egress ask callback — shell calls", () => {
     expect(asked).toHaveLength(0);
     expect(audit).toEqual([expect.objectContaining({ decision: "deny" })]);
   });
+
+  it.each(["separate writer", "unpublished commit", "unreadable file"] as const)(
+    "refuses a resolved connection when project rules change during the probe (%s)", async change => {
+      const sessionId = "session-1";
+      const probing = deferred<void>();
+      const finishProbe = deferred<void>();
+      const remoteControllerAuthority = bindRemoteControllerToSession({
+        kind: "tailnet-controller",
+        actorId: "tailnet:controller-digest",
+        pairedShare: { pairingId: "pairing", pairingEpoch: 1, shareId: "share", shareEpoch: 1, scope: "scope" },
+        pairedShareGuard: { isCurrent: () => true, refreshCurrent: async () => {
+          probing.resolve();
+          await finishProbe.promise;
+          return true;
+        } },
+      }, sessionId);
+      owners.set(SHELL_TOKEN, { ...interactiveShell, context: { ...interactiveShell.context, sessionId,
+        permissionContext: { remoteControllerAuthority } } });
+      const rulesPath = join(dir, "permissions.json");
+      const manager = new PermissionManager(rulesPath);
+      manager.setMode("strict");
+      const scope = { kind: "project", projectCwd: PROJECT } as const;
+      const pattern = "Network(github.com:443)";
+      await manager.addRulePersist({ pattern, action: "allow" }, scope);
+      const location = projectRuleFiles.projectRulesLocation(dir, PROJECT);
+      const pending = rawCallback(undefined, createShellNetworkPermissionEvaluator(manager))({ host: "github.com", port: 443 }, {
+        attributionKey: SHELL_TOKEN, identity: "listener", phase: "resolved", addresses: ["140.82.112.3"], resolution: "pinned",
+      });
+      const writing = deferred<void>();
+      const finishPublish = deferred<void>();
+      let write: Promise<void> | undefined;
+      const update = projectRuleFiles.updateProjectRulesFile;
+      const writerSpy = vi.spyOn(projectRuleFiles, "updateProjectRulesFile");
+      try {
+        await probing.promise;
+        if (change === "unpublished commit") {
+          writerSpy.mockImplementationOnce(async (...args) => {
+            const committed = await update(...args);
+            writing.resolve();
+            await finishPublish.promise;
+            return committed;
+          });
+          write = manager.addRulePersist({ pattern, action: "deny" }, scope);
+          await writing.promise;
+        } else {
+          await new PermissionManager(rulesPath).addRulePersist({ pattern, action: "deny" }, scope);
+        }
+        expect(JSON.parse(readFileSync(location.filePath, "utf8")).rules).toContainEqual({ pattern, action: "deny" });
+        if (change === "unreadable file") {
+          renameSync(location.filePath, `${location.filePath}.saved`);
+          mkdirSync(location.filePath);
+        }
+        finishProbe.resolve();
+        expect(await pending).toEqual({ allow: false, reason: "Permission policy changed before execution." });
+        expect(asked).toHaveLength(0);
+        expect(audit).toEqual([expect.objectContaining({ decision: "deny" })]);
+      } finally {
+        finishProbe.resolve();
+        finishPublish.resolve();
+        await write;
+        writerSpy.mockRestore();
+      }
+    },
+  );
+
 
   it.each(["prompt", "remembered grant"] as const)("does not act on a %s for a call that ended while its policy was evaluated", async (path) => {
     const controller = new AbortController();
