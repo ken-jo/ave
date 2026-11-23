@@ -127,13 +127,12 @@ export async function stageRunHarness(opts: {
   }
   const notify = (pulse?: ChildWaitPulse, recheck = false) => { for (const changed of childChanges) changed(pulse, recheck); };
   const pulse = (reason: string, originSessionId?: string) => notify({ error: new Error(`Child wait ended: ${reason}`), originSessionId });
-  function fail(reason: string, origin: string, completed = false): Flight {
-    const flight = flightOf(origin);
-    flight.failure = { error: new Error(`Child wait ended: ${reason}`), at: ++seq, completed };
-    return flight;
+  function fail(reason: string, origin: string, completed = false): void {
+    flightOf(origin).failure = { error: new Error(`Child wait ended: ${reason}`), at: ++seq, completed };
   }
   function endRun(reason: string, origin: string, completed = false): void {
-    fail(reason, origin, completed).endedAt = seq;
+    fail(reason, origin, completed);
+    flightOf(origin).endedAt = seq;
     notify();
   }
   /** Opens a call for the origin on the current engine; the returned function closes it, and only an accepted call starts the origin. */
@@ -149,7 +148,8 @@ export async function stageRunHarness(opts: {
     };
   }
 
-  /** Children a replaced engine spawned after its replacement. Waits never count them, while `children` and `live()` keep every child. */
+  /** Children a replaced engine spawned after its replacement. Waits never count them, while `children` and `live()` keep every child, so
+   * once a stray exists a count taken from `children.length` runs ahead of what a wait counts. */
   const strays = new WeakSet<FakeChild>();
   let generation = 0;
   const ofCurrentEngine = (list: FakeChild[]) => list.filter(child => !strays.has(child));
@@ -443,7 +443,10 @@ export async function stageRunHarness(opts: {
       if (origin !== undefined) return standing(origin)?.error;
       const flying = inFlight();
       const candidates = flying.length > 0 ? flying : lastRequestedOrigin !== undefined ? [lastRequestedOrigin] : [];
-      return candidates.length > 0 && candidates.every(from => standing(from)) ? standing(candidates.at(-1) ?? "")?.error : undefined;
+      const failures = candidates.map(standing).filter(failure => failure !== undefined);
+      if (failures.length === 0 || failures.length < candidates.length) return undefined;
+      // The newest failure names it, whatever order the items were first seen in.
+      return failures.reduce((newest, failure) => failure.at > newest.at ? failure : newest).error;
     }
     widen(current);
     const failedAtCreation = createdFailed();
