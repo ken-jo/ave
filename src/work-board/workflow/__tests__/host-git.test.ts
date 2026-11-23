@@ -334,7 +334,7 @@ describe("host git", () => {
     });
   });
 
-  it("every process the work board starts is started here, and only as git through the host floor", () => {
+  it("every process the work board starts is started here, only as git through the host floor and the host's one start of git", () => {
     const board = fileURLToPath(new URL("../../", import.meta.url));
     const sources = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap(entry => entry.isDirectory()
       ? entry.name === "__tests__" ? [] : sources(join(dir, entry.name))
@@ -342,10 +342,10 @@ describe("host git", () => {
     const starting = sources(board).filter(file => /child_process/u.test(readFileSync(file, "utf8")));
     expect(starting.map(file => relative(board, file).split(sep).join("/"))).toEqual(["workflow/host-git.ts"]);
     const text = readFileSync(join(board, "workflow", "host-git.ts"), "utf8");
-    expect(text.match(/\bspawn\(/gu)).toHaveLength(1);
+    expect(text.match(/\bspawn\(/gu)).toBeNull();
+    expect(text.match(/\bspawnHostGitIfWorkspaceFree\(/gu)).toHaveLength(1);
     // The program is the one the host resolved, never a name looked up where the call runs.
-    expect(text).toMatch(/\bspawn\(program, args, /u);
-    expect(text).not.toMatch(/\bspawn\(\s*["'`]/u);
+    expect(text).toMatch(/\bspawnHostGitIfWorkspaceFree\(cwd, git\.path, args, /u);
   });
 
   it("a path reaches git only as a literal pathspec the call gives apart: an argument list that carries one is refused before git starts", async () => {
@@ -505,6 +505,19 @@ describe("host git on the installed git", () => {
       release();
     }
     expect((await git.run(held, ["--version"])).code).toBe(0);
+  });
+
+  it("a hold a sandboxed command takes while the host resolves git still refuses the call, and git never starts", async () => {
+    const held = join(base, "held");
+    mkdirSync(held);
+    const program = (await discoverHostGitAsync(null)).git?.path as string;
+    const git = createHostGit({ env, resolve: async (use) => {
+      const release = holdSandboxGitWrites([held]);
+      try { return await use({ path: program }); } finally { release(); }
+    } });
+    spawned.calls = 0;
+    expect(await reasonOf(git.run(held, ["--version"]))).toBe("held");
+    expect(spawned.calls).toBe(0);
   });
 });
 

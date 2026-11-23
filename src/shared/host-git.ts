@@ -1,3 +1,4 @@
+import { type ChildProcess, spawn, type SpawnOptions } from "node:child_process";
 import { isAbsolute, relative, sep } from "node:path";
 import { inspectPhysicalFilesystemPath } from "./shell-filesystem-path.js";
 
@@ -50,6 +51,13 @@ export function isHostGitWorkspaceAvailable(root: string): boolean {
     if (roots.some((held) => containsWorkspace(held, workspace) || containsWorkspace(workspace, held))) return false;
   }
   return true;
+}
+
+/** The one place host git starts on a workspace: the hold on `workspace` is asked and the process started in one synchronous step, so
+ * no sandboxed command can take the hold in between. `held` starts nothing. */
+export function spawnHostGitIfWorkspaceFree(workspace: string, program: string, args: readonly string[], options: SpawnOptions): ChildProcess | "held" {
+  if (!isHostGitWorkspaceAvailable(workspace)) return "held";
+  return spawn(program, args, { ...options, shell: false });
 }
 
 /** Refuse implicit bare-repository discovery and prevent repository metadata from starting monitors or hooks. Callers retain their environment,

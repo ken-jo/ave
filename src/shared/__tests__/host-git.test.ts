@@ -1,7 +1,8 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { gitFixtureEnv } from "../../__tests__/support/git-fixture-env.mjs";
 import { shellQuote } from "../../lib/shell-resolver.js";
@@ -173,5 +174,49 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("h
     const after = git(root, ["commit", "--quiet", "--allow-empty", "-m", "fixture"], true);
     expect(after.status, after.stderr).toBe(0);
     expect(existsSync(marker)).toBe(false);
+  });
+});
+
+describe("host git starts only where the hold is asked", () => {
+  const src = fileURLToPath(new URL("../../", import.meta.url));
+  /** The one start, and the one caller that asks the hold for a plan the shell tool runs later. */
+  const ASKS_THE_HOLD = new Set(["shared/host-git.ts", "permissions/verified-shell-command.ts"]);
+  /** Modules that run the git the host resolved on a workspace. */
+  const WORKSPACE_GIT = ["work-board/workflow/host-git.ts", "memory/project-agents-md.ts"];
+  const productSources = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap(entry => entry.isDirectory()
+    ? entry.name === "__tests__" ? [] : productSources(join(dir, entry.name))
+    : /\.tsx?$/u.test(entry.name) && !/\.d\.ts$/u.test(entry.name) ? [join(dir, entry.name)] : []);
+  const tree = (): Map<string, string> => new Map(productSources(src).map(file => [relative(src, file).split(sep).join("/"), readFileSync(file, "utf8")]));
+
+  function problems(sources: ReadonlyMap<string, string>): string[] {
+    const found: string[] = [];
+    for (const [file, text] of sources) {
+      if (/\bisHostGitWorkspaceAvailable\b/u.test(text) && !ASKS_THE_HOLD.has(file)) found.push(`${file}: asks the hold apart from the start`);
+    }
+    for (const file of WORKSPACE_GIT) {
+      const text = sources.get(file) ?? "";
+      if (/\b(?:spawn|spawnSync|execFile|execFileSync|exec|execSync|fork)\s*\(/u.test(text)) found.push(`${file}: starts a process itself`);
+      if (/^import\s+(?!type\b)[^;]*from\s+["']node:child_process["']/mu.test(text)) found.push(`${file}: imports a process start`);
+    }
+    if ((sources.get("shared/host-git.ts") ?? "").match(/\bspawn\(/gu)?.length !== 1) found.push("shared/host-git.ts: starts git other than in the one start");
+    return found;
+  }
+
+  it("in the tree", () => {
+    expect(problems(tree())).toEqual([]);
+  });
+
+  it("refuses a planted start of the resolved git and a planted hold check", () => {
+    const sources = tree();
+    const planted = new Map(sources);
+    planted.set("memory/project-agents-md.ts", `${sources.get("memory/project-agents-md.ts")}\nexecFile(git.path, args);\n`);
+    planted.set("work-board/workflow/host-git.ts", `import { spawn } from "node:child_process";\n${sources.get("work-board/workflow/host-git.ts")}\nspawn(git.path, args, {});\n`);
+    planted.set("marketplace/git/run-git.ts", `${sources.get("marketplace/git/run-git.ts")}\nisHostGitWorkspaceAvailable(root);\n`);
+    expect(problems(planted)).toEqual([
+      "marketplace/git/run-git.ts: asks the hold apart from the start",
+      "work-board/workflow/host-git.ts: starts a process itself",
+      "work-board/workflow/host-git.ts: imports a process start",
+      "memory/project-agents-md.ts: starts a process itself",
+    ]);
   });
 });

@@ -1,11 +1,11 @@
-import { spawn } from "node:child_process";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { getIsPackaged, isConfigured, isPackagedElectronProcess } from "../../boot/dev-flags.js";
 import { createLogger } from "../../lib/logger.js";
 import { forceKillManagedChildProcess } from "../../main/managed-child-processes.js";
-import { buildHostGitArgs, HOOK_EVENTS, HOOK_EVENTS_VALIDATED, isHostGitWorkspaceAvailable } from "../../shared/host-git.js";
+import { buildHostGitArgs, HOOK_EVENTS, HOOK_EVENTS_VALIDATED, spawnHostGitIfWorkspaceFree } from "../../shared/host-git.js";
 import { parseGitVersion } from "../../shared/git-version.js";
 import { installerGitRoot, withHostGitRecovery } from "../../shared/host-git-executable.js";
 
@@ -112,7 +112,6 @@ export function createHostGit(options: { env?: NodeJS.ProcessEnv; resolve?: Host
   /** What git wrote, as the bytes it wrote. */
   function raw(cwd: string, args: readonly string[], call: HostGitCall = {}): Promise<{ code: number; stdout: Buffer; stderr: Buffer }> {
     if (args.includes("--")) return Promise.reject(new Error("a path reaches git only as one of the call's paths"));
-    if (!isHostGitWorkspaceAvailable(cwd)) return Promise.reject(new HostGitError("held", "the workspace is held by a sandboxed command"));
     const configArgs = [...HARDENED_CONFIG.flatMap(entry => ["-c", entry]), ...(call.drivers ?? [])];
     const full = [
       ...call.worktree === undefined ? [] : [`--git-dir=${call.worktree.gitDir}`, `--work-tree=${call.worktree.workTree}`],
@@ -124,9 +123,10 @@ export function createHostGit(options: { env?: NodeJS.ProcessEnv; resolve?: Host
 
   function start(git: HostGitProgram | null, cwd: string, args: string[], call: HostGitCall): Promise<{ code: number; stdout: Buffer; stderr: Buffer }> {
     if (git === null || !isAbsolute(git.path)) return Promise.reject(new HostGitError("unavailable", "no git installation was found"));
-    const program = git.path;
     return new Promise((resolve, reject) => {
-      const child = spawn(program, args, { cwd, env: programEnv(call.isolated === true ? isolated : env, git), shell: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+      const started = spawnHostGitIfWorkspaceFree(cwd, git.path, args, { cwd, env: programEnv(call.isolated === true ? isolated : env, git), windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+      if (started === "held") return reject(new HostGitError("held", "the workspace is held by a sandboxed command"));
+      const child = started as ChildProcessWithoutNullStreams;
       const out: Buffer[] = [];
       const err: Buffer[] = [];
       let size = 0;

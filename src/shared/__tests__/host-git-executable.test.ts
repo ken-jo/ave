@@ -501,10 +501,10 @@ describe("resolveHostGit", () => {
       };
       expect(execFileSync).not.toHaveBeenCalled();
       expect(spawnSync).not.toHaveBeenCalled();
-      expect(spawn).toHaveBeenCalledExactlyOnceWith(bundled, ["--no-lazy-fetch", "--version"], expect.objectContaining(expectedOptions));
-      expect(execFile).toHaveBeenCalledTimes(2);
-      expect.soft(execFile).toHaveBeenNthCalledWith(2, bundled, expect.arrayContaining(["check-ignore"]), expect.objectContaining(expectedOptions), expect.any(Function));
-      expect(execFile).toHaveBeenNthCalledWith(1, helper, ["--system-directory"], expect.objectContaining({
+      expect(spawn).toHaveBeenCalledTimes(2);
+      expect(spawn).toHaveBeenNthCalledWith(1, bundled, ["--no-lazy-fetch", "--version"], expect.objectContaining(expectedOptions));
+      expect.soft(spawn).toHaveBeenNthCalledWith(2, bundled, expect.arrayContaining(["check-ignore"]), expect.objectContaining(expectedOptions));
+      expect(execFile).toHaveBeenCalledExactlyOnceWith(helper, ["--system-directory"], expect.objectContaining({
         shell: false,
         env: {
           HOMEDRIVE: "", HOMEPATH: "", LOGONSERVER: "", PATH: "", SYSTEMDRIVE: "", SYSTEMROOT: "",
