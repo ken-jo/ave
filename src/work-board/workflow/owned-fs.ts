@@ -1,6 +1,7 @@
-import { type BigIntStats, chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { type BigIntStats, chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { type FileHandle, open } from "node:fs/promises";
 import { isAbsolute, join, relative, sep } from "node:path";
+import { replaceStagedFile } from "../../lib/atomic-file.js";
 
 /**
  * Every host change under a run folder goes through here. A folder is held by its device and file id, made one component at a time, and
@@ -257,7 +258,7 @@ class Dir implements OwnedDir {
     this.check();
     const written = stats(`${path}.tmp`);
     if (written === undefined || !written.isFile() || written.nlink !== 1n || idOf(written) !== id) throw new OwnedFsError("changed", "the file was replaced while it was written");
-    renameSync(`${path}.tmp`, path);
+    replaceStagedFile(`${path}.tmp`, path);
   }
 
   readFile(name: string): Buffer | undefined {
