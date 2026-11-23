@@ -10,6 +10,8 @@ import { configureHostResources } from "../../main/host-resources.js";
 import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
 import { projectRulesLocation } from "../rules/project-rule-files.js";
 import { PermissionManager } from "../permission-manager.js";
+import * as permissionsStore from "../permissions-store.js";
+import { deferred } from "../../__tests__/support/deferred.js";
 import { NO_APPROVER_MESSAGE } from "../decision-pipeline.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { PermissionTestResources } from "./test-resources.js";
@@ -222,5 +224,71 @@ describe("user rules at the resolved connection", () => {
     writeFileSync(userFile(), readFileSync(userFile(), "utf8").replace("\n}", ",\n  \"note\": 1\n}"));
     expect(running.checkLoadedNetworkPermission(DESTINATION, headless).permission)
       .toMatchObject({ decision: "deny", reason: "Permission policy changed before execution." });
+  });
+});
+
+describe("a user-rules reload keeps restrictions that live only in memory", () => {
+  const userFile = () => join(directory, "permissions.json");
+  const booted = async () => {
+    await manager.addRulePersist({ pattern: "Network(api.example.com:443)", action: "allow" }, { kind: "user" });
+    const running = new PermissionManager(userFile());
+    running.setMode("default");
+    await running.loadRulesFromFile();
+    return running;
+  };
+  // A hand edit the next connection must reload: an unrelated allow added outside Ave.
+  const handEdit = () => {
+    const edited = JSON.parse(readFileSync(userFile(), "utf8")) as { rules: unknown[] };
+    edited.rules.push({ pattern: "Network(other.example.com:443)", action: "allow" });
+    writeFileSync(userFile(), `${JSON.stringify(edited, null, 2)}\n`);
+  };
+  const tool = (subject: PermissionManager, name: string) => subject.checkDetailed(name, "builtin", "read").decision;
+
+  it("keeps a deny whose durable write failed through a later reload", async () => {
+    const running = await booted();
+    const writer = vi.spyOn(permissionsStore, "updatePermissionsFile").mockRejectedValueOnce(new Error("disk full"));
+    try {
+      await expect(running.addAlwaysDeniedPersist("deny_probe")).rejects.toThrow("disk full");
+    } finally {
+      writer.mockRestore();
+    }
+    expect(tool(running, "deny_probe")).toBe("deny");
+    handEdit();
+    await running.checkNetworkPermission(DESTINATION, { headless: true });
+    expect(running.checkLoadedNetworkPermission({ ...DESTINATION, host: "other.example.com" }, { headless: true }).permission.decision).toBe("allow");
+    expect(tool(running, "deny_probe")).toBe("deny");
+  });
+
+  it.each([
+    ["deny", "deny_probe", (subject: PermissionManager) => subject.addAlwaysDeniedPersist("deny_probe")],
+    ["ask", "ask_probe", (subject: PermissionManager) => subject.addAlwaysAskedPersist("ask_probe")],
+  ] as const)("keeps a %s rule added while a reload is reading the file", async (decision, name, add) => {
+    const running = await booted();
+    handEdit();
+    const reading = deferred<void>();
+    const release = deferred<void>();
+    const read = permissionsStore.readPermissionsFile;
+    const held = vi.spyOn(permissionsStore, "readPermissionsFile").mockImplementationOnce(async (...args) => {
+      const file = await read(...args);
+      reading.resolve();
+      await release.promise;
+      return file;
+    });
+    try {
+      const connection = running.checkNetworkPermission(DESTINATION, { headless: true });
+      await reading.promise;
+      const adding = add(running);
+      // Give a writer that does not wait for the reload time to finish its write and its in-memory insert first.
+      await Promise.race([adding, new Promise(resolve => setTimeout(resolve, 200))]);
+      release.resolve();
+      await connection;
+      // A deny is active from the moment it is added; an ask becomes active once its write lands.
+      if (decision === "deny") expect(tool(running, name)).toBe(decision);
+      await adding;
+      expect(tool(running, name)).toBe(decision);
+    } finally {
+      release.resolve();
+      held.mockRestore();
+    }
   });
 });

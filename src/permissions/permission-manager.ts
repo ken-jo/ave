@@ -97,6 +97,7 @@ import { errorMessage } from "../shared/error-message.js";
 import type { ExecutionMode } from "../shared/permission-mode.js";
 import type { ApprovalSurface } from "../shared/authorization-required.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
+import { createSerialQueue } from "../lib/with-file-lock.js";
 import { capturePersistedPolicyVersion, isPersistedPolicyVersionCurrent, persistedPolicyVersionForContent, STALE_PERMISSION_POLICY, type PersistedPolicyVersion } from "./persisted-policy-version.js";
 import {
   captureShellWorkingDirectoryIdentity,
@@ -580,6 +581,11 @@ export class PermissionManager {
   // The rules set in memory before the user file merges in (boot's standing allows): a refresh starts again from these.
   private baseRules: PermissionRule[] = [];
   private userRulesRefresh: Promise<void> | undefined;
+  // Writes of the user rule file and user-rule reloads run one at a time, so no writer interleaves between a reload's read and its assignment.
+  private readonly userRulesQueue = createSerialQueue();
+  // Deny and ask rules active in memory that the file may not hold: inserted before their write, kept when that write fails. A reload
+  // keeps them, because a fail-closed rule must never be dropped by a reload. Cleared when a later write persists it or it is removed in-app.
+  private readonly unpersistedRestrictions: PermissionRule[] = [];
   // Unread deny rules fail admission closed for every tool category.
   private rulesLoadError: PermissionRulesFileCorruptError | undefined;
   private readonly projectRuleScopes: ProjectRuleScopes;
@@ -943,6 +949,8 @@ export class PermissionManager {
       this.rules.unshift({ pattern, action: "deny" });
       this.policyGeneration += 1;
     }
+    const restriction = { pattern, action: "deny" as const };
+    if (!this.unpersistedRestrictions.some((r) => sameRule(r, restriction))) this.unpersistedRestrictions.push(restriction);
     // Persistent file.
     await this.updateRulesFile((file) => {
       const fileExists = file.rules.some(
@@ -952,6 +960,7 @@ export class PermissionManager {
         file.rules.unshift({ pattern, action: "deny" });
       }
     });
+    this.forgetUnpersisted(restriction);
     this.policyGeneration += 1;
     this.broadcastConfigChanged?.();
     // Deny added → outstanding bearers MUST be aborted so a plugin that held a bearer captured in a closure can't continue calling the upstream provider after the user revoked access.
@@ -1293,6 +1302,7 @@ export class PermissionManager {
     this.rules = this.rules.filter(
       (r) => !(r.pattern === pattern && r.action === action && r.source === source),
     );
+    if (source === undefined) this.forgetUnpersisted({ pattern, action });
     if (action === "allow" && source === undefined) this.alwaysAllowed.delete(pattern);
     this.policyGeneration += 1;
 
@@ -1372,7 +1382,11 @@ export class PermissionManager {
   // rules; a change after this point is caught by the final synchronous check. Concurrent connections share one reload.
   private async refreshUserRulesIfChanged(): Promise<void> {
     if (this.userRulesVersion !== undefined && isPersistedPolicyVersionCurrent(this.userRulesVersion)) return;
-    this.userRulesRefresh ??= this.reloadUserRules().finally(() => { this.userRulesRefresh = undefined; });
+    this.userRulesRefresh ??= this.userRulesQueue(async () => {
+      // Checked again under the queue: a writer that ran first may already have published the current version.
+      if (this.userRulesVersion !== undefined && isPersistedPolicyVersionCurrent(this.userRulesVersion)) return;
+      await this.reloadUserRules();
+    }).finally(() => { this.userRulesRefresh = undefined; });
     await this.userRulesRefresh;
   }
 
@@ -1393,6 +1407,9 @@ export class PermissionManager {
     this.rules = this.baseRules.map((rule) => ({ ...rule }));
     this.alwaysAllowed.clear();
     if (file) this.mergeFileRules(file);
+    for (const rule of this.unpersistedRestrictions) {
+      if (!this.rules.some((r) => sameRule(r, rule) && !r.source)) this.rules.unshift({ ...rule });
+    }
     this.userRulesVersion = loadedUserRulesVersion(policyVersion, file);
     this.rulesLoadError = undefined;
     this.policyGeneration += 1;
@@ -1446,6 +1463,15 @@ export class PermissionManager {
 
   // Retain the version actually written, never adopt another writer's unseen rules.
   private async updateRulesFile(mutator: Parameters<typeof updatePermissionsFile>[1], authority?: ApprovalPersistenceGuard): Promise<void> {
+    await this.userRulesQueue(() => this.updateRulesFileNow(mutator, authority));
+  }
+
+  private forgetUnpersisted(rule: Pick<PermissionRule, "pattern" | "action">): void {
+    const index = this.unpersistedRestrictions.findIndex((r) => sameRule(r, rule));
+    if (index >= 0) this.unpersistedRestrictions.splice(index, 1);
+  }
+
+  private async updateRulesFileNow(mutator: Parameters<typeof updatePermissionsFile>[1], authority?: ApprovalPersistenceGuard): Promise<void> {
     const previous = this.userRulesVersion;
     let written: PermissionsFile | undefined;
     let knownPolicy = false;
@@ -2386,4 +2412,8 @@ function loadedUserRulesVersion(version: PersistedPolicyVersion | undefined, fil
   if (version === undefined || !isPersistedPolicyVersionCurrent(version)) return undefined;
   if (version.withheld === true) return version;
   return version.contentsDigest === sha256Hex(canonicalStringify(file)) ? version : undefined;
+}
+
+function sameRule(left: Pick<PermissionRule, "pattern" | "action">, right: Pick<PermissionRule, "pattern" | "action">): boolean {
+  return left.pattern === right.pattern && left.action === right.action;
 }
