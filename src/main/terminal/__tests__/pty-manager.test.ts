@@ -1749,7 +1749,7 @@ describe("pty-manager typing an approved agent command", () => {
       expect(pty.written).toEqual(writes.slice(0, through));
     });
 
-    it("shares the deadline between both editor reports and the paste echo", async () => {
+    it("gives both editor reports and the paste echo independent budgets", async () => {
       const { pty, prompt, shell, report } = await zshTerminal(3);
       pty.emitData(prompt());
       shell.shows = () => "";
@@ -1768,11 +1768,51 @@ describe("pty-manager typing an approved agent command", () => {
       await flushEvents();
       expect(pty.written).toEqual(writes.slice(0, 4));
       expect(vi.getTimerCount()).toBe(1);
+      await vi.advanceTimersByTimeAsync(101);
+      report(line);
+      await flushEvents();
+      expect(pty.written).toEqual(writes);
+      await expect(typing).resolves.toEqual({ ok: true, firstBlockId: 1 });
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it.each<Wait>(["empty report", "paste echo", "confirmed report"])("expires the pending %s at 2,000 ms", async (wait) => {
+      const { pty, through, emit } = await pauseAt(wait);
+      const typing = typeTerminalCommand(TAB, 3, line, "/w");
+      await flushEvents();
+      expect(pty.written).toEqual(writes.slice(0, through));
+      expect(vi.getTimerCount()).toBe(1);
+      await vi.advanceTimersByTimeAsync(1_999);
+      expect(pty.written).toEqual(writes.slice(0, through));
+      expect(vi.getTimerCount()).toBe(1);
       await vi.advanceTimersByTimeAsync(1);
       expect(vi.getTimerCount()).toBe(0);
       await expect(typing).resolves.toMatchObject({ ok: false, reason: "edit-line-mismatch" });
-      report(line);
-      expect(pty.written).toEqual([...writes.slice(0, 4), "\u0003"]);
+      emit();
+      await flushEvents();
+      expect(pty.written).toEqual([...writes.slice(0, through), "\u0003"]);
+    });
+
+    it("allows the final exclusive check to finish after the editor wait has settled", async () => {
+      const { pty, prompt } = await zshTerminal(3);
+      pty.emitData(prompt());
+      const verify = readForegroundMock.getMockImplementation();
+      readForegroundMock.mockImplementation(async (_pid, options) => {
+        if (options?.exclusive) await new Promise((resolve) => setTimeout(resolve, 2_100));
+        return foregroundReading;
+      });
+      try {
+        const typing = typeTerminalCommand(TAB, 3, line, "/w");
+        await flushEvents();
+        expect(readForegroundMock).toHaveBeenLastCalledWith(9999, { exclusive: true });
+        expect(pty.written).toEqual(writes.slice(0, 4));
+        await vi.advanceTimersByTimeAsync(2_100);
+        await expect(typing).resolves.toEqual({ ok: true, firstBlockId: 1 });
+        expect(pty.written).toEqual(writes);
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        readForegroundMock.mockImplementation(verify ?? (async () => foregroundReading));
+      }
     });
   });
 
