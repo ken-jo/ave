@@ -443,7 +443,7 @@ describe("ToolExecutor sealed rationale resume", () => {
   it.each([
     [true, "executes once as the desk's answer"],
     [false, "refuses it as unrelated drift"],
-  ] as const)("resumes after a policy change turned the ask into an allow (same-card transition: %s) and %s", async (transition) => {
+  ] as const)("resumes after a policy change turned the ask into an allow (same-card transition: %s) and %s", async (transition, _outcome) => {
     const f = await fixture();
     try {
       await f.manager.addAlwaysAllowedPersist("sealed_write");
