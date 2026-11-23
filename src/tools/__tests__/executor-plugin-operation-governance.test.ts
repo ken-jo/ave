@@ -1950,6 +1950,9 @@ describe("ToolExecutor plugin operation governance", () => {
         .map(([entry]) => entry)
         .filter((entry) => JSON.stringify(entry.denyReasons ?? []).includes("remains unsettled after interruption"));
       expect(unsettled).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: hostStop ? "unknown" : "plugin-emitted" })]);
+      // The authorization row and exactly one settlement row; only a host stop leaves the invocation's origin behind.
+      expect(auditLogger.appendPermissionAuditEntry.mock.calls.map(([entry]) => [entry.decision, entry.trustOrigin]))
+        .toEqual([["allow", "plugin-emitted"], ["deny", hostStop ? "unknown" : "plugin-emitted"]]);
     } finally {
       releaseWrite?.();
       vi.useRealTimers();

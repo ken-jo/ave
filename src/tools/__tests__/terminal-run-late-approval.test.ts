@@ -1,7 +1,7 @@
 import type { UserOwnedSurfaceChoice } from "../../shared/permissions-events.js";
 import { NO_APPROVER_MESSAGE } from "../../permissions/decision-pipeline.js";
 import { randomBytes, randomUUID } from "node:crypto";
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuditLogger } from "../../audit/audit-logger.js";
@@ -37,7 +37,7 @@ afterEach(async () => {
   await resources.cleanup();
 });
 
-async function fixture(options: { outside?: boolean; mode?: "default" | "strict"; exactRule?: boolean; holdFinalizer?: boolean; surfaceChoice?: UserOwnedSurfaceChoice; logicalReview?: () => Promise<{ consistent: boolean; reason: string }>; headless?: boolean } = {}) {
+async function fixture(options: { outside?: boolean; mode?: "default" | "strict"; exactRule?: boolean; holdFinalizer?: boolean; surfaceChoice?: UserOwnedSurfaceChoice; logicalReview?: () => Promise<{ consistent: boolean; reason: string }>; headless?: boolean; turnGrant?: boolean } = {}) {
   const root = realpathSync(resources.makeTmpDir("ave-late-terminal-"));
   const outside = realpathSync(resources.makeTmpDir("ave-terminal-outside-"));
   const command = options.outside ? `printf ready > ${shellQuote(join(outside, "output.txt"))}` : COMMAND;
@@ -121,9 +121,9 @@ async function fixture(options: { outside?: boolean; mode?: "default" | "strict"
   }));
   const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined, audit);
   const run = () => executor.executeAll([{ id: "late-terminal-command", name: "terminal_run", input: { command, waitSeconds: 0 } }], {
-    sessionId: SESSION_ID, executionCwd: root, permissionContext: userPermissionContext({ trustOrigin: "llm-tool-arg", userIntent: "Print ready in the selected terminal.", currentTaskStep: "Run the requested terminal status command.", ...(options.headless ? { headless: true } : {}) }),
+    sessionId: SESSION_ID, executionCwd: root, permissionContext: userPermissionContext({ trustOrigin: "llm-tool-arg", userIntent: "Print ready in the selected terminal.", currentTaskStep: "Run the requested terminal status command.", ...(options.headless ? { headless: true } : {}), ...(options.turnGrant ? { onTurnDirectoryGrant: vi.fn() } : {}) }),
   });
-  return { manager, pause, typed, cards, request, approve, deny, gate, reached, release, run, command };
+  return { manager, pause, typed, cards, request, approve, deny, gate, reached, release, run, command, audit };
 }
 
 describe("host terminal late native approval", () => {
@@ -378,4 +378,80 @@ describe("host terminal late native approval", () => {
     });
   });
 
+});
+
+// Each terminal path writes exactly one terminal row, attributed by the provenance of the decision that ended it.
+describe("one terminal row per surface invocation", () => {
+  const terminalRows = (audit: AuditLogger) => readFileSync(audit.getPermissionAuditLogFile(), "utf8").split("\n").filter(Boolean)
+    .map(line => JSON.parse(line) as Record<string, unknown>)
+    .filter(row => row.toolUseId === "late-terminal-command" && (row.decision === "allow" || row.decision === "deny") && row.grantLifetime === undefined);
+  const inconsistent = async () => ({ consistent: false, reason: "The command does not follow the current task." });
+
+  it.each([false, true])("records a deny on the second card as the desk's (outside directory: %s)", async outside => {
+    const f = await fixture({ outside, ...(outside ? { mode: "strict" as const } : {}), exactRule: false, holdFinalizer: false, surfaceChoice: "auto", logicalReview: inconsistent });
+    await runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "fallback-deny-turn" }, async () => {
+      const pending = f.run();
+      await vi.waitFor(() => expect(f.cards).toHaveLength(1));
+      f.approve(f.cards[0], true);
+      await vi.waitFor(() => expect(f.cards).toHaveLength(2));
+      expect(f.cards[1].userOwnedSurfaceReviewFallback).toBe(true);
+      f.deny(f.cards[1]);
+      const [result] = await pending;
+      expect(result.is_error).toBe(true);
+      expect(f.typed).toEqual([]);
+      expect(terminalRows(f.audit)).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "user-keyboard" })]);
+    });
+  });
+
+  it.each([false, true])("records the policy's deny in place of an answered surface card with the invocation's origin (outside directory: %s)", async outside => {
+    const f = await fixture({ outside, ...(outside ? { mode: "strict" as const } : {}), exactRule: false, holdFinalizer: false });
+    await runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "recheck-deny-turn" }, async () => {
+      const pending = f.run();
+      await vi.waitFor(() => expect(f.cards).toHaveLength(1));
+      vi.spyOn(f.manager, "recheckPermission").mockImplementationOnce(permission => ({ ...permission, decision: "deny", reason: "The surface policy now refuses this command." }));
+      f.approve(f.cards[0], true);
+      const [result] = await pending;
+      expect(result.is_error).toBe(true);
+      expect(f.typed).toEqual([]);
+      expect(terminalRows(f.audit)).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "llm-tool-arg" })]);
+    });
+  });
+
+  it.each([
+    ["auto", "llm-tool-arg"],
+    ["ask", "user-keyboard"],
+  ] as const)("records a %s surface choice's turn grant and allow with the %s origin", async (choice, origin) => {
+    const logical = vi.fn(async () => ({ consistent: true, reason: "The requested redirected command follows the current task." }));
+    const f = await fixture({ outside: true, mode: "strict", exactRule: false, holdFinalizer: false, surfaceChoice: choice, logicalReview: logical, turnGrant: true });
+    await runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "surface-grant-turn" }, async () => {
+      const pending = f.run();
+      await vi.waitFor(() => expect(f.cards).toHaveLength(1));
+      f.approve(f.cards[0], true);
+      const [result] = await pending;
+      expect(result.is_error, result.content).toBeFalsy();
+      expect(logical).toHaveBeenCalledTimes(choice === "auto" ? 1 : 0);
+      const grants = readFileSync(f.audit.getPermissionAuditLogFile(), "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line) as Record<string, unknown>)
+        .filter(row => row.grantLifetime !== undefined);
+      expect(grants).toEqual([expect.objectContaining({ grantLifetime: "turn", trustOrigin: origin })]);
+      expect(terminalRows(f.audit)).toEqual([expect.objectContaining({ decision: "allow", trustOrigin: origin })]);
+    });
+  });
+
+  it("records a late deny on the review fallback card as the desk's", async () => {
+    const logical = vi.fn(async () => ({ consistent: true, reason: "The command follows the current task." }));
+    const f = await fixture({ logicalReview: logical, surfaceChoice: "auto" });
+    f.manager.setUserOwnedSurfaceChoice(SESSION_ID, "host-terminal", "auto");
+    await runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "late-fallback-deny-turn" }, async () => {
+      const pending = f.run();
+      await f.reached;
+      await f.pause();
+      f.release();
+      await vi.waitFor(() => expect(f.cards).toHaveLength(1));
+      f.deny(f.cards[0]);
+      const [result] = await pending;
+      expect(result.is_error).toBe(true);
+      expect(f.typed).toEqual([]);
+      expect(terminalRows(f.audit)).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "user-keyboard" })]);
+    });
+  });
 });

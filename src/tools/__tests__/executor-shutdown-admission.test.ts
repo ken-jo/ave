@@ -118,6 +118,7 @@ describe("ToolExecutor admission across the quit seal", () => {
     expect(hostShutdownRows(rowsAtClose, "tu-queued-0")).toHaveLength(1);
     // The host refused the call; the keyboard origin of the invocation does not carry over.
     expect(hostShutdownRows(rows(), "tu-queued-0")).toEqual([expect.objectContaining({ trustOrigin: "unknown" })]);
+    expect(rows().filter((row) => row.toolUseId === "tu-queued-0" && row.decision !== "ask")).toHaveLength(1);
   });
 
   it("records a tool the seal interrupts mid-execution as a host-shutdown deny without the invocation origin", async () => {
