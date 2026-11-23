@@ -1,6 +1,7 @@
 import type { AuditLogger } from "../audit/audit-logger.js";
 import type { PermissionAuditEntryInput } from "../audit/audit-schema.js";
 import { createLogger } from "../lib/logger.js";
+import { errorMessage } from "../shared/error-message.js";
 import { HostExitAbortError } from "../shared/host-exit-abort.js";
 
 const log = createLogger("invocation-ledger");
@@ -108,7 +109,7 @@ function commitDetached(commit: () => Promise<unknown>): void {
     written = Promise.reject(error);
   }
   trackToolInvocationSettlement(written.catch((error: unknown) => {
-    log.error("detached tool invocation audit failed: %s", error instanceof Error ? error.message : String(error));
+    log.error("detached tool invocation audit failed: %s", errorMessage(error));
     throw error;
   }));
 }
