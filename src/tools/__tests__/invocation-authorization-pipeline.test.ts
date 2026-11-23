@@ -55,7 +55,7 @@ function fixture(options: {
     meta: { groupId: "pipeline", toolUseId: "inspect", displayOrder: 0 }, approvalPurpose: undefined, auditInput: {}, abortSignal: undefined,
     rationaleResumeContext: undefined, rationaleBatchContext: undefined,
     targetFilePath: undefined, canonicalTargets: [], approvalCacheKey: undefined,
-    executionCwd: directory, auditCurrentToolCall: vi.fn(), auditCurrentPermissionAsk: vi.fn(),
+    executionCwd: directory, auditCurrentToolCall: vi.fn(), auditCancelledToolCall: vi.fn(), auditCurrentPermissionAsk: vi.fn(),
     withHostShellExecutionPlan: (result) => result,
     abortDeps: vi.fn(), returnRationaleResumeBlock: vi.fn(), sessionId: "pipeline", startTime: Date.now(),
     permissionResult: undefined, resolvedPluginOperation: undefined, pluginOperationPrincipal: undefined, linkedTargets: [],

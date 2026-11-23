@@ -10,12 +10,18 @@ import {
   type DecisionProvenance,
 } from "../../permissions/approval-gate.js";
 import type { PermissionCheckResult } from "../../permissions/permission-manager.js";
+import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import { isHostExitAbort } from "../../shared/host-exit-abort.js";
 import { maskSensitiveData } from "../../shared/dlp.js";
 
 /** The host's refusal of a call the quit seal stopped; no person decided it. */
 export function hostShutdownDenial(): PermissionCheckResult {
   return { decision: "deny", reason: "host-shutdown", provenance: HOST_PROVENANCE };
+}
+
+/** The refusal of a call the user's abort stopped; every user-abort row carries this one. */
+export function userAbortRefusal(): PermissionCheckResult {
+  return { decision: "deny", reason: "user aborted turn", provenance: RULE_PROVENANCE };
 }
 
 /** A refusal an invocation selected for its terminal row before the host ended it. */

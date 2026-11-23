@@ -182,7 +182,7 @@ describe("the answerer contract", () => {
     const writer = new AuditWriter(audit, registry, undefined, true);
     const call = (permission: PermissionCheckResult, cause?: "error") => (row: TerminalRowWriter) => writer.auditToolCall(
       "integrity-session", "write_file", "builtin", "medium", { path: "notes.txt" }, "refused", true, Date.now(), permission, Infinity,
-      { trustOrigin: "plugin-emitted" }, "write", project, undefined, cause, undefined, { toolUseId: "integrity-call" }, row);
+      { trustOrigin: "plugin-emitted" }, "write", project, undefined, cause, undefined, { toolUseId: "integrity-call" }, { row, kind: "denied" });
     const admission = admitToolInvocation("write_file");
     const NO_DENIAL = { governed: () => false, fire: async () => {} };
     admission.terminal.hostTerminal((cause, detail, _selected, row) =>

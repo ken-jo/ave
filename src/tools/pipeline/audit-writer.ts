@@ -1,7 +1,7 @@
-import { appendDirectoryGrantRecord, appendToolInvocationAudit, recordToolInvocationAuditFailure, type DirectoryGrantRecord, type TerminalLifecycleEvent, type TerminalRowWriter } from "../invocation-ledger.js";
+import { appendDirectoryGrantRecord, appendToolInvocationAudit, recordToolInvocationAuditFailure, type DirectoryGrantRecord, type KindedTerminalRowWriter, type TerminalDenial, type TerminalLifecycleEvent } from "../invocation-ledger.js";
 import type { ToolAuditTerminationReason } from "../../audit/audit-logger.js";
-// Tool terminal rows go through auditToolCall with a row writer only the ledger hands out; the ledger fires one
-// PermissionDenied per deny row, except for a governed tool.
+// Tool terminal rows go through auditToolCall with a row writer only the ledger hands out and the kind its writer named;
+// the ledger fires one PermissionDenied per permission-denial row, except for a governed tool, and none for a cancellation.
 import { randomUUID } from "node:crypto";
 import type { ToolRegistry } from "../registry.js";
 import type { ToolSource, ToolCategory, TrustLevel } from "../types.js";
@@ -52,12 +52,33 @@ export class AuditWriter {
   ) {}
 
   // Lifecycle hooks are observe-only: audit decisions but never alter tool control flow or propagate errors.
-  async fireLifecycleEvent(
-    event: "PostToolUseFailure" | TerminalLifecycleEvent,
+  fireLifecycleEvent(
+    event: "PostToolUseFailure",
     sessionId: string | undefined,
     context: { readonly trustOrigin: HookTrustOrigin },
     payload: LifecycleEventPayload,
     abortSignal?: AbortSignal,
+  ): Promise<LifecycleDispatchObservation> {
+    return this.#dispatch(event, sessionId, context, payload, abortSignal);
+  }
+
+  /** Fires the denial the ledger committed; nothing but the ledger can mint one. */
+  fireDenied(
+    denial: TerminalDenial,
+    sessionId: string | undefined,
+    context: { readonly trustOrigin: HookTrustOrigin },
+    payload: LifecycleEventPayload,
+    abortSignal?: AbortSignal,
+  ): Promise<LifecycleDispatchObservation> {
+    return this.#dispatch(denial.event, sessionId, context, payload, abortSignal);
+  }
+
+  async #dispatch(
+    event: "PostToolUseFailure" | TerminalLifecycleEvent,
+    sessionId: string | undefined,
+    context: { readonly trustOrigin: HookTrustOrigin },
+    payload: LifecycleEventPayload,
+    abortSignal: AbortSignal | undefined,
   ): Promise<LifecycleDispatchObservation> {
     if (!this.scriptHookManager) return { status: "unwired" };
     try {
@@ -205,9 +226,9 @@ export class AuditWriter {
     terminationReason?: ToolAuditTerminationReason,
     hookChain?: HookResult[],
     audit?: ToolExecutionAuditMetadata,
-    row?: TerminalRowWriter,
+    terminal?: KindedTerminalRowWriter,
   ): Promise<void> {
-    if (!row) throw new Error(`terminal row of ${toolName} has no ledger writer`);
+    if (!terminal) throw new Error(`terminal row of ${toolName} has no ledger writer`);
     const governedTool = audit?.governedOperation !== undefined;
     const auditSafeInput = auditSafeToolInput(input, audit);
     const auditSafeOutput = governedTool
@@ -269,7 +290,10 @@ export class AuditWriter {
       throw error;
     }
     // The writer enqueues the row before its first await; the ledger's denial lifecycle runs after it and cannot lose it.
-    const appended = row({ entry, ...(ready ? { logger: this.auditLogger } : {}), ...(permission?.decision === "deny" ? { reason: permission.reason } : {}) });
+    const logger = ready ? { logger: this.auditLogger } : {};
+    const appended = entry.decision === "deny"
+      ? terminal.row({ entry, kind: terminal.kind, ...logger, ...(permission?.decision === "deny" ? { reason: permission.reason } : {}) })
+      : terminal.row({ entry, ...logger });
     try {
       await appended;
     } catch (err) {

@@ -715,7 +715,7 @@ describe("forced shutdown with parked executors", () => {
         return sideEffect === "failed history" ? Promise.reject(new Error("history store unavailable")) : held.promise;
       });
       if (sideEffect === "held hook") {
-        vi.spyOn(AuditWriter.prototype, "fireLifecycleEvent").mockImplementation(sideEffectCall as never);
+        vi.spyOn(AuditWriter.prototype, "fireDenied").mockImplementation(sideEffectCall as never);
       } else {
         vi.spyOn(manager, "getRecentlyDenied").mockReturnValue({ append: sideEffectCall } as never);
       }

@@ -11,7 +11,6 @@ import {
   type EffectLedger,
 } from "../../permissions/effect-ledger.js";
 import type { PermissionCheckResult } from "../../permissions/permission-manager.js";
-import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import type { ToolExecutionAuditMetadata } from "../../audit/audit-schema.js";
 import { t } from "../../i18n/index.js";
 import type { ToolSource, TrustLevel, ToolCategory } from "../types.js";
@@ -24,7 +23,7 @@ import type {
 } from "../executor.js";
 import type { AuditWriter } from "./audit-writer.js";
 import { commitTerminalRow, type InvocationTerminal, type TerminalRowWriter } from "../invocation-ledger.js";
-import { hostShutdownDenial } from "./approval-outcome.js";
+import { hostShutdownDenial, userAbortRefusal } from "./approval-outcome.js";
 import { emitToolStart } from "./display-mask.js";
 
 // Record per-invocation state while stage-local permission, category, and scope mutations remain coordinated at authorization boundaries.
@@ -103,7 +102,7 @@ export interface UserAbortDeps {
   terminal: InvocationTerminal;
 }
 
-// Emit cancellation result and fixed denial audit without participating in containment relaxation.
+// Emit cancellation result and its fixed cancellation row without participating in containment relaxation.
 export async function returnUserAbort(deps: UserAbortDeps): Promise<ToolResult> {
   const {
     input,
@@ -126,9 +125,10 @@ export async function returnUserAbort(deps: UserAbortDeps): Promise<ToolResult> 
   const hostShutdown = isHostExitAbort(abortSignal?.reason);
   const abortedPermission: PermissionCheckResult = hostShutdown
     ? hostShutdownDenial()
-    : { decision: "deny", reason: "user aborted turn", provenance: RULE_PROVENANCE };
+    : userAbortRefusal();
   emitToolStart(callbacks, toolUse.name, input, meta);
   callbacks?.onToolEnd?.(toolUse.name, msg, true, meta, undefined, durationMs);
+  // A user abort and the host's quit are cancellations: no permission refused the call.
   const write = (row: TerminalRowWriter) => auditWriter.auditToolCall(
     sessionId,
     toolUse.name,
@@ -147,7 +147,7 @@ export async function returnUserAbort(deps: UserAbortDeps): Promise<ToolResult> 
     hostShutdown ? "host-shutdown" : "user-abort",
     undefined,
     audit,
-    row,
+    { row, kind: "cancelled" },
   );
   await commitTerminalRow(deps.terminal, write);
   return { tool_use_id: toolUse.id, content: msg, is_error: true, durationMs };

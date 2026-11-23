@@ -31,27 +31,50 @@ type TerminalOwner = "invocation" | "rationale";
 type TerminalState = "open" | "enqueued" | "committed" | "failed";
 /** Why the host ends an attempt itself; `selected` is a human outcome already accepted for it. */
 type HostTerminalCause = "host-shutdown" | "user-abort" | "error";
-/** The lifecycle event only the ledger emits, once, after an invocation's deny row is enqueued. */
+/** The lifecycle event only the ledger emits, once, after an invocation's permission-denial row is enqueued. */
 export type TerminalLifecycleEvent = "PermissionDenied";
 /**
- * How an attempt reports its denial. The ledger fires it once for every deny row it commits, from any writer; a governed
- * tool's lease and proof cannot include effect-capable hooks, so a governed attempt's rows fire nothing.
+ * What a deny row ends: a permission denial (a rule, a person, a hook, a host policy, an integrity failure), or a
+ * cancellation (a user abort, a host shutdown, a deadline drain) that no permission decided. The writer of each deny row
+ * names it; the ledger reads nothing else to decide whether the row is a denial.
+ */
+export type TerminalDenyKind = "denied" | "cancelled";
+type DenyEntry = Extract<PermissionAuditEntryInput, { decision: "deny" }>;
+
+/** A permission denial the ledger committed; only the ledger mints one, so only its lifecycle can fire PermissionDenied. */
+class LedgerDenial {
+  readonly event: TerminalLifecycleEvent = "PermissionDenied";
+  // A private field makes the type nominal: no object built outside the ledger is a TerminalDenial.
+  readonly #reason: string;
+  constructor(reason: string) { this.#reason = reason; }
+  get reason(): string { return this.#reason; }
+}
+export type TerminalDenial = LedgerDenial;
+
+/**
+ * How an attempt reports its denial. The ledger fires it once for every deny row of kind `denied` it commits, from any
+ * writer; a cancellation fires nothing, and a governed tool's lease and proof cannot include effect-capable hooks, so a
+ * governed attempt's rows fire nothing.
  */
 export type TerminalDenialLifecycle = {
   governed(): boolean;
-  fire(event: TerminalLifecycleEvent, reason: string): Promise<unknown>;
+  fire(denial: TerminalDenial): Promise<unknown>;
 };
 /**
- * Writes the attempt's terminal row; only the ledger hands one out. The call claims the attempt and enqueues the row
- * synchronously, so a writer that throws first leaves the attempt open. `logger` is absent when the chain is neither
- * set up nor required; `reason` is the finalized denial reason, defaulting to the row's first. A refused claim writes
- * and fires nothing.
+ * The attempt's terminal row. A deny row names its kind; any other row cannot. `logger` is absent when the chain is
+ * neither set up nor required; `reason` is the finalized denial reason, defaulting to the row's first.
  */
-export type TerminalRowWriter = (row: {
+export type TerminalRow = {
   logger?: Pick<AuditLogger, "appendPermissionAuditEntry">;
-  entry: PermissionAuditEntryInput;
   reason?: string;
-}) => Promise<void>;
+} & ({ entry: DenyEntry; kind: TerminalDenyKind } | { entry: Exclude<PermissionAuditEntryInput, { decision: "deny" }>; kind?: never });
+/**
+ * Writes the attempt's terminal row; only the ledger hands one out. The call claims the attempt and enqueues the row
+ * synchronously, so a writer that throws first leaves the attempt open. A refused claim writes and fires nothing.
+ */
+export type TerminalRowWriter = (row: TerminalRow) => Promise<void>;
+/** A ledger writer together with the kind its deny row records, for a writer that builds the entry itself. */
+export type KindedTerminalRowWriter = { row: TerminalRowWriter; kind: TerminalDenyKind };
 type HostTerminalWrite = (cause: HostTerminalCause, detail: string, selected: unknown, row: TerminalRowWriter) => Promise<unknown>;
 
 /** A refused terminal claim: a second claim of the same attempt, or a claim after the sink closed. */
@@ -135,15 +158,17 @@ class TerminalLedger implements InvocationTerminal {
 
   #commitAs<T>(by: TerminalOwner | "host", enqueue: (row: TerminalRowWriter) => Promise<T>): Promise<T | undefined> {
     if (this.#refusal(by)) return Promise.resolve(undefined);
-    const row: TerminalRowWriter = ({ logger, entry, reason }) => {
+    const row: TerminalRowWriter = (terminal) => {
       if (this.#refusal(by)) return Promise.resolve();
       this.#take();
+      const { logger, entry, reason } = terminal;
       const append = logger ? appendTerminalRow(logger, entry) : Promise.resolve();
       this.#track(append);
       const lifecycle = this.#lifecycle;
       return (async () => {
-        if (entry.decision === "deny" && lifecycle !== undefined && !lifecycle.governed()) {
-          await lifecycle.fire("PermissionDenied", reason ?? entry.denyReasons[0]?.reason ?? "");
+        // The one rule: a permission denial fires PermissionDenied unless the attempt is governed; a cancellation never does.
+        if (terminal.kind === "denied" && lifecycle !== undefined && !lifecycle.governed()) {
+          await lifecycle.fire(new LedgerDenial(reason ?? terminal.entry.denyReasons[0]?.reason ?? ""));
         }
         await append;
       })();

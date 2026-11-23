@@ -311,7 +311,7 @@ describe("OS sandbox release at quit", () => {
     const parked = ledger.admitToolInvocation("parked-probe");
     parked.terminal.hostTerminal((cause, _detail, _selected, row) => {
       calls.push(`hostTerminal:${cause}`);
-      return row({ entry: { ...PROBE_ROW, tool: "parked-probe" }, logger: { appendPermissionAuditEntry: async () => {
+      return row({ entry: { ...PROBE_ROW, tool: "parked-probe" }, kind: "cancelled", logger: { appendPermissionAuditEntry: async () => {
         await afterQueuedCallbacks();
         calls.push("rowCommitted");
         return {} as never;
@@ -342,7 +342,7 @@ describe("OS sandbox release at quit", () => {
     const ledger = await import("../../tools/invocation-ledger.js");
     const parked = ledger.admitToolInvocation("stuck-probe");
     const stuckLogger = { appendPermissionAuditEntry: () => new Promise<never>(() => {}) };
-    parked.terminal.hostTerminal((_cause, _detail, _selected, row) => row({ logger: stuckLogger, entry: { ...PROBE_ROW, tool: "stuck-probe" } }), NO_DENIAL);
+    parked.terminal.hostTerminal((_cause, _detail, _selected, row) => row({ logger: stuckLogger, entry: { ...PROBE_ROW, tool: "stuck-probe" }, kind: "cancelled" }), NO_DENIAL);
     const unwritten = ledger.admitToolInvocation("unwritten-probe");
     unwritten.terminal.hostTerminal(() => new Promise(() => {}), NO_DENIAL);
     const services = makeServices();

@@ -185,6 +185,8 @@ export interface ExecutionStageContext {
   callbacks: ToolExecutorCallbacks | undefined;
   meta: ToolCallMeta;
   auditCurrentToolCall: AuditToolCall;
+  /** Writes the attempt's row as a cancellation: a stop no permission decided. */
+  auditCancelledToolCall: AuditToolCall;
   currentAuditMetadata: (
     input?: Record<string, unknown>,
   ) => ToolExecutionAuditMetadata;
@@ -254,6 +256,7 @@ export async function executeAuthorizedToolInvocation(
     callbacks,
     meta,
     auditCurrentToolCall,
+    auditCancelledToolCall,
     currentAuditMetadata,
     withHostShellExecutionPlan,
     humanApproved: initialHumanApproved,
@@ -1533,7 +1536,8 @@ export async function executeAuthorizedToolInvocation(
       if (!rationaleResumeContext?.started) {
         callbacks?.onToolEnd?.(toolUse.name, displayContent, true, meta, undefined, durationMs);
       }
-      await auditCurrentToolCall(
+      // An abort mid-execution is a cancellation: a user abort keeps the call's allow, the quit writes the host's deny.
+      await auditCancelledToolCall(
         sessionId,
         toolUse.name,
         source,

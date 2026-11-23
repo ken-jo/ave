@@ -1,4 +1,4 @@
-import { commitTerminalRow, type TerminalDenialLifecycle } from "./invocation-ledger.js";
+import { commitTerminalRow, type TerminalDenialLifecycle, type TerminalDenyKind } from "./invocation-ledger.js";
 import { agentBrowserScopeOf, browserApprovalCardFacts, userOwnedBrowserScopeOf } from "./browser-tools.js";
 import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pipeline/user-owned-surface.js";
 import { issueReplayRootBinding } from "../permissions/reviewer/replay-root-binding.js";
@@ -66,7 +66,7 @@ import {
 } from "../shared/chat-origin.js";
 import { isRationaleEligible, RationaleHumanApprovalDeniedError } from "./pipeline/rationale-control.js";
 import { answeredApprovalProvenance, approvalReasonFields, approvalTargetFor, HOST_PROVENANCE, provenanceTrustOrigin, RULE_PROVENANCE, type ApprovalDecision, type DecisionProvenance } from "../permissions/approval-gate.js";
-import { abortSupersedesApprovalDecision, answeredPermission, approvalFailureOutcome, hostRefusalOfApproval, hostShutdownDenial, isSelectedRefusal, refusal } from "./pipeline/approval-outcome.js";
+import { abortSupersedesApprovalDecision, answeredPermission, approvalFailureOutcome, hostRefusalOfApproval, hostShutdownDenial, isSelectedRefusal, refusal, userAbortRefusal } from "./pipeline/approval-outcome.js";
 import {
   buildPermissionEvaluationContext,
   type PermissionEvaluationContext,
@@ -397,7 +397,7 @@ export async function runToolInvocation(
           // The rule's deny is the attempt's one terminal row, written with no logger when the chain is neither set up nor
           // required; the admission's settle then finds it claimed.
           await commitTerminalRow(services.invocationTerminal, (row) => row({ ...(ready ? { logger: services.auditLogger } : {}),
-            entry: { ...common, decision: "deny", denyReasons: [{ reason, source: "hook-input-mutation" }] } }));
+            entry: { ...common, decision: "deny", denyReasons: [{ reason, source: "hook-input-mutation" }] }, kind: "denied" }));
         }
         if (denied) {
           const result = { tool_use_id: toolUse.id, content: appendContext(reason), is_error: true, durationMs: Date.now() - startedAt };
@@ -503,14 +503,16 @@ async function runToolInvocationAttempt(
         : {}),
     });
     let denialRecorded = false;
-    const auditCurrentToolCall = async (...args: AuditToolCallArgs): Promise<void> => {
+    // The invocation's own row writers, one per kind a deny row records: its permission denials, and the
+    // cancellations (a user abort or the host's stop of a call no permission refused).
+    const auditToolCallAs = (kind: TerminalDenyKind) => async (...args: AuditToolCallArgs): Promise<void> => {
       args[16] = currentAuditMetadata(args[4]);
       // The row is claimed and enqueued before anything else awaits; a refused claim (a late resume after the host
       // wrote the row, or a closed sink) resolves without writing.
       const terminal = services.invocationTerminal;
       const before = terminal.state;
       const written = commitTerminalRow(terminal, (row) => {
-        args[17] = row;
+        args[17] = { row, kind };
         return services.auditWriter.auditToolCall(...args);
       });
       if (before !== "open" || terminal.state === "open") return written;
@@ -525,6 +527,8 @@ async function runToolInvocationAttempt(
       }
       return written;
     };
+    const auditCurrentToolCall = auditToolCallAs("denied");
+    const auditCancelledToolCall = auditToolCallAs("cancelled");
     const recordRecentlyDenied = async (
       history: NonNullable<ReturnType<NonNullable<InvocationRunnerServices["permissionManager"]>["getRecentlyDenied"]>>,
       denied: PermissionCheckResult,
@@ -567,20 +571,23 @@ async function runToolInvocationAttempt(
 
     const denialLifecycle: TerminalDenialLifecycle = {
       governed: () => governedTool || pluginAuthLifecycle !== undefined,
-      fire: (event, reason) => services.auditWriter.fireLifecycleEvent(event, sessionId, { trustOrigin: permissionContext?.trustOrigin ?? "unknown" },
-        { toolName: toolUse.name, denyReason: { source: "tool-executor", reason } }, abortSignal),
+      fire: (denial) => services.auditWriter.fireDenied(denial, sessionId, { trustOrigin: permissionContext?.trustOrigin ?? "unknown" },
+        { toolName: toolUse.name, denyReason: { source: "tool-executor", reason: denial.reason } }, abortSignal),
     };
     // Registered before the tool lookup, so no attempt ends without a host row and every open attempt is listed.
     let resolvedTool: Tool | undefined;
     services.invocationTerminal.hostTerminal((cause, detail, selected, row) => {
-      // A human outcome accepted before the host ended the attempt stays the row's outcome.
-      const denial = isSelectedRefusal(selected) ? selected
-        : cause === "host-shutdown" ? hostShutdownDenial()
-        : cause === "user-abort" ? refusal("user aborted turn", RULE_PROVENANCE)
-        : refusal(detail, HOST_PROVENANCE);
+      // A human refusal accepted before the host ended the attempt stays the row's outcome, and a denial; the host's own
+      // stop (a quit, a user abort) is a cancellation, and a failed invocation or row is the host's denial.
+      const selectedRefusal = isSelectedRefusal(selected) ? selected : undefined;
+      const denial = selectedRefusal
+        ?? (cause === "host-shutdown" ? hostShutdownDenial()
+          : cause === "user-abort" ? userAbortRefusal()
+          : refusal(detail, HOST_PROVENANCE));
+      const kind: TerminalDenyKind = selectedRefusal === undefined && cause !== "error" ? "cancelled" : "denied";
       const hostSource = resolvedTool?.source ?? "builtin";
       return services.auditWriter.auditToolCall(sessionId, toolUse.name, hostSource, trustFromSource(hostSource), toolUse.input, detail, true, startTime,
-        denial, Infinity, permissionContext, resolvedTool?.category ?? "meta", executionCwd, undefined, cause, undefined, currentAuditMetadata(toolUse.input), row);
+        denial, Infinity, permissionContext, resolvedTool?.category ?? "meta", executionCwd, undefined, cause, undefined, currentAuditMetadata(toolUse.input), { row, kind });
     }, denialLifecycle);
     const tool = services.toolRegistry.findByName(toolUse.name);
     resolvedTool = tool;
@@ -612,11 +619,13 @@ async function runToolInvocationAttempt(
         const reason = `Plugin generation admission denied: ${
           errorMessage(error)
         }`;
+        // Admission the runtime's shutdown closed is the host's stop of the call, a cancellation; any other refusal is a denial.
+        const shutdownEnded = endedByPluginRuntimeShutdown(error);
         const denied: PermissionCheckResult = {
-          decision: "deny", provenance: endedByPluginRuntimeShutdown(error) ? HOST_PROVENANCE : RULE_PROVENANCE,
+          decision: "deny", provenance: shutdownEnded ? HOST_PROVENANCE : RULE_PROVENANCE,
           reason,
           };
-        await auditCurrentToolCall(
+        await (shutdownEnded ? auditCancelledToolCall : auditCurrentToolCall)(
           sessionId,
           toolUse.name,
           tool.source,
@@ -2524,6 +2533,7 @@ async function runToolInvocationAttempt(
       approvalCacheKey,
       executionCwd,
       auditCurrentToolCall,
+      auditCancelledToolCall,
       terminalClaimed: () => services.invocationTerminal.state !== "open",
       auditCurrentPermissionAsk,
       withHostShellExecutionPlan,
@@ -2635,6 +2645,7 @@ async function runToolInvocationAttempt(
       callbacks,
       meta,
       auditCurrentToolCall,
+      auditCancelledToolCall,
       currentAuditMetadata,
       withHostShellExecutionPlan,
       permissionResult,

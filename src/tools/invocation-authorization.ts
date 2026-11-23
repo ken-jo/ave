@@ -126,6 +126,8 @@ export interface AuthorizationStageContext {
   approvalCacheKey: string | undefined;
   executionCwd: string;
   auditCurrentToolCall: AuditToolCall;
+  /** Writes the attempt's row as a cancellation: a stop no permission decided. */
+  auditCancelledToolCall: AuditToolCall;
   /** True once this attempt claimed its terminal row. */
   terminalClaimed?: () => boolean;
   auditCurrentPermissionAsk: AuditPermissionAsk;
@@ -577,8 +579,9 @@ export async function authorizeToolInvocation(
           recordTerminalDenial: async (reason, stopped) => {
             if (abortSignal?.aborted || context.terminalClaimed?.()) return;
             // A card stopped by the quit is the host's refusal; any other stop is the user's, as on the ordinary path.
+            // Either stop is a cancellation; a card that ends without a stop is refused, a denial.
             const quit = stopped === true && toolInvocationShutdownStarted();
-            await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, reason, true,
+            await (stopped === true ? context.auditCancelledToolCall : auditCurrentToolCall)(sessionId, toolUse.name, source, trust, finalInput, reason, true,
               startTime, quit ? hostShutdownDenial() : refusal(reason, RULE_PROVENANCE), Infinity,
               invocationPermissionContext, invocationCategory, executionCwd, undefined,
               stopped === true ? quit ? "host-shutdown" : "user-abort" : undefined);
