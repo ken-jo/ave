@@ -433,7 +433,7 @@ describe("WorkBoardEngine — execute child id is exposed when it links (WB-1)",
       const engine = createWorkBoardEngine({ store, getRunner: () => runner, emitProgress: (e) => events.push(e) });
 
       const run = runThroughDecision(engine, store, id, "approve");
-      const execChild = await linked;
+      const execChild = await within(linked, "the child to link");
       expect(execChild).toBe(`work-board:${id}::exec`);
 
       const linkedEvent = events.find((e) => e.phase === "executing" && e.runSessionId !== undefined);
@@ -463,7 +463,7 @@ describe("WorkBoardEngine — execute child id is exposed when it links (WB-1)",
       const { runner, release, linked } = linkingRunner();
       const engine = createWorkBoardEngine({ store, getRunner: () => runner, emitProgress: () => {} });
       const run = runThroughDecision(engine, store, id, "approve");
-      await linked;
+      await within(linked, "the child to link");
       release();
       expect((await run).status).toBe("completed");
 
@@ -499,7 +499,7 @@ describe("WorkBoardEngine — execute child id is exposed when it links (WB-1)",
       const engine = createWorkBoardEngine({ store, getRunner: () => runner, emitProgress: (e) => events.push(e) });
 
       const run = runThroughDecision(engine, store, id, "approve");
-      await linked;
+      await within(linked, "the child to link");
       release();
       const result = await run;
       expect(result).toMatchObject({ status: "error", reason: "disk full" });
@@ -609,7 +609,7 @@ describe("WorkBoardEngine — steer and stop a running execution (WB-3)", () => 
       const engine = createWorkBoardEngine({ store, getRunner: () => runner, emitProgress: () => {} });
       expect(engine.executingChildSessionId(id)).toBeUndefined();
       const run = runThroughDecision(engine, store, id, "approve");
-      const child = await linked;
+      const child = await within(linked, "the child to link");
       expect(engine.executingChildSessionId(id)).toBe(child);
       release();
       expect((await run).status).toBe("completed");
@@ -629,7 +629,7 @@ describe("WorkBoardEngine — steer and stop a running execution (WB-3)", () => 
       const { runner, linked, release, steerCalls } = controllableRunner();
       const engine = createWorkBoardEngine({ store, getRunner: () => runner, emitProgress: () => {} });
       const run = runThroughDecision(engine, store, id, "approve");
-      const child = await linked;
+      const child = await within(linked, "the child to link");
       expect(await engine.steerRun(id, "also cover the edge cases")).toEqual({ ok: true, messageId: "m-1" });
       expect(steerCalls).toEqual([[`work-board:${id}`, child, "also cover the edge cases"]]);
       release();
@@ -650,7 +650,7 @@ describe("WorkBoardEngine — steer and stop a running execution (WB-3)", () => 
       const transcriptStorage = memTranscriptStorage();
       const engine = createWorkBoardEngine({ store, getRunner: () => runner, emitProgress: (e) => events.push(e), transcriptStorage });
       const run = runThroughDecision(engine, store, id, "approve");
-      const child = await linked;
+      const child = await within(linked, "the child to link");
 
       expect(engine.cancelRun(id)).toEqual({ ok: true });
       expect(interruptCalls).toEqual([[child, `work-board:${id}`]]);
@@ -687,7 +687,7 @@ describe("WorkBoardEngine — steer and stop a running execution (WB-3)", () => 
       interruptAccepted.value = false;
       const engine = createWorkBoardEngine({ store, getRunner: () => runner, emitProgress: () => {} });
       const run = runThroughDecision(engine, store, id, "approve");
-      await linked;
+      await within(linked, "the child to link");
       expect(engine.cancelRun(id)).toEqual({ ok: false, reason: "not-running" });
       // The refused call must not leave its mark behind, or this stop would short-circuit without interrupting.
       interruptAccepted.value = true;
@@ -709,7 +709,7 @@ describe("WorkBoardEngine — steer and stop a running execution (WB-3)", () => 
       const events: WorkBoardRunEvent[] = [];
       const engine = createWorkBoardEngine({ store, getRunner: () => runner, emitProgress: (e) => events.push(e) });
       const run = runThroughDecision(engine, store, id, "approve");
-      await linked;
+      await within(linked, "the child to link");
       expect(engine.cancelRun(id)).toEqual({ ok: true });
       expect(engine.cancelRun(id)).toEqual({ ok: true });
       expect(interruptCalls).toHaveLength(1);
@@ -733,7 +733,7 @@ describe("WorkBoardEngine — steer and stop a running execution (WB-3)", () => 
       const events: WorkBoardRunEvent[] = [];
       const engine = createWorkBoardEngine({ store, getRunner: () => runner, emitProgress: (e) => events.push(e) });
       const run = runThroughDecision(engine, store, id, "approve");
-      await linked;
+      await within(linked, "the child to link");
       interruptFromElsewhere();
       expect((await run).status).toBe("error");
       expect(events.some((e) => e.phase === "cancelled")).toBe(false);

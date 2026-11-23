@@ -2,7 +2,7 @@
  * each turn's tool steps reach the board as host-derived, bounded labels, never the tool's raw input. */
 import { describe, expect, it, vi } from "vitest";
 import { createWorkBoardEngine } from "../work-board-engine.js";
-import { untilAsserted } from "../../__tests__/support/signal-wait.js";
+import { untilAsserted, within } from "../../__tests__/support/signal-wait.js";
 import type { SubAgentRunner, SubAgentSpawnCallbacks } from "../../engine/subagent-runner.js";
 import type { WorkBoardRunEvent } from "../../shared/work-board-types.js";
 import type { ChatEntry, ToolEntryItem } from "../../lib/chat-stream-state.js";
@@ -249,7 +249,7 @@ describe("WorkBoardEngine — the planning child is recorded as it links", () =>
     const engine = createWorkBoardEngine({ store: board.store, getRunner: () => runner, emitProgress: () => {} });
     try {
       const run = runThroughDecision(engine, board.store, id, "reject");
-      await linked;
+      await within(linked, "the child to link");
       await untilAsserted(wake => board.store.boardChanged.subscribe(wake), async () => {
         const got = await board.store.get(id);
         if (got.status !== "found") throw new Error("missing item");
