@@ -14,6 +14,7 @@ import { mintHostDecisionProof } from "../../../main/workflow-template-decision.
 import { createWorkBoardEngine, type WorkBoardEngineDeps } from "../../../core/work-board-engine.js";
 import { deferred } from "../../../__tests__/support/deferred.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
+import { untilAsserted } from "../../../__tests__/support/signal-wait.js";
 import { boardParentToolRegistry } from "../../__tests__/board-test-fixtures.js";
 import { authoriseRunSource } from "../run-authority.js";
 import { boardRunState, type RunRecord } from "../run-state.js";
@@ -108,6 +109,11 @@ export async function stageRunHarness(opts: {
   const audits: Parameters<NonNullable<WorkflowDeps["audit"]>>[0][] = [];
   const unauthorised = new Set<string>();
   const workspaceCalls: string[] = [];
+  const callWaits = new Set<() => void>();
+  function recordCall(call: string): void {
+    workspaceCalls.push(call);
+    for (const wake of callWaits) wake();
+  }
   /** The run ids each boot sweep kept. */
   const sweeps: string[][] = [];
   const registry = boardParentToolRegistry();
@@ -226,19 +232,22 @@ export async function stageRunHarness(opts: {
 
   const workspace: StageWorkspaceProvider = {
     open: async (run, projectRoot) => {
-      workspaceCalls.push(`open:${projectRoot ?? ""}`);
+      recordCall(`open:${projectRoot ?? ""}`);
       return { ok: true, workspace: { kind: "folder", runRoot: join(dir, "runs", run.runId) } };
     },
     prepare: async (run, stage, attempt) => {
-      workspaceCalls.push(`prepare:${stage.id}#${attempt}`);
+      recordCall(`prepare:${stage.id}#${attempt}`);
       const root = join(dir, "runs", run.runId, `${stage.id}-${attempt}`);
       mkdirSync(root, { recursive: true });
       return { ok: true, workspace: { kind: "folder", root } };
     },
-    seal: async (_run, stageId) => { workspaceCalls.push(`seal:${stageId}`); return { ok: true }; },
-    integrate: async (_run, joinId) => { workspaceCalls.push(`integrate:${joinId}`); return opts.integrate?.() ?? { ok: true }; },
+    seal: async (_run, stageId) => { recordCall(`seal:${stageId}`); return { ok: true }; },
+    integrate: async (_run, joinId) => { recordCall(`integrate:${joinId}`); return opts.integrate?.() ?? { ok: true }; },
     release: async () => undefined,
-    sweep: async (active) => { sweeps.push([...active]); },
+    sweep: async (active) => {
+      sweeps.push([...active]);
+      for (const wake of callWaits) wake();
+    },
     ...opts.workspace,
   };
 
@@ -612,6 +621,16 @@ export async function stageRunHarness(opts: {
   const waitForProgress = (check: (event: WorkBoardRunEvent) => boolean, what: string, from = 0) => closed
     ? Promise.reject(progressEnded())
     : waitForSignal(progressChanges, () => events.slice(from).find(check), `progress signal never arrived for ${what}`);
+  const signalOf = <T>(waits: Set<(change: T) => void>) => (wake: () => void) => { waits.add(wake); return () => { waits.delete(wake); }; };
+  /** Reruns `assertion` after each run-file commit, by any store, until it passes. */
+  const untilRunFile = (assertion: () => void | Promise<void>) => untilAsserted(signalOf(runWaits), assertion);
+  /** Reruns `assertion` after each run-file commit or progress event until it passes. */
+  const untilObserved = (assertion: () => void | Promise<void>) => untilAsserted(wake => {
+    const stops = [signalOf(runWaits)(wake), signalOf(progressChanges)(wake)];
+    return () => { for (const stop of stops) stop(); };
+  }, assertion);
+  /** Reruns `assertion` after each workspace call or sweep until it passes. */
+  const untilWorkspaceCalls = (assertion: () => void | Promise<void>) => untilAsserted(signalOf(callWaits), assertion);
   /** The event that ended the run; it follows the stored status, so a test waits for it. */
   const settleEvent = () => waitForProgress(event => event.phase === "cancelled" || event.phase === "done" || event.phase === "denied" || event.phase === "error",
     "a run's end (cancelled, done, denied or error)");
@@ -625,7 +644,7 @@ export async function stageRunHarness(opts: {
 
   return {
     dir, boardPath, get board() { return board; }, templates, get engine() { return engine; }, makeEngine, editRow, runOf, events, children, interrupts, audits, unauthorised, workspaceCalls, sweeps,
-    confirm: confirmTemplate, pinOf, addItem, local, attach, detach, item, stageRun, until, untilStage, untilLive, untilSpawned, settleEvent, waitForLive, waitForProgress, live, decide, statusOf, start,
+    confirm: confirmTemplate, pinOf, addItem, local, attach, detach, item, stageRun, until, untilStage, untilLive, untilSpawned, settleEvent, waitForLive, waitForProgress, untilRunFile, untilObserved, untilWorkspaceCalls, live, decide, statusOf, start,
     drainRunWork: async (options?: { includeLaunches?: boolean }) => { await runWorkObservers.at(-1)?.drain(options); },
     drainAllRunWork: async () => { await Promise.all(runWorkObservers.map(runWork => runWork.drain())); },
     /** Listeners of the child and progress waits still pending. */
