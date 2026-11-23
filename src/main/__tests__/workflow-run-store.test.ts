@@ -3,7 +3,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { WorkflowRunStore } from "../workflow-run-store.js";
+import { type DeleteMarker, WorkflowRunStore } from "../workflow-run-store.js";
 import * as homeTrust from "../../shared/ave-home-trust.js";
 import * as namespace from "../storage/feature-namespace.js";
 import type { WorkflowRunRecord } from "../../shared/workflow-template-types.js";
@@ -137,6 +137,77 @@ it("signals keyed metadata when a delete intent is published or replaces an unkn
   expect(await store.markDeleted(pair, () => true)).toBe("marked");
   expect(read.mock.calls).toHaveLength(1);
   expect(await read.mock.results[0].value).toEqual({ readable: true, intent: true, unknown: false });
+});
+
+it("refuses to persist a delete if a memory marker decision fails", async () => {
+  const store = new WorkflowRunStore(file);
+  const pair = { runId: "run-1", itemId: 1 };
+  await store.put(run());
+  await store.markUnknown(pair);
+  const write = vi.spyOn(namespace, "writeFileAtomicAtPath").mockRejectedValueOnce(new Error("marker persist refused"));
+  await store.markUnknown(pair, { op: "card", ownIntent: true });
+  write.mockClear();
+  const before = await readFile(file, "utf8");
+  const markers = await store.markersOf(pair);
+  const changed = vi.fn();
+  store.runChanged.subscribe(changed);
+  const error = new Error("marker decision failed");
+
+  await expect(store.markDeleted(pair, marker => {
+    if (marker.operation?.op === "card") throw error;
+    return true;
+  })).rejects.toBe(error);
+  expect(write).not.toHaveBeenCalled();
+  expect(await readFile(file, "utf8")).toBe(before);
+  expect(await store.markersOf(pair)).toEqual(markers);
+  expect(changed).not.toHaveBeenCalled();
+});
+
+it("delivers a successful delete commit and keeps a marker added during persistence", async () => {
+  const store = new WorkflowRunStore(file);
+  const pair = { runId: "run-1", itemId: 1 };
+  const rowMarker = { ...pair, operation: { op: "row", ownIntent: true } };
+  const cardOperation = { op: "card", ownIntent: true } as const;
+  await store.put(run());
+  await store.markUnknown(pair);
+  const changed = vi.fn(() => store.markersOf(pair));
+  store.runChanged.subscribe(changed);
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  const persist = namespace.writeFileAtomicAtPath;
+  let persisted = false;
+  vi.spyOn(namespace, "writeFileAtomicAtPath").mockImplementationOnce(async (...args) => {
+    entered.resolve();
+    await release.promise;
+    await persist(...args);
+    persisted = true;
+  }).mockRejectedValueOnce(new Error("concurrent marker persist refused"));
+  const held = vi.fn((_marker: DeleteMarker) => {
+    if (persisted) throw new Error("marker decision called after persistence");
+    return true;
+  });
+
+  const deleting = store.markDeleted(pair, held);
+  void deleting.catch(() => {});
+  let adding: Promise<void> | undefined;
+  try {
+    await entered.promise;
+    adding = store.markUnknown(pair, cardOperation);
+    expect(changed).not.toHaveBeenCalled();
+    release.resolve();
+    await expect(deleting).resolves.toBe("marked");
+    await adding;
+    expect(persisted).toBe(true);
+    expect(held.mock.calls).toEqual([[rowMarker]]);
+    expect(changed).toHaveBeenCalledTimes(1);
+    expect(changed).toHaveBeenCalledWith(pair.runId);
+    expect(await changed.mock.results[0].value).toEqual([{ ...pair, operation: cardOperation }]);
+    expect((await new WorkflowRunStore(file).runFacts())?.of(pair))
+      .toEqual({ readable: true, intent: true, unknown: false });
+  } finally {
+    release.resolve();
+    await Promise.allSettled([deleting, adding]);
+  }
 });
 
 it("signals keyed metadata when an intent and its unknown marker are withdrawn", async () => {

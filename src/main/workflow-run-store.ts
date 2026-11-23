@@ -134,8 +134,8 @@ function markerOf(entry: unknown): DeleteMarker | undefined {
   if (!whole) return pair;
   return { ...pair, operation: { op: op as MarkerOp["op"], ownIntent: ownIntent as boolean, ...(entrySha === undefined ? {} : { entrySha: entrySha as string }) } };
 }
-const sameMarker = (a: DeleteMarker) => (b: DeleteMarker): boolean =>
-  samePair(a)(b) && canonicalWorkflowJson(a.operation ?? null) === canonicalWorkflowJson(b.operation ?? null);
+const markerOperationKey = (marker: DeleteMarker): string => canonicalWorkflowJson(marker.operation ?? null);
+const sameMarker = (a: DeleteMarker) => (b: DeleteMarker): boolean => samePair(a)(b) && markerOperationKey(a) === markerOperationKey(b);
 const markerEntry = ({ itemId, runId, operation }: DeleteMarker): Record<string, unknown> => ({ itemId, runId, ...operation });
 const markersIn = (file: RunsFile): DeleteMarker[] => (file.unknownDeletes ?? []).flatMap(entry => markerOf(entry) ?? []);
 // Whether a stored entry is a marker about the pair, whatever its shape.
@@ -388,15 +388,29 @@ export class WorkflowRunStore {
       if (file === undefined) return "pending-review";
       if (!openIntent(file, intent)) return "none";
       const intents = file.deleteIntents ?? [];
-      const stale = (marker: DeleteMarker | undefined): boolean => marker !== undefined && samePair(intent)(marker) && held(marker);
-      const dropping = (file.unknownDeletes ?? []).some(entry => stale(markerOf(entry))) || this.unknown.some(stale);
-      if (intents.some(sameIntent(intent)) && !dropping) return "marked";
-      if (!intents.some(sameIntent(intent))) file.deleteIntents = [...intents, { itemId: intent.itemId, runId: intent.runId }];
-      file.unknownDeletes = dropFrom(file.unknownDeletes, entry => stale(markerOf(entry)));
+      const memory = this.unknown;
+      const matches = samePair(intent);
+      const decisions = new Map<string, boolean>();
+      const stale = (marker: DeleteMarker | undefined): boolean => {
+        if (marker === undefined || !matches(marker)) return false;
+        const key = markerOperationKey(marker);
+        const known = decisions.get(key);
+        if (known !== undefined) return known;
+        const decision = held(marker);
+        decisions.set(key, decision);
+        return decision;
+      };
+      const kept = dropFrom(file.unknownDeletes, entry => stale(markerOf(entry)));
+      const removed = new Set(memory.filter(stale));
+      const droppingStored = (kept?.length ?? 0) < (file.unknownDeletes?.length ?? 0);
+      const hasIntent = intents.some(sameIntent(intent));
+      if (hasIntent && !droppingStored && removed.size === 0) return "marked";
+      if (!hasIntent) file.deleteIntents = [...intents, { itemId: intent.itemId, runId: intent.runId }];
+      file.unknownDeletes = kept;
       const committed = await this.commit(file, { confirm: runIds => {
-        if (runIds === undefined) return;
+        if (runIds === undefined || removed.size === 0) return;
         const count = this.unknown.length;
-        this.unknown = this.unknown.filter(marker => !stale(marker));
+        this.unknown = this.unknown.filter(marker => !removed.has(marker));
         if (this.unknown.length < count) runIds.add(intent.runId);
       } });
       return committed ? "marked" : "too-large";
