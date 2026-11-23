@@ -1241,6 +1241,32 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
     expect(fs.readdirSync(chosen)).toEqual([]);
   });
 
+  it("records anew, at the next start, a file the sweep left under another name", async () => {
+    let chosenFolder = "";
+    let original = "";
+    const { root, staging, chosen } = await stalledCopy({
+      beforeRemove: (helper) => {
+        if (arg(helper, 1) !== chosenFolder) return undefined;
+        // The removal fails while a file is put at the temporary file's name, so it cannot go back.
+        fs.writeFileSync(join(chosenFolder, original), "the user's file");
+        return "refuse";
+      },
+      beforeStall: (folder) => {
+        chosenFolder = folder;
+        original = fs.readdirSync(folder)[0] ?? "";
+      },
+    });
+    expect(recordedAt(staging)).toEqual([original]);
+    const swept = follow(sweepBrowserDownloadStaging(root));
+    await until(() => swept.settled);
+    expect(swept.error).toBeUndefined();
+    const hidden = fs.readdirSync(chosen).find((name) => name !== original) ?? "";
+    expect(hidden).toMatch(MOVED_ASIDE);
+    expect(fs.readFileSync(join(chosen, original), "utf8")).toBe("the user's file");
+    expect(fs.readFileSync(join(chosen, hidden), "utf8")).toBe("partial copy");
+    expect(recordedAt(staging)).toEqual([hidden]);
+  });
+
   it("says a file known by its content is left because its folder is gone, not that it could not be moved aside", async () => {
     const { removeOwnFile } = await import("../browser-download-files.js");
     const chosen = join(base, "chosen");

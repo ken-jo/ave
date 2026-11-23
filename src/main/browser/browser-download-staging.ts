@@ -201,13 +201,16 @@ const UNSTOPPED = new AbortController().signal;
  * that is no longer the verified one, or a helper that does not run, is a staging refusal; downloads are then refused.
  */
 export async function sweepBrowserDownloadStaging(root: BrowserDownloadStagingRoot): Promise<number> {
-  await removeRecordedParts(root);
+  const stillLeft = await removeRecordedParts(root);
   try {
     return await root.files.sweep(root);
   } catch (error) {
     if (error instanceof HeldDirectoryRefusedError) throw new BrowserDownloadStagingError(STAGING_REFUSALS[error.refusal], { cause: error });
     if (error instanceof HeldFileHelperUnavailableError) throw new BrowserDownloadStagingError(error.message, { cause: error });
     throw error;
+  } finally {
+    // Recorded anew once the sweep has removed the old records, so the next start tries again.
+    for (const record of stillLeft) tryWritePartRecord(root, record);
   }
 }
 
@@ -440,15 +443,17 @@ function readRecordFile(path: string): PartRecord | null {
   }
 }
 
-// At start, before the sweep removes the records with every other file in the staging folder, act on each once. Never throws: a record
-// that cannot be read or acted on is logged and what it names is left, without refusing downloads.
-async function removeRecordedParts(root: BrowserDownloadStagingRoot): Promise<void> {
+// At start, before the sweep removes the records with every other file in the staging folder, act on each once. Returns the records of
+// files left where they can still be found, by the name they have now and how they are known there. Never throws: a record that cannot
+// be read or acted on is logged and what it names is left, without refusing downloads.
+async function removeRecordedParts(root: BrowserDownloadStagingRoot): Promise<PartRecord[]> {
+  const stillLeft: PartRecord[] = [];
   let names: string[];
   try {
     names = withVerifiedRoot(root, () => readdirSync(root.path)).filter((name) => PART_RECORD.test(name));
   } catch (error) {
     log.warn({ error: (error as Error).message }, "browser download cleanup records could not be read");
-    return;
+    return stillLeft;
   }
   for (const name of names) {
     const path = join(root.path, name);
@@ -461,10 +466,12 @@ async function removeRecordedParts(root: BrowserDownloadStagingRoot): Promise<vo
       const result = await removeRecordedPart(root, record);
       log.info({ path: join(record.folder.path, record.part), partialCopy: result.outcome, leftAs: result.outcome === "left" ? result.at?.name : undefined },
         "a previous run's stopped browser download copy's temporary file was checked");
+      if (result.outcome === "left" && result.at !== null) stillLeft.push({ ...record, at: result.at });
     } catch (error) {
       log.warn({ path, error: (error as Error).message }, "a browser download cleanup record could not be acted on; nothing it names is removed");
     }
   }
+  return stillLeft;
 }
 
 class StagedDownload extends EventEmitter implements ObservedDownload {
