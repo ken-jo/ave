@@ -75,6 +75,8 @@ const isNodeId = (value: unknown): value is NodeId => typeof value === "string" 
 const absolute = (value: unknown): value is string => typeof value === "string" && isAbsolute(value);
 const optional = (value: unknown, is: (value: unknown) => boolean): boolean => value === undefined || is(value);
 const text = (value: unknown): boolean => typeof value === "string";
+/** A commit as git names it in full: the only form of one that is ever handed to git. */
+const commit = (value: unknown): boolean => typeof value === "string" && OBJECT_ID.test(value);
 const located = (value: unknown, path: string): boolean => isObject(value) && absolute(value[path]) && isNodeId(value.id);
 
 /** The shape alone: every field a later call relies on, and no field the record's kind does not carry. */
@@ -82,7 +84,7 @@ export function isWorkspaceRecord(value: unknown): value is WorkspaceRecord {
   if (!isObject(value) || value.v !== 2 || typeof value.runId !== "string" || value.runId === "" || !Number.isInteger(value.itemId)) return false;
   if ((value.kind !== "git" && value.kind !== "folder") || !isNodeId(value.self)) return false;
   if (!optional(value.project, project => located(project, "root")) || !optional(value.repo, repo => located(repo, "gitDir"))) return false;
-  if (![value.branch, value.baseCommit, value.merging].every(field => optional(field, text)) || !optional(value.ignoreRules, flag => typeof flag === "boolean")) return false;
+  if (![value.branch, value.baseCommit].every(field => optional(field, text)) || !optional(value.merging, commit) || !optional(value.ignoreRules, flag => typeof flag === "boolean")) return false;
   if (!optional(value.joinDir, isNodeId) || !optional(value.outDir, isNodeId)) return false;
   if (!Array.isArray(value.refs) || !isObject(value.registrations) || !isObject(value.stages) || !isObject(value.joins) || !isObject(value.out)) return false;
   const given = (...fields: unknown[]): boolean => fields.some(field => field !== undefined);
@@ -92,7 +94,7 @@ export function isWorkspaceRecord(value: unknown): value is WorkspaceRecord {
   if (!value.refs.every(ref => isObject(ref) && text(ref.name) && text(ref.oid))) return false;
   if (!Object.entries(value.registrations).every(([key, entry]) => (key === JOIN_DIR || isStageId(key)) && located(entry, "admin") && isObject(entry) && absolute(entry.gitdir))) return false;
   return Object.entries(value.stages).every(([id, entry]) => isStageId(id) && isObject(entry) && typeof entry.ready === "boolean" && Number.isInteger(entry.attempt)
-    && optional(entry.dir, isNodeId) && (entry.ready !== true || entry.dir !== undefined));
+    && optional(entry.dir, isNodeId) && (entry.ready !== true || entry.dir !== undefined) && optional(entry.base, commit) && optional(entry.sealCommit, commit));
 }
 
 const foldName = (name: string): string => process.platform === "win32" ? name.toLowerCase() : name;

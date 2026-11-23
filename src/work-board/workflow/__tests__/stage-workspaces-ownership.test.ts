@@ -99,6 +99,7 @@ function expectRepositoryUntouched(at: Scene): void {
   expect(existsSync(at.admin)).toBe(true);
 }
 
+const keptFile = (): string => join(fx.base, "kept.txt");
 type Row = [field: string, path: (string | number)[], value: (at: Scene) => unknown];
 
 /** One field of the record, changed in place: the run folder is then not the one the record names, and nothing of the run goes. */
@@ -116,6 +117,8 @@ const refused: Row[] = [
   ["refs[0].name", ["refs", 0, "name"], () => "refs/heads/keep"],
   ["refs[0].oid", ["refs", 0, "oid"], at => fx.userGit(fx.repo, "rev-parse", runBranch(at.other.run.runId))],
   ["registrations._join.gitdir", ["registrations", "_join", "gitdir"], at => join(at.otherRoot, JOIN_DIR, ".git")],
+  // A commit the record would hand to git, written as an option that names a file to write.
+  ...[["stages", "s1", "base"], ["stages", "s1", "sealCommit"], ["merging"]].map((path): Row => [path.join("."), path, () => `--output=${keptFile()}`]),
 ];
 
 /** A field that names the project or its repository: the run folder is still the run's and goes; the repository is left as it is. */
@@ -197,9 +200,11 @@ describe.each(["release", "swept", "discarded"] as const)("what a %s with its pr
     });
 
     it.each(refused)("a record whose %s no longer matches stops it: nothing of the run goes", async (_field, path, value) => {
+      writeFileSync(keptFile(), "kept\n");
       setPath(at.record, path, value(at));
       try {
         await operate(operation, at);
+        expect(readFileSync(keptFile(), "utf8")).toBe("kept\n");
         expect(existsSync(join(at.stage, "a.txt"))).toBe(true);
         expect(existsSync(join(at.runRoot, JOIN_DIR, "a.txt"))).toBe(true);
         expectRepositoryUntouched(at);
@@ -240,7 +245,7 @@ it("a run folder that stays is reported once, however often it is found again", 
 });
 
 /** The call that makes the run's branch. */
-const makesBranch = (args: readonly string[]): boolean => args.includes("-b") || (args[0] === "update-ref" && args.length === 4 && args[3] === "");
+const makesBranch = (args: readonly string[]): boolean => args.includes("-b") || (args[0] === "update-ref" && args.at(-1) === "");
 
 describe("the run branch", () => {
   it("update-ref with an empty old value creates only an absent ref", () => {
@@ -476,6 +481,44 @@ it("a join folder whose worktree link was pointed at another worktree gets no me
   } finally {
     relink(written);
   }
+});
+
+/** A run with two sealed stages that both changed `a.txt`: collecting them is a real conflict. */
+async function conflicting(git?: HostGit): Promise<{ handle: GitHandle; record: string }> {
+  const handle = fx.start(git === undefined ? {} : { git });
+  const open = await handle.provider.open(handle.run, fx.repo);
+  if (!open.ok) throw new Error(open.code);
+  for (const stageId of ["s1", "s2"]) write(await stageRoot(handle, stageId), "a.txt", `from ${stageId}\n`);
+  for (const stageId of ["s1", "s2"]) await sealed(handle, stageId);
+  return { handle, record: join(open.workspace.runRoot, RUN_FILE) };
+}
+
+it("a stage's commit that the record gives as an option is no record: a join conflict writes no file it names", async () => {
+  const { handle, record } = await conflicting();
+  const written = readFileSync(record, "utf8");
+  writeFileSync(keptFile(), "kept\n");
+  setPath(record, ["stages", "s1", "base"], `--output=${keptFile()}`);
+  try {
+    await expect(handle.provider.integrate(handle.run, "j1", ["s1", "s2"])).rejects.toThrow("the run has no workspace");
+    expect(readFileSync(keptFile(), "utf8")).toBe("kept\n");
+  } finally {
+    writeFileSync(record, written);
+  }
+  expect(await handle.provider.integrate(handle.run, "j1", ["s1", "s2"])).toMatchObject({ ok: false, conflict: { reason: "merge-conflict", files: [{ path: "a.txt", stageIds: ["s1", "s2"] }] } });
+});
+
+it("every commit and ref git is given comes after the end of its options", async () => {
+  const real = createHostGit({ env: fx.env });
+  const calls: (readonly string[])[] = [];
+  const { handle } = await conflicting({ drivers: real.drivers, run: (cwd, args, call) => { calls.push(args); return real.run(cwd, args, call); } });
+  expect(await handle.provider.integrate(handle.run, "j1", ["s1", "s2"])).toMatchObject({ ok: false });
+  await handle.provider.release(handle.run, "all");
+  const branch = runBranch(handle.run.runId);
+  const revision = (arg: string): boolean => /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(arg) || arg === branch || arg.startsWith(`refs/heads/${branch}`);
+  const given = calls.filter(args => args.some(revision));
+  // The branch's making and removal, both worktrees' making, the branch head's reading, and the join's ancestry test, merge and comparison.
+  expect(new Set(given.map(args => args[0]))).toEqual(new Set(["update-ref", "worktree", "rev-parse", "merge-base", "merge", "diff"]));
+  for (const args of given) expect(args.slice(0, args.findIndex(revision)), args.join(" ")).toContain("--end-of-options");
 });
 
 it("a release that git gives no answer to about the repository leaves the run whole: no answer is not another repository", async () => {
