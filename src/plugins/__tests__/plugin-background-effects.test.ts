@@ -259,6 +259,15 @@ describe("background effect approvals", () => {
     atomicWrites.fail = false;
     session.approve(kept);
     expect(new PluginBackgroundEffectApprovals(retried).isApproved(removed)).toBe(false);
+
+    const reinstalled = approvalsFile();
+    const before = new PluginBackgroundEffectApprovals(reinstalled);
+    before.approve(removed);
+    atomicWrites.fail = true;
+    before.revoke(removed.pluginId);
+    atomicWrites.fail = false;
+    before.bindSubject(removed.pluginId, async () => removed);
+    expect(new PluginBackgroundEffectApprovals(reinstalled).isApproved(removed)).toBe(false);
   });
 
   it("keep every approval the registry still names, and survive a failed prune", () => {

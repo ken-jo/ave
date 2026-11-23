@@ -762,7 +762,7 @@ describe("a tools/call's invocation, as the child's hostApi requests reach it", 
 
   it("runs unattributed fetches of every verb beside a live call, and audits a settled-token fetch write with redacted diagnostics", async () => {
     const rig = invocationRig();
-    const { frames, replies } = await callTools(rig, 1);
+    const { frames: [live = {}], replies } = await callTools(rig, 1);
     const init = (method: string) => encodeHostFetchInit({ method, headers: { Authorization: "header-secret" }, body: "body-secret" }, "fetch approval");
     try {
       for (const method of ["GET", "HEAD", "OPTIONS", "post", "PATCH"]) {
@@ -774,11 +774,11 @@ describe("a tools/call's invocation, as the child's hostApi requests reach it", 
         expect(rig.sent.find((frame) => frame.id === method)).toMatchObject({ result: { status: 200 } });
       }
       expect(rig.audit).not.toHaveBeenCalled();
-      rig.deliver({ jsonrpc: "2.0", id: frames[0]!.id as string, result: { content: [] } });
+      rig.deliver({ jsonrpc: "2.0", id: live.id as string, result: { content: [] } });
       await replies[0];
       rig.deliver({
         jsonrpc: "2.0", id: "settled-post", method: hostApiMethodOf("hostFetch"),
-        params: { input: "https://example.test/?token=url-secret", init: await init("POST"), _meta: { [INVOCATION_META]: tokenOf(frames[0]!) } },
+        params: { input: "https://example.test/?token=url-secret", init: await init("POST"), _meta: { [INVOCATION_META]: tokenOf(live) } },
       });
       await settle();
       expect(rig.sent.find((frame) => frame.id === "settled-post")?.error).toMatchObject({ data: { code: "argument-marshalling-rejected" } });
@@ -822,7 +822,7 @@ describe("a tools/call's invocation, as the child's hostApi requests reach it", 
         return "reply";
       }),
     } });
-    const { frames, replies } = await callTools(rig, 1);
+    const { frames: [live = {}], replies } = await callTools(rig, 1);
     try {
       const replyTo = async (id: string) => {
         await vi.waitFor(() => expect(rig.sent.some((frame) => frame.id === id)).toBe(true));
@@ -834,7 +834,7 @@ describe("a tools/call's invocation, as the child's hostApi requests reach it", 
       else expect(reply?.error).toMatchObject({ data: { code: "effect-boundary-denied" } });
       rig.deliver({
         jsonrpc: "2.0", id: "tool-llm", method: hostApiMethodOf("callLlm"),
-        params: { prompt: "hello", options: {}, _meta: { [INVOCATION_META]: tokenOf(frames[0]!) } },
+        params: { prompt: "hello", options: {}, _meta: { [INVOCATION_META]: tokenOf(live) } },
       });
       expect(await replyTo("tool-llm")).toMatchObject({ result: "reply" });
       expect(contexts).toEqual([true, undefined]);
