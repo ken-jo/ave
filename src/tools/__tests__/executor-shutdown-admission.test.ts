@@ -263,7 +263,7 @@ describe("ToolExecutor admission across the quit seal", () => {
       expect.objectContaining({ source: "plugin", category: "write", pluginId: "probe-plugin" }), undefined, expect.any(Number));
   });
 
-  it("refuses a queued tool without an audit failure when the force-kill path closes the audit in the seal's tick", async () => {
+  it("keeps a queued tool's host-shutdown row when the force-kill path closes the audit in the seal's tick", async () => {
     const { ledger, executor, executes, audit, rows, hostShutdownRows, toolUses, cancelled } = await freshExecutor(2);
     let firstDelivered!: () => void;
     const delivered = new Promise<void>((resolve) => { firstDelivered = resolve; });
@@ -277,17 +277,17 @@ describe("ToolExecutor admission across the quit seal", () => {
       },
     });
     await delivered;
-    ledger.sealToolInvocations({ startQueued: false });
+    ledger.sealToolInvocations();
     ledger.markToolInvocationAuditClosed();
     const closed = audit.close();
     releaseJournal();
     const results = await running;
     await closed;
+    await expect(ledger.closeToolInvocationAudit(async () => {})).resolves.toBe(0);
     expect(executes[1]).not.toHaveBeenCalled();
     expect(results[1]).toMatchObject({ tool_use_id: "tu-queued-1", is_error: true, content: cancelled });
-    // The claimed start was skipped, so the queued tool met the closed gate and wrote nothing.
-    expect(hostShutdownRows(rows(), "tu-queued-1")).toHaveLength(0);
-    await expect(ledger.closeToolInvocationAudit(async () => {})).resolves.toBe(0);
+    // The claim queues the row inside the seal, so the close drains it.
+    expect(hostShutdownRows(rows(), "tu-queued-1")).toHaveLength(1);
   });
 
   it("starts a claimed tool in the batch's async context when the seal comes from outside it", async () => {

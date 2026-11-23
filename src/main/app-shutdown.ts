@@ -397,8 +397,9 @@ export async function runAppShutdownCleanup(options: {
     const auditLogger = svc.auditLogger;
     const cardGates = [svc.approvalGate, svc.askUserQuestionGate];
     const closeAuditAfterForceKill = (): void => {
-      // The graceful deadline also bounds audit draining. The audit closes in this tick, so queued tools are not started.
-      try { sealToolInvocations({ startQueued: false }); } catch (error) {
+      // The graceful deadline also bounds audit draining. Claimed queued tools start inside the seal and queue their
+      // host-shutdown rows before the close below, which drains them; dropping the claims would lose those rows.
+      try { sealToolInvocations(); } catch (error) {
         log.warn("shutdown: tool invocation seal failed: %s", errorMessage(error));
       }
       // Parked cards hold no admission signal; cancel them while their rows can still be written.

@@ -276,10 +276,10 @@ describe("OS sandbox release at quit", () => {
     }
   });
 
-  it("does not start claimed queued tools at the force-kill seal, which closes the audit in the same tick", async () => {
+  it("starts claimed queued tools at the force-kill seal, before the audit closes in the same tick", async () => {
     vi.resetModules();
     const ledger = await import("../../tools/invocation-ledger.js");
-    const claim = vi.fn();
+    const claim = vi.fn(() => { calls.push("sealClaim"); });
     const withdraw = ledger.claimAtToolInvocationSeal(claim);
     getServices.mockReturnValue(makeServices());
     const shutdown = await configuredShutdown();
@@ -290,8 +290,9 @@ describe("OS sandbox release at quit", () => {
       hardTimeoutFires = false;
       withdraw();
     }
+    expect(claim).toHaveBeenCalledOnce();
     expect(calls).toContain("closeAudit");
-    expect(claim).not.toHaveBeenCalled();
+    expect(calls.indexOf("sealClaim")).toBeLessThan(calls.indexOf("closeAudit"));
   });
 
   it("still cancels parked cards and closes the audit when the fallback seal throws", async () => {

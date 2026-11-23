@@ -127,11 +127,15 @@ export function beginToolInvocationAuditShutdown(): void {
   shutdownStarted = true;
 }
 
-/** `startQueued: false` drops the claims for a caller that closes the audit in the same tick; their tools meet the closed gate. */
-export function sealToolInvocations({ startQueued = true }: { startQueued?: boolean } = {}): void {
+/**
+ * Claims run synchronously, so an abort refusal queues its row before this returns. A claimed tool that awaits before
+ * its row (a non-abort deny firing a lifecycle hook) can meet an audit closed in the same tick; that append fails and
+ * records a shutdown failure.
+ */
+export function sealToolInvocations(): void {
   beginToolInvocationAuditShutdown();
   shutdown.abort(new HostExitAbortError());
-  const claims = startQueued ? [...sealClaims] : [];
+  const claims = [...sealClaims];
   sealClaims.clear();
   for (const claim of claims) {
     try { claim(); } catch (error) { recordToolInvocationAuditFailure(error); }
