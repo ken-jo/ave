@@ -418,6 +418,23 @@ describe("one terminal row per surface invocation", () => {
     });
   });
 
+  it.each([false, true])("records the host's timeout of the review fallback card as the host's (outside directory: %s)", async outside => {
+    const f = await fixture({ outside, ...(outside ? { mode: "strict" as const } : {}), exactRule: false, holdFinalizer: false, surfaceChoice: "auto", logicalReview: inconsistent });
+    await runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "fallback-timeout-turn" }, async () => {
+      const pending = f.run();
+      await vi.waitFor(() => expect(f.cards).toHaveLength(1));
+      // Only the fallback card is asked after this, so only it expires.
+      Object.assign(f.gate, { timeoutMs: 20 });
+      f.approve(f.cards[0], true);
+      const [result] = await pending;
+      expect(f.cards).toHaveLength(2);
+      expect(f.cards[1].userOwnedSurfaceReviewFallback).toBe(true);
+      expect(result.is_error).toBe(true);
+      expect(f.typed).toEqual([]);
+      expect(terminalRows(f.audit)).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "unknown", denyReasons: [expect.objectContaining({ reason: expect.stringContaining("expired") })] })]);
+    });
+  });
+
   it.each([false, true])("records the policy's deny in place of an answered surface card with the invocation's origin (outside directory: %s)", async outside => {
     const f = await fixture({ outside, ...(outside ? { mode: "strict" as const } : {}), exactRule: false, holdFinalizer: false });
     await runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "recheck-deny-turn" }, async () => {
