@@ -324,8 +324,8 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     if (root === undefined || at.file.ignoreRules !== true) return undefined;
     return async (paths) => {
       const checked = await git.run(root, ["check-ignore", "-z", "--stdin"], { exact: true, stdin: paths.map(path => `${path}\0`).join("") });
-      // Exit 1: none of them is ignored.
-      if (checked.code !== 0 && checked.code !== 1) throw new Error("the project's ignore rules could not be read");
+      // Exit 1 with nothing written: none of them is ignored. Anything git writes to stderr, or any other exit, is no answer.
+      if (checked.stderr !== "" || (checked.code === 1 ? checked.stdout !== "" : checked.code !== 0)) throw new Error("the project's ignore rules could not be read");
       return new Set(nul(checked.stdout));
     };
   }
@@ -796,8 +796,8 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
             const entry = file.stages[other];
             if (other === stageId || entry?.sealCommit === undefined || entry.base === undefined) continue;
             const changed = await inJoin(["diff", "--quiet", "--no-ext-diff", "--no-textconv", END_OF_OPTIONS, entry.base, entry.sealCommit], { drivers, paths: [path] });
-            if (changed.code === 1) touched.push(other);
-            else if (changed.code !== 0) failed ??= new Error("git could not tell which stages changed a conflicting file");
+            if (changed.code === 1 && changed.stderr === "") touched.push(other);
+            else if (changed.code !== 0 || changed.stderr !== "") failed ??= new Error("git could not tell which stages changed a conflicting file");
           }
           files.push({ path, stageIds: stageIds.filter(id => touched.includes(id)) });
         }
