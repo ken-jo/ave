@@ -59,6 +59,8 @@ const buildOptions = {
     "mxc-extension-supervisor": resolve(repoRoot, "src", "permissions", "mxc-extension-supervisor.ts"),
     ...mxcVerificationEntries(repoRoot),
     "plugin-child-main": resolve(repoRoot, "src", "plugins", "isolation", "plugin-child-main.ts"),
+    "memory-map-worker": resolve(repoRoot, "src", "main", "memory-map", "worker-main.ts"),
+    "memory-map-child": resolve(repoRoot, "src", "main", "memory-map", "inference-child-main.ts"),
     "preview-document-child-main": resolve(repoRoot, "src", "tools", "preview-document-child-main.ts"),
   },
   outdir,

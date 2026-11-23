@@ -38,6 +38,7 @@
         // Executed as a separate managed child, not imported into the host loop.
         "src/tools/image-preparation-child.ts",
         "src/tools/preview-document-child-main.ts",
+        "src/main/memory-map/inference-child-main.ts",
         // Executed as a dedicated native-process supervisor by its installed path.
         "src/permissions/mxc-extension-supervisor.ts",
         // Diagnostic entry launched explicitly under the packaged runtime.
@@ -94,7 +95,9 @@
         "src/engine/__tests__/fixtures/mid-stream-writer.ts",
         // The srt-win exit-order test runs it as a separate process so its
         // exit handlers fire for real; spawned BY PATH.
-        "src/permissions/__tests__/fixtures/srt-win-exit-order-child.ts"
+        "src/permissions/__tests__/fixtures/srt-win-exit-order-child.ts",
+        // The memory-map inference child stand-in, bundled and spawned BY PATH.
+        "src/main/memory-map/__tests__/fixtures/inference-probe-child.ts"
       ]
     },
     "web": {

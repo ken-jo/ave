@@ -26,7 +26,7 @@ import type { ChatEntry } from "../../lib/chat-stream-state.js";
 // One mounted singleton per away display mode; empty slots render nothing.
 import { McpAppPipPanel } from "./components/McpAppPipPanel.js";
 import { McpAppFullscreenPanel } from "./components/McpAppFullscreenPanel.js";
-import { MemorySearchPanel } from "./components/MemorySearchPanel.js";
+import { MemoryView } from "./components/MemoryView.js";
 import { SchedulePanel } from "./components/schedule/SchedulePanel.js";
 import { WorkBoardPanel } from "./components/WorkBoardPanel.js";
 import { ProjectHomeView } from "./components/ProjectHomeView.js";
@@ -2097,7 +2097,8 @@ export function App() {
 
     if (view === "memory") {
       return viewPane("memory", (
-        <MemorySearchPanel
+        <MemoryView
+          onOpenEmbeddingSettings={() => navigateToSettingsPath({ tab: "chat", section: "memory-embeddings" })}
           api={api}
           project={activeProject ?? defaultWorkspaceProject}
           defaultProject={defaultWorkspaceProject}

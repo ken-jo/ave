@@ -6,7 +6,7 @@ import { isRecord } from "../shared/is-record.js";
 import { UUID_PATTERN } from "../shared/uuid.js";
 import { isValidSessionId } from "../shared/session-id.js";
 import type { MemoryDetailResult, MemoryOriginSummary, MemoryResolvedOrigin, MemorySummariesResult, MemoryUsageRead, MemoryUsageRow } from "../shared/memory-detail.js";
-import type { MemoryManager, MemoryOriginV1, ProjectScopedMemoryOptions } from "./memory-manager.js";
+import type { MemoryManager, MemoryOriginV1, NoteEntry, ProjectScopedMemoryOptions } from "./memory-manager.js";
 import type { SessionRepository } from "./session-repository.js";
 import { MEMORY_USAGE_LOG_FILENAME, type MemoryUseStore } from "./memory-usage-log.js";
 
@@ -172,19 +172,25 @@ function usageTitles(usage: MemoryUsageRead, stores: MemoryConversationStores): 
 }
 
 /** Scope is checked before any provenance or log data is read; internal contract failures propagate. */
-export async function readMemoryDetail(manager: MemoryManager, id: string, options: ProjectScopedMemoryOptions, stores: MemoryConversationStores): Promise<MemoryDetailResult> {
+export async function readMemoryDetail(manager: MemoryManager, id: string, options: ProjectScopedMemoryOptions, stores: MemoryConversationStores, source?: { contentRevision: string; read: () => NoteEntry | undefined }): Promise<MemoryDetailResult> {
   if (!UUID_PATTERN.test(id)) return { ok: false, error: "invalid-input" };
   try {
-    const entry = manager.listMemoryEntries(options).find((candidate) => candidate.id?.toLowerCase() === id.toLowerCase());
+    const entry = source ? source.read() : manager.listMemoryEntries(options).find((candidate) => candidate.id?.toLowerCase() === id.toLowerCase());
     if (!entry) return { ok: false, error: "not-found" };
-    const [history, allUsage] = await Promise.all([manager.getMemoryHistory(id, options), readUsageFile(join(manager.getDir(), "memories", MEMORY_USAGE_LOG_FILENAME))]);
+    const historyRead = source ? manager.getMemoryHistory(id, options, entry.filename) : manager.getMemoryHistory(id, options);
+    const [history, allUsage] = await Promise.all([historyRead, readUsageFile(join(manager.getDir(), "memories", MEMORY_USAGE_LOG_FILENAME))]);
     const matching = allUsage.entries.filter((row) => row.memoryId.toLowerCase() === id.toLowerCase()).sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
     const usage: MemoryUsageRead = {
       entries: matching.slice(0, MAX_USAGE_ROWS),
       ...(allUsage.incomplete ? { incomplete: true } : {}),
       ...(allUsage.limited || matching.length > MAX_USAGE_ROWS ? { limited: true } : {}),
     };
-    return { ok: true, history, usage: usageTitles(usage, stores), origin: resolveOrigin(entry.origin, stores) };
+    const current = source ? source.read() : entry;
+    if (!current) return { ok: false, error: "not-found" };
+    return {
+      ok: true, history, usage: usageTitles(usage, stores), origin: resolveOrigin(current.origin, stores),
+      ...(source ? { source: { content: current.content, contentRevision: source.contentRevision } } : {}),
+    };
   } catch (error) {
     if (!isFilesystemError(error)) throw error;
     logBoundaryFailure(error, "detail");

@@ -15,6 +15,223 @@
     "sha256": "537607e3f1533ad2c5b12978967f5ab27f34ffb7e626e321017a7ccca6cc24ff"
   },
   {
+    "packageName": "@cosmos.gl/graph",
+    "version": "3.6.0",
+    "source": "LICENCE",
+    "noticeFile": "cosmos.gl-graph-LICENCE",
+    "sha256": "1ba46fcac7658d70105e8e10f3401515b792385744e12dae089ace3d450c9513"
+  },
+  {
+    "packageName": "d3-array",
+    "version": "3.2.4",
+    "source": "LICENSE",
+    "noticeFile": "d3-array-LICENSE",
+    "sha256": "3e6849627f74ff73c257a3ae1efb574015d94fc1035c05ec3c15805165efcbc4"
+  },
+  {
+    "packageName": "internmap",
+    "version": "1.0.1",
+    "source": "LICENSE",
+    "noticeFile": "internmap-LICENSE",
+    "sha256": "9ea8903938dab5f12c4572d60725069bec2d1b0dc3bcc210b09bae946a5ebb1f"
+  },
+  {
+    "packageName": "d3-color",
+    "version": "3.1.0",
+    "source": "LICENSE",
+    "noticeFile": "d3-color-LICENSE",
+    "sha256": "faa682e3e430941f958d26180458f5934a62f58dac4d70ccdd15608c15d0f884"
+  },
+  {
+    "packageName": "d3-drag",
+    "version": "3.0.0",
+    "source": "LICENSE",
+    "noticeFile": "d3-drag-LICENSE",
+    "sha256": "e008c5e25a6be382593089c29bfabbc553c6378eee02895aec46ce396cc404ee"
+  },
+  {
+    "packageName": "d3-dispatch",
+    "version": "3.0.1",
+    "source": "LICENSE",
+    "noticeFile": "d3-dispatch-LICENSE",
+    "sha256": "e008c5e25a6be382593089c29bfabbc553c6378eee02895aec46ce396cc404ee"
+  },
+  {
+    "packageName": "d3-selection",
+    "version": "3.0.0",
+    "source": "LICENSE",
+    "noticeFile": "d3-selection-LICENSE",
+    "sha256": "e008c5e25a6be382593089c29bfabbc553c6378eee02895aec46ce396cc404ee"
+  },
+  {
+    "packageName": "d3-ease",
+    "version": "3.0.1",
+    "source": "LICENSE",
+    "noticeFile": "d3-ease-LICENSE",
+    "sha256": "b989d9085148d21ff64a75e14462aefa06b2589a55553b07b1460c70081c7d08"
+  },
+  {
+    "packageName": "d3-scale",
+    "version": "4.0.2",
+    "source": "LICENSE",
+    "noticeFile": "d3-scale-LICENSE",
+    "sha256": "e008c5e25a6be382593089c29bfabbc553c6378eee02895aec46ce396cc404ee"
+  },
+  {
+    "packageName": "d3-format",
+    "version": "3.1.2",
+    "source": "LICENSE",
+    "noticeFile": "d3-format-LICENSE",
+    "sha256": "2a6d2d5f32ba0b755ddbc1c833f766e30cdbe6ebe9a6d4e3e24427721f0b63d3"
+  },
+  {
+    "packageName": "d3-interpolate",
+    "version": "3.0.1",
+    "source": "LICENSE",
+    "noticeFile": "d3-interpolate-LICENSE",
+    "sha256": "e008c5e25a6be382593089c29bfabbc553c6378eee02895aec46ce396cc404ee"
+  },
+  {
+    "packageName": "d3-time",
+    "version": "3.1.0",
+    "source": "LICENSE",
+    "noticeFile": "d3-time-LICENSE",
+    "sha256": "faa682e3e430941f958d26180458f5934a62f58dac4d70ccdd15608c15d0f884"
+  },
+  {
+    "packageName": "d3-time-format",
+    "version": "4.1.0",
+    "source": "LICENSE",
+    "noticeFile": "d3-time-format-LICENSE",
+    "sha256": "e008c5e25a6be382593089c29bfabbc553c6378eee02895aec46ce396cc404ee"
+  },
+  {
+    "packageName": "d3-transition",
+    "version": "3.0.1",
+    "source": "LICENSE",
+    "noticeFile": "d3-transition-LICENSE",
+    "sha256": "e008c5e25a6be382593089c29bfabbc553c6378eee02895aec46ce396cc404ee"
+  },
+  {
+    "packageName": "d3-timer",
+    "version": "3.0.1",
+    "source": "LICENSE",
+    "noticeFile": "d3-timer-LICENSE",
+    "sha256": "e008c5e25a6be382593089c29bfabbc553c6378eee02895aec46ce396cc404ee"
+  },
+  {
+    "packageName": "d3-zoom",
+    "version": "3.0.0",
+    "source": "LICENSE",
+    "noticeFile": "d3-zoom-LICENSE",
+    "sha256": "e008c5e25a6be382593089c29bfabbc553c6378eee02895aec46ce396cc404ee"
+  },
+  {
+    "packageName": "dompurify",
+    "version": "3.4.17",
+    "source": "LICENSE",
+    "noticeFile": "dompurify-LICENSE",
+    "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+  },
+  {
+    "packageName": "dompurify",
+    "version": "3.4.17",
+    "source": "LICENSE-MPL",
+    "noticeFile": "dompurify-LICENSE-MPL",
+    "sha256": "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5"
+  },
+  {
+    "packageName": "gl-bench",
+    "version": "1.0.42",
+    "source": "LICENSE",
+    "noticeFile": "gl-bench-LICENSE",
+    "sha256": "a488fb5fbaa57ee91348864f038f198e1874f770ff5e00c40dd85239f78207bd"
+  },
+  {
+    "packageName": "gl-matrix",
+    "version": "3.4.4",
+    "source": "LICENSE.md",
+    "noticeFile": "gl-matrix-LICENSE-md",
+    "sha256": "65469d8984d15e58c02525acb11ef91252c3142f026255d745796433353f9e9f"
+  },
+  {
+    "packageName": "random",
+    "version": "4.1.0",
+    "source": "license",
+    "noticeFile": "random-license",
+    "sha256": "7f1788a4cf32daeee11d63d6c38110eeb71788c26df2d34947150786bd7d1f2e"
+  },
+  {
+    "packageName": "seedrandom",
+    "version": "3.0.5",
+    "source": "seedrandom.js",
+    "noticeFile": "seedrandom-seedrandom-js",
+    "sha256": "35239de2e7f05b0ae7dd0f521f21cfb4045898973091b9331e1a044a3cf01e3b"
+  },
+  {
+    "packageName": "@luma.gl/core",
+    "version": "9.3.6",
+    "source": "LICENSE",
+    "noticeFile": "luma.gl-core-LICENSE",
+    "sha256": "70c5af739aad066c8b6ce92a73c7269ba95b0b2a182217c632e205af58039ac7"
+  },
+  {
+    "packageName": "@math.gl/types",
+    "version": "4.1.0",
+    "source": "LICENSE",
+    "noticeFile": "math.gl-types-LICENSE",
+    "sha256": "0a713c4944b0e1d3104ba648cc9757f592f521144e537689a65574fc28d1b94a"
+  },
+  {
+    "packageName": "@probe.gl/env",
+    "version": "4.1.2",
+    "source": "LICENSE",
+    "noticeFile": "probe.gl-env-LICENSE",
+    "sha256": "e499a2c2ba3b9faabe91fdfddf43e329439263264b7148e5548d0ec605cce9f2"
+  },
+  {
+    "packageName": "@probe.gl/log",
+    "version": "4.1.2",
+    "source": "LICENSE",
+    "noticeFile": "probe.gl-log-LICENSE",
+    "sha256": "e499a2c2ba3b9faabe91fdfddf43e329439263264b7148e5548d0ec605cce9f2"
+  },
+  {
+    "packageName": "@probe.gl/stats",
+    "version": "4.1.2",
+    "source": "LICENSE",
+    "noticeFile": "probe.gl-stats-LICENSE",
+    "sha256": "e499a2c2ba3b9faabe91fdfddf43e329439263264b7148e5548d0ec605cce9f2"
+  },
+  {
+    "packageName": "@luma.gl/engine",
+    "version": "9.3.6",
+    "source": "LICENSE",
+    "noticeFile": "luma.gl-engine-LICENSE",
+    "sha256": "70c5af739aad066c8b6ce92a73c7269ba95b0b2a182217c632e205af58039ac7"
+  },
+  {
+    "packageName": "@math.gl/core",
+    "version": "4.1.0",
+    "source": "LICENSE",
+    "noticeFile": "math.gl-core-LICENSE",
+    "sha256": "0a713c4944b0e1d3104ba648cc9757f592f521144e537689a65574fc28d1b94a"
+  },
+  {
+    "packageName": "@luma.gl/shadertools",
+    "version": "9.3.6",
+    "source": "LICENSE",
+    "noticeFile": "luma.gl-shadertools-LICENSE",
+    "sha256": "70c5af739aad066c8b6ce92a73c7269ba95b0b2a182217c632e205af58039ac7"
+  },
+  {
+    "packageName": "@luma.gl/webgl",
+    "version": "9.3.6",
+    "source": "LICENSE",
+    "noticeFile": "luma.gl-webgl-LICENSE",
+    "sha256": "70c5af739aad066c8b6ce92a73c7269ba95b0b2a182217c632e205af58039ac7"
+  },
+  {
     "packageName": "@xterm/addon-web-links",
     "noticeFile": "xterm-addon-web-links-LICENSE",
     "sha256": "689ceb10716bd7a87a804c14951d7c2b818cbd60aab83d540902470ce3b13444"

@@ -23,7 +23,7 @@ const TAB_SOURCES: Record<SettingsTab, readonly string[]> = {
     "tabs/SubscriptionProvidersController.tsx",
   ],
   appearance: ["tabs/AppearanceTab.tsx"],
-  chat: ["tabs/ChatTab.tsx", "tabs/PrivacyTab.tsx"],
+  chat: ["tabs/ChatTab.tsx", "tabs/PrivacyTab.tsx", "components/MemoryEmbeddingsSection.tsx"],
   notifications: ["tabs/NotificationsTab.tsx", "tabs/AccessibilitySignalsSettings.tsx"],
   web: ["tabs/WebTab.tsx"],
   startup: ["tabs/StartupTab.tsx"],

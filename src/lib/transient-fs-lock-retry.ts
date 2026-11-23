@@ -57,6 +57,11 @@ export async function renameDirectory(
   }
 }
 
+/** One directory rename, never retried: the caller reads an existing target (EEXIST/ENOTEMPTY/EPERM) as a collision, not a lock. */
+export function renameDirectoryOnce(from: string, to: string): Promise<void> {
+  return fsRename(from, to);
+}
+
 const TRANSIENT_FS_LOCK_CODES = DIRECTORY_OP_LOCK_CODES;
 
 export function isTransientFsLockError(err: unknown): boolean {

@@ -12,7 +12,7 @@ type UsageVia = LoadedDetail["usage"]["entries"][number]["via"];
 export function MemoryDetailContent({ detail, onOpenSession, onSameOrigin }: {
   detail: MemoryDetailResult | undefined;
   onOpenSession?: OpenMemorySession;
-  onSameOrigin: (sessionId: string) => void;
+  onSameOrigin?: (sessionId: string) => void;
 }) {
   const { t } = useTranslation();
   const [via, setVia] = useState<"all" | UsageVia>("all");
@@ -74,7 +74,7 @@ export function MemoryDetailContent({ detail, onOpenSession, onSameOrigin }: {
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <Button size="sm" variant="outline" disabled={!onOpenSession} onClick={() => void open(origin.sessionId, origin.messageId)}>{t("memorySearchPanel.viewConversation")}</Button>
-                  <Button size="sm" variant="outline" onClick={() => onSameOrigin(origin.sessionId)}>{t("memorySearchPanel.sameOrigin")}</Button>
+                  {onSameOrigin && <Button size="sm" variant="outline" onClick={() => onSameOrigin(origin.sessionId)}>{t("memorySearchPanel.sameOrigin")}</Button>}
                 </div>
                 <p className="text-muted-foreground">{t("memorySearchPanel.liveQuote")}</p>
               </>}

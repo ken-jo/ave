@@ -1,3 +1,4 @@
+import { memoryMapApiSurface } from './memory-map-api-surface.js';
 import type { ScheduleAttachmentInput, ScheduleAttachment, WorkflowTemplateIpcResult, WorkflowTemplate, WorkflowTemplateRecord, WorkflowTemplateDraftInput, WorkflowTemplateConfirmInput, TemplateVersion } from "../shared/workflow-template-types.js";
 import type { MemoryDetailResult, MemorySummariesResult } from "../shared/memory-detail.js";
 import type { HookTrustListResult, HookTrustReviewRequest, HookTrustReviewResult } from "../shared/hook-trust-review.js";
@@ -413,8 +414,10 @@ export function buildInternalApiSurface() {
 
   // Plugin-owned OAuth removed host-owned provider auth IPC bridges.
 
-  memoryGetDetail: async (id: string, opts?: MemoryProjectOptions): Promise<MemoryDetailResult> =>
-    opts === undefined ? ipcRenderer.invoke(CHANNELS.memory.detailGet, id) : ipcRenderer.invoke(CHANNELS.memory.detailGet, id, opts),
+  memoryMap: memoryMapApiSurface,
+  memoryGetDetail: async (id: string, opts?: MemoryProjectOptions, contentRevision?: string): Promise<MemoryDetailResult> =>
+    contentRevision !== undefined ? ipcRenderer.invoke(CHANNELS.memory.detailGet, id, opts, contentRevision)
+      : opts === undefined ? ipcRenderer.invoke(CHANNELS.memory.detailGet, id) : ipcRenderer.invoke(CHANNELS.memory.detailGet, id, opts),
   memoryGetSummaries: async (opts?: MemoryProjectOptions): Promise<MemorySummariesResult> =>
     invokeWithOptionalMemoryOptions(CHANNELS.memory.summariesGet, opts),
 

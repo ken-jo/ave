@@ -2772,6 +2772,9 @@ async function wrapLongLivedCommand(
   if (!isAsrtSandboxActive()) {
     throw new Error(`${caller}: ASRT sandbox is not active (initialize at boot first)`);
   }
+  if (process.platform === "linux" && options.denyUnixSockets === true && getVendoredApplySeccompPath() === undefined) {
+    throw new Error(`${caller}: Unix socket filtering helper is unavailable`);
+  }
   assertWindowsDenyProtection();
   noteConfinedProcessesMayRun();
   // Publish before wrapping: the runtime sets TMPDIR inside the command, ahead of any environment the spawning caller supplies. Idempotent.
