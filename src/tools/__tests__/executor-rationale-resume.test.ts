@@ -440,6 +440,33 @@ describe("ToolExecutor sealed rationale resume", () => {
     }
   });
 
+  it.each([
+    [true, "executes once as the desk's answer"],
+    [false, "refuses it as unrelated drift"],
+  ] as const)("resumes after a policy change turned the ask into an allow (same-card transition: %s) and %s", async (transition) => {
+    const f = await fixture();
+    try {
+      await f.manager.addAlwaysAllowedPersist("sealed_write");
+      Object.assign(f.resumeRuntime, { hasApprovedPolicyTransition: () => transition });
+      const append = vi.mocked(f.auditLogger.appendPermissionAuditEntry);
+      const before = append.mock.calls.length;
+      const result = await resumeFixture(f);
+      const terminal = append.mock.calls.slice(before).map(([entry]) => entry).filter(entry => entry.decision !== "ask" && !("grantLifetime" in entry));
+      if (transition) {
+        expect(result.is_error, JSON.stringify(result)).toBeUndefined();
+        expect(f.execute).toHaveBeenCalledOnce();
+        expect(terminal).toEqual([expect.objectContaining({ decision: "allow", trustOrigin: "user-keyboard" })]);
+      } else {
+        expect(result.is_error).toBe(true);
+        expect(f.execute).not.toHaveBeenCalled();
+        expect(terminal).toEqual([expect.objectContaining({ decision: "deny" })]);
+      }
+      expect(f.approvalGate.requestAndWait).not.toHaveBeenCalled();
+    } finally {
+      await cleanupTmpDir(f.directory);
+    }
+  });
+
   it("blocks a HookRunner mutation before identity, receipt, modal, or execute", async () => {
     const f = await fixture();
     try {

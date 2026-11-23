@@ -819,7 +819,8 @@ export async function authorizeToolInvocation(
         }
       }
     }
-    if (permissionResult.decision === "ask") {
+    // A prepared resume whose own card turned the ask into an allow goes through the same receipt consumer; prepare already refused unrelated drift.
+    if (permissionResult.decision === "ask" || rationaleResumeContext?.prepared && permissionResult.decision === "allow") {
       if (rationaleResumeContext?.prepared) {
         const permHook = await runScriptHook(
           services.scriptHookManager,
