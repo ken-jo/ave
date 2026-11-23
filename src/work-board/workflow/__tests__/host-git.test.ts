@@ -600,6 +600,25 @@ describe("the hook floor's probe", () => {
     } finally {
       vi.useRealTimers();
     }
+    // The probe did not finish: it is asked again.
+    fakeGit(holding);
+    expect(await probe(program)).toBe(true);
+  });
+
+  it("a probe whose scratch folder a sandboxed command holds refuses git and is asked again once released", async () => {
+    const program = planted(join(base, "first"));
+    fakeGit(holding);
+    const probe = await freshProbe();
+    // The hold of the very module instance the fresh probe asks.
+    const { holdSandboxGitWrites: hold } = await import("../../../shared/host-git.js");
+    const release = hold([tmpdir()]);
+    try {
+      expect(await probe(program)).toBe(false);
+      expect(spawned.calls).toBe(0);
+    } finally {
+      release();
+    }
+    expect(await probe(program)).toBe(true);
   });
 
   it("is asked once per program until the program changes, and a git newer than the release the events were listed from is told of once", async () => {

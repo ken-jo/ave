@@ -248,8 +248,8 @@ let unprovenLogged = false;
  * Whether the host floor keeps every event `HOOK_EVENTS` lists from running a configured hook on `git`, the program a call starts, asked
  * once per program and its modification time. In a scratch repository, through the same calls every host git process makes, a hook is
  * configured ahead of the floor and run: one for an event the floor leaves alone must run, or nothing tells whether one ran at all,
- * and none for a listed event may. Anything else, a failed call or a timeout among them, is no. Only that answer is kept: a scratch
- * folder that cannot be made or taken away decides nothing.
+ * and none for a listed event may. Anything else, a failed call or a timeout among them, is no. Only an answer the probe finished with
+ * is kept: a scratch folder that cannot be made or taken away decides nothing.
  */
 function floorHoldsOn(git: HostGitProgram, env: NodeJS.ProcessEnv): Promise<boolean> {
   let key: string;
@@ -258,7 +258,11 @@ function floorHoldsOn(git: HostGitProgram, env: NodeJS.ProcessEnv): Promise<bool
   if (known !== undefined) return known;
   let scratch: string;
   try { scratch = mkdtempSync(join(tmpdir(), "ave-git-floor-")); } catch { return Promise.resolve(false); }
-  const verdict = probeFloor(createHostGit({ env, resolve: use => use(git) }), scratch).catch(() => false);
+  // A probe that did not finish, held or timed out among them, answers no and is asked again next time.
+  const verdict: Promise<boolean> = probeFloor(createHostGit({ env, resolve: use => use(git) }), scratch).catch(() => {
+    if (floorProbes.get(key) === verdict) floorProbes.delete(key);
+    return false;
+  });
   floorProbes.set(key, verdict);
   void verdict.then(() => removeScratch(scratch));
   return verdict;
