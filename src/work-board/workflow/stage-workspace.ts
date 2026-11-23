@@ -23,10 +23,12 @@ export interface StageWorkspaceProvider {
   /** Install one immutable result per run/join from the stage seals; repetition returns that result without another merge.
    * A non-idempotent implementation must commit its receipt atomically with the integration. */
   integrate(run: RunRef, joinId: string, stageIds: readonly string[]): Promise<{ ok: true } | { ok: false; conflict: JoinConflict }>;
-  /** Stage folders only; the run branch and the output folder stay. Already absent folders are a no-op. */
+  /** Stage folders only; the run branch and the output folder stay. Already absent folders are a no-op. A git run is released only
+   * with its project open (`run.projectRoot`): without it nothing of the run is touched. */
   release(run: RunRef, stageIds: readonly string[] | "all"): Promise<void>;
   /** Everything left under the run root, the output folder included, of each run that has no record and whose item is gone. A run
-   * whose item is still listed keeps its output folder whether or not its record stays. The run branch stays. */
+   * whose item is still listed keeps its output folder whether or not its record stays. The run branch stays. No project is open
+   * for this call or for `sweep`: a git run is left whole by both, for a `release` with its project open. */
   discard(): Promise<void>;
   /** Boot: drop what no active run owns, and with it what `discard` would remove. An active run loses only what a stop during a
    * seeding left of its ignore matcher. */
