@@ -403,6 +403,21 @@ describe("one terminal row per surface invocation", () => {
     });
   });
 
+  it("records the host's refusal of the outside directory's second card as the host's", async () => {
+    const f = await fixture({ outside: true, mode: "strict", exactRule: false, holdFinalizer: false, surfaceChoice: "auto", logicalReview: inconsistent });
+    await runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "fallback-host-turn" }, async () => {
+      const pending = f.run();
+      await vi.waitFor(() => expect(f.cards).toHaveLength(1));
+      f.approve(f.cards[0], true);
+      await vi.waitFor(() => expect(f.cards).toHaveLength(2));
+      f.gate.disposeAll();
+      const [result] = await pending;
+      expect(result.is_error).toBe(true);
+      expect(f.typed).toEqual([]);
+      expect(terminalRows(f.audit)).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "unknown" })]);
+    });
+  });
+
   it.each([false, true])("records the policy's deny in place of an answered surface card with the invocation's origin (outside directory: %s)", async outside => {
     const f = await fixture({ outside, ...(outside ? { mode: "strict" as const } : {}), exactRule: false, holdFinalizer: false });
     await runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "recheck-deny-turn" }, async () => {
@@ -434,6 +449,26 @@ describe("one terminal row per surface invocation", () => {
         .filter(row => row.grantLifetime !== undefined);
       expect(grants).toEqual([expect.objectContaining({ grantLifetime: "turn", trustOrigin: origin })]);
       expect(terminalRows(f.audit)).toEqual([expect.objectContaining({ decision: "allow", trustOrigin: origin })]);
+    });
+  });
+
+  it("records a late deny on the second card as the desk's", async () => {
+    const f = await fixture({ surfaceChoice: "auto" });
+    await runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "late-second-card-turn" }, async () => {
+      const pending = f.run();
+      await f.reached;
+      await f.pause();
+      f.manager.setUserOwnedSurfaceChoice(SESSION_ID, "host-terminal", "ask");
+      f.release();
+      await vi.waitFor(() => expect(f.cards).toHaveLength(1));
+      f.approve(f.cards[0], true);
+      await vi.waitFor(() => expect(f.cards).toHaveLength(2));
+      expect(f.cards[1].userOwnedSurfaceReviewFallback).toBe(true);
+      f.deny(f.cards[1]);
+      const [result] = await pending;
+      expect(result.is_error).toBe(true);
+      expect(f.typed).toEqual([]);
+      expect(terminalRows(f.audit)).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "user-keyboard" })]);
     });
   });
 
