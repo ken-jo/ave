@@ -11,7 +11,7 @@ import {
   LOOPBACK_RANGES,
 } from "@anthropic-ai/sandbox-runtime/dist/sandbox/address.js";
 import { BlockList, isIP } from "node:net";
-import { openFeatureNamespace, writeFileAtomicAtPath } from "../main/storage/feature-namespace.js";
+import { openFeatureNamespace, writeFileAtomicAtPath, writeFileAtomicAtPathIf } from "../main/storage/feature-namespace.js";
 import { assertAveHomeInputWritable, readAveHomeInput } from "../shared/ave-home-trust.js";
 import { createSerialQueue } from "../lib/with-file-lock.js";
 import { projectRuleRoot } from "./rules/project-rule-files.js";
@@ -19,6 +19,12 @@ import { canonicalizePathForMatch, foldCanonicalPathSeparators } from "./sensiti
 import { maxEgressGrantScope, type EgressIdentityStrength } from "../shared/sandbox-capability-info.js";
 import { sessionAuthorityWithheld } from "../shared/turn-extension-policy.js";
 import { approvalConversationRoot } from "./user-approval-store.js";
+import {
+  ApprovalPersistenceError,
+  assertApprovalPersistenceCurrent,
+  refreshApprovalPersistence,
+  type ApprovalPersistenceGuard,
+} from "./approval-persistence-guard.js";
 import {
   EGRESS_GRANT_SCOPE_LADDERS,
   isEgressGrantScope,
@@ -334,6 +340,7 @@ export class EgressGrantStore {
     destination: EgressGrantDestination,
     now: Date = new Date(),
     signal?: AbortSignal,
+    authority?: ApprovalPersistenceGuard,
   ): Promise<void> {
     if (!isEgressGrantScope(scope)) throw new Error(`egress grant: unknown scope ${String(scope)}`);
     if (!allowedScopes.includes(scope)) throw new Error(`egress grant: scope ${scope} was not offered`);
@@ -343,6 +350,11 @@ export class EgressGrantStore {
     if (egressScopesForNetwork([scope], network).length === 0) throw new Error("egress grant: scope cannot cover this network class");
     const key = destinationKey(destination);
     signal?.throwIfAborted();
+    if (authority && !isPersistentScope(scope)) {
+      await refreshApprovalPersistence(authority);
+      signal?.throwIfAborted();
+      assertApprovalPersistenceCurrent(authority);
+    }
     switch (scope) {
       case "once":
         // A terminal's "Allow once" lets one connection through and is never held.
@@ -364,7 +376,7 @@ export class EgressGrantStore {
         await this.mutatePersistent((grants) => {
           if (grants.some((g) => g.scope === "project" && g.origin === "shell" && g.projectRoot === projectRoot && destinationKey(g) === key)) return grants;
           return [...grants, { scope: "project", origin: "shell", projectRoot, host: destination.host, port: destination.port, network: grantNetwork(destination), grantedAt: now.toISOString() }];
-        }, signal);
+        }, signal, authority);
         return;
       }
       case "always": {
@@ -372,7 +384,7 @@ export class EgressGrantStore {
         await this.mutatePersistent((grants) => {
           if (grants.some((g) => g.scope === "always" && g.origin === origin && destinationKey(g) === key)) return grants;
           return [...grants, { scope: "always", origin, host: destination.host, port: destination.port, network: grantNetwork(destination), grantedAt: now.toISOString() }];
-        }, signal);
+        }, signal, authority);
         return;
       }
     }
@@ -503,7 +515,11 @@ export class EgressGrantStore {
     return this.persistent;
   }
 
-  private mutatePersistent(mutate: (grants: readonly PersistentEgressGrant[]) => readonly PersistentEgressGrant[], signal?: AbortSignal): Promise<void> {
+  private mutatePersistent(
+    mutate: (grants: readonly PersistentEgressGrant[]) => readonly PersistentEgressGrant[],
+    signal?: AbortSignal,
+    authority?: ApprovalPersistenceGuard,
+  ): Promise<void> {
     // The store reads as absent in a refused home; rewriting it from that view would erase the user's file.
     try { assertAveHomeInputWritable(this.filePath); }
     catch (error) { return Promise.reject(error); }
@@ -512,9 +528,17 @@ export class EgressGrantStore {
       this.persistent = undefined;
       const current = await this.loadPersistent();
       signal?.throwIfAborted();
+      if (authority) await refreshApprovalPersistence(authority);
       const next = [...mutate(current)];
       const file: GrantFile = { version: FILE_VERSION, grants: next };
-      if (this.filePath === egressGrantFilePath()) await openFeatureNamespace("permissions").writeJson("shell-egress-hosts.json", file);
+      if (authority || signal) {
+        const committed = await writeFileAtomicAtPathIf(this.filePath, `${JSON.stringify(file, null, 2)}\n`,
+          () => signal?.aborted !== true && (authority?.isCurrent() ?? true));
+        if (!committed) {
+          signal?.throwIfAborted();
+          throw new ApprovalPersistenceError();
+        }
+      } else if (this.filePath === egressGrantFilePath()) await openFeatureNamespace("permissions").writeJson("shell-egress-hosts.json", file);
       else await writeFileAtomicAtPath(this.filePath, `${JSON.stringify(file, null, 2)}\n`);
       this.persistent = next;
     });

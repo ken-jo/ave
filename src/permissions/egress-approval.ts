@@ -2,6 +2,7 @@
 import type { NetworkRuleScope, PermissionManager } from "./permission-manager.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
 import { NO_APPROVER_MESSAGE } from "./decision-pipeline.js";
+import { remoteControllerOriginOf } from "../shared/chat-origin.js";
 import { randomUUID } from "node:crypto";
 import { isIP } from "node:net";
 import { canonicalRuleSpecifier } from "./rules/rule-specifier.js";
@@ -98,6 +99,7 @@ export function createApprovalGateEgressRequester(
       }
       if (headless) { request.onNoApprover?.(); return { allow: false, reason: NO_APPROVER_MESSAGE }; }
     }
+    const remoteControllerAuthority = terminal ? undefined : request.permissionContext?.remoteControllerAuthority;
     const decision = await gate.requestAndWait({
       id: requestId,
       category: "tool",
@@ -115,6 +117,11 @@ export function createApprovalGateEgressRequester(
       durableApprovalRecordAllowed: false,
       forceExplicit: true,
       ...(!terminal ? { ownerUnattended: request.ownerUnattended, toolApprovalWait: request.toolApprovalWait } : {}),
+      ...(remoteControllerAuthority === undefined ? {} : {
+        remoteControllerAuthority,
+        remoteControllerOrigin: remoteControllerOriginOf(remoteControllerAuthority),
+        trustOrigin: remoteControllerAuthority.kind === "tailnet-controller" ? "tailnet-surface" : "platform-bridge",
+      }),
       egressHost: {
         host,
         port,

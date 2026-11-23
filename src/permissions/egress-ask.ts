@@ -3,6 +3,12 @@
 import { AveHomeConfigurationRefusedWriteError } from "../shared/ave-home.js";
 import type { ToolApprovalWait } from "../tools/executor-ceiling.js";
 import type { NetworkPermissionEvaluation } from "./permission-manager.js";
+import {
+  ApprovalPersistenceError,
+  assertApprovalPersistenceCurrent,
+  invocationApprovalPersistenceGuard,
+  refreshApprovalPersistence,
+} from "./approval-persistence-guard.js";
 import { NO_APPROVER_MESSAGE } from "./decision-pipeline.js";
 import type { SandboxAskCallback } from "@anthropic-ai/sandbox-runtime";
 import { matchesDomainPatternWithPort } from "@anthropic-ai/sandbox-runtime/dist/sandbox/domain-pattern.js";
@@ -351,21 +357,33 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
     invocation: LiveInvocation,
     oneConnection?: true,
   ): Promise<Decision> => {
-    // A terminal's "Allow once" is spent on the connection that asked; it is never held.
-    if (scope === "once" && (owner.kind === "terminal" || oneConnection)) return allow("prompt", "once");
+    const authority = owner.kind === "shell"
+      ? invocationApprovalPersistenceGuard(owner.context.permissionContext?.remoteControllerAuthority, owner.context.sessionId, invocation.signal)
+      : undefined;
     const subject = grantSubject(token, owner);
+    // A one-connection answer is spent here. Longer scopes fence their own commit.
+    const holdsGrant = scope !== "once" || (owner.kind === "shell" && !oneConnection);
+    let grantedScope = scope;
     try {
-      // The store commits nothing once the invocation's signal aborts before the write.
-      await deps.grants.grant(scope, scopes, subject, destination, undefined, invocation.signal);
+      if (holdsGrant) {
+        try {
+          await deps.grants.grant(scope, scopes, subject, destination, undefined, invocation.signal, authority);
+        } catch (error) {
+          // A project or always grant cannot be kept while boot refuses the home folder.
+          if (!(error instanceof AveHomeConfigurationRefusedWriteError)) throw error;
+          grantedScope = "once";
+        }
+      }
+      if (authority && (!holdsGrant || grantedScope !== scope)) await refreshApprovalPersistence(authority);
+      if (!invocation.live()) return unattributed();
+      assertApprovalPersistenceCurrent(authority);
+      if (holdsGrant && grantedScope === scope) deps.grants.noteUse(scope, subject, destination);
+      return allow("prompt", grantedScope);
     } catch (error) {
       if (!invocation.live()) return unattributed();
-      // A project or always grant cannot be kept while boot refuses the home folder; this connection is allowed once.
-      if (!(error instanceof AveHomeConfigurationRefusedWriteError)) throw error;
-      return allow("prompt", "once");
+      if (error instanceof ApprovalPersistenceError) return deny("policy", "remote-controller-revoked");
+      throw error;
     }
-    if (!invocation.live()) return unattributed();
-    deps.grants.noteUse(scope, subject, destination);
-    return allow("prompt", scope);
   };
 
   // `verified` receives the key, owner and liveness once the key's identity is accepted; nothing else is attributed to anyone.

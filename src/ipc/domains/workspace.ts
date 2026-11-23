@@ -10,6 +10,7 @@ import type { IpcDeps } from "../types.js";
 import { ensureFileAccess, sensitiveFilePattern } from "../../tools/file-access-policy.js";
 import { expandLeadingTilde } from "../../shared/home-tilde.js";
 import { assertReadableFilePath } from "../../tools/file-read-core.js";
+import { assertApprovalPersistenceCurrent, type ApprovalPersistenceGuard } from "../../permissions/approval-persistence-guard.js";
 import {
   readPermissionSettings,
   PermissionSettingsUnreadableError,
@@ -702,11 +703,17 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
     operationId: string;
   };
 
-  async function allowPersistedWorkspaceRoot(root: string, source: string): Promise<string[]> {
+  async function allowPersistedWorkspaceRoot(
+    root: string,
+    source: string,
+    authority?: ApprovalPersistenceGuard,
+  ): Promise<string[]> {
     const runtimeRoot = canonicalizePathForMatch(resolvePath(root));
     return withWorkspaceRootLifecycleLock(runtimeRoot, async () => {
+      assertApprovalPersistenceCurrent(authority);
       // Validate persistent additions under the same-root lifecycle lock so all entrypoints reject vanished or non-directory paths.
       const stat = await fs.stat(runtimeRoot).catch(() => null);
+      assertApprovalPersistenceCurrent(authority);
       if (!stat) {
         throw new Error("workspace-root-not-found");
       }
@@ -722,6 +729,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
       if (alreadyRegistered) return current;
       const preserveRoots = retainedDescendantWorkspaceRoots(runtimeRoot, current);
       await pruneWorkspaceRootGrants(runtimeRoot, source, preserveRoots);
+      assertApprovalPersistenceCurrent(authority);
       try {
         // Finish stale routine-scope cleanup before re-add or restart could revive denied grants.
         await pruneWorkspaceRootRoutineScopes(runtimeRoot, source, preserveRoots);
@@ -733,7 +741,10 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
         }
         throw error;
       }
-      const persisted = await addAllowedDirectoryPersist(runtimeRoot);
+      assertApprovalPersistenceCurrent(authority);
+      const persisted = authority
+        ? await addAllowedDirectoryPersist(runtimeRoot, undefined, authority)
+        : await addAllowedDirectoryPersist(runtimeRoot);
       allowWorkspaceRoot(runtimeRoot, source);
       return persisted;
     });
@@ -791,8 +802,8 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
   }
 
   const permissionDirectoryLifecycle = {
-    allowDirectory: (root: string, source: "permission-slash") =>
-      allowPersistedWorkspaceRoot(root, source),
+    allowDirectory: (root: string, source: "permission-slash", authority?: ApprovalPersistenceGuard) =>
+      allowPersistedWorkspaceRoot(root, source, authority),
     denyDirectory: async (root: string, source: "permission-slash") =>
       (await removePersistedWorkspaceRoot(root, source))?.persisted ??
         readPermissionSettings().permissions.additionalDirectories,

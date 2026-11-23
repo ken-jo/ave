@@ -21,7 +21,7 @@ import { sessionAuthorityWithheld } from "../shared/turn-extension-policy.js";
 import { createSerialQueue } from "../lib/with-file-lock.js";
 import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
 
-import { refreshApprovalPersistence, type ApprovalPersistenceGuard } from "./approval-persistence-guard.js";
+import { assertApprovalPersistenceCurrent, refreshApprovalPersistence, type ApprovalPersistenceGuard } from "./approval-persistence-guard.js";
 
 let persistentWrites = createSerialQueue();
 
@@ -361,6 +361,7 @@ export async function recordApproval(
 
   if (entry.scope === "session") {
     await refreshApprovalPersistence(authority);
+    assertApprovalPersistenceCurrent(authority);
     sessionStore.set(key, full);
     approvalGeneration += 1;
     return;

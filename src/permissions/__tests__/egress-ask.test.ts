@@ -26,6 +26,7 @@ import * as terminalObservation from "../../tools/agent-terminal-observation.js"
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { EGRESS_GRANT_SCOPE_LADDERS } from "../../shared/egress-grant-scopes.js";
 import { _resetAveHomePrivacyForTest, setAveHomeConfigurationRefusedAtBoot } from "../../shared/ave-home.js";
+import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
 
 const matchingScopes = Object.values(EGRESS_GRANT_SCOPE_LADDERS).flat();
 
@@ -916,9 +917,23 @@ describe("egress ask callback — shell calls", () => {
     expect(audit.at(-1)).toMatchObject({ invocation: { kind: "unattributed" } });
   });
 
-  it("grants nothing when the call ends while its persistent grant waits in the store's queue", async () => {
+  it.each(["abort", "revoke"] as const)("grants nothing after %s while a persistent egress grant waits in the store", async interruption => {
     const controller = new AbortController();
     signals.set(SHELL_TOKEN, controller.signal);
+    let current = true;
+    if (interruption === "revoke") {
+      const sessionId = "session-1";
+      const remoteControllerAuthority = bindRemoteControllerToSession({
+        kind: "tailnet-controller",
+        actorId: "tailnet:controller-digest",
+        pairedShare: { pairingId: "pairing", pairingEpoch: 1, shareId: "share", shareEpoch: 1, scope: "scope" },
+        pairedShareGuard: { isCurrent: () => current, refreshCurrent: async () => current },
+      }, sessionId);
+      owners.set(SHELL_TOKEN, {
+        ...interactiveShell,
+        context: { ...interactiveShell.context, sessionId, permissionContext: { remoteControllerAuthority } },
+      });
+    }
     const notes = vi.spyOn(denyMonitor, "noteCallbackDecision");
     const observations = vi.spyOn(terminalObservation, "observeAgentTerminalEgressDecision");
     const store = grants as unknown as { loadPersistent(): Promise<unknown> };
@@ -935,16 +950,22 @@ describe("egress ask callback — shell calls", () => {
     const github = { host: "github.com", port: 443 };
     const decision = rawCallback()(github, { attributionKey: SHELL_TOKEN, identity: "listener", phase: "resolved", addresses: ["140.82.112.3"], resolution: "pinned" });
     await reread;
-    controller.abort();
+    if (interruption === "abort") controller.abort();
+    else current = false;
     ungate();
     const result = await decision;
     const stored = new EgressGrantStore(join(dir, "shell-egress-hosts.json"));
     expect(await stored.matchingScope({ token: OTHER_SHELL_TOKEN, sessionId: "session-1", tabId: undefined, projectRoot: PROJECT, origin: "shell" },
       { ...github, network: "public" }, matchingScopes)).toBeUndefined();
-    expect(result).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
-    expect(audit.at(-1)).toMatchObject({ invocation: { kind: "unattributed" }, decision: "deny", reason: EGRESS_DENY_REASONS.unattributed });
-    expect(notes.mock.calls.at(-1)).toEqual([undefined, "github.com", 443]);
-    expect(observations.mock.calls.at(-1)?.[0]).toBeUndefined();
+    if (interruption === "revoke") {
+      expect(result).toEqual({ allow: false, reason: "remote-controller-revoked" });
+      expect(audit).toEqual([expect.objectContaining({ invocation: { kind: "shell", toolName: "bash", toolUseId: "toolu_1" }, decision: "deny", reason: "remote-controller-revoked" })]);
+    } else {
+      expect(result).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
+      expect(audit.at(-1)).toMatchObject({ invocation: { kind: "unattributed" }, decision: "deny", reason: EGRESS_DENY_REASONS.unattributed });
+      expect(notes.mock.calls.at(-1)).toEqual([undefined, "github.com", 443]);
+      expect(observations.mock.calls.at(-1)?.[0]).toBeUndefined();
+    }
   });
 
   it.each(["prompt", "remembered grant"] as const)("does not act on a %s for a call that ended while its policy was evaluated", async (path) => {
