@@ -1,6 +1,6 @@
 import { admitToolInvocation, admitToolInvocationWhileAuditOpen, appendToolInvocationAudit, toolInvocationsSealed } from "../../tools/invocation-ledger.js";
 import { HostExitAbortError, isHostExitAbort } from "../../shared/host-exit-abort.js";
-import { isAnsweredApprovalDenial } from "../../permissions/approval-gate.js";
+import { approvalDecisionTrustOrigin, isAnsweredApprovalDenial } from "../../permissions/approval-gate.js";
 import { hostApprovalDenialReason } from "../../tools/pipeline/approval-outcome.js";
 /** Route plugin calls through the executor; only trusted panel calls may use the app-only runtime bypass. */
 import { randomUUID } from "node:crypto";
@@ -668,7 +668,7 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
             // Who decided comes from the decision: a person's answered deny stays theirs even when the seal
             // lands before this resumes; a deny the host produced, or an allow the seal vetoes, is the host's.
             const denial = isAnsweredApprovalDenial(decision)
-              ? { reason: "plugin operation grant denied by user", trustOrigin: "user-keyboard" as const }
+              ? { reason: "plugin operation grant denied by user", trustOrigin: approvalDecisionTrustOrigin(decision) }
               : {
                   reason: isHostExitAbort(admission.signal.reason)
                     ? "host-shutdown"
@@ -729,7 +729,7 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
               tool: toolName,
               source: "plugin",
               category: governedTool.category,
-              trustOrigin: "user-keyboard",
+              trustOrigin: approvalDecisionTrustOrigin(decision),
               pluginOperation: {
                 pluginId,
                 operation: inspected.operation,

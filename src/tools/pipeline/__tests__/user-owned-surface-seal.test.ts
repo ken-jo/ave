@@ -1,11 +1,31 @@
 import { describe, expect, it } from "vitest";
 import { deferred } from "../../../__tests__/support/deferred.js";
-import { isAnsweredApprovalDenial, type ApprovalDecision, type ApprovalGate } from "../../../permissions/approval-gate.js";
+import {
+  ApprovalGate,
+  IPC_APPROVAL_REQUEST,
+  approvalDecisionTrustOrigin,
+  isAnsweredApprovalDenial,
+  type ApprovalDecision,
+  type ApprovalRequest,
+} from "../../../permissions/approval-gate.js";
 import type { PermissionCheckResult, PermissionManager } from "../../../permissions/permission-manager.js";
 import { HostExitAbortError } from "../../../shared/host-exit-abort.js";
 import { resolveUserOwnedSurfaceApproval } from "../user-owned-surface.js";
 
 const ask: PermissionCheckResult = { decision: "ask", reason: "surface review fallback" };
+
+// A deny a person answered on a real gate, so it carries the gate's record of who decided.
+async function answeredDeny(answeredBy: "desk" | "platform-bridge" = "desk"): Promise<ApprovalDecision> {
+  const card = deferred<ApprovalRequest>();
+  const gate = new ApprovalGate({
+    isDestroyed: () => false,
+    send: (channel: string, request: ApprovalRequest) => { if (channel === IPC_APPROVAL_REQUEST) card.resolve(request); },
+  } as never);
+  const decision = gate.requestAndWait({ id: "fallback-card", category: "tool", toolName: "probe", args: {}, reason: "probe", createdAt: Date.now() });
+  const asked = await card.promise;
+  gate.resolve(asked.id, { requestId: asked.id, choice: "deny-once", nonce: asked.nonce, hmac: asked.hmac }, answeredBy);
+  return decision;
+}
 
 function surfaceFallback() {
   const answer = deferred<ApprovalDecision>();
@@ -34,9 +54,17 @@ describe("user-owned surface approval across the quit seal", () => {
     const { answer, asked, quit, resolution } = surfaceFallback();
     await asked;
     // The person's answer settles the card; the quit lands before the awaiting resolution runs again.
-    answer.resolve({ requestId: "fallback-card", choice: "deny-once" });
+    answer.resolve(await answeredDeny());
     quit.abort(new HostExitAbortError());
     await expect(resolution).resolves.toMatchObject({ decision: { choice: "deny-once" }, humanApproved: false });
+  });
+
+  it("ends on the quit for a deny no person answered through the gate", async () => {
+    const { answer, asked, quit, resolution } = surfaceFallback();
+    await asked;
+    answer.resolve({ requestId: "fallback-card", choice: "deny-once" });
+    quit.abort(new HostExitAbortError());
+    await expect(resolution).rejects.toBeInstanceOf(HostExitAbortError);
   });
 
   it("still ends on the quit when the fallback card was allowed", async () => {
@@ -59,5 +87,16 @@ describe("user-owned surface approval across the quit seal", () => {
     });
     expect(resolution.decision.choice).toBe("deny-once");
     expect(isAnsweredApprovalDenial(resolution.decision)).toBe(false);
+  });
+
+  it.each([
+    ["desk", "user-keyboard"],
+    ["platform-bridge", "platform-bridge"],
+  ] as const)("records who answered a %s deny on the decision itself", async (answeredBy, origin) => {
+    const decision = await answeredDeny(answeredBy);
+    expect(approvalDecisionTrustOrigin(decision)).toBe(origin);
+    expect(isAnsweredApprovalDenial(decision)).toBe(true);
+    // A copy is not the gate's decision, so it carries no answerer.
+    expect(isAnsweredApprovalDenial({ ...decision })).toBe(false);
   });
 });

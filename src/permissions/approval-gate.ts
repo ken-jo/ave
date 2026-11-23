@@ -38,6 +38,7 @@ import { exactCanonicalStringify } from "../shared/exact-json.js";
 import type {
   RemoteControllerAuthority,
   RemoteControllerOrigin,
+  TrustOriginWithUnknown,
 } from "../shared/chat-origin.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import type { ApprovalPurposeSuggestion } from "../shared/permission-review-status.js";
@@ -390,20 +391,16 @@ export function isHostApprovalRejectedDecision(
   );
 }
 
-// A deny a policy recheck substitutes for a person's allow. The host decided it, but it keeps the policy's own reason.
-const hostPolicyDenials = new WeakSet<ApprovalDecision>();
+// Who decided, stamped on a decision when the gate accepts an answer for it. Any decision without a stamp is the host's own
+// (timeout, rejection, disposal, an aborted turn, a policy recheck, or an object built outside the gate).
+const answeredDecisionOrigins = new WeakMap<ApprovalDecision, TrustOriginWithUnknown>();
 
-export function hostPolicyDenial(requestId: string): ApprovalDecision {
-  const decision: ApprovalDecision = { requestId, choice: "deny-once" };
-  hostPolicyDenials.add(decision);
-  return decision;
+export function approvalDecisionTrustOrigin(decision: ApprovalDecision): TrustOriginWithUnknown {
+  return answeredDecisionOrigins.get(decision) ?? "unknown";
 }
 
-// A deny the person answered. Every deny the host makes (timeout, rejection, disposal, an aborted turn, a policy recheck)
-// is marked when it is made, so none passes for one.
 export function isAnsweredApprovalDenial(decision: ApprovalDecision): boolean {
-  return decision.choice.startsWith("deny") && !hostTimeoutDecisions.has(decision) &&
-    !hostRejectedApprovalDecisions.has(decision) && !hostPolicyDenials.has(decision);
+  return decision.choice.startsWith("deny") && approvalDecisionTrustOrigin(decision) !== "unknown";
 }
 
 // An `egress-host` request is fully specified or it is a bug: it carries its payload with at least one offered scope, offers exactly allow-once and deny-once, and is never recorded in the user-approval store. Any other kind carrying the payload is a bug too.
@@ -646,6 +643,13 @@ const APPROVAL_ANSWERER_AUDIT_TOKENS = {
   // The headless one-shot runner (`--exec`): no window, no owner, no dock. It answers every parked request with a deny so an unattended process cannot sit on the gate's timeout. Distinct from every token above for the reason the dimension exists — a reviewer must be able to tell "the owner declined this call" from "nobody was there and the host declined it on their behalf", and only this token can carry the second.
   "headless-exec": "headless-exec",
 } as const;
+
+// The trust origin of each answerer's decision. The headless runner's deny is the host's, not a person's.
+const APPROVAL_ANSWERER_TRUST_ORIGINS: Record<keyof typeof APPROVAL_ANSWERER_AUDIT_TOKENS, TrustOriginWithUnknown> = {
+  desk: "user-keyboard",
+  "platform-bridge": "platform-bridge",
+  "headless-exec": "unknown",
+};
 
 // Who answered an approval. Host-derived at answer time from the code path that received the answer. It is never read out of the ApprovalDecision payload, out of the request, out of a provider's output, or inferred from the localizable free-text `reason` — a value any of those can influence is not attribution.
 export type ApprovalAnswerer = keyof typeof APPROVAL_ANSWERER_AUDIT_TOKENS;
@@ -1976,6 +1980,7 @@ export class ApprovalGate {
       type: "approval",
       output: `[approval:decided] ${requestId} ${formatApprovalAuditFields({ ...entry, answeredBy }, entry.executionPlan)} choice=${resolvedDecision.choice} rememberPattern=${resolvedDecision.rememberPattern ?? "none"}${entry.kind === "egress-host" ? ` egressScope=${resolvedDecision.egressScope ?? "none"}` : ""}`,
     });
+    if (Object.hasOwn(APPROVAL_ANSWERER_TRUST_ORIGINS, answeredBy)) answeredDecisionOrigins.set(resolvedDecision, APPROVAL_ANSWERER_TRUST_ORIGINS[answeredBy]);
     entry.resolve(resolvedDecision);
     return resolvedDecision;
   }

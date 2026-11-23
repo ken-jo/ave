@@ -1,7 +1,7 @@
 import { deferred } from "../../../__tests__/support/deferred.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeMockWebContents } from "../../../__tests__/test-helpers.js";
-import { IPC_APPROVAL_REQUEST } from "../../../permissions/approval-gate.js";
+import { IPC_APPROVAL_REQUEST, type ApprovalRequest } from "../../../permissions/approval-gate.js";
 import type { BootContext, ReadyBootContext } from "../../context.js";
 import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
 import { PluginRuntimeDetachedOperationError } from "../../../plugins/runtime/detached-operation.js";
@@ -85,6 +85,22 @@ import { setupPluginToolExecutor } from "../plugin-tool-executor.js";
 const pluginId = "sampleportal";
 const activeGenerationId = "generation-2";
 const predecessorGenerationId = "generation-1";
+
+// A real gate (from the current module graph, after vi.resetModules) whose card the test answers, so the decision carries the gate's record of who decided.
+async function answeringGate(choice: "allow-once" | "deny-once", answeredBy: "desk" | "platform-bridge" = "desk") {
+  const { ApprovalGate } = await import("../../../permissions/approval-gate.js");
+  const card = deferred<ApprovalRequest>();
+  const surface = makeMockWebContents();
+  surface.send.mockImplementation((channel: string, request: ApprovalRequest) => {
+    if (channel === IPC_APPROVAL_REQUEST) card.resolve(request);
+  });
+  const gate = new ApprovalGate(surface as never);
+  const answer = async () => {
+    const asked = await card.promise;
+    return gate.resolve(asked.id, { requestId: asked.id, choice, nonce: asked.nonce, hmac: asked.hmac }, answeredBy);
+  };
+  return { gate, answer };
+}
 
 function makeContext(options: {
   manifestTools?: unknown[];
@@ -716,10 +732,12 @@ it("revokes an issued plugin operation grant instead of delivering it after the 
   const ledger = await import("../../../tools/invocation-ledger.js");
   const ctx = makeContext();
   const rows: Array<Record<string, unknown>> = [];
+  const { gate, answer } = await answeringGate("allow-once");
+  void answer();
   mocks.resolvePluginOperationAccount.mockReturnValue({ accountScopeHash: "account-scope", accountHash: "account" });
   Object.assign(ctx, {
     toolRegistry: { findByName: () => ({ category: "write" }) },
-    approvalGate: { requestAndWait: async () => ({ choice: "allow-once" }) },
+    approvalGate: gate,
     bootAuditLogger: {
       appendPermissionAuditEntry: async (row: Record<string, unknown>) => {
         rows.push(row);
@@ -749,15 +767,20 @@ it("revokes an issued plugin operation grant instead of delivering it after the 
   expect(rows[1]).toMatchObject({ decision: "deny", denyReasons: [{ reason: "host-shutdown", source: "plugin-operation-grant" }], trustOrigin: "unknown" });
 });
 
-it("keeps the keyboard origin on a plugin operation grant the user denied", async () => {
+it.each([
+  ["desk", "user-keyboard"],
+  ["platform-bridge", "platform-bridge"],
+] as const)("records a plugin operation grant denied from the %s with that answerer's origin", async (answeredBy, origin) => {
   vi.resetModules();
   const { setupPluginToolExecutor } = await import("../plugin-tool-executor.js");
   const ctx = makeContext();
   const rows: Array<Record<string, unknown>> = [];
+  const { gate, answer } = await answeringGate("deny-once", answeredBy);
+  void answer();
   mocks.resolvePluginOperationAccount.mockReturnValue({ accountScopeHash: "account-scope", accountHash: "account" });
   Object.assign(ctx, {
     toolRegistry: { findByName: () => ({ category: "write" }) },
-    approvalGate: { requestAndWait: async () => ({ choice: "deny-once" }) },
+    approvalGate: gate,
     bootAuditLogger: { appendPermissionAuditEntry: async (row: Record<string, unknown>) => { rows.push(row); } },
     pluginBundleLifecycle: {
       acquire: async () => ({
@@ -776,7 +799,7 @@ it("keeps the keyboard origin on a plugin operation grant the user denied", asyn
   expect(rows).toEqual([expect.objectContaining({
     decision: "deny",
     denyReasons: [{ reason: "plugin operation grant denied by user", source: "plugin-operation-grant" }],
-    trustOrigin: "user-keyboard",
+    trustOrigin: origin,
   })]);
 });
 
@@ -786,12 +809,11 @@ it("keeps a user's grant denial when the seal lands before the handler resumes",
   const ledger = await import("../../../tools/invocation-ledger.js");
   const ctx = makeContext();
   const rows: Array<Record<string, unknown>> = [];
-  const asked = deferred<void>();
-  const answer = deferred<{ requestId: string; choice: "deny-once" }>();
+  const { gate, answer } = await answeringGate("deny-once");
   mocks.resolvePluginOperationAccount.mockReturnValue({ accountScopeHash: "account-scope", accountHash: "account" });
   Object.assign(ctx, {
     toolRegistry: { findByName: () => ({ category: "write" }) },
-    approvalGate: { requestAndWait: () => { asked.resolve(); return answer.promise; } },
+    approvalGate: gate,
     bootAuditLogger: { appendPermissionAuditEntry: async (row: Record<string, unknown>) => { rows.push(row); } },
     pluginBundleLifecycle: {
       acquire: async () => ({
@@ -807,9 +829,8 @@ it("keeps a user's grant denial when the seal lands before the handler resumes",
   const grant = ctx.requestPluginOperationGrant({
     pluginId, toolName: "update_record", input: {}, appSessionId: "grant-window",
   });
-  await asked.promise;
   // The person's answer settles the gate; the seal lands before the awaiting handler runs again.
-  answer.resolve({ requestId: "grant-card", choice: "deny-once" });
+  expect((await answer())?.choice).toBe("deny-once");
   ledger.sealToolInvocations();
   await expect(grant).rejects.toThrow("operation grant denied");
   expect(rows).toEqual([expect.objectContaining({
