@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 import { beforeEach, expect, it, vi } from "vitest";
 import { adminNameIn, runFolderOf } from "../workspace-record.js";
 
-const disk = vi.hoisted(() => ({ asked: [] as string[], resolved: [] as string[], real: undefined as string | undefined }));
+const disk = vi.hoisted(() => ({ asked: [] as string[], resolved: [] as string[], real: undefined as string | undefined, gone: false }));
 
 vi.mock("../owned-fs.js", async (original) => ({
   ...await original<typeof import("../owned-fs.js")>(),
@@ -12,7 +12,11 @@ vi.mock("../owned-fs.js", async (original) => ({
 
 vi.mock("node:fs", async (original) => {
   const real = await original<typeof import("node:fs")>();
-  const native = (path: string): string => { disk.resolved.push(path); return disk.real ?? path; };
+  const native = (path: string): string => {
+    disk.resolved.push(path);
+    if (disk.gone) throw new Error("ENOENT");
+    return disk.real ?? path;
+  };
   return { ...real, realpathSync: Object.assign((path: string) => real.realpathSync(path), { native }) };
 });
 
@@ -20,7 +24,7 @@ const onShares = it.skipIf(process.platform !== "win32");
 const HOME_RUN = String.raw`\\server\share\home\run`;
 const run = (path: string): { path: string; id: "1:1" } => ({ path, id: "1:1" });
 
-beforeEach(() => { disk.asked.length = 0; disk.resolved.length = 0; disk.real = undefined; });
+beforeEach(() => { disk.asked.length = 0; disk.resolved.length = 0; disk.real = undefined; disk.gone = false; });
 
 it("a registration on a local path is looked up on disk, and the run folder's own path is not resolved for it", () => {
   expect(runFolderOf(run(resolve("/run")), "_join", resolve("/run", "_join", ".git"))).toBe(resolve("/run", "_join"));
@@ -63,6 +67,13 @@ onShares("a share or device path outside the run folder names nothing, and nothi
 onShares("a run folder whose real path is a device path keeps no share registration", () => {
   disk.real = String.raw`\\.\C:\run`;
   expect(runFolderOf(run(HOME_RUN), "_join", String.raw`${HOME_RUN}\_join\.git`)).toBeUndefined();
+  expect(disk.asked).toEqual([]);
+});
+
+onShares("a run folder whose real path cannot be read keeps no share registration", () => {
+  disk.gone = true;
+  expect(runFolderOf(run(HOME_RUN), "_join", "//server/share/home/run/_join/.git")).toBeUndefined();
+  expect(disk.resolved).toEqual([HOME_RUN]);
   expect(disk.asked).toEqual([]);
 });
 

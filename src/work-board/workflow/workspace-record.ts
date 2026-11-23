@@ -118,7 +118,8 @@ function plainPath(path: string): string | undefined {
  * A record is read from disk and may name any path, so a path on a network share is looked at only when its text puts it in the run
  * folder as that folder really is: a home on a share keeps its registrations, and no other share is ever asked anything. A device
  * path is refused the same way. Known limit, on the closed side: the same share under another spelling of its server (short name,
- * full name, address) is refused.
+ * full name, address) is refused. Known limit, on the open side: a path whose text does not show the network, a drive letter that
+ * stands for a share or a mount point, is looked up as any local path is.
  */
 export function runFolderOf(run: { path: string; id: NodeId }, key: string, gitdir: string): string | undefined {
   const plain = plainPath(gitdir);
@@ -143,7 +144,8 @@ export function runFolderOf(run: { path: string; id: NodeId }, key: string, gitd
  * and its last part must be one plain name. A network path is then taken only when its text is `worktrees` of the directory the record
  * gives as the repository's, so this path asks nothing of any other share; a device path names nothing. The directory is asked which
  * one it is only after that. The record's own repository path is the caller's to check. Known limit, on the closed side: another
- * spelling of the share's server is refused, and so is a share path when the repository was reached by a drive letter.
+ * spelling of the share's server is refused, and so is a share path when the repository was reached by a drive letter. On the open
+ * side, as for `runFolderOf`: a drive letter that stands for a share or a mount point is looked up as any local path is.
  */
 export function adminNameIn(gitDir: string, worktrees: NodeId, admin: string): string | undefined {
   const plain = plainPath(admin);

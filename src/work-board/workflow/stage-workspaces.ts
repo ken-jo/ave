@@ -678,7 +678,8 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     // Where the output folder's names fold case, two paths that differ by case alone are one file: the run folder's own entries tell.
     // Paths are composed and then folded to capitals, which joins what such file systems join: letters that differ by case, a letter
     // and its compatibility sign, a composed letter and its decomposed spelling. It is not the volume's own table, and it errs to the
-    // safe side: a pair it joins that the volume keeps apart is contested for nothing.
+    // safe side: a pair it joins that the volume keeps apart is contested for nothing, except a composed and a decomposed spelling
+    // that one stage holds side by side.
     const folds = projectFoldsCase(at.run.path, options.nameReader) === true;
     const fold = (path: string): string => folds ? path.normalize("NFC").toUpperCase() : path;
     const spelled = new Map([...next.keys()].map(path => [fold(path), path]));
