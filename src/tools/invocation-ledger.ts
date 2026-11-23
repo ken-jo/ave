@@ -64,7 +64,7 @@ export type TerminalDenialLifecycle = {
  * The attempt's terminal row. A deny row names its kind; any other row cannot. `logger` is absent when the chain is
  * neither set up nor required; `reason` is the finalized denial reason, defaulting to the row's first.
  */
-export type TerminalRow = {
+type TerminalRow = {
   logger?: Pick<AuditLogger, "appendPermissionAuditEntry">;
   reason?: string;
 } & ({ entry: DenyEntry; kind: TerminalDenyKind } | { entry: Exclude<PermissionAuditEntryInput, { decision: "deny" }>; kind?: never });

@@ -110,7 +110,7 @@ async function settledRow(probe: Probe, id = "denied-call"): Promise<Record<stri
   await vi.waitFor(() => expect(probe.rows(id)).toHaveLength(1));
   await new Promise<void>((done) => setImmediate(done));
   expect(probe.rows(id)).toHaveLength(1);
-  return probe.rows(id)[0]!;
+  return probe.rows(id)[0] as Record<string, unknown>;
 }
 
 async function expectOneDenial(probe: Probe, reason: string | RegExp): Promise<void> {
