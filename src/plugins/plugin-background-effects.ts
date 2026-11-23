@@ -166,6 +166,7 @@ function parseApprovals(value: unknown): Map<string, ApprovalRecord> | null {
 export class PluginBackgroundEffectApprovals {
   private approvals = new Map<string, ApprovalRecord>();
   private readonly subjects = new Map<string, Array<() => Promise<PluginBackgroundEffectSubject>>>();
+  private readonly uninstalls = new Map<string, number>();
 
   constructor(private readonly path?: string) {
     if (!path) return;
@@ -204,6 +205,13 @@ export class PluginBackgroundEffectApprovals {
     return read ? await read() : null;
   }
 
+  /** The review a card names; each uninstall changes it, so a card dismissed before a reinstall from the same source shows again. */
+  reviewSha256(subject: PluginBackgroundEffectSubject): string {
+    const uninstalls = this.uninstalls.get(subject.pluginId) ?? 0;
+    if (uninstalls === 0) return subject.reviewSha256;
+    return createHash("sha256").update(JSON.stringify([subject.reviewSha256, uninstalls])).digest("hex");
+  }
+
   isApproved(subject: PluginBackgroundEffectSubject): boolean {
     const record = this.approvals.get(subject.pluginId);
     return subject.declared && subject.source !== null
@@ -221,8 +229,9 @@ export class PluginBackgroundEffectApprovals {
     this.approvals = next;
   }
 
-  /** Uninstall drops the approval; a failed write is logged and the in-memory approval is already gone. */
+  /** Uninstall drops the approval and renames the review; a failed write is logged and the in-memory approval is already gone. */
   revoke(pluginId: string): void {
+    this.uninstalls.set(pluginId, (this.uninstalls.get(pluginId) ?? 0) + 1);
     if (!this.approvals.has(pluginId)) return;
     const next = new Map(this.approvals);
     next.delete(pluginId);

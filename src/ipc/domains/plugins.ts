@@ -471,7 +471,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     if (!store || !subject) return { ok: false, error: "background-effects-unavailable" };
     return {
       ok: true, pluginId, name: manifest.name,
-      reviewSha256: subject.declared && subject.source !== null ? subject.reviewSha256 : null,
+      reviewSha256: subject.declared && subject.source !== null ? store.reviewSha256(subject) : null,
       declared: subject.declared,
       approved: store.isApproved(subject),
       effects: subject.effects,
@@ -492,7 +492,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     const store = deps.pluginBackgroundEffects;
     const subject = await store?.currentSubject(pluginId);
     if (!store || !subject) return { ok: false, error: "background-effects-unavailable" };
-    if (subject.reviewSha256 !== reviewSha256) return { ok: false, error: "background-effects-review-stale" };
+    if (store.reviewSha256(subject) !== reviewSha256) return { ok: false, error: "background-effects-review-stale" };
     try {
       store.approve(subject);
     } catch (error) {

@@ -307,6 +307,20 @@ describe("plugin background effects IPC", () => {
       .toEqual({ ok: false, error: "background-effects-review-stale" });
   });
 
+  it("names a new review after any uninstall, so a reinstall from the same source is asked again even if its card was dismissed", async () => {
+    const { deps } = await running(["api.example.test"]);
+    const shown = await invoke("ave:plugins:background-effects:get", "plugin-config") as { reviewSha256: string };
+    deps.pluginBackgroundEffects.revoke("plugin-config");
+    const reinstalled = await invoke("ave:plugins:background-effects:get", "plugin-config") as { reviewSha256: string };
+    expect(reinstalled).toMatchObject({ ok: true, declared: true, approved: false, reviewSha256: expect.stringMatching(/^[a-f0-9]{64}$/u) });
+    expect(reinstalled.reviewSha256).not.toBe(shown.reviewSha256);
+    expect(await invoke("ave:plugins:background-effects:approve", { pluginId: "plugin-config", reviewSha256: shown.reviewSha256 }))
+      .toEqual({ ok: false, error: "background-effects-review-stale" });
+    expect(await invoke("ave:plugins:background-effects:approve", { pluginId: "plugin-config", reviewSha256: reinstalled.reviewSha256 }))
+      .toEqual({ ok: true, pluginId: "plugin-config", reviewSha256: reinstalled.reviewSha256 });
+    expect(await invoke("ave:plugins:background-effects:get", "plugin-config")).toMatchObject({ ok: true, approved: true, reviewSha256: reinstalled.reviewSha256 });
+  });
+
   it("offers no review for an empty scope or an unpinned source", async () => {
     const empty = await running([]);
     expect(await invoke("ave:plugins:background-effects:get", "plugin-config")).toMatchObject({ ok: true, reviewSha256: null, declared: false, approved: false });
