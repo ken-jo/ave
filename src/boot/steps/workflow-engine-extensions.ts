@@ -26,7 +26,7 @@ export function workflowEngineExtensions(store: WorkBoardStore, attachments: Pic
   // row's history let it go): that run's output stays until the row goes. A board that cannot be read removes nothing.
   const workspace = createStageWorkspaceProvider({ removable: () => store.runsWithoutItem() });
   // The project of each run whose record this process saw go, as the run file last named it: a git run is taken apart only against
-  // it, and its row may go after its record. An entry goes once a discard has used it, and the oldest goes when more than
+  // it, and its row may go after its record. An entry goes once a discard has used it or found no folder left of its run, and the oldest goes when more than
   // KEPT_PROJECTS wait. A run with none here (its record went in an earlier process, or its entry aged out) is left whole.
   const projects = new Map<string, string>();
   const note = (runId: string, projectRoot: string): void => {

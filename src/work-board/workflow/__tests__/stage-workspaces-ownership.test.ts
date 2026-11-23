@@ -175,6 +175,24 @@ it("a run whose release was refused for want of its project goes at a discard gi
   expectUsersOwn(at);
 });
 
+it("a discard tells of a run it was given a root for that has no folder left, unless a folder it cannot read may be that run's", async () => {
+  const at = await scene();
+  const provider = createStageWorkspaceProvider({ git: createHostGit({ env: fx.env }), removable: async () => run => run.itemId !== 8 });
+  await provider.release(at.target.run, "all");
+  expect(existsSync(at.runRoot)).toBe(false);
+  // Item 8's run has its folder and its row: it is not taken in hand, and what is held for it waits.
+  const given = new Map([[at.target.run.runId, fx.repo], [at.other.run.runId, fx.repo]]);
+  expect(await provider.discard(given)).toEqual([at.target.run.runId]);
+  const record = join(at.otherRoot, RUN_FILE);
+  const written = readFileSync(record, "utf8");
+  setPath(record, ["v"], 1);
+  try {
+    expect(await provider.discard(given)).toEqual([]);
+  } finally {
+    writeFileSync(record, written);
+  }
+});
+
 describe.each(["release", "swept", "discarded"] as const)("what a %s with its project open may remove of a git run", (operation) => {
   it("with every field as it was written, the run's folder, registration and branch go and nothing else", async () => {
     const at = await scene();

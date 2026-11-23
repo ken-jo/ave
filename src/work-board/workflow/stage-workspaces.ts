@@ -937,30 +937,36 @@ ${fields(side)}`;
 
   const unreadable = new Set<string>();
 
-  /** Every run folder that holds its own record. A folder without one was not made by a run the host can name; it is left alone. */
-  function recordedRuns(): Held[] {
+  /** Every run folder that holds its own record. A folder without one was not made by a run the host can name; it is left alone.
+   * `whole`: every entry under `worktrees` was read as some run's folder, so a run that is not among them has none. */
+  function recordedRuns(): { runs: Held[]; whole: boolean } {
     const found: Held[] = [];
+    let whole = true;
     const real = (parent: OwnedDir, name: string): OwnedDir | undefined => { try { return parent.existing(name); } catch { return undefined; } };
     try {
       const base = holdDir(aveHome()).existing(WORKTREES_DIR);
-      if (base === undefined) return found;
+      if (base === undefined) return { runs: found, whole };
       for (const name of base.list()) {
         const project = real(base, name);
-        if (project === undefined) continue;
+        if (project === undefined) { whole = false; continue; }
         for (const slug of project.list()) {
           const run = real(project, slug);
-          if (run === undefined) continue;
+          if (run === undefined) { whole = false; continue; }
           const runRoot = join(worktreesRoot(), name, slug);
           const file = readRunFile(runRoot, run);
-          if (file !== null) found.push({ runRoot, file, project, run });
-          else if (!unreadable.has(runRoot)) {
+          if (file !== null) { found.push({ runRoot, file, project, run }); continue; }
+          whole = false;
+          if (!unreadable.has(runRoot)) {
             unreadable.add(runRoot);
             log.warn("a folder under worktrees holds no record of its own and is left as it is: %s/%s", name, slug);
           }
         }
       }
-    } catch { /* a level that is no real directory holds no run the host can name */ }
-    return found;
+    } catch {
+      // A level that is no real directory holds no run the host can name.
+      whole = false;
+    }
+    return { runs: found, whole };
   }
 
   /** Inside the run's queue, a run folder seen earlier: the same directories holding the same owner's record, as it reads now. Null for
@@ -982,7 +988,8 @@ ${fields(side)}`;
     // A first selection only, so that the stores are read again for the few runs it names and not for every folder.
     const selected = await options.removable?.();
     if (selected === undefined) return taken;
-    for (const seen of recordedRuns()) {
+    const listed = recordedRuns();
+    for (const seen of listed.runs) {
       const { runId, itemId } = seen.file;
       if (!selected({ runId, itemId })) continue;
       await serial(runId, async () => {
@@ -994,6 +1001,11 @@ ${fields(side)}`;
       });
       roots.delete(runSlug(itemId, runId));
     }
+    // A run with no folder left has nothing a root could be used for. A folder that could not be read may be any run's.
+    if (listed.whole) {
+      const recorded = new Set(listed.runs.map(seen => seen.file.runId));
+      for (const runId of projects.keys()) if (!recorded.has(runId)) taken.push(runId);
+    }
     return taken;
   }
 
@@ -1001,7 +1013,7 @@ ${fields(side)}`;
     const active = new Set(activeRunIds);
     // What a stop between a record's removal and the discard left behind goes here; an answer that could not be had keeps it.
     const selected = await options.removable?.().catch(() => undefined);
-    for (const seen of recordedRuns()) {
+    for (const seen of recordedRuns().runs) {
       const { runId, itemId } = seen.file;
       if (active.has(runId)) {
         // A run that goes on keeps its stages and its output; what a stop during a seeding left of the ignore matcher still goes.
