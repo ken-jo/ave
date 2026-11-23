@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { lstat, readdir, realpath, rename, rm } from 'node:fs/promises';
+import { lstat, readdir, realpath, rm } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
+import { renameDirectoryOnce } from '../../lib/transient-fs-lock-retry.js';
 import { openFeatureNamespace, type FeatureNamespaceHandle } from '../storage/feature-namespace.js';
 import { MODEL_FILES, LOCAL_MODEL_REVISION, modelFileUrl, type ModelFile } from './model-manifest.js';
 import type { MemoryModelStatus, MemoryModelError as ModelErrorCode } from '../../shared/memory-model.js';
@@ -287,7 +288,7 @@ export class LocalModelManager {
       await stage(name, staging);
       signal.throwIfAborted();
       let validated: string | undefined;
-      try { await rename(staging, final); }
+      try { await renameDirectoryOnce(staging, final); }
       catch (error) {
         if (!['EEXIST', 'ENOTEMPTY', 'EPERM', 'ENOTDIR', 'EISDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
         try { validated = await this.verifyManagedSlot(final, signal); }
@@ -296,7 +297,7 @@ export class LocalModelManager {
           if (!(validationError instanceof MemoryModelError)) throw validationError;
           const recovery = `${LOCAL_MODEL_REVISION}-${id}`;
           final = join(parent, recovery);
-          await rename(staging, final);
+          await renameDirectoryOnce(staging, final);
           createdRecovery = recovery;
         }
       }

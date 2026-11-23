@@ -1,3 +1,4 @@
+import { errorMessage } from '../../shared/error-message.js';
 import { createLocalEmbedder } from './embedding.js';
 import { serveInferenceChild } from './inference-child-serve.js';
 
@@ -14,6 +15,6 @@ serveInferenceChild(async (task, files, onProgress) => {
     return vectors;
   } finally { await embedder.dispose(); }
 }).then(() => process.exit(0), (error: unknown) => {
-  process.stderr.write(`[memory-map-child] ${error instanceof Error ? error.message : String(error)}\n`);
+  process.stderr.write(`[memory-map-child] ${errorMessage(error)}\n`);
   process.exit(1);
 });
