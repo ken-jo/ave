@@ -5,6 +5,7 @@ import { delimiter, isAbsolute, join } from "node:path";
 import { createLogger } from "../../lib/logger.js";
 import { forceKillManagedChildProcess } from "../../main/managed-child-processes.js";
 import { buildHostGitArgs, HOOK_EVENTS, HOOK_EVENTS_VALIDATED, isHostGitWorkspaceAvailable } from "../../shared/host-git.js";
+import { parseGitVersion } from "../../shared/git-version.js";
 
 const log = createLogger("work-board-host-git");
 
@@ -256,7 +257,7 @@ async function probeFloor(env: NodeJS.ProcessEnv): Promise<boolean> {
     if (await hooked("ave-floor-probe", 0, ["--allow-unknown-hook-name"]) !== 0 || !existsSync(marker)) return false;
     rmSync(marker);
     for (const event of HOOK_EVENTS) if (await hooked(event, 3) !== 0 || existsSync(marker)) return false;
-    const [major = 0, minor = 0] = (/^git version (\d+)\.(\d+)/u.exec(version.stdout)?.slice(1) ?? []).map(Number);
+    const { major = 0, minor = 0 } = parseGitVersion(version.stdout) ?? {};
     if (!unprovenLogged && (major > HOOK_EVENTS_VALIDATED[0] || (major === HOOK_EVENTS_VALIDATED[0] && minor > HOOK_EVENTS_VALIDATED[1]))) {
       unprovenLogged = true;
       log.warn("git %s is newer than %s, the release the hook events were listed from: an event added since is not switched off", version.stdout.trim(), HOOK_EVENTS_VALIDATED.join("."));
