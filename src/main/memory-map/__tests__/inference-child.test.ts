@@ -116,6 +116,7 @@ describe('inference model stream', () => {
     const processStdin = new PassThrough();
     const stdioWrite = vi.spyOn(processStdin, 'write');
     if (platform === 'win32') {
+      vi.stubEnv('SystemRoot', 'C:/Windows');
       createHome.mockReturnValue({ env: {}, cleanup: vi.fn() });
       const [socket, peer] = duplexPair();
       peer.pipe(child.stdin);
