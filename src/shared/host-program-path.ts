@@ -16,10 +16,27 @@ function isFullyQualified(entry: string, platform: NodeJS.Platform): boolean {
     : posix.isAbsolute(entry);
 }
 
-function searchPath(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string {
-  if (platform !== "win32") return env.PATH ?? "";
-  const key = Object.keys(env).find((name) => name.toUpperCase() === "PATH");
+type ProgramFs = {
+  statSync(path: string): { isFile(): boolean };
+  lstatSync(path: string): { isSymbolicLink(): boolean };
+  accessSync(path: string, mode: number): void;
+};
+
+const hostFs: ProgramFs = { statSync, lstatSync, accessSync };
+
+function windowsVariable(env: NodeJS.ProcessEnv, name: string): string {
+  const key = Object.keys(env).find((candidate) => candidate.toUpperCase() === name);
   return key === undefined ? "" : env[key] ?? "";
+}
+
+function searchPath(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string {
+  return platform === "win32" ? windowsVariable(env, "PATH") : env.PATH ?? "";
+}
+
+// The one folder whose app execution aliases launch although their targets cannot be stat'ed.
+function windowsAppsFolder(env: NodeJS.ProcessEnv): string | null {
+  const local = windowsVariable(env, "LOCALAPPDATA");
+  return isFullyQualified(local, "win32") ? win32.join(local, "Microsoft", "WindowsApps").toLowerCase() : null;
 }
 
 function pathEntries(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string[] {
@@ -30,20 +47,19 @@ function pathEntries(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string[
     .filter((entry) => isFullyQualified(entry, platform));
 }
 
-function runnable(candidate: string, platform: NodeJS.Platform): boolean {
+function runnable(candidate: string, platform: NodeJS.Platform, aliases: string | null, fs: ProgramFs): boolean {
   try {
-    if (!statSync(candidate).isFile()) return false;
-    if (platform !== "win32") accessSync(candidate, constants.X_OK);
+    if (!fs.statSync(candidate).isFile()) return false;
+    if (platform !== "win32") fs.accessSync(candidate, constants.X_OK);
     return true;
   } catch {
-    // Windows app execution aliases are links whose targets this account cannot stat, yet they launch.
-    return platform === "win32" && lstatExists(candidate);
+    return platform === "win32" && aliases !== null && win32.dirname(candidate).toLowerCase() === aliases && isLink(candidate, fs);
   }
 }
 
-function lstatExists(candidate: string): boolean {
+function isLink(candidate: string, fs: ProgramFs): boolean {
   try {
-    return lstatSync(candidate).isSymbolicLink();
+    return fs.lstatSync(candidate).isSymbolicLink();
   } catch {
     return false;
   }
@@ -54,6 +70,7 @@ export function findHostProgram(
   program: string,
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
+  fs: ProgramFs = hostFs,
 ): string | null {
   if (program === "" || program.includes("\0")) return null;
   const paths = platform === "win32" ? win32 : posix;
@@ -63,10 +80,11 @@ export function findHostProgram(
   const names = platform === "win32"
     ? [...(win32.extname(program) ? [program] : []), `${program}.com`, `${program}.exe`]
     : [program];
+  const aliases = platform === "win32" ? windowsAppsFolder(env) : null;
   for (const entry of pathEntries(env, platform)) {
     for (const name of names) {
       const candidate = paths.join(entry, name);
-      if (runnable(candidate, platform)) return candidate;
+      if (runnable(candidate, platform, aliases, fs)) return candidate;
     }
   }
   return null;
