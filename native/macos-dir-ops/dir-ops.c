@@ -147,11 +147,17 @@ static int hold_directory(const char *path, const char *dev, const char *ino, co
 }
 
 // The chosen name may hold nothing yet, or an ordinary file the user agreed to replace; never a link or anything else.
-// Returns 0 or the exit code to end with.
-static int check_replaceable(int directory, const char *name) {
+// Returns 0, -1 when the name holds something else, or the errno that stopped the check.
+static int replaceable(int directory, const char *name) {
   struct stat info;
-  if (fstatat(directory, name, &info, AT_SYMLINK_NOFOLLOW) != 0) return errno == ENOENT ? 0 : failed(errno);
-  return S_ISREG(info.st_mode) ? 0 : refused("target");
+  if (fstatat(directory, name, &info, AT_SYMLINK_NOFOLLOW) != 0) return errno == ENOENT ? 0 : errno;
+  return S_ISREG(info.st_mode) ? 0 : -1;
+}
+
+// replaceable(), answered: returns 0 or the exit code to end with.
+static int check_replaceable(int directory, const char *name) {
+  const int found = replaceable(directory, name);
+  return found == 0 ? 0 : found < 0 ? refused("target") : failed(found);
 }
 
 // Test builds of this helper make each write take part of what it is given, or nothing, to prove the copy handles both.
@@ -183,11 +189,64 @@ static int write_all(int target, const unsigned char *bytes, size_t length) {
   return 0;
 }
 
-// Remove the partial copy from the held folder. Then report `failure`, or `cancelled` when there is none; a partial copy
-// that cannot be removed is itself the failure reported.
-static int abandon(int to, const char *part, int failure) {
-  if (unlinkat(to, part, 0) != 0 && errno != ENOENT) return failed(errno);
-  return failure != 0 ? failed(failure) : done("cancelled");
+// `.`, 32 hex digits, `.removing` and its end: the shape of the name the host moves a file aside to (MOVED_ASIDE_NAME in
+// src/main/browser/browser-download-files.ts).
+#define HIDDEN_NAME_SIZE 43
+
+static void fresh_hidden_name(char name[HIDDEN_NAME_SIZE]) {
+  static const char digits[] = "0123456789abcdef";
+  unsigned char random[16];
+  arc4random_buf(random, sizeof random);
+  name[0] = '.';
+  for (size_t index = 0; index < sizeof random; ++index) {
+    name[1 + 2 * index] = digits[random[index] >> 4];
+    name[2 + 2 * index] = digits[random[index] & 0x0f];
+  }
+  memcpy(name + 1 + 2 * sizeof random, ".removing", sizeof ".removing");
+}
+
+// Remove the partial copy `part` from the held folder only while it is the file the copy wrote, `written` (the identity of the
+// descriptor it wrote through), never by its name alone: it is moved to a fresh hidden name, which nothing else uses, checked there,
+// and only then removed under that name. A file put at `part` meanwhile is put back there if the name is still free, or stays under the
+// hidden name. Returns 1 when the copy's file was removed; otherwise 0, with `hidden` holding the hidden name a file stays under, or
+// empty when nothing stays under one (the file at `part` could not be moved, or was moved back).
+static int remove_own_part(int to, const char *part, const struct stat *written, char hidden[HIDDEN_NAME_SIZE]) {
+  char aside[HIDDEN_NAME_SIZE];
+  fresh_hidden_name(aside);
+  hidden[0] = '\0';
+  if (renameatx_np(to, part, to, aside, RENAME_EXCL) != 0) return 0;
+  struct stat moved;
+  if (fstatat(to, aside, &moved, AT_SYMLINK_NOFOLLOW) != 0) {
+    if (errno != ENOENT) memcpy(hidden, aside, HIDDEN_NAME_SIZE);
+    return 0;
+  }
+  if (moved.st_dev == written->st_dev && moved.st_ino == written->st_ino) {
+    if (unlinkat(to, aside, 0) == 0) return 1;
+    if (errno != ENOENT) memcpy(hidden, aside, HIDDEN_NAME_SIZE);
+    return 0;
+  }
+  if (renameatx_np(to, aside, to, part, RENAME_EXCL) != 0) memcpy(hidden, aside, HIDDEN_NAME_SIZE);
+  return 0;
+}
+
+// End a copy that stopped after creating `part` with `answer` and its exit code, saying what became of `part`: nothing more when
+// the copy's own file was removed, ` left` when it was not, or ` left <hidden name>` when a file stays under that name. `written` is
+// null when the copy's file could not be identified; it is then left.
+static int stopped_copy(int to, const char *part, const struct stat *written, const char *answer, int exit_code) {
+  char hidden[HIDDEN_NAME_SIZE] = "";
+  if (written != NULL && remove_own_part(to, part, written, hidden)) printf("%s\n", answer);
+  else if (hidden[0] == '\0') printf("%s left\n", answer);
+  else printf("%s left %s\n", answer, hidden);
+  fflush(stdout);
+  return exit_code;
+}
+
+// Remove the partial copy as stopped_copy() does, and report `failure`, or `cancelled` when there is none.
+static int abandon(int to, const char *part, const struct stat *written, int failure) {
+  if (failure == 0) return stopped_copy(to, part, written, "cancelled", EXIT_DONE);
+  char answer[32];
+  snprintf(answer, sizeof answer, "failed %s", errno_name(failure));
+  return stopped_copy(to, part, written, answer, EXIT_FAILED);
 }
 
 static int run_rename(char **argv) {
@@ -230,10 +289,17 @@ static int run_copy(char **argv) {
   // The temporary file is created exclusively, never through a link, in the held folder.
   const int copy = openat(to, part, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, info.st_mode & 0777);
   if (copy < 0) return failed(errno);
+  // The identity of the file this copy writes, so a cleanup removes only that file.
+  struct stat written;
+  if (fstat(copy, &written) != 0) {
+    const int code = errno;
+    close(copy);
+    return abandon(to, part, NULL, code);
+  }
   unsigned char *buffer = malloc(COPY_CHUNK);
   if (buffer == NULL) {
     close(copy);
-    return abandon(to, part, ENOMEM);
+    return abandon(to, part, &written, ENOMEM);
   }
   int failure = 0;
   unsigned long long copied = 0;
@@ -242,7 +308,7 @@ static int run_copy(char **argv) {
     if (stop_requested()) {
       free(buffer);
       close(copy);
-      return abandon(to, part, 0);
+      return abandon(to, part, &written, 0);
     }
     const ssize_t count = read(source, buffer, COPY_CHUNK);
     if (count < 0 && errno == EINTR) continue;
@@ -265,15 +331,13 @@ static int run_copy(char **argv) {
   free(buffer);
   if (failure == 0 && fsync(copy) != 0) failure = errno;
   if (close(copy) != 0 && failure == 0) failure = errno;
-  if (failure != 0) return abandon(to, part, failure);
+  if (failure != 0) return abandon(to, part, &written, failure);
   // The rename below is the commit point: the caller answers here whether the copy is still wanted.
-  if (!proceed("copied")) return abandon(to, part, 0);
-  status = check_replaceable(to, target);
-  if (status != 0) {
-    if (unlinkat(to, part, 0) != 0 && errno != ENOENT) return failed(errno);
-    return status;
-  }
-  if (renameat(to, part, to, target) != 0) return abandon(to, part, errno);
+  if (!proceed("copied")) return abandon(to, part, &written, 0);
+  const int found = replaceable(to, target);
+  if (found < 0) return stopped_copy(to, part, &written, "refused target", EXIT_REFUSED);
+  if (found > 0) return abandon(to, part, &written, found);
+  if (renameat(to, part, to, target) != 0) return abandon(to, part, &written, errno);
   return done("committed");
 }
 

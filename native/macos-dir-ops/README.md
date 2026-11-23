@@ -50,6 +50,21 @@ stdin.
   unreadable, a link, or another directory at its path), the source is not an
   ordinary file, or `target` holds something other than an ordinary file.
   Exit `4`: `failed <errno name>`. Exit `2`: the arguments are wrong.
+- A copy that stops after creating `part` (cancelled, failed, or refused
+  `target` at the commit) removes it only as the file it wrote, never by its
+  name alone. It keeps the device and inode of the descriptor it writes
+  through, renames `part` exclusively (`RENAME_EXCL`) to a fresh hidden name
+  in the same folder, `.<32 hex digits>.removing`, checks that identity
+  there, and only then removes it under that name. A file found there that is
+  not the one written goes back to `part` exclusively, or stays under the
+  hidden name when `part` is taken again. When the file is not removed (it is
+  not the one written, it cannot be moved aside, or its removal fails), the
+  outcome ends with ` left`, or ` left <hidden name>` when a file stays under
+  that name: `cancelled left` (exit `0`), `failed <errno name> left` (exit
+  `4`), `refused target left` (exit `3`). The host reports such a copy's
+  temporary file as left and does not record it for the next start. Only
+  `--dir-copy` answers this way; `native/windows-path-kind` removes `part`
+  through the handle it wrote it with and never does.
 - A `failed <errno name>` answer may have one stderr diagnostic,
   `Windows error <decimal code>` followed by LF or CRLF. The two pipes can
   deliver in either order, including fragmented writes. The diagnostic is

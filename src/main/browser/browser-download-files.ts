@@ -61,12 +61,16 @@ export class HeldFileHelperUnavailableError extends Error {
 export interface StoppedCopy { readonly partialCopy: "removed" | "absent" | "left"; readonly partLeftAt: LeftPart | null }
 const stoppedCopies = new WeakMap<Error, StoppedCopy>();
 
-/** For the error a copy failed with after it may have written its temporary file: what became of that file, or null. */
+/**
+ * For the error a copy failed with after it may have written its temporary file: what became of that file, or null. An error that wraps
+ * the copy's own (a refusal reported as a staging error) answers with the copy's.
+ */
 export function stoppedCopyOf(error: unknown): StoppedCopy | null {
   if (error instanceof HeldFileHelperUnavailableError) {
     return error.partialCopy === null ? null : { partialCopy: error.partialCopy, partLeftAt: error.partLeftAt };
   }
-  return error instanceof Error ? stoppedCopies.get(error) ?? null : null;
+  if (!(error instanceof Error)) return null;
+  return stoppedCopies.get(error) ?? (error.cause instanceof Error ? stoppedCopies.get(error.cause) ?? null : null);
 }
 
 function markStoppedCopy(error: unknown, result: OwnFileResult): void {
@@ -680,6 +684,11 @@ const EXIT_FAILED = 4;
 const REFUSALS: ReadonlySet<string> = new Set<HeldRefusal>(["from", "to", "source", "target"]);
 const PROGRESS = /^progress (\d+)$/u;
 const FAILURE_DIAGNOSTIC = /^Windows error \d+(?: \(NTSTATUS 0x[0-9A-F]{8}, (?:NtCreateFile|NtSetInformationFile)\))?\r?\n$/u;
+// A copy's `cancelled`, `failed` or `refused target` answer may end by saying its temporary file was not removed: ` left`, or
+// ` left <hidden name>` when a file stays under the name it was moved aside to (see MOVED_ASIDE_NAME).
+const PART_LEFT = / left(?: (\.[0-9a-f]{32}\.removing))?$/u;
+// For an error a copy's helper answered with such a line: the hidden name it gave, or null.
+const helperLeftParts = new WeakMap<Error, string | null>();
 
 /** How long a helper may say nothing (`stallMs`), and how long its exit may take to be seen once it is killed (`killMs`). */
 interface HelperBounds { readonly stallMs: number; readonly killMs: number }
@@ -698,15 +707,23 @@ function directoryArguments(directory: HeldDirectory): string[] {
 // Turn the helper's last line and exit status into the operation's outcome, or the error it ended with. A refusal and a filesystem failure
 // the helper reports are answers about the operation; any other ending, an unknown status or line among them, means the helper is broken.
 function helperOutcome(helper: string, status: number | null, signal: NodeJS.Signals | null, last: string, stderr: string): string | Error {
-  if (status === EXIT_DONE && /^(?:committed|cancelled|cross-volume|removed|absent|swept \d+)$/u.test(last)) return last;
-  const refused = /^refused (\w+)$/u.exec(last);
+  const left = PART_LEFT.exec(last);
+  const answer = left === null ? last : last.slice(0, left.index);
+  if (status === EXIT_DONE && (left === null ? /^(?:committed|cancelled|cross-volume|removed|absent|swept \d+)$/u.test(last) : answer === "cancelled")) {
+    return last;
+  }
+  const leaving = (error: Error): Error => {
+    if (left !== null) helperLeftParts.set(error, left[1] ?? null);
+    return error;
+  };
+  const refused = /^refused (\w+)$/u.exec(answer);
   const refusal = refused?.[1];
   if (status === EXIT_REFUSED && refusal !== undefined && REFUSALS.has(refusal)) {
-    return new HeldDirectoryRefusedError(refusal as HeldRefusal);
+    return leaving(new HeldDirectoryRefusedError(refusal as HeldRefusal));
   }
-  const failed = /^failed (E[A-Z0-9_]+)$/u.exec(last);
+  const failed = /^failed (E[A-Z0-9_]+)$/u.exec(answer);
   if (status === EXIT_FAILED && failed !== null) {
-    return Object.assign(new Error(`the download file helper failed (${failed[1]})`), { code: failed[1] });
+    return leaving(Object.assign(new Error(`the download file helper failed (${failed[1]})`), { code: failed[1] }));
   }
   const why = signal !== null ? `signal ${signal}` : `exit ${status ?? "unknown"}`;
   return new HeldFileHelperUnavailableError(helper, `it ended unexpectedly (${why}, ${JSON.stringify(last)}${stderr.trim() ? `: ${stderr.trim()}` : ""})`);
@@ -845,6 +862,15 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
       kill(protocolFailure);
     };
     const isOutcome = (line: string): boolean => {
+      const left = PART_LEFT.exec(line);
+      if (left !== null) {
+        // Only a copy let past `ready`, which may have created its temporary file, says what became of it.
+        if (mode !== "--dir-copy" || passed === null) return false;
+        const answer = line.slice(0, left.index);
+        if (answer === "cancelled") return stopping;
+        if (answer === "refused target") return passed === "copied";
+        return /^failed E[A-Z0-9_]+$/u.test(answer);
+      }
       if (/^refused (from|to|source|target)$/u.test(line) || /^failed E[A-Z0-9_]+$/u.test(line)) return true;
       if (line === "cancelled") return phase !== "holding" && stopping;
       if (mode === "--dir-copy") return line === "committed" && passed === "copied";
@@ -961,10 +987,23 @@ function helperFileOperations(helper: string, bounds: HelperBounds = POLICY_BOUN
         return proceed(step);
       };
       try {
-        return oneOf(helper, await run(["--dir-copy", ...directoryArguments(from), name, ...directoryArguments(to), target, part], proceedSeeing, stop, seen),
-          ["committed", "cancelled"] as const);
+        const answer = await run(["--dir-copy", ...directoryArguments(from), name, ...directoryArguments(to), target, part], proceedSeeing, stop, seen);
+        const left = PART_LEFT.exec(answer);
+        if (left !== null) {
+          // Cancelled with its temporary file left: reported as a failure, as a cancelled Linux copy whose file is left is.
+          const error = new Error("a stopped download copy's temporary file is left in the chosen folder");
+          helperLeftParts.set(error, left[1] ?? null);
+          throw error;
+        }
+        return oneOf(helper, answer, ["committed", "cancelled"] as const);
       } catch (error) {
-        if (error instanceof HeldFileHelperUnavailableError && error.passed !== null) {
+        if (error instanceof Error && helperLeftParts.has(error)) {
+          // The helper removes its temporary file only while it is the file it wrote, and said it did not remove what is at that name.
+          // It is not recorded for the next start: the identity taken at the first progress line may be of a file put there before it.
+          const hidden = helperLeftParts.get(error) ?? null;
+          log.warn({ path: join(to.path, part), leftAs: hidden ?? undefined }, "a stopped download copy's temporary file is left: the helper did not find it to be its own, or could not remove it");
+          markStoppedCopy(error, { outcome: "left", at: null });
+        } else if (error instanceof HeldFileHelperUnavailableError && error.passed !== null) {
           error.partFile = partFile;
           // A helper that may still be running is not raced: its file is left for a cleanup once it ends.
           if (error instanceof HeldFileHelperStalledError && error.stillRunning) error.partialCopy = "left";
