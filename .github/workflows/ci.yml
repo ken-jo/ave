@@ -302,9 +302,10 @@ jobs:
       # namespace — rather than inside a test.
       - name: Prove the sandbox backend
         run: bwrap --version && socat -V | head -1 && rg --version | head -1 && bwrap --unshare-all --ro-bind / / --dev /dev --proc /proc /bin/true
-      # The stage-workspace regressions run on the git release their hook
-      # events were validated against; any other fails here, not in a test.
-      - name: Require the validated git release
+      # The stage-workspace regressions need at least the git release their
+      # hook events were validated against; an older one fails here, not in a
+      # test, and the exact version is logged.
+      - name: Require the validated git release or newer
         run: node ave/.github/scripts/require-validated-git.mjs
       - uses: ./ave/.github/actions/setup-bun
         env:
@@ -656,9 +657,11 @@ jobs:
         with:
           bun-version-file: ave/.bun-version
       # Before job-root setup: the guard contains every later step. The
-      # stage-workspace regressions run on the git release their hook events
-      # were validated against; any other fails here, not in a test.
-      - name: Require the validated git release
+      # stage-workspace regressions need at least the git release their hook
+      # events were validated against; an older one fails here, not in a
+      # test, and the exact version is logged.
+      - name: Require the validated git release or newer
+        if: steps.docs-impact.outputs.docs_only != 'true'
         shell: bash
         run: node ave/.github/scripts/require-validated-git.mjs
       # Native fixtures need system-volume aliases and trusted root ownership.
