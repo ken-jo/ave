@@ -277,6 +277,24 @@ it("a discard that began before a run's root was noted leaves the run to the one
   }
 }));
 
+it("one deletion that the run store and the board both tell of, of a run whose root is known and whose folder stays: one warning, and the run taken in hand once", () => withGitRun(async ({ h, repo, run, runRoot, discard, removed, unverified }) => {
+  const record = join(runRoot, RUN_FILE);
+  const written = readFileSync(record, "utf8");
+  setPath(record, ["repo", "gitDir"], join(dirname(repo), "elsewhere", ".git"));
+  const taken = async (): Promise<string[]> => (await Promise.all(discard.mock.results.map(result => result.value as Promise<readonly string[]>))).flat();
+  try {
+    // The removed record's discard is given the root and runs; the row's removal asks while it does, and is answered by one more.
+    h.board.runs.onRunsRemoved?.([removed("card")]);
+    h.board.onItemRemoved?.();
+    await vi.waitFor(() => expect(discard).toHaveBeenCalledTimes(2), { timeout: 20_000 });
+    expect.soft(await taken()).toEqual([run.runId]);
+    expect.soft(unverified()).toEqual([expect.stringContaining("repo.gitDir")]);
+    expect.soft(existsSync(runRoot)).toBe(true);
+  } finally {
+    writeFileSync(record, written);
+  }
+}));
+
 interface HeldDiscard { given: Map<string, string>; answer: (taken: readonly string[]) => void; fail: (error: Error) => void }
 
 /** The production parts with a provider whose discards stay open until the test answers them; `announce` is a removal the run store

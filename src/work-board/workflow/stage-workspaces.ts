@@ -882,13 +882,13 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
    * whole run stays as it is. It stays as well, record and registrations included, when a path of the record could not be checked
    * against an open project: nothing is asked of such a path, and what the run left in the repository is not lost with its record.
    * When it is the open project or its repository that is no longer what the record names, the run folder still goes, and nothing in
-   * the repository is touched: its branch and worktree list stay as they are.
+   * the repository is touched: its branch and worktree list stay as they are. True when the whole run was left as it is.
    */
-  async function releaseIn(at: Held, stageIds: readonly string[] | "all", output: "keep" | "drop" = "keep"): Promise<void> {
+  async function releaseIn(at: Held, stageIds: readonly string[] | "all", output: "keep" | "drop" = "keep"): Promise<boolean> {
     const { file } = at;
     if (stageIds !== "all") {
       for (const stageId of stageIds) if (file.stages[stageId] !== undefined) await removeStage(at, stageId);
-      return;
+      return false;
     }
     const mismatches = await preflight(at);
     const fields = (side: Mismatch["side"]): string => mismatches.filter(entry => entry.side === side).map(entry => entry.field).join(", ");
@@ -902,7 +902,7 @@ ${fields(side)}`;
     for (const side of ["host", "unverified"] as const) {
       if (fields(side) === "") continue;
       if (first(side)) log.warn(side === "host" ? "a run's workspace stays as it is: %s is not what its record names (run=%s)" : "a run's cleanup is unverified and everything of it is left: %s is not the open project's (run=%s)", fields(side), file.runId);
-      return;
+      return true;
     }
     const repo = fields("repo") === "";
     if (!repo && first("repo")) log.warn("a run's repository is left as it is: %s is not what its record names (run=%s)", fields("repo"), file.runId);
@@ -917,7 +917,7 @@ ${fields(side)}`;
       }
     }
     if (file.kind === "folder" && at.run.entryId(OUT_DIR) !== undefined) {
-      if (output === "keep") return;
+      if (output === "keep") return false;
       await at.run.remove(OUT_DIR, file.outDir);
     }
     await at.run.remove(`${RUN_FILE}.tmp`);
@@ -926,6 +926,7 @@ ${fields(side)}`;
     try {
       if (at.run.removeSelfIfEmpty()) at.project.removeSelfIfEmpty();
     } catch { /* what could not go stays */ }
+    return false;
   }
 
   function release(run: RunRef, stageIds: readonly string[] | "all"): Promise<void> {
@@ -994,6 +995,16 @@ ${fields(side)}`;
 
   /** Whether the stores let the run's output go, read now. A start publishes its folder before it stores its record, so only a read
    * begun after the folder was listed, with the run's queue held, decides: by then the run's row is on the board. */
+  /** The run folders a discard or a sweep left whole, each with the owner of the record it held and the root it was judged on: a
+   * discard's own entry for the run, or none. While the same record is held, only a root told anew has the run judged again. A
+   * discard given none for it would otherwise judge it with no project, and report as a second fault what is the first one still. */
+  const leftWhole = new Map<string, { owner: string; root: RemovedRunProject | undefined }>();
+  /** Takes the whole run apart, and remembers the one that was left whole. */
+  async function dropWhole(current: Held, root: RemovedRunProject | undefined, live: string | undefined, output: "keep" | "drop"): Promise<void> {
+    leftWhole.delete(current.runRoot);
+    if (await releaseIn({ ...current, ...liveOf(current.file, live) }, "all", output)) leftWhole.set(current.runRoot, { owner: ownerOf(current.file), root });
+  }
+
   async function removableNow(run: { runId: string; itemId: number }): Promise<boolean> {
     return (await options.removable?.())?.(run) === true;
   }
@@ -1015,8 +1026,15 @@ ${fields(side)}`;
         if (waiting) return;
         const current = heldStill(seen);
         if (current === null) return;
+        const root = projects.get(runId);
+        const left = leftWhole.get(seen.runRoot);
+        if (left !== undefined && left.owner === ownerOf(current.file) && (root === undefined || root === left.root)) {
+          // Given the very root it was judged on, that root is used up all the same.
+          if (root !== undefined) taken.push(runId);
+          return;
+        }
         taken.push(runId);
-        await releaseIn({ ...current, ...liveOf(current.file, projects.get(runId)?.projectRoot) }, "all", "drop");
+        await dropWhole(current, root, root?.projectRoot, "drop");
       });
       if (!waiting) roots.delete(runSlug(itemId, runId));
     }
@@ -1046,7 +1064,7 @@ ${fields(side)}`;
       await serial(runId, async () => {
         const output = selected?.({ runId, itemId }) === true && await removableNow({ runId, itemId }).catch(() => false) ? "drop" : "keep";
         const current = heldStill(seen);
-        if (current !== null) await releaseIn({ ...current, ...liveOf(current.file, projects?.get(runId)) }, "all", output);
+        if (current !== null) await dropWhole(current, undefined, projects?.get(runId), output);
       }).catch(() => undefined);
       roots.delete(runSlug(itemId, runId));
     }

@@ -180,6 +180,28 @@ it("a run whose release was refused for want of its project goes at a discard gi
   expectUsersOwn(at);
 });
 
+it("a run a discard left whole on the root it was given is not judged again by a discard given none for it, another run's own included: one report, until a root is told anew", async () => {
+  const at = await scene();
+  const real = createHostGit({ env: fx.env });
+  let answers = false;
+  const git: HostGit = {
+    drivers: real.drivers,
+    run: (cwd, args, call) => !answers && args.includes("--git-common-dir") ? Promise.reject(new HostGitError("timeout", "git gave no answer")) : real.run(cwd, args, call),
+  };
+  const provider = createStageWorkspaceProvider({ git, removable: async () => run => run.itemId !== 8 });
+  expect.soft(await provider.discard(new Map([named(at.target)]))).toEqual([at.target.run.runId]);
+  answers = true;
+  // As the engine discards a run whose start was refused: with that run's root alone, and every folder under `worktrees` read.
+  expect.soft(await provider.discard(new Map([["run-refused", { projectRoot: fx.repo, itemId: 70 }]]))).toEqual(["run-refused"]);
+  expect.soft(await provider.discard(new Map())).toEqual([]);
+  expectLeftWhole(at, "repo.gitDir");
+  // The same record, and a root told anew: the run is judged on it.
+  expect(await provider.discard(new Map([named(at.target)]))).toEqual([at.target.run.runId]);
+  expect(existsSync(at.runRoot)).toBe(false);
+  expect(fx.userGit(fx.repo, "branch", "--list", at.branch)).toBe("");
+  expectUsersOwn(at);
+});
+
 it("a discard tells of a run it was given a root for that has no folder left, whatever another run's folder it cannot read holds; not while a folder it cannot read carries the run's own name", async () => {
   const at = await scene();
   const provider = createStageWorkspaceProvider({ git: createHostGit({ env: fx.env }), removable: async () => run => run.itemId !== 8 });
