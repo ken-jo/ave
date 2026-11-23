@@ -263,6 +263,53 @@ describe("ToolExecutor admission across the quit seal", () => {
       expect.objectContaining({ source: "plugin", category: "write", pluginId: "probe-plugin" }), undefined, expect.any(Number));
   });
 
+  function abortedPluginCall() {
+    const lease = { generation: { generationId: "gen-1", state: { runtime: {} } }, release: () => {} };
+    const acquireExact = vi.fn(async () => lease);
+    const access = {
+      getActive: () => undefined,
+      isExactAdmitted: () => false,
+      acquire: async () => lease,
+      acquireExact,
+      runWithLease: async <T>(_lease: unknown, operation: () => Promise<T>) => operation(),
+    } as unknown as PluginRuntimeGenerationAccess;
+    const turn = new AbortController();
+    turn.abort();
+    const callbacks = { onToolStart: vi.fn(), onToolEnd: vi.fn() };
+    return { acquireExact, access, signal: turn.signal, callbacks };
+  }
+
+  it("refuses a user-aborted plugin-generation tool without taking the generation lease", async () => {
+    const call = abortedPluginCall();
+    const { executor, executes, rows, toolUses, cancelled } = await freshExecutor(1, [], { generationAccess: call.access });
+    const [result] = await executor.executeAll(toolUses, {
+      sessionId: "sess-user-abort", permissionContext: userPermissionContext(), abortSignal: call.signal, callbacks: call.callbacks,
+    });
+    expect(result).toMatchObject({ tool_use_id: "tu-queued-0", is_error: true, content: cancelled });
+    expect(call.acquireExact).not.toHaveBeenCalled();
+    expect(executes[0]).not.toHaveBeenCalled();
+    expect(rows().filter((row) => row.toolUseId === "tu-queued-0")).toEqual([
+      expect.objectContaining({ decision: "deny", denyReasons: [expect.objectContaining({ reason: "user aborted turn" })] }),
+    ]);
+    expect(call.callbacks.onToolEnd).toHaveBeenCalledWith("queued_probe_0", cancelled, true,
+      expect.objectContaining({ source: "plugin", category: "write", pluginId: "probe-plugin" }), undefined, expect.any(Number));
+  });
+
+  it("answers an aborted model-hidden plugin tool as not found", async () => {
+    const call = abortedPluginCall();
+    const { executor, executes, rows, toolUses } = await freshExecutor(1, [], { generationAccess: call.access, modelVisible: false });
+    const { t } = await import("../../i18n/index.js");
+    const [result] = await executor.executeAll(toolUses, {
+      sessionId: "sess-hidden-abort", permissionContext: userPermissionContext(), abortSignal: call.signal, callbacks: call.callbacks,
+    });
+    expect(result).toMatchObject({ tool_use_id: "tu-queued-0", is_error: true, content: t("be_executor.toolNotFound", { name: "queued_probe_0" }) });
+    expect(call.acquireExact).not.toHaveBeenCalled();
+    expect(executes[0]).not.toHaveBeenCalled();
+    expect(call.callbacks.onToolStart).not.toHaveBeenCalled();
+    const denyReasons = rows().filter((row) => row.toolUseId === "tu-queued-0").map((row) => JSON.stringify(row.denyReasons));
+    expect(denyReasons).toEqual([expect.stringContaining("model-hidden tool")]);
+  });
+
   it("keeps a queued tool's host-shutdown row when the force-kill path closes the audit in the seal's tick", async () => {
     const { ledger, executor, executes, audit, rows, hostShutdownRows, toolUses, cancelled } = await freshExecutor(2);
     let firstDelivered!: () => void;
