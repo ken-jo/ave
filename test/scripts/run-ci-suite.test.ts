@@ -23,12 +23,15 @@ import {
   runsCoverage,
   runsRepoCodeOutOfProcess,
   selectCiTests,
-  testListsRepositoryDirectories,
+  selectUnboundedInputTests,
+  unboundedInputClasses,
+  unboundedInputHits,
   testRunsRepoCodeOutOfProcess,
 } from "../../scripts/run-ci-suite.mjs";
 import { parseGitRawDiff } from "../../scripts/hooks/pre-push-ref-updates.mjs";
 import { isCollectedVitestFile } from "../../scripts/hooks/pre-push-source-policy.mjs";
 import { WINDOWS_INVENTORY_LOCK, WINDOWS_TEST_LISTS } from "../../scripts/windows-test-inventory.mjs";
+import { UNBOUNDED_INPUT_EXEMPTIONS } from "../../scripts/ci-unbounded-input-exemptions.mjs";
 import { modifiedEntry as modified } from "../../src/__tests__/support/git-diff-entry.js";
 
 vi.mock("node:child_process", async (importOriginal) => {
@@ -77,6 +80,8 @@ const GRAPH_SOURCES = [
   "src/main/ave-protocol-registration.ts",
   "src/core/model-catalog/refresh.ts",
   "src/__tests__/support/git-diff-entry.ts",
+  "src/main/app-menu.ts",
+  "src/plugins/capabilities.ts",
 ];
 let graphCoverage = new Map<string, string[]>();
 
@@ -118,7 +123,7 @@ describe("Windows inventory metadata in CI plans", () => {
   const added = "src/shared/__tests__/escape-html.test.ts";
   const removed = "src/core/__tests__/route-input.test.ts";
   const unaffected = "src/shared/__tests__/tool-result-trim.test.ts";
-  const expected = (...files: string[]) => [...new Set([...files, WINDOWS_INVENTORY_LOCK, ...mustRunTests])].sort();
+  const expected = (...files: string[]) => [...new Set([...files, WINDOWS_INVENTORY_LOCK, ...mustRunTests, ...selectUnboundedInputTests(trackedTests, readText)])].sort();
 
   it.each(WINDOWS_TEST_LISTS.slice(0, 2))("runs the membership delta and must-run set for %s", list => {
     const discovery = vi.fn(() => null);
@@ -372,7 +377,10 @@ describe("CI test selection fallbacks", () => {
       expect(plan.mode).toBe("affected");
       expect(plan.reason).toContain("category merge: affected checks");
       expect(plan.tests).toContain(test);
-      expect(plan.tests).not.toContain("src/permissions/__tests__/powershell-encoded-unicode.test.ts");
+      // A permissions-domain suite outside the unbounded-input set stays out of a core change.
+      const permissionSuite = "src/permissions/__tests__/approval-gate.test.ts";
+      expect(selectUnboundedInputTests(trackedTests, readText)).not.toContain(permissionSuite);
+      expect(plan.tests).not.toContain(permissionSuite);
     });
   });
 
@@ -417,7 +425,7 @@ describe("event rules over the pull request merge and the whole push", () => {
       const plan = planCiSuite("pull_request", { headRef: "test/windows", baseRef: "main" });
       const mustRun = expandMustRunTests(mustRunDocument, trackedTests, [list]);
       expect(plan.mode).toBe("affected");
-      expect(plan.tests).toEqual([...new Set([changedTest, removed, WINDOWS_INVENTORY_LOCK, ...mustRun])].sort());
+      expect(plan.tests).toEqual([...new Set([changedTest, removed, WINDOWS_INVENTORY_LOCK, ...mustRun, ...selectUnboundedInputTests(trackedTests, readText)])].sort());
       expect(vi.mocked(spawnSync).mock.calls.slice(3).map(call => call[1])).toEqual([["show", `first:${list}`], ["show", `HEAD:${list}`]]);
     });
   });
@@ -433,7 +441,7 @@ describe("event rules over the pull request merge and the whole push", () => {
     ], () => {
       const plan = planCiSuite("pull_request", { headRef: "test/windows", baseRef: "main" });
       expect(plan.mode).toBe("affected");
-      expect(plan.tests).toEqual([...new Set([file, WINDOWS_INVENTORY_LOCK, ...core])].sort());
+      expect(plan.tests).toEqual([...new Set([file, WINDOWS_INVENTORY_LOCK, ...core, ...selectUnboundedInputTests(trackedTests, readText)])].sort());
     });
   });
 
@@ -686,7 +694,7 @@ describe("CI selection for integration bases", () => {
       tests: [...new Set([changed, reader, ...relatedTests, ...locks, mustRun])].sort(),
       reason: `${fullReason}; integration base: traced selection, strict fallback at the main boundary; ` +
         `2 changed module(s) reach ${relatedCount} test file(s); 1 changed test file(s); ` +
-        `1 test file(s) name a changed path; ${locks.length} lock suite file(s); 1 must-run file(s)`,
+        `1 test file(s) name a changed path; ${locks.length} lock suite file(s); 1 must-run file(s); 0 unbounded-input file(s)`,
     });
   });
 
@@ -739,14 +747,14 @@ describe("unresolved pull request diffs", () => {
 describe("the must-run set", () => {
   it("names security, permissions, sandbox, contract, IPC and naming tests that all exist", () => {
     expect(Object.keys((mustRunDocument as { groups: object }).groups).sort())
-      .toEqual(["contract", "ipc", "naming", "out-of-process", "permissions", "repository-listings", "sandbox", "security", "smoke", "tree-invariants"]);
+      .toEqual(["contract", "ipc", "naming", "out-of-process", "permissions", "sandbox", "security", "smoke", "tree-invariants"]);
     expect(mustRunTests).toContain("src/permissions/__tests__/runner-decisions.test.ts");
     expect(mustRunTests).toContain("src/ipc/__tests__/channel-inventory.test.ts");
     expect(mustRunTests).toContain("src/plugins/__tests__/tool-name-policy.test.ts");
   });
 
   // A test that reads the repository's tracked tree through git: `ls-files` or `ls-tree` as a quoted argument, `grep` as the first argument of a git helper call (`git(["grep", ...])`,
-  // `spawnSync("git", ["grep", ...])`), or a `git grep` / `git ls-files` / `git ls-tree` command string. Directory listings are held separately below: text-reader tracing misses roots built from import.meta.url or split path joins.
+  // `spawnSync("git", ["grep", ...])`), or a `git grep` / `git ls-files` / `git ls-tree` command string. Filesystem and git primitives are held separately below, whatever their root.
   const TREE_READER = [
     /["'`]ls-(?:files|tree)["'`]/u,
     /\bgit\w*\(\s*\[\s*["'`]grep["'`]/u,
@@ -792,114 +800,81 @@ describe("the must-run set", () => {
     expect(plan.tests).toEqual(expect.arrayContaining(treeScanners));
   });
 
-  // Directory listings that may read repository files no import or literal path names. Each exemption lists only
-  // temporary, home, host or dependency directories; it must still match, so a stale entry fails instead of hiding a scanner.
-  const NOT_REPOSITORY_LISTINGS: Record<string, string> = {
-    "src/plugins/__tests__/test-helpers.ts": "lists temporary plugin roots; SOURCE_ROOT only formats display paths",
-    "src/plugins/isolation/__tests__/python-smoke-harness.ts": "lists the temporary site-packages copy; the committed fixture is read by a fixtures path",
-    "test/e2e/ui/seeded-electron.ts": "lists the temporary profile tree it makes writable",
-    "scripts/run-ci-suite.mjs": "the only listing text is this detector's own pattern; tracked tests come from git ls-files",
-    "scripts/build-macos-dir-ops.mjs": "lists only the root its caller passes, and its tests pass temporary roots; a change to scripts/ plans the full suite",
-    "scripts/check-mxc-packaging.mjs": "lists the package or unpacked build root its caller passes; its tests pass temporary roots or node_modules, which the lockfile owns",
-    "scripts/lib/packaged-executable-selection.mjs": "lists only the root its caller passes, and its tests pass temporary roots; a change to scripts/ plans the full suite",
-    "scripts/prepare-windows-job.mjs": "lists only the root its caller passes, and its tests pass temporary roots; a change to scripts/ plans the full suite",
-    "scripts/smoke-windows-nsis-installer.mjs": "lists only the root its caller passes, and its tests pass temporary roots; a change to scripts/ plans the full suite",
-    "scripts/update-mxc-pins.mjs": "lists only the root its caller passes, and its tests pass temporary roots; a change to scripts/ plans the full suite",
-    "scripts/restore-node-pty-exec-bit.mjs": "lists node-pty prebuilds under node_modules, which the lockfile owns, or a temporary copy in its tests",
-    "src/audit/__tests__/hmac-chain.test.ts": "lists its temporary secrets directory",
-    "src/audit/__tests__/permission-audit-proof.test.ts": "lists its temporary AVE_HOME and secrets directory",
-    "src/core/model-catalog/__tests__/bundled-snapshot.test.ts": "lists a temporary scratch root; the catalog generator it calls is imported source",
-    "src/engine/__tests__/subagent-resume.test.ts": "lists temporary session directories",
-    "src/engine/__tests__/subagent-runner.test.ts": "lists temporary session directories",
-    "src/hooks/__tests__/hook-quarantine-cause.test.ts": "lists the temporary disabled-hooks directory",
-    "src/ipc/domains/__tests__/work-board-project.test.ts": "lists temporary backup copies",
-    "src/ipc/domains/__tests__/work-board-stage-decide.test.ts": "lists temporary backup copies",
-    "src/main/__tests__/ave-home-first-write.test.ts": "lists temporary working and home directories",
-    "src/main/__tests__/claude-code-authenticity.test.ts": "lists temporary executable directories",
-    "src/main/__tests__/claude-code-policy.test.ts": "lists temporary runtime directories",
-    "src/main/__tests__/claude-code-runtime.test.ts": "lists temporary runtime directories",
-    "src/main/__tests__/seed-ave-home-docs.test.ts": "lists the temporary seeded home",
-    "src/main/terminal/__tests__/host-shell-integration.test.ts": "lists the temporary shell integration directory",
-    "src/main/terminal/__tests__/pty-manager-linux-sandbox.test.ts": "lists /proc for live child processes",
-    "src/mcp/__tests__/tasks-extension.test.ts": "lists the temporary feature namespace",
-    "src/permissions/__tests__/asrt-sandbox.test.ts": "wraps readdirSync in a mock; listings are of temporary roots",
-    "src/permissions/__tests__/browser-download-staging-windows.test.ts": "lists a simulated drive or temporary pin roots",
-    "src/permissions/__tests__/mxc-sdk-packaging.test.ts": "lists temporary package trees and node_modules, which the lockfile owns",
-    "src/permissions/__tests__/sandbox-process-home.test.ts": "compares the working directory listing before and after each case; its content does not decide the result",
-    "src/plugins/__tests__/plugin-storage-layout.test.ts": "lists temporary plugin storage",
-    "src/plugins/__tests__/registry-atomicity.test.ts": "lists temporary registry roots",
-    "src/plugins/isolation/__tests__/adversarial-escapes.test.ts": "lists temporary audit and secrets directories",
-    "src/plugins/isolation/__tests__/confined-plugin-child.test.ts": "lists temporary plugin and secrets directories",
-    "src/shared/__tests__/ave-home-boundaries.windows.test.ts": "lists temporary migration directories",
-    "src/shared/__tests__/ave-home-configuration-owners.test.ts": "lists the temporary home",
-    "src/tools/__tests__/shell-termination-diagnostics.test.ts": "lists temporary roots",
-    "src/tools/__tests__/xlsx-edit-skill.test.ts": "lists the temporary workbook directory",
-    "test/scripts/bundled-font-resource.test.ts": "lists the temporary build output",
-    "test/scripts/fetch-uv-cache.test.ts": "lists the temporary archive cache",
-    "test/scripts/pre-push-host-lock.test.ts": "lists temporary lock directories",
-    "test/scripts/pre-push-markdown-policy.test.ts": "lists temporary repositories; it reads the tracked tree through git as a tree scanner",
-  };
-  // Listings whose only roots are literal paths that text-reader tracing names, so a change below any root selects the test.
-  const TRACED_REPOSITORY_LISTINGS: Record<string, string[]> = {
-    "src/main/browser/__tests__/browser-tools-source.test.ts": ["src/main/browser"],
-    "src/main/__tests__/workflow-template-capabilities.test.ts": ["src/routines"],
-    "src/permissions/__tests__/powershell-encoded-unicode.test.ts": ["src/permissions/__tests__/powershell-encoded-unicode"],
-    "src/ui/renderer/__tests__/format-ipc-error-coverage.test.ts": ["src/ipc/domains", "src/alerts"],
-  };
-  const repositoryListingExemptions = () => new Set([...Object.keys(NOT_REPOSITORY_LISTINGS), ...Object.keys(TRACED_REPOSITORY_LISTINGS)]);
-  const untriggeredMustRun = () => expandMustRunTests(mustRunDocument, trackedTests, []);
+  // Any test that uses a listing, git or non-literal read primitive, in its own text or a helper or script it imports,
+  // runs on every affected plan unless an audited exemption covers that file and primitive class.
+  const missedWalkers = [
+    "src/__tests__/main-single-instance-gate.test.ts", "test/renderer/assistant-card-contrast.test.tsx",
+    "src/ui/renderer/utils/__tests__/markdown-plugins.test.ts", "src/permissions/__tests__/mxc-native-spawn-callers.test.ts",
+    "src/ui/renderer/hooks/__tests__/use-send-message-resource.test.tsx", "src/plugins/__tests__/validate-boundary.test.ts",
+  ];
 
-  it.each(Object.entries(TRACED_REPOSITORY_LISTINGS))("traces every listed root of %s", (test, roots) => {
-    expect(testListsRepositoryDirectories(test, readText)).toBe(true);
-    const named = namedRepositoryPaths(test, readText(test) ?? "");
-    for (const root of roots) expect(named.some((path) => namesChangedPath(path, `${root}/added-entry.ts`)), root).toBe(true);
+  it("selects every primitive user, including the walkers that root recognition missed", () => {
+    const unbounded = selectUnboundedInputTests(trackedTests, readText);
+    expect(unbounded).toEqual(expect.arrayContaining(missedWalkers));
+    const untriggered = expandMustRunTests(mustRunDocument, trackedTests, []);
+    for (const test of missedWalkers) expect(untriggered, test).not.toContain(test);
   });
 
-  it("holds every test that lists repository directories, so any change those listings scan runs it", () => {
-    for (const path of Object.keys(NOT_REPOSITORY_LISTINGS)) expect(testListsRepositoryDirectories(path, readText), path).toBe(true);
-    const listers = trackedTests.filter((test) => testListsRepositoryDirectories(test, readText, repositoryListingExemptions()));
-    expect(listers).toEqual(expect.arrayContaining([
-      "src/ui/renderer/hooks/__tests__/use-send-message-resource.test.tsx", "src/permissions/__tests__/sandbox-scope-gates.test.ts",
-      "src/plugins/__tests__/app-plugin-decoupling-audit.test.ts", "src/__tests__/boot-llm-fetch-source.test.ts",
-      "test/scripts/windows-ci-test-list.test.ts", "src/plugins/__tests__/validate-boundary.test.ts",
-    ]));
-    expect(listers.filter((test) => !untriggeredMustRun().includes(test))).toEqual([]);
-    // The group is the detector's output, less tests another untriggered group already holds.
-    const { groups, triggers } = mustRunDocument as { groups: Record<string, string[]>; triggers: Record<string, string[]> };
-    const elsewhere = new Set(Object.entries(groups).filter(([group]) => group !== "repository-listings" && !Object.hasOwn(triggers, group))
-      .flatMap(([, entries]) => entries));
-    expect(groups["repository-listings"]).toEqual(listers.filter((test) => !elsewhere.has(test)));
+  it.each(Object.entries(UNBOUNDED_INPUT_EXEMPTIONS))("keeps the exemption for %s current", (file, entry) => {
+    const text = readText(file);
+    expect(text, file).not.toBeNull();
+    const kinds = Object.keys(entry).filter((key) => key !== "forwards");
+    expect(kinds.length).toBeGreaterThan(0);
+    for (const kind of kinds) {
+      expect(String(entry[kind as "read"]).trim(), `${file}:${kind}`).not.toBe("");
+      expect(unboundedInputClasses(text ?? ""), `${file} no longer uses the exempted ${kind} primitive`).toContain(kind);
+    }
+    for (const name of Object.values(entry.forwards ?? {}).flat()) expect(text).toMatch(new RegExp(`export (?:async )?function ${name}\\b`, "u"));
   });
 
   it.each([
-    ['const SRC_DIR = resolve(fileURLToPath(import.meta.url), "../../../../.."); readdirSync(SRC_DIR, { withFileTypes: true });', true],
-    ['const root = join(__dirname, "..", ".."); for (const entry of readdirSync(root)) walk(entry);', true],
-    ['globSync("src/**/*.ts");', true],
-    ['await readdir(resolve("src/routines"));', true],
-    ['const dir = mkdtempSync(join(tmpdir(), "x-")); readdirSync(dir);', false],
-    ['configureHostResources({ resourcePath: resolve("resources") }); readdirSync(home);', false],
-  ])("detects a repository directory listing: %s -> %s", (text, expected) => {
-    const path = "src/a/__tests__/listing.test.ts";
-    expect(testListsRepositoryDirectories(path, (file) => file === path ? text as string : null)).toBe(expected);
+    ['const root = mkdtempSync(join(tmpdir(), "x-")); readdirSync(root);', ["listing"]],
+    ['for (const dir of ["src", "test", "scripts"]) walk(dir); function walk(d) { return readdirSync(d); }', ["listing"]],
+    ['listSourceFiles("src"); const listSourceFiles = (d) => globSync("**/*.ts", { cwd: d });', ["listing"]],
+    ['spawnSync("git", ["ls-files", "src"]);', ["git"]],
+    ['execSync("git grep -l needle");', ["git"]],
+    ['readFileSync(path, "utf8");', ["read"]],
+    ['existsSync(join(root, name));', ["read"]],
+    [`readFileSync(\`src/\${name}.ts\`);`, ["read"]],
+    ['readFileSync(new URL("./data.json", import.meta.url));', ["read"]],
+    ['readFileSync("src/main.ts", "utf8"); existsSync(\'config/a.json\'); readRepoFile(`src/lib/a.ts`);', []],
+    ['inspectFile(target);', ["read"]],
+    ['readPluginDataFixture(pluginRoot);', ["listing"]],
+  ])("classifies primitive use regardless of its root: %s", (text, expected) => {
+    expect(unboundedInputClasses(text as string)).toEqual(expected);
   });
 
-  it("follows helper imports under test/ when detecting a repository listing", () => {
+  it("follows helper, alias, package-import and scripts/ modules and fails closed on an unreadable one", () => {
     const files: Record<string, string> = {
-      "test/scripts/uses-walker.test.ts": 'import { readSources } from "./walker.js";',
-      "test/scripts/walker.ts": 'export const readSources = (root = process.cwd()) => readdirSync(join(root, "src"));',
+      "package.json": JSON.stringify({ imports: { "#support/*": "./test/support/*.ts" } }),
+      "src/a/__tests__/a.test.ts": 'import { x } from "./support/x.js"; import "#support/y"; const z = require("../../../scripts/z.mjs");',
+      "src/a/__tests__/support/x.ts": "export const x = 1;",
+      "test/support/y.ts": 'export const y = readFileSync(file);',
+      "scripts/z.mjs": 'export const z = spawnSync("git", ["ls-files"]);',
+      "src/b/__tests__/b.test.ts": 'import { gone } from "./support/gone.js"; import "@/__tests__/support/x.js";',
+      "src/__tests__/support/x.ts": "export const x = 1;",
+      "src/c/__tests__/c.test.ts": 'import { cleanup } from "../../__tests__/support/tmp-dir-teardown.js"; import { value } from "../value.js";',
+      "src/__tests__/support/tmp-dir-teardown.ts": "export const cleanup = (dir) => readdirSync(dir);",
+      "src/c/value.ts": "export const value = readFileSync(other);",
     };
     const read = (path: string) => files[path] ?? null;
-    expect(testListsRepositoryDirectories("test/scripts/uses-walker.test.ts", read)).toBe(true);
-    expect(testListsRepositoryDirectories("test/scripts/uses-walker.test.ts", read, new Set(["test/scripts/walker.ts"]))).toBe(false);
+    expect(unboundedInputHits("src/a/__tests__/a.test.ts", read).sort()).toEqual(["scripts/z.mjs:git", "test/support/y.ts:read"]);
+    expect(unboundedInputHits("src/b/__tests__/b.test.ts", read)).toEqual(["src/b/__tests__/support/gone.js:unresolved"]);
+    // An exempted helper class is silent; production modules belong to the import graph.
+    expect(unboundedInputHits("src/c/__tests__/c.test.ts", read)).toEqual([]);
   });
 
-  it("follows a test's scripts/ imports when detecting a repository listing", () => {
-    const files: Record<string, string> = {
-      "src/a/__tests__/graph.test.ts": 'import { buildGraph } from "../../../scripts/graph.mjs"; buildGraph(SOURCE_ROOT);',
-      "scripts/graph.mjs": 'const root = resolve(import.meta.dirname, ".."); export const buildGraph = (dir = root) => readdirSync(dir);',
-    };
-    const read = (path: string) => files[path] ?? null;
-    expect(testListsRepositoryDirectories("src/a/__tests__/graph.test.ts", read)).toBe(true);
+  it.each([
+    ["src/main/app-menu.ts", "src/__tests__/main-single-instance-gate.test.ts"],
+    ["src/plugins/capabilities.ts", "src/permissions/__tests__/mxc-native-spawn-callers.test.ts"],
+  ])("plans the missed walkers for a source-only change to %s", (file, walker) => {
+    const plan = selectCiTests({
+      changes: [modified(file)], trackedTests, readText,
+      mustRunTests: (paths: string[]) => expandMustRunTests(mustRunDocument, trackedTests, paths),
+      discoverRelated,
+    });
+    expect(plan.mode).toBe("affected");
+    expect(plan.tests).toEqual(expect.arrayContaining([walker, ...missedWalkers]));
   });
 
   it("selects the browser-confirmation guard for a source-only diff that adds confirm( under src/main", () => {

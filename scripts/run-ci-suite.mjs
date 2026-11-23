@@ -20,6 +20,7 @@ import {
 } from "./hooks/pre-push-source-policy.mjs";
 import { isCollectedVitestFile } from "./lib/vitest-collection.mjs";
 import { WINDOWS_INVENTORY_LOCK, windowsInventoryDiff } from "./windows-test-inventory.mjs";
+import { UNBOUNDED_INPUT_EXEMPTIONS } from "./ci-unbounded-input-exemptions.mjs";
 
 export const MUST_RUN_TESTS_PATH = "config/ci-must-run-tests.json";
 
@@ -100,17 +101,97 @@ export function testRunsRepoCodeOutOfProcess(testPath, readText) {
   return someHelperSource(testPath, readText, (_path, text) => runsRepoCodeOutOfProcess(text), (target) => target.includes("/__tests__/"));
 }
 
-const DIRECTORY_LISTING = /\breaddirSync\b|\breaddir\s*\(|\bopendirSync\b|\bopendir\s*\(|\bglobSync\b|\bglob\s*\(|\bnew\s+Glob\b|fast-glob|tinyglobby/u;
-const REPOSITORY_ANCHOR = /import\.meta\.(?:url|dirname|filename)|__dirname|__filename|process\.cwd\(\)|\b(?:resolve|join)\(\s*["'`](?:src|test|scripts|config|docs|web|\.)["'`/]|\b(?:readdirSync|readdir|opendirSync|opendir|globSync)\(\s*(?:(?:path\.)?(?:resolve|join)\(\s*)?["'`](?:src|test|scripts|config|resources|docs|web)\b/u;
+// Primitives that can read repository content that no import or literal path
+// names. Recognising dangerous roots failed open, so any use counts, whatever
+// its argument or root, unless an audited exemption covers that file and class.
+const LITERAL_ARGUMENT = '(?:"[^"\\n]*"|\'[^\'\\n]*\'|`[^`$\\n]*`)\\s*[,)]';
+function unboundedInputPatterns(exemptions) {
+  const forwards = { listing: [], read: [] };
+  for (const entry of Object.values(exemptions)) {
+    for (const kind of Object.keys(forwards)) forwards[kind].push(...(entry.forwards?.[kind] ?? []));
+  }
+  const computedCall = (names) => names.length ? `|\\b(?:${names.join("|")})\\(\\s*(?!${LITERAL_ARGUMENT})` : "";
+  return {
+    listing: new RegExp(`\\breaddir(?:Sync)?\\b|\\bopendir(?:Sync)?\\b|\\bfs\\.Dir\\b|\\bnew\\s+Dir\\b|\\bglobSync\\b|\\bglob\\s*\\(|\\bnew\\s+Glob\\b|fast-glob|tinyglobby|\\bfs\\.glob\\b${computedCall(forwards.listing)}`, "u"),
+    git: /["'`]git(?:["'`]|\s+[a-z])/u,
+    read: new RegExp(`\\b(?:${["readFileSync", "readFile", "readRepoFile", "existsSync", ...forwards.read].join("|")})\\(\\s*(?!${LITERAL_ARGUMENT})`, "u"),
+  };
+}
 
-// A directory listing beside a checkout-relative root may scan repository files
-// that no import or literal path names, so the must-run set holds such tests.
-// Helpers under __tests__/ or test/ and imported scripts/ modules count too.
-// Exempt files list only temporary, home, host or caller-supplied directories.
-export function testListsRepositoryDirectories(testPath, readText, exempt = new Set()) {
-  return someHelperSource(testPath, readText,
-    (path, text) => !exempt.has(path) && DIRECTORY_LISTING.test(text) && REPOSITORY_ANCHOR.test(text),
-    (target) => target.includes("/__tests__/") || target.startsWith("test/") || target.startsWith("scripts/"));
+export function unboundedInputClasses(text, exemptions = UNBOUNDED_INPUT_EXEMPTIONS) {
+  return Object.entries(unboundedInputPatterns(exemptions)).filter(([, pattern]) => pattern.test(text)).map(([kind]) => kind);
+}
+
+const HELPER_SPECIFIER = /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+|\brequire\s*\(\s*|\bvi\.(?:mock|doMock|importActual)\s*(?:<[^>]*>)?\(\s*)["']((?:\.{1,2}\/|@\/|#)[^"']+)["']/gu;
+const INPUT_HELPER_EXTENSIONS = ["", ".ts", ".tsx", ".mts", ".cts", ".mjs", ".cjs", ".js", ".jsx"];
+
+function packageImportTarget(imports, specifier) {
+  for (const [key, value] of Object.entries(imports ?? {})) {
+    const target = typeof value === "string" ? value : null;
+    if (!target) continue;
+    if (key === specifier) return posix.normalize(target);
+    if (key.endsWith("*") && specifier.startsWith(key.slice(0, -1))) {
+      return posix.normalize(target.replace("*", specifier.slice(key.length - 1)));
+    }
+  }
+  return null;
+}
+
+/**
+ * Primitive uses in a test and in the __tests__/, test/ and scripts/ modules it
+ * imports, as `file:class` entries. A helper import that cannot be resolved or
+ * read counts as `file:unresolved`, so an unreadable closure fails closed.
+ */
+export function unboundedInputHits(testPath, readText, exemptions = UNBOUNDED_INPUT_EXEMPTIONS) {
+  const patterns = unboundedInputPatterns(exemptions);
+  const imports = (() => {
+    try { return JSON.parse(readText("package.json") ?? "{}").imports; } catch { return undefined; }
+  })();
+  const hits = [];
+  const seen = new Set();
+  const pending = [testPath];
+  while (pending.length > 0) {
+    const path = pending.pop();
+    if (seen.has(path)) continue;
+    seen.add(path);
+    const text = readText(path);
+    if (typeof text !== "string") {
+      hits.push(`${path}:unresolved`);
+      continue;
+    }
+    for (const [kind, pattern] of Object.entries(patterns)) {
+      if (pattern.test(text) && !Object.hasOwn(exemptions[path] ?? {}, kind)) hits.push(`${path}:${kind}`);
+    }
+    for (const [, specifier] of text.matchAll(HELPER_SPECIFIER)) {
+      const target = specifier.startsWith("@/") ? posix.join("src", specifier.slice(2))
+        : specifier.startsWith("#") ? packageImportTarget(imports, specifier)
+          : posix.normalize(posix.join(posix.dirname(path), specifier));
+      if (target === null) {
+        hits.push(`${path}:unresolved ${specifier}`);
+        continue;
+      }
+      const helper = (target.includes("/__tests__/") || target.startsWith("test/") || target.startsWith("scripts/"))
+        && !/\.(?:test|spec)\.[cm]?[jt]sx?$/u.test(target);
+      if (!helper || /\.json$/u.test(target)) continue;
+      const base = target.replace(/\.[cm]?js$/u, "");
+      const candidates = INPUT_HELPER_EXTENSIONS.flatMap((extension) => [`${base}${extension}`, `${target}${extension}`, `${base}/index${extension}`]);
+      const found = candidates.find((candidate) => typeof readText(candidate) === "string");
+      pending.push(found ?? target);
+    }
+  }
+  return hits;
+}
+
+const unboundedInputCache = new WeakMap();
+// Tests always run on affected plans because a primitive use could read any repository path.
+export function selectUnboundedInputTests(trackedTests, readText, exemptions = UNBOUNDED_INPUT_EXEMPTIONS) {
+  const byTests = unboundedInputCache.get(readText) ?? new WeakMap();
+  unboundedInputCache.set(readText, byTests);
+  const cached = exemptions === UNBOUNDED_INPUT_EXEMPTIONS ? byTests.get(trackedTests) : undefined;
+  if (cached) return cached;
+  const selected = trackedTests.filter((test) => unboundedInputHits(test, readText, exemptions).length > 0).sort();
+  if (exemptions === UNBOUNDED_INPUT_EXEMPTIONS) byTests.set(trackedTests, selected);
+  return selected;
 }
 
 // Directory entries expand to collected tests; stale entries selecting nothing fail.
@@ -241,6 +322,7 @@ export function selectCiTests({ changes, trackedTests, mustRunTests: requiredTes
   const deleted = new Set(changes.filter(({ status }) => status === "D").map(({ path }) => path));
   const inventoryTests = [...inventory.suites.keys()].filter(file => !deleted.has(file));
   if (inventory.changed) inventoryTests.push(WINDOWS_INVENTORY_LOCK);
+  const unboundedTests = selectUnboundedInputTests(trackedTests, readText);
   const invalidInventoryTest = inventoryTests.find(file => !tracked.has(file));
   if (invalidInventoryTest) throw new Error(`Windows inventory names an uncollected test: ${invalidInventoryTest}`);
   if (inventory.changed && inventory.ordinary.length === 0) {
@@ -249,8 +331,8 @@ export function selectCiTests({ changes, trackedTests, mustRunTests: requiredTes
     }
     return {
       mode: "affected",
-      reason: `Windows inventory-only diff; ${inventory.suites.size} membership change(s); drift check and ${mustRunTests.length} must-run file(s)`,
-      tests: [...new Set([...inventoryTests, ...mustRunTests])].sort(),
+      reason: `Windows inventory-only diff; ${inventory.suites.size} membership change(s); drift check, ${mustRunTests.length} must-run and ${unboundedTests.length} unbounded-input file(s)`,
+      tests: [...new Set([...inventoryTests, ...mustRunTests, ...unboundedTests])].sort(),
     };
   }
   changes = inventory.ordinary;
@@ -340,7 +422,7 @@ export function selectCiTests({ changes, trackedTests, mustRunTests: requiredTes
     return matches;
   });
 
-  let tests = [...new Set([...traced, ...lockSuites, ...inventoryTests, ...mustRunTests])].sort();
+  let tests = [...new Set([...traced, ...lockSuites, ...inventoryTests, ...mustRunTests, ...unboundedTests])].sort();
   const missing = tests.filter((test) => !trackedTests.includes(test));
   if (missing.length > 0) {
     if (testOnly) throw new Error(`test-only selection names an uncollected test: ${missing[0]}`);
@@ -361,7 +443,7 @@ export function selectCiTests({ changes, trackedTests, mustRunTests: requiredTes
       `${fast.relatedFiles.length} changed module(s) reach ${related.length === 0 ? 0 : new Set(related).size} test file(s); ` +
       `${fast.testFiles.length} changed test file(s); ${textReaders.length} test file(s) name a changed path; ` +
       `${lockSuites.length} lock suite file(s); ` +
-      `${mustRunTests.length} must-run file(s)`,
+      `${mustRunTests.length} must-run file(s); ${unboundedTests.length} unbounded-input file(s)`,
     tests,
   };
 }
