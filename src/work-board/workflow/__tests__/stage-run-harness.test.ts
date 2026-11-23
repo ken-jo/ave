@@ -1113,6 +1113,29 @@ it("a progress wait whose signal never comes stays pending past 2 s and at 30 s 
   }
 });
 
+it("cleanup ends pending progress and child waits at once and leaves no listener or timer behind", async () => {
+  const h = await stageRunHarness();
+  let cleaned: Promise<void> | undefined;
+  try {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const outcome = (wait: Promise<unknown>) => wait.then(() => "resolved", (error: unknown) => String(error));
+    const waits = Promise.all([outcome(h.settleEvent()), outcome(h.untilLive(1))]);
+    expect(h.pendingWaits()).toBe(2);
+    expect(vi.getTimerCount()).toBe(2);
+    cleaned = h.cleanup();
+    expect(h.pendingWaits()).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+    // Past every bound before the directory removal can schedule anything: no wait fails late.
+    vi.advanceTimersByTime(30_000);
+    vi.useRealTimers();
+    expect(await waits).toEqual(["Error: Progress wait ended: harness cleaned up", "Error: Child wait ended: harness cleaned up"]);
+    expect(await outcome(h.settleEvent())).toBe("Error: Progress wait ended: harness cleaned up");
+  } finally {
+    vi.useRealTimers();
+    await (cleaned ?? h.cleanup());
+  }
+});
+
 it("an accepted join decision puts its item back in flight for aggregate child waits", async () => {
   let merges = 0;
   const h = await stageRunHarness({

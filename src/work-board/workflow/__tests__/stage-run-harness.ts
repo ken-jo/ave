@@ -98,7 +98,8 @@ export async function stageRunHarness(opts: {
   let runWork = observeEngineWork();
   /** `recheck` is set when a call closed refused: a failure it held off stands again, as if the wait were created now. */
   const childChanges = new Set<(pulse?: ChildWaitPulse, recheck?: boolean) => void>();
-  const progressChanges = new Set<() => void>();
+  /** Called with an error, a listener ends its wait with it. */
+  const progressChanges = new Set<(ended?: Error) => void>();
   let closed = false;
   let lastRequestedOrigin: string | undefined;
   /** The harness clock: every start, call and failure takes the next tick, so "newer" is a plain comparison. */
@@ -397,8 +398,8 @@ export async function stageRunHarness(opts: {
     timeout.unref();
     return () => clearTimeout(timeout);
   }
-  /** Resolves on the signal that makes `get` defined; rejects with `failure` once the bound expires. */
-  function waitForSignal<T>(listeners: Set<() => void>, get: () => T | undefined, failure: string): Promise<T> {
+  /** Resolves on the signal that makes `get` defined; rejects with `failure` once the bound expires, or with the error it is signalled. */
+  function waitForSignal<T>(listeners: Set<(ended?: Error) => void>, get: () => T | undefined, failure: string): Promise<T> {
     const current = get();
     if (current !== undefined) return Promise.resolve(current);
     return new Promise<T>((resolve, reject) => {
@@ -406,7 +407,13 @@ export async function stageRunHarness(opts: {
         listeners.delete(changed);
         reject(new Error(failure));
       });
-      function changed() {
+      function changed(ended?: Error) {
+        if (ended) {
+          listeners.delete(changed);
+          clear();
+          reject(ended);
+          return;
+        }
         const value = get();
         if (value === undefined) return;
         listeners.delete(changed);
@@ -491,9 +498,11 @@ export async function stageRunHarness(opts: {
   const untilLive = (count: number, itemId?: number) => waitForChildren(() => forItem(ofCurrentEngine(live()), itemId), active => active.length === count, true, itemId);
   const waitForLive = untilLive;
   const untilSpawned = (count: number, itemId?: number) => waitForChildren(() => forItem(ofCurrentEngine(children), itemId), spawned => spawned.length >= count, false, itemId);
+  const progressEnded = () => new Error("Progress wait ended: harness cleaned up");
   /** `what`: the event the wait names when its bound expires. */
-  const waitForProgress = (check: (event: WorkBoardRunEvent) => boolean, what: string) =>
-    waitForSignal(progressChanges, () => events.find(check), `progress signal never arrived for ${what}`);
+  const waitForProgress = (check: (event: WorkBoardRunEvent) => boolean, what: string) => closed
+    ? Promise.reject(progressEnded())
+    : waitForSignal(progressChanges, () => events.find(check), `progress signal never arrived for ${what}`);
   /** The event that ended the run; it follows the stored status, so a test waits for it. */
   const settleEvent = () => waitForProgress(event => event.phase === "cancelled" || event.phase === "done" || event.phase === "denied" || event.phase === "error",
     "a run's end (cancelled, done, denied or error)");
@@ -509,9 +518,13 @@ export async function stageRunHarness(opts: {
     dir, boardPath, get board() { return board; }, templates, get engine() { return engine; }, makeEngine, editRow, runOf, events, children, interrupts, audits, unauthorised, workspaceCalls, sweeps,
     confirm: confirmTemplate, pinOf, addItem, local, attach, detach, item, stageRun, until, untilStage, untilLive, untilSpawned, settleEvent, waitForLive, waitForProgress, live, decide, statusOf, start,
     drainRunWork: async () => { await runWork?.drain(); },
+    /** Listeners of the child and progress waits still pending. */
+    pendingWaits: () => childChanges.size + progressChanges.size,
     cleanup: () => {
       closed = true;
       pulse("harness cleaned up");
+      const ended = progressEnded();
+      for (const changed of progressChanges) changed(ended);
       return cleanupTmpDir(dir);
     },
   };
