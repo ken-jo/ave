@@ -236,7 +236,8 @@ async function applyPermissionModeChange(
         tool: "/permission mode",
         source: "builtin",
         category: "meta",
-        trustOrigin: "user-keyboard",
+        // The host refused the change; the keyboard origin stays on the mode_change row.
+        trustOrigin: "unknown",
         denyReasons: [{ reason: "host-shutdown", source: "permission-mode" }],
       }).catch(() => undefined);
     }

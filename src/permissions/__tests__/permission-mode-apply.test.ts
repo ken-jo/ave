@@ -474,7 +474,7 @@ describe("mode change at quit", () => {
     expect(deps.permissionManager.setModePersist).not.toHaveBeenCalled();
     expect(deps.permissionManager.setMode).not.toHaveBeenCalled();
     expect(deps.auditLogger.appendPermissionAuditEntry).toHaveBeenLastCalledWith(expect.objectContaining({
-      decision: "deny", tool: "/permission mode", denyReasons: [{ reason: "host-shutdown", source: "permission-mode" }],
+      decision: "deny", tool: "/permission mode", denyReasons: [{ reason: "host-shutdown", source: "permission-mode" }], trustOrigin: "unknown",
     }));
   });
 });

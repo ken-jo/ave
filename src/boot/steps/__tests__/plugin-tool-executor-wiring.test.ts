@@ -678,6 +678,8 @@ it("writes a host-shutdown denial for a parked plugin operation grant before aud
     expect.objectContaining({
       decision: "deny",
       denyReasons: [{ reason: "host-shutdown", source: "plugin-operation-grant" }],
+      // No person answered the card the quit cancelled.
+      trustOrigin: "unknown",
       pluginOperation: { pluginId, operation: "update", outcome: "denied" },
     }),
     "close",
@@ -741,5 +743,37 @@ it("revokes an issued plugin operation grant instead of delivering it after the 
     { pluginId, operation: "update", outcome: "issued", grantId: "issued-grant" },
     { pluginId, operation: "update", outcome: "denied", grantId: "issued-grant" },
   ]);
-  expect(rows[1]).toMatchObject({ decision: "deny", denyReasons: [{ reason: "host-shutdown", source: "plugin-operation-grant" }] });
+  expect(rows[0]).toMatchObject({ decision: "allow", trustOrigin: "user-keyboard" });
+  expect(rows[1]).toMatchObject({ decision: "deny", denyReasons: [{ reason: "host-shutdown", source: "plugin-operation-grant" }], trustOrigin: "unknown" });
+});
+
+it("keeps the keyboard origin on a plugin operation grant the user denied", async () => {
+  vi.resetModules();
+  const { setupPluginToolExecutor } = await import("../plugin-tool-executor.js");
+  const ctx = makeContext();
+  const rows: Array<Record<string, unknown>> = [];
+  mocks.resolvePluginOperationAccount.mockReturnValue({ accountScopeHash: "account-scope", accountHash: "account" });
+  Object.assign(ctx, {
+    toolRegistry: { findByName: () => ({ category: "write" }) },
+    approvalGate: { requestAndWait: async () => ({ choice: "deny-once" }) },
+    bootAuditLogger: { appendPermissionAuditEntry: async (row: Record<string, unknown>) => { rows.push(row); } },
+    pluginBundleLifecycle: {
+      acquire: async () => ({
+        generation: { generationId: activeGenerationId, state: { runtime: { manifest: { version: "2.0.0" } } } },
+        release: vi.fn(),
+      }),
+      runWithLease: async (_lease: unknown, run: () => Promise<unknown>) => run(),
+    },
+  });
+  Object.assign(ctx.pluginRuntime, { getPluginAuthOperationAccount: () => undefined });
+  await setupPluginToolExecutor(ctx);
+  if (!ctx.requestPluginOperationGrant) throw new Error("Plugin grant handler missing");
+  await expect(ctx.requestPluginOperationGrant({
+    pluginId, toolName: "update_record", input: {}, appSessionId: "grant-window",
+  })).rejects.toThrow("operation grant denied");
+  expect(rows).toEqual([expect.objectContaining({
+    decision: "deny",
+    denyReasons: [{ reason: "plugin operation grant denied by user", source: "plugin-operation-grant" }],
+    trustOrigin: "user-keyboard",
+  })]);
 });

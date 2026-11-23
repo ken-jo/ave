@@ -675,7 +675,8 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
                 reason: hostShutdown ? "host-shutdown" : "plugin operation grant denied by user",
                 source: "plugin-operation-grant",
               }],
-              trustOrigin: "user-keyboard",
+              // A host-shutdown refusal is the host's, not a person's answer.
+              trustOrigin: hostShutdown ? "unknown" : "user-keyboard",
               pluginOperation: {
                 pluginId,
                 operation: inspected.operation,
@@ -743,7 +744,7 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
               source: "plugin",
               category: governedTool.category,
               denyReasons: [{ reason: "host-shutdown", source: "plugin-operation-grant" }],
-              trustOrigin: "user-keyboard",
+              trustOrigin: "unknown",
               pluginOperation: {
                 pluginId,
                 operation: inspected.operation,
