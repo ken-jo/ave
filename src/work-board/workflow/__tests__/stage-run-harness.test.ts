@@ -1070,3 +1070,44 @@ it("a child wait that never settles times out and names the items in flight", as
     await h.cleanup();
   }
 });
+
+it("an accepted join decision puts its item back in flight for aggregate child waits", async () => {
+  let merges = 0;
+  const h = await stageRunHarness({
+    observeRunWork: true,
+    integrate: () => (merges += 1) === 1
+      ? { ok: false, conflict: { conflictHash: "c".repeat(64), reason: "merge-conflict", files: [] } }
+      : { ok: true },
+  });
+  const runs: Promise<unknown>[] = [];
+  try {
+    const version = await h.confirm([autoStageOf("a")]);
+    const single = await h.confirm([stageOf("x")]);
+    const id = await h.addItem(version);
+    const other = await h.addItem(single);
+    runs.push(h.start(id, h.local(version)));
+    (await h.untilLive(1, id))[0].finish();
+    const parked = await h.until(id, item => item.stageJoins.some(join => join.status === "conflict"));
+    await runs[0];
+    h.makeEngine();
+    await h.engine.adoptParkedTemplateRuns();
+    // The other item stays in flight, parked on its failed stage with no live child.
+    runs.push(h.start(other, h.local(single)));
+    (await h.untilLive(1, other))[0].finish({ ok: false, summary: "failed", error: "failed" });
+    expect(await runs[1]).toMatchObject({ status: "awaiting_approval" });
+    const wait = Promise.allSettled([h.untilLive(1)]);
+    const [join] = parked.stageJoins;
+    expect(await h.engine.decideStageJoin(id, {
+      runId: parked.runId ?? "", joinId: join.joinId, conflictHash: join.conflict?.conflictHash ?? "", decision: "retry_merge",
+    })).toEqual({ ok: true });
+    await h.drainRunWork();
+    expect(await Promise.race([wait, setImmediate("still pending")])).toEqual([
+      { status: "rejected", reason: expect.objectContaining({ message: expect.stringMatching(/done/) }) },
+    ]);
+  } finally {
+    for (const child of h.live()) child.finish();
+    await Promise.allSettled(runs);
+    await h.drainRunWork();
+    await h.cleanup();
+  }
+});
