@@ -577,6 +577,9 @@ function pathGrantRemovalMatcher(root: string, preserveRoots: readonly string[] 
 
 export class PermissionManager {
   private rules: PermissionRule[] = [];
+  // The rules set in memory before the user file merges in (boot's standing allows): a refresh starts again from these.
+  private baseRules: PermissionRule[] = [];
+  private userRulesRefresh: Promise<void> | undefined;
   // Unread deny rules fail admission closed for every tool category.
   private rulesLoadError: PermissionRulesFileCorruptError | undefined;
   private readonly projectRuleScopes: ProjectRuleScopes;
@@ -884,6 +887,7 @@ export class PermissionManager {
   }
 
   setRules(rules: PermissionRule[]): void {
+    this.baseRules = rules.map((rule) => ({ ...rule }));
     this.rules = rules.map((rule) => ({ ...rule }));
     this.policyGeneration += 1;
   }
@@ -1130,6 +1134,7 @@ export class PermissionManager {
   // The `Network(<host>[:port])` rule that decides a sandboxed shell's or terminal's connection, from the user rules, the project's rules (a shell call with a project) and the conversation's "This session" rules, with the precedence of every rule kind: deny, then ask (no grant is consulted and the card asks), then allow. Undefined when no rule matches; the grant store and the card then decide. The network card's "Always deny" and its edited rules are stored as these rules (owner 2026-10-25). A corrupt project rules file throws, which the egress callback turns into an audited deny.
   // `scope` names where the deciding rule is stored, so the egress callback can hold an allow to the lifetimes the connection's identity may use.
   async networkRuleDecision(subject: NetworkRuleSubject): Promise<NetworkRuleDecision | undefined> {
+    await this.refreshUserRulesIfChanged();
     if (subject.projectCwd !== undefined) await this.projectRuleScopes.ensureLoaded(subject.projectCwd);
     return this.matchLoadedNetworkRule(subject);
   }
@@ -1340,7 +1345,7 @@ export class PermissionManager {
 
   // Called during app boot. Merges permissions.json into memory. Missing file is a normal no-op.
   async loadRulesFromFile(): Promise<void> {
-    const policyVersion = capturePersistedPolicyVersion(this.permissionsFilePath);
+    const policyVersion = capturePersistedPolicyVersion(this.permissionsFilePath, { withheld: true });
     let file: Awaited<ReturnType<typeof readPermissionsFile>>;
     try {
       file = await readPermissionsFile(this.permissionsFilePath);
@@ -1353,15 +1358,47 @@ export class PermissionManager {
       return;
     }
     this.policyGeneration += 1;
-    this.userRulesVersion = policyVersion !== undefined &&
-      policyVersion.contentsDigest === sha256Hex(canonicalStringify(file)) &&
-      isPersistedPolicyVersionCurrent(policyVersion) ? policyVersion : undefined;
+    this.userRulesVersion = loadedUserRulesVersion(policyVersion, file);
     this.rulesLoadError = undefined;
     if (!file) return;
 
     // Sync mode.
     if (file.mode) this.mode = file.mode;
+    this.mergeFileRules(file);
+  }
 
+  // Before a connection's asynchronous decision, reload the user rules when the file no longer matches the captured version (a hand
+  // edit, or a completed home-content review). The reload replaces what the file supplied, so local and remote decide on the same
+  // rules; a change after this point is caught by the final synchronous check. Concurrent connections share one reload.
+  private async refreshUserRulesIfChanged(): Promise<void> {
+    if (this.userRulesVersion !== undefined && isPersistedPolicyVersionCurrent(this.userRulesVersion)) return;
+    this.userRulesRefresh ??= this.reloadUserRules().finally(() => { this.userRulesRefresh = undefined; });
+    await this.userRulesRefresh;
+  }
+
+  // The mode is not reloaded: a session-scoped mode deliberately differs from the file, and durable changes write both.
+  private async reloadUserRules(): Promise<void> {
+    const policyVersion = capturePersistedPolicyVersion(this.permissionsFilePath, { withheld: true });
+    let file: Awaited<ReturnType<typeof readPermissionsFile>>;
+    try {
+      file = await readPermissionsFile(this.permissionsFilePath);
+    } catch (error) {
+      if (!(error instanceof PermissionRulesFileCorruptError)) throw error;
+      console.error(`[permission] ${error.message}`);
+      this.rulesLoadError = error;
+      this.userRulesVersion = undefined;
+      this.policyGeneration += 1;
+      return;
+    }
+    this.rules = this.baseRules.map((rule) => ({ ...rule }));
+    this.alwaysAllowed.clear();
+    if (file) this.mergeFileRules(file);
+    this.userRulesVersion = loadedUserRulesVersion(policyVersion, file);
+    this.rulesLoadError = undefined;
+    this.policyGeneration += 1;
+  }
+
+  private mergeFileRules(file: PermissionsFile): void {
     // Merge rules: add file rules after existing in-memory rules, deduplicated.
     for (const rule of file.rules) {
       const dup = this.rules.some(
@@ -1413,7 +1450,7 @@ export class PermissionManager {
     let written: PermissionsFile | undefined;
     let knownPolicy = false;
     await updatePermissionsFile(this.permissionsFilePath, async (file) => {
-      knownPolicy = previous !== undefined && (
+      knownPolicy = previous !== undefined && previous.withheld !== true && (
         previous.contentsDigest === sha256Hex(canonicalStringify(file)) ||
         (previous.contentsDigest === sha256Hex("null") && file.rules.length === 0)
       );
@@ -1761,7 +1798,7 @@ export class PermissionManager {
       issuedFloorSessionDecisions.set(result, Object.freeze({ toolName, dialect: requestedRuleSubject.dialect, command: requestedRuleSubject.command, cwd: requestedRuleSubject.cwd,
         planIdentity: context.hostShellExecutionPlan.identity, issuer: this, policyEpoch: this.getPolicyEpoch() }));
     }
-    if (result.decision === "allow" && result.reasonCode === "rule-allow" && context.hostShellExecutionPlan?.executionRequest === "host" && requestedRuleSubject?.cwd !== undefined && cwdIdentity && this.userRulesVersion && projectPolicyVersion && isPersistedPolicyVersionCurrent(this.userRulesVersion) && isPersistedPolicyVersionCurrent(projectPolicyVersion)) {
+    if (result.decision === "allow" && result.reasonCode === "rule-allow" && context.hostShellExecutionPlan?.executionRequest === "host" && requestedRuleSubject?.cwd !== undefined && cwdIdentity && this.userRulesVersion && this.userRulesVersion.withheld !== true && projectPolicyVersion && projectPolicyVersion.withheld !== true && isPersistedPolicyVersionCurrent(this.userRulesVersion) && isPersistedPolicyVersionCurrent(projectPolicyVersion)) {
       issuedShellAllowRuleDecisions.set(result, Object.freeze({ toolName, dialect: requestedRuleSubject.dialect, command: requestedRuleSubject.command, cwd: requestedRuleSubject.cwd, cwdIdentity, issuer: this, policyEpoch: this.getPolicyEpoch(), persistedPolicyVersions: Object.freeze([this.userRulesVersion, projectPolicyVersion]) }));
     }
     return result;
@@ -2341,4 +2378,12 @@ function normalizeApprovalCacheKey(key: string | undefined): string | null {
 function redactVerdictReason(verdict: RiskVerdict): RiskVerdict {
   const masked = maskSensitiveData(verdict.reason).masked;
   return masked === verdict.reason ? verdict : { ...verdict, reason: masked };
+}
+
+// The version a load may publish: the bytes it parsed must still be on disk, and for a trusted file they must describe the rules it
+// loaded. A withheld file loaded its restriction overlay, which no contents digest describes.
+function loadedUserRulesVersion(version: PersistedPolicyVersion | undefined, file: PermissionsFile | null): PersistedPolicyVersion | undefined {
+  if (version === undefined || !isPersistedPolicyVersionCurrent(version)) return undefined;
+  if (version.withheld === true) return version;
+  return version.contentsDigest === sha256Hex(canonicalStringify(file)) ? version : undefined;
 }

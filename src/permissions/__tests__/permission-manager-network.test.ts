@@ -1,7 +1,14 @@
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { join, resolve } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { _resetAveHomePrivacyForTest, ensureAveHomePrivate } from "../../shared/ave-home.js";
+import { migrateAveHomeConfiguration } from "../../shared/ave-home-configuration.js";
+import { setAveHomeConfigurationOwner } from "../../shared/ave-home-configuration-access.js";
+import { _resetAveHomeTrustForTest, approveAveHomeTrustItems, evaluateAveHomeTrustAtBoot, getAveHomeTrustReview, readAveHomeInputSync } from "../../shared/ave-home-trust.js";
+import { configureHostResources } from "../../main/host-resources.js";
+import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
+import { projectRulesLocation } from "../rules/project-rule-files.js";
 import { PermissionManager } from "../permission-manager.js";
 import { NO_APPROVER_MESSAGE } from "../decision-pipeline.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -117,5 +124,103 @@ describe("actual network connection pipeline", () => {
     const decision = manager.resolveReviewedPermission(result.permission, review);
     expect(decision.decision).toBe(level === "low" ? "allow" : "deny");
     if (level === "high") expect(decision.reason).toBe(NO_APPROVER_MESSAGE);
+  });
+});
+
+describe("user rules at the resolved connection", () => {
+  const OTHER = { ...DESTINATION, host: "other.example.com" } as const;
+  const headless = { headless: true } as const;
+  const userFile = () => join(directory, "permissions.json");
+  // Local decides on the asynchronous phase alone. Remote also takes the final synchronous check after its owner probe.
+  const decide = async (subject: PermissionManager, destination: typeof DESTINATION | typeof OTHER) => {
+    const local = (await subject.checkNetworkPermission(destination, headless)).permission;
+    const remote = subject.checkLoadedNetworkPermission(destination, headless).permission;
+    return { local: [local.decision, local.reason], remote: [remote.decision, remote.reason] };
+  };
+  const booted = async () => {
+    const fresh = new PermissionManager(userFile());
+    fresh.setMode("default");
+    await fresh.loadRulesFromFile();
+    return fresh;
+  };
+
+  it("picks up a hand edit that removes an allow before the next connection, for local and remote alike", async () => {
+    await manager.addRulePersist({ pattern: "Network(api.example.com:443)", action: "allow" }, { kind: "user" });
+    await manager.addRulePersist({ pattern: "Network(other.example.com:443)", action: "allow" }, { kind: "user" });
+    const running = await booted();
+    expect(await decide(running, DESTINATION)).toEqual({ local: ["allow", expect.anything()], remote: ["allow", expect.anything()] });
+    const edited = JSON.parse(readFileSync(userFile(), "utf8")) as { rules: { pattern: string }[] };
+    edited.rules = edited.rules.filter(rule => rule.pattern !== "Network(api.example.com:443)");
+    writeFileSync(userFile(), `${JSON.stringify(edited, null, 2)}\n`);
+    // A process booted on the edited file is the reference: the running one must decide exactly as it does.
+    const reference = await booted();
+    for (const destination of [DESTINATION, OTHER]) {
+      const expected = await decide(reference, destination);
+      expect(await decide(running, destination)).toEqual(expected);
+    }
+    expect((await decide(running, DESTINATION)).remote).toEqual(["deny", NO_APPROVER_MESSAGE]);
+    expect((await decide(running, OTHER)).remote[0]).toBe("allow");
+  });
+
+  it.each(["user", "project"] as const)("decides on the withheld %s overlay while review is pending, then on the full file once the review completes", async kind => {
+    const home = join(realpathSync(directory), ".ave");
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+    setAveHomeConfigurationOwner({ hasSingleInstanceLock: () => true });
+    setFixtureOwner(directory);
+    vi.stubEnv("AVE_HOME", home);
+    try {
+      const privacy = ensureAveHomePrivate(home);
+      expect(privacy.enforcement).not.toBe("none");
+      migrateAveHomeConfiguration(home, privacy);
+      evaluateAveHomeTrustAtBoot(home);
+      const userRules = join(home, "permissions.json");
+      const projectCwd = join(realpathSync(directory), "project");
+      mkdirSync(projectCwd);
+      const scope = kind === "user" ? { kind } as const : { kind, projectCwd } as const;
+      const file = kind === "user" ? userRules : projectRulesLocation(home, projectCwd).filePath;
+      const writer = new PermissionManager(userRules);
+      await writer.addRulePersist({ pattern: "Network(api.example.com:443)", action: "allow" }, scope);
+      await writer.addRulePersist({ pattern: "Network(other.example.com:443)", action: "deny" }, scope);
+      // Changed outside Ave: at the next boot the file is pending review and loads as its deny-only overlay.
+      writeFileSync(file, `${readFileSync(file, "utf8")}\n`);
+      _resetAveHomeTrustForTest();
+      evaluateAveHomeTrustAtBoot(home);
+      expect(readAveHomeInputSync(file)).toMatchObject({ status: "untrusted", reason: "changed" });
+      const running = new PermissionManager(userRules);
+      running.setMode("default");
+      await running.loadRulesFromFile();
+      const at = (destination: typeof DESTINATION | typeof OTHER) => kind === "user" ? destination
+        : { ...destination, ruleScopes: ["user", "project"] } as unknown as typeof DESTINATION;
+      const context = kind === "user" ? headless : { ...headless, projectRulesCwd: projectCwd };
+      const decideIn = async (destination: typeof DESTINATION | typeof OTHER) => {
+        const local = (await running.checkNetworkPermission(at(destination), context)).permission;
+        const remote = running.checkLoadedNetworkPermission(at(destination), context).permission;
+        return { local: [local.decision, local.reason], remote: [remote.decision, remote.reason] };
+      };
+      // Remote decides as local does, on the overlay: its deny applies and the withheld allow does not.
+      expect(await decideIn(DESTINATION)).toEqual({ local: ["deny", NO_APPROVER_MESSAGE], remote: ["deny", NO_APPROVER_MESSAGE] });
+      expect((await decideIn(OTHER)).remote[0]).toBe("deny");
+      const review = getAveHomeTrustReview();
+      if (review === undefined) throw new Error("no home-content review is pending");
+      expect(approveAveHomeTrustItems(review.snapshotId, review.rows.map(row => row.key))).toBe(1);
+      expect(readAveHomeInputSync(file).status).toBe("trusted");
+      // The allow exists only in the full file, so this proves the rules were reloaded, not merely the version re-captured.
+      expect(await decideIn(DESTINATION)).toEqual({ local: ["allow", expect.anything()], remote: ["allow", expect.anything()] });
+    } finally {
+      setAveHomeConfigurationOwner(undefined);
+      _resetAveHomeTrustForTest();
+      _resetAveHomePrivacyForTest();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("still denies the remote connection when the file changes after the asynchronous phase", async () => {
+    await manager.addRulePersist({ pattern: "Network(api.example.com:443)", action: "allow" }, { kind: "user" });
+    const running = await booted();
+    expect((await running.checkNetworkPermission(DESTINATION, headless)).permission.decision).toBe("allow");
+    // The owner probe is where this edit lands: no reload can run before the synchronous check.
+    writeFileSync(userFile(), readFileSync(userFile(), "utf8").replace("\n}", ",\n  \"note\": 1\n}"));
+    expect(running.checkLoadedNetworkPermission(DESTINATION, headless).permission)
+      .toMatchObject({ decision: "deny", reason: "Permission policy changed before execution." });
   });
 });
