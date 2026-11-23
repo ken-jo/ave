@@ -533,21 +533,12 @@ export class EgressGrantStore {
     this.pendingPersistentRevocations.set(key, (this.pendingPersistentRevocations.get(key) ?? 0) + 1);
     try {
       let removed = false;
-      let body: string | undefined;
-      try {
-        await this.mutatePersistent((grants) => {
-          const kept = grants.filter(grant => grantUseKey(grant) !== key);
-          removed = kept.length < grants.length;
-          body = grantFileBody(kept);
-          return kept;
-        });
-      } catch (error) {
-        // The rename landed when the file now holds exactly the body without the grant; only a later step (the directory sync) failed.
-        // Its bytes are compared whatever their trust: a failed write never vouches for what it left behind.
-        if (!removed || body === undefined || !this.fileHolds(body)) throw error;
-        return { removed, durabilitySyncFailed: true };
-      }
-      return { removed, durabilitySyncFailed: false };
+      const { landedAfterFailure } = await this.mutatePersistent((grants) => {
+        const kept = grants.filter(grant => grantUseKey(grant) !== key);
+        removed = kept.length < grants.length;
+        return kept;
+      }, undefined, undefined, () => removed);
+      return { removed, durabilitySyncFailed: landedAfterFailure };
     } finally {
       const pending = this.pendingPersistentRevocations.get(key) ?? 0;
       if (pending > 1) this.pendingPersistentRevocations.set(key, pending - 1);
@@ -595,7 +586,9 @@ export class EgressGrantStore {
     mutate: (grants: readonly PersistentEgressGrant[]) => readonly PersistentEgressGrant[],
     signal?: AbortSignal,
     authority?: ApprovalPersistenceGuard,
-  ): Promise<void> {
+    // Whether a failed write whose body is proven on disk counts as landed (a revoke that removed its grant). Never for a grant.
+    acceptLanded: () => boolean = () => false,
+  ): Promise<{ readonly landedAfterFailure: boolean }> {
     // The store reads as absent in a refused home; rewriting it from that view would erase the user's file.
     try { assertAveHomeInputWritable(this.filePath); }
     catch (error) { return Promise.reject(error); }
@@ -619,10 +612,14 @@ export class EgressGrantStore {
         } else if (this.filePath === egressGrantFilePath()) await openFeatureNamespace("permissions").writeJson("shell-egress-hosts.json", file);
         else await writeFileAtomicAtPath(this.filePath, body);
         this.persistent = { grants: next, digest: sha256Hex(body) };
+        return { landedAfterFailure: false };
       } catch (error) {
         // A write can report failure after its rename. Confirm what is on disk before a pending revoke is released.
         await this.loadPersistent(true).catch(() => undefined);
         signal?.throwIfAborted();
+        // Still inside the queue task, so no later write can have renamed over it: the rename landed when the file holds exactly
+        // this body. Its bytes are compared whatever their trust: a failed write never vouches for what it left behind.
+        if (acceptLanded() && this.fileHolds(body)) return { landedAfterFailure: true };
         throw error;
       } finally {
         this.landingDigest = undefined;

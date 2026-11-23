@@ -377,6 +377,41 @@ describe("EgressGrantStore", () => {
     expect(store.matchingLoadedScope(subject, github, ALL)).toBe(committed ? undefined : "always");
   });
 
+  it("proves a landed revoke inside its queue task, before a queued write can rename over it", async () => {
+    const store = new EgressGrantStore(file);
+    const other = { host: "example.com", port: 443 };
+    await store.grant("always", ALL, subject, github);
+    store.noteUse("always", subject, github);
+    const failure = new Error("directory sync failed");
+    const writeFile = featureNamespace.writeFileAtomicAtPath;
+    const writer = vi.spyOn(featureNamespace, "writeFileAtomicAtPath").mockImplementationOnce(async (...args) => {
+      await writeFile(...args);
+      throw failure;
+    });
+    // The revoke's caller resumes only after the next queued write has renamed its own body into place.
+    const queue = store as unknown as { writes: <T>(task: () => Promise<T>) => Promise<T> };
+    const original = queue.writes;
+    let second: Promise<unknown> | undefined;
+    queue.writes = <T>(task: () => Promise<T>): Promise<T> => {
+      queue.writes = original;
+      return original(task).catch(async (error: unknown) => {
+        await second;
+        throw error;
+      });
+    };
+    try {
+      const revoking = store.revoke({ ...github, scope: "always", origin: "shell" }).catch(error => error);
+      second = store.grant("always", ALL, subject, other);
+      const result = await revoking;
+      await second;
+      expect(JSON.parse(readFileSync(file, "utf8")).grants).toEqual([expect.objectContaining(other)]);
+      expect(result).toEqual({ removed: true, tokens: [subject.token], durabilitySyncFailed: true });
+    } finally {
+      queue.writes = original;
+      writer.mockRestore();
+    }
+  });
+
   it("still rejects a failed write that removed nothing, although the file already holds its unchanged body", async () => {
     const store = new EgressGrantStore(file);
     await store.grant("always", ALL, subject, github);
