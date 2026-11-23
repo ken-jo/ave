@@ -21,7 +21,7 @@ import {
 } from "../managed-child-processes.js";
 
 const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
-let runners: Array<EventEmitter & { kill: ReturnType<typeof vi.fn> }>;
+let runners: Array<EventEmitter & { kill: ReturnType<typeof vi.fn>; unref: ReturnType<typeof vi.fn> }>;
 
 function makeChild() {
   return Object.assign(new EventEmitter(), {
@@ -37,7 +37,7 @@ beforeEach(() => {
   vi.spyOn(process, "kill").mockReturnValue(true);
   runners = [];
   vi.mocked(spawn).mockImplementation(() => {
-    const runner = Object.assign(new EventEmitter(), { kill: vi.fn(() => true) });
+    const runner = Object.assign(new EventEmitter(), { kill: vi.fn(() => true), unref: vi.fn() });
     runners.push(runner);
     return runner as unknown as ChildProcess;
   });
@@ -309,5 +309,24 @@ describe("Windows managed process tree termination", () => {
     await expect(completion).resolves.toBeUndefined();
     expect(warn).toHaveBeenCalledWith(expect.objectContaining({ pid: 4321, code: "EPERM" }), "managed-child: force kill failed");
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("holds the event loop only for a tracked child's tree kill", async () => {
+    const watchdogs: NodeJS.Timeout[] = [];
+    const fakeSetTimeout = globalThis.setTimeout;
+    vi.spyOn(globalThis, "setTimeout").mockImplementation(((...args: Parameters<typeof setTimeout>) => {
+      const timer = fakeSetTimeout(...args);
+      if (args[1] === TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs) watchdogs.push(timer);
+      return timer;
+    }) as typeof setTimeout);
+    const tracked = makeChild();
+    trackManagedChildProcess(tracked);
+    const trackedKill = forceKillManagedChildProcess(tracked, "cancelled");
+    const untracked = Object.assign(makeChild(), { pid: 8765 });
+    const untrackedKill = forceKillManagedChildProcess(untracked, "cancelled");
+    expect(runners.map((runner) => runner.unref.mock.calls.length)).toEqual([0, 1]);
+    expect(watchdogs.map((timer) => timer.hasRef())).toEqual([true, false]);
+    for (const runner of runners) runner.emit("exit", 0, null);
+    await Promise.all([trackedKill, untrackedKill]);
   });
 });

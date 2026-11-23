@@ -386,7 +386,8 @@ export function forceKillManagedChildProcess(child: ChildProcess, reason: string
     }
   };
   try {
-    const completion = pending ?? forceKillProcessTree(child, entry?.killProcessGroup ?? false, entry?.processGroupId);
+    // Only tracked children are owned through shutdown; an untracked tree kill must not keep a short-lived process alive.
+    const completion = pending ?? forceKillProcessTree(child, entry?.killProcessGroup ?? false, entry?.processGroupId, entry !== undefined);
     if (completion) {
       // This public boundary always handles failures, including fire-and-forget transport callbacks. Awaiters observe completion without rejection leaks.
       const handled = completion.then(finish, (err: unknown) => { handleError(err); finish(); });
@@ -469,7 +470,7 @@ interface TreeKillResult {
   targetGone: boolean;
 }
 
-function runWindowsTreeKill(child: ChildProcess, pid: number): Promise<TreeKillResult> {
+function runWindowsTreeKill(child: ChildProcess, pid: number, holdEventLoop: boolean): Promise<TreeKillResult> {
   return new Promise((resolve) => {
     const startedAt = Date.now();
     let settled = false;
@@ -497,6 +498,10 @@ function runWindowsTreeKill(child: ChildProcess, pid: number): Promise<TreeKillR
         finish(null, "SIGKILL", true, targetGone);
         try { runner.kill("SIGKILL"); } catch { /* Still try the tree again. */ }
       }, TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs);
+      if (!holdEventLoop) {
+        runner.unref?.();
+        timer.unref?.();
+      }
     } catch {
       finish(null, null);
     }
@@ -507,6 +512,7 @@ function forceKillProcessTree(
   child: ChildProcess,
   killProcessGroup: boolean,
   processGroupId?: number,
+  holdEventLoop = true,
 ): void | Promise<void> {
   const pending = pendingTreeKills.get(child);
   if (pending) return pending;
@@ -519,7 +525,7 @@ function forceKillProcessTree(
     // No runtime Windows descendant snapshot is available. Retry the full tree before terminating the root, which would lose its ancestry information.
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       if (attempt > 1 && (child.exitCode != null || child.signalCode != null)) break;
-      const result = await runWindowsTreeKill(child, pid);
+      const result = await runWindowsTreeKill(child, pid, holdEventLoop);
       if (result.targetGone) {
         log.info({ targetPid: pid, attempt, elapsedMs: result.elapsedMs }, "managed-child: taskkill watchdog expired after the target exited");
         return;
