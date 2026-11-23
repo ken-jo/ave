@@ -253,7 +253,7 @@ async function askGitIgnores(repoRoot: string, path: string): Promise<boolean | 
         const child = spawnHostGitIfWorkspaceFree(repoRoot, git.path, args, {
           ...git.options, windowsHide: true, stdio: "ignore", timeout: TOOL_TIMEOUT_POLICY.projectGitQueryMs,
         });
-        if (child === "held") return resolve(undefined);
+        if (typeof child === "string") return resolve(undefined);
         child.on("error", reject);
         child.on("close", (code) => {
           if (code === 0) resolve(true);

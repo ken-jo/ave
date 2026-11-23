@@ -472,7 +472,7 @@ describe("resolveHostGit", () => {
       vi.mocked(existsSync).mockReturnValue(true);
       vi.mocked(statSync).mockImplementation((path) => path === bundled
         ? { isFile: () => true } as ReturnType<typeof statSync>
-        : actual.statSync(path));
+        : path === cwd ? { isDirectory: () => true } as ReturnType<typeof statSync> : actual.statSync(path));
       vi.mocked(execFile).mockImplementation((_file, args, _options, callback) => {
         if (Array.isArray(args) && args.includes("--system-directory")) {
           callback?.(null, systemDirectoryReply(systemDirectory).stdout, Buffer.alloc(0));

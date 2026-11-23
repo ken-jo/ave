@@ -82,6 +82,7 @@ describe("the git a stage workspace starts is the one the host's discovery resol
       };
     });
     vi.mocked(spawn).mockImplementation((() => ended(0, "git version 2.56.0\n")) as unknown as typeof spawn);
+    vi.mocked(statSync).mockImplementation(((path: string) => ({ isDirectory: () => path === "D:\\project" })) as unknown as typeof statSync);
     const { createHostGit } = await import("../host-git.js");
     const userConfig = "C:\\Users\\alice\\.gitconfig";
     await createHostGit({ env: { Path: "C:\\Users\\alice\\bin", SystemRoot: "C:\\Elsewhere", GIT_CONFIG_GLOBAL: userConfig } }).run("D:\\project", ["--version"]);

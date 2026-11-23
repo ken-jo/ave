@@ -1,4 +1,5 @@
 import { type ChildProcess, spawn, type SpawnOptions } from "node:child_process";
+import { statSync } from "node:fs";
 import { isAbsolute, relative, sep } from "node:path";
 import { inspectPhysicalFilesystemPath } from "./shell-filesystem-path.js";
 
@@ -54,10 +55,20 @@ export function isHostGitWorkspaceAvailable(root: string): boolean {
 }
 
 /** The one place host git starts on a workspace: the hold on `workspace` is asked and the process started in one synchronous step, so
- * no sandboxed command can take the hold in between. `held` starts nothing. */
-export function spawnHostGitIfWorkspaceFree(workspace: string, program: string, args: readonly string[], options: SpawnOptions): ChildProcess | "held" {
+ * no sandboxed command can take the hold in between. `held` starts nothing; neither does `no-folder`, a `cwd` that is no folder, which
+ * says nothing of the program and so is no failure to start it. */
+export function spawnHostGitIfWorkspaceFree(workspace: string, program: string, args: readonly string[], options: SpawnOptions): ChildProcess | "held" | "no-folder" {
   if (!isHostGitWorkspaceAvailable(workspace)) return "held";
+  if (options.cwd !== undefined && !isFolder(options.cwd)) return "no-folder";
   return spawn(program, args, { ...options, shell: false });
+}
+
+function isFolder(path: string | URL): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 /** Refuse implicit bare-repository discovery and prevent repository metadata from starting monitors or hooks. Callers retain their environment,

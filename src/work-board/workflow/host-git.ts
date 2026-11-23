@@ -126,6 +126,7 @@ export function createHostGit(options: { env?: NodeJS.ProcessEnv; resolve?: Host
     return new Promise((resolve, reject) => {
       const started = spawnHostGitIfWorkspaceFree(cwd, git.path, args, { cwd, env: programEnv(call.isolated === true ? isolated : env, git), windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
       if (started === "held") return reject(new HostGitError("held", "the workspace is held by a sandboxed command"));
+      if (started === "no-folder") return reject(new HostGitError("unavailable", "the folder git would run in does not exist"));
       const child = started as ChildProcessWithoutNullStreams;
       const out: Buffer[] = [];
       const err: Buffer[] = [];

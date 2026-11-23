@@ -653,6 +653,7 @@ describe("discoverDirectoryInstructions", () => {
       expect(gitCalls.checkIgnore).toHaveLength(before);
       const fixtureGit = join(project, "fixture-git");
       const options = { cwd: join(project, "installer"), env: { GIT_ALLOW_PROTOCOL: "" } };
+      mkdirSync(options.cwd);
       resolve.mockReturnValue({ path: fixtureGit, options });
       gitCalls.intercept = () => Buffer.alloc(0);
       expect(await discover(project, join("build", "x.js"), new Set(), opts)).toEqual([]);

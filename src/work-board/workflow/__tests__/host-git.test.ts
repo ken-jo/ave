@@ -507,6 +507,16 @@ describe("host git on the installed git", () => {
     expect((await git.run(held, ["--version"])).code).toBe(0);
   });
 
+  it("a call in a folder that does not exist starts nothing, and the git the host resolved stays resolved", async () => {
+    const before = (await discoverHostGitAsync(null)).git?.path;
+    spawned.calls = 0;
+    expect(await reasonOf(createHostGit({ env }).run(join(base, "missing"), ["--version"]))).toBe("unavailable");
+    // Not a program that failed to start: no new discovery probes another one.
+    expect(spawned.calls).toBe(0);
+    expect((await discoverHostGitAsync(null)).git?.path).toBe(before);
+    expect(spawned.calls).toBe(0);
+  });
+
   it("a hold a sandboxed command takes while the host resolves git still refuses the call, and git never starts", async () => {
     const held = join(base, "held");
     mkdirSync(held);
