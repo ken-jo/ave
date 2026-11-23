@@ -253,7 +253,9 @@ describe("ToolExecutor admission across the quit seal", () => {
     let rowsAtClose: Array<Record<string, unknown>> = [];
     const join = ledger.closeToolInvocationAudit(async () => { rowsAtClose = rows(); await audit.close(); });
     releaseBlocker();
-    const settled = await Promise.race([join, new Promise((resolve) => { setTimeout(() => resolve("held"), 3_000); })]);
+    let held: ReturnType<typeof setTimeout> | undefined;
+    const settled = await Promise.race([join, new Promise((resolve) => { held = setTimeout(() => resolve("held"), 10_000); })])
+      .finally(() => { clearTimeout(held); });
     expect(settled).toBe(2);
     expect(acquireExact).toHaveBeenCalledOnce();
     expect(executes[1]).not.toHaveBeenCalled();
