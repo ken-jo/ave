@@ -6,7 +6,7 @@ import { aveHome } from "../../../shared/ave-home.js";
 import { createHostGit, type HostGit, HostGitError } from "../host-git.js";
 import { nodeIdOf } from "../owned-fs.js";
 import { createStageWorkspaceProvider } from "../stage-workspaces.js";
-import { JOIN_DIR, RUN_FILE, runBranch, runRootOf } from "../workspace-layout.js";
+import { JOIN_DIR, RUN_FILE, runBranch, runRootOf, runSlug } from "../workspace-layout.js";
 import { removeTree, setPath, writeUnder as write } from "./stage-fixtures.js";
 import { type GitFixture, type GitHandle, gitFixture, sealed, stageRoot } from "./stage-git-fixture.js";
 
@@ -205,6 +205,26 @@ it("a discard tells of a run it was given a root for that has no folder left, wh
     rmSync(at.runRoot, { recursive: true });
   }
   expect(await provider.discard(given)).toEqual([at.target.run.runId]);
+});
+
+it("a folder a discard cannot read keeps the root of the run whose name it carries in another case", async () => {
+  const at = await scene();
+  const provider = createStageWorkspaceProvider({ git: createHostGit({ env: fx.env }), removable: async () => run => run.itemId !== 8 });
+  await provider.release(at.target.run, "all");
+  // A run of item 7 with no folder, and its folder's name in capitals: a volume that folds case finds the one by the other.
+  const runId = "run-case";
+  const slug = runSlug(7, runId);
+  expect(slug.toUpperCase()).not.toBe(slug);
+  const given = new Map([[runId, { projectRoot: fx.repo, itemId: 7 }]]);
+  expect(await provider.discard(given)).toEqual([runId]);
+  const candidate = join(dirname(at.otherRoot), slug.toUpperCase());
+  mkdirSync(candidate);
+  try {
+    expect(await provider.discard(given)).toEqual([]);
+  } finally {
+    rmSync(candidate, { recursive: true });
+  }
+  expect(await provider.discard(given)).toEqual([runId]);
 });
 
 describe.each(["release", "swept", "discarded"] as const)("what a %s with its project open may remove of a git run", (operation) => {

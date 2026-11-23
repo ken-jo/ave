@@ -940,8 +940,9 @@ ${fields(side)}`;
   const unreadable = new Set<string>();
 
   /** Every run folder that holds its own record. A folder without one was not made by a run the host can name; it is left alone.
-   * `whole`: every level under `worktrees` was listed. `unread`: the names of the run folders that hold no record the host reads;
-   * a run that is not among `runs` has no folder when its name is not among these either. */
+   * `whole`: every level under `worktrees` was listed. `unread`: the names of the run folders that hold no record the host reads, in
+   * lower case as a run's own name is, since a volume that folds case finds a run's folder under any spelling of it; a run that is
+   * not among `runs` has no folder when its name is not among these either. */
   function recordedRuns(): { runs: Held[]; whole: boolean; unread: Set<string> } {
     const found: Held[] = [];
     const unread = new Set<string>();
@@ -955,11 +956,11 @@ ${fields(side)}`;
         if (project === undefined) { whole = false; continue; }
         for (const slug of project.list()) {
           const run = real(project, slug);
-          if (run === undefined) { unread.add(slug); continue; }
+          if (run === undefined) { unread.add(slug.toLowerCase()); continue; }
           const runRoot = join(worktreesRoot(), name, slug);
           const file = readRunFile(runRoot, run);
           if (file !== null) { found.push({ runRoot, file, project, run }); continue; }
-          unread.add(slug);
+          unread.add(slug.toLowerCase());
           if (!unreadable.has(runRoot)) {
             unreadable.add(runRoot);
             log.warn("a folder under worktrees holds no record of its own and is left as it is: %s/%s", name, slug);
