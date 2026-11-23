@@ -169,18 +169,28 @@ it.skipIf(process.platform !== "win32")("a home on a share keeps the registratio
     if (!open.ok) throw new Error("expected a workspace");
     const stage = await stageRoot(handle, "s1");
     const recordPath = join(open.workspace.runRoot, RUN_FILE);
-    const record = JSON.parse(readFileSync(recordPath, "utf8")) as { registrations: Record<string, { admin: string }> };
+    const record = JSON.parse(readFileSync(recordPath, "utf8")) as { registrations: Record<string, { admin: string; gitdir: string }> };
     const admin = record.registrations.s1?.admin as string;
+    const joined = record.registrations[JOIN_DIR] as { gitdir: string };
+    const local = joined.gitdir;
     const real = realpathSync.native(stage);
     const volume = parse(real).root;
     between.share = { run: open.workspace.runRoot, volume, root: "\\\\server\\share\\" };
     // As git leaves it on a share, with a stop before the host recorded it: the admin folder names the stage by the share's path.
     writeFileSync(join(admin, "gitdir"), `//server/share/${real.slice(volume.length).replaceAll("\\", "/")}/.git\n`);
     delete record.registrations.s1;
+    // The integration folder's registration is recorded by the share's path as well: the run folder is really there.
+    joined.gitdir = `\\\\server\\share\\${join(dirname(real), JOIN_DIR, ".git").slice(volume.length)}`;
     writeFileSync(recordPath, JSON.stringify(record));
-    await handle.provider.release(handle.run, ["s1"]);
-    expect(existsSync(stage)).toBe(false);
-    expect(existsSync(admin)).toBe(false);
+    try {
+      await handle.provider.release(handle.run, ["s1"]);
+      expect(existsSync(stage)).toBe(false);
+      expect(existsSync(admin)).toBe(false);
+    } finally {
+      const left = JSON.parse(readFileSync(recordPath, "utf8")) as typeof record;
+      (left.registrations[JOIN_DIR] as { gitdir: string }).gitdir = local;
+      writeFileSync(recordPath, JSON.stringify(left));
+    }
   } finally {
     between.share = undefined;
     await fx.done();

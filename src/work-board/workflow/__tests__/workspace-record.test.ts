@@ -176,7 +176,8 @@ it("a path of the record or of a link file is taken only as the open project's o
   const cases = process.platform === "win32" ? [...anyPlace, ...onShare] : anyPlace;
   for (const [kind, live, text, taken] of cases) {
     const got = vetRecordPath(kind, text, live);
-    expect(process.platform === "win32" && kind !== "project" ? got?.toLowerCase() : got, `${kind} ${text} with ${JSON.stringify(live)}`).toBe(process.platform === "win32" && kind !== "project" ? taken?.toLowerCase() : taken);
+    // Every row is reported, not only the first that fails.
+    expect.soft(process.platform === "win32" && kind !== "project" ? got?.toLowerCase() : got, `${kind} ${text} with ${JSON.stringify(live)}`).toBe(process.platform === "win32" && kind !== "project" ? taken?.toLowerCase() : taken);
   }
   expect(cases.filter(([, , , taken]) => taken === undefined).length).toBeGreaterThan(20);
   expect(disk.asked).toEqual([]);
