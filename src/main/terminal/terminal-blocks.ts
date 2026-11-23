@@ -509,7 +509,7 @@ export class TerminalBlockTracker {
     let text = "";
     let editLineOutput = false;
     const flush = (): void => {
-      editLineOutput ||= text.length > 0 && this.phase === "input";
+      editLineOutput ||= this.editLineOutputListeners.size > 0 && text.length > 0 && this.phase === "input";
       this.appendText(text);
       text = "";
     };
@@ -599,7 +599,7 @@ export class TerminalBlockTracker {
       }
     }
     flush();
-    if (editLineOutput) {
+    if (editLineOutput && this.editLineOutputListeners.size > 0) {
       for (const listener of [...this.editLineOutputListeners]) listener();
     }
     return this.display;
