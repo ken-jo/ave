@@ -27,6 +27,7 @@ import { EGRESS_GRANT_SCOPE_LADDERS } from "../../shared/egress-grant-scopes.js"
 import { _resetAveHomePrivacyForTest, AveHomeConfigurationRefusedWriteError, setAveHomeConfigurationRefusedAtBoot } from "../../shared/ave-home.js";
 import * as homeTrust from "../../shared/ave-home-trust.js";
 import { deferred } from "../../__tests__/support/deferred.js";
+import * as featureNamespace from "../../main/storage/feature-namespace.js";
 
 const ALL = ["once", "session", "project", "always"] as const;
 const matchingScopes = Object.values(EGRESS_GRANT_SCOPE_LADDERS).flat();
@@ -339,6 +340,32 @@ describe("EgressGrantStore", () => {
     expect((await store.revoke({ scope: "always", origin: "shell", host: "github.com", port: 443 })).removed).toBe(true);
     expect(await store.matchingScope(subject, github, matchingScopes)).toBeUndefined();
     expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ version: 2, grants: [] });
+  });
+
+  it.each([false, true])("reconciles a failed revocation with the file (rename committed: %s)", async committed => {
+    const store = new EgressGrantStore(file);
+    await store.grant("always", ALL, subject, github);
+    const arrived = deferred<void>();
+    const finishWrite = deferred<void>();
+    const failure = new Error("could not write grants");
+    const writeFile = featureNamespace.writeFileAtomicAtPath;
+    const writer = vi.spyOn(featureNamespace, "writeFileAtomicAtPath").mockImplementationOnce(async (...args) => {
+      arrived.resolve();
+      await finishWrite.promise;
+      if (committed) await writeFile(...args);
+      throw failure;
+    });
+    const pending = store.revoke({ ...github, scope: "always", origin: "shell" }).catch(error => error);
+    try {
+      await arrived.promise;
+      expect(store.matchingLoadedScope(subject, github, ALL)).toBeUndefined();
+    } finally {
+      finishWrite.resolve();
+      await pending;
+      writer.mockRestore();
+    }
+    expect(await pending).toBe(failure);
+    expect(store.matchingLoadedScope(subject, github, ALL)).toBe(committed ? undefined : "always");
   });
 
   it.each([

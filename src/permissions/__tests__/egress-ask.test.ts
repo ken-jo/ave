@@ -31,6 +31,7 @@ import { createShellNetworkPermissionEvaluator } from "../egress-approval.js";
 import { PermissionManager } from "../permission-manager.js";
 import { deferred } from "../../__tests__/support/deferred.js";
 import * as projectRuleFiles from "../rules/project-rule-files.js";
+import * as featureNamespace from "../../main/storage/feature-namespace.js";
 
 const matchingScopes = Object.values(EGRESS_GRANT_SCOPE_LADDERS).flat();
 
@@ -1132,6 +1133,73 @@ describe("egress ask callback — shell calls", () => {
     },
   );
 
+  describe.each(["remote", "local", "terminal"] as const)("persistent egress grant use by %s", origin => {
+    it.each(["unrelated save", "matching revoke"] as const)("checks the grant during a pending mutation (%s)", async mutation => {
+      const terminal = origin === "terminal";
+      const token = terminal ? TERMINAL_TOKEN : SHELL_TOKEN;
+      const sessionId = "session-1";
+      const subject = { token, sessionId, tabId: terminal ? TERMINAL_TAB : undefined,
+        projectRoot: terminal ? undefined : PROJECT, origin: terminal ? "terminal" as const : "shell" as const };
+      const destination = { host: "github.com", port: 443 };
+      const grant = { ...destination, scope: "always", network: "public", origin: subject.origin } as const;
+      await grants.grant("always", ["always"], subject, grant);
+      const staging = deferred<void>();
+      const finishWrite = deferred<void>();
+      const writeFile = featureNamespace.writeFileAtomicAtPath;
+      const holdWriter = vi.spyOn(featureNamespace, "writeFileAtomicAtPath").mockImplementationOnce(async (...args) => {
+        staging.resolve();
+        await finishWrite.promise;
+        return writeFile(...args);
+      });
+      let write: Promise<unknown> | undefined;
+      const startMutation = async () => {
+        write = mutation === "matching revoke" ? grants.revoke(grant)
+          : grants.grant("always", ["always"], subject, { ...destination, host: "example.com" });
+        await staging.promise;
+      };
+      const matchingScope = grants.matchingScope.bind(grants);
+      if (origin === "remote") {
+        const remoteControllerAuthority = bindRemoteControllerToSession({
+          kind: "tailnet-controller",
+          actorId: "tailnet:controller-digest",
+          pairedShare: { pairingId: "pairing", pairingEpoch: 1, shareId: "share", shareEpoch: 1, scope: "scope" },
+          pairedShareGuard: { isCurrent: () => true, refreshCurrent: async () => {
+            await startMutation();
+            return true;
+          } },
+        }, sessionId);
+        owners.set(token, { ...interactiveShell, context: { ...interactiveShell.context, sessionId,
+          permissionContext: { remoteControllerAuthority } } });
+      } else {
+        vi.spyOn(grants, "matchingScope").mockImplementationOnce(async (...args) => {
+          const matched = await matchingScope(...args);
+          await startMutation();
+          return matched;
+        });
+      }
+      const noteUse = vi.spyOn(grants, "noteUse");
+      const manager = new PermissionManager(join(dir, "permissions.json"));
+      manager.setMode("strict");
+      try {
+        const result = await rawCallback(undefined, createShellNetworkPermissionEvaluator(manager))(destination, {
+          attributionKey: token, identity: "listener", phase: "resolved", addresses: ["140.82.112.3"], resolution: "pinned",
+        });
+        if (mutation === "unrelated save") {
+          expect(result).toBe(true);
+          expect(noteUse).toHaveBeenCalledWith("always", expect.objectContaining({ token }), { ...destination, network: "public" });
+        } else {
+          expect(result).toMatchObject({ allow: false });
+          expect(noteUse).not.toHaveBeenCalled();
+        }
+        expect(asked).toHaveLength(0);
+        expect(audit).toEqual([expect.objectContaining({ decision: mutation === "unrelated save" ? "allow" : "deny" })]);
+      } finally {
+        finishWrite.resolve();
+        await write;
+        holdWriter.mockRestore();
+      }
+    });
+  });
 
   it.each(["prompt", "remembered grant"] as const)("does not act on a %s for a call that ended while its policy was evaluated", async (path) => {
     const controller = new AbortController();

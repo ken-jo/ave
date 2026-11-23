@@ -298,6 +298,7 @@ export class EgressGrantStore {
   // Grant identity to the invocation tokens it let through (for closing them on revoke).
   private readonly uses = new Map<string, Set<string>>();
   private persistent: PersistentEgressGrant[] | undefined;
+  private readonly pendingPersistentRevocations = new Map<string, number>();
   private readonly writes = createSerialQueue();
 
   // Destination keys of v1 grants already reported dropped, so a re-read before the file is rewritten does not report them twice.
@@ -336,6 +337,7 @@ export class EgressGrantStore {
     // Persistent grants of the subject's own origin only.
     const persistent = (this.persistent ?? []).filter((grant) =>
       eligibleScopes.includes(grant.scope) && grant.origin === subject.origin && destinationKey(grant) === key
+      && !this.pendingPersistentRevocations.has(grantUseKey(grant))
       && egressScopesForNetwork([grant.scope], grantNetwork(destination)).length > 0);
     const projectRoot = subject.projectRoot === undefined ? undefined : canonicalProjectRoot(subject.projectRoot);
     if (projectRoot !== undefined && persistent.some((g) => g.scope === "project" && g.projectRoot === projectRoot)) return "project";
@@ -493,28 +495,39 @@ export class EgressGrantStore {
 
   // Remove one persistent grant. Resolves true when it existed.
   private async revokePersistent(target: Pick<PersistentEgressGrant, "scope" | "origin" | "host" | "port" | "network" | "projectRoot">): Promise<boolean> {
-    let removed = false;
-    await this.mutatePersistent((grants) => {
-      const kept = grants.filter((g) => {
-        const same = g.scope === target.scope && g.origin === target.origin && destinationKey(g) === destinationKey(target) &&
-          (g.scope === "always" || g.projectRoot === target.projectRoot);
-        if (same) removed = true;
-        return !same;
+    const key = grantUseKey(target);
+    this.pendingPersistentRevocations.set(key, (this.pendingPersistentRevocations.get(key) ?? 0) + 1);
+    try {
+      let removed = false;
+      await this.mutatePersistent((grants) => {
+        const kept = grants.filter(grant => grantUseKey(grant) !== key);
+        removed = kept.length < grants.length;
+        return kept;
       });
-      return kept;
-    });
-    return removed;
+      return removed;
+    } finally {
+      const pending = this.pendingPersistentRevocations.get(key) ?? 0;
+      if (pending > 1) this.pendingPersistentRevocations.set(key, pending - 1);
+      else this.pendingPersistentRevocations.delete(key);
+    }
   }
 
-  private async loadPersistent(): Promise<readonly PersistentEgressGrant[]> {
-    if (this.persistent !== undefined) return this.persistent;
+  private async loadPersistent(refresh = false): Promise<readonly PersistentEgressGrant[]> {
+    if (!refresh && this.persistent !== undefined) return this.persistent;
+    try {
+      this.persistent = await this.readPersistent();
+      return this.persistent ?? [];
+    } catch (error) {
+      this.persistent = undefined;
+      throw error;
+    }
+  }
+
+  private async readPersistent(): Promise<PersistentEgressGrant[] | undefined> {
     // Remembered hosts grant network authority, so an unverified file (a refused home's, or one pending review) reads as absent (R2); none of it restricts.
     const input = await readAveHomeInput(this.filePath);
-    if (input.status === "untrusted") return [];
-    if (input.status === "absent") {
-      this.persistent = [];
-      return this.persistent;
-    }
+    if (input.status === "untrusted") return undefined;
+    if (input.status === "absent") return [];
     const raw = input.bytes.toString("utf8");
     const parsed = parseGrantFile(this.filePath, raw);
     for (const dropped of parsed.droppedLegacy) {
@@ -523,8 +536,7 @@ export class EgressGrantStore {
       this.reportedLegacyDrops.add(key);
       this.onLegacyGrantDropped(dropped);
     }
-    this.persistent = parsed.grants;
-    return this.persistent;
+    return parsed.grants;
   }
 
   private mutatePersistent(
@@ -536,30 +548,29 @@ export class EgressGrantStore {
     try { assertAveHomeInputWritable(this.filePath); }
     catch (error) { return Promise.reject(error); }
     return this.writes(async () => {
-      // Re-read under the queue so a second window's write is not lost.
-      this.persistent = undefined;
-      const current = await this.loadPersistent();
+      // Re-read under the queue while keeping committed grants visible to connection checks.
+      const current = await this.loadPersistent(true);
       signal?.throwIfAborted();
       const next = [...mutate(current)];
       const file: GrantFile = { version: FILE_VERSION, grants: next };
-      // Until the write settles, a synchronous connection check cannot rely on the old file.
-      this.persistent = undefined;
-      if (authority || signal) {
-        const isCurrent = () => signal?.aborted !== true && (authority?.isCurrent() ?? true);
-        await preparePrivateFileDirectory(this.filePath);
-        try {
+      try {
+        if (authority || signal) {
+          const isCurrent = () => signal?.aborted !== true && (authority?.isCurrent() ?? true);
+          await preparePrivateFileDirectory(this.filePath);
           signal?.throwIfAborted();
           await commitApprovalFile(this.filePath, `${JSON.stringify(file, null, 2)}\n`, {
             refresh: async () => isCurrent() && (authority === undefined || await authority.refresh()),
             isCurrent,
           });
-        } catch (error) {
-          signal?.throwIfAborted();
-          throw error;
-        }
-      } else if (this.filePath === egressGrantFilePath()) await openFeatureNamespace("permissions").writeJson("shell-egress-hosts.json", file);
-      else await writeFileAtomicAtPath(this.filePath, `${JSON.stringify(file, null, 2)}\n`);
-      this.persistent = next;
+        } else if (this.filePath === egressGrantFilePath()) await openFeatureNamespace("permissions").writeJson("shell-egress-hosts.json", file);
+        else await writeFileAtomicAtPath(this.filePath, `${JSON.stringify(file, null, 2)}\n`);
+        this.persistent = next;
+      } catch (error) {
+        // A write can report failure after its rename. Confirm what is on disk before a pending revoke is released.
+        await this.loadPersistent(true).catch(() => undefined);
+        signal?.throwIfAborted();
+        throw error;
+      }
     });
   }
 }
