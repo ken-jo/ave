@@ -119,7 +119,9 @@ function scopeOf(source: ts.SourceFile, from: string, exists: (path: string) => 
         const waits = INTERVAL_WAITS.get(scope.waitObjects.get(init.text) ?? "");
         for (const element of node.name.elements) {
           const key = element.propertyName ?? element.name;
-          if (waits && ts.isIdentifier(key) && waits.has(key.text) && ts.isIdentifier(element.name)) scope.intervalAliases.add(element.name.text);
+          if (waits && key && ts.isIdentifier(key) && waits.has(key.text) && element.name && ts.isIdentifier(element.name)) {
+            scope.intervalAliases.add(element.name.text);
+          }
         }
       } else if (ts.isIdentifier(node.name) && isIntervalWaitCallee(scope, init)) scope.intervalAliases.add(node.name.text);
     }
