@@ -1599,6 +1599,7 @@ describe("installer smoke and packaging discipline", () => {
     { label: "missing impact", selected: "", native: "skipped", build: "success", vitest: "success", docs: "false", status: 1 },
     { label: "failed build", selected: "false", native: "skipped", build: "failure", vitest: "skipped", docs: "false", status: 1 },
     { label: "failed tests", selected: "false", native: "skipped", build: "success", vitest: "failure", docs: "false", status: 1 },
+    { label: "cancelled tests", selected: "false", native: "skipped", build: "success", vitest: "cancelled", docs: "false", status: 1 },
     { label: "documentation path", selected: "false", native: "skipped", build: "success", vitest: "skipped", docs: "true", status: 0 },
     { label: "missing documentation impact", selected: "false", native: "skipped", build: "success", vitest: "success", docs: "", status: 1 },
   ])("evaluates the actual aggregate shell for $label", ({ selected, native, build, vitest, docs, status }) => {
@@ -1772,6 +1773,9 @@ describe("installer smoke and packaging discipline", () => {
     expect(body).toContain("WINDOWS_RESULT: ${{ needs.windows-permission-tests.result }}");
     expect(matched(commands, VERIFIES_THE_CODE)).toEqual([]);
     expect(shards).toMatch(/^ {4}needs: build$/mu);
+    // An affected plan above AFFECTED_SHARD_THRESHOLD shards too; one failed or
+    // cancelled shard makes needs.vitest.result fail the aggregate.
+    expect(shards).toContain("      fail-fast: false\n");
     expect(shards).toContain("        shard: ${{ fromJSON(needs.build.outputs.shards || '[1]') }}");
     expect(shards).toContain("          AVE_CI_SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}");
 

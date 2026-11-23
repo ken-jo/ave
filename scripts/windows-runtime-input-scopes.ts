@@ -37,7 +37,7 @@ export function windowsReaderDigest(file: string, modules: ReadonlyMap<string, D
 
 export const windowsRuntimeInputScopes: Readonly<Record<string, WindowsRuntimeInputScope>> = {
   // Workflow discovery and the paths read out of workflow steps and actions.
-  "src/__tests__/packaging-discipline-source.test.ts": { digest: "98694ad95851c0c87a51f709ba87df6a42b6f587c8361d2af20d592ee99790e0", inputs: [".github/**", "scripts/**", "config/**"] },
+  "src/__tests__/packaging-discipline-source.test.ts": { digest: "3c71980b4b14ce0384a8159d941ff96740ea44b0187273f4c6141f0a4c087503", inputs: [".github/**", "scripts/**", "config/**"] },
   // Paths to read in the checkout are supplied by individual suites.
   "src/__tests__/test-helpers.ts": { readers: ["readRepoFile", "inspectFile"], digest: "7145da91054e911828efbfbcbd6f053c448b1908870cf9478736357bcbf788b9", inputs: [] },
   "src/__tests__/support/simulated-win32-drive.ts": { digest: "fcb6d6c9006a28c8f04fe65f8fa9dcb784aa9836fad0e6895b359eecc75eb896", inputs: [] },

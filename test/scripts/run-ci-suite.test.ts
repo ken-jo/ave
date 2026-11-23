@@ -4,6 +4,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { beforeAll, describe, expect, it, vi } from "vitest";
+import { BaseSequencer } from "vitest/node";
 
 import {
   AFFECTED_TEST_LIMIT,
@@ -13,6 +14,7 @@ import {
   MUST_RUN_TESTS_PATH,
   namedRepositoryPaths,
   namesChangedPath,
+  AFFECTED_SHARD_THRESHOLD,
   ciShardCount,
   ciSuiteArguments,
   FULL_RUN_SHARDS,
@@ -332,9 +334,18 @@ describe("CI test selection fallbacks", () => {
     expect(ciSuiteArguments(affected, false)).toEqual([join("scripts", "run-vitest-under-electron.mjs"), "run", "--silent=true", "./src/a.test.ts"]);
   });
 
-  it("shards only a full run without coverage, and passes the shard to Vitest", () => {
+  it("shards a full run and a large affected plan without coverage, and passes the shard to Vitest", () => {
     const fullPlan = { mode: "full" as const, reason: "push runs the full suite", tests: [] };
     const affected = { mode: "affected" as const, reason: "traced", tests: ["src/a.test.ts"] };
+    const plan = (count: number) => ({
+      mode: "affected" as const,
+      reason: "traced",
+      tests: Array.from({ length: count }, (_, index) => `src/s${index}.test.ts`),
+    });
+    expect(ciShardCount(plan(AFFECTED_SHARD_THRESHOLD), false)).toBe(1);
+    expect(ciShardCount(plan(AFFECTED_SHARD_THRESHOLD + 1), false)).toBe(FULL_RUN_SHARDS);
+    expect(ciShardCount(plan(800), false)).toBe(FULL_RUN_SHARDS);
+    expect(ciShardCount(plan(800), false, true)).toBe(1);
     expect(FULL_RUN_SHARDS).toBeGreaterThan(1);
     expect(ciShardCount(fullPlan, false)).toBe(FULL_RUN_SHARDS);
     expect(ciShardCount(fullPlan, true)).toBe(1);
@@ -352,6 +363,32 @@ describe("CI test selection fallbacks", () => {
       join("scripts", "run-vitest-under-electron.mjs"), "run", "--silent=true", "--shard=1/2", "./src/a.test.ts",
     ]);
     expect(() => ciSuiteArguments(fullPlan, true, "1/4")).toThrow("a coverage run cannot be sharded");
+  });
+
+  it("assigns every suite of an 800-suite affected plan to exactly one shard, as Vitest splits the full run", async () => {
+    const plan = {
+      mode: "affected" as const,
+      reason: "traced",
+      tests: Array.from({ length: 800 }, (_, index) => `src/area${index % 13}/s${index}.test.ts`),
+    };
+    const count = ciShardCount(plan, false);
+    expect(count).toBe(FULL_RUN_SHARDS);
+    const root = "/repo";
+    const assigned: string[] = [];
+    for (let index = 1; index <= count; index += 1) {
+      const args = ciSuiteArguments(plan, false, parseCiShard(`${index}/${count}`));
+      expect(args.filter((arg) => arg.startsWith("--shard="))).toEqual([`--shard=${index}/${count}`]);
+      const files = args.filter((arg) => arg.startsWith("./")).map((arg) => arg.slice(2));
+      expect(files).toEqual(plan.tests);
+      // Vitest's own sequencer is the full run's balancing: hash order, contiguous slices.
+      const sequencer = new BaseSequencer({ config: { root, shard: { index, count } } } as never);
+      const specs = files.map((file) => ({ moduleId: `${root}/${file}` }));
+      const slice = await sequencer.shard(specs as never);
+      expect(slice.length).toBeGreaterThan(0);
+      assigned.push(...slice.map((spec) => (spec as { moduleId: string }).moduleId.slice(root.length + 1)));
+    }
+    expect(assigned).toHaveLength(plan.tests.length);
+    expect([...assigned].sort()).toEqual([...plan.tests].sort());
   });
 
   it("reads a shard and a written plan strictly", () => {

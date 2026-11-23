@@ -31,6 +31,7 @@ export declare function testRunsRepoCodeOutOfProcess(testPath: string, readText:
 export declare function unboundedInputClasses(text: string, exemptions?: UnboundedInputExemptions): string[];
 export declare function unboundedInputHits(testPath: string, readText: (path: string) => string | null, exemptions?: UnboundedInputExemptions): string[];
 export declare function selectUnboundedInputTests(trackedTests: readonly string[], readText: (path: string) => string | null, exemptions?: UnboundedInputExemptions): string[];
+export declare const AFFECTED_SHARD_THRESHOLD: number;
 export declare function runsCoverage(eventName: string | undefined): boolean;
 export const FULL_RUN_SHARDS: number;
 export declare function ciShardCount(plan: CiSuitePlan, coverage: boolean, nativeChecks?: boolean): number;

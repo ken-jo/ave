@@ -241,9 +241,17 @@ export function runsCoverage(eventName) {
 // beside it instead of paying for extra runners that finish early.
 export const FULL_RUN_SHARDS = 4;
 
+// About one full-run shard's worth of suites (a full shard runs roughly 1,900
+// files / 4; the always-run unbounded-input suites are heavier). A larger
+// affected plan uses the full run's shards so it cannot outlast the full run.
+export const AFFECTED_SHARD_THRESHOLD = 240;
+
 export function ciShardCount(plan, coverage, nativeChecks = false) {
-  return plan.mode === "full" && !coverage && !nativeChecks ? FULL_RUN_SHARDS : 1;
+  if (coverage || nativeChecks) return 1;
+  if (plan.mode === "full") return FULL_RUN_SHARDS;
+  return plan.tests.length > AFFECTED_SHARD_THRESHOLD ? FULL_RUN_SHARDS : 1;
 }
+
 
 // Reject malformed shard values so the aggregate cannot misreport coverage.
 export function parseCiShard(value) {
@@ -589,6 +597,7 @@ export function ciSuiteArguments(plan, coverage, shard = null) {
   if (coverage) return [join("scripts", "run-test-coverage-gate.mjs")];
   if (plan.mode === "affected" && plan.tests.length === 0) throw new Error("affected CI selection must not be empty");
   const tests = plan.mode === "full" ? [] : plan.tests.map((test) => `./${test}`);
+  // Vitest shards the given files with the full run's hash balancing.
   const split = shard === null ? [] : [`--shard=${shard}`];
   return [join("scripts", "run-vitest-under-electron.mjs"), "run", "--silent=true", ...split, ...tests];
 }
