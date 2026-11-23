@@ -218,6 +218,21 @@ it("a run left whole on the root it was given is still checked by a later discar
   renameSync(`${at.stage}-away`, at.stage);
 });
 
+it("a registration whose `gitdir` holds bytes that are no text is not read as other text: the release leaves the run whole until it is the path git wrote", async () => {
+  const handle = fx.start();
+  const open = await handle.provider.open(handle.run, fx.repo);
+  if (!open.ok) throw new Error(open.code);
+  const stage = await stageRoot(handle, "s1");
+  const gitdir = join(adminOf(stage), "gitdir");
+  const written = readFileSync(gitdir);
+  writeFileSync(gitdir, Buffer.concat([written.subarray(0, -1), Buffer.from([0xff, 0x0a])]));
+  await handle.provider.release(handle.run, "all");
+  expect([existsSync(stage), existsSync(join(open.workspace.runRoot, RUN_FILE))]).toEqual([true, true]);
+  writeFileSync(gitdir, written);
+  await handle.provider.release(handle.run, "all");
+  expect([existsSync(open.workspace.runRoot), existsSync(dirname(gitdir))]).toEqual([false, false]);
+});
+
 it("a folder run left whole because a stage folder was replaced is taken apart by a later discard once the folder is its own again", async () => {
   const provider = createStageWorkspaceProvider({ git: createHostGit({ env: fx.env }), removable: async () => () => true });
   const run = { itemId: 9, runId: `run-folder-${process.pid}-${Date.now()}`, runKey: "key" };

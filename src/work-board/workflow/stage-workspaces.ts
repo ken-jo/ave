@@ -39,6 +39,13 @@ export interface StageWorkspaceOptions {
   nameReader?: NameReader;
 }
 
+/** A file's bytes as the text they are: none replaced, no leading mark dropped. Text that names a registration or a record is compared
+ * with what the run holds, and bytes that are no text would compare as other text; they throw instead. */
+const EXACT_TEXT = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+const exactText = (bytes: Buffer | undefined): string | undefined => bytes === undefined ? undefined : EXACT_TEXT.decode(bytes);
+/** The path a `gitdir` file holds: git ends it with one line break, and nothing else is taken off. */
+const gitdirOf = (text: string): string => text.endsWith("\n") ? text.slice(0, -1) : text;
+
 /** The mismatches already reported in this process, by record. */
 const warnedOnce = new Set<string>();
 /** Git writes the two files that tie a worktree to its registration as absolute paths, whatever the repository is configured to. */
@@ -87,7 +94,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     try {
       const text = run.readFile(RUN_FILE);
       if (text === undefined) return null;
-      const file: unknown = JSON.parse(text.toString("utf8"));
+      const file: unknown = JSON.parse(EXACT_TEXT.decode(text));
       return isWorkspaceRecord(file) && recordFits(aveHome(), { path: runRoot, id: run.id }, file) ? file : null;
     } catch {
       return null;
@@ -155,12 +162,12 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
    */
   function captureRegistration(at: Held, key: string, folder: OwnedDir): Registration | undefined {
     try {
-      const admin = vetRecordPath("link", folder.readFile(".git")?.toString("utf8") ?? "", at.live);
+      const admin = vetRecordPath("link", exactText(folder.readFile(".git")) ?? "", at.live);
       if (admin === undefined) return undefined;
       const held = repoWorktrees(at)?.existing(basename(admin));
-      const text = held?.readFile("gitdir")?.toString("utf8");
+      const text = exactText(held?.readFile("gitdir"));
       if (held === undefined || text === undefined) return undefined;
-      const gitdir = resolve(admin, text.trimEnd());
+      const gitdir = resolve(admin, gitdirOf(text));
       // A registration no later call would take is not recorded.
       const own = runFolderOf(at.run, key, gitdir);
       return own !== undefined && realDirId(own) === folder.id ? { admin, id: held.id, gitdir } : undefined;
@@ -197,8 +204,8 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     const folder = at.run.entryId(basename(own));
     if (folder !== undefined && folder !== (key === JOIN_DIR ? at.file.joinDir : at.file.stages[key]?.dir)) throw new OwnedFsError("changed", "the registration points at a folder the run did not make");
     if (worktrees.entryId(name) === undefined) return undefined;
-    const text = worktrees.child(name, registration.id)?.readFile("gitdir")?.toString("utf8");
-    if (text === undefined || !samePath(resolve(admin, text.trimEnd()), registration.gitdir)) throw new OwnedFsError("changed", "the registration no longer points at the run's folder");
+    const text = exactText(worktrees.child(name, registration.id)?.readFile("gitdir"));
+    if (text === undefined || !samePath(resolve(admin, gitdirOf(text)), registration.gitdir)) throw new OwnedFsError("changed", "the registration no longer points at the run's folder");
     return { worktrees, name };
   }
 
@@ -232,7 +239,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
 
   function ownWorktree(at: Held, key: string, folder: OwnedDir): { gitDir: string; workTree: string } {
     folder.check();
-    const admin = vetRecordPath("link", folder.readFile(".git")?.toString("utf8") ?? "", at.live);
+    const admin = vetRecordPath("link", exactText(folder.readFile(".git")) ?? "", at.live);
     const registration = at.file.registrations[key];
     if (admin === undefined || registration === undefined || repoWorktrees(at)?.child(basename(admin), registration.id) === undefined) throw new Error(`the ${key === JOIN_DIR ? "integration" : "stage"} worktree is not the run's own`);
     return { gitDir: admin, workTree: folder.path };
@@ -518,7 +525,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
         const segments = path.split("/");
         await held.walk(segments.slice(0, -1))?.remove(segments.at(-1) as string);
       }
-      const link = held.readFile(".git")?.toString("utf8");
+      const link = exactText(held.readFile(".git"));
       if (link === undefined) throw new Error("the stage folder has no worktree link");
       const entry = file.stages[stage.id];
       if (entry) Object.assign(entry, { ready: true, base: head, link });
@@ -640,7 +647,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     const root = at.live?.root;
     const dir = stage.path;
     // The worktree link decides which repository the host's git writes to; a changed one is not followed.
-    if (root === undefined || entry.base === undefined || stage.readFile(".git")?.toString("utf8") !== entry.link) return { ok: false, code: "workspace-unavailable" };
+    if (root === undefined || entry.base === undefined || exactText(stage.readFile(".git")) !== entry.link) return { ok: false, code: "workspace-unavailable" };
     if (!(await identityOf(root))) return { ok: false, code: "identity-missing" };
     await assertRepository(at);
     const drivers = (await driversIn(at, stageId, stage)).config;

@@ -52,6 +52,16 @@ function selectorOf(globs: readonly string[]): { starts: string[]; matches: (pat
  * The regular files under `root` that `globs` select. It never follows a symbolic link, junction or other link (the entry is skipped and
  * listed), skips every secret and ignored path, and stops with `seed-too-large` at the bounds.
  */
+const NAME_TEXT = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+/** A folder's names from the bytes the disk holds. A name that is no text would be read as another, or as one beside it, and refuses
+ * the listing. */
+async function namesOf(dir: string): Promise<string[]> {
+  const names = await readdir(dir, { encoding: "buffer" }).catch(() => { throw new SeedStop("seed-unreadable"); });
+  return names.map((name) => {
+    try { return NAME_TEXT.decode(name); } catch { throw new SeedStop("seed-unreadable"); }
+  });
+}
+
 export async function listSeedFiles(root: string, globs: readonly string[], rules: SeedRules): Promise<Listed> {
   const limits = rules.limits ?? { files: MAX_SEED_FILES, bytes: MAX_SEED_BYTES };
   const { starts, matches } = selectorOf(globs);
@@ -85,7 +95,7 @@ export async function listSeedFiles(root: string, globs: readonly string[], rule
     for (const entry of entries) {
       if (ignored.has(entry.directory ? `${entry.path}/` : entry.path)) { skipped.push({ path: entry.path, why: "ignored" }); continue; }
       if (entry.directory) {
-        const names = await readdir(join(root, entry.path)).catch(() => { throw new SeedStop("seed-unreadable"); });
+        const names = await namesOf(join(root, entry.path));
         await visit(names.sort().map(name => `${entry.path}/${name}`));
       } else if (matches(entry.path)) {
         bytes += entry.size;
@@ -98,8 +108,7 @@ export async function listSeedFiles(root: string, globs: readonly string[], rule
   try {
     for (const start of starts) {
       if (start === "") {
-        const names = await readdir(root).catch(() => { throw new SeedStop("seed-unreadable"); });
-        await visit(names.sort());
+        await visit((await namesOf(root)).sort());
         continue;
       }
       const segments = relativeSegments(start);
