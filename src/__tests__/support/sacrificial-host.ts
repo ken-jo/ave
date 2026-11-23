@@ -1,8 +1,9 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
 
-const WATCHDOG_MS = 15_000;
+// Keep the body and teardown within the 45-second test timeout.
+const FIXTURE_BODY_MS = 30_000;
+const FIXTURE_TEARDOWN_MS = 10_000;
 
 export function spawnSacrificialHost(source: string, args: readonly string[], env: NodeJS.ProcessEnv = {}): ChildProcess {
   const node = process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath;
@@ -12,13 +13,16 @@ export function spawnSacrificialHost(source: string, args: readonly string[], en
   });
 }
 
-export async function waitForFixture<T>(phase: string, probe: () => T | undefined): Promise<T> {
-  const deadline = performance.now() + WATCHDOG_MS;
-  do {
+export async function waitForFixture<T>(phase: string, probe: () => T | undefined, deadline: number): Promise<T> {
+  let remaining = deadline - performance.now();
+  while (remaining > 0) {
     const result = probe();
+    remaining = deadline - performance.now();
+    if (remaining <= 0) break;
     if (result !== undefined) return result;
-    await delay(50);
-  } while (performance.now() < deadline);
+    await delay(Math.min(50, Math.ceil(remaining)));
+    remaining = deadline - performance.now();
+  }
   throw new Error(`Fixture watchdog expired during ${phase}`);
 }
 
@@ -32,18 +36,14 @@ export function posixProcessExists(pid: number): boolean {
   }
 }
 
-export async function stopSacrificialHost(host: ChildProcess): Promise<void> {
+export async function stopSacrificialHost(host: ChildProcess, deadline: number): Promise<void> {
   if (host.exitCode !== null || host.signalCode !== null || host.pid === undefined) return;
-  const exited = once(host, "exit", { signal: AbortSignal.timeout(WATCHDOG_MS) });
   host.kill("SIGKILL");
-  try {
-    await exited;
-  } catch (error) {
-    throw new Error("Sacrificial host cleanup watchdog failed", { cause: error });
-  }
+  await waitForFixture("sacrificial host cleanup", () =>
+    host.exitCode !== null || host.signalCode !== null ? true : undefined, deadline);
 }
 
-export async function stopFixtureProcesses(pids: readonly number[]): Promise<void> {
+export async function stopFixtureProcesses(pids: readonly number[], deadline: number): Promise<void> {
   const results = await Promise.allSettled(pids.map(async (pid) => {
     try {
       process.kill(pid, "SIGKILL");
@@ -51,19 +51,40 @@ export async function stopFixtureProcesses(pids: readonly number[]): Promise<voi
       if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
       throw error;
     }
-    await waitForFixture(`cleanup of fixture process ${pid}`, () => posixProcessExists(pid) ? undefined : true);
+    await waitForFixture(`cleanup of fixture process ${pid}`, () => posixProcessExists(pid) ? undefined : true, deadline);
   }));
   const failures = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
   if (failures.length > 0) throw new AggregateError(failures, "Fixture process cleanup failed");
 }
 
-export async function withFixtureCleanup(run: () => Promise<void>, cleanup: readonly (() => void | Promise<void>)[]): Promise<void> {
+export async function withFixtureCleanup(
+  run: (deadline: number) => Promise<void>,
+  cleanup: readonly ((deadline: number) => void | Promise<void>)[],
+  bodyMs = FIXTURE_BODY_MS,
+): Promise<void> {
   const failures: unknown[] = [];
-  for (const step of [run, ...cleanup]) {
+  try {
+    await run(performance.now() + bodyMs);
+  } catch (error) {
+    failures.push(error);
+  }
+
+  // Give each step a share of teardown time even if the previous step stalls.
+  const stepMs = Math.floor(FIXTURE_TEARDOWN_MS / Math.max(1, cleanup.length));
+  for (const [index, step] of cleanup.entries()) {
+    const deadline = performance.now() + stepMs;
+    const timer = new AbortController();
     try {
-      await step();
+      await Promise.race([
+        step(deadline),
+        delay(Math.max(0, Math.ceil(deadline - performance.now())), undefined, { signal: timer.signal }).then(() => {
+          throw new Error(`Fixture cleanup step ${index + 1} exceeded its time budget`);
+        }),
+      ]);
     } catch (error) {
       failures.push(error);
+    } finally {
+      timer.abort();
     }
   }
   if (failures.length === 1) throw failures[0];

@@ -2,7 +2,7 @@ import { execFileSync, type ChildProcess } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { posixProcessExists, spawnSacrificialHost, stopFixtureProcesses, stopSacrificialHost, waitForFixture, withFixtureCleanup } from "../../../__tests__/support/sacrificial-host.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { shellQuote } from "../../../lib/shell-resolver.js";
@@ -90,10 +90,19 @@ const ROLES = ["leader", "same-group", "new-session"] as const;
 type Role = (typeof ROLES)[number];
 const PLUGIN_ID = "heartbeat";
 
-function heartbeatProcesses(script: string, outsidePath: string): Map<Role, number> {
+function heartbeatProcesses(script: string, outsidePath: string, deadline: number): Map<Role, number> {
   // The Linux sandbox's process IDs are local to its PID namespace. Match the host's IDs to this fixture's exact argv.
   const processes = new Map<Role, number>();
-  const listing = execFileSync("/bin/ps", ["-axww", "-o", "pid=,command="], { encoding: "utf8" });
+  const timeout = Math.ceil(deadline - performance.now());
+  const timeoutMessage = "Fixture watchdog expired during heartbeat process inventory";
+  if (timeout <= 0) throw new Error(timeoutMessage);
+  let listing: string;
+  try {
+    listing = execFileSync("/bin/ps", ["-axww", "-o", "pid=,command="], { encoding: "utf8", timeout, killSignal: "SIGKILL" });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ETIMEDOUT") throw new Error(timeoutMessage, { cause: error });
+    throw error;
+  }
   for (const line of listing.split("\n")) {
     const match = /^\s*([1-9]\d*)\s+(.+)$/u.exec(line);
     if (!match) continue;
@@ -104,6 +113,31 @@ function heartbeatProcesses(script: string, outsidePath: string): Map<Role, numb
   }
   return processes;
 }
+
+it("reports the stalled phase at the shared fixture deadline and runs teardown", async () => {
+  const clock = vi.spyOn(performance, "now").mockReturnValue(0);
+  const cleanup = vi.fn();
+  const probe = vi.fn<() => true | undefined>()
+    .mockImplementationOnce(() => {
+      clock.mockReturnValue(100);
+      return undefined;
+    })
+    .mockReturnValue(true);
+
+  try {
+    await expect(withFixtureCleanup(async (deadline) => {
+      await waitForFixture("confined host launch", () => {
+        clock.mockReturnValue(75);
+        return true;
+      }, deadline);
+      await waitForFixture("plugin stdin EOF acknowledgment", probe, deadline);
+    }, [cleanup], 100)).rejects.toThrow("Fixture watchdog expired during plugin stdin EOF acknowledgment");
+    expect(probe).toHaveBeenCalledOnce();
+    expect(cleanup).toHaveBeenCalledOnce();
+  } finally {
+    clock.mockRestore();
+  }
+});
 
 describe.runIf(process.platform === "win32")("direct process plugin admission", () => {
   it("refuses a Windows process launch before validating its command or roots", async () => {
@@ -133,7 +167,7 @@ describe.runIf(process.platform === "linux" || process.platform === "darwin")("p
       existsSync(path(name)) ? JSON.parse(readFileSync(path(name), "utf8")) as T : undefined;
     let activeHost: ChildProcess | undefined;
     let pgid: number | undefined;
-    await withFixtureCleanup(async () => {
+    await withFixtureCleanup(async (deadline) => {
       mkdirSync(pluginDataDir, { recursive: true, mode: 0o700 });
       writeFileSync(outsidePath, "original");
       writeFileSync(script, HEARTBEAT);
@@ -161,7 +195,7 @@ describe.runIf(process.platform === "linux" || process.platform === "darwin")("p
       const launch = await waitForFixture("confined host launch", () => {
         assertHostRunning();
         return started;
-      });
+      }, deadline);
       expect(launch.confinement).toBe(mac ? "macos-sandbox" : "linux-bubblewrap");
       expect(launch.pgid).toBeGreaterThan(1);
       const ready = await waitForFixture("plugin readiness", () => {
@@ -169,10 +203,10 @@ describe.runIf(process.platform === "linux" || process.platform === "darwin")("p
         const spawnError = readResult<string>("spawn-error");
         if (spawnError !== undefined) throw new Error(spawnError);
         return ROLES.every((role) => existsSync(path(`ready-${role}`))) ? true : undefined;
-      });
+      }, deadline);
       expect(ready).toBe(true);
       for (const role of ROLES) expect(heartbeat(role), role).toBeGreaterThan(0);
-      const visible = heartbeatProcesses(script, outsidePath);
+      const visible = heartbeatProcesses(script, outsidePath, deadline);
       expect(visible.size).toBe(ROLES.length);
       const newSession = visible.get("new-session");
       if (newSession === undefined) throw new Error("Missing host-visible new-session PID");
@@ -186,10 +220,10 @@ describe.runIf(process.platform === "linux" || process.platform === "darwin")("p
       await waitForFixture("plugin stdin EOF acknowledgment", () => {
         assertHostRunning();
         return readResult<number>("stdin-eof");
-      });
+      }, deadline);
       for (const pid of visible.values()) expect(posixProcessExists(pid)).toBe(true);
       host.kill("SIGKILL");
-      await waitForFixture("host SIGKILL", () => host.signalCode ?? undefined);
+      await waitForFixture("host SIGKILL", () => host.signalCode ?? undefined, deadline);
       expect(host.signalCode).toBe("SIGKILL");
 
       const reaped = mac ? ROLES.slice(0, 2) : ROLES;
@@ -201,7 +235,7 @@ describe.runIf(process.platform === "linux" || process.platform === "darwin")("p
           if (posixProcessExists(pid)) return undefined;
         }
         return true;
-      });
+      }, deadline);
       pgid = undefined;
       const stopped = reaped.map(heartbeat);
       if (mac) {
@@ -211,17 +245,17 @@ describe.runIf(process.platform === "linux" || process.platform === "darwin")("p
         const result = await waitForFixture("surviving session probe", () => {
           if (!posixProcessExists(newSession)) throw new Error("New session exited before its probe");
           return readResult<{ write: string; proxy: string }>("probe-result");
-        });
+        }, deadline);
         expect(result.write).toMatch(/^(EPERM|EACCES)$/);
         expect(result.proxy).toBe("ECONNREFUSED");
         expect(readFileSync(outsidePath, "utf8")).toBe("original");
-        await waitForFixture("surviving heartbeat", () => heartbeat("new-session") > surviving ? true : undefined);
+        await waitForFixture("surviving heartbeat", () => heartbeat("new-session") > surviving ? true : undefined, deadline);
       }
       expect(reaped.map(heartbeat)).toEqual(stopped);
     }, [
-      async () => { if (activeHost) await stopSacrificialHost(activeHost); },
-      () => stopFixtureProcesses(pgid !== undefined && pgid > 1 ? [-pgid] : []),
-      () => stopFixtureProcesses([...heartbeatProcesses(script, outsidePath).values()]),
+      async (deadline) => { if (activeHost) await stopSacrificialHost(activeHost, deadline); },
+      (deadline) => stopFixtureProcesses(pgid !== undefined && pgid > 1 ? [-pgid] : [], deadline),
+      (deadline) => stopFixtureProcesses([...heartbeatProcesses(script, outsidePath, deadline).values()], deadline),
       () => cleanupTmpDir(root),
     ]);
   });

@@ -146,7 +146,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("p
       let activeHost: ChildProcess | undefined;
       let pgid: number | undefined;
       let companion: number | undefined;
-      await withFixtureCleanup(async () => {
+      await withFixtureCleanup(async (deadline) => {
         const host = spawnSacrificialHost(GATED_HOST, [
           new URL("../managed-child-processes.ts", import.meta.url).href,
           new URL("../process-group-reaper.ts", import.meta.url).href,
@@ -165,7 +165,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("p
           if (hostError) throw hostError;
           if (host.exitCode !== null || host.signalCode !== null) throw new Error("Sacrificial host exited before the launch boundary");
           return reached;
-        });
+        }, deadline);
         expect(reached).toBe(boundary);
         if (pgid === undefined || pgid <= 1) throw new Error("No launch group reported");
         const group = pgid;
@@ -176,16 +176,16 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("p
           expect(groupAlive(companion)).toBe(true);
         }
         host.kill("SIGKILL");
-        await waitForFixture("host SIGKILL", () => host.signalCode ?? undefined);
+        await waitForFixture("host SIGKILL", () => host.signalCode ?? undefined, deadline);
         expect(host.signalCode).toBe("SIGKILL");
         await waitForFixture("group reaping", () =>
-          !groupAlive(group) && (companion === undefined || !groupAlive(companion)) ? true : undefined);
+          !groupAlive(group) && (companion === undefined || !groupAlive(companion)) ? true : undefined, deadline);
         expect(existsSync(marker)).toBe(boundary === "released");
         pgid = undefined;
         companion = undefined;
       }, [
-        async () => { if (activeHost) await stopSacrificialHost(activeHost); },
-        () => stopFixtureProcesses([pgid, companion].flatMap((group) => group !== undefined && group > 1 ? [-group] : [])),
+        async (deadline) => { if (activeHost) await stopSacrificialHost(activeHost, deadline); },
+        (deadline) => stopFixtureProcesses([pgid, companion].flatMap((group) => group !== undefined && group > 1 ? [-group] : []), deadline),
         () => rmSync(dir, { recursive: true, force: true }),
       ]);
     },
