@@ -32,7 +32,8 @@ let transcript: string;
 const CONTENT = "saved-session-native-fixture\n";
 
 beforeEach(() => {
-  root = realpathSync(mkdtempSync(join(tmpdir(), "session-read-shell-")));
+  // The runtime appends a Unix socket path beneath this fixture's temp directory.
+  root = realpathSync(mkdtempSync(join(tmpdir(), "history-")));
   cwd = join(root, "workspace");
   profile = join(root, "configured-profile");
   sessions = sessionStorePath(profile);
