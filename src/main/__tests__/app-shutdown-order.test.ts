@@ -84,7 +84,8 @@ vi.mock("../managed-child-processes.js", () => ({
 vi.mock("../terminal/pty-manager.js", () => ({
   forceKillAllTerminalsForShutdown: () => forceKillAllTerminalsForShutdown(),
 }));
-vi.mock("../../tools/shell-tools.js", () => ({
+vi.mock("../../tools/shell-tools.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../tools/shell-tools.js")>(),
   backgroundShellManager: {
     disposeAllBrokerShells: (signal?: AbortSignal) => disposeAllBrokerShells(signal),
     waitForAllBrokerCleanup: () => waitForAllBrokerCleanup(),
@@ -305,7 +306,11 @@ describe("OS sandbox release at quit", () => {
     vi.resetModules();
     const ledger = await import("../../tools/invocation-ledger.js");
     const parked = ledger.admitToolInvocation("parked-probe");
-    parked.hostTerminal(() => { calls.push("hostTerminal"); });
+    parked.terminal.hostTerminal(async (cause) => {
+      calls.push(`hostTerminal:${cause}`);
+      await afterQueuedCallbacks();
+      calls.push("rowCommitted");
+    });
     getServices.mockReturnValue(makeServices());
     const shutdown = await configuredShutdown();
     hardTimeoutFires = true;

@@ -1,4 +1,4 @@
-import { beginToolInvocationAuditShutdown, commitParkedHostTerminals, markToolInvocationAuditClosed, pendingToolInvocationCount, sealToolInvocations } from "../tools/invocation-ledger.js";
+import { beginToolInvocationAuditShutdown, drainToolInvocationAuditForExit, pendingToolInvocationCount, sealToolInvocations } from "../tools/invocation-ledger.js";
 import type { BootHost } from "../boot/host-runtime.js";
 import { browserTabRegistry } from "./browser/browser-tab-registry.js";
 // Ordered teardown runs under a hard deadline so a wedged subsystem cannot hang app.quit(). Unordered cleanup belongs in registerShutdownHook instead of
@@ -250,10 +250,13 @@ async function finishIncompleteBootShutdown(result: { status: "completed" | "fai
   return result.status;
 }
 
+const FORCED_AUDIT_COMMIT_RESERVE_MS = 2_000;
+
 export async function runAppShutdownCleanup(options: {
   reason: "before-quit" | "app-update-install";
   exitOnTimeout: boolean;
   resourceStartup?: { settled: Promise<void>; cancel(): void };
+  auditCommitReserveMs?: number;
 }): Promise<AppShutdownCleanupOutcome> {
   let svc = getServices();
   if ((!svc && !options.resourceStartup) || isAppShutdownCompleted()) return "skipped";
@@ -396,7 +399,7 @@ export async function runAppShutdownCleanup(options: {
 
     const auditLogger = svc.auditLogger;
     const cardGates = [svc.approvalGate, svc.askUserQuestionGate];
-    const closeAuditAfterForceKill = (): void => {
+    const closeAuditAfterForceKill = async (): Promise<void> => {
       // The graceful deadline also bounds audit draining. Claimed queued tools start inside the seal and queue their
       // host-shutdown rows before the close below, which drains them; dropping the claims would lose those rows.
       try { sealToolInvocations(); } catch (error) {
@@ -408,19 +411,22 @@ export async function runAppShutdownCleanup(options: {
           log.warn("shutdown: parked card cancel failed: %s", errorMessage(error));
         }
       }
-      // Executors still parked cannot resume before the close below; the host writes their terminal rows now.
-      commitParkedHostTerminals();
-      markToolInvocationAuditClosed();
-      void (async () => { await auditLogger.close(); })().catch((error: unknown) => {
-        log.warn("shutdown: audit logger close failed: %s", errorMessage(error));
-      });
+      // Executors still parked cannot resume: the host enqueues their terminal rows, the sink closes after every enqueued
+      // append, and a commit the reserve cannot cover is logged as its own audit failure before exit.
+      const outcome = await drainToolInvocationAuditForExit(
+        () => auditLogger.close(),
+        options.auditCommitReserveMs ?? FORCED_AUDIT_COMMIT_RESERVE_MS,
+      );
+      if (outcome !== "committed") {
+        log.error({ outcome }, "permission audit terminal rows did not commit before exit");
+      }
     };
 
     if (result.status === "timed-out") {
       const pendingToolInvocations = pendingToolInvocationCount();
       // Force-kill BEFORE the log line so killedChildCount reflects what actually happened, not an optimistic pre-kill count.
       const killedChildCount = forceKillManagedChildProcesses(`${options.reason} cleanup timeout`);
-      closeAuditAfterForceKill();
+      await closeAuditAfterForceKill();
       await releaseOsSandboxAfterIncompleteShutdown(`${options.reason} cleanup timeout`);
       await shutdownHost?.close();
       log.error({
@@ -446,7 +452,7 @@ export async function runAppShutdownCleanup(options: {
       // A failed lifecycle stage may have prevented a runtime-owned child from acknowledging its graceful stop. The normal stop ran in the cleanup finally
       // block; this is only the last-resort descendant-safe backstop.
       const killedChildCount = forceKillManagedChildProcesses(`${options.reason} cleanup failed`);
-      closeAuditAfterForceKill();
+      await closeAuditAfterForceKill();
       await releaseOsSandboxAfterIncompleteShutdown(`${options.reason} cleanup failed`);
       await shutdownHost?.close();
       log.error(
