@@ -42,11 +42,13 @@ type ChildWaitPulse = { error: Error; originSessionId?: string };
  * start is newer than its latest end, or a call is pending. A call changes nothing until it resolves. */
 type Flight = { startedAt: number; endedAt: number; pending: number[]; failure?: ChildWaitFailure };
 
-function observeRunWork(launches: AsyncLocalStorage<ObservedLaunch>) {
+function observeRunWork(launches: AsyncLocalStorage<ObservedLaunch>, onScheduled?: () => void) {
   const pending = new Set<Promise<unknown>>();
-  function track(work: Promise<unknown>): void {
-    pending.add(work);
-    const remove = () => { pending.delete(work); };
+  const launchesPending = new Set<Promise<unknown>>();
+  function track(work: Promise<unknown>, queue = pending): void {
+    queue.add(work);
+    onScheduled?.();
+    const remove = () => { queue.delete(work); };
     void work.then(remove, remove);
   }
   const observe: NonNullable<WorkflowDeps["_observeDetachedWorkForTest"]> = (work, kind) => {
@@ -56,11 +58,13 @@ function observeRunWork(launches: AsyncLocalStorage<ObservedLaunch>) {
     }
     // A controlled child parks its launch after linkage and resumes tracking before it ends.
     const linked = deferred<void>();
-    const done = launches.run({ linked: linked.resolve, resume: () => track(done) }, work);
-    track(Promise.race([linked.promise, done]));
+    const done = launches.run({ linked: linked.resolve, resume: () => track(done, launchesPending) }, work);
+    track(Promise.race([linked.promise, done]), launchesPending);
   };
-  async function drain(): Promise<void> {
-    while (pending.size > 0) await Promise.allSettled(pending);
+  async function drain({ includeLaunches = true } = {}): Promise<void> {
+    while (pending.size > 0 || (includeLaunches && launchesPending.size > 0)) {
+      await Promise.allSettled(includeLaunches ? [...pending, ...launchesPending] : pending);
+    }
   }
   return { observe, drain };
 }
@@ -76,8 +80,9 @@ export async function stageRunHarness(opts: {
   integrate?: () => IntegrateResult | Promise<IntegrateResult>;
   /** Replaces a part of the workspace provider. */
   workspace?: Partial<StageWorkspaceProvider>;
-  /** Track detached work for the current engine. */
+  /** Track detached work for each engine. */
   observeRunWork?: boolean;
+  onRunWorkScheduled?: () => void;
 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ave-stage-run-"));
   const boardPath = join(dir, "board.json");
@@ -94,8 +99,7 @@ export async function stageRunHarness(opts: {
   const sweeps: string[][] = [];
   const registry = boardParentToolRegistry();
   const launches = new AsyncLocalStorage<ObservedLaunch>();
-  const observeEngineWork = () => opts.observeRunWork ? observeRunWork(launches) : undefined;
-  let runWork = observeEngineWork();
+  const runWorkObservers: ReturnType<typeof observeRunWork>[] = [];
   /** `recheck` is set when a call closed refused: a failure it held off stands again, as if the wait were created now. */
   const childChanges = new Set<(pulse?: ChildWaitPulse, recheck?: boolean) => void>();
   /** Called with an error, a listener ends its wait with it. */
@@ -225,6 +229,8 @@ export async function stageRunHarness(opts: {
   };
 
   function engineOn(store: WorkBoardStore): ReturnType<typeof createWorkBoardEngine> {
+    const runWork = opts.observeRunWork ? observeRunWork(launches, opts.onRunWorkScheduled) : undefined;
+    if (runWork) runWorkObservers.push(runWork);
     const workflow = {
       templates, attachments: templates, runs: boardRunState(store), workspace, authoriseRunSource, passConditions: createPassConditionRegistry(),
       scopeAuthorised: (scope: TemplateScope) => scope.kind === "all" || !unauthorised.has(scope.projectRoot),
@@ -331,7 +337,6 @@ export async function stageRunHarness(opts: {
     flights = new Map();
     generation += 1;
     board = new WorkBoardStore(boardPath);
-    runWork = observeEngineWork();
     engine = engineOn(board);
     return engine;
   };
@@ -517,7 +522,8 @@ export async function stageRunHarness(opts: {
   return {
     dir, boardPath, get board() { return board; }, templates, get engine() { return engine; }, makeEngine, editRow, runOf, events, children, interrupts, audits, unauthorised, workspaceCalls, sweeps,
     confirm: confirmTemplate, pinOf, addItem, local, attach, detach, item, stageRun, until, untilStage, untilLive, untilSpawned, settleEvent, waitForLive, waitForProgress, live, decide, statusOf, start,
-    drainRunWork: async () => { await runWork?.drain(); },
+    drainRunWork: async (options?: { includeLaunches?: boolean }) => { await runWorkObservers.at(-1)?.drain(options); },
+    drainAllRunWork: async () => { await Promise.all(runWorkObservers.map(runWork => runWork.drain())); },
     /** Listeners of the child and progress waits still pending. */
     pendingWaits: () => childChanges.size + progressChanges.size,
     cleanup: () => {

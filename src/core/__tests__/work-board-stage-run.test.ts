@@ -39,6 +39,7 @@ it("spawns only the pinned version's stages with the stage's tool scope", () => 
   expect(await run).toMatchObject({ status: "awaiting_approval" });
   expect(await h.stageRun(id, "a")).toMatchObject({ status: "awaiting_gate", gate: { type: "human", status: "pending" } });
   expect(h.children).toHaveLength(1);
+  expect(await run).toMatchObject({ status: "awaiting_approval" });
   expect(await h.decide(id, "a", "approve")).toEqual({ ok: true, status: "approved" });
   const [b] = await h.untilLive(1);
   expect(b.input.title).toContain("Stage b");

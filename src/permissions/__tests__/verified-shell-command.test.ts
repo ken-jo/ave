@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as childProcess from "node:child_process";
 import { resolveVerifiedExecutable } from "../../shared/verified-executable.js";
+import { resolveHostGit } from "../../shared/host-git-executable.js";
 import { PermissionManager } from "../permission-manager.js";
 import { prepareVerifiedShellCommand, verifiedShellEnvironment, verifiedShellExecution, verifiedShellRequiresResultCheck, verifiedShellResultRefusal, type VerifiedShellCommand } from "../verified-shell-command.js";
 import { buildShellRuleApproval, shellRuleCoversCommand } from "../rules/shell-rule-approval.js";
@@ -17,6 +18,7 @@ import { holdSandboxGitWrites } from "../../shared/host-git.js";
 vi.mock("node:fs", { spy: true });
 vi.mock("node:child_process", { spy: true });
 vi.mock("../../shared/verified-executable.js", () => ({ resolveVerifiedExecutable: vi.fn() }));
+vi.mock("../../shared/host-git-executable.js", { spy: true });
 vi.mock("../../shared/powershell-startup-policy.js", () => ({ isPowerShellStartupPinned: () => true, POWERSHELL_STARTUP_UNPROVEN_REASON: "startup is unproven" }));
 const originalPlatform = process.platform;
 let cwd: string;
@@ -51,6 +53,17 @@ function permission(command: string, dialect: "bash" | "powershell", handle: Ver
 }
 
 describe("bound native command authority", () => {
+  it("uses the shared resolver with the protected Git installation policy", () => {
+    vi.stubEnv("PATH", join(cwd, "bin"));
+    const identity = { command: "git log", dialect: "bash" as const, cwd };
+    expect(prepareVerifiedShellCommand(identity)).toBeDefined();
+    expect(resolveHostGit).toHaveBeenCalledWith("verified");
+    expect(resolveVerifiedExecutable).toHaveBeenCalledWith([
+      { executable: "/usr/bin/git", installationRoots: ["/usr/bin/git"] },
+      { executable: "/opt/git/bin/git", installationRoots: ["/opt/git"] },
+    ]);
+  });
+
   it.each(["bash", "powershell"] as const)("rechecks unchanged checked repository results on %s", dialect => {
     const identity = { command: "git rev-parse --verify HEAD", dialect, cwd };
     const handle = prepareVerifiedShellCommand(identity);

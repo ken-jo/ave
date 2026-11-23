@@ -337,6 +337,7 @@ export class TerminalBlockTracker {
   private currentEditLineReport: { readonly generation: number; readonly line: string } | null = null;
   // Called after authenticated markers, user input, and exit (see {@link subscribe}).
   private readonly listeners = new Set<() => void>();
+  private readonly editLineOutputListeners = new Set<() => void>();
   private blockOutput: { blockId: number; pending: string; onOutput: (text: string) => void } | undefined;
 
   private readonly nonce: string;
@@ -455,12 +456,14 @@ export class TerminalBlockTracker {
     return this.nextId;
   }
 
-  // Be told when a block opens or closes or the prompt state changes (after every authenticated marker, user input, and shell exit). Returns the
-  // unsubscribe function. A listener runs inside the PTY data or input callback and must only record what it needs.
-  subscribe(listener: () => void): () => void {
+  // Listen for authenticated markers, user input, shell exit and, if requested, parsed edit-line output.
+  // A listener runs inside the PTY data or input callback and must only record what it needs.
+  subscribe(listener: () => void, { includeEditLineOutput = false }: { includeEditLineOutput?: boolean } = {}): () => void {
     this.listeners.add(listener);
+    if (includeEditLineOutput) this.editLineOutputListeners.add(listener);
     return () => {
       this.listeners.delete(listener);
+      this.editLineOutputListeners.delete(listener);
     };
   }
 
@@ -504,7 +507,9 @@ export class TerminalBlockTracker {
   // Hold incomplete markers and strip authenticated nonce fields before renderer output or replay.
   recordOutput(chunk: string): string {
     let text = "";
+    let editLineOutput = false;
     const flush = (): void => {
+      editLineOutput ||= this.editLineOutputListeners.size > 0 && text.length > 0 && this.phase === "input";
       this.appendText(text);
       text = "";
     };
@@ -594,6 +599,9 @@ export class TerminalBlockTracker {
       }
     }
     flush();
+    if (editLineOutput && this.editLineOutputListeners.size > 0) {
+      for (const listener of [...this.editLineOutputListeners]) listener();
+    }
     return this.display;
   }
 

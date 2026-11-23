@@ -1,8 +1,10 @@
 import { spawn, spawnSync, type ChildProcess, type SpawnOptions } from "node:child_process";
+import { Writable } from "node:stream";
 import { win32SystemBinary } from "../shared/windows-system-path.js";
 import { createLogger } from "../lib/logger.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { errorMessage } from "../shared/error-message.js";
+import { runWithCeiling } from "../tools/executor-ceiling.js";
 import { createProcessGroupReaper, type ProcessGroupReaper } from "./process-group-reaper.js";
 
 const log = createLogger("ave");
@@ -14,8 +16,10 @@ interface ManagedChildProcess {
   child: ChildProcess;
   label: string;
   killProcessGroup: boolean;
+  requireProcessGroupReaper?: boolean;
   processGroupId?: number;
   disposeTimer?: NodeJS.Timeout;
+  groupForceTimer?: NodeJS.Timeout;
   disposalStartedAt?: number;
   retentionWarningEmitted?: boolean;
   retainedUntilExit?: boolean;
@@ -44,6 +48,103 @@ export function assertManagedChildProcessAdmissionOpen(label: string): void {
 export interface TrackManagedChildProcessOptions {
   label?: string;
   killProcessGroup?: boolean;
+  requireProcessGroupReaper?: boolean;
+}
+
+const PROCESS_GROUP_LAUNCH_GATE = [
+  'IFS= read -r release <&3 && [ -z "$release" ] || exit 0',
+  "exec 3<&-",
+  'exec "$@"',
+].join("\n");
+
+type LaunchBoundary = "before-registration" | "registration-written" | "acknowledged" | "released";
+
+interface GatedLaunchOptions {
+  label: string;
+  onSpawn: (child: ChildProcess) => void;
+  assertStillValid: () => void;
+}
+
+interface LaunchBoundaryTestHooks {
+  reaper: ProcessGroupReaper;
+  onBoundary: (boundary: LaunchBoundary, pgid: number) => void | Promise<void>;
+}
+
+export function spawnGatedManagedProcess(
+  command: string,
+  args: readonly string[],
+  spawnOptions: SpawnOptions,
+  options: GatedLaunchOptions,
+): Promise<ChildProcess> {
+  return spawnGatedProcess(command, args, spawnOptions, options);
+}
+
+export function _spawnGatedManagedProcessForTest(
+  command: string,
+  args: readonly string[],
+  spawnOptions: SpawnOptions,
+  options: GatedLaunchOptions,
+  hooks: LaunchBoundaryTestHooks,
+): Promise<ChildProcess> {
+  return spawnGatedProcess(command, args, spawnOptions, options, hooks);
+}
+
+async function spawnGatedProcess(
+  command: string,
+  args: readonly string[],
+  spawnOptions: SpawnOptions,
+  { label, onSpawn, assertStillValid }: GatedLaunchOptions,
+  hooks?: LaunchBoundaryTestHooks,
+): Promise<ChildProcess> {
+  if (process.platform === "win32") throw new Error("Process group launch gates require POSIX");
+  const stdio = Array.isArray(spawnOptions.stdio) ? spawnOptions.stdio : Array(3).fill(spawnOptions.stdio);
+  if (stdio.length > 3) throw new Error("Process group launch gate requires fd 3");
+  assertManagedChildProcessAdmissionOpen(label);
+  const reaper = hooks?.reaper ?? hostDeathReaper();
+  reaper.assertAvailable();
+  const child = spawn("/bin/sh", ["-c", PROCESS_GROUP_LAUNCH_GATE, "launch-gate", command, ...args], {
+    ...spawnOptions, shell: false, detached: true, stdio: [stdio[0], stdio[1], stdio[2], "pipe"],
+  });
+  const release = child.stdio[3];
+  const stopped = new AbortController();
+  const onError = (error: Error): void => stopped.abort(error);
+  const onExit = (): void => stopped.abort(new Error("Process group launch gate exited before release"));
+  child.once("error", onError);
+  child.once("exit", onExit);
+  release?.on("error", onError);
+  let tracked = false;
+  try {
+    onSpawn(child);
+    const pgid = child.pid;
+    if (pgid === undefined || !(release instanceof Writable)) throw new Error("Process group launch gate did not start");
+    if (hooks) await hooks.onBoundary("before-registration", pgid);
+    stopped.signal.throwIfAborted();
+    trackChild(child, { label, killProcessGroup: true, requireProcessGroupReaper: true }, reaper);
+    tracked = true;
+    const acknowledgment = await runWithCeiling(
+      (signal) => reaper.acknowledge(pgid, signal, hooks && (() => hooks.onBoundary("registration-written", pgid))),
+      TOOL_TIMEOUT_POLICY.pluginFactoryMs, stopped.signal, label,
+    );
+    if (!acknowledgment.ok) throw acknowledgment.error;
+    if (hooks) await hooks.onBoundary("acknowledged", pgid);
+    assertManagedChildProcessAdmissionOpen(label);
+    assertStillValid();
+    acknowledgment.value();
+    stopped.signal.throwIfAborted();
+    // One newline is the release byte. EOF alone leaves read unsuccessful.
+    await new Promise<void>((resolve, reject) => {
+      release.write("\n", (error) => { if (error) reject(error); else resolve(); });
+    });
+    if (hooks) await hooks.onBoundary("released", pgid);
+    return child;
+  } catch (error) {
+    if (tracked) void forceKillManagedChildProcess(child, "process group launch failed");
+    throw error;
+  } finally {
+    release?.destroy();
+    child.off("exit", onExit);
+    if (tracked) child.off("error", onError);
+  }
 }
 
 // Spawn and track together to preserve quit cleanup; detached POSIX children default to group-kill unless an external supervisor owns them.
@@ -55,13 +156,14 @@ export function spawnManaged(
 ): ChildProcess {
   const label = trackOptions.label ?? "child-process";
   assertManagedChildProcessAdmissionOpen(label);
+  if (trackOptions.requireProcessGroupReaper) assertProcessGroupReaperAvailable();
   // ESLint-style guardrail: callers MUST go through this helper. Direct `spawn()` imports outside of `managed-child-processes.ts` should be flagged by a
   // future lint rule (`no-restricted-imports` allowlisting this module only).
   const child = spawn(command, args, { windowsHide: true, ...spawnOptions });
   const inferredGroupKill =
     spawnOptions.detached === true && process.platform !== "win32";
   trackManagedChildProcess(child, {
-    label: trackOptions.label,
+    ...trackOptions,
     killProcessGroup: trackOptions.killProcessGroup ?? inferredGroupKill,
   });
   return child;
@@ -71,6 +173,14 @@ export function trackManagedChildProcess(
   child: ChildProcess,
   options: TrackManagedChildProcessOptions = {},
 ): () => void {
+  return trackChild(child, options);
+}
+
+function trackChild(
+  child: ChildProcess,
+  options: TrackManagedChildProcessOptions,
+  launchReaper?: ProcessGroupReaper,
+): () => void {
   if (typeof child.once !== "function" || typeof child.off !== "function") {
     return () => {};
   }
@@ -79,6 +189,7 @@ export function trackManagedChildProcess(
     child,
     label: options.label ?? "child-process",
     killProcessGroup: options.killProcessGroup === true,
+    requireProcessGroupReaper: options.requireProcessGroupReaper,
     processGroupId: resolveProcessGroupId(child, options),
     dispose: () => {},
     onSettled: () => {},
@@ -88,7 +199,8 @@ export function trackManagedChildProcess(
   // Only a process this host spawned goes to the reaper (below): a pid on any other object names nothing the host owns. `spawnfile` is set by
   // node:child_process on every process it starts.
   const reaperHeldGroup = typeof child.spawnfile === "string" ? entry.processGroupId : undefined;
-  const dispose = (): void => disposeManagedChildProcess(entry, reaperHeldGroup);
+  let releaseGroup: (() => void) | undefined;
+  const dispose = (): void => disposeManagedChildProcess(entry, releaseGroup);
   const onSettled = (): void => {
     entry.exitObserved = true;
     if (pendingTreeKills.has(child)) return;
@@ -118,7 +230,9 @@ export function trackManagedChildProcess(
   // dies. A registration that fails is undone whole: the child is killed, since no owner would end it, and no half-tracked entry is left behind.
   if (reaperHeldGroup !== undefined) {
     try {
-      hostDeathReaper().retain(reaperHeldGroup);
+      const reaper = launchReaper ?? hostDeathReaper();
+      reaper.retain(reaperHeldGroup);
+      releaseGroup = () => reaper.release(reaperHeldGroup);
     } catch (error) {
       dispose();
       try {
@@ -174,15 +288,16 @@ export function retainUnterminatedChildProcess(child: ChildProcess, label: strin
   child.on("error", entry.onError);
 }
 
-function disposeManagedChildProcess(entry: ManagedChildProcess, reaperHeldGroup?: number): void {
+function disposeManagedChildProcess(entry: ManagedChildProcess, releaseGroup?: () => void): void {
   const { child } = entry;
   if (entry.retainedUntilExit && !entry.exitObserved && child.exitCode == null && child.signalCode == null) return;
   const wasTracked = managedChildren.delete(entry);
   if (entry.disposeTimer) clearTimeout(entry.disposeTimer);
+  if (entry.groupForceTimer) clearTimeout(entry.groupForceTimer);
   child.off("exit", entry.onSettled);
   child.off("close", entry.onSettled);
   child.off("error", entry.onError);
-  if (wasTracked && reaperHeldGroup !== undefined) hostDeathReaper().release(reaperHeldGroup);
+  if (wasTracked) releaseGroup?.();
 }
 
 export function getManagedChildProcessCount(): number {
@@ -196,7 +311,7 @@ function resolveProcessGroupId(
 ): number | undefined {
   if (options.killProcessGroup !== true) return undefined;
   if (process.platform === "win32") return undefined;
-  if (typeof child.pid !== "number" || child.pid <= 0) return undefined;
+  if (typeof child.pid !== "number" || child.pid <= 1) return undefined;
   return child.pid;
 }
 
@@ -386,7 +501,8 @@ export function forceKillManagedChildProcess(child: ChildProcess, reason: string
     }
   };
   try {
-    const completion = pending ?? forceKillProcessTree(child, entry?.killProcessGroup ?? false, entry?.processGroupId);
+    // Only tracked children are owned through shutdown; an untracked tree kill must not keep a short-lived process alive.
+    const completion = pending ?? forceKillProcessTree(child, entry?.killProcessGroup ?? false, entry?.processGroupId, entry !== undefined);
     if (completion) {
       // This public boundary always handles failures, including fire-and-forget transport callbacks. Awaiters observe completion without rejection leaks.
       const handled = completion.then(finish, (err: unknown) => { handleError(err); finish(); });
@@ -403,8 +519,18 @@ export function forceKillManagedChildProcess(child: ChildProcess, reason: string
 }
 
 function hostDeathReaper(): ProcessGroupReaper {
-  processGroupReaper ??= createProcessGroupReaper();
+  processGroupReaper ??= createProcessGroupReaper(undefined, {
+    onUnavailable: () => {
+      for (const entry of managedChildren) {
+        if (entry.requireProcessGroupReaper) void forceKillManagedChildProcess(entry.child, "process group reaper unavailable");
+      }
+    },
+  });
   return processGroupReaper;
+}
+
+export function assertProcessGroupReaperAvailable(): void {
+  hostDeathReaper().assertAvailable();
 }
 
 export function __resetManagedChildProcessesForTest(): void {
@@ -418,6 +544,25 @@ export function __resetManagedChildProcessesForTest(): void {
 function isKillable(entry: ManagedChildProcess): boolean {
   if (entry.processGroupId !== undefined && processExists(-entry.processGroupId)) return true;
   return entry.child.exitCode === null && entry.child.signalCode == null;
+}
+
+export function terminateManagedProcessGroup(child: ChildProcess, forceAfterMs: number): void {
+  const entry = [...managedChildren].find((candidate) => candidate.child === child && candidate.processGroupId !== undefined);
+  const pgid = entry?.processGroupId;
+  if (!entry || pgid === undefined || entry.groupForceTimer) return;
+  try {
+    process.kill(-pgid, "SIGTERM");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") {
+      entry.dispose();
+      return;
+    }
+  }
+  entry.groupForceTimer = setTimeout(() => {
+    entry.groupForceTimer = undefined;
+    void forceKillManagedChildProcess(child, "process group did not terminate");
+  }, forceAfterMs);
+  entry.groupForceTimer.unref();
 }
 
 function scheduleProcessGroupDisposal(entry: ManagedChildProcess): void {
@@ -469,7 +614,7 @@ interface TreeKillResult {
   targetGone: boolean;
 }
 
-function runWindowsTreeKill(child: ChildProcess, pid: number): Promise<TreeKillResult> {
+function runWindowsTreeKill(child: ChildProcess, pid: number, holdEventLoop: boolean): Promise<TreeKillResult> {
   return new Promise((resolve) => {
     const startedAt = Date.now();
     let settled = false;
@@ -497,6 +642,10 @@ function runWindowsTreeKill(child: ChildProcess, pid: number): Promise<TreeKillR
         finish(null, "SIGKILL", true, targetGone);
         try { runner.kill("SIGKILL"); } catch { /* Still try the tree again. */ }
       }, TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs);
+      if (!holdEventLoop) {
+        runner.unref?.();
+        timer.unref?.();
+      }
     } catch {
       finish(null, null);
     }
@@ -507,6 +656,7 @@ function forceKillProcessTree(
   child: ChildProcess,
   killProcessGroup: boolean,
   processGroupId?: number,
+  holdEventLoop = true,
 ): void | Promise<void> {
   const pending = pendingTreeKills.get(child);
   if (pending) return pending;
@@ -519,7 +669,7 @@ function forceKillProcessTree(
     // No runtime Windows descendant snapshot is available. Retry the full tree before terminating the root, which would lose its ancestry information.
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       if (attempt > 1 && (child.exitCode != null || child.signalCode != null)) break;
-      const result = await runWindowsTreeKill(child, pid);
+      const result = await runWindowsTreeKill(child, pid, holdEventLoop);
       if (result.targetGone) {
         log.info({ targetPid: pid, attempt, elapsedMs: result.elapsedMs }, "managed-child: taskkill watchdog expired after the target exited");
         return;

@@ -337,7 +337,7 @@ describe("the file a tab's output is kept in", () => {
   });
   it.runIf(process.platform === "win32")("keeps an unrelated native read failure distinct from an oversized replay", async () => {
     const failure: unknown = await windowsKeptFileReader()(join(aveHome, "invalid|target")).catch(error => error);
-    expect(failure).toMatchObject({ status: 4, message: expect.stringContaining("Command failed") });
+    expect(failure).toMatchObject({ status: 4, message: "Windows path facts helper failed (exit 4)" });
     expect((failure as Error).message).not.toContain("larger than a terminal's replay");
   });
 

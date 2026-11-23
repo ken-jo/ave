@@ -91,7 +91,6 @@ src/permissions/__tests__/egress-ask.test.ts
 src/permissions/__tests__/execution-router.test.ts
 src/permissions/__tests__/scoped-rules.test.ts
 src/permissions/judge/__tests__/judge-dispatch.test.ts
-src/main/__tests__/document-open.test.ts
 src/permissions/__tests__/sensitive-paths-canonicalize.test.ts
 src/permissions/__tests__/canonicalizer-8dot3.test.ts
 src/permissions/__tests__/policy-home.test.ts
@@ -217,6 +216,7 @@ src/permissions/__tests__/sandbox-process-home.test.ts
 src/permissions/__tests__/windows-process-start-time.test.ts
 src/boot/__tests__/windows-sandbox-home-sweep.test.ts
 src/plugins/isolation/__tests__/confined-plugin-child.test.ts
+src/plugins/isolation/__tests__/process-plugin-host-death.test.ts
 src/shared/__tests__/shell-execution.test.ts
 src/shared/__tests__/shell-filesystem-path.test.ts
 src/shared/__tests__/windows-powershell-env.test.ts
@@ -435,4 +435,9 @@ src/plugins/runtime/__tests__/sandbox-withdrawal.test.ts
 src/shared/__tests__/ave-home-host-ownership.test.ts
 src/tools/__tests__/file-tools.test.ts
 src/tools/__tests__/shell-interruption-cleanup.test.ts
+src/main/__tests__/windows-path-kind-launcher.windows.test.ts
+src/marketplace/git/__tests__/installer-git.test.ts
+src/marketplace/git/__tests__/marketplace-git.test.ts
+src/shared/__tests__/host-git-executable.test.ts
+src/shared/__tests__/host-git-probe.test.ts
 src/work-board/workflow/__tests__/stage-run-harness.test.ts

@@ -67,7 +67,7 @@ function fitLayer(
 }
 
 /** Record attached files only when their new instruction block fits. */
-export function directoryInstructionsForToolResult(input: {
+export async function directoryInstructionsForToolResult(input: {
   projectRoot: string | undefined;
   source: ToolSource | undefined;
   toolInput: unknown;
@@ -77,14 +77,14 @@ export function directoryInstructionsForToolResult(input: {
   stubbedOnWire: boolean;
   attached: Map<string, number>;
   gitIgnoreVerdicts?: GitIgnoreVerdicts;
-}): { text: string; attached: AttachedDirectoryInstruction[] } | undefined {
+}): Promise<{ text: string; attached: AttachedDirectoryInstruction[] } | undefined> {
   const { projectRoot, source, toolInput, isError, toolResultContent, stubbedOnWire, attached, gitIgnoreVerdicts } = input;
   if (!projectRoot || source !== "builtin" || isError || stubbedOnWire) return undefined;
   const path = toolInput && typeof toolInput === "object"
     ? (toolInput as Record<string, unknown>).path
     : undefined;
   if (typeof path !== "string" || path.length === 0) return undefined;
-  const layers = discoverDirectoryInstructions(projectRoot, path, attached, gitIgnoreVerdicts ? { gitIgnoreVerdicts } : {});
+  const layers = await discoverDirectoryInstructions(projectRoot, path, attached, gitIgnoreVerdicts ? { gitIgnoreVerdicts } : {});
   if (layers.length === 0) return undefined;
   let sessionBytes = [...attached.values()].reduce((sum, bytes) => sum + bytes, 0);
   let combined = toolResultContent;

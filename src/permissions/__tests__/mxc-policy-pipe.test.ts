@@ -201,13 +201,43 @@ describe("native policy pipe lifecycle", () => {
       await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.processTreeKillMs - 1);
       expect(failures).toEqual([]);
       await vi.advanceTimersByTimeAsync(1);
-      expect(failures).toEqual([expect.objectContaining({ outcome: "left", message: expect.stringContaining("termination failed") })]);
+      // The cause is carried raw, for whoever reports the failure to read after release.
+      expect(failures).toEqual([expect.objectContaining({
+        outcome: "left",
+        message: "Windows sandbox policy helper was left; termination was not confirmed",
+        cause: expect.objectContaining({ message: "termination failed" }),
+      })]);
       await pending;
       expect(helper.kill).toHaveBeenLastCalledWith("SIGKILL");
       expect(helper.stdin.destroyed).toBe(true);
       expect(managedChildren.getManagedChildProcessCount()).toBe(1);
     } finally { helper.child.emit("close", 0, null); }
     expect(managedChildren.getManagedChildProcessCount()).toBe(0);
+  });
+
+  it("settles a failed termination whose recorded failure cannot be read", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const helper = helperChild();
+    const unreadable = new Error("termination failed");
+    Object.defineProperty(unreadable, "message", { get: () => { throw new Error("message read failed"); } });
+    helper.kill.mockImplementation(() => { throw unreadable; });
+    vi.spyOn(childProcess, "spawn").mockImplementation(() => {
+      queueMicrotask(() => helper.stdout.write("ready\n"));
+      return helper.child as ReturnType<typeof childProcess.spawn>;
+    });
+    const transport = await openMxcPolicyPipe(Buffer.from("policy"), PIPE);
+    try {
+      const failures: unknown[] = [];
+      void transport.release().then(
+        () => { failures.push("released"); },
+        (error: unknown) => { failures.push(error); },
+      );
+      await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.processTreeKillMs);
+      expect(failures).toHaveLength(1);
+      expect(failures[0]).toBeInstanceOf(Error);
+      expect((failures[0] as Error & { outcome?: string }).outcome).toBe("left");
+      expect((failures[0] as Error).cause).toBe(unreadable);
+    } finally { helper.child.emit("close", 0, null); }
   });
 
   it("sends policy and launcher PID only over private helper stdin", async () => {

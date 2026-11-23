@@ -1750,7 +1750,7 @@ export async function typeLineAtPrompt(
     return result;
   };
   // 5. Confirm both the display and the editor's actual buffer before Enter.
-  const shown = await waitForEditLine(blocks, prompt, line, EDIT_LINE_TIMEOUT_MS, target.signal);
+  const shown = await waitForEditLine(blocks, prompt, line, target.signal);
   if (target.signal?.aborted) return cancelledAfterPaste(notTyped("aborted", "terminal command preparation was cancelled; Enter was not pressed"));
   if (!shown || !target.isLive() || interrupted()) {
     if (target.isLive() && !await safeToWrite()) target.write("\u0003");
@@ -1835,8 +1835,55 @@ async function resetToFreshPrompt(
   return null;
 }
 
-/** How long typing waits for the pasted line to show in the line editor. */
+/** Time allowed for each editor wait. */
 const EDIT_LINE_TIMEOUT_MS = 2_000;
+
+/** The reader returns undefined while pending, null on refusal, or the editor evidence. */
+function waitForEditorState<T>(
+  blocks: TerminalBlockTracker,
+  signal: AbortSignal | undefined,
+  read: () => T | null | undefined,
+  { includeEditLineOutput, write }: { includeEditLineOutput?: boolean; write?: () => void } = {},
+): Promise<T | null> {
+  return new Promise((resolve, reject) => {
+    let done = false;
+    let expiresAt = Infinity;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const cleanup = (): void => {
+      done = true;
+      clearTimeout(timer);
+      unsubscribe();
+      signal?.removeEventListener("abort", stop);
+    };
+    const stop = (): void => {
+      cleanup();
+      resolve(null);
+    };
+    const check = (writeIfPending?: () => void, deadlineReached = false): void => {
+      if (done) return;
+      try {
+        const value = signal?.aborted ? null : read();
+        if (value === undefined && !deadlineReached && Date.now() < expiresAt) {
+          writeIfPending?.();
+          return;
+        }
+        cleanup();
+        resolve(value ?? null);
+      } catch (error) {
+        cleanup();
+        reject(error);
+      }
+    };
+    // Marker callbacks can run mid-chunk. Read once the tracker has processed the full chunk.
+    const unsubscribe = blocks.subscribe(() => queueMicrotask(check), { includeEditLineOutput });
+    signal?.addEventListener("abort", stop, { once: true });
+    check(write);
+    if (done) return;
+    expiresAt = Date.now() + EDIT_LINE_TIMEOUT_MS;
+    timer = setTimeout(() => check(undefined, true), EDIT_LINE_TIMEOUT_MS);
+    if (write) check();
+  });
+}
 
 /** Ask the owned shell editor for its buffer, rather than infer it from display echo. */
 async function requestEditLine(
@@ -1849,30 +1896,26 @@ async function requestEditLine(
   if (!blocks.supportsEditLineQuery() || !target.isLive() || interrupted()
     || blocks.promptEndCount() !== prompt || blocks.typedSincePromptEnd()
     || (state !== "ready" && state !== "pending-input")) return null;
-  const generation = blocks.editLineReportGeneration();
-  target.write(TERMINAL_EDIT_LINE_QUERY);
-  const deadline = Date.now() + EDIT_LINE_TIMEOUT_MS;
-  for (;;) {
+  let generationAtQuery: number | undefined;
+  return waitForEditorState(blocks, target.signal, () => {
     if (!target.isLive() || interrupted() || blocks.promptEndCount() !== prompt
       || !blocks.supportsEditLineQuery() || blocks.typedSincePromptEnd()) return null;
+    if (generationAtQuery === undefined) return undefined;
     const report = blocks.editLineReport();
-    if (report && report.generation > generation) return report;
-    if (Date.now() >= deadline) return null;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
+    return report && report.generation > generationAtQuery ? report : undefined;
+  }, { write: () => {
+    generationAtQuery = blocks.editLineReportGeneration();
+    target.write(TERMINAL_EDIT_LINE_QUERY);
+  } });
 }
 
 /** Wait until the prompt typed at (`prompt`, its end count) shows exactly `line` in its edit line,
  * with no key from the user since it was drawn. False on timeout, or when that prompt goes away. */
-async function waitForEditLine(blocks: TerminalBlockTracker, prompt: number, line: string, timeoutMs: number, signal?: AbortSignal): Promise<boolean> {
-  // Echoed text does not notify subscribers (only markers do), so poll.
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    if (signal?.aborted || blocks.promptEndCount() !== prompt || blocks.hasExited() || blocks.typedSincePromptEnd()) return false;
-    if (blocks.editLineText() === line) return true;
-    if (Date.now() >= deadline) return false;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
+async function waitForEditLine(blocks: TerminalBlockTracker, prompt: number, line: string, signal?: AbortSignal): Promise<boolean> {
+  return await waitForEditorState(blocks, signal, () => {
+    if (blocks.promptEndCount() !== prompt || blocks.hasExited() || blocks.typedSincePromptEnd()) return null;
+    return blocks.editLineText() === line ? true : undefined;
+  }, { includeEditLineOutput: true }) === true;
 }
 
 const TERMINAL_NOT_READY_MESSAGES: Record<Exclude<TerminalPromptState, "ready">, string> = {

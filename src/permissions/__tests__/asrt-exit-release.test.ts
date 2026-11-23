@@ -99,6 +99,69 @@ describe("sandbox runtime release at exit", () => {
     expect(isSrtWinRuntimeReleasePending()).toBe(true);
   });
 
+  const MALFORMED_ROWS = [{ step: "grant revoke", status: "missing", count: 1, targets: null }];
+  const WELL_FORMED_ROWS = [{ step: "grant revoke", status: "missing", count: 1, targets: [String.raw`D:\example\gone`] }];
+  // Either the rows cannot be read, or the log sink throws (and throws again for the fallback warning).
+  const LOGGING_FAULTS = [
+    ["malformed rows", MALFORMED_ROWS, () => undefined],
+    ["a throwing log sink", WELL_FORMED_ROWS, () => { throw new Error("log sink failed"); }],
+  ] as const;
+
+  it.each(LOGGING_FAULTS)("rejects with the reset's own error when its rows meet %s", async (_name, rows, sink) => {
+    const failure = Object.assign(new Error("srt-win acl: release failed"), { windowsAclUnreleased: rows });
+    manager.reset.mockRejectedValueOnce(failure);
+    const warn = vi.spyOn(console, "warn").mockImplementation(sink);
+    try {
+      await expect(resetAsrtSandbox()).rejects.toBe(failure);
+      expect(warn.mock.calls.flat().map(String).join("\n")).toContain("the dropped ACE rows could not be logged");
+      expect(isSrtWinRuntimeReleasePending()).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it.each(LOGGING_FAULTS)("finishes a successful reset and marks its release when its rows meet %s", async (_name, rows, sink) => {
+    manager.reset.mockResolvedValueOnce({ windowsAclUnreleased: rows });
+    const warn = vi.spyOn(console, "warn").mockImplementation(sink);
+    try {
+      await expect(resetAsrtSandbox()).resolves.toBeUndefined();
+      expect(warn.mock.calls.flat().map(String).join("\n")).toContain("the dropped ACE rows could not be logged");
+      expect(isSrtWinRuntimeReleasePending()).toBe(false);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it.each(LOGGING_FAULTS)("marks a failed initialization's release when its successful reset's rows meet %s", async (_name, rows, sink) => {
+    await resetAsrtSandbox();
+    manager.initialize.mockRejectedValueOnce(new Error("runtime probe failed"));
+    manager.reset.mockResolvedValueOnce({ windowsAclUnreleased: rows });
+    const warn = vi.spyOn(console, "warn").mockImplementation(sink);
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      await expect(initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true })).rejects.toThrow("runtime probe failed");
+      expect(warn.mock.calls.flat().map(String).join("\n")).toContain("the dropped ACE rows could not be logged");
+      expect(isSrtWinRuntimeReleasePending()).toBe(false);
+      expect(error.mock.calls.flat().map(String).join("\n")).not.toContain("sandbox runtime reset failed");
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
+    }
+  });
+
+  it("keeps a failed initialization's own error when the reset failure's log throws", async () => {
+    await resetAsrtSandbox();
+    manager.initialize.mockRejectedValueOnce(new Error("runtime probe failed"));
+    manager.reset.mockRejectedValueOnce(new Error("srt-win acl: release failed"));
+    const error = vi.spyOn(console, "error").mockImplementation(() => { throw new Error("log sink failed"); });
+    try {
+      await expect(initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true })).rejects.toThrow("runtime probe failed");
+      expect(isSrtWinRuntimeReleasePending()).toBe(true);
+    } finally {
+      error.mockRestore();
+    }
+  });
+
   it("fails the quit release when the runtime could not run its ACL revoke, and keeps the copy for a retry", async () => {
     const revoke = vi.fn(() => undefined);
     setWindowsAclReleaseForTesting({ sandboxUserSid: "S-1-5-21-1", srtWin: executable, revoke, restore: () => [] });
