@@ -204,7 +204,7 @@ describe("extractCorporateCa", () => {
 describe.runIf(process.platform !== "win32")("trust store tool lookup", () => {
   it("never runs a trust store tool planted in the cwd or reached through an empty or relative PATH entry", async () => {
     await withPlantedProgram(["security"], async (planted) => {
-      expect(await extractCorporateCa({ commonName: DEFAULT_CORP_CA_COMMON_NAME }, "darwin")).toBeNull();
+      expect(await extractCorporateCa({ commonName: DEFAULT_CORP_CA_COMMON_NAME, debugLog: false }, "darwin")).toBeNull();
       expect(planted.ran()).toBe(false);
     });
   });
