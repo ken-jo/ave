@@ -23,6 +23,20 @@ vi.mock("node:child_process", async (original) => {
   }) as typeof spawnType;
   return { ...real, spawn };
 });
+/** `failures`: how many more times the floor probe's scratch folder refuses to be taken away, as a folder a process holds does. */
+const removal = vi.hoisted(() => ({ failures: 0, scratch: undefined as string | undefined }));
+vi.mock("node:fs", async (original) => {
+  const real = await original<typeof import("node:fs")>();
+  const rmSync = ((path: Parameters<typeof real.rmSync>[0], options?: Parameters<typeof real.rmSync>[1]) => {
+    if (removal.failures > 0 && options?.recursive === true && String(path).includes("ave-git-floor-")) {
+      removal.failures -= 1;
+      removal.scratch = String(path);
+      throw Object.assign(new Error(`EBUSY: resource busy or locked, rmdir '${String(path)}'`), { code: "EBUSY" });
+    }
+    real.rmSync(path, options);
+  }) as typeof real.rmSync;
+  return { ...real, rmSync, default: { ...real, rmSync } };
+});
 const warned = vi.hoisted(() => ({ lines: [] as string[] }));
 vi.mock("../../../lib/logger.js", () => {
   const quiet = (): void => undefined;
@@ -587,4 +601,21 @@ describe("the hook floor's probe", () => {
     expect(spawned.calls).toBe(0);
   });
 
+  it("a scratch folder that cannot be taken away yet keeps the probe's answer, and is taken away later", async () => {
+    const program = planted(join(base, "first"));
+    fakeGit(holding);
+    const probe = await freshProbe();
+    removal.failures = 1;
+    removal.scratch = undefined;
+    warned.lines = [];
+    expect(await probe(program)).toBe(true);
+    const asked = spawned.calls;
+    expect(await probe(program)).toBe(true);
+    expect(spawned.calls).toBe(asked);
+    expect(removal.failures).toBe(0);
+    expect(warned.lines.filter(line => line.includes("scratch"))).toHaveLength(1);
+    const scratch = removal.scratch as string | undefined;
+    expect(scratch).toBeDefined();
+    await vi.waitFor(() => expect(existsSync(scratch as string)).toBe(false), { timeout: 10_000 });
+  });
 });
