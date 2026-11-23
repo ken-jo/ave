@@ -2370,6 +2370,8 @@ export const en = {
   "formatIpcError.noScheduler": "The scheduler is not active.",
   "formatIpcError.pluginNotLoaded": "The extension is not loaded.",
   "formatIpcError.unknownPluginId": "Unknown extension ID.",
+  "formatIpcError.backgroundEffectsUnavailable": "Background effect approvals are not available right now.",
+  "formatIpcError.backgroundEffectsUpgradeElsewhere": "Another Ave window is showing this review.",
   "formatIpcError.invalidBundleId": "Invalid bundle ID.",
   "formatIpcError.invalidEntryUrl": "Invalid entry URL.",
   "formatIpcError.entryUrlOutsideInstallRoot": "The entry URL is outside the install path.",

@@ -2372,6 +2372,8 @@ export const ko: Record<MessageCatalogKey, string> = {
   "formatIpcError.noScheduler": "스케줄러가 활성화되지 않았습니다.",
   "formatIpcError.pluginNotLoaded": "익스텐션이 로드되지 않았습니다.",
   "formatIpcError.unknownPluginId": "알 수 없는 익스텐션 ID입니다.",
+  "formatIpcError.backgroundEffectsUnavailable": "지금은 백그라운드 작업 승인을 사용할 수 없습니다.",
+  "formatIpcError.backgroundEffectsUpgradeElsewhere": "다른 Ave 창에서 이 검토를 표시하고 있습니다.",
   "formatIpcError.invalidBundleId": "잘못된 번들 ID입니다.",
   "formatIpcError.invalidEntryUrl": "잘못된 entry URL입니다.",
   "formatIpcError.entryUrlOutsideInstallRoot": "entry URL이 설치 경로를 벗어났습니다.",
