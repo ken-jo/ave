@@ -81,12 +81,20 @@ it("a gate decision taken before the launch call settles is part of its result, 
     const version = await h.confirm([stageOf("a"), stageOf("b", { inputs: ["a"] })]);
     const id = await h.addItem(version);
     const run = h.start(id, h.local(version));
+    let settled = false;
+    run.then(() => { settled = true; }, () => { settled = true; });
     (await h.untilLive(1))[0].finish();
     await h.untilStage(id, "a", "awaiting_gate");
     expect(h.children).toHaveLength(1);
     expect(await h.decide(id, "a", "approve")).toEqual({ ok: true, status: "approved" });
     (await h.untilLive(1))[0].finish();
-    await h.untilStage(id, "b", "awaiting_gate");
+    const atB = await h.untilStage(id, "b", "awaiting_gate");
+    // The decision queued at a took the launch call past gate a; b waits at its own gate, and nothing settles before b's decision.
+    expect(settled).toBe(false);
+    expect(atB.stageRuns).toMatchObject([
+      { stageId: "a", status: "passed", gate: { type: "human", status: "approved" } },
+      { stageId: "b", status: "awaiting_gate", gate: { type: "human", status: "pending" } },
+    ]);
     expect(await h.decide(id, "b", "approve")).toEqual({ ok: true, status: "approved" });
     expect(await run).toMatchObject({ status: "completed", output: "output of child-2" });
     expect((await h.item(id)).stageRuns).toMatchObject([
