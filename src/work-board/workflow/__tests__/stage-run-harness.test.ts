@@ -1096,6 +1096,23 @@ it("a child wait that never settles times out and names the items in flight", as
   }
 });
 
+it("a progress wait whose signal never comes stays pending past 2 s and at 30 s fails naming what it waited for", async () => {
+  const h = await stageRunHarness();
+  try {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const ended = h.settleEvent().then(() => "resolved", (error: unknown) => String(error));
+    await vi.advanceTimersByTimeAsync(2_001);
+    expect(await Promise.race([ended, setImmediate("still pending")]), "after 2,001 ms").toBe("still pending");
+    await vi.advanceTimersByTimeAsync(29_999 - 2_001);
+    expect(await Promise.race([ended, setImmediate("still pending")]), "after 29,999 ms").toBe("still pending");
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await ended).toBe("Error: progress signal never arrived for a run's end (cancelled, done, denied or error)");
+  } finally {
+    vi.useRealTimers();
+    await h.cleanup();
+  }
+});
+
 it("an accepted join decision puts its item back in flight for aggregate child waits", async () => {
   let merges = 0;
   const h = await stageRunHarness({
