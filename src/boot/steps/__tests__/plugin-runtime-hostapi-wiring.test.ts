@@ -1569,6 +1569,51 @@ describe("HostApi incarnation authority", () => {
     expect(await approvals.currentSubject("plugin-a")).toBeNull();
   });
 
+  it.each(["strict", "default"] as const)("in %s mode runs background model calls and helper processes only when declared and approved", async (mode) => {
+    runtimeTestState.spawnWorker.mockResolvedValue({
+      control: "output-only-v1", pid: 7, stop: vi.fn(), onStdout: vi.fn(), onStderr: vi.fn(), onExit: vi.fn(),
+    });
+    const root = tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-background-llm-")));
+    const permissionManager = new PermissionManager(join(root, "permissions.json"));
+    permissionManager.setMode(mode);
+    const requestAndWait = vi.fn(async () => ({ choice: "allow-once" }));
+    const approvals = new PluginBackgroundEffectApprovals();
+    const createHostApi = await initAndGetFactory(makeSettingsService(new Map()), { log: vi.fn() }, undefined, { requestAndWait }, {
+      permissionManager, backgroundEffectApprovals: approvals,
+    });
+    const entry: PluginRegistryTrust = {
+      installSource: "user",
+      origin: {
+        sourceId: "example-source", sourceOrigin: "custom", commit: "a".repeat(40), packagePath: "plugins/a", version: "1.0.0",
+        rung: "release", artifactSha256: "b".repeat(64), installedAt: "2026-11-01T00:00:00.000Z",
+      },
+    };
+    const approvedApi = (capabilities: string[]) => {
+      const manifest = {
+        id: "plugin-a", name: "Sample", version: "1.0.0", entry: "dist/plugin.js", description: "sample", tools: [], config: {},
+        networkAccess: { allowedDomains: ["api.example.test"] }, capabilities,
+      } as unknown as PluginManifest;
+      const api = createHostApi("plugin-a", manifest, pluginDataDirIn(tmpDirs.track(mkdtempSync(join(root, "data-")))), activeIncarnation(), null, entry) as unknown as PluginHostApi;
+      approvals.approve(backgroundEffectSubject(manifest, entry));
+      return api;
+    };
+    const outcome = (run: () => Promise<unknown>) => runWithEffectGateContext({ headless: false, standalone: true, toolName: "background" }, run)
+      .then(() => "ran", (caught: unknown) => caught instanceof EffectBoundaryDeniedError ? "denied" : "ran");
+    const spawn = (api: PluginHostApi) => () => api.spawnWorker!({ workerId: "w", command: "node", control: "output-only-v1" } as never);
+
+    const neither = approvedApi([]);
+    expect(await outcome(() => neither.callLlm("hello"))).toBe("denied");
+    expect(await outcome(spawn(neither))).toBe("denied");
+    const llmOnly = approvedApi(["background:call-llm"]);
+    expect(await outcome(() => llmOnly.callLlm("hello"))).toBe("ran");
+    expect(await outcome(spawn(llmOnly))).toBe("denied");
+    expect(runtimeTestState.spawnWorker).not.toHaveBeenCalled();
+    const both = approvedApi(["background:call-llm", "background:spawn-worker"]);
+    expect(await outcome(spawn(both))).toBe("ran");
+    expect(runtimeTestState.spawnWorker).toHaveBeenCalledTimes(1);
+    expect(requestAndWait).not.toHaveBeenCalled();
+  });
+
   it("revokes every callable HostApi surface when its incarnation is deactivated", async () => {
     const createHostApi = await initAndGetFactory(
       makeSettingsService(new Map()),
