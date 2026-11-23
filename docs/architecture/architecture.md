@@ -2278,6 +2278,28 @@ Key boundaries:
   long-lived worker treats EOF on stdin as the order to exit; that, not the
   shutdown sweep, is what keeps workers from outliving a crashed or killed host.
 
+### Process plugin lifecycle
+
+On Linux and macOS, a `process` plugin launches in a detached process group
+under mandatory OS confinement. It requires a live process-group reaper before
+spawn. If the reaper goes away, the host stops the process plugins it tracks and
+refuses new process-plugin launches until the reaper recovers. On host death the
+reaper reads EOF and kills the registered groups. Explicit stop also signals the
+group, including descendants still running after the leader exits.
+
+Linux tears down the sandbox PID namespace, including descendants in new process
+groups or sessions. On macOS, a descendant that moves to a different process group
+with `setsid()` or `setpgid()` can survive host death. This is an accepted limit
+of macOS process cleanup. The descendant remains bound by its original Seatbelt
+profile, and its host-owned proxy listener goes away with the host.
+
+The [host-death heartbeat test](../../src/plugins/isolation/__tests__/process-plugin-host-death.test.ts)
+closes the plugin's stdin and then the reaper pipe. It checks that every Linux
+heartbeat stops within two seconds, including the new-session grandchild. On
+macOS it checks that the original group's heartbeats stop and that the surviving
+grandchild cannot write outside its granted roots or use its plugin proxy after
+the host's proxy listeners close.
+
 ### Extension alerts and scheduled routines
 
 The [alerts design](../design/plugin-alerts.md) defines the complete alerts
