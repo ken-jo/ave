@@ -550,21 +550,9 @@ async function runToolInvocationAttempt(
       InvocationRunnerServices["pluginGenerationAccessProvider"]
     >;
     let generationLease: PluginGenerationLease<HostPluginGenerationState> | undefined;
-    // A pending generation transition must not hold an aborted call (and the quit join) on the lease.
-    if (tool.pluginGeneration && abortSignal?.aborted) {
-      const abortedCategory = resolveInvocationCategory(tool, toolUse.input, sessionId);
-      meta.source = tool.source;
-      meta.category = abortedCategory;
-      if (tool.pluginId) meta.pluginId = tool.pluginId;
-      if (tool.workerId) meta.workerId = tool.workerId;
-      if (tool.mcpServerId) meta.mcpServerId = tool.mcpServerId;
-      return withHostShellExecutionPlan(await returnUserAbort({
-        input: toolUse.input, toolUse, meta, callbacks, source: tool.source, trust: trustFromSource(tool.source),
-        invocationCategory: abortedCategory, sessionId, permissionContext,
-        executionCwd, startTime, auditWriter: services.auditWriter, abortSignal, audit: currentAuditMetadata(toolUse.input),
-      }));
-    }
-    if (tool.pluginGeneration) {
+    // An aborted call runs leaseless, so a pending generation transition cannot hold it (or the quit join); the
+    // owner and model-hidden denies still precede its abort refusal.
+    if (tool.pluginGeneration && !abortSignal?.aborted) {
       generationAccess = services.pluginGenerationAccessProvider();
       try {
         if (!generationAccess) {
