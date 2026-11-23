@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import { beforeEach, expect, it, vi } from "vitest";
-import { runFolderOf, vetRecordPath } from "../workspace-record.js";
+import { isWorkspaceRecord, runFolderOf, vetRecordPath } from "../workspace-record.js";
 
 const disk = vi.hoisted(() => ({ asked: [] as string[], resolved: [] as string[], real: undefined as string | undefined, gone: false }));
 
@@ -204,4 +204,21 @@ it("a registration's worktree path is taken only as the named folder of the run 
   for (const [text, taken] of cases) expect(vetRecordPath("worktree", text, at), text).toBe(taken);
   expect(disk.asked).toEqual([]);
   expect(disk.resolved).toEqual([]);
+});
+
+it("a folder run's record names a stage's files and the output folder's only by plain relative paths", () => {
+  const file = { sha256: "0".repeat(64), size: 1 };
+  const record = (where: "manifest" | "out", path: unknown): unknown => ({
+    v: 2, runId: "run", itemId: 1, kind: "folder", self: "1:1", outDir: "1:2", refs: [], registrations: {}, joins: {},
+    stages: { s1: { ready: true, attempt: 1, dir: "1:3", sealed: true, manifest: where === "manifest" ? [typeof path === "string" ? { path, ...file } : path] : [] } },
+    out: where === "out" ? { [path as string]: { ...file, stageId: "s1" } } : {},
+  });
+  for (const where of ["manifest", "out"] as const) {
+    for (const path of ["a.txt", "deep/er/a.txt", "..a/b..", ".hidden/x "]) expect.soft(isWorkspaceRecord(record(where, path)), `${where} ${path}`).toBe(true);
+    const refused = ["", "/abs/a.txt", "../a.txt", "a/../../b.txt", "a/..", "./a.txt", "a/./b.txt", "a//b.txt", "a/", "C:/a.txt", "C:a.txt", "a.txt:stream", String.raw`C:\a.txt`, String.raw`..\a.txt`,
+      String.raw`a\..\..\b.txt`, String.raw`\server\share\a.txt`, String.raw`\?\C:\a.txt`, "a\0.txt"];
+    for (const path of refused) expect.soft(isWorkspaceRecord(record(where, path)), `${where} ${JSON.stringify(path)}`).toBe(false);
+  }
+  for (const item of [null, 1, ["a.txt"], {}, { path: 1 }]) expect.soft(isWorkspaceRecord(record("manifest", item)), JSON.stringify(item)).toBe(false);
+  expect(isWorkspaceRecord({ ...(record("out", "a.txt") as object), stages: { s1: { ready: false, attempt: 1, manifest: {} } } })).toBe(false);
 });
