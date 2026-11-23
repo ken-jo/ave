@@ -3,6 +3,7 @@
 // Patch and category merges use affected tests; untrusted selections retain the full backstop.
 
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { join, posix } from "node:path";
 import process from "node:process";
@@ -20,7 +21,9 @@ import {
 } from "./hooks/pre-push-source-policy.mjs";
 import { isCollectedVitestFile } from "./lib/vitest-collection.mjs";
 import { WINDOWS_INVENTORY_LOCK, windowsInventoryDiff } from "./windows-test-inventory.mjs";
-import { UNBOUNDED_INPUT_EXEMPTIONS } from "./ci-unbounded-input-exemptions.mjs";
+import * as ast from "typescript/unstable/ast";
+import { UNBOUNDED_INPUT_EXEMPTIONS, UNBOUNDED_INPUT_TEMP_HELPERS } from "./ci-unbounded-input-exemptions.mjs";
+import { withParsedSourceTexts } from "./lib/ts7-ast.mjs";
 
 export const MUST_RUN_TESTS_PATH = "config/ci-must-run-tests.json";
 
@@ -137,16 +140,29 @@ function packageImportTarget(imports, specifier) {
   return null;
 }
 
-/**
- * Primitive uses in a test and in the __tests__/, test/ and scripts/ modules it
- * imports, as `file:class` entries. A helper import that cannot be resolved or
- * read counts as `file:unresolved`, so an unreadable closure fails closed.
- */
-export function unboundedInputHits(testPath, readText, exemptions = UNBOUNDED_INPUT_EXEMPTIONS) {
+// The helper a test-closure specifier names, or null when it names no
+// __tests__/, test/ or scripts/ module. Unresolvable specifiers return
+// { unresolved: true } so the closure fails closed.
+function resolveInputHelper(path, specifier, imports, readText) {
+  const target = specifier.startsWith("@/") ? posix.join("src", specifier.slice(2))
+    : specifier.startsWith("#") ? packageImportTarget(imports, specifier)
+      : posix.normalize(posix.join(posix.dirname(path), specifier));
+  if (target === null) return { unresolved: true };
+  const helper = (target.includes("/__tests__/") || target.startsWith("test/") || target.startsWith("scripts/"))
+    && !/\.(?:test|spec)\.[cm]?[jt]sx?$/u.test(target);
+  if (!helper || /\.json$/u.test(target)) return null;
+  const base = target.replace(/\.[cm]?js$/u, "");
+  const candidates = INPUT_HELPER_EXTENSIONS.flatMap((extension) => [`${base}${extension}`, `${target}${extension}`, `${base}/index${extension}`]);
+  return { path: candidates.find((candidate) => typeof readText(candidate) === "string") ?? target };
+}
+
+function packageImports(readText) {
+  try { return JSON.parse(readText("package.json") ?? "{}").imports; } catch { return undefined; }
+}
+
+function rawUnboundedInputHits(testPath, readText, exemptions) {
   const patterns = unboundedInputPatterns(exemptions);
-  const imports = (() => {
-    try { return JSON.parse(readText("package.json") ?? "{}").imports; } catch { return undefined; }
-  })();
+  const imports = packageImports(readText);
   const hits = [];
   const seen = new Set();
   const pending = [testPath];
@@ -163,23 +179,355 @@ export function unboundedInputHits(testPath, readText, exemptions = UNBOUNDED_IN
       if (pattern.test(text) && !Object.hasOwn(exemptions[path] ?? {}, kind)) hits.push(`${path}:${kind}`);
     }
     for (const [, specifier] of text.matchAll(HELPER_SPECIFIER)) {
-      const target = specifier.startsWith("@/") ? posix.join("src", specifier.slice(2))
-        : specifier.startsWith("#") ? packageImportTarget(imports, specifier)
-          : posix.normalize(posix.join(posix.dirname(path), specifier));
-      if (target === null) {
-        hits.push(`${path}:unresolved ${specifier}`);
-        continue;
-      }
-      const helper = (target.includes("/__tests__/") || target.startsWith("test/") || target.startsWith("scripts/"))
-        && !/\.(?:test|spec)\.[cm]?[jt]sx?$/u.test(target);
-      if (!helper || /\.json$/u.test(target)) continue;
-      const base = target.replace(/\.[cm]?js$/u, "");
-      const candidates = INPUT_HELPER_EXTENSIONS.flatMap((extension) => [`${base}${extension}`, `${target}${extension}`, `${base}/index${extension}`]);
-      const found = candidates.find((candidate) => typeof readText(candidate) === "string");
-      pending.push(found ?? target);
+      const helper = resolveInputHelper(path, specifier, imports, readText);
+      if (helper?.unresolved) hits.push(`${path}:unresolved ${specifier}`);
+      else if (helper) pending.push(helper.path);
     }
   }
   return hits;
+}
+
+// A non-literal read is bounded only when this file proves its path comes from
+// a temporary root the test made: mkdtemp, os.tmpdir(), or an audited temp
+// helper whose digest matches, joined with literals or for-of variables over
+// literal arrays, with no `..` segment and no absolute segment. Every other
+// read, including any root this cannot prove, stays unbounded.
+const READ_CALL_NAMES = ["readFileSync", "readFile", "existsSync"];
+const COPY_CALL_NAMES = ["symlinkSync", "symlink", "linkSync", "link", "cpSync", "cp", "copyFileSync", "copyFile", "renameSync", "rename"];
+const TEMP_VALUE_LIMIT = 64;
+const moduleFamily = (specifier) => ({ fs: "fs", "node:fs": "fs", "fs/promises": "fs", "node:fs/promises": "fs",
+  path: "path", "node:path": "path", os: "os", "node:os": "os" })[specifier] ?? null;
+const unwrapExpression = (node) => {
+  while (ast.isParenthesizedExpression(node) || ast.isAsExpression(node) || ast.isNonNullExpression(node) || ast.isSatisfiesExpression(node)) node = node.expression;
+  return node;
+};
+const escapesRoot = (value) => value.split(/[\\/]+/u).includes("..") || value.includes("~");
+const isAbsoluteSegment = (value) => /^(?:[\\/]|[A-Za-z]:)/u.test(value);
+
+function importOf(declaration) {
+  if (!declaration) return null;
+  if (ast.isImportSpecifier(declaration)) {
+    const clause = declaration.parent?.parent;
+    const statement = clause?.parent;
+    if (!ast.isImportClause(clause) || clause.isTypeOnly || declaration.isTypeOnly || !ast.isImportDeclaration(statement)) return null;
+    return { specifier: statement.moduleSpecifier.text, name: (declaration.propertyName ?? declaration.name).text };
+  }
+  const clause = ast.isNamespaceImport(declaration) ? declaration.parent : ast.isImportClause(declaration) ? declaration : null;
+  const statement = clause?.parent;
+  if (!clause || clause.isTypeOnly || !ast.isImportDeclaration(statement)) return null;
+  return { specifier: statement.moduleSpecifier.text, name: "*" };
+}
+
+// The digest an audited temp helper entry pins: the helper and every file it covers.
+export function tempHelperDigest(path, entry, readText) {
+  const hash = createHash("sha256");
+  for (const file of [path, ...(entry.covers ?? [])]) {
+    const text = readText(file);
+    if (typeof text !== "string") return null;
+    hash.update(`${file}\0${text}\0`);
+  }
+  return hash.digest("hex");
+}
+
+function identifiersOf(source) {
+  const identifiers = [];
+  const collect = (node) => {
+    if (ast.isIdentifier(node)) identifiers.push(node);
+    node.forEachChild(collect);
+  };
+  collect(source);
+  return identifiers;
+}
+
+function proveTempReads(path, text, source, declarations, context) {
+  const references = new Map();
+  const callsByCalleeEnd = new Map();
+  const visit = (node) => {
+    if (ast.isIdentifier(node)) {
+      const declaration = declarations.get(node);
+      if (declaration) references.set(declaration, [...(references.get(declaration) ?? []), node]);
+    }
+    if (ast.isCallExpression(node)) {
+      const callee = unwrapExpression(node.expression);
+      callsByCalleeEnd.set((ast.isPropertyAccessExpression(callee) ? callee.name : callee).end, node);
+    }
+    node.forEachChild(visit);
+  };
+  visit(source);
+
+  // { family, name } for an fs, path or os function, or { helper, name } for an
+  // imported function of a resolved helper module.
+  const calleeOf = (expression) => {
+    const callee = unwrapExpression(expression);
+    if (ast.isIdentifier(callee)) {
+      const imported = importOf(declarations.get(callee));
+      if (!imported || imported.name === "*") return null;
+      const family = moduleFamily(imported.specifier);
+      if (family) return { family, name: imported.name };
+      const helper = /^(?:\.{1,2}\/|@\/|#)/u.test(imported.specifier)
+        ? resolveInputHelper(path, imported.specifier, context.imports, context.readText) : null;
+      return helper?.path ? { helper: helper.path, name: imported.name } : null;
+    }
+    if (!ast.isPropertyAccessExpression(callee)) return null;
+    let receiver = unwrapExpression(callee.expression);
+    let member = null;
+    if (ast.isPropertyAccessExpression(receiver)) {
+      member = receiver.name.text;
+      receiver = unwrapExpression(receiver.expression);
+    }
+    if (!ast.isIdentifier(receiver)) return null;
+    const imported = importOf(declarations.get(receiver));
+    const family = imported ? moduleFamily(imported.specifier) : null;
+    if (!family) return null;
+    // fs.promises.readFile, path.posix.join, or { promises } / { posix } imports.
+    const namespace = member === null ? imported.name : imported.name === "*" ? member : null;
+    if (namespace === "*" || (family === "fs" && namespace === "promises") || (family === "path" && namespace === "posix")) {
+      return { family, name: callee.name.text };
+    }
+    return null;
+  };
+
+  // The audited factory a `const maker = factory(...literal segments)` binding
+  // was made by, with its literal arguments, or null.
+  const auditedMaker = (expression) => {
+    const callee = unwrapExpression(expression);
+    const declaration = ast.isIdentifier(callee) ? declarations.get(callee) : undefined;
+    if (!declaration || !ast.isVariableDeclaration(declaration) || !ast.isIdentifier(declaration.name)) return null;
+    const list = declaration.parent;
+    if (!ast.isVariableDeclarationList(list) || (list.flags & ast.NodeFlags.Const) === 0 || !ast.isVariableStatement(list.parent)) return null;
+    const made = declaration.initializer && unwrapExpression(declaration.initializer);
+    if (!made || !ast.isCallExpression(made)) return null;
+    const factory = calleeOf(made.expression);
+    const entry = factory?.helper ? context.helpers[factory.helper] : undefined;
+    const kind = entry?.factories[factory.name];
+    if (!kind || tempHelperDigest(factory.helper, entry, context.readText) !== entry.digest) return null;
+    const args = made.arguments.map(derive);
+    if (args.some((arg) => !arg || arg.temp || arg.values.some((value) => escapesRoot(value) || isAbsoluteSegment(value)))) return null;
+    return { kind, args };
+  };
+
+  const cross = (left, right, join) => {
+    const values = left.flatMap((a) => right.map((b) => `${a}${join}${b}`));
+    return values.length > TEMP_VALUE_LIMIT ? null : values;
+  };
+
+  // { temp, values }: values are the possible literal strings, or for a temp
+  // path the possible suffixes after the temporary root. null is unproven.
+  const visiting = new Set();
+  const derive = (input) => {
+    const node = unwrapExpression(input);
+    if (ast.isStringLiteral(node) || ast.isNoSubstitutionTemplateLiteral(node) || ast.isNumericLiteral(node)) {
+      return { temp: false, values: [node.text] };
+    }
+    if (ast.isTemplateExpression(node)) {
+      if (node.head.text !== "") return null;
+      let result = null;
+      for (const span of node.templateSpans) {
+        const part = derive(span.expression);
+        if (!part || (result === null ? !part.temp : part.temp)) return null;
+        const values = result === null ? part.values : cross(result.values, part.values, "");
+        const withLiteral = values && cross(values, [span.literal.text], "");
+        if (!withLiteral) return null;
+        result = { temp: true, values: withLiteral };
+      }
+      return result;
+    }
+    if (ast.isBinaryExpression(node) && node.operatorToken.kind === ast.SyntaxKind.PlusToken) {
+      const left = derive(node.left);
+      const right = derive(node.right);
+      if (!left || !right || right.temp) return null;
+      const values = cross(left.values, right.values, "");
+      return values && { temp: left.temp, values };
+    }
+    if (ast.isAwaitExpression(node)) {
+      const inner = unwrapExpression(node.expression);
+      return ast.isCallExpression(inner) ? deriveCall(inner, true) : null;
+    }
+    if (ast.isCallExpression(node)) return deriveCall(node, false);
+    if (ast.isIdentifier(node)) return deriveBinding(declarations.get(node));
+    return null;
+  };
+
+  const deriveCall = (call, awaited) => {
+    const args = call.arguments.map(derive);
+    if (args.some((arg) => arg === null)) return null;
+    const maker = auditedMaker(call.expression);
+    if (maker) {
+      // A directory maker takes an optional own prefix; a path maker joins its file name.
+      const literal = (arg) => !arg.temp && !arg.values.some((value) => escapesRoot(value) || isAbsoluteSegment(value));
+      if (maker.kind === "directory" && args.length <= 1 && args.every(literal)) return { temp: true, values: [""] };
+      if (maker.kind === "path" && args.length === 0 && maker.args.length === 2) {
+        return { temp: true, values: maker.args[1].values.map((value) => `/${value}`) };
+      }
+      return null;
+    }
+    const callee = calleeOf(call.expression);
+    if (!callee) return null;
+    if (callee.family === "path" && (callee.name === "join" || callee.name === "resolve")) {
+      const [root, ...segments] = args;
+      if (!root?.temp || segments.some((segment) => segment.temp)) return null;
+      if (callee.name === "resolve" && segments.some((segment) => segment.values.some(isAbsoluteSegment))) return null;
+      let values = root.values;
+      for (const segment of segments) {
+        values = cross(values, segment.values, "/");
+        if (!values) return null;
+      }
+      return { temp: true, values };
+    }
+    const fresh = (callee.family === "fs" && ["mkdtempSync", "realpathSync"].includes(callee.name))
+      || (callee.family === "fs" && awaited && ["mkdtemp", "realpath"].includes(callee.name))
+      || (callee.family === "os" && callee.name === "tmpdir" && args.length === 0);
+    if (!fresh) return null;
+    // realpath keeps its argument's root, so its argument must already be temp.
+    if (callee.name.startsWith("realpath") && !(args.length >= 1 && args[0].temp && args.slice(1).every((arg) => !arg.temp))) return null;
+    return { temp: true, values: [""] };
+  };
+
+  const assignmentTarget = (reference) => {
+    let node = reference;
+    let nested = false;
+    while (ast.isParenthesizedExpression(node.parent) || ast.isArrayLiteralExpression(node.parent) || ast.isObjectLiteralExpression(node.parent)
+      || ast.isShorthandPropertyAssignment(node.parent) || ast.isSpreadElement(node.parent) || ast.isSpreadAssignment(node.parent)
+      || (ast.isPropertyAssignment(node.parent) && node.parent.initializer === node)) {
+      if (!ast.isParenthesizedExpression(node.parent)) nested = true;
+      node = node.parent;
+    }
+    const parent = node.parent;
+    const assignment = ast.isBinaryExpression(parent) && parent.left === node
+      && parent.operatorToken.kind >= ast.SyntaxKind.FirstAssignment && parent.operatorToken.kind <= ast.SyntaxKind.LastAssignment;
+    const loopTarget = (ast.isForOfStatement(parent) || ast.isForInStatement(parent)) && parent.initializer === node;
+    const update = (ast.isPrefixUnaryExpression(parent) || ast.isPostfixUnaryExpression(parent))
+      && (parent.operator === ast.SyntaxKind.PlusPlusToken || parent.operator === ast.SyntaxKind.MinusMinusToken);
+    if (!assignment && !loopTarget && !update) return { write: false };
+    const simple = !nested && assignment && parent.operatorToken.kind === ast.SyntaxKind.EqualsToken && node === reference;
+    return { write: true, value: simple ? parent.right : null };
+  };
+
+  const deriveBinding = (declaration) => {
+    if (!declaration || !ast.isVariableDeclaration(declaration) || !ast.isIdentifier(declaration.name)) return null;
+    if (visiting.has(declaration)) return null;
+    visiting.add(declaration);
+    try {
+      const list = declaration.parent;
+      if (!ast.isVariableDeclarationList(list)) return null;
+      const constant = (list.flags & ast.NodeFlags.Const) !== 0;
+      if (ast.isForOfStatement(list.parent)) {
+        const items = unwrapExpression(list.parent.expression);
+        if (!constant || !ast.isArrayLiteralExpression(items)) return null;
+        const values = [];
+        for (const item of items.elements) {
+          if (!ast.isStringLiteral(item) && !ast.isNoSubstitutionTemplateLiteral(item)) return null;
+          values.push(item.text);
+        }
+        return values.length > 0 && values.length <= TEMP_VALUE_LIMIT ? { temp: false, values } : null;
+      }
+      if (!ast.isVariableStatement(list.parent)) return null;
+      const sources = declaration.initializer ? [declaration.initializer] : [];
+      if (!constant) {
+        for (const reference of references.get(declaration) ?? []) {
+          if (reference === declaration.name) continue;
+          const target = assignmentTarget(reference);
+          if (!target.write) continue;
+          if (!target.value) return null;
+          sources.push(target.value);
+        }
+      } else if (!declaration.initializer) return null;
+      if (sources.length === 0) return null;
+      const values = [];
+      for (const source of sources) {
+        const derived = derive(source);
+        if (!derived?.temp) return null;
+        values.push(...derived.values);
+      }
+      return values.length <= TEMP_VALUE_LIMIT ? { temp: true, values } : null;
+    } finally {
+      visiting.delete(declaration);
+    }
+  };
+
+  // Content copied or linked into the temp tree from elsewhere, or written by a
+  // child process, would make a temp read observe repository content. Every
+  // copy-named identifier must be a proven fs call, an fs namespace may only be
+  // a property receiver, and fs loaded any other way is not followed.
+  if (/child_process|\bexeca\b|\bBun\.(?:\$|spawn)/u.test(text)) return false;
+  if (/\b(?:require|import|importActual|doMock|mock)\s*(?:<[^>]*>)?\(\s*["'](?:node:)?fs(?:\/promises)?["']/u.test(text)) return false;
+  for (const [declaration, uses] of references) {
+    const imported = importOf(declaration);
+    if (imported && moduleFamily(imported.specifier) === "fs") {
+      const namespace = imported.name === "*" || imported.name === "promises";
+      if (COPY_CALL_NAMES.includes(imported.name) && declaration.propertyName) return false;
+      for (const use of uses) {
+        if (use === declaration.name || use === declaration.propertyName) continue;
+        if (namespace && !(ast.isPropertyAccessExpression(use.parent) && use.parent.expression === use)) return false;
+      }
+    }
+  }
+  for (const identifier of identifiersOf(source)) {
+    if (!COPY_CALL_NAMES.includes(identifier.text)) continue;
+    const parent = identifier.parent;
+    if (ast.isImportSpecifier(parent)) continue;
+    const callee = ast.isPropertyAccessExpression(parent) && parent.name === identifier ? parent : identifier;
+    const target = calleeOf(callee);
+    // Neither an fs import nor a member of one: aliasing and dynamic fs loads are rejected above.
+    if (!target) continue;
+    const call = callee.parent;
+    if (target?.family !== "fs" || !ast.isCallExpression(call) || call.expression !== callee || call.arguments.length === 0) return false;
+    const from = derive(call.arguments[0]);
+    if (!from?.temp || from.values.some(escapesRoot)) return false;
+  }
+  const read = new RegExp(`\\b(${READ_CALL_NAMES.join("|")}|${["readRepoFile", ...context.forwardedReads].join("|")})\\(\\s*(?!${LITERAL_ARGUMENT})`, "gu");
+  for (const match of text.matchAll(read)) {
+    const call = callsByCalleeEnd.get(match.index + match[1].length);
+    if (!call || !READ_CALL_NAMES.includes(match[1])) return false;
+    const callee = calleeOf(call.expression);
+    if (callee?.family !== "fs" || callee.name !== match[1] || call.arguments.length === 0) return false;
+    const argument = derive(call.arguments[0]);
+    if (!argument?.temp || argument.values.some(escapesRoot)) return false;
+  }
+  return true;
+}
+
+/**
+ * The files among `paths` whose every non-literal read is proven temp-bounded.
+ * A file that cannot be read, parsed or resolved is not proven.
+ */
+export function tempBoundedReadFiles(paths, readText, { exemptions = UNBOUNDED_INPUT_EXEMPTIONS, helpers = UNBOUNDED_INPUT_TEMP_HELPERS } = {}) {
+  const texts = new Map();
+  for (const path of new Set(paths)) {
+    const text = readText(path);
+    if (typeof text === "string") texts.set(path, text);
+  }
+  const proven = new Set();
+  if (texts.size === 0) return proven;
+  const context = {
+    readText,
+    helpers,
+    imports: packageImports(readText),
+    forwardedReads: Object.values(exemptions).flatMap((entry) => entry.forwards?.read ?? []),
+  };
+  withParsedSourceTexts(texts, (sources, resolveDeclarations) => {
+    for (const [path, source] of sources) {
+      if (proveTempReads(path, texts.get(path), source, resolveDeclarations(path, identifiersOf(source)), context)) proven.add(path);
+    }
+  });
+  return proven;
+}
+
+const withoutTempBoundedReads = (hitsByTest, readText, exemptions) => {
+  const readFiles = [...new Set([...hitsByTest.values()].flat().filter((hit) => hit.endsWith(":read")).map((hit) => hit.slice(0, -":read".length)))];
+  const proven = tempBoundedReadFiles(readFiles, readText, { exemptions });
+  return new Map([...hitsByTest].map(([test, hits]) => [test, hits.filter((hit) => !(hit.endsWith(":read") && proven.has(hit.slice(0, -":read".length))))]));
+};
+
+/**
+ * Primitive uses in a test and in the __tests__/, test/ and scripts/ modules it
+ * imports, as `file:class` entries. A helper import that cannot be resolved or
+ * read counts as `file:unresolved`, so an unreadable closure fails closed. A
+ * read class whose every non-literal read is proven temp-bounded is dropped.
+ */
+export function unboundedInputHits(testPath, readText, exemptions = UNBOUNDED_INPUT_EXEMPTIONS) {
+  const raw = new Map([[testPath, rawUnboundedInputHits(testPath, readText, exemptions)]]);
+  return withoutTempBoundedReads(raw, readText, exemptions).get(testPath);
 }
 
 const unboundedInputCache = new WeakMap();
@@ -189,7 +537,9 @@ export function selectUnboundedInputTests(trackedTests, readText, exemptions = U
   unboundedInputCache.set(readText, byTests);
   const cached = exemptions === UNBOUNDED_INPUT_EXEMPTIONS ? byTests.get(trackedTests) : undefined;
   if (cached) return cached;
-  const selected = trackedTests.filter((test) => unboundedInputHits(test, readText, exemptions).length > 0).sort();
+  const raw = new Map(trackedTests.map((test) => [test, rawUnboundedInputHits(test, readText, exemptions)]));
+  const hits = withoutTempBoundedReads(new Map([...raw].filter(([, entries]) => entries.length > 0)), readText, exemptions);
+  const selected = [...hits].filter(([, entries]) => entries.length > 0).map(([test]) => test).sort();
   if (exemptions === UNBOUNDED_INPUT_EXEMPTIONS) byTests.set(trackedTests, selected);
   return selected;
 }

@@ -1,4 +1,4 @@
-import type { UnboundedInputExemptions } from "./ci-unbounded-input-exemptions.mjs";
+import type { UnboundedInputExemptions, UnboundedInputTempHelper } from "./ci-unbounded-input-exemptions.mjs";
 import type { GitRawDiffEntry } from "./hooks/pre-push-ref-updates.mjs";
 import type { ReadWindowsVersion } from "./windows-test-inventory.mjs";
 
@@ -30,6 +30,12 @@ export declare function runsRepoCodeOutOfProcess(text: string): boolean;
 export declare function testRunsRepoCodeOutOfProcess(testPath: string, readText: (path: string) => string | null): boolean;
 export declare function unboundedInputClasses(text: string, exemptions?: UnboundedInputExemptions): string[];
 export declare function unboundedInputHits(testPath: string, readText: (path: string) => string | null, exemptions?: UnboundedInputExemptions): string[];
+export declare function tempHelperDigest(path: string, entry: UnboundedInputTempHelper, readText: (path: string) => string | null): string | null;
+export declare function tempBoundedReadFiles(
+  paths: Iterable<string>,
+  readText: (path: string) => string | null,
+  options?: { exemptions?: UnboundedInputExemptions; helpers?: Readonly<Record<string, UnboundedInputTempHelper>> },
+): Set<string>;
 export declare function selectUnboundedInputTests(trackedTests: readonly string[], readText: (path: string) => string | null, exemptions?: UnboundedInputExemptions): string[];
 export declare const AFFECTED_SHARD_THRESHOLD: number;
 export declare function runsCoverage(eventName: string | undefined): boolean;

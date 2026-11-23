@@ -47,3 +47,17 @@ export const UNBOUNDED_INPUT_EXEMPTIONS = {
     read: "reads its adjacent documentation-references.json; a change under scripts/ plans the full suite",
   },
 };
+
+// Audited temp factories. A `const maker = factory(...)` call with literal
+// arguments returns a maker whose calls return a fresh temporary directory
+// ("directory") or a literal file name joined onto one ("path"). The digest
+// (tempHelperDigest) pins the helper and the files it covers; the lock in
+// run-ci-suite.test.ts fails once any of them changes, which needs a re-audit.
+export const UNBOUNDED_INPUT_TEMP_HELPERS = {
+  "src/__tests__/test-helpers.ts": {
+    digest: "0855c54ee4b9e934b7a120d15edf433c3eb3512cc3110c2ec52cbf9b4af6378a",
+    covers: ["src/__tests__/support/tmp-dir-teardown.ts"],
+    factories: { useTempDirs: "directory", useTempPaths: "path" },
+    reason: "useTempDirs makers return tracker.track(mkdtempSync(join(tmpdir(), prefix))), and track returns its argument; useTempPaths makers join the factory's fileName onto one",
+  },
+};

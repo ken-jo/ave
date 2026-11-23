@@ -26,6 +26,7 @@ import {
   runsRepoCodeOutOfProcess,
   selectCiTests,
   selectUnboundedInputTests,
+  tempHelperDigest,
   unboundedInputClasses,
   unboundedInputHits,
   testRunsRepoCodeOutOfProcess,
@@ -33,7 +34,7 @@ import {
 import { parseGitRawDiff } from "../../scripts/hooks/pre-push-ref-updates.mjs";
 import { isCollectedVitestFile } from "../../scripts/hooks/pre-push-source-policy.mjs";
 import { WINDOWS_INVENTORY_LOCK, WINDOWS_TEST_LISTS } from "../../scripts/windows-test-inventory.mjs";
-import { UNBOUNDED_INPUT_EXEMPTIONS } from "../../scripts/ci-unbounded-input-exemptions.mjs";
+import { UNBOUNDED_INPUT_EXEMPTIONS, UNBOUNDED_INPUT_TEMP_HELPERS } from "../../scripts/ci-unbounded-input-exemptions.mjs";
 import { modifiedEntry as modified } from "../../src/__tests__/support/git-diff-entry.js";
 
 vi.mock("node:child_process", async (importOriginal) => {
@@ -899,6 +900,70 @@ describe("the must-run set", () => {
     expect(unboundedInputHits("src/b/__tests__/b.test.ts", read)).toEqual(["src/b/__tests__/support/gone.js:unresolved"]);
     // An exempted helper class is silent; production modules belong to the import graph.
     expect(unboundedInputHits("src/c/__tests__/c.test.ts", read)).toEqual([]);
+  });
+
+  describe("temp-bounded reads", () => {
+    const header = [
+      'import { cpSync, existsSync, mkdtempSync, readFileSync, realpathSync, symlinkSync } from "node:fs";',
+      'import { mkdtemp, readFile } from "node:fs/promises";',
+      'import * as fs from "node:fs";',
+      'import { tmpdir } from "node:os";',
+      'import { join, resolve } from "node:path";',
+    ].join("\n");
+    const hits = (body: string, extra: Record<string, string> = {}, fallback: (path: string) => string | null = () => null) => {
+      const files: Record<string, string> = { "src/t/__tests__/t.test.ts": `${header}\n${body}\n`, ...extra };
+      return unboundedInputHits("src/t/__tests__/t.test.ts", (path) => files[path] ?? fallback(path));
+    };
+    const unbounded = ["src/t/__tests__/t.test.ts:read"];
+
+    it.each([
+      ["mkdtempSync joined with literals", 'const dir = mkdtempSync(join(tmpdir(), "x-")); readFileSync(join(dir, "a", "b.json"), "utf8");'],
+      ["a for-of variable over a literal array", 'const dir = mkdtempSync(join(tmpdir(), "x-")); for (const name of ["a.json", "b.json"]) existsSync(join(dir, name));'],
+      ["awaited mkdtemp through realpathSync and a template", `const root = realpathSync(await mkdtemp(join(tmpdir(), "x-"))); await readFile(\`\${root}/state/a.json\`);`],
+      ["a let assigned only temp paths", 'let dir: string; beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "x-")); }); it("r", () => fs.readFileSync(resolve(dir, "a")));'],
+      ["a copy inside the temp tree", 'const dir = mkdtempSync(join(tmpdir(), "x-")); cpSync(join(dir, "a"), join(dir, "b")); readFileSync(join(dir, "b"));'],
+    ])("proves a temp-derived read bounded: %s", (_label, body) => {
+      expect(hits(body)).toEqual([]);
+    });
+
+    it.each([
+      ["temp mixed with process.cwd()", 'const dir = mkdtempSync(join(tmpdir(), "x-")); readFileSync(join(process.cwd(), dir));'],
+      ["a cwd root", 'readFileSync(join(process.cwd(), "a.json"));'],
+      ["a .. segment", 'const dir = mkdtempSync(join(tmpdir(), "x-")); readFileSync(join(dir, "..", "..", "package.json"));'],
+      ["an absolute resolve segment", 'const dir = mkdtempSync(join(tmpdir(), "x-")); readFileSync(resolve(dir, "/etc/hosts"));'],
+      ["a let reassigned to a non-temp path", 'let dir = mkdtempSync(join(tmpdir(), "x-")); dir = process.cwd(); readFileSync(join(dir, "a"));'],
+      ["a for-of variable over a computed array", 'const dir = mkdtempSync(join(tmpdir(), "x-")); for (const name of names()) readFileSync(join(dir, name));'],
+      ["a function parameter", "const read = (dir: string) => readFileSync(join(dir, \"a\"));"],
+      ["a property of a harness", 'readFileSync(harness.boardPath, "utf8");'],
+      ["a link from the repository into the temp tree", 'const dir = mkdtempSync(join(tmpdir(), "x-")); symlinkSync(process.cwd(), join(dir, "repo")); readFileSync(join(dir, "repo", "package.json"));'],
+      ["a copy from the repository into the temp tree", 'const dir = mkdtempSync(join(tmpdir(), "x-")); cpSync(process.cwd(), dir, { recursive: true }); readFileSync(join(dir, "package.json"));'],
+      ["a child process that can write the temp tree", 'import { execFileSync } from "node:child_process"; const dir = mkdtempSync(join(tmpdir(), "x-")); execFileSync("cp", ["-r", ".", dir]); readFileSync(join(dir, "a"));'],
+      ["fs loaded outside an import", 'const dir = mkdtempSync(join(tmpdir(), "x-")); require("node:fs").cpSync(".", dir); readFileSync(join(dir, "a"));'],
+      ["an aliased fs namespace", 'const f = fs; const dir = mkdtempSync(join(tmpdir(), "x-")); f.cpSync(".", dir); readFileSync(join(dir, "a"));'],
+      ["readFileSync not imported from fs", 'const dir = mkdtempSync(join(tmpdir(), "x-")); readFileSync(join(dir, "a")); function readFileSync(p: string) { return p; }'],
+    ])("keeps an unproven read unbounded: %s", (_label, body) => {
+      expect(hits(body)).toEqual(unbounded);
+    });
+
+    it("bounds a read through an audited temp factory only while its digest matches, and never through an unaudited helper", () => {
+      const auditedPath = "src/__tests__/test-helpers.ts";
+      const audited = readText(auditedPath) ?? "";
+      const teardown = readText("src/__tests__/support/tmp-dir-teardown.ts") ?? "";
+      const repo = { "src/__tests__/test-helpers.ts": audited, "src/__tests__/support/tmp-dir-teardown.ts": teardown };
+      const viaAudited = 'import { useTempDirs, useTempPaths } from "../../__tests__/test-helpers.js";\nconst makeDir = useTempDirs("x-"); const makePath = useTempPaths("y-", "state.json");\nreadFileSync(join(makeDir(), "a.json")); existsSync(makePath());';
+      // The helper's own imports come from the real tree.
+      expect(hits(viaAudited, repo, readText)).toEqual([]);
+      expect(hits(viaAudited, { ...repo, "src/__tests__/support/tmp-dir-teardown.ts": `${teardown}\n// changed` }, readText)).toEqual(unbounded);
+      expect(hits('import { useTempPaths } from "../../__tests__/test-helpers.js";\nconst makePath = useTempPaths("y-", "../../package.json"); readFileSync(makePath());', repo, readText)).toEqual(unbounded);
+      const viaUnaudited = 'import { makeScratch } from "./support/scratch.js";\nconst dir = makeScratch(); readFileSync(join(dir, "a.json"));';
+      expect(hits(viaUnaudited, { "src/t/__tests__/support/scratch.ts": 'export const makeScratch = () => "/tmp/x";' })).toEqual(unbounded);
+    });
+
+    it.each(Object.entries(UNBOUNDED_INPUT_TEMP_HELPERS))("pins the audited temp factories of %s", (file, entry) => {
+      expect(tempHelperDigest(file, entry, readText), `${file} or a covered file changed; re-audit its factories and update the digest`).toBe(entry.digest);
+      expect(entry.reason.trim()).not.toBe("");
+      for (const name of Object.keys(entry.factories)) expect(readText(file)).toMatch(new RegExp(`export function ${name}\\b`, "u"));
+    });
   });
 
   it.each([
