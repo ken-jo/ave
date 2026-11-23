@@ -622,15 +622,26 @@ export async function stageRunHarness(opts: {
     ? Promise.reject(progressEnded())
     : waitForSignal(progressChanges, () => events.slice(from).find(check), `progress signal never arrived for ${what}`);
   const signalOf = <T>(waits: Set<(change: T) => void>) => (wake: () => void) => { waits.add(wake); return () => { waits.delete(wake); }; };
+  /** Assertion waits still pending; cleanup ends each with its last failure. */
+  const assertionWaits = new Set<() => void>();
+  /** An assertion wait under the harness bound: past it, or at cleanup, it rejects with the assertion's last failure. */
+  function untilPasses(subscribe: (wake: () => void) => () => void, assertion: () => void | Promise<void>): Promise<void> {
+    if (closed) return Promise.reject(new Error("Assertion wait ended: harness cleaned up"));
+    return untilAsserted(subscribe, assertion, expire => {
+      const clearBound = boundWait(expire);
+      assertionWaits.add(expire);
+      return () => { clearBound(); assertionWaits.delete(expire); };
+    });
+  }
   /** Reruns `assertion` after each run-file commit, by any store, until it passes. */
-  const untilRunFile = (assertion: () => void | Promise<void>) => untilAsserted(signalOf(runWaits), assertion);
+  const untilRunFile = (assertion: () => void | Promise<void>) => untilPasses(signalOf(runWaits), assertion);
   /** Reruns `assertion` after each run-file commit or progress event until it passes. */
-  const untilObserved = (assertion: () => void | Promise<void>) => untilAsserted(wake => {
+  const untilObserved = (assertion: () => void | Promise<void>) => untilPasses(wake => {
     const stops = [signalOf(runWaits)(wake), signalOf(progressChanges)(wake)];
     return () => { for (const stop of stops) stop(); };
   }, assertion);
   /** Reruns `assertion` after each workspace call or sweep until it passes. */
-  const untilWorkspaceCalls = (assertion: () => void | Promise<void>) => untilAsserted(signalOf(callWaits), assertion);
+  const untilWorkspaceCalls = (assertion: () => void | Promise<void>) => untilPasses(signalOf(callWaits), assertion);
   /** The event that ended the run; it follows the stored status, so a test waits for it. */
   const settleEvent = () => waitForProgress(event => event.phase === "cancelled" || event.phase === "done" || event.phase === "denied" || event.phase === "error",
     "a run's end (cancelled, done, denied or error)");
@@ -656,6 +667,7 @@ export async function stageRunHarness(opts: {
       pulse("harness cleaned up");
       const ended = progressEnded();
       for (const changed of progressChanges) changed(ended);
+      for (const end of [...assertionWaits]) end();
       return cleanupTmpDir(dir);
     },
   };

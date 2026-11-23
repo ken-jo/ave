@@ -211,6 +211,7 @@ it("a boot that finds the run file awaiting review settles, sweeps and takes ove
     // The takeover sweeps with the run kept, then the run can be stopped.
     await h.untilWorkspaceCalls(() => expect(h.sweeps.slice(swept)).toEqual([[runId]]));
     await h.untilObserved(() => expect(engine.cancelRun(id).ok).toBe(true));
+    expect(h.sweeps.slice(swept)).toEqual([[runId]]);
     expect(h.children).toHaveLength(1);
   } finally {
     await h.cleanup();
