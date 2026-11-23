@@ -27,6 +27,8 @@ import { setProcessPlatform } from "../../__tests__/support/process-platform.js"
 import { EGRESS_GRANT_SCOPE_LADDERS } from "../../shared/egress-grant-scopes.js";
 import { _resetAveHomePrivacyForTest, setAveHomeConfigurationRefusedAtBoot } from "../../shared/ave-home.js";
 import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
+import { createShellNetworkPermissionEvaluator } from "../egress-approval.js";
+import { PermissionManager } from "../permission-manager.js";
 
 const matchingScopes = Object.values(EGRESS_GRANT_SCOPE_LADDERS).flat();
 
@@ -98,7 +100,7 @@ let requesterPresent: boolean;
 let networkRule: EgressAskDeps["networkRule"];
 const signals = new Map<string, AbortSignal>();
 
-function rawCallback(identityStrength: EgressAskDeps["identityStrength"] = () => strength) {
+function rawCallback(identityStrength: EgressAskDeps["identityStrength"] = () => strength, evaluateShellPermission?: EgressAskDeps["evaluateShellPermission"]) {
   return createEgressAskCallback({
     identityStrength,
     ownerOf: (token) => owners.get(token),
@@ -106,6 +108,7 @@ function rawCallback(identityStrength: EgressAskDeps["identityStrength"] = () =>
     workerAllowedDomains: (pluginId) => (pluginId === "fixture_plugin" ? ["api.fixture.example", "*.cdn.example:443"] : []),
     grants,
     networkRule: (subject) => networkRule(subject),
+    evaluateShellPermission,
     shellAskEnabled: () => askEnabled,
     requester: () => (requesterPresent
       ? async (request) => {
@@ -966,6 +969,60 @@ describe("egress ask callback — shell calls", () => {
       expect(notes.mock.calls.at(-1)).toEqual([undefined, "github.com", 443]);
       expect(observations.mock.calls.at(-1)?.[0]).toBeUndefined();
     }
+  });
+
+  it.each(["remembered", "rule", "mode"] as const)("denies a controller's next resolved connection under a %s allow when the owner changes", async basis => {
+    const sessionId = "session-1";
+    let ownerMatches = true;
+    const refreshCurrent = vi.fn(async () => ownerMatches);
+    const remoteControllerAuthority = bindRemoteControllerToSession({
+      kind: "tailnet-controller",
+      actorId: "tailnet:controller-digest",
+      pairedShare: { pairingId: "pairing", pairingEpoch: 1, shareId: "share", shareEpoch: 1, scope: "scope" },
+      pairedShareGuard: { isCurrent: () => true, refreshCurrent },
+    }, sessionId);
+    owners.set(SHELL_TOKEN, { ...interactiveShell, context: { ...interactiveShell.context, sessionId,
+      permissionContext: { remoteControllerAuthority } } });
+    const destination = { host: "github.com", port: 443 };
+    if (basis === "remembered") {
+      await grants.grant("always", ["always"],
+        { token: SHELL_TOKEN, sessionId, tabId: undefined, projectRoot: PROJECT, origin: "shell" }, destination);
+    } else if (basis === "rule") {
+      networkRule = async () => ({ decision: "allow", pattern: "Network(github.com)", scope: "user" });
+    }
+    const manager = new PermissionManager(join(dir, "permissions.json"));
+    manager.setMode("allow");
+    const raw = rawCallback(undefined, basis === "mode" ? createShellNetworkPermissionEvaluator(manager) : undefined);
+    const resolved = { attributionKey: SHELL_TOKEN, identity: "listener" as const, phase: "resolved" as const,
+      addresses: ["140.82.112.3"], resolution: "pinned" as const };
+    expect(await raw(destination, resolved)).toBe(true);
+    ownerMatches = false;
+    expect(await raw(destination, resolved)).toEqual({ allow: false, reason: "remote-controller-revoked" });
+    expect(refreshCurrent).toHaveBeenCalledTimes(2);
+    expect(asked).toHaveLength(0);
+    expect(audit.map(entry => entry.decision)).toEqual(["allow", "deny"]);
+    expect(audit[0]?.basis).toBe(basis === "remembered" ? "grant" : basis === "mode" ? "policy" : "rule");
+  });
+
+  it("refreshes the owner again before returning a newly approved resolved connection", async () => {
+    const sessionId = "session-1";
+    const refreshCurrent = vi.fn(async () => false).mockResolvedValueOnce(true);
+    const remoteControllerAuthority = bindRemoteControllerToSession({
+      kind: "tailnet-controller",
+      actorId: "tailnet:controller-digest",
+      pairedShare: { pairingId: "pairing", pairingEpoch: 1, shareId: "share", shareEpoch: 1, scope: "scope" },
+      pairedShareGuard: { isCurrent: () => true, refreshCurrent },
+    }, sessionId);
+    owners.set(SHELL_TOKEN, { ...interactiveShell, context: { ...interactiveShell.context, sessionId,
+      permissionContext: { remoteControllerAuthority } } });
+    answer = async () => ({ allow: true, scope: "once", oneConnection: true });
+    const destination = { host: "github.com", port: 443 };
+    const resolved = { attributionKey: SHELL_TOKEN, identity: "listener" as const, phase: "resolved" as const,
+      addresses: ["140.82.112.3"], resolution: "pinned" as const };
+    expect(await rawCallback()(destination, resolved)).toEqual({ allow: false, reason: "remote-controller-revoked" });
+    expect(asked).toHaveLength(1);
+    expect(refreshCurrent).toHaveBeenCalledTimes(2);
+    expect(audit).toEqual([expect.objectContaining({ decision: "deny", reason: "remote-controller-revoked" })]);
   });
 
   it.each(["prompt", "remembered grant"] as const)("does not act on a %s for a call that ended while its policy was evaluated", async (path) => {

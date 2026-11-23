@@ -1,6 +1,7 @@
 // Unknown/unvouched identities deny; workers reach only declared/model endpoints, never prompt or inherit shell grants. Shells require a matching grant or explicit foreground approval; disabled asks and unattended calls deny. Terminal asks use their tab and deny when unanswered.
 // Decide by name before DNS/routing, then recheck the resolved destination class; changed classes require fresh consent. Match origin in both phases so shell/tab grants cannot cross. Exceptions and every value except literal true deny; audit each final decision with its reason.
 import { AveHomeConfigurationRefusedWriteError } from "../shared/ave-home.js";
+import { isRemoteControllerBoundToSession, refreshRemoteControllerBoundToSession } from "../shared/chat-origin.js";
 import type { ToolApprovalWait } from "../tools/executor-ceiling.js";
 import type { NetworkPermissionEvaluation } from "./permission-manager.js";
 import {
@@ -144,6 +145,7 @@ interface Decision {
   readonly provisional?: true;
   // Names nobody: no record, observation or audit row carries the key or owner.
   readonly unattributed?: true;
+  readonly onAllow?: () => void;
 }
 
 // A person's allow given by name, held until the resolved phase confirms the destination's class.
@@ -184,6 +186,15 @@ const log = createLogger("egress-ask");
 
 const unattributed = (): Decision =>
   ({ allow: false, basis: "policy", scope: null, reason: EGRESS_DENY_REASONS.unattributed, unattributed: true });
+const revokedConnection = (): Decision => deny("policy", "remote-controller-revoked");
+
+function invocationRefusal({ owner, invocation }: Verified): Decision | undefined {
+  if (invocation?.live() !== true) return unattributed();
+  if (owner?.kind === "shell" &&
+    !isRemoteControllerBoundToSession(owner.context.permissionContext?.remoteControllerAuthority, owner.context.sessionId)) {
+    return revokedConnection();
+  }
+}
 
 // A person's answer, before it becomes a grant: the scope chosen among those offered.
 type AskAnswer =
@@ -377,11 +388,13 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
       if (authority && (!holdsGrant || grantedScope !== scope)) await refreshApprovalPersistence(authority);
       if (!invocation.live()) return unattributed();
       assertApprovalPersistenceCurrent(authority);
-      if (holdsGrant && grantedScope === scope) deps.grants.noteUse(scope, subject, destination);
-      return allow("prompt", grantedScope);
+      return {
+        ...allow("prompt", grantedScope),
+        ...(holdsGrant && grantedScope === scope ? { onAllow: () => deps.grants.noteUse(scope, subject, destination) } : {}),
+      };
     } catch (error) {
       if (!invocation.live()) return unattributed();
-      if (error instanceof ApprovalPersistenceError) return deny("policy", "remote-controller-revoked");
+      if (error instanceof ApprovalPersistenceError) return revokedConnection();
       throw error;
     }
   };
@@ -460,11 +473,13 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
         const eligibleScopes = egressScopesForNetwork(egressGrantScopesFor(strength, owner.kind), network);
         const key = holdKey(token, invocation.generation, destination, strength);
         const granted = await deps.grants.matchingScope(subject, grantDestination, eligibleScopes);
+        const afterLookup = invocationRefusal(verified);
+        if (afterLookup) return afterLookup;
         const evaluation = owner.kind === "shell" ? await deps.evaluateShellPermission({ destination,
           context: deps.shellAskEnabled() ? owner.context : { ...owner.context, approvalSurface: "unavailable" },
           network, scopes: eligibleScopes, ...(granted === undefined ? {} : { rememberedGrant: granted }) }) : undefined;
-        // From here to the no-approver notice, the prompt, the held-answer take, the grant call or the use note nothing awaits, so an invocation that ended during the lookups above gets none of them.
-        if (!invocation.live()) return unattributed();
+        const afterPolicy = invocationRefusal(verified);
+        if (afterPolicy) return afterPolicy;
         if (evaluation?.permission.decision === "deny") {
           if (evaluation.permission.reasonCode === "no-approver" && owner.kind === "shell") owner.context.onNoApprover?.();
           const ruleDenied = evaluation.rule?.decision === "deny";
@@ -480,23 +495,21 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
         }
         if (owner.kind === "shell" && evaluation?.permission.decision === "allow") {
           if (granted !== undefined && evaluation.permission.reasonCode === "remembered-approval") {
-            if (resolvedPhase) deps.grants.noteUse(granted, subject, grantDestination);
-            return pass(allow("grant", granted));
+            return pass({ ...allow("grant", granted), onAllow: () => deps.grants.noteUse(granted, subject, grantDestination) });
           }
           return pass(allow(evaluation.rule?.decision === "allow" ? "rule" : "policy", null));
         }
         for (;;) {
           // Physical terminal grants remain outside agent policy. Shell grants have already passed the common pipeline.
           if (owner.kind === "terminal" && granted !== undefined) {
-            if (resolvedPhase) deps.grants.noteUse(granted, subject, grantDestination);
-            return pass(allow("grant", granted));
+            return pass({ ...allow("grant", granted), onAllow: () => deps.grants.noteUse(granted, subject, grantDestination) });
           }
           if (owner.kind === "terminal" && !deps.shellAskEnabled()) return deny("policy", EGRESS_DENY_REASONS.askOff);
           // Shell availability is resolved by the common pipeline: automatic review runs before a human fallback denies.
           const answer = await ask(token, invocation.generation, owner, destination, network, strength, evaluation);
+          const afterAnswer = invocationRefusal(verified);
+          if (afterAnswer) return afterAnswer;
           if (answer === ASK_AGAIN) return decide(host, port, context, verified);
-          // An answer that arrives after the invocation ended grants nothing, and its refusal is not the invocation's.
-          if (!invocation.live()) return unattributed();
           if (!answer.allow) return answer.decision;
           if (resolvedPhase) return await grantAnswer(token, owner, grantDestination, answer.scope, answer.scopes, invocation, answer.oneConnection);
           holdAnswer(key, { scope: answer.scope, scopes: answer.scopes, network, at: now().getTime(),
@@ -513,6 +526,18 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
     let decision: Decision;
     try {
       decision = await decide(host, port, context, verified);
+      if (decision.allow) {
+        const { owner } = verified;
+        const binding = owner?.kind === "shell" ? owner.context.permissionContext?.remoteControllerAuthority : undefined;
+        const refusal = invocationRefusal(verified);
+        if (refusal) decision = refusal;
+        else if (!decision.provisional && owner?.kind === "shell" && binding) {
+          // The resolved decision can authorize a new socket even when its policy or approval was already known.
+          const fresh = await refreshRemoteControllerBoundToSession(binding, owner.context.sessionId);
+          decision = invocationRefusal(verified) ?? (fresh ? decision : revokedConnection());
+        }
+        if (decision.allow) decision.onAllow?.();
+      }
     } catch (error) {
       if (verified.invocation?.live() === false) {
         // The refusal names nobody once the call ended; its failure is still kept for diagnosis.
@@ -526,8 +551,6 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
         decision = deny("policy", `${EGRESS_DENY_REASONS.failed}: ${errorMessage(error)}`);
       }
     }
-    // Every allow, provisional, remembered and policy ones included, is given only to an invocation that is still live.
-    if (decision.allow && verified.invocation?.live() !== true) decision = unattributed();
     const attributed: Verified = decision.unattributed === true ? {} : verified;
     const { key, owner } = attributed;
     // A name-phase allow is not a decision yet: the resolved phase gives it.
