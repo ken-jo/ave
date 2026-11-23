@@ -139,6 +139,7 @@ import {
 import { planWindowsSandbox } from "../../boot/steps/windows-sandbox-plan.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { startFakeRelayPeer } from "../../__tests__/support/fake-relay-peer.js";
+import { installProgramsOnPath, withPlantedProgram } from "../../__tests__/support/planted-program.js";
 import { resolvePluginChildEntryPath } from "../confined-child.js";
 import { HostApiDispatcher, HOSTAPI_DISPATCH_TABLE, defineHostApiPath } from "../../plugins/isolation/host-api-dispatcher.js";
 import { PluginHostApiError } from "../../plugins/isolation/host-api-wire.js";
@@ -363,6 +364,27 @@ describe("spawnWorker — gate OFF (default)", () => {
       workerId: "Embed",
       command: "/opt/worker", control: "output-only-v1" as const,
     })).rejects.toThrow(/invalid workerId/);
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it("spawns a bare worker name from its absolute PATH location, so existing specs keep working", async () => {
+    const programs = installProgramsOnPath(["ave-worker-on-path"]);
+    try {
+      spawnMock.mockReturnValueOnce(new StubWorkerChild());
+      const worker = await spawnWorker(workerOptions({ command: "ave-worker-on-path" }));
+      expect(spawnMock.mock.calls[0]?.[0]).toBe(programs.program("ave-worker-on-path"));
+      worker.stop();
+    } finally {
+      await programs.restore();
+    }
+  });
+
+  it("refuses a worker name reachable only through the cwd or empty and relative PATH entries, and a relative path", async () => {
+    await withPlantedProgram(["ave-planted-worker"], async () => {
+      for (const command of ["ave-planted-worker", "./ave-planted-worker"]) {
+        await expect(spawnWorker(workerOptions({ command }))).rejects.toThrow(/not found on PATH|bare name or an absolute path/u);
+      }
+    });
     expect(spawnMock).not.toHaveBeenCalled();
   });
 

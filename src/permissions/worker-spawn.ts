@@ -29,6 +29,7 @@ import {
   type WorkerStdioControl,
 } from "./worker-stdio-control.js";
 import { buildSafeChildEnv } from "../tools/safe-env.js";
+import { resolveHostProgram } from "../shared/host-program-path.js";
 import { spawnConfinedChild } from "./confined-child.js";
 import {
   assertManagedChildProcessAdmissionOpen,
@@ -248,7 +249,8 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
   // Gate OFF → plain unwrapped spawn
   if (!isPluginWorkerConfinementActive()) {
     assertManagedChildProcessAdmissionOpen(`worker:${safePlugin}:${safeWorker}`);
-    const child = spawn(spec.command, args, {
+    // A bare name resolves on PATH only, never in the inherited host cwd.
+    const child = spawn(resolveHostProgram(spec.command, baseEnv), args, {
       stdio: WORKER_STDIO,
       shell: false,
       windowsHide: true,

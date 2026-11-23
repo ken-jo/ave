@@ -1,11 +1,13 @@
 /** A program planted in the current directory under a host program's name, with PATH holding only cwd-relative and empty entries plus an empty folder. */
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { win32SystemBinary } from "../../shared/windows-system-path.js";
-import { cleanupTmpDir } from "./tmp-dir-teardown.js";
 
 const LOOKUP_VARIABLE = "NoDefaultCurrentDirectoryInExePath";
+
+// Synchronous so callers that mock the promise file API can still use these fixtures.
+const removeFixture = (dir: string) => rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
 
 export interface PlantedProgram {
   /** The folder holding the planted program; also the process cwd while planted. */
@@ -50,7 +52,7 @@ export async function withPlantedProgram<T>(names: readonly string[], use: (plan
     else process.env.PATH = previousPath;
     if (previousLookup === undefined) delete process.env[LOOKUP_VARIABLE];
     else process.env[LOOKUP_VARIABLE] = previousLookup;
-    await cleanupTmpDir(root);
+    removeFixture(root);
   }
 }
 
@@ -78,7 +80,7 @@ export function installProgramsOnPath(names: readonly string[]): ProgramsOnPath 
     async restore() {
       if (previousPath === undefined) delete process.env.PATH;
       else process.env.PATH = previousPath;
-      await cleanupTmpDir(dir);
+      removeFixture(dir);
     },
   };
 }
