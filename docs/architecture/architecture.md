@@ -2277,6 +2277,30 @@ Key boundaries:
   an orderly stop, otherwise it closes when the host process is gone, so a
   long-lived worker treats EOF on stdin as the order to exit; that, not the
   shutdown sweep, is what keeps workers from outliving a crashed or killed host.
+- extension work outside a tool call (timers, events, startup) carries no
+  invocation token and may use only its **declared background effects**, after
+  the user approves them on the enable card (owner decision 2026-11-23). The
+  manifest fields define them: writes to the extension's own storage; `hostFetch`
+  to `networkAccess.allowedDomains`; `raiseAlert` for the declared `alerts.kinds`;
+  `triggerConversation` for the declared `alerts.suggestions` sources; `callLlm`
+  when `capabilities` lists `background:call-llm`; and `spawnWorker` when it lists
+  `background:spawn-worker`. Any other `background:` capability is a manifest
+  error. Everything else is denied outside a tool call, including `config.set`,
+  `openExternalUrl` and the auth methods. Storage reads need no approval.
+  The approval is keyed by the extension id, the install source pinned at
+  install (the marketplace source and package path, or for a local development
+  install the manifest it installed) and the hash of the canonical declared set.
+  A version-only update keeps it; a scope or source change asks again. Uninstall
+  drops it and disable keeps it. An install with no pinned source (admin, bundled
+  or a legacy row) cannot be approved, and a missing or unreadable approvals file
+  loads as empty. Within the approved scope a deny or a forced floor still
+  denies, and the card answers only ordinary asks (`file-write`,
+  `shell-approval`, `network-approval`, `review-required`). An own-storage write
+  also passes the application-home floor, because extension storage sits in the
+  app home and the host confines the path. Any other ask is denied. The card
+  appears when an extension starts running unapproved after an install, update
+  or enable; an extension loaded at boot shows a Review badge in its settings
+  instead.
 
 ### Extension alerts and scheduled routines
 

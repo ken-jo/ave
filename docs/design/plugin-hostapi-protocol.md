@@ -716,11 +716,16 @@ Rules:
   - A request without the token runs in the standalone context. It inherits no
     tool or spawn context and never asks. A gated reverse write or host fetch hop runs
     only when it falls in the plugin's declared background scope and the user approved
-    that scope at enable for the current manifest hash. The scope is the plugin's own
-    storage writes, host fetch when the manifest declares network destinations, and
-    `raiseAlert` / `triggerConversation` when it declares alert kinds or suggestion
-    sources. A manifest change re-asks; until then every standalone gated effect is
-    denied, as is any effect outside the scope, and a policy deny still wins.
+    that scope at enable for the current install source and scope hash. The scope is
+    the plugin's own storage writes, host fetch to its declared network destinations,
+    `raiseAlert` / `triggerConversation` for its declared alert kinds and suggestion
+    sources, and `callLlm` / `spawnWorker` when its capabilities list
+    `background:call-llm` / `background:spawn-worker` (the
+    [architecture](../architecture/architecture.md#extension-runtime) defines it).
+    A source or scope change re-asks; until then every standalone gated effect is
+    denied, as is any effect outside the scope. Inside it a policy deny or forced
+    floor still wins and only ordinary asks pass. Storage reads need no approval but
+    still stop at a deny or an ask.
     Manifest capability, destination and redirect checks still apply to host fetch.
   - With one live tool call, a gated write requires an invocation token. This
     includes mutating host fetch verbs. With concurrent live tool calls, every
