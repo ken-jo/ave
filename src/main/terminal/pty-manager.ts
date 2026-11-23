@@ -17,7 +17,8 @@ import { shellQuote } from "../../lib/shell-resolver.js";
 import { buildSandboxedChildEnv, buildUserTerminalEnv } from "../../tools/safe-env.js";
 import {
   getDefaultSensitiveReadDenyPaths,
-  getDefaultSensitiveWriteDenyPaths,
+  getDefaultSensitiveWriteDenyEntries,
+  runWithSandboxWritePreflight,
   wrapTerminalCommand,
   wrapWorkerCommand,
   cleanupAsrtSandboxAfterCommand,
@@ -682,7 +683,6 @@ async function spawnNewTerminal(
   const allowRead = [cwd, ...allowWrite];
   const boundarySnapshot = createAveHomeBoundarySnapshot();
   const denyRead = boundarySnapshot.run(() => getDefaultSensitiveReadDenyPaths());
-  const denyWrite = getDefaultSensitiveWriteDenyPaths();
 
   // macOS only (terminal-tty-handoff.ts): the pty is spawned first, on a trampoline, so the wrap can grant the shell its own terminal by path.
   let handoff: TerminalTtyHandoff | undefined;
@@ -703,7 +703,6 @@ async function spawnNewTerminal(
       innerPtyCommand = innerPty.innerPtyShellCommand;
     }
     const cmdline = buildShellCommand(shell, tempDir, innerPtyCommand);
-    const filesystem = { allowWrite, allowRead, denyRead, denyWrite };
     const ptyOptions = { name: "xterm-256color", cols, rows, cwd };
 
     let ownTty: string | undefined;
@@ -739,10 +738,11 @@ async function spawnNewTerminal(
       egressAbort.abort(new Error("terminal shell ended"));
       egress.release();
     });
-    wrapped =
-      ownTty === undefined
-        ? await wrapWorkerCommand(cmdline, { filesystem, boundarySnapshot, commandId: egress.token, denyUnixSockets: true, abortSignal: owner.abort.signal })
-        : await wrapTerminalCommand(cmdline, { filesystem, ownTty, boundarySnapshot, commandId: egress.token, denyUnixSockets: true, abortSignal: owner.abort.signal });
+    wrapped = await runWithSandboxWritePreflight(owner.abort.signal, () => {
+      const filesystem = { allowWrite, allowRead, denyRead, denyWrite: getDefaultSensitiveWriteDenyEntries() };
+      const options = { filesystem, boundarySnapshot, commandId: egress.token, denyUnixSockets: true, abortSignal: owner.abort.signal };
+      return ownTty === undefined ? wrapWorkerCommand(cmdline, options) : wrapTerminalCommand(cmdline, { ...options, ownTty });
+    });
     const { argv, env } = wrapped;
     const cleanupWrap = addCleanup(() => { void cleanupAsrtSandboxAfterCommand(); releaseEgress(); });
     const gitPolicyChanged = prepareTerminalGitPolicyCheck(wrapped.filesystemPolicy, wrapped.gitControlSnapshot);

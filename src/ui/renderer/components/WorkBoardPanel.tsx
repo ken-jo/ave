@@ -39,6 +39,9 @@ import type {
   WorkItemPriority,
   WorkItemResolved,
   WorkItemStatusStored,
+  WorkItemDeleteTarget,
+  WorkItemUnreadableRow,
+  WorkItemUnreadableRun,
   WorkItemUpdateInput,
 } from "../../../shared/work-board-types.js";
 import type { WorkBoardToolApprovalSurface } from "../../../shared/work-board-types.js";
@@ -63,6 +66,7 @@ import {
   isTerminalPhase,
   latestTurn,
   liveTextOf,
+  reasonText,
   runStartedAt,
   useNowTick,
   useWorkBoardRun,
@@ -242,6 +246,7 @@ function RunIndicator({ run, item }: { run: WorkItemRunState | undefined; item?:
   const duration = settledDuration(item);
   const inFlight = isRunInFlight(run);
   const phase = run.phase;
+  if (run.heldNotice) return <span role="status" className="text-tiny text-muted-foreground" data-testid="work-board-run-held">{run.heldNotice}</span>;
 
   // Settled states of a run this board saw: done, rejected, failed or stopped, each with its own chip (livestep cases 10-12). Every phase
   // is named so a new one cannot fall through to "no chip" unnoticed.
@@ -406,6 +411,8 @@ interface CardActions {
   onComplete: (id: number) => void;
   onReopen: (id: number) => void;
   onRun: (id: number) => void;
+  /** Clear a row shown `template-run-not-found`, as its card shows it. */
+  onClearRun: (item: WorkItemResolved) => void;
   onOpenDetail: (id: number) => void;
   /** Open the live step panel on the item's run. */
   onShowSteps: (id: number) => void;
@@ -430,12 +437,15 @@ function WorkItemCard({ item, run, actions }: WorkItemCardProps) {
   const stage = workBoardStage(item);
   const overdue = item.status_resolved === "overdue";
   const isCompleted = item.status === "completed";
+  const runMissing = item.templateRunError === "template-run-not-found";
   const live = run !== undefined && isRunInFlight(run) ? run : undefined;
   const narration = latestTurn(live);
   const toolApproval = live ? actions.toolApprovals.get(item.id)?.[0] : undefined;
   const stepsShowing = actions.stepsShowingId === item.id;
   const narrationLine = (className: string) => (
-    toolApproval ? (
+    live?.heldNotice ? (
+      <p role="status" className={className} data-testid="work-board-run-held">{live.heldNotice}</p>
+    ) : toolApproval ? (
       // A waiting tool approval takes the narration's line, so the card keeps its height. In chat mode the line links to the run's
       // step panel, where the approval card is; in dialog mode the card is already over the board.
       <p className={className} data-testid="work-board-live-narration" title={toolApproval.toolName}>
@@ -544,7 +554,11 @@ function WorkItemCard({ item, run, actions }: WorkItemCardProps) {
                   </Badge>
                 )}
                 <span className="text-dense text-muted-foreground">{formatDue(item.due_at)}</span>
-                <RunIndicator run={run} item={item} />
+                {runMissing ? (
+                  <Badge variant="outline" className="border-destructive/(--opacity-half) text-destructive" title={t("workBoard.runRecordNotFoundHint")} data-testid="work-board-run-not-found">
+                    {t("workBoard.runRecordNotFound")}
+                  </Badge>
+                ) : <RunIndicator run={run} item={item} />}
               </div>
             </>
           )}
@@ -573,7 +587,22 @@ function WorkItemCard({ item, run, actions }: WorkItemCardProps) {
             {t("workBoard.liveStepsShow")}
           </Button>
         )}
-        {!isCompleted && !live && (
+        {runMissing && !live && (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-6 px-2 text-dense"
+            aria-label={t("workBoard.clearRunLabel", { id: item.id })}
+            onClick={(e) => {
+              e.stopPropagation();
+              actions.onClearRun(item);
+            }}
+            data-testid="work-board-clear-run"
+          >
+            {t("workBoard.clearRunButton")}
+          </Button>
+        )}
+        {!isCompleted && !live && !runMissing && (
           <Button
             size="sm"
             variant="ghost"
@@ -760,7 +789,7 @@ function defaultDueIso(): string {
   return localDateKey(d);
 }
 
-function WorkItemCreateDialog({ api, project, onClose, onCreated }: CreateDialogProps) {
+export function WorkItemCreateDialog({ api, project, onClose, onCreated }: CreateDialogProps) {
   const [title, setTitle] = useState("");
   const [detail, setDetail] = useState("");
   const [dueDate, setDueDate] = useState(defaultDueIso());
@@ -797,7 +826,7 @@ function WorkItemCreateDialog({ api, project, onClose, onCreated }: CreateDialog
         onClose();
       } else {
         const reason = "reason" in result ? result.reason : "error" in result ? result.error : undefined;
-        setError(reason ?? t("workBoard.errorAddFailed"));
+        setError(reasonText(reason) ?? t("workBoard.errorAddFailed"));
       }
     } catch (err) {
       setError(errorMessage(err) || t("workBoard.errorAddFailed"));
@@ -1102,8 +1131,16 @@ function workItemMutationMessage(reason: unknown): string {
     case "movePlanDecision": return t("workBoard.movePlanDecision");
     case "moveReviewDerived": return t("workBoard.moveReviewDerived");
     case "moveResultDecision": return t("workBoard.moveResultDecision");
-    default: return t("workBoard.errorMutationRefused");
+    case "template-run-not-found": return t("reasonCodes.template-run-not-found");
+    default: return refusalText(reason) ?? t("workBoard.errorMutationRefused");
   }
+}
+
+// The text of a refusal code the host sends, or undefined for a reason that has none.
+function refusalText(reason: unknown): string | undefined {
+  if (typeof reason !== "string") return undefined;
+  const text = reasonText(reason);
+  return text === reason ? undefined : text;
 }
 
 function WorkItemDetailDialog({ api, itemId, run, openLatestRun, onClose, onChanged, onRun }: DetailDialogProps) {
@@ -1228,7 +1265,7 @@ function WorkItemDetailDialog({ api, itemId, run, openLatestRun, onClose, onChan
           ? await api.completeWorkBoardItem(item.id, item.mutationRevision)
           : op === "reopen"
             ? await api.reopenWorkBoardItem(item.id, item.mutationRevision)
-            : await api.removeWorkBoardItem(item.id);
+            : await api.removeWorkBoardItem(item.id, { revision: item.mutationRevision ?? "" });
       const ok =
         "status" in result &&
         (result.status === "completed" || result.status === "reopened" || result.status === "deleted");
@@ -1599,6 +1636,50 @@ function ReportResultBlock({
   );
 }
 
+/** One card per row of the board file that does not validate: it says which row. Nothing on it opens or changes the row; its delete
+ * removes that entry alone at once, with no confirm. */
+function UnreadableRowCards({ rows, onDelete }: { rows: readonly WorkItemUnreadableRow[]; onDelete: (row: WorkItemUnreadableRow) => void }) {
+  return (
+    <ul className="flex flex-col gap-2 pb-3" aria-label={t("workBoard.unreadableRowsLabel")} data-testid="work-board-unreadable-rows">
+      {rows.map((row) => (
+        <li key={`${row.position}-${row.hash}`} className="rounded-lg border border-destructive/(--opacity-half) bg-destructive/(--opacity-faint) p-3 text-sm" data-testid="work-board-unreadable-row">
+          <Badge variant="outline" className="mb-1.5 border-destructive text-destructive">{t("workBoard.unreadableRowBadge")}</Badge>
+          <p>{row.id === undefined ? t("workBoard.unreadableRowNoId") : t("workBoard.unreadableRow", { id: row.id })}</p>
+          <Button
+            size="sm" variant="outline" className="mt-2" data-testid="work-board-unreadable-row-delete"
+            aria-label={row.id === undefined ? t("workBoard.unreadableRowNoIdDeleteLabel", { n: row.position + 1 }) : t("workBoard.unreadableRowDeleteLabel", { id: row.id })}
+            onClick={() => onDelete(row)}
+          >
+            {t("workBoard.deleteButton")}
+          </Button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** One card per entry of the run file that does not read as a run: it says which row it names, if any. Its discard removes that entry
+ * alone at once, with no confirm; nothing on it starts or stops a run. */
+function UnreadableRunCards({ runs, onDiscard }: { runs: readonly WorkItemUnreadableRun[]; onDiscard: (run: WorkItemUnreadableRun) => void }) {
+  return (
+    <ul className="flex flex-col gap-2 pb-3" aria-label={t("workBoard.unreadableRunsLabel")} data-testid="work-board-unreadable-runs">
+      {runs.map((run) => (
+        <li key={`${run.position}-${run.hash}`} className="rounded-lg border border-destructive/(--opacity-half) bg-destructive/(--opacity-faint) p-3 text-sm" data-testid="work-board-unreadable-run">
+          <Badge variant="outline" className="mb-1.5 border-destructive text-destructive">{t("workBoard.unreadableRunBadge")}</Badge>
+          <p>{run.itemId === undefined ? t("workBoard.unreadableRunNoRow") : t("workBoard.unreadableRun", { id: run.itemId })}</p>
+          <Button
+            size="sm" variant="outline" className="mt-2" data-testid="work-board-unreadable-run-discard"
+            aria-label={run.itemId === undefined ? t("workBoard.unreadableRunNoRowDiscardLabel", { n: run.position + 1 }) : t("workBoard.unreadableRunDiscardLabel", { id: run.itemId })}
+            onClick={() => onDiscard(run)}
+          >
+            {t("workBoard.discardRunButton")}
+          </Button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 export function WorkBoardPanel({
   api, project, focusItemId, onFocusConsumed, approvalFocusKey, onApprovalFocusConsumed, approvalShowAll, onApprovalShowAllConsumed,
   onOpenRoutine, onOpenSchedule, onOpenSession,
@@ -1649,8 +1730,13 @@ export function WorkBoardPanel({
   // Set once the first list read settled, so a focus request can see which item it names and what that item's run waits on.
   const [listedOnce, setListedOnce] = useState(false);
   const [pendingReview, setPendingReview] = useState(false);
-  // A failed read keeps the rows last listed for the same filter and shows the failure; it never stands in for an empty board.
-  const [loadFailed, setLoadFailed] = useState(false);
+  const [unreadableRows, setUnreadableRows] = useState<readonly WorkItemUnreadableRow[]>([]);
+  const [unreadableRuns, setUnreadableRuns] = useState<readonly WorkItemUnreadableRun[]>([]);
+  // A failed read keeps the rows last listed for the same filter and shows the failure (its message key); it never stands in for an
+  // empty board.
+  const [loadFailed, setLoadFailed] = useState<string | null>(null);
+  // The board file holds a key twice: its rows are listed as they read, and no write goes over it until it is fixed by hand.
+  const [writesRefused, setWritesRefused] = useState<string | null>(null);
   const listedKeyRef = useRef<string | null>(null);
 
   const refresh = useCallback(async () => {
@@ -1666,13 +1752,16 @@ export function WorkBoardPanel({
         }
       : undefined;
     const key = JSON.stringify(filter ?? null);
-    const fail = () => {
+    const fail = (reason?: unknown) => {
       if (listedKeyRef.current !== key) {
         listedKeyRef.current = null;
         setItems([]);
         setPendingReview(false);
+        setUnreadableRows([]);
+        setUnreadableRuns([]);
+        setWritesRefused(null);
       }
-      setLoadFailed(true);
+      setLoadFailed(reason === "workflow-runs-duplicate-key" ? `reasonCodes.${reason}` : "workBoard.boardLoadFailed");
     };
     try {
       const result = await api.listWorkBoard(filter);
@@ -1681,9 +1770,12 @@ export function WorkBoardPanel({
         listedKeyRef.current = key;
         setItems(result.items);
         setPendingReview(result.items.some((item) => item.templateRunError === "template-runs-pending-review"));
-        setLoadFailed(false);
+        setUnreadableRows(result.unreadableRows ?? []);
+        setUnreadableRuns(result.unreadableRuns ?? []);
+        setWritesRefused(result.writesRefused === undefined ? null : `reasonCodes.${result.writesRefused}`);
+        setLoadFailed(null);
       } else {
-        fail();
+        fail("error" in result ? result.error : undefined);
       }
     } catch {
       if (mountedRef.current) fail();
@@ -1694,6 +1786,39 @@ export function WorkBoardPanel({
       }
     }
   }, [api, project]);
+
+  // The message for the last invalid card delete, unreadable run record discard or missing run clear that did nothing; `changed` when
+  // its entry changed.
+  const [entryError, setEntryError] = useState<string | null>(null);
+  const removeEntry = useCallback(async (target: WorkItemDeleteTarget, changed: string, itemId: number | undefined) => {
+    setEntryError(null);
+    let error: string | null = "workBoard.errorMutationRefused";
+    try {
+      const result = await api.removeWorkBoardItem(null, target);
+      if ("status" in result && result.status === "deleted") error = null;
+      else if ("reason" in result && result.reason === "work-board-row-changed") error = changed;
+      else if ("reason" in result && refusalText(result.reason) !== undefined) error = `reasonCodes.${result.reason}`;
+    } catch (failure) {
+      console.error("[ave] work-board invalid entry delete failed", { itemId, message: errorMessage(failure) });
+    }
+    if (!mountedRef.current) return;
+    setEntryError(error);
+    await refresh();
+  }, [api, refresh]);
+  const clearRun = useCallback(async (item: WorkItemResolved) => {
+    setEntryError(null);
+    let error: string | null = "workBoard.errorMutationRefused";
+    try {
+      const result = await api.clearWorkBoardRun(item.id, { revision: item.mutationRevision ?? "", runId: item.runId ?? "" });
+      if ("status" in result && result.status === "updated") error = null;
+      else if ("reason" in result && result.reason === "work-item-changed") error = "workBoard.itemChangedReload";
+    } catch (failure) {
+      console.error("[ave] work-board run clear failed", { itemId: item.id, message: errorMessage(failure) });
+    }
+    if (!mountedRef.current) return;
+    setEntryError(error);
+    await refresh();
+  }, [api, refresh]);
 
   useEffect(() => {
     void refresh();
@@ -1842,8 +1967,8 @@ export function WorkBoardPanel({
       const result = await api.acceptWorkProposal(proposalId, projectRoot);
       if (mountedRef.current) await refresh();
       if ("status" in result && result.status === "accepted") return { ok: true, itemId: result.itemId };
-      // The store's invalid reason is its own sentence (an item limit, a project refusal); a missing proposal has a code of its own.
-      if ("status" in result && result.status === "invalid") return { ok: false, error: "proposal-refused", message: result.reason };
+      // The store's invalid reason is its own sentence (an item limit, a project refusal) or a refusal code with text; a missing proposal has a code of its own.
+      if ("status" in result && result.status === "invalid") return { ok: false, error: "proposal-refused", message: reasonText(result.reason) ?? result.reason };
       if ("status" in result) return { ok: false, error: "proposal-not-found" };
       return { ok: false, error: result.error };
     },
@@ -1880,12 +2005,13 @@ export function WorkBoardPanel({
     onComplete,
     onReopen,
     onRun,
+    onClearRun: (item) => { void clearRun(item); },
     onOpenDetail,
     onShowSteps: showSteps,
     stepsShowingId: stepsOpen ? stepsItemId : null,
     toolApprovals,
     approvalSurface,
-  }), [onStart, onComplete, onReopen, onRun, onOpenDetail, showSteps, stepsOpen, stepsItemId, toolApprovals, approvalSurface]);
+  }), [onStart, onComplete, onReopen, onRun, clearRun, onOpenDetail, showSteps, stepsOpen, stepsItemId, toolApprovals, approvalSurface]);
 
   // Below the narrow panel width the overview's columns become status tabs and the step panel docks below the board.
   const [statusTab, setStatusTab] = useState<"planned" | "in-progress" | "review" | "completed">("in-progress");
@@ -2085,8 +2211,12 @@ export function WorkBoardPanel({
           </Badge>
         </div>
       </div>
-      {loadFailed && <p role="alert" className="pb-3 text-sm text-destructive" data-testid="work-board-load-error">{t("workBoard.boardLoadFailed")}</p>}
+      {loadFailed && <p role="alert" className="pb-3 text-sm text-destructive" data-testid="work-board-load-error">{t(loadFailed)}</p>}
+      {writesRefused && <p role="alert" className="pb-3 text-sm text-destructive" data-testid="work-board-writes-refused">{t(writesRefused)}</p>}
       {pendingReview && <p role="alert" className="pb-3 text-sm text-destructive" data-testid="work-board-pending-review">{t("workBoard.pendingReview", { tabPermissions: t("settingsContent.tabPermissions"), homeTrustTitle: t("permissionsTab.homeTrustTitle") })}</p>}
+      {entryError && <p role="alert" className="pb-3 text-sm text-destructive" data-testid="work-board-unreadable-row-error">{t(entryError)}</p>}
+      {unreadableRows.length > 0 && <UnreadableRowCards rows={unreadableRows} onDelete={(row) => { void removeEntry({ invalidRow: { position: row.position, hash: row.hash } }, "workBoard.unreadableRowChanged", row.id); }} />}
+      {unreadableRuns.length > 0 && <UnreadableRunCards runs={unreadableRuns} onDiscard={(run) => { void removeEntry({ runRecord: { position: run.position, hash: run.hash } }, "workBoard.unreadableRunChanged", run.itemId); }} />}
       <div className="@container flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
         {narrow && (
           <div role="tablist" className="flex gap-1" data-testid="work-board-tabs">

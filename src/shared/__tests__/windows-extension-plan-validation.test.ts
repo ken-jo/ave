@@ -8,6 +8,23 @@ function ready() {
 }
 
 describe("serialized extension backend plan", () => {
+  it("reports the selected MXC extension route's protocol limits", () => {
+    const plan = ready();
+    expect(plan).toMatchObject({
+      selectedBackend: "mxc", readiness: "ready",
+      egressProtocolCoverage: { dns: "host-resolver", rawIp: "unknown" },
+    });
+  });
+
+  it("reports unknown protocol coverage for the fallback route", () => {
+    const fallback = planWindowsExtensionHolder({
+      requested: true, mxc: { state: "unavailable", reason: "native-validation-required" },
+      fallback: { version: "0.0.80", ready: true },
+    });
+    expect(fallback.selectedBackend).toBe("srt-win");
+    expect(fallback.egressProtocolCoverage).toEqual({ dns: "unknown", rawIp: "unknown" });
+  });
+
   it("accepts every produced state and fallback reason", () => {
     const input = { requested: true, fallback: { version: "0.0.80", ready: true } };
     for (const plan of [
@@ -35,10 +52,21 @@ describe("serialized extension backend plan", () => {
     ["requestedBackend", "none"], ["selectedBackend", "none"], ["readiness", "fallback"],
     ["reason", "checking"], ["fallbackVersion", "0.0.80"], ["fallbackVersion", "0.0.81"],
     ["uiPolicy", "ui-disabled"], ["egressIdentity", "shared"], ["proxyOwnerVerified", true],
-    ["hostLoopback", "closed"], ["inboundProtection", "container"], ["dnsProtection", "confined"],
+    ["hostLoopback", "closed"], ["inboundProtection", "container"],
     ["ancestorAccess", "file-read"], ["ancestorNameExposure", false],
   ])("rejects an impossible %s=%s claim", (key, value) => {
     expect(() => assertSandboxWindowsExtensionPlan({ ...ready(), [key]: value })).toThrow(/Invalid Windows/);
+  });
+
+  it("rejects protocol overclaims and unexpected coverage fields", () => {
+    for (const egressProtocolCoverage of [
+      { dns: "brokered", rawIp: "unknown" },
+      { dns: "host-resolver", rawIp: "blocked" },
+      { dns: "host-resolver", rawIp: "unknown", extra: true },
+      { dns: "host-resolver" },
+    ]) {
+      expect(() => assertSandboxWindowsExtensionPlan({ ...ready(), egressProtocolCoverage })).toThrow(/Invalid Windows/);
+    }
   });
 
   it("does not accept a rejected deadline as settled degradation", () => {

@@ -1,3 +1,5 @@
+import type { EnvelopeToolRef } from "./workflow-template-types.js";
+
 /** Keep board contracts renderer-safe. Overdue is derived on read for incomplete items past due, never persisted. */
 
 export type WorkItemStatusStored = "planned" | "in_progress" | "completed";
@@ -114,8 +116,13 @@ export type WorkPlanDecideIpcResult =
   | { ok: false; reason: WorkPlanDecideRefusal | "user-gesture-required" | "invalid-input" };
 
 export interface WorkItemResolved extends WorkItem {
-  /** The run this row names cannot be used: its stored entry is unreadable or belongs to another row, or the run file awaits review. Never persisted. */
-  templateRunError?: "invalid-template-run" | "template-runs-pending-review";
+  /** The run this row names cannot be used: its stored entry is unreadable or belongs to another row, or the run file awaits review.
+   * `template-run-not-found`: the row says the run is in flight and the run file holds no record of it; the row is shown as error until
+   * the user clears it. Never persisted. */
+  templateRunError?: "invalid-template-run" | "template-runs-pending-review" | "template-run-not-found";
+  /** Where the row's template run stands, told by the host from the run file and its own state. resuming: a restart left the run and
+   * the host has not taken it over yet. Never persisted; a value a board row carries is dropped. */
+  templateRunState?: "running" | "awaiting_review" | "resuming";
   /** Host-issued snapshot revision for conditional lifecycle mutations; never persisted. */
   mutationRevision?: string;
   status_resolved: WorkItemStatusResolved;
@@ -158,8 +165,43 @@ export interface WorkItemListFilter {
 
 // Discriminated outcomes let callers branch without parsing exception messages.
 
+/** A row of the board file that does not validate, shown only as a placeholder with a delete. `position`: its place among those rows;
+ * `hash`: the sha-256 of its JSON. Both name it to that delete, which removes nothing else. */
+export type WorkItemUnreadableRow = { id?: number; position: number; hash: string };
+
+/** An entry of the run file that does not read as a run, shown only as a placeholder with a discard. `position`: its index among the
+ * file's runs; `hash`: the sha-256 of its JSON; `itemId`: the row it names, when that reads as an id. */
+export type WorkItemUnreadableRun = { itemId?: number; position: number; hash: string };
+
+/** What a board delete names: a listed row by the revision its card showed (with its id), or, with a null id, an entry of the board
+ * file that does not validate or an entry of the run file that does not read as a run. */
+export type WorkItemDeleteTarget =
+  | { revision: string }
+  | { invalidRow: { position: number; hash: string } }
+  | { runRecord: { position: number; hash: string } };
+
+/** Why a guard refused a work-board file write; nothing was written. Each has its text under `reasonCodes.`. The duplicate-key codes
+ * stand for a file that holds a key twice in one object: no write goes over it until it is fixed by hand, and a run file such as that
+ * is not read either. */
+export type WorkBoardRefusalCode =
+  | "work-board-run-id-held" | "work-board-runs-unreadable" | "work-board-legacy-copy-unfinished" | "work-board-unread" | "work-board-write-failed"
+  | "work-board-duplicate-key" | "workflow-runs-duplicate-key" | "work-board-backup-conflict" | "work-board-backup-failed";
+
+/** A delete of an entry of the board or run file; `itemId` when a board entry has a usable id. `work-board-row-changed`: the entry at
+ * that place is no longer the one named, and nothing was deleted; `template-runs-too-large`: the run file left would be past its read
+ * limit, and nothing was discarded; `work-board-run-owner-unknown`: the run record names no start whose project can be read, and it
+ * was not discarded. */
+export type WorkBoardEntryDeleteResult =
+  | { status: "deleted"; itemId?: number }
+  | { status: "not_found" }
+  | { status: "invalid"; reason: "work-board-row-changed" | "template-runs-too-large" | "work-board-run-owner-unknown" | WorkBoardRefusalCode };
+
 export type WorkItemListResult =
-  | { status: "ok"; items: WorkItemResolved[] }
+  // unreadableRows: one entry per row of the board file that does not validate, with its id when it has one; they are kept in the file
+  // and are not listed. unreadableRuns: one per entry of the run file that does not read as a run. writesRefused: the board file as
+  // last read holds a key twice, so every write of it is refused until it is fixed by hand; or, once per unreadable episode, a write was
+  // refused because the run file cannot be read, and it still cannot (`work-board-runs-unreadable`). The rows are listed as they read.
+  | { status: "ok"; items: WorkItemResolved[]; unreadableRows?: WorkItemUnreadableRow[]; unreadableRuns?: WorkItemUnreadableRun[]; writesRefused?: "work-board-duplicate-key" | "work-board-runs-unreadable" }
   | { status: "invalid"; reason: string };
 
 export type WorkItemCreateResult =
@@ -196,7 +238,8 @@ export type WorkItemReopenResult =
   | { status: "invalid"; itemId: number; reason: string };
 
 export type WorkItemDeleteResult =
-  | { status: "deleted"; itemId: number; reason?: string }
+  // runId: the run the deleted row named.
+  | { status: "deleted"; itemId: number; reason?: string; runId?: string }
   | { status: "not_found"; itemId: number }
   | { status: "invalid"; itemId: number; reason: string };
 
@@ -235,7 +278,8 @@ export type WorkBoardBriefingResult =
   | { status: "error"; kind: WorkBoardBriefingKind; reason: string };
 
 export interface WorkItemChangedEventPayload {
-  itemId: number;
+  /** Absent for an entry of the board file without a usable id. */
+  itemId?: number;
   change:
     | "created"
     | "updated"
@@ -270,6 +314,9 @@ type WorkBoardRunPhase =
   | "done"
   | "error"
   | "cancelled";
+
+/** Template runs: a stage waits at its gate, passed, or failed. Never the run's own phase, which stays `executing` until the run settles. */
+export type WorkBoardStagePhase = "stage_gate" | "stage_passed" | "stage_failed";
 
 /** Where a running work item's tool approval is answered (owner decision 2026-11-04). `chat`: the board marks the card and links to the run's
  * chat, where the normal approval card decides. `dialog`: the window's approval dialog over the board. Display location only: the same
@@ -334,7 +381,7 @@ interface WorkItemRunHistoryEntry {
 
 export interface WorkBoardRunEvent {
   itemId: number;
-  phase: WorkBoardRunPhase;
+  phase: WorkBoardRunPhase | WorkBoardStagePhase;
   /** 1-based child-agent turn number (planning / executing phases). */
   turn?: number;
   text?: string;
@@ -349,6 +396,12 @@ export interface WorkBoardRunEvent {
   /** A queued steer's outcome. Such an event reports nothing else: it may arrive after the run settled (a dropped steer), so its `phase`
    * is `executing` by construction and must not be read as the run's phase. */
   steer?: WorkBoardSteerAck;
+  /** Template runs: the stage (and its attempt) the event is about. */
+  stageId?: string;
+  attempt?: number;
+  /** Template runs: the run-authority code that refused the start or ended the run, with the tool it names when it names one. */
+  reasonCode?: string;
+  reasonTool?: EnvelopeToolRef;
   at: string;
 }
 
@@ -364,7 +417,56 @@ export interface WorkItemRunResult {
   runSessionId?: string;
   /** already_running reports the concurrent run without spawning another child. */
   reason?: string;
+  /** Template runs: the run-authority code that refused the start or ended the run, with the tool it names when it names one. */
+  reasonCode?: string;
+  reasonTool?: EnvelopeToolRef;
 }
+
+/** The user's decision at a stage's gate, bound to the run, the attempt and the hash of the output they saw; the output itself is never sent. */
+/** What `Create and run` sends beside the item id: the tuple the card showed and, when the card showed one, its project. Main resolves
+ * the project against the workspace registry and mints the run source; this is never one. */
+export interface TemplateRunRequest {
+  templateId: string;
+  version: number;
+  graphHash: string;
+  projectRoot?: string;
+}
+
+export interface StageRetryInput {
+  runId: string;
+  stageId: string;
+}
+
+export interface StageGateDecideInput {
+  runId: string;
+  stageId: string;
+  attempt: number;
+  resultHash: string;
+  /** Required when the stage run carries requested outputs; binds their approval. */
+  outputHash?: string;
+  decision: WorkPlanDecision;
+  note?: string;
+}
+/** A store's refusal of a write behind a stage decision or retry, by its code. */
+type StageStoreRefusal = WorkBoardRefusalCode | "invalid-template-run";
+/** Decision refusals are snake_case. One with text shows reasonCodes.<the refusal with "-" for "_">, as run reason codes do. */
+type StageGateRefusal = "not_found" | "not_pending" | "run_mismatch" | "run_end_unconfirmed" | "runs_not_adopted" | "attempt_mismatch" | "result_mismatch" | "output_mismatch" | "attempts_exhausted"
+  | "note_required" | "note_too_long" | "note_invalid" | "version_missing" | "graph_mismatch";
+export type StageGateDecideResult = { ok: true; status: Exclude<WorkPlanApprovalStatus, "pending"> } | { ok: false; reason: StageGateRefusal };
+export type StageGateDecideIpcResult =
+  | { ok: true; status: Exclude<WorkPlanApprovalStatus, "pending">; redactedCount?: number }
+  | { ok: false; reason: StageGateRefusal | "user-gesture-required" | "invalid-input" | StageStoreRefusal };
+
+/** The user's decision on a join that could not be collected, bound to the conflict they saw. */
+export interface StageJoinDecideInput { runId: string; joinId: string; conflictHash: string; decision: "retry_merge" | "reject" }
+/** run_end_unconfirmed: the run's end is not yet written to the run file. runs_not_adopted: the runs a restart left are not taken over
+ * yet. Both are shown by their reasonCodes text. */
+type StageRunRefusal = "not_found" | "run_mismatch" | "run_end_unconfirmed" | "runs_not_adopted" | "not_pending" | "version_missing" | "graph_mismatch";
+export type StageJoinDecideResult = { ok: true } | { ok: false; reason: StageRunRefusal | "conflict_mismatch" };
+export type StageJoinDecideIpcResult = StageJoinDecideResult | { ok: false; reason: "user-gesture-required" | "invalid-input" | StageStoreRefusal };
+/** Retry of a failed stage, or continuing a run that has only ready stages after a restart. not_idle: a child of the run is still live. */
+export type StageRetryResult = { ok: true } | { ok: false; reason: StageRunRefusal | "attempts_exhausted" | "not_idle" };
+export type StageRetryIpcResult = StageRetryResult | { ok: false; reason: "user-gesture-required" | "invalid-input" | StageStoreRefusal };
 
 /** Steering a running execution (permission-decision-tree.md S→T): accepted means queued for the execute child's next round boundary,
  * not delivered; a steer still queued when the child's turn ends is dropped and recorded only in the audit.

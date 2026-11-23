@@ -858,6 +858,7 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
     completeWorkBoardItem: vi.fn(async (id: number) => ({ status: "not_found", itemId: id })),
     reopenWorkBoardItem: vi.fn(async (id: number) => ({ status: "not_found", itemId: id })),
     removeWorkBoardItem: vi.fn(async (id: number) => ({ status: "not_found", itemId: id })),
+    clearWorkBoardRun: vi.fn(async (id: number) => ({ status: "not_found", itemId: id })),
     runWorkBoardItem: vi.fn(async () => ({ ok: true })),
     generateWorkBoardReport: vi.fn(async (input: { kind: string; period?: string }) => ({
       status: "empty",

@@ -7,7 +7,7 @@ import { TableDocumentError } from "../tools/table-document-error.js";
 import { assertCodexExecutableLocation } from "../main/codex-executable-location.js";
 import {
   buildPerCommandSandboxCustomConfig, getDefaultSensitiveReadDenyPaths,
-  getDefaultSensitiveWriteDenyPaths, isOfflineProcessConfinementActive,
+  getDefaultSensitiveWriteDenyEntries, isOfflineProcessConfinementActive,
 } from "./asrt-sandbox.js";
 import { createAveHomeBoundarySnapshot } from "./ave-home-boundary-snapshot.js";
 import { detectSandboxCapability } from "./sandbox-capability.js";
@@ -84,7 +84,7 @@ export async function wrapOfflineProcess(input: OfflineProcessInput): Promise<Of
     : ["/bin/sh", "/usr/bin/env", "/usr/lib", "/usr/lib64", "/lib", "/lib64", "/usr/share/fonts", "/usr/share/fontconfig", "/etc/fonts", "/etc/ld.so.cache", "/etc/localtime", "/etc/passwd", "/dev/null", "/dev/random", "/dev/urandom"];
   const policy = createAveHomeBoundarySnapshot().run(() => buildPerCommandSandboxCustomConfig({
     allowWrite: [output], allowRead: [source, output, ...systemReads],
-    denyRead: getDefaultSensitiveReadDenyPaths(), denyWrite: getDefaultSensitiveWriteDenyPaths(),
+    denyRead: getDefaultSensitiveReadDenyPaths(), denyWrite: getDefaultSensitiveWriteDenyEntries(),
     pinWriteRoots: true,
   }));
   if (!policy?.filesystem || !(policy.filesystem.allowWrite ?? []).some(entry => entry === output)) {

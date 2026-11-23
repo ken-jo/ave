@@ -11,6 +11,7 @@ import { aveHome } from "../../../shared/ave-home.js";
 import { windowsCommandLine } from "../../../shared/windows-command-line.js";
 import { PluginChildTerminationUnverifiedError } from "../plugin-child-transport.js";
 import { attachMxcPluginChild, spawnMxcPluginChild } from "../mxc-plugin-child.js";
+import { PluginChildInputWriteDecoder, pluginChildInputCredit } from "../plugin-child-credit.js";
 
 const terminationDebug = vi.hoisted(() => vi.fn());
 vi.mock("../../../lib/logger.js", async (importOriginal) => {
@@ -72,8 +73,23 @@ describe("native plugin stream ownership", () => {
   it("uses native streams and the container identity without a relay or process facade", async () => {
     const { owned, launch, resolve } = fixture();
     const child = attachMxcPluginChild(owned, launch, "native-probe");
-    expect(child.link.input).toBe(owned.stdout);
-    expect(child.link.output).toBe(owned.stdin);
+    const request = Buffer.from("request\n");
+    const response = Buffer.from("response\n");
+    const sent = new Promise<Buffer>((done) => owned.stdin.once("data", done));
+    const received = new Promise<Buffer>((done) => child.link.input.once("data", done));
+    const written = new Promise<void>((done, reject) => child.link.output.write(request, (error) => {
+      if (error) reject(error);
+      else done();
+    }));
+    const payloads: Buffer[] = [];
+    const decoder = new PluginChildInputWriteDecoder();
+    decoder.push(await sent, (payload, id, consumed) => {
+      payloads.push(payload);
+      owned.stdout.write(Buffer.concat([pluginChildInputCredit(id, consumed), response]));
+    });
+    expect(payloads).toEqual([request]);
+    await expect(received).resolves.toEqual(response);
+    await written;
     expect(child.pid).toBe(42);
     resolve({ exitCode: 7, timedOut: false });
     await child.waitForExit();

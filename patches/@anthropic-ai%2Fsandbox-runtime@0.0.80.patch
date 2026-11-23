@@ -71,6 +71,18 @@ the installed package.
    the same destination and upstream guards; both binds exclude the configured
    shared proxy range. Its listener identity, refusal records and tracked
    connections use the same policy and revocation paths as invocation listeners.
+   Aborting its admission stops every forward at once and keeps the port
+   bound; the admission adopts the relay's close as soon as the relay exists
+   and closes it once nothing can reach the port. A key an invocation listener
+   or host relay owns is never attributed from a shared front end's proxy
+   username, and a callback denial marked `unattributed: true` is recorded
+   without its key. A relay's key is retired as soon as its admission ends,
+   and a key never gets a second relay, beside a live one or after its
+   retirement.
+   Its close attempts the unbind even when the connection drain throws,
+   rejects on either failure, and keeps the relay owned until its port is
+   unbound. reset() logs a relay close that fails, completes the rest of its
+   teardown, and then rejects while a relay port is still bound.
 
 4. Upstream routes (Ave): `SandboxManager.setParentProxyRouter(router)`
    replaces the single static `parentProxy` with a per-destination hook. The
@@ -1822,12 +1834,19 @@ index d52e0f809e13d5515ab80fb52fe437eccff778f6..2f993bebb2361b569ebf10b11c2a4daa
  /**
   * Schema for the access mode of a declared credential source.
 diff --git a/dist/sandbox/sandbox-manager.d.ts b/dist/sandbox/sandbox-manager.d.ts
-index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..c3c74469dbcd4156baaa6a1d8be38bdb64bb2241 100644
+index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..5aea50d2b57919fb5a2d8d4e021ab72580cdcfb3 100644
 --- a/dist/sandbox/sandbox-manager.d.ts
 +++ b/dist/sandbox/sandbox-manager.d.ts
-@@ -1,3 +1,11 @@
+@@ -1,3 +1,18 @@
 +/** Host-owned invocation relay; its credentials and endpoint stay outside confined processes. */
-+export declare function openHostInvocationProxy(commandId: string): Promise<{
++export declare function openHostInvocationProxy(commandId: string, admission?: {
++    /** Aborting it stops every forward at once; the port stays bound until close. */
++    readonly signal: AbortSignal;
++    assertCanBind(): void;
++    acceptsConnections(): boolean;
++    /** Receives the relay's close as soon as the relay exists; the caller then owns it. */
++    adopt(close: () => Promise<void>): void;
++}): Promise<{
 +    readonly port: number;
 +    readonly proxyAuthorization: string;
 +    registerPort(port: number): void;
@@ -1837,7 +1856,7 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..c3c74469dbcd4156baaa6a1d8be38bdb
  import { SentinelRegistry } from './credential-sentinel.js';
  import { MaskedFileStore } from './credential-mask-files.js';
  import { AwsPairRegistry } from './credential-aws-pairs.js';
-@@ -45,11 +53,60 @@ export type WrapWithSandboxOptions = {
+@@ -45,11 +60,60 @@ export type WrapWithSandboxOptions = {
       * reported as the violation's `command`. Defaults to `command`.
       */
      commandText?: string;
@@ -1898,7 +1917,7 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..c3c74469dbcd4156baaa6a1d8be38bdb
      initialize(runtimeConfig: SandboxRuntimeConfig, sandboxAskCallback?: SandboxAskCallback, enableLogMonitor?: boolean): Promise<void>;
      isSupportedPlatform(): boolean;
      isSandboxingEnabled(): boolean;
-@@ -125,6 +182,66 @@ export interface ISandboxManager {
+@@ -125,6 +189,66 @@ export interface ISandboxManager {
       * none. `reset()` removes them all.
       */
      unregisterCommandNetworkLists(commandId: string): void;
@@ -1965,7 +1984,7 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..c3c74469dbcd4156baaa6a1d8be38bdb
      /**
       * True when the network filter understands an ask callback's
       * `{ allow: false, reason }` answer (see {@link SandboxAskCallback}). Read
-@@ -143,11 +260,52 @@ export interface ISandboxManager {
+@@ -143,11 +267,54 @@ export interface ISandboxManager {
      getMaskedFileStore(): MaskedFileStore;
      updateConfig(newConfig: SandboxRuntimeConfig): void;
      cleanupAfterCommand(): void;
@@ -1977,6 +1996,8 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..c3c74469dbcd4156baaa6a1d8be38bdb
 +     * non-zero, or returned an unlisted status); that ACL state is then kept
 +     * for a later reset() to retry. Otherwise resolves with the rows srt-win
 +     * dropped without releasing (`mismatch`, `missing`), counted per step.
++     * A rejection (an invocation relay port still bound included) carries
++     * those rows as a non-enumerable `windowsAclUnreleased`; never log it.
 +     */
 +    reset(): Promise<SandboxResetReport>;
 +    /**
@@ -2020,7 +2041,7 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..c3c74469dbcd4156baaa6a1d8be38bdb
 +export declare function setWindowsIsolationForTesting(srtWin: { exe: string; prependArgs: string[] } | undefined): void;
  //# sourceMappingURL=sandbox-manager.d.ts.map
 diff --git a/dist/sandbox/sandbox-manager.js b/dist/sandbox/sandbox-manager.js
-index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..6b1630fe87fbbf83b26a242d96566272f01ae0f4 100644
+index 810b0aa..1e6ba3e 100644
 --- a/dist/sandbox/sandbox-manager.js
 +++ b/dist/sandbox/sandbox-manager.js
 @@ -1,3 +1,4 @@
@@ -2181,6 +2202,8 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..6b1630fe87fbbf83b26a242d96566272
      return (own ? reasons[entry] : undefined) ?? 'host is on the deny list';
  }
 -async function filterNetworkRequest(port, host, sandboxAskCallback, encodedCommand, explain) {
+-    const denied = (reason) => {
+-        recordOutboundDeny(host, port, reason, encodedCommand);
 +/**
 + * Ave patch (name-first decisions). The first phase of a destination
 + * decision, on the destination as named: nothing is resolved and no route is
@@ -2192,8 +2215,8 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..6b1630fe87fbbf83b26a242d96566272
 + * or 'ask' (the callback allowed the name; the resolved phase must confirm).
 + */
 +async function decideByName(port, host, sandboxAskCallback, encodedCommand, explain, identity = 'username') {
-     const denied = (reason) => {
-         recordOutboundDeny(host, port, reason, encodedCommand);
++    const denied = (reason, unattributed = false) => {
++        recordOutboundDeny(host, port, reason, unattributed ? undefined : encodedCommand);
          explain?.(reason);
 -        return false;
 +        return 'deny';
@@ -2209,7 +2232,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..6b1630fe87fbbf83b26a242d96566272
          }
      }
      // strictAllowlist makes the configured allowlist deterministic enforcement:
-@@ -353,33 +459,70 @@ async function filterNetworkRequest(port, host, sandboxAskCallback, encodedComma
+@@ -353,35 +459,74 @@ async function filterNetworkRequest(port, host, sandboxAskCallback, encodedComma
      // Coming after both configured lists, it lifts the default deny for that
      // one command and never a configured deniedDomains entry. The username is
      // presented by the sandboxed client: see registerCommandNetworkLists.
@@ -2243,8 +2266,8 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..6b1630fe87fbbf83b26a242d96566272
 + * and how it will be reached, and its answer decides the connection.
 + */
 +async function confirmResolvedDestination(port, host, sandboxAskCallback, encodedCommand, explain, identity, plan) {
-+    const denied = (reason) => {
-+        recordOutboundDeny(host, port, reason, encodedCommand);
++    const denied = (reason, unattributed = false) => {
++        recordOutboundDeny(host, port, reason, unattributed ? undefined : encodedCommand);
 +        explain?.(reason);
 +        return false;
 +    };
@@ -2286,9 +2309,14 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..6b1630fe87fbbf83b26a242d96566272
 -        logForDebugging(`User denied: ${host}:${port}`);
 +        logForDebugging(`User denied (${context.phase}): ${host}:${port}`);
          // The callback's own reason, when it gave one, says what to do instead.
-         return denied(denialReasonOf(answer) ?? 'user denied');
+-        return denied(denialReasonOf(answer) ?? 'user denied');
++        // Ave patch (invocation listeners): a denial that did not accept the
++        // key (`unattributed: true`) is recorded without it.
++        return denied(denialReasonOf(answer) ?? 'user denied', typeof answer === 'object' && answer !== null && answer.unattributed === true);
      }
-@@ -390,6 +533,47 @@ async function filterNetworkRequest(port, host, sandboxAskCallback, encodedComma
+     catch (error) {
+         logForDebugging(`Error in permission callback: ${error}`, {
+@@ -390,6 +535,47 @@ async function filterNetworkRequest(port, host, sandboxAskCallback, encodedComma
          return denied('permission prompt failed');
      }
  }
@@ -2336,7 +2364,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..6b1630fe87fbbf83b26a242d96566272
  /**
   * Build the header-mutation callback that substitutes sentinel→real for
   * masked credentials. Returns undefined when no `credentials` block is
-@@ -438,7 +622,7 @@ function buildSigv4Planner() {
+@@ -438,7 +624,7 @@ function buildSigv4Planner() {
   * otherwise returns undefined.
   *
   * Matches the canonicalized hostname, like the allow/deny filter
@@ -2345,7 +2373,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..6b1630fe87fbbf83b26a242d96566272
   * fails OPEN on a miss — a host that matches no MITM pattern is dialed
   * directly — so it must accept exactly the set of spellings the allowlist
   * accepts: otherwise `api.example.com.` (trailing-dot FQDN, same name to
-@@ -468,7 +652,7 @@ function getMitmSocketPath(host) {
+@@ -468,7 +654,7 @@ function getMitmSocketPath(host) {
   * so mTLS / cert-pinning clients can complete their own handshake.
   *
   * Matches the canonicalized hostname, like the allow/deny filter
@@ -2354,7 +2382,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..6b1630fe87fbbf83b26a242d96566272
   * canonicalization (`127.1`, a trailing-dot FQDN) would dodge the exclusion
   * and get terminated anyway.
   */
-@@ -497,11 +681,231 @@ function shouldTerminateTLSForHost(host) {
+@@ -497,11 +683,232 @@ function shouldTerminateTLSForHost(host) {
      }
      return true;
  }
@@ -2370,18 +2398,19 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..6b1630fe87fbbf83b26a242d96566272
      const injectBodyCredentials = buildBodyCredentialInjector();
 -    httpProxyServer = createHttpProxyServer({
 -        filter: (port, host, _socket, encodedCommand, explain) => filterNetworkRequest(port, host, sandboxAskCallback, encodedCommand, explain),
-+    const attribution = (encodedCommand) => lane ? lane.encodedKey : encodedCommand;
++    const attribution = (encodedCommand) => lane ? lane.encodedKey : usernameAttribution(encodedCommand);
 +    const filter = lane
 +        ? invocationListenerFilter(lane, sandboxAskCallback)
 +        : async (port, host, encodedCommand, explain, socket, plainHttp) => {
++            const attributed = attribution(encodedCommand);
 +            // A proxy front end is never a destination, through any front end.
 +            const local = localDestinationReason(host, port);
 +            if (local !== undefined) {
-+                recordOutboundDeny(host, port, local, encodedCommand);
++                recordOutboundDeny(host, port, local, attributed);
 +                explain?.(local);
 +                return false;
 +            }
-+            const resolved = await decideDestination(port, host, sandboxAskCallback, encodedCommand, explain, 'username', plainHttp);
++            const resolved = await decideDestination(port, host, sandboxAskCallback, attributed, explain, 'username', plainHttp);
 +            if (resolved === undefined)
 +                return false;
 +            if (socket)
@@ -2589,7 +2618,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..6b1630fe87fbbf83b26a242d96566272
          getMitmSocketPath,
          mitmCA,
          shouldTerminateTLS: shouldTerminateTLSForHost,
-@@ -521,7 +925,7 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
+@@ -521,7 +928,7 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
          onFilterRequestDenied: ({ method, url, reason, encodedCommand }) => {
              // A refused CONNECT comes with its authority (`host:port`), not a URL.
              const target = method === 'CONNECT' ? url : redactUrlForViolation(url);
@@ -2598,7 +2627,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..6b1630fe87fbbf83b26a242d96566272
          },
          // TLS-terminated path always gets the injector; the plain-HTTP path
          // only when explicitly opted in. Without the opt-in, a sentinel sent
-@@ -538,19 +942,27 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
+@@ -538,19 +945,27 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
          // injection: the real signature must not travel over plaintext.
          planSigv4: buildSigv4Planner(),
          parentProxy,
@@ -2633,7 +2662,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..6b1630fe87fbbf83b26a242d96566272
          },
          probeUnauthenticated: async (port, host) => {
              // Explicit deny rules only: an unauthenticated peer must never reach
-@@ -562,17 +974,27 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
+@@ -562,17 +977,27 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
              for (const entry of config.network.deniedDomains) {
                  if (matchesDomainPatternWithPort(canonical, port, entry)) {
                      const reason = deniedDomainReason(entry);
@@ -2662,7 +2691,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..6b1630fe87fbbf83b26a242d96566272
      });
      const mux = muxProxyServer;
      // Backend first so the front-end never accepts a connection that would
-@@ -588,6 +1010,858 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
+@@ -588,6 +1013,937 @@ async function startMuxProxyServer(sandboxAskCallback, portRange) {
      logForDebugging(`Mux proxy (HTTP+SOCKS) listening on localhost:${muxPort}`);
      return muxPort;
  }
@@ -2687,45 +2716,71 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..6b1630fe87fbbf83b26a242d96566272
 +})();
 +/** Host-owned relay ports participate in every destination and upstream guard. */
 +const hostInvocationProxies = new Set();
-+export async function openHostInvocationProxy(commandId) {
++export async function openHostInvocationProxy(commandId, admission) {
 +    if (getPlatform() !== 'windows')
 +        throw new Error('openHostInvocationProxy: unsupported platform');
 +    const key = invocationListenerKey(commandId, 'openHostInvocationProxy');
 +    if (!(await waitForNetworkInitialization()) || !muxProxyServer)
 +        throw new Error('openHostInvocationProxy: the sandbox proxy is not running');
++    admission?.assertCanBind();
 +    if (hostInvocationProxies.size >= MAX_INVOCATION_LISTENERS)
 +        throw new Error('openHostInvocationProxy: too many invocation relays');
++    // A key has one relay for the session: none beside a live one, none once it was retired.
++    // Checked with no await before the relay is registered.
++    if (retiredInvocationKeys.has(key) || [...hostInvocationProxies].some(relay => relay.key === key))
++        throw new Error('openHostInvocationProxy: the invocation already had a relay');
 +    const lane = { key, encodedKey: encodeSandboxedCommand(commandId), ended: false, proxyAuthToken: randomBytes(32).toString('hex') };
 +    const ports = new Set();
 +    let closing;
++    // Ending the admission stops every forward at once; the port stays bound
++    // until the relay is closed, so nothing left running can reach a reused one.
++    const revoke = () => {
++        lane.ended = true;
++        // Retired at once: the key attributes nothing again, whatever the close does.
++        retiredInvocationKeys.add(key);
++        destroyInvocationSockets(lane);
++    };
 +    const relay = {
++        key,
 +        ports,
 +        close() {
-+            lane.ended = true;
-+            destroyInvocationSockets(lane);
++            revoke();
++            admission?.signal.removeEventListener('abort', revoke);
 +            return closing ??= (async () => {
 +                await lane.ready?.catch(() => { });
-+                await disposeInvocationListener(lane);
-+                hostInvocationProxies.delete(relay);
++                try {
++                    await disposeInvocationListener(lane);
++                }
++                finally {
++                    // The relay stays owned, by a later close or the session's reset, until its port is unbound.
++                    if (lane.http?.listening === true)
++                        closing = undefined;
++                    else
++                        hostInvocationProxies.delete(relay);
++                }
 +            })();
 +        },
 +    };
 +    hostInvocationProxies.add(relay);
++    // From here the admission's owner closes the relay, whatever happens while it opens.
++    admission?.adopt(() => relay.close());
++    admission?.signal.addEventListener('abort', revoke, { once: true });
 +    lane.ready = (async () => {
 +        const { http, socks } = createProxyServers(invocationAskCallback, lane);
 +        Object.assign(lane, { http, socks });
 +        const [start, end] = config?.windows?.proxyPortRange ?? DEFAULT_WINDOWS_PROXY_PORT_RANGE;
 +        let accepting = false;
 +        http.prependListener('connection', socket => {
-+            if (!accepting)
++            if (!accepting || lane.ended || admission?.acceptsConnections() === false)
 +                socket.destroy();
 +        });
 +        for (let attempt = 0;; attempt++) {
++            admission?.assertCanBind();
 +            await listenOn(http, 0, '127.0.0.1');
 +            lane.port = http.address().port;
 +            if (lane.port < start || lane.port > end)
 +                break;
-+            await new Promise(resolve => http.close(() => resolve()));
++            await closeInvocationHttpServer(http);
 +            if (attempt >= 32)
 +                throw new Error('openHostInvocationProxy: no port outside the shared proxy range');
 +        }
@@ -2735,11 +2790,19 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..6b1630fe87fbbf83b26a242d96566272
 +    })();
 +    try {
 +        await lane.ready;
++        admission?.assertCanBind();
 +        if (lane.ended)
 +            throw new Error('openHostInvocationProxy: invocation ended while opening');
 +    }
 +    catch (error) {
-+        await relay.close();
++        if (admission === undefined) {
++            try {
++                await relay.close();
++            }
++            catch (closeError) {
++                throw new AggregateError([error, closeError], 'openHostInvocationProxy: opening and closing failed');
++            }
++        }
 +        throw error;
 +    }
 +    return {
@@ -3285,6 +3348,24 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..6b1630fe87fbbf83b26a242d96566272
 +        return true;
 +    };
 +}
++/**
++ * Ave patch (invocation listeners). A key an invocation listener or a host
++ * relay owns is learned from that listener alone: named by a proxy username
++ * on the shared front end it attributes nothing, so neither the callback nor
++ * a refusal record ties that connection to the invocation.
++ */
++function usernameAttribution(encodedCommand) {
++    if (!encodedCommand)
++        return encodedCommand;
++    const key = decodeSandboxedCommand(encodedCommand);
++    if (invocationListeners.has(key) || retiredInvocationKeys.has(key))
++        return undefined;
++    for (const relay of hostInvocationProxies) {
++        if (relay.key === key)
++            return undefined;
++    }
++    return encodedCommand;
++}
 +function invocationListenerKey(commandId, caller) {
 +    const key = typeof commandId === 'string'
 +        ? decodeSandboxedCommand(encodeSandboxedCommand(commandId))
@@ -3380,7 +3461,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..6b1630fe87fbbf83b26a242d96566272
 +    catch (error) {
 +        invocationListeners.delete(key);
 +        retiredInvocationKeys.add(key);
-+        void disposeInvocationListener(lane);
++        void disposeInvocationListener(lane).catch(() => logForDebugging('Error closing invocation listener', { level: 'error' }));
 +        throw error;
 +    }
 +    if (lane.ended) {
@@ -3407,13 +3488,38 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..6b1630fe87fbbf83b26a242d96566272
 +        socket.destroy();
 +    lane.sockets?.clear();
 +}
-+/** Close every server of a listener (its front end included). */
++/**
++ * Close an invocation's HTTP server. The unbind is attempted even when the
++ * connection drain throws; either failure, other than an already-unbound
++ * server, rejects.
++ */
++function closeInvocationHttpServer(server) {
++    let drainFailure;
++    try {
++        if (typeof server.closeAllConnections === 'function')
++            server.closeAllConnections();
++    }
++    catch (error) {
++        drainFailure = error;
++    }
++    return new Promise((resolve, reject) => {
++        server.close(error => {
++            if (error && error.code !== 'ERR_SERVER_NOT_RUNNING' && error.message !== 'Server is not running.')
++                reject(error);
++            else if (drainFailure !== undefined)
++                reject(drainFailure);
++            else
++                resolve();
++        });
++    });
++}
++/** Close every server of a listener (its front end included); rejects when its HTTP server's close failed. */
 +async function disposeInvocationListener(lane) {
 +    lane.ended = true;
 +    destroyInvocationSockets(lane);
 +    // Close the backend before the front end, which also closes its listener.
-+    await Promise.all([
-+        lane.http ? forceCloseHttpServer(lane.http) : undefined,
++    const [backend] = await Promise.allSettled([
++        lane.http ? closeInvocationHttpServer(lane.http) : undefined,
 +        lane.socks?.close().catch(() => { }),
 +    ]);
 +    if (lane.mux)
@@ -3426,6 +3532,8 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..6b1630fe87fbbf83b26a242d96566272
 +            // best effort: the path is never reused either way
 +        }
 +    }
++    if (backend.status === 'rejected')
++        throw backend.reason;
 +}
 +/**
 + * Ave patch (invocation listeners). End an invocation's listener: from now
@@ -3492,7 +3600,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..6b1630fe87fbbf83b26a242d96566272
 +        }
 +        invocationListeners.delete(key);
 +        retiredInvocationKeys.add(key);
-+        await disposeInvocationListener(lane);
++        await disposeInvocationListener(lane).catch(() => logForDebugging('Error closing invocation listener', { level: 'error' }));
 +    })();
 +}
 +/** The open listener for a wrap's commandId, or undefined. Throws for an ended one. */
@@ -3521,7 +3629,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..6b1630fe87fbbf83b26a242d96566272
  // ============================================================================
  // Public Module Functions (will be exported via namespace)
  // ============================================================================
-@@ -604,6 +1878,222 @@ async function initialize(runtimeConfig, sandboxAskCallback, enableLogMonitor =
+@@ -604,6 +1960,222 @@ async function initialize(runtimeConfig, sandboxAskCallback, enableLogMonitor =
          throw error;
      }
  }
@@ -3744,7 +3852,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..6b1630fe87fbbf83b26a242d96566272
  async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonitor) {
      // Return if already initializing
      if (initializationPromise) {
-@@ -616,7 +2106,12 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
+@@ -616,7 +2188,12 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
      // Resolve parent/upstream proxy from config or HTTP_PROXY env before we
      // start our own listeners (which will later shadow those vars in the child).
      parentProxy = resolveParentProxy(runtimeConfig.network.parentProxy);
@@ -3757,7 +3865,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..6b1630fe87fbbf83b26a242d96566272
          logForDebugging(`Parent proxy configured: http=${redactUrl(parentProxy.httpUrl)} ` +
              `https=${redactUrl(parentProxy.httpsUrl)}`);
      }
-@@ -705,171 +2200,18 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
+@@ -705,171 +2282,18 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
      // sandboxed child can be spawned. Doing this at initialize() (not
      // wrap-time) means the host gets a single actionable error before
      // any per-exec work happens, instead of exit-15 on every command.
@@ -3941,7 +4049,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..6b1630fe87fbbf83b26a242d96566272
      }
      // Initialize network infrastructure
      initializationPromise = (async () => {
-@@ -992,6 +2334,12 @@ function checkDependenciesCommon(ripgrepConfig) {
+@@ -992,6 +2416,12 @@ function checkDependenciesCommon(ripgrepConfig) {
          errors.push(...linuxDeps.errors);
          warnings.push(...linuxDeps.warnings);
      }
@@ -3954,7 +4062,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..6b1630fe87fbbf83b26a242d96566272
      else if (platform === 'windows') {
          let srtWin;
          try {
-@@ -1306,16 +2654,14 @@ function computeWindowsFsAccessSet(c, maskedFiles) {
+@@ -1306,16 +2736,14 @@ function computeWindowsFsAccessSet(c, maskedFiles) {
      // creates a placeholder chain and stamps it (deny lands on the
      // exact target path). `mode: 'grant'` drops them (a grant on
      // nothing is meaningless).
@@ -3976,7 +4084,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..6b1630fe87fbbf83b26a242d96566272
  }
  /**
   * The `mode: "mask"` files, as credential denies: an ACL cannot redirect a
-@@ -1515,6 +2861,9 @@ async function waitToWalk(signal) {
+@@ -1515,6 +2943,9 @@ async function waitToWalk(signal) {
      };
  }
  async function wrapWithSandbox(command, binShell, customConfig, abortSignal, options) {
@@ -3986,7 +4094,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..6b1630fe87fbbf83b26a242d96566272
      return wrapWithSandboxAgain(0, command, binShell, customConfig, abortSignal, options);
  }
  /** {@link wrapWithSandbox}, having started over `restarts` times. */
-@@ -1710,15 +3059,18 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1710,15 +3141,18 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
      const allowNestedUserNamespaces = customConfig?.allowNestedUserNamespaces ?? config?.allowNestedUserNamespaces;
      const gitSafeDirectories = getGitSafeDirectories(customConfig);
      switch (platform) {
@@ -4008,7 +4116,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..6b1630fe87fbbf83b26a242d96566272
                  proxyAuthToken: needsNetworkProxy ? proxyAuthToken : undefined,
                  caCertPath: mitmCA?.trustBundlePath,
                  javaAgentJarPath: needsNetworkProxy ? javaAgentJarPath : undefined,
-@@ -1728,29 +3080,37 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1728,29 +3162,37 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                  setEnvVars: credentialRestrictions.setEnvVars,
                  maskedFileBinds: credentialRestrictions.maskedFileBinds,
                  degradeToDenyPaths: credentialRestrictions.degradeToDenyPaths,
@@ -4051,7 +4159,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..6b1630fe87fbbf83b26a242d96566272
                      : undefined,
                  httpProxyPort: needsNetworkProxy
                      ? managerContext?.httpProxyPort
-@@ -1769,7 +3129,8 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1769,7 +3211,8 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                  maskedFileStoreDir: credentialRestrictions.maskedFileStoreDir,
                  enableWeakerNestedSandbox: getEnableWeakerNestedSandbox(),
                  allowNestedUserNamespaces,
@@ -4061,7 +4169,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..6b1630fe87fbbf83b26a242d96566272
                  binShell,
                  ripgrepConfig: getRipgrepConfig(),
                  mandatoryDenySearchDepth: getMandatoryDenySearchDepth(),
-@@ -1786,6 +3147,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1786,6 +3229,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                      return startOver();
                  throw err;
              });
@@ -4069,7 +4177,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..6b1630fe87fbbf83b26a242d96566272
          case 'windows':
              // Windows wraps to an argv array, not a shell string. Forcing
              // callers through wrapWithSandboxArgv() means they spawn with
-@@ -1821,7 +3183,16 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1821,7 +3265,16 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
   *   `process.cwd()`. Currently unused on macOS/Linux.
   */
  async function wrapWithSandboxArgv(command, binShell, customConfig, abortSignal, cwd, options) {
@@ -4086,7 +4194,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..6b1630fe87fbbf83b26a242d96566272
      if (platform === 'windows') {
          const hasNetworkConfig = customConfig?.network?.allowedDomains !== undefined ||
              config?.network?.allowedDomains !== undefined;
-@@ -1877,16 +3248,10 @@ async function wrapWithSandboxArgv(command, binShell, customConfig, abortSignal,
+@@ -1877,16 +3330,10 @@ async function wrapWithSandboxArgv(command, binShell, customConfig, abortSignal,
              maskedFiles.length > 0) {
              const sessRead = new Set(windowsFsStampedSet?.denyRead ?? []);
              const sessWrite = new Set(windowsFsStampedSet?.denyWrite ?? []);
@@ -4104,7 +4212,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..6b1630fe87fbbf83b26a242d96566272
                  held: windowsFsStampedSet,
              });
              perExecDenyRead = ranked.denyRead.filter(p => !sessRead.has(p));
-@@ -1950,7 +3315,7 @@ function getConfig() {
+@@ -1950,7 +3397,7 @@ function getConfig() {
   *
   * **Network/allowlist changes are a live swap**: the running
   * mux proxy reads `config.network.allowedDomains` /
@@ -4113,7 +4221,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..6b1630fe87fbbf83b26a242d96566272
   * reassigning `config` here takes effect on the next connection
   * with no proxy rebind and no port change — on every platform,
   * including Windows. This is what lets a host enable/deny domains
-@@ -1989,6 +3354,7 @@ function updateConfig(newConfig) {
+@@ -1989,6 +3436,7 @@ function updateConfig(newConfig) {
      // effect only on re-initialize. This keeps the state consistent for the
      // next initialize() call.
      parentProxy = resolveParentProxy(newConfig.network.parentProxy);
@@ -4121,7 +4229,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..6b1630fe87fbbf83b26a242d96566272
      logForDebugging('Sandbox configuration updated');
  }
  /**
-@@ -2113,7 +3479,30 @@ function forceCloseHttpServer(server) {
+@@ -2113,7 +3561,30 @@ function forceCloseHttpServer(server) {
          });
      });
  }
@@ -4153,7 +4261,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..6b1630fe87fbbf83b26a242d96566272
      // Windows: release this session's sandbox-user ACEs. Best-effort
      // — log anomalies rather than throw, so teardown always
      // completes. Leftover ACEs are recoverable later via
-@@ -2123,28 +3512,54 @@ async function reset() {
+@@ -2123,28 +3594,54 @@ async function reset() {
          // Captured at initialize() — the SAME binary the grants/stamps
          // were applied with, immune to `config` mutation between.
          const srtWin = srtWinSpawn;
@@ -4227,7 +4335,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..6b1630fe87fbbf83b26a242d96566272
      // windowsWfpVerified is NOT cleared — per-process, not per-session.
      // Clean up any leftover bwrap mount points. Force past the
      // active-sandbox counter — reset() means the session is over.
-@@ -2222,6 +3637,8 @@ async function reset() {
+@@ -2222,6 +3719,8 @@ async function reset() {
      managerContext = undefined;
      initializationPromise = undefined;
      parentProxy = undefined;
@@ -4236,13 +4344,15 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..6b1630fe87fbbf83b26a242d96566272
      resolvedAddressGuard = createResolvedAddressGuard();
      mitmCA = undefined;
      javaAgentJarPath = undefined;
-@@ -2229,7 +3646,37 @@ async function reset() {
+@@ -2229,7 +3728,50 @@ async function reset() {
      awsPairRegistry.clear();
      commandTextsByKey.clear();
      commandNetworkListsByKey.clear();
 +    // Ave patch (invocation listeners): the session is over, so every
-+    // listener (ended ones kept bound on macOS included) goes.
-+    await Promise.all([...hostInvocationProxies].map(relay => relay.close()));
++    // listener (ended ones kept bound on macOS included) goes. A relay's failed close is logged; one whose port is
++    // still bound stays owned, and the reset fails once the rest of its teardown is done.
++    await Promise.all([...hostInvocationProxies].map(relay => relay.close().catch(() => logForDebugging('Error closing invocation relay', { level: 'error' }))));
++    const boundRelays = hostInvocationProxies.size;
 +    const lanes = [...invocationListeners.values()];
 +    invocationListeners.clear();
 +    retiredInvocationKeys.clear();
@@ -4255,26 +4365,37 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..6b1630fe87fbbf83b26a242d96566272
 +            clearTimeout(lane.quarantine);
 +    }
 +    invocationAskCallback = undefined;
-+    await Promise.all(lanes.map(lane => lane.ready?.catch(() => { }).then(() => disposeInvocationListener(lane))));
++    await Promise.all(lanes.map(lane => lane.ready?.catch(() => { }).then(() => disposeInvocationListener(lane))
++        .catch(() => logForDebugging('Error closing invocation listener', { level: 'error' }))));
 +    if (privateSocketDir !== undefined) {
 +        fs.rmSync(privateSocketDir, { recursive: true, force: true });
 +        privateSocketDir = undefined;
 +    }
      maskedFileStore.dispose();
 +    windowsIsolationTask = undefined;
++    const failures = [];
 +    if (aclReleaseFailures.length > 0) {
-+        throw new WindowsSandboxError('acl_release_failed', `Windows sandbox ACL release incomplete: ${aclReleaseFailures.join('; ')}`);
++        failures.push(new WindowsSandboxError('acl_release_failed', `Windows sandbox ACL release incomplete: ${aclReleaseFailures.join('; ')}`));
 +    }
-+    return {
-+        windowsAclUnreleased: [...aclReleaseStale].map(([key, targets]) => {
-+            const [step, status] = key.split('\n');
-+            return { step, status, count: targets.length, targets };
-+        }),
-+    };
++    if (boundRelays > 0) {
++        failures.push(new Error(`Sandbox reset left ${boundRelays} invocation relay port${boundRelays === 1 ? '' : 's'} bound`));
++    }
++    const windowsAclUnreleased = [...aclReleaseStale].map(([key, targets]) => {
++        const [step, status] = key.split('\n');
++        return { step, status, count: targets.length, targets };
++    });
++    if (failures.length > 0) {
++        const failure = failures.length > 1 ? new AggregateError(failures, 'Sandbox reset incomplete') : failures[0];
++        // Ave patch (invocation listeners): a failed reset still reports the rows its ACL release dropped,
++        // non-enumerable so the raw targets stay off a serialized or logged error.
++        Object.defineProperty(failure, 'windowsAclUnreleased', { value: windowsAclUnreleased, enumerable: false, configurable: true, writable: true });
++        throw failure;
++    }
++    return { windowsAclUnreleased };
  }
  function getSandboxViolationStore() {
      return sandboxViolationStore;
-@@ -2314,6 +3761,7 @@ function getLinuxGlobPatternWarnings() {
+@@ -2314,6 +3856,7 @@ function getLinuxGlobPatternWarnings() {
   */
  export const SandboxManager = {
      initialize,
@@ -4282,7 +4403,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..6b1630fe87fbbf83b26a242d96566272
      isSupportedPlatform,
      isSandboxingEnabled,
      checkDependencies,
-@@ -2336,6 +3784,12 @@ export const SandboxManager = {
+@@ -2336,6 +3879,12 @@ export const SandboxManager = {
      wrapWithSandboxArgv,
      registerCommandNetworkLists,
      unregisterCommandNetworkLists,
@@ -4296,17 +4417,22 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..6b1630fe87fbbf83b26a242d96566272
      cleanupAfterCommand,
      reset,
 diff --git a/dist/sandbox/sandbox-schemas.d.ts b/dist/sandbox/sandbox-schemas.d.ts
-index 4c0be53fa68af536b0dcf49192421651d7b51476..2eb129ab7d56f8537980f1f39ccdf761c4ea77d9 100644
+index 4c0be53fa68af536b0dcf49192421651d7b51476..63657daab9a18cf9b9718b95f2c066143bf08742 100644
 --- a/dist/sandbox/sandbox-schemas.d.ts
 +++ b/dist/sandbox/sandbox-schemas.d.ts
-@@ -151,8 +151,75 @@ export type NetworkHostPattern = {
+@@ -150,9 +150,80 @@ export type NetworkHostPattern = {
+  *
   * Check `SandboxManager.askCallbackDenyReason` before returning an object:
   * a release without it reads any truthy answer as an allow.
++ *
++ * Ave patch (invocation listeners): `unattributed: true` says the callback
++ * did not accept `attributionKey`; the refusal is then recorded without it.
   */
 -export type SandboxAskCallback = (params: NetworkHostPattern) => Promise<boolean | {
 +export type SandboxAskCallback = (params: NetworkHostPattern, context?: SandboxAskContext) => Promise<boolean | {
      allow: false;
      reason: string;
++    unattributed?: true;
  }>;
 +/**
 + * Which invocation opened the connection a SandboxAskCallback is asked about
@@ -4640,11 +4766,12 @@ index 65b8eef..40dec6d 100644
   * PROTECTED rewrite, no SD snapshot. Idempotent and refcounted via
   * srt-win's `working_aces` table.
   *
-@@ -860,7 +862,25 @@ export interface WindowsAclStampOptions {
+@@ -860,7 +862,26 @@ export interface WindowsAclStampOptions {
   *   2, so on throw the caller should call {@link restoreWindowsAcl}
   *   to release whatever WAS stamped.
   */
 +export declare function assertWindowsAclPolicyBudget(denyRead?: readonly FilesystemPathEntry[], denyWrite?: readonly FilesystemPathEntry[], extraRead?: readonly FilesystemPathEntry[]): void;
++export declare function expandWindowsAclDenyLists(read?: readonly FilesystemPathEntry[], write?: readonly FilesystemPathEntry[], credential?: readonly FilesystemPathEntry[], masked?: readonly string[]): { denyRead: string[]; denyWrite: string[]; credentialDeny: string[] };
  export declare function stampWindowsAcl(opts: WindowsAclStampOptions): void;
 +export declare function stampWindowsAclAsync(opts: WindowsAclStampOptions): Promise<void>;
 +/** Ave patch (recovery report): counts from one `srt-win acl recover` run. */
@@ -4740,7 +4867,18 @@ index 540c566..337dca5 100644
              timeoutMs: 30000,
              srtWin: opts.srtWin,
          });
-@@ -996,13 +1008,14 @@ export function expandWindowsFsPaths(patterns, opts) {
+@@ -983,7 +995,9 @@ export function expandWindowsFsPaths(patterns, opts) {
+         const marked = typeof entry !== 'string';
+         const raw = marked ? markedLiteralPath(entry) : entry;
+-        const norm = normalizePathForSandbox(raw, marked ? { literal: true } : undefined);
++        const norm = marked && opts?.preserveLiteralWriteDenies && path.win32.isAbsolute(raw) && /%(?:USERPROFILE|HOMEDRIVE|HOMEPATH)%/i.test(raw)
++            ? path.win32.normalize(stripExtendedPathPrefix(raw))
++            : normalizePathForSandbox(raw, marked ? { literal: true } : undefined);
+         if (marked && containsGlobCharsWin(norm)) {
+             logForDebugging(`[Sandbox Windows] Skipping a literal path that no file can have: ${norm}`, { level: 'warn' });
+             continue;
+         }
+@@ -996,13 +1010,14 @@ export function expandWindowsFsPaths(patterns, opts) {
          }
          const candidates = isGlob
              ? [
@@ -4832,7 +4970,7 @@ index 540c566..337dca5 100644
 +    };
 +    const expand = entries => expandWindowsFsPaths(entries, { mode: 'deny', windowsAclWork });
 +    const denyRead = expand(read);
-+    const denyWrite = expand(write);
++    const denyWrite = expandWindowsFsPaths(write, { mode: 'deny', windowsAclWork, preserveLiteralWriteDenies: true });
 +    const credentialDeny = [...expand(credential), ...masked];
 +    assertWindowsAclPolicyBudget(denyRead, denyWrite, credentialDeny);
 +    return { denyRead, denyWrite, credentialDeny };

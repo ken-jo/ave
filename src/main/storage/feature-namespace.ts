@@ -111,16 +111,23 @@ export async function readJsonFileOrEmpty<T>(
   try {
     parsed = JSON.parse(raw);
   } catch {
-    const backup = `${filePath}.corrupt-${Date.now()}-${randomBytes(4).toString("hex")}.bak`;
-    try {
-      await fs.rename(filePath, backup);
-      log.warn(`corrupt JSON in ${filePath}; moved to ${backup}, starting empty`);
-    } catch (err) {
-      log.warn(`corrupt JSON in ${filePath}; could not move it to ${backup} (${(err as Error).message}), starting empty`);
-    }
+    await quarantineCorruptJson(filePath);
     return empty();
   }
   return hydrate(parsed);
+}
+
+/** Move a damaged JSON file aside to `<file>.corrupt-<ms>-<hex>.bak`. False when the move failed, which is logged: the file is still there. */
+export async function quarantineCorruptJson(filePath: string): Promise<boolean> {
+  const backup = `${filePath}.corrupt-${Date.now()}-${randomBytes(4).toString("hex")}.bak`;
+  try {
+    await fs.rename(filePath, backup);
+    log.warn(`corrupt JSON in ${filePath}; moved to ${backup}`);
+    return true;
+  } catch (err) {
+    log.warn(`corrupt JSON in ${filePath}; could not move it to ${backup} (${(err as Error).message})`);
+    return false;
+  }
 }
 
 /** fsync the directory that now holds the renamed entry. `rename` orders the replacement but does not make the new directory entry durable; without this the file survives a process crash and not a power cut, which is the half of the promise the docstring

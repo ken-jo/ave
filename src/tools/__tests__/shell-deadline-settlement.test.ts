@@ -15,7 +15,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async (importOriginal) => ({
   })),
   cleanupAsrtSandboxAfterCommand: vi.fn(async () => {}),
   getDefaultSensitiveReadDenyPaths: () => [],
-  getDefaultSensitiveWriteDenyPaths: () => [],
+  getDefaultSensitiveWriteDenyEntries: () => [],
 }));
 
 import { BashTool, spawnWithSandbox } from "../shell-tools.js";

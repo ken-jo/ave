@@ -15,7 +15,8 @@ const homePrivacyError = {
 };
 const extensionPlan: SandboxWindowsExtensionPlan = {
   requestedBackend: "mxc", selectedBackend: "none", fallbackVersion: null, uiPolicy: "ui-enabled", egressIdentity: "shared",
-  proxyOwnerVerified: false, hostLoopback: "bidirectional", inboundProtection: "host-firewall", dnsProtection: "host-resolver",
+  proxyOwnerVerified: false, hostLoopback: "bidirectional", inboundProtection: "host-firewall",
+  egressProtocolCoverage: { dns: "unknown", rawIp: "unknown" },
   ancestorAccess: "query-enumerate-only", ancestorNameExposure: true, readiness: "unavailable", reason: "native-validation-required",
 };
 const snapshot = {

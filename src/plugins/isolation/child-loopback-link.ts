@@ -8,6 +8,7 @@ import { PassThrough, type Readable, type Writable } from "node:stream";
 
 /** Selects the loopback channel in `plugin-child-main.ts`. Absent: stdio. */
 export const CHILD_LOOPBACK_TRANSPORT_ARG = "--ave-child-transport=loopback";
+export const CHILD_PRIVATE_STDIO_TRANSPORT_ARG = "--ave-child-transport=private-stdio";
 /** Selects the stdio relay in `plugin-child-main.ts`; stands alone. */
 export const CHILD_RELAY_TRANSPORT_ARG = "--ave-child-transport=relay";
 /** Carries the child's intended environment, base64url JSON. */
@@ -83,12 +84,16 @@ function assertEnvPair(name: string, value: unknown): asserts value is string {
 
 /** What the child was launched to do, read from its own argv. */
 export type ChildLaunchMode =
-  | { readonly transport: "stdio" }
+  | { readonly transport: "stdio"; readonly privateInput?: true }
   | { readonly transport: "loopback"; readonly env: Readonly<Record<string, string>> }
   | { readonly transport: "relay" };
 
 /** No channel arguments means stdio; otherwise accept exactly one complete supported argument form. */
 export function parseChildLaunchArgs(args: readonly string[]): ChildLaunchMode {
+  if (args.includes(CHILD_PRIVATE_STDIO_TRANSPORT_ARG)) {
+    if (args.length !== 1) throw new Error("[child-loopback-link] private stdio takes no other child argument");
+    return { transport: "stdio", privateInput: true };
+  }
   if (args.includes(CHILD_RELAY_TRANSPORT_ARG)) {
     if (args.length !== 1) {
       throw new Error("[child-loopback-link] the relay transport takes no other child argument");

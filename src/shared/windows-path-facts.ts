@@ -142,6 +142,13 @@ function encodeParentDaclFrame(paths: readonly string[]): Buffer {
   return input;
 }
 
+// A non-zero exit's message and stderr name the helper's install path and the requested paths.
+function helperExitFailure(error: unknown): (Error & { status: number | null }) | undefined {
+  if (typeof error !== "object" || error === null || !("status" in error) || "syscall" in error) return undefined;
+  const status = typeof error.status === "number" && Number.isSafeInteger(error.status) ? error.status : null;
+  return Object.assign(new Error(status === null ? "Windows path facts helper failed" : `Windows path facts helper failed (exit ${status})`), { status });
+}
+
 function request(paths: readonly string[], mode: "--pin" | "--dacl", flags: readonly string[] = []): WindowsPathFacts[] {
   if (paths.length === 0) return [];
   const framed = mode === "--dacl" && flags.includes("--parent") && !flags.includes("--content");
@@ -161,12 +168,13 @@ function request(paths: readonly string[], mode: "--pin" | "--dacl", flags: read
       });
     });
   } catch (error) {
-    if (flags.includes("--content") && typeof error === "object" && error !== null && "status" in error && error.status === CONTENT_TOO_LARGE_EXIT_CODE) {
-      const oversized: NodeJS.ErrnoException = new Error("Windows file content exceeds the native read limit", { cause: error });
+    const failure = helperExitFailure(error);
+    if (flags.includes("--content") && failure?.status === CONTENT_TOO_LARGE_EXIT_CODE) {
+      const oversized: NodeJS.ErrnoException = new Error("Windows file content exceeds the native read limit", { cause: failure });
       oversized.code = "EFBIG";
       throw oversized;
     }
-    throw error;
+    throw failure ?? error;
   }
   return decodeWindowsPathFacts(decodeWindowsNativeReply(output), paths.length, mode, flags, framed ? paths : undefined);
 }

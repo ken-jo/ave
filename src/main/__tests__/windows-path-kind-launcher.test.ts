@@ -1,10 +1,10 @@
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ execFile: vi.fn(), existsSync: vi.fn() }));
-vi.mock("node:child_process", () => ({ execFile: mocks.execFile }));
+const mocks = vi.hoisted(() => ({ execFile: vi.fn(), execFileSync: vi.fn(), existsSync: vi.fn() }));
+vi.mock("node:child_process", () => ({ execFile: mocks.execFile, execFileSync: mocks.execFileSync }));
 vi.mock("node:fs", () => ({ existsSync: mocks.existsSync }));
-import { queryDosDevice, queryWindowsSystemDirectory, resolveWindowsPathKindHelper } from "../windows-path-kind-launcher.js";
+import { queryDosDevice, queryWindowsDocumentsDirectory, queryWindowsSystemDirectory, resolveWindowsPathKindHelper } from "../windows-path-kind-launcher.js";
 import { configureHostResources } from "../host-resources.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 
@@ -79,6 +79,41 @@ describe("Windows folder classifier launcher", () => {
     await expect(queryDosDevice("Q:")).rejects.toThrow("not one mapping");
     mocks.execFile.mockImplementationOnce(helperReply("a\nb\n"));
     await expect(queryDosDevice("Q:")).rejects.toThrow("not one mapping");
+  });
+});
+
+describe("native Documents directory launcher", () => {
+  beforeEach(() => {
+    configureHostResources({ resourcePath: "/trusted/resources", isPackaged: true });
+    mocks.execFile.mockReset();
+    mocks.execFileSync.mockReset().mockReturnValue(Buffer.from("D:\\Documents\r\n"));
+    mocks.existsSync.mockReset().mockReturnValue(true);
+    vi.stubGlobal("process", { ...process, platform: "win32", arch: "x64" });
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("lets the event loop run while the Documents helper stalls and settles on cancellation", async () => {
+    const abort = new AbortController();
+    mocks.execFile.mockImplementation((_file, _args, options, callback) => {
+      options.signal.addEventListener("abort", () => callback(options.signal.reason, Buffer.alloc(0), Buffer.alloc(0)), { once: true });
+    });
+    const pending = Promise.resolve(queryWindowsDocumentsDirectory(abort.signal));
+    let settled = false;
+    void pending.then(() => { settled = true; }, () => { settled = true; });
+
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(settled).toBe(false);
+    abort.abort(new Error("cancel Documents lookup"));
+    await expect(pending).rejects.toThrow("cancel Documents lookup");
+    expect(mocks.execFile).toHaveBeenCalledTimes(1);
+  });
+
+  it("bounds the Documents lookup and rejects a helper timeout", async () => {
+    mocks.execFile.mockImplementation(helperReply("", "", new Error("Documents helper timed out")));
+    await expect(Promise.resolve(queryWindowsDocumentsDirectory())).rejects.toThrow("Documents helper timed out");
+    expect(mocks.execFile).toHaveBeenCalledWith(expect.any(String), ["--documents-directory"], expect.objectContaining({
+      timeout: expect.any(Number), windowsHide: true, encoding: "buffer",
+    }), expect.any(Function));
   });
 });
 

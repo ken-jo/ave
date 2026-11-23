@@ -5,15 +5,41 @@ import { migrateLegacyPluginBoardToWorkBoard } from "./work-board-migration.js";
 import { seedSampleWorkBoard } from "../../work-board/sample-data.js";
 import { scanAndRaiseDueSoon, startDueSoonScans } from "../../work-board/due-soon.js";
 import { ALERT_HOST_PLUGIN_ID } from "../../shared/alerts-types.js";
-import { createDirStorage } from "../../work-board/storage.js";
+import { createDirStorage, type WorkBoardStorage } from "../../work-board/storage.js";
 import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
 import { createLogger } from "../../lib/logger.js";
+import { t } from "../../i18n/index.js";
 import type { BootContext } from "../context.js";
 
 const log = createLogger("ave");
 
+const LEGACY_BOARD_NOTICE_FILE = "legacy-board-notice.json";
+
+/** Once per home, on the desktop: the legacy boards the migration left as they are, and where they are. */
+export async function noticeLegacyBoardKept(
+  paths: readonly string[],
+  ctx: Pick<BootContext, "host" | "notificationService">,
+  marker: Pick<WorkBoardStorage, "readJson" | "writeJson">,
+): Promise<void> {
+  if (!ctx.host.desktop || (await marker.readJson(LEGACY_BOARD_NOTICE_FILE)) !== null) return;
+  const delivery = ctx.notificationService.deliver({
+    kind: "system",
+    title: t("be_workBoard.legacyBoardKeptTitle"),
+    body: t("be_workBoard.legacyBoardKept", { path: paths.join(", ") }),
+    // Boot can precede the renderer's toast subscription.
+    bypassFocusGate: true,
+  });
+  if (delivery?.accepted) await marker.writeJson(LEGACY_BOARD_NOTICE_FILE, { noticedAt: new Date().toISOString() });
+}
+
 export async function setupWorkBoard(ctx: BootContext): Promise<void> {
-  const workBoardMigrated = await migrateLegacyPluginBoardToWorkBoard();
+  const workBoardStorage = createDirStorage(openFeatureNamespace("work-board").dir);
+  let keptBoards: readonly string[] = [];
+  const workBoardMigrated = await migrateLegacyPluginBoardToWorkBoard((paths) => { keptBoards = paths; });
+  if (keptBoards.length > 0) {
+    await noticeLegacyBoardKept(keptBoards, ctx, workBoardStorage).catch((err) =>
+      log.warn("boot: legacy work-board notice not shown (non-fatal): %s", (err as Error).message));
+  }
   const workBoardStore = new WorkBoardStore();
   await workBoardStore.load().catch((err) => {
     log.warn("boot: work-board load failed (non-fatal): %s", (err as Error).message);
@@ -24,8 +50,6 @@ export async function setupWorkBoard(ctx: BootContext): Promise<void> {
     .catch((err) =>
       log.warn("boot: work-board run reconcile failed (non-fatal): %s", (err as Error).message),
     );
-
-  const workBoardStorage = createDirStorage(openFeatureNamespace("work-board").dir);
 
   // Seed labeled samples once, only for an empty, unmigrated board.
   await seedSampleWorkBoard({

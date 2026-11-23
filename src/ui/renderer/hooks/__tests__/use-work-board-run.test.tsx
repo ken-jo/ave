@@ -20,6 +20,9 @@ import {
   useNowTick,
   useWorkBoardRun,
 } from "../use-work-board-run.js";
+import { en } from "../../../../i18n/messages/en.js";
+import { t } from "../../../../i18n/runtime.js";
+import { ko } from "../../../../i18n/messages/ko.js";
 
 type Handler<T> = (payload: T) => void;
 
@@ -228,6 +231,119 @@ describe("useWorkBoardRun — transcript backfill", () => {
     });
 
     expect(result.current.runState[4]?.turns).toEqual([]);
+  });
+});
+
+describe("useWorkBoardRun — refusal text", () => {
+  it("shows a refused start by its text, never its code, and leaves any other reason as sent", async () => {
+    const { api } = harness();
+    vi.mocked(api.runWorkBoardItem)
+      .mockResolvedValueOnce({ status: "error", reason: "template-runs-too-large", reasonCode: "template-runs-too-large" })
+      .mockResolvedValueOnce({ status: "error", reason: "disk full" });
+    const { result } = renderHook(() => useWorkBoardRun(api, []));
+    act(() => result.current.runItem(7));
+    await waitFor(() => expect(result.current.runState[7]?.reason).toBe(t("reasonCodes.template-runs-too-large")));
+    expect(result.current.runState[7]?.reason).not.toBe("template-runs-too-large");
+    act(() => result.current.runItem(8));
+    await waitFor(() => expect(result.current.runState[8]?.reason).toBe("disk full"));
+  });
+
+  for (const code of ["template-runs-too-large", "run-state-unavailable"]) {
+    it(`shows a run the run file refused mid-run by the refusal's text, from its event and from its result (${code})`, async () => {
+      const { api, emit } = harness();
+      let finish: (result: Awaited<ReturnType<AveApi["runWorkBoardItem"]>>) => void = () => undefined;
+      vi.mocked(api.runWorkBoardItem).mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+      const { result } = renderHook(() => useWorkBoardRun(api, []));
+      act(() => result.current.runItem(7));
+      // The event and the result as the stage engine sends them when a stage's end write is refused.
+      emit({ itemId: 7, phase: "error", message: code, reasonCode: code });
+      expect(result.current.runState[7]?.reason).toBe(t(`reasonCodes.${code}`));
+      await act(async () => { finish({ status: "error", reason: code, reasonCode: code }); });
+      expect(result.current.runState[7]).toMatchObject({ phase: "error", reason: t(`reasonCodes.${code}`) });
+    });
+  }
+
+  it("keeps the refusal's text for a run whose end the run file did not confirm", async () => {
+    const { api, emit } = harness();
+    const code = "template-runs-pending-review";
+    let finish: (result: Awaited<ReturnType<AveApi["runWorkBoardItem"]>>) => void = () => undefined;
+    vi.mocked(api.runWorkBoardItem).mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    const { result } = renderHook(() => useWorkBoardRun(api, []));
+    act(() => result.current.runItem(7));
+    // The event and the result as the stage engine sends them while the run's end is not written.
+    emit({ itemId: 7, phase: "error", message: code, reasonCode: code });
+    await act(async () => { finish({ status: "error", reason: code, reasonCode: code }); });
+    expect(result.current.runState[7]).toMatchObject({ busy: false, phase: "error", reason: t(`reasonCodes.${code}`) });
+  });
+
+  for (const status of ["error", "denied"] as const) {
+    it(`keeps its event's text when a run's ${status} result names no reason`, async () => {
+      const { api, emit } = harness();
+      const code = "template-runs-board-unread";
+      let finish: (result: Awaited<ReturnType<AveApi["runWorkBoardItem"]>>) => void = () => undefined;
+      vi.mocked(api.runWorkBoardItem).mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+      const { result } = renderHook(() => useWorkBoardRun(api, []));
+      act(() => result.current.runItem(7));
+      emit({ itemId: 7, phase: status, message: code, reasonCode: code });
+      await act(async () => { finish({ status }); });
+      expect(result.current.runState[7]).toMatchObject({ busy: false, phase: status, reason: t(`reasonCodes.${code}`) });
+    });
+  }
+
+  it("marks a stopped run whose result says its end is not saved yet, and leaves it stopped", async () => {
+    const { api } = harness();
+    vi.mocked(api.runWorkBoardItem).mockResolvedValueOnce({ status: "cancelled", reason: "run-end-unconfirmed", reasonCode: "run-end-unconfirmed" });
+    const { result } = renderHook(() => useWorkBoardRun(api, []));
+    act(() => result.current.runItem(7));
+    await waitFor(() => expect(result.current.runState[7]).toMatchObject({ busy: false, phase: "cancelled", endUnconfirmed: true }));
+  });
+
+  it("clears a stopped run's note once the host says its end is saved, and leaves another run's error text as it is", async () => {
+    const { api, emit } = harness();
+    const { result } = renderHook(() => useWorkBoardRun(api, []));
+    emit({ itemId: 7, phase: "cancelled", message: "user-stopped", reasonCode: "run-end-unconfirmed" });
+    emit({ itemId: 8, phase: "error", message: "template-runs-board-unread", reasonCode: "template-runs-board-unread" });
+    await waitFor(() => expect(result.current.runState[7]).toMatchObject({ phase: "cancelled", endUnconfirmed: true }));
+    emit({ itemId: 7, phase: "cancelled", reasonCode: "run-end-confirmed" });
+    await waitFor(() => expect(result.current.runState[7]).toMatchObject({ busy: false, phase: "cancelled", endUnconfirmed: false }));
+    expect(result.current.runState[8]).toMatchObject({ phase: "error", reason: t("reasonCodes.template-runs-board-unread") });
+    for (const catalog of [en, ko]) expect(Reflect.get(catalog, "reasonCodes.run-end-confirmed")).toEqual(expect.stringMatching(/\S/));
+  });
+
+  it("a cancelled event without a code never replaces error or denied text, and never clears a stopped run's note", async () => {
+    const { api, emit } = harness();
+    const { result } = renderHook(() => useWorkBoardRun(api, []));
+    emit({ itemId: 7, phase: "error", message: "template-runs-board-unread", reasonCode: "template-runs-board-unread" });
+    emit({ itemId: 8, phase: "denied", message: "rejected" });
+    emit({ itemId: 9, phase: "cancelled", message: "user-stopped", reasonCode: "run-end-unconfirmed" });
+    await waitFor(() => expect(result.current.runState[9]).toMatchObject({ phase: "cancelled", endUnconfirmed: true }));
+    const denied = result.current.runState[8];
+    expect(denied).toMatchObject({ phase: "denied", reason: expect.stringMatching(/\S/) });
+    for (const itemId of [7, 8, 9]) {
+      emit({ itemId, phase: "cancelled" });
+      emit({ itemId, phase: "cancelled", message: "user-stopped" });
+    }
+    await act(async () => {});
+    expect(result.current.runState[7]).toMatchObject({ phase: "error", reason: t("reasonCodes.template-runs-board-unread") });
+    expect(result.current.runState[8]).toEqual(denied);
+    expect(result.current.runState[9]).toMatchObject({ phase: "cancelled", endUnconfirmed: true });
+  });
+
+  it("keeps the error text of a start refused after a stop whose end was not saved, when that end is saved later", async () => {
+    const { api, emit } = harness();
+    vi.mocked(api.runWorkBoardItem).mockResolvedValueOnce({ status: "error", reason: "template-runs-pending-review", reasonCode: "template-runs-pending-review" });
+    const { result } = renderHook(() => useWorkBoardRun(api, []));
+    emit({ itemId: 7, phase: "cancelled", message: "user-stopped", reasonCode: "run-end-unconfirmed" });
+    act(() => result.current.runItem(7));
+    await waitFor(() => expect(result.current.runState[7]).toMatchObject({ busy: false, phase: "error", reason: t("reasonCodes.template-runs-pending-review") }));
+    emit({ itemId: 7, phase: "cancelled", reasonCode: "run-end-confirmed" });
+    expect(result.current.runState[7]).toMatchObject({ phase: "error", reason: t("reasonCodes.template-runs-pending-review"), endUnconfirmed: false });
+  });
+
+  it("has the text of every refusal code it maps in both catalogs", () => {
+    for (const code of ["template-runs-too-large", "invalid-template-run", "template-runs-pending-review", "template-runs-board-unread", "template-run-lost", "run-state-unavailable"]) {
+      for (const catalog of [en, ko]) expect(Reflect.get(catalog, `reasonCodes.${code}`)).toEqual(expect.stringMatching(/\S/));
+    }
   });
 });
 
@@ -551,4 +667,16 @@ describe("useWorkBoardRun — a plan waiting for the user's decision", () => {
     start(4);
     expect(result.current.runState[4]?.turns).toHaveLength(0);
   });
+});
+
+it("keeps a localized held notice through active updates and clears it on recovery without an error phase", () => {
+  const { api, emit } = harness();
+  const { result } = renderHook(() => useWorkBoardRun(api, [runningItem()]));
+  emit({ itemId: 4, phase: "executing", message: "template-runs-board-unread", reasonCode: "template-runs-board-unread" });
+  expect(result.current.runState[4]).toMatchObject({ busy: true, phase: "executing", heldNotice: t("reasonCodes.template-runs-board-unread") });
+  emit({ itemId: 4, phase: "executing", turn: 1, text: "working" });
+  expect(result.current.runState[4]?.heldNotice).toBe(t("reasonCodes.template-runs-board-unread"));
+  emit({ itemId: 4, phase: "executing", message: "resumed" });
+  expect(result.current.runState[4]?.heldNotice).toBeUndefined();
+  expect(result.current.runState[4]?.phase).toBe("executing");
 });

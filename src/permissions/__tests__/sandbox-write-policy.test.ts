@@ -372,6 +372,13 @@ describe("mandatory sandbox control-file writes", () => {
       .toThrow("Invalid inherited sandbox write deny");
   });
 
+  it("rejects bracket patterns as inherited Linux write denies", () => {
+    withPlatform("linux", () => {
+      expect(() => buildMandatorySandboxWritePolicy([root], undefined, [], [join(root, "Work [Archive]")]))
+        .toThrow("Invalid inherited sandbox write deny");
+    });
+  });
+
   it("includes inherited, conditional, common and worktree hook targets without executing configuration", () => {
     const project = join(root, "project");
     const marker = join(project, ".git");

@@ -106,6 +106,7 @@ export function buildPipSyncFallbackArgs(
 const UV_EGRESS_PROBE_URLS = [
   "https://pypi.org/simple/",
   "https://files.pythonhosted.org/",
+  "https://releases.astral.sh/github/python-build-standalone/releases/download/",
   "https://github.com/astral-sh/python-build-standalone/releases/",
   "https://astral.sh/",
 ] as const;
@@ -115,23 +116,32 @@ const UV_EGRESS_PROBE_URLS = [
 export function uvProxyEnvFromPacResolutions(
   resolutions: ReadonlyArray<readonly [url: string, pac: string]>,
 ): Record<string, string> {
-  const proxies = new Set<string>();
+  let proxy: string | undefined;
+  const proxied: string[] = [];
   const direct: string[] = [];
   for (const [url, pac] of resolutions) {
     const first = pac.split(";")[0] ?? "";
+    const host = new URL(url).hostname;
     if (first.trim().toUpperCase() === "DIRECT") {
-      direct.push(new URL(url).hostname);
+      direct.push(host);
       continue;
     }
     const proxyUrl = proxyUrlFromPacEntry(first);
-    if (!proxyUrl) return {};
-    proxies.add(proxyUrl);
+    if (!proxyUrl) throw new Error(t("be_pythonRuntime.errProxyRouteUnsupported", { host }));
+    if (proxy !== undefined && proxy !== proxyUrl) {
+      throw new Error(t("be_pythonRuntime.errProxyRoutesIncompatible"));
+    }
+    proxy = proxyUrl;
+    proxied.push(host);
   }
-  if (proxies.size !== 1) return {};
-  const [proxy] = [...proxies];
+  if (proxy === undefined) return {};
+  // NO_PROXY matches subdomains as well as the listed domain.
+  if (proxied.some((host) => direct.some((domain) => host === domain || host.endsWith(`.${domain}`)))) {
+    throw new Error(t("be_pythonRuntime.errProxyRoutesIncompatible"));
+  }
   return {
-    HTTP_PROXY: proxy!,
-    HTTPS_PROXY: proxy!,
+    HTTP_PROXY: proxy,
+    HTTPS_PROXY: proxy,
     ...(direct.length > 0 ? { NO_PROXY: direct.join(",") } : {}),
   };
 }
@@ -140,6 +150,7 @@ export class PythonRuntimeBootstrapper {
   // Resolved once — see {@link PythonRuntimeBootstrapper.uvEgressEnv}.
   private uvEgressEnvOnce: Promise<Record<string, string>> | null = null;
   private mainWindow: MainWindow | null = null;
+  private pluginRuntimeDir: string | undefined;
 
   constructor(private readonly options: PythonRuntimeBootstrapperOptions = {}) {}
 
@@ -219,7 +230,35 @@ export class PythonRuntimeBootstrapper {
       forceSetup: false,
       onStatus: onStatus ?? this.options.onStatus,
     });
+    bootstrapper.pluginRuntimeDir = runtimeDir;
     return bootstrapper.ensureReady(mainWindow);
+  }
+
+  private async hasExistingVenv(venvDir: string): Promise<boolean> {
+    try {
+      if (!(await fs.lstat(venvDir)).isDirectory()) return false;
+      return (await fs.lstat(path.join(venvDir, "pyvenv.cfg"))).isFile();
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw error;
+    }
+  }
+
+  private async resolveVenvToClear(venvDir: string): Promise<string | undefined> {
+    if (!await this.hasExistingVenv(venvDir)) return undefined;
+
+    const runtimeRoot = aveRuntimeDir();
+    if (path.relative(runtimeRoot, this.runtimeDir()) !== "" && this.runtimeDir() !== this.pluginRuntimeDir) {
+      throw new Error(t("be_pythonRuntime.errUnsafeVenvClear"));
+    }
+    assertAveHomeRuntimeBoundary();
+    const realRoot = await fs.realpath(runtimeRoot);
+    const realVenv = await fs.realpath(venvDir);
+    const expectedVenv = path.join(realRoot, path.relative(runtimeRoot, venvDir));
+    if (!isResolvedPathWithin(realRoot, realVenv) || path.relative(expectedVenv, realVenv) !== "") {
+      throw new Error(t("be_pythonRuntime.errUnsafeVenvClear"));
+    }
+    return realVenv;
   }
 
   private async checkSentinel(): Promise<boolean> {
@@ -268,6 +307,8 @@ export class PythonRuntimeBootstrapper {
   }
 
   private async setup(): Promise<void> {
+    const venvDir = this.venvDir();
+    const venvToClear = await this.resolveVenvToClear(venvDir);
     await this.ensureDirs();
 
     const uvBin = this.getUvBinaryPath();
@@ -282,16 +323,16 @@ export class PythonRuntimeBootstrapper {
     this.sendStatus({ phase: "installing-python", msg: t("be_pythonRuntime.statusInstallingPython"), pct: 10 });
     await this.log("[python-runtime] Step 1: uv python install 3.12");
     const uvVersion = await this.rebuildStep(() => this.runUv(uvBin, [
-      "python", "install", "3.12",
+      "python", "install", "3.12", "--no-bin", "--no-registry",
     ], {
       UV_PYTHON_INSTALL_DIR: this.pythonInstallDir(),
     }));
 
     this.sendStatus({ phase: "installing-python", msg: t("be_pythonRuntime.statusCreatingVenv"), pct: 30 });
     await this.log("[python-runtime] Step 2: uv venv");
-    await this.runUv(uvBin, [
-      "venv", this.venvDir(), "--python", "3.12",
-    ], {
+    const venvArgs = ["venv", venvToClear ?? venvDir, "--python", "3.12"];
+    if (venvToClear !== undefined) venvArgs.push("--clear");
+    await this.runUv(uvBin, venvArgs, {
       UV_PYTHON_INSTALL_DIR: this.pythonInstallDir(),
     });
 
@@ -444,27 +485,19 @@ export class PythonRuntimeBootstrapper {
     this.uvEgressEnvOnce ??= (async () => {
       const env: Record<string, string> = {
         // Use native TLS trust; a corporate-only SSL_CERT_FILE would replace public roots and break package downloads.
-        UV_NATIVE_TLS: "1",
+        UV_SYSTEM_CERTS: "1",
       };
       const resolve = this.options.resolveOsProxy;
       if (!resolve) return env;
-      try {
-        const resolutions = await Promise.all(
-          UV_EGRESS_PROBE_URLS.map(async (url) => [url, await resolve(url)] as const),
-        );
-        const proxyEnv = uvProxyEnvFromPacResolutions(resolutions);
-        if (Object.keys(proxyEnv).length === 0 && resolutions.some(([, pac]) =>
-          pac.split(";")[0]?.trim().toUpperCase() !== "DIRECT")) {
-          await this.log(
-            "[python-runtime] the OS routes uv's hosts through more than one proxy; "
-            + "HTTP_PROXY cannot express that, so uv runs without proxy variables",
-          );
+      const resolutions = await Promise.all(UV_EGRESS_PROBE_URLS.map(async (url) => {
+        try {
+          return [url, await resolve(url)] as const;
+        } catch (error) {
+          const host = new URL(url).hostname;
+          throw new Error(t("be_pythonRuntime.errProxyRouteLookupFailed", { host }), { cause: error });
         }
-        return { ...env, ...proxyEnv };
-      } catch (error) {
-        await this.log(`[python-runtime] OS proxy resolution failed: ${(error as Error).message}`);
-        return env;
-      }
+      }));
+      return { ...env, ...uvProxyEnvFromPacResolutions(resolutions) };
     })();
     return this.uvEgressEnvOnce;
   }

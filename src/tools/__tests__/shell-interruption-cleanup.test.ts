@@ -21,7 +21,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async (importOriginal) => ({
   wrapToolCommand: vi.fn(async () => ({ argv: ["shell"], env: {} })),
   cleanupAsrtSandboxAfterCommand: vi.fn(async () => {}),
   getDefaultSensitiveReadDenyPaths: () => [],
-  getDefaultSensitiveWriteDenyPaths: () => [],
+  getDefaultSensitiveWriteDenyEntries: () => [],
 }));
 
 import { ChildProcess, spawn } from "node:child_process";

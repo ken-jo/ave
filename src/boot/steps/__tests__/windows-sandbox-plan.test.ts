@@ -92,7 +92,7 @@ describe("Windows substrate helpers", () => {
     });
   });
 
-  it("claims full confinement for an MXC shell and none for the proxy-only runtime", () => {
+  it("preserves the MXC shell confinement dimensions and claims none for the proxy-only runtime", () => {
     const { substrate } = planWindowsSandbox({ shellRequested: true, shellLocalNetworkAccess: true, workerRequested: true, mxc: AVAILABLE, windowsBuild: BUILD, srtWinReady: false });
     expect(mxcShellCapability().confines).toEqual({ filesystem: true, process: true, network: true });
     expect(windowsProxyOnlyCapability(substrate)).toMatchObject({
@@ -100,6 +100,18 @@ describe("Windows substrate helpers", () => {
       reason: expect.stringContaining("agent shell commands run in containers"),
       confines: { filesystem: false, process: false, network: false },
     });
+  });
+
+  it("withdraws MXC extension protocol coverage when the runtime is unavailable", () => {
+    const input = { shellRequested: false, workerRequested: true, mxc: AVAILABLE,
+      extensionMxc: AVAILABLE, windowsBuild: BUILD, srtWinReady: false } as const;
+    const substrate = windowsSubstrateFor(input, "proxy-only");
+    for (const unavailable of [windowsSubstrateFor(input, "none"), windowsSubstrateWithoutAsrt(substrate)]) {
+      expect(unavailable.extensionPlan).toMatchObject({
+        selectedBackend: "none", reason: "runtime-unavailable", egressProtocolCoverage: { dns: "unknown", rawIp: "unknown" },
+      });
+      assertSandboxWindowsExtensionPlan(unavailable.extensionPlan);
+    }
   });
 
   it("reports the approved host route when the proxy-only container probe fails", () => {
