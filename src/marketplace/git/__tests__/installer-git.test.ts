@@ -26,7 +26,7 @@ describe("findInstallerGit", () => {
     const root = join(dir, "git");
     mkdirSync(join(root, "cmd"), { recursive: true });
     mkdirSync(join(root, prefix, "libexec", "git-core"), { recursive: true });
-    writeFileSync(join(root, "cmd", "git.exe"), "");
+    writeFileSync(join(root, "cmd", "git.exe"), "", { mode: 0o755 });
     expect(findInstallerGit(root)).toEqual({ path: join(root, "cmd", "git.exe"), root, prefix });
   });
 
@@ -37,7 +37,7 @@ describe("findInstallerGit", () => {
     expect(findInstallerGit(join(dir, "empty"))).toBeNull();
     const noToolchain = join(dir, "no-toolchain");
     mkdirSync(join(noToolchain, "cmd"), { recursive: true });
-    writeFileSync(join(noToolchain, "cmd", "git.exe"), "");
+    writeFileSync(join(noToolchain, "cmd", "git.exe"), "", { mode: 0o755 });
     expect(findInstallerGit(noToolchain)).toBeNull();
   });
 });
