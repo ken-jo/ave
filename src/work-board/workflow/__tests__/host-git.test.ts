@@ -146,6 +146,47 @@ describe("host git", () => {
     expect(await reasonOf(git.drivers(repo))).toBe("unavailable");
   });
 
+  /** Git processes that write what each reply holds, in turn, and end with its code. */
+  function replying(...replies: { code: number; stdout?: string; stderr?: string }[]): void {
+    spawned.fake = () => {
+      const reply = replies.shift() ?? { code: 1 };
+      const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill: () => true });
+      queueMicrotask(() => {
+        if (reply.stdout !== undefined) child.stdout.emit("data", Buffer.from(reply.stdout));
+        if (reply.stderr !== undefined) child.stderr.emit("data", Buffer.from(reply.stderr));
+        child.emit("close", reply.code);
+      });
+      return child;
+    };
+  }
+  const named = { code: 0, stdout: "filter.a.clean\ncat\0filter.a.required\0filter.b.required\nfalse\0" };
+
+  it("the configuration command's answers are taken as it writes them: entries ended by NUL, a required filter as true or false", async () => {
+    replying(named, { code: 0, stdout: "filter.a.required\ntrue\0filter.b.required\nfalse\0" });
+    const drivers = await createHostGit({ env }).drivers(base);
+    expect(drivers.requiredFilters).toEqual(["a"]);
+    for (const name of ["a", "b"]) expect(drivers.config, name).toContain(`filter.${name}.required=false`);
+    // Nothing configured: exit 1 with nothing written, twice.
+    replying({ code: 1 }, { code: 1 });
+    expect(await createHostGit({ env }).drivers(base)).toEqual({ config: [], requiredFilters: [] });
+  });
+
+  it.each<[string, { code: number; stdout?: string; stderr?: string }[]]>([
+    ["finds nothing and writes a diagnostic", [{ code: 1, stderr: "warning: fixture\n" }]],
+    ["succeeds and writes nothing", [{ code: 0 }]],
+    ["leaves its last entry open", [{ code: 0, stdout: "filter.a.clean\ncat" }]],
+    ["names a key that was not asked for", [{ code: 0, stdout: "core.editor\nvi\0" }, { code: 1 }]],
+    ["gives a required filter a value that is neither true nor false", [named, { code: 0, stdout: "filter.a.required\nyes\0filter.b.required\nfalse\0" }]],
+    ["gives a required filter no value where it was asked for a boolean", [named, { code: 0, stdout: "filter.a.required\0filter.b.required\nfalse\0" }]],
+    ["finds no required filter after it listed two", [named, { code: 1 }]],
+    ["lists the required filters in another order than before", [named, { code: 0, stdout: "filter.b.required\nfalse\0filter.a.required\ntrue\0" }]],
+    ["names a required filter it had not listed", [{ code: 0, stdout: "filter.a.clean\ncat\0" }, { code: 0, stdout: "filter.a.required\ntrue\0" }]],
+    ["finds no required filter and writes a diagnostic", [{ code: 0, stdout: "filter.a.clean\ncat\0" }, { code: 1, stderr: "warning: fixture\n" }]],
+  ])("a configuration command that %s gave no answer: the drivers are not known", async (_what, replies) => {
+    replying(...replies);
+    expect(await reasonOf(createHostGit({ env }).drivers(base))).toBe("unavailable");
+  });
+
   it("drivers are read from the configuration every git command reads: a file an inherited variable names for the configuration command alone hides none, and one named through inherited variables is switched off too", async () => {
     const repo = repositoryWith('[filter "own"]\n\tclean = cat\n\trequired = true\n');
     writeFileSync(join(base, "other.cfg"), "");

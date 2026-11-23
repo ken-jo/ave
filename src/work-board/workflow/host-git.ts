@@ -106,25 +106,38 @@ export function createHostGit(options: { env?: NodeJS.ProcessEnv; timeoutMs?: nu
   }
 
   async function drivers(cwd: string, worktree?: HostGitCall["worktree"]): Promise<{ config: string[]; requiredFilters: string[] }> {
-    const listed = async (...args: string[]): Promise<[key: string, value: string][]> => {
+    const unread = (): HostGitError => new HostGitError("unavailable", "git configuration could not be read");
+    // An answer is taken only in the form the command writes it: each entry ended by NUL, its key first and, after a line break, its
+    // value, or the key alone where the configuration gives it none. Nothing configured is exit 1 with nothing written at all. Any
+    // other failure is a configuration git itself does not take, and any other form is no answer.
+    const listed = async (...args: string[]): Promise<[key: string, value: string | undefined][]> => {
       const read = await run(cwd, ["config", "--null", ...args], worktree === undefined ? {} : { worktree });
-      // Exit 1 with no output: nothing is configured. Any other failure is a configuration git itself does not take.
-      if (read.code !== 0 && !(read.code === 1 && read.stdout === "")) throw new HostGitError("unavailable", "git configuration could not be read");
-      return read.stdout.split("\0").filter(entry => entry !== "").map((entry) => { const [key = "", value = ""] = entry.split("\n", 2); return [key, value]; });
+      if (read.code === 1 && read.stdout === "" && read.stderr === "") return [];
+      if (read.code !== 0 || !read.stdout.endsWith("\0")) throw unread();
+      return read.stdout.slice(0, -1).split("\0").map((entry) => {
+        const at = entry.indexOf("\n");
+        return at < 0 ? [entry, undefined] : [entry.slice(0, at), entry.slice(at + 1)];
+      });
     };
     const nameOf = (key: string): string => key.slice(key.indexOf(".") + 1, key.lastIndexOf("."));
     const filters = new Set<string>();
     const merges = new Set<string>();
-    for (const [key] of await listed("--get-regexp", "^(filter|merge)\\..*\\.(clean|smudge|process|required|driver)$")) {
+    const named = await listed("--get-regexp", "^(filter|merge)\\..*\\.(clean|smudge|process|required|driver)$");
+    for (const [key] of named) {
+      if (!/^(filter|merge)\..*\.(clean|smudge|process|required|driver)$/iu.test(key)) throw unread();
       const name = nameOf(key);
       // A name `-c` cannot carry would stay active.
       if (name === "" || /[=\n\r\0]/u.test(name)) throw new HostGitError("driver-name", "a configured driver name cannot be switched off");
       (key.slice(0, key.indexOf(".")).toLowerCase() === "merge" ? merges : filters).add(name);
     }
     // Asked of git as the boolean it reads there: a key with no value and a number other than 0 are true, an empty value is false, the
-    // last one given decides, and a value that is neither fails the call.
+    // last one given decides, and a value that is neither fails the call. It answers for the very keys the first listing named, in
+    // their order, each with `true` or `false`: an answer that differs is of another configuration, or is none.
     const requiredFilters = new Set<string>();
-    for (const [key, value] of await listed("--type=bool", "--get-regexp", "^filter\\..*\\.required$")) {
+    const required = await listed("--type=bool", "--get-regexp", "^filter\\..*\\.required$");
+    const asked = named.map(([key]) => key).filter(key => /^filter\..*\.required$/iu.test(key));
+    if (required.length !== asked.length || required.some(([key, value], index) => key !== asked[index] || (value !== "true" && value !== "false"))) throw unread();
+    for (const [key, value] of required) {
       if (value === "true") requiredFilters.add(nameOf(key));
       else requiredFilters.delete(nameOf(key));
     }
