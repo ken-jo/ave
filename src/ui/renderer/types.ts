@@ -905,10 +905,10 @@ export type AvePreloadApi = {
   >;
   /**
    * The first interactive launch's one card: every enabled plugin whose declared scope is not approved (`reviewSha256` is null
-   * for an unpinned source). Empty once the card was answered.
+   * for an unpinned source). Empty once the card was answered; `incomplete` when a plugin could not be read, so it is not answered.
    */
   getPluginBackgroundEffectsUpgrade: () => Promise<
-    | { ok: true; reviews: Array<{ pluginId: string; name: string; reviewSha256: string | null; effects: PluginBackgroundEffects }> }
+    | { ok: true; reviews: Array<{ pluginId: string; name: string; reviewSha256: string | null; effects: PluginBackgroundEffects }>; incomplete?: true }
     | { ok: false; error: string }
   >;
   /** The first-launch card was answered (each Allow, or Later); later launches show no card. */

@@ -2311,7 +2311,9 @@ Key boundaries:
   a Later that leaves the Review badge in its settings. Only the first window
   that lists it shows it while that window is open. Answering it is saved
   with the approvals, so later launches show no such card; a headless launch has
-  no window and leaves it owed.
+  no window and leaves it owed. If any enabled extension cannot be read, the
+  card lists the rest but answering it does not count, so the next launch asks
+  again.
 
 ### Extension alerts and scheduled routines
 

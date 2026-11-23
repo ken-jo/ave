@@ -437,6 +437,24 @@ describe("plugin background effects first-launch card IPC", () => {
     expect(await invoke("ave:plugins:background-effects:get", "llm")).toMatchObject({ ok: true, approved: false });
   });
 
+  it.each([
+    ["cannot be read", (context: Awaited<ReturnType<typeof launch>>) => {
+      context.store.bindSubject("quiet", async () => { throw new Error("registry unreadable"); });
+    }],
+    ["is not bound", (context: Awaited<ReturnType<typeof launch>>) => {
+      context.deps.pluginRuntime.listPluginIds.mockReturnValue([...installed.keys(), "unbound"]);
+      context.deps.pluginRuntime.getPluginManifest.mockImplementation(((pluginId: string) =>
+        pluginId === "unbound" ? manifestOf("unbound", ["background:call-llm"]) : installed.get(pluginId)?.manifest) as never);
+    }],
+  ] as const)("says the list is incomplete when an enabled plugin's subject %s, and still lists the rest", async (_label, arrange) => {
+    const context = await launch(cardPath("ave-upgrade-incomplete-"));
+    arrange(context);
+    expect(await invoke(GET)).toEqual({ ok: true, incomplete: true, reviews: [
+      expect.objectContaining({ pluginId: "llm" }), expect.objectContaining({ pluginId: "unpinned" }),
+    ] });
+    expect(context.store.upgradeReviewOwed()).toBe(true);
+  });
+
   it("answers neither channel to a frame that is not the host renderer", async () => {
     const { store } = await launch(cardPath("ave-upgrade-sender-"));
     for (const channel of [GET, DONE]) {

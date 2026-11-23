@@ -13,9 +13,10 @@ const A = "a".repeat(64);
 const B = "b".repeat(64);
 
 interface UpgradeRow { pluginId: string; name: string; reviewSha256: string | null; effects: Record<string, unknown> }
+type UpgradeAnswer = { ok: true; reviews: readonly UpgradeRow[]; incomplete?: true } | { ok: false; error: string };
 
 /** A host that answers like the IPC handler: unavailable until the plugin runs, approval only for the review it shows. */
-function fakeHost(upgrade?: { reviews: readonly UpgradeRow[] } | "fails") {
+function fakeHost(upgrade?: { reviews: readonly UpgradeRow[]; incomplete?: true } | "fails") {
   const runtime = new Set<(payload: { pluginId: string }) => void>();
   const enabled = new Set<(payload: { pluginId: string; enabled: boolean }) => void>();
   const uninstalled = new Set<(payload: { slug: string; success: boolean }) => void>();
@@ -42,9 +43,9 @@ function fakeHost(upgrade?: { reviews: readonly UpgradeRow[] } | "fails") {
     state.approved.add(input.reviewSha256);
     return { ok: true as const, ...input };
   });
-  const getPluginBackgroundEffectsUpgrade = vi.fn(async () => {
+  const getPluginBackgroundEffectsUpgrade = vi.fn(async (): Promise<UpgradeAnswer> => {
     if (upgrade === "fails") throw new Error("host unavailable");
-    return { ok: true as const, reviews: upgrade?.reviews ?? [] };
+    return { ok: true, reviews: upgrade?.reviews ?? [], ...(upgrade?.incomplete ? { incomplete: true as const } : {}) };
   });
   const finishPluginBackgroundEffectsUpgrade = vi.fn(async () => ({ ok: true as const }));
   const subscribe = <T,>(set: Set<T>) => (handler: T) => {
@@ -296,5 +297,24 @@ describe("the first-launch background effects card", () => {
     host.started();
     await answer("허용");
     expect(host.approvePluginBackgroundEffects).toHaveBeenCalledExactlyOnceWith({ pluginId: ID, reviewSha256: A });
+  });
+
+  it("never answers a list the host says is incomplete, so the next launch asks again", async () => {
+    const host = fakeHost({ reviews: [{ pluginId: ID, name: "Digest Plugin", reviewSha256: A, effects }], incomplete: true });
+    render(<PluginBackgroundEffectsPrompt />);
+    fireEvent.click(within(await upgradeCard()).getByRole("button", { name: "나중에" }));
+    await upgradeClosed();
+    await act(async () => { await Promise.resolve(); });
+    expect(host.finishPluginBackgroundEffectsUpgrade).not.toHaveBeenCalled();
+    cleanup();
+
+    const empty = fakeHost({ reviews: [], incomplete: true });
+    render(<PluginBackgroundEffectsPrompt />);
+    await waitFor(() => expect(empty.getPluginBackgroundEffectsUpgrade).toHaveBeenCalledTimes(1));
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.queryByTestId(UPGRADE)).toBeNull();
+    empty.started();
+    await answer("허용");
+    expect(empty.finishPluginBackgroundEffectsUpgrade).not.toHaveBeenCalled();
   });
 });

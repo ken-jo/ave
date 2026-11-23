@@ -44,6 +44,8 @@ export function PluginBackgroundEffectsPrompt() {
   const holding = useRef(false);
   const upgradeRows = useRef<readonly PluginBackgroundEffectsUpgradeRow[] | null>(null);
   const allowedRows = useRef(new Set<string>());
+  // The host could not read every plugin, so this list is not the whole answer and the next launch asks again.
+  const incomplete = useRef(false);
 
   const pump = useCallback(async (): Promise<void> => {
     if (current.current || holding.current) return;
@@ -119,7 +121,7 @@ export function PluginBackgroundEffectsPrompt() {
     setUpgrade(null);
     setUpgradeError(null);
     try {
-      void Promise.resolve(getApi().finishPluginBackgroundEffectsUpgrade()).catch(() => undefined);
+      if (!incomplete.current) void Promise.resolve(getApi().finishPluginBackgroundEffectsUpgrade()).catch(() => undefined);
     } catch {
       // Unanswered, the next launch shows the card again.
     }
@@ -172,12 +174,13 @@ export function PluginBackgroundEffectsPrompt() {
     };
     Promise.resolve().then(() => api.getPluginBackgroundEffectsUpgrade()).then((result) => {
       if (cancelled) return;
+      incomplete.current = result?.ok === true && result.incomplete === true;
       if (result?.ok && result.reviews.length > 0) {
         upgradeRows.current = result.reviews;
         setUpgrade(result.reviews);
         return;
       }
-      if (result?.ok) void Promise.resolve().then(() => api.finishPluginBackgroundEffectsUpgrade()).catch(() => undefined);
+      if (result?.ok && !incomplete.current) void Promise.resolve().then(() => api.finishPluginBackgroundEffectsUpgrade()).catch(() => undefined);
       release();
     }, () => {
       if (!cancelled) release();

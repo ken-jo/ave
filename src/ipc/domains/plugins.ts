@@ -518,18 +518,24 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     }
     upgradeHolder = e.sender;
     const reviews = [];
+    // A plugin whose subject cannot be read is not known to need no card, so the renderer must not answer this list.
+    let incomplete = false;
     for (const pluginId of deps.pluginRuntime.listPluginIds()) {
       const manifest = deps.pluginRuntime.getPluginManifest(pluginId);
       if (!manifest || !deps.pluginRuntime.isPluginEnabled(pluginId)) continue;
       const subject = await store.currentSubject(pluginId).catch(() => null);
-      if (!subject?.declared || store.isApproved(subject)) continue;
+      if (!subject) {
+        incomplete = true;
+        continue;
+      }
+      if (!subject.declared || store.isApproved(subject)) continue;
       reviews.push({
         pluginId, name: manifest.name,
         reviewSha256: subject.source === null ? null : store.reviewSha256(subject),
         effects: subject.effects,
       });
     }
-    return { ok: true, reviews };
+    return { ok: true, reviews, ...(incomplete ? { incomplete: true } : {}) };
   });
 
   ipcMain.handle(CHANNELS.plugins.backgroundEffectsUpgradeDone, (e) => {
