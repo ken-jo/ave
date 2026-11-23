@@ -17,12 +17,12 @@ function resolveSpecifier(fromFile: string, specifier: string): string | undefin
 function staticClosure(entry: string): Set<string> {
   const seen = new Set<string>();
   const queue = [entry];
-  while (queue.length > 0) {
-    const file = queue.pop()!;
+  for (let file = queue.pop(); file !== undefined; file = queue.pop()) {
     if (seen.has(file)) continue;
     seen.add(file);
     for (const match of readFileSync(file, 'utf8').matchAll(STATIC_EDGE)) {
-      const target = resolveSpecifier(file, match[1]!);
+      const specifier = match[1];
+      const target = specifier === undefined ? undefined : resolveSpecifier(file, specifier);
       if (target !== undefined && !seen.has(target)) queue.push(target);
     }
   }
