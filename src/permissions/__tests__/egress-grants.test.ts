@@ -25,6 +25,8 @@ import { canonicalizePathForMatch } from "../sensitive-paths.js";
 import { PermissionManager } from "../permission-manager.js";
 import { EGRESS_GRANT_SCOPE_LADDERS } from "../../shared/egress-grant-scopes.js";
 import { _resetAveHomePrivacyForTest, AveHomeConfigurationRefusedWriteError, setAveHomeConfigurationRefusedAtBoot } from "../../shared/ave-home.js";
+import * as homeTrust from "../../shared/ave-home-trust.js";
+import { deferred } from "../../__tests__/support/deferred.js";
 
 const ALL = ["once", "session", "project", "always"] as const;
 const matchingScopes = Object.values(EGRESS_GRANT_SCOPE_LADDERS).flat();
@@ -48,6 +50,36 @@ afterEach(() => {
 });
 
 describe("EgressGrantStore", () => {
+  it("refuses a persistent grant when only the fresh owner probe fails after the queued reread", async () => {
+    const store = new EgressGrantStore(file);
+    await store.grant("always", ALL, subject, github);
+    const before = readFileSync(file, "utf8");
+    const arrived = deferred<void>();
+    const release = deferred<void>();
+    const read = homeTrust.readAveHomeInput;
+    const spy = vi.spyOn(homeTrust, "readAveHomeInput").mockImplementationOnce(async path => {
+      const result = await read(path);
+      arrived.resolve();
+      await release.promise;
+      return result;
+    });
+    let ownerMatches = true;
+    const refresh = vi.fn(async () => ownerMatches);
+    const isCurrent = () => true;
+    const destination = { host: "example.com", port: 443 };
+    const save = store.grant("always", ALL, subject, destination, undefined, undefined, { refresh, isCurrent });
+    const outcome = Promise.allSettled([save]);
+    await arrived.promise;
+    ownerMatches = false;
+    release.resolve();
+    const [result] = await outcome;
+    spy.mockRestore();
+    expect(readFileSync(file, "utf8")).toBe(before);
+    expect(result).toMatchObject({ status: "rejected", reason: expect.objectContaining({ message: "Approval authority is unavailable" }) });
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(isCurrent()).toBe(true);
+  });
+
   it("reads a refused home's remembered hosts as absent and refuses to rewrite them", async () => {
     const store = new EgressGrantStore(file);
     await store.grant("always", ALL, subject, github);
