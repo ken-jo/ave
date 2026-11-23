@@ -9,6 +9,7 @@ import { deferred } from "../../__tests__/support/deferred.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
 import type { PluginRuntimeGenerationAccess } from "../../plugins/plugin-host-generation.js";
 import type { ApprovalRequest } from "../../permissions/approval-gate.js";
+import { PluginGenerationCoordinator, type ActivePluginGeneration } from "../../plugins/plugin-generation-coordinator.js";
 
 const roots: string[] = [];
 const loggers: Array<{ close(): Promise<void> }> = [];
@@ -596,5 +597,64 @@ describe("ToolExecutor admission across the quit seal", () => {
     expect(ledger.pendingToolInvocationCount()).toBe(0);
     await expect(ledger.closeToolInvocationAudit(async () => {})).resolves.toBe(0);
     for (const execute of executes) expect(execute).not.toHaveBeenCalled();
+  });
+});
+
+describe("terminal rows of early refusals", () => {
+  const terminal = (all: Array<Record<string, unknown>>, toolUseId: string) => all.filter((row) => row.toolUseId === toolUseId && row.decision !== "ask");
+
+  it("writes the host's categorized row before close for a generation acquisition pending when admission closes", async () => {
+    const coordinator = new PluginGenerationCoordinator<{ runtime: object }>();
+    const generation = (generationId: string): ActivePluginGeneration<{ runtime: object }> => ({
+      pluginId: "probe-plugin", pluginVersion: "1.0.0", artifactGenerationId: generationId === "gen-1" ? "c".repeat(64) : "d".repeat(64),
+      generationId, manifestSha256: "1".repeat(64), receiptSha256: "a".repeat(64), contributions: [], state: { runtime: {} },
+    });
+    await (await coordinator.commit(generation("gen-1"), async () => undefined)).markDispatchReady();
+    let finishCommit!: () => void;
+    const durable = new Promise<void>((resolve) => { finishCommit = resolve; });
+    const atDurable = deferred<void>();
+    const held = coordinator.commit(generation("gen-2"), async () => { atDurable.resolve(); await durable; }).catch(() => undefined);
+    await atDurable.promise;
+    const acquireExact = vi.fn((pluginId: string, generationId: string) => coordinator.acquireExact(pluginId, generationId));
+    const access = {
+      getActive: (pluginId: string) => coordinator.getActive(pluginId),
+      isExactAdmitted: (pluginId: string, generationId: string) => coordinator.isExactAdmitted(pluginId, generationId),
+      acquire: (pluginId: string) => coordinator.acquire(pluginId),
+      acquireExact,
+      runWithLease: async <T>(_lease: unknown, operation: () => Promise<T>) => operation(),
+    } as unknown as PluginRuntimeGenerationAccess;
+    const { ledger, executor, executes, audit, rows, toolUses } = await freshExecutor(1, [], { generationAccess: access });
+    const running = executor.executeAll(toolUses, { sessionId: "sess-generation-pending", permissionContext: userPermissionContext() });
+    await vi.waitFor(() => expect(acquireExact).toHaveBeenCalledOnce());
+    coordinator.closeAdmission((pluginId) => Object.assign(new Error(`plugin '${pluginId}' is shutting down`), { code: "plugin-runtime-shutdown" }));
+    ledger.sealToolInvocations();
+    let rowsAtClose: Array<Record<string, unknown>> = [];
+    const join = ledger.closeToolInvocationAudit(async () => { rowsAtClose = rows(); await audit.close(); });
+    const [result] = await running;
+    await join;
+    finishCommit();
+    await held;
+    expect(result.is_error).toBe(true);
+    expect(executes[0]).not.toHaveBeenCalled();
+    expect(terminal(rowsAtClose, "tu-queued-0")).toEqual([expect.objectContaining({ decision: "deny", category: "write", trustOrigin: "unknown" })]);
+  });
+
+  it("writes an unknown tool's refusal with an unknown category", async () => {
+    const { executor, rows } = await freshExecutor(0);
+    const [result] = await executor.executeAll([{ id: "tu-missing", name: "missing_probe", input: {} }], {
+      sessionId: "sess-missing", permissionContext: userPermissionContext(),
+    });
+    expect(result.is_error).toBe(true);
+    expect(terminal(rows(), "tu-missing")).toEqual([expect.objectContaining({ decision: "deny", category: "unknown", tool: "missing_probe" })]);
+  });
+
+  it("writes a changed MCP owner's refusal with the tool's category", async () => {
+    const { executor, executes, rows, toolUses } = await freshExecutor(1);
+    const [result] = await executor.executeAll(toolUses, {
+      sessionId: "sess-owner", permissionContext: userPermissionContext({ expectedMcpServerId: "server-a" }),
+    });
+    expect(result).toMatchObject({ is_error: true, content: expect.stringContaining("MCP tool owner changed") });
+    expect(executes[0]).not.toHaveBeenCalled();
+    expect(terminal(rows(), "tu-queued-0")).toEqual([expect.objectContaining({ decision: "deny", category: "write" })]);
   });
 });

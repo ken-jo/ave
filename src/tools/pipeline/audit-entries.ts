@@ -4,7 +4,7 @@ import type { Tool } from "../base.js";
 import type { ToolSource, ToolCategory } from "../types.js";
 import type { PermissionCheckResult } from "../../permissions/permission-manager.js";
 import { HOST_PROVENANCE, provenanceTrustOrigin, RULE_PROVENANCE } from "../../permissions/approval-gate.js";
-import type { PermissionAuditEntryInput, HookResult, ToolExecutionAuditMetadata } from "../../audit/audit-schema.js";
+import type { AuditToolCategory, PermissionAuditEntryInput, HookResult, ToolExecutionAuditMetadata } from "../../audit/audit-schema.js";
 import { hookInvocationFailureReason, type HookTrustOrigin, type ScriptHookType } from "../../hooks/script-hook-types.js";
 import type { HookDispatchResult } from "../../hooks/script-hook-manager.js";
 import type { ToolPermissionContext } from "../executor.js";
@@ -41,12 +41,12 @@ export function auditTrustOrigin(context?: ToolPermissionContext): HookTrustOrig
 function auditDirectoryForInput(
   tool: Tool | undefined,
   input: Record<string, unknown>,
-  cwd: string,
+  cwd: string | undefined,
   canonicalTargetFilePath?: string,
 ): string | undefined {
   if (tool) {
     if (canonicalTargetFilePath) return canonicalTargetFilePath;
-    if (tool.category === "shell" && typeof input.cwd === "string" && input.cwd.length > 0) {
+    if (cwd !== undefined && tool.category === "shell" && typeof input.cwd === "string" && input.cwd.length > 0) {
       return resolveToolPathForPermission(input.cwd, cwd);
     }
   }
@@ -57,7 +57,7 @@ function permissionAuditBase(args: {
   toolName: string;
   tool?: Tool;
   source: ToolSource;
-  category: ToolCategory;
+  category: AuditToolCategory;
   trustOrigin: HookTrustOrigin;
   audit?: ToolExecutionAuditMetadata;
 }): Pick<
@@ -122,12 +122,12 @@ export function permissionAuditEntryFromToolCall(args: {
   toolName: string;
   tool?: Tool;
   source: ToolSource;
-  category: ToolCategory;
+  category: AuditToolCategory;
   input: Record<string, unknown>;
   permission: PermissionCheckResult | undefined;
   rateLimitRemaining: number;
   trustOrigin: HookTrustOrigin;
-  cwd: string;
+  cwd: string | undefined;
   auditDirectory?: string;
   hookChain?: HookResult[];
   audit?: ToolExecutionAuditMetadata;

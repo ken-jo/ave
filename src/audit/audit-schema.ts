@@ -1,5 +1,8 @@
 /** Permission rows discriminate on decision in a dedicated channel; telemetry rows use type. See docs/architecture/permission-policy-design.md, Layer 7. */
 import type { ToolCategory, ToolSource } from "../tools/types.js";
+
+/** A row whose tool the host could not resolve records its category as unknown rather than being skipped. */
+export type AuditToolCategory = ToolCategory | "unknown";
 import type { ExecutionMode } from "../shared/permission-mode.js";
 import type { HookTrustOrigin, ScriptHookType, HookFailureReason } from "../hooks/script-hook-types.js";
 import type { HookSourceKind } from "../hooks/hook-source-policy.js";
@@ -100,7 +103,7 @@ interface AuditAllow extends AuditCommon {
   decision: "allow";
   tool: string;
   source: ToolSource;
-  category: ToolCategory;
+  category: AuditToolCategory;
   directory?: string;
   directoryAllowed?: true;
   scope?: RoutineScopeSnapshot;
@@ -118,7 +121,7 @@ interface AuditAsk extends AuditCommon {
   decision: "ask";
   tool: string;
   source: ToolSource;
-  category: ToolCategory;
+  category: AuditToolCategory;
   directory?: string;
   reason: string;
   hookChain?: HookResult[];
@@ -129,7 +132,7 @@ interface AuditDeny extends AuditCommon {
   decision: "deny";
   tool: string;
   source: ToolSource;
-  category: ToolCategory;
+  category: AuditToolCategory;
   denyReasons: ReadonlyArray<{ reason: string; source: string }>;
   hookChain?: HookResult[];
 }
@@ -157,7 +160,7 @@ interface AuditJudge extends AuditCommon {
   decision: "judge";
   tool: string;
   source: ToolSource;
-  category: ToolCategory;
+  category: AuditToolCategory;
   judgeRecord: JudgeAuditRecord;
 }
 

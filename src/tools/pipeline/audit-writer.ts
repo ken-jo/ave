@@ -264,15 +264,13 @@ export class AuditWriter {
         errorMessage(err),
       );
     }
-    if (!category || !cwd) {
-      return;
-    }
+    // Every terminal row is written; what the host could not resolve is recorded as unknown.
     const tool = this.toolRegistry.findByName(toolName);
     const entry = permissionAuditEntryFromToolCall({
       toolName,
       tool,
       source,
-      category,
+      category: category ?? "unknown",
       input: auditSafeInput,
       permission,
       rateLimitRemaining,

@@ -547,7 +547,7 @@ async function runToolInvocationAttempt(
     const tool = services.toolRegistry.findByName(toolUse.name);
     if (!tool) {
       const durationMs = Date.now() - startTime;
-      await auditCurrentToolCall(sessionId, toolUse.name, "builtin", "high", toolUse.input, t("be_executor.toolNotFoundAudit"), true, startTime, { decision: "deny", reason: t("be_executor.toolNotFoundAudit"), provenance: RULE_PROVENANCE }, Infinity, permissionContext);
+      await auditCurrentToolCall(sessionId, toolUse.name, "builtin", "high", toolUse.input, t("be_executor.toolNotFoundAudit"), true, startTime, { decision: "deny", reason: t("be_executor.toolNotFoundAudit"), provenance: RULE_PROVENANCE }, Infinity, permissionContext, undefined, executionCwd);
       callbacks?.onToolEnd?.(toolUse.name, t("be_executor.toolNotFound", { name: toolUse.name }), true, meta, undefined, durationMs);
       return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: t("be_executor.toolNotFound", { name: toolUse.name }), is_error: true, durationMs });
     }
@@ -589,6 +589,8 @@ async function runToolInvocationAttempt(
           denied,
           Infinity,
           permissionContext,
+          tool.category,
+          executionCwd,
         );
         callbacks?.onToolEnd?.(
           toolUse.name,
@@ -633,6 +635,8 @@ async function runToolInvocationAttempt(
         denied,
         Infinity,
         permissionContext,
+        tool.category,
+        executionCwd,
       );
       callbacks?.onToolEnd?.(
         toolUse.name,
