@@ -204,6 +204,20 @@ describe("folder stage workspaces", () => {
     expect(open).toEqual({ ok: false, code: "git-unavailable" });
   });
 
+  it("a stage holding names that are no text is taken apart whole", async () => {
+    const handle = await start(project);
+    const root = await stageRoot(handle, "s1");
+    // On Windows a lone surrogate, elsewhere a byte that is no UTF-8: either, listed as text, reads back as another name.
+    const odd = Buffer.from(process.platform === "win32" ? [0x61, 0xed, 0xa0, 0x80] : [0x61, 0xff]);
+    const at = (...names: Buffer[]): Buffer => Buffer.concat([Buffer.from(root), ...names.flatMap(name => [Buffer.from(sep), name])]);
+    mkdirSync(at(odd));
+    writeFileSync(at(odd, odd), "inside\n");
+    writeFileSync(at(Buffer.concat([odd, Buffer.from(".txt")])), "beside\n");
+    expect(readdirSync(root, { encoding: "buffer" })).toHaveLength(2);
+    await handle.provider.release(handle.run, "all");
+    expect(existsSync(root)).toBe(false);
+  });
+
   it("a work tree whose top level git names cannot be found is not thereby a plain folder: it gets no workspace", async () => {
     const real = createHostGit({ env });
     const git: HostGit = { drivers: real.drivers, run: async (cwd, args, call) => args.includes("--show-toplevel") ? { code: 0, stdout: `${join(base, "gone")}\n`, stderr: "" } : real.run(cwd, args, call) };

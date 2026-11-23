@@ -1,6 +1,6 @@
 import { type BigIntStats, chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { type FileHandle, open } from "node:fs/promises";
-import { isAbsolute, join, relative } from "node:path";
+import { isAbsolute, join, relative, sep } from "node:path";
 
 /**
  * Every host change under a run folder goes through here. A folder is held by its device and file id, made one component at a time, and
@@ -19,7 +19,7 @@ export class OwnedFsError extends Error {
   constructor(readonly reason: OwnedFsReason, message: string) { super(message); this.name = "OwnedFsError"; }
 }
 
-const stats = (path: string): BigIntStats | undefined => lstatSync(path, { bigint: true, throwIfNoEntry: false });
+const stats = (path: string | Buffer): BigIntStats | undefined => lstatSync(path, { bigint: true, throwIfNoEntry: false });
 const idOf = (stat: BigIntStats): NodeId => {
   // A file system that reports no file id gives nothing to hold a folder by.
   if (stat.ino === 0n) throw new OwnedFsError("no-id", "the file system reports no file id");
@@ -62,7 +62,7 @@ function entryName(name: string): string {
 }
 
 /** Removes a link itself, whatever it points at. */
-function unlinkEntry(path: string): void {
+function unlinkEntry(path: string | Buffer): void {
   try { unlinkSync(path); } catch (error) {
     if (codeOf(error) === "ENOENT") return;
     if (codeOf(error) !== "EPERM" && codeOf(error) !== "EISDIR") throw error;
@@ -71,6 +71,9 @@ function unlinkEntry(path: string): void {
 }
 
 export interface SourceRoot { readonly path: string; readonly id: NodeId }
+
+/** One level of a chain: `own` checks that level alone, `check` every level from the root down. */
+interface Level { own(): void; check(): void }
 
 /**
  * Opens a regular file for reading under a root that must still be the real directory with `id`. No parent is a link, and the handle is
@@ -278,11 +281,11 @@ class Dir implements OwnedDir {
     const stat = stats(path);
     if (stat === undefined) return;
     if (expect !== undefined && idOf(stat) !== expect) throw new OwnedFsError("changed", "the entry is not the one that was recorded");
-    await this.removeEntry(name, stat);
+    await this.removeEntry(Buffer.from(path), stat, { own: () => this.own(), check: () => this.check() });
   }
 
-  /** One removal system call, repeated a few times while the entry is busy; `act` checks before it acts. */
-  private async retried(path: string, act: () => void): Promise<void> {
+  /** One removal system call, repeated a few times while the entry is busy; `act` checks before it acts. `level` holds the entry. */
+  private async retried(path: Buffer, level: Level, act: () => void): Promise<void> {
     let writable = false;
     for (let attempt = 0; ; attempt += 1) {
       try { act(); return; } catch (error) {
@@ -292,36 +295,48 @@ class Dir implements OwnedDir {
         if (stat?.isFile() === true && stat.nlink === 1n) {
           // A read-only file. One with a second name is left as it is: the mode is the other name's too.
           writable = true;
-          this.own();
+          level.own();
           chmodSync(path, 0o666);
           continue;
         }
         if ((code !== "EBUSY" && code !== "ENOTEMPTY" && code !== "EPERM") || attempt >= 3) throw error;
         await delay(100 * (attempt + 1));
-        this.check();
+        level.check();
       }
     }
   }
 
-  private async removeEntry(name: string, stat: BigIntStats): Promise<void> {
-    const path = join(this.path, name);
+  /** Below a held folder every name is taken as the bytes it was listed as: one an agent wrote need not be text, and read as text it
+   * would name another entry, or none. */
+  private async removeEntry(path: Buffer, stat: BigIntStats, parent: Level): Promise<void> {
     if (!stat.isDirectory() || stat.isSymbolicLink()) {
-      await this.retried(path, () => {
-        this.own();
+      await this.retried(path, parent, () => {
+        parent.own();
         if (stat.isSymbolicLink()) unlinkEntry(path); else unlinkSync(path);
       });
       return;
     }
-    const sub = this.child(name, idOf(stat));
-    if (sub === undefined) return;
-    for (const entry of readdirSync(sub.path)) {
-      const found = stats(join(sub.path, entry));
+    const id = idOf(stat);
+    parent.check();
+    const now = stats(path);
+    if (now === undefined) return;
+    if (!realDir(now) || idOf(now) !== id) throw new OwnedFsError("changed", "the entry is not the folder that was recorded");
+    const own = (): void => {
+      const held = stats(path);
+      if (!realDir(held) || idOf(held) !== id) throw new OwnedFsError("moved", "a held folder is no longer the one that was held");
+    };
+    const level: Level = { own, check: () => { parent.check(); own(); } };
+    for (const entry of readdirSync(path, { encoding: "buffer" })) {
+      const at = Buffer.concat([path, Buffer.from(sep), entry]);
+      const found = stats(at);
       if (found === undefined) continue;
-      sub.own();
-      await sub.removeEntry(entry, found);
+      // On Windows a folder name that ends in a dot or a space would be another entry.
+      if (found.isDirectory() && process.platform === "win32" && (entry.at(-1) === 0x2e || entry.at(-1) === 0x20)) throw new OwnedFsError("not-plain", "not a single name");
+      own();
+      await this.removeEntry(at, found, level);
     }
-    await this.retried(path, () => {
-      sub.check();
+    await this.retried(path, parent, () => {
+      level.check();
       rmdirSync(path);
     });
   }
