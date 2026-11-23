@@ -1,3 +1,4 @@
+// windows-native: uses native junctions when the host is Windows.
 const driveFixture = vi.hoisted(() => ({
   enabled: false, backing: "", nativeHost: process.platform,
   toHost: (path: string): string => path,

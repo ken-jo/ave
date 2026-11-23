@@ -83,6 +83,20 @@ describe("Windows CI test list", () => {
     expect(windowsTestLists.get(NATIVE_TEST_LIST)).toBe(windowsNativeInventory(sources));
   });
 
+  it("keeps the real junction, symlink, reparse-point and ACL regressions in the native inventory", () => {
+    const native = new Set(windowsTestLists.get(NATIVE_TEST_LIST)?.trim().split("\n"));
+    for (const file of [
+      "src/main/__tests__/skill-store.test.ts",
+      "src/permissions/__tests__/sandbox-write-policy-hosted.test.ts",
+      "src/permissions/__tests__/windows-acl-policy-budget.test.ts",
+      "src/plugins/__tests__/registry-manifest-path-trust.test.ts",
+      "src/tools/__tests__/file-tools-read-binding.test.ts",
+      "src/tools/__tests__/grep-search-read-binding.test.ts",
+      "src/tools/__tests__/preview-document-input.test.ts",
+      "src/tools/__tests__/structured-file-transfers.test.ts",
+    ]) expect(native.has(file), file).toBe(true);
+  });
+
   it("names only files that exist", () => {
     expect(listed.filter((file) => !sources.has(file))).toEqual([]);
     expect(listed).toContain("test/scripts/windows-ci-test-list.test.ts");

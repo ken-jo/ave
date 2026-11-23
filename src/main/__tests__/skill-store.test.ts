@@ -1,3 +1,4 @@
+// windows-native: checks containment of real symlinks on the native host.
 import { withTempDirectory } from "./support/temp-directory.js";
 import { describe, it, expect } from "vitest";
 import { mkdirSync, mkdtempSync, writeFileSync, symlinkSync } from "node:fs";

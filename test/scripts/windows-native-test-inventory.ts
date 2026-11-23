@@ -284,8 +284,8 @@ function declarationBindings(tokens: readonly string[]): [string, string][] {
   return entries;
 }
 
-function usedMembers(tokens: readonly string[], specifier: string): Set<string> {
-  const members = new Set<string>();
+function moduleBindings(tokens: readonly string[], specifier: string) {
+  const immediate = new Set<string>();
   const bindings = new Map<string, string>();
   for (let i = 0; i < tokens.length; i++) {
     if (literal(tokens[i]) !== specifier) continue;
@@ -305,7 +305,7 @@ function usedMembers(tokens: readonly string[], specifier: string): Set<string> 
     if (tokens[i - 1] !== "(" || !(["import", "require", "importActual"].includes(tokens[i - 2] ?? "")
       || requireCallArgumentIndex(tokens, i - 4) === i || requireCallArgumentIndex(tokens, i - 5) === i)) continue;
     const directMember = tokens[i + 3];
-    if (tokens[i + 2] === "." && directMember && ["(", "?."].includes(tokens[i + 4] ?? "")) members.add(directMember);
+    if (tokens[i + 2] === "." && directMember && ["(", "?."].includes(tokens[i + 4] ?? "")) immediate.add(directMember);
     let start = i - 2;
     while (start >= 0 && !["=", ";", "=>"].includes(tokens[start] ?? "")) start--;
     if (tokens[start] !== "=") continue;
@@ -315,11 +315,26 @@ function usedMembers(tokens: readonly string[], specifier: string): Set<string> 
       for (const [local, imported] of declarationBindings(tokens.slice(brace + 1, start - 1))) bindings.set(local, imported);
     } else if (lhs) bindings.set(lhs, "*");
   }
+  return { bindings, immediate };
+}
+
+function memberCall(tokens: readonly string[], bindings: ReadonlyMap<string, string>, index: number) {
+  const binding = bindings.get(tokens[index] ?? "");
+  const memberAccess = tokens[index + 1] === "." || tokens[index + 1] === "?.";
+  const namespace = memberAccess && (binding === "*" || binding === "default" || binding === "promises");
+  const member = namespace ? tokens[index + 2] : binding;
+  const last = namespace ? index + 3 : index + 1;
+  const opening = tokens[last] === "?." ? last + 1 : last;
+  return member && tokens[opening] === "(" ? { member, opening } : undefined;
+}
+
+function usedMembers(tokens: readonly string[], specifier: string): Set<string> {
+  const { bindings, immediate: members } = moduleBindings(tokens, specifier);
   for (let i = 0; i < tokens.length; i++) {
     const member = bindings.get(tokens[i] ?? "");
     if (member === undefined) continue;
     const property = tokens[i + 2];
-    if (member === "*" && [".", "?."].includes(tokens[i + 1] ?? "") && property
+    if ((member === "*" || member === "default") && [".", "?."].includes(tokens[i + 1] ?? "") && property
       && ["(", "?.", "."].includes(tokens[i + 3] ?? "")) members.add(property);
     if (["(", "?."].includes(tokens[i + 1] ?? "")) members.add(member);
   }
@@ -334,9 +349,15 @@ function hasWindowsMarker(source: string): boolean {
   return false;
 }
 
+const NATIVE_COMMANDS = new Set(["spawn", "spawnSync", "execFile", "execFileSync", "exec", "execSync"]);
+const LINK_METHODS = new Set(["symlink", "symlinkSync", "readlink", "readlinkSync"]);
+
+function bindingsFor(tokens: readonly string[], mocks: ReadonlySet<string>, specifiers: string[]) {
+  return new Map(specifiers.filter(specifier => !mocks.has(specifier)).flatMap(specifier => [...moduleBindings(tokens, specifier).bindings]));
+}
+
 function callsNativeHelper(tokens: readonly string[], mocks: ReadonlySet<string>): boolean {
-  if (mocks.has("node:child_process") || mocks.has("child_process")) return false;
-  const commands = new Set(["spawn", "spawnSync", "execFile", "execFileSync", "exec", "execSync"]);
+  const bindings = bindingsFor(tokens, mocks, ["node:child_process", "child_process"]);
   function isHelper(start: number): boolean {
     const direct = literal(tokens[start]);
     if (direct !== undefined) return WINDOWS_HELPER.test(direct);
@@ -348,11 +369,24 @@ function callsNativeHelper(tokens: readonly string[], mocks: ReadonlySet<string>
     return false;
   }
   for (let i = 0; i < tokens.length; i++) {
-    if (!commands.has(tokens[i] ?? "") || tokens[i + 1] !== "(") continue;
-    const argument = tokens[i + 2];
-    if (isHelper(i + 2)) return true;
+    const call = memberCall(tokens, bindings, i);
+    if (!call || !NATIVE_COMMANDS.has(call.member)) continue;
+    const argument = tokens[call.opening + 1];
+    if (isHelper(call.opening + 1)) return true;
     const definition = tokens.findIndex((token, index) => token === argument && tokens[index - 1] === "const" && tokens[index + 1] === "=");
     if (definition >= 0 && isHelper(definition + 2)) return true;
+  }
+  return false;
+}
+
+function exercisesFilesystemLinks(tokens: readonly string[], mocks: ReadonlySet<string>): boolean {
+  const bindings = bindingsFor(tokens, mocks, ["node:fs", "fs", "node:fs/promises", "fs/promises"]);
+  for (let i = 0; i < tokens.length; i++) {
+    const call = memberCall(tokens, bindings, i);
+    if (call && LINK_METHODS.has(call.member)) return true;
+    const binding = bindings.get(tokens[i] ?? "");
+    if ((binding === "*" || binding === "default") && tokens[i + 1] === "." && tokens[i + 2] === "promises"
+      && tokens[i + 3] === "." && LINK_METHODS.has(tokens[i + 4] ?? "") && tokens[i + 5] === "(") return true;
   }
   return false;
 }
@@ -361,11 +395,34 @@ function checksWindowsPlatform(source: string, tokens: readonly string[], mocks:
   if (/\b(?:setProcessPlatform\s*\(|stubGlobal\s*\(\s*["']process|(?:defineProperty|replaceProperty|spyOn)\s*\(\s*process\s*,\s*["']platform|process\.platform\s*=(?!=))/u.test(source)) return false;
   if (!mocks.has("node:os") && !mocks.has("os") && conditionalGates(source).some(gate => gate.classification === "win32-only")) return true;
   if (!tokens.some(token => literal(token) === "win32")) return false;
-  const code = tokens.map(token => literal(token) === undefined ? token : literal(token) === "win32" ? "'win32'" : '""').join(" ");
-  const platform = String.raw`process \. platform${mocks.has("node:os") || mocks.has("os") ? "" : String.raw`|os \. platform \( \)`}`;
-  const compare = "(?:===|!==|==|!=)";
-  const guard = new RegExp(String.raw`(?:${platform}) ${compare} 'win32'|'win32' ${compare} (?:${platform})|switch \( (?:${platform}) \)[\s\S]*case 'win32'`, "u");
-  return guard.test(code);
+  const bindings = bindingsFor(tokens, mocks, ["node:os", "os"]);
+  const platformAliases = new Set<string>();
+  const windowsAliases = new Set<string>();
+  const comparisons = new Set(["===", "!==", "==", "!="]);
+  const declarations = new Set(["const", "let", "var"]);
+  function platformEnd(index: number): number | undefined {
+    if (tokens[index] === "process" && tokens[index + 1] === "." && tokens[index + 2] === "platform") return index + 3;
+    const call = memberCall(tokens, bindings, index);
+    if (call?.member === "platform" && tokens[call.opening + 1] === ")") return call.opening + 2;
+    if (platformAliases.has(tokens[index] ?? "")) return index + 1;
+    return undefined;
+  }
+  const windowsValue = (index: number) => literal(tokens[index]) === "win32" || windowsAliases.has(tokens[index] ?? "");
+  for (let i = 0; i < tokens.length; i++) {
+    const name = tokens[i + 1];
+    if (!declarations.has(tokens[i] ?? "") || !name || tokens[i + 2] !== "=") continue;
+    const end = platformEnd(i + 3);
+    if (end !== undefined && tokens[end] === ";") platformAliases.add(name);
+    if (windowsValue(i + 3) && tokens[i + 4] === ";") windowsAliases.add(name);
+  }
+  for (let i = 0; i < tokens.length; i++) {
+    const end = platformEnd(i);
+    if (end !== undefined && comparisons.has(tokens[end] ?? "") && windowsValue(end + 1)) return true;
+    if (windowsValue(i) && comparisons.has(tokens[i + 1] ?? "") && platformEnd(i + 2) !== undefined) return true;
+    if (tokens[i] === "switch" && tokens[i + 1] === "(" && platformEnd(i + 2) !== undefined
+      && tokens.some((token, index) => index > i && token === "case" && windowsValue(index + 1))) return true;
+  }
+  return false;
 }
 
 function declarationEnd(tokens: readonly string[], start: number): number {
@@ -420,7 +477,7 @@ function scanNativeBackedTestFiles(sources: ReadonlyMap<string, string>, replyTi
     const source = sources.get(file);
     if (source === undefined) throw new Error(`Missing Windows test source: ${file}`);
     if (hasWindowsMarker(source) || file.endsWith(".windows.test.ts")
-      || callsNativeHelper(module.tokens, module.mocks) || checksWindowsPlatform(source, module.tokens, module.mocks)) {
+      || callsNativeHelper(module.tokens, module.mocks) || exercisesFilesystemLinks(module.tokens, module.mocks) || checksWindowsPlatform(source, module.tokens, module.mocks)) {
       required.set(file, [file]);
       continue;
     }

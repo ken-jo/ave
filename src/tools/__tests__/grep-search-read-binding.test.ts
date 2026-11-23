@@ -1,3 +1,4 @@
+// windows-native: uses real junctions across search and read boundaries.
 // grep_files shows only lines the host read itself from the file its judged path names. These tests change the
 // filesystem around the search's own read and around the host's read, so they hook the spawn and the open for the whole
 // module and stay out of the real-filesystem grep suite.

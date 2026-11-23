@@ -1,3 +1,4 @@
+// windows-native: retargets a real junction before the descriptor opens.
 import { constants, linkSync, mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { FileHandle } from "node:fs/promises";
