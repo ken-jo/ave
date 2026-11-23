@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { assertWindowsCoverage, planWindowsTests, pullRequestWindowsChanges, windowsChecksRequired } from "../../scripts/plan-windows-tests.js";
+import { assertWindowsCoverage, planWindowsTests, pullRequestWindowsChanges } from "../../scripts/plan-windows-tests.js";
 import { plannedWindowsFiles, WINDOWS_TEST_LISTS, WINDOWS_TEST_SHARDS, windowsTestFiles } from "../../scripts/run-windows-test-list.mjs";
 import { windowsImportGraph, windowsRuntimeInputIndex } from "./windows-native-test-inventory.js";
 
@@ -100,14 +100,6 @@ describe("Windows regression planning", () => {
   it("uses a full plan for executable source-tree fixtures even without a discovered caller", () => {
     const file = "src/shared/__tests__/fixtures/computed.ts";
     expect(plan([{ status: "M", file }])).toMatchObject({ mode: "full", reason: expect.stringContaining("executable fixture") });
-  });
-
-  it("requires Windows checks for full runs and PRs that touch a Windows test", () => {
-    expect(windowsChecksRequired(plan([], "push"), "false")).toBe(true);
-    expect(windowsChecksRequired(plan([{ status: "M", file: "package.json" }]), "false")).toBe(true);
-    expect(windowsChecksRequired(plan([{ status: "M", file: changed }]), "false")).toBe(true);
-    expect(windowsChecksRequired(plan([]), "true")).toBe(true);
-    expect(windowsChecksRequired(plan([]), "false")).toBe(false);
   });
 
   it("fails closed for missing history, absent source and deleted paths", () => {

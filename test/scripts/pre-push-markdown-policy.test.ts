@@ -323,7 +323,7 @@ describe("documentation impact policy", () => {
           expect(step.if).toContain("steps.docs-impact.outputs.docs_only == 'true'");
           expect(step.run).toContain("check-asrt-version-claims.mjs");
         } else {
-          expect(step.if).toMatch(/steps\.(?:docs-impact\.outputs\.docs_only != 'true'|windows-plan\.outputs\.windows_checks == 'true')/u);
+          expect(step.if).toContain("steps.docs-impact.outputs.docs_only != 'true'");
         }
       }
     }

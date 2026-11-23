@@ -1,7 +1,7 @@
 name: CI
 # Patch and category PRs use trusted affected tests plus change-triggered domain
-# checks. Native platforms run on backend/global changes, not renderer-only
-# patches. Unknown impact keeps full verification. Tags, nightly and manual
+# checks. Windows runs on every non-documentation change. Other native
+# platforms run on backend/global changes. Unknown impact keeps full verification. Tags, nightly and manual
 # dispatch run the full suite; nightly and manual dispatch enforce coverage.
 # scripts/run-ci-suite.mjs owns selection and records the decision in summaries.
 on:
@@ -44,7 +44,6 @@ jobs:
     outputs:
       docs_only: ${{ steps.docs-impact.outputs.docs_only }}
       platform_checks: ${{ steps.plan.outputs.platform_checks || (steps.docs-impact.outputs.docs_only == 'true' && 'false' || 'unknown') }}
-      windows_checks: ${{ steps.windows-plan.outputs.windows_checks || (steps.docs-impact.outputs.docs_only == 'true' && 'false' || 'unknown') }}
       # One shard when the plan step did not run (a docs-only change), so the
       # matrix below always reads a list.
       shards: ${{ steps.plan.outputs.shards || '[1]' }}
@@ -209,16 +208,14 @@ jobs:
           mkdir -p "$RUNNER_TEMP/ci-plan"
           node scripts/run-ci-suite.mjs --write-plan "$RUNNER_TEMP/ci-plan/ci-plan.json"
       - name: Plan Windows regressions
-        id: windows-plan
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         env:
           AVE_WINDOWS_PR_BASE: ${{ github.event.pull_request.base.sha }}
           AVE_WINDOWS_PR_HEAD: ${{ github.event.pull_request.head.sha }}
-          AVE_CI_PLATFORM_CHECKS: ${{ steps.plan.outputs.platform_checks }}
         run: bun run scripts/plan-windows-tests.ts "$RUNNER_TEMP/windows-ci/windows-plan.json"
       - name: Upload the Windows regression plan
-        if: steps.windows-plan.outputs.windows_checks == 'true'
+        if: steps.docs-impact.outputs.docs_only != 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-ci-plan
@@ -552,7 +549,6 @@ jobs:
           VITEST_RESULT: ${{ needs.vitest.result }}
           DOCS_ONLY: ${{ needs.build.outputs.docs_only }}
           PLATFORM_CHECKS: ${{ needs.build.outputs.platform_checks }}
-          WINDOWS_CHECKS: ${{ needs.build.outputs.windows_checks }}
           WINDOWS_PREPARATION_RESULT: ${{ needs.windows-native-preparation.result }}
           WINDOWS_RESULT: ${{ needs.windows-permission-tests.result }}
           MACOS_RESULT: ${{ needs.macos-permission-tests.result }}
@@ -570,6 +566,10 @@ jobs:
             echo "::error::the build job ended $BUILD_RESULT"
             exit 1
           fi
+          if [ "$DOCS_ONLY" != "true" ] && [ "$DOCS_ONLY" != "false" ]; then
+            echo "::error::documentation impact was not resolved"
+            exit 1
+          fi
           if [ "$DOCS_ONLY" = "true" ]; then
             if [ "$VITEST_RESULT" != "skipped" ]; then
               echo "::error::a docs-only change ran Vitest shards ($VITEST_RESULT)"
@@ -583,12 +583,8 @@ jobs:
             echo "::error::native platform selection was not resolved"
             exit 1
           fi
-          expected=skipped
-          case "$WINDOWS_CHECKS" in
-            true) expected=success ;;
-            false) ;;
-            *) echo "::error::Windows platform selection was not resolved"; exit 1 ;;
-          esac
+          expected=success
+          if [ "$DOCS_ONLY" = "true" ]; then expected=skipped; fi
           for result in "$WINDOWS_PREPARATION_RESULT" "$WINDOWS_RESULT"; do
             if [ "$result" != "$expected" ]; then
               echo "::error::Windows check ended $result, expected $expected"
@@ -627,7 +623,7 @@ jobs:
       group: ci-platform-${{ github.workflow }}-windows-prepare-${{ github.event_name }}-${{ github.ref }}-${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'latest' || github.run_id }}
       cancel-in-progress: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     needs: build
-    if: needs.build.outputs.windows_checks == 'true'
+    if: needs.build.outputs.docs_only == 'false'
     # GitHub-hosted runner, as every job is; see workflow-runner-policy.ts.
     # The runner needs Git for Windows (bash) and the C++ build tools that
     # scripts/build-windows-job.ps1 finds through vswhere. Pinned to
@@ -883,7 +879,7 @@ jobs:
       group: ci-platform-${{ github.workflow }}-windows-${{ github.event_name }}-${{ github.ref }}-${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'latest' || github.run_id }}-${{ matrix.shard }}
       cancel-in-progress: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     needs: [build, windows-native-preparation]
-    if: needs.build.outputs.windows_checks == 'true' && needs.windows-native-preparation.result == 'success'
+    if: needs.build.outputs.docs_only == 'false' && needs.windows-native-preparation.result == 'success'
     runs-on: windows-2025
     strategy:
       fail-fast: false

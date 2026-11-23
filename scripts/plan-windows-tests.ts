@@ -123,11 +123,7 @@ export function planWindowsTests({
   // Direct runtime witnesses are recorded before graph traversal.
   assertWindowsCoverage([...required, ...directInputs], Object.values(lists).flat());
   return { mode: affected === undefined ? "full" : "affected", reason, lists,
-    affectedCount: affected === undefined ? 0 : changedTests.length, shards: balanceWindowsTests(required, durations) };
-}
-
-export function windowsChecksRequired(plan: ReturnType<typeof planWindowsTests>, platformChecks: string | undefined): boolean {
-  return plan.mode === "full" || platformChecks !== "false" || plan.affectedCount > 0;
+    shards: balanceWindowsTests(required, durations) };
 }
 
 function balanceWindowsTests(files: ReadonlySet<string>, durations: Record<string, number>) {
@@ -170,9 +166,6 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
   const summary = windowsPlanSummary(plan);
   console.log(summary);
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);
-  if (process.env.GITHUB_OUTPUT) {
-    appendFileSync(process.env.GITHUB_OUTPUT, `windows_checks=${windowsChecksRequired(plan, process.env.AVE_CI_PLATFORM_CHECKS)}\n`);
-  }
   mkdirSync(dirname(resolve(output)), { recursive: true });
   writeFileSync(output, `${JSON.stringify(plan, null, 2)}\n`);
 }
