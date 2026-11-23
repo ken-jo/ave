@@ -820,11 +820,13 @@ it("an accepted gate decision puts its item back in flight for aggregate child w
   }
 });
 
-/** An item whose first retry's relaunch failed: its failed stage stands and its run is parked. */
-async function failedRelaunch(hold?: Promise<void>) {
+/** An item whose first retry's relaunch failed: its failed stage stands and its run is parked. `read`, once armed, holds every run read
+ * until its release. */
+async function failedRelaunch(hold?: Promise<void>, read?: { armed: boolean; held: () => void; release: Promise<void> }) {
   const h = await stageRunHarness({
     observeRunWork: true,
-    wiring: (_store, { workspace }) => ({
+    wiring: (store, { workspace }) => ({
+      ...(read ? { runs: heldRead(boardRunState(store), read) } : {}),
       workspace: {
         ...workspace,
         prepare: async (...args) => {
@@ -845,6 +847,20 @@ async function failedRelaunch(hold?: Promise<void>) {
   await h.drainRunWork();
   await expect(h.untilLive(1, id)).rejects.toThrow(/stage_failed/);
   return { h, version, id, runId };
+}
+
+function heldRead(runs: ReturnType<typeof boardRunState>, read: { armed: boolean; held: () => void; release: Promise<void> }) {
+  return {
+    ...runs,
+    get: async (...args: Parameters<typeof runs.get>) => {
+      const result = await runs.get(...args);
+      if (read.armed) {
+        read.held();
+        await read.release;
+      }
+      return result;
+    },
+  };
 }
 
 it("a refused retry that overlaps an accepted one leaves the accepted retry's start standing", async () => {
@@ -1032,16 +1048,25 @@ it("an accepted decision that ends the run before it returns leaves the item out
 });
 
 it("an aggregate wait created while a refused retry runs takes the failure that stands again after the refusal", async () => {
-  const { h, id } = await failedRelaunch();
+  const held = deferred<void>();
+  const release = deferred<void>();
+  const read = { armed: false, held: () => held.resolve(), release: release.promise };
+  const { h, id, runId } = await failedRelaunch(undefined, read);
   try {
     await expect(h.untilLive(1)).rejects.toThrow(/stage_failed/);
-    const refused = h.engine.retryStage(id, { runId: "run-other", stageId: "a" });
+    read.armed = true;
+    // A stage the run does not have passes the run read, so the refusal comes after it.
+    const refused = h.engine.retryStage(id, { runId, stageId: "missing" });
     const wait = Promise.allSettled([h.untilLive(1)]);
+    await held.promise;
+    expect(await Promise.race([wait, refused, setImmediate("still pending")])).toBe("still pending");
+    release.resolve();
     expect(await refused).toMatchObject({ ok: false });
     expect(await Promise.race([wait, setImmediate("still pending")])).toEqual([
       { status: "rejected", reason: expect.objectContaining({ message: expect.stringMatching(/stage_failed/) }) },
     ]);
   } finally {
+    release.resolve();
     for (const child of h.live()) child.finish();
     await h.drainRunWork();
     await h.cleanup();
