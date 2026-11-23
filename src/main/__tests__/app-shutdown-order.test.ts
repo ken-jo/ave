@@ -279,7 +279,12 @@ describe("OS sandbox release at quit", () => {
   it("starts claimed queued tools at the force-kill seal, before the audit closes in the same tick", async () => {
     vi.resetModules();
     const ledger = await import("../../tools/invocation-ledger.js");
-    const claim = vi.fn(() => { calls.push("sealClaim"); });
+    let admitted: ReturnType<typeof ledger.admitToolInvocationWhileAuditOpen>;
+    const claim = vi.fn(() => {
+      calls.push("sealClaim");
+      admitted = ledger.admitToolInvocationWhileAuditOpen("probe");
+      admitted?.settle();
+    });
     const withdraw = ledger.claimAtToolInvocationSeal(claim);
     getServices.mockReturnValue(makeServices());
     const shutdown = await configuredShutdown();
@@ -291,6 +296,7 @@ describe("OS sandbox release at quit", () => {
       withdraw();
     }
     expect(claim).toHaveBeenCalledOnce();
+    expect(admitted).toBeDefined();
     expect(calls).toContain("closeAudit");
     expect(calls.indexOf("sealClaim")).toBeLessThan(calls.indexOf("closeAudit"));
   });

@@ -128,9 +128,9 @@ export function beginToolInvocationAuditShutdown(): void {
 }
 
 /**
- * Claims run synchronously, so an abort refusal queues its row before this returns. A claimed tool that awaits before
- * its row (a non-abort deny firing a lifecycle hook) can meet an audit closed in the same tick; that append fails and
- * records a shutdown failure.
+ * Claims run synchronously, so an abort refusal queues its row before this returns. A claimed tool that awaits first
+ * (a deny firing a lifecycle hook) can meet an audit closed in the same tick. A permission row it then appends fails
+ * and is recorded; only closeToolInvocationAudit turns that into a failed shutdown.
  */
 export function sealToolInvocations(): void {
   beginToolInvocationAuditShutdown();

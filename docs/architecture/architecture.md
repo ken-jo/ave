@@ -3530,6 +3530,8 @@ connection.
 The existing hard shutdown deadline also bounds the join. Join or append
 failure marks cleanup as failed. Failed and timed-out cleanup force-kills
 managed children and starts a best-effort audit logger close before exit.
+That path still seals admission first and starts queued tools, so their
+host-shutdown rows are written before the close.
 
 ### Home path redaction
 

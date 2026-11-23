@@ -312,6 +312,24 @@ describe("ToolExecutor admission across the quit seal", () => {
     expect(denyReasons).toEqual([expect.stringContaining("model-hidden tool")]);
   });
 
+  it("answers an aborted plugin tool whose MCP owner changed with the owner deny", async () => {
+    const call = abortedPluginCall();
+    const { executor, executes, audit, plainRows, toolUses } = await freshExecutor(1, [], { generationAccess: call.access });
+    const [result] = await executor.executeAll(toolUses, {
+      sessionId: "sess-owner-abort",
+      permissionContext: userPermissionContext({ expectedMcpServerId: "server-a" }),
+      abortSignal: call.signal,
+      callbacks: call.callbacks,
+    });
+    expect(result).toMatchObject({ tool_use_id: "tu-queued-0", is_error: true, content: expect.stringContaining("MCP tool owner changed") });
+    expect(call.acquireExact).not.toHaveBeenCalled();
+    expect(executes[0]).not.toHaveBeenCalled();
+    await audit.close();
+    const reasons = plainRows().flatMap((row) => (row.toolCalls as Array<Record<string, unknown>> | undefined) ?? [])
+      .filter((toolCall) => toolCall.name === "queued_probe_0").map((toolCall) => toolCall.permissionReason);
+    expect(reasons).toEqual([expect.stringContaining("MCP tool owner changed")]);
+  });
+
   it("keeps a queued tool's host-shutdown row when the force-kill path closes the audit in the seal's tick", async () => {
     const { ledger, executor, executes, audit, rows, hostShutdownRows, toolUses, cancelled } = await freshExecutor(2);
     let firstDelivered!: () => void;
