@@ -1247,7 +1247,7 @@ export async function executeAuthorizedToolInvocation(
     deferredOperationSettlement = outcome.settlement;
     terminationReason = "indeterminate";
     // The ceiling and the quit seal are the host's stops; the invocation's principal decided nothing here.
-    const hostStopped = outcome.reason === "ceiling" || isHostExitAbort(abortSignal?.reason);
+    const hostStopped = !outcome.ok && outcome.reason === "ceiling" || isHostExitAbort(abortSignal?.reason);
     await appendToolInvocationAudit(services.auditLogger, {
       ts: new Date().toISOString(),
       auditId: randomUUID(),
