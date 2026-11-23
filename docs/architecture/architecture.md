@@ -2308,7 +2308,8 @@ Key boundaries:
   or enable. Boot starts installed extensions without such an event, so the
   first interactive launch of this version shows one card listing every enabled
   extension with a declared scope and no approval, each with its own Allow, and
-  a Later that leaves the Review badge in its settings. Answering it is saved
+  a Later that leaves the Review badge in its settings. Only the first window
+  that lists it shows it while that window is open. Answering it is saved
   with the approvals, so later launches show no such card; a headless launch has
   no window and leaves it owed.
 

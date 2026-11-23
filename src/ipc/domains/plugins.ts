@@ -5,7 +5,7 @@ import { stripMcpErrorCode } from "../../shared/mcp-error-code.js";
 import { createPluginRetirementPort, type PluginConfigRetention } from "../../plugins/retired-config.js";
 import { ContributionTrustReviewStaleError } from "../../plugins/plugin-contribution-trust.js";
 import { getAveAppVersion } from "../../shared/app-version.js";
-import { dialog, ipcMain } from "electron";
+import { dialog, ipcMain, type WebContents } from "electron";
 import { t } from "../../i18n/index.js";
 import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
@@ -503,6 +503,8 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
   });
 
   // Boot starts installed plugins with no runtime event, so the first interactive launch lists every unapproved one at once.
+  // The first window that lists the card holds it until that window goes away, so a second window shows no copy.
+  let upgradeHolder: WebContents | undefined;
   ipcMain.handle(CHANNELS.plugins.backgroundEffectsUpgradeGet, async (e) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, CHANNELS.plugins.backgroundEffectsUpgradeGet, e);
@@ -511,6 +513,10 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     const store = deps.pluginBackgroundEffects;
     if (!store) return { ok: false, error: "background-effects-unavailable" };
     if (!store.upgradeReviewOwed()) return { ok: true, reviews: [] };
+    if (upgradeHolder && upgradeHolder.id !== e.sender.id && !upgradeHolder.isDestroyed()) {
+      return { ok: false, error: "background-effects-upgrade-elsewhere" };
+    }
+    upgradeHolder = e.sender;
     const reviews = [];
     for (const pluginId of deps.pluginRuntime.listPluginIds()) {
       const manifest = deps.pluginRuntime.getPluginManifest(pluginId);

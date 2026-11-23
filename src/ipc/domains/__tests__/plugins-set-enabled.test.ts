@@ -3,6 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTmpDirTracker } from "../../../__tests__/support/tmp-dir-teardown.js";
+import { hostFrameEvent } from "../../../__tests__/test-helpers.js";
 import { invokeAppIpcHandlerFromFrame, makeAppIpcInvoker } from "./test-helpers.js";
 import type { ApprovalGate } from "../../../permissions/approval-gate.js";
 import { EffectBoundaryDeniedError, gateMutatingEffect, runWithEffectGateContext } from "../../../permissions/effect-enforcement.js";
@@ -443,6 +444,22 @@ describe("plugin background effects first-launch card IPC", () => {
         .toEqual({ ok: false, error: "unauthorized-frame" });
     }
     expect(store.upgradeReviewOwed()).toBe(true);
+  });
+
+  it("shows the card in the first window that lists it until that window goes away", async () => {
+    await launch(cardPath("ave-upgrade-window-"));
+    const windowOf = (id: number) => {
+      const window = { id, destroyed: false, isDestroyed: () => window.destroyed };
+      return window;
+    };
+    const [first, second] = [windowOf(1), windowOf(2)];
+    const list = (sender: ReturnType<typeof windowOf>) =>
+      handlers.get(GET)?.({ ...hostFrameEvent(), sender }) as Promise<{ ok: boolean; reviews?: unknown[]; error?: string }>;
+    expect(await list(first)).toMatchObject({ ok: true, reviews: [expect.anything(), expect.anything()] });
+    expect(await list(second)).toEqual({ ok: false, error: "background-effects-upgrade-elsewhere" });
+    expect(await list(first)).toMatchObject({ ok: true, reviews: [expect.anything(), expect.anything()] });
+    first.destroyed = true;
+    expect(await list(second)).toMatchObject({ ok: true, reviews: [expect.anything(), expect.anything()] });
   });
 });
 
