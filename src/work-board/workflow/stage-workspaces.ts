@@ -12,7 +12,7 @@ import { holdDir, type NodeId, nodeIdOf, type OwnedDir, OwnedFsError, realDirId,
 import type { JoinConflict } from "./shipped-shapes.js";
 import type { RunRef, StageWorkspaceProvider, WORKSPACE_REFUSALS } from "./stage-workspace.js";
 import { IGNORE_PREFIX, isIgnoreFolder, JOIN_DIR, OUT_DIR, RUN_FILE, runBranch, runRootOf, runSlug, stageDirName, WORKTREES_DIR } from "./workspace-layout.js";
-import { isWorkspaceRecord, type LiveRepo, type OutputFile, ownerOf, recordFits, type Registration, runFolderOf, type StageEntry, samePath, vetRecordPath, type WorkspaceRecord } from "./workspace-record.js";
+import { isRecordFilePath, isWorkspaceRecord, type LiveRepo, type OutputFile, ownerOf, recordFits, type Registration, runFolderOf, type StageEntry, samePath, vetRecordPath, type WorkspaceRecord } from "./workspace-record.js";
 import { copySeedFiles, hashSeedFile, listSeedFiles, MAX_SEED_BYTES, MAX_SEED_FILES, type SeedRules } from "./workspace-seed.js";
 
 const log = createLogger("work-board-stage-workspace");
@@ -644,6 +644,8 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
   async function sealFolder(entry: StageEntry, stage: OwnedDir): Promise<{ ok: true } | { ok: false; code: Refusal }> {
     const listed = await listSeedFiles(stage.path, entry.outputs ?? ["**"], seedRules());
     if (!listed.ok) return listed;
+    // A name the record cannot hold as a file's path would be hashed under another spelling and then make the whole record unreadable.
+    if (!listed.files.every(item => isRecordFilePath(item.path))) return { ok: false, code: "seed-unreadable" };
     const manifest: OutputFile[] = [];
     for (const item of listed.files) manifest.push({ path: item.path, ...(await hashSeedFile(stage, item.path)) });
     entry.manifest = manifest;

@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { cpSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, sep } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { _resetAveHomePrivacyForTest, aveHome, setAveHomePrivacyAtBoot } from "../../../shared/ave-home.js";
 import type { StageInputDecl } from "../../../shared/workflow-template-types.js";
 import { type NameReader, plainFolderIgnore, projectFoldsCase } from "../folder-ignore.js";
@@ -13,6 +13,17 @@ import { createStageWorkspaceProvider, type StageWorkspaceOptions } from "../sta
 import { OUT_DIR, RUN_FILE, runRootOf } from "../workspace-layout.js";
 import { copySeedFiles, isInside, listSeedFiles } from "../workspace-seed.js";
 import { removeLink, removeTree, setPath, stageOf, writeUnder as write } from "./stage-fixtures.js";
+
+/** Files a listing is told of beside the ones on disk: a name the host's file system cannot hold. */
+const listing = vi.hoisted(() => ({ also: undefined as { path: string; size: number }[] | undefined }));
+vi.mock("../workspace-seed.js", async (original) => {
+  const real = await original<typeof import("../workspace-seed.js")>();
+  const listSeedFiles: typeof real.listSeedFiles = async (...args) => {
+    const listed = await real.listSeedFiles(...args);
+    return listed.ok && listing.also !== undefined ? { ...listed, files: [...listed.files, ...listing.also] } : listed;
+  };
+  return { ...real, listSeedFiles };
+});
 
 let base: string;
 let project: string;
@@ -565,6 +576,22 @@ describe("folder stage workspaces", () => {
     expect(await handle.provider.prepare(handle.run, stageOf("s1", { inputFiles: [fromProject("src/deep/b.ts")] }), 1)).toEqual({ ok: false, code: "seed-unreadable" });
     expect(readdirSync(outside)).toEqual([]);
     expect(existsSync(stage)).toBe(false);
+  });
+
+  it("a file whose name holds a backslash, beside the file that name spells with a slash, stops the seal; the record stays one the next call reads", async () => {
+    const handle = await start(project);
+    const stage = await stageRoot(handle, "s1", { outputs: ["**"] });
+    write(stage, "a/b", "by folders\n");
+    // Where a name may hold a backslash the file is made; elsewhere the listing is told of it.
+    if (sep === "/") write(stage, "a\\b", "by name\n");
+    else listing.also = [{ path: "a\\b", size: 8 }];
+    try {
+      expect(await handle.provider.seal(handle.run, "s1")).toEqual({ ok: false, code: "seed-unreadable" });
+    } finally {
+      listing.also = undefined;
+    }
+    if (sep === "/") rmSync(join(stage, "a\\b"));
+    expect(await handle.provider.seal(handle.run, "s1")).toEqual({ ok: true });
   });
 
   it("an output folder junction gets no collected file through it", async () => {

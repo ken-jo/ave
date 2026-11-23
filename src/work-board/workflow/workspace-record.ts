@@ -79,7 +79,7 @@ const text = (value: unknown): boolean => typeof value === "string";
 const commit = (value: unknown): boolean => typeof value === "string" && OBJECT_ID.test(value);
 /** A file of a stage folder or of the output folder as a seal lists it: names joined by `/`, none of them empty, `.` or `..`, and none
  * holding `:`, `\` or NUL. So it is relative, stays below its folder and names no drive, share or stream. */
-const filePath = (value: unknown): boolean => typeof value === "string" && value.split("/").every(name => name !== "" && name !== "." && name !== ".." && !/[:\\\0]/u.test(name));
+export const isRecordFilePath = (value: unknown): boolean => typeof value === "string" && value.split("/").every(name => name !== "" && name !== "." && name !== ".." && !/[:\\\0]/u.test(name));
 const located = (value: unknown, path: string): boolean => isObject(value) && absolute(value[path]) && isNodeId(value.id);
 
 /** The shape alone: every field a later call relies on, and no field the record's kind does not carry. */
@@ -94,12 +94,12 @@ export function isWorkspaceRecord(value: unknown): value is WorkspaceRecord {
   if (value.kind === "git") {
     if ([value.project, value.repo, value.branch, value.baseCommit].includes(undefined) || given(value.outDir, value.ignoreRules) || value.refs.length > 1) return false;
   } else if (given(value.repo, value.branch, value.baseCommit, value.merging, value.joinDir) || value.refs.length > 0 || Object.keys(value.registrations).length > 0) return false;
-  if (!Object.keys(value.out).every(filePath)) return false;
+  if (!Object.keys(value.out).every(isRecordFilePath)) return false;
   if (!value.refs.every(ref => isObject(ref) && text(ref.name) && text(ref.oid))) return false;
   if (!Object.entries(value.registrations).every(([key, entry]) => (key === JOIN_DIR || isStageId(key)) && located(entry, "admin") && isObject(entry) && absolute(entry.gitdir))) return false;
   return Object.entries(value.stages).every(([id, entry]) => isStageId(id) && isObject(entry) && typeof entry.ready === "boolean" && Number.isInteger(entry.attempt)
     && optional(entry.dir, isNodeId) && (entry.ready !== true || entry.dir !== undefined) && optional(entry.base, commit) && optional(entry.sealCommit, commit)
-    && optional(entry.manifest, manifest => Array.isArray(manifest) && manifest.every(item => isObject(item) && filePath(item.path))));
+    && optional(entry.manifest, manifest => Array.isArray(manifest) && manifest.every(item => isObject(item) && isRecordFilePath(item.path))));
 }
 
 const foldName = (name: string): string => process.platform === "win32" ? name.toLowerCase() : name;
