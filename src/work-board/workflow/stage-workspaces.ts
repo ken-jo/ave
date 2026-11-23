@@ -1083,7 +1083,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
   async function dropWhole(current: Held, root: RemovedRunProject | undefined, live: string | undefined, output: "keep" | "drop"): Promise<void> {
     leftWhole.delete(current.runRoot);
     const left = await releaseIn({ ...current, ...liveOf(current.file, live) }, "all", output);
-    if (root !== undefined && left !== undefined && left.every(entry => entry.side === "unverified")) leftWhole.set(current.runRoot, { owner: ownerOf(current.file), root });
+    if (root !== undefined && left?.every(entry => entry.side === "unverified") === true) leftWhole.set(current.runRoot, { owner: ownerOf(current.file), root });
   }
 
   async function removableNow(run: { runId: string; itemId: number }): Promise<boolean> {
