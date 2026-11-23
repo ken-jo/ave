@@ -573,6 +573,7 @@ src/observation/__tests__/text-document.test.ts
 src/permissions/__tests__/approval-gate-shutdown.test.ts
 src/permissions/__tests__/approval-rule-basis-gate.test.ts
 src/permissions/__tests__/approval-run-kinds.integration.test.ts
+src/permissions/__tests__/asrt-mxc-egress.test.ts
 src/permissions/__tests__/asrt-profile-compaction.test.ts
 src/permissions/__tests__/asrt-seccomp-helper-missing.test.ts
 src/permissions/__tests__/asrt-startup-cancellation.test.ts

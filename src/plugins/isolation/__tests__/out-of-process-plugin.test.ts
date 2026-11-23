@@ -160,6 +160,7 @@ import { TOOL_TIMEOUT_POLICY, windowsSrtPluginChildFactoryBudgetMs } from "../..
 import { setAveHomePrivacyAtBoot, approveExtensionsWithoutIsolation, _resetAveHomePrivacyForTest } from "../../../shared/ave-home.js";
 import { setPluginWorkerConfinementRequestedAtBoot, __resetSandboxRequestedAtBootForTest } from "../../../permissions/sandbox-capability.js";
 import { setProcessPlatform } from "../../../__tests__/support/process-platform.js";
+import { getManagedChildProcessCount, trackManagedChildProcess } from "../../../main/managed-child-processes.js";
 import { createBoundHostApiDispatchTable } from "../bound-host-api-table.js";
 import {
   acceptHostOverLoopback,
@@ -1565,8 +1566,10 @@ describe("the factory's launch reaches the spawn as decided", () => {
           args: string[];
           baseEnv: NodeJS.ProcessEnv;
           extraEnv: Record<string, string>;
+          requireWrap: boolean;
         };
         expect(spec.command).toBe("/usr/bin/env");
+        expect(spec.requireWrap).toBe(true);
         expect(spec.args).toEqual([
           `SMOKE_VENDOR_DIR=${join(root, "vendor")}`,
           `PLUGIN_ROOT=${root}`,
@@ -1609,6 +1612,31 @@ describe("the factory's launch reaches the spawn as decided", () => {
       roots.remove();
     }
   });
+
+  it.runIf(process.platform === "linux" || process.platform === "darwin")(
+    "kills a process launch that comes back unconfined before exposing it to the session",
+    async () => {
+      const roots = spawnableRoots();
+      const kill = vi.fn();
+      const stdin = new PassThrough();
+      const stdout = new PassThrough();
+      const child = Object.assign(new EventEmitter(), { exitCode: null, signalCode: null, stdin, stdout, stdio: [stdin, stdout], kill });
+      sandbox.active = true;
+      spawnConfinedChild.mockResolvedValueOnce({ child, confinement: "unconfined" });
+      try {
+        const { pluginRoot } = roots.context;
+        if (!pluginRoot) throw new Error("Missing plugin root");
+        const refused = await attempt(processLaunch(pluginRoot), PROCESS_MANIFEST, roots);
+        expect(refused).toBeInstanceOf(ProcessEntryUnconfinedError);
+        expect(kill).toHaveBeenCalledWith("SIGKILL");
+      } finally {
+        stdin.destroy();
+        stdout.destroy();
+        sandbox.active = false;
+        roots.remove();
+      }
+    },
+  );
 
   it("refuses a process launch on Windows even with the sandbox on, before anything is spawned", async () => {
     const roots = spawnableRoots();
@@ -1682,6 +1710,65 @@ describe("the factory's launch reaches the spawn as decided", () => {
       roots.remove();
     }
   });
+});
+
+it.each(["explicit stop", "clean EOF", "PGID reuse"])("stops a confined POSIX group after leader exit (%s)", async (mode) => {
+  const roots = spawnableRoots();
+  const input = new PassThrough();
+  const stdout = new PassThrough();
+  const child = Object.assign(new EventEmitter(), {
+    pid: 4242, exitCode: null as number | null, signalCode: null, stdio: [null, stdout, null, input], stdout, kill: vi.fn(),
+  });
+  const platform = process.platform;
+  vi.useFakeTimers();
+  setProcessPlatform("linux");
+  let originalGroupGone = false;
+  const kill = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+    if (pid === -child.pid && signal === 0 && originalGroupGone) {
+      throw Object.assign(new Error("No such process"), { code: "ESRCH" });
+    }
+    return true;
+  });
+  const before = getManagedChildProcessCount();
+  const dispose = trackManagedChildProcess(child as unknown as ChildProcess, { killProcessGroup: true });
+  spawnConfinedChild.mockResolvedValueOnce({ child, confinement: "linux-bubblewrap" });
+  try {
+    const { pluginRoot, pluginSocketDir } = roots.context;
+    if (!pluginRoot || !pluginSocketDir) throw new Error("Missing plugin paths");
+    const plugin = await spawnConfinedPluginChild({
+      pluginId: "example",
+      socketDir: pluginSocketDir,
+      launch: { kind: "entry", childEntryPath: join(pluginRoot, "plugin.mjs") },
+      envelope: { read: [], write: [] },
+    });
+    if (mode === "explicit stop") plugin.link.terminate("explicit stop");
+    child.exitCode = 0;
+    child.emit("exit", 0, null);
+    expect(kill).toHaveBeenCalledWith(-child.pid, "SIGTERM");
+    if (mode === "PGID reuse") {
+      originalGroupGone = true;
+      vi.advanceTimersByTime(TOOL_TIMEOUT_POLICY.processGroupPollMs);
+      expect(getManagedChildProcessCount()).toBe(before);
+      originalGroupGone = false;
+      vi.advanceTimersByTime(TOOL_TIMEOUT_POLICY.pluginChildForceKillMs - TOOL_TIMEOUT_POLICY.processGroupPollMs);
+      expect(kill).not.toHaveBeenCalledWith(-child.pid, "SIGKILL");
+    } else {
+      vi.advanceTimersByTime(TOOL_TIMEOUT_POLICY.pluginChildForceKillMs);
+      expect(kill.mock.calls.filter(([, signal]) => signal !== 0)).toEqual([
+        [-child.pid, "SIGTERM"], [-child.pid, "SIGKILL"],
+      ]);
+    }
+    expect(child.kill).not.toHaveBeenCalled();
+  } finally {
+    dispose();
+    child.emit("close");
+    input.destroy();
+    stdout.destroy();
+    kill.mockRestore();
+    setProcessPlatform(platform);
+    vi.useRealTimers();
+    roots.remove();
+  }
 });
 
 /** Hold Windows grants against the holder process and record ordering; this suite does not measure effective ACLs. */
