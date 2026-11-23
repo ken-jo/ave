@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,6 +12,18 @@ import {
   withinBackgroundScope,
 } from "../plugin-background-effects.js";
 import type { PluginManifest, PluginRegistryEntryOrigin, PluginRegistryTrust } from "../types.js";
+
+const atomicWrites = vi.hoisted(() => ({ fail: false }));
+vi.mock("../../lib/atomic-file.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../lib/atomic-file.js")>();
+  return {
+    ...actual,
+    writeUtf8FileAtomicSync: (...args: Parameters<typeof actual.writeUtf8FileAtomicSync>) => {
+      if (atomicWrites.fail) throw new Error("disk full");
+      return actual.writeUtf8FileAtomicSync(...args);
+    },
+  };
+});
 
 const STORAGE_WRITES = ["storage.write", "storage.writeJson", "storage.rm", "storage.mkdir", "storage.writeEncrypted"];
 
@@ -46,6 +58,7 @@ const marketplaceEntry = (extra: Partial<PluginRegistryEntryOrigin> = {}): Plugi
 
 const roots: string[] = [];
 afterEach(() => {
+  atomicWrites.fail = false;
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -216,6 +229,48 @@ describe("background effect approvals", () => {
     expect(approvals.isApproved(subject)).toBe(false);
     expect(new PluginBackgroundEffectApprovals(path).isApproved(subject)).toBe(false);
     expect(() => approvals.revoke("never-approved")).not.toThrow();
+  });
+
+  it("drop a removal whose write failed at the next save, or at boot once the registry no longer names the plugin", () => {
+    const path = approvalsFile();
+    const removed = backgroundEffectSubject(declaring(), marketplaceEntry());
+    const kept = backgroundEffectSubject(declaring({ id: "kept" }), marketplaceEntry({ packagePath: "plugins/kept" }));
+    const approvals = new PluginBackgroundEffectApprovals(path);
+    approvals.approve(removed);
+    approvals.approve(kept);
+    atomicWrites.fail = true;
+    approvals.revoke(removed.pluginId);
+    atomicWrites.fail = false;
+    expect(approvals.isApproved(removed)).toBe(false);
+    const restarted = new PluginBackgroundEffectApprovals(path);
+    expect(restarted.isApproved(removed)).toBe(true);
+    restarted.retain(new Set(["kept"]));
+    expect(restarted.isApproved(removed)).toBe(false);
+    for (const fresh of [restarted, new PluginBackgroundEffectApprovals(path)]) {
+      expect(fresh.isApproved(removed)).toBe(false);
+      expect(fresh.isApproved(kept)).toBe(true);
+    }
+
+    const retried = approvalsFile();
+    const session = new PluginBackgroundEffectApprovals(retried);
+    session.approve(removed);
+    atomicWrites.fail = true;
+    session.revoke(removed.pluginId);
+    atomicWrites.fail = false;
+    session.approve(kept);
+    expect(new PluginBackgroundEffectApprovals(retried).isApproved(removed)).toBe(false);
+  });
+
+  it("keep every approval the registry still names, and survive a failed prune", () => {
+    const path = approvalsFile();
+    const subject = backgroundEffectSubject(declaring(), marketplaceEntry());
+    const approvals = new PluginBackgroundEffectApprovals(path);
+    approvals.approve(subject);
+    approvals.retain(new Set(["sample"]));
+    expect(new PluginBackgroundEffectApprovals(path).isApproved(subject)).toBe(true);
+    atomicWrites.fail = true;
+    expect(() => approvals.retain(new Set())).not.toThrow();
+    expect(approvals.isApproved(subject)).toBe(false);
   });
 
   it("persist across loads and approve nothing from a malformed file", () => {

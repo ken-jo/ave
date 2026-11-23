@@ -28,6 +28,7 @@ const runtimeTestState = vi.hoisted(() => ({
   }>,
   capturedRuntimeOptions: null as Record<string, unknown> | null,
   readPluginRegistry: vi.fn(async (): Promise<{ version: number; plugins: unknown[] }> => ({ version: 1, plugins: [] })),
+  vouchedInstalledPluginIds: vi.fn(async (): Promise<ReadonlySet<string> | undefined> => undefined),
   officialPins: vi.fn(async () => ["a".repeat(64)]),
   runtime: {
     load: vi.fn(async () => {}),
@@ -40,6 +41,7 @@ const runtimeTestState = vi.hoisted(() => ({
     ),
     getPluginManifest: vi.fn(() => null),
     resolvePluginInstallId: vi.fn((pluginId: string) => pluginId),
+    resolvePluginId: vi.fn((pluginId: string) => pluginId === "install-alias" ? "aliased" : pluginId),
     isPluginEnabled: vi.fn(() => true),
     getApprovedPluginAccess: vi.fn(() => undefined),
     registerDisposer: vi.fn(),
@@ -106,6 +108,7 @@ vi.mock("../../../plugins/plugin-paths.js", () => ({
 
 vi.mock("../../../plugins/registry.js", () => ({
   readPluginRegistry: runtimeTestState.readPluginRegistry,
+  vouchedInstalledPluginIds: runtimeTestState.vouchedInstalledPluginIds,
 }));
 
 vi.mock("../plugin-runtime/grant-evidence.js", () => ({
@@ -144,6 +147,7 @@ import { canonicalJSON } from "../../../plugins/secret-access/canonical-json.js"
 import { recordManifestDocument } from "../../../plugins/runtime/manifest-validation.js";
 import { agentPluginsDocument, pluginDataDirIn } from "../../../plugins/__tests__/test-helpers.js";
 import type { PluginHostApi, PluginManifest } from "../../../plugins/types.js";
+import { backgroundEffectSubject, PluginBackgroundEffectApprovals } from "../../../plugins/plugin-background-effects.js";
 
 /** Bind the installer pin to the original manifest document. */
 function pinDocument(manifest: object): string {
@@ -1336,5 +1340,59 @@ describe("initPluginRuntime sandbox union ordering", () => {
     // Plugin start begins the phase in which plugin trees are only tombstoned.
     expect(confinedProcessesMayBeRunning()).toBe(true);
     _resetConfinedProcessPhaseForTests();
+  });
+});
+
+describe("initPluginRuntime background effect approvals", () => {
+  const subjectOf = (id: string) => backgroundEffectSubject(
+    { id, name: id, version: "1.0.0", entry: "plugin.mjs", description: id, tools: [], capabilities: ["background:call-llm"] } as unknown as PluginManifest,
+    { installSource: "user", origin: {
+      sourceId: "example-source", sourceOrigin: "custom", commit: "a".repeat(40), packagePath: `plugins/${id}`, version: "1.0.0",
+      rung: "release", artifactSha256: "b".repeat(64), installedAt: "2026-11-01T00:00:00.000Z",
+    } },
+  );
+
+  it.each([
+    ["a vouched registry", new Set(["kept", "install-alias"]), ["kept", "aliased"]],
+    ["a registry that cannot vouch", undefined, ["kept", "aliased", "removed"]],
+  ] as const)("keeps after load only the approvals %s still names", async (_label, vouched, approved) => {
+    runtimeTestState.capturedRuntimeOptions = null;
+    runtimeTestState.runtime.listPluginIds.mockReturnValue([]);
+    runtimeTestState.runtime.listPluginManifests.mockReturnValue([]);
+    runtimeTestState.vouchedInstalledPluginIds.mockResolvedValueOnce(vouched);
+    const path = join(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-background-prune-"))), "background-effects.json");
+    const seeded = new PluginBackgroundEffectApprovals(path);
+    for (const id of ["kept", "aliased", "removed"]) seeded.approve(subjectOf(id));
+    const approvals = new PluginBackgroundEffectApprovals(path);
+    const output = await initPluginRuntime({
+      host: createRuntimeHost(),
+      projectRoot: fixture.path("project"),
+      settingsService: createRuntimeSettings() as never,
+      memoryManager: {} as never,
+      networkFetch: vi.fn() as never,
+      clearAuthPartitionService: vi.fn(),
+      toolRegistry: createRuntimeToolRegistry() as never,
+      pythonPath: undefined,
+      bootAuditLogger: { log: vi.fn() } as never,
+      mainWindow: {} as never,
+      openAuthWindowService: vi.fn(),
+      openLinkWindowService: vi.fn(),
+      openAuthPartitionViewerService: vi.fn(),
+      shellOpenExternal: vi.fn(),
+      approvalGate: {} as never,
+      routinesStore: { list: () => [] } as never,
+      getAlertsService: () => undefined,
+      deferStart: true,
+      backgroundEffectApprovals: approvals,
+    });
+    expect(approvals.isApproved(subjectOf("removed"))).toBe(true);
+
+    _resetConfinedProcessPhaseForTests();
+    await output.startPlugins();
+    _resetConfinedProcessPhaseForTests();
+
+    for (const store of [approvals, new PluginBackgroundEffectApprovals(path)]) {
+      expect(["kept", "aliased", "removed"].filter((id) => store.isApproved(subjectOf(id)))).toEqual(approved);
+    }
   });
 });

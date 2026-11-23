@@ -26,6 +26,7 @@ import {
 } from "../dev-flags.js";
 import { resolvePluginPaths } from "../../plugins/plugin-paths.js";
 import { backgroundEffectApprovalsPath, PluginBackgroundEffectApprovals } from "../../plugins/plugin-background-effects.js";
+import { vouchedInstalledPluginIds } from "../../plugins/registry.js";
 import type {
   AuthWindowCookie,
   OpenAuthWindowBaseOptions,
@@ -345,6 +346,17 @@ export async function initPluginRuntime(
     getAllWindows: () => input.host.desktop?.getAppWindows() ?? [],
   }));
 
+  // A removal whose write failed must not leave an approval that a reinstall from the same source would inherit; a registry
+  // that cannot vouch for its plugins prunes nothing.
+  const pruneBackgroundEffectApprovals = async (): Promise<void> => {
+    try {
+      const installed = await vouchedInstalledPluginIds(pluginPaths.registryPath);
+      if (!installed) return;
+      backgroundEffectApprovals.retain(new Set([...installed].flatMap((id) => [id, pluginRuntime.resolvePluginId(id)])));
+    } catch (error) {
+      log.warn("boot: background effect approvals were not pruned: %s", error instanceof Error ? error.message : String(error));
+    }
+  };
   const preStartPhase = new PluginRuntimePreStartPhase();
   const startPluginsOnce = async (): Promise<void> => {
     // After plugin processes may start, delete plugin trees only during boot.
@@ -353,6 +365,7 @@ export async function initPluginRuntime(
     if (input.deferStart) await refreshRegistryEntryCache();
     // Load manifests before activation so confinement domains cover every declared server.
     await pluginRuntime.load();
+    await pruneBackgroundEffectApprovals();
     // Refresh confinement domains from loaded manifests before any child can spawn.
     await input.refreshSandboxUnionDomains?.();
     await pluginRuntime.startAll();

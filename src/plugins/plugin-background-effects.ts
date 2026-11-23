@@ -223,7 +223,7 @@ export class PluginBackgroundEffectApprovals {
     this.approvals = next;
   }
 
-  /** Uninstall drops the approval and renames the review; a failed write is logged and the in-memory approval is already gone. */
+  /** Uninstall drops the approval and renames the review; a failed write is logged, and the next save or boot prune drops it on disk. */
   revoke(pluginId: string): void {
     this.uninstalls.set(pluginId, (this.uninstalls.get(pluginId) ?? 0) + 1);
     if (!this.approvals.has(pluginId)) return;
@@ -234,6 +234,18 @@ export class PluginBackgroundEffectApprovals {
       this.persist(next);
     } catch (error) {
       log.warn({ pluginId, err: error instanceof Error ? error.message : String(error) }, "background effect approval removal was not saved");
+    }
+  }
+
+  /** Boot drops approvals for plugins the registry no longer names, so a removal whose write failed is not honoured on reinstall. */
+  retain(pluginIds: ReadonlySet<string>): void {
+    const next = new Map([...this.approvals].filter(([pluginId]) => pluginIds.has(pluginId)));
+    if (next.size === this.approvals.size) return;
+    this.approvals = next;
+    try {
+      this.persist(next);
+    } catch (error) {
+      log.warn({ err: error instanceof Error ? error.message : String(error) }, "background effect approval prune was not saved");
     }
   }
 

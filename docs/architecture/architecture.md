@@ -2292,7 +2292,9 @@ Key boundaries:
   install (the marketplace source and package path, or for a local development
   install the manifest it installed) and the hash of the canonical declared set.
   A version-only update keeps it; a scope or source change asks again. Uninstall
-  drops it and disable keeps it. An install with no pinned source (admin, bundled
+  drops it and disable keeps it; boot also drops any approval whose extension the
+  registry no longer names, so a removal that failed to save is not inherited by a
+  reinstall. An install with no pinned source (admin, bundled
   or a legacy row) cannot be approved, and a missing or unreadable approvals file
   loads as empty. Within the approved scope a deny or a forced floor still
   denies, and the card answers only ordinary asks (`file-write`,
