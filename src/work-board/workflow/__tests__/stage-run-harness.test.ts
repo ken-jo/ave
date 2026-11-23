@@ -1075,9 +1075,10 @@ it("an accepted join decision puts its item back in flight for aggregate child w
   let merges = 0;
   const h = await stageRunHarness({
     observeRunWork: true,
-    integrate: () => (merges += 1) === 1
-      ? { ok: false, conflict: { conflictHash: "c".repeat(64), reason: "merge-conflict", files: [] } }
-      : { ok: true },
+    integrate: () => {
+      merges += 1;
+      return merges === 1 ? { ok: false, conflict: { conflictHash: "c".repeat(64), reason: "merge-conflict", files: [] } } : { ok: true };
+    },
   });
   const runs: Promise<unknown>[] = [];
   try {
