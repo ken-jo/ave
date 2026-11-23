@@ -151,6 +151,17 @@ describe("Windows inventory metadata in CI plans", () => {
     expect(plan.tests).toEqual(expected(added, removed));
   });
 
+  it.each([["U+2028", "\u2028"], ["bare CR", "\r"], ["U+2029", "\u2029"]])("treats executable code after %s as a source edit", (_name, terminator) => {
+    const before = "// windows-permission: exercise the boundary\nexport {};\n";
+    const after = before.replace("boundary", `boundary${terminator}globalThis.fixtureChanged = true;`);
+    const plan = selectCiTests({
+      changes: [modified(added)], trackedTests, mustRunTests, readText, discoverRelated: vi.fn(() => null),
+      readVersion: (_file, side) => side === "before" ? before : after,
+    });
+    expect(plan.reason).toContain("test-only diff");
+    expect(plan.tests).toContain(added);
+  });
+
   it("keeps regular code handling for a list edit with executable changes", () => {
     const list = WINDOWS_TEST_LISTS[0];
     const standardPlan = select([modified("src/core/route-input.ts")]);

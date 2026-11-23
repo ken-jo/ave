@@ -58,6 +58,18 @@ describe("Windows regression planning", () => {
     expect(selected(result)).toEqual([...new Set([...core(), removed, permissionSuite])].sort());
   });
 
+  it.each([["U+2028", "\u2028"], ["bare CR", "\r"], ["U+2029", "\u2029"]])("treats executable code after %s as a source edit", (_name, terminator) => {
+    const before = "// windows-permission: exercise the boundary\nexport {};\n";
+    const after = before.replace("boundary", `boundary${terminator}globalThis.fixtureChanged = true;`);
+    const result = planWindowsTests({
+      event: "pull_request", changes: [modified(permissionSuite)], inventories,
+      readSources: () => new Map([[permissionSuite, after]]),
+      readVersion: (_file, side) => side === "before" ? before : after,
+    });
+    expect(result.mode).toBe("affected");
+    expect(selected(result)).toEqual([...new Set([...core(), permissionSuite])].sort());
+  });
+
   it("retains full selection when a CI input changes with a list", () => {
     const result = planWindowsTests({
       event: "pull_request", changes: [modified(permission), modified(".github/workflows/ci.yml")], inventories, readSources,

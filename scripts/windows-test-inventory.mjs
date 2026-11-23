@@ -10,6 +10,7 @@ const MARKERS = new Map([
   ["windows-native", WINDOWS_TEST_LISTS[1]],
 ]);
 const HEADER = /^[ \t]*\/\/ (windows-permission|windows-native)(?:[ \t]*$|:)/u;
+const NON_LF_TERMINATOR = /[\r\u2028\u2029]/u;
 
 export function windowsTestFiles(text) {
   const files = [...new Set(text.replace(/^\uFEFF/u, "").split(/\r?\n/u).map(line => line.trim()).filter(Boolean))];
@@ -99,7 +100,10 @@ export function windowsInventoryDiff(changes, readVersion, isCollectedVitestFile
     const current = inventoryHeader(after);
     const markerChanges = [...difference(previous.markers, current.markers), ...difference(current.markers, previous.markers)];
     for (const marker of markerChanges) record(path, MARKERS.get(marker));
-    const markerOnly = before !== after && previous.body === current.body;
+    // JavaScript ends line comments at more than LF. Never strip a possible
+    // executable edit as header metadata when comparing these source bytes.
+    const markerOnly = before !== after && previous.body === current.body
+      && !NON_LF_TERMINATOR.test(before) && !NON_LF_TERMINATOR.test(after);
     if (markerOnly || markerChanges.length > 0) changed = true;
     if (!markerOnly) ordinary.push(entry);
   }
