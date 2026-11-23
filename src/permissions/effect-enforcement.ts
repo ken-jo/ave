@@ -64,6 +64,8 @@ export interface EffectGateContext {
 const gateContextStorage = new AsyncLocalStorage<EffectGateContext>();
 const authorizationRequiredLatch = new WeakMap<EffectGateContext, () => void>();
 const noApproverLatch = new WeakMap<EffectGateContext, () => void>();
+/** Frames whose invocation returned; work left running there keeps no once-grant. */
+const poppedFrames = new WeakSet<EffectGateContext>();
 
 // Run `fn` with an effect-gate context bound for the async chain of one tool invocation. A fresh `allow-once` grant set is minted per call so once-grants never leak across invocations. AsyncLocalStorage propagates through the loopback transport (the same path the effect ledger relies on), so the per-plugin hostApi closures see this context when they reach a gated effect.
 export function runWithEffectGateContext<T>(
@@ -78,7 +80,18 @@ export function runWithEffectGateContext<T>(
     authorizationRequiredLatch.set(frame, onAuthorizationRequired);
   }
   if (onNoApprover) noApproverLatch.set(frame, onNoApprover);
-  return gateContextStorage.run(frame, fn);
+  const pop = () => {
+    poppedFrames.add(frame);
+    frame.onceGrants.clear();
+  };
+  let result: Promise<T>;
+  try {
+    result = gateContextStorage.run(frame, fn);
+  } catch (error) {
+    pop();
+    throw error;
+  }
+  return Promise.resolve(result).finally(pop);
 }
 
 /** Capture the host denial signal for a socket callback that outlives this async frame. */
@@ -384,7 +397,7 @@ export async function gateMutatingEffect(params: {
   }
   switch (decision.choice) {
     case "allow-once":
-      if (reusableGrant) ctx.onceGrants.add(key);
+      if (reusableGrant && !poppedFrames.has(ctx)) ctx.onceGrants.add(key);
       return;
     case "allow-session":
       if (reusableGrant) descriptorGrants.set(key, { choice: "allow-session", sessionId: ctx.sessionId });

@@ -31,6 +31,7 @@ const MANIFEST: PluginManifest = {
   tools: [
     { name: "raise", description: "raise", inputSchema: { type: "object", properties: {} } },
     { name: "raise_after_return", description: "raise later", inputSchema: { type: "object", properties: {} } },
+    { name: "raise_then_replay", description: "raise now and again later", inputSchema: { type: "object", properties: {} } },
     { name: "subscribe", description: "subscribe", inputSchema: { type: "object", properties: {} } },
   ],
 };
@@ -65,6 +66,16 @@ beforeAll(() => {
     raise_after_return: async () => {
       setTimeout(() => {
         context.hostApi.raiseAlert({ kind: "reply", key: "late" }).then(
+          () => globalThis.${LATE_OUTCOMES}.push("raised"),
+          (error) => globalThis.${LATE_OUTCOMES}.push(error.name),
+        );
+      }, 0);
+      return "returned";
+    },
+    raise_then_replay: async () => {
+      await context.hostApi.raiseAlert({ kind: "reply", key: "replay" });
+      setTimeout(() => {
+        context.hostApi.raiseAlert({ kind: "reply", key: "replay" }).then(
           () => globalThis.${LATE_OUTCOMES}.push("raised"),
           (error) => globalThis.${LATE_OUTCOMES}.push(error.name),
         );
@@ -219,16 +230,17 @@ describe("an out-of-process tool's hostApi call runs in its host invocation", ()
     }
   });
 
-  it("keeps a headless invocation's deny for a call made after the tool returned", async () => {
+  it.each<[string, Parameters<typeof runWithEffectGateContext>[0]]>([
+    ["headless", { headless: true, approvalSurface: "unavailable", toolName: "raise_after_return" }],
+    ["foreground", { headless: false, approvalSurface: "interactive", toolName: "raise_after_return", sessionId: "session-2" }],
+  ])("refuses a %s call's effect made after the tool returned", async (_label, invocation) => {
     const probe = await openProbe();
     try {
-      await expect(runWithEffectGateContext(
-        { headless: true, approvalSurface: "unavailable", toolName: "raise_after_return" },
-        async () => await probe.session.instance.handlers.raise_after_return!(),
-      )).resolves.toBe("returned");
+      await expect(runWithEffectGateContext(invocation, async () => await probe.session.instance.handlers.raise_after_return!()))
+        .resolves.toBe("returned");
       await vi.waitFor(() => expect(lateOutcomes()).toHaveLength(1));
       // A settled invocation token must preserve refusal of late work rather than reopen authority.
-      expect(lateOutcomes()).toEqual(["EffectBoundaryDeniedError"]);
+      expect(lateOutcomes()).toEqual(["HostApiBoundaryError"]);
       expect(probe.requestAndWait).not.toHaveBeenCalled();
       expect(probe.raised).toEqual([]);
     } finally {
@@ -236,22 +248,17 @@ describe("an out-of-process tool's hostApi call runs in its host invocation", ()
     }
   });
 
-  it("asks the user for a foreground call made after the tool returned, attributed to that tool", async () => {
+  it("refuses to replay an allow-once approval after its call settled", async () => {
     const probe = await openProbe();
     try {
       await expect(runWithEffectGateContext(
-        { headless: false, approvalSurface: "interactive", toolName: "raise_after_return", sessionId: "session-2" },
-        async () => await probe.session.instance.handlers.raise_after_return!(),
+        { headless: false, approvalSurface: "interactive", toolName: "raise_then_replay", sessionId: "session-4" },
+        async () => await probe.session.instance.handlers.raise_then_replay!(),
       )).resolves.toBe("returned");
       await vi.waitFor(() => expect(lateOutcomes()).toHaveLength(1));
-      expect(lateOutcomes()).toEqual(["raised"]);
+      expect(lateOutcomes()).toEqual(["HostApiBoundaryError"]);
       expect(probe.requestAndWait).toHaveBeenCalledTimes(1);
-      expect(probe.requestAndWait.mock.calls[0]![0]).toMatchObject({
-        toolName: "raise_after_return",
-        sessionId: "session-2",
-        approvalScope: expect.stringMatching(/^[a-f0-9]{64}$/u),
-      });
-      expect(probe.raised).toEqual([{ key: "late", toolName: "raise_after_return" }]);
+      expect(probe.raised).toEqual([{ key: "replay", toolName: "raise_then_replay" }]);
     } finally {
       await probe.session.teardown("case over");
     }

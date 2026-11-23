@@ -13,6 +13,7 @@ import {
   currentEffectGateContext,
   EffectBoundaryDeniedError,
   GATED_EFFECT_PATHS,
+  pathReadEffectPaths,
   runWithEffectGateContext,
 } from "../../permissions/effect-enforcement.js";
 import { ManifestIntegrityError } from "../../permissions/manifest-integrity.js";
@@ -95,6 +96,13 @@ import {
 
 const log = createLogger("host-api-dispatcher");
 const MISSING_INVOCATION_TOKEN = "missing-invocation-token";
+const SETTLED_INVOCATION_TOKEN = "settled-invocation-token";
+const INVOCATION_REFUSALS: ReadonlySet<unknown> = new Set([MISSING_INVOCATION_TOKEN, SETTLED_INVOCATION_TOKEN]);
+
+/** Paths whose host implementation authorizes against the invocation's effect-gate frame. */
+function readsEffectFrame(path: HostApiPath): boolean {
+  return path === "hostFetch" || GATED_EFFECT_PATHS.has(path) || pathReadEffectPaths.has(path);
+}
 
 export type InvocationContextRunner = <R>(fn: () => R) => R;
 
@@ -1346,7 +1354,7 @@ export interface HostApiDispatcherOptions {
 
 interface HostInvocationTable {
   /** Resolve both live and retained invocation contexts; missing or evicted tokens refuse without weaker gating. */
-  resolve(token: string): InvocationContextRunner | undefined;
+  resolve(token: string): { readonly run: InvocationContextRunner; readonly live: boolean } | undefined;
   toolCallsInFlight(): number;
 }
 
@@ -1464,16 +1472,23 @@ export class HostApiDispatcher {
     });
   }
 
-  /** A named invocation must resolve or the request refuses. */
+  /** A named invocation must resolve; a gated effect also needs that call to be live. */
   private runInInvocation<R>(path: HostApiPath, token: string, invoke: () => R): R {
-    const inInvocation = this.options.invocations?.resolve(token);
-    if (inInvocation === undefined) {
+    const invocation = this.options.invocations?.resolve(token);
+    if (invocation === undefined) {
       throw new HostApiBoundaryError(
         "argument-marshalling-rejected",
         `[host-api-dispatcher] '${path}' names an invocation this connection does not hold`,
       );
     }
-    return inInvocation(invoke);
+    if (!invocation.live && readsEffectFrame(path)) {
+      throw new HostApiBoundaryError(
+        "argument-marshalling-rejected",
+        `[host-api-dispatcher] '${path}' names a tool call that has already settled`,
+        { reason: SETTLED_INVOCATION_TOKEN },
+      );
+    }
+    return invocation.run(invoke);
   }
 
   /** Accept only declared child notification kinds; dispatch release, cancellation and logs through their owners. */
@@ -1524,9 +1539,8 @@ export class HostApiDispatcher {
 
   private errorReply(id: JsonRpcRequestId, error: unknown, path?: HostApiPath): HostApiReply {
     const classified = classifyHostApiError(error);
-    const reason = error instanceof HostApiBoundaryError && error.detail?.reason === MISSING_INVOCATION_TOKEN
-      ? MISSING_INVOCATION_TOKEN
-      : undefined;
+    const refusal = error instanceof HostApiBoundaryError ? error.detail?.reason : undefined;
+    const reason = INVOCATION_REFUSALS.has(refusal) ? refusal as HostApiBudgetAudit["reason"] : undefined;
     this.budgets.deny(path ?? "<unknown>", classified.code,
       error instanceof HostApiRateLimitError ? error.bucket : undefined, reason);
     return { jsonrpc: "2.0", id, error: toHostApiRpcError(classified) };

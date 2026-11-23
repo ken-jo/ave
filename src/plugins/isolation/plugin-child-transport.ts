@@ -148,7 +148,12 @@ export class PluginChildTransport {
       ...options,
       isActive: () => this.closedReason === undefined && options.isActive(),
       invocations: {
-        resolve: (token) => this.liveInvocations.get(token) ?? this.settledInvocations.get(token),
+        resolve: (token) => {
+          const live = this.liveInvocations.get(token);
+          if (live !== undefined) return { run: live, live: true };
+          const settled = this.settledInvocations.get(token);
+          return settled === undefined ? undefined : { run: settled, live: false };
+        },
         toolCallsInFlight: () => this.liveInvocations.size,
       },
       notifications: {

@@ -1,6 +1,7 @@
 // Actual effects retain descriptor scope, common policy ordering and effect-before-execution enforcement.
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { randomUUID } from "node:crypto";
+import { AsyncResource } from "node:async_hooks";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PermissionManager, type ReviewerDispatchResult } from "../permission-manager.js";
@@ -318,6 +319,21 @@ describe("enforceMutatingEffects — dedup (one grant ends repeats, never widene
     );
     expect(requests).toHaveLength(1);
     expect(log).toEqual(["write", "write"]);
+  });
+
+  it("allow-once ends when its invocation returns, including for work the invocation left running", async () => {
+    const log: string[] = [];
+    const { gate, requests } = makeGate("allow-once");
+    const api = enforceMutatingEffects(makeApi(log), deps(gate));
+    let late!: () => Promise<void>;
+    await runWithEffectGateContext({ headless: false, toolName: "t" }, async () => {
+      await api.storage.write("a.txt", "1");
+      late = AsyncResource.bind(() => api.storage.write("a.txt", "1"));
+    });
+    await late();
+    await late();
+    expect(requests).toHaveLength(3);
+    expect(log).toEqual(["write", "write", "write"]);
   });
 
   it("a DIFFERENT target re-prompts — the grant is not widened beyond its descriptor", async () => {

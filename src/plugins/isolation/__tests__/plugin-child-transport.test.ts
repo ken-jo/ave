@@ -339,6 +339,10 @@ function invocationRig(options: { pluginId?: string; teardown?: () => void; term
           seen.push(marker.getStore());
           return { status: "raised", alertId: "alert" } as never;
         }),
+        hasRoutineBySource: defineHostApiPath("hasRoutineBySource", async () => {
+          seen.push(marker.getStore());
+          return false as never;
+        }),
         "config.onChange": defineHostApiPath("config.onChange", async (_call, scope) => {
           scope.adopt("events", () => options.teardown?.());
           return { handleId: "events" };
@@ -386,6 +390,16 @@ function tokenOf(frame: Frame): string {
   return ((frame.params as Record<string, unknown>)._meta as Record<string, string>)[INVOCATION_META]!;
 }
 
+/** An ungated reverse request; it records the context it ran in. */
+async function probeFromChild(rig: InvocationRig, id: string, token: string): Promise<Frame> {
+  rig.deliver({
+    jsonrpc: "2.0", id, method: hostApiMethodOf("hasRoutineBySource"),
+    params: { source: id, _meta: { [INVOCATION_META]: token } },
+  });
+  await settle();
+  return rig.sent.find((frame) => frame.id === id)!;
+}
+
 async function raiseAlertFromChild(rig: InvocationRig, id: string, token?: string): Promise<Frame> {
   rig.deliver({
     jsonrpc: "2.0",
@@ -402,14 +416,22 @@ async function raiseAlertFromChild(rig: InvocationRig, id: string, token?: strin
 }
 
 describe("a tools/call's invocation, as the child's hostApi requests reach it", () => {
-  it("still runs a request in its call's context after the call has settled", async () => {
+  it("runs an ungated request in its settled call's context and refuses a gated one", async () => {
     const rig = invocationRig();
     const { frames, replies } = await callTools(rig, 1);
     rig.deliver({ jsonrpc: "2.0", id: frames[0]!.id as string, result: { content: [] } });
     await replies[0];
-    const reply = await raiseAlertFromChild(rig, "late", tokenOf(frames[0]!));
-    expect(reply).toMatchObject({ result: { status: "raised" } });
+    await expect(probeFromChild(rig, "late-read", tokenOf(frames[0]!))).resolves.toMatchObject({ result: false });
+    const write = await raiseAlertFromChild(rig, "late", tokenOf(frames[0]!));
+    expect(write.error).toMatchObject({ data: { code: "argument-marshalling-rejected" } });
+    rig.deliver({
+      jsonrpc: "2.0", id: "late-fetch", method: hostApiMethodOf("hostFetch"),
+      params: { input: "https://example.test", _meta: { [INVOCATION_META]: tokenOf(frames[0]!) } },
+    });
+    await settle();
+    expect(rig.sent.find((frame) => frame.id === "late-fetch")?.error).toMatchObject({ data: { code: "argument-marshalling-rejected" } });
     expect(rig.seen).toEqual(["call-0"]);
+    expect(rig.audit).toHaveBeenCalledWith(expect.objectContaining({ method: "raiseAlert", reason: "settled-invocation-token" }));
     rig.transport.close("case over");
   });
 
@@ -468,10 +490,10 @@ describe("a tools/call's invocation, as the child's hostApi requests reach it", 
       rig.deliver({ jsonrpc: "2.0", id: call.frames[0]!.id as string, result: { content: [] } });
       await call.replies[0];
     }
-    const evicted = await raiseAlertFromChild(rig, "evicted", tokenOf(frames[0]!));
+    const evicted = await probeFromChild(rig, "evicted", tokenOf(frames[0]!));
     expect(evicted.error).toMatchObject({ data: { code: "argument-marshalling-rejected" } });
-    const kept = await raiseAlertFromChild(rig, "kept", tokenOf(frames[1]!));
-    expect(kept).toMatchObject({ result: { status: "raised" } });
+    const kept = await probeFromChild(rig, "kept", tokenOf(frames[1]!));
+    expect(kept).toMatchObject({ result: false });
     expect(rig.seen).toEqual(["call-1"]);
     rig.transport.close("case over");
   });
