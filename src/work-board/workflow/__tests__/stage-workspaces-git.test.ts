@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createHostGit, type HostGit } from "../host-git.js";
@@ -274,26 +274,51 @@ describe("git stage workspaces", () => {
     expect(readdirSync(marks)).toEqual([]);
   });
 
-  it("a filter that only a linked worktree's configuration requires gets no git workspace", async () => {
-    const included = join(repo, ".git", "linked.cfg");
-    for (const [key, value] of [["clean", "cat"], ["smudge", "cat"], ["required", "true"]]) userGit(repo, "config", "-f", included, `filter.need.${key}`, value);
-    userGit(repo, "config", "includeIf.gitdir:**/worktrees/**.path", "linked.cfg");
+  /** The ways git reads a filter's `required` as true, as the line of a configuration file. */
+  const requiredAs = [["a word", "required = true"], ["no value", "required"], ["a number", "required = 2"]] as const;
+  const needFilter = (required: string): string => `[filter "need"]\n\tclean = cat\n\tsmudge = cat\n\t${required}\n`;
+
+  async function expectNoGitWorkspace(): Promise<void> {
     const handle = start();
     expect(await handle.provider.open(handle.run, repo)).toEqual({ ok: false, code: "git-unavailable" });
     expect(userGit(repo, "branch", "--list", "ave/*")).toBe("");
     expect(userGit(repo, "worktree", "list", "--porcelain").match(/^worktree /gmu)).toHaveLength(1);
+  }
+
+  it.each(requiredAs)("a filter that only a linked worktree's configuration requires, by %s, gets no git workspace", async (_form, required) => {
+    writeFileSync(join(repo, ".git", "linked.cfg"), needFilter(required));
+    userGit(repo, "config", "includeIf.gitdir:**/worktrees/**.path", "linked.cfg");
+    write(repo, ".gitattributes", "*.txt filter=need\n");
+    commitAll("filtered in a linked worktree");
+    await expectNoGitWorkspace();
   });
 
-  it("a repository that requires a filter driver gets no git workspace", async () => {
-    userGit(repo, "config", "filter.need.clean", "cat");
-    userGit(repo, "config", "filter.need.smudge", "cat");
-    userGit(repo, "config", "filter.need.required", "true");
+  it.each(requiredAs)("a repository that requires a filter driver, by %s, gets no git workspace", async (_form, required) => {
+    appendFileSync(join(repo, ".git", "config"), needFilter(required));
     write(repo, ".gitattributes", "*.txt filter=need\n");
     commitAll("required filter");
+    await expectNoGitWorkspace();
+  });
+
+  it("a filter whose required setting is empty is not required and does not run; a setting git reads as no boolean gets no git workspace", async () => {
+    const mark = join(base, "smudged");
+    writeFileSync(join(base, "smudge.sh"), `echo ran >> '${mark.replace(/\\/g, "/")}'\ncat\n`);
+    appendFileSync(join(repo, ".git", "config"), `[filter "need"]\n\tclean = cat\n\tsmudge = sh '${join(base, "smudge.sh").replace(/\\/g, "/")}'\n\trequired =\n`);
+    write(repo, ".gitattributes", "*.txt filter=need\n");
+    commitAll("a filter that is not required");
+    // Control: the user's own git runs it.
+    rmSync(join(repo, "a.txt"));
+    userGit(repo, "checkout", "--", "a.txt");
+    expect(existsSync(mark)).toBe(true);
+    rmSync(mark);
     const handle = start();
-    expect(await handle.provider.open(handle.run, repo)).toEqual({ ok: false, code: "git-unavailable" });
-    expect(userGit(repo, "branch", "--list", "ave/*")).toBe("");
-    expect(userGit(repo, "worktree", "list", "--porcelain").match(/^worktree /gmu)).toHaveLength(1);
+    expect(await handle.provider.open(handle.run, repo)).toMatchObject({ ok: true, workspace: { kind: "git" } });
+    expect(readFileSync(join(await stageRoot(handle, "s1"), "a.txt"), "utf8")).toBe("one\n");
+    expect(existsSync(mark)).toBe(false);
+    await handle.provider.release(handle.run, "all");
+    // No tracked file uses this one: what cannot be read as required or not is refused all the same.
+    appendFileSync(join(repo, ".git", "config"), '[filter "unclear"]\n\trequired = maybe\n');
+    await expectNoGitWorkspace();
   });
 
   it("a tracked secret file is absent from the stage folder and is not committed as a deletion", async () => {

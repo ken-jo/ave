@@ -1,12 +1,13 @@
-import type { ChildProcess, spawn as spawnType } from "node:child_process";
+import { type ChildProcess, execFileSync, type spawn as spawnType } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { holdSandboxGitWrites } from "../../../shared/host-git.js";
 import { createHostGit, HostGitError } from "../host-git.js";
+import { removeTree } from "./stage-fixtures.js";
 
 const spawned = vi.hoisted(() => ({ fake: undefined as (() => unknown) | undefined, calls: 0 }));
 vi.mock("node:child_process", async (original) => {
@@ -39,7 +40,19 @@ beforeEach(() => {
   spawned.fake = undefined;
   spawned.calls = 0;
 });
-afterEach(() => { spawned.fake = undefined; });
+afterEach(() => {
+  spawned.fake = undefined;
+  removeTree(base);
+});
+
+/** A repository under `base` whose own configuration ends with `text`. */
+function repositoryWith(text: string): string {
+  const repo = join(base, "repo");
+  mkdirSync(repo);
+  execFileSync("git", ["init", "-q"], { cwd: repo, env, stdio: "pipe" });
+  appendFileSync(join(repo, ".git", "config"), text);
+  return repo;
+}
 
 describe("host git", () => {
   it("a git process that does not finish in time is killed and the call rejects as a timeout", async () => {
@@ -121,6 +134,16 @@ describe("host git", () => {
     // Only what the call itself carries is left.
     expect(isolated.filter(line => !line.startsWith("command line:"))).toEqual([]);
     expect(isolated.filter(line => line.includes("fixture."))).toEqual([]);
+  });
+
+  it("a filter is required where git reads its setting as true: with no value or a number, not with an empty value or a later false; a value that is no boolean refuses the call", async () => {
+    const repo = repositoryWith('[filter "bare"]\n\trequired\n[filter "number"]\n\trequired = 2\n[filter "empty"]\n\trequired =\n[filter "later"]\n\trequired = true\n\trequired = false\n[filter "word"]\n\trequired = on\n');
+    const git = createHostGit({ env });
+    const drivers = await git.drivers(repo);
+    expect([...drivers.requiredFilters].sort()).toEqual(["bare", "number", "word"]);
+    for (const name of ["bare", "number", "empty", "later", "word"]) expect(drivers.config, name).toContain(`filter.${name}.required=false`);
+    appendFileSync(join(repo, ".git", "config"), '[filter "unclear"]\n\trequired = maybe\n');
+    expect(await reasonOf(git.drivers(repo))).toBe("unavailable");
   });
 
   it("a workspace a sandboxed command holds is refused before git starts, and runs again once released", async () => {

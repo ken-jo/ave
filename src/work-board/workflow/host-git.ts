@@ -105,25 +105,27 @@ export function createHostGit(options: { env?: NodeJS.ProcessEnv; timeoutMs?: nu
   }
 
   async function drivers(cwd: string, worktree?: HostGitCall["worktree"]): Promise<{ config: string[]; requiredFilters: string[] }> {
-    const listed = await run(cwd, ["config", "--null", "--get-regexp", "^(filter|merge)\\..*\\.(clean|smudge|process|required|driver)$"], worktree === undefined ? {} : { worktree });
-    // Exit 1 with no output: nothing is configured.
-    if (listed.code !== 0 && !(listed.code === 1 && listed.stdout === "")) throw new HostGitError("unavailable", "git configuration could not be read");
+    const listed = async (...args: string[]): Promise<[key: string, value: string][]> => {
+      const read = await run(cwd, ["config", "--null", ...args], worktree === undefined ? {} : { worktree });
+      // Exit 1 with no output: nothing is configured. Any other failure is a configuration git itself does not take.
+      if (read.code !== 0 && !(read.code === 1 && read.stdout === "")) throw new HostGitError("unavailable", "git configuration could not be read");
+      return read.stdout.split("\0").filter(entry => entry !== "").map((entry) => { const [key = "", value = ""] = entry.split("\n", 2); return [key, value]; });
+    };
+    const nameOf = (key: string): string => key.slice(key.indexOf(".") + 1, key.lastIndexOf("."));
     const filters = new Set<string>();
     const merges = new Set<string>();
-    const requiredFilters = new Set<string>();
-    for (const entry of listed.stdout.split("\0")) {
-      if (entry === "") continue;
-      const [key = "", value = ""] = entry.split("\n", 2);
-      const kind = key.slice(0, key.indexOf("."));
-      const name = key.slice(kind.length + 1, key.lastIndexOf("."));
-      const field = key.slice(key.lastIndexOf(".") + 1).toLowerCase();
+    for (const [key] of await listed("--get-regexp", "^(filter|merge)\\..*\\.(clean|smudge|process|required|driver)$")) {
+      const name = nameOf(key);
       // A name `-c` cannot carry would stay active.
       if (name === "" || /[=\n\r\0]/u.test(name)) throw new HostGitError("driver-name", "a configured driver name cannot be switched off");
-      if (kind.toLowerCase() === "merge") merges.add(name);
-      else {
-        filters.add(name);
-        if (field === "required" && /^(true|yes|on|1)$/iu.test(value.trim())) requiredFilters.add(name);
-      }
+      (key.slice(0, key.indexOf(".")).toLowerCase() === "merge" ? merges : filters).add(name);
+    }
+    // Asked of git as the boolean it reads there: a key with no value and a number other than 0 are true, an empty value is false, the
+    // last one given decides, and a value that is neither fails the call.
+    const requiredFilters = new Set<string>();
+    for (const [key, value] of await listed("--type=bool", "--get-regexp", "^filter\\..*\\.required$")) {
+      if (value === "true") requiredFilters.add(nameOf(key));
+      else requiredFilters.delete(nameOf(key));
     }
     return {
       config: [
