@@ -67,7 +67,7 @@ describe("native page presentation", () => {
       await act(async () => {});
       const slot = slotBox();
       await act(async () => { placeWebSurfaces(); });
-      expect(transcript.style.clipPath).toBe('path(evenodd, "M0 0H1000V600H0ZM10 20H650V500H10Z")');
+      expect(transcript.style.clipPath).toBe('path(evenodd, "M 0 0 H 1000 V 600 H 0 Z M 10 20 H 650 V 500 H 10 Z")');
       expect(foreignChat.style.clipPath).toBe("");
       expect(composer.style.clipPath).toBe("");
       expect(decision.style.clipPath).toBe("");
