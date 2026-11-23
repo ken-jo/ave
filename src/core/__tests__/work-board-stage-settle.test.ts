@@ -27,13 +27,7 @@ async function withHarness(run: (h: Harness) => Promise<void>, opts: (h: () => H
 const options = opts(() => { if (!made.h) throw new Error("harness not ready"); return made.h; });
   const h = await stageRunHarness({ ...options, observeRunWork: true });
   made.h = h;
-  try {
-    await run(h);
-  } finally {
-    for (const child of h.children) child.finish();
-    await h.drainAllRunWork();
-    await h.cleanup();
-  }
+  await h.runThenEnd(() => run(h));
 }
 
 const isCancelledOrError = (event: WorkBoardRunEvent): boolean => event.phase === "cancelled" || event.phase === "error";

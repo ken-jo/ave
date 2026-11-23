@@ -1710,3 +1710,48 @@ it("untilWorkspaceCalls wakes on the calls of a replaced workspace part as on th
     await h.cleanup();
   }
 });
+
+/** A join whose integration never returns holds the run's observed work; `armDrain` hands over the drain bound's expiry once armed. */
+async function heldJoinHarness() {
+  const integrating = deferred<void>();
+  const h = await stageRunHarness({ observeRunWork: true, integrate: () => { integrating.resolve(); return new Promise(() => undefined); } });
+  const armed = deferred<(reason?: string) => void>();
+  const armDrain = (expire: (reason?: string) => void) => { armed.resolve(expire); return () => undefined; };
+  const holdJoin = async () => {
+    const version = await h.confirm([autoStageOf("a")]);
+    const id = await h.addItem(version);
+    void h.start(id, h.local(version));
+    (await h.untilLive(1, id))[0].finish();
+    await integrating.promise;
+  };
+  /** Waits for the drain to arm its bound, shows the drain is held, then expires the bound. */
+  const expireHeldDrain = async () => {
+    const expire = await armed.promise;
+    const drained = vi.fn();
+    void h.drainAllRunWork().then(drained);
+    await setImmediate();
+    expect(drained).not.toHaveBeenCalled();
+    expire();
+  };
+  return { h, armDrain, holdJoin, expireHeldDrain };
+}
+const failureOf = (work: Promise<unknown>) => work.then(() => "resolved", (error: unknown) => error instanceof Error ? error.message : String(error));
+
+it("runThenEnd rethrows the body's own failure when run work is still held, not the drain's", async () => {
+  const { h, armDrain, holdJoin, expireHeldDrain } = await heldJoinHarness();
+  const ended = failureOf(h.runThenEnd(async () => {
+    await holdJoin();
+    throw new Error("the body's own failure");
+  }, { bound: armDrain }));
+  await expireHeldDrain();
+  expect(await ended).toBe("the body's own failure");
+  expect(h.pendingWaits()).toBe(0);
+});
+
+it("runThenEnd fails naming the drain once held run work outlasts its bound after a passing body, and still cleans up", async () => {
+  const { h, armDrain, holdJoin, expireHeldDrain } = await heldJoinHarness();
+  const ended = failureOf(h.runThenEnd(holdJoin, { bound: armDrain }));
+  await expireHeldDrain();
+  expect(await ended).toBe("timed out waiting for the run work to drain");
+  expect(await failureOf(h.untilRunFile(() => undefined, "a wait after cleanup"))).toBe("the harness was cleaned up before waiting for a wait after cleanup");
+});

@@ -14,7 +14,7 @@ import { mintHostDecisionProof } from "../../../main/workflow-template-decision.
 import { createWorkBoardEngine, type WorkBoardEngineDeps } from "../../../core/work-board-engine.js";
 import { deferred } from "../../../__tests__/support/deferred.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
-import { boundWait, type Expire, untilAsserted } from "../../../__tests__/support/signal-wait.js";
+import { type Bound, boundWait, type Expire, untilAsserted, within } from "../../../__tests__/support/signal-wait.js";
 import { boardParentToolRegistry } from "../../__tests__/board-test-fixtures.js";
 import { authoriseRunSource } from "../run-authority.js";
 import { boardRunState, type RunRecord } from "../run-state.js";
@@ -666,23 +666,40 @@ export async function stageRunHarness(opts: {
     return engine.decideStageGate(itemId, { runId: current.runId ?? "", stageId, attempt: run.attempt, resultHash: run.resultHash ?? "", decision, ...(note !== undefined ? { note } : {}) });
   }
   const start = (itemId: number, source: RunAuthoritySource) => engine.runItem(itemId, { templateSource: source });
+  const drainRunWork = async (options?: { includeLaunches?: boolean }) => { await runWorkObservers.at(-1)?.drain(options); };
+  const drainAllRunWork = async () => { await Promise.all(runWorkObservers.map(runWork => runWork.drain())); };
+  function cleanup(): Promise<void> {
+    closed = true;
+    for (const wake of itemWaits) wake();
+    for (const stop of stopRunSources.splice(0)) stop();
+    pulse("harness cleaned up");
+    const ended = progressEnded();
+    for (const changed of progressChanges) changed(ended);
+    for (const end of [...assertionWaits]) end("the harness was cleaned up");
+    return cleanupTmpDir(dir);
+  }
+  /** Runs `body`, then ends the harness: finishes every child, drains observed run work under the signal-wait bound (every engine's, only
+   * the latest engine's where a test abandons an earlier one mid-write, or none), and cleans up. The first failure is rethrown, so a drain
+   * that cannot finish never hides why the body failed. */
+  async function runThenEnd(body: () => Promise<void>, { drain = "all", bound }: { drain?: "all" | "latest" | "none"; bound?: Bound } = {}): Promise<void> {
+    let failure: { error: unknown } | undefined;
+    const step = async (work: () => Promise<void>) => {
+      try { await work(); } catch (error) { failure ??= { error }; }
+    };
+    await step(body);
+    await step(async () => {
+      for (const child of children) child.finish();
+      if (drain !== "none") await within(drain === "all" ? drainAllRunWork() : drainRunWork(), "the run work to drain", bound);
+    });
+    await step(cleanup);
+    if (failure) throw failure.error;
+  }
 
   return {
     dir, boardPath, get board() { return board; }, templates, get engine() { return engine; }, makeEngine, editRow, runOf, events, children, interrupts, audits, unauthorised, workspaceCalls, sweeps,
     confirm: confirmTemplate, pinOf, addItem, local, attach, detach, item, stageRun, until, untilStage, untilLive, untilSpawned, settleEvent, waitForLive, waitForProgress, untilRunFile, untilObserved, untilWorkspaceCalls, live, decide, statusOf, start,
-    drainRunWork: async (options?: { includeLaunches?: boolean }) => { await runWorkObservers.at(-1)?.drain(options); },
-    drainAllRunWork: async () => { await Promise.all(runWorkObservers.map(runWork => runWork.drain())); },
+    drainRunWork, drainAllRunWork, runThenEnd, cleanup,
     /** Child, progress, item and assertion waits still pending. */
     pendingWaits: () => childChanges.size + progressChanges.size + itemWaits.size + assertionWaits.size,
-    cleanup: () => {
-      closed = true;
-      for (const wake of itemWaits) wake();
-      for (const stop of stopRunSources.splice(0)) stop();
-      pulse("harness cleaned up");
-      const ended = progressEnded();
-      for (const changed of progressChanges) changed(ended);
-      for (const end of [...assertionWaits]) end("the harness was cleaned up");
-      return cleanupTmpDir(dir);
-    },
   };
 }
