@@ -40,8 +40,14 @@ export function workflowEngineExtensions(store: WorkBoardStore, attachments: Pic
   };
   // The runs whose schedule's approved project is still being read.
   const unread = new Set<string>();
-  // A row can also go when none of its runs has a record left to remove, so both a removed record and a removed row ask.
+  // A row can also go when none of its runs has a record left to remove, so both a removed record and a removed row ask. One discard
+  // runs at a time, and whatever asks meanwhile is answered by one more after it: a discard that began before a run's root was noted
+  // would otherwise come to the run after a later one had used that root, and warn of a run with none.
+  let running = false;
+  let asked = false;
   const discard = (): void => {
+    if (running) { asked = true; return; }
+    running = true;
     // Only what this discard was given is used up by it: a root noted while it ran waits for the next.
     const given = new Map(projects);
     // A discard reads the stores after it was given its roots, and can so come to a run whose record went since. Such a run's root
@@ -49,7 +55,13 @@ export function workflowEngineExtensions(store: WorkBoardStore, attachments: Pic
     const waits = (runId: string): boolean => unread.has(runId) || (projects.has(runId) && projects.get(runId) !== given.get(runId));
     void workspace.discard(given, waits)
       .then((taken) => { for (const runId of taken) if (projects.get(runId) === given.get(runId)) projects.delete(runId); })
-      .catch((error: unknown) => log.warn("[workflow] a removed run's workspace was not discarded: %s", (error as Error).message));
+      .catch((error: unknown) => log.warn("[workflow] a removed run's workspace was not discarded: %s", (error as Error).message))
+      .finally(() => {
+        running = false;
+        if (!asked) return;
+        asked = false;
+        ask();
+      });
   };
   // As the engine tells a run's project: the card's root for Create and run, the approved snapshot for a schedule. A card's root is
   // noted before anything is awaited, so a discard its row's removal asks for at once already has it. A schedule's is read first:

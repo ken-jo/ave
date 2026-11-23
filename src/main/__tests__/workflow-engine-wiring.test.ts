@@ -5,10 +5,11 @@ import { expect, it, type MockInstance, vi } from "vitest";
 import { aveHome } from "../../shared/ave-home.js";
 import { workflowEngineExtensions } from "../../boot/steps/workflow-engine-extensions.js";
 import type { RemovedRun } from "../workflow-run-store.js";
-import { stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
+import { setPath, stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
 import type { StageWorkspaceProvider } from "../../work-board/workflow/stage-workspace.js";
 import { gitFixture } from "../../work-board/workflow/__tests__/stage-git-fixture.js";
 import { stageRunHarness } from "../../work-board/workflow/__tests__/stage-run-harness.js";
+import { RUN_FILE } from "../../work-board/workflow/workspace-layout.js";
 
 /** The project root a discard was given for each run. */
 const rootsOf = (projects: ReadonlyMap<string, { projectRoot: string }>): Map<string, string> => new Map([...projects].map(([runId, named]) => [runId, named.projectRoot]));
@@ -69,17 +70,18 @@ it("with the production parts alone a run works in stage folders under the home 
 it("the production parts give a discard the project of each run whose record went: a card's root at once, a schedule's approved one once read", async () => {
   const given: Map<string, string>[] = [];
   const items: Map<string, number>[] = [];
-  const atOnce: { removed: readonly RemovedRun[]; projects: Map<string, string> | undefined }[] = [];
+  const atOnce: { removed: readonly RemovedRun[]; projects: () => Map<string, string> | undefined }[] = [];
   const h = await stageRunHarness({ wiring: (store, harness) => {
     const parts = workflowEngineExtensions(store, harness.templates);
     vi.spyOn(parts.workspace, "discard").mockImplementation(async (projects) => { given.push(rootsOf(projects)); items.push(new Map([...projects].map(([runId, named]) => [runId, named.itemId]))); return []; });
-    // A row's removal asks for a discard as soon as its record's has been announced.
+    // A row's removal asks for a discard as soon as its record's has been announced: the first to begin from the announcement on
+    // is the one that answers it.
     const announce = store.runs.onRunsRemoved;
     store.runs.onRunsRemoved = (removed) => {
-      announce?.(removed);
       const asked = given.length;
+      announce?.(removed);
       store.onItemRemoved?.();
-      atOnce.push({ removed, projects: given[asked] });
+      atOnce.push({ removed, projects: () => given[asked] });
     };
     return { ...parts, workspace: harness.workspace, workspaceBinding: undefined };
   } });
@@ -99,7 +101,7 @@ it("the production parts give a discard the project of each run whose record wen
     const [cardRun, scheduledRun, plainRun] = await Promise.all([card, scheduled, plain].map(async id => (await h.item(id)).runId ?? ""));
     for (const id of [card, scheduled, plain]) expect(await h.board.remove(id)).toMatchObject({ status: "deleted" });
     await vi.waitFor(() => expect(atOnce.flatMap(entry => entry.removed.map(run => run.runId)).sort()).toEqual([cardRun, scheduledRun, plainRun].sort()), { timeout: 5000 });
-    expect(atOnce.find(entry => entry.removed.some(run => run.runId === cardRun))?.projects?.get(cardRun)).toBe(A);
+    expect(atOnce.find(entry => entry.removed.some(run => run.runId === cardRun))?.projects()?.get(cardRun)).toBe(A);
     // A run with no project has none to give, and is left to the provider as one.
     await vi.waitFor(() => expect(given.at(-1)).toEqual(new Map([[cardRun, A], [scheduledRun, B]])), { timeout: 5000 });
     // Each with the item it was a run of: the two name the run's folder.
@@ -227,7 +229,8 @@ it("a discard a row's removal asks for while a schedule's approved project is st
   expect.soft(discard).not.toHaveBeenCalled();
   answer();
   await vi.waitFor(() => expect(existsSync(runRoot)).toBe(false), { timeout: 20_000 });
-  expect.soft(discard.mock.calls.map(([projects]) => projects.get(run.runId)?.projectRoot)).toEqual(discard.mock.calls.map(() => repo));
+  // The two that waited are answered by one discard, which has the root; one more follows it and finds the run gone.
+  expect.soft(discard.mock.calls[0]?.[0].get(run.runId)?.projectRoot).toBe(repo);
   expect.soft(unverified()).toEqual([]);
 }));
 
@@ -239,17 +242,39 @@ it.each([
   h.board.onItemRemoved?.();
   expect(discard).toHaveBeenCalledTimes(1);
   // The run's record goes while the first discard waits for the stores. A card's root is noted at once, and the discard that
-  // removal asks for is held at its own read; a schedule's is asked for only once its project was read.
-  const second = by === "card" ? hold() : (): void => undefined;
+  // removal asks for follows the first; a schedule's is asked for only once its project was read.
   h.board.runs.onRunsRemoved?.([removed(by)]);
   first();
   await discard.mock.results[0]?.value;
   expect.soft(existsSync(runRoot)).toBe(true);
   expect.soft(unverified()).toEqual([]);
   answer();
-  second();
   await vi.waitFor(() => expect(existsSync(runRoot)).toBe(false), { timeout: 20_000 });
   expect.soft(unverified()).toEqual([]);
+}));
+
+it("a discard that began before a run's root was noted leaves the run to the one given the root, also when that one leaves the run's folder: one warning, and the run taken in hand once", () => withGitRun(async ({ h, repo, run, runRoot, discard, removed, hold, unverified }) => {
+  // The record names a repository the open project is not in: a discard given the root leaves the run whole, with a warning.
+  const record = join(runRoot, RUN_FILE);
+  const written = readFileSync(record, "utf8");
+  setPath(record, ["repo", "gitDir"], join(dirname(repo), "elsewhere", ".git"));
+  try {
+    const first = hold();
+    h.board.onItemRemoved?.();
+    expect(discard).toHaveBeenCalledTimes(1);
+    h.board.runs.onRunsRemoved?.([removed("card")]);
+    // Whatever that removal started at once has ended, and its answer was taken in, before the first discard goes on.
+    await Promise.all(discard.mock.results.slice(1).map(result => result.value as Promise<unknown>));
+    await new Promise(resolve => setImmediate(resolve));
+    first();
+    await vi.waitFor(() => expect(discard).toHaveBeenCalledTimes(2), { timeout: 20_000 });
+    const taken = await Promise.all(discard.mock.results.map(result => result.value as Promise<readonly string[]>));
+    expect.soft(taken.flat()).toEqual([run.runId]);
+    expect.soft(unverified()).toEqual([expect.stringContaining("repo.gitDir")]);
+    expect.soft(existsSync(runRoot)).toBe(true);
+  } finally {
+    writeFileSync(record, written);
+  }
 }));
 
 interface HeldDiscard { given: Map<string, string>; answer: (taken: readonly string[]) => void; fail: (error: Error) => void }
@@ -279,8 +304,12 @@ it("a project noted while a discard is still running is kept for the next one, w
   await announce([["early", "/projects/a"]]);
   // While the first discard runs: a run it never saw, and the first run noted again under another root.
   await announce([["late", "/projects/b"], ["early", "/projects/c"]]);
-  expect(discards.map(discard => discard.given)).toEqual([new Map([["early", "/projects/a"]]), new Map([["early", "/projects/c"], ["late", "/projects/b"]])]);
+  // One discard at a time: the one that removal asked for begins when the first has ended.
+  expect(discards.map(discard => discard.given)).toEqual([new Map([["early", "/projects/a"]])]);
   discards[0]?.answer(["early", "late"]);
+  await settled();
+  expect(discards.map(discard => discard.given)).toEqual([new Map([["early", "/projects/a"]]), new Map([["early", "/projects/c"], ["late", "/projects/b"]])]);
+  discards[1]?.answer([]);
   await settled();
   await announce([["next", "/projects/d"]]);
   expect(discards[2]?.given).toEqual(new Map([["early", "/projects/c"], ["late", "/projects/b"], ["next", "/projects/d"]]));
