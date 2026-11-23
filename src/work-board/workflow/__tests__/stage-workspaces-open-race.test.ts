@@ -25,6 +25,8 @@ const between = vi.hoisted(() => ({
   home: undefined as string | undefined,
   /** The name of a held folder whose listing fails. */
   unlisted: undefined as string | undefined,
+  /** Runs right after a held folder was listed, with its path. */
+  listed: undefined as ((path: string) => void) | undefined,
 }));
 
 vi.mock("../../../shared/ave-home.js", async (original) => {
@@ -50,6 +52,7 @@ vi.mock("../owned-fs.js", async (original) => {
       if (key === "remove") return async (name: string, expect?: string) => { await target.remove(name, expect); between.removed?.(join(target.path, name)); };
       if (key === "make" && depth === 2) return (name: string) => { between.act?.(target.path); return target.make(name); };
       if (key === "list" && between.unlisted === basename(target.path)) return () => { throw Object.assign(new Error("fixture: the folder cannot be listed"), { code: "EACCES" }); };
+      if (key === "list") return () => { const names = target.list(); between.listed?.(target.path); return names; };
       const value = Reflect.get(target, key) as unknown;
       return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
     },
@@ -95,6 +98,7 @@ afterEach(() => {
   between.share = undefined;
   between.home = undefined;
   between.unlisted = undefined;
+  between.listed = undefined;
   between.foreign.length = 0;
   between.asked.length = 0;
   rmSync(base, { recursive: true, force: true, maxRetries: 3 });
@@ -138,39 +142,75 @@ it("an open whose worktrees folder is swapped for another while the run folder i
   }
 });
 
-it("a plain file under worktrees holds no run and keeps no root; a link there, or a worktrees that cannot be listed, may hold any run's", async () => {
+/** A run whose record went and that has no folder: what was held for it is told as used. */
+const gone = "run-gone";
+const givenGone = (): Map<string, { projectRoot: string; itemId: number }> => new Map([[gone, { projectRoot: join(base, "project"), itemId: 7 }]]);
+
+it.each([
+  ["a project's folder", (worktrees: string) => join(worktrees, "fixture-file")],
+  ["the run's own folder", (worktrees: string) => join(worktrees, "fixture-project", runSlug(7, gone))],
+])("a plain file where %s would be holds no run and keeps no root", async (_where, at) => {
   const provider = createStageWorkspaceProvider({ git: hostGit(), removable: async () => () => false });
   const worktrees = join(aveHome(), "worktrees");
   const project = join(worktrees, "fixture-project");
   mkdirSync(project, { recursive: true });
   try {
-    // A run whose record went and that has no folder: what was held for it is told as used.
-    const gone = "run-gone";
-    const given = new Map([[gone, { projectRoot: join(base, "project"), itemId: 7 }]]);
-    expect(await provider.discard(given)).toEqual([gone]);
-    // Where a project's folder would be, and where the run's own would be.
-    for (const file of [join(worktrees, "fixture-file"), join(project, runSlug(7, gone))]) {
-      writeFileSync(file, "");
-      try {
-        expect(await provider.discard(given), file).toEqual([gone]);
-      } finally {
-        rmSync(file);
-      }
+    expect(await provider.discard(givenGone())).toEqual([gone]);
+    writeFileSync(at(worktrees), "");
+    try {
+      expect(await provider.discard(givenGone())).toEqual([gone]);
+    } finally {
+      rmSync(at(worktrees));
     }
+  } finally {
+    rmSync(project, { recursive: true });
+  }
+});
+
+it("a link under worktrees, or a worktrees that cannot be listed, may hold any run's: every root is kept", async () => {
+  const provider = createStageWorkspaceProvider({ git: hostGit(), removable: async () => () => false });
+  const worktrees = join(aveHome(), "worktrees");
+  const project = join(worktrees, "fixture-project");
+  mkdirSync(project, { recursive: true });
+  try {
     const link = join(worktrees, "fixture-link");
     mkdirSync(join(base, "outside"));
     symlinkSync(join(base, "outside"), link, "junction");
     try {
-      expect(await provider.discard(given)).toEqual([]);
+      expect(await provider.discard(givenGone())).toEqual([]);
     } finally {
       removeLink(link, aveHome());
     }
     between.unlisted = "worktrees";
-    expect(await provider.discard(given)).toEqual([]);
+    expect(await provider.discard(givenGone())).toEqual([]);
     between.unlisted = undefined;
-    expect(await provider.discard(given)).toEqual([gone]);
+    expect(await provider.discard(givenGone())).toEqual([gone]);
   } finally {
     rmSync(project, { recursive: true });
+  }
+});
+
+it.each(["worktrees", "fixture-project"])("a %s that is no longer the folder that was listed holds what is not known: a file where the folder that took its place has one keeps the root", async (level) => {
+  const home = join(base, "home");
+  const worktrees = join(home, "worktrees");
+  const project = join(worktrees, "fixture-project");
+  // A folder with the run's name and no record: the run's own, for all that can be read of it.
+  mkdirSync(join(project, runSlug(7, gone)), { recursive: true });
+  const before = process.env.AVE_HOME;
+  process.env.AVE_HOME = home;
+  let swaps = 0;
+  between.listed = (path) => {
+    if (basename(path) !== level || swaps++ > 0) return;
+    renameSync(path, join(base, "away"));
+    mkdirSync(path);
+    // Where the listed folder held a folder, the one that took its name holds a file.
+    writeFileSync(join(path, level === "worktrees" ? "fixture-project" : runSlug(7, gone)), "");
+  };
+  try {
+    expect(await createStageWorkspaceProvider({ git: hostGit(), removable: async () => () => false }).discard(givenGone())).toEqual([]);
+    expect(swaps).toBe(1);
+  } finally {
+    if (before === undefined) delete process.env.AVE_HOME; else process.env.AVE_HOME = before;
   }
 });
 

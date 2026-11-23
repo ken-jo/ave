@@ -8,7 +8,7 @@ import type { TemplateStage } from "../../shared/workflow-template-types.js";
 import { isStageId } from "../template-graph.js";
 import { type NameReader, plainFolderIgnore, projectFoldsCase } from "./folder-ignore.js";
 import { createHostGit, type HostGit, HostGitError } from "./host-git.js";
-import { holdDir, isFileAt, type NodeId, nodeIdOf, type OwnedDir, OwnedFsError, realDirId, realWithin, type SourceRoot } from "./owned-fs.js";
+import { holdDir, type NodeId, nodeIdOf, type OwnedDir, OwnedFsError, realDirId, realWithin, type SourceRoot } from "./owned-fs.js";
 import type { JoinConflict } from "./shipped-shapes.js";
 import type { RemovedRunProject, RunRef, StageWorkspaceProvider, WORKSPACE_REFUSALS } from "./stage-workspace.js";
 import { IGNORE_PREFIX, isIgnoreFolder, JOIN_DIR, OUT_DIR, RUN_FILE, runBranch, runRootOf, runSlug, stageDirName, WORKTREES_DIR } from "./workspace-layout.js";
@@ -953,16 +953,23 @@ ${fields(side)}`;
       if (base === undefined) return { runs: found, whole, unread };
       for (const name of base.list()) {
         try {
+          // A file where a project's folder would be holds no run.
+          if (base.isFile(name)) continue;
           const project = base.existing(name);
           // Gone since it was listed: what it held is not known.
           if (project === undefined) { whole = false; continue; }
           for (const slug of project.list()) {
             let run: OwnedDir | undefined;
-            try { run = project.existing(slug); } catch { /* No real directory: told apart below. */ }
-            if (run === undefined) {
-              if (!isFileAt(join(project.path, slug))) unread.add(slug.toLowerCase());
-              continue;
+            try {
+              // So does a file where a run's folder would be.
+              if (project.isFile(slug)) continue;
+              run = project.existing(slug);
+            } catch (error) {
+              // The project's folder is no longer the one that was listed: what that one holds is not known. Any other entry that
+              // is no real directory, or cannot be read, may be the run's whose name it carries.
+              if (error instanceof OwnedFsError && error.reason === "moved") whole = false;
             }
+            if (run === undefined) { unread.add(slug.toLowerCase()); continue; }
             const runRoot = join(worktreesRoot(), name, slug);
             const file = readRunFile(runRoot, run);
             if (file !== null) { found.push({ runRoot, file, project, run }); continue; }
@@ -973,9 +980,9 @@ ${fields(side)}`;
             }
           }
         } catch {
-          // A file where a project's folder would be holds no run. Any other entry that could not be read may hold any run's, and
+          // An entry that could not be read, or one read under a `worktrees` that is no longer the one listed, may hold any run's;
           // the projects after it are read all the same.
-          if (!isFileAt(join(base.path, name))) whole = false;
+          whole = false;
         }
       }
     } catch {

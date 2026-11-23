@@ -45,16 +45,6 @@ export function realDirId(path: string): NodeId | undefined {
   }
 }
 
-/** Whether a path is known to be a file, itself and through no link: it then holds no entry. A link, a path that cannot be read and
- * one with nothing at it are not known to be. */
-export function isFileAt(path: string): boolean {
-  try {
-    return stats(path)?.isFile() === true;
-  } catch {
-    return false;
-  }
-}
-
 /** Whether `inner` is `outer` or lies beneath it, as both really are on disk. */
 export function realWithin(outer: string, inner: string): boolean {
   const real = (value: string): string => process.platform === "win32" ? realpathSync.native(value).toLowerCase() : realpathSync.native(value);
@@ -117,6 +107,9 @@ export interface OwnedDir {
   makeTemp(prefix: string): OwnedDir;
   /** The folder at `name` as it is now; undefined when nothing is there, `not-plain` for anything but a real directory. */
   existing(name: string): OwnedDir | undefined;
+  /** Whether the entry at `name` is a regular file, itself and through no link: it then holds no entry of its own. Read with every
+   * level still the one held, before and after (`moved` otherwise); an entry that cannot be read throws as well. */
+  isFile(name: string): boolean;
   ensure(name: string): OwnedDir;
   ensurePath(segments: readonly string[]): OwnedDir;
   walk(segments: readonly string[]): OwnedDir | undefined;
@@ -180,6 +173,14 @@ class Dir implements OwnedDir {
     if (stat === undefined) return undefined;
     if (!realDir(stat)) throw new OwnedFsError("not-plain", "the entry is not a real directory");
     return new Dir(this, path, idOf(stat));
+  }
+
+  isFile(name: string): boolean {
+    const path = join(this.path, entryName(name));
+    this.check();
+    const stat = stats(path);
+    this.check();
+    return stat?.isFile() === true;
   }
 
   ensure(name: string): OwnedDir {
