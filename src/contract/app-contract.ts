@@ -208,6 +208,10 @@ export const CHANNELS = {
     call: "ave:plugins:call",
     contributionTrustList: "ave:plugins:contribution-trust:list",
     contributionTrustSet: "ave:plugins:contribution-trust:set",
+    backgroundEffectsGet: "ave:plugins:background-effects:get",
+    backgroundEffectsApprove: "ave:plugins:background-effects:approve",
+    backgroundEffectsUpgradeGet: "ave:plugins:background-effects:upgrade-get",
+    backgroundEffectsUpgradeDone: "ave:plugins:background-effects:upgrade-done",
     /** Trusted-renderer, AVE_E2E-only bundle generation observation. */
     e2eBundleSnapshot: "ave:plugins:e2e:bundle-snapshot",
     // Lifecycle event channels (main → renderer). Not registered via ipcMain.

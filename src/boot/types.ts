@@ -121,6 +121,8 @@ export interface AppServices {
    * (`resolveMcpUiBackend`): a plugin's `ui://` card is served here because its `serverId === pluginId` is NEVER in `mcpManager.clients` (external-only). */
   pluginLoopbackManager: PluginLoopbackManager;
   pluginBundleLifecycle?: import("../plugins/plugin-bundle-lifecycle.js").PluginBundleLifecycle;
+  /** Background effect approvals shared by the effect gate and the approval IPC. */
+  pluginBackgroundEffects?: import("../plugins/plugin-background-effects.js").PluginBackgroundEffectApprovals;
   /** Resolve this late-bound gated executor per call for external tool IPC.
    * Loopback plugin calls keep the runtime path that installs the same permission and audit delegate. */
   getPluginToolInvoker: () => PluginToolInvocationDelegate | null;

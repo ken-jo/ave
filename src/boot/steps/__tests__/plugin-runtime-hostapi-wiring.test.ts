@@ -6,7 +6,7 @@ import { createBootHostFixture, createDesktopHostFixture } from "../../../__test
 import { directHostFetchTransport } from "../../../__tests__/support/host-fetch-transport.js";
 /** Drive the captured boot HostApi factory so config precedence and capability lifetimes are tested at their producer. */
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { aveHome } from "../../../shared/ave-home.js";
@@ -18,7 +18,8 @@ import { directHostApiChannel } from "../../../__tests__/support/host-protocol-w
 import { HOSTAPI_DISPATCH_TABLE, HostApiDispatcher, createServiceHostApiPaths } from "../../../plugins/isolation/host-api-dispatcher.js";
 import { startPluginChildRuntime } from "../../../plugins/isolation/plugin-child-runtime.js";
 import type { PluginHostApi } from "../../../plugins/types.js";
-import { runWithEffectGateContext } from "../../../permissions/effect-enforcement.js";
+import { EffectBoundaryDeniedError, runWithEffectGateContext } from "../../../permissions/effect-enforcement.js";
+import { backgroundEffectSubject, PluginBackgroundEffectApprovals } from "../../../plugins/plugin-background-effects.js";
 import { SettingsService } from "../../../data/settings-store.js";
 import { PermissionManager } from "../../../permissions/permission-manager.js";
 import type { CredentialIssuanceStage } from "../../../main/host-api/resolve-api-key.js";
@@ -98,7 +99,8 @@ vi.mock("../../../plugins/dev-watcher.js", () => ({
   startPluginDevWatcher: vi.fn(() => ({ stop: vi.fn() })),
 }));
 
-vi.mock("../../../permissions/worker-spawn.js", () => ({
+vi.mock("../../../permissions/worker-spawn.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../../../permissions/worker-spawn.js")>(),
   spawnWorker: runtimeTestState.spawnWorker,
 }));
 
@@ -140,7 +142,9 @@ const OFFICIAL_ORIGIN = {
 
 import { initPluginRuntime } from "../plugin-runtime.js";
 import { withPluginInstallLock } from "../../../plugins/install-lifecycle.js";
-import type { PluginRegistryTrust } from "../../../plugins/types.js";
+import type { PluginRegistryEntry, PluginRegistryTrust } from "../../../plugins/types.js";
+import { HostApiGenerationScope } from "../../../plugins/plugin-host-effect-scope.js";
+import { settleMacrotask } from "../../../__tests__/test-helpers.js";
 import { canonicalJSON } from "../../../plugins/secret-access/canonical-json.js";
 import { recordManifestDocument } from "../../../plugins/runtime/manifest-validation.js";
 import { agentPluginsDocument, pluginDataDirIn } from "../../../plugins/__tests__/test-helpers.js";
@@ -213,6 +217,7 @@ type CreateHostApi = (
     trackOperation: <T>(operation: Promise<T>) => Promise<T>;
     isActive: () => boolean;
     isLifecycleHookActive: () => boolean;
+    generationScope?: HostApiGenerationScope;
   },
   installPluginId: string | null,
   candidateRegistryEntry?: PluginRegistryTrust,
@@ -230,6 +235,7 @@ async function initAndGetFactory(
     permissionManager?: PermissionManager;
     onCredentialIssuanceStage?: (stage: CredentialIssuanceStage) => Promise<void> | void;
     getAuthPartition?: (partition: string) => unknown;
+    backgroundEffectApprovals?: PluginBackgroundEffectApprovals;
   } = {},
 ): Promise<CreateHostApi> {
   runtimeTestState.capturedRuntimeOptions = null;
@@ -266,6 +272,7 @@ async function initAndGetFactory(
     ...(options.permissionManager ? { permissionManager: options.permissionManager } : {}),
     routinesStore: { list: () => [] } as never,
     getAlertsService: () => undefined,
+    ...(options.backgroundEffectApprovals ? { backgroundEffectApprovals: options.backgroundEffectApprovals } : {}),
   });
   const createHostApi = (
     runtimeTestState.capturedRuntimeOptions as {
@@ -1385,56 +1392,327 @@ describe("HostApi incarnation authority", () => {
     expect(transport).not.toHaveBeenCalled();
   });
 
-  it("carries a lease through child, dispatcher and factory into the gated transport", async () => {
+  it("carries a lease from a standalone child request only within the background effects approved for its source and scope", async () => {
     const settings = makeSettingsService(new Map());
     settings.getSecret.mockImplementation((key: string) =>
       key === "plugin.plugin-a.llm.apiKey.openai" ? "synthetic-secret" : undefined);
     const transport = vi.fn(async () => new Response("ok")) as unknown as typeof fetch;
-    const createHostApi = await initAndGetFactory(settings, { log: vi.fn() }, transport);
-    const manifest = {
-      id: "plugin-a", name: "Sample", version: "1.0.0", entry: "dist/plugin.js",
+    const root = tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-lease-wire-")));
+    const permissionManager = new PermissionManager(join(root, "permissions.json"));
+    permissionManager.setMode("allow");
+    const requestAndWait = vi.fn(async () => ({ choice: "allow-once" }));
+    const approvals = new PluginBackgroundEffectApprovals();
+    const createHostApi = await initAndGetFactory(settings, { log: vi.fn() }, transport, { requestAndWait }, {
+      permissionManager, backgroundEffectApprovals: approvals,
+    });
+    const manifestOf = (version: string, allowedDomains = ["api.openai.com"]) => ({
+      id: "plugin-a", name: "Sample", version, entry: "dist/plugin.js",
       description: "sample", tools: [], config: {},
       capabilities: ["external-auth-consumer"],
-      networkAccess: { allowedDomains: ["api.openai.com"] },
-    } as PluginManifest;
-    const api = createHostApi(
-      "plugin-a", manifest,
-      pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-lease-wire-")))), activeIncarnation(), "plugin-a",
-    );
-    let host!: HostApiDispatcher;
-    let child!: Awaited<ReturnType<typeof startPluginChildRuntime>>;
-    const channel = directHostApiChannel({
-      handle: (request) => host.handle(request),
-      handleNotification: (notification) => host.handleNotification(notification),
-    });
-    host = new HostApiDispatcher({
-      pluginId: "plugin-a", isActive: () => true, reportUnknownField: vi.fn(),
-      notifications: { deliver: (notification) => { child.deliver(notification); } },
-      table: {
-        ...HOSTAPI_DISPATCH_TABLE,
-        ...createServiceHostApiPaths(api as unknown as PluginHostApi, { read: [], write: [] }),
+      networkAccess: { allowedDomains },
+    }) as PluginManifest;
+    const entryFrom = (sourceId: string, installedAt = "2026-11-01T00:00:00.000Z"): PluginRegistryTrust => ({
+      installSource: "user",
+      origin: {
+        sourceId, sourceOrigin: "custom", commit: "a".repeat(40), packagePath: "plugins/a", version: "1.0.0",
+        rung: "release", artifactSha256: "b".repeat(64), installedAt,
       },
     });
-    child = await startPluginChildRuntime({
-      input: new PassThrough(), output: new PassThrough(), manifest,
-      context: {
-        pluginId: "plugin-a", pluginRoot: "/plugins/a", hostRoot: "/app",
-        pluginDataDir: "/plugins/a/data", userHome: "/Users/example",
-        aveHome: "/Users/example/.ave",
-      },
-      channel,
-      loadFactory: async () => () => ({ handlers: {} }),
-    });
-    const key = await child.hostApi.resolveApiKey!({ purpose: "llm", vendor: "openai" });
-    expect(key).toMatchObject({ ok: true, exposure: "lease" });
-    if (!key.ok || key.exposure !== "lease") throw new Error("expected lease");
-    const response = await child.hostApi.hostFetch!("https://api.openai.com/v1/models", { auth: { lease: key.leaseId } });
-    expect(await response.text()).toBe("ok");
+    const source = entryFrom("example-source");
+    const childFor = async (manifest: PluginManifest, entry = source) => {
+      const api = createHostApi("plugin-a", manifest, pluginDataDirIn(root), activeIncarnation(), null, entry);
+      let child!: Awaited<ReturnType<typeof startPluginChildRuntime>>;
+      const host = new HostApiDispatcher({
+        pluginId: "plugin-a", isActive: () => true, reportUnknownField: vi.fn(),
+        notifications: { deliver: (notification) => { child.deliver(notification); } },
+        table: {
+          ...HOSTAPI_DISPATCH_TABLE,
+          ...createServiceHostApiPaths(api as unknown as PluginHostApi, { read: [], write: [] }),
+        },
+      });
+      child = await startPluginChildRuntime({
+        input: new PassThrough(), output: new PassThrough(), manifest,
+        context: {
+          pluginId: "plugin-a", pluginRoot: "/plugins/a", hostRoot: "/app",
+          pluginDataDir: "/plugins/a/data", userHome: "/Users/example",
+          aveHome: "/Users/example/.ave",
+        },
+        channel: directHostApiChannel({
+          handle: (request) => host.handle(request),
+          handleNotification: (notification) => host.handleNotification(notification),
+        }),
+        loadFactory: async () => () => ({ handlers: {} }),
+      });
+      return child;
+    };
+    const fetchWithLease = async (child: Awaited<ReturnType<typeof childFor>>) => {
+      const key = await child.hostApi.resolveApiKey!({ purpose: "llm", vendor: "openai" });
+      if (!key.ok || key.exposure !== "lease") throw new Error("expected lease");
+      try {
+        return await (await child.hostApi.hostFetch!("https://api.openai.com/v1/models", { auth: { lease: key.leaseId } })).text();
+      } finally {
+        await key.release();
+      }
+    };
+    const first = manifestOf("1.0.0");
+    const child = await childFor(first);
+    await expect(child.hostApi.hostFetch!("https://refused.example.test")).rejects.toThrow("Host request failed.");
+    expect(lastBootAuditLogger.log).toHaveBeenCalledWith(expect.objectContaining({
+      input: expect.stringContaining("not in networkAccess.allowedDomains"),
+    }));
+    await expect(fetchWithLease(child)).rejects.toThrow();
+    expect(transport).not.toHaveBeenCalled();
+    approvals.approve(backgroundEffectSubject(first, source));
+    await expect(fetchWithLease(child)).resolves.toBe("ok");
     const networkInit = (transport as ReturnType<typeof vi.fn>).mock.calls[0]?.[1] as RequestInit & { auth?: unknown };
     expect(networkInit.auth).toBeUndefined();
     expect(new Headers(networkInit.headers).get("authorization")).toBe("Bearer synthetic-secret");
-    expect(JSON.stringify(networkInit)).not.toContain(key.leaseId);
-    await key.release();
+    // The approval covers the declared destinations only.
+    await expect(child.hostApi.hostFetch?.("https://refused.example.test")).rejects.toThrow("Host request failed.");
+    expect(transport).toHaveBeenCalledOnce();
+    // A version-only update keeps the approval, though it writes a new install stamp.
+    await expect(fetchWithLease(await childFor(manifestOf("1.1.0"), entryFrom("example-source", "2026-11-02T00:00:00.000Z"))))
+      .resolves.toBe("ok");
+    expect(transport).toHaveBeenCalledTimes(2);
+    // A changed scope or another source under the same id is not covered until approved itself.
+    const widened = manifestOf("1.2.0", ["api.openai.com", "upload.example.test"]);
+    const widenedChild = await childFor(widened);
+    await expect(fetchWithLease(widenedChild)).rejects.toThrow();
+    const otherSource = entryFrom("other-source");
+    await expect(fetchWithLease(await childFor(first, otherSource))).rejects.toThrow();
+    expect(transport).toHaveBeenCalledTimes(2);
+    approvals.approve(backgroundEffectSubject(widened, source));
+    await expect(fetchWithLease(widenedChild)).resolves.toBe("ok");
+    await expect(fetchWithLease(child)).rejects.toThrow();
+    expect(transport).toHaveBeenCalledTimes(3);
+    expect(requestAndWait).not.toHaveBeenCalled();
+  });
+
+  it("moves a background approval to an update's stamp only once the registry commits it and the generation publishes", async () => {
+    const dir = tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-background-update-")));
+    runtimeTestState.registryPath = join(dir, "registry.json");
+    try {
+      const manifest = {
+        id: "plugin-a", name: "Sample", version: "1.1.0", entry: "dist/plugin.js", description: "sample", tools: [], config: {},
+        networkAccess: { allowedDomains: ["api.openai.com"] },
+      } as PluginManifest;
+      const manifestSha256 = "c".repeat(64);
+      const trustAt = (installedAt: string): PluginRegistryTrust => ({
+        installSource: "user", manifestSha256,
+        origin: {
+          sourceId: "example-source", sourceOrigin: "custom", commit: "a".repeat(40), packagePath: "plugins/a", version: "1.1.0",
+          rung: "release", artifactSha256: "b".repeat(64), installedAt,
+        },
+      });
+      const registryAt = (installedAt: string, pendingUpdate?: PluginRegistryEntry["pendingUpdate"]) => ({
+        version: 1, plugins: [{ id: "plugin-a", manifestPath: "plugin-a/plugin.json", ...trustAt(installedAt), pendingUpdate }],
+      });
+      const approvalsPath = join(dir, "approvals.json");
+      const approvedAt = (installedAt: string) =>
+        new PluginBackgroundEffectApprovals(approvalsPath).isApproved(backgroundEffectSubject(manifest, trustAt(installedAt), true));
+      const approvals = new PluginBackgroundEffectApprovals(approvalsPath);
+      runtimeTestState.readPluginRegistry.mockResolvedValue(
+        registryAt("2026-11-01T00:00:00.000Z", { kind: "marketplace", previousManifestFileSha256: null, previousReceiptRaw: null }));
+      writeFileSync(runtimeTestState.registryPath, "update pending");
+      const createHostApi = await initAndGetFactory(makeSettingsService(new Map()), undefined, undefined, undefined, {
+        backgroundEffectApprovals: approvals,
+      });
+      approvals.approve(backgroundEffectSubject(manifest, trustAt("2026-11-01T00:00:00.000Z"), true));
+      const before = readFileSync(approvalsPath, "utf8");
+      const scope = new HostApiGenerationScope("plugin-a");
+      createHostApi("plugin-a", manifest, pluginDataDirIn(dir), { ...activeIncarnation(), generationScope: scope }, "plugin-a",
+        trustAt("2026-11-02T00:00:00.000Z"));
+      const candidate = await approvals.currentSubject("plugin-a");
+      for (let turn = 0; turn < 5; turn += 1) await settleMacrotask();
+      expect(readFileSync(approvalsPath, "utf8")).toBe(before);
+      expect(candidate).toMatchObject({ installedAt: "2026-11-02T00:00:00.000Z", committed: false });
+
+      runtimeTestState.readPluginRegistry.mockResolvedValue(registryAt("2026-11-02T00:00:00.000Z"));
+      writeFileSync(runtimeTestState.registryPath, "update committed");
+      scope.bindGeneration({} as never, "update");
+      scope.publish();
+      await vi.waitFor(() => expect(approvedAt("2026-11-02T00:00:00.000Z")).toBe(true));
+      expect(approvedAt("2026-11-01T00:00:00.000Z")).toBe(false);
+    } finally {
+      runtimeTestState.registryPath = fixture.path("registry.json");
+    }
+  });
+
+  it("binds a local development install's background approval to the stamp its committed registry entry carries", async () => {
+    const dir = tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-background-local-")));
+    runtimeTestState.registryPath = join(dir, "registry.json");
+    try {
+      const manifest = {
+        id: "plugin-a", name: "Sample", version: "1.0.0", entry: "dist/plugin.js", description: "sample", tools: [], config: {},
+        networkAccess: { allowedDomains: ["api.openai.com"] },
+      } as PluginManifest;
+      const local: PluginRegistryTrust = { installSource: "local-dev", manifestSha256: "c".repeat(64) };
+      runtimeTestState.readPluginRegistry.mockResolvedValue({
+        version: 1, plugins: [{ id: "plugin-a", manifestPath: "plugin-a/plugin.json", ...local, installedAt: "2026-11-01T00:00:00.000Z" }],
+      });
+      writeFileSync(runtimeTestState.registryPath, "local install committed");
+      const approvals = new PluginBackgroundEffectApprovals(join(dir, "approvals.json"));
+      const createHostApi = await initAndGetFactory(makeSettingsService(new Map()), undefined, undefined, undefined, {
+        backgroundEffectApprovals: approvals,
+      });
+      createHostApi("plugin-a", manifest, pluginDataDirIn(dir), activeIncarnation(), "plugin-a", local);
+      expect(await approvals.currentSubject("plugin-a")).toMatchObject({ installedAt: "2026-11-01T00:00:00.000Z", committed: true });
+    } finally {
+      runtimeTestState.registryPath = fixture.path("registry.json");
+    }
+  });
+
+  it.each(["strict", "default"] as const)("in %s mode keeps approved background effects to their declared targets", async (mode) => {
+    const transport = vi.fn(async (input: string | URL | Request) => String(input).includes("/hop")
+      ? new Response(null, { status: 302, headers: { location: "https://93.184.216.35/landing" } })
+      : new Response("ok")) as unknown as typeof fetch;
+    const root = tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-background-kinds-")));
+    const permissionManager = new PermissionManager(join(root, "permissions.json"));
+    permissionManager.setMode(mode);
+    const requestAndWait = vi.fn(async () => ({ choice: "allow-once" }));
+    const approvals = new PluginBackgroundEffectApprovals();
+    const createHostApi = await initAndGetFactory(makeSettingsService(new Map()), { log: vi.fn() }, transport, { requestAndWait }, {
+      permissionManager, backgroundEffectApprovals: approvals,
+    });
+    const manifest = {
+      id: "plugin-a", name: "Sample", version: "1.0.0", entry: "dist/plugin.js", description: "sample", tools: [], config: {}, capabilities: ["external-auth-consumer"],
+      networkAccess: { allowedDomains: ["93.184.216.34", "127.0.0.1"] },
+      alerts: {
+        reasoning: "Tells you when a digest is ready.",
+        kinds: [{
+          id: "digest", label: { en: "Morning digest" }, defaultEnabled: true, visibility: "summary-only",
+          slots: { topics: { kind: "list", maxItems: 5, maxLength: 120 } },
+          summary: { en: "Today: {topics}" }, prompt: { en: "Summarise these topics for me: {topics}" },
+        }],
+        suggestions: ["overlay:sample-routine"],
+      },
+    } as unknown as PluginManifest;
+    const entry: PluginRegistryTrust = {
+      installSource: "user",
+      origin: {
+        sourceId: "example-source", sourceOrigin: "custom", commit: "a".repeat(40), packagePath: "plugins/a", version: "1.0.0",
+        rung: "release", artifactSha256: "b".repeat(64), installedAt: "2026-11-01T00:00:00.000Z",
+      },
+    };
+    const api = createHostApi("plugin-a", manifest, pluginDataDirIn(root), activeIncarnation(), null, entry) as unknown as Required<PluginHostApi>;
+    approvals.approve(backgroundEffectSubject(manifest, entry));
+    const background = <T>(run: () => Promise<T>) => runWithEffectGateContext({ headless: false, standalone: true, toolName: "background" }, run);
+    const refused = async (run: () => Promise<unknown>) => {
+      const error = await background(run).then(() => undefined, (caught: unknown) => caught);
+      expect(error).toBeDefined();
+      return error;
+    };
+
+    await expect(background(async () => (await api.hostFetch("https://93.184.216.34/x")).text())).resolves.toBe("ok");
+    await expect(background(async () => (await api.hostFetch("http://127.0.0.1:8080/x")).text())).resolves.toBe("ok");
+    expect(transport).toHaveBeenCalledTimes(2);
+    await refused(() => api.hostFetch("https://93.184.216.35/x"));
+    await refused(() => api.hostFetch("https://93.184.216.34/hop", { redirect: "follow" }));
+    expect((transport as ReturnType<typeof vi.fn>).mock.calls.map(([input]) => String(input))).not.toContain("https://93.184.216.35/landing");
+    expect(await refused(() => api.raiseAlert({ kind: "undeclared", slots: {} } as never))).toBeInstanceOf(EffectBoundaryDeniedError);
+    expect(await refused(() => api.raiseAlert({ kind: "digest", slots: { topics: ["a"] } } as never))).not.toBeInstanceOf(EffectBoundaryDeniedError);
+    expect(await refused(() => api.triggerConversation({ source: "overlay:undeclared", prompt: "x" } as never))).toBeInstanceOf(EffectBoundaryDeniedError);
+    await refused(() => api.storage.write("../escape.txt", "x"));
+    expect(requestAndWait).not.toHaveBeenCalled();
+  });
+
+  it.each(["strict", "default", "auto"] as const)("in %s mode writes a plugin's own storage outside a tool call with no card or approval, and nothing past it", async (mode) => {
+    const root = tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-background-own-storage-")));
+    const permissionManager = new PermissionManager(join(root, "permissions.json"));
+    permissionManager.setMode(mode);
+    const requestAndWait = vi.fn(async () => ({ choice: "allow-once" }));
+    const createHostApi = await initAndGetFactory(makeSettingsService(new Map()), { log: vi.fn() }, undefined, { requestAndWait }, {
+      permissionManager, backgroundEffectApprovals: new PluginBackgroundEffectApprovals(),
+    });
+    const manifest = {
+      id: "plugin-a", name: "Sample", version: "1.0.0", entry: "dist/plugin.js", description: "sample", tools: [], config: {}, capabilities: ["external-auth-consumer"],
+      networkAccess: { allowedDomains: ["93.184.216.34"] },
+    } as unknown as PluginManifest;
+    const api = createHostApi("plugin-a", manifest, pluginDataDirIn(root), activeIncarnation(), null, undefined) as unknown as Required<PluginHostApi>;
+    const background = <T>(run: () => Promise<T>) => runWithEffectGateContext({ headless: false, standalone: true, toolName: "background" }, run);
+
+    await background(() => api.storage.writeJson("state.json", { n: 1 }));
+    await background(() => api.storage.write("notes/a.txt", "x"));
+    await expect(background(() => api.storage.readJson("state.json"))).resolves.toEqual({ n: 1 });
+    await expect(background(() => api.storage.write("../escape.txt", "x"))).rejects.toThrow();
+    await expect(background(() => api.hostFetch("https://93.184.216.34/x"))).rejects.toBeInstanceOf(EffectBoundaryDeniedError);
+    expect(requestAndWait).not.toHaveBeenCalled();
+  });
+
+  it("reviews the newest live HostApi's background scope, falling back when a candidate is discarded", async () => {
+    const approvals = new PluginBackgroundEffectApprovals();
+    const createHostApi = await initAndGetFactory(makeSettingsService(new Map()), { log: vi.fn() }, undefined, undefined, {
+      backgroundEffectApprovals: approvals,
+    });
+    const entry: PluginRegistryTrust = {
+      installSource: "user",
+      origin: {
+        sourceId: "example-source", sourceOrigin: "custom", commit: "a".repeat(40), packagePath: "plugins/a", version: "1.0.0",
+        rung: "release", artifactSha256: "b".repeat(64), installedAt: "2026-11-01T00:00:00.000Z",
+      },
+    };
+    const manifestFor = (allowedDomains: string[]) => ({
+      id: "plugin-a", name: "Sample", version: "1.0.0", entry: "dist/plugin.js", description: "sample", tools: [], config: {},
+      networkAccess: { allowedDomains },
+    }) as PluginManifest;
+    const incarnation = () => {
+      const disposers: Array<() => void> = [];
+      return { ...activeIncarnation(), registerDisposer: (dispose: () => void) => { disposers.push(dispose); }, dispose: () => { for (const dispose of disposers) dispose(); } };
+    };
+    const running = incarnation();
+    createHostApi("plugin-a", manifestFor(["api.example.test"]), pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-bind-a-")))), running, null, entry);
+    const candidate = incarnation();
+    createHostApi("plugin-a", manifestFor(["api.example.test", "upload.example.test"]), pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-bind-b-")))), candidate, null, entry);
+    expect((await approvals.currentSubject("plugin-a"))?.effects.networkDestinations).toEqual(["api.example.test", "upload.example.test"]);
+    candidate.dispose();
+    expect((await approvals.currentSubject("plugin-a"))?.effects.networkDestinations).toEqual(["api.example.test"]);
+    running.dispose();
+    expect(await approvals.currentSubject("plugin-a")).toBeNull();
+  });
+
+  it.each(["strict", "default"] as const)("in %s mode runs background model calls and helper processes only when declared and approved", async (mode) => {
+    runtimeTestState.spawnWorker.mockResolvedValue({
+      control: "output-only-v1", pid: 7, stop: vi.fn(), onStdout: vi.fn(), onStderr: vi.fn(), onExit: vi.fn(),
+    });
+    const root = tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-background-llm-")));
+    const permissionManager = new PermissionManager(join(root, "permissions.json"));
+    permissionManager.setMode(mode);
+    const requestAndWait = vi.fn(async () => ({ choice: "allow-once" }));
+    const approvals = new PluginBackgroundEffectApprovals();
+    const createHostApi = await initAndGetFactory(makeSettingsService(new Map()), { log: vi.fn() }, undefined, { requestAndWait }, {
+      permissionManager, backgroundEffectApprovals: approvals,
+    });
+    const entry: PluginRegistryTrust = {
+      installSource: "user",
+      origin: {
+        sourceId: "example-source", sourceOrigin: "custom", commit: "a".repeat(40), packagePath: "plugins/a", version: "1.0.0",
+        rung: "release", artifactSha256: "b".repeat(64), installedAt: "2026-11-01T00:00:00.000Z",
+      },
+    };
+    const approvedApi = (capabilities: string[]) => {
+      const manifest = {
+        id: "plugin-a", name: "Sample", version: "1.0.0", entry: "dist/plugin.js", description: "sample", tools: [], config: {},
+        networkAccess: { allowedDomains: ["api.example.test"] }, capabilities,
+      } as unknown as PluginManifest;
+      const api = createHostApi("plugin-a", manifest, pluginDataDirIn(tmpDirs.track(mkdtempSync(join(root, "data-")))), activeIncarnation(), null, entry) as unknown as Required<PluginHostApi>;
+      approvals.approve(backgroundEffectSubject(manifest, entry));
+      return api;
+    };
+    const outcome = (run: () => Promise<unknown>) => runWithEffectGateContext({ headless: false, standalone: true, toolName: "background" }, run)
+      .then(() => "ran", (caught: unknown) => caught instanceof EffectBoundaryDeniedError ? "denied" : "ran");
+    const spawn = (api: Required<PluginHostApi>) => () => api.spawnWorker({ workerId: "w", command: "node", control: "output-only-v1" } as never);
+
+    const neither = approvedApi([]);
+    expect(await outcome(() => neither.callLlm("hello"))).toBe("denied");
+    expect(await outcome(spawn(neither))).toBe("denied");
+    const llmOnly = approvedApi(["background:call-llm"]);
+    expect(await outcome(() => llmOnly.callLlm("hello"))).toBe("ran");
+    expect(await outcome(spawn(llmOnly))).toBe("denied");
+    expect(runtimeTestState.spawnWorker).not.toHaveBeenCalled();
+    const both = approvedApi(["background:call-llm", "background:spawn-worker"]);
+    expect(await outcome(spawn(both))).toBe("ran");
+    expect(runtimeTestState.spawnWorker).toHaveBeenCalledTimes(1);
+    expect(requestAndWait).not.toHaveBeenCalled();
   });
 
   it("revokes every callable HostApi surface when its incarnation is deactivated", async () => {

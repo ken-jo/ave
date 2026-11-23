@@ -835,6 +835,7 @@ describe("bootstrap() integration lock", () => {
         "notificationService",
         "paneChatLoops",
         "personaPromptStore",
+        "pluginBackgroundEffects",
         "pluginBundleLifecycle",
         "pluginLoopbackManager",
         "pluginMarketplace",

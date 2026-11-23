@@ -13,9 +13,11 @@ import {
   currentEffectGateContext,
   EffectBoundaryDeniedError,
   GATED_EFFECT_PATHS,
+  pathReadEffectPaths,
+  runWithEffectGateContext,
+  sameEffectAuthority,
 } from "../../permissions/effect-enforcement.js";
 import { ManifestIntegrityError } from "../../permissions/manifest-integrity.js";
-import { methodEffect } from "../../permissions/effect-kind.js";
 import { PluginRuntimeDetachedOperationError } from "../runtime/detached-operation.js";
 import { currentInvocationOrigin } from "../runtime/origin-chain.js";
 import {
@@ -93,6 +95,16 @@ import {
 } from "./host-api-budgets.js";
 
 const log = createLogger("host-api-dispatcher");
+const SETTLED_INVOCATION_TOKEN = "settled-invocation-token";
+const AMBIGUOUS_INVOCATION_TOKEN = "ambiguous-invocation-token";
+const INVOCATION_REFUSALS: ReadonlySet<unknown> = new Set([
+  SETTLED_INVOCATION_TOKEN, AMBIGUOUS_INVOCATION_TOKEN,
+]);
+
+/** Paths whose host implementation authorizes against the invocation's effect-gate frame. */
+function readsEffectFrame(path: HostApiPath): boolean {
+  return path === "hostFetch" || GATED_EFFECT_PATHS.has(path) || pathReadEffectPaths.has(path);
+}
 
 export type InvocationContextRunner = <R>(fn: () => R) => R;
 
@@ -1344,8 +1356,9 @@ export interface HostApiDispatcherOptions {
 
 interface HostInvocationTable {
   /** Resolve both live and retained invocation contexts; missing or evicted tokens refuse without weaker gating. */
-  resolve(token: string): InvocationContextRunner | undefined;
-  toolCallsInFlight(): number;
+  resolve(token: string): { readonly run: InvocationContextRunner; readonly live: boolean } | undefined;
+  /** Context runners of the tool calls still in flight. */
+  live(): Iterable<InvocationContextRunner>;
 }
 
 function invocationTokenOf(params: unknown): string | undefined {
@@ -1376,7 +1389,6 @@ export class HostApiDispatcher {
   private pendingSubscriptionCount = 0;
   private readonly reportedUnknownFields = new Set<string>();
   private unknownFieldsSuppressed = false;
-  private readonly warnedTokenlessPaths = new Set<HostApiPath>();
 
   constructor(private readonly options: HostApiDispatcherOptions) {
     this.table = options.table ?? HOSTAPI_DISPATCH_TABLE;
@@ -1425,7 +1437,7 @@ export class HostApiDispatcher {
       );
       const token = invocationTokenOf(request.params);
       const value = await (token === undefined
-        ? this.runTokenless(handler.path, args, invoke)
+        ? this.runTokenless(handler.path, controller.signal, invoke)
         : this.runInInvocation(handler.path, token, invoke));
       // JSON-RPC requires result; void or absent values cross as null.
       return { jsonrpc: "2.0", id, result: this.checkResult(handler, value) ?? null };
@@ -1437,35 +1449,44 @@ export class HostApiDispatcher {
     }
   }
 
-  /** Tokenless work runs outside invocation context; warn on gated writes while tool calls are in flight. */
-  private runTokenless<R>(path: HostApiPath, args: readonly unknown[], invoke: () => R): R {
-    // Fetch gates its verb inline; use checked args only to select diagnostics.
-    const rawMethod = path === "hostFetch" ? (args[1] as { method?: unknown } | undefined)?.method : undefined;
-    const isFetchWrite = path === "hostFetch"
-      && methodEffect(typeof rawMethod === "string" && rawMethod.length > 0 ? rawMethod : "GET") === "write";
-    if (GATED_EFFECT_PATHS.has(path) || isFetchWrite) {
-      const toolCallsInFlight = this.options.invocations?.toolCallsInFlight() ?? 0;
-      if (toolCallsInFlight > 0 && !this.warnedTokenlessPaths.has(path)) {
-        this.warnedTokenlessPaths.add(path);
-        log.warn(
-          { pluginId: this.options.pluginId, path, toolCallsInFlight },
-          "a gated hostApi write arrived without an invocation token while a tool call was in flight; it runs outside any invocation",
-        );
-      }
-    }
-    return runOutsideInvocation(invoke);
+  /** A request without a token takes the standalone policy, whether or not a tool call is live. */
+  private runTokenless(path: HostApiPath, signal: AbortSignal, invoke: () => Promise<unknown>): Promise<unknown> {
+    return runOutsideInvocation(() => {
+      if (!readsEffectFrame(path)) return invoke();
+      return runWithEffectGateContext({ headless: false, standalone: true, toolName: path, abortSignal: signal }, invoke);
+    });
   }
 
-  /** A named invocation must resolve or the request refuses. */
+  /** A named invocation must resolve; a gated effect also needs that call to be live. */
   private runInInvocation<R>(path: HostApiPath, token: string, invoke: () => R): R {
-    const inInvocation = this.options.invocations?.resolve(token);
-    if (inInvocation === undefined) {
+    const invocation = this.options.invocations?.resolve(token);
+    if (invocation === undefined) {
       throw new HostApiBoundaryError(
         "argument-marshalling-rejected",
         `[host-api-dispatcher] '${path}' names an invocation this connection does not hold`,
       );
     }
-    return inInvocation(invoke);
+    if (!invocation.live && readsEffectFrame(path)) {
+      throw new HostApiBoundaryError(
+        "argument-marshalling-rejected",
+        `[host-api-dispatcher] '${path}' names a tool call that has already settled`,
+        { reason: SETTLED_INVOCATION_TOKEN },
+      );
+    }
+    if (invocation.live && readsEffectFrame(path)) {
+      // The child picks the token, so a gated effect runs only when every live call would authorize it alike.
+      const named = invocation.run(currentEffectGateContext);
+      for (const other of this.options.invocations?.live() ?? []) {
+        if (!sameEffectAuthority(named, other(currentEffectGateContext))) {
+          throw new HostApiBoundaryError(
+            "argument-marshalling-rejected",
+            `[host-api-dispatcher] '${path}' names one of several active tool calls with different permission contexts`,
+            { reason: AMBIGUOUS_INVOCATION_TOKEN },
+          );
+        }
+      }
+    }
+    return invocation.run(invoke);
   }
 
   /** Accept only declared child notification kinds; dispatch release, cancellation and logs through their owners. */
@@ -1506,7 +1527,6 @@ export class HostApiDispatcher {
       controller.abort(new DOMException("[host-api-dispatcher] the child is gone", "AbortError"));
     }
     this.inFlight.clear();
-    this.warnedTokenlessPaths.clear();
     this.budgets.end();
     const closed = this.subscriptions.end("peer-gone");
     this.receivers.clear();
@@ -1517,8 +1537,10 @@ export class HostApiDispatcher {
 
   private errorReply(id: JsonRpcRequestId, error: unknown, path?: HostApiPath): HostApiReply {
     const classified = classifyHostApiError(error);
+    const refusal = error instanceof HostApiBoundaryError ? error.detail?.reason : undefined;
+    const reason = INVOCATION_REFUSALS.has(refusal) ? refusal as HostApiBudgetAudit["reason"] : undefined;
     this.budgets.deny(path ?? "<unknown>", classified.code,
-      error instanceof HostApiRateLimitError ? error.bucket : undefined);
+      error instanceof HostApiRateLimitError ? error.bucket : undefined, reason);
     return { jsonrpc: "2.0", id, error: toHostApiRpcError(classified) };
   }
 
