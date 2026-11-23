@@ -1,0 +1,55 @@
+/** A program planted in the current directory under a host program's name, with PATH holding only cwd-relative and empty entries plus an empty folder. */
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { win32SystemBinary } from "../../shared/windows-system-path.js";
+import { cleanupTmpDir } from "./tmp-dir-teardown.js";
+
+const LOOKUP_VARIABLE = "NoDefaultCurrentDirectoryInExePath";
+
+export interface PlantedProgram {
+  /** The folder holding the planted program; also the process cwd while planted. */
+  readonly dir: string;
+  /** PATH with empty, "." and relative entries and one empty fully qualified folder. */
+  readonly path: string;
+  /** POSIX: whether the planted script ran. Windows images leave no marker; assert on the site's outcome. */
+  ran(): boolean;
+}
+
+export async function withPlantedProgram<T>(names: readonly string[], use: (planted: PlantedProgram) => Promise<T> | T): Promise<T> {
+  const windows = process.platform === "win32";
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-planted-program-")));
+  const dir = join(root, "cwd");
+  const empty = join(root, "empty");
+  mkdirSync(dir);
+  mkdirSync(empty);
+  const marker = join(root, "ran");
+  for (const name of names) {
+    if (windows) {
+      for (const extension of [".exe", ".com"]) copyFileSync(win32SystemBinary("hostname.exe"), join(dir, `${name}${extension}`));
+      writeFileSync(join(dir, `${name}.bat`), `@echo planted> "${marker}"\r\n`);
+    } else {
+      writeFileSync(join(dir, name), `#!/bin/sh\necho planted > '${marker}'\necho planted\n`);
+      chmodSync(join(dir, name), 0o755);
+    }
+  }
+  const separator = windows ? ";" : ":";
+  const path = ["", ".", join("..", "cwd"), empty].join(separator);
+  const cwd = process.cwd();
+  const previousPath = process.env.PATH;
+  const previousLookup = process.env[LOOKUP_VARIABLE];
+  // The regression must hold without the process-wide defense.
+  delete process.env[LOOKUP_VARIABLE];
+  process.env.PATH = path;
+  process.chdir(dir);
+  try {
+    return await use({ dir, path, ran: () => existsSync(marker) });
+  } finally {
+    process.chdir(cwd);
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
+    if (previousLookup === undefined) delete process.env[LOOKUP_VARIABLE];
+    else process.env[LOOKUP_VARIABLE] = previousLookup;
+    await cleanupTmpDir(root);
+  }
+}
