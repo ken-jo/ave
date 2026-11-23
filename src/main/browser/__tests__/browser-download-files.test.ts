@@ -1528,7 +1528,13 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
     await flush();
     expect(fs.readFileSync(part, "utf8")).toBe("partial copy");
     expect(swept.settled).toBe(true);
-    expect(boundary.warn).toHaveBeenCalledWith({ path: recordPath }, expect.stringContaining("not one this app wrote"));
+    // The link is never followed. macOS and Linux refuse to open it (O_NOFOLLOW answers ELOOP), so the record cannot be acted on; Windows
+    // opens what it names and finds a file other than the one listed.
+    if (process.platform === "win32") {
+      expect(boundary.warn).toHaveBeenCalledWith({ path: recordPath }, expect.stringContaining("not one this app wrote"));
+    } else {
+      expect(boundary.warn).toHaveBeenCalledWith({ path: recordPath, error: expect.stringMatching(/^ELOOP/) }, expect.stringContaining("could not be acted on"));
+    }
   });
 
   it("says a recorded file's folder is gone, not that the file there is another, and keeps the record", async () => {
