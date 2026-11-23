@@ -67,7 +67,7 @@ export interface RationaleResumeHostRuntime {
     now: number,
   ) => Promise<boolean> | boolean;
   /** Who authorized the receipt, copied when it was minted. */
-  readonly loadHostResumeProvenance?: (request: SealedRationaleResumeRequest) => DecisionProvenance | null;
+  readonly loadHostResumeProvenance: (request: SealedRationaleResumeRequest) => DecisionProvenance | null;
   readonly hostInvocationStartCas?: HostInvocationStartCas;
   /** Required durable audit boundary; runtime validation still fails closed. */
   readonly onInvocationAudit: (
@@ -233,6 +233,9 @@ export async function authorizeRationaleResume(
     if (!loadReceipt || !verifyReceipt) {
       return mismatch("rationale resume receipt authenticity boundary is unavailable");
     }
+    if (typeof prepared.runtime.loadHostResumeProvenance !== "function") {
+      return mismatch("rationale resume provenance loader is unavailable");
+    }
     const receipt = await loadReceipt(prepared.request);
     if (receipt === null || !(await verifyReceipt(receipt, now))) {
       return mismatch("rationale resume allow-once receipt is absent or inauthentic");
@@ -246,7 +249,7 @@ export async function authorizeRationaleResume(
     )) {
       return mismatch("sealed rationale resume request failed exact receipt/identity validation");
     }
-    const provenance = prepared.runtime.loadHostResumeProvenance?.(prepared.request) ?? null;
+    const provenance = prepared.runtime.loadHostResumeProvenance(prepared.request);
     if (provenance === null) return mismatch("rationale resume receipt provenance is unavailable");
     const authorizedInvocationAudit = createAuthorizedInvocationAudit({
       control: prepared.request.control,

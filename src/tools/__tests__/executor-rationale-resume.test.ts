@@ -678,6 +678,25 @@ describe("ToolExecutor sealed rationale resume", () => {
     }
   });
 
+  it("fails closed before the receipt when the resume provenance loader is missing", async () => {
+    const f = await fixture();
+    try {
+      const { loadHostResumeProvenance: _missing, ...withoutProvenance } = f.resumeRuntime;
+      const result = await f.executor.executeSealedRationaleResume(f.request, {
+        ...f.options,
+        rationaleResumeRuntime: withoutProvenance as unknown as RationaleResumeHostRuntime,
+      });
+
+      expect(result.is_error).toBe(true);
+      expect(result.content).toContain("provenance loader is unavailable");
+      expect(f.loadReceipt).not.toHaveBeenCalled();
+      expect(f.execute).not.toHaveBeenCalled();
+      expect(f.invocationAudits).toEqual([]);
+    } finally {
+      await cleanupTmpDir(f.directory);
+    }
+  });
+
   it("fails closed when trusted resume callbacks are not wired", async () => {
     const f = await fixture();
     try {
