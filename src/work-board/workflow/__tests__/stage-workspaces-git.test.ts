@@ -243,6 +243,16 @@ describe("git stage workspaces", () => {
     expect(await handle.provider.open(handle.run, repo)).toMatchObject({ ok: true, workspace: { kind: "git" } });
   });
 
+  it("a merge state git cannot read is not taken for none: the retry marker stays, and nothing is merged over it", async () => {
+    const { handle, joinDir, record, failing } = await conflicting(args => args[0] === "merge" && args[1] === "--abort");
+    failing.on = true;
+    await expect(handle.provider.integrate(handle.run, "j1", ["s1", "s2"])).rejects.toThrow();
+    failing.on = false;
+    writeFileSync(resolve(joinDir, userGit(joinDir, "rev-parse", "--git-path", "MERGE_HEAD")), "no object name\n");
+    await expect(handle.provider.integrate(handle.run, "j1", ["s1", "s2"])).rejects.toThrow();
+    expect((JSON.parse(readFileSync(record, "utf8")) as { merging?: string }).merging).toBeDefined();
+  });
+
   it("a merge state git gave no answer about is not taken for none", async () => {
     const { handle, failing } = await conflicting(args => args.includes("MERGE_HEAD"));
     failing.on = true;

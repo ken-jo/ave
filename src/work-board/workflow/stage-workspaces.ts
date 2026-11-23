@@ -287,8 +287,16 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     if (!samePath(realpathSync.native(top.stdout.replace(/\r?\n$/u, "")), root)) return { inWorkTree: true };
     const head = await git.run(root, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]);
     if (head.code === 0) return { baseCommit: head.stdout.trim() };
-    // Exit 1 with nothing written is a repository with no commit yet; any other failure is no answer.
-    if (head.code === 1 && head.stdout === "") return { inWorkTree: true };
+    // No commit yet only when HEAD names a branch git shows does not exist (exit 2, which always comes with its own message); any other
+    // answer, a HEAD whose object is missing or no commit among them, is none.
+    if (head.code === 1 && head.stdout === "" && head.stderr === "") {
+      const branch = await git.run(root, ["symbolic-ref", "-q", "HEAD"], { exact: true });
+      const ref = branch.stdout.slice(0, -1);
+      if (branch.code === 0 && branch.stderr === "" && branch.stdout.endsWith("\n") && /^refs\/heads\/[^\n]+$/u.test(ref)) {
+        const shown = await git.run(root, ["show-ref", "--exists", ref]);
+        if (shown.code === 2 && shown.stdout === "") return { inWorkTree: true };
+      }
+    }
     throw new Error("git gave no answer for the project's HEAD");
   }
 
@@ -735,11 +743,12 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     await assertRepository(at);
     const drivers = (await driversIn(at, JOIN_DIR, joined)).config;
     const inJoin = gitIn(at, JOIN_DIR, joined);
-    // Exit 1 with nothing written is no merge; any other failure is no answer, and nothing is taken from it.
+    // A merge is in progress while MERGE_HEAD exists, and none only once git shows it does not (exit 2, with its own message); any other
+    // answer is none, and nothing is taken from it.
     const merging = async (): Promise<boolean> => {
-      const head = await inJoin(["rev-parse", "--verify", "--quiet", "MERGE_HEAD"]);
-      if (head.code === 0) return true;
-      if (head.code === 1 && head.stdout === "") return false;
+      const head = await inJoin(["show-ref", "--exists", "MERGE_HEAD"]);
+      if (head.code === 0 && head.stdout === "" && head.stderr === "") return true;
+      if (head.code === 2 && head.stdout === "") return false;
       throw new Error("git gave no answer whether a merge is in progress");
     };
     const unmerged = async (): Promise<string[]> => nul(answered(["diff"], await inJoin(["diff", "--name-only", "-z", "--diff-filter=U", "--no-ext-diff", "--no-textconv"], { drivers, exact: true })));

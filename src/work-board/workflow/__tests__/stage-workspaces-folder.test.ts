@@ -190,6 +190,20 @@ describe("folder stage workspaces", () => {
     expect(tree(await stageRoot(handle, "s2", { inputFiles: [fromProject("linked/private.txt", "linked/**", ".env", "keys/id_rsa", "build/out.js", "debug.log")] }))).toEqual([]);
   });
 
+  it.each(["an object that is missing", "a tree"])("a work tree whose branch names %s is not one with no commit yet: it gets no workspace", async (kind) => {
+    const git = (...args: string[]): string => execFileSync("git", ["-c", "user.name=Alice Example", "-c", "user.email=alice@example.com", ...args], { cwd: project, env, encoding: "utf8", stdio: "pipe" }).trim();
+    git("init", "-q");
+    git("add", "-A");
+    git("commit", "-q", "-m", "first");
+    const target = kind === "a tree" ? git("rev-parse", "HEAD^{tree}") : "0123456789abcdef0123456789abcdef01234567";
+    writeFileSync(join(project, ".git", ...git("symbolic-ref", "HEAD").split("/")), `${target}\n`);
+    const run: RunRef = { itemId: 7, runId: `run-folder-${process.pid}-${Date.now()}-head`, runKey: "key", projectRoot: project };
+    const provider = createStageWorkspaceProvider({ git: createHostGit({ env }) });
+    const open = await provider.open(run, project);
+    if (open.ok) opened.push({ provider, run, runRoot: open.workspace.runRoot, out: "" });
+    expect(open).toEqual({ ok: false, code: "git-unavailable" });
+  });
+
   it("a work tree whose top level git names cannot be found is not thereby a plain folder: it gets no workspace", async () => {
     const real = createHostGit({ env });
     const git: HostGit = { drivers: real.drivers, run: async (cwd, args, call) => args.includes("--show-toplevel") ? { code: 0, stdout: `${join(base, "gone")}\n`, stderr: "" } : real.run(cwd, args, call) };
