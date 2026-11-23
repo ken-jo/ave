@@ -3596,6 +3596,22 @@ Security-sensitive areas are intentionally centralized:
 Changes spanning these areas merit proportionate cross-cutting review. That
 review is advisory, never a merge gate.
 
+### Invocation terminal rows and denials
+
+Each tool invocation ends with one terminal allow or deny row in the permission
+audit. Only the invocation ledger (`src/tools/invocation-ledger.ts`) commits
+that row. Whoever ends the call writes it through the ledger's row writer: the
+rule, the unknown-tool check, a human answer, a hook input mutation, the host
+on an integrity failure, cancellation, or the shutdown deadline. Records beside
+the outcome, such as asks, plugin operation rows, mode changes, and directory
+grants, use their own writers, and those writers refuse a terminal row.
+
+The ledger fires one `PermissionDenied` lifecycle event for each deny row it
+commits, whatever the source. Governed tools are the exception: a tool with an
+operation policy, or a call under a plugin authorization lifecycle, still
+gets its deny row but no event. No call site emits
+`PermissionDenied` itself; a source guard test enforces this.
+
 ### Permission audit during shutdown
 
 Desktop and headless shutdown share the same service teardown. The early

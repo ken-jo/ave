@@ -1,6 +1,7 @@
 import { appendDirectoryGrantRecord, appendToolInvocationAudit, recordToolInvocationAuditFailure, type DirectoryGrantRecord, type TerminalLifecycleEvent, type TerminalRowWriter } from "../invocation-ledger.js";
 import type { ToolAuditTerminationReason } from "../../audit/audit-logger.js";
-// Tool terminal rows finalize through auditToolCall with a row writer only the ledger hands out; the ledger fires PermissionDenied.
+// Tool terminal rows go through auditToolCall with a row writer only the ledger hands out; the ledger fires one
+// PermissionDenied per deny row, except for a governed tool.
 import { randomUUID } from "node:crypto";
 import type { ToolRegistry } from "../registry.js";
 import type { ToolSource, ToolCategory, TrustLevel } from "../types.js";
