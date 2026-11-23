@@ -163,7 +163,7 @@ it("a plain file under worktrees holds no run and keeps no root; a link there, o
     try {
       expect(await provider.discard(given)).toEqual([]);
     } finally {
-      removeLink(link);
+      removeLink(link, aveHome());
     }
     between.unlisted = "worktrees";
     expect(await provider.discard(given)).toEqual([]);

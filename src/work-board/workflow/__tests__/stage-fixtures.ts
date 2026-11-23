@@ -1,5 +1,5 @@
-import { chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { type BigIntStats, chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import type { TemplateGraph, TemplateStage, TemplateVersion, WorkItemStageRun } from "../../../shared/workflow-template-types.js";
 import { graphHashOf } from "../../template-graph.js";
 
@@ -9,24 +9,53 @@ export function writeUnder(root: string, path: string, text: string): void {
   writeFileSync(join(root, path), text);
 }
 
-/** Removes a link to a directory as the link it is: what it points at stays. A removal that takes a path for a file or a folder can refuse one. */
-export function removeLink(path: string): void {
+const entryAt = (path: string): BigIntStats | undefined => lstatSync(path, { bigint: true, throwIfNoEntry: false });
+const realDir = (stat: BigIntStats | undefined): stat is BigIntStats => stat?.isDirectory() === true && !stat.isSymbolicLink();
+const sameDir = (stat: BigIntStats | undefined, held: BigIntStats): boolean => realDir(stat) && stat.ino !== 0n && stat.ino === held.ino && stat.dev === held.dev;
+
+/** Refuses a path that is not below `base` through real folders alone: `base` is a folder the fixture made, and each folder from the
+ * path up to it is one itself and no link to one. They are told by which folder each is on disk, not by how the path spells them. */
+function below(base: string, path: string): void {
+  const held = entryAt(base);
+  if (!realDir(held)) throw new Error(`a fixture's base is no real folder: ${base}`);
+  for (let at = dirname(resolve(path)); ; at = dirname(at)) {
+    const stat = entryAt(at);
+    if (sameDir(stat, held)) return;
+    if (!realDir(stat) || dirname(at) === at) throw new Error(`not below the fixture's base through real folders: ${path}`);
+  }
+}
+
+/** Removes a link to a directory as the link it is: what it points at stays. A removal that takes a path for a file or a folder can
+ * refuse one. `base`: a folder of the fixture's own that the link lies below; anything else at the path, or a path that is reached
+ * through another link, is refused. */
+export function removeLink(path: string, base: string): void {
+  below(base, path);
+  if (entryAt(path)?.isSymbolicLink() !== true) throw new Error(`not a link: ${path}`);
   unlinkSync(path);
 }
 
 /** Removes a fixture's folder with all it holds. A link in it goes as a link, and a file that cannot be written (git stores its objects
- * so) is made writable first: on Windows a recursive removal can stop at either. */
-export function removeTree(root: string): void {
-  const clear = (dir: string): void => {
-    for (const name of readdirSync(dir)) {
+ * so) is made writable first: on Windows a recursive removal can stop at either. `base`: the fixture's own folder that `root` lies
+ * below, when it is not `root` itself. A root that is no real folder, or is reached through a link, is refused, and so is a folder
+ * that is another one by the time it has been listed. Whatever writes into the fixture has to have ended before. */
+export function removeTree(root: string, base = root): void {
+  const clear = (dir: string, held: BigIntStats): void => {
+    const names = readdirSync(dir);
+    if (!sameDir(entryAt(dir), held)) throw new Error(`a fixture's folder changed while it was removed: ${dir}`);
+    for (const name of names) {
       const path = join(dir, name);
-      const stat = lstatSync(path);
-      if (stat.isSymbolicLink()) removeLink(path);
-      else if (stat.isDirectory()) clear(path);
-      else if ((stat.mode & 0o200) === 0) chmodSync(path, 0o666);
+      const stat = entryAt(path);
+      if (stat === undefined) continue;
+      if (stat.isSymbolicLink()) unlinkSync(path);
+      else if (stat.isDirectory()) clear(path, stat);
+      else if ((stat.mode & 0o200n) === 0n) chmodSync(path, 0o666);
     }
   };
-  if (lstatSync(root, { throwIfNoEntry: false })?.isDirectory() === true) clear(root);
+  if (root !== base) below(base, root);
+  const held = entryAt(root);
+  if (held === undefined) return;
+  if (!realDir(held)) throw new Error(`not a real folder: ${root}`);
+  clear(root, held);
   rmSync(root, { recursive: true, force: true, maxRetries: 3 });
 }
 

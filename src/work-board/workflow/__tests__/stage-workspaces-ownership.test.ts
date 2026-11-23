@@ -494,7 +494,7 @@ describe("the repository's identity", () => {
     if (!open.ok || base === undefined) throw new Error("expected a git workspace");
     await stageRoot(handle, "s1");
     // The child is now a plain folder of the parent's work tree, and the parent has a branch of the run's name at the run's commit.
-    removeTree(join(child, ".git"));
+    removeTree(join(child, ".git"), fx.base);
     const branch = runBranch(handle.run.runId);
     userGit(repo, "update-ref", `refs/heads/${branch}`, base);
     const listed = userGit(repo, "worktree", "list", "--porcelain");

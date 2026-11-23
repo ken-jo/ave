@@ -336,7 +336,7 @@ describe("folder stage workspaces", () => {
         expect(await provider.prepare(run, stageOf("s1"), 1), name).toEqual({ ok: false, code: "workspace-unavailable" });
       });
       expect(readdirSync(outside), name).toEqual([]);
-      removeLink(level);
+      removeLink(level, base);
     }
   });
 
@@ -604,7 +604,7 @@ describe("folder stage workspaces", () => {
     symlinkSync(outside, join(handle.out, "report"), "junction");
     await expect(handle.provider.integrate(handle.run, "j1", ["s1"])).rejects.toThrow();
     expect(readdirSync(outside)).toEqual([]);
-    removeLink(join(handle.out, "report"));
+    removeLink(join(handle.out, "report"), aveHome());
     expect(await handle.provider.integrate(handle.run, "j1", ["s1"])).toEqual({ ok: true });
     expect(read(handle.out, "report/deep/r.md")).toBe("report\n");
   });
@@ -629,7 +629,7 @@ describe("folder stage workspaces", () => {
       expect(await handle.provider.prepare(handle.run, stageOf("s2", fromFirst), 1)).toEqual({ ok: false, code: "seed-unreadable" });
       expect(existsSync(join(handle.runRoot, "s2"))).toBe(false);
     } finally {
-      removeLink(handle.out);
+      removeLink(handle.out, aveHome());
       renameSync(away, handle.out);
     }
     expect(tree(await stageRoot(handle, "s2", fromFirst))).toEqual(["plan.md"]);
@@ -1006,7 +1006,7 @@ describe("folder stage workspaces", () => {
       expect(read(join(kept, "_out"), "result.md"), level).toBe("collected\n");
       // The run that was not swapped went as usual.
       expect(handles.filter(handle => handle !== swapped).map(handle => existsSync(handle.runRoot)), level).toEqual([false]);
-      removeLink(level === "run" ? swapped.runRoot : dirname(swapped.runRoot));
+      removeLink(level === "run" ? swapped.runRoot : dirname(swapped.runRoot), aveHome());
     }
   });
 
@@ -1036,10 +1036,39 @@ describe("folder stage workspaces", () => {
       expect(prepared).toEqual({ ok: false, code: "seed-unreadable" });
     } finally {
       if (existsSync(restored)) {
-        removeLink(runRoot);
+        removeLink(runRoot, aveHome());
         renameSync(restored, runRoot);
       }
       await provider.release(run, "all");
     }
+  });
+});
+
+describe("what a fixture's own removal takes", () => {
+  it("nothing through a link above the path or outside the base it was given, and a link only where a link is", () => {
+    const owned = join(base, "owned");
+    const sibling = join(base, "sibling");
+    const sentinel = join(sibling, "kept", "sentinel.txt");
+    mkdirSync(join(owned, "inner"), { recursive: true });
+    mkdirSync(join(sibling, "kept"), { recursive: true });
+    writeFileSync(sentinel, "kept\n");
+    writeFileSync(join(owned, "plain.txt"), "plain\n");
+    symlinkSync(sibling, join(owned, "link"), "junction");
+    symlinkSync(join(sibling, "kept"), join(sibling, "inner-link"), "junction");
+    // A folder and a link that are reached through a link, a folder that is not below the base, a link taken for a folder, and a
+    // file taken for a link.
+    expect.soft(() => removeTree(join(owned, "link", "kept"), owned)).toThrow();
+    expect.soft(() => removeLink(join(owned, "link", "inner-link"), owned)).toThrow();
+    expect.soft(() => removeTree(join(sibling, "kept"), owned)).toThrow();
+    expect.soft(() => removeTree(join(owned, "link"), owned)).toThrow();
+    expect.soft(() => removeLink(join(owned, "plain.txt"), owned)).toThrow();
+    expect.soft([sentinel, join(sibling, "inner-link"), join(owned, "link"), join(owned, "plain.txt")].map(path => lstatSync(path, { throwIfNoEntry: false }) !== undefined)).toEqual([true, true, true, true]);
+    // The base's own goes: a link as the link it is, a folder with the links it holds.
+    removeTree(join(owned, "inner"), owned);
+    removeTree(owned);
+    expect.soft(existsSync(owned)).toBe(false);
+    expect.soft(existsSync(sentinel)).toBe(true);
+    removeLink(join(sibling, "inner-link"), base);
+    expect.soft(existsSync(sentinel)).toBe(true);
   });
 });
