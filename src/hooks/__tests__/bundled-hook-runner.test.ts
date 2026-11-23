@@ -11,15 +11,23 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { MAX_HOOK_STDOUT_BYTES, type ScriptHookStdin } from "../script-hook-types.js";
 
 const SANDBOX_TEMP_ROOT = "/tmp/ave-test-sandbox-tmp";
+const HOST_PLATFORM = process.platform;
 let sandboxActive = false;
 let admissionOpen = true;
 const wrap = vi.fn<(cmdline: string, options?: unknown) => Promise<{ argv: string[]; env: NodeJS.ProcessEnv }>>();
 vi.mock("../../main/managed-child-processes.js", async (original) => {
   const real = await original<typeof import("../../main/managed-child-processes.js")>();
-  return { ...real, assertManagedChildProcessAdmissionOpen: (label: string) => {
-    if (!admissionOpen) throw new Error("hook admission closed");
-    return real.assertManagedChildProcessAdmissionOpen(label);
-  } };
+  // Simulating the hook platform cannot create a native process group.
+  const trackManagedChildProcess: typeof real.trackManagedChildProcess = (child, options) =>
+    real.trackManagedChildProcess(child, HOST_PLATFORM === "win32" ? { ...options, killProcessGroup: false } : options);
+  return {
+    ...real,
+    assertManagedChildProcessAdmissionOpen: (label: string) => {
+      if (!admissionOpen) throw new Error("hook admission closed");
+      return real.assertManagedChildProcessAdmissionOpen(label);
+    },
+    trackManagedChildProcess,
+  };
 });
 vi.mock("../../permissions/asrt-sandbox.js", async (original) => {
   const real = await original<typeof import("../../permissions/asrt-sandbox.js")>();

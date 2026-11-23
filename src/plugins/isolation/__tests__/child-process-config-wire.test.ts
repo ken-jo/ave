@@ -1,23 +1,32 @@
 /** Exercise config delivery across a real JSON process boundary; in-memory sharing cannot prove marshalling. */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
+import { EventEmitter, once } from "node:events";
+import { createServer, type Server, type Socket } from "node:net";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { createInterface } from "node:readline";
+import { PassThrough, Writable } from "node:stream";
 import { buildChildEntry, childBundleDir, repositoryRoot } from "./child-entry-bundle.js";
 import { aveHome } from "../../../shared/ave-home.js";
+import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
+import { deferred } from "../../../__tests__/support/deferred.js";
 import type { PluginHostApi, PluginManifest, PluginRuntimeContext, RuntimePlugin } from "../../types.js";
 import { derivePluginChildEnvelope } from "../out-of-process-plugin.js";
 import { createBoundHostApiDispatchTable } from "../bound-host-api-table.js";
 import { openPluginProtocolSession } from "../plugin-protocol-session.js";
 import type { ChildLink } from "../plugin-child-transport.js";
+import { CHILD_LOOPBACK_TRANSPORT_ARG, CHILD_PRIVATE_STDIO_TRANSPORT_ARG, connectToAnnouncedChild, encodeChildEnv } from "../child-loopback-link.js";
+import { OUTBOUND_QUEUE_BYTES_MAX } from "../child-stream-multiplex.js";
+import { pacePluginChildInput, PLUGIN_CHILD_INPUT_FD, pluginChildInputCredit } from "../plugin-child-credit.js";
 import { SECRET_REDACTED_SENTINEL } from "../host-api-wire.js";
 import {
   emitPluginConfigChange,
   subscribePluginConfigChange,
   _resetPluginConfigChangeBus,
 } from "../../config-change-bus.js";
-import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
 import { resolvePluginSocketDir } from "../../plugin-storage-layout.js";
 
 const PLUGIN_ID = "sampleassistant";
@@ -34,6 +43,7 @@ interface RecordedChange {
 
 let temporaryRoot: string | undefined;
 const spawnedChildren = new Set<ChildProcess>();
+const stallServers = new Set<Server>();
 
 const CHILD_BUNDLE_CACHE = "plugin-child-config-wire";
 
@@ -87,24 +97,39 @@ const MANIFEST = {
   ],
 } as PluginManifest;
 
-function spawnPlainChild(childEntryPath: string): ChildLink {
-  const child = spawn(process.execPath, [childEntryPath], {
-    stdio: ["pipe", "pipe", "pipe"],
+async function spawnPlainChild(
+  childEntryPath: string,
+  canTerminate = true,
+  transport = "stdio",
+): Promise<ChildLink & { disconnect(): void; rawOutput: Writable }> {
+  const args = transport === "loopback" ? [CHILD_LOOPBACK_TRANSPORT_ARG, encodeChildEnv({})]
+    : transport === "stdio" ? [CHILD_PRIVATE_STDIO_TRANSPORT_ARG] : [];
+  const child = spawn(process.execPath, [childEntryPath, ...args], {
+    stdio: [transport === "native stdio" ? "pipe" : "ignore", "pipe", "pipe",
+      ...(transport === "stdio" ? ["pipe" as const] : [])],
     // Set ELECTRON_RUN_AS_NODE so the executable acts as Node and exposes no main-process API.
     env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
   });
   spawnedChildren.add(child);
   child.once("exit", () => spawnedChildren.delete(child));
-  if (!child.stdin || !child.stdout) {
+  const pipe = transport === "stdio" ? child.stdio[PLUGIN_CHILD_INPUT_FD] : child.stdin;
+  if (!child.stdout || (transport !== "loopback" && !(pipe instanceof Writable))) {
     child.kill("SIGKILL");
     throw new Error("the spawned child has no pipes");
   }
   // A fault with a live PID is not exit; only terminal exit or spawn-without-process means gone.
   const hasProcess = (): boolean => typeof child.pid === "number" && child.pid > 0;
+  const socket = transport === "loopback" ? await connectToAnnouncedChild({
+    stdout: child.stdout,
+    exited: new Promise((resolve) => child.once("exit", () => resolve("test child exited"))),
+    timeoutMs: 10_000,
+  }) : undefined;
+  const rawOutput = socket ?? pipe as Writable;
   return {
-    input: child.stdout,
-    output: child.stdin,
-    terminate: () => child.kill("SIGTERM"),
+    ...pacePluginChildInput(socket ?? child.stdout, rawOutput),
+    rawOutput,
+    disconnect: () => rawOutput.end(),
+    terminate: () => { if (canTerminate) child.kill("SIGTERM"); },
     onGone: (handler) => {
       child.once("exit", (code, signal) =>
         handler(`child exited code=${String(code)} signal=${String(signal)}`),
@@ -126,6 +151,7 @@ function plainSessionFactory(spec: {
   readonly manifest: PluginManifest;
   readonly entryPath: string;
   readonly childEntryPath: string;
+  readonly link?: ChildLink;
 }): (context: PluginRuntimeContext) => Promise<RuntimePlugin> {
   return async (context) => {
     const envelope = derivePluginChildEnvelope({
@@ -138,7 +164,7 @@ function plainSessionFactory(spec: {
       pluginId: spec.manifest.id,
       manifest: spec.manifest,
       hostProtocolVersion: "5",
-      link: spawnPlainChild(spec.childEntryPath),
+      link: spec.link ?? await spawnPlainChild(spec.childEntryPath),
       context,
       entryPath: spec.entryPath,
       table: createBoundHostApiDispatchTable(context.hostApi, envelope),
@@ -187,6 +213,87 @@ async function waitFor(predicate: () => boolean, what: string): Promise<void> {
   throw new Error(`timed out waiting for ${what}`);
 }
 
+async function openStallControl() {
+  const connected = deferred<Socket>();
+  const server = createServer((socket) => {
+    socket.on("error", () => undefined);
+    server.close();
+    connected.resolve(socket);
+  });
+  stallServers.add(server);
+  server.once("close", () => stallServers.delete(server));
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("missing stall control port");
+  return { port: address.port, connected: connected.promise };
+}
+
+function stallFixture(port: number): string {
+  const worker = `
+const { connect } = require("node:net");
+const { parentPort, workerData: { state, port } } = require("node:worker_threads");
+const socket = connect(port, "127.0.0.1");
+socket.on("data", (command) => {
+  if (command.toString("ascii") === "B") {
+    parentPort.postMessage(null);
+    return;
+  }
+  Atomics.store(state, 0, 1);
+  Atomics.notify(state, 0);
+  socket.end();
+});
+`;
+  return `
+import { Worker } from "node:worker_threads";
+const state = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+const gate = new Worker(${JSON.stringify(worker)}, { eval: true, workerData: { state, port: ${port} } });
+gate.on("message", stall);
+gate.unref();
+function stall() {
+  writeSync(2, "plugin stalled\\n");
+  Atomics.wait(state, 0, 0);
+  writeSync(2, "plugin resumed\\n");
+}
+`;
+}
+
+function observeStall(child: Pick<ChildProcess, "stderr"> | undefined) {
+  if (!child?.stderr) throw new Error("missing child diagnostics");
+  const entered = deferred<void>();
+  const digest = deferred<string>();
+  let resumed = false;
+  const lines = createInterface({ input: child.stderr });
+  const drained = new Promise<void>((resolve) => lines.once("close", resolve));
+  lines.on("line", (line) => {
+    if (line === "plugin stalled") entered.resolve();
+    if (line === "plugin resumed") resumed = true;
+    if (line.startsWith("pressure digest ")) digest.resolve(line.slice("pressure digest ".length));
+  });
+  return {
+    entered: entered.promise,
+    digest: digest.promise,
+    async outcomeAfterExit<T>(exited: Promise<T>) {
+      const [exit] = await Promise.all([exited, drained]);
+      return { exit, resumed };
+    },
+  };
+}
+
+function acknowledgeNextRawWrite(output: Writable): Promise<Error | null | undefined> {
+  const accepted = deferred<Error | null | undefined>();
+  const original = output.write;
+  const write = original.bind(output);
+  output.write = ((chunk: Buffer, done?: (error?: Error | null) => void) => {
+    output.write = original;
+    return write(chunk, (error) => {
+      done?.(error);
+      accepted.resolve(error);
+    });
+  }) as Writable["write"];
+  return accepted.promise;
+}
+
 async function readChanges(instance: RuntimePlugin): Promise<RecordedChange[]> {
   return (await instance.handlers.probe_changes!()) as RecordedChange[];
 }
@@ -199,6 +306,7 @@ beforeEach(() => {
 afterEach(() => {
   for (const child of spawnedChildren) child.kill("SIGKILL");
   spawnedChildren.clear();
+  for (const server of stallServers) server.close();
   _resetPluginConfigChangeBus();
   if (temporaryRoot) rmSync(temporaryRoot, { recursive: true, force: true });
   temporaryRoot = undefined;
@@ -291,43 +399,348 @@ export const createPlugin = async () => {
     expect(readFileSync(marker, "utf8")).toBe("cleaned");
   }, 180_000);
 
-  it("exits after host pipe loss even when the plugin keeps an interval alive", async () => {
-    const root = temporaryRoot!;
-    const entryPath = join(root, "interval-plugin.mjs");
-    writeFileSync(entryPath, `export const createPlugin = async () => {
-  setInterval(() => {}, 100);
-  return { handlers: {} };
+  it.each(["stdio", "loopback", "native stdio"])("exposes only %s stdin observation", async (transport) => {
+    const root = temporaryRoot;
+    if (!root) throw new Error("missing plugin fixture directory");
+    const marker = join(root, "stdin-end.txt");
+    const entryPath = join(root, "stdin-observer.mjs");
+    writeFileSync(entryPath, `import { readSync, writeSync, writeFileSync } from "node:fs";
+import { Worker } from "node:worker_threads";
+import { EventEmitter } from "node:events";
+import { Readable } from "node:stream";
+export const createPlugin = async () => {
+  const view = process.stdin;
+  let read = null;
+  let writeIsInert = null;
+  if (${JSON.stringify(transport)} !== "native stdio") {
+    read = readSync(0, Buffer.alloc(1));
+    try {
+      writeIsInert = writeSync(0, "inert") === 5;
+    } catch (error) {
+      writeIsInert = error.code === "EBADF";
+    }
+  }
+  const previousWrite = view.write;
+  const writeReplaced = Reflect.set(view, "write", () => { throw new Error("wrong destination"); });
+  if (writeReplaced) Reflect.set(view, "write", previousWrite);
+  const destinationReplaced = Reflect.defineProperty(process, "stdin", { value: {} });
+  let ownerReached = false;
+  const previousPost = Worker.prototype.postMessage;
+  Worker.prototype.postMessage = function (...args) {
+    ownerReached = true;
+    return Reflect.apply(previousPost, this, args);
+  };
+  let parserDispatchReached = false;
+  const previousToString = Buffer.prototype.toString;
+  const containsMeasuredFrame = (value) => Buffer.isBuffer(value)
+    && Reflect.apply(previousToString, value, ["utf8"]).includes("/onPublished");
+  const previousFrom = Buffer.from;
+  Buffer.from = function (...args) {
+    const result = Reflect.apply(previousFrom, this, args);
+    if (containsMeasuredFrame(result)) parserDispatchReached = true;
+    return result;
+  };
+  for (const method of ["indexOf", "subarray", "toString"]) {
+    const previous = Buffer.prototype[method];
+    Buffer.prototype[method] = function (...args) {
+      if (containsMeasuredFrame(this)) parserDispatchReached = true;
+      return Reflect.apply(previous, this, args);
+    };
+  }
+  const previousParse = JSON.parse;
+  JSON.parse = function (text, ...args) {
+    if (typeof text === "string" && text.includes("/onPublished")) parserDispatchReached = true;
+    return Reflect.apply(previousParse, this, [text, ...args]);
+  };
+  const previousEmit = EventEmitter.prototype.emit;
+  EventEmitter.prototype.emit = function (event, ...args) {
+    if (event === "data" && containsMeasuredFrame(args[0])) {
+      parserDispatchReached = true;
+    }
+    return Reflect.apply(previousEmit, this, [event, ...args]);
+  };
+  const previousOn = Readable.prototype.on;
+  Readable.prototype.on = function (event, listener) {
+    if (event === "data") {
+      return Reflect.apply(previousOn, this, [event, function (chunk) {
+        if (containsMeasuredFrame(chunk)) parserDispatchReached = true;
+        return Reflect.apply(listener, this, [chunk]);
+      }]);
+    }
+    return Reflect.apply(previousOn, this, [event, listener]);
+  };
+  const previousPush = Readable.prototype.push;
+  Readable.prototype.push = function (chunk, ...args) {
+    if (containsMeasuredFrame(chunk)) parserDispatchReached = true;
+    return Reflect.apply(previousPush, this, [chunk, ...args]);
+  };
+  let seen = false;
+  view.once("data", (chunk) => {
+    seen = containsMeasuredFrame(chunk);
+    chunk.fill(0);
+  });
+  view.on("end", () => {
+    setTimeout(() => writeFileSync(${JSON.stringify(marker)}, "ended"), 25);
+  });
+  let published = false;
+  return {
+    onPublished() { published = true; },
+    handlers: { probe_changes: () => ({
+      read, writeIsInert, writeReplaced, destinationReplaced, ownerReached,
+      seen, published, parserDispatchReached, writable: typeof view.write, fd: typeof view.fd,
+    }) },
+  };
 };
 `);
     const { hostApi } = hostApiFor();
-    const factory = plainSessionFactory({
-      manifest: { ...MANIFEST, tools: [] }, entryPath,
-      childEntryPath: await buildChildEntry(CHILD_BUNDLE_CACHE),
-    });
-    await factory({
+    const childEntryPath = await buildChildEntry(CHILD_BUNDLE_CACHE);
+    const link = await spawnPlainChild(childEntryPath, false, transport);
+    const instance = await plainSessionFactory({ manifest: MANIFEST, entryPath, childEntryPath, link })({
       pluginId: PLUGIN_ID, pluginRoot: root, hostRoot: repositoryRoot(),
       pluginDataDir: root, pluginSocketDir: resolvePluginSocketDir(root),
       userHome: homedir(), aveHome: aveHome(), config: {}, hostApi,
     });
-    const child = [...spawnedChildren][0]!;
-    const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
-      child.once("exit", (code, signal) => resolve({ code, signal }));
+    await instance.onPublished!();
+    expect(await instance.handlers.probe_changes!()).toEqual({
+      read: transport === "native stdio" ? null : 0,
+      writeIsInert: transport === "native stdio" ? null : true,
+      writeReplaced: false, destinationReplaced: false,
+      ownerReached: false, seen: true, published: true, parserDispatchReached: false, writable: "undefined", fd: "undefined",
     });
-    // Drop the host's protocol input without the normal stop hook or any signal.
-    child.stdin!.end();
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      const result = await Promise.race([
-        exited,
-        new Promise<never>((_resolve, reject) => {
-          timer = setTimeout(() => reject(new Error("child survived host pipe loss")),
-            TOOL_TIMEOUT_POLICY.pluginShutdownKillGraceMs * 2 + 1_000);
-        }),
-      ]);
-      expect(result).toEqual({ code: 0, signal: null });
-    } finally {
-      clearTimeout(timer);
-    }
+    await instance.stop?.();
+    expect(readFileSync(marker, "utf8")).toBe("ended");
   }, 180_000);
 
+  it("includes a resume marker delivered on stderr after child exit", async () => {
+    const child = new EventEmitter();
+    const stderr = new PassThrough();
+    const state = observeStall({ stderr });
+    const outcome = state.outcomeAfterExit(once(child, "exit"));
+    child.emit("exit", 1, null);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    stderr.end("plugin resumed\n");
+    expect(await outcome).toEqual({ exit: [1, null], resumed: true });
+  });
+
+  it.each([
+    ["stdio", "an interval"],
+    ["loopback", "an interval"],
+    ["native stdio", "an interval"],
+    ["stdio", "a blocked hook"],
+  ])(
+    "exits after %s host loss with %s",
+    async (transport, pluginWork) => {
+      const root = temporaryRoot;
+      if (!root) throw new Error("missing plugin fixture directory");
+      const entryPath = join(root, "pipe-loss-plugin.mjs");
+      const control = pluginWork === "a blocked hook" ? await openStallControl() : undefined;
+      writeFileSync(entryPath, `import { writeSync } from "node:fs";
+${control ? stallFixture(control.port) : ""}
+export const createPlugin = async () => ({
+  handlers: {},
+  start: ${control ? "stall" : `() => {
+    setInterval(() => {}, 60_000);
+    writeSync(2, "plugin stalled\\n");
+  }`},
+});
+`);
+      const { hostApi } = hostApiFor();
+      const childEntryPath = await buildChildEntry(CHILD_BUNDLE_CACHE);
+      const link = await spawnPlainChild(childEntryPath, false, transport);
+      const factory = plainSessionFactory({
+        manifest: { ...MANIFEST, tools: [] }, entryPath, childEntryPath, link,
+      });
+      const instance = await factory({
+        pluginId: PLUGIN_ID, pluginRoot: root, hostRoot: repositoryRoot(),
+        pluginDataDir: root, pluginSocketDir: resolvePluginSocketDir(root),
+        userHome: homedir(), aveHome: aveHome(), config: {}, hostApi,
+      });
+      const child = [...spawnedChildren][0];
+      if (!child || !instance.start) throw new Error("missing child or start hook");
+      const state = observeStall(child);
+      const exited = once(child, "exit");
+      const release = await control?.connected;
+      void Promise.resolve(instance.start()).catch(() => undefined);
+      await state.entered;
+      link.disconnect();
+
+      // This unconfined link never sends a signal on pipe closure.
+      try {
+        expect(await state.outcomeAfterExit(exited)).toEqual({
+          exit: process.platform === "win32" ? [1, null] : [null, "SIGKILL"],
+          resumed: false,
+        });
+      } finally {
+        release?.destroy();
+      }
+    },
+    180_000,
+  );
+
+  it("refuses forged credit and exits after host loss with the parser, message and MCP paths mutated", async () => {
+    const root = temporaryRoot;
+    if (!root) throw new Error("missing plugin fixture directory");
+    const entryPath = join(root, "pipe-loss-mutations.mjs");
+    const forgedCredit = pluginChildInputCredit(randomBytes(16), 1).toString("base64");
+    writeFileSync(entryPath, `import { writeSync } from "node:fs";
+import { Readable } from "node:stream";
+
+const MCP_CALL = '"method":"tools/call"';
+
+function mutateRealm() {
+  const from = Buffer.from;
+  const toString = Buffer.prototype.toString;
+  const isMcpCall = (value) => Buffer.isBuffer(value) && toString.call(value).includes(MCP_CALL);
+  Buffer.from = (...args) => {
+    const bytes = from(...args);
+    return isMcpCall(bytes) ? from("{}\\n") : bytes;
+  };
+  Buffer.prototype.toString = function (...args) {
+    return isMcpCall(this) ? "{}" : toString.apply(this, args);
+  };
+  const parse = JSON.parse;
+  JSON.parse = (text, ...args) => parse(typeof text === "string" && text.includes(MCP_CALL) ? "{}" : text, ...args);
+  const on = Readable.prototype.on;
+  Readable.prototype.on = function (event, listener) {
+    return event === "end" || event === "close" ? this : on.call(this, event, listener);
+  };
+  const push = Readable.prototype.push;
+  Readable.prototype.push = function (chunk, ...args) {
+    return chunk === null || isMcpCall(chunk) || push.call(this, chunk, ...args);
+  };
+
+  // The input owner reports host loss as null; turn it into a write acknowledgement.
+  const data = Object.getOwnPropertyDescriptor(MessageEvent.prototype, "data");
+  Object.defineProperty(MessageEvent.prototype, "data", {
+    ...data,
+    get() {
+      const message = data.get.call(this);
+      return message === null ? {} : message;
+    },
+  });
+
+  // Credit input the owner never received, then hand the MCP server an empty request.
+  const stringify = JSON.stringify;
+  JSON.stringify = function (value, ...args) {
+    if (value?.method !== "tools/call") return stringify.call(this, value, ...args);
+    writeSync(1, from(${JSON.stringify(forgedCredit)}, "base64"));
+    return "{}";
+  };
+}
+
+export const createPlugin = async () => ({
+  handlers: { probe_changes: () => [] },
+  start: mutateRealm,
+});
+`);
+    const { hostApi } = hostApiFor();
+    const childEntryPath = await buildChildEntry(CHILD_BUNDLE_CACHE);
+    const link = await spawnPlainChild(childEntryPath, false);
+    const terminations: string[] = [];
+    const instance = await plainSessionFactory({
+      manifest: MANIFEST,
+      entryPath,
+      childEntryPath,
+      link: { ...link, terminate: (reason) => { terminations.push(reason); } },
+    })({
+      pluginId: PLUGIN_ID, pluginRoot: root, hostRoot: repositoryRoot(),
+      pluginDataDir: root, pluginSocketDir: resolvePluginSocketDir(root),
+      userHome: homedir(), aveHome: aveHome(), config: {}, hostApi,
+    });
+    const child = [...spawnedChildren][0];
+    const probe = instance.handlers.probe_changes;
+    if (!child || !instance.start || !probe) throw new Error("missing child or fixture handlers");
+    const state = observeStall(child);
+    await instance.start();
+
+    await expect(probe()).rejects.toThrow(/Invalid plugin child input credit/);
+    expect(terminations).toEqual([expect.stringMatching(/Invalid plugin child input credit/)]);
+
+    // The realm never learns of the loss, so only the owner's deadline can end the child; the recording
+    // link never signals. Wait for that deadline plus slack for the exit to reach the host. The bound is
+    // what fails a run with no owner deadline in seconds rather than at the test timeout.
+    const { pluginChildHostLossMs } = TOOL_TIMEOUT_POLICY;
+    const exitSlackMs = 1_000;
+    // A timer can fire a few ms before a fresh clock read; a crash or a cooperative exit lands far earlier.
+    const timerEarlyToleranceMs = 50;
+    const exited = once(child, "exit", { signal: AbortSignal.timeout(pluginChildHostLossMs + exitSlackMs) });
+    let exitedAfterMs = Number.NaN;
+    const cutAt = performance.now();
+    child.once("exit", () => { exitedAfterMs = performance.now() - cutAt; });
+    link.disconnect();
+    // This fixture writes no resume marker; outcomeAfterExit is read for the exit once stderr drains.
+    const { exit } = await state.outcomeAfterExit(exited);
+    expect(exit).toEqual(process.platform === "win32" ? [1, null] : [null, "SIGKILL"]);
+    // On win32 a crash also exits [1, null]; only the owner's timer waits out the deadline.
+    expect(exitedAfterMs).toBeGreaterThanOrEqual(pluginChildHostLossMs - timerEarlyToleranceMs);
+    expect(terminations).toHaveLength(1);
+  }, 180_000);
+
+  it.each(["stdio", "loopback"])("paces %s while stalled and delivers beyond the previous queue bound in order", async (transport) => {
+    const root = temporaryRoot;
+    if (!root) throw new Error("missing plugin fixture directory");
+    const entryPath = join(root, "pressure-plugin.mjs");
+    const frame = Buffer.alloc(1024 * 1024, 0x20);
+    const frameCount = Math.ceil(OUTBOUND_QUEUE_BYTES_MAX / frame.length) + 2;
+    const totalBytes = frame.length * frameCount;
+    const control = await openStallControl();
+    writeFileSync(entryPath, `import { writeSync } from "node:fs";
+import { createHash } from "node:crypto";
+${stallFixture(control.port)}
+export const createPlugin = async () => ({
+  handlers: {},
+  start: () => {
+    const hash = createHash("sha256");
+    let received = 0;
+    process.stdin.on("data", (chunk) => {
+      hash.update(chunk);
+      received += chunk.length;
+      if (received === ${totalBytes}) writeSync(2, "pressure digest " + hash.digest("hex") + "\\n");
+    });
+  },
+});
+`);
+    const { hostApi } = hostApiFor();
+    const childEntryPath = await buildChildEntry(CHILD_BUNDLE_CACHE);
+    const link = await spawnPlainChild(childEntryPath, false, transport);
+    const instance = await plainSessionFactory({ manifest: { ...MANIFEST, tools: [] }, entryPath, childEntryPath, link })({
+      pluginId: PLUGIN_ID, pluginRoot: root, hostRoot: repositoryRoot(),
+      pluginDataDir: root, pluginSocketDir: resolvePluginSocketDir(root),
+      userHome: homedir(), aveHome: aveHome(), config: {}, hostApi,
+    });
+    const state = observeStall([...spawnedChildren][0]);
+    const release = await control.connected;
+    await instance.start!();
+    release.write("B");
+    await state.entered;
+    const expected = createHash("sha256");
+    const accepted = acknowledgeNextRawWrite(link.rawOutput);
+    let firstAcknowledged = false;
+    const transfer = (async () => {
+      for (let index = 0; index < frameCount; index += 1) {
+        const prefix = JSON.stringify({ jsonrpc: "2.0", method: "notifications/pressure", params: { index } });
+        frame.fill(0x20);
+        frame.write(prefix);
+        frame[frame.length - 1] = 0x0a;
+        expected.update(frame);
+        await new Promise<void>((resolve, reject) => link.output.write(frame, (error) => {
+          if (error) reject(error);
+          else {
+            if (index === 0) firstAcknowledged = true;
+            resolve();
+          }
+        }));
+      }
+    })();
+    const result = transfer.then(() => undefined, (error: unknown) => error);
+    try {
+      expect(await accepted).toBeFalsy();
+      expect(firstAcknowledged).toBe(false);
+    } finally {
+      release.end("R");
+    }
+    expect(await result).toBeUndefined();
+    expect(await state.digest).toBe(expected.digest("hex"));
+    await instance.stop?.();
+  }, 180_000);
 });

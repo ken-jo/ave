@@ -2322,6 +2322,44 @@ Key boundaries:
   card lists the rest but answering it does not count, so the next launch asks
   again.
 
+### Process plugin lifecycle
+
+On Linux and macOS, the host starts a trusted launch wrapper as the leader of a
+detached process group. The wrapper waits on a dedicated release pipe. The host
+registers the PGID with the reaper and waits for both the queued write to flush
+and a matching framed acknowledgment from that reaper. Only then does the host
+send the release byte. The wrapper closes its release descriptor and executes
+the mandatory sandbox command. EOF before the release byte makes the wrapper
+exit without executing the command, including when the host dies during
+registration or immediately after acknowledgment.
+
+Once released, the group is registered with the reaper. If the host dies while
+the reaper is live, the reaper reads EOF on its host-liveness pipe and kills the
+registered groups. If the host observes reaper loss, it stops the process
+plugins it tracks and refuses new launches until recovery. Simultaneous loss
+of the host and reaper can leave a released group without either cleanup path.
+Explicit stop and leader exit also trigger termination of a still-owned group.
+The tracker cancels pending force-kill escalation when it releases the group
+after observing its disappearance. A group that disappears and has its PGID
+reused between observations retains the platform's PGID-reuse risk.
+
+Linux tears down the sandbox PID namespace, including descendants in new process
+groups or sessions. On macOS, a descendant that moves to a different process group
+with `setsid()` or `setpgid()` can survive host death. This is an accepted limit
+of macOS process cleanup. The descendant remains bound by its original Seatbelt
+profile, and its host-owned proxy listener goes away with the host.
+
+The [launch handoff tests](../../src/main/__tests__/process-group-reaper.test.ts)
+kill a sacrificial host before registration, after the registration write
+without an acknowledgment, after acknowledgment without release, and after
+release. Each checks that the OS reports the group gone. The
+[host-death heartbeat test](../../src/plugins/isolation/__tests__/process-plugin-host-death.test.ts)
+waits for readiness and stdin EOF acknowledgments before killing a sacrificial
+host that launched the confined plugin. It verifies that the original group is
+gone and checks the processes that wrote the heartbeats. On Linux the new session
+is also gone. On macOS it survives, acknowledges a probe, and cannot write
+outside its granted roots or use the former host's plugin proxy.
+
 ### Extension alerts and scheduled routines
 
 The [alerts design](../design/plugin-alerts.md) defines the complete alerts
@@ -2865,6 +2903,14 @@ A failed native deny verification seals the session against further wraps and
 worker grants until reset. Confinement stays marked active so callers cannot
 fall back to host execution. Previously issued commands are not revoked by this
 check.
+
+The in-process reference runtime (the child runtime that shares one JavaScript
+realm with plugin code) is not a boundary against plugin code; the host treats
+all child frames as untrusted. The boundary is the child process and its OS
+confinement. The reference child adds a worker thread that never runs plugin
+code: it owns the host pipe, decodes host input and ends the child 2 s after it
+observes host loss, even while plugin code blocks or misleads the main thread.
+A native-executable child has no such worker.
 
 Isolation between plugins is a macOS and Linux property. There every wrap of
 plugin-owned code — plugin child, delegated worker, bundled hook, bundled MCP
@@ -3550,6 +3596,25 @@ Security-sensitive areas are intentionally centralized:
 Changes spanning these areas merit proportionate cross-cutting review. That
 review is advisory, never a merge gate.
 
+### Query credential masking
+
+Both scrubbers in `src/shared/dlp.ts` mask credential query values, signed-URL
+signatures and session tokens, by the credential detector contract in
+[multi-source-git-marketplace.md](../design/multi-source-git-marketplace.md).
+A value ends before the delimiters of the text that carries it, so a scrubbed
+JSON log line in a diagnostics bundle stays one valid object. The value is
+masked up to `&` or whitespace. A quote, backtick or `>` ends it earlier only
+where it closes an opener still open before the value (an odd count of that
+quote at the same escape depth, or an unclosed `<`) and a delimiter follows;
+any other quote is masked with the value. The count covers the whole text
+before the value, so an unrelated quote there, such as an apostrophe in
+prose, can open the span that a later quote closes. An opaque signature is
+masked in a signed query, identified by its other parameters, and elsewhere
+only by a digest or mixed-case base64 shape, so a digest option such as
+`?sig=sha256` stays readable. Query syntax is read through up to three
+percent-encoding layers and three layers of JSON `\u00XX` escapes; a fourth
+layer is outside the contract.
+
 ### Home path redaction
 
 The redactor identifies tokens in the original audit or display text. It
@@ -3579,6 +3644,36 @@ For supported homes the redactor matches both the configured spelling, with
 trailing separators removed, and the normalized spelling. Platform path
 normalization collapses dot segments and duplicate separators without
 consulting the working directory.
+
+The generic users/home rules redact any account's profile in display text and
+in audit path values (`redactFsPath`), after the configured home's own forms,
+with `[home]` or `file://[home]`, under a drive (also after a `\\?\` or `\\.\`
+device prefix, which is kept), a UNC server and optional share (both kept), a
+`/users/` or a `/home/` root. A profile name is letters,
+marks, digits, `._-` and apostrophes before a letter or digit, each also
+percent-encoded up to the same three layers or written as a JSON `\u` escape,
+whose backslashes double with each serialization. An escape-like run followed
+by the same run of backslashes before a folder name is a separator, so
+`C:\Users\bob\uface\x` keeps the folder `uface`. Its separators may be
+encoded either way too. Encodings deeper than three
+layers are outside the contract. Words after a space join the name in a path
+value, before a separator, a quote, the value's end, or a query or fragment. In display
+text they join only inside a quoted or backtick span that starts with the home,
+before a separator or the closing quote. Elsewhere in text a name stops at
+whitespace, a JSON-escaped space (`\u0020`) included, so a following command
+argument stays visible, and the rest of an
+unquoted spaced name of another account (`/home/Demo Smith` as `[home] Smith`)
+is a known residual. Command text inside a JSON string value is unquoted shell
+text too, so `{"command":"cat /home/Demo Smith/x"}` becomes
+`cat [home] Smith/x`, while a quoted path inside it, as in
+`cat \"/home/Demo Smith/x\"`, is masked in full. The configured home matches
+literally, spaces included.
+A name stops where a drive profile joins it directly, so the joined home is
+redacted too. A home path right after a URL authority, plain or percent-encoded
+and with escaped host bytes, keeps the separator that ends the authority, for
+the configured home and the generic rules alike. An escaped byte joined
+directly to a configured home, as in `/home/bob%C3%A9`, keeps the base literal
+boundary and stays after the marker.
 
 ### Windows object ownership
 

@@ -5,6 +5,8 @@ import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
+import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
+import { terminateChildProcess } from "../../../tools/terminate-child-process.js";
 import { frameMessage, StdioFrameDecoder } from "../../../mcp/stdio-framing.js";
 import { INVOCATION_META, RPC_METHOD_NOT_FOUND } from "../../../mcp/protocol-constants.js";
 import { evaluateHostFetch } from "../../../main/host-fetch-guard.js";
@@ -203,6 +205,59 @@ describe("an observed exit is not a requested termination", () => {
     childToHost.write(Buffer.alloc(FRAME_BYTES_MAX + 1, 0x78));
     await expect(pending).rejects.toThrow(/exceeded .* bytes/);
     expect(terminated).toHaveLength(1);
+  });
+});
+
+describe("host pipe loss", () => {
+  it.each([
+    ["finish", "end"],
+    ["end", "close"],
+    ["close", "finish"],
+    ["end", "exit"],
+    ["finish", "stop"],
+  ] as const)("starts one graceful shutdown when %s arrives first and %s arrives during grace", async (first, next) => {
+    vi.useFakeTimers();
+    const { link, childToHost, fireGone } = recordedLink();
+    const kill = vi.fn(() => true);
+    const child = { exitCode: null, signalCode: null, kill };
+    const transport = transportOver({
+      ...link,
+      terminate: () => { terminateChildProcess(child, TOOL_TIMEOUT_POLICY.pluginChildForceKillMs); },
+    });
+    const grace = TOOL_TIMEOUT_POLICY.pluginShutdownKillGraceMs;
+    const force = TOOL_TIMEOUT_POLICY.pluginChildForceKillMs;
+    const loss = {
+      finish: () => link.output.end(),
+      end: () => childToHost.emit("end"),
+      close: () => childToHost.emit("close"),
+    };
+
+    loss[first]();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(grace - 1);
+    let stop: Promise<void> | undefined;
+    if (next === "exit") fireGone("child exited");
+    else if (next === "stop") stop = transport.closeInput("session stopped");
+    else loss[next]();
+    expect(kill).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    if (next === "exit") {
+      await vi.advanceTimersByTimeAsync(force);
+      expect(kill.mock.calls).toEqual([]);
+      await expect(transport.exited).resolves.toBe("child exited");
+      return;
+    }
+    expect(kill.mock.calls).toEqual([["SIGTERM"]]);
+    await stop;
+
+    await vi.advanceTimersByTimeAsync(force - 1);
+    expect(kill.mock.calls).toEqual([["SIGTERM"]]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(kill.mock.calls).toEqual([["SIGTERM"], ["SIGKILL"]]);
+
+    fireGone("child exited");
+    await expect(transport.exited).resolves.toBe("child exited");
   });
 });
 

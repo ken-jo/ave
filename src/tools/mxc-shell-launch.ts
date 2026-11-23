@@ -1,16 +1,15 @@
-// Prepare invocation-scoped container launch resources; release the proxy only after the launcher and its job have exited.
-// This prevents surviving processes from reaching a port reused by another invocation.
+// Prepare invocation-scoped container launch resources. The invocation's lifecycle closes the proxy only after the launcher and its job
+// have exited, so a surviving process can never reach a port reused by another invocation.
 import { win32 as winPath } from "node:path";
 import type { ChildProcess } from "node:child_process";
 import { lstatSync, readdirSync } from "node:fs";
 import { windowsSystemRoot } from "../shared/windows-system-path.js";
 
 import { aveHomeReadBoundaryCovering, getProtectedReadDenyFloor } from "../permissions/asrt-sandbox.js";
-import {
-  openInvocationProxyListener,
-  type InvocationProxyListener,
-} from "../permissions/egress-invocation-listener.js";
+import { openInvocationProxyListener } from "../permissions/egress-invocation-listener.js";
 import { openHostEgressListener } from "../permissions/egress-host-listener.js";
+import { egressInvocationAbortSignal, egressInvocationOwner, onEgressInvocationReleased, releaseEgressInvocation } from "../permissions/egress-invocations.js";
+import { detectMxcShellCapability, getWindowsShellConsentRevision, onSandboxStatusChanged } from "../permissions/sandbox-capability.js";
 import {
   buildMxcShellRequest,
   openMxcRequestTransport,
@@ -19,15 +18,16 @@ import {
   type MxcDirectoryEntry,
   type ShellFilesystemPolicy,
 } from "../permissions/mxc-windows.js";
+import type { ContainedShellLifecycle } from "./contained-shell-lifecycle.js";
 
 export interface MxcShellLaunch {
   /** `wxc-exec.exe` followed by its arguments; spawn with `shell: false`. */
   readonly argv: readonly string[];
   readonly proxyPort: number;
+  /** Admit connections after the final shell admission checks, immediately before spawn. */
+  activate(): void;
   /** Bind policy delivery immediately after spawning the launcher. */
   bindChild(child: ChildProcess): void;
-  /** Close the listener. Call once `wxc-exec.exe` has exited. Idempotent. */
-  release(): Promise<void>;
 }
 
 export interface PrepareMxcShellLaunchInput {
@@ -64,10 +64,59 @@ function listDirectory(directory: string): MxcDirectoryEntry[] {
 /** Margin MXC's own timeout keeps behind the host's lifetime watch. */
 const MXC_TIMEOUT_MARGIN_MS = 30_000;
 
-export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput): Promise<MxcShellLaunch> {
-  const wxcExec = await resolveHostWxcExecPath();
+/**
+ * Every resource is registered with `lifecycle` as it is allocated, and every failure is thrown raw: the
+ * lifecycle's owner disposes and formats. Ending the invocation (its release, its cancellation, a route or
+ * consent change) revokes the lifecycle, which stops all forwarding at once.
+ */
+export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, lifecycle: ContainedShellLifecycle): Promise<MxcShellLaunch> {
+  const capability = detectMxcShellCapability();
+  if (capability === undefined) throw new Error("Container shell route is unavailable");
+  const consentRevision = getWindowsShellConsentRevision();
+  const token = input.egressToken;
+  const owner = egressInvocationOwner(token);
+  if (owner?.kind !== "shell" || owner.requiresListener !== true) {
+    throw new Error("Container egress requires a live shell invocation");
+  }
+  lifecycle.onRevoke(() => releaseEgressInvocation(token));
+  const invocationSignal = egressInvocationAbortSignal(token);
+  let active = false;
+  const isRouteCurrent = (): boolean =>
+    detectMxcShellCapability() === capability && getWindowsShellConsentRevision() === consentRevision;
+  // The invocation's own end (cancellation or release) is reported before what it caused.
+  const assertAdmission = (): void => {
+    invocationSignal?.throwIfAborted();
+    if (!isRouteCurrent()) throw new Error("Container shell route is unavailable");
+    if (egressInvocationOwner(token) !== owner) throw new Error("Container egress requires a live shell invocation");
+    lifecycle.signal.throwIfAborted();
+  };
+  const admission = {
+    signal: lifecycle.signal,
+    assertCanBind: assertAdmission,
+    acceptsConnections: () => active && !lifecycle.signal.aborted,
+    adopt: (close: () => Promise<void>) => lifecycle.defer(close),
+  };
+  // Watched for the whole invocation: any of these ends it, before spawn or while the job runs.
+  lifecycle.defer(onEgressInvocationReleased((released) => {
+    if (released === token) lifecycle.revoke();
+  }));
+  lifecycle.defer(onSandboxStatusChanged(() => {
+    if (!isRouteCurrent()) lifecycle.revoke();
+  }));
+  const revokeOnAbort = (): void => lifecycle.revoke();
+  invocationSignal?.addEventListener("abort", revokeOnAbort, { once: true });
+  lifecycle.defer(() => invocationSignal?.removeEventListener("abort", revokeOnAbort));
+  if (invocationSignal?.aborted === true) lifecycle.revoke();
+  assertAdmission();
+  let wxcExec: string;
+  try {
+    wxcExec = await resolveHostWxcExecPath();
+  } catch {
+    // The resolver's failures name the launcher's absolute path.
+    throw new Error("Contained shell launcher could not be verified on this installation");
+  }
   if (!input.exists(wxcExec)) {
-    throw new Error(`Microsoft Execution Containers launcher is missing: ${wxcExec}`);
+    throw new Error("Contained shell launcher is missing from this installation");
   }
   // A grant would carve the Ave home deny open, so inside that home only a re-allowed child is granted.
   const insideBoundary = (path: string): boolean => aveHomeReadBoundaryCovering(path) !== undefined;
@@ -77,49 +126,39 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput): 
     allowWrite: input.filesystem.allowWrite.filter((path) => !insideBoundary(path)),
     protectedFloor: getProtectedReadDenyFloor(),
   }, input.exists, input.list ?? listDirectory);
-  let listener: InvocationProxyListener | undefined;
-  const relay = await openHostEgressListener(input.egressToken);
-  try {
-    listener = await openInvocationProxyListener({
-      upstream: () => ({ host: "127.0.0.1", port: relay.port, proxyAuthorization: relay.proxyAuthorization }),
-      onRefused: relay.recordRefusal,
-    });
-    relay.registerPort(listener.port);
-    const systemRoot = windowsSystemRoot();
-    const env: Record<string, string> = { ...input.env };
-    if (!Object.keys(env).some((key) => key.toUpperCase() === "SYSTEMROOT")) env["SYSTEMROOT"] = systemRoot;
-    const request = buildMxcShellRequest({
-      commandLine: input.commandLine,
-      cwd: winPath.normalize(input.cwd),
-      grants,
-      env,
-      proxyUrl: listener.url,
-      timeoutMs: input.timeoutMs + MXC_TIMEOUT_MARGIN_MS,
-    });
-    const opened = listener;
-    const transport = await openMxcRequestTransport(request, wxcExec);
-    return {
-      argv: [wxcExec, ...transport.args],
-      proxyPort: opened.port,
-      bindChild: transport.bindChild,
-      release: async () => {
-        try {
-          await transport.release();
-        } finally {
-          try {
-            await opened.close();
-          } finally {
-            await relay.close();
-          }
-        }
-      },
-    };
-  } catch (error) {
-    try {
-      await listener?.close();
-    } finally {
-      await relay.close();
-    }
-    throw error;
-  }
+  assertAdmission();
+  const relay = await openHostEgressListener(token, admission);
+  assertAdmission();
+  const listener = await openInvocationProxyListener({
+    admission,
+    upstream: () => admission.acceptsConnections()
+      ? { host: "127.0.0.1", port: relay.port, proxyAuthorization: relay.proxyAuthorization }
+      : undefined,
+    onRefused: relay.recordRefusal,
+  });
+  assertAdmission();
+  relay.registerPort(listener.port);
+  const systemRoot = windowsSystemRoot();
+  const env: Record<string, string> = { ...input.env };
+  if (!Object.keys(env).some((key) => key.toUpperCase() === "SYSTEMROOT")) env["SYSTEMROOT"] = systemRoot;
+  const request = buildMxcShellRequest({
+    commandLine: input.commandLine,
+    cwd: winPath.normalize(input.cwd),
+    grants,
+    env,
+    proxyUrl: listener.url,
+    timeoutMs: input.timeoutMs + MXC_TIMEOUT_MARGIN_MS,
+  });
+  const transport = await openMxcRequestTransport(request, wxcExec);
+  lifecycle.defer(() => transport.release());
+  assertAdmission();
+  return {
+    argv: [wxcExec, ...transport.args],
+    proxyPort: listener.port,
+    activate: () => {
+      assertAdmission();
+      active = true;
+    },
+    bindChild: transport.bindChild,
+  };
 }
