@@ -1,9 +1,10 @@
-import { closeSync, constants, existsSync, fstatSync, linkSync, lstatSync, openSync, readdirSync, renameSync, unlinkSync, type BigIntStats } from "node:fs";
-import { randomBytes } from "node:crypto";
+import { closeSync, constants, existsSync, fstatSync, linkSync, lstatSync, openSync, readdirSync, readSync, unlinkSync, type BigIntStats } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
 import { open, type FileHandle } from "node:fs/promises";
 import { join } from "node:path";
 import { replaceStagedFile } from "../../lib/atomic-file.js";
 import { createLogger } from "../../lib/logger.js";
+import { renameFile, renameFileOnce } from "../../lib/transient-fs-lock-retry.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { forceKillManagedChildProcess, spawnManaged } from "../managed-child-processes.js";
 import { windowsPathKindHelperIn } from "../windows-path-kind-launcher.js";
@@ -49,8 +50,32 @@ export class HeldFileHelperUnavailableError extends Error {
   partialCopy: "removed" | "absent" | "left" | null = null;
   /** For such a copy: the identity its temporary file had while the helper wrote it, or null when it was never seen. */
   partFile: FileIdentity | null = null;
+  /** For such a copy whose temporary file was left: where it can still be found, or null. */
+  partLeftAt: LeftPart | null = null;
   constructor(readonly helper: string, readonly why = "it is missing", message?: string) {
     super(message ?? `the download file helper ${helper} cannot be used: ${why}. Reinstall Ave; in a development checkout, build it (${HELPER_BUILD[process.platform] ?? "no build for this platform"}).`);
+  }
+}
+
+/** What became of a failed copy's temporary file, and where one that was left can still be found. */
+export interface StoppedCopy { readonly partialCopy: "removed" | "absent" | "left"; readonly partLeftAt: LeftPart | null }
+const stoppedCopies = new WeakMap<Error, StoppedCopy>();
+
+/** For the error a copy failed with after it may have written its temporary file: what became of that file, or null. */
+export function stoppedCopyOf(error: unknown): StoppedCopy | null {
+  if (error instanceof HeldFileHelperUnavailableError) {
+    return error.partialCopy === null ? null : { partialCopy: error.partialCopy, partLeftAt: error.partLeftAt };
+  }
+  return error instanceof Error ? stoppedCopies.get(error) ?? null : null;
+}
+
+function markStoppedCopy(error: unknown, result: OwnFileResult): void {
+  const stopped: StoppedCopy = { partialCopy: result.outcome, partLeftAt: result.outcome === "left" ? result.at : null };
+  if (error instanceof HeldFileHelperUnavailableError) {
+    error.partialCopy = stopped.partialCopy;
+    error.partLeftAt = stopped.partLeftAt;
+  } else if (error instanceof Error) {
+    stoppedCopies.set(error, stopped);
   }
 }
 
@@ -70,81 +95,271 @@ export interface FileIdentity {
   readonly birthtimeNs: bigint;
 }
 
+/** A file's content: its size, its last change, and digests of its first and last 64 KiB. */
+interface Fingerprint {
+  readonly size: bigint;
+  readonly mtimeNs: bigint;
+  readonly head: string;
+  readonly tail: string;
+}
+
 /**
- * What is at `name` in `folder` now, against `expected`: the same ordinary file, nothing (`absent`), or anything else, including a
- * folder that is no longer the held one. Every failure to tell is `other`.
+ * How a temporary file is known: by its file id, or by its content in a folder without hard links (FAT, exFAT), where a rename gives the
+ * file another id.
  */
-function compareFile(folder: HeldDirectory, name: string, expected: FileIdentity): "same" | "absent" | "other" {
+export type PartIdentity = { readonly kind: "fileId"; readonly file: FileIdentity } | { readonly kind: "fingerprint"; readonly content: Fingerprint };
+
+/** A temporary file a cleanup left: the name it has now in its folder, and how it is known there. */
+export interface LeftPart { readonly name: string; readonly identity: PartIdentity }
+
+/** What a cleanup did. A file it left can still be found at `at`, or is null when what it found there is not the file that was written. */
+export type OwnFileResult = { readonly outcome: "removed" | "absent" } | { readonly outcome: "left"; readonly at: LeftPart | null };
+
+/** The hidden name a temporary file is moved to before it is checked and removed. */
+export const MOVED_ASIDE_NAME = /^\.[0-9a-f]{32}\.removing$/u;
+const FINGERPRINT_SPAN = 64 * 1024;
+const NOFOLLOW = constants.O_NOFOLLOW ?? 0;
+
+// What is at a name, against what is expected there. `unheld`: the folder is no longer the held one (moved, replaced or unmounted);
+// `unreadable`: what is there could not be read.
+type Found = "same" | "absent" | "other" | "unheld" | "unreadable";
+
+function compareFile(folder: HeldDirectory, name: string, expected: FileIdentity): Found {
   let info: BigIntStats | null;
   try {
     info = entryIn(folder, name);
-  } catch {
-    return "other";
+  } catch (error) {
+    return error instanceof HeldDirectoryRefusedError ? "unheld" : "unreadable";
   }
   if (info === null) return "absent";
-  return info.isFile() && info.dev === expected.dev && info.ino === expected.ino && info.birthtimeNs === expected.birthtimeNs ? "same" : "other";
+  return info.isFile() && sameFile(info, expected) ? "same" : "other";
+}
+
+function sameFile(info: FileIdentity, expected: FileIdentity): boolean {
+  return info.dev === expected.dev && info.ino === expected.ino && info.birthtimeNs === expected.birthtimeNs;
+}
+
+function sameContent(found: Fingerprint, expected: Fingerprint): boolean {
+  return found.size === expected.size && found.mtimeNs === expected.mtimeNs && found.head === expected.head && found.tail === expected.tail;
+}
+
+// The ordinary file at `name` in `folder`, read through one open descriptor: its identity and its content.
+function contentAt(folder: HeldDirectory, name: string): Exclude<Found, "same"> | { readonly file: FileIdentity; readonly content: Fingerprint } {
+  try {
+    heldFolder(folder);
+  } catch {
+    return "unheld";
+  }
+  let fd: number;
+  try {
+    fd = openSync(join(folder.path, name), constants.O_RDONLY | NOFOLLOW);
+  } catch (error) {
+    return codeOf(error) === "ENOENT" ? "absent" : "unreadable";
+  }
+  try {
+    const info = fstatSync(fd, { bigint: true });
+    if (!info.isFile()) return "other";
+    const digest = (position: number, length: number): string => {
+      const buffer = Buffer.alloc(length);
+      for (let done = 0; done < length;) {
+        const read = readSync(fd, buffer, done, length - done, position + done);
+        if (read === 0) break;
+        done += read;
+      }
+      return createHash("sha256").update(buffer).digest("hex");
+    };
+    const size = Number(info.size);
+    const span = Math.min(size, FINGERPRINT_SPAN);
+    return {
+      file: { dev: info.dev, ino: info.ino, birthtimeNs: info.birthtimeNs },
+      content: { size: info.size, mtimeNs: info.mtimeNs, head: digest(0, span), tail: digest(size - span, span) },
+    };
+  } catch {
+    return "unreadable";
+  } finally {
+    closeSync(fd);
+  }
+}
+
+// Whether a volume keeps a file's id across a rename and can link a file back, probed once per volume in this process by linking the
+// file at `name` to a fresh hidden name and checking it there. A failed probe is read as no hard links: the content check still holds.
+const linkSupport = new Map<bigint, boolean>();
+function linksIn(folder: HeldDirectory, name: string): boolean {
+  const known = linkSupport.get(folder.dev);
+  if (known !== undefined) return known;
+  const path = join(folder.path, name);
+  const probe = join(folder.path, `.${randomBytes(16).toString("hex")}.probe`);
+  let supported = false;
+  try {
+    linkSync(path, probe);
+    try {
+      const linked = lstatSync(probe, { bigint: true });
+      supported = linked.nlink >= 2n && sameFile(linked, lstatSync(path, { bigint: true }));
+    } finally {
+      try {
+        unlinkSync(probe);
+      } catch (error) {
+        log.warn({ path, alsoAt: probe, code: codeOf(error) }, "a temporary download file is also left under a hard-link probe's name");
+      }
+    }
+  } catch {
+    supported = false;
+  }
+  linkSupport.set(folder.dev, supported);
+  return supported;
+}
+
+/** Forget every volume's probed hard-link support. */
+export function _forgetLinkSupportForTest(): void {
+  linkSupport.clear();
 }
 
 /**
- * Remove the file `name` in `folder` only if it is `expected`, never a file put at that name. It is first renamed to a fresh hidden name in
- * the same folder, checked there, and only then removed by `remove` under that name, so a file put at `name` meanwhile is not touched. A
- * file that turns out not to be `expected`, or that `remove` does not remove, goes back to `name` if that is still free, or stays at the
- * hidden name, both logged; a later attempt by `name` can then find it again. Anything that cannot be done is logged and leaves the file.
- * Never throws.
+ * Remove a temporary file, now at `at` in `folder` and first written as `original`, only while it is the file `identity` names, never a
+ * file put at either name. It is moved to a fresh hidden name in the same folder, checked there, and only then removed under that name by
+ * `remove`, so a file put at its name meanwhile is not touched. A file that turns out not to be that file, or that `remove` does not
+ * remove, goes back to `original` if that is still free, or stays at the hidden name; the result says where a file that may be the
+ * temporary file is left, so it can be tried again. Every step that cannot be done is logged with its own reason. Never throws.
  */
 export async function removeOwnFile(
-  folder: HeldDirectory, name: string, expected: FileIdentity,
+  folder: HeldDirectory, original: string, at: string, identity: PartIdentity,
   remove: (folder: HeldDirectory, name: string) => Promise<"removed" | "absent" | "cancelled">,
-): Promise<"removed" | "absent" | "left"> {
-  const path = join(folder.path, name);
-  const found = compareFile(folder, name, expected);
-  if (found === "absent") return "absent";
-  if (found === "other") {
-    log.warn({ path }, "a temporary download file is left: what is at its name is not the file that was written");
-    return "left";
-  }
-  const hidden = `.${randomBytes(16).toString("hex")}.removing`;
-  const hiddenPath = join(folder.path, hidden);
-  try {
-    renameSync(path, hiddenPath);
-  } catch (error) {
-    log.warn({ path, code: codeOf(error) }, "a temporary download file is left: it could not be moved aside to be checked");
-    return "left";
-  }
-  const moved = compareFile(folder, hidden, expected);
-  if (moved === "absent") return "absent";
-  if (moved === "other") {
-    putBack(hiddenPath, path, "it is not the file that was written");
-    return "left";
-  }
-  let why: string;
-  try {
-    const removed = await remove(folder, hidden);
-    if (removed !== "cancelled") return removed;
-    why = "its removal was cancelled";
-  } catch (error) {
-    why = `it could not be removed: ${(error as Error).message}`;
-  }
-  putBack(hiddenPath, path, why);
-  return "left";
+): Promise<OwnFileResult> {
+  const path = join(folder.path, at);
+  if (identity.kind === "fingerprint") return removeByContent(folder, original, at, identity.content, remove);
+  const found = compareFile(folder, at, identity.file);
+  if (found !== "same") return notMoved(found, path, { name: at, identity });
+  if (linksIn(folder, at)) return removeByFileId(folder, original, at, identity, remove);
+  // No hard links: a rename may give the file another id, so it is known by its content from here on.
+  const now = contentAt(folder, at);
+  if (typeof now === "string") return notMoved(now, path, { name: at, identity });
+  if (!sameFile(now.file, identity.file)) return notMoved("other", path, { name: at, identity });
+  return removeByContent(folder, original, at, now.content, remove);
 }
 
-// Return a file moved aside to its own name, unless something is at that name now (a hard link fails rather than replace it). Logs where
-// the file is left.
-function putBack(hiddenPath: string, path: string, why: string): void {
+// A file not moved aside, because of what was found at its name.
+function notMoved(found: Exclude<Found, "same">, path: string, keep: LeftPart): OwnFileResult {
+  if (found === "absent") return { outcome: "absent" };
+  if (found === "other") {
+    log.warn({ path }, "a temporary download file is left: what is at its name is not the file that was written");
+    return { outcome: "left", at: null };
+  }
+  if (found === "unheld") log.warn({ path }, "a temporary download file is left: its folder is no longer the chosen one (moved, replaced or unmounted)");
+  else log.warn({ path }, "a temporary download file is left: what is at its name could not be read");
+  return { outcome: "left", at: keep };
+}
+
+async function moveAside(folder: HeldDirectory, at: string, keep: LeftPart): Promise<string | OwnFileResult> {
+  const hidden = `.${randomBytes(16).toString("hex")}.removing`;
+  const path = join(folder.path, at);
+  try {
+    // A brief lock by another program is waited out: the file is checked again after the move, so the wait ages no judgment.
+    await renameFile(path, join(folder.path, hidden));
+  } catch (error) {
+    log.warn({ path, code: codeOf(error) }, "a temporary download file is left: it could not be moved aside to be checked");
+    return { outcome: "left", at: keep };
+  }
+  return hidden;
+}
+
+async function removeMoved(folder: HeldDirectory, hidden: string, remove: (folder: HeldDirectory, name: string) => Promise<"removed" | "absent" | "cancelled">): Promise<"removed" | "absent" | string> {
+  try {
+    const removed = await remove(folder, hidden);
+    return removed === "cancelled" ? "its removal was cancelled" : removed;
+  } catch (error) {
+    return `it could not be removed: ${(error as Error).message}`;
+  }
+}
+
+// A folder whose renames keep file ids: the file is checked by id at the hidden name, and put back by a hard link, which never replaces.
+async function removeByFileId(
+  folder: HeldDirectory, original: string, at: string, identity: Extract<PartIdentity, { kind: "fileId" }>,
+  remove: (folder: HeldDirectory, name: string) => Promise<"removed" | "absent" | "cancelled">,
+): Promise<OwnFileResult> {
+  const hidden = await moveAside(folder, at, { name: at, identity });
+  if (typeof hidden !== "string") return hidden;
+  const hiddenPath = join(folder.path, hidden);
+  const path = join(folder.path, original);
+  const moved = compareFile(folder, hidden, identity.file);
+  if (moved === "absent") return { outcome: "absent" };
+  if (moved === "same") {
+    const removed = await removeMoved(folder, hidden, remove);
+    if (removed === "removed" || removed === "absent") return { outcome: removed };
+    return { outcome: "left", at: { name: linkBack(hiddenPath, path, removed) ? original : hidden, identity } };
+  }
+  const why = moved === "other" ? "it is not the file that was written" : moved === "unheld" ? "its folder is no longer the chosen one" : "it could not be read";
+  const back = linkBack(hiddenPath, path, why);
+  if (moved === "other") return { outcome: "left", at: back ? null : { name: hidden, identity } };
+  return { outcome: "left", at: { name: back ? original : hidden, identity } };
+}
+
+// Link a file moved aside back to its own name unless something is at that name now; true once it is there. Logs where it is left.
+function linkBack(hiddenPath: string, path: string, why: string): boolean {
   try {
     linkSync(hiddenPath, path);
   } catch (error) {
     log.warn({ path, movedTo: hiddenPath, why, code: codeOf(error) }, "a temporary download file is left under another name, and could not be put back");
-    return;
+    return false;
   }
   try {
     unlinkSync(hiddenPath);
   } catch (error) {
     log.warn({ path, alsoAt: hiddenPath, why, code: codeOf(error) }, "a temporary download file is left, put back, but also still under another name");
-    return;
+    return true;
   }
   log.warn({ path, why }, "a temporary download file is left, put back at its name");
+  return true;
+}
+
+// A folder without hard links: the file is checked by content at the hidden name, read through a new descriptor, and put back by a rename
+// only while nothing is at its name. Between that check and the rename a file put there could be replaced; only such folders take that.
+async function removeByContent(
+  folder: HeldDirectory, original: string, at: string, content: Fingerprint,
+  remove: (folder: HeldDirectory, name: string) => Promise<"removed" | "absent" | "cancelled">,
+): Promise<OwnFileResult> {
+  const identity: PartIdentity = { kind: "fingerprint", content };
+  let hidden = at;
+  if (!MOVED_ASIDE_NAME.test(at)) {
+    const moved = await moveAside(folder, at, { name: at, identity });
+    if (typeof moved !== "string") return moved;
+    hidden = moved;
+  }
+  const hiddenPath = join(folder.path, hidden);
+  const path = join(folder.path, original);
+  const there = contentAt(folder, hidden);
+  if (there === "absent") return { outcome: "absent" };
+  if (typeof there !== "string" && sameContent(there.content, content)) {
+    const removed = await removeMoved(folder, hidden, remove);
+    if (removed === "removed" || removed === "absent") return { outcome: removed };
+    return { outcome: "left", at: { name: await renameBack(hiddenPath, path, removed) ? original : hidden, identity } };
+  }
+  const why = typeof there !== "string" || there === "other" ? "it is not the file that was written"
+    : there === "unheld" ? "its folder is no longer the chosen one" : "it could not be read";
+  const back = await renameBack(hiddenPath, path, why);
+  if (typeof there !== "string" || there === "other") return { outcome: "left", at: back ? null : { name: hidden, identity } };
+  return { outcome: "left", at: { name: back ? original : hidden, identity } };
+}
+
+// Rename a file moved aside back to its own name only while nothing is at that name; true once it is there. Logs where it is left.
+async function renameBack(hiddenPath: string, path: string, why: string): Promise<boolean> {
+  try {
+    lstatSync(path);
+    log.warn({ path, movedTo: hiddenPath, why }, "a temporary download file is left under another name: something is at its own name");
+    return false;
+  } catch (error) {
+    if (codeOf(error) !== "ENOENT") {
+      log.warn({ path, movedTo: hiddenPath, why, code: codeOf(error) }, "a temporary download file is left under another name: its own name could not be checked");
+      return false;
+    }
+  }
+  try {
+    await renameFileOnce(hiddenPath, path);
+  } catch (error) {
+    log.warn({ path, movedTo: hiddenPath, why, code: codeOf(error) }, "a temporary download file is left under another name, and could not be put back");
+    return false;
+  }
+  log.warn({ path, why }, "a temporary download file is left, put back at its name");
+  return true;
 }
 
 // The identity of the ordinary file `name` in `folder` while `folder` is still the held one, or null.
@@ -157,10 +372,21 @@ function identityOf(folder: HeldDirectory, name: string): FileIdentity | null {
   }
 }
 
-// The entry `name` in `folder`, or null when there is none; throws when `folder` is no longer the held one or cannot be read.
-function entryIn(folder: HeldDirectory, name: string): BigIntStats | null {
-  const held = lstatSync(folder.path, { bigint: true });
+// Throws a refusal unless `folder` is still the held one; one that cannot be checked (unmounted, say) is not.
+function heldFolder(folder: HeldDirectory): void {
+  let held: BigIntStats;
+  try {
+    held = lstatSync(folder.path, { bigint: true });
+  } catch {
+    throw new HeldDirectoryRefusedError("to");
+  }
   if (!held.isDirectory() || held.isSymbolicLink() || held.dev !== folder.dev || held.ino !== folder.ino) throw new HeldDirectoryRefusedError("to");
+}
+
+// The entry `name` in `folder`, or null when there is none; throws a refusal when `folder` is no longer the held one, and the error when
+// the entry cannot be read.
+function entryIn(folder: HeldDirectory, name: string): BigIntStats | null {
+  heldFolder(folder);
   try {
     return lstatSync(join(folder.path, name), { bigint: true });
   } catch (error) {
@@ -288,6 +514,17 @@ async function writeFully(target: FileHandle, buffer: Buffer, length: number): P
   }
 }
 
+// A stopped copy's temporary file, removed from the held folder; one that cannot be removed is reported left on the error that says so.
+function removeStoppedPart(path: string, part: string): void {
+  try {
+    removeIfPresent(path);
+  } catch (error) {
+    log.warn({ part, code: codeOf(error) }, "a stopped download copy's temporary file is left: it could not be removed");
+    markStoppedCopy(error, { outcome: "left", at: null });
+    throw error;
+  }
+}
+
 function removeIfPresent(path: string): void {
   try {
     unlinkSync(path);
@@ -348,7 +585,7 @@ function descriptorFileOperations(): HeldFileOperations {
       } finally {
         await source.close();
         // A copy that did not reach its commit leaves nothing behind, and is removed only from the held folder.
-        if (created) removeIfPresent(inHeld(toFd, part));
+        if (created) removeStoppedPart(inHeld(toFd, part), part);
       }
     }),
     remove: (directory, name, proceed, stop) => holding(directory, null, (fd) => {
@@ -633,23 +870,23 @@ export function _helperFileOperationsForTest(helper: string, bounds?: HelperBoun
 function helperFileOperations(helper: string, bounds: HelperBounds = POLICY_BOUNDS): HeldFileOperations {
   const run = (args: readonly string[], proceed: Proceed, stop: AbortSignal, onProgress?: () => void): Promise<string> =>
     runHelper(helper, args, proceed, stop, bounds, onProgress);
-  // A copy that ended after `ready` without its outcome may have left its temporary file. Unless the helper may still be running, it is
-  // removed through the chosen folder, held anew, only while it is the file the copy wrote. One never seen while it was written is left.
-  const removePartialCopy = async (to: HeldDirectory, part: string, ended: HeldFileHelperUnavailableError): Promise<"removed" | "absent" | "left"> => {
-    if (ended instanceof HeldFileHelperStalledError && ended.stillRunning) return "left";
-    if (ended.partFile === null) {
-      let absent = false;
-      try {
-        absent = entryIn(to, part) === null;
-      } catch {
-        // The folder cannot be told to be the held one: whatever is there is left.
-      }
-      if (absent) return "absent";
-      log.warn({ path: join(to.path, part) }, "a stopped download copy's temporary file is left: it was never seen while the copy wrote it");
-      return "left";
+  const removeNamed = async (folder: HeldDirectory, name: string): Promise<"removed" | "absent"> =>
+    oneOf(helper, await run(["--dir-remove", ...directoryArguments(folder), name], () => true, UNSTOPPED), ["removed", "absent"] as const);
+  // A copy that ended after it may have written its temporary file, with the helper seen to end: the file is removed through the chosen
+  // folder, held anew, only while it is the file the copy wrote. One never seen while it was written is never removed by name: when
+  // something is at its name it is left, and so is whatever a folder that can no longer be checked holds, when `unknownIsLeft`.
+  const removePartialCopy = async (to: HeldDirectory, part: string, partFile: FileIdentity | null, unknownIsLeft: boolean): Promise<OwnFileResult | null> => {
+    if (partFile !== null) return removeOwnFile(to, part, part, { kind: "fileId", file: partFile }, removeNamed);
+    let found: "absent" | "present" | "unknown" = "unknown";
+    try {
+      found = entryIn(to, part) === null ? "absent" : "present";
+    } catch {
+      // The folder cannot be told to be the held one.
     }
-    return removeOwnFile(to, part, ended.partFile, async (folder, name) =>
-      oneOf(helper, await run(["--dir-remove", ...directoryArguments(folder), name], () => true, UNSTOPPED), ["removed", "absent"] as const));
+    if (found === "absent") return { outcome: "absent" };
+    if (found === "unknown" && !unknownIsLeft) return null;
+    log.warn({ path: join(to.path, part) }, "a stopped download copy's temporary file is left: it was never seen while the copy wrote it");
+    return { outcome: "left", at: null };
   };
   return {
     move: async (from, name, to, target, proceed, stop) => oneOf(helper,
@@ -669,7 +906,13 @@ function helperFileOperations(helper: string, bounds: HelperBounds = POLICY_BOUN
       } catch (error) {
         if (error instanceof HeldFileHelperUnavailableError && error.passed !== null) {
           error.partFile = partFile;
-          error.partialCopy = await removePartialCopy(to, part, error);
+          // A helper that may still be running is not raced: its file is left for a cleanup once it ends.
+          if (error instanceof HeldFileHelperStalledError && error.stillRunning) error.partialCopy = "left";
+          else markStoppedCopy(error, await removePartialCopy(to, part, partFile, true) ?? { outcome: "left", at: null });
+        } else if (!(error instanceof HeldFileHelperUnavailableError) && !(error instanceof HeldDirectoryRefusedError)) {
+          // The helper answered that the copy failed, and has ended. A temporary file it wrote and did not remove is cleaned the same way.
+          const result = await removePartialCopy(to, part, partFile, false);
+          if (result !== null) markStoppedCopy(error, result);
         }
         throw error;
       }

@@ -57,14 +57,46 @@ const boundary = vi.hoisted(() => ({
   warn: vi.fn(),
   // Runs just before every rename through node:fs, and may throw in its place.
   beforeRename: null as ((from: string, to: string) => void) | null,
+  // Runs just after every lstat through node:fs.
+  afterLstat: null as ((path: string) => void) | null,
+  // Every hard link made through node:fs, as [existing, new].
+  links: [] as [string, string][],
+  // A folder like FAT or exFAT: no hard links, and a rename gives a file another id.
+  linkless: false,
 }));
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
   const renameSync: typeof actual.renameSync = (from, to) => {
     boundary.beforeRename?.(String(from), String(to));
-    actual.renameSync(from, to);
+    if (!boundary.linkless) {
+      actual.renameSync(from, to);
+      return;
+    }
+    // A new directory entry is a new file id there; the content and its last change stay.
+    const { mtime, atime } = actual.statSync(from);
+    actual.copyFileSync(from, to);
+    actual.utimesSync(to, atime, mtime);
+    actual.unlinkSync(from);
   };
-  return { ...actual, default: { ...actual, renameSync }, renameSync };
+  const linkSync: typeof actual.linkSync = (existing, path) => {
+    boundary.links.push([String(existing), String(path)]);
+    if (boundary.linkless) throw Object.assign(new Error("operation not permitted, link"), { code: "EPERM" });
+    actual.linkSync(existing, path);
+  };
+  const lstatSync = ((path: string, ...rest: unknown[]) => {
+    const info = (actual.lstatSync as (...args: unknown[]) => unknown)(path, ...rest);
+    boundary.afterLstat?.(String(path));
+    return info;
+  }) as typeof actual.lstatSync;
+  const replaced = { renameSync, linkSync, lstatSync };
+  return { ...actual, default: { ...actual, ...replaced }, ...replaced };
+});
+// The host's own renames go through the promise API: the same hook and the same folder without hard links.
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  const { renameSync } = await import("node:fs");
+  const rename: typeof actual.rename = async (from, to) => { renameSync(from, to); };
+  return { ...actual, default: { ...actual, rename }, rename };
 });
 vi.mock("../../../lib/logger.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../lib/logger.js")>();
@@ -84,9 +116,10 @@ vi.mock("../../managed-child-processes.js", () => ({
   }),
 }));
 
-const { _helperFileOperationsForTest, HeldDirectoryRefusedError, HeldFileHelperStalledError, HeldFileHelperUnavailableError } =
+const { _forgetLinkSupportForTest, _helperFileOperationsForTest, HeldDirectoryRefusedError, HeldFileHelperStalledError, HeldFileHelperUnavailableError } =
   await import("../browser-download-files.js");
 
+const { BACKGROUND_BUDGET_MS } = await import("../../../lib/transient-fs-lock-retry.js");
 const BOUNDS = { stallMs: 1_000, killMs: 400 };
 const files = _helperFileOperationsForTest("/helper/ave-dir-ops", BOUNDS);
 const from = { path: "/staging", dev: 1n, ino: 2n };
@@ -116,6 +149,10 @@ beforeEach(() => {
   boundary.info.mockClear();
   boundary.warn.mockClear();
   boundary.beforeRename = null;
+  boundary.afterLstat = null;
+  boundary.links = [];
+  boundary.linkless = false;
+  _forgetLinkSupportForTest();
 });
 afterEach(() => {
   vi.useRealTimers();
@@ -776,17 +813,26 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
     readonly copyDiesWhenKilled: boolean;
     // The copy writes its temporary file but never says so.
     readonly quietCopy: boolean;
+    // The copy answers that it failed once it has written its temporary file, and ends.
+    readonly copyFails: boolean;
     // Runs as a removal is let go, before it acts; answering "refuse" ends it without an outcome.
     readonly beforeRemove: (helper: FakeHelper) => "refuse" | undefined;
   }
-  const actOnRealFolders = ({ copyDiesWhenKilled, quietCopy, beforeRemove }: Faults) => (helper: FakeHelper): void => {
+  const actOnRealFolders = ({ copyDiesWhenKilled, quietCopy, copyFails, beforeRemove }: Faults) => (helper: FakeHelper): void => {
     const [mode] = helper.args;
     helper.say("ready");
     if (mode === "--dir-copy") {
       helper.diesWhenKilled = copyDiesWhenKilled;
       helper.once("input", () => {
-        fs.writeFileSync(join(arg(helper, 5), arg(helper, 9)), "partial copy");
+        const part = join(arg(helper, 5), arg(helper, 9));
+        fs.writeFileSync(part, "partial copy");
+        // Whole seconds, which a copy of the file keeps exactly, as FAT keeps only coarse times.
+        if (boundary.linkless) fs.utimesSync(part, 1_700_000_000, 1_700_000_000);
         if (!quietCopy) helper.say("progress 1048576");
+        if (copyFails) {
+          helper.say("failed EIO");
+          helper.exit(4);
+        }
       });
     } else if (mode === "--dir-remove") {
       helper.once("input", () => {
@@ -820,7 +866,7 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
   afterEach(() => { fs.rmSync(base, { recursive: true, force: true }); });
 
   const stalledCopy = async ({
-    copyDiesWhenKilled = false, quietCopy = false, beforeRemove = (_helper: FakeHelper): "refuse" | undefined => undefined, beforeStall = (_chosen: string): void => {},
+    copyDiesWhenKilled = false, quietCopy = false, copyFails = false, beforeRemove = (_helper: FakeHelper): "refuse" | undefined => undefined, beforeStall = (_chosen: string): void => {},
   } = {}) => {
     const staging = join(base, "staging");
     const chosen = join(base, "chosen");
@@ -828,7 +874,7 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
     fs.mkdirSync(chosen);
     const info = fs.statSync(staging, { bigint: true });
     const root = { path: staging, dev: info.dev, ino: info.ino, files: { ...files, move: async () => "cross-volume" as const } };
-    script(actOnRealFolders({ copyDiesWhenKilled, quietCopy, beforeRemove }));
+    script(actOnRealFolders({ copyDiesWhenKilled, quietCopy, copyFails, beforeRemove }));
     const item = Object.assign(new EventEmitter(), {
       getFilename: () => "report.pdf", getURL: () => "https://site.example/report", getURLChain: () => ["https://site.example/report"],
       hasUserGesture: () => true, getReceivedBytes: () => 8, getTotalBytes: () => 8, getState: () => "completed" as const,
@@ -996,6 +1042,8 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
     boundary.beforeRename = () => { throw Object.assign(new Error("operation not permitted"), { code: "EPERM" }); };
     copy.exit(null, "SIGKILL");
     await flush();
+    // On Windows the rename is tried again through the bounded lock ladder.
+    await advance(BACKGROUND_BUDGET_MS);
     await flush();
     expect(fs.readFileSync(part, "utf8")).toBe("partial copy");
     expect(records(staging)).toHaveLength(1);
@@ -1009,10 +1057,13 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
       const { chosen, part, done } = await stalledCopy({
         copyDiesWhenKilled: true,
         beforeStall: (folder) => {
-          // libuv's UV_FS_O_EXLOCK, which node:fs does not name: the file is opened with no sharing, as another program may hold it.
+          // The exclusive-lock open flag, which node:fs does not name: the file is opened with no sharing, as another program may hold it.
           held = fs.openSync(join(folder, fs.readdirSync(folder)[0] ?? ""), fs.constants.O_RDONLY | 0x10000000);
         },
       });
+      // The rename is tried again through the bounded lock ladder before the file is left.
+      await advance(BACKGROUND_BUDGET_MS);
+      await flush();
       expect(done).toMatchObject({ settled: true, value: ["interrupted", "part-left"] });
       expect(fs.readdirSync(chosen)).toEqual([part.slice(chosen.length + 1)]);
       expect(removalsIn(chosen)).toEqual([]);
@@ -1020,5 +1071,166 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
     } finally {
       if (held !== null) fs.closeSync(held);
     }
+  });
+
+  // A folder like FAT or exFAT: a file moved aside has another id there, and nothing can be linked back.
+  describe("in a folder without hard links", () => {
+    beforeEach(() => { boundary.linkless = true; });
+
+    it("removes the copy's file, given another id by its move aside, once its content is the copy's", async () => {
+      const { staging, chosen, done } = await stalledCopy({ copyDiesWhenKilled: true });
+      expect(fs.readdirSync(chosen)).toEqual([]);
+      expect(done).toMatchObject({ settled: true, value: ["interrupted", "removed"] });
+      expect(arg(removalsIn(chosen)[0] as FakeHelper, 4)).toMatch(/^\.[0-9a-f]{32}\.removing$/u);
+      expect(records(staging)).toEqual([]);
+    });
+
+    it("puts back, and never removes, a file with other content put at the temporary file's name just before it is moved aside", async () => {
+      const { chosen, part, done } = await stalledCopy({
+        copyDiesWhenKilled: true,
+        beforeStall: (folder) => {
+          boundary.beforeRename = (from) => {
+            if (!from.startsWith(folder) || !from.endsWith(".part")) return;
+            boundary.beforeRename = null;
+            fs.unlinkSync(from);
+            fs.writeFileSync(from, "the user's file");
+          };
+        },
+      });
+      expect(fs.readdirSync(chosen)).toEqual([part.slice(chosen.length + 1)]);
+      expect(fs.readFileSync(part, "utf8")).toBe("the user's file");
+      expect(removalsIn(chosen)).toEqual([]);
+      expect(done).toMatchObject({ settled: true, value: ["interrupted", "part-left"] });
+    });
+
+    // The helper ends late; the removal of the copy's file, moved aside, fails while a file is put at its name, so it cannot go back.
+    const leftUnderHiddenName = async () => {
+      let folder = "";
+      let original = "";
+      let refused = false;
+      const copied = await stalledCopy({
+        beforeRemove: (helper) => {
+          if (arg(helper, 1) !== folder || refused) return undefined;
+          refused = true;
+          fs.writeFileSync(join(folder, original), "the user's file");
+          return "refuse";
+        },
+        beforeStall: (chosenFolder) => {
+          folder = chosenFolder;
+          original = fs.readdirSync(chosenFolder)[0] ?? "";
+        },
+      });
+      expect(copied.done).toMatchObject({ settled: true, value: ["interrupted", "part-left"] });
+      copied.copy.exit(null, "SIGKILL");
+      await flush();
+      await flush();
+      expect(refused).toBe(true);
+      return { ...copied, original };
+    };
+
+    it("keeps the copy's file it cannot put back tracked, by its hidden name and its content, for the next start", async () => {
+      const { staging, chosen, original } = await leftUnderHiddenName();
+      const hidden = fs.readdirSync(chosen).find((name) => name !== original) ?? "";
+      expect(hidden).toMatch(/^\.[0-9a-f]{32}\.removing$/u);
+      expect(fs.readFileSync(join(chosen, original), "utf8")).toBe("the user's file");
+      expect(fs.readFileSync(join(chosen, hidden), "utf8")).toBe("partial copy");
+      const kept = records(staging).map((name) => JSON.parse(fs.readFileSync(join(staging, name), "utf8")) as { part: string; at: string; identity: { kind: string } });
+      expect(kept).toEqual([expect.objectContaining({ part: original, at: hidden, identity: expect.objectContaining({ kind: "fingerprint" }) })]);
+    });
+
+    it("finds that file by its hidden name at the next start, and removes only it", async () => {
+      const { root, staging, chosen, original } = await leftUnderHiddenName();
+      const swept = follow(sweepBrowserDownloadStaging(root));
+      await flush();
+      await flush();
+      expect(fs.readdirSync(chosen)).toEqual([original]);
+      expect(fs.readFileSync(join(chosen, original), "utf8")).toBe("the user's file");
+      expect(swept).toMatchObject({ settled: true, value: 1 });
+      expect(fs.readdirSync(staging)).toEqual([]);
+    });
+  });
+
+  it("in a folder with hard links, probes that once per volume and removes the copy's file by its id", async () => {
+    const { removeOwnFile } = await import("../browser-download-files.js");
+    const { chosen, done } = await stalledCopy({ copyDiesWhenKilled: true });
+    expect(fs.readdirSync(chosen)).toEqual([]);
+    expect(done).toMatchObject({ settled: true, value: ["interrupted", "removed"] });
+    const probes = () => boundary.links.filter(([, link]) => /\.probe$/u.test(link));
+    expect(probes()).toHaveLength(1);
+    // Another file on that volume: no second probe, and the same check by id.
+    const name = ".0123456789abcdef0123456789abcdef.part";
+    fs.writeFileSync(join(chosen, name), "another");
+    const info = fs.statSync(chosen, { bigint: true });
+    const file = fs.statSync(join(chosen, name), { bigint: true });
+    const folder = { path: chosen, dev: info.dev, ino: info.ino };
+    const removed = await removeOwnFile(folder, name, name, { kind: "fileId", file: { dev: file.dev, ino: file.ino, birthtimeNs: file.birthtimeNs } },
+      async (directory, at) => { fs.unlinkSync(join(directory.path, at)); return "removed"; });
+    expect(removed).toEqual({ outcome: "removed" });
+    expect(probes()).toHaveLength(1);
+    expect(fs.readdirSync(chosen)).toEqual([]);
+  });
+
+  it.runIf(process.platform === "win32")("moves the copy's file aside after another program's brief lock, and removes it", async () => {
+    let locked = 0;
+    const { chosen, done } = await stalledCopy({
+      copyDiesWhenKilled: true,
+      beforeStall: () => {
+        boundary.beforeRename = () => {
+          locked += 1;
+          if (locked === 1) throw Object.assign(new Error("resource busy or locked"), { code: "EBUSY" });
+        };
+      },
+    });
+    await advance(BACKGROUND_BUDGET_MS);
+    await flush();
+    expect(fs.readdirSync(chosen)).toEqual([]);
+    expect(locked).toBe(2);
+    expect(done).toMatchObject({ settled: true, value: ["interrupted", "removed"] });
+  });
+
+  it("never follows a record swapped for a link after it was listed", async () => {
+    const { root, staging, part } = await stalledCopy();
+    const [name] = records(staging);
+    const recordPath = join(staging, name ?? "");
+    // The same record, outside the staging folder.
+    const elsewhere = join(base, "elsewhere.json");
+    fs.copyFileSync(recordPath, elsewhere);
+    boundary.afterLstat = (path) => {
+      if (path !== recordPath) return;
+      boundary.afterLstat = null;
+      fs.unlinkSync(recordPath);
+      fs.symlinkSync(elsewhere, recordPath, "file");
+    };
+    const swept = follow(sweepBrowserDownloadStaging(root));
+    await flush();
+    await flush();
+    expect(fs.readFileSync(part, "utf8")).toBe("partial copy");
+    expect(swept.settled).toBe(true);
+    expect(boundary.warn).toHaveBeenCalledWith({ path: recordPath }, expect.stringContaining("not one this app wrote"));
+  });
+
+  it("says a recorded file's folder is gone, not that the file there is another, and keeps the record", async () => {
+    const { staging, chosen, copy, part } = await stalledCopy();
+    fs.rmSync(chosen, { recursive: true, force: true });
+    copy.exit(null, "SIGKILL");
+    await flush();
+    await flush();
+    expect(boundary.warn).toHaveBeenCalledWith({ path: part }, expect.stringContaining("its folder is no longer the chosen one"));
+    expect(boundary.warn).not.toHaveBeenCalledWith({ path: part }, expect.stringContaining("not the file that was written"));
+    expect(records(staging)).toHaveLength(1);
+  });
+
+  it("removes the temporary file of a copy the helper reports failed, once it is the file the copy wrote", async () => {
+    const { chosen, done } = await stalledCopy({ copyFails: true });
+    expect(fs.readdirSync(chosen)).toEqual([]);
+    expect(done).toMatchObject({ settled: true, value: ["interrupted", "removed"] });
+    expect(arg(removalsIn(chosen)[0] as FakeHelper, 4)).toMatch(/^\.[0-9a-f]{32}\.removing$/u);
+  });
+
+  it("reports the temporary file of a copy the helper reports failed as left, when it was never seen while written", async () => {
+    const { chosen, part, done } = await stalledCopy({ copyFails: true, quietCopy: true });
+    expect(fs.readFileSync(part, "utf8")).toBe("partial copy");
+    expect(removalsIn(chosen)).toEqual([]);
+    expect(done).toMatchObject({ settled: true, value: ["interrupted", "part-left"] });
   });
 });

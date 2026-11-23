@@ -13,6 +13,8 @@ const hooks = vi.hoisted(() => ({
   checkFault: null as { path: string; code: string } | null,
   writeLimit: null as number | null,
   pathOperations: [] as string[],
+  // A removal of a matching path that fails with a filesystem error.
+  unlinkFault: null as RegExp | null,
 }));
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
@@ -37,6 +39,7 @@ vi.mock("node:fs", async (importOriginal) => {
     },
     unlinkSync: (path: string) => {
       hooks.pathOperations.push(path);
+      if (hooks.unlinkFault?.test(String(path))) throw Object.assign(new Error("EACCES: simulated"), { code: "EACCES" });
       return actual.unlinkSync(path);
     },
   };
@@ -89,6 +92,7 @@ beforeEach(() => {
   hooks.checkFault = null;
   hooks.writeLimit = null;
   hooks.pathOperations = [];
+  hooks.unlinkFault = null;
 });
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -992,6 +996,21 @@ describe.runIf(process.platform === "darwin")("a native helper that stops answer
     await nothingPublishedLater(chosen);
   });
 
+  it("removes a killed copy's temporary file only once it is moved aside and checked, through the helper", async () => {
+    const prepared = prepare();
+    let cancel = (): void => {};
+    const root = atStep(acrossVolumes(hanging(prepared, "ignores-eof")), "copy", "ready", () => { setTimeout(() => cancel(), 150); });
+    const { download, chosen, ended } = await publishing(root, chunks(30));
+    const outcome = doneOutcome(download);
+    cancel = () => download.cancel();
+    expect((await ended).state).toBe("interrupted");
+    expect(await outcome).toEqual({ state: "interrupted", cleanup: "removed" });
+    const movedAside = hooks.pathOperations.filter((path) => dirname(path) === chosen && /^.[0-9a-f]{32}.removing$/u.test(basename(path)));
+    expect(movedAside).toHaveLength(1);
+    expect(readdirSync(chosen)).toEqual([]);
+    expect(helpersStillRunning()).toEqual([]);
+  });
+
   it.each([
     ["is cancelled at its commit", true],
     ["is let commit but never answers", false],
@@ -1093,5 +1112,29 @@ describe("the native helper", () => {
     expect(await root.files.remove(root, basename(staged), () => false, stop.signal)).toBe("cancelled");
     expect(readFileSync(staged, "utf8")).toBe("staged");
     expect(readdirSync(other)).toEqual([]);
+  });
+});
+
+describe.runIf(process.platform === "linux")("a Linux copy whose temporary file cannot be removed when it stops", () => {
+  it("reports the temporary file as left", async () => {
+    const prepared = acrossVolumes(prepare());
+    const { asked, askSavePath } = dialogs();
+    const item = fakeItem();
+    let download!: Observed;
+    const root = atStep(prepared, "copy", "ready", () => {
+      hooks.unlinkFault = /.part$/u;
+      download.cancel();
+    });
+    const staged = stageBrowserDownload(item, { root, askSavePath }, Promise.resolve());
+    download = staged.download;
+    const done = doneOutcome(staged.download);
+    await settled();
+    const chosen = join(home, "chosen");
+    mkdirSync(chosen);
+    asked[0]?.answer(join(chosen, "report.pdf"));
+    await settled();
+    item.complete("x".repeat(3 * 1024 * 1024));
+    expect(await done).toEqual({ state: "interrupted", cleanup: "part-left" });
+    expect(readdirSync(chosen)).toEqual([expect.stringMatching(/^.[0-9a-f]{32}.part$/u)]);
   });
 });

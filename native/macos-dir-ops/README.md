@@ -90,8 +90,16 @@ holds the chosen folder anew and checks it is the bound one. A file put at
 `part`'s name meanwhile is not touched. A file found not to be the one
 written, or one that removal fails on, is put back at `part`'s name if that
 is still free (a hard link, which never replaces), or left under the hidden
-name, and logged. A `part` never seen while it was written has no identity
-and is left, as is one whose rename fails. The download is reported as
+name, and logged. A folder without hard links (FAT, exFAT), where a rename
+gives the file another id, is found by a link probe once per volume; there
+`part` is known by its content instead (size, last change, and digests of its
+first and last 64 KiB, read through an open descriptor), checked again at the
+hidden name, and put back by a rename only while nothing is at its name. A
+file left where it can still be found, under either name, is recorded for the
+next start with the name it has and how it is known. A `part` never seen
+while it was written has no identity and is left, as is one whose rename
+still fails once a brief lock was waited out. A copy the helper reports failed
+has its `part` cleaned the same way. The download is reported as
 failed, and the log records whether `part` was removed. It also remains,
 logged as possibly left, when the app quits during a copy: shutdown kills the
 helper with every other owned process and starts no new one, so nothing
