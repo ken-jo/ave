@@ -37,6 +37,8 @@ export interface StageWorkspaceOptions {
   removable?: () => Promise<((run: { runId: string; itemId: number }) => boolean) | undefined>;
   /** How a folder's names and their identities are read when a plain project's case rule is asked for; the default reads the disk. */
   nameReader?: NameReader;
+  /** The highest folder a plain-folder check looks at, itself included; with none it looks up to the volume root. */
+  plainCeiling?: string;
 }
 
 /** A file's bytes as the text they are: none replaced, no leading mark dropped. Text that names a registration or a record is compared
@@ -49,12 +51,6 @@ const gitdirOf = (text: string): string => text.endsWith("\n") ? text.slice(0, -
 /** The mismatches already reported in this process, by record. */
 const warnedOnce = new Set<string>();
 
-/** The highest folder a plain-folder check looks at; none looks up to the volume root. */
-let plainCeiling: string | undefined;
-/** Keeps a test's folders from answering to a `.git` the account holds above its temp folder. */
-export function _setPlainFolderCeilingForTest(dir: string | undefined): void {
-  plainCeiling = dir === undefined ? undefined : realpathSync.native(dir);
-}
 /** Git writes the two files that tie a worktree to its registration as absolute paths, whatever the repository is configured to. */
 const ABSOLUTE_LINKS = ["-c", "worktree.useRelativePaths=false"];
 /** Before every commit or ref in an argument vector: git reads what follows as one, never as an option. */
@@ -66,6 +62,7 @@ const chunked = <T>(items: readonly T[], size = 200): T[][] => Array.from({ leng
 /** Stage workspaces under `<aveHome>/worktrees`: a git worktree per stage for a git project, a seeded plain folder otherwise. */
 export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}): StageWorkspaceProvider {
   const git = options.git ?? createHostGit();
+  const plainCeiling = options.plainCeiling === undefined ? undefined : realpathSync.native(options.plainCeiling);
   const sensitive = options.sensitive ?? ((path: string) => isSensitivePath(path, "read") !== null);
   const roots = new Map<string, string>();
   const chains = new Map<string, Promise<unknown>>();

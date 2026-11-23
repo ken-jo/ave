@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { aveHome } from "../../../shared/ave-home.js";
 import { createHostGit, type HostGit } from "../host-git.js";
 import type { OwnedDir } from "../owned-fs.js";
-import { _setPlainFolderCeilingForTest, createStageWorkspaceProvider } from "../stage-workspaces.js";
+import { createStageWorkspaceProvider } from "../stage-workspaces.js";
 import { JOIN_DIR, OUT_DIR, RUN_FILE, runRootOf, runSlug } from "../workspace-layout.js";
 import { removeLink, stageOf } from "./stage-fixtures.js";
 import { type GitFixture, type GitHandle, gitFixture, sealed, stageRoot } from "./stage-git-fixture.js";
@@ -103,7 +103,6 @@ const run = (): { itemId: number; runId: string; runKey: string } => ({ itemId: 
 
 beforeEach(() => {
   base = mkdtempSync(join(tmpdir(), "swr-"));
-  _setPlainFolderCeilingForTest(base);
   mkdirSync(join(base, "project"));
   writeFileSync(join(base, "gitconfig"), "");
 });
@@ -119,12 +118,11 @@ afterEach(() => {
   between.unread = undefined;
   between.foreign.length = 0;
   between.asked.length = 0;
-  _setPlainFolderCeilingForTest(undefined);
   rmSync(base, { recursive: true, force: true, maxRetries: 3 });
 });
 
 it("an open whose project folder another run's release took away makes it again", async () => {
-  const provider = createStageWorkspaceProvider({ git: hostGit() });
+  const provider = createStageWorkspaceProvider({ plainCeiling: base, git: hostGit() });
   const opening = run();
   let taken = 0;
   between.act = (projectFolder) => {
@@ -137,7 +135,7 @@ it("an open whose project folder another run's release took away makes it again"
 
 it("an open whose project folder keeps going away is refused as unavailable, not as an unsafe home", async () => {
   between.act = projectFolder => rmdirSync(projectFolder);
-  expect(await createStageWorkspaceProvider({ git: hostGit() }).open(run(), join(base, "project"))).toEqual({ ok: false, code: "workspace-unavailable" });
+  expect(await createStageWorkspaceProvider({ plainCeiling: base, git: hostGit() }).open(run(), join(base, "project"))).toEqual({ ok: false, code: "workspace-unavailable" });
 });
 
 it("an open whose worktrees folder is swapped for another while the run folder is made is refused as an unsafe home", async () => {
@@ -152,7 +150,7 @@ it("an open whose worktrees folder is swapped for another while the run folder i
     mkdirSync(worktrees);
   };
   try {
-    expect(await createStageWorkspaceProvider({ git: hostGit() }).open(run(), join(base, "project"))).toEqual({ ok: false, code: "home-boundary-unverified" });
+    expect(await createStageWorkspaceProvider({ plainCeiling: base, git: hostGit() }).open(run(), join(base, "project"))).toEqual({ ok: false, code: "home-boundary-unverified" });
     // Nothing is made in the folder that took the name.
     expect(swaps).toBe(1);
     expect(readdirSync(join(home, "worktrees"))).toEqual([]);
@@ -169,7 +167,7 @@ it.each([
   ["a project's folder", (worktrees: string) => join(worktrees, "fixture-file")],
   ["the run's own folder", (worktrees: string) => join(worktrees, "fixture-project", runSlug(7, gone))],
 ])("a plain file where %s would be holds no run and keeps no root", async (_where, at) => {
-  const provider = createStageWorkspaceProvider({ git: hostGit(), removable: async () => () => false });
+  const provider = createStageWorkspaceProvider({ plainCeiling: base, git: hostGit(), removable: async () => () => false });
   const worktrees = join(aveHome(), "worktrees");
   const project = join(worktrees, "fixture-project");
   mkdirSync(project, { recursive: true });
@@ -187,7 +185,7 @@ it.each([
 });
 
 it("a link under worktrees, or a worktrees that cannot be listed, may hold any run's: every root is kept", async () => {
-  const provider = createStageWorkspaceProvider({ git: hostGit(), removable: async () => () => false });
+  const provider = createStageWorkspaceProvider({ plainCeiling: base, git: hostGit(), removable: async () => () => false });
   const worktrees = join(aveHome(), "worktrees");
   const project = join(worktrees, "fixture-project");
   mkdirSync(project, { recursive: true });
@@ -226,7 +224,7 @@ it.each(["worktrees", "fixture-project"])("a %s that is no longer the folder tha
     writeFileSync(join(path, level === "worktrees" ? "fixture-project" : runSlug(7, gone)), "");
   };
   try {
-    expect(await createStageWorkspaceProvider({ git: hostGit(), removable: async () => () => false }).discard(givenGone())).toEqual([]);
+    expect(await createStageWorkspaceProvider({ plainCeiling: base, git: hostGit(), removable: async () => () => false }).discard(givenGone())).toEqual([]);
     expect(swaps).toBe(1);
   } finally {
     if (before === undefined) delete process.env.AVE_HOME; else process.env.AVE_HOME = before;
@@ -234,7 +232,7 @@ it.each(["worktrees", "fixture-project"])("a %s that is no longer the folder tha
 });
 
 it("an output folder that is no longer the one the run made tells nothing of a file in it: a path two stages answer is not told as left open there", async () => {
-  const provider = createStageWorkspaceProvider({ git: hostGit() });
+  const provider = createStageWorkspaceProvider({ plainCeiling: base, git: hostGit() });
   const opening = run();
   const open = await provider.open(opening, join(base, "project"));
   if (!open.ok) throw new Error(open.code);
@@ -269,7 +267,7 @@ it("an output folder that is no longer the one the run made tells nothing of a f
 it("a project's folder that cannot be listed keeps every root, and the runs of the other projects still go", async () => {
   const first = run();
   const runs = [first, { ...first, runId: `${first.runId}-second` }];
-  const provider = createStageWorkspaceProvider({ git: hostGit(), removable: async () => at => runs.some(one => one.runId === at.runId) });
+  const provider = createStageWorkspaceProvider({ plainCeiling: base, git: hostGit(), removable: async () => at => runs.some(one => one.runId === at.runId) });
   mkdirSync(join(base, "second"));
   const roots: string[] = [];
   for (const [index, project] of ["project", "second"].entries()) {
@@ -496,7 +494,7 @@ async function found(fx: GitFixture, rootAs?: (root: string) => string): Promise
     writeFileSync(join(runRoot, RUN_FILE), JSON.stringify(record));
   }
   const { git, calls } = countedGit(fx);
-  return { provider: createStageWorkspaceProvider({ git, removable: async () => () => true }), calls, handle, runRoot, record, local };
+  return { provider: createStageWorkspaceProvider({ plainCeiling: base, git, removable: async () => () => true }), calls, handle, runRoot, record, local };
 }
 
 type Unverified = [what: string, rootAs: ((root: string) => string) | undefined, open: boolean];

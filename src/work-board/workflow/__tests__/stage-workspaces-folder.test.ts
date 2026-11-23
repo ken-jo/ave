@@ -9,7 +9,7 @@ import { type NameReader, plainFolderIgnore, projectFoldsCase } from "../folder-
 import { createHostGit, type HostGit, HostGitError } from "../host-git.js";
 import { holdDir, nodeIdOf } from "../owned-fs.js";
 import type { RunRef } from "../stage-workspace.js";
-import { _setPlainFolderCeilingForTest, createStageWorkspaceProvider, type StageWorkspaceOptions } from "../stage-workspaces.js";
+import { createStageWorkspaceProvider, type StageWorkspaceOptions } from "../stage-workspaces.js";
 import { OUT_DIR, RUN_FILE, runRootOf } from "../workspace-layout.js";
 import { copySeedFiles, isInside, listSeedFiles } from "../workspace-seed.js";
 import { removeLink, removeTree, setPath, stageOf, writeUnder as write } from "./stage-fixtures.js";
@@ -46,7 +46,7 @@ const fromProject = (...paths: string[]): StageInputDecl => ({ from: "project", 
 async function start(root: string | undefined, options: StageWorkspaceOptions = {}, itemId = 7): Promise<Handle> {
   runs += 1;
   const run: RunRef = { itemId, runId: `run-folder-${process.pid}-${Date.now()}-${runs}`, runKey: "key", ...(root !== undefined ? { projectRoot: root } : {}) };
-  const provider = createStageWorkspaceProvider({ git: createHostGit({ env }), ...options });
+  const provider = createStageWorkspaceProvider({ plainCeiling: base, git: createHostGit({ env }), ...options });
   const open = await provider.open(run, root);
   if (!open.ok || open.workspace.kind !== "folder" || open.workspace.outputDir === undefined) throw new Error("expected a folder workspace");
   const handle = { provider, run, runRoot: open.workspace.runRoot, out: open.workspace.outputDir };
@@ -91,7 +91,6 @@ async function withHome<T>(home: string, work: () => Promise<T>): Promise<T> {
 
 beforeEach(() => {
   base = mkdtempSync(join(tmpdir(), "swf-"));
-  _setPlainFolderCeilingForTest(base);
   project = join(base, "project");
   mkdirSync(project);
   writeFileSync(join(base, "gitconfig"), "[core]\n\tautocrlf = false\n");
@@ -104,7 +103,6 @@ beforeEach(() => {
 
 afterEach(async () => {
   for (const { provider, run } of opened.splice(0)) await provider.release(run, "all");
-  _setPlainFolderCeilingForTest(undefined);
   removeTree(base);
 });
 
@@ -129,7 +127,7 @@ describe("folder stage workspaces", () => {
     const listed = (): string[] => existsSync(join(aveHome(), "worktrees")) ? tree(join(aveHome(), "worktrees")) : [];
     const before = listed();
     try {
-      const provider = createStageWorkspaceProvider({ git: createHostGit({ env }) });
+      const provider = createStageWorkspaceProvider({ plainCeiling: base, git: createHostGit({ env }) });
       const run: RunRef = { itemId: 8, runId: `run-unverified-${process.pid}-${Date.now()}`, runKey: "key" };
       expect(await provider.open(run, project)).toEqual({ ok: false, code: "home-boundary-unverified" });
       expect(listed()).toEqual(before);
@@ -200,7 +198,7 @@ describe("folder stage workspaces", () => {
     const target = kind === "a tree" ? git("rev-parse", "HEAD^{tree}") : "0123456789abcdef0123456789abcdef01234567";
     writeFileSync(join(project, ".git", ...git("symbolic-ref", "HEAD").split("/")), `${target}\n`);
     const run: RunRef = { itemId: 7, runId: `run-folder-${process.pid}-${Date.now()}-head`, runKey: "key", projectRoot: project };
-    const provider = createStageWorkspaceProvider({ git: createHostGit({ env }) });
+    const provider = createStageWorkspaceProvider({ plainCeiling: base, git: createHostGit({ env }) });
     const open = await provider.open(run, project);
     if (open.ok) opened.push({ provider, run, runRoot: open.workspace.runRoot, out: "" });
     expect(open).toEqual({ ok: false, code: "git-unavailable" });
@@ -224,7 +222,7 @@ describe("folder stage workspaces", () => {
     const real = createHostGit({ env });
     const git: HostGit = { drivers: real.drivers, floorHolds: real.floorHolds, run: async (cwd, args, call) => args.includes("--show-toplevel") ? { code: 0, stdout: `${join(base, "gone")}\n`, stderr: "" } : real.run(cwd, args, call) };
     const run: RunRef = { itemId: 7, runId: `run-folder-${process.pid}-gone`, runKey: "key", projectRoot: project };
-    expect(await createStageWorkspaceProvider({ git }).open(run, project)).toEqual({ ok: false, code: "git-unavailable" });
+    expect(await createStageWorkspaceProvider({ plainCeiling: base, git }).open(run, project)).toEqual({ ok: false, code: "git-unavailable" });
   });
 
   it.each(["a work tree with no commit", "a plain folder"])("in %s, an ignore answer that holds a name that is no text seeds nothing: no name is asked about under another", async (kind) => {
@@ -275,7 +273,7 @@ describe("folder stage workspaces", () => {
     write(outer, ".git/info/exclude", "secret.txt\n");
     writeFileSync(join(outer, ".git", "config"), `${readFileSync(join(outer, ".git", "config"), "utf8")}[broken\n`);
     const run: RunRef = { itemId: 7, runId: `run-folder-${process.pid}-${Date.now()}-unset`, runKey: "key", projectRoot: inner };
-    expect(await createStageWorkspaceProvider({ git: createHostGit({ env }) }).open(run, inner)).toEqual({ ok: false, code: "git-unavailable" });
+    expect(await createStageWorkspaceProvider({ plainCeiling: base, git: createHostGit({ env }) }).open(run, inner)).toEqual({ ok: false, code: "git-unavailable" });
     rmSync(join(outer, ".git"), { recursive: true, force: true });
     expect(tree(await stageRoot(await start(inner), "s1", { inputFiles: [fromProject("**")] }))).toEqual(["kept.txt", "secret.txt"]);
   });
@@ -360,7 +358,7 @@ describe("folder stage workspaces", () => {
     const run: RunRef = { itemId: 7, runId: `run-overlap-${process.pid}-${Date.now()}`, runKey: "key" };
     for (const home of [join(project, "profile"), project]) {
       await withHome(home, async () => {
-        const provider = createStageWorkspaceProvider({ git: createHostGit({ env }) });
+        const provider = createStageWorkspaceProvider({ plainCeiling: base, git: createHostGit({ env }) });
         expect(await provider.open(run, project), home).toEqual({ ok: false, code: "workspace-unavailable" });
         expect(await provider.prepare(run, stageOf("s1"), 1), home).toEqual({ ok: false, code: "workspace-unavailable" });
       });
@@ -372,7 +370,7 @@ describe("folder stage workspaces", () => {
     const inside = join(home, "worktrees", "project-0a1b2c3d", "0a1b2c3d4e5f", "s1");
     write(inside, "notes.txt", "notes\n");
     await withHome(home, async () => {
-      const provider = createStageWorkspaceProvider({ git: createHostGit({ env }) });
+      const provider = createStageWorkspaceProvider({ plainCeiling: base, git: createHostGit({ env }) });
       for (const root of [inside, join(home, "worktrees")]) expect(await provider.open(run, root), root).toEqual({ ok: false, code: "workspace-unavailable" });
       // The home's other folders are no run folders: a project there is one like any other.
       write(home, "projects/mine/notes.txt", "notes\n");
@@ -400,7 +398,7 @@ describe("folder stage workspaces", () => {
       mkdirSync(outside);
       symlinkSync(outside, level, "junction");
       await withHome(home, async () => {
-        const provider = createStageWorkspaceProvider({ git: createHostGit({ env }) });
+        const provider = createStageWorkspaceProvider({ plainCeiling: base, git: createHostGit({ env }) });
         expect(await provider.open(run, project), name).toEqual({ ok: false, code });
         expect(await provider.prepare(run, stageOf("s1"), 1), name).toEqual({ ok: false, code: "workspace-unavailable" });
       });
@@ -425,7 +423,7 @@ describe("folder stage workspaces", () => {
     if (!opened.ok) throw new Error(opened.code);
     expect(opened.workspace.runRoot).not.toBe(handle.runRoot);
     await handle.provider.release(other, "all");
-    await createStageWorkspaceProvider({ git: createHostGit({ env }), removable: async () => run => run.itemId === 8 }).discard(new Map());
+    await createStageWorkspaceProvider({ plainCeiling: base, git: createHostGit({ env }), removable: async () => run => run.itemId === 8 }).discard(new Map());
     expect(existsSync(opened.workspace.runRoot)).toBe(false);
     expect(read(stage, "plan.md")).toBe("the plan\n");
   });
@@ -850,15 +848,15 @@ describe("folder stage workspaces", () => {
 
     // As after a restart: a provider that never saw the run finds it by its id.
     // With nothing to say which runs are removable, and with an answer that could not be had, nothing goes.
-    await createStageWorkspaceProvider({ git: createHostGit({ env }) }).discard(new Map());
-    await createStageWorkspaceProvider({ git: createHostGit({ env }), removable: async () => undefined }).discard(new Map());
+    await createStageWorkspaceProvider({ plainCeiling: base, git: createHostGit({ env }) }).discard(new Map());
+    await createStageWorkspaceProvider({ plainCeiling: base, git: createHostGit({ env }), removable: async () => undefined }).discard(new Map());
     expect(read(handle.out, "plan.md")).toBe("the plan\n");
     // What a stop during a seeding left, under the name of this build and under the one an earlier build used, goes with the run.
     write(handle.runRoot, "_ignore-Ab12Cd/.git/HEAD", "ref: refs/heads/main\n");
     write(handle.runRoot, "_ignore/.git/HEAD", "ref: refs/heads/main\n");
     // As after a restart: a provider that never saw the run finds it by its record.
     const asked: { runId: string; itemId: number }[] = [];
-    const restarted = createStageWorkspaceProvider({ git: createHostGit({ env }), removable: async () => (run) => { asked.push(run); return run.runId === handle.run.runId; } });
+    const restarted = createStageWorkspaceProvider({ plainCeiling: base, git: createHostGit({ env }), removable: async () => (run) => { asked.push(run); return run.runId === handle.run.runId; } });
     await restarted.discard(new Map());
     expect(existsSync(handle.runRoot)).toBe(false);
     expect(asked).toEqual(expect.arrayContaining([{ runId: handle.run.runId, itemId: handle.run.itemId }, { runId: other.run.runId, itemId: other.run.itemId }]));
@@ -880,7 +878,7 @@ describe("folder stage workspaces", () => {
     write(outside, "keep.md", "not the run's\n");
     symlinkSync(outside, join(handle.runRoot, "_ignore-linked"), "junction");
 
-    await createStageWorkspaceProvider({ git: createHostGit({ env }), removable: async () => () => true }).sweep([handle.run.runId]);
+    await createStageWorkspaceProvider({ plainCeiling: base, git: createHostGit({ env }), removable: async () => () => true }).sweep([handle.run.runId]);
     expect(readdirSync(handle.runRoot).sort()).toEqual(["_out", "_run.json", "s1"]);
     expect(tree(stage)).toEqual(["notes.txt"]);
     expect(read(handle.out, "result.md")).toBe("collected\n");
@@ -896,7 +894,7 @@ describe("folder stage workspaces", () => {
     // The first read is the stale one: it allows the removal, and every later read does not.
     let reads = 0;
     let fails = false;
-    const restarted = createStageWorkspaceProvider({ git: createHostGit({ env }), removable: async () => {
+    const restarted = createStageWorkspaceProvider({ plainCeiling: base, git: createHostGit({ env }), removable: async () => {
       reads += 1;
       const first = reads === 1;
       if (!first && fails) throw new Error("the stores cannot be read");
@@ -948,7 +946,7 @@ describe("folder stage workspaces", () => {
       rmSync(record);
       rmSync(elsewhere, { force: true });
       plant();
-      const restarted = createStageWorkspaceProvider({ git: createHostGit({ env }), removable: async () => () => true });
+      const restarted = createStageWorkspaceProvider({ plainCeiling: base, git: createHostGit({ env }), removable: async () => () => true });
       await restarted.discard(new Map());
       await restarted.sweep([]);
       expect(readdirSync(handle.runRoot).sort(), name).toEqual(["_out", "_run.json", "s1"]);
@@ -967,7 +965,7 @@ describe("folder stage workspaces", () => {
     cpSync(handle.runRoot, away, { recursive: true });
     rmSync(handle.runRoot, { recursive: true });
     cpSync(away, handle.runRoot, { recursive: true });
-    const restarted = createStageWorkspaceProvider({ git: createHostGit({ env }), removable: async () => () => true });
+    const restarted = createStageWorkspaceProvider({ plainCeiling: base, git: createHostGit({ env }), removable: async () => () => true });
     await restarted.discard(new Map());
     await restarted.sweep([]);
     expect(readdirSync(handle.runRoot).sort()).toEqual(["_out", "_run.json"]);
@@ -992,7 +990,7 @@ describe("folder stage workspaces", () => {
       const { handle: other } = await collected(8);
       const record = join(target.runRoot, RUN_FILE);
       const operate = async (): Promise<void> => {
-        const provider = createStageWorkspaceProvider({ git: createHostGit({ env }), removable: async () => run => run.itemId !== 8 });
+        const provider = createStageWorkspaceProvider({ plainCeiling: base, git: createHostGit({ env }), removable: async () => run => run.itemId !== 8 });
         await (operation === "discard" ? provider.discard(new Map()) : provider.sweep([]));
       };
       return { target, stage, other, record, written: readFileSync(record, "utf8"), operate };
@@ -1056,7 +1054,7 @@ describe("folder stage workspaces", () => {
       const handles = [await settled(roots[0]), await settled(roots[1])];
       const restored = join(base, `restored-${level}`);
       let swapped: Handle | undefined;
-      const restarted = createStageWorkspaceProvider({ git: createHostGit({ env }), removable: async () => (run) => {
+      const restarted = createStageWorkspaceProvider({ plainCeiling: base, git: createHostGit({ env }), removable: async () => (run) => {
         const mine = handles.find(handle => handle.run.runId === run.runId);
         if (mine !== undefined && swapped === undefined) {
           swapped = handles.find(handle => handle !== mine) as Handle;
@@ -1085,7 +1083,7 @@ describe("folder stage workspaces", () => {
     const restored = join(base, "restored");
     const watched = watchedGit();
     let runRoot = "";
-    const provider = createStageWorkspaceProvider({ git: watched.git, sensitive: () => {
+    const provider = createStageWorkspaceProvider({ plainCeiling: base, git: watched.git, sensitive: () => {
       if (runRoot !== "" && !existsSync(restored)) {
         renameSync(runRoot, restored);
         symlinkSync(restored, runRoot, "junction");
