@@ -1,3 +1,4 @@
+import { setImmediate } from "node:timers/promises";
 import { expect, it, vi } from "vitest";
 import { deferred } from "../../../__tests__/support/deferred.js";
 import { boardRunState } from "../run-state.js";
@@ -5,7 +6,12 @@ import { createPassConditionRegistry } from "../stage-gates.js";
 import { autoStageOf, stageOf } from "./stage-fixtures.js";
 import { stageRunHarness } from "./stage-run-harness.js";
 
-it.each(["event", "restart"] as const)("a notification failure resumes sealing and integration on the next %s", async recovery => {
+it.each(["event", "restart", "missing notification"] as const)("observes join replay with %s", async recovery => {
+  const replayWriting = deferred<void>();
+  const releaseReplay = deferred<void>();
+  const notification = deferred<void>();
+  const sealStarted = deferred<void>();
+  const releaseSeal = deferred<{ ok: true }>();
   let refusing = false;
   let armed = false;
   let notified = false;
@@ -20,14 +26,21 @@ it.each(["event", "restart"] as const)("a notification failure resumes sealing a
   });
   const warnings = vi.spyOn(console, "warn");
   const h = await stageRunHarness({
+    observeRunWork: true,
     workflow: { passConditions: conditions, itemChanged: () => {
       if (!armed) return;
-      armed = false; notified = true;
+      armed = false;
+      if (recovery === "missing notification") return;
+      notified = true;
+      notification.resolve();
       throw new Error("notification delivery failed");
     } },
     workspace: {
       seal: async () => {
-        if (recovery === "restart" && !abandoned) return new Promise(() => undefined);
+        if (recovery === "restart" && !abandoned) {
+          sealStarted.resolve();
+          return releaseSeal.promise;
+        }
         if (!sealed) { sealed = true; seals += 1; }
         return { ok: true };
       },
@@ -35,7 +48,14 @@ it.each(["event", "restart"] as const)("a notification failure resumes sealing a
     },
     wiring: store => {
       const records = boardRunState(store);
-      return { runs: { ...records, update: (...args) => refusing ? Promise.resolve({ ok: false, reason: "row-lost" }) : records.update(...args) } };
+      return { runs: { ...records, update: async (...args) => {
+        if (refusing) return { ok: false, reason: "row-lost" };
+        if (armed) {
+          replayWriting.resolve();
+          await releaseReplay.promise;
+        }
+        return records.update(...args);
+      } } };
     },
   });
   try {
@@ -43,20 +63,36 @@ it.each(["event", "restart"] as const)("a notification failure resumes sealing a
     const id = await h.addItem(version);
     void h.start(id, h.local(version));
     const [child] = await h.untilLive(1);
-    await h.until(id, item => item.stageRuns[0]?.childSessionId === child.sessionId);
+    await h.drainRunWork();
+    expect((await h.stageRun(id, "a")).childSessionId).toBe(child.sessionId);
     const runId = (await h.item(id)).runId ?? "";
     child.finish();
-    await vi.waitFor(async () => expect(await h.board.runs.heldEvents({ itemId: id, runId })).toMatchObject([{ kind: "gate_evaluated" }]));
+    await h.drainRunWork();
+    expect(await h.board.runs.heldEvents({ itemId: id, runId })).toMatchObject([{ kind: "gate_evaluated" }]);
     armed = true; refusing = false;
     await h.engine.adoptParkedTemplateRuns();
-    await vi.waitFor(() => expect(notified).toBe(true));
+    const drain = h.drainRunWork();
+    const observed = Promise.race([notification.promise, drain]).then(() => expect(notified, "join replay ended without notification").toBe(true));
+    const observation = observed.then(() => "notified", (error: Error) => error.message);
+    const first = await Promise.race([replayWriting.promise.then(() => "writer"), drain.then(() => "drain")]);
+    expect(first).toBe("writer");
+    expect(notified).toBe(false);
+    releaseReplay.resolve();
+    if (recovery === "missing notification") {
+      const failure = await Promise.race([observation, drain.then(() => setImmediate("notification check stayed pending"))]);
+      expect(failure).toContain("join replay ended without notification");
+      return;
+    }
+    await observed;
     if (recovery === "restart") {
+      expect(await Promise.race([sealStarted.promise.then(() => "sealing"), drain.then(() => "drained")])).toBe("sealing");
       expect((await h.runOf(runId))?.stageJoins?.[0]?.status).toBe("integrating");
       abandoned = true;
       h.makeEngine();
-    }
+    } else await drain;
     await h.engine.adoptParkedTemplateRuns();
-    await vi.waitFor(() => expect(integrations).toBe(1));
+    await h.drainRunWork();
+    expect(integrations).toBe(1);
     expect(await h.settleEvent()).toMatchObject({ phase: "done", itemId: id });
     await h.engine.adoptParkedTemplateRuns();
     expect(seals).toBe(1);
@@ -65,6 +101,11 @@ it.each(["event", "restart"] as const)("a notification failure resumes sealing a
     expect(warnings.mock.calls.some(call => call.some(arg => String(arg).includes("notification delivery failed")))).toBe(true);
   } finally {
     refusing = false; armed = false;
+    if (!abandoned) releaseSeal.resolve({ ok: true });
+    abandoned = true;
+    releaseReplay.resolve();
+    for (const child of h.live()) child.finish();
+    await h.drainRunWork();
     vi.restoreAllMocks();
     await h.cleanup();
   }

@@ -440,3 +440,4 @@ src/marketplace/git/__tests__/installer-git.test.ts
 src/marketplace/git/__tests__/marketplace-git.test.ts
 src/shared/__tests__/host-git-executable.test.ts
 src/shared/__tests__/host-git-probe.test.ts
+src/work-board/workflow/__tests__/stage-run-harness.test.ts
