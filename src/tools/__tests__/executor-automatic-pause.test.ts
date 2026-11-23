@@ -357,6 +357,31 @@ describe("executor automated approval pause", () => {
     expect(JSON.stringify(denied)).not.toContain("host-shutdown");
   });
 
+  it("records a plugin-emitted write approved on a late desk card as the desk's", async () => {
+    const f = await subject();
+    const execute = vi.fn(async () => "wrote");
+    const registry = new ToolRegistry();
+    registry.register(makeWriteProbeTool(execute));
+    const { hooks, reached, release } = heldPreToolUse();
+    const { gate, cards, approve } = manualGate();
+    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, hooks, f.audit);
+    const pending = executor.executeAll([{ id: "plugin-late-card", name: "write_probe", input: { path: join(f.root, "held.txt") } }], {
+      sessionId: SESSION_ID, executionCwd: f.root,
+      permissionContext: userPermissionContext({ trustOrigin: "plugin-emitted", additionalDirectories: [f.root] }),
+    });
+    await reached;
+    await f.pause();
+    release();
+    await vi.waitFor(() => expect(cards).toHaveLength(1));
+    expect(approve(cards[0])?.choice).toBe("allow-once");
+    const [result] = await pending;
+    expect(result.is_error, result.content).not.toBe(true);
+    expect(execute).toHaveBeenCalledOnce();
+    const rows = readFileSync(f.audit.getPermissionAuditLogFile(), "utf8").trimEnd().split("\n").map((line) => JSON.parse(line));
+    const allowed = rows.filter((row) => row.toolUseId === "plugin-late-card" && row.decision === "allow");
+    expect(allowed.at(-1)).toMatchObject({ trustOrigin: "user-keyboard" });
+  });
+
   it("settles caller cancellation while a late PermissionRequest hook is still held", async () => {
     const f = await subject();
     const controller = new AbortController();
