@@ -2,6 +2,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { AsyncResource } from "node:async_hooks";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PermissionManager, type ReviewerDispatchResult } from "../permission-manager.js";
@@ -172,6 +173,30 @@ describe("standalone frames run only the approved background scope", () => {
     }
     expect(log).toEqual(["write"]);
     expect(requests).toHaveLength(0);
+  });
+
+  it.runIf(process.platform === "win32")("follows a junction out of its own storage, and matches the storage root in any case", async () => {
+    const root = mkdtempSync(join(tmpdir(), "effect-storage-links-"));
+    try {
+      const storage = join(root, "storage");
+      mkdirSync(storage);
+      mkdirSync(join(root, "outside"));
+      symlinkSync(join(root, "outside"), join(storage, "link"), "junction");
+      const log: string[] = [];
+      const { gate, requests } = makeGate("allow-once");
+      const own = (resolveStoragePath: (rel: string) => string) =>
+        enforceMutatingEffects(makeApi(log), { ...deps(gate), resolveStoragePath, standaloneScope: () => true });
+      await expect(runWithEffectGateContext(standalone, () => own((rel) => join(storage, rel)).storage.write("link/a.txt", "x")))
+        .rejects.toBeInstanceOf(EffectBoundaryDeniedError);
+      await runWithEffectGateContext(standalone, () => own((rel) => rel === "." ? storage : join(storage.toUpperCase(), rel)).storage.write("a.txt", "x"));
+      // A root not created yet keeps the spelling it was given.
+      const fresh = (rel: string) => rel === "." ? join(root, "fresh-storage") : join(root, "FRESH-STORAGE", rel);
+      await runWithEffectGateContext(standalone, () => own(fresh).storage.write("a.txt", "x"));
+      expect(log).toEqual(["write", "write"]);
+      expect(requests).toHaveLength(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("keeps a policy deny inside the scope", async () => {
