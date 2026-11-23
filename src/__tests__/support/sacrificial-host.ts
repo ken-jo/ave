@@ -59,7 +59,7 @@ export async function stopFixtureProcesses(pids: readonly number[], deadline: nu
 
 export async function withFixtureCleanup(
   run: (deadline: number) => Promise<void>,
-  cleanup: readonly ((deadline: number) => void | Promise<void>)[],
+  cleanup: readonly { phase: string; run: (deadline: number) => void | Promise<void> }[],
   bodyMs = FIXTURE_BODY_MS,
 ): Promise<void> {
   const failures: unknown[] = [];
@@ -71,20 +71,22 @@ export async function withFixtureCleanup(
 
   // Give each step a share of teardown time even if the previous step stalls.
   const stepMs = Math.floor(FIXTURE_TEARDOWN_MS / Math.max(1, cleanup.length));
-  for (const [index, step] of cleanup.entries()) {
+  for (const { phase, run: step } of cleanup) {
     const deadline = performance.now() + stepMs;
-    const timer = new AbortController();
+    const timeout = new Error(`Fixture cleanup timed out during ${phase}`);
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      await Promise.race([
-        step(deadline),
-        delay(Math.max(0, Math.ceil(deadline - performance.now())), undefined, { signal: timer.signal }).then(() => {
-          throw new Error(`Fixture cleanup step ${index + 1} exceeded its time budget`);
-        }),
-      ]);
+      const watchdog = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(timeout), stepMs);
+      });
+      const result = Promise.resolve().then(() => step(deadline)).finally(() => {
+        if (performance.now() >= deadline) throw timeout;
+      });
+      await Promise.race([watchdog, result]);
     } catch (error) {
       failures.push(error);
     } finally {
-      timer.abort();
+      clearTimeout(timer);
     }
   }
   if (failures.length === 1) throw failures[0];

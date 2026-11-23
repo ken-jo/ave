@@ -131,7 +131,7 @@ it("reports the stalled phase at the shared fixture deadline and runs teardown",
         return true;
       }, deadline);
       await waitForFixture("plugin stdin EOF acknowledgment", probe, deadline);
-    }, [cleanup], 100)).rejects.toThrow("Fixture watchdog expired during plugin stdin EOF acknowledgment");
+    }, [{ phase: "fixture cleanup", run: cleanup }], 100)).rejects.toThrow("Fixture watchdog expired during plugin stdin EOF acknowledgment");
     expect(probe).toHaveBeenCalledOnce();
     expect(cleanup).toHaveBeenCalledOnce();
   } finally {
@@ -253,10 +253,10 @@ describe.runIf(process.platform === "linux" || process.platform === "darwin")("p
       }
       expect(reaped.map(heartbeat)).toEqual(stopped);
     }, [
-      async (deadline) => { if (activeHost) await stopSacrificialHost(activeHost, deadline); },
-      (deadline) => stopFixtureProcesses(pgid !== undefined && pgid > 1 ? [-pgid] : [], deadline),
-      (deadline) => stopFixtureProcesses([...heartbeatProcesses(script, outsidePath, deadline).values()], deadline),
-      () => cleanupTmpDir(root),
+      { phase: "sacrificial host shutdown", run: async (deadline) => { if (activeHost) await stopSacrificialHost(activeHost, deadline); } },
+      { phase: "plugin group reaping", run: (deadline) => stopFixtureProcesses(pgid !== undefined && pgid > 1 ? [-pgid] : [], deadline) },
+      { phase: "heartbeat process reaping", run: (deadline) => stopFixtureProcesses([...heartbeatProcesses(script, outsidePath, deadline).values()], deadline) },
+      { phase: "fixture directory removal", run: () => cleanupTmpDir(root) },
     ]);
   });
 });

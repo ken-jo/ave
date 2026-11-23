@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { posixProcessExists, spawnSacrificialHost, stopFixtureProcesses, stopSacrificialHost, waitForFixture, withFixtureCleanup } from "../../__tests__/support/sacrificial-host.js";
+import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import {
   createProcessGroupReaper,
   PROCESS_GROUP_REAPER_RESPAWN_MIN_INTERVAL_MS,
@@ -184,9 +185,9 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("p
         pgid = undefined;
         companion = undefined;
       }, [
-        async (deadline) => { if (activeHost) await stopSacrificialHost(activeHost, deadline); },
-        (deadline) => stopFixtureProcesses([pgid, companion].flatMap((group) => group !== undefined && group > 1 ? [-group] : []), deadline),
-        () => rmSync(dir, { recursive: true, force: true }),
+        { phase: "sacrificial host shutdown", run: async (deadline) => { if (activeHost) await stopSacrificialHost(activeHost, deadline); } },
+        { phase: "launch group reaping", run: (deadline) => stopFixtureProcesses([pgid, companion].flatMap((group) => group !== undefined && group > 1 ? [-group] : []), deadline) },
+        { phase: "fixture directory removal", run: () => cleanupTmpDir(dir) },
       ]);
     },
   );
@@ -234,10 +235,46 @@ describe("process group reaper bookkeeping", () => {
     const cleanupFailure = new Error("Fixture cleanup failed");
     const laterCleanup = vi.fn();
     await expect(withFixtureCleanup(async () => { throw failure; }, [
-      () => { throw cleanupFailure; },
-      laterCleanup,
+      { phase: "failing cleanup", run: () => { throw cleanupFailure; } },
+      { phase: "remaining cleanup", run: laterCleanup },
     ])).rejects.toMatchObject({ errors: [failure, cleanupFailure] });
     expect(laterCleanup).toHaveBeenCalledOnce();
+  });
+
+  it("reports a stalled cleanup phase within the teardown allowance and preserves the fixture failure", async () => {
+    vi.useFakeTimers();
+    try {
+      const failure = new Error("Fixture assertion failed");
+      const reportFailure = vi.fn();
+      const laterCleanup = vi.fn();
+      void withFixtureCleanup(async () => { throw failure; }, [
+        { phase: "fixture directory removal", run: () => new Promise<void>(() => {}) },
+        { phase: "remaining cleanup", run: laterCleanup },
+      ]).catch(reportFailure);
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(laterCleanup).toHaveBeenCalledOnce();
+      expect(reportFailure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        errors: [failure, expect.objectContaining({ message: "Fixture cleanup timed out during fixture directory removal" })],
+      }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["fulfills", "rejects"])("reports a timeout when cleanup %s after its slice", async (settlement) => {
+    const clock = vi.spyOn(performance, "now").mockReturnValue(0);
+    try {
+      await expect(withFixtureCleanup(async () => {}, [{
+        phase: "fixture directory removal",
+        run: async (deadline) => {
+          clock.mockReturnValue(deadline + 1);
+          if (settlement === "rejects") throw new Error("Directory removal failed");
+        },
+      }])).rejects.toThrow("Fixture cleanup timed out during fixture directory removal");
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it("requires a complete matching ack and the queued write callback", async () => {
