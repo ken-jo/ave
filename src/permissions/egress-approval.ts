@@ -142,13 +142,16 @@ export function createApprovalGateEgressRequester(
       if (forced && decision.egressScope !== "once") return { allow: false, reason: "A forced network approval is valid for one connection only." };
       return { allow: true, scope: decision.egressScope, ...(forced ? { oneConnection: true as const } : {}) };
     }
+    const timedOut = Boolean(isHostApprovalTimeoutDecision(decision));
+    const rejected = Boolean(isHostApprovalRejectedDecision(decision));
     return {
       allow: false,
-      reason: isHostApprovalTimeoutDecision(decision)
+      reason: timedOut
         ? EGRESS_APPROVAL_DENY_REASONS.timeout
-        : isHostApprovalRejectedDecision(decision)
+        : rejected
           ? EGRESS_APPROVAL_DENY_REASONS.rejected
           : EGRESS_APPROVAL_DENY_REASONS.denied,
+      ...(!timedOut && !rejected && decision.choice.startsWith("deny") ? { humanDenied: true as const } : {}),
     };
   };
 }

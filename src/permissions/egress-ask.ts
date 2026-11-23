@@ -79,7 +79,7 @@ const TERMINAL_EGRESS_ASK_TIMEOUT_MS = 120_000;
 // What the person answered. A deny carries why (their choice, a timeout, no surface).
 export type EgressApprovalAnswer =
   | { readonly allow: true; readonly scope: EgressGrantScope; readonly oneConnection?: true }
-  | { readonly allow: false; readonly reason: string };
+  | { readonly allow: false; readonly reason: string; readonly humanDenied?: true };
 
 export type EgressApprovalRequester = (request: EgressApprovalRequest) => Promise<EgressApprovalAnswer>;
 
@@ -199,7 +199,7 @@ function invocationRefusal({ owner, invocation }: Verified): Decision | undefine
 // A person's answer, before it becomes a grant: the scope chosen among those offered.
 type AskAnswer =
   | { readonly allow: true; readonly scope: EgressGrantScope; readonly scopes: readonly EgressGrantScope[]; readonly oneConnection?: true; readonly policyEpoch?: string; readonly approvalIdentity?: string }
-  | { readonly allow: false; readonly decision: Decision };
+  | { readonly allow: false; readonly decision: Decision; readonly humanDenied?: true };
 
 // Whether `host:port` matches one allowlist entry, by ASRT's own `allowedDomains` matcher (`d` exactly, `*.d` strictly under `d`, `*` anything, an optional `:port` suffix), so a worker reaches exactly what the shared allowlist let it reach before the lists were split per extension.
 export function egressAllowlistMatches(entries: readonly string[], destination: EgressDestination): boolean {
@@ -349,7 +349,8 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
       }
       if (timedOut && !answer.allow) answer = { allow: false, reason: EGRESS_DENY_REASONS.terminalTimeout };
     }
-    if (!answer.allow) return { allow: false, decision: deny("prompt", answer.reason) };
+    if (!answer.allow) return { allow: false, decision: deny("prompt", answer.reason),
+      ...(answer.humanDenied ? { humanDenied: true as const } : {}) };
     // A scope the card did not offer is the requester's bug, not a grant.
     if (!scopes.includes(answer.scope)) throw new Error(`egress grant: scope ${answer.scope} was not offered`);
     if (evaluation?.permission.forceModal && answer.scope !== "once") throw new Error("Forced network approval cannot create a standing grant");
@@ -507,6 +508,7 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
           if (owner.kind === "terminal" && !deps.shellAskEnabled()) return deny("policy", EGRESS_DENY_REASONS.askOff);
           // Shell availability is resolved by the common pipeline: automatic review runs before a human fallback denies.
           const answer = await ask(token, invocation.generation, owner, destination, network, strength, evaluation);
+          if (answer !== ASK_AGAIN && !answer.allow && answer.humanDenied) return answer.decision;
           const afterAnswer = invocationRefusal(verified);
           if (afterAnswer) return afterAnswer;
           if (answer === ASK_AGAIN) return decide(host, port, context, verified);
