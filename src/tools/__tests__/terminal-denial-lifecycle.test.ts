@@ -17,7 +17,7 @@ afterEach(async () => { for (const root of roots.splice(0)) await cleanupTmpDir(
 type Source =
   | "rule" | "unknown-tool" | "human" | "hook-mutation" | "host" | "integrity" | "plugin-generation"
   | "user-abort" | "host-shutdown" | "deadline" | "mid-execution" | "plugin-generation-shutdown"
-  | "governed-operation" | "governed-auth";
+  | "card-quit" | "card-abort" | "governed-operation" | "governed-auth";
 
 /** Each probe loads a fresh module graph, so a sealed or drained ledger never leaks into another case. */
 async function setup(source: Source) {
@@ -31,6 +31,7 @@ async function setup(source: Source) {
   const { parseHookConfig } = await import("../../hooks/hook-config.js");
   const { bindHookConfigPaths } = await import("../../hooks/hook-config-trust.js");
   const { AuditLogger } = await import("../../audit/audit-logger.js");
+  const { ApprovalGate, IPC_APPROVAL_REQUEST } = await import("../../permissions/approval-gate.js");
   const root = mkdtempSync(join(tmpdir(), "ave-denial-lock-"));
   roots.push(root);
   const audit = new AuditLogger(join(root, "audit"));
@@ -57,7 +58,7 @@ async function setup(source: Source) {
     } }));
   const permissions = new PermissionManager(join(root, "permissions.json"));
   if (source === "rule" || source === "governed-operation" || source === "governed-auth") permissions.setRules([{ pattern: TOOL, action: "deny" }]);
-  if (source === "human" || source === "host" || source === "integrity") permissions.setRules([{ pattern: TOOL, action: "ask" }]);
+  if (source === "human" || source === "host" || source === "integrity" || source === "card-quit" || source === "card-abort") permissions.setRules([{ pattern: TOOL, action: "ask" }]);
   if (holds || generation || source === "host-shutdown") permissions.setRules([{ pattern: TOOL, action: "allow" }]);
   const hooks = new ScriptHookManager();
   if (source === "hook-mutation") {
@@ -82,7 +83,13 @@ async function setup(source: Source) {
     },
     runWithLease: async <T>(_lease: unknown, operation: () => Promise<T>) => operation(),
   } as unknown as PluginRuntimeGenerationAccess;
-  const executor = new ToolExecutor(registry, undefined, permissions, undefined, { requestAndWait } as unknown as ApprovalGate, hooks, audit,
+  // card-quit, card-abort: the real gate holds an open card until the quit or the abort ends it.
+  let cardShown!: () => void;
+  const cardOpen = new Promise<void>((done) => { cardShown = done; });
+  const realGate = new ApprovalGate({ isDestroyed: () => false,
+    send: (channel: string) => { if (channel === IPC_APPROVAL_REQUEST) cardShown(); } } as never);
+  const gate = source === "card-quit" || source === "card-abort" ? realGate : { requestAndWait } as unknown as ApprovalGate;
+  const executor = new ToolExecutor(registry, undefined, permissions, undefined, gate, hooks, audit,
     undefined, undefined, undefined, () => access);
   const authLifecycle = { binding: { pluginId: "probe-plugin", generationId: "gen-1", toolName: TOOL, appSessionId: "app", accountScopeHash: "hash" },
     beforeHandler: () => {}, completeSuccess: () => {}, completeFailure: () => {} } satisfies HostPluginAuthLifecycle;
@@ -97,7 +104,7 @@ async function setup(source: Source) {
     .map((line) => JSON.parse(line) as Record<string, unknown>).filter((row) => row.decision !== "ask");
   const rows = (id = "denied-call") => allRows().filter((row) => row.toolUseId === id);
   const denials = () => lifecycle.mock.calls.filter(([event]) => event === "PermissionDenied");
-  return { ledger, audit, run, rows, denials, running, release, controller };
+  return { ledger, audit, run, rows, denials, running, release, controller, cardOpen, gate: realGate };
 }
 
 type Probe = Awaited<ReturnType<typeof setup>>;
@@ -207,6 +214,27 @@ describe("a permission denial fires one PermissionDenied; a cancellation and a g
       await expectNoDenial(probe, "host-shutdown");
     } finally {
       probe.release();
+      await probe.audit.close();
+    }
+  });
+
+  it.each([
+    ["card-quit", "host-shutdown"],
+    ["card-abort", "user aborted turn"],
+  ] as const)("%s: a call whose approval card the stop ends fires no event", async (source, reason) => {
+    const probe = await setup(source);
+    try {
+      const result = probe.run().catch(() => undefined);
+      await probe.cardOpen;
+      if (source === "card-quit") {
+        probe.ledger.sealToolInvocations();
+        probe.gate.disposeAll();
+      } else {
+        probe.controller.abort();
+      }
+      await result;
+      await expectNoDenial(probe, reason);
+    } finally {
       await probe.audit.close();
     }
   });

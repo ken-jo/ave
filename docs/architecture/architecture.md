@@ -3625,9 +3625,10 @@ it commits, whatever the source. A `cancelled` row fires none. Governed tools
 fire none either: a tool with an operation policy, or a call under a plugin
 authorization lifecycle, still gets its deny row but no event. This one rule
 lives in the ledger's row writer and reads only the kind, never the reason.
-No call site emits `PermissionDenied` itself. The audit writer fires the event
-only for a denial that the ledger created. A source guard test enforces both
-rules, and it also flags any lifecycle dispatch whose event is not a literal.
+No call site emits `PermissionDenied` itself, and a source guard test enforces
+this. The guard also flags any lifecycle dispatch whose event is not a literal.
+The audit writer fires the event only for a denial that the ledger created, and
+the type system enforces that rule.
 
 ### Permission audit during shutdown
 
