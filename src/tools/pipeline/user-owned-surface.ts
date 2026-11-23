@@ -1,8 +1,15 @@
 import { randomUUID } from "node:crypto";
 import type { ApprovalDecision, ApprovalGate, ApprovalRequestInput } from "../../permissions/approval-gate.js";
-import { isHostApprovalRejectedDecision, RULE_PROVENANCE, type RuleProvenance } from "../../permissions/approval-gate.js";
+import { HOST_PROVENANCE, isHostApprovalRejectedDecision, RULE_PROVENANCE, type HostProvenance, type RuleProvenance } from "../../permissions/approval-gate.js";
 import type { PermissionCheckResult, PermissionManager } from "../../permissions/permission-manager.js";
-import { abortSupersedesApprovalDecision, isSettledRefusal } from "./approval-outcome.js";
+import { errorMessage } from "../../shared/error-message.js";
+import { abortSupersedesApprovalDecision, isSettledRefusal, refusal } from "./approval-outcome.js";
+
+type SurfaceResolution = { permission: PermissionCheckResult; decision: ApprovalDecision; provenance?: RuleProvenance | HostProvenance };
+
+function refused(decision: ApprovalDecision, reason: string, provenance: RuleProvenance | HostProvenance): SurfaceResolution {
+  return { permission: refusal(reason, provenance), decision: { requestId: decision.requestId, choice: "deny-once" }, provenance };
+}
 
 export function userOwnedSurfaceCardFacts(
   permission: PermissionCheckResult,
@@ -20,8 +27,18 @@ export function userOwnedSurfaceCardFacts(
 }
 
 /** Selection receipts change session policy only after this live native card authorizes them. The result marks a decision the
- * current policy made in place of the card with the rule's provenance; any other decision is one the gate returned, with its own. */
-export async function resolveUserOwnedSurfaceApproval(input: {
+ * current policy made in place of the card with the rule's provenance, and a failure of the host with the host's; any other decision is
+ * one the gate returned, with its own. Only an abort is thrown. */
+export async function resolveUserOwnedSurfaceApproval(input: SurfaceInput): Promise<SurfaceResolution> {
+  try {
+    return await resolveSurface(input);
+  } catch (error) {
+    if (input.request.abortSignal?.aborted) throw error;
+    return refused(input.decision, errorMessage(error), HOST_PROVENANCE);
+  }
+}
+
+type SurfaceInput = {
   manager: PermissionManager;
   gate: ApprovalGate;
   permission: PermissionCheckResult;
@@ -29,7 +46,9 @@ export async function resolveUserOwnedSurfaceApproval(input: {
   request: ApprovalRequestInput;
   sessionId: string | undefined;
   review: (permission: PermissionCheckResult) => Promise<PermissionCheckResult>;
-}): Promise<{ permission: PermissionCheckResult; decision: ApprovalDecision; provenance?: RuleProvenance }> {
+};
+
+async function resolveSurface(input: SurfaceInput): Promise<SurfaceResolution> {
   const { manager, gate, request, sessionId } = input;
   let { permission, decision } = input;
   if (!request.userOwnedSurface || !sessionId || !decision.choice.startsWith("allow") || Boolean(isHostApprovalRejectedDecision(decision))) return { permission, decision };
@@ -38,12 +57,12 @@ export async function resolveUserOwnedSurfaceApproval(input: {
   if (permission.forceModal && !request.forceExplicit) return { permission, decision: { requestId: decision.requestId, choice: "deny-once" }, provenance: RULE_PROVENANCE };
   if (request.userOwnedSurfaceReviewFallback) return { permission, decision };
   const choice = gate.consumeUserOwnedSurfaceChoice(decision, sessionId, request.userOwnedSurface);
-  if (choice === undefined) throw new Error("User-owned surface approval receipt is unavailable.");
+  if (choice === undefined) return refused(decision, "User-owned surface approval receipt is unavailable.", HOST_PROVENANCE);
   manager.setUserOwnedSurfaceChoice(sessionId, request.userOwnedSurface, choice);
   if (choice !== "auto") return { permission, decision };
   permission = manager.recheckPermission(permission);
   if (permission.reviewer && permission.decision === "ask") permission = await input.review(permission);
-  if (permission.decision === "deny") throw new Error(permission.reason);
+  if (permission.decision === "deny") return refused(decision, permission.reason, RULE_PROVENANCE);
   if (permission.decision === "allow") return { permission, decision, provenance: RULE_PROVENANCE };
   const epoch = manager.getPolicyEpoch();
   const fallback: ApprovalRequestInput = {
@@ -58,8 +77,8 @@ export async function resolveUserOwnedSurfaceApproval(input: {
   if (abortSupersedesApprovalDecision(request.abortSignal, decision)) request.abortSignal?.throwIfAborted();
   // A settled refusal is terminal: neither a policy change nor the refreshed permission reopens it.
   if (isSettledRefusal(decision)) return { permission, decision };
-  if (epoch !== manager.getPolicyEpoch() && !gate.allowsPolicyTransition(decision, epoch, manager.getPolicyEpoch())) throw new Error("Permission policy changed while approval was pending.");
+  if (epoch !== manager.getPolicyEpoch() && !gate.allowsPolicyTransition(decision, epoch, manager.getPolicyEpoch())) return refused(decision, "Permission policy changed while approval was pending.", RULE_PROVENANCE);
   permission = manager.recheckPermission(permission);
-  if (permission.decision === "deny") throw new Error(permission.reason);
+  if (permission.decision === "deny") return refused(decision, permission.reason, RULE_PROVENANCE);
   return { permission, decision };
 }

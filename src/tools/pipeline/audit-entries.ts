@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { Tool } from "../base.js";
 import type { ToolSource, ToolCategory } from "../types.js";
 import type { PermissionCheckResult } from "../../permissions/permission-manager.js";
-import { provenanceTrustOrigin, RULE_PROVENANCE } from "../../permissions/approval-gate.js";
+import { HOST_PROVENANCE, provenanceTrustOrigin, RULE_PROVENANCE } from "../../permissions/approval-gate.js";
 import type { PermissionAuditEntryInput, HookResult, ToolExecutionAuditMetadata } from "../../audit/audit-schema.js";
 import { hookInvocationFailureReason, type HookTrustOrigin, type ScriptHookType } from "../../hooks/script-hook-types.js";
 import type { HookDispatchResult } from "../../hooks/script-hook-manager.js";
@@ -132,14 +132,18 @@ export function permissionAuditEntryFromToolCall(args: {
   hookChain?: HookResult[];
   audit?: ToolExecutionAuditMetadata;
 }): PermissionAuditEntryInput {
+  // An ask nobody settled is never an allow: it ends as the host's refusal.
+  const permission: PermissionCheckResult | undefined = args.permission?.decision === "ask"
+    ? { decision: "deny", reason: args.permission.reason, provenance: HOST_PROVENANCE }
+    : args.permission;
   // The row records who decided, from the decision's provenance.
-  const trustOrigin = provenanceTrustOrigin(args.permission?.provenance ?? RULE_PROVENANCE, args.permission?.decision ?? "allow", args.trustOrigin);
+  const trustOrigin = provenanceTrustOrigin(permission?.provenance ?? RULE_PROVENANCE, permission?.decision ?? "allow", args.trustOrigin);
   const base = permissionAuditBase({ ...args, trustOrigin });
-  if (args.permission?.decision === "deny") {
-    const denyReasons = args.permission.denyReasons?.length
-      ? args.permission.denyReasons
+  if (permission?.decision === "deny") {
+    const denyReasons = permission.denyReasons?.length
+      ? permission.denyReasons
       : [{
-        reason: args.permission.reason,
+        reason: permission.reason,
         source: "tool-executor",
       }];
     return {
@@ -154,8 +158,8 @@ export function permissionAuditEntryFromToolCall(args: {
     ...base,
     decision: "allow",
     };
-  if (args.permission?.reviewer?.verdict) {
-    allowEntry.reviewer = args.permission.reviewer.verdict;
+  if (permission?.reviewer?.verdict) {
+    allowEntry.reviewer = permission.reviewer.verdict;
   }
   if (auditDirectory) {
     allowEntry.directory = auditDirectory;

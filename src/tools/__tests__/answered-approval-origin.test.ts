@@ -10,6 +10,8 @@ import { PermissionManager } from "../../permissions/permission-manager.js";
 import { ToolExecutor } from "../executor.js";
 import { WriteFileTool } from "../file-tools.js";
 import { ToolRegistry } from "../registry.js";
+import { permissionAuditEntryFromToolCall } from "../pipeline/audit-entries.js";
+import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 
 let root: string;
 let project: string;
@@ -101,6 +103,14 @@ describe("the answerer contract", () => {
       sessionId: randomUUID(), executionCwd: project,
       permissionContext: { trustOrigin: "plugin-emitted", additionalDirectories: [project] },
     })).rejects.toThrow("approval: an answered decision carries no record of who answered");
+  });
+  it("never projects an ask nobody settled as an allow", () => {
+    const entry = permissionAuditEntryFromToolCall({
+      toolName: "write_file", source: "builtin", category: "write", input: { path: "notes.txt" },
+      permission: { decision: "ask", reason: "a person must answer this write", provenance: RULE_PROVENANCE },
+      rateLimitRemaining: Infinity, trustOrigin: "plugin-emitted", cwd: "/workspace",
+    });
+    expect(entry).toMatchObject({ decision: "deny", trustOrigin: "unknown", denyReasons: [{ reason: "a person must answer this write" }] });
   });
 });
 

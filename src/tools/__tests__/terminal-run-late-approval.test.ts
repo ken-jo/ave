@@ -543,4 +543,48 @@ describe("one terminal row per surface invocation", () => {
       expect(terminalRows(f.audit)).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "user-keyboard" })]);
     });
   });
+
+  const secondCardRecheck = {
+    throws: (manager: PermissionManager) => vi.spyOn(manager, "recheckPermission").mockImplementationOnce(() => { throw new Error("The rule store is unavailable."); }),
+    denies: (manager: PermissionManager) => vi.spyOn(manager, "recheckPermission").mockImplementationOnce(permission => ({ ...permission, decision: "deny", reason: "The surface policy now refuses this command." })),
+  };
+
+  it.each([
+    [false, "throws", "unknown"], [true, "throws", "unknown"],
+    [false, "denies", "llm-tool-arg"], [true, "denies", "llm-tool-arg"],
+  ] as const)("ends an approved second card with one terminal row (outside directory: %s, recheck %s, origin %s)", async (outside, recheck, origin) => {
+    const f = await fixture({ outside, ...(outside ? { mode: "strict" as const } : {}), exactRule: false, holdFinalizer: false, surfaceChoice: "auto", logicalReview: inconsistent });
+    await runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "fallback-recheck-turn" }, async () => {
+      const pending = f.run();
+      await vi.waitFor(() => expect(f.cards).toHaveLength(1));
+      f.approve(f.cards[0], true);
+      await vi.waitFor(() => expect(f.cards).toHaveLength(2));
+      secondCardRecheck[recheck](f.manager);
+      f.approve(f.cards[1], true);
+      const [result] = await pending;
+      expect(result.is_error).toBe(true);
+      expect(f.typed).toEqual([]);
+      expect(terminalRows(f.audit)).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: origin })]);
+    });
+  });
+
+  it.each([["throws", "unknown"], ["denies", "llm-tool-arg"]] as const)("ends an approved late second card with one terminal row (recheck %s, origin %s)", async (recheck, origin) => {
+    const f = await fixture({ surfaceChoice: "auto" });
+    await runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "late-fallback-recheck-turn" }, async () => {
+      const pending = f.run();
+      await f.reached;
+      await f.pause();
+      f.manager.setUserOwnedSurfaceChoice(SESSION_ID, "host-terminal", "ask");
+      f.release();
+      await vi.waitFor(() => expect(f.cards).toHaveLength(1));
+      f.approve(f.cards[0], true);
+      await vi.waitFor(() => expect(f.cards).toHaveLength(2));
+      secondCardRecheck[recheck](f.manager);
+      f.approve(f.cards[1], true);
+      const [result] = await pending;
+      expect(result.is_error).toBe(true);
+      expect(f.typed).toEqual([]);
+      expect(terminalRows(f.audit)).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: origin })]);
+    });
+  });
 });

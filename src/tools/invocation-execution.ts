@@ -1110,7 +1110,7 @@ export async function executeAuthorizedToolInvocation(
     }
     humanApproved = surfaceResolution.provenance === undefined && decision.choice.startsWith("allow") && !isHostApprovalRejectedDecision(decision);
     if (!humanApproved && permissionResult.decision !== "allow") {
-      permissionResult = refusal(request.reason, surfaceResolution.provenance ?? answeredApprovalProvenance(decision));
+      permissionResult = refusal(permissionResult.decision === "deny" ? permissionResult.reason : request.reason, surfaceResolution.provenance ?? answeredApprovalProvenance(decision));
       throw new Error(request.reason);
     }
     if (humanApproved) {
@@ -1203,10 +1203,13 @@ export async function executeAuthorizedToolInvocation(
       try {
         await requestLateApproval(attempt.error.request);
       } catch (error) {
+        const userAbort = abortSupersedesApprovalDecision(abortSignal, lateApprovalDecision);
+        // A late approval that failed without a refusal of its own ends as the host's.
+        if (!userAbort && permissionResult?.decision !== "deny") permissionResult = refusal(errorMessage(error), HOST_PROVENANCE);
         return {
           ok: false,
           // A late deny the person answered ends as their denial, not as the seal's.
-          reason: abortSupersedesApprovalDecision(abortSignal, lateApprovalDecision) ? "user-abort" : "error",
+          reason: userAbort ? "user-abort" : "error",
           error: error instanceof Error ? error : new Error(String(error)),
         };
       }
