@@ -1246,15 +1246,15 @@ export async function executeAuthorizedToolInvocation(
   ) {
     deferredOperationSettlement = outcome.settlement;
     terminationReason = "indeterminate";
-    // An interruption by the quit seal is the host's refusal; the invocation's principal decided nothing here.
-    const hostRefusal = isHostExitAbort(abortSignal?.reason) ? hostShutdownDenial() : undefined;
+    // The ceiling and the quit seal are the host's stops; the invocation's principal decided nothing here.
+    const hostStopped = outcome.reason === "ceiling" || isHostExitAbort(abortSignal?.reason);
     await appendToolInvocationAudit(services.auditLogger, {
       ts: new Date().toISOString(),
       auditId: randomUUID(),
       tool: toolUse.name,
       source,
       category: invocationCategory,
-      trustOrigin: hostRefusal?.trustOrigin ?? invocationPermissionContext.trustOrigin,
+      trustOrigin: hostStopped ? "unknown" : invocationPermissionContext.trustOrigin,
       decision: "deny",
       denyReasons: [{
         reason: "authorized governed operation remains unsettled after interruption",

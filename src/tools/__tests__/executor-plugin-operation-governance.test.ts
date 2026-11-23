@@ -1916,6 +1916,45 @@ describe("ToolExecutor plugin operation governance", () => {
     }
   });
 
+  it.each([
+    ["the ceiling", true],
+    ["a user stop", false],
+  ] as const)("records a write %s interrupts as unsettled, as the host's stop only when the host stopped it", async (by, hostStop) => {
+    vi.useFakeTimers();
+    const { executor, write, auditLogger } = setup();
+    let releaseWrite: (() => void) | undefined;
+    try {
+      await runWithInvocationOrigin("ui", undefined, () =>
+        executor.executeAll([{ id: "r-stop", name: "domain_read", input: { operation: "status" } }], options()),
+      );
+      const grant = executor.issuePluginOperationGrant({ toolName: "domain_write", input: { operation: "save", value: 35 }, principal });
+      const writeStarted = new Promise<void>((started) => {
+        write.mockImplementationOnce(() => new Promise((resolve) => {
+          started();
+          releaseWrite = () => resolve({ output: "late saved", isError: false });
+        }));
+      });
+      const stop = new AbortController();
+      const interrupted = runWithInvocationOrigin("ui", undefined, () =>
+        executor.executeAll(
+          [{ id: "w-stop", name: "domain_write", input: { operation: "save", value: 35 } }],
+          { ...options(grant.token), abortSignal: stop.signal },
+        ),
+      );
+      await writeStarted;
+      if (by === "the ceiling") await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.globalCeilingMs + 1);
+      else stop.abort();
+      expect((await interrupted)[0].is_error).toBe(true);
+      const unsettled = auditLogger.appendPermissionAuditEntry.mock.calls
+        .map(([entry]) => entry)
+        .filter((entry) => JSON.stringify(entry.denyReasons ?? []).includes("remains unsettled after interruption"));
+      expect(unsettled).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: hostStop ? "unknown" : "plugin-emitted" })]);
+    } finally {
+      releaseWrite?.();
+      vi.useRealTimers();
+    }
+  });
+
   // Seals the process-wide ledger, so it stays the last test in this file.
   it("closes a detached write at the seal with one host-shutdown row and refuses its late settlement", async () => {
     vi.useFakeTimers();
