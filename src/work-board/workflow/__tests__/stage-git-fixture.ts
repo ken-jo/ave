@@ -1,11 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHostGit } from "../host-git.js";
 import type { RunRef } from "../stage-workspace.js";
 import { createStageWorkspaceProvider, type StageWorkspaceOptions } from "../stage-workspaces.js";
-import { stageOf, writeUnder } from "./stage-fixtures.js";
+import { removeTree, stageOf, writeUnder } from "./stage-fixtures.js";
 
 export interface GitHandle { provider: ReturnType<typeof createStageWorkspaceProvider>; run: RunRef }
 export interface GitFixture {
@@ -48,7 +48,7 @@ export function gitFixture(): GitFixture {
     },
     done: async () => {
       for (const { provider, run } of opened.splice(0)) await provider.release(run, "all");
-      rmSync(base, { recursive: true, force: true, maxRetries: 3 });
+      removeTree(base);
     },
   };
 }

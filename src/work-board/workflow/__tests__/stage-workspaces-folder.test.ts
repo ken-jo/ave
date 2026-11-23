@@ -12,7 +12,7 @@ import type { RunRef } from "../stage-workspace.js";
 import { createStageWorkspaceProvider, type StageWorkspaceOptions } from "../stage-workspaces.js";
 import { OUT_DIR, RUN_FILE, runRootOf } from "../workspace-layout.js";
 import { copySeedFiles, isInside, listSeedFiles } from "../workspace-seed.js";
-import { setPath, stageOf, writeUnder as write } from "./stage-fixtures.js";
+import { removeLink, removeTree, setPath, stageOf, writeUnder as write } from "./stage-fixtures.js";
 
 let base: string;
 let project: string;
@@ -92,7 +92,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   for (const { provider, run } of opened.splice(0)) await provider.release(run, "all");
-  rmSync(base, { recursive: true, force: true, maxRetries: 3 });
+  removeTree(base);
 });
 
 describe("folder stage workspaces", () => {
@@ -325,7 +325,7 @@ describe("folder stage workspaces", () => {
         expect(await provider.prepare(run, stageOf("s1"), 1), name).toEqual({ ok: false, code: "workspace-unavailable" });
       });
       expect(readdirSync(outside), name).toEqual([]);
-      rmSync(level);
+      removeLink(level);
     }
   });
 
@@ -577,7 +577,7 @@ describe("folder stage workspaces", () => {
     symlinkSync(outside, join(handle.out, "report"), "junction");
     await expect(handle.provider.integrate(handle.run, "j1", ["s1"])).rejects.toThrow();
     expect(readdirSync(outside)).toEqual([]);
-    rmSync(join(handle.out, "report"));
+    removeLink(join(handle.out, "report"));
     expect(await handle.provider.integrate(handle.run, "j1", ["s1"])).toEqual({ ok: true });
     expect(read(handle.out, "report/deep/r.md")).toBe("report\n");
   });
@@ -602,7 +602,7 @@ describe("folder stage workspaces", () => {
       expect(await handle.provider.prepare(handle.run, stageOf("s2", fromFirst), 1)).toEqual({ ok: false, code: "seed-unreadable" });
       expect(existsSync(join(handle.runRoot, "s2"))).toBe(false);
     } finally {
-      rmSync(handle.out);
+      removeLink(handle.out);
       renameSync(away, handle.out);
     }
     expect(tree(await stageRoot(handle, "s2", fromFirst))).toEqual(["plan.md"]);
@@ -979,7 +979,7 @@ describe("folder stage workspaces", () => {
       expect(read(join(kept, "_out"), "result.md"), level).toBe("collected\n");
       // The run that was not swapped went as usual.
       expect(handles.filter(handle => handle !== swapped).map(handle => existsSync(handle.runRoot)), level).toEqual([false]);
-      rmSync(level === "run" ? swapped.runRoot : dirname(swapped.runRoot));
+      removeLink(level === "run" ? swapped.runRoot : dirname(swapped.runRoot));
     }
   });
 
@@ -1009,7 +1009,7 @@ describe("folder stage workspaces", () => {
       expect(prepared).toEqual({ ok: false, code: "seed-unreadable" });
     } finally {
       if (existsSync(restored)) {
-        rmSync(runRoot);
+        removeLink(runRoot);
         renameSync(restored, runRoot);
       }
       await provider.release(run, "all");

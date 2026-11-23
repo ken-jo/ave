@@ -7,7 +7,7 @@ import { createHostGit, type HostGit, HostGitError } from "../host-git.js";
 import { nodeIdOf } from "../owned-fs.js";
 import { createStageWorkspaceProvider } from "../stage-workspaces.js";
 import { JOIN_DIR, RUN_FILE, runBranch, runRootOf } from "../workspace-layout.js";
-import { setPath, writeUnder as write } from "./stage-fixtures.js";
+import { removeTree, setPath, writeUnder as write } from "./stage-fixtures.js";
 import { type GitFixture, type GitHandle, gitFixture, sealed, stageRoot } from "./stage-git-fixture.js";
 
 const warned = vi.hoisted(() => [] as string[]);
@@ -460,7 +460,7 @@ describe("the repository's identity", () => {
     if (!open.ok || base === undefined) throw new Error("expected a git workspace");
     await stageRoot(handle, "s1");
     // The child is now a plain folder of the parent's work tree, and the parent has a branch of the run's name at the run's commit.
-    rmSync(join(child, ".git"), { recursive: true, force: true });
+    removeTree(join(child, ".git"));
     const branch = runBranch(handle.run.runId);
     userGit(repo, "update-ref", `refs/heads/${branch}`, base);
     const listed = userGit(repo, "worktree", "list", "--porcelain");

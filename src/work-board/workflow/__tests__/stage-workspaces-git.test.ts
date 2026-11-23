@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createHostGit, type HostGit } from "../host-git.js";
 import { createStageWorkspaceProvider } from "../stage-workspaces.js";
 import { JOIN_DIR, RUN_FILE, runBranch } from "../workspace-layout.js";
-import { stageOf, writeUnder as write } from "./stage-fixtures.js";
+import { removeLink, stageOf, writeUnder as write } from "./stage-fixtures.js";
 import { type GitFixture, gitFixture, sealed, stageRoot } from "./stage-git-fixture.js";
 
 let fx: GitFixture;
@@ -404,7 +404,7 @@ describe("git stage workspaces", () => {
       expect(calls.filter(call => /^worktree|^branch|^update-ref/u.test(call))).toEqual([]);
     } finally {
       if (existsSync(restored)) {
-        rmSync(runRoot);
+        removeLink(runRoot);
         renameSync(restored, runRoot);
       }
     }
