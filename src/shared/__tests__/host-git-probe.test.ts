@@ -68,8 +68,7 @@ if (mode !== "exit") setInterval(() => {}, 15000);
 
 function readPid(pidFile: string): number {
   try {
-    const pid = Number(readFileSync(pidFile, "utf8"));
-    return pid > 0 ? pid : 0;
+    return Number(readFileSync(pidFile, "utf8")) || 0;
   } catch {
     return 0;
   }
