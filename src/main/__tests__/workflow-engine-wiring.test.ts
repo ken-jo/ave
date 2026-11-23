@@ -180,3 +180,45 @@ it("a discard a row's removal asks for while a schedule's approved project is st
     await h.cleanup();
   }
 });
+
+interface HeldDiscard { given: Map<string, string>; answer: (taken: readonly string[]) => void; fail: (error: Error) => void }
+
+/** The production parts with a provider whose discards stay open until the test answers them; `announce` is a removal the run store
+ * tells of, awaited until the discard it asks for was given its projects, and `settled` waits until an answer has been taken in. */
+async function withHeldDiscards(run: (announce: (runs: [runId: string, projectRoot: string][]) => Promise<void>, discards: HeldDiscard[], settled: () => Promise<void>) => Promise<void>): Promise<void> {
+  const discards: HeldDiscard[] = [];
+  const h = await stageRunHarness({ wiring: (store, harness) => {
+    const parts = workflowEngineExtensions(store, harness.templates);
+    vi.spyOn(parts.workspace, "discard").mockImplementation(projects => new Promise((answer, fail) => { discards.push({ given: new Map(projects), answer, fail }); }));
+    return { ...parts, workspace: harness.workspace, workspaceBinding: undefined };
+  } });
+  try {
+    const pin = h.pinOf(await h.confirm([stageOf("a")]));
+    const settled = (): Promise<void> => new Promise(resolve => setImmediate(resolve));
+    await run(async (runs) => {
+      h.board.runs.onRunsRemoved?.(runs.map(([runId, projectRoot]): RemovedRun => ({ runId, itemId: 1, runStartedBy: { kind: "local-create-and-run", pin, projectRoot } })));
+      await settled();
+    }, discards, settled);
+  } finally {
+    await h.cleanup();
+  }
+}
+
+it("a project noted while a discard is still running is kept for the next one, whatever that discard then says it took", () => withHeldDiscards(async (announce, discards, settled) => {
+  await announce([["early", "/projects/a"]]);
+  // While the first discard runs: a run it never saw, and the first run noted again under another root.
+  await announce([["late", "/projects/b"], ["early", "/projects/c"]]);
+  expect(discards.map(discard => discard.given)).toEqual([new Map([["early", "/projects/a"]]), new Map([["early", "/projects/c"], ["late", "/projects/b"]])]);
+  discards[0]?.answer(["early", "late"]);
+  await settled();
+  await announce([["next", "/projects/d"]]);
+  expect(discards[2]?.given).toEqual(new Map([["early", "/projects/c"], ["late", "/projects/b"], ["next", "/projects/d"]]));
+}));
+
+it("a discard that fails keeps every project it was given", () => withHeldDiscards(async (announce, discards, settled) => {
+  await announce([["first", "/projects/a"], ["second", "/projects/b"]]);
+  discards[0]?.fail(new Error("fixture: the discard failed"));
+  await settled();
+  await announce([["next", "/projects/c"]]);
+  expect(discards[1]?.given).toEqual(new Map([["first", "/projects/a"], ["second", "/projects/b"], ["next", "/projects/c"]]));
+}));
