@@ -252,7 +252,7 @@ describe("standalone frames take only the asks the enable card answers", () => {
     const real = permissionManager.checkDetailed.bind(permissionManager);
     vi.spyOn(permissionManager, "checkDetailed").mockImplementation((...args) => {
       const result = real(...args);
-      return { ...result, decision: "ask", reasonCode: "review-required", pipelineRequest: { ...result.pipelineRequest!, ...evidence } } as never;
+      return { ...result, decision: "ask", reasonCode: "review-required", pipelineRequest: { ...result.pipelineRequest, ...evidence } } as never;
     });
     const log: string[] = [];
     const { gate, requests } = makeGate("allow-once");
