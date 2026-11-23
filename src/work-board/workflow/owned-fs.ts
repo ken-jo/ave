@@ -115,6 +115,8 @@ export interface OwnedDir {
   walk(segments: readonly string[]): OwnedDir | undefined;
   /** The folder at `name` only while it has `id`; undefined when nothing is there, `changed` for anything else. */
   child(name: string, id: NodeId): OwnedDir | undefined;
+  /** Which entry `name` is now, a link as the link itself; undefined when nothing is there. Read with every level still the one held,
+   * before and after (`moved` otherwise): a folder that took a held one's place says nothing of what the held one holds. */
   entryId(name: string): NodeId | undefined;
   list(): string[];
   /** A new regular file. With `replace`, a file or link of that name is unlinked first: the name, never what it points at. */
@@ -211,7 +213,11 @@ class Dir implements OwnedDir {
   }
 
   entryId(name: string): NodeId | undefined {
-    return nodeIdOf(join(this.path, entryName(name)));
+    const path = join(this.path, entryName(name));
+    this.check();
+    const id = nodeIdOf(path);
+    this.check();
+    return id;
   }
 
   list(): string[] {

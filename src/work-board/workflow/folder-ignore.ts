@@ -107,7 +107,7 @@ export function plainFolderIgnore(git: HostGit, runRoot: string, root: string, h
       }
       held.check();
       const checked = await git.run(root, [`--git-dir=${join(scratch.path, ".git")}`, `--work-tree=${root}`, "check-ignore", "--no-index", "-z", "--stdin"],
-        { stdin: paths.map(path => `${path}\0`).join(""), isolated: true, drivers: [...MATCHER_CONFIG, "-c", `core.ignoreCase=${folds}`] });
+        { stdin: paths.map(path => `${path}\0`).join(""), isolated: true, exact: true, drivers: [...MATCHER_CONFIG, "-c", `core.ignoreCase=${folds}`] });
       // Exit 1: none of them is ignored.
       held.check();
       if (checked.code !== 0 && checked.code !== 1) throw new Error("the folder's ignore rules could not be read");

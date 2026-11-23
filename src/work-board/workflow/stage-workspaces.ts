@@ -8,7 +8,7 @@ import type { TemplateStage } from "../../shared/workflow-template-types.js";
 import { isStageId } from "../template-graph.js";
 import { type NameReader, plainFolderIgnore, projectFoldsCase } from "./folder-ignore.js";
 import { createHostGit, type HostGit, HostGitError } from "./host-git.js";
-import { holdDir, type NodeId, nodeIdOf, type OwnedDir, OwnedFsError, realDirId, realWithin, type SourceRoot } from "./owned-fs.js";
+import { holdDir, type NodeId, type OwnedDir, OwnedFsError, realDirId, realWithin, type SourceRoot } from "./owned-fs.js";
 import type { JoinConflict } from "./shipped-shapes.js";
 import type { RemovedRunProject, RunRef, StageWorkspaceProvider, WORKSPACE_REFUSALS } from "./stage-workspace.js";
 import { IGNORE_PREFIX, isIgnoreFolder, JOIN_DIR, OUT_DIR, RUN_FILE, runBranch, runRootOf, runSlug, stageDirName, WORKTREES_DIR } from "./workspace-layout.js";
@@ -193,7 +193,8 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     if (worktrees === undefined) return undefined;
     const own = runFolderOf(at.run, key, registration.gitdir);
     if (own === undefined) throw new OwnedFsError("changed", "the registration points outside the run's folder");
-    const folder = nodeIdOf(own);
+    // Asked of the held run folder: one that took its place would show the folder gone while it is still there.
+    const folder = at.run.entryId(basename(own));
     if (folder !== undefined && folder !== (key === JOIN_DIR ? at.file.joinDir : at.file.stages[key]?.dir)) throw new OwnedFsError("changed", "the registration points at a folder the run did not make");
     if (worktrees.entryId(name) === undefined) return undefined;
     const text = worktrees.child(name, registration.id)?.readFile("gitdir")?.toString("utf8");
@@ -258,7 +259,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
   async function gitProject(root: string): Promise<{ baseCommit: string } | { inWorkTree: boolean }> {
     let top: Awaited<ReturnType<HostGit["run"]>>;
     try {
-      top = await git.run(root, ["rev-parse", "--show-toplevel"]);
+      top = await git.run(root, ["rev-parse", "--show-toplevel"], { exact: true });
     } catch (error) {
       // No git on this machine: every project is a plain folder.
       if (error instanceof HostGitError && error.reason === "unavailable") return { inWorkTree: false };
@@ -273,9 +274,10 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
   }
 
   async function usesFilter(root: string, filters: readonly string[]): Promise<boolean> {
-    const tracked = await gitOut(root, ["ls-files", "-z"]);
+    // The names go back to git as they came: a name that is no text would be asked about under another.
+    const tracked = await gitOut(root, ["ls-files", "-z"], { exact: true });
     if (tracked === "") return false;
-    const attributes = nul(await gitOut(root, ["check-attr", "-z", "--stdin", "filter"], { stdin: tracked }));
+    const attributes = nul(await gitOut(root, ["check-attr", "-z", "--stdin", "filter"], { stdin: tracked, exact: true }));
     for (let index = 2; index < attributes.length; index += 3) if (filters.includes(attributes[index] ?? "")) return true;
     return false;
   }
@@ -294,7 +296,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     const root = at.live?.root;
     if (root === undefined || at.file.ignoreRules !== true) return undefined;
     return async (paths) => {
-      const checked = await git.run(root, ["check-ignore", "-z", "--stdin"], { stdin: paths.map(path => `${path}\0`).join("") });
+      const checked = await git.run(root, ["check-ignore", "-z", "--stdin"], { exact: true, stdin: paths.map(path => `${path}\0`).join("") });
       // Exit 1: none of them is ignored.
       if (checked.code !== 0 && checked.code !== 1) throw new Error("the project's ignore rules could not be read");
       return new Set(nul(checked.stdout));
@@ -314,7 +316,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
 
   /** The repository's common directory as it really is on disk, and which directory it is. */
   async function commonDirOf(cwd: string): Promise<NonNullable<WorkspaceRecord["repo"]>> {
-    const gitDir = realpathSync.native((await gitOut(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).replace(/\r?\n$/u, ""));
+    const gitDir = realpathSync.native((await gitOut(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"], { exact: true })).replace(/\r?\n$/u, ""));
     const id = realDirId(gitDir);
     if (id === undefined) throw new Error("the repository's common directory is no real directory");
     return { gitDir, id };
@@ -493,8 +495,8 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       held.check();
       await checkOut(at, stage.id, held, drivers.requiredFilters);
       held.check();
-      // A tracked secret file is not handed to a stage.
-      const tracked = nul(answered(["ls-files"], await gitIn(at, stage.id, held)(["ls-files", "-z"])));
+      // A tracked secret file is not handed to a stage. It is found, and then removed, by its name: one that is no text is neither.
+      const tracked = nul(answered(["ls-files"], await gitIn(at, stage.id, held)(["ls-files", "-z"], { exact: true })));
       held.check();
       for (const path of tracked) {
         if (!sensitive(join(held.path, path))) continue;
@@ -586,8 +588,12 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       }
       // A git run with no open project that its record names gets nothing made: no step in its repository could be taken.
       if (file.kind === "git" && found.live === undefined) return unavailable;
-      // A folder nobody recorded is not the provider's to replace.
-      if (existing === undefined && found.run.entryId(name) !== undefined) return unavailable;
+      // A folder nobody recorded is not the provider's to replace; neither is one that cannot be asked about.
+      try {
+        if (existing === undefined && found.run.entryId(name) !== undefined) return unavailable;
+      } catch {
+        return unavailable;
+      }
       let entry: StageEntry | undefined;
       let held: OwnedDir;
       try {
@@ -627,10 +633,11 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     const out = async (args: readonly string[], call?: Parameters<HostGit["run"]>[2]): Promise<string> => answered(args, await inStage(args, call));
     await out(["add", "-A"], { drivers });
     // A secret path never enters the commit, as a deletion (the host removed it) or as a new file.
-    const staged = nul(await out(["diff", "--cached", "--name-only", "-z", "--no-ext-diff", "--no-textconv", "--no-renames", "HEAD"], { drivers }));
+    const staged = nul(await out(["diff", "--cached", "--name-only", "-z", "--no-ext-diff", "--no-textconv", "--no-renames", "HEAD"], { drivers, exact: true }));
     for (const paths of chunked(staged.filter(path => sensitive(join(dir, path))))) {
       await assertRepository(at);
-      await out(["reset", "-q", "HEAD", "--", ...paths], { drivers });
+      // Each is the one file that was checked: read as a pattern, a name would take other files out of the commit, or none.
+      await out(["reset", "-q", "HEAD", "--", ...paths.map(path => `:(literal)${path}`)], { drivers });
     }
     const dirty = await inStage(["diff", "--cached", "--quiet", "--no-ext-diff", "--no-textconv", "HEAD"], { drivers });
     if (dirty.code !== 0) {

@@ -337,6 +337,24 @@ describe("git stage workspaces", () => {
     expect(userGit(repo, "show", `${seal}:.env`)).toBe("TOKEN=fixture");
   });
 
+  it("a secret path stays out of a seal as the one file it names, whatever its name reads as to git, and every name git tells the host is asked for as text", async () => {
+    const calls: { args: readonly string[]; exact: boolean }[] = [];
+    const real = createHostGit({ env });
+    const git: HostGit = { drivers: real.drivers, run: (cwd, args, call) => { calls.push({ args, exact: call?.exact === true }); return real.run(cwd, args, call); } };
+    // The secret's name is, read as a pattern, the other file's.
+    const handle = fx.start({ git, sensitive: path => basename(path) === "[n]ew.txt" });
+    await handle.provider.open(handle.run, repo);
+    const root = await stageRoot(handle, "s1");
+    write(root, "new.txt", "new\n");
+    write(root, "[n]ew.txt", "kept out\n");
+    const seal = await sealed(handle, "s1");
+    expect.soft(seal === undefined ? "no commit" : userGit(repo, "show", "--name-status", "--format=", seal)).toBe("A\tnew.txt");
+    const kinds = ["ls-files", "check-attr", "check-ignore", "--show-toplevel", "--git-common-dir", "--name-only"];
+    const names = calls.filter(({ args }) => !args.includes("--diff-filter=U") && kinds.some(kind => args.includes(kind)));
+    expect.soft(names.filter(call => !call.exact).map(call => call.args.join(" "))).toEqual([]);
+    expect.soft(kinds.filter(kind => names.some(({ args }) => args.includes(kind)))).toEqual(["ls-files", "--show-toplevel", "--git-common-dir", "--name-only"]);
+  });
+
   it("release removes worktrees and keeps the run branch", async () => {
     const handle = start();
     const open = await handle.provider.open(handle.run, repo);

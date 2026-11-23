@@ -62,6 +62,19 @@ describe("owned folders", () => {
     expect(readdirSync(join(outside, "s1"))).toEqual([]);
   });
 
+  it("a level swapped after the chain was held tells nothing of its entries: what took its place neither has one nor lacks one", () => {
+    const run = holdDir(join(base, "home")).ensure("run");
+    const stage = run.make("s1");
+    writeFileSync(join(run.path, "note.txt"), "");
+    expect([run.entryId("s1"), run.entryId("s2"), run.isFile("note.txt"), run.isFile("s1"), run.isFile("s2")]).toEqual([stage.id, undefined, true, false, false]);
+    renameSync(run.path, join(base, "home", "away"));
+    mkdirSync(run.path);
+    // The folder with the run's name holds neither; the one that was held holds both.
+    expect(reasonOf(() => run.entryId("s1"))).toBe("moved");
+    expect(reasonOf(() => run.isFile("note.txt"))).toBe("moved");
+    expect(reasonOf(() => stage.entryId("src"))).toBe("moved");
+  });
+
   it("ensurePath stops at a junction component", () => {
     const run = holdDir(join(base, "home")).ensure("run");
     linkDir(outside, join(run.path, "a"));

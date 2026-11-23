@@ -37,15 +37,20 @@ const DROPPED_ENV = new RegExp(`^(${[
 ].join("|")})$`, "iu");
 
 interface HostGitResult { code: number; stdout: string; stderr: string }
-/** `worktree`: the registration and the folder git works on, given to it outright; it then reads no `.git` file to find them. */
-interface HostGitCall { stdin?: string; drivers?: readonly string[]; isolated?: boolean; worktree?: { gitDir: string; workTree: string } }
+/** `worktree`: the registration and the folder git works on, given to it outright; it then reads no `.git` file to find them.
+ * `exact`: the answer holds names the caller compares, looks up on disk or hands back to git, so it must be text as it stands: one
+ * that is not would be read as other names, and is refused as `not-text`. */
+interface HostGitCall { stdin?: string; drivers?: readonly string[]; isolated?: boolean; exact?: boolean; worktree?: { gitDir: string; workTree: string } }
+/** Bytes as the text they are and nothing else: no byte replaced, no leading mark dropped. Throws for bytes that are no text. */
+const STRICT_TEXT = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 export class HostGitError extends Error {
-  constructor(readonly reason: "unavailable" | "held" | "timeout" | "output-limit" | "terminated" | "driver-name", message: string) { super(message); }
+  constructor(readonly reason: "unavailable" | "held" | "timeout" | "output-limit" | "terminated" | "driver-name" | "not-text", message: string) { super(message); }
 }
 
 export interface HostGit {
   /** Runs one hardened git process. A non-zero exit is returned, never thrown; only a process that could not run or finish throws: one
-   * that ended without an exit code, or whose pipes stayed open after it ended, is `terminated`. `isolated` runs it on no configuration but the repository's own and the call's. */
+   * that ended without an exit code, or whose pipes stayed open after it ended, is `terminated`. `isolated` runs it on no configuration but the repository's own and the call's.
+   * What it wrote is given as text, a byte that is none replaced; with `exact` such an answer is refused instead. */
   run(cwd: string, args: readonly string[], options?: HostGitCall): Promise<HostGitResult>;
   /** `-c` entries that switch off every filter and merge driver the repository's configuration names, and the filter drivers it marks
    * required. With `worktree`, the configuration is read as a call given that worktree reads it: a file included for that
@@ -128,7 +133,8 @@ export function createHostGit(options: { env?: NodeJS.ProcessEnv; timeoutMs?: nu
 
   async function run(cwd: string, args: readonly string[], call: HostGitCall = {}): Promise<HostGitResult> {
     const { code, stdout, stderr } = await raw(cwd, args, call);
-    return { code, stdout: stdout.toString("utf8"), stderr: stderr.toString("utf8") };
+    if (call.exact !== true) return { code, stdout: stdout.toString("utf8"), stderr: stderr.toString("utf8") };
+    try { return { code, stdout: STRICT_TEXT.decode(stdout), stderr: stderr.toString("utf8") }; } catch { throw new HostGitError("not-text", "git's answer holds a name that is no text"); }
   }
 
   async function drivers(cwd: string, worktree?: HostGitCall["worktree"]): Promise<{ config: string[]; requiredFilters: string[] }> {
@@ -149,9 +155,8 @@ export function createHostGit(options: { env?: NodeJS.ProcessEnv; timeoutMs?: nu
     };
     // The name a key holds, as the text a `-c` entry carries; undefined for bytes that are no text. A leading byte order mark is
     // part of the name.
-    const strict = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
     const nameOf = (key: string): string | undefined => {
-      try { return strict.decode(Buffer.from(key.slice(key.indexOf(".") + 1, key.lastIndexOf(".")), "latin1")); } catch { return undefined; }
+      try { return STRICT_TEXT.decode(Buffer.from(key.slice(key.indexOf(".") + 1, key.lastIndexOf(".")), "latin1")); } catch { return undefined; }
     };
     const filters = new Set<string>();
     const merges = new Set<string>();

@@ -216,6 +216,16 @@ describe("host git", () => {
     expect(await reasonOf(createHostGit({ env }).drivers(repo))).toBe("driver-name");
   });
 
+  it("an answer asked for as text is given only when it is text, as it stands; asked for otherwise, a byte that is none is replaced", async () => {
+    const answer = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from("a.txt\0b"), Buffer.from([0xff]), Buffer.from(".txt\0")]);
+    replying({ code: 0, stdout: answer });
+    expect.soft(await reasonOf(createHostGit({ env }).run(base, ["ls-files", "-z"], { exact: true }))).toBe("not-text");
+    replying({ code: 0, stdout: answer });
+    expect.soft((await createHostGit({ env }).run(base, ["ls-files", "-z"])).stdout).toContain("\uFFFD.txt");
+    replying({ code: 0, stdout: answer.subarray(0, 9) });
+    expect((await createHostGit({ env }).run(base, ["ls-files", "-z"], { exact: true })).stdout).toBe("\uFEFFa.txt\0");
+  });
+
   it("a driver name the call cannot carry is still told as that, whatever character makes it so", async () => {
     for (const name of ["a\rb", "a=b"]) {
       replying({ code: 0, stdout: `filter.${name}.clean\ncat\0` }, { code: 1 });
