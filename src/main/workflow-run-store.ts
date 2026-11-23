@@ -411,7 +411,7 @@ export class WorkflowRunStore {
       file.unknownDeletes = kept;
       this.stagedUnknownRemovals = removed;
       try {
-        const committed = await this.commit(file, { confirm: runIds => {
+        const committed = await this.commit(file, { settle: runIds => {
           if (runIds === undefined || removed.size === 0) return;
           const count = this.unknown.length;
           this.unknown = this.unknown.filter(marker => !removed.has(marker));
@@ -436,7 +436,7 @@ export class WorkflowRunStore {
   async withdrawIntent(intent: DeleteIntent, operation?: MarkerOp): Promise<boolean> {
     let withdrawn = false;
     await withInProcessFileQueue(this.filePath, async () => {
-      const confirm = async (runIds?: Set<string>) => {
+      const settle = async (runIds?: Set<string>) => {
         const current = await this.read().catch(() => undefined);
         if (current === undefined || holdsDelete(current, intent)) return;
         const count = this.unknown.length;
@@ -446,12 +446,12 @@ export class WorkflowRunStore {
       };
       const file = await this.read().catch(() => undefined);
       if (file === undefined || !holdsDelete(file, intent)) {
-        await confirm();
+        await settle();
         return;
       }
       file.deleteIntents = dropFrom(file.deleteIntents, sameIntent(intent));
       file.unknownDeletes = dropFrom(file.unknownDeletes, aboutPair(intent));
-      await this.commit(file, { confirm });
+      await this.commit(file, { settle });
     }).catch(() => undefined);
     if (withdrawn) return true;
     await this.markUnknown(intent, operation);
@@ -505,7 +505,7 @@ export class WorkflowRunStore {
         const marker = markerOf(entry);
         return marker !== undefined && [...decided].some(sameMarker(marker));
       });
-      await this.commit(file, { confirm: async runIds => {
+      await this.commit(file, { settle: async runIds => {
         const current = await this.read().catch(() => undefined);
         if (current === undefined) return;
         const stored = markersIn(current);
@@ -677,10 +677,10 @@ export class WorkflowRunStore {
 
   // A file past the read limit could not be read again, so nothing could shrink it afterwards: such a write is refused and the file stays as it is.
   // Bytes it would not give back, and the file before a discard, are copied beside it first.
-  private async commit(file: RunsFile, { discard = false, runIds = [], confirm }: {
+  private async commit(file: RunsFile, { discard = false, runIds = [], settle }: {
     discard?: boolean;
     runIds?: readonly string[];
-    confirm?: (committedIds: Set<string> | undefined) => void | Promise<void>;
+    settle?: (committedIds: Set<string> | undefined) => void | Promise<void>;
   } = {}): Promise<boolean> {
     let committedIds: Set<string> | undefined;
     try {
@@ -693,7 +693,7 @@ export class WorkflowRunStore {
       addChangedMetadataIds(file, committedIds);
       return true;
     } finally {
-      if (confirm !== undefined) await confirm(committedIds);
+      if (settle !== undefined) await settle(committedIds);
       if (committedIds !== undefined) for (const runId of committedIds) this.runChanged.emit(runId);
     }
   }
