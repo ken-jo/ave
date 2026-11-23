@@ -1,5 +1,5 @@
 // Per-command deny arrays replace the shared boot floor, even when empty; this primitive always restates it so children cannot regain secret reads. Callers provide allow paths only.
-import { spawn, type ChildProcess, type StdioOptions } from "node:child_process";
+import { spawn, type ChildProcess, type SpawnOptions, type StdioOptions } from "node:child_process";
 import { assertSrtWinSpawnIntegrity } from "./srt-win-integrity.js";
 import { win32SystemBinary } from "../shared/windows-system-path.js";
 import { existsSync, realpathSync, statSync } from "node:fs";
@@ -53,6 +53,7 @@ import { assertMxcHolderPrivateDirectories, type MxcExtensionFilesystemOwnership
 import { buildSandboxedChildEnv, isSandboxWrapperEnvKey } from "../tools/safe-env.js";
 import {
   assertManagedChildProcessAdmissionOpen,
+  spawnGatedManagedProcess,
   trackManagedChildProcess,
 } from "../main/managed-child-processes.js";
 import { shellQuote } from "../lib/shell-resolver.js";
@@ -107,6 +108,8 @@ export interface ConfinedChildSpec {
   // Whose plugin-owned code this is, for egress attribution: while the sandbox is active the wrap carries an egress token (`egress-invocations.ts`) minted for this owner, and every proxy deny of the child is audited under it. The token lives as long as the child.
   readonly egressOwner: WorkerEgressOwner;
   readonly grantMode: ConfinementGrantMode;
+  readonly requireWrap?: boolean;
+  readonly requireProcessGroupReaper?: boolean;
   // Ignored under `deny-only`, where ACLs grant reachability instead.
   readonly allowRead?: readonly string[];
   readonly allowWrite?: readonly string[];
@@ -437,12 +440,25 @@ export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<Confi
 
   const { executable, args, wrappedEnv, confinement, relayRequest, egress } = await resolveSpawnLine(spec);
   let child: ChildProcess;
-  try {
-    if (spec.refreshStillValid) await spec.refreshStillValid();
+  const assertStillValid = (): void => {
     spec.assertStillValid?.();
     assertManagedChildProcessAdmissionOpen(spec.label);
+    if (spec.requireWrap && !isPluginWorkerConfinementActive()) {
+      throw new Error(`[confined-child] ${spec.label}: child requires active confinement`);
+    }
+  };
+  const noteSpawn = (running: ChildProcess): void => {
+    if (egress === undefined) return;
+    if (process.platform !== "win32" && running.pid !== undefined) egress.noteProcessGroup(running.pid);
+    running.once("exit", () => egress.release());
+    running.once("close", () => egress.release());
+    running.once("error", () => { if (running.pid === undefined) egress.release(); });
+  };
+  try {
+    if (spec.refreshStillValid) await spec.refreshStillValid();
+    assertStillValid();
     if (confinement !== "unconfined") assertSrtWinSpawnIntegrity(executable);
-    child = spawn(executable, args, {
+    const options: SpawnOptions = {
       stdio,
       shell: false,
       windowsHide: true,
@@ -451,21 +467,21 @@ export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<Confi
       env: composeConfinedEnv(spec.baseEnv, wrappedEnv, spec.extraEnv ?? {}),
       // On the relay the program's directory also travels in its request; srt-win itself still starts in it.
       ...(spec.cwd !== undefined ? { cwd: spec.cwd } : {}),
-    });
+    };
+    if (spec.requireProcessGroupReaper) {
+      if (confinement !== "linux-bubblewrap" && confinement !== "macos-sandbox") {
+        throw new Error(`[confined-child] ${spec.label}: process group launch requires POSIX confinement`);
+      }
+      child = await spawnGatedManagedProcess(executable, args, options, { label: spec.label, onSpawn: noteSpawn, assertStillValid });
+    } else {
+      child = spawn(executable, args, options);
+      noteSpawn(child);
+      trackManagedChildProcess(child, { label: spec.label, killProcessGroup: egress !== undefined && process.platform !== "win32" });
+    }
   } catch (error) {
     egress?.release();
     throw error;
   }
-  if (egress !== undefined) {
-    // Detached (POSIX), the child leads its own process group: the sandbox keeps the ended invocation's listener port while that group lives.
-    if (process.platform !== "win32" && child.pid !== undefined) egress.noteProcessGroup(child.pid);
-    // The token outlives neither the process nor a spawn that never started.
-    const running = child;
-    running.once("exit", () => egress.release());
-    running.once("close", () => egress.release());
-    running.once("error", () => { if (running.pid === undefined) egress.release(); });
-  }
-  trackManagedChildProcess(child, { label: spec.label, killProcessGroup: egress !== undefined && process.platform !== "win32" });
   if (relayRequest === undefined) {
     return { child, confinement, stdin: child.stdin, stdout: child.stdout };
   }
@@ -575,6 +591,7 @@ async function resolveSpawnLine(
   const offline = isOfflineOwner(spec);
   if (offline ? !isOfflineProcessConfinementActive() : !isPluginWorkerConfinementActive()) {
     if (offline) throw new Error(`[confined-child] ${spec.label}: an offline process needs the OS sandbox, which is not active`);
+    if (spec.requireWrap) throw new Error(`[confined-child] ${spec.label}: child requires active confinement`);
     return { executable: spec.command, args: [...spec.args], wrappedEnv: {}, confinement: "unconfined" };
   }
   const confinement = wrapConfinement(spec.label);

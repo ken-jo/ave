@@ -20,6 +20,8 @@ const wrapWorkerCommandMock = vi.fn<
 const spawnMock = vi.fn();
 const trackMock = vi.fn();
 const admissionMock = vi.fn();
+const reaperAdmissionMock = vi.fn();
+const spawnGatedMock = vi.fn();
 // Whether the host runs under the OS sandbox. The primitive follows this one answer: wrap while it is true, spawn the caller's command as given while it is false. Defaults to true so the composition cases below see the wrap.
 const sandboxActiveMock = vi.fn<() => boolean>();
 // The offline-service gate, which an owner marked offline follows instead of the extension setting.
@@ -52,6 +54,11 @@ vi.mock("../asrt-sandbox.js", async (importOriginal) => ({
 }));
 vi.mock("../../main/managed-child-processes.js", () => ({
   assertManagedChildProcessAdmissionOpen: (label: string) => admissionMock(label),
+  assertProcessGroupReaperAvailable: () => reaperAdmissionMock(),
+  spawnGatedManagedProcess: (...args: unknown[]) => {
+    reaperAdmissionMock();
+    return spawnGatedMock(...args);
+  },
   trackManagedChildProcess: (child: unknown, opts: unknown) => trackMock(child, opts),
 }));
 vi.mock("node:child_process", () => ({ spawn: (...args: unknown[]) => spawnMock(...args) }));
@@ -78,6 +85,8 @@ beforeEach(() => {
   spawnMock.mockImplementation(() => fakeChild());
   trackMock.mockReset();
   admissionMock.mockReset();
+  reaperAdmissionMock.mockReset();
+  spawnGatedMock.mockReset().mockImplementation(() => fakeChild());
 });
 
 // The filesystem config the primitive handed ASRT on the last wrap.
@@ -511,6 +520,42 @@ describe("spawnConfinedChild", () => {
 describe("spawnConfinedChild reports the wrap it applied", () => {
   const hostPlatform = process.platform;
   afterEach(() => setProcessPlatform(hostPlatform));
+
+  it.each(["before wrapping", "after wrapping"])("refuses a required wrap if confinement is lost %s", async (when) => {
+    setProcessPlatform("linux");
+    if (when === "before wrapping") sandboxActiveMock.mockReturnValue(false);
+    const before = liveEgressInvocationCount();
+    const spec = {
+      command: "/usr/bin/example", args: [], label: "plugin-child:x", grantMode: "allow-list" as const,
+      tempPrincipal: PRINCIPAL, baseEnv: {}, egressOwner: EGRESS_OWNER, requireWrap: true,
+      onWrapped: () => sandboxActiveMock.mockReturnValue(false),
+    };
+    await expect(spawnConfinedChild(spec)).rejects.toThrow(/requires active confinement/);
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(liveEgressInvocationCount()).toBe(before);
+  });
+
+  it("refuses a protected group before spawn if the reaper is unavailable", async () => {
+    setProcessPlatform("linux");
+    reaperAdmissionMock.mockImplementation(() => { throw new Error("Process group reaper is unavailable"); });
+    const before = liveEgressInvocationCount();
+    await expect(spawnConfinedChild({
+      command: "/usr/bin/example", args: [], label: "plugin-child:x", grantMode: "allow-list",
+      tempPrincipal: PRINCIPAL, baseEnv: {}, egressOwner: EGRESS_OWNER, requireWrap: true, requireProcessGroupReaper: true,
+    })).rejects.toThrow(/reaper is unavailable/);
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(liveEgressInvocationCount()).toBe(before);
+  });
+
+  it("routes the confined executable through the protected launch gate", async () => {
+    setProcessPlatform("linux");
+    await spawnConfinedChild({
+      command: "/usr/bin/example", args: [], label: "plugin-child:x", grantMode: "allow-list",
+      tempPrincipal: PRINCIPAL, baseEnv: {}, egressOwner: EGRESS_OWNER, requireWrap: true, requireProcessGroupReaper: true,
+    });
+    expect(spawnGatedMock).toHaveBeenCalledWith("/bin/sandbox", ["--", "sh", "-c", "x"], expect.anything(), expect.anything());
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
 
   it.each([
     ["darwin", "allow-list", "macos-sandbox"],

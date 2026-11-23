@@ -1,5 +1,5 @@
 import { terminalSessionFixture } from "../../../__tests__/support/terminal-session-fixtures.js";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   PlainTextBuffer,
   EMULATOR_REPLY_WINDOW_MS,
@@ -842,6 +842,26 @@ describe("prompt state (whether a command may be typed now)", () => {
       expect(block.output).toContain("[terminal-nonce]");
     }
     expect(tracker.list().map((block) => block.command).join(" ")).not.toContain(NONCE);
+  });
+
+  it("skips echo notification work when no subscriber opts in", () => {
+    const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+    tracker.recordOutput(prompt());
+    const onState = vi.fn();
+    tracker.subscribe(onState);
+    const internals = tracker as unknown as { phase: string; editLineOutputListeners: Set<() => void> };
+    const phase = internals.phase;
+    const readPhase = vi.fn(() => phase);
+    Object.defineProperty(tracker, "phase", { get: readPhase });
+    const iterate = vi.spyOn(internals.editLineOutputListeners, Symbol.iterator);
+
+    tracker.recordOutput("echo typed");
+
+    // Appending the text needs one phase read. Notification collection needs none.
+    expect.soft(readPhase).toHaveBeenCalledTimes(1);
+    expect.soft(iterate).not.toHaveBeenCalled();
+    expect(onState).not.toHaveBeenCalled();
+    expect(tracker.editLineText()).toBe("echo typed");
   });
 
   it("tells subscribers about every marker and the exit, and stops after unsubscribe", () => {
