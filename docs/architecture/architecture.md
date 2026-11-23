@@ -2296,7 +2296,9 @@ Key boundaries:
   or a legacy row) cannot be approved, and a missing or unreadable approvals file
   loads as empty. Within the approved scope a deny or a forced floor still
   denies, and the card answers only ordinary asks (`file-write`,
-  `shell-approval`, `network-approval`, `review-required`). An own-storage write
+  `shell-approval`, `network-approval`, and `review-required` only when the ask
+  under the review is one of those, so a user ask rule, the exfiltration guard or
+  a secret read still denies). An own-storage write
   also passes the application-home floor, because extension storage sits in the
   app home and the host confines the path. Any other ask is denied. The card
   appears when an extension starts running unapproved after an install, update
