@@ -40,9 +40,24 @@ const isCancelledOrError = (event: WorkBoardRunEvent): boolean => event.phase ==
 const waitForRunEnd = (h: Harness, from: number, itemId?: number) =>
   h.waitForProgress(event => (itemId === undefined || event.itemId === itemId) && isCancelledOrError(event), "a cancelled or failed run", from);
 
-function startOrLive<T>(h: Harness, itemId: number, started: Promise<T>): Promise<T | undefined> {
-  // A refused start can reject the child wait before its result is returned.
-  return Promise.any([started, h.untilLive(1, itemId).then(() => undefined)]);
+type Outcome<T> = { ok: true; value: T } | { ok: false; error: unknown };
+const outcomeOf = <T>(work: Promise<T>): Promise<Outcome<T>> => work.then(value => ({ ok: true, value }), (error: unknown) => ({ ok: false, error }));
+
+/** The start's result, or undefined once the item's child is live. A refused start can reject the child wait before its result is returned,
+ * so the side that fails first leaves the other to decide, the start under the signal-wait bound; a failure is the start's own. */
+async function startOrLive<T>(h: Harness, itemId: number, started: Promise<T>): Promise<T | undefined> {
+  const start = outcomeOf(started);
+  const live = outcomeOf(h.untilLive(1, itemId));
+  const first = await Promise.race([start.then(outcome => ({ start: outcome })), live.then(outcome => ({ live: outcome }))]);
+  if ("start" in first) {
+    if (first.start.ok) return first.start.value;
+    if ((await live).ok) return undefined;
+    throw first.start.error;
+  }
+  if (first.live.ok) return undefined;
+  const result = await outcomeOf(within(started, `the start of item ${itemId} to return`));
+  if (result.ok) return result.value;
+  throw result.error;
 }
 
 const auto = autoStageOf;
