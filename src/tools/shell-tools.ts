@@ -12,6 +12,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { createLogger } from "../lib/logger.js";
 import { beginAgentTerminalObservation, type AgentTerminalObservationInput, type AgentTerminalObservationLease } from "./agent-terminal-observation.js";
 import { errorMessage } from "../shared/error-message.js";
+import { redactHomePathsInText } from "../audit/dlp-filter.js";
+import { scrubDiagnosticSecrets } from "../shared/dlp.js";
 import { hostScriptInvocationReadPaths } from "../main/host-script-runtime.js";
 import { endConversationTerminalSession } from "../main/terminal/pty-manager.js";
 import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-path.js";
@@ -93,6 +95,7 @@ import { createAveHomeBoundarySnapshot } from "../permissions/ave-home-boundary-
 import { openEgressInvocation, type ShellEgressContext } from "../permissions/egress-invocations.js";
 import { MXC_BASH_UNAVAILABLE_MESSAGE, powerShellMxcCommandLine } from "../permissions/mxc-windows.js";
 import { prepareMxcShellLaunch, type MxcShellLaunch } from "./mxc-shell-launch.js";
+import { createContainedShellLifecycle } from "./contained-shell-lifecycle.js";
 import { buildMandatorySandboxWritePolicy } from "../permissions/sandbox-write-policy.js";
 import { captureEffectNoApprover, currentEffectGateContext } from "../permissions/effect-enforcement.js";
 import { currentToolExecutionCwd } from "./execution-context.js";
@@ -2344,15 +2347,123 @@ async function annotateSandboxCommandResult(
   };
 }
 
-// Every step runs in order even after an earlier one throws or rejects.
+// Failure text copied into a result or log: at most four messages from up to two aggregate levels, each redacted and cut to 500 bytes.
+// A message too long to redact whole is left out, since a cut could split what a redactor must see whole.
+const SHOWN_FAILURES = 4;
+const FAILURE_DEPTH = 2;
+const FAILURE_SCAN_CHARS = 4096;
+const FAILURE_MESSAGE_BYTES = 500;
+const FAILURE_UNAVAILABLE = "failure details unavailable";
+
+function clipUtf8(text: string, maxBytes: number): string {
+  const bytes = Buffer.from(text, "utf8");
+  if (bytes.length <= maxBytes) return text;
+  let end = maxBytes - 3;
+  // Back up to the start of a character; the `…` takes the last three bytes.
+  while (end > 0 && ((bytes[end] ?? 0) & 0xc0) === 0x80) end--;
+  return `${bytes.subarray(0, end).toString("utf8")}…`;
+}
+
+function validatedErrorCode(error: unknown): string | undefined {
+  try {
+    const code: unknown = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+    return typeof code === "string" && /^(?:E[A-Z0-9]{1,31}|ERR_[A-Z0-9_]{1,60})$/u.test(code) ? code : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// "shown" keeps a system error's message; "code" keeps only its validated code, since a Node spawn, spawnSync or fs error names host
+// paths in its message, `syscall`, `path` and `spawnargs`. Only a `syscall` or `spawnargs` marks one: Ave's own errors may carry a `path`.
+type SystemErrorText = "shown" | "code";
+
+// The text of a string or a verified Error, bounded before anything reads it further; any other value has none.
+function boundedFailureText(error: unknown, systemErrors: SystemErrorText): string | undefined {
+  if (systemErrors === "code" && error instanceof Error && ("syscall" in error || "spawnargs" in error)) {
+    const code = validatedErrorCode(error);
+    return code === undefined ? "host system error" : `host system error ${code}`;
+  }
+  const raw: unknown = typeof error === "string" ? error : error instanceof Error ? error.message : undefined;
+  if (typeof raw !== "string") return undefined;
+  if (raw.length > FAILURE_SCAN_CHARS) return `failure message omitted (${raw.length} characters)`;
+  return redactHomePathsInText(scrubDiagnosticSecrets(raw));
+}
+
+// A failure followed by up to two causes its text does not already carry. Each read stands alone, so an unreadable cause never erases its error.
+function failureMessage(error: unknown, systemErrors: SystemErrorText): string {
+  let text: string;
+  try {
+    text = boundedFailureText(error, systemErrors) ?? FAILURE_UNAVAILABLE;
+  } catch {
+    return FAILURE_UNAVAILABLE;
+  }
+  const seen: unknown[] = [error];
+  for (let depth = 0; depth < FAILURE_DEPTH; depth++) {
+    try {
+      const current = seen.at(-1);
+      const cause: unknown = current instanceof Error ? current.cause : undefined;
+      if (cause === undefined || seen.includes(cause)) break;
+      seen.push(cause);
+      const causeText = boundedFailureText(cause, systemErrors);
+      if (causeText !== undefined && !text.includes(causeText)) text = `${text}: ${causeText}`;
+    } catch {
+      break;
+    }
+  }
+  return clipUtf8(text, FAILURE_MESSAGE_BYTES);
+}
+
+function aggregateMembers(error: unknown): readonly unknown[] | undefined {
+  try {
+    const members: unknown = error instanceof AggregateError ? error.errors : undefined;
+    return Array.isArray(members) && members.length > 0 ? members : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// Never throws. An aggregate already on the path is shown by its message, so a member shared by two branches still shows in both.
+// Every member is read on its own: one that cannot be read shows as unavailable and leaves the others standing.
+function shellFailureText(errors: readonly unknown[], systemErrors: SystemErrorText = "shown"): string {
+  const shown: string[] = [];
+  let more = 0;
+  const visit = (list: readonly unknown[], ancestors: readonly unknown[]): void => {
+    let length: number;
+    try {
+      length = list.length;
+    } catch {
+      length = Number.NaN;
+    }
+    if (!Number.isSafeInteger(length) || length < 0) {
+      shown.push(FAILURE_UNAVAILABLE);
+      return;
+    }
+    let index = 0;
+    for (; index < length && shown.length < SHOWN_FAILURES; index++) {
+      try {
+        const error = list[index];
+        const members = ancestors.length < FAILURE_DEPTH && !ancestors.includes(error) ? aggregateMembers(error) : undefined;
+        if (members === undefined) shown.push(failureMessage(error, systemErrors));
+        else visit(members, [...ancestors, error]);
+      } catch {
+        shown.push(FAILURE_UNAVAILABLE);
+      }
+    }
+    more += length - index;
+  };
+  visit(errors, []);
+  return more > 0 ? `${shown.join("; ")} (+${more} more)` : shown.join("; ");
+}
+
+// Every step runs in order even after an earlier one throws or rejects. Failures come back raw and are formatted only after every step.
 // Only a returned promise is awaited, so leading sync steps stay synchronous.
-async function runReleaseSteps(steps: ReadonlyArray<() => void | Promise<void>>): Promise<string[]> {
-  const failures: string[] = [];
+async function runReleaseSteps(steps: ReadonlyArray<() => void | Promise<void>>): Promise<unknown[]> {
+  const failures: unknown[] = [];
   for (const step of steps) {
     try {
       const pending = step();
       if (pending instanceof Promise) await pending;
-    } catch (err) { failures.push(errorMessage(err)); }
+    } catch (err) { failures.push(err); }
   }
   return failures;
 }
@@ -2370,27 +2481,54 @@ async function attachFilesystemBlock(result: SpawnResult, commandId: string, com
 }
 
 // Release failures make the result an error, like an ASRT cleanup failure.
-function withReleaseFailures<T extends ToolExecutionResult>(result: T, failures: readonly string[]): T {
+function withReleaseFailures<T extends ToolExecutionResult>(result: T, failures: readonly unknown[], systemErrors: SystemErrorText = "shown"): T {
   if (failures.length === 0) return result;
   return carrySandboxBlock(result, {
     ...result,
-    output: `${result.output}\nShell resource release failed: ${failures.join("; ")}`,
+    output: `${result.output}\nShell resource release failed: ${shellFailureText(failures, systemErrors)}`,
     isError: true,
     metadata: { ...result.metadata, sandboxCleanupFailed: true },
   });
 }
 
 // For a release that runs after the result has already settled.
-function logReleaseFailures(label: string, failures: readonly string[]): void {
-  if (failures.length > 0) shellTaskLog.error({ label, failures }, "shell resource release failed after the result settled");
+function logReleaseFailures(label: string, failures: readonly unknown[]): void {
+  if (failures.length > 0) shellTaskLog.error({ label, failures: shellFailureText(failures) }, "shell resource release failed after the result settled");
 }
 
 // A fault inside finalization still settles the spawn, as an error result.
 function finalizationFault(label: string, settle: (result: SpawnResult) => void, prefix = ""): (err: unknown) => void {
   return (err) => {
-    shellTaskLog.error({ label, err: errorMessage(err) }, "shell finalization failed");
-    settle({ output: `${prefix}spawn failed: ${errorMessage(err)}`, isError: true, metadata: {} });
+    const details = shellFailureText([err]);
+    shellTaskLog.error({ label, err: details }, "shell finalization failed");
+    settle({ output: `${prefix}spawn failed: ${details}`, isError: true, metadata: {} });
   };
+}
+
+const MXC_SHELL_LABEL = "tool:powershell:mxc";
+
+function mxcSpawnFailure(details: string): ToolExecutionResult {
+  return { output: `PowerShell spawn failed: ${details}`, isError: true, metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" } };
+}
+
+// The contained route's host helpers and disposers name their install paths in system errors: the result keeps their codes, the log
+// their redacted full text.
+function withContainedReleaseFailures<T extends ToolExecutionResult>(result: T, failures: readonly unknown[]): T {
+  if (failures.length > 0) shellTaskLog.error({ label: MXC_SHELL_LABEL, failures: shellFailureText(failures) }, "contained shell resource release failed");
+  return withReleaseFailures(result, failures, "code");
+}
+
+// Node's launcher errors name the launcher's absolute path (message, `syscall`, `path`, `spawnargs`): only a validated code is kept.
+function launcherError(error: unknown): Error {
+  const code = validatedErrorCode(error);
+  return new Error(code === undefined ? "container launcher error" : `container launcher error ${code}`);
+}
+
+// The parser's output and stderr are never shown: how it ended is reported in fixed words.
+function powerShellParserEnding(aborted: boolean, timedOut: boolean, timeoutSeconds: number, code: number | null): string {
+  if (aborted) return "Shell command cancelled.";
+  if (timedOut) return `PowerShell parser timed out after ${resolveShellTimeoutMs(timeoutSeconds) / 1000} seconds.`;
+  return code === null ? "PowerShell parser ended without an exit code." : `PowerShell parser exited with code ${code}.`;
 }
 
 export async function spawnWithSandbox(
@@ -2532,7 +2670,7 @@ export async function spawnWithSandbox(
     let settled = false;
 
     let lifecycleCleaned = false;
-    const cleanupAfterTermination = async (): Promise<string[]> => {
+    const cleanupAfterTermination = async (): Promise<unknown[]> => {
       if (lifecycleCleaned) return [];
       if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) return [];
       lifecycleCleaned = true;
@@ -3640,7 +3778,11 @@ async function parsePowerShellAstInMxc(command: string, cwd: string, ctx: ToolEx
   const result = await spawnPowerShellInMxc(plan, parserScript, cwd, writePaths, timeoutSeconds, ctx.abortSignal, undefined, undefined,
     typeof ctx.metadata.toolUseId === "string" ? ctx.metadata.toolUseId : undefined, response);
   if (result.isError) return { failure: result };
-  return normalizePowerShellAstSummary(JSON.parse(response.read()));
+  const text = response.read();
+  let summary: unknown;
+  // What the container wrote is never echoed into the result.
+  try { summary = JSON.parse(text); } catch { throw new Error("PowerShell parser response is not valid JSON"); }
+  return normalizePowerShellAstSummary(summary);
 }
 
 interface VerifiedPowerShellExecution {
@@ -3807,7 +3949,7 @@ async function spawnPowerShellWithSandbox(
     }, await runReleaseSteps([() => egress.release(), () => sandboxHome.cleanup()]));
   }
 
-  const releaseSandboxResources = (): Promise<string[]> =>
+  const releaseSandboxResources = (): Promise<unknown[]> =>
     runReleaseSteps([() => egress.release(), () => sandboxHome.cleanup(), () => cleanupAsrtSandboxAfterCommand()]);
   const [cmd, ...args] = wrapped.argv;
   if (signal?.aborted) {
@@ -3890,7 +4032,7 @@ async function spawnPowerShellWithSandbox(
     let settled = false;
 
     let lifecycleCleaned = false;
-    const cleanupAfterTermination = async (): Promise<string[]> => {
+    const cleanupAfterTermination = async (): Promise<unknown[]> => {
       if (lifecycleCleaned) return [];
       if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) return [];
       lifecycleCleaned = true;
@@ -3984,8 +4126,7 @@ async function spawnPowerShellInMxc(
   verified?: VerifiedPowerShellExecution,
 ): Promise<ToolExecutionResult> {
   if (!isWindowsShellConsentCurrent(plan) || detectMxcShellCapability() === undefined) {
-    return { output: "PowerShell spawn failed: container shell route is no longer available", isError: true,
-      metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" } };
+    return mxcSpawnFailure("container shell route is no longer available");
   }
   const waitForClose = verified !== undefined && verifiedShellRequiresResultCheck(verified.handle, verified.identity);
   signal?.throwIfAborted();
@@ -3994,32 +4135,39 @@ async function spawnPowerShellInMxc(
   const systemExecutable = win32SystemBinary("WindowsPowerShell/v1.0/powershell.exe");
   if (installation === null || installation.kind !== "windows-powershell"
     || win32Path.normalize(installation.executable).toLowerCase() !== systemExecutable.toLowerCase()) {
-    return {
-      output: "PowerShell spawn failed: trusted system installation is unavailable",
-      isError: true,
-      metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
-    };
+    return mxcSpawnFailure("trusted system installation is unavailable");
   }
-  let sandboxHome: ReturnType<typeof createSandboxProcessHome>;
-  try {
-    sandboxHome = createSandboxProcessHome();
-  } catch (err) {
-    return {
-      output: `PowerShell spawn failed: could not create isolated HOME: ${(err as Error).message}`,
-      isError: true,
-      metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
-    };
-  }
-  const powerShellLaunch = preparePowerShellLaunch(verified?.command ?? command, powerShellExecutionEnvironment(verified, buildSafeChildEnv({ ...sandboxHome.env })), sandboxHome);
-  const sandboxWritePaths = [...writePaths, sandboxHome.path];
-  const hostHome = process.env["USERPROFILE"] ?? process.env["HOME"];
-  const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy([cwd, ...sandboxWritePaths, ...runtimeReadPaths, ...(verified === undefined ? [] : [verified.executable])], hostHome, sandboxHome.path);
-  const egress = openEgressInvocation(
-    { kind: "shell", toolName: "powershell", toolUseId, context: ambientShellEgressContext() },
-    signal ? { abortSignal: signal } : {},
-  );
+  // The invocation's one owner: each resource below registers with it as it is allocated, and every
+  // failure is formatted only after disposal, from the raw errors.
+  const lifecycle = createContainedShellLifecycle();
+  const controllerRevoked = new Error("remote-controller-revoked");
+  let failurePrefix = "could not create isolated HOME: ";
+  let observation: AgentTerminalObservationLease | undefined;
+  let collector: ReturnType<typeof createOutputCollector> | undefined;
+  let observationEnded = false;
+  const endObservation = (code: number | null, status?: Parameters<AgentTerminalObservationLease["finish"]>[1]): void => {
+    if (observationEnded) return;
+    observationEnded = true;
+    if (collector !== undefined) collector.finishObservation(code, status);
+    else observation?.finish(code, status);
+  };
+  let token: string;
   let launch: MxcShellLaunch;
+  let child: PipedChild;
   try {
+    const sandboxHome = createSandboxProcessHome();
+    failurePrefix = "";
+    lifecycle.defer(() => sandboxHome.cleanup());
+    const powerShellLaunch = preparePowerShellLaunch(verified?.command ?? command, powerShellExecutionEnvironment(verified, buildSafeChildEnv({ ...sandboxHome.env })), sandboxHome);
+    const sandboxWritePaths = [...writePaths, sandboxHome.path];
+    const hostHome = process.env["USERPROFILE"] ?? process.env["HOME"];
+    const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy([cwd, ...sandboxWritePaths, ...runtimeReadPaths, ...(verified === undefined ? [] : [verified.executable])], hostHome, sandboxHome.path);
+    const egress = openEgressInvocation(
+      { kind: "shell", toolName: "powershell", toolUseId, requiresListener: true, context: ambientShellEgressContext() },
+      signal ? { abortSignal: signal } : {},
+    );
+    lifecycle.onRevoke(() => egress.release());
+    token = egress.token;
     // MXC bypasses the ASRT wrap, so it takes the same mandatory write floor
     // the per-command ASRT config restates: workspace control files (.git
     // controls, .vscode, .husky, .claude, .envrc, …) and Ave's permission,
@@ -4028,7 +4176,7 @@ async function spawnPowerShellInMxc(
     const sensitiveDenyWrite = await runWithSandboxWritePreflight(signal, () => getDefaultSensitiveWriteDenyPaths());
     const mandatory = buildMandatorySandboxWritePolicy(sandboxWritePaths, undefined, sensitiveDenyWrite);
     launch = await prepareMxcShellLaunch({
-      egressToken: egress.token,
+      egressToken: token,
       commandLine: powerShellMxcCommandLine(systemRoot, powerShellLaunch.args.at(-1)!),
       cwd,
       filesystem: {
@@ -4044,37 +4192,19 @@ async function spawnPowerShellInMxc(
       env: powerShellExecutionEnvironment(verified, powerShellLaunch.env),
       timeoutMs: resolveShellTimeoutMs(timeoutSeconds),
       exists: existsSync,
-    });
-  } catch (err) {
-    return withReleaseFailures({
-      output: `PowerShell spawn failed: ${(err as Error).message}`,
-      isError: true,
-      metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
-    }, await runReleaseSteps([() => egress.release(), () => sandboxHome.cleanup()]));
-  }
-  const releaseContainerResources = (): Promise<string[]> =>
-    runReleaseSteps([() => sandboxHome.cleanup(), () => launch.release(), () => egress.release()]);
-  const [cmd, ...args] = launch.argv;
-  if (signal?.aborted || cmd === undefined) {
-    return withReleaseFailures({ output: "Shell command cancelled.", isError: true, metadata: { aborted: true, sandboxed: false } },
-      await releaseContainerResources());
-  }
-  const gate = currentEffectGateContext();
-  if (!await refreshRemoteControllerBoundToSession(gate?.permissionContext?.remoteControllerAuthority, gate?.sessionId)) {
-    await releaseContainerResources();
-    throw new Error("remote-controller-revoked");
-  }
-  let observation: AgentTerminalObservationLease | undefined;
-  try { observation = parserResponse === undefined ? startShellObservation(command, cwd,
-    { mode: "isolated", detail: "filesystem/process confinement" }, egress.token) : undefined; }
-  catch (error) { void launch.release(); sandboxHome.cleanup(); egress.release(); throw error; }
-
-  return await new Promise<ToolExecutionResult>((resolveResult) => {
-    let child: PipedChild;
+    }, lifecycle);
+    signal?.throwIfAborted();
+    const gate = currentEffectGateContext();
+    if (!await refreshRemoteControllerBoundToSession(gate?.permissionContext?.remoteControllerAuthority, gate?.sessionId)) throw controllerRevoked;
+    observation = parserResponse === undefined ? startShellObservation(command, cwd,
+      { mode: "isolated", detail: "filesystem/process confinement" }, token) : undefined;
+    if (!isRemoteControllerBoundToSession(gate?.permissionContext?.remoteControllerAuthority, gate?.sessionId)) throw new Error("remote-controller-revoked");
+    assertManagedChildProcessAdmissionOpen(MXC_SHELL_LABEL);
+    if (!isWindowsShellConsentCurrent(plan) || detectMxcShellCapability() === undefined) throw new Error("Container shell route is no longer available");
+    const [cmd, ...args] = launch.argv;
+    if (cmd === undefined) throw new Error("Container launcher is missing");
+    launch.activate();
     try {
-      if (!isRemoteControllerBoundToSession(gate?.permissionContext?.remoteControllerAuthority, gate?.sessionId)) throw new Error("remote-controller-revoked");
-      assertManagedChildProcessAdmissionOpen("tool:powershell:mxc");
-      if (!isWindowsShellConsentCurrent(plan) || detectMxcShellCapability() === undefined) throw new Error("Container shell route is no longer available");
       child = spawn(cmd, args, {
         // The launcher runs from its own (per-machine, admin-only) directory, so
         // nothing in the workspace sits beside it; the container's working
@@ -4086,96 +4216,148 @@ async function spawnPowerShellInMxc(
         // The launcher's own environment: the container's is in the request.
         env: buildSafeChildEnv({}),
       });
-    } catch (err) {
-      observation?.finish(null, "failed");
-      void releaseContainerResources().then((released) => resolveResult(withReleaseFailures({
-        output: `PowerShell spawn failed: ${(err as Error).message}`,
-        isError: true,
-        metadata: { sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
-      }, released)));
-      return;
+    } catch (error) {
+      throw launcherError(error);
     }
-    const closed = checkedShellClose(child, waitForClose);
-    trackManagedChildProcess(child, { killProcessGroup: false, label: "tool:powershell:mxc" });
-    launch.bindChild(child);
+  } catch (error) {
+    lifecycle.revoke();
+    const ended = await runReleaseSteps([() => endObservation(null, "failed")]);
+    const released = [...ended, ...await lifecycle.dispose()];
+    if (error === controllerRevoked) {
+      logReleaseFailures(MXC_SHELL_LABEL, released);
+      throw error;
+    }
+    if (signal?.aborted === true && error === signal.reason) {
+      return withContainedReleaseFailures({ output: "Shell command cancelled.", isError: true, metadata: { aborted: true, sandboxed: false } }, released);
+    }
+    // Pre-spawn steps run host helpers (path facts, the policy pipe) whose system errors name their install paths.
+    shellTaskLog.error({ label: MXC_SHELL_LABEL, err: shellFailureText([error]) }, "contained shell failed before its job started");
+    return withContainedReleaseFailures(mxcSpawnFailure(`${failurePrefix}${shellFailureText([error], "code")}`), released);
+  }
+  const spawned = child;
+  const egressToken = token;
 
-    const outputCollector = createOutputCollector(child, { captureFactory: outputCaptureFactory, progress, observation });
-    child.stdout.on("data", parserResponse === undefined ? outputCollector.collect : parserResponse.collect);
-    child.stderr.on("data", outputCollector.collectStderr);
-
-    let settled = false;
-    let lifecycleCleaned = false;
-    // After wxc-exec exits the container is gone, so the listener can close:
-    // nothing is left that could reach its port.
-    const cleanupAfterTermination = async (): Promise<string[]> => {
-      if (lifecycleCleaned) return [];
-      if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) return [];
-      lifecycleCleaned = true;
-      return await releaseContainerResources();
-    };
-    const lifetime = watchShellLifetime(child, timeoutSeconds, signal);
-
-    const finish = async (code: number | null, signal: NodeJS.Signals | null = null): Promise<void> => {
-      if (closed !== undefined) await closed;
-      lifetime.dispose();
-      if (settled) {
-        logReleaseFailures("tool:powershell:mxc", await cleanupAfterTermination());
-        return;
+  return await new Promise<ToolExecutionResult>((resolveResult) => {
+    // The launcher's exit ends the container job, and with it everything the command started.
+    const jobLive = (): boolean => spawned.pid !== undefined && spawned.exitCode === null && spawned.signalCode === null;
+    // The job's exit revokes the invocation and starts disposal; a result formatted after the job exited
+    // joins that disposal, while one that settles first carries generic details and the outcome is logged.
+    const release = async (result: () => ToolExecutionResult, failures: readonly unknown[]): Promise<ToolExecutionResult> => {
+      if (!jobLive()) {
+        const released = await lifecycle.dispose();
+        return withContainedReleaseFailures(result(), [...failures, ...released]);
       }
-      settled = true;
-      const metadata = { ...lifetime.metadata(), returncode: code, timedOut: lifetime.timedOut, sandboxed: true };
-      let completed: SpawnResult = { output: "", isError: true, metadata };
-      // Read the proxy's refusals under this call's token before releasing it.
-      // A collector failure still releases the container resources below.
-      const finalized = await runReleaseSteps([async () => {
-        const artifactMetadata = await outputCollector.finish(lifetime.timedOut || lifetime.aborted || signal !== null);
-        const output = await annotateWithSandboxViolations(egress.token, lifetime.output(outputCollector.format(
-          lifetime.timedOut || lifetime.aborted ? undefined : { code, signal },
-        )));
-        completed = {
-          output: lifetime.timedOut
-            ? `PowerShell command timed out after ${resolveShellTimeoutMs(timeoutSeconds) / 1000} seconds.\n${output}`
-            : output,
-          isError: lifetime.aborted || lifetime.timedOut || code !== 0,
-          metadata: { ...artifactMetadata, ...metadata },
-        };
-      }]);
-      const released = await cleanupAfterTermination();
-      outputCollector.finishObservation(code, lifetime.aborted ? "cancelled" : lifetime.timedOut || signal !== null ? "failed" : undefined);
-      const result = withReleaseFailures(completed, [...finalized, ...released]);
-      resolveResult(!lifetime.aborted && !lifetime.timedOut && code !== null && code !== 0
-        ? await attachFilesystemBlock(result, egress.token, command, cwd) : result);
+      void lifecycle.dispose().then((released) => logReleaseFailures(MXC_SHELL_LABEL, released));
+      return withContainedReleaseFailures(result(), failures);
     };
-    const fault = finalizationFault("tool:powershell:mxc", resolveResult, "PowerShell ");
-
-    void lifetime.stopped.then(() => finish(child.exitCode)).catch(fault);
-    child.once("close", (code, signal) => { void finish(code, signal).catch(fault); });
-    child.on("error", (err) => {
+    // A failure's redacted full text is logged; the result withholds it while the job is live and shows system errors by code after.
+    const spawnFailure = (error: unknown): ToolExecutionResult => {
+      const live = jobLive();
+      try {
+        shellTaskLog.error({ label: MXC_SHELL_LABEL, err: shellFailureText([error]) },
+          live ? "contained shell failed while its job was live" : "contained shell failed with no live job");
+      } catch {
+        // A failing log sink still leaves the call its result and the job its release.
+      }
+      return mxcSpawnFailure(live ? FAILURE_UNAVAILABLE : shellFailureText([error], "code"));
+    };
+    // A fault inside finalization still settles, ends the observation, and still disposes.
+    const fault = (error: unknown): void => {
+      void runReleaseSteps([() => endObservation(null, "failed")])
+        .then((failures) => release(() => spawnFailure(error), failures)).then(resolveResult);
+    };
+    let settled = false;
+    const settle = (produce: () => Promise<ToolExecutionResult>): void => {
+      if (settled) return;
+      settled = true;
+      void produce().then(resolveResult, fault);
+    };
+    let lifetime: ReturnType<typeof watchShellLifetime> | undefined;
+    let closed: Promise<void> | undefined;
+    spawned.on("error", (err) => {
       void (async () => {
         if (closed !== undefined) await closed;
-        // A spawn that fails (no pid) may never emit "close": release the
-        // listener, the egress token and the sandbox HOME here. A running
-        // child keeps its timeout and abort watch, and "close" releases its
-        // resources (cleanupAfterTermination's guard waits for the exit).
-        let released: string[] = [];
-        if (child.pid === undefined) {
-          lifetime.dispose();
-          released = await cleanupAfterTermination();
-        }
-        if (settled) {
-          logReleaseFailures("tool:powershell:mxc", released);
-          return;
-        }
-        settled = true;
-        const artifactMetadata = await outputCollector.finish(true);
-        outputCollector.finishObservation(null, "failed");
-        resolveResult(withReleaseFailures({
-          output: `PowerShell spawn failed: ${err.message}`,
-          isError: true,
-          metadata: { ...artifactMetadata, sandboxed: false, sandboxAttempted: true, isolation: "unavailable" },
-        }, released));
-      })().catch(fault);
+        // A spawn that fails (no pid) may never emit "close". A running child keeps its
+        // timeout and abort watch; its error result uses generic details while it runs.
+        if (spawned.pid === undefined) lifetime?.dispose();
+        settle(async () => {
+          let artifactMetadata = {};
+          const failures = await runReleaseSteps([
+            async () => { artifactMetadata = await collector?.finish(true) ?? {}; },
+            () => endObservation(null, "failed"),
+          ]);
+          return release(() => {
+            const failed = spawnFailure(launcherError(err));
+            return { ...failed, metadata: { ...artifactMetadata, ...failed.metadata } };
+          }, failures);
+        });
+      })();
     });
+    try {
+      // A confirmed exit, or a spawn that failed with no pid, revokes the invocation and starts its disposal
+      // at once; output finalization never holds its authority.
+      lifecycle.jobStarted(new Promise<void>((resolve) => {
+        spawned.once("exit", () => { resolve(); void lifecycle.dispose(); });
+        spawned.once("error", () => { if (spawned.pid === undefined) { resolve(); void lifecycle.dispose(); } });
+      }));
+      closed = checkedShellClose(spawned, waitForClose);
+      trackManagedChildProcess(spawned, { killProcessGroup: false, label: MXC_SHELL_LABEL });
+      launch.bindChild(spawned);
+      collector = createOutputCollector(spawned, { captureFactory: outputCaptureFactory, progress, observation });
+      spawned.stdout.on("data", parserResponse === undefined ? collector.collect : parserResponse.collect);
+      // The parser's stderr is drained, never kept.
+      spawned.stderr.on("data", parserResponse === undefined ? collector.collectStderr : () => {});
+      // Timeout and cancellation revoke the invocation before the kill starts.
+      lifetime = watchShellLifetime(spawned, timeoutSeconds, signal, () => lifecycle.revoke());
+    } catch (error) {
+      lifecycle.revoke();
+      const termination = forceKillManagedChildProcess(spawned, "shell-spawn-failed");
+      spawned.stdout.destroy();
+      spawned.stderr.destroy();
+      settle(async () => {
+        await termination;
+        return release(() => spawnFailure(error), await runReleaseSteps([() => endObservation(null, "failed")]));
+      });
+      return;
+    }
+    const output = collector;
+    const watch = lifetime;
+
+    const finish = async (code: number | null, exitSignal: NodeJS.Signals | null = null): Promise<void> => {
+      if (closed !== undefined) await closed;
+      watch.dispose();
+      settle(async () => {
+        const metadata = { ...watch.metadata(), returncode: code, timedOut: watch.timedOut, sandboxed: true };
+        let completed: SpawnResult = { output: "", isError: true, metadata };
+        const failures = await runReleaseSteps([
+          async () => {
+            const artifactMetadata = await output.finish(watch.timedOut || watch.aborted || exitSignal !== null);
+            if (parserResponse !== undefined) {
+              completed = { output: powerShellParserEnding(watch.aborted, watch.timedOut, timeoutSeconds, code),
+                isError: watch.aborted || watch.timedOut || code !== 0, metadata: { ...artifactMetadata, ...metadata } };
+              return;
+            }
+            // The refusals recorded under this call's token outlive its release.
+            const text = await annotateWithSandboxViolations(egressToken, watch.output(output.format(
+              watch.timedOut || watch.aborted ? undefined : { code, signal: exitSignal },
+            )));
+            completed = {
+              output: watch.timedOut
+                ? `PowerShell command timed out after ${resolveShellTimeoutMs(timeoutSeconds) / 1000} seconds.\n${text}`
+                : text,
+              isError: watch.aborted || watch.timedOut || code !== 0,
+              metadata: { ...artifactMetadata, ...metadata },
+            };
+          },
+          () => endObservation(code, watch.aborted ? "cancelled" : watch.timedOut || exitSignal !== null ? "failed" : undefined),
+        ]);
+        const result = parserResponse === undefined && !watch.aborted && !watch.timedOut && code !== null && code !== 0
+          ? await attachFilesystemBlock(completed, egressToken, command, cwd) : completed;
+        return release(() => result, failures);
+      });
+    };
+    void watch.stopped.then(() => finish(spawned.exitCode)).catch(fault);
+    spawned.once("close", (code, exitSignal) => { void finish(code, exitSignal).catch(fault); });
   });
 }
 

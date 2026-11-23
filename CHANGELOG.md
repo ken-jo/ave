@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- 익스텐션 도구 핸들러는 `handlers` 객체의 자체(own) 함수 속성이어야 합니다. 프로토타입에서 상속된 핸들러(예: 클래스 인스턴스의 메서드)는 핸들러 누락으로 처리되어 해당 도구가 비활성화됩니다.
 - `features.hostClassifiesRisk` 저장값은 업데이트 때 조용히 제거되며, 호스트 위험 분류가 항상 적용됩니다.
 - 새로 기록하는 비감사급 `permission-shadow.jsonl`에서 카테고리 비교 행과 효과 행의 `declaredCategory` 필드를 제거합니다. 관측 효과 행과 기존 기록은 유지됩니다.
 

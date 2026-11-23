@@ -56,14 +56,17 @@ describe("ASRT unavailable metadata", () => {
 
   it("does not claim isolation before a PowerShell command starts in its MXC container", () => {
     const source = readRepoFile("src/tools/shell-tools.ts");
+    const helperStart = source.indexOf("function mxcSpawnFailure(");
+    expect(helperStart).toBeGreaterThanOrEqual(0);
+    const helper = metadataObjects(source.slice(helperStart, source.indexOf("\n}\n", helperStart)));
+    expect(helper.map(isUnavailableMetadata)).toEqual([true]);
     const start = source.indexOf("async function spawnPowerShellInMxc(");
     const end = source.indexOf("async function spawnPowerShell(", start);
     expect(start).toBeGreaterThanOrEqual(0);
     expect(end).toBeGreaterThan(start);
-    const failures = metadataObjects(source.slice(start, end)).filter((metadata) => /\bsandboxAttempted\s*:/.test(metadata));
-    // Consent admission, image admission, sandbox HOME, launch preparation, spawn throw and child error.
-    expect(failures).toHaveLength(6);
-    for (const metadata of failures) expect(isUnavailableMetadata(metadata)).toBe(true);
+    const implementation = source.slice(start, end);
+    // shell-windows-mxc.test.ts drives each failure path to this helper's result; here, none builds a verdict of its own.
+    expect(metadataObjects(implementation).filter((metadata) => /\bsandboxAttempted\s*:/.test(metadata))).toEqual([]);
   });
 
   it("lets failure verdicts override preceding artifact metadata, but rejects later overrides", () => {

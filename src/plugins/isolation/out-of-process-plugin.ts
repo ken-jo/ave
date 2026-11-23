@@ -3,7 +3,7 @@
 import { mkdirSync, statSync } from "node:fs";
 import { sameFileIdentity, type FileIdentity } from "../../lib/file-identity.js";
 import type { Socket } from "node:net";
-import type { Readable, Writable } from "node:stream";
+import { Writable, type Readable } from "node:stream";
 import { ENV_NAME_RE } from "../../mcp/safe-names.js";
 import { ProcessEntryUnconfinedError, type ProcessLaunch } from "../process-entry.js";
 import { isAbsolute, join, resolve as resolvePath } from "node:path";
@@ -40,6 +40,7 @@ import {
 } from "../plugin-storage-layout.js";
 import { buildSafeChildEnv } from "../../tools/safe-env.js";
 import { terminateChildProcess } from "../../tools/terminate-child-process.js";
+import { terminateManagedProcessGroup } from "../../main/managed-child-processes.js";
 import {
   isPathAllowed,
   sanitizeAllowedDirectories,
@@ -69,9 +70,11 @@ import {
 import { PluginChildTerminationUnverifiedError, terminationUnverified, type ChildLink } from "./plugin-child-transport.js";
 import {
   CHILD_LOOPBACK_TRANSPORT_ARG,
+  CHILD_PRIVATE_STDIO_TRANSPORT_ARG,
   connectToAnnouncedChild,
   encodeChildEnv,
 } from "./child-loopback-link.js";
+import { pacePluginChildInput, PLUGIN_CHILD_INPUT_FD } from "./plugin-child-credit.js";
 import {
   createBoundHostApiDispatchTable,
   type DispatchableHostApi,
@@ -472,6 +475,8 @@ export async function spawnConfinedPluginChild(
   spec: ConfinedPluginChildSpec,
 ): Promise<ConfinedPluginChild> {
   assertExtensionStartAllowed();
+  const processLaunch = spec.launch.kind === "process";
+  if (processLaunch && process.platform === "win32") throw new ProcessEntryUnconfinedError();
   spec.assertStillValid?.();
   // Decided before anything is created, so a refused line leaves nothing behind.
   const spawnLine = confinedSpawnLine(spec.pluginId, spec.launch);
@@ -549,17 +554,20 @@ export async function spawnConfinedPluginChild(
     const { command, baseEnv } = spawnLine;
     const extraEnv = { ...sandboxHome.env };
     // Windows, wrapped: srt-win relays no stdin, delivers none of this spawn's environment, and PowerShell does not wait for `electron.exe`; so the child is launched through `cmd.exe`, told its environment in
-    // an argument, and spoken to over an authenticated loopback connection instead of its pipes (`child-loopback-link.ts`). Everywhere else, and on Windows with the sandbox off, the stdio child is unchanged.
+    // an argument, and spoken to over an authenticated loopback connection instead of its pipes (`child-loopback-link.ts`).
     const windowsLoopback = spec.launch.kind === "entry" && process.platform === "win32" && isPluginWorkerConfinementActive();
+    const referenceStdio = spec.launch.kind === "entry" && !windowsLoopback;
     const launchLine = windowsLoopback
       ? windowsLoopbackLaunchLine(spawnLine.args, baseEnv, extraEnv)
-      : { args: spawnLine.args };
+      : { args: referenceStdio ? [...spawnLine.args, CHILD_PRIVATE_STDIO_TRANSPORT_ARG] : spawnLine.args };
     const { child, confinement } = await spawnConfinedChild({
       command,
       ...launchLine,
       label: `plugin-child:${spec.pluginId}`,
       egressOwner: { kind: "worker", role: "plugin-child", pluginId: spec.pluginId },
       grantMode: process.platform === "win32" ? "deny-only" : "allow-list",
+      requireWrap: processLaunch,
+      requireProcessGroupReaper: processLaunch,
       // The plugin's own temp directory, shared with its workers and bundled hooks and with no other principal.
       tempPrincipal: { kind: "plugin", id: spec.pluginId },
       allowRead: [...spec.envelope.read, sandboxHome.path],
@@ -574,9 +582,8 @@ export async function spawnConfinedPluginChild(
       pinWriteRoots: true,
       baseEnv,
       extraEnv,
-      // The child is a JSON-RPC server whose pipes the host owns, so unlike the Python worker it needs stdin
-      // (on every path but Windows' loopback one, where stdin is inert and stdout carries only the announce).
-      stdio: ["pipe", "pipe", "pipe"],
+      // The reference runtime's fd 0 is inert. Its owner reads fd 3 or the authenticated socket.
+      stdio: referenceStdio ? ["ignore", "pipe", "pipe", "pipe"] : [windowsLoopback ? "ignore" : "pipe", "pipe", "pipe"],
       onWrapped: () => {
         wrapped = true;
         // Reviewer signal (sandbox-capability registry): tools owned by this plugin now execute in a genuinely ASRT-confined child, so
@@ -588,7 +595,12 @@ export async function spawnConfinedPluginChild(
         grant?.assertAlive();
       },
     });
-    if (!child.stdin || !child.stdout) {
+    if (processLaunch && confinement !== "macos-sandbox" && confinement !== "linux-bubblewrap") {
+      child.kill("SIGKILL");
+      throw new ProcessEntryUnconfinedError();
+    }
+    const pipe = referenceStdio ? child.stdio[PLUGIN_CHILD_INPUT_FD] : child.stdin;
+    if (!child.stdout || (!windowsLoopback && !(pipe instanceof Writable))) {
       child.kill("SIGKILL");
       throw new Error(`[out-of-process-plugin] ${spec.pluginId}: child has no pipes`);
     }
@@ -625,16 +637,26 @@ export async function spawnConfinedPluginChild(
       });
     });
     let terminated = false;
+    const processGroup = confinement === "macos-sandbox" || confinement === "linux-bubblewrap";
     const terminateChild = (): void => {
       if (terminated) return;
       terminated = true;
-      const forceTimer = terminateChildProcess(child, 3_000);
+      if (processGroup) {
+        terminateManagedProcessGroup(child, TOOL_TIMEOUT_POLICY.pluginChildForceKillMs);
+        return;
+      }
+      const forceTimer = terminateChildProcess(child, TOOL_TIMEOUT_POLICY.pluginChildForceKillMs);
       child.once("exit", () => clearTimeout(forceTimer));
     };
+    // Clean stdin EOF can end the leader before the transport would signal it.
+    if (processGroup) {
+      if (alreadyExited) terminateChild();
+      else child.once("exit", terminateChild);
+    }
     // A holder that dies takes the grant's guarantee with it; the child it served stops rather than run on a grant nobody holds.
     grant?.onLost(terminateChild);
     let input: Readable = child.stdout;
-    let output: Writable = child.stdin;
+    let output: Writable = pipe as Writable;
     let channel: Socket | undefined;
     if (windowsLoopback) {
       if (confinement !== "windows-srt") {
@@ -665,10 +687,8 @@ export async function spawnConfinedPluginChild(
       child.stdout.on("data", (chunk: Buffer) => {
         log.debug(`[${spec.pluginId}] stdout: ${chunk.toString("utf-8").trimEnd()}`);
       });
-      // The connection IS the child's lifetime from here: a channel that closes or fails leaves
-      // nothing to serve, so the process is ended and its exit reported through `onGone` as for a pipe.
+      // The transport owns grace for socket EOF and termination for socket errors.
       const connected = channel;
-      connected.once("close", terminateChild);
       connected.on("error", (error: Error) => {
         log.debug(`[${spec.pluginId}] channel error: ${error.message}`);
         connected.destroy();
@@ -676,6 +696,7 @@ export async function spawnConfinedPluginChild(
       input = connected;
       output = connected;
     }
+    if (spec.launch.kind === "entry") ({ input, output } = pacePluginChildInput(input, output));
     return {
       pid: hasProcess() ? child.pid : undefined,
       confinement,

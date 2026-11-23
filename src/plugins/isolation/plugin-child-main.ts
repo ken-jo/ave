@@ -3,8 +3,9 @@ import { PassThrough, Writable } from "node:stream";
 import { Console } from "node:console";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
-import { importPluginFactory } from "../runtime/plugin-loader.js";
+import { isMainThread, workerData } from "node:worker_threads";
+import { openPluginChildInput, ownPluginChildInput, type PluginChildInputOwner } from "./plugin-child-stdin.js";
+import { importPluginFactory, ownToolHandler } from "../runtime/plugin-loader.js";
 import { frameMessage } from "../../mcp/stdio-framing.js";
 import {
   startPluginChildRuntime,
@@ -14,6 +15,8 @@ import {
   classifyMultiplexedMessage,
   FramedMessageStream,
   PendingCallTable,
+  type DecodedMessageInput,
+  type FramedMessageInput,
   type MultiplexedMessage,
 } from "./child-stream-multiplex.js";
 import {
@@ -36,7 +39,6 @@ import {
 } from "../../mcp/protocol-constants.js";
 import { errorMessage } from "../../shared/error-message.js";
 import {
-  acceptHostOverLoopback,
   parseChildLaunchArgs,
   serveStdioRelay,
   type ChildLaunchMode,
@@ -81,7 +83,7 @@ function describeLifecycleHooks(instance: PluginChildRuntime["instance"]): Plugi
 
 /** Inject streams to exercise the same child runtime without subprocess setup. */
 export function servePluginChild(
-  input: NodeJS.ReadableStream,
+  input: (FramedMessageInput | DecodedMessageInput) & { destroy(): void },
   output: Writable,
 ): PluginChildService {
   let runtime: PluginChildRuntime | undefined;
@@ -101,13 +103,13 @@ export function servePluginChild(
   const mcpIn = new PassThrough();
 
   const stream = new FramedMessageStream(
-    input as never,
+    input,
     output,
     (message) => route(message),
     (reason) => {
       // A framing failure destroys input and triggers the same exit path as host loss.
       process.stderr.write(`[plugin-child] ${reason}; ending\n`);
-      (input as NodeJS.ReadableStream & { destroy(): void }).destroy();
+      input.destroy();
     },
     (dropped) => {
       // Log drops to stderr because the dropped frame may itself be a log notification.
@@ -186,7 +188,7 @@ export function servePluginChild(
     return {
       // Intersect actual handlers with host-declared tool names; the child cannot announce extra tools.
       implementedToolNames: params.declaredToolNames.filter(
-        (name) => typeof instance.handlers[name] === "function",
+        (name) => ownToolHandler(instance.handlers, name) !== undefined,
       ),
       servesUiResources: runtime.servesUiResources,
       lifecycleHooks: describeLifecycleHooks(instance),
@@ -296,48 +298,14 @@ function isProcessEntryModule(): boolean {
   return realpathSync.native(entry) === realpathSync.native(fileURLToPath(import.meta.url));
 }
 
-/** The stdio child exits when host pipes close. */
-function serveOverStdio(): void {
-  const service = servePluginChild(process.stdin, claimProtocolStdout());
-  const end = (): void => {
-    service.hostGone();
-    // Let EOF cleanup finish; a lost host cannot leave plugin-owned handles alive forever.
-    process.exitCode = 0;
-    setTimeout(() => process.exit(0), TOOL_TIMEOUT_POLICY.pluginShutdownKillGraceMs * 2).unref();
-  };
-  process.stdin.on("end", end);
-  process.stdin.on("close", end);
-}
-
-/** Apply the intended Windows environment, authenticate loopback, and fail nonzero before connection on errors. */
-function serveOverLoopback(env: Readonly<Record<string, string>>): void {
-  for (const [name, value] of Object.entries(env)) process.env[name] = value;
-  const announce = (line: string): void => {
-    process.stdout.write(line);
-  };
-  acceptHostOverLoopback({ announce, acceptTimeoutMs: 60_000, handshakeTimeoutMs: 10_000 }).then(
-    (socket) => {
-      // Keep stray stdout diagnostic-only even when the protocol uses a socket.
-      claimProtocolStdout();
-      const service = servePluginChild(socket, socket);
-      const end = (): void => {
-        service.hostGone();
-        process.exitCode = 0;
-        setTimeout(() => process.exit(0), TOOL_TIMEOUT_POLICY.pluginShutdownKillGraceMs * 2).unref();
-      };
-      socket.on("end", end);
-      socket.on("close", end);
-      socket.on("error", (error) => {
-        process.stderr.write(`[plugin-child] channel error: ${error.message}\n`);
-        end();
-      });
-      socket.resume();
-    },
-    (error: unknown) => {
-      process.stderr.write(`[plugin-child] ${errorMessage(error)}; ending\n`);
-      process.exit(1);
-    },
-  );
+function serveReferenceChild(mode: Exclude<ChildLaunchMode, { transport: "relay" }>): void {
+  const stdout = claimProtocolStdout();
+  const { transport } = mode;
+  const { input, output, stdin } = openPluginChildInput(new URL(import.meta.url), {
+    transport, privateInput: transport === "stdio" && mode.privateInput === true,
+  }, stdout, () => service.hostGone());
+  Object.defineProperty(process, "stdin", { value: stdin, configurable: false, writable: false });
+  const service = servePluginChild(input, transport === "stdio" ? stdout : output);
 }
 
 /** The relay loads no plugin; it runs the authenticated program and maps channel EOF to stdin closure. */
@@ -361,6 +329,14 @@ function serveAsRelay(): void {
 
 /** Guard the process entry so test imports cannot take over stdio. */
 if (isProcessEntryModule()) {
+  if (!isMainThread) {
+    await ownPluginChildInput(workerData as PluginChildInputOwner);
+  } else {
+    launchPluginChild();
+  }
+}
+
+function launchPluginChild(): void {
   let mode: ChildLaunchMode;
   try {
     mode = parseChildLaunchArgs(process.argv.slice(2));
@@ -368,7 +344,12 @@ if (isProcessEntryModule()) {
     process.stderr.write(`[plugin-child] ${errorMessage(error)}; ending\n`);
     process.exit(1);
   }
-  if (mode.transport === "loopback") serveOverLoopback(mode.env);
-  else if (mode.transport === "relay") serveAsRelay();
-  else serveOverStdio();
+  if (mode.transport === "relay") {
+    serveAsRelay();
+    return;
+  }
+  if (mode.transport === "loopback") {
+    for (const [name, value] of Object.entries(mode.env)) process.env[name] = value;
+  }
+  serveReferenceChild(mode);
 }

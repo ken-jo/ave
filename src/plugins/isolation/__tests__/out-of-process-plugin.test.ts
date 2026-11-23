@@ -116,12 +116,18 @@ vi.mock("../../../permissions/sandbox-process-home.js", async (importOriginal) =
 
 const transportWarnings = vi.hoisted(() => [] as unknown[][]);
 const factoryDebug = vi.hoisted(() => [] as string[]);
+const sessionWarnings = vi.hoisted(() => [] as unknown[][]);
 vi.mock("../../../lib/logger.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../lib/logger.js")>();
   return {
     ...actual,
     createLogger: (name: string) => {
       const logger = actual.createLogger(name);
+      if (name === "plugin-protocol-session") {
+        return Object.assign(Object.create(logger) as typeof logger, {
+          warn: (...args: unknown[]) => void sessionWarnings.push(args),
+        });
+      }
       if (name === "out-of-process-plugin" || name === "plugin-runtime") {
         return Object.assign(Object.create(logger) as typeof logger, {
           debug: (...args: unknown[]) => void factoryDebug.push(args.map(String).join(" ")),
@@ -154,6 +160,7 @@ import { TOOL_TIMEOUT_POLICY, windowsSrtPluginChildFactoryBudgetMs } from "../..
 import { setAveHomePrivacyAtBoot, approveExtensionsWithoutIsolation, _resetAveHomePrivacyForTest } from "../../../shared/ave-home.js";
 import { setPluginWorkerConfinementRequestedAtBoot, __resetSandboxRequestedAtBootForTest } from "../../../permissions/sandbox-capability.js";
 import { setProcessPlatform } from "../../../__tests__/support/process-platform.js";
+import { getManagedChildProcessCount, trackManagedChildProcess } from "../../../main/managed-child-processes.js";
 import { createBoundHostApiDispatchTable } from "../bound-host-api-table.js";
 import {
   acceptHostOverLoopback,
@@ -162,7 +169,10 @@ import {
   encodeChildEnv,
   parseChildLaunchArgs,
 } from "../child-loopback-link.js";
+import { pacePluginChildInput } from "../plugin-child-credit.js";
+import { consumePluginChildInput } from "../../../__tests__/support/plugin-child-input.js";
 import { openPluginProtocolSession } from "../plugin-protocol-session.js";
+import { buildMethodMap } from "../../runtime/plugin-loader.js";
 import { PluginChildTerminationUnverifiedError, type ChildLink } from "../plugin-child-transport.js";
 import {
   FRAME_BYTES_MAX,
@@ -1155,7 +1165,7 @@ describe("construct negotiates the host protocol", () => {
     const roots = spawnableRoots();
     const { dir, entryPath } = writePluginModule();
     const input = new PassThrough(), output = new PassThrough(), stderr = new PassThrough();
-    const service = servePluginChild(input, output);
+    const service = servePluginChild(consumePluginChildInput(input, output), output);
     let finish!: (result: { exitCode: number; timedOut: boolean }) => void;
     const completion = new Promise<{ exitCode: number; timedOut: boolean }>((resolve) => { finish = resolve; });
     const dispose = vi.fn(async () => {
@@ -1202,7 +1212,7 @@ describe("construct negotiates the host protocol", () => {
     const roots = spawnableRoots();
     const { dir, entryPath } = writePluginModule();
     const input = new PassThrough(), output = new PassThrough();
-    const service = servePluginChild(input, output);
+    const service = servePluginChild(consumePluginChildInput(input, output), output);
     // The supervisor already reported exit, so termination begins at attach; disposal stays pending, which keeps
     // the streams up and lets the handshake complete regardless.
     const dispose = vi.fn(() => new Promise<void>(() => {}));
@@ -1356,6 +1366,146 @@ describe("construct negotiates the host protocol", () => {
     );
     expect(terminated()).toMatch(/startup failed/);
   });
+
+  it("binds only declared tool names from a construct reply, never an inherited key", async () => {
+    const { child, terminated } = scriptedChild({
+      ...CONSTRUCTED,
+      implementedToolNames: ["pilot_echo", "pilot_unlisted", "__proto__"],
+      pluginProtocol: { requires: [] },
+    });
+    const factory = sessionFactory({
+      manifest: MANIFEST,
+      entryPath: join(tmpdir(), "never-imported.mjs"),
+      link: child.link,
+    });
+    const instance = await factory(hostContext(fakeHostApi()));
+    expect(Object.getPrototypeOf(instance.handlers)).toBeNull();
+    expect(Object.keys(instance.handlers)).toEqual(["pilot_echo"]);
+    expect(terminated()).toBeUndefined();
+  });
+
+  it("keeps a declared __proto__ tool an own handler, and the method map binds it", async () => {
+    const manifest: PluginManifest = {
+      ...MANIFEST,
+      tools: [...MANIFEST.tools, { name: "__proto__", description: "named like the prototype key", inputSchema: EMPTY_SCHEMA }],
+    };
+    const { child, terminated } = scriptedChild({
+      ...CONSTRUCTED,
+      implementedToolNames: ["pilot_echo", "__proto__"],
+      pluginProtocol: { requires: [] },
+    });
+    const factory = sessionFactory({
+      manifest,
+      entryPath: join(tmpdir(), "never-imported.mjs"),
+      link: child.link,
+    });
+    const instance = await factory(hostContext(fakeHostApi()));
+    expect(Object.getPrototypeOf(instance.handlers)).toBeNull();
+    expect(Object.keys(instance.handlers)).toEqual(["pilot_echo", "__proto__"]);
+    const missing: string[] = [];
+    const methods = buildMethodMap(manifest, instance, (toolName) => void missing.push(toolName));
+    expect([...methods.keys()]).toEqual(["pilot_echo", "__proto__"]);
+    expect(missing).toEqual(MANIFEST.tools.map((tool) => tool.name).filter((name) => name !== "pilot_echo"));
+    expect(terminated()).toBeUndefined();
+  });
+
+  it.each([
+    ["a non-string entry", ["pilot_echo", 1]],
+    ["a bare string", "pilot_echo"],
+    ["no field", undefined],
+  ])("fails a construct reply whose implementedToolNames is %s", async (_case, implementedToolNames) => {
+    const { child, terminated } = scriptedChild({
+      ...CONSTRUCTED,
+      implementedToolNames,
+      pluginProtocol: { requires: [] },
+    });
+    const factory = sessionFactory({
+      manifest: MANIFEST,
+      entryPath: join(tmpdir(), "never-imported.mjs"),
+      link: child.link,
+    });
+    await expect(factory(hostContext(fakeHostApi()))).rejects.toThrow(
+      /construct answered no implementedToolNames list/,
+    );
+    expect(terminated()).toMatch(/startup failed/);
+  });
+
+  it.each([
+    ["lifecycleHooks is a bare string", { lifecycleHooks: "start" }, /construct answered no lifecycleHooks list/],
+    ["lifecycleHooks has a non-string entry", { lifecycleHooks: ["start", 1] }, /construct answered no lifecycleHooks list/],
+    ["lifecycleHooks is missing", { lifecycleHooks: undefined }, /construct answered no lifecycleHooks list/],
+    ["lifecycleHooks names an unknown hook", { lifecycleHooks: ["start", "restart"] }, /construct answered an unknown lifecycle hook/],
+    ["lifecycleHooks names an inherited key", { lifecycleHooks: ["constructor"] }, /construct answered an unknown lifecycle hook/],
+    ["servesUiResources is a string", { servesUiResources: "yes" }, /construct answered no servesUiResources flag/],
+    ["servesUiResources is missing", { servesUiResources: undefined }, /construct answered no servesUiResources flag/],
+  ])("fails a construct reply whose %s", async (_case, fields, refusal) => {
+    const { child, terminated } = scriptedChild({
+      ...CONSTRUCTED,
+      ...fields,
+      pluginProtocol: { requires: [] },
+    });
+    const factory = sessionFactory({
+      manifest: MANIFEST,
+      entryPath: join(tmpdir(), "never-imported.mjs"),
+      link: child.link,
+    });
+    await expect(factory(hostContext(fakeHostApi()))).rejects.toThrow(refusal);
+    expect(terminated()).toMatch(/startup failed/);
+  });
+
+  it("binds every known lifecycle hook a construct reply names", async () => {
+    const { child, terminated } = scriptedChild({
+      ...CONSTRUCTED,
+      lifecycleHooks: ["start", "onPublished", "stop"],
+      pluginProtocol: { requires: [] },
+    });
+    const instance = await sessionFactory({
+      manifest: MANIFEST,
+      entryPath: join(tmpdir(), "never-imported.mjs"),
+      link: child.link,
+    })(hostContext(fakeHostApi()));
+    expect([typeof instance.start, typeof instance.onPublished]).toEqual(["function", "function"]);
+    expect(terminated()).toBeUndefined();
+  });
+
+  function constructNaming(implementedToolNames: readonly string[]): Promise<RuntimePlugin> {
+    const { child } = scriptedChild({ ...CONSTRUCTED, implementedToolNames, pluginProtocol: { requires: [] } });
+    return sessionFactory({
+      manifest: MANIFEST,
+      entryPath: join(tmpdir(), "never-imported.mjs"),
+      link: child.link,
+    })(hostContext(fakeHostApi()));
+  }
+
+  it("warns once when a construct reply names undeclared tools, and not for a declared subset", async () => {
+    sessionWarnings.length = 0;
+    await constructNaming(["pilot_echo"]);
+    expect(sessionWarnings).toEqual([]);
+    const instance = await constructNaming(["pilot_echo", "pilot_unlisted", "pilot_other"]);
+    expect(Object.keys(instance.handlers)).toEqual(["pilot_echo"]);
+    expect(sessionWarnings).toEqual([[
+      { pluginId: PLUGIN_ID, undeclaredCount: 2, undeclared: ["pilot_unlisted", "pilot_other"] },
+      expect.stringMatching(/undeclared tools/),
+    ]]);
+  });
+
+  it("caps that warning at a count and the first five names, each clipped to 64 code points", async () => {
+    const long = `pilot_${"x".repeat(200)}`;
+    // Astral code points take two UTF-16 units each: 70 of them clip to 64, and exactly 64 stay whole.
+    const astral = "\u{1F9EA}".repeat(70);
+    const astralAtCap = "\u{1F9EA}".repeat(64);
+    const extras = [long, astral, astralAtCap, ...Array.from({ length: 6 }, (_, index) => `pilot_extra_${index}`)];
+    sessionWarnings.length = 0;
+    await constructNaming(["pilot_echo", ...extras]);
+    expect(sessionWarnings).toEqual([[
+      {
+        pluginId: PLUGIN_ID,
+        undeclaredCount: 9,
+        undeclared: [`${long.slice(0, 64)}…`, `${astralAtCap}…`, astralAtCap, "pilot_extra_0", "pilot_extra_1"],
+      },
+      expect.stringMatching(/undeclared tools/),
+    ]]);
+  });
 });
 
 /** Record both launch forms as received by spawn; live confinement is measured separately. */
@@ -1416,8 +1566,10 @@ describe("the factory's launch reaches the spawn as decided", () => {
           args: string[];
           baseEnv: NodeJS.ProcessEnv;
           extraEnv: Record<string, string>;
+          requireWrap: boolean;
         };
         expect(spec.command).toBe("/usr/bin/env");
+        expect(spec.requireWrap).toBe(true);
         expect(spec.args).toEqual([
           `SMOKE_VENDOR_DIR=${join(root, "vendor")}`,
           `PLUGIN_ROOT=${root}`,
@@ -1460,6 +1612,31 @@ describe("the factory's launch reaches the spawn as decided", () => {
       roots.remove();
     }
   });
+
+  it.runIf(process.platform === "linux" || process.platform === "darwin")(
+    "kills a process launch that comes back unconfined before exposing it to the session",
+    async () => {
+      const roots = spawnableRoots();
+      const kill = vi.fn();
+      const stdin = new PassThrough();
+      const stdout = new PassThrough();
+      const child = Object.assign(new EventEmitter(), { exitCode: null, signalCode: null, stdin, stdout, stdio: [stdin, stdout], kill });
+      sandbox.active = true;
+      spawnConfinedChild.mockResolvedValueOnce({ child, confinement: "unconfined" });
+      try {
+        const { pluginRoot } = roots.context;
+        if (!pluginRoot) throw new Error("Missing plugin root");
+        const refused = await attempt(processLaunch(pluginRoot), PROCESS_MANIFEST, roots);
+        expect(refused).toBeInstanceOf(ProcessEntryUnconfinedError);
+        expect(kill).toHaveBeenCalledWith("SIGKILL");
+      } finally {
+        stdin.destroy();
+        stdout.destroy();
+        sandbox.active = false;
+        roots.remove();
+      }
+    },
+  );
 
   it("refuses a process launch on Windows even with the sandbox on, before anything is spawned", async () => {
     const roots = spawnableRoots();
@@ -1535,11 +1712,71 @@ describe("the factory's launch reaches the spawn as decided", () => {
   });
 });
 
+it.each(["explicit stop", "clean EOF", "PGID reuse"])("stops a confined POSIX group after leader exit (%s)", async (mode) => {
+  const roots = spawnableRoots();
+  const input = new PassThrough();
+  const stdout = new PassThrough();
+  const child = Object.assign(new EventEmitter(), {
+    pid: 4242, exitCode: null as number | null, signalCode: null, stdio: [null, stdout, null, input], stdout, kill: vi.fn(),
+  });
+  const platform = process.platform;
+  vi.useFakeTimers();
+  setProcessPlatform("linux");
+  let originalGroupGone = false;
+  const kill = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+    if (pid === -child.pid && signal === 0 && originalGroupGone) {
+      throw Object.assign(new Error("No such process"), { code: "ESRCH" });
+    }
+    return true;
+  });
+  const before = getManagedChildProcessCount();
+  const dispose = trackManagedChildProcess(child as unknown as ChildProcess, { killProcessGroup: true });
+  spawnConfinedChild.mockResolvedValueOnce({ child, confinement: "linux-bubblewrap" });
+  try {
+    const { pluginRoot, pluginSocketDir } = roots.context;
+    if (!pluginRoot || !pluginSocketDir) throw new Error("Missing plugin paths");
+    const plugin = await spawnConfinedPluginChild({
+      pluginId: "example",
+      socketDir: pluginSocketDir,
+      launch: { kind: "entry", childEntryPath: join(pluginRoot, "plugin.mjs") },
+      envelope: { read: [], write: [] },
+    });
+    if (mode === "explicit stop") plugin.link.terminate("explicit stop");
+    child.exitCode = 0;
+    child.emit("exit", 0, null);
+    expect(kill).toHaveBeenCalledWith(-child.pid, "SIGTERM");
+    if (mode === "PGID reuse") {
+      originalGroupGone = true;
+      vi.advanceTimersByTime(TOOL_TIMEOUT_POLICY.processGroupPollMs);
+      expect(getManagedChildProcessCount()).toBe(before);
+      originalGroupGone = false;
+      vi.advanceTimersByTime(TOOL_TIMEOUT_POLICY.pluginChildForceKillMs - TOOL_TIMEOUT_POLICY.processGroupPollMs);
+      expect(kill).not.toHaveBeenCalledWith(-child.pid, "SIGKILL");
+    } else {
+      vi.advanceTimersByTime(TOOL_TIMEOUT_POLICY.pluginChildForceKillMs);
+      expect(kill.mock.calls.filter(([, signal]) => signal !== 0)).toEqual([
+        [-child.pid, "SIGTERM"], [-child.pid, "SIGKILL"],
+      ]);
+    }
+    expect(child.kill).not.toHaveBeenCalled();
+  } finally {
+    dispose();
+    child.emit("close");
+    input.destroy();
+    stdout.destroy();
+    kill.mockRestore();
+    setProcessPlatform(platform);
+    vi.useRealTimers();
+    roots.remove();
+  }
+});
+
 /** Hold Windows grants against the holder process and record ordering; this suite does not measure effective ACLs. */
 describe("on Windows a confined child holds a grant on its own directories for exactly its lifetime", () => {
   type FakeChild = EventEmitter & {
     pid: number | undefined;
-    stdin: PassThrough;
+    stdin: null;
+    stdio: Array<PassThrough | null>;
     stdout: PassThrough;
     stderr: PassThrough;
     exitCode: number | null;
@@ -1554,11 +1791,15 @@ describe("on Windows a confined child holds a grant on its own directories for e
       if (own) ownStream(own, pipe);
       return pipe;
     };
+    const input = makePipe();
+    const stdout = makePipe();
+    const stderr = makePipe();
     const child = Object.assign(new EventEmitter(), {
       pid,
-      stdin: makePipe(),
-      stdout: makePipe(),
-      stderr: makePipe(),
+      stdin: null,
+      stdout,
+      stderr,
+      stdio: [null, stdout, stderr, input],
       exitCode: null as number | null,
       signalCode: null as NodeJS.Signals | null,
       kill: vi.fn(),
@@ -1966,7 +2207,11 @@ describe("on Windows a confined child holds a grant on its own directories for e
   }
 
   /** Use the real child loopback implementation to exercise the host handshake; this test does not prove OS sandbox admission. */
-  function loopbackChild(own: OwnResource, opts: { readonly onAnnounce?: (server: Server, port: number) => void; readonly ignoresEof?: boolean } = {}) {
+  function loopbackChild(own: OwnResource, opts: {
+    readonly onAnnounce?: (server: Server, port: number) => void;
+    readonly onAccepted?: (socket: Socket) => void;
+    readonly ignoresEof?: boolean;
+  } = {}) {
     return async (spec: { args: string[] }) => {
       windowsGrant.events.push("spawn");
       const child = fakeChild(undefined, own);
@@ -1986,8 +2231,9 @@ describe("on Windows a confined child holds a grant on its own directories for e
         acceptTimeoutMs: 5_000,
         handshakeTimeoutMs: 5_000,
       }, (socket) => {
+        opts.onAccepted?.(socket);
         if (opts.ignoresEof) socket.allowHalfOpen = true;
-        const service = servePluginChild(socket, socket);
+        const service = servePluginChild(consumePluginChildInput(socket, socket), socket);
         const onClose = own("loopback child service", () => service.hostGone());
         const socketClosed = () => {
           void onClose().catch(() => undefined);
@@ -2140,6 +2386,53 @@ describe("on Windows a confined child holds a grant on its own directories for e
     }, { own });
   });
 
+  it.for([false, true])("uses one deadline after a clean wrapped socket close, with session stop: %s", async (stopDuringGrace, { onTestFinished }) => {
+    const own = testResources(onTestFinished);
+    const layout = aveLayout(undefined, own);
+    const { entryPath } = writePluginModule(own);
+    await asWindows(layout, async () => {
+      let peer: Socket | undefined;
+      let wrapper: FakeChild | undefined;
+      const spawnLoopback = loopbackChild(own, {
+        ignoresEof: true,
+        onAccepted: (socket) => { peer = socket; },
+      });
+      spawnConfinedChild.mockImplementation(async (spec: { args: string[] }) => {
+        const result = await spawnLoopback(spec);
+        wrapper = result.child;
+        wrapper.kill.mockReset().mockReturnValue(true);
+        return result;
+      });
+      const factory = createOutOfProcessPluginFactory({ manifest: MANIFEST, launch: { kind: "entry", entryPath } });
+      const instance = await factory(hostContext(fakeHostApi(), layout.context));
+      if (!peer || !wrapper) throw new Error("missing wrapped child or peer");
+      const socket = peer;
+      const child = wrapper;
+      vi.useFakeTimers();
+      try {
+        const closed = new Promise<void>((resolve) => socket.once("close", () => resolve()));
+        socket.end();
+        await closed;
+        const { pluginShutdownKillGraceMs: grace, pluginChildForceKillMs: force } = TOOL_TIMEOUT_POLICY;
+        await vi.advanceTimersByTimeAsync(grace - 1);
+        const stop = stopDuringGrace ? Promise.resolve(instance.stop?.()).catch((error: unknown) => error) : undefined;
+        await vi.advanceTimersByTimeAsync(0);
+        expect(child.kill.mock.calls).toEqual([]);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(child.kill.mock.calls).toEqual([["SIGTERM"]]);
+        await vi.advanceTimersByTimeAsync(force - 1);
+        expect(child.kill.mock.calls).toEqual([["SIGTERM"]]);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(child.kill.mock.calls).toEqual([["SIGTERM"], ["SIGKILL"]]);
+        end(child, 0, null);
+        expect(await stop).toBeUndefined();
+      } finally {
+        end(child, 0, null);
+        vi.useRealTimers();
+      }
+    }, { own });
+  });
+
   it("refuses a child whose stdout says anything before its announce, ends it, and releases the grant", async ({ onTestFinished }) => {
     const own = testResources(onTestFinished);
     const layout = aveLayout(undefined, own);
@@ -2256,8 +2549,7 @@ describe("on Windows a confined child holds a grant on its own directories for e
     own("loopback socket error listener", () => socket.off("error", onError));
     socket.on("error", onError);
     const link: ChildLink = {
-      input: socket,
-      output: socket,
+      ...pacePluginChildInput(socket, socket),
       terminate: () => socket.destroy(),
       onGone: (handler) => void exited.then(handler),
       onFault: () => undefined,

@@ -219,6 +219,7 @@ src/permissions/__tests__/sandbox-process-home.test.ts
 src/permissions/__tests__/windows-process-start-time.test.ts
 src/boot/__tests__/windows-sandbox-home-sweep.test.ts
 src/plugins/isolation/__tests__/confined-plugin-child.test.ts
+src/plugins/isolation/__tests__/process-plugin-host-death.test.ts
 src/shared/__tests__/shell-execution.test.ts
 src/shared/__tests__/shell-filesystem-path.test.ts
 src/shared/__tests__/windows-powershell-env.test.ts
@@ -439,3 +440,4 @@ src/plugins/runtime/__tests__/sandbox-withdrawal.test.ts
 src/shared/__tests__/ave-home-host-ownership.test.ts
 src/tools/__tests__/file-tools.test.ts
 src/tools/__tests__/shell-interruption-cleanup.test.ts
+src/work-board/workflow/__tests__/stage-run-harness.test.ts

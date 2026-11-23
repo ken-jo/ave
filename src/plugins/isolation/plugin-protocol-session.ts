@@ -20,6 +20,7 @@ import {
   PLUGIN_INSTANCE_METHODS,
   type PluginConstructParams,
   type PluginConstructResult,
+  type PluginLifecycleHookName,
 } from "./plugin-instance-wire.js";
 import {
   PluginChildTransport,
@@ -157,6 +158,63 @@ function requireServedCapabilities(
   if (missing.length > 0) {
     throw new IncompatibleHostProtocolError(pluginId, { missingCapabilities: missing });
   }
+}
+
+/** Every hook name the wire defines; `satisfies` fails the build when the union and this table disagree. */
+const LIFECYCLE_HOOK_NAMES = { start: true, onPublished: true, stop: true } satisfies Record<
+  PluginLifecycleHookName,
+  true
+>;
+
+/** Undeclared names are child-chosen, so the warning carries a count and a clipped head, never the whole list. */
+const UNDECLARED_WARN_NAMES_MAX = 5;
+const UNDECLARED_WARN_NAME_CODE_POINTS_MAX = 64;
+
+function clipForLog(text: string, max: number): string {
+  const head = [...text.slice(0, max * 2)].slice(0, max).join("");
+  return head.length < text.length ? `${head}…` : text;
+}
+
+/** Refuse construct reply lists and flags outside the schema; a malformed field is not a default. */
+function requireConstructReplyFields(pluginId: string, construction: PluginConstructResult): void {
+  for (const field of ["implementedToolNames", "lifecycleHooks"] as const) {
+    const value: unknown = construction[field];
+    if (!Array.isArray(value) || !value.every((entry) => typeof entry === "string")) {
+      throw new Error(`[out-of-process-plugin] ${pluginId}: construct answered no ${field} list`);
+    }
+  }
+  if (!construction.lifecycleHooks.every((hook) => Object.hasOwn(LIFECYCLE_HOOK_NAMES, hook))) {
+    throw new Error(`[out-of-process-plugin] ${pluginId}: construct answered an unknown lifecycle hook`);
+  }
+  const servesUiResources: unknown = construction.servesUiResources;
+  if (typeof servesUiResources !== "boolean") {
+    throw new Error(
+      `[out-of-process-plugin] ${pluginId}: construct answered no servesUiResources flag`,
+    );
+  }
+}
+
+/** Bind only host-declared names; the child intersects already, so an extra name is a contract breach. */
+function declaredImplementedToolNames(
+  pluginId: string,
+  implemented: readonly string[],
+  declared: readonly string[],
+): string[] {
+  const declaredNames = new Set(declared);
+  const undeclared = implemented.filter((name) => !declaredNames.has(name));
+  if (undeclared.length > 0) {
+    log.warn(
+      {
+        pluginId,
+        undeclaredCount: undeclared.length,
+        undeclared: undeclared
+          .slice(0, UNDECLARED_WARN_NAMES_MAX)
+          .map((name) => clipForLog(name, UNDECLARED_WARN_NAME_CODE_POINTS_MAX)),
+      },
+      "construct reply named undeclared tools; they stay unbound",
+    );
+  }
+  return implemented.filter((name) => declaredNames.has(name));
 }
 
 function readUiResourceHtml(pluginId: string, uri: string, result: unknown): string {
@@ -317,12 +375,19 @@ export async function openPluginProtocolSession(
       TOOL_TIMEOUT_POLICY.pluginImportMs + TOOL_TIMEOUT_POLICY.pluginFactoryMs,
     )) as PluginConstructResult;
     requireServedCapabilities(pluginId, construction, capabilities);
+    requireConstructReplyFields(pluginId, construction);
+    const implementedToolNames = declaredImplementedToolNames(
+      pluginId,
+      construction.implementedToolNames,
+      constructParams.declaredToolNames,
+    );
 
+    const stopReason = `[out-of-process-plugin] ${pluginId}: stopped`;
     const channel: PluginProtocolChannel = {
       requestMcp: (method, params, timeoutMs) => transport.requestMcp(method, params, timeoutMs),
       probe: (method, params) => transport.probe(method, params),
       runStopHook: async () => {
-        if (!construction.lifecycleHooks.includes("stop")) return;
+        if (transport.channelClosing || !construction.lifecycleHooks.includes("stop")) return;
         await transport.request(
           PLUGIN_INSTANCE_METHODS.stop,
           {},
@@ -331,13 +396,14 @@ export async function openPluginProtocolSession(
         );
       },
       closeInput: () => {
-        spec.link.output.end();
+        void transport.closeInput(stopReason);
       },
       exited,
     };
 
-    const handlers: Record<string, PluginToolHandler> = {};
-    for (const toolName of construction.implementedToolNames) {
+    // A null prototype keeps a declared `__proto__` an own key instead of replacing the prototype.
+    const handlers = Object.create(null) as Record<string, PluginToolHandler>;
+    for (const toolName of implementedToolNames) {
       handlers[toolName] = async (payload?: unknown) => {
         const result = await transport.requestMcp("tools/call", {
           name: toolName,
@@ -357,19 +423,10 @@ export async function openPluginProtocolSession(
           await channel.runStopHook();
         } finally {
           // EOF gives the child time to release its own resources before signal-based termination.
-          channel.closeInput();
-          let graceTimer: ReturnType<typeof setTimeout> | undefined;
           try {
-            await Promise.race([
-              channel.exited,
-              new Promise<void>((resolve) => {
-                graceTimer = setTimeout(resolve, TOOL_TIMEOUT_POLICY.pluginShutdownKillGraceMs);
-              }),
-            ]);
+            await transport.closeInput(stopReason);
           } finally {
-            clearTimeout(graceTimer);
-            // Retire authority only after the cleanup grace has ended.
-            await teardown(`[out-of-process-plugin] ${pluginId}: stopped`);
+            await teardown(stopReason);
           }
         }
       },

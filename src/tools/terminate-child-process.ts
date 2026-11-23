@@ -9,7 +9,7 @@ export interface TerminateChildOptions {
 }
 
 function signal(child: TerminableChild, name: NodeJS.Signals, group: boolean): void {
-  if (group && child.pid !== undefined) {
+  if (group && child.pid !== undefined && child.pid > 1) {
     try {
       process.kill(-child.pid, name);
       return;
@@ -34,7 +34,7 @@ export function terminateChildProcess(
     // A failed graceful signal does not prove the child is gone. Keep the escalation timer so a later force signal still has a chance to stop it.
   }
   const forceTimer = setTimeout(() => {
-    if (child.exitCode === null && child.signalCode === null) {
+    if (group || (child.exitCode === null && child.signalCode === null)) {
       try {
         signal(child, "SIGKILL", group);
       } catch {

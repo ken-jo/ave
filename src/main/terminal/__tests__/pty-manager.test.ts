@@ -1650,6 +1650,187 @@ describe("pty-manager typing an approved agent command", () => {
     expect(pty.written.filter((data) => data === "\r")).toHaveLength(1);
   });
 
+  describe("editor waits", () => {
+    const line = "echo approved";
+    const writes = ["\u0003", TERMINAL_EDIT_LINE_QUERY, PASTE(line), TERMINAL_EDIT_LINE_QUERY, "\r"];
+    const nextTurn = setImmediate;
+    const flushEvents = (): Promise<void> => new Promise((resolve) => nextTurn(resolve));
+    type Wait = "empty report" | "paste echo" | "confirmed report";
+
+    async function pauseAt(wait: Wait) {
+      const terminal = await zshTerminal(3);
+      const { pty, prompt, shell, report } = terminal;
+      pty.emitData(prompt());
+      shell.shows = () => "";
+      shell.acknowledges = () => false;
+      const through = wait === "empty report" ? 2 : wait === "paste echo" ? 3 : 4;
+      const respond = pty.respond;
+      pty.respond = (data) => {
+        respond?.(data);
+        if (pty.written.length === through) return;
+        if (data === PASTE(line)) pty.emitData(line);
+        if (data === TERMINAL_EDIT_LINE_QUERY) report(pty.written.length === 2 ? "" : line);
+      };
+      const emit = () => wait === "paste echo" ? pty.emitData(line) : report(wait === "empty report" ? "" : line);
+      return { ...terminal, through, emit };
+    }
+
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    it.each<Wait>(["empty report", "paste echo", "confirmed report"])("settles the %s on its event", async (wait) => {
+      const { pty, through, emit } = await pauseAt(wait);
+      const typing = typeTerminalCommand(TAB, 3, line, "/w");
+      await flushEvents();
+      expect(pty.written).toEqual(writes.slice(0, through));
+      emit();
+      await flushEvents();
+      expect(pty.written).toEqual(writes);
+      await expect(typing).resolves.toEqual({ ok: true, firstBlockId: 1 });
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it.each(["empty report", "confirmed report"] as const)("requires a new %s after writing its query", async (wait) => {
+      const { pty, through, emit } = await pauseAt(wait);
+      const tracker = getTerminalBlockTracker(TAB);
+      if (!tracker) throw new Error("Missing terminal tracker");
+      const subscribe = tracker.subscribe.bind(tracker);
+      const publish = vi.fn(emit);
+      const subscription = vi.spyOn(tracker, "subscribe").mockImplementation((listener, options) => {
+        if (!options?.includeEditLineOutput && pty.written.length === through - 1) publish();
+        return subscribe(listener, options);
+      });
+      try {
+        const typing = typeTerminalCommand(TAB, 3, line, "/w");
+        await flushEvents();
+        expect(publish).toHaveBeenCalledTimes(1);
+        expect(pty.written).toEqual(writes.slice(0, through));
+        expect(tracker.editLineReport()?.line).toBe(wait === "empty report" ? "" : line);
+        emit();
+        await flushEvents();
+        expect(pty.written).toEqual(writes);
+        await expect(typing).resolves.toEqual({ ok: true, firstBlockId: 1 });
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        subscription.mockRestore();
+      }
+    });
+
+    it("latches paste echo published synchronously inside the paste write", async () => {
+      const { pty, prompt, shell } = await zshTerminal(3);
+      pty.emitData(prompt());
+      shell.shows = () => "";
+      const respond = pty.respond;
+      pty.respond = (data) => {
+        respond?.(data);
+        if (data === PASTE(line)) pty.emitData(line);
+      };
+      const typing = typeTerminalCommand(TAB, 3, line, "/w");
+      await flushEvents();
+      expect(pty.written).toEqual(writes);
+      await expect(typing).resolves.toEqual({ ok: true, firstBlockId: 1 });
+    });
+
+    it.each<Wait>(["empty report", "paste echo", "confirmed report"])("abandons the pending %s on abort", async (wait) => {
+      const { pty, through, emit } = await pauseAt(wait);
+      const controller = new AbortController();
+      const typing = typeTerminalCommand(TAB, 3, line, "/w", controller.signal);
+      await flushEvents();
+      expect(pty.written).toEqual(writes.slice(0, through));
+      controller.abort();
+      await flushEvents();
+      expect(vi.getTimerCount()).toBe(0);
+      await expect(typing).resolves.toMatchObject({ ok: false, reason: "aborted" });
+      emit();
+      expect(pty.written).toEqual(writes.slice(0, through));
+    });
+
+    it("gives both editor reports and the paste echo independent budgets", async () => {
+      const { pty, prompt, shell, report } = await zshTerminal(3);
+      pty.emitData(prompt());
+      shell.shows = () => "";
+      shell.acknowledges = () => false;
+      const typing = typeTerminalCommand(TAB, 3, line, "/w");
+      await flushEvents();
+      expect(pty.written).toEqual(writes.slice(0, 2));
+      expect(vi.getTimerCount()).toBe(1);
+      await vi.advanceTimersByTimeAsync(1_000);
+      report("");
+      await flushEvents();
+      expect(pty.written).toEqual(writes.slice(0, 3));
+      expect(vi.getTimerCount()).toBe(1);
+      await vi.advanceTimersByTimeAsync(999);
+      pty.emitData(line);
+      await flushEvents();
+      expect(pty.written).toEqual(writes.slice(0, 4));
+      expect(vi.getTimerCount()).toBe(1);
+      await vi.advanceTimersByTimeAsync(101);
+      report(line);
+      await flushEvents();
+      expect(pty.written).toEqual(writes);
+      await expect(typing).resolves.toEqual({ ok: true, firstBlockId: 1 });
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it.each<Wait>(["empty report", "paste echo", "confirmed report"])("accepts the %s stored at the 2,000 ms deadline", async (wait) => {
+      const { pty, through, emit } = await pauseAt(wait);
+      const startedAt = Date.now();
+      // Schedule evidence first so it reaches the tracker before the wait's timer runs.
+      setTimeout(() => {
+        expect(Date.now() - startedAt).toBe(2_000);
+        expect(pty.written).toEqual(writes.slice(0, through));
+        emit();
+      }, 2_000);
+      const typing = typeTerminalCommand(TAB, 3, line, "/w");
+      await flushEvents();
+      expect(pty.written).toEqual(writes.slice(0, through));
+      expect(vi.getTimerCount()).toBe(2);
+      vi.advanceTimersByTime(2_000);
+      await expect(typing).resolves.toEqual({ ok: true, firstBlockId: 1 });
+      expect(pty.written).toEqual(writes);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it.each<Wait>(["empty report", "paste echo", "confirmed report"])("expires the pending %s at 2,000 ms", async (wait) => {
+      const { pty, through, emit } = await pauseAt(wait);
+      const typing = typeTerminalCommand(TAB, 3, line, "/w");
+      await flushEvents();
+      expect(pty.written).toEqual(writes.slice(0, through));
+      expect(vi.getTimerCount()).toBe(1);
+      await vi.advanceTimersByTimeAsync(1_999);
+      expect(pty.written).toEqual(writes.slice(0, through));
+      expect(vi.getTimerCount()).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(vi.getTimerCount()).toBe(0);
+      await expect(typing).resolves.toMatchObject({ ok: false, reason: "edit-line-mismatch" });
+      emit();
+      await flushEvents();
+      expect(pty.written).toEqual([...writes.slice(0, through), "\u0003"]);
+    });
+
+    it("allows the final exclusive check to finish after the editor wait has settled", async () => {
+      const { pty, prompt } = await zshTerminal(3);
+      pty.emitData(prompt());
+      const verify = readForegroundMock.getMockImplementation();
+      readForegroundMock.mockImplementation(async (_pid, options) => {
+        if (options?.exclusive) await new Promise((resolve) => setTimeout(resolve, 2_100));
+        return foregroundReading;
+      });
+      try {
+        const typing = typeTerminalCommand(TAB, 3, line, "/w");
+        await flushEvents();
+        expect(readForegroundMock).toHaveBeenLastCalledWith(9999, { exclusive: true });
+        expect(pty.written).toEqual(writes.slice(0, 4));
+        await vi.advanceTimersByTimeAsync(2_100);
+        await expect(typing).resolves.toEqual({ ok: true, firstBlockId: 1 });
+        expect(pty.written).toEqual(writes);
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        readForegroundMock.mockImplementation(verify ?? (async () => foregroundReading));
+      }
+    });
+  });
+
   it("does not paste into an editor that reports an existing buffer", async () => {
     const { pty, prompt, shell } = await zshTerminal(3);
     pty.emitData(prompt());

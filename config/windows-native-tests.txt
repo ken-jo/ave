@@ -573,6 +573,7 @@ src/observation/__tests__/text-document.test.ts
 src/permissions/__tests__/approval-gate-shutdown.test.ts
 src/permissions/__tests__/approval-rule-basis-gate.test.ts
 src/permissions/__tests__/approval-run-kinds.integration.test.ts
+src/permissions/__tests__/asrt-mxc-egress.test.ts
 src/permissions/__tests__/asrt-profile-compaction.test.ts
 src/permissions/__tests__/asrt-seccomp-helper-missing.test.ts
 src/permissions/__tests__/asrt-startup-cancellation.test.ts
@@ -814,6 +815,7 @@ src/plugins/runtime/__tests__/min-app-version-schema-compat.test.ts
 src/plugins/runtime/__tests__/native-child-quarantine.test.ts
 src/plugins/runtime/__tests__/network-access-manifest.test.ts
 src/plugins/runtime/__tests__/onboarding-highlights-manifest.test.ts
+src/plugins/runtime/__tests__/plugin-loader.test.ts
 src/plugins/runtime/__tests__/plugin-operation-account-session.test.ts
 src/plugins/runtime/__tests__/prepared-artifact-identity.test.ts
 src/plugins/runtime/__tests__/read-ui-resource.test.ts
