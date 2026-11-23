@@ -40,6 +40,7 @@ import { BashTool } from "../shell-tools.js";
 import { preparedShellFacts } from "../prepared-shell-invocation.js";
 import { approvalIdentityFor } from "../pipeline/display-mask.js";
 import { ToolRegistry } from "../registry.js";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 
 // win32 yields separator-folded canonicals ("c:/users/..."); compare against the same fold, never the raw backslash spelling.
 const directoryIdentity = (path: string | undefined): string | undefined =>
@@ -90,10 +91,10 @@ afterEach(async () => {
 });
 
 function executor(hooks?: ScriptHookManager, choice: "allow-once" | "deny-once" = "deny-once") {
-  const gate = { requestAndWait: async (request: ApprovalRequestInput) => {
+  const gate = { requestAndWait: answeringRequestAndWait(async (request: ApprovalRequestInput) => {
     requests.push(request);
     return { requestId: request.id, choice };
-  } };
+  }) };
   return new ToolExecutor(registry, undefined, manager, undefined, gate as never, hooks, audit);
 }
 function run(executor: ToolExecutor, name: string, input: Record<string, unknown>, options: { onDirectoryGrant?: (directory: string) => void; additionalDirectories?: string[]; headless?: boolean; executionCwd?: string } = {}) {
@@ -131,13 +132,13 @@ describe("native invocation permission evidence", () => {
     const siblingPath = join(outside, "sibling.txt");
     let directories: string[] = [];
     const allowDirectory = vi.fn(async (directory: string) => [directory]);
-    const gate = { requestAndWait: async (request: ApprovalRequestInput) => {
+    const gate = { requestAndWait: answeringRequestAndWait(async (request: ApprovalRequestInput) => {
       requests.push(request);
       if (!request.outOfAllowedDir) return { requestId: request.id, choice: "allow-once" };
       const scopes = buildApprovalScopeOptions(request.outOfAllowedDir!);
       expect(scopes.map(scope => scope.choice)).toContain("allow-session");
       return { requestId: request.id, choice: "allow-session" };
-    } };
+    }) };
     const subject = new ToolExecutor(registry, undefined, manager, undefined, gate as never, undefined, audit, undefined,
       () => ({ allowDirectory, denyDirectory: async () => [] }));
     const permissionContext = { trustOrigin: "llm-tool-arg" as const, additionalDirectories: [],
@@ -168,7 +169,7 @@ describe("native invocation permission evidence", () => {
       return append(entry);
     });
     const allowDirectory = vi.fn(async (directory: string) => [directory]);
-    const gate = { requestAndWait: async (request: ApprovalRequestInput) => ({ requestId: request.id, choice: "allow-always" }) };
+    const gate = { requestAndWait: answeringRequestAndWait(async (request: ApprovalRequestInput) => ({ requestId: request.id, choice: "allow-always" })) };
     const subject = new ToolExecutor(registry, undefined, manager, undefined, gate as never, undefined, audit, undefined,
       () => ({ allowDirectory, denyDirectory: async () => [] }));
     const execute = vi.spyOn(writeTool, "execute");
@@ -189,7 +190,7 @@ describe("native invocation permission evidence", () => {
       return row;
     });
     const allowDirectory = vi.fn(async (directory: string) => [directory]);
-    const gate = { requestAndWait: async (request: ApprovalRequestInput) => ({ requestId: request.id, choice: "allow-always" }) };
+    const gate = { requestAndWait: answeringRequestAndWait(async (request: ApprovalRequestInput) => ({ requestId: request.id, choice: "allow-always" })) };
     const subject = new ToolExecutor(registry, undefined, manager, undefined, gate as never, undefined, audit, undefined,
       () => ({ allowDirectory, denyDirectory: async () => [] }));
     const execute = vi.spyOn(writeTool, "execute");
@@ -208,10 +209,10 @@ describe("native invocation permission evidence", () => {
     const outside = join(root, "outside");
     await mkdir(outside);
     const path = join(outside, "result.txt");
-    const gate = { requestAndWait: async (request: ApprovalRequestInput) => {
+    const gate = { requestAndWait: answeringRequestAndWait(async (request: ApprovalRequestInput) => {
       requests.push(request);
       return { requestId: request.id, choice };
-    } };
+    }) };
     const lifecycle = {
       allowDirectory: async (directory: string) => [directory],
       denyDirectory: async () => { throw new Error("No directory removal was requested"); },

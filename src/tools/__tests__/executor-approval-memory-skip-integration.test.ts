@@ -27,6 +27,7 @@ import { approvalCacheKeyFor } from "../pipeline/display-mask.js";
 import { WriteFileTool } from "../file-tools.js";
 import { createDynamicTool } from "../base.js";
 import { ApprovalGate, type ApprovalRequest } from "../../permissions/approval-gate.js";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 
 describe("ToolExecutor — Store B memory skip end-to-end (real PermissionManager + real store)", () => {
   let dir: string;
@@ -113,10 +114,7 @@ describe("ToolExecutor — Store B memory skip end-to-end (real PermissionManage
       { scope: "session", sessionId: "sess-overlay", verdictAtApproval: "low", nlJustification: null, trustOrigin: "user-keyboard", workingDirectoryIdentity: captureApprovalWorkingDirectory(dir).identity },
     );
 
-    const requestAndWait = vi.fn(async (req: { id: string }) => ({
-      requestId: req.id,
-      choice: "deny-once" as const,
-    }));
+    const requestAndWait = answeringRequestAndWait<{ id: string }>(() => ({ choice: "deny-once" as const }));
     const executor = new ToolExecutor(
       registry,
       undefined,
@@ -161,10 +159,7 @@ describe("ToolExecutor — Store B memory skip end-to-end (real PermissionManage
       { scope: "session", sessionId: "sess-strict", verdictAtApproval: "low", nlJustification: null, trustOrigin: "user-keyboard", workingDirectoryIdentity: captureApprovalWorkingDirectory(dir).identity },
     );
 
-    const requestAndWait = vi.fn(async (req: { id: string }) => ({
-      requestId: req.id,
-      choice: "deny-once" as const,
-    }));
+    const requestAndWait = answeringRequestAndWait<{ id: string }>(() => ({ choice: "deny-once" as const }));
     const executor = new ToolExecutor(
       registry,
       undefined,
@@ -251,10 +246,7 @@ describe("ToolExecutor — Store B memory skip end-to-end (real PermissionManage
       trustOrigin: "user-keyboard",
       workingDirectoryIdentity: captureApprovalWorkingDirectory(dir).identity,
     });
-    const requestAndWait = vi.fn(async (request: { id: string }) => ({
-      requestId: request.id,
-      choice: "deny-once" as const,
-    }));
+    const requestAndWait = answeringRequestAndWait<{ id: string }>(() => ({ choice: "deny-once" as const }));
     const executor = new ToolExecutor(
       registry, undefined, manager, undefined,
       { requestAndWait } as never, undefined, auditLogger,
@@ -304,7 +296,7 @@ describe("ToolExecutor — Store B memory skip end-to-end (real PermissionManage
       trustOrigin: "user-keyboard",
       workingDirectoryIdentity: captureApprovalWorkingDirectory(dir).identity,
     });
-    const requestAndWait = vi.fn(async (request: { id: string }) => ({ requestId: request.id, choice: "deny-once" as const }));
+    const requestAndWait = answeringRequestAndWait<{ id: string }>(() => ({ choice: "deny-once" as const }));
     const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, auditLogger);
     const result = await executor.executeAll(
       [{ id: "subagent-write", name: "write_probe", input }],
@@ -350,10 +342,7 @@ describe("ToolExecutor — Store B memory skip end-to-end (real PermissionManage
       },
     );
 
-    const requestAndWait = vi.fn(async (req: { id: string }) => ({
-      requestId: req.id,
-      choice: "deny-once" as const,
-    }));
+    const requestAndWait = answeringRequestAndWait<{ id: string }>(() => ({ choice: "deny-once" as const }));
     const executor = new ToolExecutor(
       registry,
       undefined,
@@ -472,7 +461,7 @@ describe("ToolExecutor — Store B memory skip end-to-end (real PermissionManage
     (Object.values(stored.approvals)[0] as Record<string, unknown>)[field] = "invalid";
     await writeFile(storePath, JSON.stringify(stored));
     __resetSessionStoreForTest();
-    const requestAndWait = vi.fn(async (request: { id: string }) => ({ requestId: request.id, choice: "deny-once" as const }));
+    const requestAndWait = answeringRequestAndWait<{ id: string }>(() => ({ choice: "deny-once" as const }));
     const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, auditLogger);
     const result = await executor.executeAll([{ id: "malformed", name: "write_probe", input }], {
       executionCwd: dir, permissionContext: userPermissionContext({ additionalDirectories: [dir] }),

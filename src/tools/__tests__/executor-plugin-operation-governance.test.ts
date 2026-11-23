@@ -21,6 +21,7 @@ import { closeToolInvocationAudit, pendingToolInvocationCount, sealToolInvocatio
 import { ToolRegistry } from "../registry.js";
 import type { ActivePluginGeneration } from "../../plugins/plugin-generation-coordinator.js";
 import type { HostPluginGenerationState } from "../../plugins/plugin-host-generation.js";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 
 const principal = {
   ownerPluginId: "sampleportal",
@@ -132,7 +133,7 @@ function setup(options: {
   ]);
   const permissions = new PermissionManager("/tmp/nonexistent-operation-governance.json");
   permissions.checkDetailed = () => ({ decision: "allow", reason: "test", });
-  const approvalGate = { requestAndWait: vi.fn(async (_request: Record<string, unknown>) => ({ choice: "allow-once" })) };
+  const approvalGate = { requestAndWait: answeringRequestAndWait<{ id: string } & Record<string, unknown>>(() => ({ choice: "allow-once" })) };
   const scriptHookManager =
     options.wireHooks === false
       ? undefined

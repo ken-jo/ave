@@ -63,6 +63,7 @@ import { getHostShellExecutionPlanAuditProjection } from "../../permissions/host
 import { userPermissionContext as permissionContext } from "./tool-context-fixture.js";
 import { sentApprovalCards } from "../../__tests__/test-helpers.js";
 import { makeSubAgentApprovalAdapter } from "../../engine/subagent-runner.js";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 
 const ORIGINAL_PLATFORM = process.platform;
 let testRoot: string;
@@ -623,7 +624,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     setReviewerForTest(pm, { classifier: {} as never, cache: {} as never, recentlyDenied: makeRecentlyDeniedStore(join(testRoot, "recently-denied.json")) });
     pm.dispatchReviewer = vi.fn(async () => ({ verdict: { level: "low" as const, reason: "Bounded host effect" }, cacheReason: "miss-not-found" as const,
       outcome: "fresh" as const, judge: reviewerJudgeOutcomeForTest("allow", "Bounded host effect") })) as never;
-    const requestAndWait = vi.fn(async (request: { id: string }) => ({ requestId: request.id, choice: "deny-once" as const }));
+    const requestAndWait = answeringRequestAndWait<{ id: string }>(() => ({ choice: "deny-once" as const }));
     const result = await new ToolExecutor(registry, undefined, pm, undefined, { requestAndWait } as never).executeAll(
       [{ id: "partial-shell-mode", name: "bash", input: { command: "echo no-run" } }],
       { sessionId: "partial-shell", permissionContext: permissionContext() },
@@ -944,7 +945,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     const registry = shellProbeRegistry(execute);
     let request: ApprovalRequest | undefined;
     // This imitates an untrusted/stale gate response: it says allow-once but carries no host-issued receipt bound to the private action description.
-    const requestAndWait = vi.fn(async (pending: ApprovalRequest) => {
+    const requestAndWait = answeringRequestAndWait(async (pending: ApprovalRequest) => {
       request = pending;
       return { requestId: pending.id, choice: "allow-once" as const };
     });
@@ -1060,7 +1061,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
       setReviewerForTest(pm, { classifier: {} as never, cache: {} as never, recentlyDenied: makeRecentlyDeniedStore(join(testRoot, "recently-denied.json")) });
       pm.dispatchReviewer = vi.fn(async () => ({ verdict: { level: "high" as const, reason: "Host effect needs a human" }, cacheReason: "miss-not-found" as const,
         outcome: "fresh" as const, judge: reviewerJudgeOutcomeForTest("ask", "Host effect needs a human") })) as never;
-      const requestAndWait = vi.fn(async (request: { id: string }) => ({ requestId: request.id, choice: "deny-once" as const }));
+      const requestAndWait = answeringRequestAndWait<{ id: string }>(() => ({ choice: "deny-once" as const }));
       const executor = new ToolExecutor(registry, undefined, pm, undefined, { requestAndWait } as never);
       const run = (id: string) => executor.executeAll(
         [{ id, name: "bash", input: { command: "echo reviewed" } }],

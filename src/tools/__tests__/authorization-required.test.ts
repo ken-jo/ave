@@ -29,6 +29,7 @@ import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
 import { BashTool } from "../shell-tools.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 
 const temporaryDirectories: string[] = [];
 const verdictCaches: VerdictCache[] = [];
@@ -138,10 +139,7 @@ describe("ToolExecutor authorization-required control", () => {
       jsonSchema: { type: "object", properties: {} },
       execute,
     }));
-    const requestAndWait = vi.fn(async (request: { id: string }) => ({
-      requestId: request.id,
-      choice: "allow-once" as const,
-    }));
+    const requestAndWait = answeringRequestAndWait<{ id: string }>(() => ({ choice: "allow-once" as const }));
     const executor = new ToolExecutor(
       registry,
       undefined,

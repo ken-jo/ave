@@ -13,6 +13,7 @@ import { buildHookRegistry } from "../../hooks/hook-registry.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
 import type { ApprovalGate } from "../../permissions/approval-gate.js";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 
 const COMMAND = resolve(__dirname, "../../../test/fixtures/hooks/influence-command.cjs");
 const roots: string[] = [];
@@ -33,7 +34,7 @@ function setup(event: "PreToolUse" | "PermissionRequest", mode = "mutate") {
   const entries = parseHookConfig({ hooks: { [event]: [{ hooks: [{ type: "command", command: ["node", COMMAND, mode] }] }] } }).entries;
   bindHookConfigPaths(entries, dirname(COMMAND));
   manager.setTrustedRegistry([], entries);
-  const requestAndWait = vi.fn(async (_request: { args?: Record<string, unknown> }) => ({ requestId: "target", choice: "deny-once" as const }));
+  const requestAndWait = answeringRequestAndWait<{ id: string; args?: Record<string, unknown> }>(() => ({ requestId: "target", choice: "deny-once" as const }));
   const executor = new ToolExecutor(registry, undefined, permissions, undefined, { requestAndWait } as unknown as ApprovalGate, manager);
   const pre = vi.spyOn(manager, "runPreToolUse");
   const permission = vi.spyOn(manager, "runPermissionRequest");

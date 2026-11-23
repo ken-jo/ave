@@ -18,6 +18,7 @@ import type { RationaleControlCandidate, RationaleHostRuntime } from "../pipelin
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
 import type { ToolCategory } from "../types.js";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 
 
 function registerProbe(
@@ -332,7 +333,7 @@ describe("ToolExecutor rationale conversation batches", () => {
       registerProbe(registry, { name: "network_probe", category: "network", execute });
       const manager = reviewerPermissionManager(directory);
       const finalized = vi.spyOn(manager, "resolveReviewerChoice");
-      const requestAndWait = vi.fn(async (request: { id: string }) => ({ requestId: request.id, choice: "deny-once" as const }));
+      const requestAndWait = answeringRequestAndWait<{ id: string }>(() => ({ choice: "deny-once" as const }));
       const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as unknown as ApprovalGate);
       const { runtime, materialize } = createRationaleHostRuntime();
       const outcome = await executor.executeConversationBatch([

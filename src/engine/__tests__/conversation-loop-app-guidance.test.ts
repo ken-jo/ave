@@ -21,6 +21,7 @@ import { turnExtensionPolicyContext } from "../../shared/turn-extension-policy.j
 import type { ApprovalRequestInput } from "../../permissions/approval-gate.js";
 
 import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 
 const hookRoots: string[] = [];
 afterEach(async () => {
@@ -119,7 +120,7 @@ describe("MCP-app guidance downgrades the rest of the turn", () => {
       lifecycleOrigins.push({ event, floor: turnExtensionPolicyContext.getStore()?.floor?.code });
       return lifecycle(event, ...args);
     });
-    const targetApproval = vi.fn(async (request: ApprovalRequestInput) => ({ requestId: request.id, choice: "allow-once" as const }));
+    const targetApproval = answeringRequestAndWait<ApprovalRequestInput>(() => ({ choice: "allow-once" as const }));
     const { loop } = makeLoop(twoToolRounds(), { permissionManager: permissions, scriptHookManager: hooks,
       approvalGate: { requestAndWait: targetApproval } });
     const turn = loop.runTurn("Follow the current task", {}, undefined, { ...userKeyboardTurn() });

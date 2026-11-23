@@ -4,11 +4,11 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
-import type { ApprovalDecision } from "../../permissions/approval-gate.js";
 import type { Tool } from "../base.js";
 import { authorizeToolInvocation, type AuthorizationStageContext } from "../invocation-authorization.js";
 import type { InvocationRunnerServices } from "../invocation-services.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
+import { answeredApprovalDecision, answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 
 let directory: string;
 beforeEach(() => { directory = mkdtempSync(join(tmpdir(), "ave-authorization-pipeline-")); });
@@ -26,7 +26,7 @@ function fixture(options: {
 } = {}) {
   const manager = new PermissionManager(join(directory, "permissions.json"));
   manager.setMode(options.mode ?? "allow");
-  const requestAndWait = vi.fn(async (request: { id: string }): Promise<ApprovalDecision> => ({ requestId: request.id, choice: "deny-once" }));
+  const requestAndWait = answeringRequestAndWait<{ id: string }>(() => ({ choice: "deny-once" }));
   const memorySkip = vi.fn(async () => null);
   const allowsPolicyTransition = vi.fn(() => false);
   const tool: Tool = {
@@ -112,7 +112,7 @@ describe("invocation permission pipeline orchestration", () => {
     context.finalInput = Object.freeze({ path: join(directory, "resource.txt"), content: "unchanged input" });
     requestAndWait.mockImplementation(async (request) => {
       manager.setRules([{ pattern: context.toolUse.name, action: "deny" }]);
-      return { requestId: request.id, choice: "allow-once" };
+      return answeredApprovalDecision({ requestId: request.id, choice: "allow-once" });
     });
     const result = await authorizeToolInvocation(context);
     expect(result).toMatchObject({ is_error: true, content: expect.stringContaining("Permission policy changed") });

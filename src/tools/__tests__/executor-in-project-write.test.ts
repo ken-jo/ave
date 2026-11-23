@@ -14,11 +14,12 @@ import { canonicalStringify } from "../../shared/canonical-json.js";
 import { approvalCacheKeyFor, ARGS_APPROVAL_MEMORY } from "../pipeline/display-mask.js";
 import { approvalCacheKeyIdentity, captureApprovalWorkingDirectory, recordApproval, __resetSessionStoreForTest } from "../../permissions/user-approval-store.js";
 import type { ExecuteOptions } from "../executor-contract.js";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 
 describe("checkpointed project file writes", () => {
   let root: string, project: string, sessionId: string;
   let manager: PermissionManager, executor: ToolExecutor, audit: AuditLogger;
-  const requestAndWait = vi.fn(async (request: { id: string }) => ({ requestId: request.id, choice: "allow-once" as const }));
+  const requestAndWait = answeringRequestAndWait<{ id: string }>(() => ({ choice: "allow-once" as const }));
   beforeEach(async () => {
     root = await realpath(await mkdtemp(join(tmpdir(), "ave-project-write-")));
     project = join(root, "project");

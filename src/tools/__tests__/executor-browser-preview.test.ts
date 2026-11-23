@@ -9,6 +9,7 @@ import { ToolRegistry } from "../registry.js";
 import { createDynamicTool } from "../base.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import type { ToolSource } from "../types.js";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 
 const PREVIEW = { dataUrl: "data:image/jpeg;base64,QUdFTlQ=", width: 320, height: 180 };
 
@@ -25,7 +26,7 @@ async function previewOf(source: ToolSource, extra: Record<string, unknown> = {}
     execute: async () => ({ output: "captured", isError: false, browserPreview: PREVIEW }),
   }));
   // Outside tools ask first; the user allows this one call so the result itself reaches the executor.
-  const approvals = { requestAndWait: async () => ({ choice: "allow-once" as const }) };
+  const approvals = { requestAndWait: answeringRequestAndWait(() => ({ choice: "allow-once" as const })) };
   const executor = new ToolExecutor(registry, undefined, new PermissionManager("/tmp/nonexistent-browser-preview.json"), undefined, approvals as never);
   let browserPreview: unknown = "not-called";
   const [result] = await executor.executeConversationTools(

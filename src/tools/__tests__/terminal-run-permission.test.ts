@@ -18,6 +18,7 @@ import {
 import { userPermissionContext } from "./tool-context-fixture.js";
 import { isSessionOnlyApprovalMemoryScope, type ApprovalMemory } from "../../shared/permissions-events.js";
 import { TERMINAL_TEST_NONCE, terminalMarker } from "../../__tests__/support/terminal-markers.js";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 
 const WINDOW = 7;
 const TAB = "terminal:aaaaaaaa-1";
@@ -77,7 +78,7 @@ async function run(
       waitDisclosure: async () => { throw new Error("an unbound chat never reaches a host terminal"); },
     },
   }));
-  const requestAndWait = vi.fn(async (request: { id: string }) => ({ requestId: request.id, choice: options.choice ?? "deny-once" }));
+  const requestAndWait = answeringRequestAndWait(async (request: { id: string }) => ({ requestId: request.id, choice: options.choice ?? "deny-once" }));
   const executor = new ToolExecutor(registry, undefined, pm, undefined, { requestAndWait } as never);
   const [result] = await runWithToolExecutionCwd(dir, () => executor.executeAll(
     [{ id: "terminal-run-1", name: "terminal_run", input: { command, waitSeconds: 0 } }],

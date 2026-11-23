@@ -85,6 +85,7 @@ import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
 import { createDynamicTool, type Tool, type ToolExecutionContext } from "../base.js";
 import { ApplyPatchTool, ReadFileTool, WriteFileTool, createFileTools } from "../file-tools.js";
+import { answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 
 const ORIGINAL_PLATFORM = process.platform;
 const PROJECT = String.raw`D:\Fixture\Project`;
@@ -132,7 +133,7 @@ afterEach(async () => {
 async function run(tool: Tool, input: Record<string, unknown>, cwd = PROJECT, additionalDirectories: string[] = []) {
   const registry = new ToolRegistry();
   registry.register(tool);
-  const gate = { requestAndWait: async (request: ApprovalRequestInput) => { requests.push(request); return { requestId: request.id, choice: "deny-once" }; } };
+  const gate = { requestAndWait: answeringRequestAndWait(async (request: ApprovalRequestInput) => { requests.push(request); return { requestId: request.id, choice: "deny-once" }; }) };
   const executor = new ToolExecutor(registry, undefined, manager, undefined, gate as never, undefined, audit);
   const [result] = await executor.executeAll([{ id: "windows-file-target", name: tool.name, input }], {
     executionCwd: cwd, sessionId: "windows-file-target", permissionContext: {

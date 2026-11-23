@@ -15,6 +15,7 @@ import { PermissionManager } from "../../permissions/permission-manager.js";
 import { mcpSkillSelector, parseMcpSkillSelector } from "../../shared/mcp-skill-selector.js";
 import { resolveTurnExtensionPolicy, turnExtensionPolicyContext } from "../../shared/turn-extension-policy.js";
 import type { McpClient } from "../../mcp/mcp-client.js";
+import { answeredApprovalDecision, answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 
 const temp = registerTempPaths("mcp-skill-consent-", "approvals.json");
 const clients: McpClient[] = [];
@@ -40,7 +41,7 @@ async function harness(bundle = skillBundle(), declaredResources = false, resour
   const store = new SkillStore({ userDir: `${temp()}.skills`, mcpSource: new McpSkillSource(() => access) });
   const overlay = new SkillOverlay(store);
   const approvals = new SkillApprovalsStore(temp());
-  const requestAndWait = vi.fn(async (_request: unknown) => ({ choice: "deny-once", requestId: "decision" }));
+  const requestAndWait = answeringRequestAndWait(async (_request: { id: string }) => ({ choice: "deny-once", requestId: "decision" }));
   const gate = { requestAndWait } as never;
   const emit = vi.fn();
   const load = createSkillLoadTool({ store, overlay, approvals, approvalGate: gate, emit });
@@ -50,7 +51,7 @@ async function harness(bundle = skillBundle(), declaredResources = false, resour
   const executor = new ToolExecutor(registry, undefined, manager, undefined, gate);
   executor.setSkillAdmissionCheck((sessionId, name, input) => overlay.checkAdmission(sessionId, name, input));
   const selector = mcpSkillSelector("docs-server", bundle.skill.uri);
-  const optIn = () => requestAndWait.mockImplementation(async () => ({ choice: "allow-once", requestId: "decision" }));
+  const optIn = () => requestAndWait.mockImplementation(() => answeredApprovalDecision({ choice: "allow-once", requestId: "decision" }));
   return { server, client, registry, store, overlay, approvals, requestAndWait, emit, load, read, selector, optIn, executor, manager };
 }
 
@@ -228,7 +229,7 @@ describe("MCP skills use the existing skill and permission paths", () => {
     const h = await harness(); h.optIn(); await h.load.execute({ skillName: h.selector }, context());
     const changed = skillBundle({ files: { "references/guide.md": "Other\n" } }); h.server.publish(changed);
     await h.client.getSkill(changed.skill.uri);
-    h.requestAndWait.mockImplementation(async () => ({ choice: "deny-once", requestId: "decision" }));
+    h.requestAndWait.mockImplementation(() => answeredApprovalDecision({ choice: "deny-once", requestId: "decision" }));
     expect((await h.load.execute({ skillName: h.selector }, context())).isError).toBe(true);
     expect(h.requestAndWait).toHaveBeenCalledTimes(2);
     expect(h.overlay.checkAdmission("skill-chat", "execute_code", {})).toContain("revoked");
@@ -267,7 +268,7 @@ describe("MCP skills use the existing skill and permission paths", () => {
     expect(stored).not.toBeNull(); expect(stored?.allowedTools).toBeUndefined();
     const code = vi.fn(async () => ({ output: "executed", isError: false }));
     h.registry.register(createDynamicTool({ name: "execute_code", description: "Execute code", category: "shell", source: "builtin", jsonSchema: { type: "object" }, execute: code }));
-    h.requestAndWait.mockImplementation(async () => ({ choice: "deny-once", requestId: "decision" }));
+    h.requestAndWait.mockImplementation(() => answeredApprovalDecision({ choice: "deny-once", requestId: "decision" }));
     const [denied] = await h.executor.executeAll([{ id: "code", name: "execute_code", input: {} }],
       { sessionId: "skill-chat", permissionContext: { trustOrigin: "user-keyboard" } });
     expect(denied).toMatchObject({ is_error: true }); expect(code).not.toHaveBeenCalled();
@@ -289,7 +290,7 @@ describe("MCP skills use the existing skill and permission paths", () => {
     const h = await harness(); h.optIn(); await h.load.execute({ skillName: h.selector }, context());
     const code = vi.fn(async () => ({ output: "executed", isError: false }));
     h.registry.register(createDynamicTool({ name: "execute_code", description: "Execute code", category: "shell", source: "builtin", jsonSchema: { type: "object" }, execute: code }));
-    h.requestAndWait.mockImplementation(async () => { await h.client.disconnect(); return { choice: "allow-once", requestId: "decision" }; });
+    h.requestAndWait.mockImplementation(async () => { await h.client.disconnect(); return answeredApprovalDecision({ choice: "allow-once", requestId: "decision" }); });
     const [result] = await h.executor.executeAll([{ id: "late-code", name: "execute_code", input: {} }], { sessionId: "skill-chat", permissionContext: { trustOrigin: "user-keyboard" } });
     expect(result).toMatchObject({ is_error: true }); expect(code).not.toHaveBeenCalled();
   });

