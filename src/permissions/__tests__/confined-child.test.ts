@@ -21,6 +21,7 @@ const spawnMock = vi.fn();
 const trackMock = vi.fn();
 const admissionMock = vi.fn();
 const reaperAdmissionMock = vi.fn();
+const spawnGatedMock = vi.fn();
 // Whether the host runs under the OS sandbox. The primitive follows this one answer: wrap while it is true, spawn the caller's command as given while it is false. Defaults to true so the composition cases below see the wrap.
 const sandboxActiveMock = vi.fn<() => boolean>();
 
@@ -51,6 +52,10 @@ vi.mock("../asrt-sandbox.js", async (importOriginal) => ({
 vi.mock("../../main/managed-child-processes.js", () => ({
   assertManagedChildProcessAdmissionOpen: (label: string) => admissionMock(label),
   assertProcessGroupReaperAvailable: () => reaperAdmissionMock(),
+  spawnGatedManagedProcess: (...args: unknown[]) => {
+    reaperAdmissionMock();
+    return spawnGatedMock(...args);
+  },
   trackManagedChildProcess: (child: unknown, opts: unknown) => trackMock(child, opts),
 }));
 vi.mock("node:child_process", () => ({ spawn: (...args: unknown[]) => spawnMock(...args) }));
@@ -76,6 +81,7 @@ beforeEach(() => {
   trackMock.mockReset();
   admissionMock.mockReset();
   reaperAdmissionMock.mockReset();
+  spawnGatedMock.mockReset().mockImplementation(() => fakeChild());
 });
 
 // The filesystem config the primitive handed ASRT on the last wrap.
@@ -512,6 +518,16 @@ describe("spawnConfinedChild reports the wrap it applied", () => {
     })).rejects.toThrow(/reaper is unavailable/);
     expect(spawnMock).not.toHaveBeenCalled();
     expect(liveEgressInvocationCount()).toBe(before);
+  });
+
+  it("routes the confined executable through the protected launch gate", async () => {
+    setProcessPlatform("linux");
+    await spawnConfinedChild({
+      command: "/usr/bin/example", args: [], label: "plugin-child:x", grantMode: "allow-list",
+      tempPrincipal: PRINCIPAL, baseEnv: {}, egressOwner: EGRESS_OWNER, requireWrap: true, requireProcessGroupReaper: true,
+    });
+    expect(spawnGatedMock).toHaveBeenCalledWith("/bin/sandbox", ["--", "sh", "-c", "x"], expect.anything(), expect.anything());
+    expect(spawnMock).not.toHaveBeenCalled();
   });
 
   it.each([

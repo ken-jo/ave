@@ -9,7 +9,8 @@ const log = createLogger("ave");
 // sandboxed `bash -c 'sleep 100000'` or an MCP server that ignores stdin EOF then lived on indefinitely. The reaper holds the host's end of a
 // pipe on its stdin. The OS closes that pipe in every host death mode, the reaper reads EOF and SIGKILLs every group still registered.
 //
-// Protocol on stdin, one line each: `+<pgid>` registers a group, `-<pgid>` forgets it. Anything else is ignored, and so are 0 and 1: `kill -- -1`
+// Protocol on stdin, one line each: `+<pgid>` registers a group, `-<pgid>` forgets it, and `@<request>:<pgid>` acknowledges a retained group
+// with `@<request>\n` on stdout. Invalid input is ignored, including group 0 and 1: `kill -- -1`
 // would signal every process the user owns. The reaper runs in its own process group, so a signal sent to the host's group (`kill -9 -<pgid>`, a
 // terminal's Ctrl-C or Ctrl-\) cannot take it down with the host; HUP, INT and TERM sent to it directly are ignored as well. Plain POSIX sh, so it
 // needs no Electron runtime and costs one small shell per host.
@@ -18,10 +19,16 @@ export const PROCESS_GROUP_REAPER_SCRIPT = [
   "groups=' '",
   "while IFS= read -r line; do",
   "  id=${line#?}",
+  "  case $line in",
+  "    @*:*) request=${id%%:*}; id=${id#*:} ;;",
+  "  esac",
   "  case $id in ''|*[!0-9]*|0*|1) continue ;; esac",
   "  case $line in",
   "    +*) groups=\"$groups$id \" ;;",
   "    -*) kept=' '; for g in $groups; do [ \"$g\" = \"$id\" ] || kept=\"$kept$g \"; done; groups=$kept ;;",
+  "    @*:*)",
+  "      case $request in ''|*[!0-9]*) continue ;; esac",
+  "      case $groups in *\" $id \"*) printf '@%s\\n' \"$request\" ;; esac ;;",
   "  esac",
   "done",
   "for g in $groups; do kill -s KILL -- \"-$g\" 2>/dev/null; done",
@@ -31,6 +38,7 @@ export const PROCESS_GROUP_REAPER_SCRIPT = [
 export interface ProcessGroupReaper {
   assertAvailable(): void;
   retain(processGroupId: number): void;
+  acknowledge(processGroupId: number, signal: AbortSignal, onWritten?: () => void | Promise<void>): Promise<() => void>;
   release(processGroupId: number): void;
   /** Close the reaper's stdin, which makes it kill every group still registered and exit. */
   shutdown(): void;
@@ -43,7 +51,7 @@ export const PROCESS_GROUP_REAPER_SPAWN = Object.freeze({
   options: Object.freeze({
     // Its own process group: a signal to the host's group must not reach it.
     detached: true,
-    stdio: Object.freeze(["pipe", "ignore", "ignore"] as const),
+    stdio: Object.freeze(["pipe", "pipe", "ignore"] as const),
     env: Object.freeze({ PATH: "/usr/bin:/bin" }),
   }),
 });
@@ -72,10 +80,12 @@ export function createProcessGroupReaper(
   let lastRespawnAt = Number.NEGATIVE_INFINITY;
   let recovering = false;
   let respawnTimer: NodeJS.Timeout | undefined;
+  let requestId = 0;
+  const acknowledgments = new Map<string, { accept: () => void; reject: (error: Error) => void }>();
 
   const isRunning = (child: ChildProcess): boolean =>
     child.pid !== undefined && child.exitCode === null && child.signalCode === null
-    && child.stdin?.writable === true && !child.stdin.destroyed;
+    && child.stdin?.writable === true && !child.stdin.destroyed && child.stdout?.destroyed === false;
 
   const send = (line: string): void => {
     const stdin = reaper?.stdin;
@@ -88,30 +98,54 @@ export function createProcessGroupReaper(
   function forget(current: ChildProcess, reason: string): void {
     if (reaper !== current) return;
     reaper = undefined;
+    rejectAcknowledgments(new Error("Process group reaper is unavailable"));
     current.stdin?.destroy();
+    current.stdout?.destroy();
     if (counts.size !== 0) beginRecovery(reason);
+  }
+
+  function rejectAcknowledgments(error: Error): void {
+    for (const pending of acknowledgments.values()) pending.reject(error);
   }
 
   function start(): void {
     const next = spawnReaper();
     next.once("error", (err) => forget(next, errorMessage(err)));
     if (!next.stdin) throw new Error("[process-group-reaper] reaper was spawned without a stdin pipe");
+    const stdout = next.stdout;
     next.once("exit", (code, signal) => forget(next, `exit code=${code ?? "null"} signal=${signal ?? "null"}`));
     next.stdin.on("error", (err) => forget(next, errorMessage(err)));
     next.stdin.once("close", () => forget(next, "stdin closed"));
-    if (!isRunning(next)) {
+    if (!stdout || !isRunning(next)) {
       next.stdin.destroy();
-      throw new Error("[process-group-reaper] reaper did not start with a writable stdin pipe");
+      stdout?.destroy();
+      throw new Error("[process-group-reaper] reaper did not start with usable pipes");
     }
+    let frame = "";
+    stdout.setEncoding("utf8");
+    stdout.on("data", (chunk: string) => {
+      if (reaper !== next) return;
+      frame += chunk;
+      let newline = frame.indexOf("\n");
+      while (newline >= 0) {
+        acknowledgments.get(frame.slice(0, newline))?.accept();
+        frame = frame.slice(newline + 1);
+        newline = frame.indexOf("\n");
+      }
+    });
+    stdout.on("error", (err) => forget(next, errorMessage(err)));
+    stdout.once("close", () => forget(next, "stdout closed"));
     // The pipe and the reaper must not keep a headless host alive; the host's exit is what the reaper waits for.
     next.unref();
     (next.stdin as { unref?: () => void }).unref?.();
+    (stdout as { unref?: () => void }).unref?.();
     reaper = next;
     try {
       for (const id of counts.keys()) send(`+${id}`);
     } catch (error) {
       reaper = undefined;
       next.stdin.destroy();
+      stdout.destroy();
       throw error;
     }
   }
@@ -184,6 +218,49 @@ export function createProcessGroupReaper(
         throw error;
       }
     },
+    acknowledge(processGroupId, signal, onWritten) {
+      const current = reaper;
+      const assertCurrent = (): void => {
+        if (!current || reaper !== current || recovering || !isRunning(current) || !counts.has(processGroupId)) {
+          throw new Error("Process group reaper is unavailable");
+        }
+      };
+      const frame = `@${++requestId}`;
+      let abort: (() => void) | undefined;
+      return new Promise<() => void>((resolve, reject) => {
+        assertCurrent();
+        signal.throwIfAborted();
+        const stdin = current?.stdin;
+        if (!stdin) throw new Error("Process group reaper is unavailable");
+        let written = false;
+        let accepted = false;
+        const finish = (): void => {
+          if (written && accepted) resolve(assertCurrent);
+        };
+        acknowledgments.set(frame, {
+          accept() { accepted = true; finish(); },
+          reject,
+        });
+        abort = (): void => reject(signal.reason);
+        signal.addEventListener("abort", abort, { once: true });
+        // The callback accounts for queued writes even when write() returns false. The ack proves
+        // the reaper read past the preceding +PGID and still holds it.
+        stdin.write(`${frame}:${processGroupId}\n`, (error) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          if (!acknowledgments.has(frame) || signal.aborted) return;
+          void Promise.resolve().then(onWritten).then(() => {
+            written = true;
+            finish();
+          }, reject);
+        });
+      }).finally(() => {
+        acknowledgments.delete(frame);
+        if (abort) signal.removeEventListener("abort", abort);
+      });
+    },
     release(processGroupId) {
       const count = counts.get(processGroupId);
       if (count === undefined) return;
@@ -201,6 +278,7 @@ export function createProcessGroupReaper(
       counts.clear();
       const current = reaper;
       reaper = undefined;
+      rejectAcknowledgments(new Error("Process group reaper is unavailable"));
       current?.stdin?.end();
     },
   };

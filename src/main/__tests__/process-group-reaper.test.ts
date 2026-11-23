@@ -3,7 +3,7 @@ import { EventEmitter, once } from "node:events";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Writable } from "node:stream";
+import { PassThrough, Writable } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createProcessGroupReaper,
@@ -110,11 +110,15 @@ class FakeReaper extends EventEmitter {
   exitCode: number | null = null;
   signalCode: NodeJS.Signals | null = null;
   readonly lines: string[] = [];
+  readonly stdout = new PassThrough();
+  completeWrite?: () => void;
   // Records each write as it is made, so assertions need no event-loop turn.
   readonly stdin = new Writable({
+    highWaterMark: 1,
     write: (chunk: Buffer, _encoding, done) => {
       this.lines.push(...chunk.toString().split("\n").filter(Boolean));
-      done();
+      if (chunk[0] === 64) this.completeWrite = done;
+      else done();
     },
   });
   unref = vi.fn();
@@ -138,6 +142,37 @@ function fakeReapers(): { fakes: FakeReaper[]; spawnReaper: () => ChildProcess }
 }
 
 describe("process group reaper bookkeeping", () => {
+  it("requires a complete matching ack and the queued write callback", async () => {
+    const fake = new FakeReaper();
+    const reaper = createProcessGroupReaper(() => fake as unknown as ChildProcess);
+    const written = vi.fn();
+    const accepted = vi.fn();
+    reaper.retain(4242);
+    const ack = reaper.acknowledge(4242, new AbortController().signal, written).then(accepted);
+    expect(fake.stdin.writableNeedDrain).toBe(true);
+    fake.stdout.write("@2\n@");
+    fake.stdout.write("1");
+    fake.completeWrite?.();
+    await vi.waitFor(() => expect(written).toHaveBeenCalledOnce());
+    expect(accepted).not.toHaveBeenCalled();
+    fake.stdout.write("\n");
+    await ack;
+    expect(accepted).toHaveBeenCalledOnce();
+    reaper.shutdown();
+  });
+
+  it("rejects a pending ack when the reaper is lost", async () => {
+    const { fakes, spawnReaper } = fakeReapers();
+    const reaper = createProcessGroupReaper(spawnReaper);
+    reaper.retain(4242);
+    const [first] = fakes;
+    if (!first) throw new Error("Missing reaper");
+    const ack = reaper.acknowledge(4242, new AbortController().signal);
+    first.die();
+    await expect(ack).rejects.toThrow(/reaper is unavailable/);
+    reaper.shutdown();
+  });
+
   it("spawns one reaper lazily and counts registrations per group", () => {
     const { fakes, spawnReaper } = fakeReapers();
     const reaper = createProcessGroupReaper(spawnReaper);

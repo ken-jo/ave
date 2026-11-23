@@ -1,8 +1,10 @@
 import { spawn, spawnSync, type ChildProcess, type SpawnOptions } from "node:child_process";
+import { Writable } from "node:stream";
 import { win32SystemBinary } from "../shared/windows-system-path.js";
 import { createLogger } from "../lib/logger.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { errorMessage } from "../shared/error-message.js";
+import { runWithCeiling } from "../tools/executor-ceiling.js";
 import { createProcessGroupReaper, type ProcessGroupReaper } from "./process-group-reaper.js";
 
 const log = createLogger("ave");
@@ -48,6 +50,102 @@ export interface TrackManagedChildProcessOptions {
   requireProcessGroupReaper?: boolean;
 }
 
+const PROCESS_GROUP_LAUNCH_GATE = [
+  'IFS= read -r release <&3 && [ -z "$release" ] || exit 0',
+  "exec 3<&-",
+  'exec "$@"',
+].join("\n");
+
+type LaunchBoundary = "before-registration" | "registration-written" | "acknowledged" | "released";
+
+interface GatedLaunchOptions {
+  label: string;
+  onSpawn: (child: ChildProcess) => void;
+  assertStillValid: () => void;
+}
+
+interface LaunchBoundaryTestHooks {
+  reaper: ProcessGroupReaper;
+  onBoundary: (boundary: LaunchBoundary, pgid: number) => void | Promise<void>;
+}
+
+export function spawnGatedManagedProcess(
+  command: string,
+  args: readonly string[],
+  spawnOptions: SpawnOptions,
+  options: GatedLaunchOptions,
+): Promise<ChildProcess> {
+  return spawnGatedProcess(command, args, spawnOptions, options);
+}
+
+export function _spawnGatedManagedProcessForTest(
+  command: string,
+  args: readonly string[],
+  spawnOptions: SpawnOptions,
+  options: GatedLaunchOptions,
+  hooks: LaunchBoundaryTestHooks,
+): Promise<ChildProcess> {
+  return spawnGatedProcess(command, args, spawnOptions, options, hooks);
+}
+
+async function spawnGatedProcess(
+  command: string,
+  args: readonly string[],
+  spawnOptions: SpawnOptions,
+  { label, onSpawn, assertStillValid }: GatedLaunchOptions,
+  hooks?: LaunchBoundaryTestHooks,
+): Promise<ChildProcess> {
+  if (process.platform === "win32") throw new Error("Process group launch gates require POSIX");
+  const stdio = Array.isArray(spawnOptions.stdio) ? spawnOptions.stdio : Array(3).fill(spawnOptions.stdio);
+  if (stdio.length > 3) throw new Error("Process group launch gate requires fd 3");
+  assertManagedChildProcessAdmissionOpen(label);
+  const reaper = hooks?.reaper ?? hostDeathReaper();
+  reaper.assertAvailable();
+  const child = spawn("/bin/sh", ["-c", PROCESS_GROUP_LAUNCH_GATE, "launch-gate", command, ...args], {
+    ...spawnOptions, shell: false, detached: true, stdio: [stdio[0], stdio[1], stdio[2], "pipe"],
+  });
+  const release = child.stdio[3];
+  const stopped = new AbortController();
+  const onError = (error: Error): void => stopped.abort(error);
+  const onExit = (): void => stopped.abort(new Error("Process group launch gate exited before release"));
+  child.once("error", onError);
+  child.once("exit", onExit);
+  release?.on("error", onError);
+  let tracked = false;
+  try {
+    onSpawn(child);
+    const pgid = child.pid;
+    if (pgid === undefined || !(release instanceof Writable)) throw new Error("Process group launch gate did not start");
+    if (hooks) await hooks.onBoundary("before-registration", pgid);
+    stopped.signal.throwIfAborted();
+    trackChild(child, { label, killProcessGroup: true, requireProcessGroupReaper: true }, reaper);
+    tracked = true;
+    const acknowledgment = await runWithCeiling(
+      (signal) => reaper.acknowledge(pgid, signal, hooks && (() => hooks.onBoundary("registration-written", pgid))),
+      TOOL_TIMEOUT_POLICY.pluginFactoryMs, stopped.signal, label,
+    );
+    if (!acknowledgment.ok) throw acknowledgment.error;
+    if (hooks) await hooks.onBoundary("acknowledged", pgid);
+    assertManagedChildProcessAdmissionOpen(label);
+    assertStillValid();
+    acknowledgment.value();
+    stopped.signal.throwIfAborted();
+    // One newline is the release byte. EOF alone leaves read unsuccessful.
+    await new Promise<void>((resolve, reject) => {
+      release.write("\n", (error) => { if (error) reject(error); else resolve(); });
+    });
+    if (hooks) await hooks.onBoundary("released", pgid);
+    return child;
+  } catch (error) {
+    if (tracked) void forceKillManagedChildProcess(child, "process group launch failed");
+    throw error;
+  } finally {
+    release?.destroy();
+    child.off("exit", onExit);
+    if (tracked) child.off("error", onError);
+  }
+}
+
 // Spawn and track together to preserve quit cleanup; detached POSIX children default to group-kill unless an external supervisor owns them.
 export function spawnManaged(
   command: string,
@@ -74,6 +172,14 @@ export function trackManagedChildProcess(
   child: ChildProcess,
   options: TrackManagedChildProcessOptions = {},
 ): () => void {
+  return trackChild(child, options);
+}
+
+function trackChild(
+  child: ChildProcess,
+  options: TrackManagedChildProcessOptions,
+  launchReaper?: ProcessGroupReaper,
+): () => void {
   if (typeof child.once !== "function" || typeof child.off !== "function") {
     return () => {};
   }
@@ -92,7 +198,8 @@ export function trackManagedChildProcess(
   // Only a process this host spawned goes to the reaper (below): a pid on any other object names nothing the host owns. `spawnfile` is set by
   // node:child_process on every process it starts.
   const reaperHeldGroup = typeof child.spawnfile === "string" ? entry.processGroupId : undefined;
-  const dispose = (): void => disposeManagedChildProcess(entry, reaperHeldGroup);
+  let releaseGroup: (() => void) | undefined;
+  const dispose = (): void => disposeManagedChildProcess(entry, releaseGroup);
   const onSettled = (): void => {
     entry.exitObserved = true;
     if (pendingTreeKills.has(child)) return;
@@ -122,7 +229,9 @@ export function trackManagedChildProcess(
   // dies. A registration that fails is undone whole: the child is killed, since no owner would end it, and no half-tracked entry is left behind.
   if (reaperHeldGroup !== undefined) {
     try {
-      hostDeathReaper().retain(reaperHeldGroup);
+      const reaper = launchReaper ?? hostDeathReaper();
+      reaper.retain(reaperHeldGroup);
+      releaseGroup = () => reaper.release(reaperHeldGroup);
     } catch (error) {
       dispose();
       try {
@@ -178,7 +287,7 @@ export function retainUnterminatedChildProcess(child: ChildProcess, label: strin
   child.on("error", entry.onError);
 }
 
-function disposeManagedChildProcess(entry: ManagedChildProcess, reaperHeldGroup?: number): void {
+function disposeManagedChildProcess(entry: ManagedChildProcess, releaseGroup?: () => void): void {
   const { child } = entry;
   if (entry.retainedUntilExit && !entry.exitObserved && child.exitCode == null && child.signalCode == null) return;
   const wasTracked = managedChildren.delete(entry);
@@ -186,7 +295,7 @@ function disposeManagedChildProcess(entry: ManagedChildProcess, reaperHeldGroup?
   child.off("exit", entry.onSettled);
   child.off("close", entry.onSettled);
   child.off("error", entry.onError);
-  if (wasTracked && reaperHeldGroup !== undefined) hostDeathReaper().release(reaperHeldGroup);
+  if (wasTracked) releaseGroup?.();
 }
 
 export function getManagedChildProcessCount(): number {

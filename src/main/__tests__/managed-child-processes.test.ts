@@ -68,7 +68,7 @@ describe("managed child process tracking", () => {
     vi.useFakeTimers();
     const signal = vi.spyOn(process, "kill").mockReturnValue(true);
     const reapers = Array.from({ length: 3 }, (_, index) => Object.assign(new EventEmitter(), {
-      pid: 4_000 + index, exitCode: null, signalCode: null, stdin: new PassThrough(), unref: vi.fn(),
+      pid: 4_000 + index, exitCode: null, signalCode: null, stdin: new PassThrough(), stdout: new PassThrough(), unref: vi.fn(),
     }));
     const launchReaper = vi.mocked(spawn);
     launchReaper.mockClear();
