@@ -360,7 +360,10 @@ describe("host git on the installed git", () => {
   const plain = (cwd: string, ...args: string[]): string => execFileSync("git", args, { cwd, env, encoding: "utf8", stdio: "pipe" }).trim();
   const identity = "[user]\n\tname = Alice Example\n\temail = alice@example.com\n";
 
-  it("no hook runs for any host call, whether the repository, the user's file or a file it includes configures it; git without the floor runs them", async () => {
+  const hookSwitch = configHooksSwitchable();
+  it(`no hook runs for any host call, whether the repository, the user's file or a file it includes configures it; git without the floor runs them (${hookSwitch.version}: ${hookSwitch.switchable ? "an event's hooks switch off, the floor holds" : "no event switch, the floor is refused"})`, async () => {
+    // Without an event switch the floor cannot be proven, so the host refuses that git; the hooks directory is still never read.
+    expect(await hostGitFloorHolds(env)).toBe(hookSwitch.switchable);
     const marker = join(base, "fired.txt");
     const hooks = join(base, "hooks");
     mkdirSync(hooks);
@@ -394,13 +397,16 @@ describe("host git on the installed git", () => {
     await ok(repo, ["commit", "-q", "--no-verify", "-a", "-m", "main again"]);
     expect.soft((await git.run(repo, ["merge", "--no-edit", "--no-verify", "side"])).code).toBe(1);
     await ok(repo, ["merge", "--abort"]);
-    expect(existsSync(marker) ? readFileSync(marker, "utf8") : "").toBe("");
-    // The same hooks are live: git without the floor runs each kind.
+    const fromHost = existsSync(marker) ? readFileSync(marker, "utf8") : "";
+    if (hookSwitch.switchable) expect(fromHost).toBe("");
+    else expect(fromHost.split("\n").filter(line => line.startsWith("dir-"))).toEqual([]);
+    // The same hooks are live: git without the floor runs each kind it knows.
     writeFileSync(join(repo, "c.txt"), "control\n");
     plain(repo, "add", "-A");
     plain(repo, "commit", "-q", "--no-verify", "-m", "control");
-    const fired = readFileSync(marker, "utf8");
-    for (const kind of ["repo-post-commit", "user-post-commit", "included-post-commit", "dir-post-commit", "repo-prepare-commit-msg", "repo-reference-transaction"]) expect.soft(fired, kind).toContain(kind);
+    const fired = readFileSync(marker, "utf8").slice(fromHost.length);
+    const configKinds = ["repo-post-commit", "user-post-commit", "included-post-commit", "repo-prepare-commit-msg", "repo-reference-transaction"];
+    for (const kind of ["dir-post-commit", ...hookSwitch.switchable ? configKinds : []]) expect.soft(fired, kind).toContain(kind);
   });
 
   it("an exec path the host inherited is not where git starts its own programs", async () => {

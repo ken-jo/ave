@@ -296,6 +296,16 @@ jobs:
       # namespace — rather than inside a test.
       - name: Prove the sandbox backend
         run: bwrap --version && socat -V | head -1 && rg --version | head -1 && bwrap --unshare-all --ro-bind / / --dev /dev --proc /proc /bin/true
+      # The stage workspaces refuse a git older than the release whose hook
+      # events they were validated against; fail here rather than in a test.
+      - name: Require git 2.56 or newer
+        run: |
+          git --version
+          set -- $(git --version | sed -nE 's/^git version ([0-9]+)\.([0-9]+)(\..*)?$/\1 \2/p')
+          if [ $# -ne 2 ] || [ "$1" -lt 2 ] || { [ "$1" -eq 2 ] && [ "$2" -lt 56 ]; }; then
+            echo "::error::git older than 2.56, or a version this cannot read"
+            exit 1
+          fi
       - uses: ./ave/.github/actions/setup-bun
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -645,6 +655,10 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           bun-version-file: ave/.bun-version
+      # Before job-root setup: the guard contains every later step.
+      - name: Show the git the regressions run against
+        shell: bash
+        run: git --version
       # Native fixtures need system-volume aliases and trusted root ownership.
       # The unique job directory remains outside the account profile.
       - name: Isolate home and temp directories on the system volume
@@ -1020,6 +1034,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: node .github/scripts/python-download-mirror.mjs
+      - name: Show the git the regressions run against
+        run: git --version
       - name: Run macOS permission regressions
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave

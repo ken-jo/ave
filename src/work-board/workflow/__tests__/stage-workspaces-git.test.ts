@@ -1,11 +1,13 @@
-import { appendFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { execFileSync } from "node:child_process";
+import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { aveHome } from "../../../shared/ave-home.js";
 import { createHostGit, type HostGit, HostGitError } from "../host-git.js";
 import { createStageWorkspaceProvider } from "../stage-workspaces.js";
 import { JOIN_DIR, RUN_FILE, runBranch } from "../workspace-layout.js";
-import { removeLink, stageOf, writeUnder as write } from "./stage-fixtures.js";
+import { removeLink, removeTree, stageOf, writeUnder as write } from "./stage-fixtures.js";
 import { type GitFixture, gitFixture, sealed, stageRoot } from "./stage-git-fixture.js";
 
 let fx: GitFixture;
@@ -22,6 +24,33 @@ beforeEach(() => {
 });
 
 afterEach(() => fx.done());
+
+/** Every file and folder under `root`, as sorted `/` paths; none when it is not there. */
+const tree = (root: string, prefix = ""): string[] => !existsSync(join(root, prefix)) ? [] : readdirSync(join(root, prefix), { withFileTypes: true })
+  .flatMap(entry => entry.isDirectory() ? [`${prefix}${entry.name}/`, ...tree(root, `${prefix}${entry.name}/`)] : [`${prefix}${entry.name}`]).sort();
+
+/** Whether the git in use moves a repository's refs to another format and then reads them from a folder the format names: asked of
+ * git alone, in a repository of its own. */
+function refStoreElsewhere(): { version: string; supported: boolean } {
+  const dir = mkdtempSync(join(tmpdir(), "swg-probe-"));
+  const git = (...args: string[]): string => execFileSync("git", args, { cwd: dir, env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: join(dir, "none") }, encoding: "utf8", stdio: "pipe" });
+  try {
+    const version = git("--version").trim();
+    try {
+      git("init", "-q", "repo");
+      git("-C", "repo", "-c", "user.name=Alice Example", "-c", "user.email=alice@example.com", "commit", "-q", "--allow-empty", "-m", "probe");
+      git("-C", "repo", "refs", "migrate", "--ref-format=reftable");
+      cpSync(join(dir, "repo", ".git", "reftable"), join(dir, "store", "reftable"), { recursive: true });
+      git("-C", "repo", "config", "extensions.refStorage", `reftable://${join(dir, "store").split("\\").join("/")}`);
+      git("-C", "repo", "rev-parse", "--verify", "HEAD");
+      return { version, supported: true };
+    } catch {
+      return { version, supported: false };
+    }
+  } finally {
+    removeTree(dir);
+  }
+}
 
 describe("git stage workspaces", () => {
   it("a stage folder swapped after the tracked-file listing loses no outside file", async () => {
@@ -179,18 +208,36 @@ describe("git stage workspaces", () => {
     expect(() => userGit(joinDir, "rev-parse", "--verify", "--quiet", "MERGE_HEAD")).toThrow();
   });
 
-  it("a repository whose refs are kept in a folder its format names elsewhere gets no git workspace; one keeping them in its own folder does", async () => {
-    userGit(repo, "refs", "migrate", "--ref-format=reftable");
+  const refStores = refStoreElsewhere();
+  it(`a repository whose refs are kept in a folder its format names elsewhere gets no git workspace; one keeping them in its own folder does (${refStores.version}: ${refStores.supported ? "such a store is read" : "no such store, the format is refused"})`, async () => {
     const store = join(base, "ref-store");
     mkdirSync(store);
+    const storeUrl = `reftable://${store.split("\\").join("/")}`;
+    const runFolders = (): string[] => tree(join(aveHome(), "worktrees"));
+    const before = runFolders();
+    if (!refStores.supported) {
+      // A git that cannot read the format cannot be told what it holds either: nothing is made, by the configuration file alone.
+      const config = join(repo, ".git", "config");
+      userGit(repo, "config", "--file", config, "core.repositoryformatversion", "1");
+      userGit(repo, "config", "--file", config, "extensions.refStorage", storeUrl);
+      const refused = start();
+      expect(await refused.provider.open(refused.run, repo)).toEqual({ ok: false, code: "git-unavailable" });
+      const packed = join(repo, ".git", "packed-refs");
+      expect([existsSync(join(repo, ".git", "refs", "heads", "ave")), existsSync(packed) && readFileSync(packed, "utf8").includes("refs/heads/ave/")]).toEqual([false, false]);
+      expect([existsSync(join(repo, ".git", "worktrees")), existsSync(join(store, "worktrees"))]).toEqual([false, false]);
+      expect(runFolders()).toEqual(before);
+      return;
+    }
+    userGit(repo, "refs", "migrate", "--ref-format=reftable");
     cpSync(join(repo, ".git", "reftable"), join(store, "reftable"), { recursive: true });
-    userGit(repo, "config", "extensions.refStorage", `reftable://${store.split("\\").join("/")}`);
+    userGit(repo, "config", "extensions.refStorage", storeUrl);
     expect(userGit(repo, "rev-parse", "--verify", "HEAD")).toMatch(/^[0-9a-f]{40}$/u);
     const refused = start();
     expect(await refused.provider.open(refused.run, repo)).toEqual({ ok: false, code: "git-unavailable" });
-    // Refused before anything was made: no branch, no registration, in either folder.
+    // Refused before anything was made: no branch, no registration, in either folder, and no run folder.
     expect(userGit(repo, "for-each-ref", "--format=%(refname)", "refs/heads/")).toBe("refs/heads/main");
     expect([existsSync(join(repo, ".git", "worktrees")), existsSync(join(store, "worktrees"))]).toEqual([false, false]);
+    expect(runFolders()).toEqual(before);
     userGit(repo, "config", "extensions.refStorage", "reftable");
     const handle = start();
     expect(await handle.provider.open(handle.run, repo)).toMatchObject({ ok: true, workspace: { kind: "git" } });
