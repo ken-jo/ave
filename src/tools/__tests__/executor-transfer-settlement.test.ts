@@ -317,6 +317,17 @@ describe.each(INTERRUPTIONS)("builtin cancellation settlement after %s", (reason
   });
 });
 
+describe.each(INTERRUPTIONS)("an ordinary handler still settling after %s", (reason) => {
+  it("names the interruption in the plain record, never ok", async () => {
+    const invocation = await startInvocation({ marked: false });
+    await invocation.interrupt(reason);
+    const [result] = await invocation.execution;
+    invocation.task.resolve({ output: "late success", isError: false });
+    expect(result.is_error).toBe(true);
+    expect(invocation.terminalAudits()[0].toolCalls?.[0]).toMatchObject({ terminationReason: reason, isError: true });
+  });
+});
+
 describe("builtin cancellation marker boundary", () => {
   it("leaves ordinary marked success unchanged", async () => {
     const invocation = await startInvocation();

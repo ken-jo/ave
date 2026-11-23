@@ -1324,7 +1324,8 @@ export async function executeAuthorizedToolInvocation(
     const hostShutdown = outcome.reason === "user-abort" && isHostExitAbort(abortSignal?.reason);
     if (hostShutdown && terminationReason !== "indeterminate") {
       terminationReason = "host-shutdown";
-    } else if (!outcome.settlement || cancellationSettlement) {
+    } else if (terminationReason !== "indeterminate") {
+      // The plain record names the interruption even while an ordinary handler is still settling.
       terminationReason = outcome.reason;
     }
     // Ceiling expiry is a RETRYABLE tool error, never a throw that ends the
