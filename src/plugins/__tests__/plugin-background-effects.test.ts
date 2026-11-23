@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { settleMacrotask } from "../../__tests__/test-helpers.js";
 import { GATED_EFFECT_PATHS } from "../../permissions/effect-enforcement.js";
 import {
   backgroundEffectScopeSha256,
@@ -331,7 +332,6 @@ describe("an approval and the install it was given for", () => {
   const T1 = "2026-11-01T00:00:00.000Z";
   const T2 = "2026-11-02T00:00:00.000Z";
   const at = (installedAt: string) => backgroundEffectSubject(declaring(), marketplaceEntry({ installedAt }));
-  const settled = () => new Promise((resolve) => setImmediate(resolve));
 
   it("is not honoured for a reinstall after a removal whose write failed, across restarts and with no boot prune", async () => {
     const path = approvalsFile();
@@ -340,12 +340,12 @@ describe("an approval and the install it was given for", () => {
     atomicWrites.fail = true;
     session.revoke("sample");
     session.bindSubject("sample", async () => at(T2));
-    await settled();
+    await settleMacrotask();
     atomicWrites.fail = false;
     for (let restart = 0; restart < 2; restart += 1) {
       const restarted = new PluginBackgroundEffectApprovals(path);
       restarted.bindSubject("sample", async () => at(T2));
-      await settled();
+      await settleMacrotask();
       expect(restarted.isApproved(at(T2))).toBe(false);
     }
     new PluginBackgroundEffectApprovals(path).retain(new Map([["sample", T2]]));
@@ -364,7 +364,7 @@ describe("an approval and the install it was given for", () => {
       new PluginBackgroundEffectApprovals(path).approve(at(T1));
       const session = new PluginBackgroundEffectApprovals(path);
       match(session);
-      await settled();
+      await settleMacrotask();
       session.bindSubject("sample", async () => at(T2));
       // Approved at once, before the move is saved.
       expect(session.isApproved(at(T2))).toBe(true);
