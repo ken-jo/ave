@@ -421,6 +421,24 @@ describe("an approval and the install it was given for", () => {
     await settleMacrotask();
     expect(new PluginBackgroundEffectApprovals(path).isApproved(at(T1))).toBe(true);
   });
+
+  it("binds a local development install too, so a byte-identical reinstall after an unsaved removal asks again", async () => {
+    const local = (installedAt: string) =>
+      backgroundEffectSubject(declaring(), { installSource: "local-dev", manifestSha256: "d".repeat(64), installedAt }, true);
+    expect(local(T2).source).toBe(local(T1).source);
+    const path = approvalsFile();
+    const session = new PluginBackgroundEffectApprovals(path);
+    session.approve(local(T1));
+    atomicWrites.fail = true;
+    session.revoke("sample");
+    atomicWrites.fail = false;
+    expect(new PluginBackgroundEffectApprovals(path).isApproved(local(T1))).toBe(true);
+    const restarted = new PluginBackgroundEffectApprovals(path);
+    restarted.bindSubject("sample", async () => local(T2));
+    await settleMacrotask();
+    expect(restarted.isApproved(local(T2))).toBe(false);
+    expect(local(T1).installedAt).toBe(T1);
+  });
 });
 
 describe("the subject a running plugin binds for its review", () => {

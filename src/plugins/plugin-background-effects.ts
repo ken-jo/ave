@@ -66,6 +66,11 @@ function backgroundEffectSource(entry: PluginRegistryTrust | undefined): string 
   return null;
 }
 
+/** A reinstall writes a new stamp: an installed source's origin carries it, a local development install its own entry. */
+export function registryInstallStamp(entry: PluginRegistryTrust | undefined): string | null {
+  return entry?.origin?.installedAt ?? entry?.installedAt ?? null;
+}
+
 /** The (plugin, install source, scope hash) an approval binds to; the IPC review and the gate derive it here alike. */
 export interface PluginBackgroundEffectSubject {
   readonly pluginId: string;
@@ -96,7 +101,7 @@ export function backgroundEffectSubject(
     effects,
     declared: hasBackgroundEffects(effects),
     reviewSha256: createHash("sha256").update(JSON.stringify([manifest.id, source, scopeSha256])).digest("hex"),
-    installedAt: entry?.origin?.installedAt ?? null,
+    installedAt: registryInstallStamp(entry),
     committed,
   };
 }

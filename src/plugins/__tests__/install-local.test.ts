@@ -234,6 +234,27 @@ describe("PluginMarketplaceService.installLocal", () => {
     expect(entry.installSource).toBe("local-dev");
   });
 
+  // A background effect approval binds to this stamp, so a byte-identical reinstall after a removal asks again.
+  it("stamps a fresh local install, keeps that stamp across an in-place reinstall, and gives a reinstall after removal a new one", async () => {
+    const stamp = async (): Promise<unknown> =>
+      (JSON.parse(await readFile(registryPath, "utf-8")) as { plugins: Array<{ installedAt?: unknown }> }).plugins[0]?.installedAt;
+    const service = makeService();
+    await service.installLocal(sourceDir);
+    const first = await stamp();
+    expect(typeof first).toBe("string");
+    expect(first).not.toBe("");
+
+    await service.installLocal(sourceDir);
+    expect(await stamp()).toBe(first);
+
+    await service.uninstall("test-plugin");
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    await service.installLocal(sourceDir);
+    const reinstalled = await stamp();
+    expect(typeof reinstalled).toBe("string");
+    expect(reinstalled).not.toBe(first);
+  });
+
   it("writes a fresh install receipt covering plugin.json + dist files", async () => {
     const service = makeService();
     await service.installLocal(sourceDir);

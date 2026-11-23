@@ -93,6 +93,7 @@ function migrateLegacyEntry(
   if (cleanedAccess.access !== undefined) migrated.approvedPluginAccess = cleanedAccess.access;
   if (installSource !== undefined) migrated.installSource = installSource;
   if (entry.origin !== undefined) migrated.origin = entry.origin;
+  if (entry.installedAt !== undefined) migrated.installedAt = entry.installedAt;
   if (entry.pendingUpdate !== undefined) migrated.pendingUpdate = entry.pendingUpdate;
   if (entry.pendingCleanup !== undefined) {
     migrated.pendingCleanup = entry.pendingCleanup.map((item) => ({ ...item }));
@@ -217,7 +218,7 @@ export async function readPluginRegistry(registryPath: string): Promise<PluginRe
 
 const REGISTRY_ENTRY_KEYS = new Set([
   "id", "manifestPath", "manifestSha256", "enabled", "bundleRefs",
-  "approvedPluginAccess", "installSource", "origin", "pendingUpdate",
+  "approvedPluginAccess", "installSource", "origin", "installedAt", "pendingUpdate",
   "pendingCleanup",
 ]);
 const LEGACY_REGISTRY_ENTRY_KEYS = new Set([...REGISTRY_ENTRY_KEYS, "installedBy", "_devLinked"]);
@@ -273,6 +274,9 @@ function validateRegistryEntry(
   }
   if (value.approvedPluginAccess !== undefined) validatePluginAccess(value.approvedPluginAccess, value.id, allowLegacy);
   if (value.origin !== undefined) validateOrigin(value.origin, value.id);
+  if (value.installedAt !== undefined && (typeof value.installedAt !== "string" || value.installedAt.length === 0)) {
+    throw new Error(`Invalid plugin registry install stamp: ${value.id}`);
+  }
   if (value.pendingUpdate !== undefined) validatePendingUpdate(value.pendingUpdate, value.id);
   if (value.pendingCleanup !== undefined) validatePendingCleanup(value.pendingCleanup, value.id);
 }

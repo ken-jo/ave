@@ -1360,6 +1360,32 @@ describe("initPluginRuntime background effect approvals", () => {
   afterEach(() => {
     runtimeTestState.runtime.getPluginManifest.mockImplementation(() => null);
   });
+  const bootWith = (approvals: PluginBackgroundEffectApprovals) => initPluginRuntime({
+    host: createRuntimeHost(),
+    projectRoot: fixture.path("project"),
+    settingsService: createRuntimeSettings() as never,
+    memoryManager: {} as never,
+    networkFetch: vi.fn() as never,
+    clearAuthPartitionService: vi.fn(),
+    toolRegistry: createRuntimeToolRegistry() as never,
+    pythonPath: undefined,
+    bootAuditLogger: { log: vi.fn() } as never,
+    mainWindow: {} as never,
+    openAuthWindowService: vi.fn(),
+    openLinkWindowService: vi.fn(),
+    openAuthPartitionViewerService: vi.fn(),
+    shellOpenExternal: vi.fn(),
+    approvalGate: {} as never,
+    routinesStore: { list: () => [] } as never,
+    getAlertsService: () => undefined,
+    deferStart: true,
+    backgroundEffectApprovals: approvals,
+  });
+  const startPlugins = async (output: Awaited<ReturnType<typeof bootWith>>): Promise<void> => {
+    _resetConfinedProcessPhaseForTests();
+    await output.startPlugins();
+    _resetConfinedProcessPhaseForTests();
+  };
 
   // An entry that did not load has no manifest id to match its approval by, so nothing is pruned.
   it.each([
@@ -1378,37 +1404,41 @@ describe("initPluginRuntime background effect approvals", () => {
     const seeded = new PluginBackgroundEffectApprovals(path);
     for (const id of ["kept", "aliased", "removed"]) seeded.approve(subjectOf(id));
     const approvals = new PluginBackgroundEffectApprovals(path);
-    const output = await initPluginRuntime({
-      host: createRuntimeHost(),
-      projectRoot: fixture.path("project"),
-      settingsService: createRuntimeSettings() as never,
-      memoryManager: {} as never,
-      networkFetch: vi.fn() as never,
-      clearAuthPartitionService: vi.fn(),
-      toolRegistry: createRuntimeToolRegistry() as never,
-      pythonPath: undefined,
-      bootAuditLogger: { log: vi.fn() } as never,
-      mainWindow: {} as never,
-      openAuthWindowService: vi.fn(),
-      openLinkWindowService: vi.fn(),
-      openAuthPartitionViewerService: vi.fn(),
-      shellOpenExternal: vi.fn(),
-      approvalGate: {} as never,
-      routinesStore: { list: () => [] } as never,
-      getAlertsService: () => undefined,
-      deferStart: true,
-      backgroundEffectApprovals: approvals,
-    });
+    const output = await bootWith(approvals);
     expect(approvals.isApproved(subjectOf("removed"))).toBe(true);
-
-    _resetConfinedProcessPhaseForTests();
-    await output.startPlugins();
-    _resetConfinedProcessPhaseForTests();
+    await startPlugins(output);
 
     for (const store of [approvals, new PluginBackgroundEffectApprovals(path)]) {
       expect(["kept", "aliased", "removed"].filter((id) => store.isApproved(subjectOf(id)))).toEqual(approved);
       // Boot alone never answers the first-launch card, so a launch with no window leaves it for the next interactive one.
       expect(store.upgradeReviewOwed()).toBe(true);
     }
+  });
+
+  // A local development install has no origin; its own stamp is what tells a byte-identical reinstall apart.
+  it.each([
+    ["kept for the install it was given for", "2026-11-01T00:00:00.000Z", true],
+    ["dropped once that install was removed and reinstalled", "2026-11-02T00:00:00.000Z", false],
+  ] as const)("a local development approval is %s", async (_label, installedAt, kept) => {
+    const local = (stamp: string): PluginRegistryEntry => ({
+      id: "local", manifestPath: "local/plugin.json", installSource: "local-dev", manifestSha256: "d".repeat(64), installedAt: stamp,
+    });
+    const subject = (stamp: string) => backgroundEffectSubject(
+      { id: "local", name: "local", version: "1.0.0", entry: "plugin.mjs", description: "local", tools: [], capabilities: ["background:call-llm"] } as unknown as PluginManifest,
+      local(stamp),
+      true,
+    );
+    runtimeTestState.capturedRuntimeOptions = null;
+    runtimeTestState.runtime.listPluginIds.mockReturnValue([]);
+    runtimeTestState.runtime.listPluginManifests.mockReturnValue([]);
+    runtimeTestState.runtime.getPluginManifest.mockImplementation(((pluginId: string) => pluginId === "local" ? { id: pluginId } : null) as never);
+    runtimeTestState.vouchedInstalledPluginEntries.mockResolvedValueOnce([local(installedAt)]);
+    const path = join(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-background-prune-local-"))), "background-effects.json");
+    new PluginBackgroundEffectApprovals(path).approve(subject("2026-11-01T00:00:00.000Z"));
+    const approvals = new PluginBackgroundEffectApprovals(path);
+    await startPlugins(await bootWith(approvals));
+
+    expect(new PluginBackgroundEffectApprovals(path).isApproved(subject("2026-11-01T00:00:00.000Z"))).toBe(kept);
+    expect(new PluginBackgroundEffectApprovals(path).isApproved(subject(installedAt))).toBe(kept);
   });
 });

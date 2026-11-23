@@ -461,6 +461,26 @@ describe("readPluginRegistry — legacy installedBy/_devLinked migration", () =>
     }));
     await expect(readPluginRegistry(registryPath)).rejects.toThrow(/pending cleanup/);
   });
+
+  it("keeps a local development install stamp, through migration too, and rejects an empty one", async () => {
+    const installedAt = "2026-11-01T00:00:00.000Z";
+    await writeFile(registryPath, JSON.stringify({
+      version: 1,
+      plugins: [
+        { id: "local", manifestPath: "local/plugin.json", installSource: "local-dev", installedAt },
+        { id: "linked", manifestPath: "linked/plugin.json", _devLinked: true, installedAt },
+      ],
+    }));
+    expect((await readPluginRegistry(registryPath)).plugins.map((entry) => entry.installedAt)).toEqual([installedAt, installedAt]);
+
+    for (const bad of ["", 7]) {
+      await writeFile(registryPath, JSON.stringify({
+        version: 1,
+        plugins: [{ id: "local", manifestPath: "local/plugin.json", installSource: "local-dev", installedAt: bad }],
+      }));
+      await expect(readPluginRegistry(registryPath)).rejects.toThrow(/install stamp/);
+    }
+  });
 });
 
 describe("vouchedInstalledPluginIds", () => {

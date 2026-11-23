@@ -25,7 +25,7 @@ import {
   tamperedVarsAtBoot,
 } from "../dev-flags.js";
 import { resolvePluginPaths } from "../../plugins/plugin-paths.js";
-import { backgroundEffectApprovalsPath, PluginBackgroundEffectApprovals } from "../../plugins/plugin-background-effects.js";
+import { backgroundEffectApprovalsPath, PluginBackgroundEffectApprovals, registryInstallStamp } from "../../plugins/plugin-background-effects.js";
 import { vouchedInstalledPluginEntries } from "../../plugins/registry.js";
 import type {
   AuthWindowCookie,
@@ -357,7 +357,7 @@ export async function initPluginRuntime(
       for (const entry of entries) {
         const pluginId = pluginRuntime.resolvePluginId(entry.id);
         if (!pluginRuntime.getPluginManifest(pluginId)) return;
-        const installedAt = entry.origin?.installedAt ?? null;
+        const installedAt = registryInstallStamp(entry);
         installs.set(entry.id, installedAt).set(pluginId, installedAt);
       }
       backgroundEffectApprovals.retain(installs);

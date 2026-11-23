@@ -30,6 +30,13 @@ describe("plugin runtime registry-entry cache", () => {
             installSource: "admin",
             manifestSha256: "c".repeat(64),
           },
+          {
+            id: "local",
+            manifestPath: "local/plugin.json",
+            installSource: "local-dev",
+            manifestSha256: "d".repeat(64),
+            installedAt: "2026-11-01T00:00:00.000Z",
+          },
         ],
       }));
       const cache = createRegistryEntryCache({ registryPath, log: { warn: vi.fn() } });
@@ -40,6 +47,11 @@ describe("plugin runtime registry-entry cache", () => {
       expect(cache.getRegistryEntry("ready")).toEqual({
         installSource: "admin",
         manifestSha256: "c".repeat(64),
+      });
+      expect(cache.getRegistryEntry("local")).toEqual({
+        installSource: "local-dev",
+        manifestSha256: "d".repeat(64),
+        installedAt: "2026-11-01T00:00:00.000Z",
       });
     } finally {
       await rm(dir, { recursive: true, force: true });
