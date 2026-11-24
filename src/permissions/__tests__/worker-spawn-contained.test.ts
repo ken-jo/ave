@@ -14,6 +14,11 @@ interface FakeHolder {
 }
 
 const holders: FakeHolder[] = [];
+const holder = (index: number): FakeHolder => {
+  const found = holders[index];
+  if (!found) throw new Error(`no holder ${index}`);
+  return found;
+};
 let selected = true;
 let startFailure: Error | undefined;
 const spawnMxcBundledHolder = vi.fn(async (input: Record<string, unknown>) => {
@@ -81,9 +86,9 @@ vi.mock("../../main/managed-child-processes.js", () => ({
 
 import { __resetActiveWrappedWorkersForTest, spawnWorker, WorkerAlreadyRunningError } from "../worker-spawn.js";
 
-const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+const platform = process.platform;
 beforeAll(() => { Object.defineProperty(process, "platform", { value: "win32" }); });
-afterAll(() => { Object.defineProperty(process, "platform", platform); });
+afterAll(() => { Object.defineProperty(process, "platform", { value: platform }); });
 beforeEach(() => {
   holders.length = 0;
   selected = true;
@@ -107,7 +112,7 @@ describe("contained plugin worker", () => {
     const worker = await spawnWorker({ ...spec("D:\\work\\a"), control: "output-only-v1" });
 
     expect(holders).toHaveLength(1);
-    expect(holders[0]!.input).toMatchObject({
+    expect(holder(0).input).toMatchObject({
       label: "worker:example-plugin:indexer",
       command: "D:\\payload\\worker.exe",
       args: ["--serve"],
@@ -132,28 +137,28 @@ describe("contained plugin worker", () => {
 
     worker.stop();
     await refused;
-    expect(holders[0]!.release).toHaveBeenCalledTimes(1);
+    expect(holder(0).release).toHaveBeenCalledTimes(1);
     // Still stopping: the identity is not free, so the new grants cannot start beside the old run.
     await expect(spawnWorker({ ...spec("D:\\work\\b"), control: "stdio-control-v1" })).rejects.toBeInstanceOf(WorkerAlreadyRunningError);
     expect(holders).toHaveLength(1);
 
-    holders[0]!.finishRelease();
+    holder(0).finishRelease();
     await vi.waitFor(() => expect(exits).toEqual([{ code: 0, signal: null, reason: "stopped" }]));
     expect(marks.unmark).toHaveBeenCalledWith("example-plugin", "indexer");
     await expect(worker.request("late", {})).rejects.toMatchObject({ code: "worker-incarnation-ended" });
 
     const next = await spawnWorker({ ...spec("D:\\work\\b"), control: "stdio-control-v1" });
     expect(holders).toHaveLength(2);
-    expect(holders[1]!.input.allowWrite).toEqual(["D:\\work\\b"]);
-    expect(holders[1]!.stdin).not.toBe(holders[0]!.stdin);
+    expect(holder(1).input.allowWrite).toEqual(["D:\\work\\b"]);
+    expect(holder(1).stdin).not.toBe(holder(0).stdin);
     next.stop();
-    holders[1]!.finishRelease();
+    holder(1).finishRelease();
   });
 
   it("refuses a respawn after an unverified termination", async () => {
     const worker = await spawnWorker({ ...spec("D:\\work\\a"), control: "output-only-v1" });
     worker.stop();
-    holders[0]!.finishRelease(new Error("termination unverified"));
+    holder(0).finishRelease(new Error("termination unverified"));
     await vi.waitFor(() => expect(marks.unmark).toHaveBeenCalled());
 
     await expect(spawnWorker({ ...spec("D:\\work\\a"), control: "output-only-v1" })).rejects.toBeInstanceOf(WorkerAlreadyRunningError);

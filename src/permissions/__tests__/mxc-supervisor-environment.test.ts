@@ -22,7 +22,7 @@ describe("native extension supervisor environment", () => {
       }, state);
       expect(Object.keys(env).filter((key) => /^(MXC_|NODE_OPTIONS$|NODE_PATH$)/i.test(key))).toEqual([]);
       expect(Object.keys(env).filter((key) => key.toUpperCase() === "PATH")).toEqual(["PATH"]);
-      expect(env.PATH!.split(";").slice(0, 3)).toEqual(["C:\\Windows\\System32", "C:\\Windows", "C:\\Tools\\usr\\bin"]);
+      expect(env.PATH?.split(";").slice(0, 3)).toEqual(["C:\\Windows\\System32", "C:\\Windows", "C:\\Tools\\usr\\bin"]);
       expect(Object.keys(env).filter((key) => key.toUpperCase() === "LOCALAPPDATA")).toEqual(["LOCALAPPDATA"]);
       expect(env.LOCALAPPDATA).toBe(state);
       expect(existsSync(state)).toBe(true);

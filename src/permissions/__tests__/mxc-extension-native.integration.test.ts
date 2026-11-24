@@ -29,7 +29,7 @@ describe.runIf(process.platform === "win32")("native extension container filesys
   it("denies writes outside the grant, through a grandchild and through a junction, and leaves nothing behind", { timeout: 240_000 }, async (context) => {
     configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false });
     await requireMxcCapability(context.skip);
-    const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT!;
+    const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT ?? "C:\\Windows";
     const shellDirectory = join(systemRoot, "System32", "WindowsPowerShell", "v1.0");
     const shell = join(shellDirectory, "powershell.exe");
     const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-mxc-extension-native-")));
