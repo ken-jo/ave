@@ -22,14 +22,17 @@ const rates = new Map<string, PluginRate>();
 
 /** Read only diagnostics; protocol output remains owned by the transport. Simultaneous children share their plugin's budget. */
 export function capturePluginStderr(stream: Readable, pluginId: string, resolvedEnvValues: readonly string[] = []): void {
-  const valuesByFirstByte: Buffer[][] = [];
+  const valuesByFirstByte = new Map<number, Buffer[]>();
   for (const value of new Set(resolvedEnvValues)) {
     // Values shorter than eight characters bypass this check to preserve common diagnostic text.
     if (!/^.{8}/su.test(value)) continue;
     const needle = Buffer.from(value);
-    (valuesByFirstByte[needle[0]!] ??= []).push(needle);
+    const firstByte = needle.readUInt8(0);
+    const candidates = valuesByFirstByte.get(firstByte) ?? [];
+    candidates.push(needle);
+    valuesByFirstByte.set(firstByte, candidates);
   }
-  for (const values of valuesByFirstByte) values?.sort((a, b) => b.length - a.length);
+  for (const values of valuesByFirstByte.values()) values.sort((a, b) => b.length - a.length);
   let rate = rates.get(pluginId);
   if (!rate) {
     rate = { users: 0, tokens: LINE_BURST_MAX, updatedAt: Date.now(), droppedLines: 0 };
@@ -110,7 +113,7 @@ export function capturePluginStderr(stream: Readable, pluginId: string, resolved
     pending = undefined;
     let plainStart = 0;
     for (let offset = 0; offset < buffer.length; offset++) {
-      const match = valuesByFirstByte[buffer[offset]!]?.find(value => {
+      const match = valuesByFirstByte.get(buffer.readUInt8(offset))?.find(value => {
         const length = Math.min(value.length, buffer.length - offset);
         return (!final || length === value.length) && value.compare(buffer, offset, offset + length, 0, length) === 0;
       });
@@ -129,7 +132,7 @@ export function capturePluginStderr(stream: Readable, pluginId: string, resolved
   };
   const handleData = (chunk: Buffer | string): void => {
     const buffer = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
-    if (valuesByFirstByte.length > 0) redactChunk(buffer);
+    if (valuesByFirstByte.size > 0) redactChunk(buffer);
     else captureChunk(buffer);
   };
   stream.on("data", handleData);
@@ -138,7 +141,7 @@ export function capturePluginStderr(stream: Readable, pluginId: string, resolved
     finished = true;
     stream.off("data", handleData);
     if (pending) redactChunk(Buffer.alloc(0), true);
-    valuesByFirstByte.length = 0;
+    valuesByFirstByte.clear();
     if (bytes > 0 || truncated) emitLine();
     budget.users--;
     if (budget.users === 0) {
