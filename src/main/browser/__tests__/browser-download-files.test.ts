@@ -302,6 +302,29 @@ describe("a helper that does not keep to its protocol", () => {
     expect(helpers()[0]?.input).toBe(destination === null ? "" : "c");
   });
 
+  it.each([
+    ["the writer as published", "4294967297:fedcba9876543210123456789abcdef0:creation:31", "committed"],
+    ["no published identity", null, null],
+    ["another file published", "4294967297:fedcba9876543210123456789abcdef1:creation:20", null],
+  ] as const)("takes a Windows commit only after it names %s", async (_case, published, answer) => {
+    const windows = _helperFileOperationsForTest("/helper/ave-path-kind.exe", BOUNDS, true);
+    script((helper) => {
+      helper.say("destination-id 4294967297:00000000000000000000000000000003:creation:15", "ready");
+      helper.once("input", () => {
+        helper.say("writing 4294967297:fedcba9876543210123456789abcdef0:creation:20", "copied");
+        helper.once("input", () => {
+          if (published !== null) helper.say(`published ${published}`);
+          helper.say("committed");
+          helper.exit(0);
+        });
+      });
+    });
+    const run = follow(windows.copy(from, "staged", to, "report.pdf", ".part", () => true, UNSTOPPED));
+    await flush();
+    if (answer === null) expect(run.error).toBeInstanceOf(HeldFileHelperUnavailableError);
+    else expect(run.value).toBe(answer);
+  });
+
   it("keeps the entire Windows writer identity when rejecting a plain refusal after progress", async () => {
     const windows = _helperFileOperationsForTest("/helper/ave-path-kind.exe", BOUNDS, true);
     const fileId = "fedcba9876543210123456789abcdef0";
@@ -841,7 +864,7 @@ describe("a copy whose helper says it left its temporary file", () => {
         });
       });
     });
-    const journal = { hidden: HIDDEN, write, resolved };
+    const journal = { hidden: HIDDEN, write, published: vi.fn().mockResolvedValue(undefined), resolved };
     const run = follow(files.copy(from, "staged", to, "report.pdf", ".0123.part", () => true, UNSTOPPED, journal));
     await flush();
     expect(write).toHaveBeenCalledExactlyOnceWith({ dev: 1n, ino: 3n, evidence: { class: "birth", value: "15" } }, { dev: 1n, ino: 2n, evidence: { class: "birth", value: "20" } });
@@ -871,7 +894,7 @@ describe("a copy whose helper says it left its temporary file", () => {
         helper.afterInputEnds(() => { helper.say("cancelled"); helper.exit(0); });
       });
     });
-    const journal = { hidden: HIDDEN, write: vi.fn(), resolved: vi.fn() };
+    const journal = { hidden: HIDDEN, write: vi.fn(), published: vi.fn().mockResolvedValue(undefined), resolved: vi.fn() };
     const run = follow(files.copy(from, "staged", to, "report.pdf", ".0123.part", () => true, UNSTOPPED, journal));
     await flush();
     expect(run.error).toBeInstanceOf(HeldDirectoryRefusedError);
@@ -897,7 +920,7 @@ describe("a copy whose helper says it left its temporary file", () => {
         helper.afterInputEnds(() => { helper.say("cancelled"); helper.exit(0); });
       });
     });
-    const journal = { hidden: HIDDEN, write: vi.fn().mockRejectedValue(new Error("sync failed")), resolved: vi.fn() };
+    const journal = { hidden: HIDDEN, write: vi.fn().mockRejectedValue(new Error("sync failed")), published: vi.fn().mockResolvedValue(undefined), resolved: vi.fn() };
     const run = follow(files.copy(from, "staged", to, "report.pdf", ".0123.part", () => true, UNSTOPPED, journal));
     await flush();
     expect(run.error).toMatchObject({ message: "sync failed" });
@@ -918,7 +941,7 @@ describe("a copy whose helper says it left its temporary file", () => {
       });
     });
     const record = vi.fn();
-    const run = follow(files.copy(from, "staged", to, "report.pdf", ".0123.part", () => true, UNSTOPPED, { hidden: HIDDEN, write: vi.fn().mockResolvedValue(undefined), resolved: vi.fn(), left: record }));
+    const run = follow(files.copy(from, "staged", to, "report.pdf", ".0123.part", () => true, UNSTOPPED, { hidden: HIDDEN, write: vi.fn().mockResolvedValue(undefined), published: vi.fn().mockResolvedValue(undefined), resolved: vi.fn(), left: record }));
     await flush();
     expect(run.error).toBeInstanceOf(HeldDirectoryRefusedError);
     expect(stoppedCopyOf(run.error)?.partialCopy).toBe("removed");
@@ -940,7 +963,7 @@ describe("a copy whose helper says it left its temporary file", () => {
         helper.once("input", () => { helper.say("committed"); helper.exit(0); });
       });
     });
-    const journal = { hidden: HIDDEN, write: vi.fn().mockResolvedValue(undefined), resolved: vi.fn() };
+    const journal = { hidden: HIDDEN, write: vi.fn().mockResolvedValue(undefined), published: vi.fn().mockResolvedValue(undefined), resolved: vi.fn() };
     const run = follow(files.copy(from, "staged", to, "report.pdf", ".0123.part", () => true, UNSTOPPED, journal));
     await flush();
     expect(run.error).toBeInstanceOf(HeldFileHelperUnavailableError);
@@ -965,7 +988,7 @@ describe("a copy whose helper says it left its temporary file", () => {
         });
       });
     });
-    const journal = { hidden: HIDDEN, write: vi.fn().mockResolvedValue(undefined), resolved: vi.fn() };
+    const journal = { hidden: HIDDEN, write: vi.fn().mockResolvedValue(undefined), published: vi.fn().mockResolvedValue(undefined), resolved: vi.fn() };
     const run = follow(files.copy(from, "staged", to, "report.pdf", ".0123.part", () => true, UNSTOPPED, journal));
     await flush();
     expect(run.error).toBeInstanceOf(HeldFileHelperUnavailableError);
@@ -993,7 +1016,7 @@ describe("a copy whose helper says it left its temporary file", () => {
     id = "1:3:birth:15", hidden = HIDDEN, old = "1:3:birth:15", verdict = "mismatch", snapshot = "-", early, duplicate,
   }) => {
     const left = vi.fn();
-    const journal = { hidden: HIDDEN, write: vi.fn().mockResolvedValue(undefined), resolved: vi.fn(), left };
+    const journal = { hidden: HIDDEN, write: vi.fn().mockResolvedValue(undefined), published: vi.fn().mockResolvedValue(undefined), resolved: vi.fn(), left };
     script((helper) => {
       if (helper.args[0] === "--dir-remove-id") {
         helper.say("ready");

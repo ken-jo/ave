@@ -292,6 +292,7 @@ async function publish(root: BrowserDownloadStagingRoot, name: string, staged: F
   const hidden = `.${session}.removing`;
   let copied: "committed" | "cancelled";
   let record: RecordedFile | null = null;
+  let recorded: PartRecord | null = null;
   let resolved = false;
   let partResolved = false;
   let targetVerdict: HelperPartIdentity["verdict"] | undefined;
@@ -299,10 +300,15 @@ async function publish(root: BrowserDownloadStagingRoot, name: string, staged: F
     copied = await refusingAsStaging(() => root.files.copy(root, name, destination.folder, destination.name, part, proceed, cancel, {
       hidden,
       write: async (file, writer) => {
-        record = await writePartRecord(root, {
-          folder: destination.folder, part, target: destination.name, session, writer,
-          at: { name: hidden, identity: { kind: "fileId", file } },
-        });
+        recorded = { folder: destination.folder, part, target: destination.name, session, writer, at: { name: hidden, identity: { kind: "fileId", file } } };
+        record = await writePartRecord(root, recorded);
+      },
+      // A new record names the target as published, then the one written before the commit rename is removed.
+      published: async (file) => {
+        const previous = record;
+        if (previous === null || recorded === null) return;
+        record = await writePartRecord(root, { ...recorded, published: file });
+        await finishRecord(root, previous);
       },
       resolved: () => { resolved = true; },
       left: ({ identity }) => {
@@ -355,6 +361,8 @@ interface PartRecord {
   readonly target?: string;
   readonly session?: string;
   readonly writer?: FileIdentity;
+  /** The writer as it is at the target after the commit rename; a record with it is written under a name of its own. */
+  readonly published?: FileIdentity;
 }
 
 const PART_RECORD = /^[0-9a-f]{32}\.cleanup\.json$/u;
@@ -413,7 +421,7 @@ async function tryWritePartRecord(root: BrowserDownloadStagingRoot, record: Part
 
 // Write the record as a new private file in the verified staging folder, never through a link.
 async function writePartRecord(root: BrowserDownloadStagingRoot, record: PartRecord): Promise<RecordedFile> {
-  const name = `${record.session ?? randomBytes(16).toString("hex")}.cleanup.json`;
+  const name = `${record.published === undefined ? record.session ?? randomBytes(16).toString("hex") : randomBytes(16).toString("hex")}.cleanup.json`;
   const { identity } = record.at;
   const known = identity.kind === "fileId" ? { kind: identity.kind, ...fileJson(identity.file) }
     : identity.kind === "fingerprint" ? { kind: identity.kind, ...identity.content }
@@ -425,6 +433,7 @@ async function writePartRecord(root: BrowserDownloadStagingRoot, record: PartRec
     target: record.target,
     session: record.session,
     writer: record.writer === undefined ? undefined : fileJson(record.writer),
+    published: record.published === undefined ? undefined : fileJson(record.published),
     at: record.at.name,
     identity: known,
   }, (_key, value: unknown) => typeof value === "bigint" ? value.toString() : value);
@@ -467,7 +476,8 @@ function readPartRecord(text: string, name: string): PartRecord | null {
   if ((!exactly(value, ["folder", "part", "at", "identity"]) &&
        !exactly(value, ["folder", "part", "at", "identity", "target"]) &&
        !exactly(value, ["folder", "part", "at", "identity", "target", "session"]) &&
-       !exactly(value, ["folder", "part", "at", "identity", "target", "session", "writer"])) || !exactly(value.folder, ["path", "dev", "ino"])) return null;
+       !exactly(value, ["folder", "part", "at", "identity", "target", "session", "writer"]) &&
+       !exactly(value, ["folder", "part", "at", "identity", "target", "session", "writer", "published"])) || !exactly(value.folder, ["path", "dev", "ino"])) return null;
   const { folder, part, at, identity, target, session } = value;
   if (typeof folder.path !== "string" || !isAbsolute(folder.path) || !decimal(folder.dev) || !decimal(folder.ino)) return null;
   if (typeof part !== "string" || !PART_NAME.test(part) || typeof at !== "string" || (at !== part && !MOVED_ASIDE_NAME.test(at))) return null;
@@ -503,7 +513,7 @@ function readPartRecord(text: string, name: string): PartRecord | null {
       (process.platform === "win32" && target.includes(":")) || !MOVED_ASIDE_NAME.test(at))) return null;
   if (session !== undefined) {
     if (target === undefined || typeof session !== "string" || !/^[0-9a-f]{32}$/u.test(session) ||
-        name !== `${session}.cleanup.json` || part !== `.${session}.part` || at !== `.${session}.removing` ||
+        (name !== `${session}.cleanup.json` && !("published" in value)) || part !== `.${session}.part` || at !== `.${session}.removing` ||
         known.kind !== "fileId") return null;
   } else if (target !== undefined && (known.kind !== "helper" ||
       (known.observed !== null && (known.observed.file.dev !== known.dev || known.observed.file.ino !== known.ino)))) return null;
@@ -515,16 +525,25 @@ function readPartRecord(text: string, name: string): PartRecord | null {
     writer = file;
     if (writer.dev !== known.file.dev || writer.ino === known.file.ino) return null;
   }
-  return { folder: { path: folder.path, dev: BigInt(folder.dev), ino: BigInt(folder.ino) }, part, at: { name: at, identity: known }, target, session, writer };
+  let published: FileIdentity | undefined;
+  if ("published" in value) {
+    const file = fileId(value.published);
+    if (writer === undefined || file === null || file.dev !== writer.dev || file.ino !== writer.ino) return null;
+    published = file;
+  }
+  return { folder: { path: folder.path, dev: BigInt(folder.dev), ino: BigInt(folder.ino) }, part, at: { name: at, identity: known }, target, session, writer,
+    published };
 }
 
 // Retry through the file backend. The decoded record never gives the host authority to open an entry by path.
-async function removeRecordedPart(root: BrowserDownloadStagingRoot, { folder, part, at, target, session, writer }: PartRecord) {
+async function removeRecordedPart(root: BrowserDownloadStagingRoot, { folder, part, at, target, session, writer, published }: PartRecord) {
   if (session !== undefined && !writer?.evidence) return { outcome: "left" as const, at };
   if (target === undefined) return root.files.recover(folder, at.name, part, at.identity);
   const observed = at.identity.kind === "helper" ? at.identity.observed : null;
   const file = at.identity.kind === "fileId" ? at.identity.file : observed?.file;
-  const replacement = at.identity.kind === "helper" && at.identity.verdict === "remove-failed" ? "retire" : writer;
+  // Without the published identity, the record was written before the commit rename, which may have changed the writer's creation time.
+  const replacement = at.identity.kind === "helper" && at.identity.verdict === "remove-failed" ? "retire"
+    : published ?? (writer === undefined ? undefined : { renamed: writer });
   if (file !== undefined) {
     try {
       if (await root.files.recoverTarget(folder, at.name, target, file, observed?.content, replacement) === "resolved") {

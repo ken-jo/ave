@@ -86,12 +86,42 @@ function tokenOf(path, birthOffset = 0n) {
   return `${dev}:${id}:creation:${birth + birthOffset}`;
 }
 
+// A new folder on a volume that tunnels names: a file created or renamed onto a name freed moments ago takes the creation time of the
+// file that left it. AVE_TEST_TUNNEL_ROOT names a folder on such a volume; unset, the temp folder is used, which CI keeps on the system
+// volume. The probe proves the volume tunnels before a test relies on it, and fails when it does not.
+function tunnellingFolder(prefix) {
+  const dir = mkdtempSync(join(process.env.AVE_TEST_TUNNEL_ROOT || tmpdir(), prefix));
+  const probe = join(dir, "probe");
+  const birth = () => lstatSync(probe, { bigint: true }).birthtimeNs;
+  writeFileSync(probe, "");
+  const before = birth();
+  // Wait, by comparing values, until a new file's creation time differs, so an equal time below can only be a tunnelled one.
+  for (let index = 0; ; index += 1) {
+    const clock = join(dir, `clock-${index}`);
+    writeFileSync(clock, "");
+    const later = lstatSync(clock, { bigint: true }).birthtimeNs;
+    rmSync(clock);
+    if (later !== before) break;
+  }
+  renameSync(probe, join(dir, "probe-away"));
+  writeFileSync(probe, "");
+  const tunnelled = birth() === before;
+  rmSync(probe);
+  rmSync(join(dir, "probe-away"));
+  if (!tunnelled) {
+    rmSync(dir, { recursive: true, force: true });
+    throw new Error(`${dir} is on a volume that does not tunnel names; set AVE_TEST_TUNNEL_ROOT to a folder on one`);
+  }
+  return dir;
+}
+
 async function recoveryTests() {
   const record = `${"a".repeat(32)}.cleanup.json`;
   const hidden = `.${"b".repeat(32)}.removing`;
   const part = ".download.part";
   const tests = [];
-  const add = (label, test) => tests.push([label, test]);
+  const add = (label, test, root = () => mkdtempSync(join(tmpdir(), "ave-held-recovery-"))) => tests.push([label, test, root]);
+  const tunnelling = () => tunnellingFolder("ave-held-tunnel-");
   const expect = (args, lines, code = 0) => {
     const result = answered(args);
     assert.equal(result.code, code, JSON.stringify(result));
@@ -354,7 +384,7 @@ async function recoveryTests() {
     const [destination, ...copyLines] = result.lines;
     assert.match(destination, /^destination-id \d+:[0-9a-f]{32}:creation:[1-9][0-9]*$/u);
     assert.equal(destination.split(" ")[1].split(":")[0], dev);
-    assert.deepEqual(copyLines, ["ready", `writing ${token}`, "progress 6", "copied", "committed"]);
+    assert.deepEqual(copyLines, ["ready", `writing ${token}`, "progress 6", "copied", `published ${token}`, "committed"]);
     assert.ok(!existsSync(join(dir, part)));
     assert.ok(!existsSync(join(dir, "moved")));
   });
@@ -419,6 +449,75 @@ async function recoveryTests() {
       }
     });
   }
+  // Name tunnelling gives the file put at a just-freed name the creation time of the file that left it. The rename is still verified by
+  // the held handle's file ID and volume, and the creation time the file has afterwards is published.
+  const copyAll = (dir) => runCopy(["--dir-copy", ...held(dir), "source", ...held(dir), "target", part, hidden], (line, stdin) => {
+    if (line === "ready") stdin.write("c");
+    if (line === "copied") stdin.end("c");
+  });
+  // Write `name` and let a creation time pass, so a file created after it cannot share its creation time by chance.
+  const freedLater = (dir, name, bytes) => {
+    writeFileSync(join(dir, name), bytes);
+    const left = factsOf(join(dir, name));
+    writeFileSync(join(dir, "source"), "new bytes");
+    assert.notEqual(factsOf(join(dir, "source")).birth, left.birth);
+    return left;
+  };
+  add("a replacement on a tunnelling volume commits, publishes its new creation time and retires the old file", async (dir) => {
+    const old = freedLater(dir, "target", "old bytes");
+    const result = await copyAll(dir);
+    assert.equal(result.code, 0, JSON.stringify(result));
+    const now = factsOf(join(dir, "target"));
+    assert.equal(readFileSync(join(dir, "target"), "utf8"), "new bytes");
+    assert.equal(now.birth, old.birth);
+    assert.deepEqual(result.lines.slice(-3), [`published ${now.token}`, "target-retired", "committed"]);
+    assert.deepEqual(readdirSync(dir).sort(), ["source", "target"]);
+  }, tunnelling);
+  add("a copy into a name deleted moments ago commits", async (dir) => {
+    const deleted = freedLater(dir, "target", "deleted bytes");
+    rmSync(join(dir, "target"));
+    const result = await copyAll(dir);
+    assert.equal(result.code, 0, JSON.stringify(result));
+    const now = factsOf(join(dir, "target"));
+    assert.equal(now.birth, deleted.birth);
+    assert.deepEqual(result.lines.slice(-2), [`published ${now.token}`, "committed"]);
+    assert.deepEqual(readdirSync(dir).sort(), ["source", "target"]);
+  }, tunnelling);
+  add("a rename into a name deleted moments ago commits", (dir) => {
+    const deleted = freedLater(dir, "target", "deleted bytes");
+    rmSync(join(dir, "target"));
+    const result = answered(["--dir-rename", ...held(dir), "source", ...held(dir), "target", "--expect", tokenOf(join(dir, "source"))]);
+    assert.equal(result.code, 0, JSON.stringify(result));
+    const now = factsOf(join(dir, "target"));
+    assert.equal(now.birth, deleted.birth);
+    assert.deepEqual(result.lines, ["ready", `published ${now.token}`, "committed"]);
+  }, tunnelling);
+  add("target restore takes a renamed writer by its file ID and volume only", (dir) => {
+    const source = join(dir, hidden);
+    const target = join(dir, "target");
+    writeFileSync(source, "old bytes");
+    writeFileSync(target, "new bytes");
+    writeFileSync(join(dir, "other"), "other bytes");
+    const args = ["--dir-restore-target", ...held(dir), hidden, "target", "--expect", tokenOf(source)];
+    for (const extra of [["--writer", tokenOf(target)], ["--retire"]]) {
+      assert.equal(answered([...args, "--renamed-writer", tokenOf(target), ...extra]).code, 2, extra.join(" "));
+    }
+    expect([...args, "--renamed-writer", tokenOf(join(dir, "other"))], ["ready", "left"]);
+    assert.equal(readFileSync(source, "utf8"), "old bytes");
+    expect([...args, "--renamed-writer", tokenOf(target, 1n)], ["ready", "resolved"]);
+    assert.ok(!existsSync(source));
+    assert.equal(readFileSync(target, "utf8"), "new bytes");
+  });
+  add("stamps a file another handle holds open for writing", (dir) => {
+    const path = join(dir, "staged");
+    writeFileSync(path, "partial");
+    const writer = openSync(path, "r+");
+    try {
+      expect(["--dir-stamp", ...held(dir), "staged"], ["ready", `stamp ${tokenOf(path)}`]);
+    } finally {
+      closeSync(writer);
+    }
+  });
   add("keeps a retirement record while a concurrent reader holds delete sharing", async (dir) => {
     const root = join(dir, "records");
     mkdirSync(root);
@@ -497,6 +596,7 @@ async function recoveryTests() {
       assert.equal(result.code, 7, JSON.stringify(result));
       assert.equal(result.lines[1], `target-id ${old[1]}`);
       if (boundary === "leftover") assert.match(result.lines.at(-1), /^target-left left /u);
+      else if (boundary === "after-commit") assert.match(result.lines.at(-1), /^published /u);
       else assert.equal(result.lines.at(-1), "copied");
       expect(["--dir-read", ...held(root), record, "8192"], ["ready", `record ${saved}`]);
       if (boundary === "before-move") {
@@ -505,15 +605,16 @@ async function recoveryTests() {
       } else {
         assert.deepEqual(snapshot(join(dir, hidden)), old);
       }
-      expect(["--dir-restore-target", ...held(dir), hidden, "target", "--expect", old[1], "--writer", writer],
-        ["ready", "resolved"]);
+      // Stopped after the commit rename, the record holds only the writer seen before it, so recovery takes it by file ID and volume.
+      expect(["--dir-restore-target", ...held(dir), hidden, "target", "--expect", old[1],
+        boundary === "after-commit" ? "--renamed-writer" : "--writer", writer], ["ready", "resolved"]);
       if (boundary === "after-commit") {
         assert.equal(readFileSync(target, "utf8"), "new bytes");
       } else {
         assert.deepEqual(snapshot(target), old);
       }
       assert.ok(!existsSync(join(dir, hidden)));
-    });
+    }, boundary === "after-commit" ? tunnelling : undefined);
   }
   for (const fault of ["query-failure", "zero"]) {
     for (const site of ["directory", "writer", "recovery"]) {
@@ -563,16 +664,17 @@ async function recoveryTests() {
     });
   }
   let failed = 0;
-  for (const [label, test] of tests) {
-    const root = mkdtempSync(join(tmpdir(), "ave-held-recovery-"));
+  for (const [label, test, makeRoot] of tests) {
+    let root;
     try {
+      root = makeRoot();
       await test(root);
       console.log(`PASS ${label}`);
     } catch (error) {
       failed += 1;
       console.error(`FAIL ${label}\n${error}`);
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      if (root !== undefined) rmSync(root, { recursive: true, force: true });
     }
   }
   console.log(`held directory recovery: ${tests.length - failed} passed, ${failed} failed`);

@@ -172,6 +172,8 @@ const MAX_HELPER_LINE_BYTES = 1024 * 1024;
 interface DownloadTargetJournal {
   readonly hidden: string;
   write(file: FileIdentity, writer: FileIdentity): Promise<void>;
+  /** The committed file as it is at the target after the commit rename, recorded before the record is resolved. */
+  published(file: FileIdentity): Promise<void>;
   resolved(): void;
   left?(at: LeftPart): void;
 }
@@ -225,8 +227,14 @@ export interface HeldFileOperations {
   removeRecord(directory: HeldDirectory, name: string, stamp: RecordStamp): Promise<boolean>;
   recover(directory: HeldDirectory, name: string, original: string, identity: PartIdentity | HelperPartIdentity): Promise<OwnFileResult | { outcome: "restored" }>;
   recoverTarget(directory: HeldDirectory, hidden: string, target: string, file: FileIdentity, content?: Fingerprint,
-    replacement?: FileIdentity | "retire"): Promise<"resolved" | "left">;
+    replacement?: TargetReplacement): Promise<"resolved" | "left">;
 }
+
+/**
+ * What took the target's place: the writer as published (a full match); `renamed`, the writer as it was before its commit rename, known
+ * by its file ID and volume alone, since that rename may have changed its creation time; or `retire` when the target is known committed.
+ */
+export type TargetReplacement = FileIdentity | { readonly renamed: FileIdentity } | "retire";
 
 const HELPER_BUILD: Partial<Record<NodeJS.Platform, string>> = {
   darwin: "node scripts/build-macos-dir-ops.mjs",
@@ -577,7 +585,9 @@ function descriptorFileOperations(beforeRename?: (from: string, to: string) => v
   }
 
   function recoverTarget(directory: number, hidden: string, target: string, file: FileIdentity, content?: Fingerprint,
-    replacement?: FileIdentity | "retire"): "resolved" | "left" {
+    replaced?: TargetReplacement): "resolved" | "left" {
+    // A rename here keeps the file's creation time, so the writer before its commit rename is matched in full.
+    const replacement = typeof replaced === "object" && "renamed" in replaced ? replaced.renamed : replaced;
     if (file.evidence === null || (typeof replacement === "object" && replacement.evidence === null)) return "left";
     try {
       const openEntry = (name: string): number | null => {
@@ -740,6 +750,7 @@ function descriptorFileOperations(beforeRename?: (from: string, to: string) => v
           throw error;
         }
         committed = true;
+        if (old !== null) await journal?.published(identityOf(await copy.stat({ bigint: true })));
         if (old !== null && aside !== undefined) {
           try {
             if (mutateEntry(toFd, aside, old, { mode: "retire-hidden" }).outcome === "removed") journal?.resolved();
@@ -870,6 +881,7 @@ const TARGET_ID = /^target-id (\S+)$/u;
 const DESTINATION_ID = /^destination-id (\S+)$/u;
 const WRITING = /^(writing|copy-id) (\S+)$/u;
 const STAMP_LINE = /^stamp (\S+)$/u;
+const PUBLISHED = /^published (\S+)$/u;
 const RECORD_SWEEP_FRAME = /^record (\S+) ((?:[0-9a-f]{2})*)$/u;
 const RECORD_WRITTEN_FRAME = /^written (\S+)$/u;
 const FAILURE_DIAGNOSTIC = /^Windows error \d+(?: \(NTSTATUS 0x[0-9A-F]{8}, (?:NtCreateFile|NtSetInformationFile)\))?\r?\n$/u;
@@ -1009,10 +1021,16 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
     let copiedBytes = 0n;
     let writing: FileIdentity | null = null;
     let writingRefreshed = false;
+    let published: FileIdentity | null = null;
+    let persisting: Promise<void> | null = null;
     let recordDecision: boolean | null = null;
     let protocolFailure: string | null = null;
     const mode = args[0];
     const needsDestinationStamp = mode === "--dir-copy" && parseInode === parseWindowsInode;
+    // The Windows helper says what it published before it commits; a rename's moved file is the one `--expect` names.
+    const publishes = parseInode === parseWindowsInode && (mode === "--dir-copy" || mode === "--dir-rename");
+    const expectAt = args.indexOf("--expect");
+    const renamedFile = mode === "--dir-rename" && expectAt > 0 ? parseRecordFile(args[expectAt + 1] ?? "", parseInode) : null;
     let destinationDev = mode === "--dir-copy" && !needsDestinationStamp ? BigInt(args[6] ?? "-1") : null;
     let errors = "";
     let inputOpen = true;
@@ -1040,10 +1058,15 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
         fail(answer);
         return;
       }
-      if (targetLeft !== null) journal?.left?.(targetLeft);
-      if (targetResolution !== null) journal?.resolved();
-      if (answer instanceof Error) reject(answer);
-      else resolve(answer);
+      const answered = (): void => {
+        if (targetLeft !== null) journal?.left?.(targetLeft);
+        if (targetResolution !== null) journal?.resolved();
+        if (answer instanceof Error) reject(answer);
+        else resolve(answer);
+      };
+      // The published identity is recorded before the record can be resolved.
+      if (persisting === null) answered();
+      else void persisting.then(answered);
     };
     const settle = (status: number | null, signal: NodeJS.Signals | null, stillRunning: boolean): void => {
       if (settled) return;
@@ -1221,6 +1244,22 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
           targetResolution = line === "target-restored" ? "restored" : "retired";
           continue;
         }
+        const publishedToken = PUBLISHED.exec(line)?.[1];
+        if (publishedToken !== undefined) {
+          const file = parseRecordFile(publishedToken, parseInode);
+          const moved = mode === "--dir-copy" ? writing : mode === "--dir-rename" ? renamedFile : null;
+          if (published !== null || file === null || moved === null || file.dev !== moved.dev || file.ino !== moved.ino ||
+              passed !== (mode === "--dir-copy" ? "copied" : "ready") || targetResolution !== null || targetLeft !== null) { violate(); return; }
+          published = file;
+          if (journal !== undefined && oldTarget !== null) {
+            persisting = Promise.resolve().then(() => journal.published(file)).catch((error: unknown) => {
+              // The record still names the writer as it was before the rename, which recovery matches by file ID and volume.
+              log.warn({ error: String(error) }, "the published download could not be recorded");
+            });
+          }
+          awaitLine("after publishing");
+          continue;
+        }
         const identity = WRITING.exec(line);
         if (identity !== null) {
           const file = parseRecordFile(identity[2] ?? "", parseInode);
@@ -1262,6 +1301,7 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
         if (line !== "ready" && line !== "copied") {
           if (!isOutcome(line) ||
               (line === "committed" && oldTarget !== null && targetResolution === null && targetLeft === null) ||
+              (line === "committed" && publishes && published === null) ||
               (targetResolution === "retired" && line !== "committed") ||
               (targetResolution === "restored" && !/^(?:refused target|failed E)/u.test(line)) ||
               (targetLeft?.identity.verdict === "remove-failed" && line !== "committed") ||
@@ -1435,11 +1475,14 @@ function helperFileOperations(helper: string, windowsFileIds: boolean, bounds: H
     recover,
     recoverTarget: async (folder, hidden, target, file, content, replacement) => {
       const expect = tokenText(file, windowsFileIds);
-      const writer = typeof replacement === "object" ? tokenText(replacement, windowsFileIds) : undefined;
-      if (expect === null || writer === null || (typeof replacement === "object" && replacement.dev !== file.dev)) return "left";
+      const renamed = typeof replacement === "object" && "renamed" in replacement;
+      const writerFile = typeof replacement === "object" ? "renamed" in replacement ? replacement.renamed : replacement : undefined;
+      const writer = writerFile === undefined ? undefined : tokenText(writerFile, windowsFileIds);
+      if (expect === null || writer === null || (writerFile !== undefined && writerFile.dev !== file.dev)) return "left";
+      const writerOption = renamed && windowsFileIds ? "--renamed-writer" : "--writer";
       return oneOf(helper, await run(["--dir-restore-target", ...directoryArguments(folder), hidden, target, "--expect", expect,
         ...(content === undefined ? [] : ["--content", fingerprintKey(content)]),
-        ...(replacement === "retire" ? ["--retire"] : writer === undefined ? [] : ["--writer", writer])], go, UNSTOPPED), ["resolved", "left"] as const);
+        ...(replacement === "retire" ? ["--retire"] : writer === undefined ? [] : [writerOption, writer])], go, UNSTOPPED), ["resolved", "left"] as const);
     },
     listRecords: async (directory) => {
       const answer = await run(["--dir-list-records", ...directoryArguments(directory)], go, UNSTOPPED);

@@ -158,6 +158,40 @@ const doneOutcome = (download: Observed) =>
   new Promise<{ state: string; cleanup: string }>((resolve) => { download.once("done", (_event, state, cleanup) => resolve({ state, cleanup })); });
 const stagingPath = () => join(aveHomeDir, "browser-downloads");
 
+// A chosen folder on a volume that tunnels names on Windows: a file created or renamed onto a name freed moments ago takes the creation
+// time of the file that left it. AVE_TEST_TUNNEL_ROOT names a folder on such a volume; unset, the temp folder is used, which CI keeps on the
+// system volume. The probe proves the volume tunnels before a test relies on it, and fails when it does not. Elsewhere it is `home`.
+const tunnelled: string[] = [];
+afterEach(() => { for (const dir of tunnelled.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+function chosenFolder(): string {
+  if (process.platform !== "win32") {
+    mkdirSync(join(home, "chosen"));
+    return join(home, "chosen");
+  }
+  const dir = realpathSync(mkdtempSync(join(process.env.AVE_TEST_TUNNEL_ROOT || tmpdir(), "ave-download-tunnel-")));
+  tunnelled.push(dir);
+  const probe = join(dir, "probe");
+  const birth = (path: string) => statSync(path, { bigint: true }).birthtimeNs;
+  writeFileSync(probe, "");
+  const before = birth(probe);
+  // Wait, by comparing values, until a new file's creation time differs, so an equal time below can only be a tunnelled one.
+  for (let index = 0; ; index += 1) {
+    const clock = join(dir, `clock-${index}`);
+    writeFileSync(clock, "");
+    const later = birth(clock);
+    removeEntry(clock);
+    if (later !== before) break;
+  }
+  moveAside(probe, join(dir, "probe-away"));
+  writeFileSync(probe, "");
+  const same = birth(probe) === before;
+  removeEntry(probe);
+  removeEntry(join(dir, "probe-away"));
+  if (!same) throw new Error(`${dir} is on a volume that does not tunnel names; set AVE_TEST_TUNNEL_ROOT to a folder on one`);
+  mkdirSync(join(dir, "chosen"));
+  return join(dir, "chosen");
+}
+
 // The staging root with some of its file operations replaced: the rest still run for real, natively on macOS and Windows.
 const withFiles = (root: Root, change: (files: Files) => Partial<Files>): Root => ({ ...root, files: { ...root.files, ...change(root.files) } });
 // Every rename reports another volume, so publication takes the real copy through a temporary file.
@@ -456,8 +490,7 @@ describe("a staged download", () => {
     const staged = stageBrowserDownload(item, { root, askSavePath }, Promise.resolve());
     const done = doneOutcome(staged.download);
     await settled();
-    const chosen = join(home, "chosen");
-    mkdirSync(chosen);
+    const chosen = chosenFolder();
     if (existing) writeFileSync(join(chosen, "report.pdf"), "old bytes");
     asked[0]?.answer(join(chosen, "report.pdf"));
     await settled();
@@ -467,6 +500,41 @@ describe("a staged download", () => {
     expect(readdirSync(chosen)).toEqual(["report.pdf"]);
     expect(readdirSync(root.path)).toEqual([]);
     expectOnlyHeldPathOperations();
+  });
+
+  it("persists the creation time a replacement published after its commit rename before it resolves the record", async () => {
+    const events: string[] = [];
+    const root = withFiles(acrossVolumes(prepare()), (files) => ({
+      writeRecord: async (folder, name, body) => {
+        const { published } = JSON.parse(body.toString("utf8")) as { published?: { evidence: string } };
+        events.push(published === undefined ? "write" : `write published ${published.evidence}`);
+        return files.writeRecord(folder, name, body);
+      },
+      removeRecord: async (folder, name, stamp) => {
+        events.push("remove");
+        return files.removeRecord(folder, name, stamp);
+      },
+    }));
+    const { asked, askSavePath } = dialogs();
+    const item = fakeItem();
+    const staged = stageBrowserDownload(item, { root, askSavePath }, Promise.resolve());
+    const done = doneOutcome(staged.download);
+    await settled();
+    const chosen = chosenFolder();
+    writeFileSync(join(chosen, "report.pdf"), "old bytes");
+    const old = statSync(join(chosen, "report.pdf"), { bigint: true });
+    asked[0]?.answer(join(chosen, "report.pdf"));
+    await settled();
+    item.complete("new bytes");
+    expect(await done).toEqual({ state: "completed", cleanup: "removed" });
+    const now = statSync(join(chosen, "report.pdf"), { bigint: true });
+    const windows = process.platform === "win32";
+    // Tunnelling handed the committed name the old file's creation time.
+    if (windows) expect(now.birthtimeNs).toBe(old.birthtimeNs);
+    expect(events).toEqual(["write", `write published ${windows ? "creation" : "birth"}:${now.birthtimeNs + (windows ? 11644473600000000000n : 0n)}`,
+      "remove", "remove"]);
+    expect(readdirSync(chosen)).toEqual(["report.pdf"]);
+    expect(await root.files.listRecords(root)).toEqual([]);
   });
 
   it.each([false, true])("restart preserves the original and handles an occupied target: %s", async (occupied) => {
@@ -539,10 +607,12 @@ describe("a staged download", () => {
     expect(await restarted.files.listRecords(restarted)).toHaveLength(occupied ? 1 : 0);
   });
 
-  it.each(["before move", "after move", "after commit", "after retirement", "competing target", "replaced part", "writer birth mismatch", "missing writer birth", "part reader", "restored target with pending part"] as const)("restarts after a stopped replacement: %s", async (boundary) => {
+  // "after commit" and "after retirement" stop between the commit rename and persisting the creation time it published, so only the
+  // pre-rename record binds the writer: its file ID and volume. "published birth mismatch" persisted a published creation time the
+  // target does not have.
+  it.each(["before move", "after move", "after commit", "after retirement", "competing target", "replaced part", "writer birth mismatch", "missing writer birth", "published birth mismatch", "part reader", "restored target with pending part"] as const)("restarts after a stopped replacement: %s", async (boundary) => {
     const prepared = prepare();
-    const chosen = join(home, "chosen");
-    mkdirSync(chosen);
+    const chosen = chosenFolder();
     const target = join(chosen, "report.pdf");
     writeFileSync(target, "old bytes");
     const windows = process.platform === "win32";
@@ -558,8 +628,10 @@ describe("a staged download", () => {
     let hidden = "";
     let partPath = "";
     let writer: ReturnType<typeof fileId> | undefined;
-    const unverifiedWriter = boundary === "writer birth mismatch" || boundary === "missing writer birth";
-    const committed = boundary === "after commit" || boundary === "after retirement" || unverifiedWriter;
+    // Windows binds a renamed writer by its file ID and volume, since tunnelling may have changed its creation time; POSIX keeps birth.
+    const unverifiedWriter = boundary === "missing writer birth" || boundary === "published birth mismatch" ||
+      (boundary === "writer birth mismatch" && !windows);
+    const committed = boundary === "after commit" || boundary === "after retirement" || boundary === "writer birth mismatch" || unverifiedWriter;
     const root = withFiles(acrossVolumes(prepared), () => ({
       copy: async (_from, _name, _to, _target, part, _proceed, _stop, journal) => {
         if (!journal) throw new Error("missing write-ahead record");
@@ -581,6 +653,10 @@ describe("a staged download", () => {
           moveAside(target, join(chosen, hidden));
         }
         if (committed) moveAside(partPath, target);
+        if (boundary === "published birth mismatch") {
+          const published = fileId(target);
+          await journal.published({ ...published, evidence: { class: windows ? "creation" : "birth", value: String(BigInt(published.evidence?.value ?? "0") + 100n) } });
+        }
         if (boundary === "after retirement") removeEntry(join(chosen, hidden));
         if (boundary === "competing target") writeFileSync(target, "competing bytes");
         throw new Error("copy process stopped");

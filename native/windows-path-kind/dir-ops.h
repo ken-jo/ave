@@ -324,11 +324,14 @@ inline int run_rename(int argc, wchar_t** argv) {
   if (checked.error != ERROR_SUCCESS) return failed(checked);
   if (target_entry == Entry::kOther) return refused("target");
   if (target_entry == Entry::kOrdinary) return done("replace");
-  const FileFailure renamed = mutate_entry(from.handle(), name, source, {EntryMode::kRenameAway, &expected, to.handle(), &target});
+  ExpectedFile moved;
+  const FileFailure renamed = mutate_entry(from.handle(), name, source,
+    {EntryMode::kRenameAway, &expected, to.handle(), &target, nullptr, 0, nullptr, false, &moved});
   if (renamed.error != ERROR_SUCCESS) {
     if (renamed.error == ERROR_ALREADY_EXISTS || renamed.error == ERROR_FILE_EXISTS) return refused("target");
     return renamed.error == ERROR_NOT_SAME_DEVICE ? done("cross-volume") : failed(renamed);
   }
+  say(("published " + token_text(moved.id, moved.birth)).c_str());
   return done("committed");
 }
 
@@ -387,7 +390,14 @@ inline int run_copy(wchar_t** argv) {
         !read_birth(old.value, old_birth)) return refused("target");
     say(("target-id " + token_text(old_id, old_birth)).c_str());
   }
-  const ExpectedFile old_stamp{old_id, true, old_birth, {}};
+  // Every rename of the old file reads its creation time again: name tunnelling may change it.
+  ExpectedFile old_stamp{old_id, true, old_birth, {}};
+  const auto moved_old = [&](EntryMode mode, const std::wstring& from_name, const std::wstring& to_name) {
+    const FileFailure moving = mutate_entry(to.handle(), from_name, old,
+      {mode, &old_stamp, to.handle(), &to_name, nullptr, 0, nullptr, false, &old_stamp});
+    old_birth = old_stamp.birth;
+    return moving;
+  };
   if (!proceed("ready")) return done("cancelled");
   // The temporary file is created exclusively and stays open without write or delete sharing through commit or retirement.
   HANDLE created = INVALID_HANDLE_VALUE;
@@ -441,7 +451,13 @@ inline int run_copy(wchar_t** argv) {
   if (!read_id(part.value, final_id) || !read_birth(part.value, final_birth) ||
       !same_id(final_id, written) || final_birth != written_birth) return abandon({ERROR_NOT_SUPPORTED});
   if (replacing) say(("copy-id " + writer_stamp()).c_str());
-  const ExpectedFile writer_stamp_final{final_id, true, final_birth, {}};
+  ExpectedFile writer_stamp_final{final_id, true, final_birth, {}};
+  const auto moved_writer = [&](EntryMode mode, const std::wstring& from_name, const std::wstring& to_name) {
+    const FileFailure moving = mutate_entry(to.handle(), from_name, part,
+      {mode, &writer_stamp_final, to.handle(), &to_name, nullptr, 0, nullptr, false, &writer_stamp_final});
+    final_birth = writer_stamp_final.birth;
+    return moving;
+  };
   // The rename below is the commit point: the caller answers here whether the copy is still wanted.
   if (!proceed("copied")) return abandon({});
   const NameIdentity current = check_name(to.handle(), part_name, written, final_birth);
@@ -464,7 +480,7 @@ inline int run_copy(wchar_t** argv) {
       return;
     }
 #endif
-    if (mutate_entry(to.handle(), aside, old, {EntryMode::kRestore, &old_stamp, to.handle(), &target}).error != ERROR_SUCCESS)
+    if (moved_old(EntryMode::kRestore, aside, target).error != ERROR_SUCCESS)
       report_target_left(false);
     else say("target-restored");
   };
@@ -472,7 +488,7 @@ inline int run_copy(wchar_t** argv) {
 #if defined(AVE_TEST_DIR_RECOVERY)
     test_stop_replacement("before-move");
 #endif
-    if (mutate_entry(to.handle(), target, old, {EntryMode::kRenameAway, &old_stamp, to.handle(), &aside}).error != ERROR_SUCCESS) {
+    if (moved_old(EntryMode::kRenameAway, target, aside).error != ERROR_SUCCESS) {
       return stopped_copy(to.handle(), part_name, part, written, final_birth, {}, true);
     }
     if (check_name(to.handle(), aside, old_id, old_birth) != NameIdentity::kMatches) {
@@ -488,7 +504,7 @@ inline int run_copy(wchar_t** argv) {
   if (replacing && test_fail_replacement_rename(false)) renamed = {ERROR_WRITE_FAULT};
   else
 #endif
-  renamed = mutate_entry(to.handle(), part_name, part, {EntryMode::kRenameAway, &writer_stamp_final, to.handle(), &target});
+  renamed = moved_writer(EntryMode::kRenameAway, part_name, target);
   if (renamed.error != ERROR_SUCCESS) {
     restore_target();
     Entry target_entry = Entry::kAbsent;
@@ -504,11 +520,12 @@ inline int run_copy(wchar_t** argv) {
   published = test_commit_result(published);
 #endif
   if (published != NameIdentity::kMatches) {
-    const FileFailure rolled_back = mutate_entry(to.handle(), target, part,
-      {EntryMode::kRestore, &writer_stamp_final, to.handle(), &part_name});
+    const FileFailure rolled_back = moved_writer(EntryMode::kRestore, target, part_name);
     restore_target();
     return refused(rolled_back.error == ERROR_SUCCESS ? "target left" : "target changed");
   }
+  // The creation time the published file has now; the caller records it before it treats the commit as settled.
+  say(("published " + token_text(final_id, final_birth)).c_str());
   if (replacing) {
 #if defined(AVE_TEST_DIR_RECOVERY)
     test_stop_replacement("after-commit");

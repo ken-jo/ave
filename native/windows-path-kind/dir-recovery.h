@@ -115,6 +115,18 @@ inline NameIdentity check_name(HANDLE directory, const std::wstring& name, const
     ? NameIdentity::kMatches : NameIdentity::kUnverified;
 }
 
+// The entry at `name` is the file with `wanted`'s volume and file ID, its creation time not compared: after a rename, name tunnelling
+// may have given it the creation time of the file that last left that name.
+inline NameIdentity check_moved_name(HANDLE directory, const std::wstring& name, const FILE_ID_INFO& wanted) {
+  HANDLE opened = INVALID_HANDLE_VALUE;
+  const NTSTATUS status = open_relative(directory, name, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+    kOpenExisting, kOpenReparsePoint, opened);
+  if (status < 0) return missing(status_error(status)) ? NameIdentity::kAbsent : NameIdentity::kUnverified;
+  const PinnedHandle entry(opened);
+  FILE_ID_INFO actual{};
+  return ordinary(entry.value) && read_id(entry.value, actual) && same_id(actual, wanted) ? NameIdentity::kMatches : NameIdentity::kUnverified;
+}
+
 inline bool seek_to(HANDLE file, LONGLONG offset) {
   LARGE_INTEGER position{};
   position.QuadPart = offset;
@@ -312,8 +324,16 @@ inline FileFailure mutate_entry(HANDLE directory, const std::wstring& name, Pinn
     if (status < 0) return native_failure(status, "NtSetInformationFile");
     if (!CloseHandle(operation.value)) return {GetLastError()};
     operation.value = INVALID_HANDLE_VALUE;
-    return check_name(change.destination, *change.target, expected.id, expected.birth) == NameIdentity::kMatches
-      ? FileFailure{} : FileFailure{ERROR_ACCESS_DENIED};
+    // The held handle is the file that moved; its creation time is read again, since the new name may have tunnelled another one in.
+    ExpectedFile moved;
+    if (check_moved_name(change.destination, *change.target, expected.id) != NameIdentity::kMatches ||
+        !read_stamp(entry.value, moved) || !same_id(moved.id, expected.id)) return {ERROR_ACCESS_DENIED};
+    if (change.written != nullptr) {
+      change.written->id = moved.id;
+      change.written->birth = moved.birth;
+      change.written->check_birth = true;
+    }
+    return {};
   }
 
   FILE_DISPOSITION_INFO disposition{TRUE};
@@ -374,7 +394,7 @@ inline int stopped_copy(HANDLE directory, const std::wstring& name, PinnedHandle
 enum class RecoveryMode { kRemove, kRestorePart, kRestoreTarget };
 
 inline int recover_target(HANDLE directory, const std::wstring& hidden, const std::wstring& target,
-    const ExpectedFile& old, bool retire_only, const ExpectedFile* writer) {
+    const ExpectedFile& old, bool retire_only, const ExpectedFile* writer, bool writer_renamed = false) {
   const ACCESS_MASK read_access = FILE_READ_ATTRIBUTES | (old.content.empty() ? 0 : FILE_READ_DATA);
   PinnedHandle published(INVALID_HANDLE_VALUE);
   bool vacant = false;
@@ -384,8 +404,12 @@ inline int recover_target(HANDLE directory, const std::wstring& hidden, const st
       kOpenExisting, kOpenReparsePoint, published.value);
     vacant = opening < 0 && missing(status_error(opening));
     if (opening < 0 && !vacant) return done("left");
-    committed = !vacant && writer != nullptr && matches(published.value, *writer)
-      && check_name(directory, target, writer->id, writer->birth) == NameIdentity::kMatches;
+    // A writer recorded before its commit rename is known by its file ID and volume alone: the rename may have changed its creation time.
+    FILE_ID_INFO published_id{};
+    committed = !vacant && writer != nullptr && (writer_renamed
+      ? ordinary(published.value) && read_id(published.value, published_id) && same_id(published_id, writer->id)
+        && check_moved_name(directory, target, writer->id) == NameIdentity::kMatches
+      : matches(published.value, *writer) && check_name(directory, target, writer->id, writer->birth) == NameIdentity::kMatches);
   }
   PinnedHandle source(INVALID_HANDLE_VALUE);
   const NTSTATUS opening = open_relative(directory, hidden, read_access | DELETE, FILE_SHARE_READ,
@@ -411,10 +435,13 @@ inline int run_recovery(int argc, wchar_t** argv, RecoveryMode mode) {
   if (!plain_name(argv[3]) || (restore && (!plain_name(part_name) || _wcsicmp(argv[3], part_name) == 0))) return kExitUsage;
   if (mode == RecoveryMode::kRestoreTarget && !hidden_name(name)) return kExitUsage;
   Options options;
-  if (!parse_options(argc, argv, restore ? 5 : 4, {L"--expect", L"--content", L"--writer"}, {L"--retire"}, options)) return kExitUsage;
+  if (!parse_options(argc, argv, restore ? 5 : 4, {L"--expect", L"--content", L"--writer", L"--renamed-writer"}, {L"--retire"}, options)) return kExitUsage;
   const std::wstring* expect = options.get(L"--expect");
   const std::wstring* content = options.get(L"--content");
-  const std::wstring* writer_token = options.get(L"--writer");
+  const std::wstring* full_writer = options.get(L"--writer");
+  const std::wstring* renamed_writer = options.get(L"--renamed-writer");
+  if (full_writer != nullptr && renamed_writer != nullptr) return kExitUsage;
+  const std::wstring* writer_token = full_writer != nullptr ? full_writer : renamed_writer;
   const bool retire_only = options.get(L"--retire") != nullptr;
   if (expect == nullptr || (mode == RecoveryMode::kRestorePart && content == nullptr) ||
       (mode != RecoveryMode::kRestoreTarget && (writer_token != nullptr || retire_only)) || (writer_token != nullptr && retire_only)) return kExitUsage;
@@ -428,7 +455,8 @@ inline int run_recovery(int argc, wchar_t** argv, RecoveryMode mode) {
   if (status != 0) return status;
   if (!proceed("ready")) return done("cancelled");
   if (mode == RecoveryMode::kRestoreTarget)
-    return recover_target(directory.handle(), name, part_name, expected, retire_only, writer_token == nullptr ? nullptr : &writer);
+    return recover_target(directory.handle(), name, part_name, expected, retire_only, writer_token == nullptr ? nullptr : &writer,
+      renamed_writer != nullptr);
   HANDLE opened = INVALID_HANDLE_VALUE;
   const NTSTATUS opening = open_relative(directory.handle(), name, FILE_READ_DATA | FILE_READ_ATTRIBUTES | DELETE,
     FILE_SHARE_READ, kOpenExisting, kOpenReparsePoint, opened);
