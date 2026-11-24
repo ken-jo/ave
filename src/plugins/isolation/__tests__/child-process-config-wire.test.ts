@@ -13,6 +13,7 @@ import { buildChildEntry, childBundleDir, repositoryRoot } from "./child-entry-b
 import { aveHome } from "../../../shared/ave-home.js";
 import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
 import { deferred } from "../../../__tests__/support/deferred.js";
+import { within } from "../../../__tests__/support/signal-wait.js";
 import type { PluginHostApi, PluginManifest, PluginRuntimeContext, RuntimePlugin } from "../../types.js";
 import { derivePluginChildEnvelope } from "../out-of-process-plugin.js";
 import { createBoundHostApiDispatchTable } from "../bound-host-api-table.js";
@@ -657,13 +658,12 @@ export const createPlugin = async () => ({
     expect(terminations).toEqual([expect.stringMatching(/Invalid plugin child input credit/)]);
 
     // The realm never learns of the loss, so only the owner's deadline can end the child; the recording
-    // link never signals. Wait for that deadline plus slack for the exit to reach the host. The bound is
-    // what fails a run with no owner deadline in seconds rather than at the test timeout.
+    // link never signals. The signal-wait bound fails a run with no owner deadline well before the test
+    // timeout; a fixed slack past the deadline failed loaded hosts whose exit was merely late.
     const { pluginChildHostLossMs } = TOOL_TIMEOUT_POLICY;
-    const exitSlackMs = 1_000;
     // A timer can fire a few ms before a fresh clock read; a crash or a cooperative exit lands far earlier.
     const timerEarlyToleranceMs = 50;
-    const exited = once(child, "exit", { signal: AbortSignal.timeout(pluginChildHostLossMs + exitSlackMs) });
+    const exited = within(once(child, "exit"), "the owner's host-loss deadline to end the child");
     let exitedAfterMs = Number.NaN;
     const cutAt = performance.now();
     child.once("exit", () => { exitedAfterMs = performance.now() - cutAt; });

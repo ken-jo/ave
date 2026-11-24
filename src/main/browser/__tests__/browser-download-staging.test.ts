@@ -1,9 +1,11 @@
 import { execFileSync, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, linkSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { afterQueuedCallbacks } from "../../../__tests__/support/deferred.js";
 
 // Hooks into the filesystem calls a test needs to steer or observe: a check of the staging folder that fails with a filesystem error, short
@@ -13,7 +15,20 @@ const hooks = vi.hoisted(() => ({
   checkFault: null as { path: string; code: string } | null,
   writeLimit: null as number | null,
   pathOperations: [] as string[],
+  // A removal of a matching path that fails with a filesystem error.
+  unlinkFault: null as RegExp | null,
+  afterLstat: null as ((path: string) => void) | null,
+  beforeCopy: null as (() => void) | null,
+  // Every warning the host logs, by message.
+  warnings: [] as string[],
 }));
+vi.mock("../../../lib/logger.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../lib/logger.js")>();
+  return { ...actual, createLogger: (name: string) => {
+    const logger = actual.createLogger(name);
+    return { ...logger, warn: (...args: unknown[]) => { hooks.warnings.push(String(args.at(-1))); (logger.warn as (...rest: unknown[]) => void)(...args); } };
+  } };
+});
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
   const fault = (path: unknown) => {
@@ -29,7 +44,9 @@ vi.mock("node:fs", async (importOriginal) => {
     },
     lstatSync: (path: string, ...rest: unknown[]) => {
       fault(path);
-      return (actual.lstatSync as (...args: unknown[]) => unknown)(path, ...rest);
+      const result = (actual.lstatSync as (...args: unknown[]) => unknown)(path, ...rest);
+      hooks.afterLstat?.(path);
+      return result;
     },
     renameSync: (from: string, to: string) => {
       hooks.pathOperations.push(from, to);
@@ -37,6 +54,7 @@ vi.mock("node:fs", async (importOriginal) => {
     },
     unlinkSync: (path: string) => {
       hooks.pathOperations.push(path);
+      if (hooks.unlinkFault?.test(String(path))) throw Object.assign(new Error("EACCES: simulated"), { code: "EACCES" });
       return actual.unlinkSync(path);
     },
   };
@@ -45,6 +63,15 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   return {
     ...actual,
+    copyFile: async (from: string, to: string, flags: number) => {
+      hooks.beforeCopy?.();
+      return actual.copyFile(from, to, flags);
+    },
+    // The host's own renames, seen like those through node:fs.
+    rename: async (from: string, to: string) => {
+      hooks.pathOperations.push(from, to);
+      return actual.rename(from, to);
+    },
     open: async (path: string, ...rest: unknown[]) => {
       hooks.pathOperations.push(String(path));
       const handle = await (actual.open as (...args: unknown[]) => Promise<import("node:fs/promises").FileHandle>)(path, ...rest);
@@ -64,11 +91,14 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   };
 });
 
-const { prepareBrowserDownloadStaging, stageBrowserDownload, sweepBrowserDownloadStaging, BrowserDownloadStagingError, UNANSWERED_DOWNLOAD_BYTES } =
+const { prepareBrowserDownloadStaging, stageBrowserDownload, sweepBrowserDownloadStaging, stagingRefusal, BrowserDownloadStagingError, UNANSWERED_DOWNLOAD_BYTES } =
   await import("../browser-download-staging.js");
-const { _helperFileOperationsForTest } = await import("../browser-download-files.js");
+const { setLocale } = await import("../../../i18n/index.js");
+const { _descriptorFileOperationsForTest, _helperFileOperationsForTest, HeldDirectoryRefusedError, HeldFileHelperStalledError } = await import("../browser-download-files.js");
 type Root = import("../browser-download-staging.js").BrowserDownloadStagingRoot;
+type Observed = import("../browser-download-staging.js").ObservedDownload;
 type Files = import("../browser-download-files.js").HeldFileOperations;
+type FileIdentity = import("../browser-download-files.js").FileIdentity;
 // The step an operation reports while it holds its directories.
 type Step = Parameters<Parameters<Files["move"]>[4]>[0];
 const { isAdmissionDeniedPath, isSensitivePath } = await import("../../../permissions/sensitive-paths.js");
@@ -77,6 +107,7 @@ const { renameSync: moveAside, unlinkSync: removeEntry } = await vi.importActual
 
 // The checkout's resources folder, where the native helper for this platform is built (test:prepare).
 const RESOURCES = resolve("resources");
+const WINDOWS_PATH_KIND = join(RESOURCES, "windows-path-kind", process.arch, "ave-path-kind.exe");
 
 let home: string;
 let aveHomeDir: string;
@@ -88,6 +119,10 @@ beforeEach(() => {
   hooks.checkFault = null;
   hooks.writeLimit = null;
   hooks.pathOperations = [];
+  hooks.unlinkFault = null;
+  hooks.afterLstat = null;
+  hooks.beforeCopy = null;
+  hooks.warnings = [];
 });
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -114,7 +149,9 @@ function fakeItem(name = "report.pdf") {
     getTotalBytes: () => item.received,
     getState: () => item.state,
     cancel: vi.fn(() => { if (item.state === "progressing") item.end("cancelled"); }),
-    complete: (content: string | Buffer = "data") => { writeFileSync(item.path, content); item.end("completed"); },
+    // The browser writes to the staged path and says so; the first write is where the staged file is first seen.
+    write: (content: string | Buffer) => { writeFileSync(item.path, content); item.emit("updated", {}, "progressing"); },
+    complete: (content: string | Buffer = "data") => { item.write(content); item.end("completed"); },
     end: (state: "completed" | "cancelled" | "interrupted") => { item.state = state; item.emit("done", {}, state); },
   });
   return item;
@@ -129,10 +166,60 @@ function dialogs() {
 const settled = afterQueuedCallbacks;
 const doneState = (download: { once(event: "done", listener: (event: unknown, state: string) => void): unknown }) =>
   new Promise<string>((resolve) => { download.once("done", (_event, state) => resolve(state)); });
+// The state `done` reports, with what it says became of the staged file.
+const doneOutcome = (download: Observed) =>
+  new Promise<{ state: string; cleanup: string }>((resolve) => { download.once("done", (_event, state, cleanup) => resolve({ state, cleanup })); });
 const stagingPath = () => join(aveHomeDir, "browser-downloads");
+
+// A chosen folder on a volume that tunnels names on Windows: a file created or renamed onto a name freed moments ago takes the creation
+// time of the file that left it. AVE_TEST_TUNNEL_ROOT names a folder on such a volume; unset, the temp folder is used, which CI keeps on the
+// system volume. The probe proves the volume tunnels before a test relies on it, and fails when it does not. Elsewhere it is `home`.
+const tunnelled: string[] = [];
+afterEach(() => { for (const dir of tunnelled.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+function chosenFolder(): string {
+  if (process.platform !== "win32") {
+    mkdirSync(join(home, "chosen"));
+    return join(home, "chosen");
+  }
+  const dir = realpathSync(mkdtempSync(join(process.env.AVE_TEST_TUNNEL_ROOT || tmpdir(), "ave-download-tunnel-")));
+  tunnelled.push(dir);
+  const probe = join(dir, "probe");
+  const birth = (path: string) => statSync(path, { bigint: true }).birthtimeNs;
+  writeFileSync(probe, "");
+  const before = birth(probe);
+  // Wait, by comparing values, until a new file's creation time differs, so an equal time below can only be a tunnelled one.
+  for (let index = 0; ; index += 1) {
+    const clock = join(dir, `clock-${index}`);
+    writeFileSync(clock, "");
+    const later = birth(clock);
+    removeEntry(clock);
+    if (later !== before) break;
+  }
+  moveAside(probe, join(dir, "probe-away"));
+  writeFileSync(probe, "");
+  const same = birth(probe) === before;
+  removeEntry(probe);
+  removeEntry(join(dir, "probe-away"));
+  if (!same) throw new Error(`${dir} is on a volume that does not tunnel names; set AVE_TEST_TUNNEL_ROOT to a folder on one`);
+  mkdirSync(join(dir, "chosen"));
+  return join(dir, "chosen");
+}
 
 // The staging root with some of its file operations replaced: the rest still run for real, natively on macOS and Windows.
 const withFiles = (root: Root, change: (files: Files) => Partial<Files>): Root => ({ ...root, files: { ...root.files, ...change(root.files) } });
+// Counts the staged file's stamps (each failing when `fail`); `stamped` waits for every stamp begun so far to end.
+const countingStamps = (root: Root, fail = false) => {
+  const stamps: string[] = [];
+  const pending: Promise<unknown>[] = [];
+  return { stamps, stamped: () => Promise.allSettled(pending), root: withFiles(root, (files) => ({
+    stamp: (folder, name) => {
+      stamps.push(name);
+      const stamping = fail ? Promise.reject(Object.assign(new Error("EIO: simulated"), { code: "EIO" })) : files.stamp(folder, name);
+      pending.push(stamping);
+      return stamping;
+    },
+  })) };
+};
 // Every rename reports another volume, so publication takes the real copy through a temporary file.
 const acrossVolumes = (root: Root): Root => withFiles(root, () => ({ move: async () => "cross-volume" as const }));
 // Runs `at` once, when the operation of that kind reaches `step` with its directories held, right before it acts.
@@ -146,11 +233,12 @@ const atStep = (root: Root, operation: "move" | "copy" | "remove", step: Step, a
       }
       return proceed(reached);
     };
-    if (operation === "move") return { move: (from, name, to, target, proceed, stop) => files.move(from, name, to, target, wrap(proceed, {}), stop) };
+    if (operation === "move") return { move: (from, name, to, target, proceed, stop, staged) => files.move(from, name, to, target, wrap(proceed, {}), stop, staged) };
     if (operation === "copy") {
-      return { copy: (from, name, to, target, part, proceed, stop) => files.copy(from, name, to, target, part, wrap(proceed, { part }), stop) };
+      return { copy: (from, name, to, target, part, proceed, stop, journal) =>
+        files.copy(from, name, to, target, part, wrap(proceed, { part }), stop, journal) };
     }
-    return { remove: (directory, name, proceed, stop) => files.remove(directory, name, wrap(proceed, {}), stop) };
+    return { remove: (directory, name, proceed, stop, staged) => files.remove(directory, name, wrap(proceed, {}), stop, staged) };
   });
 
 // The host names a file only through a held directory: on Linux a /proc/self/fd entry of the held descriptor, and on macOS and Windows
@@ -292,8 +380,8 @@ describe("a staged download", () => {
     const second = fakeItem("two.bin");
     const one = stageBrowserDownload(first, { root, askSavePath }, Promise.resolve());
     const two = stageBrowserDownload(second, { root, askSavePath }, one.answered.then(() => undefined));
-    const firstDone = doneState(one.download);
-    const secondDone = doneState(two.download);
+    const firstDone = doneOutcome(one.download);
+    const secondDone = doneOutcome(two.download);
     await settled();
     expect(asked.map((dialog) => dialog.name)).toEqual(["one.bin"]);
     const chosen = join(home, "chosen");
@@ -306,8 +394,8 @@ describe("a staged download", () => {
     await settled();
     second.complete("second file");
     first.complete("first file");
-    expect(await secondDone).toBe("completed");
-    expect(await firstDone).toBe("completed");
+    expect(await secondDone).toEqual({ state: "completed", cleanup: "removed" });
+    expect(await firstDone).toEqual({ state: "completed", cleanup: "removed" });
     expect(readFileSync(join(chosen, "one.bin"), "utf8")).toBe("first file");
     expect(readFileSync(join(chosen, "two.bin"), "utf8")).toBe("second file");
     expect(one.download.getSavePath()).toBe(join(chosen, "one.bin"));
@@ -320,12 +408,12 @@ describe("a staged download", () => {
     const { asked, askSavePath } = dialogs();
     const item = fakeItem();
     const staged = stageBrowserDownload(item, { root, askSavePath }, Promise.resolve());
-    const done = doneState(staged.download);
-    writeFileSync(item.path, "partial");
+    const done = doneOutcome(staged.download);
+    item.write("partial");
     await settled();
     asked[0]?.answer(null);
     expect(await staged.answered).toBe(false);
-    expect(await done).toBe("cancelled");
+    expect(await done).toEqual({ state: "cancelled", cleanup: "removed" });
     expect(item.cancel).toHaveBeenCalledOnce();
     expect(existsSync(item.path)).toBe(false);
     expectOnlyHeldPathOperations();
@@ -337,10 +425,10 @@ describe("a staged download", () => {
     let release!: () => void;
     const failing = fakeItem();
     const staged = stageBrowserDownload(failing, { root, askSavePath }, new Promise<void>((resolve) => { release = resolve; }));
-    const done = doneState(staged.download);
-    writeFileSync(failing.path, "partial");
+    const done = doneOutcome(staged.download);
+    failing.write("partial");
     failing.end("interrupted");
-    expect(await done).toBe("interrupted");
+    expect(await done).toEqual({ state: "interrupted", cleanup: "removed" });
     expect(existsSync(failing.path)).toBe(false);
     release();
     expect(await staged.answered).toBe(false);
@@ -421,24 +509,349 @@ describe("a staged download", () => {
     expect(readdirSync(root.path)).toEqual([]);
   });
 
-  it("copies across volumes through a private temporary file, then removes the staged copy", async () => {
+  it.each([false, true])("publishes across volumes with an existing target: %s", async (existing) => {
     const root = acrossVolumes(prepare());
     const { asked, askSavePath } = dialogs();
     const item = fakeItem();
     const staged = stageBrowserDownload(item, { root, askSavePath }, Promise.resolve());
-    const done = doneState(staged.download);
+    const done = doneOutcome(staged.download);
     await settled();
-    const chosen = join(home, "chosen");
-    mkdirSync(chosen);
+    const chosen = chosenFolder();
+    if (existing) writeFileSync(join(chosen, "report.pdf"), "old bytes");
     asked[0]?.answer(join(chosen, "report.pdf"));
     await settled();
     item.complete("across");
-    expect(await done).toBe("completed");
+    expect(await done).toEqual({ state: "completed", cleanup: "removed" });
     expect(readFileSync(join(chosen, "report.pdf"), "utf8")).toBe("across");
     expect(readdirSync(chosen)).toEqual(["report.pdf"]);
     expect(readdirSync(root.path)).toEqual([]);
     expectOnlyHeldPathOperations();
   });
+
+  it("persists the creation time a replacement published after its commit rename before it resolves the record", async () => {
+    const events: string[] = [];
+    const root = withFiles(acrossVolumes(prepare()), (files) => ({
+      writeRecord: async (folder, name, body) => {
+        const { published } = JSON.parse(body.toString("utf8")) as { published?: { evidence: string } };
+        events.push(published === undefined ? "write" : `write published ${published.evidence}`);
+        return files.writeRecord(folder, name, body);
+      },
+      removeRecord: async (folder, name, stamp) => {
+        events.push("remove");
+        return files.removeRecord(folder, name, stamp);
+      },
+    }));
+    const { asked, askSavePath } = dialogs();
+    const item = fakeItem();
+    const staged = stageBrowserDownload(item, { root, askSavePath }, Promise.resolve());
+    const done = doneOutcome(staged.download);
+    await settled();
+    const chosen = chosenFolder();
+    writeFileSync(join(chosen, "report.pdf"), "old bytes");
+    const old = statSync(join(chosen, "report.pdf"), { bigint: true });
+    asked[0]?.answer(join(chosen, "report.pdf"));
+    await settled();
+    item.complete("new bytes");
+    expect(await done).toEqual({ state: "completed", cleanup: "removed" });
+    const now = statSync(join(chosen, "report.pdf"), { bigint: true });
+    const windows = process.platform === "win32";
+    // Tunnelling handed the committed name the old file's creation time.
+    if (windows) expect(now.birthtimeNs).toBe(old.birthtimeNs);
+    expect(events).toEqual(["write", `write published ${windows ? "creation" : "birth"}:${now.birthtimeNs + (windows ? 11644473600000000000n : 0n)}`,
+      "remove", "remove"]);
+    expect(readdirSync(chosen)).toEqual(["report.pdf"]);
+    expect(await root.files.listRecords(root)).toEqual([]);
+  });
+
+  it("keeps a replacement saved when the identity it published after its commit rename cannot be recorded", async () => {
+    let refused = 0;
+    const root = withFiles(acrossVolumes(prepare()), (files) => ({
+      writeRecord: async (folder, name, body) => {
+        if ((JSON.parse(body.toString("utf8")) as { published?: unknown }).published !== undefined) {
+          refused += 1;
+          throw new Error("EIO: simulated");
+        }
+        return files.writeRecord(folder, name, body);
+      },
+    }));
+    const { asked, askSavePath } = dialogs();
+    const item = fakeItem();
+    const staged = stageBrowserDownload(item, { root, askSavePath }, Promise.resolve());
+    const done = doneOutcome(staged.download);
+    await settled();
+    const chosen = chosenFolder();
+    writeFileSync(join(chosen, "report.pdf"), "old bytes");
+    asked[0]?.answer(join(chosen, "report.pdf"));
+    await settled();
+    item.complete("new bytes");
+    expect(await done).toEqual({ state: "completed", cleanup: "removed" });
+    expect(readFileSync(join(chosen, "report.pdf"), "utf8")).toBe("new bytes");
+    expect(readdirSync(chosen)).toEqual(["report.pdf"]);
+    // The helper published the replacement, so the failing write was reached.
+    expect(refused).toBe(1);
+  });
+
+  it.each([false, true])("restart preserves the original and handles an occupied target: %s", async (occupied) => {
+    const prepared = prepare();
+    const chosen = join(home, "chosen");
+    mkdirSync(chosen);
+    const target = join(chosen, "report.pdf");
+    const hidden = ".0123456789abcdef0123456789abcdef.removing";
+    const hiddenPath = join(chosen, hidden);
+    const alias = join(chosen, "alias.pdf");
+    const content = Buffer.from("old bytes");
+    writeFileSync(hiddenPath, content);
+    linkSync(hiddenPath, alias);
+    const auxiliary = "original auxiliary data";
+    const attribute = "user.ave";
+    const windows = process.platform === "win32";
+    const darwin = process.platform === "darwin";
+    const libc = windows ? null : (createRequire(import.meta.url)("koffi") as typeof import("koffi"))
+      .load(darwin ? "/usr/lib/libSystem.B.dylib" : "libc.so.6");
+    if (libc === null) writeFileSync(`${hiddenPath}:original`, auxiliary);
+    else {
+      const setAttribute = libc.func(darwin ? "int setxattr(const char *, const char *, const void *, size_t, uint32_t, int)"
+        : "int setxattr(const char *, const char *, const void *, size_t, int)");
+      const data = Buffer.from(auxiliary);
+      expect(setAttribute(hiddenPath, attribute, data, data.length, ...(darwin ? [0, 0] : [0]))).toBe(0);
+    }
+    const stamp = new Date("2003-01-01T00:00:00Z");
+    utimesSync(hiddenPath, stamp, stamp);
+    const original = statSync(hiddenPath, { bigint: true });
+    const folder = statSync(chosen, { bigint: true });
+    const [facts] = windows ? JSON.parse(execFileSync(WINDOWS_PATH_KIND, ["--pin", hiddenPath], { encoding: "utf8" })) : [];
+    const dev = String(windows ? BigInt(facts.volumeSerial) : original.dev);
+    const ino = String(windows ? BigInt(facts.fileId) : original.ino);
+    const epoch = windows ? 11644473600000000000n : 0n;
+    const digest = createHash("sha256").update(content).digest("hex");
+    const evidence = `${windows ? "creation" : "birth"}:${original.birthtimeNs + epoch}`;
+    await prepared.files.writeRecord(prepared, `${"a".repeat(32)}.cleanup.json`, Buffer.from(JSON.stringify({
+      folder: { path: chosen, dev: String(folder.dev), ino: String(folder.ino) },
+      part: `.${"b".repeat(32)}.part`,
+      target: "report.pdf",
+      at: hidden,
+      identity: { kind: "helper", dev, ino, evidence, verdict: "mismatch", observed: {
+        file: { dev, ino, evidence },
+        content: { size: String(original.size), mtimeNs: String(original.mtimeNs + epoch), head: digest, tail: digest },
+      } },
+    })));
+    if (occupied) writeFileSync(target, "competing bytes");
+
+    const restarted = prepare();
+    await sweepBrowserDownloadStaging(restarted);
+
+    const recovered = occupied ? hiddenPath : target;
+    expect(readFileSync(recovered)).toEqual(content);
+    expect(statSync(recovered, { bigint: true })).toMatchObject({ ino: original.ino, mtimeNs: original.mtimeNs, nlink: 2n });
+    expect(statSync(alias, { bigint: true }).ino).toBe(original.ino);
+    if (libc === null) {
+      const [actual] = JSON.parse(execFileSync(WINDOWS_PATH_KIND, ["--pin", recovered], { encoding: "utf8" }));
+      expect(actual.fileId).toBe(facts.fileId);
+      expect(readFileSync(`${recovered}:original`, "utf8")).toBe(auxiliary);
+    } else {
+      const getAttribute = libc.func(darwin ? "intptr_t getxattr(const char *, const char *, void *, size_t, uint32_t, int)"
+        : "intptr_t getxattr(const char *, const char *, void *, size_t)");
+      const data = Buffer.alloc(Buffer.byteLength(auxiliary));
+      expect(getAttribute(recovered, attribute, data, data.length, ...(darwin ? [0, 0] : []))).toBe(data.length);
+      expect(data.toString()).toBe(auxiliary);
+      libc.unload();
+    }
+    if (occupied) expect(readFileSync(target, "utf8")).toBe("competing bytes");
+    else expect(existsSync(hiddenPath)).toBe(false);
+    expect(await restarted.files.listRecords(restarted)).toHaveLength(occupied ? 1 : 0);
+  });
+
+  // "after commit" and "after retirement" stop between the commit rename and persisting the creation time it published, so only the
+  // pre-rename record binds the writer: its file ID and volume. "published birth mismatch" persisted a published creation time the
+  // target does not have.
+  it.each(["before move", "after move", "after commit", "after retirement", "competing target", "replaced part", "writer birth mismatch", "missing writer birth", "published birth mismatch", "part reader", "restored target with pending part"] as const)("restarts after a stopped replacement: %s", async (boundary) => {
+    const prepared = prepare();
+    const chosen = chosenFolder();
+    const target = join(chosen, "report.pdf");
+    writeFileSync(target, "old bytes");
+    const windows = process.platform === "win32";
+    const epoch = windows ? 11644473600000000000n : 0n;
+    const fileId = (path: string): FileIdentity => {
+      const info = statSync(path, { bigint: true });
+      const [facts] = windows ? JSON.parse(execFileSync(WINDOWS_PATH_KIND, ["--pin", path], { encoding: "utf8" })) : [];
+      return { dev: windows ? BigInt(facts.volumeSerial) : info.dev, ino: windows ? BigInt(facts.fileId) : info.ino,
+        evidence: { class: windows ? "creation" : "birth", value: String(info.birthtimeNs + epoch) } };
+    };
+    const original = statSync(target, { bigint: true });
+    const identity = fileId(target);
+    let hidden = "";
+    let partPath = "";
+    let writer: ReturnType<typeof fileId> | undefined;
+    // Windows binds a renamed writer by its file ID and volume, since tunnelling may have changed its creation time; POSIX keeps birth.
+    const unverifiedWriter = boundary === "missing writer birth" || boundary === "published birth mismatch" ||
+      (boundary === "writer birth mismatch" && !windows);
+    const committed = boundary === "after commit" || boundary === "after retirement" || boundary === "writer birth mismatch" || unverifiedWriter;
+    const root = withFiles(acrossVolumes(prepared), () => ({
+      copy: async (_from, _name, _to, _target, part, _proceed, _stop, journal) => {
+        if (!journal) throw new Error("missing write-ahead record");
+        hidden = journal.hidden;
+        partPath = join(chosen, part);
+        writeFileSync(partPath, "new bytes");
+        writer = fileId(partPath);
+        if (boundary === "writer birth mismatch" && writer.evidence !== null) {
+          writer = { ...writer, evidence: { ...writer.evidence, value: String(BigInt(writer.evidence.value) + 100n) } };
+        }
+        if (boundary === "missing writer birth") writer = { ...writer, evidence: null };
+        await journal.write(identity, writer);
+        if (boundary === "replaced part") {
+          moveAside(partPath, join(chosen, "held-by-test"));
+          writeFileSync(partPath, "an unrelated file");
+        } else if (boundary === "restored target with pending part") {
+          journal.resolved();
+        } else if (boundary !== "before move") {
+          moveAside(target, join(chosen, hidden));
+        }
+        if (committed) moveAside(partPath, target);
+        if (boundary === "published birth mismatch") {
+          const published = fileId(target);
+          await journal.published({ ...published, evidence: { class: windows ? "creation" : "birth", value: String(BigInt(published.evidence?.value ?? "0") + 100n) } });
+        }
+        if (boundary === "after retirement") removeEntry(join(chosen, hidden));
+        if (boundary === "competing target") writeFileSync(target, "competing bytes");
+        throw new Error("copy process stopped");
+      },
+    }));
+    const item = fakeItem();
+    const { asked, askSavePath } = dialogs();
+    const { download } = stageBrowserDownload(item, { root, askSavePath }, Promise.resolve());
+    const done = doneOutcome(download);
+    await settled();
+    asked[0]?.answer(target);
+    await settled();
+    item.complete("new bytes");
+    expect(await done).toEqual({ state: "interrupted", cleanup: "removed" });
+    const records = await prepared.files.listRecords(prepared);
+    expect(records).toHaveLength(1);
+    expect(JSON.parse(readFileSync(join(prepared.path, records[0] ?? ""), "utf8"))).toMatchObject({
+      session: basename(partPath).slice(1, -5), at: hidden, target: "report.pdf",
+      identity: { dev: String(identity.dev), ino: String(identity.ino), evidence: `${identity.evidence?.class}:${identity.evidence?.value}` },
+      writer: { dev: String(writer?.dev), ino: String(writer?.ino) },
+    });
+
+    const restarted = withFiles(prepare(), (files) => ({
+      removeRecord: async (folder, name, stamp) => {
+        if (name === records[0]) expect(existsSync(partPath)).toBe(false);
+        return files.removeRecord(folder, name, stamp);
+      },
+    }));
+    if ((boundary === "part reader" || boundary === "restored target with pending part") && windows) {
+      const reader = openSync(partPath, "r");
+      try {
+        await sweepBrowserDownloadStaging(restarted);
+        expect(await restarted.files.listRecords(restarted)).toEqual(records);
+        expect(readdirSync(chosen)).toContain(basename(partPath));
+      } finally {
+        closeSync(reader);
+      }
+    }
+    await sweepBrowserDownloadStaging(restarted);
+    if (unverifiedWriter) {
+      expect(readFileSync(target, "utf8")).toBe("new bytes");
+      expect(readFileSync(join(chosen, hidden), "utf8")).toBe("old bytes");
+      expect(await restarted.files.listRecords(restarted)).toEqual(records);
+    } else if (boundary === "competing target") {
+      expect(readFileSync(target, "utf8")).toBe("competing bytes");
+      expect(statSync(join(chosen, hidden), { bigint: true }).ino).toBe(original.ino);
+      expect(await restarted.files.listRecords(restarted)).toEqual(records);
+    } else if (boundary === "replaced part") {
+      expect(readFileSync(target, "utf8")).toBe("old bytes");
+      expect(readFileSync(partPath, "utf8")).toBe("an unrelated file");
+      expect(await restarted.files.listRecords(restarted)).toEqual(records);
+    } else {
+      expect(readFileSync(target, "utf8")).toBe(committed ? "new bytes" : "old bytes");
+      if (!committed) expect(statSync(target, { bigint: true }).ino).toBe(original.ino);
+      expect(existsSync(join(chosen, hidden))).toBe(false);
+      expect(existsSync(partPath)).toBe(false);
+      expect(await restarted.files.listRecords(restarted)).toEqual([]);
+    }
+  });
+
+  it("discards an unverifiable cleanup record in the verified staging folder", async () => {
+    const root = prepare();
+    const name = `${"a".repeat(32)}.cleanup.json`;
+    await root.files.writeRecord(root, name, Buffer.from('{"invalid":true}'));
+    expect(await sweepBrowserDownloadStaging(root)).toBe(1);
+    expect(await root.files.listRecords(root)).toEqual([]);
+  });
+
+  it("preserves the record that replaces rejected bytes at the same name", async () => {
+    const root = prepare();
+    const name = `${"a".repeat(32)}.cleanup.json`;
+    const path = join(root.path, name);
+    const replacement = Buffer.from('{"replacement":true}');
+    await root.files.writeRecord(root, name, Buffer.from('{"invalid":true}'));
+    const staged = withFiles(root, (files) => ({
+      readRecord: async (...args) => {
+        const bytes = await files.readRecord(...args);
+        if (existsSync(path)) moveAside(path, join(home, "rejected-record"));
+        writeFileSync(path, replacement, { flag: "wx" });
+        return bytes;
+      },
+    }));
+    await sweepBrowserDownloadStaging(staged);
+    expect(readFileSync(path)).toEqual(replacement);
+    expect(await root.files.listRecords(root)).toEqual([name]);
+  });
+
+  it.runIf(process.platform === "darwin" || process.platform === "linux").each(["commit", "restore", "occupied"] as const)(
+    "preserves old bytes and handles the record after replacement failure: %s",
+    async (failure) => {
+      const prepared = prepare();
+      const chosen = join(home, "chosen");
+      mkdirSync(chosen);
+      const target = join(chosen, "report.pdf");
+      const files = process.platform === "darwin"
+        ? _helperFileOperationsForTest(macHelper(failure === "occupied" ? "-copy-occupied" : `-copy-${failure}-failure`))
+        // The seam runs before every rename, the copy's own cleanup of its temporary file included; only the renames into the target fail.
+        : _descriptorFileOperationsForTest((from, to) => {
+          if (to !== "report.pdf") return;
+          if (failure === "occupied") {
+            if (from.endsWith(".part")) writeFileSync(target, "competing bytes");
+          } else if (from.endsWith(".part") || failure === "restore") {
+            throw Object.assign(new Error("injected rename failure"), { code: "EIO" });
+          }
+        });
+      const root = acrossVolumes({ ...prepared, files });
+      writeFileSync(target, "old bytes");
+      const item = fakeItem();
+      const { asked, askSavePath } = dialogs();
+      const { download } = stageBrowserDownload(item, { root, askSavePath }, Promise.resolve());
+      const done = doneOutcome(download);
+      await settled();
+      asked[0]?.answer(target);
+      await settled();
+      item.complete("new bytes");
+      expect(await done).toEqual({ state: "interrupted", cleanup: "removed" });
+      if (failure === "commit") {
+        expect(readdirSync(chosen)).toEqual(["report.pdf"]);
+        expect(readFileSync(target, "utf8")).toBe("old bytes");
+        expect(readdirSync(root.path)).toEqual([]);
+        return;
+      }
+      const hidden = readdirSync(chosen).find((name) => name.endsWith(".removing")) ?? "";
+      expect(readdirSync(chosen)).toHaveLength(failure === "occupied" ? 2 : 1);
+      expect(hidden).toMatch(/^\.[0-9a-f]{32}\.removing$/u);
+      expect(readFileSync(join(chosen, hidden), "utf8")).toBe("old bytes");
+      const [record = ""] = readdirSync(root.path);
+      expect(record).toMatch(/\.cleanup\.json$/u);
+      expect(JSON.parse(readFileSync(join(root.path, record), "utf8"))).toMatchObject({ at: hidden, target: "report.pdf" });
+      await sweepBrowserDownloadStaging(prepared);
+      if (failure === "occupied") {
+        expect(readFileSync(target, "utf8")).toBe("competing bytes");
+        expect(readFileSync(join(chosen, hidden), "utf8")).toBe("old bytes");
+        expect(await prepared.files.listRecords(prepared)).toHaveLength(1);
+        return;
+      }
+      expect(readFileSync(target, "utf8")).toBe("old bytes");
+      expect(readdirSync(chosen)).toEqual(["report.pdf"]);
+      expect(readdirSync(root.path)).toEqual([]);
+    },
+  );
 
   it.each(["create", "commit"] as const)("answers a cancel during a cross-volume copy (at %s) only once the copy has stopped, leaving nothing at the chosen path", async (when) => {
     const prepared = acrossVolumes(prepare());
@@ -472,6 +885,361 @@ describe("a staged download", () => {
     moveAside(root.path, join(home, "moved"));
     mkdirSync(root.path);
     expect(() => stageBrowserDownload(fakeItem(), { root, askSavePath: dialogs().askSavePath }, Promise.resolve())).toThrow(BrowserDownloadStagingError);
+  });
+});
+
+// A removal of the staged file that does not succeed: `done` says so, and the next start's sweep removes what was left.
+describe("what `done` reports when the staged file cannot be removed", () => {
+  const failingRemoval = (root: Root, error: Error): Root => withFiles(root, () => ({ remove: async () => { throw error; } }));
+  const faults = [
+    ["the removal fails", () => Object.assign(new Error("EIO: simulated"), { code: "EIO" }), "remove-failed"],
+    ["its helper is killed and seen to end", () => new HeldFileHelperStalledError("/helper", "said nothing for 1 ms", false), "remove-failed"],
+    ["its helper is killed but not seen to end", () => new HeldFileHelperStalledError("/helper", "said nothing for 1 ms", true), "helper-still-running"],
+  ] as const;
+
+  const STAGED_REPLACED = "a staged browser download was left in place: another file now has its name";
+  const STAGING_UNVERIFIED = "a staged browser download was left in place: its folder cannot be verified";
+  const UNSTAMPED_LEFT = "a staged browser download was left in place: it was never identified; the next start removes it";
+  // The cleanup `done` reports, with the reason a staged file was left.
+  const doneWithReason = (download: Observed) => new Promise<{ state: string; cleanup: string; reason?: string }>((resolve) => {
+    download.once("done", (_event, state, cleanup, reason) => resolve({ state, cleanup, ...(reason === undefined ? {} : { reason }) }));
+  });
+
+  it("stamps the staged file when the browser first writes it, and later removes only that file", async () => {
+    const prepared = prepare();
+    const { stamps, stamped, root } = countingStamps(prepared);
+    const item = fakeItem();
+    const staged = stageBrowserDownload(item, { root, askSavePath: dialogs().askSavePath }, new Promise(() => {}));
+    const done = doneWithReason(staged.download);
+    item.write("partial");
+    await stamped();
+    expect(stamps).toEqual([basename(item.path)]);
+    // Another file put at the staged name after that is not the file the download wrote, so its removal is refused.
+    moveAside(item.path, join(home, "first-file"));
+    writeFileSync(item.path, "another file");
+    staged.download.cancel();
+    expect(await done).toEqual({ state: "cancelled", cleanup: "remove-failed" });
+    expect(readFileSync(item.path, "utf8")).toBe("another file");
+    expect(stamps).toHaveLength(1);
+    expect(hooks.warnings).toContain(STAGED_REPLACED);
+    expect(hooks.warnings).not.toContain(STAGING_UNVERIFIED);
+  });
+
+  it("leaves a staged file it never saw the browser write, and never stamps it by name to remove it", async () => {
+    const prepared = prepare();
+    const { stamps, root } = countingStamps(prepared);
+    const item = fakeItem();
+    const staged = stageBrowserDownload(item, { root, askSavePath: dialogs().askSavePath }, new Promise(() => {}));
+    const done = doneWithReason(staged.download);
+    writeFileSync(item.path, "written unseen");
+    staged.download.cancel();
+    expect(await done).toEqual({ state: "cancelled", cleanup: "left", reason: "unstamped" });
+    expect(readFileSync(item.path, "utf8")).toBe("written unseen");
+    expect(readdirSync(prepared.path)).toEqual([basename(item.path)]);
+    expect(stamps.length).toBeLessThanOrEqual(1);
+    expect(hooks.warnings).toContain(UNSTAMPED_LEFT);
+  });
+
+  it("stamps a staged file that is not there yet at most once in a while, and again once the download completes", async () => {
+    const prepared = prepare();
+    const stamps: string[] = [];
+    const root = withFiles(prepared, (files) => ({
+      stamp: async (folder, name) => {
+        stamps.push(name);
+        return existsSync(join(folder.path, name)) ? files.stamp(folder, name) : null;
+      },
+    }));
+    const { asked, askSavePath } = dialogs();
+    const item = fakeItem();
+    const staged = stageBrowserDownload(item, { root, askSavePath }, Promise.resolve());
+    const done = doneOutcome(staged.download);
+    await settled();
+    mkdirSync(join(home, "chosen"));
+    asked[0]?.answer(join(home, "chosen", "report.pdf"));
+    await settled();
+    for (let index = 0; index < 5; index += 1) {
+      item.emit("updated", {}, "progressing");
+      await settled();
+    }
+    expect(stamps).toHaveLength(1);
+    item.complete("whole");
+    expect(await done).toEqual({ state: "completed", cleanup: "removed" });
+    expect(stamps).toHaveLength(2);
+    expect(readFileSync(join(home, "chosen", "report.pdf"), "utf8")).toBe("whole");
+  });
+
+  it("stamps a staged file again once its pause has passed, even after the wall clock was set back", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "performance"] });
+    try {
+      const prepared = prepare();
+      const stamps: string[] = [];
+      const root = withFiles(prepared, (files) => ({
+        stamp: async (folder, name) => {
+          stamps.push(name);
+          return existsSync(join(folder.path, name)) ? files.stamp(folder, name) : null;
+        },
+      }));
+      const { asked, askSavePath } = dialogs();
+      const item = fakeItem();
+      const staged = stageBrowserDownload(item, { root, askSavePath }, Promise.resolve());
+      const done = doneOutcome(staged.download);
+      await settled();
+      mkdirSync(join(home, "chosen"));
+      asked[0]?.answer(join(home, "chosen", "report.pdf"));
+      await settled();
+      item.emit("updated", {}, "progressing");
+      await settled();
+      expect(stamps).toHaveLength(1);
+      vi.setSystemTime(Date.now() - 3_600_000);
+      vi.advanceTimersByTime(1_001);
+      item.emit("updated", {}, "progressing");
+      await settled();
+      expect(stamps).toHaveLength(2);
+      item.complete("whole");
+      expect(await done).toEqual({ state: "completed", cleanup: "removed" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["cancelled", "completed"] as const)("leaves a %s download's staged file whose stamp failed, without stamping it again", async (ending) => {
+    const prepared = prepare();
+    const { stamps, root } = countingStamps(prepared, true);
+    const { asked, askSavePath } = dialogs();
+    const item = fakeItem();
+    const staged = stageBrowserDownload(item, { root, askSavePath }, Promise.resolve());
+    const done = doneWithReason(staged.download);
+    item.write("partial");
+    await settled();
+    if (ending === "cancelled") {
+      staged.download.cancel();
+    } else {
+      const chosen = join(home, "chosen");
+      mkdirSync(chosen);
+      asked[0]?.answer(join(chosen, "report.pdf"));
+      await settled();
+      item.complete("whole");
+    }
+    expect(await done).toEqual({ state: ending === "cancelled" ? "cancelled" : "interrupted", cleanup: "left", reason: "stamp-failed" });
+    expect(stamps).toHaveLength(1);
+    expect(existsSync(item.path)).toBe(true);
+  });
+
+  // The helper may answer `cancelled` though it was let proceed; nothing is claimed removed.
+  it("reports a closed dialog's staged file as not removed when its removal answers cancelled", async () => {
+    const prepared = prepare();
+    const { asked, askSavePath } = dialogs();
+    const item = fakeItem();
+    const root = withFiles(prepared, () => ({ remove: async () => "cancelled" as const }));
+    const staged = stageBrowserDownload(item, { root, askSavePath }, Promise.resolve());
+    const done = doneOutcome(staged.download);
+    item.write("partial");
+    await settled();
+    asked[0]?.answer(null);
+    expect(await done).toEqual({ state: "cancelled", cleanup: "remove-failed" });
+    expect(readdirSync(prepared.path)).toEqual([basename(item.path)]);
+  });
+
+  it.each(faults)("reports a closed dialog's staged file as not removed when %s", async (_case, fault, cleanup) => {
+    const prepared = prepare();
+    const { asked, askSavePath } = dialogs();
+    const item = fakeItem();
+    const staged = stageBrowserDownload(item, { root: failingRemoval(prepared, fault()), askSavePath }, Promise.resolve());
+    const done = doneOutcome(staged.download);
+    item.write("partial");
+    await settled();
+    asked[0]?.answer(null);
+    expect(await done).toEqual({ state: "cancelled", cleanup });
+    expect(readdirSync(prepared.path)).toEqual([basename(item.path)]);
+    expect(await sweepBrowserDownloadStaging(prepared)).toBe(1);
+    expect(readdirSync(prepared.path)).toEqual([]);
+  });
+
+  it.each(faults)("reports a saved cross-volume copy's staged file as not removed when %s", async (_case, fault, cleanup) => {
+    const prepared = prepare();
+    const { asked, askSavePath } = dialogs();
+    const item = fakeItem();
+    const staged = stageBrowserDownload(item, { root: acrossVolumes(failingRemoval(prepared, fault())), askSavePath }, Promise.resolve());
+    const done = doneOutcome(staged.download);
+    await settled();
+    const chosen = join(home, "chosen");
+    mkdirSync(chosen);
+    asked[0]?.answer(join(chosen, "report.pdf"));
+    await settled();
+    item.complete("across");
+    expect(await done).toEqual({ state: "completed", cleanup });
+    expect(readFileSync(join(chosen, "report.pdf"), "utf8")).toBe("across");
+    expect(readdirSync(prepared.path)).toEqual([basename(item.path)]);
+    expect(await sweepBrowserDownloadStaging(prepared)).toBe(1);
+    expect(readdirSync(prepared.path)).toEqual([]);
+  });
+
+  it("saves a completed download whose stamp in flight at completion began before the staged file existed", async () => {
+    const prepared = prepare();
+    let first = true;
+    const root = withFiles(prepared, (files) => ({
+      stamp: async (folder, name) => {
+        if (!first) return files.stamp(folder, name);
+        first = false;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return null;
+      },
+    }));
+    const { asked, askSavePath } = dialogs();
+    const item = fakeItem();
+    const staged = stageBrowserDownload(item, { root, askSavePath }, Promise.resolve());
+    const done = doneOutcome(staged.download);
+    await settled();
+    mkdirSync(join(home, "chosen"));
+    asked[0]?.answer(join(home, "chosen", "report.pdf"));
+    await settled();
+    item.emit("updated", {}, "progressing");
+    item.complete("whole");
+    expect(await done).toEqual({ state: "completed", cleanup: "removed" });
+    expect(readFileSync(join(home, "chosen", "report.pdf"), "utf8")).toBe("whole");
+  });
+});
+
+// A cross-volume copy whose helper stalled and was not seen to end (browser-download-files.test.ts drives that helper): the native helper
+// removes its recorded temporary file once that helper ends, or at the next start, and only while it is still the file the copy wrote.
+describe("a stalled copy's temporary file, removed through the native helper", () => {
+  const stalledCopy = async () => {
+    const prepared = prepare();
+    let end!: () => void;
+    const exited = new Promise<void>((resolve) => { end = resolve; });
+    const removed: string[] = [];
+    let onRemoved = (): void => {};
+    const root = withFiles(acrossVolumes(prepared), (files) => ({
+      copy: async (_from, _name, to, _target, part) => {
+        const path = join(to.path, part);
+        writeFileSync(path, "partial copy");
+        const info = statSync(path, { bigint: true });
+        let partFile: FileIdentity = { dev: info.dev, ino: info.ino, evidence: { class: "birth", value: String(info.birthtimeNs) } };
+        if (process.platform === "win32") {
+          const [facts] = JSON.parse(execFileSync(WINDOWS_PATH_KIND, ["--pin", path], { encoding: "utf8", windowsHide: true })) as
+            { volumeSerial: string; fileId: string }[];
+          if (facts === undefined) throw new Error("fixture file identity not available");
+          partFile = { dev: BigInt(facts.volumeSerial), ino: BigInt(facts.fileId),
+            evidence: { class: "creation", value: String(info.birthtimeNs + 11644473600000000000n) } };
+        }
+        const error = new HeldFileHelperStalledError("/helper", "did not end within 1 ms of being stopped", true);
+        Object.assign(error, { passed: "ready", partialCopy: "left", exited, partFile });
+        throw error;
+      },
+      removeRecord: async (directory, name, stamp) => {
+        try {
+          return await files.removeRecord(directory, name, stamp);
+        } finally {
+          removed.push(name);
+          onRemoved();
+        }
+      },
+    }));
+    const removalOf = (name: string) => new Promise<void>((resolve) => {
+      const check = (): void => { if (removed.includes(name)) resolve(); else onRemoved = check; };
+      check();
+    });
+    const { asked, askSavePath } = dialogs();
+    const item = fakeItem();
+    const staged = stageBrowserDownload(item, { root, askSavePath }, Promise.resolve());
+    const done = doneOutcome(staged.download);
+    await settled();
+    const chosen = join(home, "chosen");
+    mkdirSync(chosen);
+    asked[0]?.answer(join(chosen, "report.pdf"));
+    await settled();
+    item.complete("across");
+    expect(await done).toEqual({ state: "interrupted", cleanup: "part-left" });
+    const [part] = readdirSync(chosen);
+    const records = readdirSync(prepared.path);
+    expect(records).toEqual([expect.stringMatching(/^[0-9a-f]{32}\.cleanup\.json$/u)]);
+    return { prepared, chosen, part: join(chosen, part ?? ""), record: records[0] ?? "", end, removalOf };
+  };
+
+  it("sees the temporary file's identity while the native helper still holds it", async () => {
+    const chosen = join(home, "chosen");
+    mkdirSync(chosen);
+    let identity: bigint | undefined;
+    const root = atStep(acrossVolumes(prepare()), "copy", "copied", ({ part }) => { identity = statSync(join(chosen, part ?? ""), { bigint: true }).ino; });
+    const { asked, askSavePath } = dialogs();
+    const item = fakeItem();
+    const staged = stageBrowserDownload(item, { root, askSavePath }, Promise.resolve());
+    const done = doneOutcome(staged.download);
+    await settled();
+    asked[0]?.answer(join(chosen, "report.pdf"));
+    await settled();
+    item.complete("across");
+    expect(await done).toEqual({ state: "completed", cleanup: "removed" });
+    expect(identity).toBeGreaterThan(0n);
+  });
+
+  it("removes it once the stalled helper is seen to end, and then its record", async () => {
+    const { prepared, part, record, end, removalOf } = await stalledCopy();
+    expect(readFileSync(part, "utf8")).toBe("partial copy");
+    end();
+    await removalOf(record);
+    expect(existsSync(part)).toBe(false);
+    expect(readdirSync(prepared.path)).toEqual([]);
+  });
+
+  it("leaves it while the helper never ends, and the next start's sweep removes it", async () => {
+    const { prepared, chosen, part, record, end, removalOf } = await stalledCopy();
+    expect(await sweepBrowserDownloadStaging(prepared)).toBe(1);
+    expect(existsSync(part)).toBe(false);
+    expect(readdirSync(prepared.path)).toEqual([]);
+    end();
+    await removalOf(record);
+    expect(readdirSync(chosen)).toEqual([]);
+  });
+
+  it("never removes a file put over the temporary file's name, when the helper ends or at the next start", async () => {
+    const { prepared, chosen, part, end } = await stalledCopy();
+    const mine = join(chosen, "mine.txt");
+    writeFileSync(mine, "the user's file");
+    moveAside(mine, part);
+    end();
+    await settled();
+    expect(readFileSync(part, "utf8")).toBe("the user's file");
+    expect(readdirSync(prepared.path)).toHaveLength(1);
+    expect(await sweepBrowserDownloadStaging(prepared)).toBe(0);
+    expect(readFileSync(part, "utf8")).toBe("the user's file");
+    expect(readdirSync(prepared.path)).toEqual([expect.stringMatching(/\.cleanup\.json$/u)]);
+  });
+});
+
+describe("a chosen folder whose volume cannot replace a file safely", () => {
+  afterEach(() => { setLocale("en"); });
+
+  it.each([
+    ["en", "This location does not support safe saving; choose a local folder on a drive that supports it.",
+      "Ave could not check whether this location supports safe saving; try again or choose a local folder on a drive that supports it."],
+    ["ko", "이 위치는 안전한 저장을 지원하지 않습니다. 안전한 저장을 지원하는 드라이브의 로컬 폴더를 선택하세요.",
+      "이 위치가 안전한 저장을 지원하는지 확인하지 못했습니다. 다시 시도하거나 안전한 저장을 지원하는 드라이브의 로컬 폴더를 선택하세요."],
+  ] as const)("is refused by name, worded in %s", (locale, unsupported, unknown) => {
+    setLocale(locale);
+    expect(stagingRefusal("volume")).toBe(unsupported);
+    expect(stagingRefusal("volume-unknown")).toBe(unknown);
+    expect(stagingRefusal("to")).not.toMatch(/file IDs/u);
+  });
+
+  it.each([
+    ["volume", "unsupported-volume"],
+    ["volume-unknown", "volume-unknown"],
+    ["target", null],
+  ] as const)("ends the download interrupted with a notice the downloads list shows, for a %s refusal", async (refusal, notice) => {
+    const root = withFiles(acrossVolumes(prepare()), () => ({ copy: async () => { throw new HeldDirectoryRefusedError(refusal); } }));
+    const { asked, askSavePath } = dialogs();
+    const item = fakeItem();
+    const staged = stageBrowserDownload(item, { root, askSavePath }, Promise.resolve());
+    const done = doneOutcome(staged.download);
+    await settled();
+    mkdirSync(join(home, "chosen"));
+    asked[0]?.answer(join(home, "chosen", "report.pdf"));
+    await settled();
+    expect(staged.download.getNotice()).toBeNull();
+    item.complete("whole");
+    expect((await done).state).toBe("interrupted");
+    expect(staged.download.getNotice()).toBe(notice);
   });
 });
 
@@ -521,14 +1289,16 @@ describe("cleanup and publication after the staging folder is swapped", () => {
   };
 
   it.each(["folder", "parent"] as const)("a cancel after the %s was swapped leaves the file of that name in the other tree", async (swap) => {
-    const root = prepare();
+    const { root, stamped } = countingStamps(prepare());
     const item = fakeItem();
     const staged = stageBrowserDownload(item, { root, askSavePath: dialogs().askSavePath }, new Promise(() => {}));
-    const done = doneState(staged.download);
-    writeFileSync(item.path, "partial");
+    const done = doneOutcome(staged.download);
+    item.write("partial");
+    await stamped();
     const lookalike = swapStaging(swap, basename(item.path));
     expect(() => staged.download.cancel()).not.toThrow();
-    expect(await done).toBe("cancelled");
+    // The file is left in the folder that was verified, and `done` does not claim it removed.
+    expect(await done).toEqual({ state: "cancelled", cleanup: "remove-failed" });
     expect(readFileSync(lookalike, "utf8")).toBe("the user's file");
   });
 
@@ -684,7 +1454,8 @@ describe("the final operation boundary", () => {
     const item = fakeItem();
     const staged = stageBrowserDownload(item, { root, askSavePath: dialogs().askSavePath }, new Promise(() => {}));
     const done = doneState(staged.download);
-    writeFileSync(item.path, "partial");
+    item.write("partial");
+    await settled();
     staged.download.cancel();
     expect(await done).toBe("cancelled");
     expect(readdirSync(now)).toEqual([]);
@@ -798,9 +1569,10 @@ describe.runIf(process.platform === "darwin")("a native helper that stops answer
     const { chosen, ended } = await publishing(root, chunks(1));
     const { state, ms } = await ended;
     expect(state).toBe("interrupted");
-    // The move, then the removal of the staged file, each stall once and are killed.
-    expect(ms).toBeGreaterThanOrEqual(2 * BOUNDS.stallMs);
-    expect(ms).toBeLessThan(2 * (BOUNDS.stallMs + BOUNDS.killMs));
+    // The stamp taken at completion stalls once and is killed. The staged file is then never identified, so nothing moves or removes
+    // it, and no second helper starts.
+    expect(ms).toBeGreaterThanOrEqual(BOUNDS.stallMs);
+    expect(ms).toBeLessThan(BOUNDS.stallMs + BOUNDS.killMs);
     expect(helpersStillRunning()).toEqual([]);
     expect(readdirSync(chosen)).toEqual([]);
     // The staged file is not claimed removed: it stays in the verified staging folder for the next start to sweep.
@@ -828,6 +1600,20 @@ describe.runIf(process.platform === "darwin")("a native helper that stops answer
     expect(readdirSync(chosen)).toEqual([]);
     expect(readdirSync(prepared.path)).toEqual([]);
     await nothingPublishedLater(chosen);
+  });
+
+  it("removes a killed copy's temporary file only once it is moved aside and checked, through the helper", async () => {
+    const prepared = prepare();
+    let cancel = (): void => {};
+    const root = atStep(acrossVolumes(hanging(prepared, "ignores-eof")), "copy", "ready", () => { setTimeout(() => cancel(), 150); });
+    const { download, chosen, ended } = await publishing(root, chunks(30));
+    const outcome = doneOutcome(download);
+    cancel = () => download.cancel();
+    expect((await ended).state).toBe("interrupted");
+    expect(await outcome).toEqual({ state: "interrupted", cleanup: "removed" });
+    expect(hooks.pathOperations.filter((path) => dirname(path) === chosen)).toEqual([]);
+    expect(readdirSync(chosen)).toEqual([]);
+    expect(helpersStillRunning()).toEqual([]);
   });
 
   it.each([
@@ -869,7 +1655,7 @@ describe.runIf(process.platform === "darwin")("a native helper that stops answer
 // Exercise the native sweep directly at its held step; Linux sweeps in process.
 describe.runIf(process.platform !== "linux")("the native sweep", () => {
   const helper = process.platform === "win32"
-    ? join(RESOURCES, "windows-path-kind", process.arch, "ave-path-kind.exe")
+    ? WINDOWS_PATH_KIND
     : join(RESOURCES, "macos-dir-ops", process.arch, "ave-dir-ops");
 
   it.each(["staging folder", "Ave home"] as const)("removes only from the held %s once it was swapped for a link to another tree", async (held) => {
@@ -900,6 +1686,53 @@ describe.runIf(process.platform !== "linux")("the native sweep", () => {
 });
 
 describe("the native helper", () => {
+  it("keeps a substitute for the part out of the final name", async () => {
+    const root = prepare();
+    const name = "0123456789abcdef0123456789abcdef";
+    const part = `.${name}.part`;
+    writeFileSync(join(root.path, name), "download");
+    const path = join(home, "commit");
+    mkdirSync(path);
+    const { dev, ino } = statSync(path, { bigint: true });
+    const result = root.files.copy(root, name, { path, dev, ino }, "report.pdf", part, (step) => {
+      if (step === "copied") {
+        if (process.platform === "win32") {
+          expect(() => moveAside(join(path, part), join(path, "download.saved"))).toThrow(/EBUSY|EPERM|EACCES/u);
+          return true;
+        }
+        moveAside(join(path, part), join(path, "download.saved"));
+        writeFileSync(join(path, part), "replacement");
+      }
+      return true;
+    }, new AbortController().signal);
+    if (process.platform === "win32") {
+      await expect(result).resolves.toBe("committed");
+      expect(readFileSync(join(path, "report.pdf"), "utf8")).toBe("download");
+      expect(existsSync(join(path, part))).toBe(false);
+      return;
+    }
+    await expect(result).rejects.toMatchObject({ refusal: "target" });
+    expect(readFileSync(join(path, part), "utf8")).toBe("replacement");
+    expect(existsSync(join(path, "report.pdf"))).toBe(false);
+  });
+
+  it("keeps a part that predated the exclusive open without claiming it as a leftover", async () => {
+    const root = prepare();
+    const name = "0123456789abcdef0123456789abcdef";
+    const part = `.${name}.part`;
+    writeFileSync(join(root.path, name), "download");
+    const path = join(home, "occupied-part");
+    mkdirSync(path);
+    writeFileSync(join(path, part), "replacement");
+    const { dev, ino } = statSync(path, { bigint: true });
+    const error = await root.files.copy(root, name, { path, dev, ino }, "report.pdf", part, () => true, new AbortController().signal)
+      .catch((failure: unknown) => failure);
+    const { stoppedCopyOf } = await import("../browser-download-files.js");
+    expect(error).toMatchObject({ code: "EEXIST" });
+    expect(stoppedCopyOf(error)).toBeNull();
+    expect(readFileSync(join(path, part), "utf8")).toBe("replacement");
+  });
+
   it("refuses a directory whose identity is not the one checked, without acting", async () => {
     const root = prepare();
     const staged = join(root.path, "0123456789abcdef0123456789abcdef");
@@ -907,11 +1740,12 @@ describe("the native helper", () => {
     const other = join(home, "other");
     mkdirSync(other);
     const proceed = vi.fn(() => true);
-    await expect(root.files.remove({ ...root, ino: root.ino + 1n }, basename(staged), proceed, new AbortController().signal)).rejects.toMatchObject({ refusal: "from" });
+    const file = await stampOf(root, basename(staged));
+    await expect(root.files.remove({ ...root, ino: root.ino + 1n }, basename(staged), proceed, new AbortController().signal, file)).rejects.toMatchObject({ refusal: "from" });
     expect(proceed).not.toHaveBeenCalled();
     expect(readFileSync(staged, "utf8")).toBe("staged");
     const folder = { path: other, dev: statSync(other, { bigint: true }).dev, ino: statSync(other, { bigint: true }).ino };
-    await expect(root.files.move(root, basename(staged), { ...folder, dev: folder.dev + 1n }, "report.pdf", proceed, new AbortController().signal)).rejects.toMatchObject({ refusal: "to" });
+    await expect(root.files.move(root, basename(staged), { ...folder, dev: folder.dev + 1n }, "report.pdf", proceed, new AbortController().signal, file)).rejects.toMatchObject({ refusal: "to" });
     expect(proceed).not.toHaveBeenCalled();
     expect(readdirSync(other)).toEqual([]);
     removeEntry(staged);
@@ -926,10 +1760,639 @@ describe("the native helper", () => {
     const info = statSync(other, { bigint: true });
     const folder = { path: other, dev: info.dev, ino: info.ino };
     const stop = new AbortController();
-    expect(await root.files.move(root, basename(staged), folder, "report.pdf", () => false, stop.signal)).toBe("cancelled");
+    const file = await stampOf(root, basename(staged));
+    expect(await root.files.move(root, basename(staged), folder, "report.pdf", () => false, stop.signal, file)).toBe("cancelled");
     expect(await root.files.copy(root, basename(staged), folder, "report.pdf", ".0123.part", () => false, stop.signal)).toBe("cancelled");
-    expect(await root.files.remove(root, basename(staged), () => false, stop.signal)).toBe("cancelled");
+    expect(await root.files.remove(root, basename(staged), () => false, stop.signal, file)).toBe("cancelled");
     expect(readFileSync(staged, "utf8")).toBe("staged");
     expect(readdirSync(other)).toEqual([]);
+  });
+});
+
+// The identity a staged file has now, as a completed download is stamped.
+const stampOf = async (root: Root, name: string): Promise<FileIdentity> => {
+  const file = await root.files.stamp(root, name);
+  if (file === null) throw new Error(`${name} is absent`);
+  return file;
+};
+const PART_FOR_RECOVERY = ".0123456789abcdef0123456789abcdef.part";
+const HIDDEN_FOR_RECOVERY = ".0123456789abcdef0123456789abcdef.removing";
+const macHelper = (variant = ""): string => join(RESOURCES, "macos-dir-ops", process.arch, `ave-dir-ops${variant}`);
+const boundArgs = (path: string): string[] => {
+  const { dev, ino } = statSync(path, { bigint: true });
+  return [path, String(dev), String(ino)];
+};
+// The macOS helper's evidence token for a file, and its content fingerprint.
+const tokenOf = (path: string): string => {
+  const { dev, ino, birthtimeNs } = statSync(path, { bigint: true });
+  return `${dev}:${ino}:birth:${birthtimeNs}`;
+};
+const contentKey = (path: string): string => {
+  const { size, mtimeNs } = statSync(path, { bigint: true });
+  const bytes = readFileSync(path);
+  const sha = (slice: Buffer) => createHash("sha256").update(slice).digest("hex");
+  return `${size}:${mtimeNs}:${sha(bytes.subarray(0, 65536))}:${sha(bytes.subarray(-65536))}`;
+};
+
+const RECOVERY_RECORD = "0123456789abcdef0123456789abcdef.cleanup.json";
+const SECOND_RECOVERY_RECORD = "1123456789abcdef0123456789abcdef.cleanup.json";
+
+function writeRecoveryRecord(root: Root, name: string, path: string, at: string, identity: unknown): void {
+  const { dev, ino } = statSync(path, { bigint: true });
+  writeFileSync(join(root.path, name), JSON.stringify({
+    folder: { path, dev: String(dev), ino: String(ino) }, part: PART_FOR_RECOVERY, at, identity,
+  }));
+}
+
+function hiddenSnapshot(path: string) {
+  const { dev, ino, birthtimeNs, size, mtimeNs } = statSync(path, { bigint: true });
+  const [, , head, tail] = contentKey(path).split(":");
+  return {
+    file: { dev: String(dev), ino: String(ino), evidence: `birth:${birthtimeNs}` },
+    content: { size: String(size), mtimeNs: String(mtimeNs), head, tail },
+  };
+}
+
+it.each([
+  ["a bare file number", "legacy"],
+  ["a bare birth time", "legacy-birth"],
+  ["an unknown evidence class", "unknown"],
+  ["its evidence", "current"],
+] as const)("at startup, a record whose identity carries %s is trusted only with that evidence", async (_label, shape) => {
+  const root = prepare();
+  const chosen = join(home, "chosen");
+  mkdirSync(chosen);
+  const part = join(chosen, PART_FOR_RECOVERY);
+  writeFileSync(part, "partial copy");
+  const windows = process.platform === "win32";
+  const info = statSync(part, { bigint: true });
+  const [facts] = windows ? JSON.parse(execFileSync(WINDOWS_PATH_KIND, ["--pin", part], { encoding: "utf8" })) : [];
+  const dev = String(windows ? BigInt(facts.volumeSerial) : info.dev);
+  const ino = String(windows ? BigInt(facts.fileId) : info.ino);
+  const birth = String(info.birthtimeNs + (windows ? 11644473600000000000n : 0n));
+  const evidence = { legacy: {}, "legacy-birth": { birthtimeNs: birth }, unknown: { evidence: `other:${birth}` },
+    current: { evidence: `${windows ? "creation" : "birth"}:${birth}` } }[shape];
+  writeRecoveryRecord(root, RECOVERY_RECORD, chosen, PART_FOR_RECOVERY, { kind: "fileId", dev, ino, ...evidence });
+  await sweepBrowserDownloadStaging(root);
+  expect(existsSync(part)).toBe(shape !== "current");
+  expect(await root.files.listRecords(root)).toEqual(shape === "current" ? [] : [RECOVERY_RECORD]);
+});
+
+it.runIf(process.platform === "win32")("reads a wide writer ID and refuses a second record from a swapped staging directory", async () => {
+  const root = prepare();
+  const trusted = join(home, "trusted");
+  const forged = join(home, "forged");
+  mkdirSync(trusted);
+  mkdirSync(forged);
+  const ino = 0xfedcba9876543210123456789abcdef0n;
+  const identity = { kind: "fileId", dev: "4294967297", ino: String(ino), evidence: "creation:20" };
+  writeRecoveryRecord(root, RECOVERY_RECORD, trusted, PART_FOR_RECOVERY, identity);
+  writeRecoveryRecord(root, SECOND_RECOVERY_RECORD, trusted, PART_FOR_RECOVERY, identity);
+  writeRecoveryRecord({ ...root, path: forged }, SECOND_RECOVERY_RECORD, home, PART_FOR_RECOVERY, identity);
+  const recover = vi.fn(root.files.recover);
+  const swapped = withFiles(root, (files) => ({
+    recover,
+    listRecords: async (folder) => [...await files.listRecords(folder)].sort(),
+    readRecord: async (folder, name, max, sweep) => {
+      const bytes = await files.readRecord(folder, name, max, sweep);
+      if (name === RECOVERY_RECORD) {
+        moveAside(root.path, join(home, "old-staging"));
+        moveAside(forged, root.path);
+      }
+      return bytes;
+    },
+  }));
+  await expect(sweepBrowserDownloadStaging(swapped)).rejects.toThrow(/staging folder/u);
+  expect(recover).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({ path: trusted }), PART_FOR_RECOVERY, PART_FOR_RECOVERY,
+    { kind: "fileId", file: { dev: 4294967297n, ino, evidence: { class: "creation", value: "20" } } },
+  );
+  expect(existsSync(join(root.path, SECOND_RECOVERY_RECORD))).toBe(true);
+});
+
+async function nativeAtReady(args: string[], afterReady: () => void): Promise<string> {
+  const child = spawn(macHelper(), args, { stdio: ["pipe", "pipe", "pipe"] });
+  let transcript = "";
+  const ended = new Promise<number | null>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", resolve);
+  });
+  let replied = false;
+  child.stdout.setEncoding("utf8");
+  child.stdout.on("data", (text: string) => {
+    transcript += text;
+    if (!replied && transcript.startsWith("ready\n")) {
+      replied = true;
+      afterReady();
+      child.stdin.end("c");
+    }
+  });
+  await ended;
+  return transcript;
+}
+
+describe.runIf(process.platform === "darwin")("native recovery through a held directory", () => {
+  it.each(["remove", "restore"] as const)("keeps the retry %s in the held tree after an ancestor is replaced", async (operation) => {
+    const ancestor = join(home, "ancestor");
+    const path = join(ancestor, "chosen");
+    const moved = join(home, "moved");
+    mkdirSync(path, { recursive: true });
+    const hidden = join(path, HIDDEN_FOR_RECOVERY);
+    writeFileSync(hidden, "verified original");
+    const args = operation === "restore"
+      ? ["--dir-restore", ...boundArgs(path), HIDDEN_FOR_RECOVERY, PART_FOR_RECOVERY, "--expect", tokenOf(hidden), "--content", contentKey(hidden)]
+      : ["--dir-remove-id", ...boundArgs(path), HIDDEN_FOR_RECOVERY, "--expect", tokenOf(hidden)];
+    const transcript = await nativeAtReady(args, () => {
+      moveAside(ancestor, moved);
+      mkdirSync(path, { recursive: true });
+      writeFileSync(hidden, "unrelated file");
+    });
+    expect(transcript).toBe(operation === "restore" ? "ready\nrestored\n" : "ready\nremoved\n");
+    expect(readFileSync(hidden, "utf8")).toBe("unrelated file");
+    expect(existsSync(join(path, PART_FOR_RECOVERY))).toBe(false);
+    const held = join(moved, "chosen");
+    expect(existsSync(join(held, HIDDEN_FOR_RECOVERY))).toBe(false);
+    if (operation === "restore") expect(readFileSync(join(held, PART_FOR_RECOVERY), "utf8")).toBe("verified original");
+  });
+
+  it("keeps the hidden source when the part is replaced during copy-back", () => {
+    const hidden = join(home, HIDDEN_FOR_RECOVERY);
+    writeFileSync(hidden, "to be restored");
+    const args = ["--dir-restore", ...boundArgs(home), HIDDEN_FOR_RECOVERY, PART_FOR_RECOVERY, "--expect", tokenOf(hidden), "--content", contentKey(hidden)];
+    const transcript = execFileSync(macHelper("-swap-restored"), args, { input: "c", encoding: "utf8" });
+    expect(transcript).toMatch(/\nleft .* mismatch .* part-left\n$/u);
+    expect(readFileSync(hidden, "utf8")).toBe("to be restored");
+    expect(readFileSync(join(home, PART_FOR_RECOVERY), "utf8")).toBe("replacement");
+    expect(readFileSync(join(home, "probe-written"), "utf8")).toBe("to be restored");
+  });
+
+  it("refuses to copy back into a different tree when the folder path is replaced before retry", async () => {
+    const root = prepare();
+    const path = join(home, "chosen");
+    const moved = join(home, "moved");
+    mkdirSync(path);
+    const hidden = join(path, HIDDEN_FOR_RECOVERY);
+    writeFileSync(hidden, "verified source");
+    writeRecoveryRecord(root, RECOVERY_RECORD, path, HIDDEN_FOR_RECOVERY, {
+      kind: "helper", dev: "1", ino: "1", verdict: "mismatch", observed: hiddenSnapshot(hidden),
+    });
+    let replaced = false;
+    const replace = (): void => {
+      if (replaced) return;
+      replaced = true;
+      moveAside(path, moved);
+      mkdirSync(path);
+      writeFileSync(hidden, "other tree's file");
+    };
+    hooks.beforeCopy = replace;
+    const files = withFiles(root, (files) => ({
+      recover: (folder, at, original, identity) => {
+        replace();
+        return files.recover(folder, at, original, identity);
+      },
+    }));
+    await sweepBrowserDownloadStaging(files);
+    expect(replaced).toBe(true);
+    expect(readFileSync(hidden, "utf8")).toBe("other tree's file");
+    expect(existsSync(join(path, PART_FOR_RECOVERY))).toBe(false);
+    expect(readFileSync(join(moved, HIDDEN_FOR_RECOVERY), "utf8")).toBe("verified source");
+  });
+
+  it.each(["helper", "fingerprint"] as const)("leaves a hidden entry with a stale %s fingerprint at startup", async (kind) => {
+    const root = prepare();
+    const hidden = join(home, HIDDEN_FOR_RECOVERY);
+    writeFileSync(hidden, "original");
+    const observed = hiddenSnapshot(hidden);
+    writeRecoveryRecord(root, RECOVERY_RECORD, home, HIDDEN_FOR_RECOVERY, kind === "helper"
+      ? { kind, dev: "1", ino: "1", verdict: "mismatch", observed }
+      : { kind, ...observed.content });
+    writeFileSync(hidden, "modified");
+    await sweepBrowserDownloadStaging(root);
+    expect(readFileSync(hidden, "utf8")).toBe("modified");
+    expect(existsSync(join(home, PART_FOR_RECOVERY))).toBe(false);
+    expect(readdirSync(root.path)).toHaveLength(1);
+  });
+
+  it("refuses a forged record after the staging directory is swapped between listing and reading", async () => {
+    const root = prepare();
+    writeFileSync(join(root.path, RECOVERY_RECORD), "{}");
+    writeFileSync(join(root.path, SECOND_RECOVERY_RECORD), "{}");
+    const sentinel = join(home, PART_FOR_RECOVERY);
+    writeFileSync(sentinel, "do not remove");
+    const file = statSync(sentinel, { bigint: true });
+    const forged = join(home, "forged");
+    mkdirSync(forged);
+    linkSync(join(root.path, RECOVERY_RECORD), join(forged, RECOVERY_RECORD));
+    writeRecoveryRecord({ ...root, path: forged }, SECOND_RECOVERY_RECORD, home, PART_FOR_RECOVERY,
+      { kind: "fileId", dev: String(file.dev), ino: String(file.ino), evidence: `birth:${file.birthtimeNs}` });
+    let replaced = false;
+    const replace = (): void => {
+      if (replaced) return;
+      replaced = true;
+      moveAside(root.path, join(home, "old-staging"));
+      moveAside(forged, root.path);
+    };
+    hooks.afterLstat = (path) => { if (path === join(root.path, RECOVERY_RECORD)) replace(); };
+    const swapped = withFiles(root, (files) => ({
+      listRecords: async (folder) => {
+        const names = await files.listRecords(folder);
+        replace();
+        return names;
+      },
+    }));
+    await expect(sweepBrowserDownloadStaging(swapped)).rejects.toThrow(/staging folder/u);
+    expect(replaced).toBe(true);
+    expect(readFileSync(sentinel, "utf8")).toBe("do not remove");
+    expect(existsSync(join(root.path, SECOND_RECOVERY_RECORD))).toBe(true);
+  });
+
+  it.each(["commit", "rollback"])("preserves entries swapped at the %s rename boundary", async (boundary) => {
+    const root = prepare();
+    const name = "0123456789abcdef0123456789abcdef";
+    writeFileSync(join(root.path, name), "download");
+    const path = join(home, "commit");
+    mkdirSync(path);
+    const { dev, ino } = statSync(path, { bigint: true });
+    const files = _helperFileOperationsForTest(macHelper(`-swap-${boundary}`));
+    await expect(files.copy(root, name, { path, dev, ino }, "report.pdf", PART_FOR_RECOVERY, () => true, new AbortController().signal))
+      .rejects.toMatchObject({ refusal: "target" });
+    expect(readFileSync(join(path, "probe-written"), "utf8")).toBe("download");
+    if (boundary === "rollback") {
+      expect(readFileSync(join(path, "probe-displaced"), "utf8")).toBe("replacement");
+      expect(readFileSync(join(path, "report.pdf"), "utf8")).toBe("another replacement");
+      expect(existsSync(join(path, PART_FOR_RECOVERY))).toBe(false);
+    } else {
+      expect(readFileSync(join(path, PART_FOR_RECOVERY), "utf8")).toBe("replacement");
+      expect(existsSync(join(path, "report.pdf"))).toBe(false);
+    }
+  });
+});
+
+// The macOS helper's token and named-option interface, as native/windows-path-kind/README.md defines it for the Windows helper.
+describe.runIf(process.platform === "darwin")("the macOS helper's tokens and options", () => {
+  const run = (args: string[]): { status: number | null; stdout: string } => {
+    try {
+      return { status: 0, stdout: execFileSync(macHelper(), args, { input: "c", encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }) };
+    } catch (error) {
+      const failure = error as { status: number | null; stdout: string };
+      return { status: failure.status, stdout: failure.stdout };
+    }
+  };
+  const staged = (): { folder: string; file: string } => {
+    const folder = join(home, "held");
+    mkdirSync(folder, { recursive: true });
+    const file = join(folder, "staged");
+    writeFileSync(file, "download");
+    return { folder, file };
+  };
+  const wrongBirth = (path: string): string => {
+    const { dev, ino, birthtimeNs } = statSync(path, { bigint: true });
+    return `${dev}:${ino}:birth:${birthtimeNs + 1n}`;
+  };
+
+  it("stamps a regular file and refuses another kind of entry", () => {
+    const { folder, file } = staged();
+    expect(run(["--dir-stamp", ...boundArgs(folder), "staged"])).toEqual({ status: 0, stdout: `ready\nstamp ${tokenOf(file)}\n` });
+    expect(run(["--dir-stamp", ...boundArgs(folder), "missing"])).toEqual({ status: 0, stdout: "ready\nabsent\n" });
+    symlinkSync(file, join(folder, "link"));
+    expect(run(["--dir-stamp", ...boundArgs(folder), "link"])).toEqual({ status: 3, stdout: "ready\nrefused source\n" });
+  });
+
+  it("publishes the moved file's token before it commits a rename", () => {
+    const { folder, file } = staged();
+    const token = tokenOf(file);
+    const chosen = join(home, "chosen");
+    mkdirSync(chosen);
+    expect(run(["--dir-rename", ...boundArgs(folder), "staged", ...boundArgs(chosen), "report.pdf", "--expect", token]))
+      .toEqual({ status: 0, stdout: `ready\npublished ${token}\ncommitted\n` });
+    expect(readFileSync(join(chosen, "report.pdf"), "utf8")).toBe("download");
+  });
+
+  it.each(["birth one tick off", "another class", "no evidence"] as const)("leaves the staged file in place for a token with %s", (kind) => {
+    const { folder, file } = staged();
+    const { dev, ino } = statSync(file, { bigint: true });
+    const token = kind === "birth one tick off" ? wrongBirth(file) : kind === "another class" ? `${dev}:${ino}:creation:20` : `${dev}:${ino}:none:-`;
+    const chosen = join(home, "chosen");
+    mkdirSync(chosen);
+    expect(run(["--dir-rename", ...boundArgs(folder), "staged", ...boundArgs(chosen), "report.pdf", "--expect", token]))
+      .toEqual({ status: 3, stdout: "ready\nrefused source\n" });
+    expect(run(["--dir-remove", ...boundArgs(folder), "staged", "--expect", token])).toEqual({ status: 3, stdout: "ready\nrefused source\n" });
+    expect(run(["--dir-remove-id", ...boundArgs(folder), "staged", "--expect", token])).toEqual({ status: 0, stdout: "ready\nleft\n" });
+    expect(readFileSync(file, "utf8")).toBe("download");
+    expect(run(["--dir-remove", ...boundArgs(folder), "staged", "--expect", tokenOf(file)])).toEqual({ status: 0, stdout: "ready\nremoved\n" });
+    expect(existsSync(file)).toBe(false);
+  });
+
+  it("matches a renamed writer in full, as a rename keeps the birth time", () => {
+    const folder = join(home, "held");
+    mkdirSync(folder);
+    writeFileSync(join(folder, HIDDEN_FOR_RECOVERY), "old bytes");
+    writeFileSync(join(folder, "report.pdf"), "new bytes");
+    const old = tokenOf(join(folder, HIDDEN_FOR_RECOVERY));
+    const target = join(folder, "report.pdf");
+    const restore = (option: string, writer: string) =>
+      run(["--dir-restore-target", ...boundArgs(folder), HIDDEN_FOR_RECOVERY, "report.pdf", "--expect", old, option, writer]);
+    expect(restore("--renamed-writer", wrongBirth(target))).toEqual({ status: 0, stdout: "ready\nleft\n" });
+    expect(restore("--writer", wrongBirth(target))).toEqual({ status: 0, stdout: "ready\nleft\n" });
+    expect(existsSync(join(folder, HIDDEN_FOR_RECOVERY))).toBe(true);
+    expect(restore("--renamed-writer", tokenOf(target))).toEqual({ status: 0, stdout: "ready\nresolved\n" });
+    expect(existsSync(join(folder, HIDDEN_FOR_RECOVERY))).toBe(false);
+    expect(readFileSync(target, "utf8")).toBe("new bytes");
+  });
+
+  it.each([
+    ["no --expect", []],
+    ["a repeated option", ["--expect", "1:2:birth:3", "--expect", "1:2:birth:3"]],
+    ["an unknown option", ["--expect", "1:2:birth:3", "--force"]],
+    ["a valueless option", ["--expect"]],
+    ["a wildcard token", ["--expect", "*"]],
+    ["a zero birth", ["--expect", "1:2:birth:0"]],
+    ["an empty value", ["--expect", "1:2:birth:"]],
+    ["a short token", ["--expect", "1:2"]],
+    ["an uppercase class", ["--expect", "1:2:Birth:3"]],
+    ["a malformed fingerprint", ["--expect", "1:2:birth:3", "--content", "1:2:ab:cd"]],
+    ["a writer outside a target recovery", ["--expect", "1:2:birth:3", "--writer", "1:4:birth:5"]],
+  ] as const)("is a usage error for %s", (_case, options) => {
+    const { folder } = staged();
+    expect(run(["--dir-remove-id", ...boundArgs(folder), "staged", ...options])).toEqual({ status: 2, stdout: "" });
+  });
+
+  it.each([
+    ["--writer and --renamed-writer", ["--writer", "1:4:birth:5", "--renamed-writer", "1:4:birth:5"]],
+    ["--writer and --retire", ["--writer", "1:4:birth:5", "--retire"]],
+    ["a writer with the old file's inode", ["--writer", "1:2:birth:5"]],
+    ["a writer on another device", ["--renamed-writer", "7:4:birth:5"]],
+  ] as const)("refuses a target recovery that names %s", (_case, options) => {
+    const { folder } = staged();
+    expect(run(["--dir-restore-target", ...boundArgs(folder), HIDDEN_FOR_RECOVERY, "report.pdf", "--expect", "1:2:birth:3", ...options]))
+      .toEqual({ status: 2, stdout: "" });
+  });
+
+  it("removes a record only by a stamp it can compare", () => {
+    const { folder } = staged();
+    const name = `${"a".repeat(32)}.cleanup.json`;
+    expect(run(["--dir-remove-record", ...boundArgs(folder), name, "--expect", "1:2:none:-", "--length", "2", "--digest", "a".repeat(64)]))
+      .toEqual({ status: 2, stdout: "" });
+    expect(run(["--dir-sweep", ...boundArgs(folder), "keep-records"])).toEqual({ status: 2, stdout: "" });
+    expect(run(["--dir-sweep", ...boundArgs(folder), "--keep-records"])).toEqual({ status: 0, stdout: "ready\nswept 1\n" });
+  });
+});
+
+// The macOS helper removes a copy's temporary file only while it is the file the copy wrote: a file put at its name before the copy is
+// cancelled, fails, or finds its target refused is left there, and the download reports its temporary file as left. Each case is proven
+// against the helper's own file too, which is removed. `base` is a folder on the volume the chosen folder is on.
+type Ending = "cancelled" | "failed" | "refused";
+const ENDINGS = ["cancelled", "failed", "refused"] as const;
+const theTarget: Record<Ending, string[]> = { cancelled: [], failed: ["report.pdf"], refused: ["report.pdf"] };
+// A folder's entries, without the `._` entries a volume without extended attributes (exFAT) keeps them in.
+const entriesOf = (folder: string): string[] => readdirSync(folder).filter((name) => !name.startsWith("._")).sort();
+async function stoppedNativeCopy(ending: Ending, swap: boolean | "absent" | "directory" | "symlink" | ((path: string) => void), base: string, files?: Files) {
+  const chosen = join(base, "chosen");
+  mkdirSync(chosen);
+  const target = join(chosen, "report.pdf");
+  // A target that cannot be replaced fails the commit rename (EPERM) and nothing before it.
+  if (ending === "failed") {
+    writeFileSync(target, "the user's report");
+    execFileSync("chflags", ["uchg", target]);
+  }
+  let download!: import("../browser-download-staging.js").ObservedDownload;
+  let swapped = "";
+  const prepared = prepare();
+  const root = atStep(acrossVolumes({ ...prepared, files: files ?? prepared.files }), "copy", "copied", ({ part }) => {
+    if (swap === "absent") {
+      removeEntry(join(chosen, part ?? ""));
+    } else if (swap) {
+      swapped = join(chosen, part ?? "");
+      moveAside(swapped, join(base, "the copy's own file"));
+      if (swap === "directory") mkdirSync(swapped);
+      else if (swap === "symlink") symlinkSync(target, swapped);
+      else if (typeof swap === "function") swap(swapped);
+      else writeFileSync(swapped, "the user's file");
+    }
+    if (ending === "refused") mkdirSync(target);
+    if (ending === "cancelled") download.cancel();
+  });
+  const { asked, askSavePath } = dialogs();
+  const item = fakeItem();
+  const staged = stageBrowserDownload(item, { root, askSavePath }, Promise.resolve());
+  download = staged.download;
+  const done = doneOutcome(staged.download);
+  await settled();
+  asked[0]?.answer(target);
+  await settled();
+  item.complete("page data");
+  try {
+    return { outcome: await done, chosen, swapped, root };
+  } finally {
+    if (ending === "failed") execFileSync("chflags", ["nouchg", target]);
+  }
+}
+
+async function expectSwappedFileLeft(ending: Ending, base: string): Promise<void> {
+  const { outcome, chosen, swapped } = await stoppedNativeCopy(ending, true, base);
+  expect(readFileSync(swapped, "utf8")).toBe("the user's file");
+  expect(entriesOf(chosen)).toEqual([basename(swapped), ...theTarget[ending]].sort());
+  expect(outcome).toEqual({ state: "interrupted", cleanup: "part-left" });
+}
+
+async function expectOwnFileRemoved(ending: Ending, base: string): Promise<void> {
+  const { outcome, chosen } = await stoppedNativeCopy(ending, false, base);
+  expect(entriesOf(chosen)).toEqual(theTarget[ending]);
+  expect(outcome).toEqual({ state: ending === "cancelled" ? "cancelled" : "interrupted", cleanup: "removed" });
+}
+
+describe.runIf(process.platform === "darwin")("a stopped native copy's temporary file swapped for another file", () => {
+  it.each(ENDINGS)("leaves a file put at the temporary file's name when the copy is %s", (ending) => expectSwappedFileLeft(ending, home));
+  it.each(ENDINGS)("removes its own temporary file when the copy is %s", (ending) => expectOwnFileRemoved(ending, home));
+  it.each(ENDINGS)("reports no leftover when the temporary file is already absent and the copy is %s", async (ending) => {
+    const { outcome, chosen } = await stoppedNativeCopy(ending, "absent", home);
+    expect(entriesOf(chosen)).toEqual(theTarget[ending]);
+    expect(outcome).toEqual({ state: ending === "cancelled" ? "cancelled" : "interrupted", cleanup: "removed" });
+  });
+  it("leaves a symlink at the temporary file's name", async () => {
+    const { outcome, chosen, swapped } = await stoppedNativeCopy("cancelled", "symlink", home);
+    expect(entriesOf(chosen)).toEqual([basename(swapped)]);
+    expect(outcome).toEqual({ state: "interrupted", cleanup: "part-left" });
+  });
+});
+
+// A volume without exclusive rename or persistent file ids (exFAT, FAT) cannot commit a copy, so the macOS helper refuses it by name
+// before it opens anything there or writes a byte. The fixtures create and attach a disk image for these cases.
+describe.runIf(process.platform === "darwin")("a chosen folder on an exFAT volume", () => {
+  let image = "";
+  let mounted: string | null = null;
+  let unavailable = "";
+  beforeAll(() => {
+    image = realpathSync(mkdtempSync(join(tmpdir(), "ave-download-exfat-")));
+    const mountPoint = join(image, "volume");
+    mkdirSync(mountPoint);
+    try {
+      execFileSync("hdiutil", ["create", "-size", "64m", "-fs", "ExFAT", "-volname", "AVETEST", "-o", join(image, "volume.dmg")], { stdio: "pipe" });
+      execFileSync("hdiutil", ["attach", "-nobrowse", "-mountpoint", mountPoint, join(image, "volume.dmg")], { stdio: "pipe" });
+      mounted = mountPoint;
+    } catch (error) {
+      unavailable = `hdiutil cannot create or attach an exFAT image here: ${(error as Error).message.split("\n")[0]}`;
+    }
+  }, 60_000);
+  afterAll(() => {
+    if (mounted !== null) execFileSync("hdiutil", ["detach", "-force", mounted], { stdio: "pipe" });
+    rmSync(image, { recursive: true, force: true });
+  }, 60_000);
+  let cases = 0;
+  const onVolume = (skip: (note?: string) => never): string => {
+    if (mounted === null) skip(unavailable);
+    cases += 1;
+    const base = join(mounted as string, `case-${cases}`);
+    mkdirSync(base);
+    return base;
+  };
+
+  const savedInto = async (chosen: string, files?: Files) => {
+    const prepared = prepare();
+    const root = acrossVolumes({ ...prepared, files: files ?? prepared.files });
+    const { asked, askSavePath } = dialogs();
+    const item = fakeItem();
+    const staged = stageBrowserDownload(item, { root, askSavePath }, Promise.resolve());
+    const done = doneOutcome(staged.download);
+    await settled();
+    asked[0]?.answer(join(chosen, "report.pdf"));
+    await settled();
+    item.complete("page data");
+    return { outcome: await done, notice: staged.download.getNotice(), root };
+  };
+
+  it.for([false, true])("refuses a download saved there by name, writing nothing, with an existing target: %s", async (existing, { skip }) => {
+    const chosen = onVolume(skip);
+    if (existing) writeFileSync(join(chosen, "report.pdf"), "the user's report");
+    const { outcome, notice, root } = await savedInto(chosen);
+    expect(outcome.state).toBe("interrupted");
+    expect(notice).toBe("unsupported-volume");
+    expect(entriesOf(chosen)).toEqual(existing ? ["report.pdf"] : []);
+    if (existing) expect(readFileSync(join(chosen, "report.pdf"), "utf8")).toBe("the user's report");
+    expect(await root.files.listRecords(root)).toEqual([]);
+  });
+
+  it("answers `refused volume` before `ready`, before it opens an existing target", ({ skip }) => {
+    const chosen = onVolume(skip);
+    writeFileSync(join(chosen, "report.pdf"), "the user's report");
+    const root = prepare();
+    const source = "0123456789abcdef0123456789abcdef";
+    writeFileSync(join(root.path, source), "page data");
+    const folder = statSync(chosen, { bigint: true });
+    let transcript = "";
+    let status: number | null = 0;
+    try {
+      transcript = execFileSync(macHelper(), ["--dir-copy", root.path, String(root.dev), String(root.ino), source, chosen,
+        String(folder.dev), String(folder.ino), "report.pdf", `.${source}.part`, HIDDEN_FOR_RECOVERY], { input: "cc", encoding: "utf8" });
+    } catch (error) {
+      ({ stdout: transcript, status } = error as { stdout: string; status: number | null });
+    }
+    expect({ transcript, status }).toEqual({ transcript: "refused volume\n", status: 3 });
+    expect(entriesOf(chosen)).toEqual(["report.pdf"]);
+  });
+});
+
+describe.runIf(process.platform === "darwin")("a chosen folder whose volume capabilities cannot be read", () => {
+  it("ends the download interrupted with the volume-unknown notice", async () => {
+    const prepared = prepare();
+    const root = acrossVolumes({ ...prepared, files: _helperFileOperationsForTest(macHelper("-volume-unknown")) });
+    const { asked, askSavePath } = dialogs();
+    const item = fakeItem();
+    const staged = stageBrowserDownload(item, { root, askSavePath }, Promise.resolve());
+    const done = doneOutcome(staged.download);
+    await settled();
+    const chosen = chosenFolder();
+    asked[0]?.answer(join(chosen, "report.pdf"));
+    await settled();
+    item.complete("page data");
+    expect((await done).state).toBe("interrupted");
+    expect(staged.download.getNotice()).toBe("volume-unknown");
+    expect(readdirSync(chosen)).toEqual([]);
+  });
+});
+
+describe.runIf(process.platform === "linux")("a Linux copy whose temporary file cannot be removed when it stops", () => {
+  it("reports the temporary file as left", async () => {
+    const prepared = acrossVolumes(prepare());
+    const { asked, askSavePath } = dialogs();
+    const item = fakeItem();
+    let download!: Observed;
+    // Stopped once the copy has written its temporary file: at `ready` the file is not created yet, so nothing would be left.
+    const root = atStep(prepared, "copy", "copied", () => {
+      // The copy's file is moved aside to be checked and removed; that removal fails, so the file stays under its hidden name.
+      hooks.unlinkFault = /.removing$/u;
+      download.cancel();
+    });
+    const staged = stageBrowserDownload(item, { root, askSavePath }, Promise.resolve());
+    download = staged.download;
+    const done = doneOutcome(staged.download);
+    await settled();
+    const chosen = join(home, "chosen");
+    mkdirSync(chosen);
+    asked[0]?.answer(join(chosen, "report.pdf"));
+    await settled();
+    item.complete("x".repeat(3 * 1024 * 1024));
+    expect(await done).toEqual({ state: "interrupted", cleanup: "part-left" });
+    const left = readdirSync(chosen);
+    expect(left).toEqual([expect.stringMatching(/^\.[0-9a-f]{32}\.removing$/u)]);
+  });
+
+  // A file put at the temporary file's name once the copy has written it, as a user or another program may.
+  const swapAt = (chosen: string, part: string): void => {
+    moveAside(join(chosen, part), join(chosen, "elsewhere"));
+    writeFileSync(join(chosen, part), "the user's file");
+  };
+  const copyInto = () => {
+    const root = prepare();
+    writeFileSync(join(root.path, "0123456789abcdef0123456789abcdef"), "staged");
+    const chosen = join(home, "chosen");
+    mkdirSync(chosen);
+    const info = statSync(chosen, { bigint: true });
+    return { root, chosen, folder: { path: chosen, dev: info.dev, ino: info.ino } };
+  };
+  const part = ".0123456789abcdef0123456789abcdef.part";
+
+  it("rolls back a replacement introduced after the held commit check", async () => {
+    const { root, chosen, folder } = copyInto();
+    hooks.afterLstat = (path) => {
+      if (!path.startsWith("/proc/self/fd/") || basename(path) !== part) return;
+      hooks.afterLstat = null;
+      swapAt(chosen, part);
+    };
+    await expect(root.files.copy(root, "0123456789abcdef0123456789abcdef", folder, "report.pdf", part, () => true, new AbortController().signal))
+      .rejects.toMatchObject({ refusal: "target" });
+    expect(readFileSync(join(chosen, part), "utf8")).toBe("the user's file");
+    expect(readFileSync(join(chosen, "elsewhere"), "utf8")).toBe("staged");
+    expect(existsSync(join(chosen, "report.pdf"))).toBe(false);
+  });
+
+  it("never removes a file put at the temporary file's name when the copy is cancelled", async () => {
+    const { root, chosen, folder } = copyInto();
+    const proceed = (step: Step): boolean => {
+      if (step !== "copied") return true;
+      swapAt(chosen, part);
+      return false;
+    };
+    await expect(root.files.copy(root, "0123456789abcdef0123456789abcdef", folder, "report.pdf", part, proceed, new AbortController().signal))
+      .rejects.toThrow(/temporary file is left/u);
+    expect(readFileSync(join(chosen, part), "utf8")).toBe("the user's file");
+    expect(readdirSync(chosen).sort()).toEqual([part, "elsewhere"]);
+    expectOnlyHeldPathOperations();
+  });
+
+  it("never removes a file put at the temporary file's name when the copy fails", async () => {
+    const { root, chosen, folder } = copyInto();
+    const proceed = (step: Step): boolean => {
+      if (step !== "copied") return true;
+      swapAt(chosen, part);
+      // The chosen name now holds a folder, which the commit refuses to replace.
+      mkdirSync(join(chosen, "report.pdf"));
+      return true;
+    };
+    await expect(root.files.copy(root, "0123456789abcdef0123456789abcdef", folder, "report.pdf", part, proceed, new AbortController().signal))
+      .rejects.toMatchObject({ refusal: "target" });
+    expect(readFileSync(join(chosen, part), "utf8")).toBe("the user's file");
+    expect(readdirSync(chosen).sort()).toEqual([part, "elsewhere", "report.pdf"]);
+    expectOnlyHeldPathOperations();
   });
 });

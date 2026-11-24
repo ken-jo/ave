@@ -22,7 +22,15 @@ const SHARD_INVOCATION = "node .github/scripts/run-in-job.mjs bun run scripts/ru
 // Test commands in the job that owns the isolated job root run inside the containment launcher.
 const CONTAINED_JOB = "windows-permission-tests";
 const PREPARATION_JOB = "windows-native-preparation";
-const CONTAINED_JOBS = [PREPARATION_JOB, CONTAINED_JOB];
+const ARM64_JOB = "windows-arm64-path-kind";
+const PATH_KIND_TIMEOUT_MINUTES = 30;
+// The condition each contained job's contained steps carry; arm64 steps carry only the job condition.
+const CONTAINED_CONDITIONS = new Map([
+  [PREPARATION_JOB, REGRESSION_CONDITION],
+  [CONTAINED_JOB, REGRESSION_CONDITION],
+  [ARM64_JOB, undefined],
+]);
+const CONTAINED_JOBS = [...CONTAINED_CONDITIONS.keys()];
 const WINDOWS_PLAN_PATH = "${{ runner.temp }}/windows-ci/windows-plan.json";
 const TEST_LINE_RE = /\bbun[ \t]+run[ \t]+test(?::[\w-]+)?(?=[ \t]|$)|\bnode[ \t]+scripts\/test-|[ \t]--test(?:-native)?(?=[ \t]|$)|\brun-windows-test-list\b/u;
 const CONTAINED_LINE_RE = new RegExp(String.raw`^[ \t]*${CONTAINED}\S`, "u");
@@ -52,6 +60,19 @@ const PLAIN_INVOCATION_RE = new RegExp(`^${PLAIN_TOKEN}(?: ${PLAIN_TOKEN})*$`, "
 const POWERSHELL_SHELL_RE = /^(?:pwsh|powershell)(?:\.exe)?(?:\s|$)/i;
 const SETUP_COMMAND = "node ave/.github/scripts/isolate-job-home.mjs";
 const WRAPPER = ["node", ".github/scripts/run-in-job.mjs"];
+const ARM64_BUILD = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -Arch arm64";
+const ARM64_INSTALL = "bun install --frozen-lockfile --ignore-scripts --production";
+const ARM64_TEST = "node scripts/test-windows-path-kind.mjs";
+const ARM64_SELECTION = "needs.build.outputs.windows_arm64_path_kind";
+const ARM64_AGGREGATE = [
+  'case "$WINDOWS_ARM64_PATH_KIND:$WINDOWS_ARM64_PATH_KIND_RESULT" in',
+  "  true:success|false:skipped) ;;",
+  "  *)",
+  '    echo "::error::Windows arm64 folder classification selection=$WINDOWS_ARM64_PATH_KIND result=$WINDOWS_ARM64_PATH_KIND_RESULT"',
+  "    exit 1",
+  "    ;;",
+  "esac",
+].join("\n");
 // After job-root setup every command is a contained manifest invocation or one of these.
 const UNCONTAINED_COMMANDS = new Map([
   ["bun install --frozen-lockfile", "installs dependencies; runs no test code"],
@@ -81,6 +102,7 @@ const UNCONTAINED_COMMANDS = new Map([
  */
 export function containedSteps(workflow, job = CONTAINED_JOB) {
   if (!CONTAINED_JOBS.includes(job)) throw new Error(`Unknown contained Windows job: ${job}`);
+  const expectedCondition = CONTAINED_CONDITIONS.get(job);
   const manifest = [];
   for (const { jobId, name, stepName, condition, lines } of windowsRunSteps(workflow)) {
     if (jobId !== job) continue;
@@ -90,7 +112,9 @@ export function containedSteps(workflow, job = CONTAINED_JOB) {
       if (!CONTAINED_LINE_RE.test(line)) continue;
       const invocation = line.replace(CONTAINED_PREFIX_RE, "").trim();
       if (!slug) throw new Error(`${name}: a contained step needs a name`);
-      if (condition !== REGRESSION_CONDITION) throw new Error(`${name}: a contained step needs if: ${REGRESSION_CONDITION}`);
+      if (condition !== expectedCondition) {
+        throw new Error(`${name}: a contained step needs ${expectedCondition ? `if: ${expectedCondition}` : "the job condition only"}`);
+      }
       if (!PLAIN_INVOCATION_RE.test(invocation)) throw new Error(`${name}: contained invocation needs plain single-spaced arguments: ${invocation}`);
       const id = `${slug}-${++position}`;
       if (manifest.some(step => step.id === id || step.invocation === invocation)) {
@@ -215,10 +239,12 @@ function inspectPowerShell(shell, steps) {
   return JSON.parse(result.stdout);
 }
 
-function containedCommandProblems(commands, manifest, wrapped) {
+function containedCommandProblems(commands, manifest, wrapped, jobId) {
   return commands.flatMap(({ text, line, elements, redirected, operator }) => {
     if (elements[0]?.text !== WRAPPER[0] || elements[1]?.text !== WRAPPER[1]) {
-      return UNCONTAINED_COMMANDS.has(text) ? [] : [`line ${line}: command runs outside the job containment launcher: ${text}`];
+      const arm64Setup = jobId === ARM64_JOB && [ARM64_INSTALL, ARM64_BUILD, `${ARM64_BUILD} -Helper path-kind`].includes(text);
+      return arm64Setup || UNCONTAINED_COMMANDS.has(text)
+        ? [] : [`line ${line}: command runs outside the job containment launcher: ${text}`];
     }
     const invocation = elements.slice(2).map(element => element.text).join(" ");
     if (redirected || operator !== "Unknown" || !elements.every(element => element.plain && PLAIN_TOKEN_RE.test(element.text))
@@ -247,7 +273,7 @@ export function powerShellCommandProblems(steps, inspect = inspectPowerShell, ma
           || functions.some(fn => fn.name.toLowerCase() === command && scopes.includes(fn.scope)))) return [];
         return [`line ${line}: unrecognized command ${head}`];
       });
-      const contained = editionSteps[index].contained ? containedCommandProblems(commands, manifest, wrapped) : [];
+      const contained = editionSteps[index].contained ? containedCommandProblems(commands, manifest, wrapped, job) : [];
       failures.push(...[...errors, ...unknownCommands, ...contained].map(problem => `${editionSteps[index].name}: ${problem}`));
     }
   }
@@ -409,8 +435,56 @@ export function checkHelperExecutionOrder(jobId, steps) {
   if (!anchored) throw new Error(`${jobId}: no step for ${trust.what}`);
 }
 
+function checkArm64PathKindJob(jobs) {
+  const arm64 = jobs[ARM64_JOB];
+  if (arm64?.["runs-on"] !== "windows-11-arm" || arm64.needs !== "build"
+    || arm64.if !== `${ARM64_SELECTION} == 'true'` || arm64["continue-on-error"] !== undefined
+    || jobs.build?.outputs?.windows_arm64_path_kind !==
+      "${{ (github.event_name == 'pull_request' && steps.plan.outputs.platform_checks == 'true') || " +
+      "(github.event_name == 'push' && github.ref == 'refs/heads/main') || " +
+      "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}") {
+    throw new Error(`${ARM64_JOB}: expected the hosted arm64 runner and the path-kind selection`);
+  }
+  if (arm64["timeout-minutes"] !== PATH_KIND_TIMEOUT_MINUTES) {
+    throw new Error(`${ARM64_JOB}: expected a 30-minute timeout`);
+  }
+  const [checkout, node, bun, isolate, install, launcher, test, cleanup] = arm64.steps ?? [];
+  if (arm64.steps?.length !== 8
+    || !checkout?.uses?.startsWith("actions/checkout@") || checkout.with?.path !== "ave"
+    || checkout.with?.["persist-credentials"] !== false
+    || !node?.uses?.startsWith("actions/setup-node@") || node.with?.["node-version"] !== "24"
+    || node.with?.architecture !== "arm64" || node.with?.["package-manager-cache"] !== false
+    || bun?.uses !== "./ave/.github/actions/setup-bun" || bun.with?.["bun-version-file"] !== "ave/.bun-version"
+    || isolate?.run !== SETUP_COMMAND || isolate.shell !== "bash"
+    || install?.run !== ARM64_INSTALL || launcher?.run !== ARM64_BUILD
+    || test?.run?.trimEnd() !== [`${ARM64_BUILD} -Helper path-kind`,
+      "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }", `${WRAPPER.join(" ")} ${ARM64_TEST}`].join("\n")
+    || [install, launcher, test].some(step => step["working-directory"] !== "ave" || step.shell !== "powershell")
+    || cleanup?.run !== `${SETUP_COMMAND} --cleanup` || cleanup.shell !== "powershell"
+    || cleanup.if !== "always() && env.AVE_CI_JOB_ROOT != ''"
+    || arm64.steps.some(step => step["continue-on-error"] !== undefined || (step !== cleanup && step.if !== undefined))) {
+    throw new Error(`${ARM64_JOB}: expected arm64 setup, contained path-kind test and job-root cleanup`);
+  }
+  const aggregate = jobs["build-and-test"];
+  const result = aggregate?.steps?.[0];
+  const arm64Check = result?.run?.indexOf(ARM64_AGGREGATE) ?? -1;
+  if (!Array.isArray(aggregate?.needs) || !aggregate.needs.includes(ARM64_JOB)
+    || aggregate.if !== "always()" || aggregate["continue-on-error"] !== undefined || result?.if !== "always()"
+    || result.env?.WINDOWS_ARM64_PATH_KIND !== `\${{ ${ARM64_SELECTION} }}`
+    || result.env?.WINDOWS_ARM64_PATH_KIND_RESULT !== `\${{ needs.${ARM64_JOB}.result }}`
+    || result["continue-on-error"] !== undefined || arm64Check < 0
+    || arm64Check >= result.run.indexOf('if [ "$DOCS_ONLY" = "true" ]; then')) {
+    throw new Error(`${ARM64_JOB}: expected build-and-test to require the selected arm64 result before the docs-only exit`);
+  }
+}
+
 export function checkWindowsWorkflow(workflow, inspect) {
   const { jobs } = parse(workflow);
+  checkArm64PathKindJob(jobs);
+  const x64 = jobs[PREPARATION_JOB]?.steps?.filter(step => step.name === "Verify Windows folder classification");
+  if (x64?.length !== 1 || x64[0]["timeout-minutes"] !== PATH_KIND_TIMEOUT_MINUTES) {
+    throw new Error(`${PREPARATION_JOB}: path-kind step expected a 30-minute timeout`);
+  }
   const job = jobs[CONTAINED_JOB];
   const platform = "needs.build.outputs.platform_checks == 'true'";
   if (jobs[PREPARATION_JOB]?.if !== platform || jobs[PREPARATION_JOB]?.needs !== "build"
@@ -461,7 +535,7 @@ export function checkWindowsWorkflow(workflow, inspect) {
   ];
   if (failures.length) throw new Error(failures.join("\n"));
   checkFirstPreparationLaunch(jobs[PREPARATION_JOB].steps);
-  for (const id of CONTAINED_JOBS) checkHelperExecutionOrder(id, jobs[id].steps);
+  for (const id of Object.keys(HELPER_TRUST)) checkHelperExecutionOrder(id, jobs[id].steps);
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {

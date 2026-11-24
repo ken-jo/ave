@@ -74,12 +74,31 @@ describe("buildMacosDirOps", () => {
       macosDirOpsOutput(root, "arm64", "ave-dir-ops-stalled-writes"),
       macosDirOpsOutput(root, "arm64", "ave-dir-ops-never-ready"),
       macosDirOpsOutput(root, "arm64", "ave-dir-ops-ignores-eof"),
+      macosDirOpsOutput(root, "arm64", "ave-dir-ops-reused-file-id"),
+      macosDirOpsOutput(root, "arm64", "ave-dir-ops-swap-restored"),
+      macosDirOpsOutput(root, "arm64", "ave-dir-ops-swap-rollback"),
+      macosDirOpsOutput(root, "arm64", "ave-dir-ops-swap-commit"),
+      macosDirOpsOutput(root, "arm64", "ave-dir-ops-fail-restored"),
+      macosDirOpsOutput(root, "arm64", "ave-dir-ops-copy-commit-failure"),
+      macosDirOpsOutput(root, "arm64", "ave-dir-ops-copy-restore-failure"),
+      macosDirOpsOutput(root, "arm64", "ave-dir-ops-copy-occupied"),
+      macosDirOpsOutput(root, "arm64", "ave-dir-ops-volume-unknown"),
     ]);
+    expect(calls[13]).toContain("-DAVE_DIR_OPS_TEST_VOLUME_UNKNOWN");
     expect(calls[0]?.some((arg) => arg.startsWith("-D"))).toBe(false);
     expect(calls[1]).toContain("-DAVE_DIR_OPS_TEST_WRITE_LIMIT=4093");
     expect(calls[2]).toContain("-DAVE_DIR_OPS_TEST_STALLED_WRITES");
     expect(calls[3]).toContain("-DAVE_DIR_OPS_TEST_NEVER_READY");
     expect(calls[4]).toContain("-DAVE_DIR_OPS_TEST_IGNORES_EOF");
+    expect(calls[5]).toContain("-DAVE_DIR_OPS_TEST_REUSED_FILE_ID");
+    expect(calls[6]).toContain("-DAVE_DIR_OPS_TEST_SWAP_RESTORED");
+    expect(calls[7]).toContain("-DAVE_DIR_OPS_TEST_SWAP_COMMIT");
+    expect(calls[7]).toContain("-DAVE_DIR_OPS_TEST_SWAP_ROLLBACK");
+    expect(calls[8]).toContain("-DAVE_DIR_OPS_TEST_SWAP_COMMIT");
+    expect(calls[9]).toContain("-DAVE_DIR_OPS_TEST_FAIL_RESTORED");
+    expect(calls[10]).toContain("-DAVE_DIR_OPS_TEST_COPY_COMMIT_FAILURE");
+    expect(calls[11]).toContain("-DAVE_DIR_OPS_TEST_COPY_RESTORE_FAILURE");
+    expect(calls[12]).toContain("-DAVE_DIR_OPS_TEST_COPY_OCCUPIED");
   });
 
   it("leaves helpers newer than every source alone, and rebuilds them once a source or the build script changes", () => {

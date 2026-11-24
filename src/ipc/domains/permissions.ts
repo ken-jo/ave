@@ -22,7 +22,7 @@ import {
 const UPSTREAM_PROXY_DIAGNOSTIC_URL = "https://example.com/";
 import { errorMessage } from "../../shared/error-message.js";
 import { exactCanonicalStringify } from "../../shared/exact-json.js";
-import { approveExtensionsWithoutIsolation, areExtensionsWithoutIsolationApproved, AveHomeConfigurationRefusedWriteError, getAveHomePrivacyFailure, isAveHomeBoundaryCategory } from "../../shared/ave-home.js";
+import { approveExtensionsWithoutIsolation, areExtensionsWithoutIsolationApproved, AveHomeConfigurationRefusedWriteError, getAveHomePrivacyFailure, isAveHomeBoundaryCategory, isAveHomePrivacyApprovable } from "../../shared/ave-home.js";
 import { approveAveHomeTrustItems, AveHomeTrustReviewError, getAveHomeTrustReview, removeAveHomeTrustItem, type AveHomeTrustReviewView } from "../../shared/ave-home-trust.js";
 import { AveHomeConfigurationNotOwnerError } from "../../shared/ave-home-configuration-access.js";
 import type { AuditLogger } from "../../audit/audit-logger.js";
@@ -631,7 +631,9 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     const intent = requireUserKeyboardIntent(payloadRecord(payload).intent);
     if (!intent.ok) return intent;
     const failure = getAveHomePrivacyFailure();
-    if (failure === undefined) return { ok: false, error: "not-applicable", message: "Home privacy approval is not applicable" };
+    if (failure === undefined || !isAveHomePrivacyApprovable(failure.category)) {
+      return { ok: false, error: "not-applicable", message: "Home privacy approval is not applicable" };
+    }
     if (!areExtensionsWithoutIsolationApproved()) {
       auditLogger.log({ timestamp: new Date().toISOString(), sessionId: "permissions", type: "approval",
         output: JSON.stringify({ action: "extensions_without_isolation_approved", who: "user-ui",

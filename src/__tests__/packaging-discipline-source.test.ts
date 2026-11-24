@@ -1607,6 +1607,7 @@ describe("installer smoke and packaging discipline", () => {
     const result = spawnSync("bash", ["-e", "-c", command], { encoding: "utf8", env: {
       ...process.env, GATE_CORE_RESULT: "success", MXC_PINS_RESULT: "success", BUILD_RESULT: build, VITEST_RESULT: vitest, DOCS_ONLY: docs,
       PLATFORM_CHECKS: selected, WINDOWS_PREPARATION_RESULT: native, WINDOWS_RESULT: native, MACOS_RESULT: native, LINUX_RESULT: native,
+      WINDOWS_ARM64_PATH_KIND: "false", WINDOWS_ARM64_PATH_KIND_RESULT: "skipped",
     } });
     expect(result.status, result.stderr + result.stdout).toBe(status);
   });
@@ -1625,6 +1626,7 @@ describe("installer smoke and packaging discipline", () => {
       ...process.env, GATE_CORE_RESULT: "success", MXC_PINS_RESULT: "success", BUILD_RESULT: "success", VITEST_RESULT: "success",
       DOCS_ONLY: "false", PLATFORM_CHECKS: "true", WINDOWS_PREPARATION_RESULT: preparation,
       WINDOWS_RESULT: shards, MACOS_RESULT: "success", LINUX_RESULT: "success",
+      WINDOWS_ARM64_PATH_KIND: "true", WINDOWS_ARM64_PATH_KIND_RESULT: "success",
     } });
     expect(result.status, result.stderr + result.stdout).toBe(status);
   });
@@ -1744,7 +1746,7 @@ describe("installer smoke and packaging discipline", () => {
     // a cancellation cannot skip either, fails unless both succeeded.
     // Independent gates must report success through the required aggregate.
     const body = verification as string;
-    expect(body).toMatch(/^ {4}needs: \[build, vitest, windows-native-preparation, windows-permission-tests, macos-permission-tests, linux-confinement-tests, gate-core, mxc-pins\]$/mu);
+    expect(body).toMatch(/^ {4}needs: \[build, vitest, windows-native-preparation, windows-permission-tests, windows-arm64-path-kind, macos-permission-tests, linux-confinement-tests, gate-core, mxc-pins\]$/mu);
     expect(body).toMatch(/^ {4}if: always\(\)$/mu);
     expect(body).not.toContain("cancelled()");
     expect(body).toContain("      - name: Require the build and every Vitest shard\n        if: always()\n");

@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type TestContext } from "vitest";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, win32 } from "node:path";
 import { tmpdir } from "node:os";
 import { assertAveHomeRuntimeBoundary, setAveHomePrivacyAtBoot, AVE_HOME_PROTECTED_DIRECTORIES, AVE_HOME_RUNTIME_DIRECTORY, createAveHomeIfAbsent, ensureAveHomePrivate, aveHome, aveHomeConfigurationDirectory, setAveHomeConfigurationRefusedAtBoot, win32SystemBinary, windowsDirectoryProtectionRequest, readWindowsDirectoryDacls, _resetAveHomePrivacyForTest, type WindowsDirectoryDacl, type WindowsAccessRule, verifyAveHomeConfiguration, AVE_HOME_CONFIGURATION_MARKER_CONTENT } from "../ave-home.js";
@@ -11,6 +11,7 @@ import { WINDOWS_HOME_BOUNDARY_SOURCE } from "../windows-home-boundary.js";
 import { permissionSettingsPath } from "../../permissions/permission-settings-store.js";
 import { TOOL_TIMEOUT_POLICY } from "../tool-timeout-policy.js";
 import { configureHostResources } from "../../main/host-resources.js";
+import { windowsPathKindHelperUnavailable } from "../../main/windows-path-kind-launcher.js";
 import * as windowsPathFacts from "../windows-path-facts.js";
 import * as windowsNativeHost from "../windows-native-host.js";
 
@@ -522,6 +523,44 @@ describe("ensureAveHomePrivate", () => {
     ]);
     expect(read.mock.calls.map(([targets]) => targets)).toEqual([[resolve(dir)], [resolve(dir), resolve(join(dir, "config"))]]);
   });
+  it("classifies a path-facts helper that gave no answer as helper-unavailable, per row, per protected batch and at the root read", () => {
+    const dir = home();
+    const unavailable = () => windowsPathKindHelperUnavailable("Windows path facts helper did not answer within 15000 ms", "ETIMEDOUT");
+    vi.spyOn(windowsPathFacts, "readWindowsDacls").mockImplementation(() => { throw unavailable(); });
+    expect(readWindowsDirectoryDacls([dir])).toEqual([{ path: dir, category: "helper-unavailable", error: "Windows path facts helper did not answer within 15000 ms" }]);
+
+    const paths = [dir, join(dir, "secrets")];
+    vi.spyOn(windowsNativeHost, "runWindowsNative").mockImplementation(operation => operation());
+    vi.mocked(execFileSync).mockImplementationOnce(() => JSON.stringify(paths.map(path => ({ path }))));
+    vi.mocked(windowsPathFacts.readWindowsDacls).mockReset().mockImplementationOnce(targets => targets.map(path => nativeDescriptor(path)))
+      .mockImplementation(() => { throw unavailable(); });
+    expect(readWindowsDirectoryDacls(paths, true).map(row => row.category)).toEqual(["helper-unavailable", "helper-unavailable"]);
+
+    vi.mocked(windowsPathFacts.readWindowsDacls).mockReset().mockImplementation(() => { throw unavailable(); });
+    expect(ensureAveHomePrivate(dir, { platform: "win32", readDacls: readWindowsDirectoryDacls }))
+      .toMatchObject({ enforcement: "none", category: "helper-unavailable" });
+  });
+  it.runIf(process.platform === "win32")("keeps the missing helper's install path out of the privacy failure reason", () => {
+    const resources = mkdtempSync(join(tmpdir(), "ave-no-helper-resources-"));
+    configureHostResources({ resourcePath: resources, isPackaged: false });
+    try {
+      const failure = ensureAveHomePrivate(home(), { platform: "win32", readDacls: readWindowsDirectoryDacls });
+      expect(failure).toMatchObject({ enforcement: "none", category: "helper-unavailable" });
+      const reason = (failure as { reason: string }).reason;
+      expect(reason).toContain("Restart Ave; if it persists, reinstall Ave.");
+      expect(reason).not.toContain(resources);
+      expect(reason).not.toContain("ave-path-kind.exe");
+      expect(reason).not.toContain("Reinstall Ave;");
+    } finally {
+      configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+      rmSync(resources, { recursive: true, force: true });
+    }
+  });
+  it("keeps any other timed-out read, such as the protection command's, a read-back failure", () => {
+    const timedOut = Object.assign(new Error("spawnSync powershell.exe ETIMEDOUT"), { code: "ETIMEDOUT", syscall: "spawnSync powershell.exe" });
+    expect(ensureAveHomePrivate(home(), { platform: "win32", readDacls: () => { throw timedOut; } }))
+      .toMatchObject({ enforcement: "none", category: "read-back-failed" });
+  });
   it("reports a directory the protecting step could not create", () => {
     const dir = home();
     const result = ensureAveHomePrivate(dir, { platform: "win32", readDacls: (paths) => [
@@ -664,6 +703,14 @@ describe("ensureAveHomePrivate", () => {
       // A boundary that is still owner-only is admitted as before: the split changes only what a failure says.
       onWindows((path) => nativeDescriptor(path));
       expect(() => assertAveHomeRuntimeBoundary(dir)).not.toThrow();
+    });
+    it("tells a user whose path-facts helper gave no answer to restart, not to fix folder permissions", () => {
+      const dir = home();
+      onWindows(missing);
+      setAveHomePrivacyAtBoot({ enforcement: "none", home: dir, failedPath: dir, category: "helper-unavailable", reason: "fixture" });
+      expect(() => assertAveHomeRuntimeBoundary(dir)).toThrow(
+        `AVE_HOME protection is not established (helper-unavailable, ${dir}). Restart Ave; if it persists, reinstall Ave.`);
+      expect(() => assertAveHomeRuntimeBoundary(dir)).not.toThrow(/Fix the folder permissions/);
     });
     it("points a missing boundary under an unprotected home root to the folder-permission fix before boot publishes a refusal", () => {
       const dir = home();

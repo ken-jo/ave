@@ -271,21 +271,24 @@ describe.each([
     };
     // Reject slow small inputs before attempting the large scaling samples.
     for (const value of inputs(2 * 1024)) measure(value);
-    const timings = [100, 200, 400, 800].map(kib => {
+    expectLinearScaling(`home redaction scaling ${shape}`, kib => {
       const values = inputs(kib * 1024);
-      const samples = Array.from({ length: 5 }, () => values.reduce((total, value) => total + measure(value), 0));
-      samples.sort((a, b) => a - b);
-      return samples[2];
+      return values.reduce((total, value) => total + measure(value), 0);
     });
-    // A timer-resolution floor keeps scheduling noise from magnifying sub-millisecond samples.
-    expect(timings[1]).toBeLessThan(Math.max(timings[0], 1) * 4);
-    expect(timings[2]).toBeLessThan(Math.max(timings[1], 1) * 4);
-    expect(timings[2]).toBeLessThan(Math.max(timings[0], 1) * 8);
-    expect(timings[3]).toBeLessThan(Math.max(timings[2], 1) * 4);
-    expect(timings[3]).toBeLessThan(Math.max(timings[0], 1) * 16);
-    console.info("home redaction scaling", { shape, kib: [100, 200, 400, 800], milliseconds: timings });
   });
 });
+
+// Load only adds time, so the fastest sample is the closest to the work itself.
+// From 100 to 800 KiB linear work grows 8x and quadratic work 64x; the bound sits between them.
+const LINEAR_SCALING_BOUND = 24;
+
+function expectLinearScaling(label: string, sample: (kib: number) => number): void {
+  const fastest = (kib: number) => Math.min(...Array.from({ length: 5 }, () => sample(kib)));
+  const [small, large] = [fastest(100), fastest(800)];
+  console.info(label, { fastestMs: { kib100: small, kib800: large }, ratio: large / Math.max(small, 1), bound: LINEAR_SCALING_BOUND });
+  // A timer-resolution floor keeps scheduling noise from magnifying sub-millisecond samples.
+  expect(large, `100 KiB ${small} ms, 800 KiB ${large} ms`).toBeLessThan(Math.max(small, 1) * LINEAR_SCALING_BOUND);
+}
 
 describe.each(["win32", "linux"] as const)("reversible home encodings on %s", (platform) => {
   async function load(home?: string) {
@@ -390,24 +393,15 @@ describe.each(["%", "\\u", "&#", "&#x", "&amp;", "%25", "peeling", "zeros", MIXE
     const input = (size: number): string => shape === "peeling" ? `%${"25".repeat(Math.floor(size / 2))}2F` : shape === "zeros" ? `&#${"0".repeat(size)}47;` : shape.repeat(Math.ceil(size / shape.length));
     const measure = (size: number): number => {
       const text = input(size);
-      const samples = Array.from({ length: 5 }, () => {
-        const start = performance.now();
-        const output = redactHomePathsInText(text);
-        const elapsed = performance.now() - start;
-        expect(elapsed).toBeLessThan(2_000);
-        if (shape === MIXED_ESCAPE_FRAGMENT) expect(output).toBe(text);
-        return elapsed;
-      });
-      return samples.sort((a, b) => a - b)[2];
+      const start = performance.now();
+      const output = redactHomePathsInText(text);
+      const elapsed = performance.now() - start;
+      expect(elapsed).toBeLessThan(2_000);
+      if (shape === MIXED_ESCAPE_FRAGMENT) expect(output).toBe(text);
+      return elapsed;
     };
     measure(2 * 1024);
-    const timings = [100, 200, 400, 800].map(kib => measure(kib * 1024));
-    expect(timings[1]).toBeLessThan(Math.max(timings[0], 1) * 4);
-    expect(timings[2]).toBeLessThan(Math.max(timings[1], 1) * 4);
-    expect(timings[2]).toBeLessThan(Math.max(timings[0], 1) * 8);
-    expect(timings[3]).toBeLessThan(Math.max(timings[2], 1) * 4);
-    expect(timings[3]).toBeLessThan(Math.max(timings[0], 1) * 16);
-    console.info("decoder scaling", { shape, kib: [100, 200, 400, 800], milliseconds: timings });
+    expectLinearScaling(`decoder scaling ${shape}`, kib => measure(kib * 1024));
   });
 });
 

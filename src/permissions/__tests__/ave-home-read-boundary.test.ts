@@ -1,10 +1,13 @@
 const factsOverride = vi.hoisted(() => new Map<string, { reparseTag: number; attributes: number }>());
 // The first path of every native pin, so a test can count the helper calls one composition makes.
 const pinnedFirstPaths = vi.hoisted(() => [] as string[]);
+// A helper failure every native pin throws while set.
+const pinFault = vi.hoisted(() => ({ error: undefined as Error | undefined }));
 vi.mock("../../shared/windows-path-facts.js", async original => {
   const facts = await (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original());
   // A seam for reparse tags no fixture can create: the named paths report the given tag on their own native facts.
   const pinWindowsPaths: typeof facts.pinWindowsPaths = (paths) => {
+    if (pinFault.error !== undefined) throw pinFault.error;
     if (paths[0] !== undefined) pinnedFirstPaths.push(paths[0]);
     return facts.pinWindowsPaths(paths).map((row, index) => ({ ...row, ...factsOverride.get(paths[index] ?? "") }));
   };
@@ -47,7 +50,8 @@ vi.mock("../../shared/policy-home.js", async (importOriginal) => {
   return { ...actual, policyHomeAnchors: () => [os.homedir()] };
 });
 
-import { aveHome } from "../../shared/ave-home.js";
+import { aveHome, aveHomeBoundaryFailure } from "../../shared/ave-home.js";
+import { windowsPathKindHelperUnavailable } from "../../main/windows-path-kind-launcher.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { removeLinksUnder } from "../../__tests__/support/tmp-dir-teardown.js";
 import { useVerifiedAveHomePrivacy as installVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
@@ -278,6 +282,7 @@ describe("a profile-child Ave home on Windows", () => {
   });
   afterEach(() => {
     readdirFault.path = undefined;
+    pinFault.error = undefined;
     factsOverride.clear();
     fakeHome.value = undefined;
     const root = profile;
@@ -310,6 +315,19 @@ describe("a profile-child Ave home on Windows", () => {
     readdirFault.path = original;
     readdirFault.code = code;
     for (const [label, compose] of composers()) expect(compose, label).toThrow(refused);
+  });
+
+  it.each([
+    ["timeout", () => windowsPathKindHelperUnavailable("Windows path facts helper did not answer within 15000 ms", "ETIMEDOUT")],
+    ["launch failure", () => windowsPathKindHelperUnavailable("Windows path facts helper could not start (ENOENT)", "ENOENT")],
+  ] as const)("classifies a path-facts helper %s during the pin as helper-unavailable at every composer", (_label, fault) => {
+    pinFault.error = fault();
+    for (const [label, compose] of composers()) {
+      let thrown: unknown;
+      try { compose(); } catch (error) { thrown = error; }
+      expect(thrown, label).toEqual(refused);
+      expect(aveHomeBoundaryFailure(thrown), label).toEqual({ home: original, category: "helper-unavailable" });
+    }
   });
 
   it("denies the browser download staging folder as a top-level child once it exists, and never grants it to a shell", () => {
