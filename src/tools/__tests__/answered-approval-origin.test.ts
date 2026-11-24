@@ -266,6 +266,45 @@ describe("one terminal row per plugin-emitted invocation answered at the desk", 
     expect(JSON.stringify(rows[0]?.denyReasons).includes("remote-controller-revoked")).toBe(vetoed);
   });
 
+  it.each(["rule", "revoked"] as const)("reports a %s refusal after the directory answer", async outcome => {
+    const outside = join(root, "outside");
+    await mkdir(outside);
+    const sessionId = randomUUID();
+    let current = true;
+    const remoteControllerAuthority = bindRemoteControllerToSession({
+      kind: "tailnet-controller", actorId: "tailnet:alice",
+      pairedShare: { pairingId: "pairing", pairingEpoch: 1, shareId: "share", shareEpoch: 1, scope: "scope" },
+      pairedShareGuard: { isCurrent: () => current, refreshCurrent: async () => current },
+    }, sessionId);
+    const surface = await import("../pipeline/user-owned-surface.js");
+    const reason = "The surface policy refused this directory.";
+    const resolve = vi.spyOn(surface, "resolveUserOwnedSurfaceApproval").mockImplementationOnce(async ({ decision }) => {
+      if (outcome === "revoked") current = false;
+      const provenance = outcome === "revoked" ? HOST_PROVENANCE : RULE_PROVENANCE;
+      return { permission: { decision: "deny", reason, provenance }, decision: { requestId: decision.requestId, choice: "deny-once" }, provenance };
+    });
+    const requestAndWait = answeringRequestAndWait(() => ({ choice: "allow-once" as const }));
+    const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);
+    const id = `surface-${outcome}`;
+    const path = join(outside, "refused.txt");
+    try {
+      const [result] = await executor.executeAll([{ id, name: "write_file", input: { path, content: "refused" } }], {
+        sessionId, executionCwd: project,
+        permissionContext: { trustOrigin: "tailnet-surface", additionalDirectories: [project], remoteControllerAuthority },
+      });
+      expect(resolve).toHaveBeenCalledOnce();
+      expect(requestAndWait).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ kind: "out-of-allowed-dir" }));
+      const expected = outcome === "revoked" ? "remote-controller-revoked" : reason;
+      expect(result).toMatchObject({ is_error: true, content: expect.stringContaining(expected) });
+      expect(await ledger(id)).toEqual([expect.objectContaining({
+        decision: "deny", trustOrigin: "tailnet-surface", denyReasons: [expect.objectContaining({ reason: expected })],
+      })]);
+      await expect(readFile(path)).rejects.toThrow();
+    } finally {
+      resolve.mockRestore();
+    }
+  });
+
   it("records the desk's deny of the tool card", async () => {
     const requestAndWait = answeringRequestAndWait(() => ({ choice: "deny-once" as const }));
     const executor = new ToolExecutor(registry, undefined, manager, undefined, { requestAndWait } as never, undefined, audit);

@@ -1709,10 +1709,10 @@ async function runToolInvocationAttempt(
         };
         const approvalFailureOutcome = (decision: ApprovalDecision, name: string, permission: typeof dirLayerResult) => {
           const failure = getApprovalFailureOutcome(decision, name);
-          if (failure === null && permission.decision !== "deny") {
-            dirLayerResult = refusal(permission.reason, answeredApprovalProvenance(decision));
-          }
-          return failure;
+          if (failure !== null) return failure;
+          if (permission.decision === "deny") return { content: permission.reason, permission };
+          dirLayerResult = refusal(permission.reason, answeredApprovalProvenance(decision));
+          return null;
         };
         const resolveUserOwnedSurfaceApproval = async (input: Parameters<typeof resolveSurfaceApproval>[0]) => {
           const resolution = await resolveSurfaceApproval(input);
