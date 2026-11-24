@@ -1839,7 +1839,7 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
         writePaths,
         input.timeoutSeconds, prepared, ctx.abortSignal, outputCapture,
         outputProgress, holdsOutput,
-      ), ctx.verifiedShellCommand, verifiedIdentity);
+      ), ctx.verifiedShellCommand, verifiedIdentity, ctx.abortSignal);
       if (checked.refused) return checked.result;
       return withBackgroundUnavailable(
         trackSessionCwd(checked.result, resolvedCwd, ctx),
@@ -1872,7 +1872,7 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
       outputCapture, outputProgress, hostSpawnAuthorization,
       holdsOutput ? undefined : sessionIdFromContext(ctx), !holdsOutput && !hostShellPlan.requiresExplicitUserApproval && !disposableExecution && process.platform !== "win32",
       holdsOutput, shellObservationSandbox(hostShellPlan, disposableExecution),
-    ), ctx.verifiedShellCommand, verifiedIdentity);
+    ), ctx.verifiedShellCommand, verifiedIdentity, ctx.abortSignal);
     if (checked.refused) return checked.result;
     // A disposable route's directory belongs to its own lifecycle, not the
     // host session's.
@@ -2260,14 +2260,14 @@ interface SpawnResult {
   reportedCwd?: string;
 }
 
-function verifiedShellOutputRefusal(handle: VerifiedShellCommand | undefined, identity: VerifiedShellIdentity): SpawnResult | undefined {
-  const refusal = verifiedShellResultRefusal(handle, identity);
+async function verifiedShellOutputRefusal(handle: VerifiedShellCommand | undefined, identity: VerifiedShellIdentity): Promise<SpawnResult | undefined> {
+  const refusal = await verifiedShellResultRefusal(handle, identity);
   return refusal === undefined ? undefined : { output: refusal, isError: true, metadata: {} };
 }
 
 /** Reinspect checked executions whether they return a result or fail to spawn. */
 async function checkedShellResult<T extends ToolExecutionResult>(
-  execute: () => Promise<T>, handle: VerifiedShellCommand | undefined, identity: VerifiedShellIdentity,
+  execute: () => Promise<T>, handle: VerifiedShellCommand | undefined, identity: VerifiedShellIdentity, signal: AbortSignal | undefined,
 ): Promise<{ result: T | SpawnResult; refused: boolean }> {
   const requiresResultCheck = verifiedShellRequiresResultCheck(handle, identity);
   // Agent observation of a checked execution follows the same quarantine as its result: no output before revalidation, none at all on refusal.
@@ -2280,7 +2280,14 @@ async function checkedShellResult<T extends ToolExecutionResult>(
     const prefix = identity.dialect === "powershell" ? "PowerShell " : "";
     result = { output: `${prefix}spawn failed: ${errorMessage(error)}`, isError: true, metadata: {} };
   }
-  const refusal = verifiedShellOutputRefusal(handle, identity);
+  const abortedBeforeCheck = signal?.aborted === true;
+  const refusal = await verifiedShellOutputRefusal(handle, identity);
+  // A call cancelled while its repository evidence was re-read releases no held output.
+  // Cancellation observed earlier keeps the execution's own result, as before.
+  if (!abortedBeforeCheck && signal?.aborted) {
+    for (const observation of held) observation.releaseHeldOutput(false);
+    signal.throwIfAborted();
+  }
   for (const observation of held) observation.releaseHeldOutput(refusal === undefined);
   return refusal === undefined ? { result, refused: false } : { result: refusal, refused: true };
 }
@@ -3527,7 +3534,7 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
           outputProgress,
           typeof ctx.metadata.toolUseId === "string" ? ctx.metadata.toolUseId : undefined,
           undefined, runtimeReads, verified,
-        ), ctx.verifiedShellCommand, verifiedIdentity);
+        ), ctx.verifiedShellCommand, verifiedIdentity, ctx.abortSignal);
         const block = sandboxBlockForResult(checked.result);
         if (block !== undefined && block.command !== input.command) attachSandboxBlock(checked.result, issueFilesystemSandboxBlock(input.command, resolvedCwd));
         return checked.result;
@@ -3540,7 +3547,7 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
         outputProgress,
         typeof ctx.metadata.toolUseId === "string" ? ctx.metadata.toolUseId : undefined,
         runtimeReads, verified,
-      ), ctx.verifiedShellCommand, verifiedIdentity);
+      ), ctx.verifiedShellCommand, verifiedIdentity, ctx.abortSignal);
       const block = sandboxBlockForResult(checked.result);
       if (block !== undefined && block.command !== input.command) attachSandboxBlock(checked.result, issueFilesystemSandboxBlock(input.command, resolvedCwd));
       return checked.result;
@@ -3550,7 +3557,7 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
       input.command, hostSpawnAuthorization?.cwdIdentity.realpath ?? resolvedCwd, input.timeoutSeconds, ctx.abortSignal,
       outputCapture, outputProgress, hostSpawnAuthorization, verified,
       shellObservationSandbox(hostShellPlan, disposableExecution),
-    ), ctx.verifiedShellCommand, verifiedIdentity);
+    ), ctx.verifiedShellCommand, verifiedIdentity, ctx.abortSignal);
     if (checked.refused) return checked.result;
     const plainResult = checked.result;
     if (disposableExecution) return withDisposableExecutionMetadata(plainResult);
