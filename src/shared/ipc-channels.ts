@@ -157,6 +157,10 @@ export const PERMISSIONS = {
   egressGrantsList: "ave:permissions:egress-grants-list",
   // MUTATING (sender-frame-guarded + user-keyboard intent): revoke one of those grants.
   egressGrantRevoke: "ave:permissions:egress-grant-revoke",
+  // Read-only (sender-frame-guarded): protected paths a contained process created that Ave moved to quarantine.
+  watchedQuarantineList: "ave:permissions:watched-quarantine-list",
+  // MUTATING (sender-frame-guarded + user-keyboard intent): move one quarantined entry back.
+  watchedQuarantineRestore: "ave:permissions:watched-quarantine-restore",
   // Read-only (sender-frame-guarded): the main-owned upstream proxy setting (no credential values), whether manual credentials are
   // stored, and the effective upstream for https://example.com. Drives Settings → Permissions → OS Tool Sandbox "Upstream proxy".
   upstreamProxyGet: "ave:permissions:upstream-proxy-get",

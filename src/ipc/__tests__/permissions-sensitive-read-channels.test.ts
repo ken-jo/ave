@@ -28,6 +28,7 @@ const SENSITIVE_READ_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]
   ["userApprovalList", PERMISSIONS.userApprovalList, []],
   ["listScopedRules", PERMISSIONS.listScopedRules, []],
   ["egressGrantsList", PERMISSIONS.egressGrantsList, []],
+  ["watchedQuarantineList", PERMISSIONS.watchedQuarantineList, []],
   ["auditShow", PERMISSIONS.auditShow, [10]],
   ["auditVerify", PERMISSIONS.auditVerify, []],
   ["hookTrustList", PERMISSIONS.hookTrustList, []],
