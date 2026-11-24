@@ -62,13 +62,13 @@ export type TerminalDenialLifecycle = {
 };
 /**
  * The attempt's terminal row. A deny row names its kind; any other row cannot. `logger` is absent when the chain is
- * neither set up nor required; `reason` is the finalized denial reason, defaulting to the row's first. `answered` marks
+ * neither set up nor required; `reason` is the finalized denial reason, defaulting to the row's first. `humanAnswered` marks
  * a deny a person settled, which an abort committed after it cannot turn into a cancellation.
  */
 type TerminalRow = {
   logger?: Pick<AuditLogger, "appendPermissionAuditEntry">;
   reason?: string;
-  answered?: boolean;
+  humanAnswered?: boolean;
 } & ({ entry: DenyEntry; kind: TerminalDenyKind } | { entry: Exclude<PermissionAuditEntryInput, { decision: "deny" }>; kind?: never });
 /**
  * Writes the attempt's terminal row; only the ledger hands one out. The call claims the attempt and enqueues the row
@@ -180,7 +180,7 @@ class TerminalLedger implements InvocationTerminal {
       if (this.#refusal(by)) return Promise.resolve();
       this.#take();
       const { logger, reason } = terminal;
-      const cancellation = terminal.kind === "denied" ? this.#abortCancellation(terminal.answered === true) : undefined;
+      const cancellation = terminal.kind === "denied" ? this.#abortCancellation(terminal.humanAnswered === true) : undefined;
       // A deny row persists its kind, so a reader of the row and its PermissionDenied can never disagree.
       const entry: PermissionAuditEntryInput = terminal.entry.decision !== "deny" ? terminal.entry
         : cancellation === undefined ? { ...terminal.entry, terminalKind: terminal.kind }
@@ -225,8 +225,8 @@ class TerminalLedger implements InvocationTerminal {
    * (a hook the Stop cancelled, a step the abort made throw); only a person's settled deny and the host's own integrity
    * refusal stay denials. Returns the cancellation's reason, or undefined when the row stays a denial.
    */
-  #abortCancellation(answered: boolean): string | undefined {
-    if (!this.#signal.aborted || answered || this.#integrityFailure) return undefined;
+  #abortCancellation(humanAnswered: boolean): string | undefined {
+    if (!this.#signal.aborted || humanAnswered || this.#integrityFailure) return undefined;
     return isHostExitAbort(this.#signal.reason) ? "host-shutdown" : "user aborted turn";
   }
 

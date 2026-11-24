@@ -195,7 +195,7 @@ it("records a deny committed after the invocation's abort as a cancellation, unl
   const human = ledger.admitToolInvocation("human", answered.signal);
   human.terminal.hostTerminal(hostDenial, lifecycle);
   answered.abort();
-  await human.terminal.commit(async (row) => { await row({ logger: logger as never, entry: ENTRY, kind: "denied", answered: true }); });
+  await human.terminal.commit(async (row) => { await row({ logger: logger as never, entry: ENTRY, kind: "denied", humanAnswered: true }); });
   human.settle();
   expect(appended[2]).toMatchObject({ denyReasons: [{ reason: "probe" }] });
   expect(fired.map((denial) => denial.reason)).toEqual(["probe"]);

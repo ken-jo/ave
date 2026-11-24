@@ -20,7 +20,8 @@ type Source =
   | "rule" | "unknown-tool" | "human" | "hook-mutation" | "host" | "integrity" | "plugin-generation"
   | "user-abort" | "host-shutdown" | "deadline" | "mid-execution" | "plugin-generation-shutdown"
   | "card-quit" | "card-abort" | "governed-operation" | "governed-auth"
-  | "dir-hook-abort" | "dir-hook-inherited-abort" | "shell-prep-abort" | "human-then-abort" | "human-then-quit";
+  | "dir-hook-abort" | "dir-hook-inherited-abort" | "shell-prep-abort"
+  | "human-then-abort" | "human-then-quit" | "headless-then-abort";
 
 /** Each probe loads a fresh module graph, so a sealed or drained ledger never leaks into another case. */
 async function setup(source: Source) {
@@ -48,6 +49,7 @@ async function setup(source: Source) {
   const governed = source === "governed-operation";
   const dirHook = source === "dir-hook-abort" || source === "dir-hook-inherited-abort";
   const humanThen = source === "human-then-abort" || source === "human-then-quit";
+  const headlessThen = source === "headless-then-abort";
   const outside = mkdtempSync(join(tmpdir(), "ave-denial-outside-"));
   roots.push(outside);
   const registry = new ToolRegistry();
@@ -70,7 +72,7 @@ async function setup(source: Source) {
     } }));
   const permissions = new PermissionManager(join(root, "permissions.json"));
   if (source === "rule" || source === "governed-operation" || source === "governed-auth") permissions.setRules([{ pattern: TOOL, action: "deny" }]);
-  if (source === "human" || source === "host" || source === "integrity" || source === "card-quit" || source === "card-abort" || humanThen) {
+  if (source === "human" || source === "host" || source === "integrity" || source === "card-quit" || source === "card-abort" || humanThen || headlessThen) {
     permissions.setRules([{ pattern: TOOL, action: "ask" }]);
   }
   if (holds || generation || source === "host-shutdown") permissions.setRules([{ pattern: TOOL, action: "allow" }]);
@@ -116,8 +118,9 @@ async function setup(source: Source) {
   const lifecycle = vi.spyOn(hooks, "runLifecycleEvent");
   // human: the desk denies this call; host: an allow settled for another call; integrity: a deny settled for another call.
   const requestAndWait = vi.fn(async (request: ApprovalRequestInput) => answeredApprovalDecision(
-    { requestId: request.id, choice: source === "host" ? "allow-once" : humanThen ? "deny-always" : "deny-once" }, "desk", request.toolName,
-    source === "human" || humanThen ? request.invocationToolUseId : "another-call"));
+    { requestId: request.id, choice: source === "host" ? "allow-once" : humanThen ? "deny-always" : "deny-once" },
+    headlessThen ? "headless-exec" : "desk", request.toolName,
+    source === "human" || humanThen || headlessThen ? request.invocationToolUseId : "another-call"));
   const lease = { generation: { generationId: "gen-1", state: { runtime: {} } }, release: () => {} };
   const access = {
     getActive: () => undefined,
@@ -149,6 +152,7 @@ async function setup(source: Source) {
   const { turnExtensionPolicyContext } = await import("../../shared/turn-extension-policy.js");
   const execute = () => executor.executeAll(ids.map((id) => ({ id, name, input })), {
     sessionId: "denial-session", executionCwd: root, permissionContext: userPermissionContext(dirHook ? { trustOrigin: "llm-tool-arg" } : {}), abortSignal: controller.signal,
+    ...(headlessThen ? { callbacks: { onToolEnd: () => { controller.abort(); } } } : {}),
     ...(source === "governed-auth" ? { pluginAuthLifecycle: authLifecycle } : {}),
   });
   const run = () => source === "dir-hook-inherited-abort"
@@ -345,6 +349,14 @@ describe("a permission denial fires one PermissionDenied; a cancellation and a g
     await run("human-then-abort", async (probe) => {
       expect(probe.controller.signal.aborted).toBe(true);
       await expectOneDenial(probe, "user denied approval request");
+    });
+  });
+
+  it("an automatic headless refusal committed after Stop is cancelled without an event", async () => {
+    await run("headless-then-abort", async (probe) => {
+      expect(probe.controller.signal.aborted).toBe(true);
+      await expectNoDenial(probe, "user aborted turn");
+      expect(reasons(await settledRow(probe))[1]).toBe("user denied approval request");
     });
   });
 

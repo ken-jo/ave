@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import type { ToolRegistry } from "../registry.js";
 import type { ToolSource, ToolCategory, TrustLevel } from "../types.js";
 import type { PermissionCheckResult } from "../../permissions/permission-manager.js";
-import { answeredRecordForAction, provenanceTrustOrigin, type DecisionProvenance } from "../../permissions/approval-gate.js";
+import { answeredProvenanceRecord, answeredRecordForAction, provenanceTrustOrigin, type DecisionProvenance } from "../../permissions/approval-gate.js";
 import type { AuditLogger } from "../../audit/audit-logger.js";
 import type { HookResult, ToolExecutionAuditMetadata } from "../../audit/audit-schema.js";
 import { isPiiRedactionEnabled, maskSensitiveData } from "../../audit/dlp-filter.js";
@@ -293,7 +293,7 @@ export class AuditWriter {
     const logger = ready ? { logger: this.auditLogger } : {};
     const appended = entry.decision === "deny"
       ? terminal.row({ entry, kind: terminal.kind, ...logger, ...(permission?.decision === "deny" ? { reason: permission.reason } : {}),
-        answered: permission?.provenance.kind === "answered" })
+        humanAnswered: permission?.provenance.kind === "answered" && answeredProvenanceRecord(permission.provenance).trustOrigin !== "unknown" })
       : terminal.row({ entry, ...logger });
     try {
       await appended;
