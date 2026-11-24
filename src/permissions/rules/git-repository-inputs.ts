@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
-import { closeSync, constants, fstatSync, lstatSync, openSync, opendirSync, readSync, realpathSync, type BigIntStats } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, opendirSync, readSync, realpath, realpathSync, type BigIntStats, type Dir } from "node:fs";
+import { lstat, open, opendir, type FileHandle } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
+import { check, runChecksAsync, runChecksSync, type Checks } from "../../shared/sync-async-checks.js";
 import { admitWindowsReparse, pinWindowsPaths } from "../../shared/windows-path-facts.js";
 
 export interface GitRepositoryInputs {
@@ -56,10 +58,35 @@ function metadataIdentity(stat: BigIntStats): string {
   return [stat.dev, stat.ino, stat.mode, stat.uid, stat.gid, stat.size, stat.nlink, stat.mtimeNs, stat.ctimeNs].join(":");
 }
 
-function readControlFingerprint(path: string, expectedIdentity: string, maxBytes: number, isConfig: boolean): { hash: string; bytes: number } | null {
-  const descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+/** A control file opened by exactly one driver; using it from the other driver is a contract violation. */
+interface ControlFile { readonly descriptor?: number; readonly handle?: FileHandle }
+
+function syncDescriptor(file: ControlFile): number {
+  if (file.descriptor === undefined) throw new Error("Control file was opened by the asynchronous driver");
+  return file.descriptor;
+}
+
+function asyncHandle(file: ControlFile): FileHandle {
+  if (file.handle === undefined) throw new Error("Control file was opened by the synchronous driver");
+  return file.handle;
+}
+
+function* lstatEvidence(path: string): Checks<BigIntStats> {
+  return yield* check(() => lstatSync(path, { bigint: true }), () => lstat(path, { bigint: true }));
+}
+
+function* fstatControl(file: ControlFile): Checks<BigIntStats> {
+  return yield* check(() => fstatSync(syncDescriptor(file), { bigint: true }), () => asyncHandle(file).stat({ bigint: true }));
+}
+
+function* readControlFingerprint(path: string, expectedIdentity: string, maxBytes: number, isConfig: boolean): Checks<{ hash: string; bytes: number } | null> {
+  const flags = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
+  const file: ControlFile = yield* check(
+    (): ControlFile => ({ descriptor: openSync(path, flags) }),
+    async (): Promise<ControlFile> => ({ handle: await open(path, flags) }),
+  );
   try {
-    const stat = fstatSync(descriptor, { bigint: true });
+    const stat = yield* fstatControl(file);
     if (!stat.isFile() || stat.nlink !== 1n || stat.size > BigInt(maxBytes) || metadataIdentity(stat) !== expectedIdentity) return null;
     const contents = Buffer.alloc(CONTROL_READ_BUFFER_BYTES);
     const hash = createHash("sha256");
@@ -67,7 +94,11 @@ function readControlFingerprint(path: string, expectedIdentity: string, maxBytes
     const configChunks: Buffer[] = [];
     let length = 0;
     while (length <= maxBytes) {
-      const count = readSync(descriptor, contents, 0, Math.min(contents.length, maxBytes - length + 1), null);
+      const requested = Math.min(contents.length, maxBytes - length + 1);
+      const count = yield* check(
+        () => readSync(syncDescriptor(file), contents, 0, requested, null),
+        async () => (await asyncHandle(file).read(contents, 0, requested, null)).bytesRead,
+      );
       if (count === 0) break;
       length += count;
       if (length > maxBytes) return null;
@@ -75,12 +106,12 @@ function readControlFingerprint(path: string, expectedIdentity: string, maxBytes
       hash.update(bytes);
       if (isConfig) configChunks.push(Buffer.from(bytes));
     }
-    if ((isConfig && !hasSupportedConfig(Buffer.concat(configChunks, length)))
-      || metadataIdentity(fstatSync(descriptor, { bigint: true })) !== expectedIdentity
-      || metadataIdentity(lstatSync(path, { bigint: true })) !== expectedIdentity) return null;
+    if (isConfig && !hasSupportedConfig(Buffer.concat(configChunks, length))) return null;
+    if (metadataIdentity(yield* fstatControl(file)) !== expectedIdentity
+      || metadataIdentity(yield* lstatEvidence(path)) !== expectedIdentity) return null;
     return { hash: hash.digest("hex"), bytes: length };
   } finally {
-    closeSync(descriptor);
+    yield* check(() => closeSync(syncDescriptor(file)), () => asyncHandle(file).close());
   }
 }
 
@@ -100,7 +131,7 @@ function needsContentEvidence(path: string): boolean {
 const MAX_WINDOWS_PIN_BATCH_CHARACTERS = 16 * 1024;
 
 /** One pin covers a path and every ancestor component; batches bound helper starts per directory. */
-function areOrdinaryWindowsPaths(paths: readonly string[]): boolean {
+function* areOrdinaryWindowsPaths(paths: readonly string[]): Checks<boolean> {
   for (let start = 0; start < paths.length;) {
     let end = start;
     let characters = 0;
@@ -109,7 +140,9 @@ function areOrdinaryWindowsPaths(paths: readonly string[]): boolean {
       end += 1;
     }
     const batch = paths.slice(start, end);
-    const rows = pinWindowsPaths(batch);
+    // The native pin helper is synchronous; the asynchronous driver refuses rather than block.
+    const rows = yield* check(() => pinWindowsPaths(batch),
+      () => Promise.reject(new Error("Asynchronous repository inspection cannot pin Windows paths")));
     if (rows.length !== batch.length || !rows.every(row => row.exists === true && admitWindowsReparse(row, "evidence") === true)) return false;
     start = end;
   }
@@ -118,16 +151,30 @@ function areOrdinaryWindowsPaths(paths: readonly string[]): boolean {
 
 /** Bounded evidence for pre/post comparison; metadata is not atomically sealed. */
 export function inspectGitRepository(cwd: string): GitRepositoryInputs | null {
+  return runChecksSync(inspectRepository(cwd));
+}
+
+/** The same inspection, check for check and in the same order, without blocking the event loop. */
+export function inspectGitRepositoryAsync(cwd: string): Promise<GitRepositoryInputs | null> {
+  return runChecksAsync(inspectRepository(cwd));
+}
+
+function realpathAsync(path: string): Promise<string> {
+  // The callback form shares realpathSync's JavaScript resolution; fs/promises uses the native one.
+  return new Promise((resolve, reject) => realpath(path, (error, resolved) => error ? reject(error) : resolve(resolved)));
+}
+
+function* inspectRepository(cwd: string): Checks<GitRepositoryInputs | null> {
   if (!isAbsolute(cwd) || cwd.includes("\0")) return null;
   try {
     // Pinning the requested spelling first means realpath follows no reparse point.
-    if (process.platform === "win32" && !areOrdinaryWindowsPaths([cwd])) return null;
-    const workTree = realpathSync(cwd);
+    if (process.platform === "win32" && !(yield* areOrdinaryWindowsPaths([cwd]))) return null;
+    const workTree = yield* check(() => realpathSync(cwd), () => realpathAsync(cwd));
     const provenance: [string, string][] = [];
     let ancestor = workTree;
     for (let depth = 0; ; depth += 1) {
       if (depth > MAX_METADATA_DEPTH) return null;
-      const stat = lstatSync(ancestor, { bigint: true });
+      const stat = yield* lstatEvidence(ancestor);
       if (!stat.isDirectory() || stat.isSymbolicLink()) return null;
       provenance.push([ancestor, metadataIdentity(stat)]);
       const parent = dirname(ancestor);
@@ -138,12 +185,12 @@ export function inspectGitRepository(cwd: string): GitRepositoryInputs | null {
     const gitDirectory = join(workTree, ".git");
     let entries = 0;
     let controlBytes = 0;
-    const inspect = (path: string, relative: string, depth: number): boolean => {
+    function* inspect(path: string, relative: string, depth: number): Checks<boolean> {
       const metadataPath = relative.toLowerCase();
       if (++entries > MAX_METADATA_ENTRIES || depth > MAX_METADATA_DEPTH
         || FORBIDDEN_METADATA_PATHS.has(metadataPath) || metadataPath.endsWith("/commondir")) return false;
       // The caller pinned this path, alone for the root and with its siblings otherwise.
-      const stat = lstatSync(path, { bigint: true });
+      const stat = yield* lstatEvidence(path);
       if (stat.isSymbolicLink() || (!stat.isFile() && !stat.isDirectory()) || (stat.isFile() && stat.nlink !== 1n)) return false;
       const identity = metadataIdentity(stat);
       if (relative === "" && !stat.isDirectory()) return false;
@@ -151,7 +198,7 @@ export function inspectGitRepository(cwd: string): GitRepositoryInputs | null {
       if (stat.isFile()) {
         let contentHash = "";
         if (needsContentEvidence(metadataPath)) {
-          const fingerprint = readControlFingerprint(path, identity,
+          const fingerprint = yield* readControlFingerprint(path, identity,
             Math.min(MAX_CONTROL_FILE_BYTES, MAX_CONTROL_TOTAL_BYTES - controlBytes), isConfig);
           if (fingerprint === null) return false;
           controlBytes += fingerprint.bytes;
@@ -163,33 +210,33 @@ export function inspectGitRepository(cwd: string): GitRepositoryInputs | null {
       if (isConfig) return false;
       evidence.push([relative, identity, ""]);
       const names: string[] = [];
-      const directory = opendirSync(path);
+      const directory: Dir = yield* check(() => opendirSync(path), () => opendir(path));
       try {
         let entry;
-        while ((entry = directory.readSync()) !== null) {
+        while ((entry = yield* check(() => directory.readSync(), () => directory.read())) !== null) {
           if (entries + names.length >= MAX_METADATA_ENTRIES) return false;
           names.push(entry.name);
         }
       } finally {
-        directory.closeSync();
+        yield* check(() => directory.closeSync(), () => directory.close());
       }
-      if (process.platform === "win32" && !areOrdinaryWindowsPaths(names.map(name => join(path, name)))) return false;
+      if (process.platform === "win32" && !(yield* areOrdinaryWindowsPaths(names.map(name => join(path, name))))) return false;
       for (const name of names) {
-        if (!inspect(join(path, name), relative ? `${relative}/${name}` : name, depth + 1)) return false;
+        if (!(yield* inspect(join(path, name), relative ? `${relative}/${name}` : name, depth + 1))) return false;
       }
       return true;
-    };
+    }
     // This pin uses the realpath spelling, so its ancestor components cover every
     // provenance directory walked above as well as the metadata root itself.
-    if (process.platform === "win32" && !areOrdinaryWindowsPaths([gitDirectory])) return null;
-    if (!inspect(gitDirectory, "", 0)) return null;
+    if (process.platform === "win32" && !(yield* areOrdinaryWindowsPaths([gitDirectory]))) return null;
+    if (!(yield* inspect(gitDirectory, "", 0))) return null;
     // Catch paths changed while another part of the bounded walk was inspected.
     // This is a consistency check, not a lock on later path opens.
     for (const [path, identity] of provenance) {
-      if (metadataIdentity(lstatSync(path, { bigint: true })) !== identity) return null;
+      if (metadataIdentity(yield* lstatEvidence(path)) !== identity) return null;
     }
     for (const [relative, identity] of evidence) {
-      if (metadataIdentity(lstatSync(join(gitDirectory, relative), { bigint: true })) !== identity) return null;
+      if (metadataIdentity(yield* lstatEvidence(join(gitDirectory, relative))) !== identity) return null;
     }
     evidence.sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
     const stateFingerprint = createHash("sha256").update(JSON.stringify([provenance, evidence])).digest("hex");

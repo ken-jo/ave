@@ -12,6 +12,7 @@ import { GIT_VERSION_FLOOR, isSupportedGitVersion, readOnlyGitArguments, gitRead
 import { inspectGitRepository } from "../rules/git-repository-inputs.js";
 
 vi.mock("node:fs", { spy: true });
+vi.mock("node:fs/promises", { spy: true });
 
 interface NativeGitEngine {
   readonly version: string;

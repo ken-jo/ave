@@ -6,10 +6,12 @@ import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import * as windowsPathFacts from "../../shared/windows-path-facts.js";
-import { inspectGitRepository } from "../rules/git-repository-inputs.js";
+import * as fsPromises from "node:fs/promises";
+import { inspectGitRepository, inspectGitRepositoryAsync } from "../rules/git-repository-inputs.js";
 
 vi.mock("node:child_process", { spy: true });
 vi.mock("node:fs", { spy: true });
+vi.mock("node:fs/promises", { spy: true });
 vi.mock("../../shared/windows-path-facts.js", { spy: true });
 
 const nativeFs = await vi.importActual<typeof import("node:fs")>("node:fs");
@@ -507,5 +509,106 @@ describe("checked repository metadata inputs", () => {
   it("fails closed when an inspection raises", () => {
     vi.spyOn(fs, "lstatSync").mockImplementation(() => { throw new Error("Inspection failed"); });
     expect(inspectGitRepository(cwd)).toBeNull();
+  });
+});
+
+function syncEntryPoints() {
+  return { lstatSync: fs.lstatSync, openSync: fs.openSync, fstatSync: fs.fstatSync, readSync: fs.readSync, closeSync: fs.closeSync, opendirSync: fs.opendirSync };
+}
+function asyncEntryPoints() {
+  return { lstat: fsPromises.lstat, open: fsPromises.open, opendir: fsPromises.opendir };
+}
+
+function observedChecks() {
+  return {
+    sync: vi.mocked(fs.lstatSync).mock.calls.map(([path]) => String(path)),
+    syncOpened: vi.mocked(fs.openSync).mock.calls.map(([path]) => String(path)),
+    syncDirectories: vi.mocked(fs.opendirSync).mock.calls.map(([path]) => String(path)),
+    async: vi.mocked(fsPromises.lstat).mock.calls.map(([path]) => String(path)),
+    asyncOpened: vi.mocked(fsPromises.open).mock.calls.map(([path]) => String(path)),
+    asyncDirectories: vi.mocked(fsPromises.opendir).mock.calls.map(([path]) => String(path)),
+  };
+}
+
+function clearObservations(): void {
+  for (const entry of [...Object.values(syncEntryPoints()), ...Object.values(asyncEntryPoints()), fs.realpathSync, fs.realpath]) vi.mocked(entry).mockClear();
+}
+
+describe("asynchronous repository inspection", () => {
+  // The asynchronous driver serves the POSIX hosts with verified Git; Windows is asserted separately.
+  beforeEach(() => setProcessPlatform("linux"));
+
+  const PARITY_CASES: readonly [string, () => void][] = [
+    ["ordinary metadata", () => {}],
+    ["loose refs and packed refs", () => {
+      for (let index = 0; index < 40; index += 1) fs.writeFileSync(join(cwd, ".git", "refs", "heads", `branch-${index}`), `${"a".repeat(40)}\n`);
+      fs.writeFileSync(join(cwd, ".git", "packed-refs"), `# pack-refs with: peeled\n${"b".repeat(40)} refs/tags/v1\n`);
+    }],
+    ["unsupported configuration", () => configure("[include]\n\tpath = /outside\n")],
+    ["metadata pointer file", () => { fs.rmSync(join(cwd, ".git"), { recursive: true }); fs.writeFileSync(join(cwd, ".git"), `gitdir: ${root}\n`); }],
+    ["object alternates", () => fs.writeFileSync(join(cwd, ".git", "objects", "info", "alternates"), root)],
+    ["hard-linked metadata", () => fs.linkSync(join(cwd, ".git", "HEAD"), join(root, "head-alias"))],
+    ["symbolic ref link", () => { fs.mkdirSync(join(root, "outside")); fs.symlinkSync(join(root, "outside"), join(cwd, ".git", "refs", "heads", "linked"), "junction"); }],
+    ["missing metadata", () => fs.rmSync(join(cwd, ".git"), { recursive: true })],
+    ["nested repository data", () => { fs.mkdirSync(join(cwd, ".git", "modules", "nested"), { recursive: true }); fs.writeFileSync(join(cwd, ".git", "modules", "nested", "config"), ORDINARY_CONFIG); }],
+  ];
+
+  it.each(PARITY_CASES)("matches the synchronous driver check for check: %s", async (_name, arrange) => {
+    arrange();
+    clearObservations();
+    const expected = inspectGitRepository(cwd);
+    const syncChecks = observedChecks();
+    for (const entry of Object.values(asyncEntryPoints())) expect(entry).not.toHaveBeenCalled();
+    clearObservations();
+    const actual = await inspectGitRepositoryAsync(cwd);
+    const asyncChecks = observedChecks();
+    expect(actual).toEqual(expected);
+    // The same paths are examined in the same order, and only through the non-blocking entry points.
+    expect(asyncChecks.async).toEqual(syncChecks.sync);
+    expect(asyncChecks.asyncOpened).toEqual(syncChecks.syncOpened);
+    expect(asyncChecks.asyncDirectories).toEqual(syncChecks.syncDirectories);
+    for (const [name, entry] of Object.entries(syncEntryPoints())) expect(entry, name).not.toHaveBeenCalled();
+    // The test harness's privacy guard resolves each opened file; the inspection itself resolves cwd asynchronously.
+    const resolvedSynchronously = vi.mocked(fs.realpathSync).mock.calls.map(([path]) => String(path));
+    expect(resolvedSynchronously.every((path) => asyncChecks.asyncOpened.includes(path))).toBe(true);
+    if (asyncChecks.async.length > 0) expect(fs.realpath).toHaveBeenCalledWith(cwd, expect.any(Function));
+  });
+
+  it("yields to the event loop while inspecting", async () => {
+    let turned = false;
+    setImmediate(() => { turned = true; });
+    const inspection = inspectGitRepositoryAsync(cwd);
+    expect(turned).toBe(false);
+    expect(await inspection).not.toBeNull();
+    expect(turned).toBe(true);
+  });
+
+  it("refuses unsupported root spelling without filesystem access", async () => {
+    clearObservations();
+    for (const path of ["relative", "", "invalid\0cwd"]) expect(await inspectGitRepositoryAsync(path)).toBeNull();
+    for (const entry of Object.values(asyncEntryPoints())) expect(entry).not.toHaveBeenCalled();
+  });
+
+  it("refuses rather than blocking on the synchronous Windows pin helper", async () => {
+    setProcessPlatform("win32");
+    expect(inspectGitRepository(cwd)).not.toBeNull();
+    vi.mocked(windowsPathFacts.pinWindowsPaths).mockClear();
+    expect(await inspectGitRepositoryAsync(cwd)).toBeNull();
+    expect(windowsPathFacts.pinWindowsPaths).not.toHaveBeenCalled();
+  });
+
+  it("refuses when an asynchronous check fails and closes the opened control file", async () => {
+    const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+    const handles: fsPromises.FileHandle[] = [];
+    vi.mocked(fsPromises.open).mockImplementation((async (...args: Parameters<typeof fsPromises.open>) => {
+      const handle = await actual.open(...args);
+      handles.push(handle);
+      vi.spyOn(handle, "read").mockRejectedValue(Object.assign(new Error("I/O"), { code: "EIO" }));
+      vi.spyOn(handle, "close");
+      return handle;
+    }) as typeof fsPromises.open);
+    expect(await inspectGitRepositoryAsync(cwd)).toBeNull();
+    expect(handles.length).toBeGreaterThan(0);
+    for (const handle of handles) expect(handle.close).toHaveBeenCalledTimes(1);
   });
 });

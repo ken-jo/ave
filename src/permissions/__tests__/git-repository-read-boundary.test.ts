@@ -13,6 +13,7 @@ import { setProcessPlatform } from "../../__tests__/support/process-platform.js"
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
 vi.mock("node:fs", { spy: true });
+vi.mock("node:fs/promises", { spy: true });
 vi.mock("node:child_process", { spy: true });
 vi.mock("../../shared/verified-executable.js", () => ({ resolveVerifiedExecutable: vi.fn(), resolveVerifiedExecutableAsync: vi.fn() }));
 vi.mock("../../shared/powershell-startup-policy.js", () => ({ isPowerShellStartupPinned: () => true, POWERSHELL_STARTUP_UNPROVEN_REASON: "startup is unproven" }));

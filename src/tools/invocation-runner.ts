@@ -1957,7 +1957,8 @@ async function runToolInvocationAttempt(
       && hostShellExecutionPlan.substrate !== "mxc" && invocationPermissionContext.disposableSubstrate === undefined
       && !brokeredHostShellRouteSelected() && typeof finalInput.command === "string") {
       verifiedShellCommand = await prepareVerifiedShellCommand({ command: finalInput.command, dialect: hostShellToolName,
-        cwd: resolveHostShellWorkingDirectory(executionCwd, typeof finalInput.cwd === "string" ? finalInput.cwd : undefined) }, hostShellExecutionPlan);
+        cwd: resolveHostShellWorkingDirectory(executionCwd, typeof finalInput.cwd === "string" ? finalInput.cwd : undefined) }, hostShellExecutionPlan, abortSignal);
+      if (abortSignal?.aborted) return withHostShellExecutionPlan(await returnUserAbort(abortDeps(finalInput)));
     }
 
     // A broker capability names a Linux guest namespace. Host shell discovery,

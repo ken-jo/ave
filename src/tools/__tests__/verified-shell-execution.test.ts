@@ -19,7 +19,7 @@ import { runWithAgentObservationInvocation, runWithAgentObservationTurn } from "
 import { ObservationDaemon } from "../../observation/daemon.js";
 import { TerminalObservationAdapter } from "../../observation/terminal-adapter.js";
 import type { TerminalObservationEvent } from "../../shared/agent-observation.js";
-import { inspectGitRepository } from "../../permissions/rules/git-repository-inputs.js";
+import { inspectGitRepository, inspectGitRepositoryAsync } from "../../permissions/rules/git-repository-inputs.js";
 import { readOnlyGitArguments, gitReadOnlyEnvironment } from "../../permissions/rules/git-readonly-argv.js";
 import * as installation from "../../shared/verified-executable.js";
 import {
@@ -29,6 +29,7 @@ import {
 } from "../prepared-shell-invocation.js";
 
 vi.mock("node:fs", { spy: true });
+vi.mock("node:fs/promises", { spy: true });
 vi.mock("node:child_process", { spy: true });
 vi.mock("../../permissions/rules/git-repository-inputs.js", { spy: true });
 vi.mock("../../shared/powershell-executable.js", () => ({ resolveTrustedPowerShellExecutable: () => ({ executable: "/protected-fixture/pwsh", kind: "pwsh" }) }));
@@ -411,7 +412,7 @@ it.each((["bash", "powershell"] as const).flatMap((dialect) => [false, true].fla
     if (dialect === "powershell" && (invocation as string[]).at(-1)?.includes("Parser")) {
       return completedChild(JSON.stringify(parsedCommandResponse(command, ["git", "log", "HEAD"])));
     }
-    inspectionsAtSpawn = vi.mocked(inspectGitRepository).mock.calls.length;
+    inspectionsAtSpawn = vi.mocked(inspectGitRepositoryAsync).mock.calls.length;
     if (changed) {
       const moved = cwd + "-moved";
       renameSync(cwd, moved);
@@ -428,8 +429,8 @@ it.each((["bash", "powershell"] as const).flatMap((dialect) => [false, true].fla
     hostShellExecutionPlan: identity.plan, verifiedShellCommand,
   });
   expect(inspectionsAtSpawn).toBeDefined();
-  expect(vi.mocked(inspectGitRepository).mock.calls.length).toBe(inspectionsAtSpawn! + 1);
-  expect(inspectGitRepository).toHaveBeenLastCalledWith(cwd);
+  expect(vi.mocked(inspectGitRepositoryAsync).mock.calls.length).toBe(inspectionsAtSpawn! + 1);
+  expect(inspectGitRepositoryAsync).toHaveBeenLastCalledWith(cwd);
   if (changed) {
     expect(result).toEqual({ output: "Read-only Git output discarded: repository metadata changed during execution.", isError: true, metadata: {} });
   } else {
@@ -516,4 +517,32 @@ it("preserves trusted filesystem block evidence through native result copies wit
   expect(sandboxBlockForResult({ ...result })).toBeUndefined();
   expect(spawned).toHaveBeenCalledTimes(1);
   expect(observed).toHaveBeenCalledTimes(1);
+});
+
+it.each(["bash", "powershell"] as const)("releases no checked %s output when cancelled during the post-run repository inspection", async (dialect) => {
+  const command = "git log HEAD";
+  const { cwd, identity } = await fixture(false, command);
+  const verifiedShellCommand = await prepareVerifiedShellCommand({ command, dialect, cwd });
+  expect(verifiedShellCommand).toBeDefined();
+  sandboxTransport();
+  vi.spyOn(childProcess, "spawn").mockImplementation((_image, invocation) => {
+    if (dialect === "powershell" && (invocation as string[]).at(-1)?.includes("Parser")) {
+      return completedChild(JSON.stringify(parsedCommandResponse(command, ["git", "log", "HEAD"])));
+    }
+    throw Object.assign(new Error("spawn ENOTDIR"), { code: "ENOTDIR" });
+  });
+  const controller = new AbortController();
+  const { inspectGitRepositoryAsync: inspect } = await vi.importActual<typeof import("../../permissions/rules/git-repository-inputs.js")>("../../permissions/rules/git-repository-inputs.js");
+  vi.mocked(inspectGitRepositoryAsync).mockImplementationOnce(async (path) => {
+    controller.abort();
+    return inspect(path);
+  });
+  const progress = { write: vi.fn(), end: vi.fn() };
+  const tool = dialect === "bash" ? new BashTool() : new PowerShellTool();
+  await expect(tool.execute({ command, timeoutSeconds: 5 }, {
+    cwd, extraAllowedDirectories: [], metadata: { toolOutputProgress: progress },
+    hostShellExecutionPlan: identity.plan, verifiedShellCommand, abortSignal: controller.signal,
+  })).rejects.toMatchObject({ name: "AbortError" });
+  expect(inspectGitRepositoryAsync).toHaveBeenLastCalledWith(cwd);
+  expect(progress.write).not.toHaveBeenCalled();
 });

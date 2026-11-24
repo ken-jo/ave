@@ -29,10 +29,14 @@ vi.mock("node:child_process", async (importOriginal) => ({
 vi.mock("node:fs", async (importOriginal) => ({
   ...await importOriginal<typeof import("node:fs")>(),
   lstatSync: filesystem.stat, readdirSync: filesystem.entries, realpathSync: filesystem.realpath, accessSync: filesystem.access,
+  // The asynchronous driver uses the callback form, which shares realpathSync's resolution.
+  realpath: (path: string, callback: (error: Error | null, resolved?: string) => void) => {
+    asynchronous.realpath(path).then((resolved) => callback(null, resolved), (error: Error) => callback(error));
+  },
 }));
 vi.mock("node:fs/promises", async (importOriginal) => ({
   ...await importOriginal<typeof import("node:fs/promises")>(),
-  lstat: asynchronous.stat, readdir: asynchronous.entries, realpath: asynchronous.realpath, access: asynchronous.access,
+  lstat: asynchronous.stat, readdir: asynchronous.entries, access: asynchronous.access,
 }));
 vi.mock("../windows-path-facts.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../windows-path-facts.js")>(), readWindowsDacls: nativeFacts.read,
@@ -384,11 +388,10 @@ describe("asynchronous verified executable driver", () => {
     expect(filesystem.stat.mock.calls).toHaveLength(inspections);
   });
 
-  it("refuses Windows proof clearly without caching a result", async () => {
+  it("refuses Windows proof as an unverified executable without caching a result", async () => {
     nativeFacts.read.mockReturnValue([]);
     const { resolveVerifiedExecutable, resolveVerifiedExecutableAsync } = await import("../verified-executable.js");
-    await expect(resolveVerifiedExecutableAsync([{ executable: String.raw`C:\Tools\Reader\reader.exe` }], "win32"))
-      .rejects.toThrow("Asynchronous verified-executable proof is not available on Windows");
+    await expect(resolveVerifiedExecutableAsync([{ executable: String.raw`C:\Tools\Reader\reader.exe` }], "win32")).resolves.toBeNull();
     expect(nativeFacts.read).not.toHaveBeenCalled();
     resolveVerifiedExecutable([{ executable: String.raw`C:\Tools\Reader\reader.exe` }], "win32");
     expect(nativeFacts.read).toHaveBeenCalled();

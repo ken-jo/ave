@@ -81,8 +81,8 @@ describe("bound native command authority", () => {
     const handle = await prepareVerifiedShellCommand(identity);
     expect(handle).toBeDefined();
     expect(verifiedShellRequiresResultCheck(handle, identity)).toBe(true);
-    expect(verifiedShellResultRefusal(handle, identity)).toBeUndefined();
-    expect(verifiedShellResultRefusal(handle, identity)).toBeUndefined();
+    expect(await verifiedShellResultRefusal(handle, identity)).toBeUndefined();
+    expect(await verifiedShellResultRefusal(handle, identity)).toBeUndefined();
   });
 
   it.each([
@@ -99,9 +99,9 @@ describe("bound native command authority", () => {
     const identity = { command: "git rev-parse --verify HEAD", dialect: "bash" as const, cwd };
     const handle = await prepareVerifiedShellCommand(identity);
     expect(handle).toBeDefined();
-    expect(verifiedShellResultRefusal(handle, identity)).toBeUndefined();
+    expect(await verifiedShellResultRefusal(handle, identity)).toBeUndefined();
     mutate();
-    expect(verifiedShellResultRefusal(handle, identity)).toBe("Read-only Git output discarded: repository metadata changed during execution.");
+    expect(await verifiedShellResultRefusal(handle, identity)).toBe("Read-only Git output discarded: repository metadata changed during execution.");
   });
 
   it("fails closed for forged or mismatched output-validation handles", async () => {
@@ -111,10 +111,10 @@ describe("bound native command authority", () => {
     for (const supplied of [{} as VerifiedShellCommand, handle]) {
       const mismatched = { ...identity, command: "git show --no-patch" };
       expect(verifiedShellRequiresResultCheck(supplied, mismatched)).toBe(true);
-      expect(verifiedShellResultRefusal(supplied, mismatched)).toBe("Read-only Git output discarded: repository metadata changed during execution.");
+      expect(await verifiedShellResultRefusal(supplied, mismatched)).toBe("Read-only Git output discarded: repository metadata changed during execution.");
     }
     expect(verifiedShellRequiresResultCheck(undefined, identity)).toBe(false);
-    expect(verifiedShellResultRefusal(undefined, identity)).toBeUndefined();
+    expect(await verifiedShellResultRefusal(undefined, identity)).toBeUndefined();
   });
 
   it("retains exact-approved literal evaluation without repository output checks", async () => {
@@ -123,7 +123,7 @@ describe("bound native command authority", () => {
     expect(handle).toBeDefined();
     rmSync(join(cwd, ".git"), { recursive: true });
     expect(verifiedShellRequiresResultCheck(handle, identity)).toBe(false);
-    expect(verifiedShellResultRefusal(handle, identity)).toBeUndefined();
+    expect(await verifiedShellResultRefusal(handle, identity)).toBeUndefined();
   });
 
   it.each((["bash", "powershell"] as const).flatMap((dialect) => READ_CASES.map((command) => ({ dialect, command }))))
@@ -327,7 +327,10 @@ describe("asynchronous Git lookup", () => {
 
   it.each(["EACCES", "ELOOP", "ENOTDIR"])("refuses an index path whose absence cannot be proven (%s) before probing", async (code) => {
     vi.mocked(resolveVerifiedExecutableAsync).mockResolvedValue({ executable: `/verified-index-${code}/git` });
-    vi.mocked(fsPromises.lstat).mockRejectedValueOnce(Object.assign(new Error(code), { code }));
+    const stabilized = vi.mocked(fsPromises.lstat).getMockImplementation();
+    if (stabilized === undefined) throw new Error("Fixture ancestor stabilization is not installed");
+    vi.mocked(fsPromises.lstat).mockImplementation(((path: string, options?: unknown) => String(path).endsWith(".ave-readonly-index")
+      ? Promise.reject(Object.assign(new Error(code), { code })) : stabilized(path, options as never)) as typeof fsPromises.lstat);
     expect(await prepareVerifiedShellCommand({ command: "git log", dialect: "bash", cwd })).toBeUndefined();
     expect(fsPromises.lstat).toHaveBeenCalledWith(join(dirname(`/verified-index-${code}/git`), ".ave-readonly-index"));
     expect(childProcess.execFile).not.toHaveBeenCalled();
@@ -337,7 +340,7 @@ describe("asynchronous Git lookup", () => {
     vi.mocked(resolveVerifiedExecutableAsync).mockResolvedValue(null);
     expect(await prepareVerifiedShellCommand({ command: "git log", dialect, cwd })).toBeUndefined();
     expect(resolveHostGit).toHaveBeenCalledWith("verified");
-    expect(fsPromises.lstat).not.toHaveBeenCalled();
+    expect(fsPromises.lstat).not.toHaveBeenCalledWith(expect.stringContaining(".ave-readonly-index"));
     expect(childProcess.execFile).not.toHaveBeenCalled();
   });
 
@@ -360,13 +363,36 @@ describe("asynchronous Git lookup", () => {
     expect(verifiedShellExecution(handle, identity)?.command).toBe(`& ${bashCommand}`);
   });
 
-  it("keeps the verified command module free of blocking child-process and filesystem calls", async () => {
+  it.each(["bash", "powershell"] as const)("issues no plan when cancelled during the asynchronous lookup on %s", async (dialect) => {
+    const controller = new AbortController();
+    vi.mocked(resolveVerifiedExecutableAsync).mockImplementation(async (candidates) => {
+      controller.abort();
+      return candidates[0] === undefined ? null : { executable: candidates[0].executable };
+    });
+    expect(await prepareVerifiedShellCommand({ command: "git log", dialect, cwd }, undefined, controller.signal)).toBeUndefined();
+    expect(fsPromises.lstat).not.toHaveBeenCalledWith(expect.stringContaining(".ave-readonly-index"));
+    vi.mocked(resolveVerifiedExecutableAsync).mockImplementation(async (candidates) => candidates[0] === undefined ? null : { executable: candidates[0].executable });
+    expect(await prepareVerifiedShellCommand({ command: "git log", dialect, cwd }, undefined, new AbortController().signal)).toBeDefined();
+  });
+
+  it("refuses output when the post-run repository inspection rejects", async () => {
+    const identity = { command: "git log", dialect: "bash" as const, cwd };
+    const handle = await prepareVerifiedShellCommand(identity);
+    expect(handle).toBeDefined();
+    vi.mocked(fsPromises.lstat).mockRejectedValueOnce(Object.assign(new Error("I/O"), { code: "EIO" }));
+    expect(await verifiedShellResultRefusal(handle, identity)).toBe("Read-only Git output discarded: repository metadata changed during execution.");
+    expect(await verifiedShellResultRefusal(handle, identity)).toBeUndefined();
+  });
+
+  // Locks direct calls only: workspace availability (host-git.ts) stays a synchronous in-process check.
+  it("calls no synchronous child-process, filesystem, installation-proof or repository-inspection API directly", async () => {
     const fs = await vi.importActual<typeof import("node:fs")>("node:fs");
     for (const module of ["../verified-shell-command.ts", "../rules/verified-launcher-argv.ts"]) {
       const source = fs.readFileSync(new URL(module, import.meta.url), "utf8");
       expect(source, module).not.toMatch(/\b[\w$]+Sync\b/);
       expect(source, module).not.toMatch(/from "node:fs"/);
-      expect(source, module).not.toMatch(/\bresolveVerifiedExecutable\s*\(/);
+      expect(source, module).not.toMatch(/\bresolveVerifiedExecutable\b/);
+      expect(source, module).not.toMatch(/\binspectGitRepository\b/);
       const childProcessImport = /import \{([^}]*)\} from "node:child_process"/.exec(source)?.[1] ?? "";
       expect(childProcessImport.split(",").map((name) => name.trim()).filter(Boolean).every((name) => name === "execFile")).toBe(true);
     }

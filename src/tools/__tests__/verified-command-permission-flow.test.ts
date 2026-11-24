@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { t } from "../../i18n/index.js";
 import { stabilizeFixtureAncestorStats } from "../../__tests__/support/fixture-ancestor-stats.js";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -26,6 +27,7 @@ import { BashTool } from "../shell-tools.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
 
 vi.mock("node:fs", { spy: true });
+vi.mock("node:fs/promises", { spy: true });
 vi.mock("node:child_process", { spy: true });
 vi.mock("../../permissions/verified-shell-command.js", { spy: true });
 vi.mock("../../shared/verified-executable.js", () => ({ resolveVerifiedExecutable: vi.fn(), resolveVerifiedExecutableAsync: vi.fn() }));
@@ -99,9 +101,9 @@ function fixture(command = COMMAND) {
   registry.register(tool);
   const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined, auditLogger);
   let serial = 0;
-  const run = (headless: boolean, inputCommand = command) => runWithToolExecutionCwd(cwd, () => executor.executeAll(
+  const run = (headless: boolean, inputCommand = command, abortSignal?: AbortSignal) => runWithToolExecutionCwd(cwd, () => executor.executeAll(
     [{ id: `native-flow-${++serial}`, name: "bash", input: { command: inputCommand } }],
-    { sessionId: "native-flow", permissionContext: userPermissionContext({ headless }) },
+    { sessionId: "native-flow", permissionContext: userPermissionContext({ headless }), ...(abortSignal === undefined ? {} : { abortSignal }) },
   ));
   return { wc, execute, run };
 }
@@ -229,7 +231,7 @@ it.each([
   expect(f.execute).not.toHaveBeenCalled();
   expect(backend).not.toHaveBeenCalled();
   expect(f.wc.send).not.toHaveBeenCalled();
-  expect(verifiedCommands.prepareVerifiedShellCommand).toHaveBeenCalledWith({ command, dialect: "bash", cwd }, expect.objectContaining({ mode: expect.any(String) }));
+  expect(verifiedCommands.prepareVerifiedShellCommand).toHaveBeenCalledWith({ command, dialect: "bash", cwd }, expect.objectContaining({ mode: expect.any(String) }), undefined);
   expect(verifiedCommands.prepareVerifiedShellCommand).toHaveResolvedWith(undefined);
   expect(childProcess.spawn).not.toHaveBeenCalled();
 });
@@ -246,4 +248,20 @@ it("rejects unsafe repository inputs despite persisted exact and broad grants", 
   expect(f.execute).not.toHaveBeenCalled();
   expect(f.wc.send).not.toHaveBeenCalled();
   expect(verifiedCommands.prepareVerifiedShellCommand).toHaveResolvedWith(undefined);
+});
+
+it("stops before authorization when cancelled during the asynchronous verified lookup", async () => {
+  const f = fixture("git log");
+  manager.setRules([withCurrentShellRuleVersion({ pattern: "Bash(git log)", action: "allow" })]);
+  const controller = new AbortController();
+  vi.mocked(resolveVerifiedExecutableAsync).mockImplementation(async (candidates) => {
+    controller.abort();
+    return candidates[0] === undefined ? null : { executable: candidates[0].executable };
+  });
+  const [result] = await f.run(true, "git log", controller.signal);
+  expect(result).toMatchObject({ is_error: true, content: t("be_executor.toolExecutionCancelled") });
+  expect(verifiedCommands.prepareVerifiedShellCommand).toHaveResolvedWith(undefined);
+  expect(f.execute).not.toHaveBeenCalled();
+  expect(f.wc.send).not.toHaveBeenCalled();
+  expect(childProcess.execFile).not.toHaveBeenCalled();
 });

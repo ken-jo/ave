@@ -1,6 +1,6 @@
 import { execFile, execFileSync } from "node:child_process";
-import { accessSync, constants, lstatSync, readdirSync, realpathSync, type Stats } from "node:fs";
-import { access, lstat, readdir, realpath } from "node:fs/promises";
+import { accessSync, constants, lstatSync, readdirSync, realpath, realpathSync, type Stats } from "node:fs";
+import { access, lstat, readdir } from "node:fs/promises";
 import { posix, win32 } from "node:path";
 import { check, runChecksAsync, runChecksSync, type Checks } from "./sync-async-checks.js";
 import { admitWindowsReparse, mapWindowsGenericRights, readWindowsDacls, type WindowsDaclFacts } from "./windows-path-facts.js";
@@ -34,13 +34,14 @@ export function resolveVerifiedExecutable(
 
 /**
  * The same proof and cache as {@link resolveVerifiedExecutable}, performed without blocking the event loop.
- * Windows installations are proven only by the synchronous native DACL helper, so they are refused here.
+ * Windows installations are proven only by the synchronous native DACL helper, so this proof refuses them:
+ * the caller sees an unverified executable, never an error, and no refusal is cached for the sync proof.
  */
 export function resolveVerifiedExecutableAsync(
   candidates: readonly VerifiedExecutableCandidate[],
   platform: NodeJS.Platform = process.platform,
 ): Promise<VerifiedExecutable | null> {
-  if (platform === "win32") return Promise.reject(new Error("Asynchronous verified-executable proof is not available on Windows"));
+  if (platform === "win32") return Promise.resolve(null);
   return runChecksAsync(resolveCandidates(candidates, platform));
 }
 
@@ -136,10 +137,15 @@ function* installationEntries(root: string, platform: NodeJS.Platform, inspected
   return paths;
 }
 
+function realpathAsync(path: string): Promise<string> {
+  // The callback form shares realpathSync's JavaScript resolution; fs/promises uses the native one.
+  return new Promise((resolve, reject) => realpath(path, (error, resolved) => error ? reject(error) : resolve(resolved)));
+}
+
 function* verifyPosixInstallation(candidate: string, roots: readonly string[], platform: NodeJS.Platform): Checks<VerifiedExecutable | null> {
   try {
     if (typeof process.getuid !== "function" || process.getuid() === 0 || process.geteuid?.() === 0) return null;
-    const executable = yield* check(() => realpathSync(candidate), () => realpath(candidate));
+    const executable = yield* check(() => realpathSync(candidate), () => realpathAsync(candidate));
     if (executable !== candidate || !(yield* lstatEntry(executable)).isFile()) return null;
     let inspected = 0;
     for (const root of roots) {
