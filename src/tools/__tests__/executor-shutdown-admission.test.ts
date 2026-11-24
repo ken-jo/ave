@@ -373,19 +373,26 @@ describe("ToolExecutor admission across the quit seal", () => {
       expect.objectContaining({ source: "plugin", category: "write", pluginId: "probe-plugin" }), undefined, expect.any(Number));
   });
 
-  it("answers an aborted model-hidden plugin tool as not found", async () => {
+  it("reports cancellation for an aborted model-hidden plugin tool", async () => {
     const call = abortedPluginCall();
     const { executor, executes, rows, toolUses } = await freshExecutor(1, [], { generationAccess: call.access, modelVisible: false });
     const { t } = await import("../../i18n/index.js");
     const [result] = await executor.executeAll(toolUses, {
       sessionId: "sess-hidden-abort", permissionContext: userPermissionContext(), abortSignal: call.signal, callbacks: call.callbacks,
     });
-    expect(result).toMatchObject({ tool_use_id: "tu-queued-0", is_error: true, content: t("be_executor.toolNotFound", { name: "queued_probe_0" }) });
+    expect(result).toMatchObject({
+      tool_use_id: "tu-queued-0",
+      is_error: true,
+      content: `${t("be_executor.toolExecutionCancelled")}\n${t("be_executor.toolNotFound", { name: "queued_probe_0" })}`,
+    });
     expect(call.acquireExact).not.toHaveBeenCalled();
     expect(executes[0]).not.toHaveBeenCalled();
     expect(call.callbacks.onToolStart).not.toHaveBeenCalled();
-    const denyReasons = rows().filter((row) => row.toolUseId === "tu-queued-0").map((row) => JSON.stringify(row.denyReasons));
-    expect(denyReasons).toEqual([expect.stringContaining("model-hidden tool")]);
+    expect(rows().filter((row) => row.toolUseId === "tu-queued-0")).toEqual([
+      expect.objectContaining({ terminalKind: "cancelled", denyReasons: expect.arrayContaining([
+        expect.objectContaining({ reason: expect.stringContaining("model-hidden tool") }),
+      ]) }),
+    ]);
   });
 
   it("answers an aborted plugin tool whose MCP owner changed with the owner deny", async () => {

@@ -235,7 +235,7 @@ export class AuditWriter {
     const auditSafeOutput = governedTool
       ? (isError ? "governed operation failed" : "governed operation completed")
       : output;
-    const onEnqueued = (denyKind: TerminalDenyKind | undefined): void => {
+    const writeToolAudit = (denyKind: TerminalDenyKind | undefined): void => {
       try {
         const cancelled = denyKind === "cancelled";
         // The privacy toggle governs audit PII masking; credentials are always scrubbed.
@@ -290,10 +290,11 @@ export class AuditWriter {
     }
     // The writer enqueues the row before its first await; the ledger's denial lifecycle runs after it and cannot lose it.
     const logger = ready ? { logger: this.auditLogger } : {};
+    if (entry.decision !== "deny") writeToolAudit(undefined);
     const appended = entry.decision === "deny"
-      ? terminal.row({ entry, kind: terminal.kind, ...logger, onEnqueued, ...(permission?.decision === "deny" ? { reason: permission.reason } : {}),
+      ? terminal.row({ entry, kind: terminal.kind, ...logger, onEnqueued: writeToolAudit, ...(permission?.decision === "deny" ? { reason: permission.reason } : {}),
         humanAnswered: permission?.provenance.kind === "answered" && answeredProvenanceRecord(permission.provenance).trustOrigin !== "unknown" })
-      : terminal.row({ entry, ...logger, onEnqueued });
+      : terminal.row({ entry, ...logger });
     try {
       await appended;
     } catch (err) {
