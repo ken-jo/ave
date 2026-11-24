@@ -73,7 +73,7 @@ vi.mock("../windows-acl-grant-holder.js", () => ({
   stopWindowsAclGrantHolder: () => {},
   terminateChildBestEffort: () => {},
 }));
-vi.mock("../confined-child.js", () => ({ spawnConfinedChild: () => accountRoute.spawnConfinedChild() }));
+vi.mock("../confined-child.js", () => ({ spawnConfinedChild: () => accountRoute.spawnConfinedChild(), assertMxcDescendantOutsideParent: () => {} }));
 vi.mock("../asrt-sandbox.js", async (importOriginal) => ({
   // Under a selected container plan the legacy guard refuses and the legacy gate reads off; the route may consult neither.
   assertExtensionStartAllowed: () => { if (selected) throw new Error("legacy guard consulted"); },

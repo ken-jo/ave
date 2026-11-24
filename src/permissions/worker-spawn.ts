@@ -31,7 +31,7 @@ import {
 } from "./worker-stdio-control.js";
 import { buildSafeChildEnv } from "../tools/safe-env.js";
 import { assertHostProgramNotRelative, resolveHostProgram } from "../shared/host-program-path.js";
-import { spawnConfinedChild, type MxcConfinedChildSpawn } from "./confined-child.js";
+import { assertMxcDescendantOutsideParent, spawnConfinedChild, type MxcConfinedChildSpawn } from "./confined-child.js";
 import { MxcProcessCleanupError } from "./mxc-extension-errors.js";
 import { isMxcExtensionBackendSelected, spawnMxcBundledHolder, type MxcBundledHolder } from "../sandbox/wrap-bundled-command.js";
 import { liveMxcPluginChildHolder } from "./mxc-holder-lifetime.js";
@@ -262,6 +262,12 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
     const beyond = pluginGrantPathsBeyondOwnRoots(safePlugin, [...(spec.allowReadPaths ?? []), ...(spec.allowWritePaths ?? [])]);
     if (beyond.length > 0) {
       throw new Error(`[worker-spawn] ${label}: refusing a container grant beyond the plugin's own roots: ${[...new Set(beyond)].join(", ")}`);
+    }
+    // Sibling roots: nothing declared inside the parent's writable roots (its data directory included), nothing above them.
+    try {
+      assertMxcDescendantOutsideParent(parent, { read: spec.allowReadPaths ?? [], write: spec.allowWritePaths ?? [] });
+    } catch (error) {
+      throw new Error(`[worker-spawn] ${label}: refusing a container grant that nests with its plugin's container process: ${errorMessage(error)}`, { cause: error });
     }
   }
 
