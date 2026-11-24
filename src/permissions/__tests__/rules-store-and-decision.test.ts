@@ -90,6 +90,14 @@ afterAll(() => rmSync(TEST_HOME, { recursive: true, force: true }));
 const shell = (command: string) => ({ shellExecution: { runsSandboxed: false }, ruleSubject: { kind: "shell" as const, dialect: "bash" as const, command } });
 
 describe("Store A (user-global permissions.json)", () => {
+  it("reads a zero-byte placeholder as absent, leaves it in place, and a later update writes over it", async () => {
+    writeFileSync(permissionsFile, "");
+    await expect(readPermissionsFile(permissionsFile)).resolves.toBeNull();
+    expect(readFileSync(permissionsFile, "utf8")).toBe("");
+    await updatePermissionsFile(permissionsFile, (f) => { f.mode = "auto"; });
+    expect(await readPermissionsFile(permissionsFile)).toMatchObject({ version: 1, mode: "auto" });
+  });
+
   it("fails clearly on corrupt JSON and never overwrites the file", async () => {
     writeFileSync(permissionsFile, "{ not json");
     await expect(readPermissionsFile(permissionsFile)).rejects.toBeInstanceOf(PermissionRulesFileCorruptError);
