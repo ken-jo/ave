@@ -98,7 +98,7 @@ Existing camelCase fields remain available alongside the public fields. All inpu
 | `PermissionRequest` | `tool_name: string`, `tool_input: object` | Refuses the pending permission request |
 | `UserPromptSubmit` | `prompt: string`; legacy optional `inputOrigin`, `route`, `classification` | Refuses the turn |
 | `PostToolUseFailure` | Optional `tool_name: string`, `error: string`, `duration_ms: number` | Observe only |
-| `PermissionDenied` | Optional `tool_name: string`, `deny_reason: {source: string, reason?: string}` | Observe only |
+| `PermissionDenied` | Optional `tool_name: string`, `deny_reason: {source: string, reason?: string}` | Observe only. Fires for a permission denial, never for a cancellation: a user abort, a quit or shutdown, or the shutdown deadline. A deny committed after the call was aborted counts as a cancellation, unless a person had already settled it. |
 | `SessionStart` | Optional `source: "startup" \| "resume" \| "clear"`, `session_meta: object` | Observe only; before the first turn after session creation or loading |
 | `SessionEnd` | Optional `reason: string`, `session_meta: object`, `stop_reason: string` | Observe only; session switch or reset, not a crash/shutdown guarantee |
 | `Notification` | Optional `message: string`, `notification_type: string` (`agent_completed`) | Observe only; turn-end notification |

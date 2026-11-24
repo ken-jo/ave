@@ -3616,15 +3616,31 @@ check, a human refusal, a hook input mutation, a host policy check, and the
 host on an invocation or integrity failure. A cancellation is a stop that no
 permission decided, and it is `cancelled`. Its sources are a user abort, the
 host shutdown seal, the shutdown deadline drain, an abort during execution,
-plugin generation admission ended by runtime shutdown, and a stopped rationale
-card. A human refusal the invocation already accepted keeps its `denied` kind,
-even when the host writes the row.
+plugin generation admission ended by runtime shutdown, a stopped rationale
+card, and a stop or quit that ends an open approval card. A human refusal the
+invocation already accepted keeps its `denied` kind, even when the host writes
+the row.
+
+The ledger also applies one rule at commit time. If the invocation's abort
+signal has fired when a `denied` row commits, the row is recorded as
+`cancelled`, unless it is a deny a person settled or the host's own integrity
+refusal. Its first deny reason becomes the abort's (`user aborted turn`, or
+`host-shutdown` for the quit), and the writer's reason follows it. This covers
+any site that turns an abort into a deny: a hook the stop cancelled, an escaped
+`AbortError` that reaches the admission's failure settle, and a shell
+preparation that throws because the call was aborted. The ledger writes the
+kind on every terminal deny row as `terminalKind`. Audit readers call
+`terminalDenyKindOf` (`src/audit/audit-schema.ts`), which reads that field and
+falls back to the first deny reason for older rows. The reason alone does not
+always decide the kind, so the field is persisted. A deny entry that reaches the
+row writer without a valid kind is refused as an integrity failure, and the host
+writes the attempt's one integrity denial instead.
 
 The ledger fires one `PermissionDenied` lifecycle event for each `denied` row
 it commits, whatever the source. A `cancelled` row fires none. Governed tools
 fire none either: a tool with an operation policy, or a call under a plugin
 authorization lifecycle, still gets its deny row but no event. This one rule
-lives in the ledger's row writer and reads only the kind, never the reason.
+lives in the ledger's row writer and reads only the persisted kind, never the reason.
 No call site emits `PermissionDenied` itself, and a source guard test enforces
 this. The guard also flags any lifecycle dispatch whose event is not a literal.
 The audit writer fires the event only for a denial that the ledger created, and
