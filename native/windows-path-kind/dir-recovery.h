@@ -275,9 +275,18 @@ inline int run_recovery(int argc, wchar_t** argv, RecoveryMode mode) {
   if (status != 0) return status;
   if (!proceed("ready")) return done("cancelled");
   HANDLE opened = INVALID_HANDLE_VALUE;
-  const NTSTATUS opening = open_relative(directory.handle(), name, FILE_READ_DATA | FILE_READ_ATTRIBUTES | DELETE,
+  const ACCESS_MASK read_access = mode == RecoveryMode::kRestoreTarget && expected.content.empty() ? FILE_READ_ATTRIBUTES : FILE_READ_DATA | FILE_READ_ATTRIBUTES;
+  const NTSTATUS opening = open_relative(directory.handle(), name, read_access | DELETE,
     FILE_SHARE_READ, kOpenExisting, kOpenReparsePoint, opened);
-  if (opening < 0) return done(mode != RecoveryMode::kRestoreTarget && missing(status_error(opening)) ? "absent" : "left");
+  if (opening < 0) {
+    if (!missing(status_error(opening))) return done("left");
+    if (mode != RecoveryMode::kRestoreTarget) return done("absent");
+    if (open_relative(directory.handle(), part_name, read_access, FILE_SHARE_READ, kOpenExisting, kOpenReparsePoint, opened) < 0)
+      return done("left");
+    const PinnedHandle target(opened);
+    return done(matches(target.value, expected) &&
+      check_name(directory.handle(), part_name, expected.id) == NameIdentity::kMatches ? "restored" : "left");
+  }
   PinnedHandle source(opened);
   if (!matches(source.value, expected)) return done("left");
   if (!restore) {

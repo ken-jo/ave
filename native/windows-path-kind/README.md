@@ -88,7 +88,8 @@ The hidden name is `.<32 lowercase hex>.removing`. The snapshot is
 when unavailable. `part-left` reports incomplete or unverified copy-back at
 the original part name.
 
-`--dir-copy` checks source and target before `ready`. Its exclusive create
+`--dir-copy` takes the hidden name after the part name and checks source
+and target before `ready`. Its exclusive create
 can fail with plain `failed EEXIST`. On success it emits `writing <dev> <ino>`
 from the open part handle before progress or `copied`. It reports progress
 per 1 MiB chunk and flushes every 16 MiB. It keeps the handle open across
@@ -98,14 +99,16 @@ rollback. Commit refusals are `refused target removed` when the part is gone,
 `refused target left` with the optional named leftover when it remains, or
 `refused target changed` if rollback fails. All use exit 3. Plain copy
 refusals precede `ready`. An existing ordinary target is held and identified
-before `ready`. After the second authorization the helper moves it exclusively
-to a fresh hidden name, verifies it, commits exclusively, then verifies and
+before `ready` and announced as `target-id <dev> <ino> <birth-ns>`. After
+the second authorization the helper moves it exclusively to the supplied hidden name, verifies it, commits exclusively, then verifies and
 retires the old target. If commit fails, it restores the old target exclusively.
 A failed restore or retirement sends `target-left left <hidden> <own-dev>
 <own-ino> <verdict> <snapshot>` before the terminal reply, independent of
 the copy part's outcome. It uses `mismatch` for a failed restore and
 `remove-failed` for retirement after a verified commit. The identity is
-from the old target's handle. The host records the leftover for recovery.
+from the old target's handle. A verified restore or retirement emits
+`target-restored` or `target-retired` before the terminal reply. The host
+keeps the write-ahead record when the outcome is unavailable.
 
 A stopped copy can suffix `cancelled` or
 `failed <errno>` with the same leftover form. Success, cancellation and
@@ -125,6 +128,11 @@ I4. A displaced original moves only by identity-preserving rename. Startup
 uses the separate target recovery operation for its record. An occupied or
 unverifiable destination leaves the original and its record in place.
 Copy-back applies only to copy-part recovery.
+
+I5. The host chooses the hidden name and syncs a record containing it,
+the held original's identity, and the copy session before authorizing the
+move. Startup reads target records before part recovery and preserves each
+record until rollback or retirement verifies.
 
 Accepted residual.
 

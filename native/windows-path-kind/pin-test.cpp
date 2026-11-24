@@ -16,6 +16,7 @@ namespace dir_ops {
 enum class RecoveryBoundary { kNone, kRestoreTarget, kRestoreError, kUnsupportedIsolation, kCommitMismatch, kCommitBlocked, kReplaceCommitFailure, kReplaceRestoreFailure, kReplaceOccupied };
 RecoveryBoundary recovery_boundary = RecoveryBoundary::kNone;
 std::wstring boundary_path;
+std::string stop_boundary;
 int file_id_query_to_fault = 0;
 bool zero_file_id = false;
 
@@ -63,6 +64,10 @@ bool test_fail_replacement_rename(bool restoring) {
   }
   return recovery_boundary == RecoveryBoundary::kReplaceRestoreFailure ||
     (!restoring && recovery_boundary == RecoveryBoundary::kReplaceCommitFailure);
+}
+
+void test_stop_replacement(const char* boundary) {
+  if (stop_boundary == boundary) ExitProcess(7);
 }
 
 NameIdentity test_commit_result(NameIdentity result) {
@@ -237,20 +242,26 @@ int wmain(int argc, wchar_t** argv) {
       dir_ops::zero_file_id = test.find(L"zero") != std::wstring::npos;
       return dir_ops::run(argc - 1, argv + 1);
     }
+    if (argc == 13 && test.substr(0, 5) == L"stop-") {
+      const auto boundary = test.substr(5);
+      for (const wchar_t character : boundary) dir_ops::stop_boundary += static_cast<char>(character);
+      if (boundary == L"leftover") dir_ops::recovery_boundary = dir_ops::RecoveryBoundary::kReplaceRestoreFailure;
+      return dir_ops::run(argc - 1, argv + 1);
+    }
     if (test == L"replace-occupied") {
-      if (argc != 12) return 2;
+      if (argc != 13) return 2;
       dir_ops::recovery_boundary = dir_ops::RecoveryBoundary::kReplaceOccupied;
       dir_ops::boundary_path = std::wstring(argv[7]) + L"\\" + argv[10];
       return dir_ops::run(argc - 1, argv + 1);
     }
     if (test == L"replace-commit-failure" || test == L"replace-restore-failure") {
-      if (argc != 12) return 2;
+      if (argc != 13) return 2;
       dir_ops::recovery_boundary = test == L"replace-commit-failure"
         ? dir_ops::RecoveryBoundary::kReplaceCommitFailure : dir_ops::RecoveryBoundary::kReplaceRestoreFailure;
       return dir_ops::run(argc - 1, argv + 1);
     }
     if (test == L"commit-mismatch" || test == L"commit-blocked") {
-      if (argc != 12) return 2;
+      if (argc != 13) return 2;
       dir_ops::recovery_boundary = test == L"commit-mismatch" ? dir_ops::RecoveryBoundary::kCommitMismatch : dir_ops::RecoveryBoundary::kCommitBlocked;
       dir_ops::boundary_path = std::wstring(argv[7]) + L"\\" + argv[11];
       return dir_ops::run(argc - 1, argv + 1);

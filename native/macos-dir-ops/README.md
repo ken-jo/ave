@@ -19,7 +19,7 @@ changes nothing the mode does: it still acts in the directory it checked.
 
 ```text
 ave-dir-ops --dir-rename <from> <dev> <ino> <name> <to> <dev> <ino> <target>
-ave-dir-ops --dir-copy   <from> <dev> <ino> <name> <to> <dev> <ino> <target> <part>
+ave-dir-ops --dir-copy   <from> <dev> <ino> <name> <to> <dev> <ino> <target> <part> <hidden>
 ave-dir-ops --dir-remove <dir> <dev> <ino> <name>
 ave-dir-ops --dir-sweep  <dir> <dev> <ino>
 ave-dir-ops --dir-list-records <dir> <dir-dev> <dir-ino>
@@ -120,9 +120,9 @@ stdin.
   reports an incomplete or unverified copy-back at the part name.
   `remove-id` and `restore` may also return the named `left` outcome
   when they isolate a file under a new hidden name.
-- Before `ready`, the helper holds and identifies any existing ordinary
-  target. After authorization at `copied` it verifies the part, moves any
-  old target aside exclusively and verifies it against its descriptor.
+- Before `ready`, the helper holds any existing ordinary target and emits
+  `target-id <dev> <ino> <birth-ns>`. After authorization at `copied` it verifies the part, moves any
+  old target to the supplied hidden name exclusively and verifies it against its descriptor.
   The helper commits the part with an exclusive rename and verifies the
   new target against the writing descriptor before retiring the old target.
   A mismatched commit is rolled back exclusively if possible. If commit
@@ -131,13 +131,20 @@ stdin.
   `target-left left <hidden> <own-dev> <own-ino> <verdict> <snapshot>`
   before the terminal copy reply. The old identity comes from its held
   descriptor. The verdict is `mismatch` for a failed restore and
-  `remove-failed` for retirement after a verified commit. The host records
-  this separately from the part's outcome.
+  `remove-failed` for retirement after a verified commit. A verified restore
+  or retirement emits `target-restored` or `target-retired` before the
+  terminal reply. The host keeps the write-ahead record when the outcome
+  is unavailable.
 
   I4. A displaced original moves only by identity-preserving rename. Startup
   uses the separate target recovery operation for its record. An occupied or
   unverifiable destination leaves the original and its record in place.
   Copy-back applies only to copy-part recovery.
+
+  I5. The host chooses the hidden name and syncs a record containing it,
+  the held original's identity, and the copy session before authorizing the
+  move. Startup reads target records before part recovery and preserves each
+  record until rollback or retirement verifies.
 
   Accepted residual.
 

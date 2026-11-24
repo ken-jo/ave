@@ -779,9 +779,66 @@ describe("a copy whose helper says it left its temporary file", () => {
     expectLeftByHelper(run.error, hidden);
   });
 
+  it("awaits the synced target record even when the helper dies after a complete leftover", async () => {
+    let finishWrite = () => {};
+    const write = vi.fn(() => new Promise<void>((resolve) => { finishWrite = resolve; }));
+    const resolved = vi.fn();
+    let moveAuthorized = false;
+    script((helper) => {
+      if (helper.args[0] === "--dir-remove-id") {
+        helper.say("ready");
+        helper.once("input", () => { helper.say("removed"); helper.exit(0); });
+        return;
+      }
+      helper.say("target-id 1 3 15", "ready");
+      helper.once("input", () => {
+        helper.say("writing 1 2", "progress 8", "copied");
+        helper.once("input", () => {
+          moveAuthorized = true;
+          helper.say(`target-left left ${HIDDEN} 1 3 mismatch -`);
+          helper.exit(7);
+        });
+      });
+    });
+    const journal = { hidden: HIDDEN, write, resolved };
+    const run = follow(files.copy(from, "staged", to, "report.pdf", ".0123.part", () => true, UNSTOPPED, journal));
+    await flush();
+    expect(write).toHaveBeenCalledExactlyOnceWith({ dev: 1n, ino: 3n, birthtimeNs: 15n });
+    expect(moveAuthorized).toBe(false);
+    finishWrite();
+    await flush();
+    expect(moveAuthorized).toBe(true);
+    expect(run.error).toBeInstanceOf(HeldFileHelperUnavailableError);
+    expect(resolved).not.toHaveBeenCalled();
+  });
+
+  it("ends the copy without authorizing a move when the journal cannot be synced", async () => {
+    let moveAuthorized = false;
+    script((helper) => {
+      if (helper.args[0] === "--dir-remove-id") {
+        helper.say("ready");
+        helper.once("input", () => { helper.say("absent"); helper.exit(0); });
+        return;
+      }
+      helper.say("target-id 1 3 15", "ready");
+      helper.once("input", () => {
+        helper.say("writing 1 2", "copied");
+        helper.once("input", () => { moveAuthorized = true; });
+        helper.afterInputEnds(() => { helper.say("cancelled"); helper.exit(0); });
+      });
+    });
+    const journal = { hidden: HIDDEN, write: vi.fn().mockRejectedValue(new Error("sync failed")), resolved: vi.fn() };
+    const run = follow(files.copy(from, "staged", to, "report.pdf", ".0123.part", () => true, UNSTOPPED, journal));
+    await flush();
+    expect(run.error).toMatchObject({ message: "sync failed" });
+    expect(journal.write).toHaveBeenCalledOnce();
+    expect(moveAuthorized).toBe(false);
+    expect(journal.resolved).not.toHaveBeenCalled();
+  });
+
   it("reports a displaced target separately from the part on a failed commit", async () => {
     script((helper) => {
-      helper.say("ready");
+      helper.say("target-id 1 3 15", "ready");
       helper.once("input", () => {
         helper.say("writing 1 2", "progress 8", "copied");
         helper.once("input", () => {
@@ -791,7 +848,7 @@ describe("a copy whose helper says it left its temporary file", () => {
       });
     });
     const record = vi.fn();
-    const run = follow(files.copy(from, "staged", to, "report.pdf", ".0123.part", () => true, UNSTOPPED, record));
+    const run = follow(files.copy(from, "staged", to, "report.pdf", ".0123.part", () => true, UNSTOPPED, { hidden: HIDDEN, write: vi.fn().mockResolvedValue(undefined), resolved: vi.fn(), left: record }));
     await flush();
     expect(run.error).toBeInstanceOf(HeldDirectoryRefusedError);
     expect(stoppedCopyOf(run.error)?.partialCopy).toBe("removed");
@@ -1049,7 +1106,7 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
             break;
           }
           default: {
-            const names = fs.readdirSync(directory);
+            const names = fs.readdirSync(directory).filter((entry) => name !== "keep-records" || !/^[a-f0-9]{32}\.cleanup\.json$/u.test(entry));
             for (const name of names) fs.unlinkSync(join(directory, name));
             end(`swept ${names.length}`);
           }
@@ -1131,7 +1188,7 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
     const swept = follow(sweepBrowserDownloadStaging(root));
     await flush();
     await flush();
-    expect(swept).toMatchObject({ settled: true, value: 1 });
+    expect(swept).toMatchObject({ settled: true, value: 0 });
     expect(fs.readFileSync(part, "utf8")).toBe("the file now at the original name");
     expect(fs.readFileSync(hidden, "utf8")).toBe("the user's file");
     expect(recordedAt(staging)).toEqual([namedLeftover]);
@@ -1146,7 +1203,7 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
     const swept = follow(sweepBrowserDownloadStaging(root));
     await flush();
     await flush();
-    expect(swept).toMatchObject({ settled: true, value: 1 });
+    expect(swept).toMatchObject({ settled: true, value: 0 });
     expect(fs.readFileSync(hidden, "utf8")).toBe("the replacement");
     expect(fs.existsSync(part)).toBe(false);
     expect(recordedAt(staging)).toEqual([namedLeftover]);
@@ -1211,7 +1268,7 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
     const swept = follow(sweepBrowserDownloadStaging(root));
     await flush();
     await flush();
-    expect(swept).toMatchObject({ settled: true, value: 1 });
+    expect(swept).toMatchObject({ settled: true, value: 0 });
     expect(fs.readFileSync(part, "utf8")).toBe("the user's file");
     expect(recordedAt(staging)).toEqual([basename(part)]);
   });
@@ -1237,25 +1294,29 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
     }
   });
 
-  it("restores a still-needed record deleted by a sweep that fails part-way", async () => {
+  it("retains the same record when a staged-file sweep fails part-way", async () => {
     const { root, staging, chosen, part } = await stalledCopy();
     const [oldRecord] = records(staging);
     expect(oldRecord).toBeDefined();
     const moved = join(base, "moved");
     fs.renameSync(chosen, moved);
-    const failed = new Error("the sweep failed after deleting a record");
+    const stale = join(staging, "stale-download");
+    fs.writeFileSync(stale, "staged bytes");
+    const failed = new Error("the sweep failed after deleting a staged file");
     const failing = {
       ...root,
       files: {
         ...root.files,
-        sweep: async () => {
-          fs.unlinkSync(join(staging, oldRecord ?? ""));
+        sweep: async (_directory, keepRecords) => {
+          expect(keepRecords).toBe(true);
+          fs.unlinkSync(stale);
           throw failed;
         },
       },
     };
 
     await expect(sweepBrowserDownloadStaging(failing)).rejects.toBe(failed);
+    expect(records(staging)).toEqual([oldRecord]);
     expect(recordedAt(staging)).toEqual([basename(part)]);
 
     fs.renameSync(moved, chosen);

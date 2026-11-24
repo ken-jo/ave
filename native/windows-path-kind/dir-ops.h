@@ -341,6 +341,7 @@ inline int run_rename(wchar_t** argv) {
 
 #if defined(AVE_TEST_DIR_RECOVERY)
 bool test_fail_replacement_rename(bool restoring);
+void test_stop_replacement(const char* boundary);
 #endif
 
 inline int run_copy(wchar_t** argv) {
@@ -348,7 +349,11 @@ inline int run_copy(wchar_t** argv) {
   const std::wstring name(argv[3]);
   const std::wstring target(argv[7]);
   const std::wstring part_name(argv[8]);
-  if (_wcsicmp(part_name.c_str(), target.c_str()) == 0) return kExitUsage;
+  const std::wstring aside(argv[9]);
+  if (!hidden_name(aside) || _wcsicmp(part_name.c_str(), target.c_str()) == 0 ||
+      _wcsicmp(aside.c_str(), target.c_str()) == 0 || _wcsicmp(aside.c_str(), part_name.c_str()) == 0) return kExitUsage;
+  std::string hidden;
+  for (const wchar_t character : aside) hidden += static_cast<char>(character);
   HeldDirectory from;
   HeldDirectory to;
   int status = hold_directory(argv[0], argv[1], argv[2], "from", from);
@@ -375,12 +380,20 @@ inline int run_copy(wchar_t** argv) {
   if (opening_target < 0 && !missing(status_error(opening_target))) {
     return failed(native_failure(opening_target, "NtCreateFile"));
   }
-  const PinnedHandle old(previous);
+  PinnedHandle old(previous);
   const bool replacing = old.value != INVALID_HANDLE_VALUE;
   FILE_ID_INFO old_id{};
   if (replacing && (!ordinary(old.value) || !read_id(old.value, old_id))) return refused("target");
   FILE_ID_INFO directory_id{};
   if (!read_id(to.handle(), directory_id)) return refused("to");
+  if (replacing) {
+    FILE_BASIC_INFO basic{};
+    ULONGLONG birth = 0;
+    if (old_id.VolumeSerialNumber != directory_id.VolumeSerialNumber ||
+        !GetFileInformationByHandleEx(old.value, FileBasicInfo, &basic, sizeof(basic)) ||
+        !time_ns(basic.CreationTime, birth)) return refused("target");
+    say(("target-id " + id_text(old_id, ' ') + " " + std::to_string(birth)).c_str());
+  }
   if (!proceed("ready")) return done("cancelled");
   // The temporary file is created exclusively and stays open without write or delete sharing through commit or retirement.
   HANDLE created = INVALID_HANDLE_VALUE;
@@ -429,12 +442,13 @@ inline int run_copy(wchar_t** argv) {
   const NameIdentity current = check_name(to.handle(), part_name, written);
   if (current == NameIdentity::kAbsent) return refused("target removed");
   if (current != NameIdentity::kMatches) return refused("target left");
-  std::string hidden;
-  std::wstring aside;
   const auto report_target_left = [&](bool retiring) {
     const bool verified = check_name(to.handle(), aside, old_id) == NameIdentity::kMatches;
     say(("target-left left " + hidden + " " + id_text(old_id, ' ')
       + (retiring ? " remove-failed " : " mismatch ") + (verified ? snapshot(old.value, old_id) : "-")).c_str());
+#if defined(AVE_TEST_DIR_RECOVERY)
+    test_stop_replacement("leftover");
+#endif
   };
   const auto restore_target = [&]() {
     if (!replacing) return;
@@ -447,11 +461,13 @@ inline int run_copy(wchar_t** argv) {
     if (check_name(to.handle(), aside, old_id) != NameIdentity::kMatches ||
         rename_into(old.value, to.handle(), target, false).error != ERROR_SUCCESS ||
         check_name(to.handle(), target, old_id) != NameIdentity::kMatches) report_target_left(false);
+    else say("target-restored");
   };
   if (replacing) {
-    hidden = fresh_hidden_name();
-    aside.assign(hidden.begin(), hidden.end());
-    if (hidden.empty() || check_name(to.handle(), target, old_id) != NameIdentity::kMatches ||
+#if defined(AVE_TEST_DIR_RECOVERY)
+    test_stop_replacement("before-move");
+#endif
+    if (check_name(to.handle(), target, old_id) != NameIdentity::kMatches ||
         rename_into(old.value, to.handle(), aside, false).error != ERROR_SUCCESS) {
       return stopped_copy(to.handle(), part_name, part.value, written, {}, true);
     }
@@ -459,6 +475,9 @@ inline int run_copy(wchar_t** argv) {
       restore_target();
       return stopped_copy(to.handle(), part_name, part.value, written, {}, true);
     }
+#if defined(AVE_TEST_DIR_RECOVERY)
+    test_stop_replacement("after-move");
+#endif
   }
   FileFailure renamed;
 #if defined(AVE_TEST_DIR_RECOVERY)
@@ -485,8 +504,18 @@ inline int run_copy(wchar_t** argv) {
     restore_target();
     return refused(rolled_back.error == ERROR_SUCCESS ? "target left" : "target changed");
   }
-  if (replacing && (check_name(to.handle(), aside, old_id) != NameIdentity::kMatches ||
-      delete_on_close(old.value).error != ERROR_SUCCESS)) report_target_left(true);
+  if (replacing) {
+#if defined(AVE_TEST_DIR_RECOVERY)
+    test_stop_replacement("after-commit");
+#endif
+    if (check_name(to.handle(), aside, old_id) != NameIdentity::kMatches ||
+        delete_on_close(old.value).error != ERROR_SUCCESS) report_target_left(true);
+    else {
+      CloseHandle(old.value);
+      old.value = INVALID_HANDLE_VALUE;
+      if (check_name(to.handle(), aside, old_id) == NameIdentity::kAbsent) say("target-retired");
+    }
+  }
   return done("committed");
 }
 
@@ -523,7 +552,7 @@ inline int run_remove(wchar_t** argv) {
 }
 
 // Remove the files and links directly in the held folder; directories and anything else stay, and nothing is removed recursively.
-inline int run_sweep(wchar_t** argv) {
+inline int run_sweep(wchar_t** argv, bool keep_records) {
   HeldDirectory directory;
   const int status = hold_directory(argv[0], argv[1], argv[2], "from", directory);
   if (status != 0) return status;
@@ -541,7 +570,8 @@ inline int run_sweep(wchar_t** argv) {
       const auto entry = reinterpret_cast<const FILE_ID_BOTH_DIR_INFO*>(buffer.data() + offset);
       const std::wstring entry_name(entry->FileName, entry->FileNameLength / sizeof(wchar_t));
       const bool directory_only = (entry->FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 && (entry->FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0;
-      if (entry_name != L"." && entry_name != L".." && !directory_only) staged.push_back(entry_name);
+      if (entry_name != L"." && entry_name != L".." && !directory_only &&
+          (!keep_records || !record_name(entry_name))) staged.push_back(entry_name);
       if (entry->NextEntryOffset == 0) break;
       offset += entry->NextEntryOffset;
     }
@@ -561,9 +591,10 @@ inline int run_sweep(wchar_t** argv) {
 inline int run(int argc, wchar_t** argv) {
   const std::wstring mode(argv[1]);
   if (argc == 10 && mode == L"--dir-rename") return run_rename(argv + 2);
-  if (argc == 11 && mode == L"--dir-copy") return run_copy(argv + 2);
+  if (argc == 12 && mode == L"--dir-copy") return run_copy(argv + 2);
   if (argc == 6 && mode == L"--dir-remove") return run_remove(argv + 2);
-  if (argc == 5 && mode == L"--dir-sweep") return run_sweep(argv + 2);
+  if (mode == L"--dir-sweep" && (argc == 5 || (argc == 6 && std::wstring(argv[5]) == L"keep-records")))
+    return run_sweep(argv + 2, argc == 6);
   if (argc == 5 && mode == L"--dir-list-records") return run_list_records(argv + 2);
   if (argc == 7 && mode == L"--dir-read") return run_record(argv + 2, false);
   if (argc == 7 && mode == L"--dir-write-record") return run_record(argv + 2, true);

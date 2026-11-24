@@ -192,13 +192,13 @@ async function recoveryTests() {
   add("copy refuses nonregular target before ready", (dir) => {
     writeFileSync(join(dir, "source"), "source");
     mkdirSync(join(dir, "target"));
-    expect(["--dir-copy", ...held(dir), "source", ...held(dir), "target", part], ["refused target"], 3);
+    expect(["--dir-copy", ...held(dir), "source", ...held(dir), "target", part, hidden], ["refused target"], 3);
     assert.ok(!existsSync(join(dir, part)));
   });
   add("copy part collision stays a plain EEXIST", (dir) => {
     writeFileSync(join(dir, "source"), "source");
     writeFileSync(join(dir, part), "preexisting");
-    expect(["--dir-copy", ...held(dir), "source", ...held(dir), "target", part], ["ready", "failed EEXIST"], 4);
+    expect(["--dir-copy", ...held(dir), "source", ...held(dir), "target", part, hidden], ["ready", "failed EEXIST"], 4);
     assert.equal(readFileSync(join(dir, part), "utf8"), "preexisting");
   });
   for (const kind of ["directory", "junction"]) {
@@ -209,7 +209,7 @@ async function recoveryTests() {
       mkdirSync(original);
       writeFileSync(join(original, "sentinel"), "existing bytes");
       if (kind === "junction") symlinkSync(original, occupied, "junction");
-      expect(["--dir-copy", ...held(dir), "source", ...held(dir), "target", part], ["ready", "failed EEXIST"], 4);
+      expect(["--dir-copy", ...held(dir), "source", ...held(dir), "target", part, hidden], ["ready", "failed EEXIST"], 4);
       assert.equal(readFileSync(join(occupied, "sentinel"), "utf8"), "existing bytes");
       assert.equal(readFileSync(join(original, "sentinel"), "utf8"), "existing bytes");
       assert.equal(readFileSync(join(dir, "source"), "utf8"), "download bytes");
@@ -218,7 +218,7 @@ async function recoveryTests() {
   }
   add("copy identifies its locked writer before progress and verifies the committed name", async (dir) => {
     writeFileSync(join(dir, "source"), "source");
-    const result = await runCopy(["--dir-copy", ...held(dir), "source", ...held(dir), "target", part], (line, stdin) => {
+    const result = await runCopy(["--dir-copy", ...held(dir), "source", ...held(dir), "target", part, hidden], (line, stdin) => {
       if (line === "ready") stdin.write("c");
       if (line.startsWith("writing ")) {
         assert.throws(() => renameSync(join(dir, part), join(dir, "moved")), /EBUSY|EPERM|EACCES/u);
@@ -234,7 +234,7 @@ async function recoveryTests() {
   });
   add("commit refuses a late target and keeps it intact", async (dir) => {
     writeFileSync(join(dir, "source"), "source");
-    const result = await runCopy(["--dir-copy", ...held(dir), "source", ...held(dir), "target", part], (line, stdin) => {
+    const result = await runCopy(["--dir-copy", ...held(dir), "source", ...held(dir), "target", part, hidden], (line, stdin) => {
       if (line === "ready") stdin.write("c");
       if (line === "copied") {
         writeFileSync(join(dir, "target"), "unrelated bytes");
@@ -252,7 +252,7 @@ async function recoveryTests() {
     writeFileSync(join(dir, "source"), "new bytes");
     writeFileSync(target, "old bytes");
     const old = snapshot(target);
-    const args = ["replace-occupied", "--dir-copy", ...held(dir), "source", ...held(dir), "target", part];
+    const args = ["replace-occupied", "--dir-copy", ...held(dir), "source", ...held(dir), "target", part, hidden];
     const result = await runCopy(args, (line, stdin) => {
       if (line === "ready") stdin.write("c");
       if (line === "copied") stdin.end("c");
@@ -272,7 +272,7 @@ async function recoveryTests() {
       writeFileSync(source, "new bytes");
       writeFileSync(target, "old bytes");
       const old = snapshot(target);
-      const args = ["--dir-copy", ...held(dir), "source", ...held(dir), "target", part];
+      const args = ["--dir-copy", ...held(dir), "source", ...held(dir), "target", part, hidden];
       const result = await runCopy(failure === "none" ? args : [`replace-${failure}-failure`, ...args], (line, stdin) => {
         if (line === "ready") stdin.write("c");
         if (line === "copied") stdin.end("c");
@@ -293,6 +293,48 @@ async function recoveryTests() {
       }
     });
   }
+  for (const boundary of ["before-move", "after-move", "after-commit", "leftover"]) {
+    add(`replacement restart after ${boundary}`, async (dir) => {
+      const root = join(dir, "records");
+      mkdirSync(root);
+      const target = join(dir, "target");
+      writeFileSync(join(dir, "source"), "new bytes");
+      writeFileSync(target, "old bytes");
+      const old = snapshot(target);
+      const birth = old[2].split(":")[0];
+      const saved = Buffer.from(JSON.stringify({ hidden, old, session: "download-session" })).toString("hex");
+      const result = await runCopy(["stop-" + boundary, "--dir-copy", ...held(dir), "source", ...held(dir), "target", part, hidden], (line, stdin) => {
+        if (line === "ready") stdin.write("c");
+        if (line === "copied") {
+          expect(["--dir-write-record", ...held(root), record, saved], ["ready", "written"]);
+          stdin.end("c");
+        }
+      }, join(tmpdir(), "ave-path-pin-test.exe"));
+      assert.equal(result.code, 7, JSON.stringify(result));
+      assert.equal(result.lines[0], `target-id ${old[0]} ${old[1]} ${birth}`);
+      if (boundary === "leftover") assert.match(result.lines.at(-1), /^target-left left /u);
+      else assert.equal(result.lines.at(-1), "copied");
+      expect(["--dir-read", ...held(root), record, "8192"], ["ready", `record ${saved}`]);
+      if (boundary === "before-move") {
+        assert.deepEqual(snapshot(target), old);
+        assert.ok(!existsSync(join(dir, hidden)));
+      } else {
+        assert.deepEqual(snapshot(join(dir, hidden)), old);
+      }
+      const occupied = boundary === "after-commit";
+      expect(["--dir-restore-target", ...held(dir), hidden, "target", old[0], old[1], `${birth}:-`],
+        ["ready", occupied ? "left" : "restored"]);
+      if (occupied) {
+        assert.equal(readFileSync(target, "utf8"), "new bytes");
+        assert.deepEqual(snapshot(join(dir, hidden)), old);
+        expect(["--dir-sweep", ...held(root), "keep-records"], ["ready", "swept 0"]);
+        expect(["--dir-read", ...held(root), record, "8192"], ["ready", `record ${saved}`]);
+      } else {
+        assert.deepEqual(snapshot(target), old);
+        assert.ok(!existsSync(join(dir, hidden)));
+      }
+    });
+  }
   for (const fault of ["query-failure", "zero"]) {
     for (const site of ["directory", "writer", "recovery"]) {
       add(`unverifiable FileId (${fault}) leaves every entry at ${site}`, async (dir) => {
@@ -307,7 +349,7 @@ async function recoveryTests() {
         const known = snapshot(existing);
         if (zeroRecovery) known[1] = "0".repeat(32);
         const args = recovery ? ["--dir-remove-id", ...held(dir), hidden, ...known]
-          : ["--dir-copy", ...held(dir), "source", ...held(dir), "target", part];
+          : ["--dir-copy", ...held(dir), "source", ...held(dir), "target", part, hidden];
         const position = zeroRecovery ? "recovery" : site === "writer" ? "second" : "first";
         const result = await runCopy([`file-id-${fault}-${position}`, ...args], (line, stdin) => {
           if (line === "ready") stdin.write("c");
@@ -328,7 +370,7 @@ async function recoveryTests() {
   for (const blocked of [false, true]) {
     add(`commit identity mismatch with ${blocked ? "occupied" : "vacant"} rollback name`, async (dir) => {
       writeFileSync(join(dir, "source"), "source");
-      const args = [blocked ? "commit-blocked" : "commit-mismatch", "--dir-copy", ...held(dir), "source", ...held(dir), "target", part];
+      const args = [blocked ? "commit-blocked" : "commit-mismatch", "--dir-copy", ...held(dir), "source", ...held(dir), "target", part, hidden];
       const result = await runCopy(args, (line, stdin) => {
         if (line === "ready") stdin.write("c");
         if (line === "copied") stdin.end("c");
@@ -491,11 +533,11 @@ try {
   assert.deepEqual(result.lines, ["ready", "refused target"]);
   assert.ok(existsSync(join(from, "b")));
 
-  result = answered(["--dir-copy", ...held(from), "b", ...held(to), "copied.pdf", ".0123.part"], "cc");
+  result = answered(["--dir-copy", ...held(from), "b", ...held(to), "copied.pdf", ".0123.part", ".0123456789abcdef0123456789abcdef.removing"], "cc");
   assert.match(result.lines[1], /^writing \d+ [0-9a-f]{32}$/u);
   assert.equal(result.lines[2], "cancelled", "input that arrives while bytes are copied stops the copy");
   assert.deepEqual(readdirSync(to).sort(), ["junction.pdf", "report.pdf"]);
-  const copy = spawn(helper, ["--dir-copy", ...held(from), "b", ...held(to), "copied.pdf", ".0123.part"], { windowsHide: true, shell: false, env: {} });
+  const copy = spawn(helper, ["--dir-copy", ...held(from), "b", ...held(to), "copied.pdf", ".0123.part", ".0123456789abcdef0123456789abcdef.removing"], { windowsHide: true, shell: false, env: {} });
   const copied = await new Promise((resolveCopy, rejectCopy) => {
     let output = "";
     copy.once("error", rejectCopy);

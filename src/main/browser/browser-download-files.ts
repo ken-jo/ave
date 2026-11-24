@@ -146,6 +146,13 @@ const MAX_HELPER_LINE_BYTES = 1024 * 1024;
  * nothing it does. Linux reaches files through the open descriptor's /proc/self/fd entry; macOS and Windows have no such path, so a
  * native helper holds the directories and performs the whole operation (native/macos-dir-ops, native/windows-path-kind dir-ops.h).
  */
+export interface DownloadTargetJournal {
+  readonly hidden: string;
+  write(file: FileIdentity): Promise<void>;
+  resolved(): void;
+  left?(at: LeftPart): void;
+}
+
 export interface HeldFileOperations {
   /**
    * Rename `name` in `from` to `target` in `to`, replacing an ordinary file there; `cross-volume` when nothing moved because they are on
@@ -157,11 +164,11 @@ export interface HeldFileOperations {
    * a stop (`proceed` answering false, or `stop` aborting while bytes are copied) removes `part` and reports `cancelled`.
    */
   copy(from: HeldDirectory, name: string, to: HeldDirectory, target: string, part: string, proceed: Proceed, stop: AbortSignal,
-    onTargetLeft?: (at: LeftPart) => void): Promise<"committed" | "cancelled">;
+    journal?: DownloadTargetJournal): Promise<"committed" | "cancelled">;
   /** Remove `name`, a file or a link, from `directory`; `stop` aborting before the removal is let go ends it `cancelled`. */
   remove(directory: HeldDirectory, name: string, proceed: Proceed, stop: AbortSignal): Promise<"removed" | "absent" | "cancelled">;
   /** Remove every file and link directly in `directory`, and nothing else; await it before anything is staged. */
-  sweep(directory: HeldDirectory): Promise<number>;
+  sweep(directory: HeldDirectory, keepRecords?: boolean): Promise<number>;
   listRecords(directory: HeldDirectory): Promise<string[]>;
   readRecord(directory: HeldDirectory, name: string, max: number): Promise<Buffer | null>;
   writeRecord(directory: HeldDirectory, name: string, body: Buffer): Promise<void>;
@@ -446,8 +453,27 @@ function descriptorFileOperations(renameCopy = renameExclusive): HeldFileOperati
 
   function recoverTarget(directory: number, hidden: string, target: string, file: FileIdentity, content?: Fingerprint): "restored" | "left" {
     try {
-      const fd = boundOpen(directory, hidden);
-      if (fd === null) return "left";
+      const openEntry = (name: string): number | null => {
+        if (content !== undefined) return boundOpen(directory, name);
+        try {
+          return openSync(inHeld(directory, name), LINUX_O_PATH | constants.O_NOFOLLOW);
+        } catch (error) {
+          if (codeOf(error) === "ENOENT") return null;
+          throw error;
+        }
+      };
+      const fd = openEntry(hidden);
+      if (fd === null) {
+        const original = openEntry(target);
+        if (original === null) return "left";
+        try {
+          const info = fstatSync(original, { bigint: true });
+          return info.isFile() && sameFile(info, file) && (content === undefined || verifyFingerprint(original, content)) &&
+            entryMatches(directory, target, file) ? "restored" : "left";
+        } finally {
+          closeSync(original);
+        }
+      }
       try {
         const info = fstatSync(fd, { bigint: true });
         if (!info.isFile() || !sameFile(info, file) || (content !== undefined && !verifyFingerprint(fd, content)) ||
@@ -496,7 +522,7 @@ function descriptorFileOperations(renameCopy = renameExclusive): HeldFileOperati
       }
       return "committed";
     }),
-    copy: (from, name, to, target, part, proceed, stop, onTargetLeft) => holding(from, to, async (fromFd, toFd) => {
+    copy: (from, name, to, target, part, proceed, stop, journal) => holding(from, to, async (fromFd, toFd) => {
       let source: FileHandle;
       try {
         source = await open(inHeld(fromFd, name), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -534,18 +560,23 @@ function descriptorFileOperations(renameCopy = renameExclusive): HeldFileOperati
           position += bytesRead;
         }
         await copy.sync();
-        if (!proceed("copied")) return "cancelled";
+        if (!proceed("copied") || stop.aborted) return "cancelled";
+        if (old !== null) {
+          if (journal === undefined || !MOVED_ASIDE_NAME.test(journal.hidden)) throw new HeldDirectoryRefusedError("target");
+          await journal.write({ dev: old.dev, ino: old.ino, birthtimeNs: old.birthtimeNs });
+          if (stop.aborted) return "cancelled";
+        }
         const current = await copy.stat({ bigint: true });
         if (!entryMatches(toFd, part, current)) throw new HeldDirectoryRefusedError("target");
-        const aside = old === null ? null : `.${randomBytes(16).toString("hex")}.removing`;
+        const aside = journal?.hidden;
         const reportTarget = (name: string, expected: FileIdentity, verdict: HelperPartIdentity["verdict"]): void => {
           const snapshot = boundSnapshot(toFd, name);
-          onTargetLeft?.({ name, identity: {
+          journal?.left?.({ name, identity: {
             kind: "helper", dev: expected.dev, ino: expected.ino, verdict,
             observed: snapshot !== null && sameFile(snapshot.file, expected) ? snapshot : null,
           } });
         };
-        if (old !== null && aside !== null) {
+        if (old !== null && aside !== undefined) {
           if (!entryMatches(toFd, target, old)) throw new HeldDirectoryRefusedError("target");
           renameExclusive(toFd, target, aside);
           if (!entryMatches(toFd, aside, old)) {
@@ -564,11 +595,12 @@ function descriptorFileOperations(renameCopy = renameExclusive): HeldFileOperati
             throw new HeldDirectoryRefusedError("target");
           }
         } catch (error) {
-          if (old !== null && aside !== null) {
+          if (old !== null && aside !== undefined) {
             try {
               if (!entryMatches(toFd, aside, old)) throw new HeldDirectoryRefusedError("target");
               renameCopy(toFd, aside, target);
               if (!entryMatches(toFd, target, old)) throw new HeldDirectoryRefusedError("target");
+              journal?.resolved();
             } catch {
               reportTarget(aside, old, "mismatch");
             }
@@ -577,10 +609,11 @@ function descriptorFileOperations(renameCopy = renameExclusive): HeldFileOperati
           throw error;
         }
         committed = true;
-        if (old !== null && aside !== null) {
+        if (old !== null && aside !== undefined) {
           try {
             if (!entryMatches(toFd, aside, old)) throw new HeldDirectoryRefusedError("target");
             unlinkSync(inHeld(toFd, aside));
+            journal?.resolved();
           } catch {
             reportTarget(aside, old, "remove-failed");
           }
@@ -650,14 +683,15 @@ function descriptorFileOperations(renameCopy = renameExclusive): HeldFileOperati
       try {
         writeFileSync(record, body);
         fsyncSync(record);
+        fsyncSync(fd);
       } finally {
         closeSync(record);
       }
     }),
-    sweep: async (directory) => holdingSync(directory, (fd) => {
+    sweep: async (directory, keepRecords) => holdingSync(directory, (fd) => {
       let removed = 0;
       for (const entry of readdirSync(inHeld(fd, "."), { withFileTypes: true })) {
-        if (!entry.isFile() && !entry.isSymbolicLink()) continue;
+        if ((!entry.isFile() && !entry.isSymbolicLink()) || (keepRecords && RECORD_NAME.test(entry.name))) continue;
         if (purgeStaged(fd, entry.name) === "removed") removed += 1;
       }
       return removed;
@@ -674,6 +708,7 @@ const EXIT_REFUSED = 3;
 const EXIT_FAILED = 4;
 const REFUSALS: ReadonlySet<string> = new Set<HeldRefusal>(["from", "to", "source", "target"]);
 const PROGRESS = /^progress (\d+)$/u;
+const TARGET_ID = /^target-id ([0-9]+) ([0-9a-f]+) ([0-9]+)$/u;
 const WRITING = /^writing (0|[1-9][0-9]{0,19}) ([0-9a-f]{1,32})$/u;
 const FAILURE_DIAGNOSTIC = /^Windows error \d+(?: \(NTSTATUS 0x[0-9A-F]{8}, (?:NtCreateFile|NtSetInformationFile)\))?\r?\n$/u;
 // A stopped copy may add ` left`, or ` left <hidden name> <dev> <ino> <verdict>` when a file stays at the moved-aside name.
@@ -776,7 +811,7 @@ function statusOf(last: string): number {
  * delivery order is independent of stdout. Killing and confirming exit share one independent `killMs` ceiling, including
  * when the platform's kill request does not finish. A valid outcome before a confirmed kill is retained only if the protocol stayed valid.
  */
-function runHelper(helper: string, args: readonly string[], proceed: Proceed, stop: AbortSignal, bounds: HelperBounds, parseInode: typeof parseUnsigned, onWriting?: (file: FileIdentity) => void, onTargetLeft?: (at: LeftPart) => void): Promise<string> {
+function runHelper(helper: string, args: readonly string[], proceed: Proceed, stop: AbortSignal, bounds: HelperBounds, parseInode: typeof parseUnsigned, onWriting?: (file: FileIdentity) => void, journal?: DownloadTargetJournal): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawnManaged(helper, args, { stdio: ["pipe", "pipe", "pipe"], shell: false, env: {} }, { label: "browser-download-files" });
     const { stdin, stdout, stderr } = child;
@@ -784,6 +819,8 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
     let pending = "";
     let outcome: string | null = null;
     let targetLeft: HelperLeftPart | null = null;
+    let oldTarget: FileIdentity | null = null;
+    let targetResolution: "restored" | "retired" | null = null;
     let phase: "holding" | "copying" | "acting" | "copied" = "holding";
     let copiedBytes = 0n;
     let writing = false;
@@ -815,7 +852,8 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
         fail(answer);
         return;
       }
-      if (targetLeft !== null) onTargetLeft?.(targetLeft);
+      if (targetLeft !== null) journal?.left?.(targetLeft);
+      if (targetResolution !== null) journal?.resolved();
       if (answer instanceof Error) reject(answer);
       else resolve(answer);
     };
@@ -901,6 +939,12 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
       protocolFailure ??= "it wrote output outside its mode or phase";
       kill(protocolFailure);
     };
+    const allow = (step: HeldStep): void => {
+      if (settled || killed !== null || outcome !== null || !inputOpen || stopping || stop.aborted) return;
+      passed = step;
+      stdin.write("c");
+      awaitLine(`after ${step}`);
+    };
     const isOutcome = (line: string): boolean => {
       const left = parsePartLeft(line, parseInode);
       if (left !== null) {
@@ -938,6 +982,22 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
       for (let newline = pending.indexOf("\n"); newline >= 0; newline = pending.indexOf("\n")) {
         const line = pending.slice(0, newline).replace(/\r$/u, "");
         pending = pending.slice(newline + 1);
+        const targetId = TARGET_ID.exec(line);
+        if (targetId !== null) {
+          const dev = parseUnsigned(targetId[1]);
+          const ino = parseInode(targetId[2]);
+          const birthtimeNs = parseUnsigned(targetId[3]);
+          if (mode !== "--dir-copy" || phase !== "holding" || oldTarget !== null ||
+              dev === null || ino === null || birthtimeNs === null) { violate(); return; }
+          oldTarget = { dev, ino, birthtimeNs };
+          continue;
+        }
+        if (line === "target-restored" || line === "target-retired") {
+          if (mode !== "--dir-copy" || passed !== "copied" || oldTarget === null ||
+              targetResolution !== null || targetLeft !== null) { violate(); return; }
+          targetResolution = line === "target-restored" ? "restored" : "retired";
+          continue;
+        }
         const identity = WRITING.exec(line);
         if (identity?.[1] !== undefined && identity[2] !== undefined) {
           const dev = parseUnsigned(identity[1]);
@@ -959,7 +1019,7 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
         }
         if (line.startsWith("target-left ")) {
           const left = parsePartLeft(line, parseInode);
-          if (mode !== "--dir-copy" || passed !== "copied" || !writing || targetLeft !== null ||
+          if (mode !== "--dir-copy" || passed !== "copied" || !writing || targetLeft !== null || targetResolution !== null ||
               !left?.at || left.partLeft || left.answer !== "target-left") { violate(); return; }
           const { dev, ino, observed } = left.at.identity;
           if (observed !== null && (observed.file.dev !== dev || observed.file.ino !== ino)) { violate(); return; }
@@ -968,6 +1028,8 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
         }
         if (line !== "ready" && line !== "copied") {
           if (!isOutcome(line) ||
+              (targetResolution === "retired" && line !== "committed") ||
+              (targetResolution === "restored" && !/^(?:refused target|failed E)/u.test(line)) ||
               (targetLeft?.identity.verdict === "remove-failed" && line !== "committed") ||
               (targetLeft?.identity.verdict === "mismatch" && !/^(?:refused target|failed E)/u.test(line))) { violate(); return; }
           awaitLine("after its outcome");
@@ -984,10 +1046,20 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
         } catch (error) {
           thrown = error;
         }
-        if (go) {
-          passed = line as HeldStep;
-          stdin.write("c");
-          awaitLine(`after ${line}`);
+        if (go && line === "copied" && oldTarget !== null) {
+          if (journal === undefined) {
+            thrown = new HeldDirectoryRefusedError("target");
+            beginStopping();
+          } else {
+            const file = oldTarget;
+            void Promise.resolve().then(() => journal.write(file)).then(() => allow("copied"), (error: unknown) => {
+              if (settled) return;
+              thrown = error;
+              beginStopping();
+            });
+          }
+        } else if (go) {
+          allow(line);
         } else {
           beginStopping();
         }
@@ -1027,8 +1099,8 @@ export function _helperFileOperationsForTest(helper: string, bounds?: HelperBoun
 function helperFileOperations(helper: string, windowsFileIds: boolean, bounds: HelperBounds = POLICY_BOUNDS): HeldFileOperations {
   const parseInode = windowsFileIds ? parseWindowsInode : parseUnsigned;
   const run = (args: readonly string[], proceed: Proceed, stop: AbortSignal, onWriting?: (file: FileIdentity) => void,
-    onTargetLeft?: (at: LeftPart) => void): Promise<string> =>
-    runHelper(helper, args, proceed, stop, bounds, parseInode, onWriting, onTargetLeft);
+    journal?: DownloadTargetJournal): Promise<string> =>
+    runHelper(helper, args, proceed, stop, bounds, parseInode, onWriting, journal);
   const go = (): boolean => true;
   const recover: HeldFileOperations["recover"] = async (folder, name, original, identity) => {
     const left: OwnFileResult = { outcome: "left", at: { name, identity } };
@@ -1066,16 +1138,18 @@ function helperFileOperations(helper: string, windowsFileIds: boolean, bounds: H
     move: async (from, name, to, target, proceed, stop) => oneOf(helper,
       await run(["--dir-rename", ...directoryArguments(from), name, ...directoryArguments(to), target], proceed, stop),
       ["committed", "cancelled", "cross-volume"] as const),
-    copy: async (from, name, to, target, part, proceed, stop, onTargetLeft) => {
+    copy: async (from, name, to, target, part, proceed, stop, journal) => {
       // The temporary file's identity, taken once the helper says it is writing it, so a later cleanup removes only that file.
       let partFile: FileIdentity | null = null;
       let authorized = false;
       try {
-        const answer = await run(["--dir-copy", ...directoryArguments(from), name, ...directoryArguments(to), target, part], (step) => {
+        const hidden = journal?.hidden ?? `.${randomBytes(16).toString("hex")}.removing`;
+        if (!MOVED_ASIDE_NAME.test(hidden)) throw new HeldDirectoryRefusedError("target");
+        const answer = await run(["--dir-copy", ...directoryArguments(from), name, ...directoryArguments(to), target, part, hidden], (step) => {
           const allowed = proceed(step);
           if (step === "ready") authorized = allowed;
           return allowed;
-        }, stop, (file) => { partFile = file; }, onTargetLeft);
+        }, stop, (file) => { partFile = file; }, journal);
         const left = parsePartLeft(answer, parseInode);
         if (left !== null) {
           // Cancelled with its temporary file left: reported as a failure, as a cancelled Linux copy whose file is left is.
@@ -1128,6 +1202,7 @@ function helperFileOperations(helper: string, windowsFileIds: boolean, bounds: H
       if (body.length > MAX_RECORD_BYTES) throw new Error("the download cleanup record exceeds its limit");
       oneOf(helper, await run(["--dir-write-record", ...directoryArguments(directory), name, body.toString("hex")], go, UNSTOPPED), ["written"]);
     },
-    sweep: async (directory) => Number((await run(["--dir-sweep", ...directoryArguments(directory)], () => true, UNSTOPPED)).slice("swept ".length)),
+    sweep: async (directory, keepRecords) => Number((await run(["--dir-sweep", ...directoryArguments(directory),
+      ...(keepRecords ? ["keep-records"] : [])], go, UNSTOPPED)).slice("swept ".length)),
   };
 }

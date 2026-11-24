@@ -1183,6 +1183,11 @@ Important rules:
   unverifiable destination leaves the original and its record in place.
   Copy-back applies only to copy-part recovery.
 
+  I5. The host chooses the hidden name and syncs a record containing it,
+  the held original's identity, and the copy session before authorizing the
+  move. Startup reads target records before part recovery and preserves each
+  record until rollback or retirement verifies.
+
   Accepted residual.
 
   (a) the gap between the final fd verify and the unlink of a random hidden name; (b) anything after a verified restore or commit (the user's own act). Nothing else.

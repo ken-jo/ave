@@ -453,8 +453,16 @@ static int run_recovery(char **argv, enum recovery_mode mode, int with_fingerpri
   const int status = hold_directory(argv[0], argv[1], argv[2], "from", &directory);
   if (status != 0) return status;
   if (!proceed("ready")) return done("cancelled");
-  const int fd = open_regular(directory, name);
-  if (fd < 0) return done(mode != RECOVER_RESTORE_TARGET && errno == ENOENT ? "absent" : "left");
+  const int flags = O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC;
+  const int fd = mode == RECOVER_RESTORE_TARGET && expected == NULL ? openat(directory, name, O_EVTONLY | flags)
+    : open_regular(directory, name);
+  if (fd < 0) {
+    if (errno != ENOENT) return done("left");
+    if (mode != RECOVER_RESTORE_TARGET) return done("absent");
+    const int target = openat(directory, part, (expected == NULL ? O_EVTONLY : O_RDONLY) | flags);
+    return done(target >= 0 && matches_file(target, dev, ino, &birth) &&
+      (expected == NULL || fingerprint_matches(target, expected)) && names_file(directory, part, target) ? "restored" : "left");
+  }
   if (!matches_file(fd, dev, ino, with_fingerprint ? &birth : NULL) || (expected != NULL && !fingerprint_matches(fd, expected))) return done("left");
   if (mode == RECOVER_RESTORE_TARGET) {
     if (!names_file(directory, name, fd) || renameatx_np(directory, name, directory, part, RENAME_EXCL) != 0) return done("left");
@@ -535,7 +543,7 @@ static int run_record(char **argv, int writing) {
     if (fd < 0) return failed(errno);
     const int result = write_all(fd, bytes, (size_t)max);
     if (result != 0) return failed(result);
-    if (fsync(fd) != 0) return failed(errno);
+    if (fsync(fd) != 0 || fsync(directory) != 0) return failed(errno);
     return done("written");
   }
   const int fd = open_regular(directory, name);
@@ -679,7 +687,11 @@ static void finish_copy_target(int directory, const char *target, const char *as
   if (*aside == '\0') return;
   if (names_file(directory, aside, old)) {
     if (committed ? unlinkat(directory, aside, 0) == 0
-        : replace_copy_name(directory, aside, target, 1) == 0 && names_file(directory, target, old)) return;
+        : replace_copy_name(directory, aside, target, 1) == 0 && names_file(directory, target, old)) {
+      puts(committed ? "target-retired" : "target-restored");
+      fflush(stdout);
+      return;
+    }
   }
   struct left_part left = {
     .own = *identity, .observed = old, .verdict = committed ? "remove-failed" : "mismatch",
@@ -692,7 +704,9 @@ static int run_copy(char **argv) {
   const char *name = argv[3];
   const char *target = argv[7];
   const char *part = argv[8];
-  if (!plain_name(name) || !plain_name(target) || !plain_name(part) || strcmp(part, target) == 0) return EXIT_USAGE;
+  const char *hidden = argv[9];
+  if (!plain_name(name) || !plain_name(target) || !plain_name(part) || !hidden_name(hidden) ||
+      strcmp(part, target) == 0 || strcmp(hidden, target) == 0 || strcmp(hidden, part) == 0) return EXIT_USAGE;
   int from = -1;
   int to = -1;
   int status = hold_directory(argv[0], argv[1], argv[2], "from", &from);
@@ -709,7 +723,12 @@ static int run_copy(char **argv) {
   }
   struct stat old_identity;
   if (old < 0 && errno != ENOENT) return errno == ELOOP ? refused("target") : failed(errno);
-  if (old >= 0 && (fstat(old, &old_identity) != 0 || !S_ISREG(old_identity.st_mode))) return refused("target");
+  if (old >= 0) {
+    if (fstat(old, &old_identity) != 0 || !S_ISREG(old_identity.st_mode)) return refused("target");
+    printf("target-id %" PRIu64 " %" PRIu64 " %" PRIu64 "\n", (uint64_t)old_identity.st_dev,
+      (uint64_t)old_identity.st_ino, nanos(old_identity.st_birthtimespec));
+    fflush(stdout);
+  }
   if (!proceed("ready")) return done("cancelled");
   // The temporary file is created exclusively, never through a link, in the held folder, and opened for reading too, so a cleanup can
   // compare what it wrote.
@@ -777,7 +796,7 @@ static int run_copy(char **argv) {
   }
   char aside[HIDDEN_NAME_SIZE] = "";
   if (old >= 0) {
-    fresh_hidden_name(aside);
+    memcpy(aside, hidden, HIDDEN_NAME_SIZE);
     if (!names_file(to, target, old) || renameatx_np(to, target, to, aside, RENAME_EXCL) != 0) {
       return stopped_copy(to, part, &written, "refused target", EXIT_REFUSED);
     }
@@ -841,7 +860,7 @@ static int run_remove(char **argv) {
 }
 
 // Remove the files and links directly in the held folder; directories and anything else stay, and nothing is removed recursively.
-static int run_sweep(char **argv) {
+static int run_sweep(char **argv, int keep_records) {
   int directory = -1;
   const int status = hold_directory(argv[0], argv[1], argv[2], "from", &directory);
   if (status != 0) return status;
@@ -858,7 +877,8 @@ static int run_sweep(char **argv) {
       if (errno != 0) return failed(errno);
       break;
     }
-    if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
+    if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0 ||
+        (keep_records && record_name(entry->d_name))) continue;
     struct stat info;
     if (fstatat(directory, entry->d_name, &info, AT_SYMLINK_NOFOLLOW) != 0) {
       if (errno == ENOENT) continue;
@@ -878,9 +898,10 @@ int main(int argc, char **argv) {
   // An answer written after the caller stopped listening must not end the process before it cleans up.
   signal(SIGPIPE, SIG_IGN);
   if (argc == 10 && strcmp(argv[1], "--dir-rename") == 0) return run_rename(argv + 2);
-  if (argc == 11 && strcmp(argv[1], "--dir-copy") == 0) return run_copy(argv + 2);
+  if (argc == 12 && strcmp(argv[1], "--dir-copy") == 0) return run_copy(argv + 2);
   if (argc == 6 && strcmp(argv[1], "--dir-remove") == 0) return run_remove(argv + 2);
-  if (argc == 5 && strcmp(argv[1], "--dir-sweep") == 0) return run_sweep(argv + 2);
+  if ((argc == 5 || (argc == 6 && strcmp(argv[5], "keep-records") == 0)) && strcmp(argv[1], "--dir-sweep") == 0)
+    return run_sweep(argv + 2, argc == 6);
   if (argc == 5 && strcmp(argv[1], "--dir-list-records") == 0) return run_records(argv + 2);
   if (argc == 7 && strcmp(argv[1], "--dir-read") == 0) return run_record(argv + 2, 0);
   if (argc == 7 && strcmp(argv[1], "--dir-write-record") == 0) return run_record(argv + 2, 1);
