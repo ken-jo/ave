@@ -447,3 +447,8 @@ src/marketplace/git/__tests__/marketplace-git.test.ts
 src/shared/__tests__/host-git-executable.test.ts
 src/shared/__tests__/host-git-probe.test.ts
 src/work-board/workflow/__tests__/stage-run-harness.test.ts
+src/main/__tests__/early-quit-startup.test.ts
+src/tools/__tests__/answered-approval-origin.test.ts
+src/tools/__tests__/invocation-ledger.test.ts
+src/tools/__tests__/terminal-denial-lifecycle.test.ts
+src/tools/pipeline/__tests__/user-owned-surface-seal.test.ts
