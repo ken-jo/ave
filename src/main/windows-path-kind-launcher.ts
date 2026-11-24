@@ -38,8 +38,14 @@ export function windowsPathKindHelperUnavailable(message: string, code?: string)
   return Object.assign(new Error(message), { ...(code === undefined ? {} : { code }), [HELPER_UNAVAILABLE]: true });
 }
 
+/** True when `error` or any error in its cause chain carries the marker, so a wrapper never hides a helper failure. */
 export function isWindowsPathKindHelperUnavailable(error: unknown): boolean {
-  return typeof error === "object" && error !== null && (error as Record<symbol, unknown>)[HELPER_UNAVAILABLE] === true;
+  const seen = new Set<unknown>();
+  for (let current = error; typeof current === "object" && current !== null && !seen.has(current); current = (current as { cause?: unknown }).cause) {
+    if ((current as Record<symbol, unknown>)[HELPER_UNAVAILABLE] === true) return true;
+    seen.add(current);
+  }
+  return false;
 }
 
 /** A child killed at its deadline: the sync spawns report ETIMEDOUT; `execFile` sets `killed` with no code (an output overrun has one). */

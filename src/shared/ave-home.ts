@@ -488,11 +488,13 @@ export type AveHomePrivacyFailureCategory =
 export const AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE = "ave-home-boundary-unverified";
 
 /** The refused home and privacy category of an `ave-home-boundary-unverified` error, or undefined for any other value. Duck-typed
- * on the code so a boundary error raised through another module instance still classifies. */
-export function aveHomeBoundaryFailure(error: unknown): { home: string; category: "boundary-link" | "boundary-unlisted" } | undefined {
+ * on the code so a boundary error raised through another module instance still classifies. A boundary pin that failed because the
+ * path-facts helper gave no answer is helper-unavailable, never an approvable boundary category. */
+export function aveHomeBoundaryFailure(error: unknown): { home: string; category: "boundary-link" | "boundary-unlisted" | "helper-unavailable" } | undefined {
   if (typeof error !== "object" || error === null) return undefined;
   const { code, reason, home } = error as { code?: unknown; reason?: unknown; home?: unknown };
   if (code !== AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE || typeof home !== "string") return undefined;
+  if (isWindowsPathKindHelperUnavailable(error)) return { home, category: "helper-unavailable" };
   return { home, category: reason === "link" ? "boundary-link" : "boundary-unlisted" };
 }
 

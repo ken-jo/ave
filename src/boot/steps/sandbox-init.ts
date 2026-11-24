@@ -427,11 +427,15 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
           const boundaryFailure = process.platform === "win32" ? aveHomeBoundaryFailure(initErr) : undefined;
           if (boundaryFailure !== undefined) {
             // Not the generic Windows degrade: publish it as an AVE_HOME privacy refusal, so confined extension starts refuse until the
-            // user approves running without isolation in Settings > Permissions. The log carries codes only; the error names paths.
+            // user approves running without isolation in Settings > Permissions, or, for helper-unavailable, until a restart.
+            // The log carries codes only; the error names paths.
             setAveHomePrivacyAtBoot({ enforcement: "none", home: boundaryFailure.home, reason: AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE,
               category: boundaryFailure.category });
-            log.warn("boot: extension isolation is OFF; the AVE_HOME read boundary could not be verified (%s, %s). Extensions require session approval in Settings > Permissions.",
-              AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE, boundaryFailure.category);
+            log.warn("boot: extension isolation is OFF; the AVE_HOME read boundary could not be verified (%s, %s). %s",
+              AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE, boundaryFailure.category,
+              isAveHomePrivacyApprovable(boundaryFailure.category)
+                ? "Extensions require session approval in Settings > Permissions."
+                : "Extensions stay blocked until a restart; if it persists, reinstall Ave.");
             recordWindows("none", true);
             recordGate("degrade", "degrade-ave-home-boundary-unverified", [AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE], ["ave-home-privacy-failed"]);
           } else {
