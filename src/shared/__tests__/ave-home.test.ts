@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type TestContext } from "vitest";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, win32 } from "node:path";
 import { tmpdir } from "node:os";
 import { assertAveHomeRuntimeBoundary, setAveHomePrivacyAtBoot, AVE_HOME_PROTECTED_DIRECTORIES, AVE_HOME_RUNTIME_DIRECTORY, createAveHomeIfAbsent, ensureAveHomePrivate, aveHome, aveHomeConfigurationDirectory, setAveHomeConfigurationRefusedAtBoot, win32SystemBinary, windowsDirectoryProtectionRequest, readWindowsDirectoryDacls, _resetAveHomePrivacyForTest, type WindowsDirectoryDacl, type WindowsAccessRule, verifyAveHomeConfiguration, AVE_HOME_CONFIGURATION_MARKER_CONTENT } from "../ave-home.js";
@@ -539,6 +539,22 @@ describe("ensureAveHomePrivate", () => {
     vi.mocked(windowsPathFacts.readWindowsDacls).mockReset().mockImplementation(() => { throw unavailable(); });
     expect(ensureAveHomePrivate(dir, { platform: "win32", readDacls: readWindowsDirectoryDacls }))
       .toMatchObject({ enforcement: "none", category: "helper-unavailable" });
+  });
+  it.runIf(process.platform === "win32")("keeps the missing helper's install path out of the privacy failure reason", () => {
+    const resources = mkdtempSync(join(tmpdir(), "ave-no-helper-resources-"));
+    configureHostResources({ resourcePath: resources, isPackaged: false });
+    try {
+      const failure = ensureAveHomePrivate(home(), { platform: "win32", readDacls: readWindowsDirectoryDacls });
+      expect(failure).toMatchObject({ enforcement: "none", category: "helper-unavailable" });
+      const reason = (failure as { reason: string }).reason;
+      expect(reason).toContain("Restart Ave; if it persists, reinstall Ave.");
+      expect(reason).not.toContain(resources);
+      expect(reason).not.toContain("ave-path-kind.exe");
+      expect(reason).not.toContain("Reinstall Ave;");
+    } finally {
+      configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+      rmSync(resources, { recursive: true, force: true });
+    }
   });
   it("keeps any other timed-out read, such as the protection command's, a read-back failure", () => {
     const timedOut = Object.assign(new Error("spawnSync powershell.exe ETIMEDOUT"), { code: "ETIMEDOUT", syscall: "spawnSync powershell.exe" });

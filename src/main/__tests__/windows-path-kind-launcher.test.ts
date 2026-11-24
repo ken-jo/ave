@@ -65,9 +65,11 @@ describe("Windows folder classifier launcher", () => {
 
   it("fails clearly without the asset, off Windows, or for anything but a drive, and never runs a command", async () => {
     mocks.existsSync.mockReturnValue(false);
-    await expect(queryDosDevice("C:")).rejects.toThrow(/classifier is missing: .*ave-path-kind\.exe\. Ave cannot tell .* Reinstall Ave/u);
-    // Unavailable, yet with no file-system code: a missing helper says nothing about the folder being read.
-    const missing = await queryDosDevice("C:").catch((error: unknown) => error);
+    // Unavailable, yet with no file-system code: a missing helper says nothing about the folder being read. Its install path stays out
+    // of the message, which reaches the privacy failure reason, the boot gate and the audit log.
+    const missing = await queryDosDevice("C:").catch((error: unknown) => error as Error);
+    expect(missing.message).toBe("Windows folder classifier is missing. Ave cannot tell whether a drive is on another computer, "
+      + "so it reads no folder on a drive. Restart Ave; if it persists, reinstall Ave.");
     expect(isWindowsPathKindHelperUnavailable(missing)).toBe(true);
     expect(missing).not.toHaveProperty("code");
     mocks.existsSync.mockReturnValue(true);
@@ -99,12 +101,25 @@ describe("Windows folder classifier launcher", () => {
   it("rejects a broken helper with its cause and what to do, never as an answer about the drive", async () => {
     const fail = (error: Error & { code?: number | string | null; killed?: boolean }, stdout = "", stderr = "") =>
       mocks.execFile.mockImplementationOnce(helperReply(stdout, stderr, error));
-    fail(Object.assign(new Error("spawn EACCES"), { code: "EACCES" }));
-    await expect(queryDosDevice("Q:")).rejects.toThrow(/classifier failed for Q:: spawn EACCES\. Reinstall Ave/u);
-    fail(Object.assign(new Error("Command failed"), { code: 2 }), "", "usage: ave-path-kind.exe X:\n");
+    const helper = join("/trusted/resources", "windows-path-kind", "x64", "ave-path-kind.exe");
+    const rejection = (): Promise<Error> => queryDosDevice("Q:").then(() => { throw new Error("resolved"); }, (error: unknown) => error as Error);
+    // A helper that could not start gave no answer: unavailable, restart wording, no path and no file-system code.
+    fail(Object.assign(new Error(`spawn ${helper} EACCES`), { code: "EACCES", syscall: `spawn ${helper}`, path: helper }));
+    const launch = await rejection();
+    expect(launch.message).toBe("the Windows folder classifier for Q: could not start (EACCES). Restart Ave; if it persists, reinstall Ave.");
+    expect(isWindowsPathKindHelperUnavailable(launch)).toBe(true);
+    expect(launch).not.toHaveProperty("code");
+    expect(launch).not.toHaveProperty("cause");
+    fail(Object.assign(new Error(`Command failed: ${helper} Q:\nusage: ave-path-kind.exe X:`), { code: 2 }), "", "usage: ave-path-kind.exe X:\n");
     await expect(queryDosDevice("Q:")).rejects.toThrow("usage: ave-path-kind.exe X:");
-    fail(Object.assign(new Error("Command failed"), { code: 3 }), "", "could not write the mapping\n");
+    fail(Object.assign(new Error(`Command failed: ${helper} Q:`), { code: 3 }), "", "could not write the mapping\n");
     await expect(queryDosDevice("Q:")).rejects.toThrow("could not write the mapping");
+    // With nothing on stderr the exit status stands in for the spawn message, which names the install path.
+    fail(Object.assign(new Error(`Command failed: ${helper} Q:`), { code: 4 }));
+    const exit = await rejection();
+    expect(exit.message).toBe("the Windows folder classifier failed for Q: (exit 4). Reinstall Ave; in a development checkout, build it with scripts/build-windows-job.ps1 -Helper path-kind.");
+    expect(isWindowsPathKindHelperUnavailable(exit)).toBe(false);
+    expect(exit).not.toHaveProperty("cause");
     mocks.execFile.mockImplementationOnce(helperReply());
     await expect(queryDosDevice("Q:")).rejects.toThrow("not one mapping");
     mocks.execFile.mockImplementationOnce(helperReply("a\nb\n"));

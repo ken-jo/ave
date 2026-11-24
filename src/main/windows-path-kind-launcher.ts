@@ -11,6 +11,8 @@ const EXIT_NO_MAPPING = 1;
 
 // What to do when the helper is broken: it ships with Ave, so the install is incomplete.
 const REPAIR = "Reinstall Ave; in a development checkout, build it with scripts/build-windows-job.ps1 -Helper path-kind.";
+// What to do when the helper gave no answer (helper-unavailable): the same restart wording as the home privacy notice.
+const RESTART = "Restart Ave; if it persists, reinstall Ave.";
 
 /** Where the helper ships inside the host resources folder `resourcePath`; it may be missing from an incomplete install. */
 export function windowsPathKindHelperIn(resourcePath: string): string {
@@ -20,20 +22,20 @@ export function windowsPathKindHelperIn(resourcePath: string): string {
 export function resolveWindowsPathKindHelper(): string {
   const binary = windowsPathKindHelperIn(getHostResources().resourcePath);
   if (!existsSync(binary)) {
-    throw missingWindowsPathKindHelper(binary);
+    throw missingWindowsPathKindHelper();
   }
   return binary;
 }
 
-function missingWindowsPathKindHelper(binary: string): Error {
-  return windowsPathKindHelperUnavailable("Windows folder classifier is missing: " + binary
-    + ". Ave cannot tell whether a drive is on another computer, so it reads no folder on a drive. " + REPAIR);
+function missingWindowsPathKindHelper(): Error {
+  return windowsPathKindHelperUnavailable("Windows folder classifier is missing. Ave cannot tell whether a drive is on another computer, "
+    + `so it reads no folder on a drive. ${RESTART}`);
 }
 
 const HELPER_UNAVAILABLE = Symbol.for("ave.windows-path-kind-helper-unavailable");
 
-/** The helper is missing, could not start, or did not answer in time: no answer, as opposed to a wrong one. Only the missing
- * helper's message names a path. */
+/** The helper is missing, could not start, or did not answer in time: no answer, as opposed to a wrong one. No message names the
+ * helper's install path: it reaches the privacy failure reason, the boot gate and the audit log. */
 export function windowsPathKindHelperUnavailable(message: string, code?: string): NodeJS.ErrnoException {
   return Object.assign(new Error(message), { ...(code === undefined ? {} : { code }), [HELPER_UNAVAILABLE]: true });
 }
@@ -105,7 +107,13 @@ export function queryDosDevice(drive: string): Promise<string | null> {
             resolve(null);
             return;
           }
-          reject(new Error(`the Windows folder classifier failed for ${drive}: ${diagnostics.trim() || error.message}. ${REPAIR}`, { cause: error }));
+          // The spawn error's message and fields name the install path, so only its code is kept.
+          if (typeof error.code === "string") {
+            reject(windowsPathKindHelperUnavailable(`the Windows folder classifier for ${drive} could not start (${error.code}). ${RESTART}`));
+            return;
+          }
+          const detail = diagnostics.trim();
+          reject(new Error(`the Windows folder classifier failed for ${drive}${detail ? `: ${detail}` : ` (exit ${error.code ?? error.signal ?? "unknown"})`}. ${REPAIR}`));
           return;
         }
         const mapping = reply.replace(/\r?\n$/u, "");
@@ -128,7 +136,7 @@ export async function queryWindowsSystemDirectory(timeout: number = TOOL_TIMEOUT
   try {
     await access(helper);
   } catch {
-    throw missingWindowsPathKindHelper(helper);
+    throw missingWindowsPathKindHelper();
   }
   return new Promise((resolve, reject) => {
     execFile(helper, ["--system-directory"], {
