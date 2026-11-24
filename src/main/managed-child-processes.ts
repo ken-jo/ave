@@ -506,6 +506,8 @@ interface ResourceState {
   readonly steps: (() => unknown)[];
   readonly paths: PathToRemove[];
   released: boolean;
+  /** Set before the first release step runs, so a record from inside a step is refused too. */
+  inRelease: boolean;
   releasing?: Promise<void>;
 }
 
@@ -524,6 +526,13 @@ function openState(resources: ManagedResources): ResourceState {
   return state;
 }
 
+// A record during the release would be dropped with the handle instead of removed.
+function recordableState(resources: ManagedResources): ResourceState {
+  const state = openState(resources);
+  if (state.inRelease) throw new Error("Managed resources are being released.");
+  return state;
+}
+
 function lineage(state: ResourceState): ResourceState[] {
   const chain: ResourceState[] = [];
   for (let current: ResourceState | undefined = state; current; current = current.parent) chain.push(current);
@@ -534,7 +543,7 @@ function issueResources(evidence: ExitEvidence, parent?: ManagedResources): Mana
   const parentState = parent && openState(parent);
   if (parentState && parentState.evidence !== evidence) throw new Error("Managed resources cannot nest under a different exit evidence.");
   const resources: ManagedResources = Object.freeze({ [RESOURCES]: true });
-  resourceStates.set(resources, { parent: parentState, evidence, pending: 0, generation: 0, steps: [], paths: [], released: false });
+  resourceStates.set(resources, { parent: parentState, evidence, pending: 0, generation: 0, steps: [], paths: [], released: false, inRelease: false });
   return resources;
 }
 
@@ -550,7 +559,7 @@ export function createManagedRelayResources(): ManagedResources {
 
 /** Registering wrap modules hand their raw teardown to the owner; callers keep only the handle. */
 export function recordManagedCleanup(resources: ManagedResources, ...steps: readonly ((() => unknown) | undefined)[]): void {
-  openState(resources).steps.push(...steps.filter((step): step is () => unknown => step !== undefined));
+  recordableState(resources).steps.push(...steps.filter((step): step is () => unknown => step !== undefined));
 }
 
 // Folded paths recorded by handles not yet released. An ancestor's release does not release a descendant, so entries drop only on their own release.
@@ -569,7 +578,7 @@ function overlaps(left: string, right: string): boolean {
 export function recordManagedPaths(resources: ManagedResources, ...paths: readonly PathToRemove[]): void {
   // Each argument field is read once, resolved against the record-time cwd; fold, check and store use only this snapshot.
   const entries = paths.map(({ path, recursive }) => Object.freeze({ path: resolve(String(path)), recursive: Boolean(recursive) }));
-  const state = openState(resources);
+  const state = recordableState(resources);
   const folded = entries.map(entry => foldedPath(entry.path));
   const own = new Set(lineage(state));
   for (const [other, recorded] of livePaths) {
@@ -603,7 +612,9 @@ function acquireManagedExit<Receipt extends ExitReceipt>(resources: ManagedResou
 }
 
 function runRecordedRelease(state: ResourceState): Promise<void> {
-  state.releasing ??= (async () => {
+  if (state.releasing) return state.releasing;
+  state.inRelease = true;
+  state.releasing = (async () => {
     // Steps are independent: every one runs, and only the failed ones stay recorded for the next release.
     const failures: unknown[] = [];
     for (const step of state.steps.splice(0)) {
@@ -628,7 +639,10 @@ function runRecordedRelease(state: ResourceState): Promise<void> {
     if (failures.length > 1) throw new AggregateError(failures, "Managed resource release failed.");
     state.released = true;
     livePaths.delete(state);
-  })().finally(() => { state.releasing = undefined; });
+  })().finally(() => {
+    state.inRelease = false;
+    state.releasing = undefined;
+  });
   return state.releasing;
 }
 

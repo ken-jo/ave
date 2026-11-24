@@ -602,6 +602,39 @@ describe("managed child receipts", () => {
     }
   });
 
+  it("refuses a record on a handle while its release is in flight, from the first step to the end", async () => {
+    const directory = join(tmpdir(), `ave-managed-inflight-${process.pid}-${Date.now()}`);
+    const inFlight = "Managed resources are being released.";
+    const refused: string[] = [];
+    const early = createManagedResources();
+    recordManagedCleanup(early, () => {
+      for (const record of [() => recordManagedPaths(early, { path: join(directory, "early") }), () => recordManagedCleanup(early, () => {})]) {
+        try { record(); } catch (error) { refused.push((error as Error).message); }
+      }
+    });
+    await abandonManagedLaunch(early);
+    expect(refused).toEqual([inFlight, inFlight]);
+    let open!: () => void;
+    const gate = new Promise<void>(resolve => { open = resolve; });
+    let fail = true;
+    const late = createManagedResources();
+    recordManagedCleanup(late, () => gate.then(() => { if (fail) throw new Error("Injected step failure"); }));
+    const release = abandonManagedLaunch(late);
+    expect(() => recordManagedPaths(late, { path: join(directory, "late") })).toThrow(inFlight);
+    expect(() => recordManagedCleanup(late, () => {})).toThrow(inFlight);
+    open();
+    await expect(release).rejects.toThrow("Injected step failure");
+    // A failed release ends the in-flight state, so the retry may record again.
+    const steps: string[] = [];
+    recordManagedCleanup(late, () => steps.push("retry"));
+    fail = false;
+    await abandonManagedLaunch(late);
+    expect(steps).toEqual(["retry"]);
+    const next = createManagedResources();
+    recordManagedPaths(next, { path: join(directory, "early") }, { path: join(directory, "late") });
+    await abandonManagedLaunch(next);
+  });
+
   it("issues the never-spawned release only before any child was acquired beneath the handle", async () => {
     const idle = createManagedResources();
     const steps: string[] = [];
