@@ -61,7 +61,7 @@ const RAW_IMPORTERS: Readonly<Record<string, readonly string[]>> = {
     "observeManagedWindowsRelayExit", "recordManagedCleanup",
   ],
   "src/permissions/offline-process-sandbox.ts": ["cleanupBwrapMountPoints", "recordManagedCleanup"],
-  // The sandbox runtime's own shutdown reaches its mount cleanup.
+  // The Linux dependency check's unbound dynamic import of the module; it calls only checkLinuxDependencies.
   "src/permissions/asrt-sandbox.ts": ["@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js:*"],
   // Out of scope for this owner: other launch sites with their own lifetime contracts, and boot/shutdown wiring.
   "src/boot/steps/marketplace-setup.ts": ["src/permissions/asrt-sandbox.ts:*"],
