@@ -245,8 +245,8 @@ describe("host git starts only where the hold is asked", () => {
       if (!HOST_GIT_RESOLUTION.test(text)) continue;
       // The verified plan only probes the executable version from the installation directory.
       const other = file === "permissions/verified-shell-command.ts"
-        ? text.replace(/import \{ execFileSync \} from "node:child_process";/u, "")
-          .replace(/execFileSync\(executable, \["--version"\], \{\s*encoding: "utf8", cwd: dirname\(executable\),/u, "")
+        ? text.replace(/import \{ execFile \} from "node:child_process";/u, "")
+          .replace(/execFile\(executable, \["--version"\], \{\s*encoding: "utf8", cwd: dirname\(executable\),/u, "")
         : text;
       if ([...other.matchAll(DIRECT_PROCESS_START)].length !== 0) found.push(`${file}: starts a process itself`);
       if (PROCESS_IMPORT.test(other)) found.push(`${file}: imports a process start`);

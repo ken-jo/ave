@@ -304,7 +304,7 @@ it("refuses native records on an unsupported host before consulting an approving
 
 it("refuses to start verified Bash when sandbox writes take a hold during the launch handoff", async () => {
   const command = "git log HEAD";
-  const { cwd, identity } = fixture(false, command);
+  const { cwd, identity } = await fixture(false, command);
   const sessionId = "verified-bash-hold";
   let release: (() => void) | undefined;
   const refreshCurrent = vi.fn(async () => {
