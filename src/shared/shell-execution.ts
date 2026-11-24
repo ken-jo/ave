@@ -181,6 +181,7 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
   initial.variables.set("PWD", initialCwd ?? undefined);
   // Filesystem effects cross process scopes; after possible mutation, pre-execution stat cannot prove a later chdir outcome. Keep this flag analysis-local.
   let filesystemMayChange = false;
+  let faultPathChanges = 0;
   const within = (parent: string, path: string): boolean => {
     const rest = pathRelative(parent, path);
     return rest === "" || !isAbsolute(rest) && rest !== ".." && !rest.startsWith(`..${sep}`);
@@ -192,7 +193,14 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
   const freshExecutionContext = (caller?: ExecutionContext): ExecutionContext => ({ boundary: ++nextExecutionBoundary, loopDepth: 0, ...(caller?.condition ? { condition: true } : {}) });
   const noteFilesystemChange = (state: ShellState, ...others: ShellState[]): void => {
     if (!state.cdFault) filesystemMayChange = true;
-    else for (const changed of [state, ...others]) changed.cdFaultChanged = true;
+    else {
+      faultPathChanges += 1;
+      for (const changed of [state, ...others]) changed.cdFaultChanged = true;
+    }
+  };
+  // A change made in a child process on a fault path still changes that path's filesystem.
+  const carryFaultChange = (state: ShellState, before: number): void => {
+    if (state.cdFault && faultPathChanges !== before) state.cdFaultChanged = true;
   };
   const rootExecutionContext = freshExecutionContext();
   const leaveLoop = (result: StateResult, context: ExecutionContext): StateResult => {
@@ -375,10 +383,12 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
   };
   const executeCommand = (node: ShellCommand, incoming: ShellState, depth: number, context: ExecutionContext, redirects: CommandRedirectObservation): StateResult[] => {
     const state = cloneState(incoming);
+    const before = faultPathChanges;
     const resolvedWords = resolveWords(node.words, incoming, depth);
     const assigned = cloneState(incoming);
     const assignmentEvaluation: WordEvaluation = {};
     applyAssignments(node, assigned, incoming, depth, assignmentEvaluation);
+    carryFaultChange(state, before); carryFaultChange(assigned, before);
     markRedirectEffects(node.redirects, state, assigned);
     redirects.state = cloneState(assigned);
     if (node.words.length === 0) {
@@ -719,19 +729,24 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
         return uniqueResults(results);
       }
       case "subshell": case "background": {
+        const before = faultPathChanges;
         const result = walk(node.body, cloneState(state), depth + 1, freshExecutionContext(context));
         if (result.some((entry) => entry.control)) decline("control transfer escaped execution boundary");
+        carryFaultChange(state, before);
         // A fault path that ends inside the child process still continues in the parent.
         if (!result.length && state.cdFault) return [{ state, status: node.kind === "background" ? "success" : "unknown" }];
         return result.map((entry) => ({ state, status: node.kind === "background" ? "success" : entry.status }));
       }
       case "negate": return walk(node.body, state, depth + 1, { ...context, condition: true }).map((result) => result.control ? result : ({ ...result, status: result.status === "success" ? "failure" : result.status === "failure" ? "success" : "unknown" }));
-      case "pipeline":
+      case "pipeline": {
+        const before = faultPathChanges;
         node.statements.forEach((statement, index) => {
           const results = walk(statement, { ...cloneState(state), inputRedirect: index === 0 ? state.inputRedirect : undefined, pipeline: node.statements, fromPipe: index > 0 }, depth + 1, freshExecutionContext(context));
           if (results.some((entry) => entry.control)) decline("control transfer escaped execution boundary");
         });
+        carryFaultChange(state, before);
         return [{ state, status: "unknown" }];
+      }
       case "function": { const next = cloneState(state); next.functions.set(node.name, node.body); return [{ state: next, status: "success" }]; }
       case "for": {
         if (node.values === null) decline("implicit loop values are unresolved");

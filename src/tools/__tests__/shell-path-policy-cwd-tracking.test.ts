@@ -20,7 +20,7 @@ const EXTRAS = [STAGING];
 beforeAll(() => {
   mkdirSync(join(CWD, "sub"), { recursive: true });
   for (let index = 0; index < 6; index += 1) mkdirSync(join(CWD, `d${index}`));
-  for (const name of ["a", "b", "sub", "prior", ...Array.from({ length: 8 }, (_, index) => `d${index}`)]) mkdirSync(join(ROOT, name));
+  for (const name of ["a", "b", "c", "sub", "prior", ...Array.from({ length: 8 }, (_, index) => `d${index}`)]) mkdirSync(join(ROOT, name));
   for (let index = 0; index < 8; index += 1) mkdirSync(join(ROOT, "a", `d${index}`));
   mkdirSync(join(ROOT, "sub", "s2"));
   mkdirSync(join(STAGING, "x"), { recursive: true });
@@ -217,6 +217,17 @@ describe("shell path policy — working directory tracking", () => {
     });
 
     it.each([
+      "cd c || (rm -rf d0); cd d0; touch ../x",
+      "cd c || (rm -rf d0; exit 1); cd d0; touch ../x",
+      "cd c || rm -rf d0 | cat; cd d0; touch ../x",
+      "cd c || echo \"$(rm -rf d0)\"; cd d0; touch ../x",
+      "cd c || x=\"$(rm -rf d0)\"; cd d0; touch ../x",
+      "cd c || case \"$(rm -rf d0)\" in *) ;; esac; cd d0; touch ../x",
+    ])("carries a change made in a child process to its fault path: %s", (command) => {
+      expect(atRoot(command)).toMatchObject({ kind: "dynamic-path" });
+    });
+
+    it.each([
       `cd a || mkdir -p a; ${repeat(8, (index) => `cd d${index} && test -f m && cd ..`)}`,
       `cd b || mkdir -p b; ${repeat(8, (index) => `cd d${index} && test -f m && cd ..`)}`,
       `cd b || true; ${repeat(8, (index) => `cd d${index} && make && cd ..`)}`,
@@ -225,7 +236,7 @@ describe("shell path policy — working directory tracking", () => {
       const start = performance.now();
       const violation = atRoot(command);
       expect(performance.now() - start).toBeLessThan(5_000);
-      expect([undefined, "dynamic-path"]).toContain(violation?.kind);
+      expect(violation).toMatchObject({ kind: "dynamic-path" });
     });
 
     it("models a failing fallback cd", () => {
