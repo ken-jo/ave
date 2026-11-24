@@ -1,5 +1,6 @@
 import { spawn, spawnSync, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { Writable } from "node:stream";
+import { readFile } from "node:fs/promises";
 import { win32SystemBinary } from "../shared/windows-system-path.js";
 import { findHostProgram } from "../shared/host-program-path.js";
 import { createLogger } from "../lib/logger.js";
@@ -469,6 +470,35 @@ export async function forceKillAndDrainManagedChildProcesses(
     );
   }
   return { killedCount, unresolvedCount: unresolved.length };
+}
+
+export function observeManagedWindowsJobExit(child: ChildProcess, receiptPath: string) {
+  // The native owner bounds the job-empty query and publishes the receipt before it exits.
+  const completion = new Promise<boolean>(resolve => {
+    const removeListeners = (): void => {
+      child.off("exit", onExit);
+      child.off("close", onExit);
+      child.off("error", onError);
+    };
+    const onExit = (): void => {
+      removeListeners();
+      void readFile(receiptPath, "utf8").then(receipt => resolve(receipt === "0"), () => resolve(false));
+    };
+    const onError = (): void => {
+      removeListeners();
+      resolve(false);
+    };
+    child.once("exit", onExit);
+    child.once("close", onExit);
+    child.once("error", onError);
+  });
+  return {
+    completion,
+    stop: () => {
+      child.stdin?.destroy();
+      return completion;
+    },
+  };
 }
 
 export async function waitForManagedProcessGroupExit(child: ChildProcess, closed: Promise<unknown>, stopReason?: string): Promise<boolean> {

@@ -242,7 +242,7 @@ describe("offline process confinement", () => {
     }
   });
 
-  it.each([false, true])("requires real scanner exit confirmation before cancellation settles (missing close: %s)", async (withholdClose) => {
+  it.each([false, true])("requires real scanner exit confirmation before cancellation settles (missing stream close: %s)", async (withholdClose) => {
     await useNativeLinuxBuilder();
     const scanner = join(root, "scan-fixture.cjs");
     await writeFile(scanner, 'console.log(process.pid); setInterval(() => {}, 1000);');
@@ -252,6 +252,7 @@ describe("offline process confinement", () => {
     const controller = new AbortController();
     const reason = new Error("Stop the running scanner");
     let closed = false;
+    let exited = false;
     vi.spyOn(childProcess, "spawn").mockImplementation((command, args, options) => {
       const job = Array.isArray(args) && args[0] === "--receipt";
       if (!job && command !== "/usr/bin/rg") return nativeSpawn(command, args, options);
@@ -268,6 +269,7 @@ describe("offline process confinement", () => {
           return true;
         });
       }
+      child.once("exit", () => { exited = true; });
       child.once("close", () => { closed = true; nativeClose.resolve(); });
       launched.resolve(child);
       return child;
@@ -290,16 +292,19 @@ describe("offline process confinement", () => {
       expect(scratch).toBeDefined();
       controller.abort(reason);
 
-      if (withholdClose) {
-        await vi.advanceTimersByTimeAsync(HOST_PLATFORM === "win32"
-          ? TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs : TOOL_TIMEOUT_POLICY.processTreeKillMs);
+      if (withholdClose) await nativeClose.promise;
+      if (withholdClose && HOST_PLATFORM === "win32") {
+        await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs);
+      }
+      if (withholdClose && HOST_PLATFORM !== "win32") {
+        await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.processTreeKillMs);
         expect(await settlement).toMatchObject({
           code: "engine-confinement-unavailable", message: "Offline scanner termination was not confirmed.",
         });
         expect(await fs.promises.readdir(root)).toContain(scratch);
       } else {
         expect(await settlement).toBe(reason);
-        expect(closed).toBe(true);
+        expect(HOST_PLATFORM === "win32" ? exited : closed).toBe(true);
         expect(() => process.kill(pid, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }));
         expect(await fs.promises.readdir(root)).not.toContain(scratch);
       }
