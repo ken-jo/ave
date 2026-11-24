@@ -1,3 +1,4 @@
+import type { ApprovalPersistenceGuard } from "../../permissions/approval-persistence-guard.js";
 import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
 import { _resetAveHomePrivacyForTest, aveHome, setAveHomeConfigurationRefusedAtBoot } from "../../shared/ave-home.js";
 import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
@@ -2812,7 +2813,11 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     registry.register(makeWriteFileTool(executeSpy));
     const wc = makeMockWebContents();
     const gate = new ApprovalGate(wc as never);
-    const allowDirectory = vi.fn(async (root: string) => [root]);
+    const allowDirectory = vi.fn(async (root: string, _source: "permission-slash", authority?: ApprovalPersistenceGuard) => {
+      expect(await authority?.refresh()).toBe(true);
+      expect(authority?.isCurrent()).toBe(true);
+      return [root];
+    });
     let lifecycle:
       | import("../../permissions/permission-slash.js").PermissionDirectoryLifecycle
       | undefined;
@@ -2865,6 +2870,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     expect(allowDirectory).toHaveBeenCalledWith(
       expect.any(String),
       "permission-slash",
+      expect.anything(),
     );
   });
 
