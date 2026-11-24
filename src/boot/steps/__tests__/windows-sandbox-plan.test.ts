@@ -13,7 +13,7 @@ import {
 } from "../windows-sandbox-plan.js";
 
 const AVAILABLE = { state: "available" } as const;
-const UNAVAILABLE = { state: "unavailable", reason: "tier-unsupported" } as const;
+const UNAVAILABLE = { state: "unavailable", reason: "container-unavailable" } as const;
 const BUILD = "10.0.26300.9711";
 
 describe("planWindowsSandbox — the four MXC × srt-win rows", () => {
@@ -44,7 +44,7 @@ describe("planWindowsSandbox — the four MXC × srt-win rows", () => {
       shells: "approved-host",
       extensions: "srt-win",
       shellEgressIdentity: "shared",
-      mxc: { state: "unavailable", reason: "tier-unsupported" },
+      mxc: { state: "unavailable", reason: "container-unavailable" },
     });
   });
 

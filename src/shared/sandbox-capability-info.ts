@@ -253,7 +253,7 @@ export function maxEgressGrantScope(strength: EgressIdentityStrength): EgressGra
 /** Why Microsoft Execution Containers cannot carry agent shells on this host (`mxc-windows.ts`). */
 const MXC_UNAVAILABLE_REASONS = {
   "not-windows": true, "unsupported-arch": true, "binary-missing": true, "probe-failed": true,
-  "tier-unsupported": true, "request-rejected": true,
+  "container-unavailable": true, "request-rejected": true,
   /** Installed launcher integrity does not match its pin. */
   "launcher-mismatch": true,
   "powershell-start-failed": true,

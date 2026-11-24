@@ -594,10 +594,10 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
         accessSync(original, constants.X_OK);
         accessSync(destination, constants.X_OK);
       } catch { observedDirectory = false; }
-      if (!observedDirectory && !filesystemMayChange) return [{ state, status: "failure" }];
       const changed = cloneState(state);
       changed.variables.set("OLDPWD", state.cwd ?? undefined); changed.cwd = destination; changed.variables.set("PWD", destination);
-      return filesystemMayChange
+      // Another process can create the destination before execution.
+      return !observedDirectory || filesystemMayChange
         ? [{ state: changed, status: "success" }, { state, status: "failure" }]
         : [{ state: changed, status: "success" }];
     }

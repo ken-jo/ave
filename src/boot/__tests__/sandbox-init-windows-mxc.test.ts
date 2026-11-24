@@ -88,7 +88,7 @@ const ORIGINAL_PLATFORM = process.platform;
 const SRT_WIN_MISSING = { errors: ["no srt-win path configured"], warnings: [] };
 // Boot-path checks precede the shell start probe.
 const MXC_OK = { state: "available", windowsBuild: "10.0.26300.9711" };
-const MXC_OLD = { state: "unavailable", reason: "tier-unsupported", windowsBuild: "10.0.22631.4317", detail: "tier none" };
+const MXC_OLD = { state: "unavailable", reason: "container-unavailable", windowsBuild: "10.0.22631.4317", detail: "no container API" };
 
 let harness: SandboxBootHarness;
 
@@ -341,14 +341,14 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     expect(getWindowsSandboxSubstrate()).toMatchObject({
       shells: "approved-host",
       shellEgressIdentity: "shared",
-      mxc: { state: "unavailable", reason: "tier-unsupported" },
+      mxc: { state: "unavailable", reason: "container-unavailable" },
     });
     expect(getHostShellExecutionPlan()).toMatchObject({ mode: "plain", substrate: "none", requiresExplicitUserApproval: true });
     expect(h.logger.warn).toHaveBeenCalledWith(
       expect.stringContaining("Microsoft Execution Containers cannot confine agent shells"),
-      "tier-unsupported",
+      "container-unavailable",
       "10.0.22631.4317",
-      "tier none",
+      "no container API",
     );
   });
 
