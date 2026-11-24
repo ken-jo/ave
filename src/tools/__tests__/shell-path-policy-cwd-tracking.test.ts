@@ -1,17 +1,27 @@
 // Resolve operands against each possible execution directory, including changes made by cd.
-import { existsSync, mkdtempSync, realpathSync, rmdirSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmdirSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { hostFilesystemPath } from "../../__tests__/support/host-filesystem-path.js";
+import { shellQuote } from "../../lib/shell-resolver.js";
 import { findShellPathPolicyViolation } from "../shell-path-policy.js";
 
-// A shallower allowed directory makes traversal escape only after cd.
-const ROOT = hostFilesystemPath("/private/tmp/ave-cwd-tracking");
-const CWD = `${ROOT}/src/deep/nested`;
-const TMP = hostFilesystemPath("/tmp");
-const EXTRAS = [TMP];
+// A climb that stays inside ROOT from CWD escapes once cd enters the allowed STAGING directory.
+// cd into a missing directory fails and skips the && body, so every cd target must exist.
+const FIXTURE = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-cwd-tracking-")));
+const ROOT = join(FIXTURE, "project");
+const CWD = join(ROOT, "src", "deep", "nested");
+const STAGING = join(FIXTURE, "outside", "parent", "staging");
+const STAGING_ARG = shellQuote(STAGING.replaceAll("\\", "/"));
+const EXTRAS = [STAGING];
+
+beforeAll(() => {
+  mkdirSync(join(CWD, "sub"), { recursive: true });
+  mkdirSync(join(STAGING, "x"), { recursive: true });
+});
+
+afterAll(() => rmSync(FIXTURE, { recursive: true, force: true }));
 
 // Reads are unfenced by default but retain the sensitive-path deny-list; test cwd tracking with writes and fenced reads.
 function check(command: string, blockReads = false) {
@@ -20,28 +30,28 @@ function check(command: string, blockReads = false) {
 
 describe("shell path policy — working directory tracking", () => {
   it("blocks a WRITE climbing out of a shallow allowed directory reached by cd", () => {
-    const violation = check(`cd ${TMP} && cp ./staged ../../etc/evil`);
+    const violation = check(`cd ${STAGING_ARG} && cp ./staged ../../etc/evil`);
     expect(violation).not.toBeNull();
     expect(violation!.kind).toBe("sandbox-boundary");
   });
 
   it("blocks the same climb with a READ verb once reads are re-fenced", () => {
-    const violation = check(`cd ${TMP} && cat ../../etc/passwd`, true);
+    const violation = check(`cd ${STAGING_ARG} && cat ../../etc/passwd`, true);
     expect(violation).not.toBeNull();
     expect(violation!.kind).toBe("sandbox-boundary");
   });
 
   it.each([
-    [`cd ${TMP} && mv ./staged ../etc/evil`, "one level up"],
-    [`cd ${TMP}; cp ./staged ./x/../../etc/evil`, "climb hidden mid-path"],
-    [`cd ${TMP} && head -1 ../../../etc/shadow`, "a sensitive file above"],
+    [`cd ${STAGING_ARG} && mv ./staged ../etc/evil`, "one level up"],
+    [`cd ${STAGING_ARG}; cp ./staged ./x/../../etc/evil`, "climb hidden mid-path"],
+    [`cd ${STAGING_ARG} && head -1 ../../../etc/shadow`, "a sensitive file above"],
   ])("blocks %s (%s)", (command) => {
     expect(check(command)).not.toBeNull();
   });
 
   it.each([
-    [`cd ${TMP} && cat ../etc/passwd`, "one level up"],
-    [`cd ${TMP}; cat ./x/../../etc/passwd`, "climb hidden mid-path"],
+    [`cd ${STAGING_ARG} && cat ../etc/passwd`, "one level up"],
+    [`cd ${STAGING_ARG}; cat ./x/../../etc/passwd`, "climb hidden mid-path"],
   ])("blocks read %s (%s) when reads are re-fenced", (command) => {
     expect(check(command, true)).not.toBeNull();
   });
@@ -54,14 +64,14 @@ describe("shell path policy — working directory tracking", () => {
 
   // Wide reads remain allowed by directory policy but must still respect protected paths.
   it("admits a read that climbs out, under the shipped policy", () => {
-    expect(check(`cd ${TMP} && cat ../../etc/passwd`)).toBeNull();
+    expect(check(`cd ${STAGING_ARG} && cat ../../etc/passwd`)).toBeNull();
     expect(check("cat ../../../../../etc/passwd")).toBeNull();
   });
 
   it.each([
-    [`cd ${TMP} && cat notes.txt`],
+    [`cd ${STAGING_ARG} && cat notes.txt`],
     ["cd .. && ls"],
-    [`cd ${TMP}`],
+    [`cd ${STAGING_ARG}`],
     ["ls -la"],
     ["cat notes.txt"],
   ])("allows %s", (command) => {
@@ -110,7 +120,7 @@ describe("shell path policy — working directory tracking", () => {
     });
 
     it("does not mistake -L/-P for the destination", () => {
-      expect(check(`cd -P ${TMP} && cat notes.txt`)).toBeNull();
+      expect(check(`cd -P ${STAGING_ARG} && cat notes.txt`)).toBeNull();
     });
   });
 });

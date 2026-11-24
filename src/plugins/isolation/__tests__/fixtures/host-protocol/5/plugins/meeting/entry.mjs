@@ -19,7 +19,7 @@ export const createPlugin = async (context) => {
           seen.frames.push({ seq: frame.seq, peak: frame.peak, pcm: Array.from(frame.pcm) }),
         );
         held.capture.onEnd((end) => seen.ends.push(end));
-        held.ffmpeg = await api.spawnWorker({ workerId: "ffmpeg", command: "/usr/local/bin/ffmpeg", args: ["-version"], control: "output-only-v1" });
+        held.ffmpeg = await api.spawnWorker({ workerId: "ffmpeg", command: "ffmpeg", args: ["-version"], control: "output-only-v1" });
         held.ffmpeg.onStdout((chunk) => seen.ffmpeg.push(chunk));
         const summary = await api.callLlm("summarise the meeting", {
           systemPrompt: "You write meeting notes.",

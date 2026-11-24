@@ -5,8 +5,9 @@ import { queryWindowsSystemDirectory, queryWindowsSystemDirectorySync } from "..
 import { buildSafeChildEnv } from "../tools/safe-env.js";
 import { type GitVersion, meetsMinimumGitVersion, parseGitVersion } from "./git-version.js";
 import { runGitProbeAsync, runGitProbeSync } from "./host-git-probe.js";
+import { check, runChecksAsync, runChecksSync, type Checks } from "./sync-async-checks.js";
 import { TOOL_TIMEOUT_POLICY } from "./tool-timeout-policy.js";
-import { resolveVerifiedExecutable, type VerifiedExecutableCandidate } from "./verified-executable.js";
+import { resolveVerifiedExecutableAsync, type VerifiedExecutableCandidate } from "./verified-executable.js";
 
 export interface InstallerGitInstall {
   path: string;
@@ -114,47 +115,7 @@ export function systemGitCandidates(
   });
 }
 
-interface DiscoveryCheck<T = unknown> {
-  sync(): T;
-  async(): Promise<T>;
-}
-
-type GitChecks<T> = Generator<DiscoveryCheck, T, unknown>;
-
-// Both drivers perform the same checks and feed their results back into the same selection policy.
-function* check<T>(sync: () => T, async: () => Promise<T>): GitChecks<T> {
-  return (yield { sync, async }) as T;
-}
-
-function runChecksSync<T>(checks: GitChecks<T>): T {
-  let step = checks.next();
-  while (!step.done) {
-    let value: unknown;
-    try {
-      value = step.value.sync();
-    } catch (error) {
-      step = checks.throw(error);
-      continue;
-    }
-    step = checks.next(value);
-  }
-  return step.value;
-}
-
-async function runChecksAsync<T>(checks: GitChecks<T>): Promise<T> {
-  let step = checks.next();
-  while (!step.done) {
-    let value: unknown;
-    try {
-      value = await step.value.async();
-    } catch (error) {
-      step = checks.throw(error);
-      continue;
-    }
-    step = checks.next(value);
-  }
-  return step.value;
-}
+type GitChecks<T> = Checks<T>;
 
 function executableAccessMode(): number {
   return process.platform === "win32" ? constants.F_OK : constants.X_OK;
@@ -418,13 +379,15 @@ export async function withHostGitRecovery<T>(
   }
 }
 
-/** Verified calls require a protected installation. Discovery caches a selected executable and checks again after a miss. */
-export function resolveHostGit(policy: "verified"): string | null;
+/** Verified calls require a protected installation and prove it without blocking the event loop.
+ * Discovery caches a selected executable and checks again after a miss. */
+export function resolveHostGit(policy: "verified"): Promise<string | null>;
 export function resolveHostGit(policy: { packaged: boolean }): HostGitLaunch | null;
-export function resolveHostGit(policy: "verified" | { packaged: boolean }): HostGitLaunch | string | null {
+export function resolveHostGit(policy: "verified" | { packaged: boolean }): Promise<string | null> | HostGitLaunch | null {
   if (policy === "verified") {
     const candidates = VERIFIED_GIT_INSTALLATIONS[process.platform];
-    return candidates === undefined ? null : resolveVerifiedExecutable(candidates)?.executable ?? null;
+    return candidates === undefined ? Promise.resolve(null)
+      : resolveVerifiedExecutableAsync(candidates).then((verified) => verified?.executable ?? null);
   }
   const { git } = discoverHostGitSync(installerGitRoot(policy.packaged));
   return gitLaunch(git);

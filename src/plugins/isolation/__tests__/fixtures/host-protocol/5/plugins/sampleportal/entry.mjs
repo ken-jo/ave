@@ -22,7 +22,7 @@ export const createPlugin = async (context) => {
         });
         const workers = [];
         for (const workerId of ["directory-lookup", "session-keeper", "profile-reader"]) {
-          const worker = await api.spawnWorker({ workerId, command: "/usr/bin/true", control: "output-only-v1" });
+          const worker = await api.spawnWorker({ workerId, command: "true", control: "output-only-v1" });
           worker.onStdout((chunk) => seen.stdout.push(chunk));
           workers.push({ control: worker.control, pid: worker.pid });
         }

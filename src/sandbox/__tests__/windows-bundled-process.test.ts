@@ -37,7 +37,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async (original) => ({
   cleanupAsrtSandboxAfterCommand: () => asrtCleanup(),
 }));
 
-type Spec = Record<string, unknown> & { onWrapped?: () => void; assertStillValid?: () => void; refreshStillValid?: () => Promise<void> };
+type Spec = Record<string, unknown> & { onSpawn?: (child: unknown) => void; onWrapped?: () => void; assertStillValid?: () => void; refreshStillValid?: () => Promise<void> };
 const confinedSpawn = vi.fn<(spec: Spec) => Promise<unknown>>();
 vi.mock("../../permissions/confined-child.js", () => ({
   spawnConfinedChild: (spec: Spec) => confinedSpawn(spec),
@@ -54,6 +54,7 @@ function brokerChild(): EventEmitter & { pid: number | undefined } {
 function spawnedAs(child: unknown, confinement = "windows-srt") {
   return async (spec: Spec) => {
     spec.onWrapped?.();
+    spec.onSpawn?.(child);
     return { child, confinement, stdin: new PassThrough(), stdout: new PassThrough() };
   };
 }
@@ -103,10 +104,32 @@ describe("spawnWindowsBundledProcess", () => {
     });
     expect(spawned.child).toBe(child);
     spawned.releaseHold();
+    expect(grantRelease).not.toHaveBeenCalled();
+    expect(homeCleanup).not.toHaveBeenCalled();
+    child.emit("close", 0, null);
+    await spawned.exit;
     expect(grantRelease).toHaveBeenCalledTimes(1);
     expect(homeCleanup).toHaveBeenCalledTimes(1);
     // ASRT's per-command cleanup stays the caller's, as with the POSIX wrap.
     expect(asrtCleanup).not.toHaveBeenCalled();
+  });
+
+  it("keeps the grant, HOME and an owned command sandbox through an early hold release until the relay child exits", async () => {
+    const child = brokerChild();
+    confinedSpawn.mockImplementationOnce(spawnedAs(child));
+    const spawned = await spawnWindowsBundledProcess({ ...input, ownsCommandSandbox: true });
+    spawned.releaseHold();
+    spawned.releaseHold();
+    await new Promise(resolve => setImmediate(resolve));
+    expect(grantRelease).not.toHaveBeenCalled();
+    expect(homeCleanup).not.toHaveBeenCalled();
+    expect(asrtCleanup).not.toHaveBeenCalled();
+    child.emit("close", 0, null);
+    await spawned.exit;
+    await new Promise(resolve => setImmediate(resolve));
+    expect(asrtCleanup).toHaveBeenCalledOnce();
+    expect(grantRelease).toHaveBeenCalledOnce();
+    expect(homeCleanup).toHaveBeenCalledOnce();
   });
 
   it("starts a command that names no directory in its granted sandbox HOME, never the host's cwd", async () => {
@@ -157,8 +180,9 @@ describe("spawnWindowsBundledProcess", () => {
     const child = brokerChild();
     child.pid = undefined;
     confinedSpawn.mockImplementationOnce(spawnedAs(child));
-    await spawnWindowsBundledProcess(input);
+    const spawned = await spawnWindowsBundledProcess(input);
     child.emit("error", new Error("spawn EPERM"));
+    await spawned.exit;
     expect(grantRelease).toHaveBeenCalledTimes(1);
     expect(homeCleanup).toHaveBeenCalledTimes(1);
   });
@@ -223,10 +247,32 @@ describe("spawnWindowsBundledProcess", () => {
 
   it("refuses a process that came back unconfined, and ends it", async () => {
     const child = brokerChild();
-    confinedSpawn.mockImplementationOnce(async () => ({ child, confinement: "unconfined", stdin: new PassThrough(), stdout: new PassThrough() }));
+    confinedSpawn.mockImplementationOnce(spawnedAs(child, "unconfined"));
     await expect(spawnWindowsBundledProcess(input)).rejects.toThrow(/came back unconfined/);
     expect(terminate).toHaveBeenCalledWith(child);
+    expect(grantRelease).not.toHaveBeenCalled();
+    child.emit("close", 0, null);
+    await new Promise(resolve => setImmediate(resolve));
     expect(grantRelease).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains the grant if the relay fails before its child exits", async () => {
+    const child = brokerChild();
+    confinedSpawn.mockImplementationOnce(async spec => {
+      spec.onWrapped?.();
+      spec.onSpawn?.(child);
+      throw new Error("relay handoff failed");
+    });
+    await expect(spawnWindowsBundledProcess(input)).rejects.toThrow("relay handoff failed");
+    expect(terminate).toHaveBeenCalledWith(child);
+    expect(grantRelease).not.toHaveBeenCalled();
+    expect(homeCleanup).not.toHaveBeenCalled();
+    expect(asrtCleanup).not.toHaveBeenCalled();
+    child.emit("close", null, "SIGKILL");
+    await new Promise(resolve => setImmediate(resolve));
+    expect(grantRelease).toHaveBeenCalledOnce();
+    expect(homeCleanup).toHaveBeenCalledOnce();
+    expect(asrtCleanup).toHaveBeenCalledOnce();
   });
 
   it("is the Windows path only", async () => {

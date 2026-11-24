@@ -39,6 +39,8 @@
         "src/tools/image-preparation-child.ts",
         "src/tools/preview-document-child-main.ts",
         "src/main/memory-map/inference-child-main.ts",
+        // Started as the resident repository-inspection worker thread by its built path.
+        "src/permissions/rules/git-repository-inspection-worker-main.ts",
         // Executed as a dedicated native-process supervisor by its installed path.
         "src/permissions/mxc-extension-supervisor.ts",
         // Diagnostic entry launched explicitly under the packaged runtime.

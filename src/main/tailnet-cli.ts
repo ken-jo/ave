@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { promisify } from "node:util";
+import { findHostProgram } from "../shared/host-program-path.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 
 // On macOS the installed app bundle provides a CLI even when PATH has no entry.
@@ -32,7 +33,9 @@ export async function runTailscaleCommand(
   args: readonly string[],
 ): Promise<TailscaleCommandResult> {
   try {
-    const { stdout, stderr } = await execFileAsync(cliPath, [...args], {
+    const program = findHostProgram(cliPath);
+    if (program === null) return { kind: "not-found" };
+    const { stdout, stderr } = await execFileAsync(program, [...args], {
       encoding: "utf8",
       timeout: TOOL_TIMEOUT_POLICY.tailnetIdentityProbeMs,
       maxBuffer: TAILSCALE_CLI_MAX_OUTPUT_BYTES,

@@ -11,7 +11,8 @@ import { normalizeSourceUrl } from "../../net/source-url.js";
 import type { SourceWarning } from "../../sources/warnings.js";
 import { AskpassBroker } from "../askpass.js";
 import { GitRunner, type GitRemote } from "../run-git.js";
-import { parseSshConfig, sshConfigArgs, type SshConfigReader } from "../ssh-preflight.js";
+import { parseSshConfig, readSshConfig, sshConfigArgs, type SshConfigReader } from "../ssh-preflight.js";
+import { withPlantedProgram } from "../../../__tests__/support/planted-program.js";
 
 /** Missing git distinguishes preflight refusal from a launch attempt. */
 const NO_GIT = "/nonexistent/ave-test/git";
@@ -136,5 +137,14 @@ describe("GitRunner ssh preflight", () => {
     expect(error.code).toBe("GIT_RUNTIME_MISSING");
     expect(lookups).toEqual(["git.example.com"]);
     expect(git.environment(target).GIT_SSH_COMMAND).toBe("ssh -o BatchMode=yes");
+  });
+});
+
+describe("readSshConfig program lookup", () => {
+  it("never runs an ssh planted in the current directory or reached through an empty or relative PATH entry", async () => {
+    await withPlantedProgram(["ssh"], async (planted) => {
+      await expect(readSshConfig(["-G", "example.com"], { PATH: planted.path })).rejects.toThrow(/'ssh' was not found on PATH/u);
+      expect(planted.ran()).toBe(false);
+    });
   });
 });

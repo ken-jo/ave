@@ -60,6 +60,11 @@ export function hookDirLayout(tmpDir: string): HookDirLayout {
 // The repo's checked-in hook fixture tree, the root every hook suite spawns from.
 export const REPO_HOOK_FIXTURE_ROOT = resolve(__dirname, "..", "..", "..", "test", "fixtures", "hooks");
 
+export function repoCommandHook(mode: "policy" | "exit-fail" | "bad-json" | "slow" | "noenv"): string[] {
+  const node = process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath;
+  return [node, join(REPO_HOOK_FIXTURE_ROOT, "cmd-fixture.cjs"), mode];
+}
+
 export function repoFixtureHook(
   fileName: string,
   type: "pre" | "post" | "perm" = "pre",

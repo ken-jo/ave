@@ -4,22 +4,54 @@ import { PassThrough } from "node:stream";
 import { basename, dirname, join, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { chmod, mkdtemp, mkdir, writeFile, readFile, rm, stat, symlink } from "node:fs/promises";
-import { spawn, spawnSync, execFile } from "node:child_process";
+import childProcess, { spawn, spawnSync, execFile } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import type { ChildProcess } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { VerifiedDocumentEngineInstallation } from "../../main/document-engine-installation.js";
 import { PREVIEW_DOCUMENT_LIMITS } from "../../shared/preview-document.js";
+import { TableDocumentError } from "../../tools/table-document-error.js";
+import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
+import { afterQueuedCallbacks, deferred } from "../../__tests__/support/deferred.js";
+import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 
+const HOST_PLATFORM = process.platform;
 const residentStartup = { publish: true };
 const javaFixture = vi.hoisted(() => ({ home: undefined as string | undefined, broken: false, registrationFails: false }));
+const engineRegistration = vi.hoisted(() => ({ beforeRetain: undefined as (() => void) | undefined }));
 // win32 chmod maps only the read-only attribute, so a 0o400 create reads back as 0o444 (r--r--r--).
 const READ_ONLY_FILE_MODE = process.platform === "win32" ? 0o444 : 0o400;
 
-vi.mock("../../permissions/offline-process-sandbox.js", () => ({ wrapOfflineProcess: vi.fn(async input => ({
-  argv: [input.command, ...input.args], env: input.env, release: vi.fn(),
-})) }));
-vi.mock("../../main/managed-child-processes.js", () => ({ spawnManaged: vi.fn(), forceKillManagedChildProcess: vi.fn() }));
+vi.mock("../../permissions/offline-process-sandbox.js", async (original) => ({
+  ...await original<typeof import("../../permissions/offline-process-sandbox.js")>(),
+  wrapOfflineProcess: vi.fn<typeof import("../../permissions/offline-process-sandbox.js").wrapOfflineProcess>(async input => ({
+    argv: [input.command, ...input.args], env: input.env,
+  })),
+}));
+vi.mock("../../main/managed-child-processes.js", async original => {
+  const actual = await original<typeof import("../../main/managed-child-processes.js")>();
+  return {
+    ...actual,
+    spawnManaged: vi.fn(),
+    forceKillManagedChildProcess: vi.fn(),
+    observeManagedProcessGroup: (child: ChildProcess, scope?: Parameters<typeof actual.observeManagedProcessGroup>[1]) => {
+      const group = actual.observeManagedProcessGroup(child, scope);
+      if (child.pid !== undefined) return group;
+      return { ...group, confirmExit: (reason: string) => {
+        (child as unknown as ProcessFixture).end(null, "SIGKILL");
+        return group.confirmExit(reason);
+      } };
+    },
+  };
+});
+vi.mock("../../main/process-group-reaper.js", () => ({
+  createProcessGroupReaper: () => ({ retain: () => engineRegistration.beforeRetain?.(), release: () => {}, shutdown: () => {} }),
+}));
+vi.mock("../../main/codex-executable-location.js", async original => ({
+  ...await original<typeof import("../../main/codex-executable-location.js")>(),
+  createPrivateTempDirectory: () => mkdtemp(join(directory, "session-")),
+}));
 vi.mock("node:fs/promises", async importOriginal => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   // A regular fixture file stands in for the instance's private UNIX socket.
@@ -35,10 +67,12 @@ vi.mock("node:fs/promises", async importOriginal => {
 });
 
 import { LibreOfficeSessionPool, sweepStaleDocumentEngineRuntimes } from "../libreoffice-process.js";
-import { spawnManaged, forceKillManagedChildProcess } from "../../main/managed-child-processes.js";
-import { wrapOfflineProcess } from "../../permissions/offline-process-sandbox.js";
+import { __resetManagedChildProcessesForTest, spawnManaged, forceKillManagedChildProcess, recordManagedCleanup } from "../../main/managed-child-processes.js";
+import { OfflineScanExitUnconfirmedError, wrapOfflineProcess } from "../../permissions/offline-process-sandbox.js";
 import { fakeFixtureAclTransport, installFixtureAclTransport } from "../../__tests__/support/native-executable.js";
 import { _setWindowsAclTransportForTest } from "../../main/windows-acl-host.js";
+
+const managed = await vi.importActual<typeof import("../../main/managed-child-processes.js")>("../../main/managed-child-processes.js");
 
 interface ConversionJob { source: string; outputDirectory: string; extension: string; filter: string; inputFilter?: string }
 
@@ -59,6 +93,7 @@ let directory: string;
 let installation: VerifiedDocumentEngineInstallation;
 let pool: LibreOfficeSessionPool;
 let children: ProcessFixture[];
+let createProcessFixture: (command: string, args: readonly string[]) => ProcessFixture;
 let conversion: (client: ProcessFixture, resident: ProcessFixture) => Promise<void>;
 let readiness: (client: ProcessFixture, resident: ProcessFixture) => Promise<void>;
 
@@ -96,10 +131,7 @@ async function eventually(predicate: () => boolean): Promise<void> {
 
 beforeEach(async () => {
   vi.clearAllMocks();
-  // On win32 the private-temp ownership claim spawns the ACL host; route it through the fixture transport
-  // so the claim resolves deterministically without the real PowerShell host (the transport also configures
-  // host resources). POSIX claims via chmod/chown and needs neither, so this is scoped to win32.
-  if (process.platform === "win32") installFixtureAclTransport(fakeFixtureAclTransport(execFile));
+  if (HOST_PLATFORM === "win32") installFixtureAclTransport(fakeFixtureAclTransport(execFile));
   javaFixture.home = undefined;
   javaFixture.broken = false;
   javaFixture.registrationFails = false;
@@ -115,7 +147,7 @@ beforeEach(async () => {
   children = [];
   conversion = publish;
   readiness = publish;
-  vi.mocked(spawnManaged).mockImplementation((command, args) => {
+  createProcessFixture = (command, args) => {
     const emitter = new EventEmitter() as ProcessFixture;
     emitter.stdout = new PassThrough();
     emitter.stderr = new PassThrough();
@@ -152,13 +184,65 @@ beforeEach(async () => {
       emitter.stdout.write("H2Orestart registered");
       emitter.end();
     });
-    return emitter as unknown as ChildProcess;
+    return emitter;
+  };
+  vi.mocked(spawnManaged).mockImplementation((command, args, _options, _track, acquire) => {
+    const child = createProcessFixture(command, args) as unknown as ChildProcess;
+    acquire?.(child);
+    return child;
   });
   vi.mocked(forceKillManagedChildProcess).mockImplementation(child => { (child as unknown as ProcessFixture).end(null, "SIGKILL"); });
   pool = new LibreOfficeSessionPool();
 });
 
-afterEach(async () => { await pool.dispose(); if (process.platform === "win32") _setWindowsAclTransportForTest(undefined); await rm(directory, { recursive: true, force: true }); });
+afterEach(async () => { await pool.dispose(); if (HOST_PLATFORM === "win32") _setWindowsAclTransportForTest(undefined); await rm(directory, { recursive: true, force: true }); });
+
+function mockManagedEngineGroup(startResident = false) {
+  setProcessPlatform("linux");
+  const groupPid = 14002;
+  const launched = deferred<EventEmitter>();
+  let child: EventEmitter | undefined;
+  let groupAlive = true;
+  const nativeKill = process.kill;
+  const kill = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+    if (Math.abs(pid) !== groupPid) return nativeKill(pid, signal);
+    if (!groupAlive) throw Object.assign(new Error("Group exited"), { code: "ESRCH" });
+    if (signal === 0) return true;
+    throw Object.assign(new Error("Group still running"), { code: "EPERM" });
+  });
+  vi.mocked(spawnManaged).mockImplementationOnce((...args) => {
+    const acquired = Object.assign(startResident ? createProcessFixture(args[0], args[1]) : new EventEmitter(), {
+      pid: groupPid, spawnfile: "/fixture-engine", exitCode: null, signalCode: null,
+    });
+    child = acquired;
+    const spawnFixture = vi.spyOn(childProcess, "spawn").mockReturnValueOnce(acquired as unknown as ChildProcess);
+    syncBuiltinESMExports();
+    try { return managed.spawnManaged(...args); }
+    finally {
+      spawnFixture.mockRestore();
+      syncBuiltinESMExports();
+      launched.resolve(acquired);
+    }
+  });
+  const wrap = vi.fn();
+  vi.mocked(wrapOfflineProcess).mockImplementationOnce(async input => {
+    recordManagedCleanup(input.resources, wrap);
+    return { argv: [input.command, ...input.args], env: input.env };
+  });
+  const markGroupGone = (): void => { groupAlive = false; };
+  return { pid: groupPid, launched, kill, wrap, markGroupGone, restore: async () => {
+    markGroupGone();
+    child?.emit("close", null, "SIGKILL");
+    if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.processGroupPollMs);
+    await pool.dispose().catch(() => {});
+    pool = new LibreOfficeSessionPool();
+    engineRegistration.beforeRetain = undefined;
+    __resetManagedChildProcessesForTest();
+    kill.mockRestore();
+    setProcessPlatform(HOST_PLATFORM);
+    vi.useRealTimers();
+  } };
+}
 
 describe("private conversion process ownership", () => {
   it("keeps one resident profile and revalidates each launch while preserving the immutable input", async () => {
@@ -388,6 +472,137 @@ describe("private conversion process ownership", () => {
       .rejects.toMatchObject({ code: "engine-runtime-unavailable", message: "Document importer registration failed in the private profile." });
     await pool.convert(installation, "one", Buffer.from("docx"), "docx", new AbortController().signal);
     expect(residents()).toHaveLength(2);
+  });
+
+  it("does not spawn an engine when offline setup refuses the scan", async () => {
+    const refusal = new TableDocumentError("engine-confinement-unavailable", "Offline scan did not complete.");
+    vi.mocked(wrapOfflineProcess).mockRejectedValueOnce(refusal);
+    await expect(pool.prepare(installation, "one", "docx", new AbortController().signal)).rejects.toBe(refusal);
+    expect(wrapOfflineProcess).toHaveBeenCalledTimes(1);
+    expect(spawnManaged).not.toHaveBeenCalled();
+  });
+
+  it("keeps an existing runtime when an aborted preflight has unconfirmed termination", async () => {
+    const controller = new AbortController();
+    await pool.prepare(installation, "one", "docx", controller.signal);
+    const childCount = children.length;
+    const refusal = new OfflineScanExitUnconfirmedError();
+    let scratch: string | undefined;
+    vi.mocked(wrapOfflineProcess).mockImplementationOnce(async input => {
+      scratch = await mkdtemp(join(dirname(input.inputDirectory), ".offline-scan-"));
+      controller.abort(new Error("Stopped during the scan"));
+      throw refusal;
+    });
+    try {
+      await expect(pool.convert(installation, "one", Buffer.from("bytes"), "docx", controller.signal)).rejects.toBe(refusal);
+      expect(children).toHaveLength(childCount);
+      expect(scratch).toBeDefined();
+      if (!scratch) throw new Error("Expected retained scan scratch.");
+      expect((await stat(scratch)).isDirectory()).toBe(true);
+      await expect(pool.releaseSession("one")).rejects.toBe(refusal);
+      expect((await stat(scratch)).isDirectory()).toBe(true);
+    } finally {
+      await pool.dispose().catch(() => {});
+      if (scratch) await rm(dirname(scratch), { recursive: true, force: true });
+      pool = new LibreOfficeSessionPool();
+    }
+  });
+
+  it.each(["startup", "existing runtime"] as const)("retains the wrap and files after live-group registration failure during %s", async entry => {
+    const controller = new AbortController();
+    if (entry === "existing runtime") await pool.prepare(installation, "one", "docx", controller.signal);
+    const group = mockManagedEngineGroup();
+    engineRegistration.beforeRetain = () => {
+      if (entry === "existing runtime") controller.abort(new Error("Stopped during registration"));
+      throw new Error("Injected engine registration failure");
+    };
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const request = entry === "startup"
+      ? pool.prepare(installation, "one", "docx", controller.signal)
+      : pool.convert(installation, "one", Buffer.from("retained input"), "docx", controller.signal);
+    const settlement = request.catch((error: unknown) => error);
+    try {
+      const child = await group.launched.promise;
+      child.emit("close", null, "SIGKILL");
+      await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.processTreeKillMs);
+      const verdict = await settlement;
+      expect(verdict).toMatchObject({ code: "engine-confinement-unavailable", message: "Document engine termination was not confirmed." });
+      expect(group.kill).toHaveBeenCalledWith(-group.pid, 0);
+      expect(group.wrap).not.toHaveBeenCalled();
+      const launch = vi.mocked(wrapOfflineProcess).mock.calls.at(-1)?.[0];
+      if (!launch) throw new Error("Expected an acquired engine launch.");
+      expect((await stat(dirname(launch.inputDirectory))).isDirectory()).toBe(true);
+      if (entry === "existing runtime") {
+        const input = launch.args.at(-1);
+        if (!input) throw new Error("Expected a staged document.");
+        expect(await readFile(input, "utf8")).toBe("retained input");
+      }
+      await expect(pool.releaseSession("one")).rejects.toBe(verdict);
+    } finally { await group.restore(); }
+  });
+
+  it.each(["missing close", "leader close with a surviving group"] as const)("reports unconfirmed shutdown after %s", async exit => {
+    const group = mockManagedEngineGroup(true);
+    try {
+      await pool.prepare(installation, "one", "docx", new AbortController().signal);
+      const child = await group.launched.promise;
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+      if (exit !== "missing close") child.emit("close", 0, null);
+      let verdict: unknown;
+      const release = pool.releaseSession("one").catch((error: unknown) => { verdict = error; });
+      if (exit === "missing close") group.markGroupGone();
+      await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.processTreeKillMs - 1);
+      expect(verdict).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+      await afterQueuedCallbacks();
+      expect(verdict).toMatchObject({ code: "engine-confinement-unavailable", message: "Document engine termination was not confirmed." });
+      expect(group.kill).toHaveBeenCalledWith(-group.pid, "SIGKILL");
+      expect(group.wrap).not.toHaveBeenCalled();
+      const holder = residents()[0]?.holder;
+      if (!holder) throw new Error("Expected the resident holder file.");
+      expect((await stat(holder)).isFile()).toBe(true);
+      await release;
+    } finally { await group.restore(); }
+  });
+
+  it.each(["conversion", "readiness"] as const)("retains staged files when wrap cleanup fails during %s", async entry => {
+    const group = mockManagedEngineGroup(true);
+    const cleanupFailure = new Error("Injected mount ownership descriptor release failure");
+    const signal = new AbortController().signal;
+    const staged = deferred<ConversionJob>();
+    const failForwarding = async (client: ProcessFixture): Promise<void> => {
+      if (!client.job) throw new Error("Expected a forwarding job.");
+      staged.resolve(client.job);
+      client.end(1);
+    };
+    const failingWrap = async (input: Parameters<typeof wrapOfflineProcess>[0]) => {
+      recordManagedCleanup(input.resources, () => { throw cleanupFailure; });
+      return { argv: [input.command, ...input.args], env: input.env };
+    };
+    try {
+      if (entry === "conversion") {
+        await pool.prepare(installation, "one", "docx", signal);
+        conversion = failForwarding;
+      } else {
+        readiness = failForwarding;
+      }
+      vi.mocked(wrapOfflineProcess).mockImplementationOnce(failingWrap);
+      const request = entry === "conversion"
+        ? pool.convert(installation, "one", Buffer.from("retained input"), "docx", signal)
+        : pool.prepare(installation, "one", "docx", signal);
+      const settlement = request.catch((error: unknown) => error);
+      const [resident, job] = await Promise.all([group.launched.promise, staged.promise]);
+      const original = await readFile(job.source, "utf8").catch((error: NodeJS.ErrnoException) => error.code);
+      resident.emit("close", 0, null);
+      const verdict = await settlement;
+      expect(verdict).toMatchObject({
+        code: "engine-confinement-unavailable", message: "Document engine termination was not confirmed.",
+      });
+      expect(original).toEqual(entry === "conversion" ? "retained input" : expect.stringContaining("office:document"));
+      expect(await readFile(job.source, "utf8")).toBe(original);
+      expect((await stat(job.outputDirectory)).isDirectory()).toBe(true);
+      expect(group.wrap).not.toHaveBeenCalled();
+    } finally { await group.restore(); }
   });
 
   it("refuses empty and over-budget requests without starting a process", async () => {

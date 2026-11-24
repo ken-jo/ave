@@ -1,18 +1,15 @@
 // Trusted script and config hooks share deny precedence; later allows cannot upgrade a deny (docs/architecture/hook-runtime-expansion-design.md).
 import { describe, expect, it } from "vitest";
-import { resolve } from "node:path";
 import { ScriptHookManager } from "../script-hook-manager.js";
 import type { HookDispatchPayload } from "../script-hook-types.js";
 import type { HookConfigEntry } from "../hook-config.js";
 import {
-  hasExecutable,
+  repoCommandHook,
   REPO_HOOK_FIXTURE_ROOT as FIXTURE_ROOT,
   repoFixtureHook as shHook,
 } from "./test-helpers.js";
 
 const shellOpts = process.platform === "win32" ? { timeoutMs: 20_000 } : undefined;
-
-const HAS_PYTHON = hasExecutable("python3");
 
 function configEntry(over: Partial<HookConfigEntry> & Pick<HookConfigEntry, "id" | "command">): HookConfigEntry {
   return {
@@ -34,34 +31,34 @@ const payload: HookDispatchPayload = {
 };
 
 describe("#811 manager — unified registry dispatch", () => {
-  it.skipIf(!HAS_PYTHON)("runs a trusted config command entry for matching tools", async () => {
+  it("runs a trusted config command entry for matching tools", async () => {
     const m = new ScriptHookManager();
     m.setTrustedRegistry(
       [],
-      [configEntry({ id: "PreToolUse#0.0", command: ["python3", resolve(FIXTURE_ROOT, "cmd-policy.py")] })],
+      [configEntry({ id: "PreToolUse#0.0", command: repoCommandHook("policy") })],
     );
     const out = await m.runPreToolUse(payload);
     expect(out.decision).toBe("allow");
     expect(out.results).toHaveLength(1);
   });
 
-  it.skipIf(!HAS_PYTHON)("deny precedence across .sh + config (config denies)", async () => {
+  it("deny precedence across .sh + config (config denies)", async () => {
     const m = new ScriptHookManager();
     m.setTrustedRegistry(
       [shHook("pre-allow.sh")],
-      [configEntry({ id: "PreToolUse#0.0", command: ["python3", resolve(FIXTURE_ROOT, "cmd-policy.py")] })],
+      [configEntry({ id: "PreToolUse#0.0", command: repoCommandHook("policy") })],
     );
     const out = await m.runPreToolUse({ ...payload, toolName: "blocked_thing" }, shellOpts);
     expect(out.decision).toBe("deny");
     expect(out.reason).toContain("blocked_thing");
   });
 
-  it.skipIf(!HAS_PYTHON)("a later allow cannot upgrade an earlier deny", async () => {
+  it("a later allow cannot upgrade an earlier deny", async () => {
     const m = new ScriptHookManager();
     // Order:.sh deny (runs first), then config allow. Chain must stop at deny.
     m.setTrustedRegistry(
       [shHook("pre-deny.sh")],
-      [configEntry({ id: "PreToolUse#0.0", command: ["python3", resolve(FIXTURE_ROOT, "cmd-policy.py")] })],
+      [configEntry({ id: "PreToolUse#0.0", command: repoCommandHook("policy") })],
     );
     const out = await m.runPreToolUse(payload, shellOpts);
     expect(out.decision).toBe("deny");

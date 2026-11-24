@@ -4,47 +4,59 @@ vi.mock("node:child_process", () => ({
   execFileSync: vi.fn(),
 }));
 
+vi.mock("../../shared/host-program-path.js", () => ({
+  findHostProgram: vi.fn(),
+}));
+
 import { execFileSync } from "node:child_process";
+import { findHostProgram } from "../../shared/host-program-path.js";
 import { resolveShell, ShellMismatchError, __resetShellResolverCache } from "../shell-resolver.js";
 
-beforeEach(() => { vi.stubEnv("SystemRoot", "C:\\Windows"); });
+const onPath = (programs: Record<string, string>) => {
+  vi.mocked(findHostProgram).mockImplementation((name) => programs[name] ?? null);
+};
+
+beforeEach(() => {
+  vi.stubEnv("SystemRoot", "C:\\Windows");
+  onPath({ sh: "/usr/bin/sh" });
+});
 
 afterEach(() => {
   __resetShellResolverCache();
   vi.mocked(execFileSync).mockReset();
+  vi.mocked(findHostProgram).mockReset();
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
 });
 
 describe("shell-resolver", () => {
-  it("looks up a shell through the absolute system binary", () => {
+  it("looks up sh and bash on PATH only, never through a command-line lookup or a bare name", () => {
     vi.spyOn(process, "platform", "get").mockReturnValue("win32");
-    vi.stubEnv("SystemRoot", "C:/Windows");
+    onPath({});
     vi.mocked(execFileSync).mockImplementation(() => { throw new Error("unavailable"); });
     expect(() => resolveShell()).toThrow(ShellMismatchError);
-    expect(execFileSync).toHaveBeenCalledWith("C:\\Windows\\System32\\where.exe", ["sh"], expect.any(Object));
-    expect(vi.mocked(execFileSync).mock.calls.some(([cmd]) => cmd === "where")).toBe(false);
+    expect(findHostProgram).toHaveBeenCalledWith("sh");
+    expect(findHostProgram).toHaveBeenCalledWith("bash");
+    expect(vi.mocked(execFileSync).mock.calls.every(([cmd]) => /^[A-Za-z]:\\/u.test(String(cmd)) && !/where/iu.test(String(cmd)))).toBe(true);
   });
-  it("returns sh on Windows when sh is found", () => {
+  it("returns the absolute sh found on PATH on Windows", () => {
     vi.spyOn(process, "platform", "get").mockReturnValue("win32" as NodeJS.Platform);
+    onPath({ sh: "D:\\Runtime\\sh.exe" });
     vi.mocked(execFileSync).mockImplementation((cmd, args) => {
       if (String(cmd).includes("C:\\Program Files\\Git\\")) {
         throw new Error("not installed");
       }
-      if (cmd === "C:\\Windows\\System32\\where.exe" && args[0] === "sh") {
-        return "C:\\Windows\\System32\\sh.exe";
-      }
-      if (cmd === "sh" && args[1] === "printf __ave_shell_ok__") {
+      if (cmd === "D:\\Runtime\\sh.exe" && args[1] === "printf __ave_shell_ok__") {
         return "__ave_shell_ok__";
       }
-      if (cmd === "sh" && args[1] === "uname -s") {
+      if (cmd === "D:\\Runtime\\sh.exe" && args[1] === "uname -s") {
         return "MSYS_NT";
       }
       throw new Error("unexpected command");
     });
 
     const shell = resolveShell();
-    expect(shell.cmd).toBe("sh");
+    expect(shell.cmd).toBe("D:\\Runtime\\sh.exe");
     expect(shell.shellArgs("echo hi")).toEqual(["-c", "echo hi"]);
     expect(shell.windowsFlavor).toBe("msys");
   });
@@ -70,27 +82,22 @@ describe("shell-resolver", () => {
 
   it("falls back to bash on Windows when sh is missing", () => {
     vi.spyOn(process, "platform", "get").mockReturnValue("win32" as NodeJS.Platform);
+    onPath({ bash: "D:\\Runtime\\bash.exe" });
     vi.mocked(execFileSync).mockImplementation((cmd, args) => {
       if (String(cmd).includes("C:\\Program Files\\Git\\")) {
         throw new Error("not installed");
       }
-      if (cmd === "C:\\Windows\\System32\\where.exe" && args[0] === "sh") {
-        throw new Error("not found");
-      }
-      if (cmd === "C:\\Windows\\System32\\where.exe" && args[0] === "bash") {
-        return "C:\\Program Files\\Git\\bin\\bash.exe";
-      }
-      if (cmd === "bash" && args[1] === "printf __ave_shell_ok__") {
+      if (cmd === "D:\\Runtime\\bash.exe" && args[1] === "printf __ave_shell_ok__") {
         return "__ave_shell_ok__";
       }
-      if (cmd === "bash" && args[1] === "uname -s") {
+      if (cmd === "D:\\Runtime\\bash.exe" && args[1] === "uname -s") {
         return "MINGW64_NT";
       }
       throw new Error("unexpected command");
     });
 
     const shell = resolveShell();
-    expect(shell.cmd).toBe("bash");
+    expect(shell.cmd).toBe("D:\\Runtime\\bash.exe");
     expect(shell.shellArgs("echo hi")).toEqual(["-lc", "echo hi"]);
     expect(shell.windowsFlavor).toBe("msys");
   });
@@ -113,26 +120,33 @@ describe("shell-resolver", () => {
     expect(vi.mocked(execFileSync).mock.calls.every(([cmd]) => !/^d:\\evil/i.test(String(cmd)))).toBe(true);
   });
 
-  it("returns sh on POSIX", () => {
+  it("returns the absolute sh found on PATH on POSIX", () => {
     vi.spyOn(process, "platform", "get").mockReturnValue("linux" as NodeJS.Platform);
 
     const shell = resolveShell();
 
-    expect(shell.cmd).toBe("sh");
+    expect(shell.cmd).toBe("/usr/bin/sh");
+    expect(findHostProgram).toHaveBeenCalledWith("sh");
     expect(shell.shellArgs("echo hi")).toEqual(["-c", "echo hi"]);
     expect(execFileSync).not.toHaveBeenCalled();
+  });
+
+  it("refuses POSIX sh missing from PATH instead of returning the bare name", () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("linux" as NodeJS.Platform);
+    onPath({});
+    expect(() => resolveShell()).toThrow(ShellMismatchError);
   });
 
   it("resolves Bash separately from the generic POSIX dialect", () => {
     vi.spyOn(process, "platform", "get").mockReturnValue("linux");
     vi.mocked(execFileSync).mockReturnValue("__ave_shell_ok__");
-    expect(resolveShell().cmd).toBe("sh");
+    expect(resolveShell().cmd).toBe("/usr/bin/sh");
     const bash = resolveShell("bash");
     expect(bash.cmd).toBe("/bin/bash");
     expect(bash.shellArgs("echo hi")).toEqual(["-c", "echo hi"]);
     expect(resolveShell("bash")).toBe(bash);
     expect(execFileSync).toHaveBeenCalledTimes(1);
-    expect(resolveShell().cmd).toBe("sh");
+    expect(resolveShell().cmd).toBe("/usr/bin/sh");
   });
 
   it("reports missing Bash without falling back to sh or poisoning POSIX resolution", () => {
@@ -141,7 +155,7 @@ describe("shell-resolver", () => {
     expect(() => resolveShell("bash")).toThrow(/requires Bash/);
     expect(() => resolveShell("bash")).toThrow(ShellMismatchError);
     expect(execFileSync).toHaveBeenCalledTimes(2);
-    expect(resolveShell().cmd).toBe("sh");
+    expect(resolveShell().cmd).toBe("/usr/bin/sh");
   });
 
   it("rejects executables that do not prove the Bash dialect", () => {
@@ -162,11 +176,11 @@ describe("shell-resolver", () => {
       ["-c", expect.stringContaining("<<<")], expect.any(Object));
   });
 
-  it("pins and probes the first absolute Bash path returned by Windows lookup", () => {
+  it("pins and probes the absolute Bash path found on PATH", () => {
     vi.spyOn(process, "platform", "get").mockReturnValue("win32");
     const executable = "D:\\Shell Runtime\\bash.exe";
+    onPath({ bash: executable });
     vi.mocked(execFileSync).mockImplementation((cmd, args) => {
-      if (cmd === "C:\\Windows\\System32\\where.exe") return `${executable}\r\nE:\\Other\\bash.exe\r\n`;
       if (cmd !== executable) throw new Error("not installed");
       return Array.isArray(args) && args[1] === "uname -s" ? "MSYS_NT" : "__ave_shell_ok__";
     });
@@ -182,22 +196,18 @@ describe("shell-resolver", () => {
     expect(resolveShell("bash")).toBe(shell);
   });
 
-  it.each(["", "bash.exe", "C:bash.exe", "C:\\Runtime\\bash.cmd"])(
-    "rejects unusable Windows Bash lookup result %j without probing a bare command", (lookup) => {
-      vi.spyOn(process, "platform", "get").mockReturnValue("win32");
-      vi.mocked(execFileSync).mockImplementation((cmd) => {
-        if (cmd === "C:\\Windows\\System32\\where.exe") return lookup;
-        throw new Error("not installed");
-      });
-      expect(() => resolveShell("bash")).toThrow(/absolute executable path/);
-      expect(vi.mocked(execFileSync).mock.calls.some(([cmd]) => cmd === "bash" || cmd === "sh")).toBe(false);
-    },
-  );
+  it("refuses Windows Bash missing from PATH without probing a bare command", () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    onPath({});
+    vi.mocked(execFileSync).mockImplementation(() => { throw new Error("not installed"); });
+    expect(() => resolveShell("bash")).toThrow(/bash was not found on PATH/);
+    expect(vi.mocked(execFileSync).mock.calls.some(([cmd]) => cmd === "bash" || cmd === "sh")).toBe(false);
+  });
 
   it.each([
     { platform: "linux", dialect: "bash", executable: "/bin/bash", lookup: "bash" },
     { platform: "win32", dialect: "bash", executable: "D:\\Runtime\\bash.exe", lookup: "bash" },
-    { platform: "win32", dialect: "posix", executable: "sh", lookup: "sh" },
+    { platform: "win32", dialect: "posix", executable: "D:\\Runtime\\sh.exe", lookup: "sh" },
   ] as const)("filters every $platform $dialect probe environment", ({ platform, dialect, executable, lookup }) => {
     vi.spyOn(process, "platform", "get").mockReturnValue(platform);
     vi.stubEnv("OPENAI_API_KEY", "sentinel-provider-secret");
@@ -207,15 +217,15 @@ describe("shell-resolver", () => {
     vi.stubEnv("SystemRoot", "C:\\Windows");
     vi.stubEnv("USERPROFILE", "sentinel-user-profile");
     vi.stubEnv("LANG", "sentinel-locale");
+    onPath({ [lookup]: executable });
     vi.mocked(execFileSync).mockImplementation((cmd, args) => {
-      if (cmd === "C:\\Windows\\System32\\where.exe") return executable;
       if (cmd !== executable) throw new Error("not installed");
       return Array.isArray(args) && args[1] === "uname -s" ? "MSYS_NT" : "__ave_shell_ok__";
     });
 
     expect(resolveShell(dialect).cmd).toBe(executable);
     if (platform === "win32") {
-      expect(execFileSync).toHaveBeenCalledWith("C:\\Windows\\System32\\where.exe", [lookup], expect.any(Object));
+      expect(findHostProgram).toHaveBeenCalledWith(lookup);
       expect(execFileSync).toHaveBeenCalledWith(executable, ["-c", "uname -s"], expect.any(Object));
     }
     for (const [, , options] of vi.mocked(execFileSync).mock.calls) {
