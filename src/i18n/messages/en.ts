@@ -5177,7 +5177,7 @@ export const en = {
   "shellExecution.blocked": "Shell execution is unavailable under the current execution plan.",
   "shellExecution.homePrivacyHelperUnavailable": "Shell commands and hooks are off: Ave could not check its home folder privacy at startup. Restart Ave; if it persists, reinstall Ave.",
   "shellExecution.sandboxUnavailable": "The OS sandbox is turned on but unavailable, so shell commands run without it under the normal permission rules.",
-  "shellExecution.boundaryUnverifiedAsk": "The Ave home boundary could not be verified, so a shell command runs without the OS sandbox only after you approve it. Approve it once, or waive this sandbox approval for later shell commands and hooks in this session while the boundary stays unverified. Other permission checks still apply and may ask again.",
+  "shellExecution.boundaryUnverifiedAsk": "Ave home privacy could not be established at startup, so a shell command runs without the OS sandbox only after you approve it. Approve it once, or waive this sandbox approval for later shell commands and hooks in this session while home privacy stays unverified. Other permission checks still apply and may ask again.",
   "shellExecution.sandboxUnavailableAsk": "The OS sandbox is turned on but unavailable, so a shell command runs without it only after you approve it. Approve it once, or waive this sandbox approval for later shell commands and hooks in this session while the sandbox is unavailable. Other permission checks still apply and may ask again.",
   "shellExecution.location": "Execution location: current host ({platform}).",
   "shellExecution.temporaryHome": "Shell HOME and configuration: temporary for each command; the user's login profile is not loaded.",

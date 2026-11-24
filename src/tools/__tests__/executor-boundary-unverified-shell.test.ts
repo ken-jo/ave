@@ -36,7 +36,7 @@ import { __resetShellResolverCache } from "../../lib/shell-resolver.js";
 import { _resetAveHomePrivacyForTest, setAveHomePrivacyAtBoot, ensureAveHomePrivate, AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE, type AveHomePrivacyFailureCategory } from "../../shared/ave-home.js";
 import { shellExecutionEnvironmentLines } from "../../shared/shell-execution-environment.js";
 import { windowsPathKindHelperUnavailable } from "../../main/windows-path-kind-launcher.js";
-import { t } from "../../i18n/runtime.js";
+import { getLocale, setLocale, t } from "../../i18n/runtime.js";
 import { userPermissionContext as permissionContext } from "./tool-context-fixture.js";
 import { sentApprovalCards } from "../../__tests__/test-helpers.js";
 
@@ -263,8 +263,17 @@ describe("host shells under an unverifiable Ave home boundary", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
-  // Worker confinement on, shell scope off: boot still publishes the boundary state, and the sandbox-off plan asks every command.
-  const workerOnlyCases = (["boundary-link", "boundary-unlisted"] as const).flatMap(category => DIALECTS.flatMap(dialect => ([
+  // Worker confinement on, shell scope off: boot still publishes the privacy failure, and the sandbox-off plan asks every command.
+  const FLOOR_CATEGORIES = [
+    "boundary-link", "boundary-unlisted", "system-root-missing", "directory-failed", "identity-failed", "icacls-failed", "read-back-failed",
+    "extra-principals", "workspace-extra-principals", "not-protected", "invalid-owner-grant", "owner-claim-failed", "reparse-point", "posix-root-unsafe",
+  ] as const satisfies readonly AveHomePrivacyFailureCategory[];
+  // The card names no category: the same words hold for every privacy failure that forces the floor.
+  const CARD_TEXT = {
+    en: "Ave home privacy could not be established at startup, so a shell command runs without the OS sandbox only after you approve it. Approve it once, or waive this sandbox approval for later shell commands and hooks in this session while home privacy stays unverified. Other permission checks still apply and may ask again.",
+    ko: "시작할 때 Ave 홈 보호를 확인할 수 없어, 셸 명령은 승인한 뒤에만 OS 샌드박스 없이 실행됩니다. 한 번만 승인하거나, 홈 보호를 확인할 수 없는 동안 이 세션의 이후 셸 명령과 훅에 대한 샌드박스 승인을 면제할 수 있습니다. 다른 권한 검사는 계속 적용되며 다시 승인을 요청할 수 있습니다.",
+  };
+  const workerOnlyCases = FLOOR_CATEGORIES.flatMap(category => DIALECTS.flatMap(dialect => ([
     { category, dialect, mode: "default" as const, label: "saved prefix and tool allows", rules: [dialect.prefixRule, dialect.toolName] },
     { category, dialect, mode: "auto" as const, label: "auto review", rules: [] },
     { category, dialect, mode: "allow" as const, label: "allow mode", rules: [] },
@@ -272,7 +281,7 @@ describe("host shells under an unverifiable Ave home boundary", () => {
 
   it.each(workerOnlyCases)("$category on a worker-only boot: $dialect.toolName with $label asks every command", async ({ category, dialect, mode, rules }) => {
     setShellSandboxRequestedAtBoot(false);
-    publishBoundary(category);
+    setAveHomePrivacyAtBoot({ enforcement: "none", home: HOME, reason: category, category });
     const execute = vi.fn();
     const registry = probe(dialect.create, execute);
     const pm = manager(mode, rules);
@@ -287,7 +296,15 @@ describe("host shells under an unverifiable Ave home boundary", () => {
     const card = defined(denied.cards()[0], "approval card");
     expect(card.executionPlan).toMatchObject({ mode: "plain", requestedSandbox: false, fallbackReason: "disabled-by-setting", requiresExplicitUserApproval: true });
     expect(card.allowedChoices).toEqual(["allow-once", "deny-once"]);
-    expect(shellExecutionEnvironmentLines(defined(card.executionPlan, "card execution plan"))).toContain(t("shellExecution.boundaryUnverifiedAsk"));
+    const locale = getLocale();
+    try {
+      for (const shown of ["en", "ko"] as const) {
+        setLocale(shown);
+        expect(shellExecutionEnvironmentLines(defined(card.executionPlan, "card execution plan"))).toContain(CARD_TEXT[shown]);
+      }
+    } finally {
+      setLocale(locale);
+    }
     expect(execute).not.toHaveBeenCalled();
     expect(pm.dispatchReviewer).not.toHaveBeenCalled();
 
