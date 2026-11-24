@@ -3354,16 +3354,19 @@ The remaining backend executables are excluded because Ave never takes their
 paths: `winhttp-proxy-shim.exe` is the elevated, UAC-raising proxy fallback of
 the AppContainer tier, which MXC refuses for `runtimeConfig.networkProxy` with
 egress deny + ingress allow (the only shape Ave sends; boot also requires the
-dry run to select `base-container`); `plm.exe` is the elevated tracing helper
+probe of that request to report `base-container`); `plm.exe` is the elevated tracing helper
 behind `telemetry`, which Ave never enables; the daemon and host-prep binaries
 serve the WSL-container, Windows Sandbox, isolation-session
 and AppContainer+DACL backends. Every PR 9 measurement ran the launcher alone
 in its directory.
 
 - **Detection.** On the boot path the launcher's sha256 must match the pin,
-  `--probe` must report the `base-container` tier, and `--dry-run` of a request
-  shaped like a real one (loopback proxy, default-deny egress, no DACL
-  fallback) must pass. These checks do not start a container. With shell
+  `--probe` of a request shaped like a real one (loopback proxy, default-deny
+  egress, no DACL fallback) must report the `base-container` tier, and
+  `--dry-run` of the same request must report that validation passed. The dry
+  run prints no tier since 1.1.0, so the probed tier is required: a missing or
+  different tier, or exit 0 without the validation result, is refused. These
+  checks do not start a container. With shell
   local-network access off, the real start probe is deferred and shells stay
   on the approved-host route. Once access is on, MXC is `checking`: off the
   critical path, System32 Windows PowerShell
@@ -3373,7 +3376,7 @@ in its directory.
   says the check is running; when it passes and local-network access remains
   on, the effective route switches to MXC. Turning access off prevents a late
   probe result from enabling that route. Detection reads what the launcher does,
-  not the build number: MXC 1.0.1 no longer requires PSEC 1.1 for an
+  not the build number: MXC no longer requires PSEC 1.1 for an
   identity-less loopback proxy (the launcher queries host support and the
   directions depend on the Windows build), so the exact request must still
   validate and start. Any failure

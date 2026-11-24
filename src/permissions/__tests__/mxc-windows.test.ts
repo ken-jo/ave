@@ -29,17 +29,19 @@ const PROBE_BASE_CONTAINER = `{
     "baseContainerSupportsIngressHostLoopbackAllow": true }
 }
 `;
+// What the 1.1.0 launcher prints for a validated request (measured 2026-11-25): no tier line.
 const DRY_RUN_PASSED = [
   "SECTION: Request simplified",
-  "Script code length: 19",
+  "Script code length: 20",
   "Working directory: D:\\cc-verify\\win-mxc-2026-10-19\\m1\\rw",
-  "Script timeout: 60000",
-  "Container name: CLI",
-  "selected isolation tier: base-container",
+  "Script timeout: 1000",
+  "Container name: (assigned by the backend)",
   "Runner completed in 0ms",
   "Dry run completed. Result: validation passed",
   "",
 ].join("\r\n");
+// The 1.0.1 launcher also named the tier it selected.
+const DRY_RUN_PASSED_WITH_TIER = DRY_RUN_PASSED.replace("Runner completed", "selected isolation tier: base-container\r\nRunner completed");
 const DRY_RUN_PROXY_RULE_REJECTED =
   "Request error\r\nConfiguration parse error: runtimeConfig.networkProxy requires network.egress.default='deny' with no direct allow or deny rules\r\n";
 // What wxc-exec printed when Windows PowerShell 5.1 started in a container over SSH (session 0, 2026-10-19), and its exit code.
@@ -61,24 +63,36 @@ describe("parseMxcProbeOutput", () => {
 
 describe("parseMxcDryRunOutput", () => {
   it("accepts only a validated request on the base-container tier", () => {
-    expect(parseMxcDryRunOutput(0, DRY_RUN_PASSED, "")).toEqual({ ok: true });
-    expect(parseMxcDryRunOutput(0, DRY_RUN_PASSED.replace("base-container", "appcontainer"), "")).toEqual({
+    expect(parseMxcDryRunOutput(0, DRY_RUN_PASSED, "", "base-container")).toEqual({ ok: true });
+    expect(parseMxcDryRunOutput(0, DRY_RUN_PASSED_WITH_TIER, "", "base-container")).toEqual({ ok: true });
+    expect(parseMxcDryRunOutput(0, DRY_RUN_PASSED_WITH_TIER.replace("base-container", "appcontainer"), "", "base-container")).toEqual({
       ok: false,
       detail: "selected isolation tier: appcontainer",
     });
   });
+  it.each([
+    [undefined, "probed isolation tier: not reported"],
+    ["appcontainer-dacl", "probed isolation tier: appcontainer-dacl"],
+    ["base-container-like", "probed isolation tier: base-container-like"],
+  ])("refuses a validated request whose probed tier is %s", (probedTier, detail) => {
+    expect(parseMxcDryRunOutput(0, DRY_RUN_PASSED, "", probedTier)).toEqual({ ok: false, detail });
+    expect(parseMxcDryRunOutput(0, DRY_RUN_PASSED_WITH_TIER, "", probedTier)).toEqual({ ok: false, detail });
+  });
+  it("refuses exit 0 without the validation result", () => {
+    expect(parseMxcDryRunOutput(0, "", "", "base-container")).toEqual({ ok: false, detail: "exit 0" });
+  });
   it("keeps the parse error, not the path warnings, as the diagnostic", () => {
-    expect(parseMxcDryRunOutput(1, DRY_RUN_PROXY_RULE_REJECTED, "")).toEqual({
+    expect(parseMxcDryRunOutput(1, DRY_RUN_PROXY_RULE_REJECTED, "", "base-container")).toEqual({
       ok: false,
       detail: "Configuration parse error: runtimeConfig.networkProxy requires network.egress.default='deny' with no direct allow or deny rules",
     });
-    expect(parseMxcDryRunOutput(1, "", DRY_RUN_NON_LOOPBACK)).toEqual({
+    expect(parseMxcDryRunOutput(1, "", DRY_RUN_NON_LOOPBACK, "base-container")).toEqual({
       ok: false,
       detail: "Configuration parse error: runtimeConfig.networkProxy must use localhost, 127.0.0.1, or [::1]",
     });
   });
   it("rejects a non-zero exit even when the text looks successful", () => {
-    expect(parseMxcDryRunOutput(2, DRY_RUN_PASSED, "")).toMatchObject({ ok: false });
+    expect(parseMxcDryRunOutput(2, DRY_RUN_PASSED, "", "base-container")).toMatchObject({ ok: false });
   });
 });
 
@@ -116,12 +130,13 @@ describe("detectMxcSupport", () => {
     const d = deps();
     await expect(detectMxcSupport(d)).resolves.toEqual({ state: "available", windowsBuild: "10.0.26300" });
     expect(d.calls.map((c) => c[0])).toEqual(["--probe", "--dry-run", "--config-base64"]);
-    for (const args of d.calls.slice(1)) {
+    for (const args of d.calls) {
       expect(args).toContain("--config-base64");
       expect(windowsCommandLineLength(wxcExecPathFor(d.resourcePath, d.arch)!, args) + WINDOWS_COMMAND_LINE_MARGIN)
         .toBeLessThan(WINDOWS_COMMAND_LINE_LIMIT);
     }
-    // The dry run validates the request Ave launches: proxy mode, no DACL fallback.
+    // The probe and the dry run judge one request, the shape Ave launches: proxy mode, no DACL fallback.
+    expect(d.calls[0]!.slice(1)).toEqual(d.calls[1]!.slice(1));
     const encoded = d.calls[1]![d.calls[1]!.indexOf("--config-base64") + 1]!;
     const request = JSON.parse(Buffer.from(encoded, "base64").toString("utf8"));
     expect(request.fallback).toEqual({ allowDaclMutation: false });
@@ -162,7 +177,12 @@ describe("detectMxcSupport", () => {
     [{ exists: () => false }, "binary-missing"],
     [{ runs: { "--probe": { code: 1, stdout: "", stderr: "boom" } } }, "probe-failed"],
     [{ runs: { "--probe": new Error("spawn EACCES") } }, "probe-failed"],
+    [{ runs: { "--probe": { code: 1, stdout: PROBE_BASE_CONTAINER, stderr: "" } } }, "probe-failed"],
     [{ runs: { "--probe": { code: 0, stdout: PROBE_BASE_CONTAINER.replace("base-container", "appcontainer-dacl"), stderr: "" } } }, "tier-unsupported"],
+    [{ runs: { "--probe": { code: 0, stdout: PROBE_BASE_CONTAINER.replace('"tier": "base-container",', ""), stderr: "" } } }, "tier-unsupported"],
+    [{ runs: { "--probe": { code: 1, stdout: "", stderr: DRY_RUN_NON_LOOPBACK } } }, "request-rejected"],
+    [{ runs: { "--dry-run": { code: 0, stdout: "", stderr: "" } } }, "request-rejected"],
+    [{ runs: { "--dry-run": { code: 0, stdout: DRY_RUN_PASSED_WITH_TIER.replace("base-container", "appcontainer"), stderr: "" } } }, "request-rejected"],
     [{ runs: { "--dry-run": { code: 1, stdout: DRY_RUN_PROXY_RULE_REJECTED, stderr: "" } } }, "request-rejected"],
     [{ runs: { "--config-base64": { code: 1, stdout: "", stderr: "Access is denied." } } }, "powershell-start-failed"],
     [{ runs: { "--config-base64": new Error("spawn timeout") } }, "powershell-start-failed"],

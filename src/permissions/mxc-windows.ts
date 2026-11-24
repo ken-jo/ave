@@ -71,21 +71,27 @@ export function parseMxcProbeOutput(stdout: string): MxcProbeReport | undefined 
 
 export type MxcDryRunResult = { readonly ok: true } | { readonly ok: false; readonly detail: string };
 
-// Judge `wxc-exec --dry-run`: the request must validate AND select the BaseContainer tier. Anything else (a parse error such as an identity-less proxy the host's PSEC contract cannot carry, an AppContainer tier) is a rejection; its first diagnostic line is kept for the log.
-export function parseMxcDryRunOutput(exitCode: number | null, stdout: string, stderr: string): MxcDryRunResult {
-  const text = `${stdout}\n${stderr}`;
-  if (
-    exitCode === 0 &&
-    /selected isolation tier: base-container/i.test(text) &&
-    /validation passed/i.test(text)
-  ) {
-    return { ok: true };
-  }
-  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0);
+const MXC_CONTAINER_TIER = "base-container";
+
+function outputLines(stdout: string, stderr: string): string[] {
+  return `${stdout}\n${stderr}`.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0);
+}
+
+function configurationParseError(lines: readonly string[]): string | undefined {
+  return lines.find((line) => /^configuration parse error/i.test(line));
+}
+
+// Judge `wxc-exec --dry-run`: the request must validate AND the launcher must have reported the BaseContainer tier for it. The 1.1.0 dry run prints no tier, so the tier comes from `--probe` of the same request (`probedTier`); a missing or different probed tier is a rejection, and so is a tier line (printed by older launchers) that names another tier. A parse error (such as an identity-less proxy the host's PSEC contract cannot carry) is a rejection too; its first diagnostic line is kept for the log.
+export function parseMxcDryRunOutput(exitCode: number | null, stdout: string, stderr: string, probedTier: string | undefined): MxcDryRunResult {
+  const lines = outputLines(stdout, stderr);
+  const otherTier = lines.find((line) => /selected isolation tier/i.test(line) && !/selected isolation tier: base-container$/i.test(line));
+  const validated = exitCode === 0 && lines.some((line) => /validation passed/i.test(line));
+  if (validated && otherTier === undefined && probedTier === MXC_CONTAINER_TIER) return { ok: true };
   const diagnostic =
-    lines.find((line) => /^configuration parse error/i.test(line)) ??
+    configurationParseError(lines) ??
     lines.find((line) => /"message"\s*:/.test(line)) ??
-    lines.find((line) => /selected isolation tier/i.test(line)) ??
+    otherTier ??
+    (validated ? `probed isolation tier: ${probedTier ?? "not reported"}` : undefined) ??
     lines.find((line) => /error/i.test(line) && !/^warning:/i.test(line)) ??
     `exit ${String(exitCode)}`;
   return { ok: false, detail: diagnostic.slice(0, 500) };
@@ -135,7 +141,7 @@ export function classifyMxcStartProbe(
   return { ok: false, reason: "powershell-start-failed", detail };
 }
 
-// Decide, once at boot, whether agent shells can run in MXC on this host. The OS build number is not the gate: MXC 1.0.1 no longer requires PSEC 1.1 for an identity-less loopback proxy (the launcher queries host support, and the directions depend on the Windows build), so a build floor would not establish that the host can carry the request. The gate is what the shipped binary reports: its sha256 must match the pin, `--probe` must select `base-container`, `--dry-run` of the exact request shape Ave launches (proxy mode, DACL fallback refused) must validate on that tier, and System32 Windows PowerShell 5.1 must actually start (`exit 0`) in a real container of that shape. Any failure leaves the shells on the approved-host route.
+// Decide, once at boot, whether agent shells can run in MXC on this host. The OS build number is not the gate: MXC no longer requires PSEC 1.1 for an identity-less loopback proxy (the launcher queries host support, and the directions depend on the Windows build), so a build floor would not establish that the host can carry the request. The gate is what the shipped binary reports: its sha256 must match the pin, `--probe` of the exact request shape Ave launches (proxy mode, DACL fallback refused) must select `base-container`, `--dry-run` of that request must validate, and System32 Windows PowerShell 5.1 must actually start (`exit 0`) in a real container of that shape. Any failure leaves the shells on the approved-host route.
 export async function detectMxcSupport(deps: DetectMxcSupportDeps): Promise<MxcSupport> {
   const prerequisites = await detectMxcPrerequisites(deps);
   if (prerequisites.state === "unavailable") return prerequisites;
@@ -162,16 +168,6 @@ export async function detectMxcPrerequisites(deps: DetectMxcSupportDeps): Promis
   }
   if (digest !== pinnedWxcExecSha256(deps.arch)) return unavailable("launcher-mismatch", `${wxcExec} sha256 ${digest}`);
 
-  let probe: MxcRunResult;
-  try {
-    probe = await deps.run(wxcExec, ["--probe"], MXC_PROBE_TIMEOUT_MS);
-  } catch (error) {
-    return unavailable("probe-failed", errorMessage(error));
-  }
-  const report = probe.code === 0 ? parseMxcProbeOutput(probe.stdout) : undefined;
-  if (report === undefined) return unavailable("probe-failed", `--probe exit ${String(probe.code)}`);
-  if (report.tier !== "base-container") return unavailable("tier-unsupported", `tier ${report.tier ?? "unknown"}`);
-
   const request = buildMxcShellRequest({
     commandLine: "cmd.exe /d /c exit 0",
     cwd: deps.probeDirectory,
@@ -180,13 +176,29 @@ export async function detectMxcPrerequisites(deps: DetectMxcSupportDeps): Promis
     proxyUrl: "http://127.0.0.1:9",
     timeoutMs: 1_000,
   });
+  let probe: MxcRunResult;
+  try {
+    probe = await deps.run(wxcExec, ["--probe", ...mxcRequestArgs(request, wxcExec, ["--probe"])], MXC_PROBE_TIMEOUT_MS);
+  } catch (error) {
+    return unavailable("probe-failed", errorMessage(error));
+  }
+  const report = parseMxcProbeOutput(probe.stdout);
+  if (report === undefined) {
+    const rejected = configurationParseError(outputLines(probe.stdout, probe.stderr));
+    return rejected === undefined
+      ? unavailable("probe-failed", `--probe exit ${String(probe.code)}`)
+      : unavailable("request-rejected", rejected.slice(0, 500));
+  }
+  if (report.tier !== MXC_CONTAINER_TIER) return unavailable("tier-unsupported", `tier ${report.tier ?? "unknown"}`);
+  if (probe.code !== 0) return unavailable("probe-failed", `--probe exit ${String(probe.code)}`);
+
   let dryRun: MxcRunResult;
   try {
     dryRun = await deps.run(wxcExec, ["--dry-run", ...mxcRequestArgs(request, wxcExec, ["--dry-run"])], MXC_PROBE_TIMEOUT_MS);
   } catch (error) {
     return unavailable("probe-failed", errorMessage(error));
   }
-  const verdict = parseMxcDryRunOutput(dryRun.code, dryRun.stdout, dryRun.stderr);
+  const verdict = parseMxcDryRunOutput(dryRun.code, dryRun.stdout, dryRun.stderr, report.tier);
   if (!verdict.ok) return unavailable("request-rejected", verdict.detail);
   return { state: "available", windowsBuild: deps.windowsBuild };
 }
