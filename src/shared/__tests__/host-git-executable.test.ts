@@ -3,7 +3,6 @@ import { accessSync, existsSync, mkdtempSync, renameSync, statSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { delimiter, join, parse, win32 } from "node:path";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
-import { firstPathGit } from "../../../.github/scripts/require-validated-git.mjs";
 import { gitProbeChild } from "../../__tests__/support/git-probe-child.js";
 import { deferred } from "../../__tests__/support/deferred.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -99,6 +98,8 @@ describe("resolveHostGit", () => {
     expect(resolveHostGit({ packaged: false })?.path).toBe(join(host, binary));
     expect(vi.mocked(accessSync).mock.calls.map(([path]) => path)).toEqual([join(other, binary), join(host, binary), join(host, binary), join(host, binary)]);
     expect(execFileSync).toHaveBeenCalledExactlyOnceWith(join(host, binary), ["--no-lazy-fetch", "--version"], expect.anything());
+    const runnerGate = new URL("../../../.github/scripts/require-validated-git.mjs", import.meta.url);
+    const { firstPathGit } = await import(runnerGate.href) as { firstPathGit(searchPath: string): string | null };
     expect(firstPathGit(searchPath)).toBe(join(host, binary));
   });
 

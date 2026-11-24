@@ -67,7 +67,8 @@ describe("the git a stage workspace starts is the one the host's discovery resol
       if (args.includes("init")) return ended(0);
       if (args.includes("--allow-unknown-hook-name")) {
         if (program === replacement) return ended(129);
-        writeFileSync(join(options.cwd!, "ran"), "ran");
+        if (options.cwd === undefined) throw new Error("Missing hook probe directory");
+        writeFileSync(join(options.cwd, "ran"), "ran");
       }
       if (program === first && args.includes("worktree")) {
         const child = new EventEmitter();
