@@ -136,7 +136,7 @@ describe("detectMxcSupport", () => {
         .toBeLessThan(WINDOWS_COMMAND_LINE_LIMIT);
     }
     // The probe and the dry run judge one request, the shape Ave launches: proxy mode, no DACL fallback.
-    expect(d.calls[0]!.slice(1)).toEqual(d.calls[1]!.slice(1));
+    expect(d.calls[0]?.slice(1)).toEqual(d.calls[1]?.slice(1));
     const encoded = d.calls[1]![d.calls[1]!.indexOf("--config-base64") + 1]!;
     const request = JSON.parse(Buffer.from(encoded, "base64").toString("utf8"));
     expect(request.fallback).toEqual({ allowDaclMutation: false });
