@@ -191,8 +191,8 @@ export function buildHostShellExecutionPlan(input: {
   // What would confine a sandboxed child: `mxc` only when the host's MXC route is live and `activeCapability` is that route's capability. Defaults to the ASRT wrap.
   shellSubstrate?: "asrt" | "mxc";
   executionMode?: HostShellExecutionRequest;
-  // Boot could not verify the Ave home read boundary: every plain host shell (unavailable sandbox, shell scope off, Windows partial
-  // shell or explicit host) then needs a human ask for every command.
+  // Boot could not establish Ave home privacy (any category, an unverifiable read boundary included): every plain host shell
+  // (unavailable sandbox, shell scope off, Windows partial shell or explicit host) then needs a human ask for every command.
   unavailableSandboxRequiresAsk?: boolean;
 }): HostShellExecutionPlan {
   const shellSubstrate = input.shellSubstrate ?? "asrt";
@@ -238,7 +238,7 @@ export function buildHostShellExecutionPlan(input: {
       egressProtocolCoverage: egressProtocolCoverageFor("none"),
       capability: noneCapability(input.platform, "The OS shell sandbox is disabled for this host."),
       fallbackReason,
-      // Worker-only confinement can publish the boundary state with the shell scope off; that plain child asks every command too.
+      // Worker-only confinement can publish a home privacy failure with the shell scope off; that plain child asks every command too.
       requiresExplicitUserApproval: askEveryCommand,
       identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":" + fallbackReason + (askEveryCommand ? ASK_EVERY_COMMAND_SUFFIX : ""),
     });
@@ -336,8 +336,8 @@ export function buildHostShellExecutionPlan(input: {
 
 const ASK_EVERY_COMMAND_SUFFIX = ":ask";
 
-// An unconfined plan (unavailable sandbox, shell scope off, or explicit host) that boot marked for a human ask on every command (an unverifiable
-// Ave home boundary). The permission floor reads this, so saved allows, auto review and mode allows cannot run it unasked.
+// An unconfined plan (unavailable sandbox, shell scope off, or explicit host) that boot marked for a human ask on every command (a boot home privacy
+// failure of any category). The permission floor reads this, so saved allows, auto review and mode allows cannot run it unasked.
 // Outside that state an explicit-host plan keeps its ordinary rule and mode handling.
 export function requiresUnsandboxedShellAsk(plan: HostShellExecutionPlan | undefined): boolean {
   if (plan === undefined || plan.mode !== "plain" || plan.sandboxed || plan.capability.kind !== "none" ||

@@ -704,6 +704,14 @@ describe("ensureAveHomePrivate", () => {
       onWindows((path) => nativeDescriptor(path));
       expect(() => assertAveHomeRuntimeBoundary(dir)).not.toThrow();
     });
+    it("tells a user whose path-facts helper gave no answer to restart, not to fix folder permissions", () => {
+      const dir = home();
+      onWindows(missing);
+      setAveHomePrivacyAtBoot({ enforcement: "none", home: dir, failedPath: dir, category: "helper-unavailable", reason: "fixture" });
+      expect(() => assertAveHomeRuntimeBoundary(dir)).toThrow(
+        `AVE_HOME protection is not established (helper-unavailable, ${dir}). Restart Ave; if it persists, reinstall Ave.`);
+      expect(() => assertAveHomeRuntimeBoundary(dir)).not.toThrow(/Fix the folder permissions/);
+    });
     it("points a missing boundary under an unprotected home root to the folder-permission fix before boot publishes a refusal", () => {
       const dir = home();
       onWindows(missing, (path) => {
