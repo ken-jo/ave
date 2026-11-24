@@ -750,7 +750,14 @@ function descriptorFileOperations(beforeRename?: (from: string, to: string) => v
           throw error;
         }
         committed = true;
-        if (old !== null) await journal?.published(identityOf(await copy.stat({ bigint: true })));
+        if (old !== null) {
+          try {
+            await journal?.published(identityOf(await copy.stat({ bigint: true })));
+          } catch (error) {
+            // The record still names the writer, which recovery matches in full here: a rename keeps its birth time.
+            log.warn({ error: String(error) }, "the published download could not be recorded");
+          }
+        }
         if (old !== null && aside !== undefined) {
           try {
             if (mutateEntry(toFd, aside, old, { mode: "retire-hidden" }).outcome === "removed") journal?.resolved();
