@@ -184,6 +184,47 @@ describe("host git starts only where the hold is asked", () => {
   const HOST_GIT_RESOLUTION = /\b(?:resolveHostGit|withHostGitLaunch|withHostGitRecovery|discoverHostGitAsync)\b|["'][^"'\n]*\/host-git-executable\.js["']/u;
   const DIRECT_PROCESS_START = /\b(?:spawn|spawnSync|execFile|execFileSync|exec|execSync|fork)\s*\(/gu;
   const PROCESS_IMPORT = /^\s*import\s+(?!type\b)[^;]*from\s+["'](?:node:)?child_process["']|\b(?:require|import)\s*\(\s*["'](?:node:)?child_process["']/mu;
+  /** Launch entry points that can take a caller-supplied executable or command. */
+  const PROCESS_LAUNCH_WRAPPERS = [
+    ["hooks/script-hook-runner.ts", "runHookChain"],
+    ["hooks/script-hook-runner.ts", "runOneHookScript"],
+    ["main/codex-conversation-runtime.ts", "spawnCodexAppServer"],
+    ["main/codex-native-spawn.ts", "spawnCodexNative"],
+    ["main/document-engine-system-command.ts", "runDocumentEngineSystemCommand"],
+    ["main/editor-command.ts", "launchEditor"],
+    ["main/managed-child-processes.ts", "_spawnGatedManagedProcessForTest"],
+    ["main/managed-child-processes.ts", "spawnGatedManagedProcess"],
+    ["main/managed-child-processes.ts", "spawnManaged"],
+    ["main/windows-job-launcher.ts", "spawnWindowsJobProcess"],
+    ["marketplace/git/global-config.ts", "readCopiedCredentialConfig"],
+    ["marketplace/git/run-git.ts", "GitRunner"],
+    ["mcp/mcp-client.ts", "McpClient"],
+    ["permissions/confined-child.ts", "spawnConfinedChild"],
+    ["permissions/confined-child.ts", "spawnMxcConfinedChild"],
+    ["permissions/judge/external-judge.ts", "ExternalJudge"],
+    ["permissions/mxc-extension-process.ts", "_spawnMxcExtensionProcessForTest"],
+    ["permissions/mxc-extension-process.ts", "spawnMxcExtensionProcess"],
+    ["permissions/mxc-extension-process.ts", "spawnMxcExtensionProcessForDiagnostics"],
+    ["permissions/worker-spawn.ts", "spawnWorker"],
+    ["plugins/isolation/child-loopback-link.ts", "serveStdioRelay"],
+    ["plugins/isolation/mxc-plugin-child.ts", "spawnMxcPluginChild"],
+    ["plugins/isolation/out-of-process-plugin.ts", "spawnConfinedPluginChild"],
+    ["sandbox/wrap-bundled-command.ts", "spawnMxcBundledHolder"],
+    ["sandbox/wrap-bundled-command.ts", "spawnWindowsBundledProcess"],
+    ["shared/host-git-probe.ts", "runGitProbeAsync"],
+    ["shared/host-git-probe.ts", "runGitProbeSync"],
+    ["shared/host-git.ts", "spawnHostGitIfWorkspaceFree"],
+    ["tools/shell-tools.ts", "_spawnPowerShellForTest"],
+    ["tools/shell-tools.ts", "spawnWithSandbox"],
+  ] as const;
+  const WRAPPED_PROCESS_START = new RegExp(`\\b(?:${PROCESS_LAUNCH_WRAPPERS.map(([, wrapper]) => wrapper).join("|")})\\b`, "gu");
+  // Discovery probes installations, the marketplace owns its runner, and workspace calls use the guarded shared launch.
+  const APPROVED_LAUNCH_WRAPPERS: ReadonlyMap<string, readonly string[]> = new Map([
+    ["shared/host-git-executable.ts", ["runGitProbeAsync", "runGitProbeSync"]],
+    ["marketplace/git/marketplace-git.ts", ["GitRunner", "readCopiedCredentialConfig"]],
+    ["memory/project-agents-md.ts", ["spawnHostGitIfWorkspaceFree"]],
+    ["work-board/workflow/host-git.ts", ["spawnHostGitIfWorkspaceFree"]],
+  ]);
   const productSources = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap(entry => entry.isDirectory()
     ? entry.name === "__tests__" ? [] : productSources(join(dir, entry.name))
     : /\.tsx?$/u.test(entry.name) && !/\.d\.ts$/u.test(entry.name) ? [join(dir, entry.name)] : []);
@@ -200,7 +241,7 @@ describe("host git starts only where the hold is asked", () => {
       if (/\bisHostGitWorkspaceAvailable\b/u.test(outsideCache) && !ASKS_THE_HOLD.has(file)) found.push(`${file}: asks the hold apart from the start`);
     }
     for (const [file, text] of sources) {
-      if (!HOST_GIT_RESOLUTION.test(text) || file === "shared/host-git-executable.ts") continue;
+      if (!HOST_GIT_RESOLUTION.test(text)) continue;
       // The verified plan only probes the executable version from the installation directory.
       const other = file === "permissions/verified-shell-command.ts"
         ? text.replace(/import \{ execFileSync \} from "node:child_process";/u, "")
@@ -208,6 +249,10 @@ describe("host git starts only where the hold is asked", () => {
         : text;
       if ([...other.matchAll(DIRECT_PROCESS_START)].length !== 0) found.push(`${file}: starts a process itself`);
       if (PROCESS_IMPORT.test(other)) found.push(`${file}: imports a process start`);
+      const approved = APPROVED_LAUNCH_WRAPPERS.get(file);
+      for (const wrapper of new Set(other.match(WRAPPED_PROCESS_START))) {
+        if (!approved?.includes(wrapper)) found.push(`${file}: uses a process launch wrapper ${wrapper}`);
+      }
     }
     if ((sources.get("shared/host-git.ts") ?? "").match(/\bspawn\(/gu)?.length !== 1) found.push("shared/host-git.ts: starts git other than in the one start");
     const shellTools = sources.get("tools/shell-tools.ts") ?? "";
@@ -230,6 +275,17 @@ describe("host git starts only where the hold is asked", () => {
       withHostGitRecovery(null, async ({ git }) => start(git.path, args, { cwd }));
     `);
     expect(problems(sources)).toContain("workspace/new-consumer.ts: imports a process start");
+  });
+
+  it.each(PROCESS_LAUNCH_WRAPPERS)("refuses %s wrapper %s in a new resolver consumer", (module, wrapper) => {
+    const file = "workspace/new-consumer.ts";
+    const modulePath = module.replace(/\.ts$/u, ".js");
+    const sources = new Map([[file, `
+      import { withHostGitRecovery } from "../shared/host-git-executable.js";
+      import { ${wrapper} as startChild } from "../${modulePath}";
+      withHostGitRecovery(null, async ({ git }) => startChild(git.path, args, { cwd }));
+    `]]);
+    expect(problems(sources)).toContain(`${file}: uses a process launch wrapper ${wrapper}`);
   });
 
   it("refuses a verified Bash launch with the availability check removed", () => {
