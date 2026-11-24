@@ -37,7 +37,7 @@ import {
   setPluginWorkerConfinementRequestedAtBoot,
 } from "../sandbox-capability.js";
 import { createSandboxProcessHome } from "../sandbox-process-home.js";
-import { bundledWrappedEnv, wrapBundledCommand } from "../../sandbox/wrap-bundled-command.js";
+import { wrapBundledCommand } from "../../sandbox/wrap-bundled-command.js";
 import { getConfiguredSessionReadPolicy } from "../sensitive-paths.js";
 import { asrtCanInitialize } from "./test-helpers.js";
 
@@ -512,13 +512,14 @@ describe.skipIf(hostPlatform === "win32")("a confined child cannot reach user da
         command: "/bin/sh",
         args: ["-c", `cat ${join(sessions, "s.jsonl")}; echo probe-finished`],
         sandboxHome: home,
+        targetEnv: { PATH: process.env.PATH },
         // Lands in the bundled wrap's allowRead as well.
         allowWrite: [sessions],
         ownPluginReads: [],
         tempPrincipal: { kind: "mcp", id: "protected-write-roots" },
       });
       const run = spawnSync(argv[0]!, argv.slice(1), {
-        env: bundledWrappedEnv({ PATH: process.env.PATH ?? "/usr/bin:/bin" }, env, home.env),
+        env,
         encoding: "utf-8",
         timeout: 30_000,
       });
@@ -629,12 +630,13 @@ describe.skipIf(hostPlatform === "win32")("a confined child cannot reach user da
         command: "/bin/sh",
         args: ["-c", pluginsProbe(layout, [join(layout.generation, "hook.txt")])],
         sandboxHome: home,
+        targetEnv: { PATH: process.env.PATH },
         allowWrite: [layout.ownData],
         ownPluginReads: [layout.generation],
         tempPrincipal: { kind: "plugin", id: "own" },
       });
       const run = spawnSync(argv[0]!, argv.slice(1), {
-        env: bundledWrappedEnv({ PATH: process.env.PATH ?? "/usr/bin:/bin" }, env, home.env),
+        env,
         encoding: "utf-8",
         timeout: 30_000,
       });
@@ -656,12 +658,13 @@ describe.skipIf(hostPlatform === "win32")("a confined child cannot reach user da
         command: "/bin/sh",
         args: ["-c", pluginsProbe(layout, [join(layout.ownAgentGeneration, "hook.txt")], layout.ownAgentData)],
         sandboxHome: home,
+        targetEnv: { PATH: process.env.PATH },
         allowWrite: [layout.ownAgentData],
         ownPluginReads: [layout.ownAgentGeneration],
         tempPrincipal: { kind: "plugin", id: "agent-plugin/own" },
       });
       const run = spawnSync(argv[0]!, argv.slice(1), {
-        env: bundledWrappedEnv({ PATH: process.env.PATH ?? "/usr/bin:/bin" }, env, home.env),
+        env,
         encoding: "utf-8",
         timeout: 30_000,
       });

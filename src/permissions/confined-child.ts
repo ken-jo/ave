@@ -19,7 +19,6 @@ import {
   appOwnedSandboxTempRoot,
   appOwnedTerminalHandoffRoot,
   runWithSandboxWritePreflight,
-  sandboxTempEnvLaunch,
   wrapWorkerCommand,
   type SandboxTempPrincipal,
   type WrapOptions,
@@ -50,13 +49,13 @@ import type { MxcExtensionReadinessEvidence } from "./mxc-extension-readiness.js
 import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
 import { registerMxcHolderLifetime } from "./mxc-holder-lifetime.js";
 import { assertMxcHolderPrivateDirectories, type MxcExtensionFilesystemOwnership } from "./mxc-filesystem-ownership.js";
-import { buildSandboxedChildEnv, isSandboxWrapperEnvKey } from "../tools/safe-env.js";
+import { isSandboxWrapperEnvKey } from "../tools/safe-env.js";
 import {
   assertManagedChildProcessAdmissionOpen,
   spawnGatedManagedProcess,
   trackManagedChildProcess,
 } from "../main/managed-child-processes.js";
-import { shellQuote } from "../lib/shell-resolver.js";
+import { buildLauncherEnvironment, buildSandboxTargetCommand } from "./launcher-environment.js";
 import { createLogger } from "../lib/logger.js";
 import { mainDir } from "../main/main-paths.js";
 import {
@@ -438,7 +437,7 @@ export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<Confi
   const stdio = spec.stdio ?? ["ignore", "pipe", "pipe"];
   if (spec.windowsStdio === "relay") assertRelayableSpec(spec, stdio);
 
-  const { executable, args, wrappedEnv, confinement, relayRequest, egress } = await resolveSpawnLine(spec);
+  const { executable, args, env, confinement, relayRequest, egress } = await resolveSpawnLine(spec);
   let child: ChildProcess;
   const assertStillValid = (): void => {
     spec.assertStillValid?.();
@@ -464,7 +463,7 @@ export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<Confi
       windowsHide: true,
       // A wrapped child starts its own process session, so the sandbox profile's refusal to read other processes' arguments and environment (the carried ASRT patch) covers this process group too: Seatbelt only refuses it across sessions.
       ...(egress !== undefined && process.platform !== "win32" ? { detached: true } : {}),
-      env: composeConfinedEnv(spec.baseEnv, wrappedEnv, spec.extraEnv ?? {}),
+      env,
       // On the relay the program's directory also travels in its request; srt-win itself still starts in it.
       ...(spec.cwd !== undefined ? { cwd: spec.cwd } : {}),
     };
@@ -581,7 +580,7 @@ async function resolveSpawnLine(
 ): Promise<{
   executable: string;
   args: string[];
-  wrappedEnv: NodeJS.ProcessEnv;
+  env: NodeJS.ProcessEnv;
   confinement: SpawnConfinement;
   relayRequest?: RelayRequest;
   egress?: EgressInvocation;
@@ -592,7 +591,7 @@ async function resolveSpawnLine(
   if (offline ? !isOfflineProcessConfinementActive() : !isPluginWorkerConfinementActive()) {
     if (offline) throw new Error(`[confined-child] ${spec.label}: an offline process needs the OS sandbox, which is not active`);
     if (spec.requireWrap) throw new Error(`[confined-child] ${spec.label}: child requires active confinement`);
-    return { executable: spec.command, args: [...spec.args], wrappedEnv: {}, confinement: "unconfined" };
+    return { executable: spec.command, args: [...spec.args], env: { ...spec.baseEnv, ...spec.extraEnv }, confinement: "unconfined" };
   }
   const confinement = wrapConfinement(spec.label);
   // srt-win refuses to start unless the sandbox account can read the attributes of its working directory (it reports that as
@@ -603,15 +602,16 @@ async function resolveSpawnLine(
   }
   const relay = spec.windowsStdio === "relay" && confinement === "windows-srt" ? windowsRelayLaunch(spec) : undefined;
   const temp = spec.grantMode === "allow-list" ? ensureSandboxTempPrincipalDir(requireTempPrincipal(spec)) : undefined;
-  const launch = relay?.launch ?? (temp ? sandboxTempEnvLaunch(temp.dir, spec.command, spec.args) : spec);
-  const { cmdline, binShell } = buildConfinedCommandLine(launch.command, launch.args, relay?.launch ?? spec);
+  const launcherEnv = buildLauncherEnvironment();
+  const { cmdline, binShell } = confinement === "windows-srt"
+    ? buildWindowsConfinedCommandLine(relay?.launch ?? spec)
+    : { cmdline: buildSandboxTargetCommand(spec.command, spec.args, { ...spec.baseEnv, ...spec.extraEnv }, temp?.dir), binShell: undefined };
   const egress = openEgressInvocation(spec.egressOwner);
   // The child's floor and its wrap share one Ave home boundary snapshot.
   const boundarySnapshot = createAveHomeBoundarySnapshot();
   let argv: string[];
-  let env: NodeJS.ProcessEnv;
   try {
-    ({ argv, env } = await runWithSandboxWritePreflight(undefined, () => wrapWorkerCommand(cmdline, {
+    ({ argv } = await runWithSandboxWritePreflight(undefined, () => wrapWorkerCommand(cmdline, {
       filesystem: boundarySnapshot.run(() => buildFilesystemConfinement(spec, temp)),
       boundarySnapshot,
       ...(binShell !== undefined ? { binShell } : {}),
@@ -636,7 +636,7 @@ async function resolveSpawnLine(
   return {
     executable,
     args,
-    wrappedEnv: env,
+    env: launcherEnv,
     confinement,
     egress,
     ...(relay !== undefined ? { relayRequest: relay.request } : {}),
@@ -688,28 +688,22 @@ function buildFilesystemConfinement(spec: ConfinedChildSpec, temp: { dir: string
   };
 }
 
-// Assemble the command line ASRT will run. Every token is quoted so a path containing spaces or shell metacharacters cannot mis-split: ASRT runs this through a shell on both platforms.
-function buildConfinedCommandLine(
-  command: string,
-  args: readonly string[],
-  spec: Pick<ConfinedChildSpec, "label" | "windowsShell" | "windowsCommandLineEnv">,
+function buildWindowsConfinedCommandLine(
+  spec: Pick<ConfinedChildSpec, "command" | "args" | "label" | "windowsShell" | "windowsCommandLineEnv">,
 ): { readonly cmdline: string; readonly binShell?: WrapOptions["binShell"] } {
   if (spec.windowsCommandLineEnv !== undefined && spec.windowsShell !== "cmd") {
     throw new Error(`[confined-child] ${spec.label}: windowsCommandLineEnv needs windowsShell "cmd"`);
   }
-  if (process.platform === "win32") {
-    if (spec.windowsShell !== "cmd") {
-      throw new Error(
-        `[confined-child] ${spec.label}: a Windows sandboxed spawn names windowsStdio "relay" or windowsShell "cmd"; `
-          + "srt-win's PowerShell launch delivers no stdin, no environment and no exit code",
-      );
-    }
-    return {
-      cmdline: buildCmdCommandLine(spec.label, command, args, spec.windowsCommandLineEnv ?? {}),
-      binShell: { exe: win32SystemBinary("cmd"), args: ["/d", "/v:off", "/s", "/c"] },
-    };
+  if (spec.windowsShell !== "cmd") {
+    throw new Error(
+      `[confined-child] ${spec.label}: a Windows sandboxed spawn names windowsStdio "relay" or windowsShell "cmd"; `
+        + "srt-win's PowerShell launch delivers no stdin, no environment and no exit code",
+    );
   }
-  return { cmdline: [command, ...args].map((part) => shellQuote(part)).join(" ") };
+  return {
+    cmdline: buildCmdCommandLine(spec.label, spec.command, spec.args, spec.windowsCommandLineEnv ?? {}),
+    binShell: { exe: win32SystemBinary("cmd"), args: ["/d", "/v:off", "/s", "/c"] },
+  };
 }
 
 // `cmd.exe` limits its command line to 8191 characters; this leaves room for nothing else to be added to it.
@@ -753,21 +747,4 @@ function assertCmdSafe(label: string, token: string): void {
         + "move the plugin, or the app, to a path without it",
     );
   }
-}
-
-// Compose the child's environment. Only the variables ASRT actually CHANGED are overlaid. Taking its whole composed environment would drag in this process's own values under the guise of proxy configuration, so it is diffed against a baseline composed from `process.env` and only the differences carry over.
-function composeConfinedEnv(
-  baseEnv: NodeJS.ProcessEnv,
-  wrappedEnv: NodeJS.ProcessEnv,
-  extraEnv: Record<string, string>,
-): NodeJS.ProcessEnv {
-  const asrtComposed: Record<string, string> = buildSandboxedChildEnv(wrappedEnv);
-  const safeBaseline: Record<string, string> = buildSandboxedChildEnv(process.env);
-  const proxyOverlay: Record<string, string> = {};
-  for (const [key, value] of Object.entries(asrtComposed)) {
-    if (value === undefined) continue;
-    if (safeBaseline[key] === value) continue;
-    proxyOverlay[key] = value;
-  }
-  return { ...baseEnv, ...proxyOverlay, ...extraEnv };
 }

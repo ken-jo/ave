@@ -1,15 +1,13 @@
-import { shellQuote } from "../lib/shell-resolver.js";
 import {
   getDefaultSensitiveReadDenyPaths,
   getDefaultSensitiveWriteDenyEntries,
   cleanupAsrtSandboxAfterCommand,
   ensureSandboxTempPrincipalDir,
-  sandboxTempEnvLaunch,
   wrapWorkerCommand,
   type SandboxTempPrincipal,
 } from "../permissions/asrt-sandbox.js";
 import { createAveHomeBoundarySnapshot } from "../permissions/ave-home-boundary-snapshot.js";
-import { buildSandboxedChildEnv } from "../tools/safe-env.js";
+import { buildLauncherEnvironment, buildSandboxTargetCommand, stageSandboxTargetEnvironment } from "../permissions/launcher-environment.js";
 import type { ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, rmdirSync, statSync, unlinkSync } from "node:fs";
@@ -49,6 +47,7 @@ export interface BundledWrapInput {
   command: string;
   args: readonly string[];
   sandboxHome: { path: string; env: Record<string, string> };
+  targetEnv: NodeJS.ProcessEnv;
   allowWrite: readonly string[];
   /** The directories of the process's own plugin it reads, re-allowed inside the plugins-root deny: a hook's generation root,
    * a bundled server's payload root. Empty for a server that belongs to no plugin, which then reads nothing under the root. */
@@ -71,8 +70,8 @@ export async function wrapBundledCommand(input: BundledWrapInput): Promise<{ arg
   // The principal's own temp directory, set as its TMPDIR inside the wrap (ASRT's own assignment would otherwise name the shared root) and granted alone; the read floor denies the
   // shared temp and HOME roots, so no other principal's temp files or HOME can be read either, and the process HOME re-allowed here is its own; as `confined-child.ts` does for its children.
   const temp = ensureSandboxTempPrincipalDir(input.tempPrincipal);
-  const launch = sandboxTempEnvLaunch(temp.dir, input.command, input.args);
-  const cmdline = [launch.command, ...launch.args].map(shellQuote).join(" ");
+  const stagedEnv = stageSandboxTargetEnvironment(input.sandboxHome.path, { ...input.targetEnv, ...input.sandboxHome.env });
+  const cmdline = buildSandboxTargetCommand(input.command, input.args, {}, temp.dir, stagedEnv);
   const egress = openEgressInvocation(input.egressOwner);
   let result: { argv: string[]; env: NodeJS.ProcessEnv };
   try {
@@ -106,22 +105,7 @@ export async function wrapBundledCommand(input: BundledWrapInput): Promise<{ arg
     await cleanupAsrtSandboxAfterCommand();
     throw new Error("ASRT returned an empty argv for a bundled process");
   }
-  return { ...result, egress };
-}
-
-/** Preserve only ASRT's changed proxy keys over the caller's stripped environment. */
-export function bundledWrappedEnv(
-  baseEnv: NodeJS.ProcessEnv,
-  wrappedEnv: NodeJS.ProcessEnv,
-  sandboxHomeEnv: Record<string, string>,
-): NodeJS.ProcessEnv {
-  const composed = buildSandboxedChildEnv(wrappedEnv);
-  const baseline = buildSandboxedChildEnv(process.env);
-  const overlay: Record<string, string> = {};
-  for (const [key, value] of Object.entries(composed)) {
-    if (value !== undefined && baseline[key] !== value) overlay[key] = value;
-  }
-  return { ...baseEnv, ...overlay, ...sandboxHomeEnv };
+  return { argv: result.argv, env: buildLauncherEnvironment(), egress };
 }
 
 /** A bundled process started under srt-win, and what it holds while it runs. */

@@ -30,6 +30,7 @@ import {
 } from "./worker-stdio-control.js";
 import { buildSafeChildEnv } from "../tools/safe-env.js";
 import { spawnConfinedChild } from "./confined-child.js";
+import { assertConfiguredLauncherEnvironment } from "./launcher-environment.js";
 import {
   assertManagedChildProcessAdmissionOpen,
   trackManagedChildProcess,
@@ -208,11 +209,7 @@ async function prepareWorkerStateDirectory(pluginId: string, workerId: string): 
 const WORKER_STDIO: StdioOptions = ["pipe", "pipe", "pipe"];
 
 function definedEnv(env: NodeJS.ProcessEnv | undefined): Record<string, string> {
-  const extra: Record<string, string> = {};
-  for (const [key, value] of Object.entries(env ?? {})) {
-    if (value !== undefined) extra[key] = value;
-  }
-  return extra;
+  return Object.fromEntries(Object.entries(env ?? {}).filter((entry): entry is [string, string] => entry[1] !== undefined));
 }
 
 // Spawn a plugin worker, host-mediated and (gate ON) ASRT-wrapped. See the module header for the model. A stdio-control worker resolves only after it answered the host's hello; otherwise it is stopped, its exit awaited, and the call rejects with WorkerControlFailedError.
@@ -240,7 +237,9 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
   const args = [...(spec.args ?? [])];
 
   // Secret-stripped base env (Least Privilege), shared with other child process spawners so Windows runtime variables stay complete without forwarding provider/API-key secrets.
-  const baseEnv: NodeJS.ProcessEnv = buildSafeChildEnv(definedEnv(spec.env));
+  const configuredEnv = definedEnv(spec.env);
+  assertConfiguredLauncherEnvironment(configuredEnv);
+  const baseEnv: NodeJS.ProcessEnv = buildSafeChildEnv(configuredEnv);
   const stateDir = spec.stateDirectory === true ? await prepareWorkerStateDirectory(safePlugin, safeWorker) : undefined;
   if (stateDir !== undefined) baseEnv[WORKER_STATE_DIR_ENV] = stateDir;
   const stateGrant = stateDir !== undefined ? [stateDir] : [];

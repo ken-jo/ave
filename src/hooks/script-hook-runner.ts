@@ -50,7 +50,6 @@ import { createSandboxProcessHome } from "../permissions/sandbox-process-home.js
 import type { EgressInvocation, WorkerEgressOwner } from "../permissions/egress-invocations.js";
 import {
   assertMxcHolderNotBashForm,
-  bundledWrappedEnv,
   isMxcExtensionBackendSelected,
   MxcBashIncompatibleError,
   spawnMxcBundledHolder,
@@ -59,6 +58,7 @@ import {
   type MxcBundledHolder,
   type WindowsBundledSpawn,
 } from "../sandbox/wrap-bundled-command.js";
+import { assertConfiguredLauncherEnvironment } from "../permissions/launcher-environment.js";
 
 const log = createLogger("hook-runner");
 
@@ -376,6 +376,7 @@ export async function runOneHookScript(
   } else if (sandboxEnabled && process.platform === "win32" && (confinement || admittedPlan?.mode === "asrt")) {
     // Windows hooks use a stdio relay with read access to their generation and write access to their data.
     try {
+      assertConfiguredLauncherEnvironment(runnable.env ?? {});
       await refreshCommandAllowed?.();
       windowsSpawn = await spawnWindowsBundledProcess({
         label: `hook:${confinement?.pluginId ?? "user"}`,
@@ -407,8 +408,10 @@ export async function runOneHookScript(
     const sandboxHome = createSandboxProcessHome();
     let wrappedAsrt = false;
     try {
+      assertConfiguredLauncherEnvironment(runnable.env ?? {});
       const wrapped = await wrapBundledCommand({ command: spawnCmd, args: spawnArgs,
         sandboxHome,
+        targetEnv: childEnvBase,
         allowWrite: confinement ? [confinement.dataDir] : [projectDir],
         ownPluginReads: confinement ? [confinement.generationRoot] : userScriptReads,
         tempPrincipal: confinement ? { kind: "plugin", id: confinement.pluginId }
@@ -417,7 +420,7 @@ export async function runOneHookScript(
       wrappedEgress = wrapped.egress;
       wrappedAsrt = true;
       [spawnCmd, ...spawnArgs] = wrapped.argv;
-      spawnEnv = bundledWrappedEnv(childEnvBase, wrapped.env, sandboxHome.env);
+      spawnEnv = wrapped.env;
       let cleaned = false;
       cleanupWrap = () => {
         if (cleaned) return;

@@ -77,7 +77,7 @@ import { createRecordingHost } from "./host-protocol-recording-host.js";
 import { useVerifiedAveHomePrivacy } from "../../../__tests__/support/ave-home-privacy.js";
 import { assertProcessEntryAdmitted, resolveProcessLaunch } from "../../process-entry.js";
 import { PLUGIN_INSTANCE_METHODS } from "../plugin-instance-wire.js";
-import { bundledWrappedEnv, wrapBundledCommand } from "../../../sandbox/wrap-bundled-command.js";
+import { wrapBundledCommand } from "../../../sandbox/wrap-bundled-command.js";
 import { createSandboxProcessHome } from "../../../permissions/sandbox-process-home.js";
 import { buildSafeChildEnv } from "../../../tools/safe-env.js";
 import {
@@ -3753,6 +3753,36 @@ describe("the sandbox temp directories", () => {
   );
 });
 
+it.runIf(process.platform === "darwin" || process.platform === "linux")(
+  "refuses worker startup variables and delivers the confined target environment",
+  async () => {
+    if (!(await sandboxCasesRun())) return;
+    await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+    const loaderName = process.platform === "linux" ? "LD_PRELOAD" : "DYLD_INSERT_LIBRARIES";
+    const spec = {
+      pluginId: "environment-probe",
+      workerId: "probe",
+      control: "output-only-v1",
+      command: "/bin/sh",
+      args: ["-c", `printf "%s\\n" "$WORKER_PROBE" "$PATH" "$SANDBOX_RUNTIME" "\${BASH_ENV-unset}" "\${ENV-unset}" "\${LD_PRELOAD-unset}" "\${DYLD_INSERT_LIBRARIES-unset}"`],
+    } as const;
+    for (const name of ["BASH_ENV", "ENV", loaderName]) {
+      await expect(spawnWorker({ ...spec, env: { [name]: "" } })).rejects.toMatchObject({
+        name: "LauncherEnvironmentError",
+        code: "launcher-environment-refused",
+      });
+    }
+    const worker = await spawnWorker({ ...spec, env: { WORKER_PROBE: "-a=b" } });
+    let output = "";
+    worker.onStdout(chunk => { output += chunk; });
+    await expect(new Promise(resolve => worker.onExit(resolve))).resolves.toMatchObject({ code: 0 });
+    expect(output.trimEnd().split("\n")).toEqual([
+      "-a=b", process.env.PATH ?? "/usr/bin:/bin:/usr/sbin:/sbin", "1", "unset", "unset", "unset", "unset",
+    ]);
+  },
+  60_000,
+);
+
 /** A plugin installed under `home`, for the cases that need a short AVE_HOME. */
 function installTempPlugin(home: string, pluginId: string): InstalledPlugin {
   const pluginRoot = join(home, "plugins", pluginId);
@@ -3943,6 +3973,7 @@ async function runBundledWrapToExit(
       command: process.execPath,
       args: [probe],
       sandboxHome,
+      targetEnv: buildSafeChildEnv({ ELECTRON_RUN_AS_NODE: "1" }),
       allowWrite: [],
       ownPluginReads: [],
       tempPrincipal: principal,
@@ -3950,7 +3981,7 @@ async function runBundledWrapToExit(
     try {
       const child = spawn(argv[0]!, argv.slice(1), {
         stdio: ["ignore", "ignore", "ignore"],
-        env: bundledWrappedEnv(buildSafeChildEnv({ ELECTRON_RUN_AS_NODE: "1" }), env, sandboxHome.env),
+        env,
       });
       await new Promise<void>((resolve, reject) => {
         child.once("exit", () => resolve());

@@ -212,9 +212,9 @@ describe("spawnConfinedChild", () => {
       baseEnv: {},
     });
     const [cmdline] = wrapWorkerCommandMock.mock.calls.at(-1)!;
-    expect(cmdline).toBe(
-      `'/usr/bin/env' 'TMPDIR=${TEMP_DIR}' 'TMP=${TEMP_DIR}' 'TEMP=${TEMP_DIR}' '/usr/bin/python3' '-u'`,
-    );
+    expect(cmdline).toContain("/usr/bin/env -i --");
+    expect(cmdline).toContain(`'TMPDIR=${TEMP_DIR}' 'TMP=${TEMP_DIR}' 'TEMP=${TEMP_DIR}'`);
+    expect(cmdline).toContain("'/usr/bin/python3' '-u'");
   });
 
   it("refuses an allow-list spawn that names no temp principal, before any wrap", async () => {
@@ -499,8 +499,11 @@ describe("spawnConfinedChild", () => {
 
     const [, , options] = spawnMock.mock.calls.at(-1)!;
     const env = (options as { env: NodeJS.ProcessEnv }).env;
-    expect(env.HOME).toBe("/sandbox/home");
-    expect(env.KEEP).toBe("1");
+    expect(env).toEqual({ PATH: "/usr/bin:/bin:/usr/sbin:/sbin" });
+    const cmdline = wrapWorkerCommandMock.mock.calls.at(-1)?.[0];
+    expect(cmdline).toContain("'HOME=/sandbox/home'");
+    expect(cmdline).toContain("'KEEP=1'");
+    expect(cmdline).not.toContain("HOME=/home/u");
   });
 
   it("registers the child under the caller's label", async () => {
