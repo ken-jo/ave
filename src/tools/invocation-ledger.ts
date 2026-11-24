@@ -1,5 +1,5 @@
 import type { AuditLogger } from "../audit/audit-logger.js";
-import type { PermissionAuditEntryInput } from "../audit/audit-schema.js";
+import { terminalDenyKindOf, type AuditDenyKind, type PermissionAuditEntryInput } from "../audit/audit-schema.js";
 import { createLogger } from "../lib/logger.js";
 import { errorMessage } from "../shared/error-message.js";
 import { HostExitAbortError, isHostExitAbort } from "../shared/host-exit-abort.js";
@@ -38,7 +38,7 @@ export type TerminalLifecycleEvent = "PermissionDenied";
  * cancellation (a user abort, a host shutdown, a deadline drain) that no permission decided. The writer of each deny row
  * names it; the ledger reads nothing else to decide whether the row is a denial.
  */
-export type TerminalDenyKind = "denied" | "cancelled";
+export type TerminalDenyKind = AuditDenyKind;
 type DenyEntry = Extract<PermissionAuditEntryInput, { decision: "deny" }>;
 
 /** A permission denial the ledger committed; only the ledger mints one, so only its lifecycle can fire PermissionDenied. */
@@ -165,16 +165,17 @@ class TerminalLedger implements InvocationTerminal {
       this.#take();
       const { logger, reason } = terminal;
       const cancellation = terminal.kind === "denied" ? this.#abortCancellation(terminal.answered === true) : undefined;
-      const entry = cancellation === undefined || terminal.entry.decision !== "deny" ? terminal.entry
-        : { ...terminal.entry, denyReasons: [{ reason: cancellation, source: "tool-executor" }, ...terminal.entry.denyReasons] };
-      const kind = cancellation === undefined ? terminal.kind : "cancelled";
+      // A deny row persists its kind, so a reader of the row and its PermissionDenied can never disagree.
+      const entry: PermissionAuditEntryInput = terminal.entry.decision !== "deny" ? terminal.entry
+        : cancellation === undefined ? { ...terminal.entry, terminalKind: terminal.kind }
+        : { ...terminal.entry, terminalKind: "cancelled", denyReasons: [{ reason: cancellation, source: "tool-executor" }, ...terminal.entry.denyReasons] };
       const append = logger ? appendTerminalRow(logger, entry) : Promise.resolve();
       this.#track(append);
       const lifecycle = this.#lifecycle;
       return (async () => {
         // The one rule: a permission denial fires PermissionDenied unless the attempt is governed; a cancellation never does.
-        if (kind === "denied" && lifecycle !== undefined && !lifecycle.governed()) {
-          await lifecycle.fire(new LedgerDenial(reason ?? (entry.decision === "deny" ? entry.denyReasons[0]?.reason : undefined) ?? ""));
+        if (entry.decision === "deny" && terminalDenyKindOf(entry) === "denied" && lifecycle !== undefined && !lifecycle.governed()) {
+          await lifecycle.fire(new LedgerDenial(reason ?? entry.denyReasons[0]?.reason ?? ""));
         }
         await append;
       })();

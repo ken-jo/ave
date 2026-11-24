@@ -142,6 +142,27 @@ interface AuditDeny extends AuditCommon {
   /** Who answered the allow this host refusal overrode; trustOrigin stays the host's. */
   answerTrustOrigin?: HookTrustOrigin;
   hookChain?: HookResult[];
+  /** What an invocation's terminal deny ended; the ledger writes it on every one. Rows without it are read through terminalDenyKindOf. */
+  terminalKind?: AuditDenyKind;
+}
+
+/** A permission denial (a rule, a person, a hook, a host policy, an integrity failure), or a cancellation no permission decided. */
+export type AuditDenyKind = "denied" | "cancelled";
+
+// The first reasons a cancellation's row carried before terminalKind was written. A reason alone cannot always tell the kind (the
+// plugin runtime's shutdown is told from a retired generation by its error code, not its message), so new rows persist it.
+const LEGACY_CANCELLATION_REASONS: ReadonlySet<string> = new Set([
+  "user aborted turn",
+  "host-shutdown",
+  "Hook execution cancelled",
+  "Plugin generation admission denied: plugin runtime is shutting down",
+]);
+
+/** The kind of a persisted deny row: its terminalKind when written, else derived from its first reason. */
+export function terminalDenyKindOf(entry: Pick<AuditDeny, "denyReasons" | "terminalKind">): AuditDenyKind {
+  if (entry.terminalKind !== undefined) return entry.terminalKind;
+  const first = entry.denyReasons[0]?.reason;
+  return first !== undefined && LEGACY_CANCELLATION_REASONS.has(first) ? "cancelled" : "denied";
 }
 
 /** Mode slash commands require user-keyboard origin; retain the origin for forensic verification. */

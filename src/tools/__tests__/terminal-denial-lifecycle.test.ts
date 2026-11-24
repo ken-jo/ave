@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { terminalDenyKindOf } from "../../audit/audit-schema.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { answeredApprovalDecision } from "../../__tests__/support/answering-approval-gate.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
@@ -152,7 +153,7 @@ async function setup(source: Source) {
     .map((line) => JSON.parse(line) as Record<string, unknown>).filter((row) => row.decision !== "ask");
   const rows = (id = "denied-call") => allRows().filter((row) => row.toolUseId === id);
   const denials = () => lifecycle.mock.calls.filter(([event]) => event === "PermissionDenied");
-  return { ledger, audit, run, rows, denials, running, release, controller, cardOpen, gate: realGate, saveStarted, persisted };
+  return { ledger, audit, run, rows, denials, running, release, controller, cardOpen, gate: realGate, saveStarted, persisted, source };
 }
 
 type Probe = Awaited<ReturnType<typeof setup>>;
@@ -171,7 +172,8 @@ async function settledRow(probe: Probe, id = "denied-call"): Promise<Record<stri
 async function expectOneDenial(probe: Probe, reason: string | RegExp): Promise<void> {
   const row = await settledRow(probe);
   await vi.waitFor(() => expect(probe.denials()).toHaveLength(1));
-  expect(row).toMatchObject({ decision: "deny" });
+  expect(row).toMatchObject({ decision: "deny", terminalKind: "denied" });
+  expect(terminalDenyKindOf(row as never)).toBe("denied");
   expect(firstReason(row)).toMatch(reason);
   expect(probe.denials()).toEqual([["PermissionDenied", "denial-session", "user-keyboard",
     expect.objectContaining({ toolName: expect.stringMatching(/_probe$/), denyReason: expect.objectContaining({ source: "tool-executor" }) }), expect.anything()]]);
@@ -179,7 +181,8 @@ async function expectOneDenial(probe: Probe, reason: string | RegExp): Promise<v
 
 async function expectNoDenial(probe: Probe, reason: string | RegExp): Promise<void> {
   const row = await settledRow(probe);
-  expect(row).toMatchObject({ decision: "deny" });
+  expect(row).toMatchObject({ decision: "deny", terminalKind: governedCase(probe) ? "denied" : "cancelled" });
+  expect(terminalDenyKindOf(row as never)).toBe(governedCase(probe) ? "denied" : "cancelled");
   expect(firstReason(row)).toMatch(reason);
   await new Promise<void>((done) => setImmediate(done));
   expect(probe.denials()).toEqual([]);
@@ -195,6 +198,10 @@ async function run(source: Source, check: (probe: Probe) => Promise<void>): Prom
     probe.persisted();
     await probe.audit.close();
   }
+}
+
+function governedCase(probe: Probe): boolean {
+  return probe.source === "governed-operation" || probe.source === "governed-auth";
 }
 
 function reasons(row: Record<string, unknown>): string[] {
@@ -344,5 +351,32 @@ describe("a permission denial fires one PermissionDenied; a cancellation and a g
       probe.persisted();
       await probe.audit.close();
     }
+  });
+});
+
+describe("an audit reader reads the kind of a deny row", () => {
+  it("prefers the persisted kind, so one reason can be either kind", () => {
+    const reason = [{ reason: "Plugin generation admission denied: plugin runtime is shutting down", source: "tool-executor" }];
+    expect(terminalDenyKindOf({ denyReasons: reason, terminalKind: "denied" })).toBe("denied");
+    expect(terminalDenyKindOf({ denyReasons: reason, terminalKind: "cancelled" })).toBe("cancelled");
+  });
+
+  it.each([
+    ["user aborted turn", "cancelled"],
+    ["host-shutdown", "cancelled"],
+    ["Hook execution cancelled", "cancelled"],
+    ["Plugin generation admission denied: plugin runtime is shutting down", "cancelled"],
+    [TOOL, "denied"],
+    ["tool not found", "denied"],
+    ["user denied approval request", "denied"],
+    ["Hook input mutation could not safely restart permission classification", "denied"],
+    ["the invocation failed: boom", "denied"],
+    ["the terminal row failed its integrity check: boom", "denied"],
+    ["Plugin generation admission denied: generation gen-1 is retired", "denied"],
+    ["approval request expired", "denied"],
+    ["approval rejected by host", "denied"],
+    ["host-derived operation identity is missing", "denied"],
+  ] as const)("a row written before the kind was persisted, first reason %s, reads as %s", (reason, kind) => {
+    expect(terminalDenyKindOf({ denyReasons: [{ reason, source: "tool-executor" }] })).toBe(kind);
   });
 });
