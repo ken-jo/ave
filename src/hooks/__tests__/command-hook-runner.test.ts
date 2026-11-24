@@ -6,12 +6,11 @@ import {
   type RunnableHook,
 } from "../script-hook-runner.js";
 import type { ScriptHookStdin } from "../script-hook-types.js";
-import { hasExecutable } from "./test-helpers.js";
+import { hasExecutable, repoCommandHook } from "./test-helpers.js";
 import { withPlantedProgram } from "../../__tests__/support/planted-program.js";
 
 const FIXTURE_ROOT = resolve(__dirname, "..", "..", "..", "test", "fixtures", "hooks");
 
-const HAS_PYTHON = hasExecutable("python3");
 const HAS_NODE = hasExecutable("node");
 
 function cmdHook(over: Partial<RunnableHook> & Pick<RunnableHook, "command">): RunnableHook {
@@ -34,28 +33,28 @@ const samplePayload: ScriptHookStdin = {
   trustOrigin: "user-keyboard",
 };
 
-describe("#811 generalized runner — python command hook", () => {
-  it.skipIf(!HAS_PYTHON)("runs a python3 <script> command and parses allow", async () => {
+describe("generalized hook command runner", () => {
+  it("runs a configured script and parses allow", async () => {
     const r = await runOneHookScript(
-      cmdHook({ command: ["python3", resolve(FIXTURE_ROOT, "cmd-policy.py")] }),
+      cmdHook({ command: repoCommandHook("policy") }),
       samplePayload,
     );
     expect(r.decision).toBe("allow");
-    expect(r.reason).toContain("python policy ok");
+    expect(r.reason).toContain("command policy ok");
   });
 
-  it.skipIf(!HAS_PYTHON)("a python command can deny (deny precedence)", async () => {
+  it("a configured script can deny", async () => {
     const r = await runOneHookScript(
-      cmdHook({ command: ["python3", resolve(FIXTURE_ROOT, "cmd-policy.py")] }),
+      cmdHook({ command: repoCommandHook("policy") }),
       { ...samplePayload, toolName: "blocked_tool" },
     );
     expect(r.decision).toBe("deny");
     expect(r.reason).toContain("blocked_tool");
   });
 
-  it.skipIf(!HAS_PYTHON)("nonzero exit fails closed → deny", async () => {
+  it("nonzero exit fails closed → deny", async () => {
     const r = await runOneHookScript(
-      cmdHook({ command: ["python3", resolve(FIXTURE_ROOT, "cmd-exit-fail.py")] }),
+      cmdHook({ command: repoCommandHook("exit-fail") }),
       samplePayload,
     );
     expect(r.decision).toBe("deny");
@@ -63,18 +62,18 @@ describe("#811 generalized runner — python command hook", () => {
     expect(r.reason).toMatch(/non-zero/);
   });
 
-  it.skipIf(!HAS_PYTHON)("malformed stdout fails closed → deny", async () => {
+  it("malformed stdout fails closed → deny", async () => {
     const r = await runOneHookScript(
-      cmdHook({ command: ["python3", resolve(FIXTURE_ROOT, "cmd-badjson.py")] }),
+      cmdHook({ command: repoCommandHook("bad-json") }),
       samplePayload,
     );
     expect(r.decision).toBe("deny");
     expect(r.reason).toMatch(/not valid/);
   });
 
-  it.skipIf(!HAS_PYTHON)("timeout fails closed → deny (per-runnable budget)", async () => {
+  it("timeout fails closed → deny (per-runnable budget)", async () => {
     const r = await runOneHookScript(
-      cmdHook({ command: ["python3", resolve(FIXTURE_ROOT, "cmd-slow.py")], timeoutMs: 200 }),
+      cmdHook({ command: repoCommandHook("slow"), timeoutMs: 200 }),
       samplePayload,
     );
     expect(r.decision).toBe("deny");
@@ -82,7 +81,7 @@ describe("#811 generalized runner — python command hook", () => {
     expect(r.reason).toMatch(/timed out/);
   });
 
-  it.skipIf(!HAS_PYTHON)("env carries NO secrets — only AVE_HOOK_* + allowlist", async () => {
+  it("forwards only allowlisted environment variables", async () => {
     const prev = {
       ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
       GITHUB_TOKEN: process.env.GITHUB_TOKEN,
@@ -93,7 +92,7 @@ describe("#811 generalized runner — python command hook", () => {
     process.env.AVE_SECRET_PROBE = "ave-internal-should-not-leak";
     try {
       const r = await runOneHookScript(
-        cmdHook({ command: ["python3", resolve(FIXTURE_ROOT, "cmd-noenv.py")] }),
+        cmdHook({ command: repoCommandHook("noenv") }),
         samplePayload,
       );
       expect(r.decision).toBe("allow");
