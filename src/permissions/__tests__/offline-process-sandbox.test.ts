@@ -1,9 +1,15 @@
-import { mkdtemp, mkdir, realpath, rm } from "node:fs/promises";
+import childProcess from "node:child_process";
+import { access, mkdtemp, mkdir, realpath, rm, writeFile } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 
+vi.mock("node:fs/promises", async (importOriginal) => ({
+  ...await importOriginal<typeof import("node:fs/promises")>(),
+  access: vi.fn(async () => {}),
+}));
 vi.mock("../asrt-sandbox.js", () => ({
   isOfflineProcessConfinementActive: vi.fn(() => true),
   getDefaultSensitiveReadDenyPaths: () => ["/private-service-secrets"],
@@ -30,6 +36,7 @@ vi.mock("@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js", () 
 import { wrapOfflineProcess } from "../offline-process-sandbox.js";
 import { isOfflineProcessConfinementActive, buildPerCommandSandboxCustomConfig } from "../asrt-sandbox.js";
 import { detectSandboxCapability } from "../sandbox-capability.js";
+import { assertCodexExecutableLocation } from "../../main/codex-executable-location.js";
 import { wrapCommandWithSandboxMacOS } from "@anthropic-ai/sandbox-runtime/dist/sandbox/macos-sandbox-utils.js";
 import { wrapCommandWithSandboxLinux, cleanupBwrapMountPoints } from "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js";
 
@@ -48,6 +55,8 @@ function request() {
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  vi.mocked(access).mockReset();
+  vi.mocked(assertCodexExecutableLocation).mockReset();
   vi.mocked(isOfflineProcessConfinementActive).mockReturnValue(true);
   vi.mocked(detectSandboxCapability).mockReturnValue({ kind: "asrt", confidence: "verified", platform: HOST_PLATFORM,
     reason: "native test boundary", confines: { filesystem: true, process: true, network: true } });
@@ -86,11 +95,59 @@ describe("offline process confinement", () => {
       bwrapPath: "/usr/bin/bwrap", enableWeakerNestedSandbox: false,
     }));
     const native = vi.mocked(wrapCommandWithSandboxLinux).mock.calls[0][0];
-    expect(native.ripgrepConfig).toBeUndefined();
+    expect(native.ripgrepConfig).toEqual({ command: "/usr/bin/rg" });
     expect(native.httpSocketPath).toBeUndefined();
     expect(native.socksSocketPath).toBeUndefined();
     wrapped.release(); wrapped.release();
     expect(cleanupBwrapMountPoints).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["relative", ""])("pins the pre-wrap scan with a competing rg on PATH entry %j", async (entry) => {
+    const competingDirectory = join(root, entry);
+    await mkdir(competingDirectory, { recursive: true });
+    await writeFile(join(competingDirectory, "rg"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    const actual = await vi.importActual<typeof import("@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js")>(
+      "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js",
+    );
+    vi.mocked(wrapCommandWithSandboxLinux).mockImplementation(actual.wrapCommandWithSandboxLinux);
+    const controller = new AbortController();
+    const stop = new Error("Stop after observing the scan executable");
+    const previousCwd = process.cwd();
+    process.chdir(root);
+    vi.stubEnv("PATH", `${entry}:/usr/bin`);
+    setProcessPlatform("linux");
+    const spawn = vi.spyOn(childProcess, "spawn").mockImplementation(() => {
+      controller.abort(stop);
+      throw stop;
+    });
+    syncBuiltinESMExports();
+    try {
+      await expect(wrapOfflineProcess({ ...request(), signal: controller.signal })).rejects.toBe(stop);
+      expect(spawn).toHaveBeenCalledExactlyOnceWith("/usr/bin/rg", expect.arrayContaining(["--files", root]), expect.any(Object));
+    } finally {
+      spawn.mockRestore();
+      syncBuiltinESMExports();
+      setProcessPlatform(HOST_PLATFORM);
+      vi.unstubAllEnvs();
+      process.chdir(previousCwd);
+    }
+  });
+
+  it.each(["ENOENT", "EACCES"])("refuses offline setup when the fixed scan helper fails with %s", async (code) => {
+    setProcessPlatform("linux");
+    const failure = Object.assign(new Error(code), { code });
+    if (code === "ENOENT") {
+      vi.mocked(assertCodexExecutableLocation).mockImplementation(async (candidate) => {
+        if (candidate === "/usr/bin/rg") throw failure;
+      });
+    } else {
+      vi.mocked(access).mockRejectedValue(failure);
+    }
+    await expect(wrapOfflineProcess(request())).rejects.toMatchObject({
+      code: "engine-confinement-unavailable",
+      message: expect.stringContaining("/usr/bin/rg"),
+    });
+    expect(wrapCommandWithSandboxLinux).not.toHaveBeenCalled();
   });
 
   it("refuses a local-IPC backend that cannot disable new namespaces", async () => {

@@ -1,4 +1,4 @@
-import { lstat, realpath } from "node:fs/promises";
+import { access, constants, lstat, realpath } from "node:fs/promises";
 import { isAbsolute, resolve, sep } from "node:path";
 import { shellQuote } from "../lib/shell-resolver.js";
 import { noteConfinedProcessesMayRun } from "../lib/confined-process-phase.js";
@@ -120,14 +120,20 @@ export async function wrapOfflineProcess(input: OfflineProcessInput): Promise<Of
     input.signal.throwIfAborted();
     return { ...hardenMacSandboxGitMetadata({ argv: ["/bin/sh", "-c", wrapped], env }), release: () => {} };
   }
-  // Offline confinement selects its system executable independently of online dependency discovery.
   const bwrap = "/usr/bin/bwrap";
   await assertCodexExecutableLocation(bwrap);
+  const ripgrep = "/usr/bin/rg";
+  try {
+    await assertCodexExecutableLocation(ripgrep);
+    await access(ripgrep, constants.X_OK);
+  } catch {
+    throw new TableDocumentError("engine-confinement-unavailable", `Offline scan helper ${ripgrep} is unavailable or not executable.`);
+  }
   const { wrapCommandWithSandboxLinux, cleanupBwrapMountPoints } = await import("@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js");
   const wrapped = await wrapCommandWithSandboxLinux({
     command, needsNetworkRestriction: true, readConfig, writeConfig,
     allowAllUnixSockets: true, allowNestedUserNamespaces: false, enableWeakerNestedSandbox: false,
-    binShell: "/bin/sh", bwrapPath: bwrap,
+    binShell: "/bin/sh", bwrapPath: bwrap, ripgrepConfig: { command: ripgrep },
     abortSignal: input.signal, unsetEnvVars: ["JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS"],
   });
   let released = false;
