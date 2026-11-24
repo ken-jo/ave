@@ -75,8 +75,8 @@ export function installProgramsOnPath(names: readonly string[], platform = proce
   const imageName = (name: string) => windows && !/\.(?:com|exe)$/iu.test(name) ? `${name}.exe` : name;
   for (const name of names) {
     const path = join(fixture, imageName(name));
-    writeFileSync(path, windows ? "" : "#!/bin/sh\nexit 0\n");
-    if (!windows) chmodSync(path, 0o755);
+    // The mode is set at creation: suites that mock `chmodSync` (worker-spawn) would otherwise leave a POSIX program non-executable.
+    writeFileSync(path, windows ? "" : "#!/bin/sh\nexit 0\n", windows ? undefined : { mode: 0o755 });
   }
   const previousPath = process.env.PATH;
   process.env.PATH = [dir, previousPath].filter(Boolean).join(windows ? ";" : ":");
