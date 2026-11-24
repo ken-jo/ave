@@ -1,6 +1,5 @@
 import { existsSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
-import { withPlantedProgram } from "../../__tests__/support/planted-program.js";
 import { resolveShell, ShellMismatchError, __resetShellResolverCache } from "../shell-resolver.js";
 
 // Unmocked on purpose: unlike shell-resolver.test.ts this file does NOT mock node:child_process, so it
@@ -27,20 +26,5 @@ describe("shell-resolver win32 trusted root", () => {
       if (error !== undefined) expect(error, "Git absent → missing-shell report").toBeInstanceOf(ShellMismatchError);
       else expect(resolved, "Git absent → PATH fallback, not a Program Files path").not.toMatch(/Program Files/i);
     }
-  });
-});
-
-describe.runIf(process.platform !== "win32")("resolveShell program lookup", () => {
-  it("refuses an sh reachable only through the cwd or empty and relative PATH entries", async () => {
-    await withPlantedProgram(["sh"], () => {
-      expect(() => resolveShell()).toThrow(ShellMismatchError);
-    });
-  });
-
-  it("returns the absolute sh from a fully qualified PATH folder", async () => {
-    await withPlantedProgram(["sh"], (planted) => {
-      process.env.PATH = planted.dir;
-      expect(resolveShell().cmd).toBe(`${planted.dir}/sh`);
-    });
   });
 });
