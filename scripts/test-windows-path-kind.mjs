@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -225,6 +225,25 @@ async function recoveryTests() {
     assert.deepEqual(result.stdout.trimEnd().split(/\r?\n/u), ["refused volume"]);
     assert.deepEqual(readdirSync(dir).sort(), existing ? ["source", "target"] : ["source"]);
     if (existing) assert.equal(readFileSync(join(dir, "target"), "utf8"), "old bytes");
+  });
+  add("a volume without file-ID opens refuses the copy before the existing target is opened", (dir) => {
+    writeFileSync(join(dir, "source"), "source");
+    writeFileSync(join(dir, "target"), "old bytes");
+    // Held with no sharing (libuv's UV_FS_O_EXLOCK), so any open of the target by the helper fails instead of answering the refusal.
+    const locked = openSync(join(dir, "target"), constants.O_RDONLY | 0x10000000);
+    let result;
+    try {
+      assert.throws(() => readFileSync(join(dir, "target")), { code: "EBUSY" });
+      result = spawnSync(join(tmpdir(), "ave-path-pin-test.exe"),
+        ["volume-without-file-ids", "--dir-copy", ...held(dir), "source", ...held(dir), "target", part, hidden],
+        { input: "c", windowsHide: true, shell: false, env: {}, timeout: 10_000, encoding: "utf8" });
+    } finally {
+      closeSync(locked);
+    }
+    assert.ifError(result.error);
+    assert.equal(result.status, 3, result.stdout);
+    assert.deepEqual(result.stdout.trimEnd().split(/\r?\n/u), ["refused volume"]);
+    assert.equal(readFileSync(join(dir, "target"), "utf8"), "old bytes");
   });
   add("record round trip and exclusive collision", (dir) => {
     const folder = held(dir);
