@@ -21,7 +21,7 @@ vi.mock("node:fs", async (original) => {
 });
 
 const onShares = it.skipIf(process.platform !== "win32");
-const HOME_RUN = String.raw`\\server\share\home\run`;
+const HOME_RUN = String.raw`\\server\share\home\runner`;
 const run = (path: string): { path: string; id: "1:1" } => ({ path, id: "1:1" });
 
 beforeEach(() => { disk.asked.length = 0; disk.resolved.length = 0; disk.real = undefined; disk.gone = false; });
@@ -48,7 +48,7 @@ onShares("a drive path under the long-path prefix is the drive path", () => {
 });
 
 onShares("a registration in the run folder of a home on a share is kept, however the share path is spelled", () => {
-  const spellings = ["//server/share/home/run/_join/.git", String.raw`\\SERVER\Share\home\run\_join\.git`, String.raw`\\?\UNC\server\share\home\run\_join\.git`, "//?/UNC/server/share/home/run/_join/.git"];
+  const spellings = ["//server/share/home/runner/_join/.git", String.raw`\\SERVER\Share\home\runner\_join\.git`, String.raw`\\?\UNC\server\share\home\runner\_join\.git`, "//?/UNC/server/share/home/runner/_join/.git"];
   for (const gitdir of spellings) expect(runFolderOf(run(HOME_RUN), "_join", gitdir)?.toLowerCase(), gitdir).toBe(String.raw`${HOME_RUN}\_join`);
   // Only the plain spelling of the run folder is ever asked about.
   expect(new Set(disk.asked.map(path => path.toLowerCase()))).toEqual(new Set([HOME_RUN]));
@@ -56,17 +56,17 @@ onShares("a registration in the run folder of a home on a share is kept, however
 });
 
 onShares("a home reached by a drive letter that is really a share keeps a registration git wrote with the share's path", () => {
-  disk.real = String.raw`\\?\UNC\server\share\home\run`;
-  expect(runFolderOf(run(String.raw`Z:\home\run`), "s1", "//server/share/home/run/s1/.git")).toBe(String.raw`${HOME_RUN}\s1`);
-  expect(disk.resolved).toEqual([String.raw`Z:\home\run`]);
+  disk.real = String.raw`\\?\UNC\server\share\home\runner`;
+  expect(runFolderOf(run(String.raw`Z:\home\runner`), "s1", "//server/share/home/runner/s1/.git")).toBe(String.raw`${HOME_RUN}\s1`);
+  expect(disk.resolved).toEqual([String.raw`Z:\home\runner`]);
   expect(disk.asked).toEqual([HOME_RUN]);
 });
 
 onShares("a share or device path outside the run folder names nothing, and nothing is asked of it", () => {
-  const outside = [String.raw`\\other\share\home\run\_join\.git`, "//server/other/home/run/_join/.git", String.raw`\\server\share\home\other\_join\.git`, String.raw`\\server\share\home\run\deeper\_join\.git`,
-    String.raw`\\?\UNC\other\share\home\run\_join\.git`, String.raw`\\.\C:\run\_join\.git`, String.raw`\\.\UNC\server\share\home\run\_join\.git`, String.raw`\\?\Volume{1}\run\_join\.git`,
+  const outside = [String.raw`\\other\share\home\runner\_join\.git`, "//server/other/home/runner/_join/.git", String.raw`\\server\share\home\bob\_join\.git`, String.raw`\\server\share\home\runner\deeper\_join\.git`,
+    String.raw`\\?\UNC\other\share\home\runner\_join\.git`, String.raw`\\.\C:\run\_join\.git`, String.raw`\\.\UNC\server\share\home\runner\_join\.git`, String.raw`\\?\Volume{1}\run\_join\.git`,
     String.raw`\\?\GLOBALROOT\Device\X\run\_join\.git`, String.raw`\\?\UNC\?\C:\run\_join\.git`, String.raw`\\?\UNC\.\C:\run\_join\.git`, "//./pipe/run/_join/.git",
-    String.raw`\\?\UNC\server\share\..\..\other\..\home\run\_join\.git`, String.raw`\\server\share\home\other\..\run\_join\.git`, String.raw`Z:\home\run\_join\.git`];
+    String.raw`\\?\UNC\server\share\..\..\other\..\home\runner\_join\.git`, String.raw`\\server\share\home\bob\..\run\_join\.git`, String.raw`Z:\home\runner\_join\.git`];
   for (const from of [HOME_RUN, String.raw`C:\run`]) for (const gitdir of outside) expect(runFolderOf(run(from), "_join", gitdir), gitdir).toBeUndefined();
   expect(disk.asked).toEqual([]);
   // The run folder's own path is the only one resolved.
@@ -84,7 +84,7 @@ onShares("a run folder whose real path is a device path keeps a registration onl
 
 onShares("a run folder whose real path cannot be read keeps no share registration", () => {
   disk.gone = true;
-  expect(runFolderOf(run(HOME_RUN), "_join", "//server/share/home/run/_join/.git")).toBeUndefined();
+  expect(runFolderOf(run(HOME_RUN), "_join", "//server/share/home/runner/_join/.git")).toBeUndefined();
   expect(disk.resolved).toEqual([HOME_RUN]);
   expect(disk.asked).toEqual([]);
 });
@@ -185,7 +185,7 @@ it("a path of the record or of a link file is taken only as the open project's o
 });
 
 it("a registration's worktree path is taken only as the named folder of the run folder, under one of the host's own spellings of it", () => {
-  const RUN = resolve("/home/worktrees/p/r");
+  const RUN = resolve("/home/example/p/r");
   const REAL = resolve("/real/worktrees/p/r");
   const at = { run: [RUN, REAL], name: "_join" };
   const cases: [text: string, taken: string | undefined][] = [
@@ -199,7 +199,7 @@ it("a registration's worktree path is taken only as the named folder of the run 
     [`${RUN}/x/../_join/.git`, undefined],
     [`${RUN}/./_join/.git`, undefined],
     ["_join/.git", undefined],
-    ...(process.platform === "win32" ? [String.raw`\\other\share\r\_join\.git`, String.raw`\\.\C:\home\worktrees\p\r\_join\.git`, "//./pipe/r/_join/.git"].map((text): [string, undefined] => [text, undefined]) : []),
+    ...(process.platform === "win32" ? [String.raw`\\other\share\r\_join\.git`, String.raw`\\.\C:\home\example\p\r\_join\.git`, "//./pipe/r/_join/.git"].map((text): [string, undefined] => [text, undefined]) : []),
   ];
   for (const [text, taken] of cases) expect(vetRecordPath("worktree", text, at), text).toBe(taken);
   expect(disk.asked).toEqual([]);
