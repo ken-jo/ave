@@ -562,6 +562,8 @@ export interface MxcBundledHolderInput {
   readonly allowWrite: readonly string[];
   /** Host-captured read roots of the owning incarnation (a plugin generation, a bundled payload). */
   readonly ownedReadRoots: readonly string[];
+  /** The reads, among `allowRead`, held inside the protected read floor. Named by the host, never by the holder. */
+  readonly floorPierces?: readonly string[];
   readonly egressOwner: WorkerEgressOwner;
   /** Workspace roots beyond the authorized ones this holder writes (a user hook's cwd). */
   readonly workspaceRoots?: readonly string[];
@@ -617,6 +619,7 @@ export async function spawnMxcBundledHolder(input: MxcBundledHolderInput): Promi
       filesystemOwnership: { readRoots: [...input.ownedReadRoots], writeRoots: allowWrite, hostStorageRoots: [] },
       holder: Object.freeze({ label: input.label }),
       probe,
+      ...(input.floorPierces !== undefined ? { floorPierces: [...input.floorPierces] } : {}),
       ...(input.assertStillValid ? { assertStillValid: input.assertStillValid } : {}),
       ...(input.workerTransport ? { workerTransport: input.workerTransport } : {}),
       ...(input.signal ? { signal: input.signal } : {}),
