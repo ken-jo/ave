@@ -148,6 +148,11 @@ function engineAcquiresBeforeRegistration(source: string): boolean {
         else wrapped?.release();
         throw runtime.unconfirmedExit ?? error;
       }
+      if (!running) {
+        runtime.unconfirmedExit ??= terminationUnconfirmed();
+        throw runtime.unconfirmedExit;
+      }
+      return running;
     `)
     && (launch.match(/\b(?:wrap|wrapped|running|process)\??\.release\(/gu) ?? []).length === 1;
 }
@@ -156,6 +161,7 @@ function engineRetainsUnconfirmedRuntime(source: string): boolean {
   const recovery = section(source, "await this.stopRuntime(owner.runtime);", "} finally {");
   const startup = section(source, "private async createRuntime", "private baseArguments");
   const release = section(source, "async releaseSession", "async dispose");
+  const importer = section(source, "private async ensureImporter", "private async findJavaHome");
   return statements(recovery).includes(statements(`
     const recoverable = !unconfirmedExit && !owner.failure && (signal.aborted
       || (cause instanceof TableDocumentError && cause.code === "engine-runtime-unavailable"));
@@ -180,6 +186,11 @@ function engineRetainsUnconfirmedRuntime(source: string): boolean {
       await this.stopRuntime(session.runtime);
       if (session.runtime?.unconfirmedExit) throw session.runtime.unconfirmedExit;
       if (session.runtime) await rm(session.runtime.directory, { recursive: true, force: true });
+    `))
+    && statements(importer).includes(statements(`
+      await this.stopRuntime(runtime);
+      if (runtime.unconfirmedExit) throw runtime.unconfirmedExit;
+      const java = await this.run(
     `))
     && (source.match(/\bawait rm\((?:owner|session)\.runtime\.directory,/gu) ?? []).length === 2
     && (source.match(/\bif \(!runtime\.unconfirmedExit\) \{\s+await rm\(source, \{ force: true \}\);\s+await rm\(output, \{ recursive: true, force: true \}\);\s+\}/gu) ?? []).length === 2
@@ -221,11 +232,16 @@ function engineHasOnlyWorkloadDeadlines(source: string): boolean {
       "Date.now() + TOOL_TIMEOUT_POLICY.documentEngineStartupMs",
       "Date.now() + TOOL_TIMEOUT_POLICY.documentEngineReceiptMs",
     ].join("\n")
-    && source.includes("const result = await process.exit.wait(signal);");
+    && statements(source).includes(statements(`
+      const result = await process.exit.wait(signal)
+        .finally(() => this.finishProcess(runtime, process))
+        .catch((error: unknown) => { throw runtime.unconfirmedExit ?? error; });
+      if (runtime.unconfirmedExit) throw runtime.unconfirmedExit;
+    `));
 }
 
 const earlyWindowsRelease = 'if (windowsSpawn) await forceKillManagedChildProcess(windowsSpawn.child, "hook caller aborted");';
-const ownedEngineLaunch = /(spawnManaged\(wrap\.argv\[0\][\s\S]*?\}, \{ label: "document-engine", killProcessGroup: true \}), child => \{([\s\S]*?)\n      \}\);\n      return running!;/u;
+const ownedEngineLaunch = /(spawnManaged\(wrap\.argv\[0\][\s\S]*?\}, \{ label: "document-engine", killProcessGroup: true \}), child => \{([\s\S]*?)\n {6}\}\);/u;
 const managedEngineStop = "if (!await running.exit.confirmExit(reason)) {";
 const lifetimeMutations = [
   ["early Windows hook hold release", hookRefresh, hookStopsAfterAuthorityRefresh, earlyWindowsRelease,
@@ -235,7 +251,7 @@ const lifetimeMutations = [
   ["early managed group verdict", managedExit, managedGroupRequiresProof, "await raceWithAbort(closed, signal);",
     "return;\n    await raceWithAbort(closed, signal);"],
   ["engine registration before acquisition", engine, engineAcquiresBeforeRegistration, ownedEngineLaunch,
-    "const acquired = $1);\n      ((child: typeof acquired) => {$2\n      })(acquired);\n      return running!;"],
+    "const acquired = $1);\n      ((child: typeof acquired) => {$2\n      })(acquired);"],
   ["local engine termination timer", engine, engineHasOnlyWorkloadDeadlines, managedEngineStop,
     "if (!await Promise.race([running.exit.confirmExit(reason), new Promise<boolean>(resolve => setTimeout(() => resolve(false), TOOL_TIMEOUT_POLICY.processTreeKillMs))])) {"],
 ] as const;

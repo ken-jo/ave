@@ -554,33 +554,35 @@ export class LibreOfficeSessionPool {
           }
         });
       });
-      return running!;
     } catch (error) {
       if (running) await this.finishProcess(runtime, running, "document engine launch failed");
       else if (error instanceof OfflineScanExitUnconfirmedError) runtime.unconfirmedExit = error;
       else wrapped?.release();
       throw runtime.unconfirmedExit ?? error;
     }
+    if (!running) {
+      runtime.unconfirmedExit ??= terminationUnconfirmed();
+      throw runtime.unconfirmedExit;
+    }
+    return running;
   }
 
   private async run(session: EngineSession, runtime: SessionRuntime, command: string,
     args: readonly string[], signal: AbortSignal): Promise<RunningProcess> {
     const process = await this.spawn(session, runtime, command, args, signal);
-    try {
-      const result = await process.exit.wait(signal);
-      aborted(signal);
-      if (process.failure) throw process.failure;
-      if (result.error || result.code !== 0 || result.signal !== null) {
-        const failed = failure(`Document engine conversion process failed (code=${String(result.code)}, signal=${String(result.signal)}).`);
-        Object.defineProperty(failed, "cause", { value: { exitCode: result.code, terminationSignal: result.signal,
-          diagnostic: process.output, ...(result.error ? { error: result.error } : {}) } });
-        throw failed;
-      }
-      return process;
-    } finally {
-      await this.finishProcess(runtime, process);
-      if (runtime.unconfirmedExit) throw runtime.unconfirmedExit;
+    const result = await process.exit.wait(signal)
+      .finally(() => this.finishProcess(runtime, process))
+      .catch((error: unknown) => { throw runtime.unconfirmedExit ?? error; });
+    if (runtime.unconfirmedExit) throw runtime.unconfirmedExit;
+    aborted(signal);
+    if (process.failure) throw process.failure;
+    if (result.error || result.code !== 0 || result.signal !== null) {
+      const failed = failure(`Document engine conversion process failed (code=${String(result.code)}, signal=${String(result.signal)}).`);
+      Object.defineProperty(failed, "cause", { value: { exitCode: result.code, terminationSignal: result.signal,
+        diagnostic: process.output, ...(result.error ? { error: result.error } : {}) } });
+      throw failed;
     }
+    return process;
   }
 
   private async convertOne(session: EngineSession, runtime: SessionRuntime, bytes: Buffer,
@@ -660,6 +662,7 @@ export class LibreOfficeSessionPool {
       UNO_JAVA_JFW_JREHOME: pathToFileURL(javaHome).href };
     // A profile's extension registry is never changed while its resident is using it.
     await this.stopRuntime(runtime);
+    if (runtime.unconfirmedExit) throw runtime.unconfirmedExit;
     const java = await this.run(session, runtime, join(javaHome, "bin", "java"), ["-version"], signal)
       .catch(importerUnavailable(signal, "The isolated Java runtime could not start."));
     const version = /(?:openjdk|java)\s+(?:version\s+)?"?(\d+)/u.exec(java.output)?.[1];
