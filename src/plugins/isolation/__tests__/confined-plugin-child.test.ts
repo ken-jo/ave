@@ -2992,18 +2992,6 @@ process.stdin.on("end", () => process.exit(0));
     await child.waitForExit?.();
   }
 
-  /** The positive control: the same environment given to the wrap's own outer shell, `/bin/bash -c`, OUTSIDE any sandbox. It must run the fixture, or the sentinel's absence under the wrap would prove nothing; the
-   * control's sentinel is removed before the wrapped run. Its stdin is `/dev/null`: on a socket stdin, which is what a default Node pipe is, bash takes its rshd heuristic, sources `~/.bashrc` and skips `BASH_ENV`. */
-  function runOuterShellUnconfined(env: Record<string, string>, sentinel: string): void {
-    execFileSync("/bin/bash", ["-c", "true"], {
-      env: { ...env, PATH: "/usr/bin:/bin" },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    expect(existsSync(sentinel), "the control did not run the fixture, so the wrapped case would measure nothing")
-      .toBe(true);
-    rmSync(sentinel);
-  }
-
   /** A launcher that does nothing, so anything that ran came from the environment. */
   function installInertPlugin(fx: Fixture): InstalledPlugin {
     const plugin = installPlugin(fx, "inertprobe");
@@ -3042,17 +3030,8 @@ process.stdin.on("end", () => process.exit(0));
       const plugin = installInertPlugin(fx);
       const sentinelDir = mkdtempSync(join(fx.root, "preload-sentinel-"));
       const sentinel = join(sentinelDir, "ran");
-      // A library whose constructor writes the sentinel, built in the plugin's own root. The C compiler is a
-      // precondition of this case, not optional: a machine without one fails here rather than passing unmeasured.
-      const source = join(fx.root, "preload.c");
       const library = join(plugin.pluginRoot, "preload.so");
-      writeFileSync(
-        source,
-        `#include <stdio.h>\n__attribute__((constructor)) static void ran(void) {\n`
-          + `  FILE *f = fopen(${JSON.stringify(sentinel)}, "w");\n  if (f) { fputs("ran", f); fclose(f); }\n}\n`,
-        "utf-8",
-      );
-      execFileSync("cc", ["-shared", "-fPIC", "-o", library, source]);
+      buildPreloadMarkerLibrary(fx.root, library, sentinel);
       runOuterShellUnconfined({ LD_PRELOAD: library }, sentinel);
       await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
       await spawnBelowHardening(plugin, { LD_PRELOAD: library });
@@ -3823,12 +3802,43 @@ it.runIf(process.platform === "darwin" || process.platform === "linux").each(["c
   60_000,
 );
 
-it.runIf(process.platform === "darwin" || process.platform === "linux")(
-  "refuses worker startup variables and delivers the confined target environment",
-  async () => {
+// /dev/null stdin keeps the control shell from treating the socket used for Node stdio as an rsh connection.
+function runOuterShellUnconfined(env: Record<string, string>, sentinel: string): void {
+  execFileSync("/bin/bash", ["-c", "true"], {
+    env: { ...env, PATH: "/usr/bin:/bin" },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  expect(existsSync(sentinel), "the unconfined shell must run the marker fixture").toBe(true);
+  rmSync(sentinel);
+}
+
+function buildPreloadMarkerLibrary(root: string, library: string, sentinel: string): void {
+  const source = join(root, "preload.c");
+  writeFileSync(source, `#include <stdio.h>\n__attribute__((constructor)) static void ran(void) {\n`
+    + `  FILE *f = fopen(${JSON.stringify(sentinel)}, "w");\n  if (f) { fputs("ran", f); fclose(f); }\n}\n`, "utf8");
+  execFileSync("cc", ["-shared", "-fPIC", "-o", library, source]);
+}
+
+it.runIf(process.platform === "darwin" || process.platform === "linux").each([
+  "BASH_ENV", process.platform === "linux" ? "LD_PRELOAD" : "DYLD_INSERT_LIBRARIES",
+])(
+  "refuses delegated worker %s without running host startup code and delivers the target environment",
+  async name => {
     if (!(await sandboxCasesRun())) return;
+    const root = fixture!.root;
+    const sentinel = join(root, "outer-startup-marker");
+    const value = join(root, name === "BASH_ENV" ? "startup.sh" : "preload.so");
+    if (name === "BASH_ENV") {
+      writeFileSync(value, `echo ran > ${JSON.stringify(sentinel)}\n`, "utf8");
+      runOuterShellUnconfined({ [name]: value }, sentinel);
+    } else if (name === "LD_PRELOAD") {
+      buildPreloadMarkerLibrary(root, value, sentinel);
+      runOuterShellUnconfined({ [name]: value }, sentinel);
+    }
+    // System Integrity Protection strips DYLD_* from the system Bash environment. This route can verify named refusal on macOS.
     await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
-    const loaderName = process.platform === "linux" ? "LD_PRELOAD" : "DYLD_INSERT_LIBRARIES";
+    const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
+    const wrap = vi.spyOn(SandboxManager, "wrapWithSandboxArgv");
     const spec = {
       pluginId: "environment-probe",
       workerId: "probe",
@@ -3836,19 +3846,31 @@ it.runIf(process.platform === "darwin" || process.platform === "linux")(
       command: "/bin/sh",
       args: ["-c", `printf "%s\\n" "$WORKER_PROBE" "$PATH" "$SANDBOX_RUNTIME" "\${BASH_ENV-unset}" "\${ENV-unset}" "\${LD_PRELOAD-unset}" "\${DYLD_INSERT_LIBRARIES-unset}"`],
     } as const;
-    for (const name of ["BASH_ENV", "ENV", loaderName]) {
-      await expect(spawnWorker({ ...spec, env: { [name]: "" } })).rejects.toMatchObject({
+    try {
+      const refused = await spawnWorker({ ...spec, env: { [name]: value } }).then(async unexpected => {
+        await new Promise(resolve => unexpected.onExit(resolve));
+        return undefined;
+      }, (error: unknown) => error);
+      expect(existsSync(sentinel)).toBe(false);
+      expect(refused).toMatchObject({
         name: "LauncherEnvironmentError",
         code: "launcher-environment-refused",
       });
+      expect(wrap).not.toHaveBeenCalled();
+
+      const canary = "-worker-native-canary=a=b";
+      const worker = await spawnWorker({ ...spec, env: { WORKER_PROBE: canary } });
+      let output = "";
+      worker.onStdout(chunk => { output += chunk; });
+      await expect(new Promise(resolve => worker.onExit(resolve))).resolves.toMatchObject({ code: 0 });
+      expect(wrap.mock.calls[0]![0]).not.toContain(canary);
+      expect(output.trimEnd().split("\n")).toEqual([
+        canary, process.env.PATH ?? "/usr/bin:/bin:/usr/sbin:/sbin", "1", "unset", "unset", "unset", "unset",
+      ]);
+      expect(existsSync(sentinel)).toBe(false);
+    } finally {
+      wrap.mockRestore();
     }
-    const worker = await spawnWorker({ ...spec, env: { WORKER_PROBE: "-a=b" } });
-    let output = "";
-    worker.onStdout(chunk => { output += chunk; });
-    await expect(new Promise(resolve => worker.onExit(resolve))).resolves.toMatchObject({ code: 0 });
-    expect(output.trimEnd().split("\n")).toEqual([
-      "-a=b", process.env.PATH ?? "/usr/bin:/bin:/usr/sbin:/sbin", "1", "unset", "unset", "unset", "unset",
-    ]);
   },
   60_000,
 );
