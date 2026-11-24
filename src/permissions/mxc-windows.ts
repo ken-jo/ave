@@ -27,6 +27,8 @@ export type MxcSupport =
       readonly windowsBuild: string | null;
       // Main-process diagnostic; may hold local paths, never sent to the renderer.
       readonly detail: string;
+      // The probe's host fact, set only with "container-unavailable".
+      readonly baseContainerApiPresent?: boolean;
     };
 
 // The architectures MXC ships `wxc-exec.exe` for.
@@ -48,7 +50,7 @@ export function wxcExecPathFor(resourcePath: string, arch: string): string | und
 export interface MxcProbeReport {
   readonly tier: string | undefined;
   readonly needsDaclAugmentation: boolean | undefined;
-  // Given instead of a tier when the backend cannot serve the request.
+  // Given instead of a tier when the backend cannot serve the request, beside the host facts.
   readonly error: string | undefined;
   readonly baseContainerApiPresent: boolean | undefined;
 }
@@ -80,15 +82,6 @@ export type MxcDryRunResult = { readonly ok: true } | { readonly ok: false; read
 
 const MXC_CONTAINER_TIER = "base-container";
 
-// Why the probe did not report the container tier. The 1.1.0 launcher names no lesser tier: it omits the tier and gives an error. Only its own host fact (no container API) is read as a host without the tier; any other tier-less report stays unrecognised.
-function unsupportedTierDetail(report: MxcProbeReport): string {
-  if (report.tier !== undefined) return `tier ${report.tier}`;
-  const detail = report.error !== undefined && report.baseContainerApiPresent === false
-    ? `tier none (no container API): ${report.error}`
-    : `tier unknown: ${report.error ?? "no probe error"} (container API ${String(report.baseContainerApiPresent)})`;
-  return detail.slice(0, 500);
-}
-
 function outputLines(stdout: string, stderr: string): string[] {
   return `${stdout}\n${stderr}`.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0);
 }
@@ -97,7 +90,7 @@ function configurationParseError(lines: readonly string[]): string | undefined {
   return lines.find((line) => /^configuration parse error/i.test(line));
 }
 
-// Judge `wxc-exec --dry-run`: the request must validate AND `--probe` of the same request must have reported the BaseContainer tier (`probedTier`). The probe reports only whether the ProcessContainer backend can serve the request; the 1.1.0 dry run prints no tier, and network-policy and PSEC checks happen at launch, so the start probe is what refuses a proxy contract the host cannot carry. A missing or different probed tier is a rejection, and so is a tier line (printed by older launchers) that names another tier. A parse error (such as an identity-less proxy the host's PSEC contract cannot carry) is a rejection too; its first diagnostic line is kept for the log.
+// Judge `wxc-exec --dry-run`: the request must validate AND `--probe` of the same request must have served it (`probedTier`). The dry run prints no tier; a tier line naming anything else is refused, defensively. Network-policy and PSEC checks happen at launch, so the start probe is what refuses a proxy contract the host cannot carry. A parse error (such as an identity-less proxy the host's PSEC contract cannot carry) is a rejection too; its first diagnostic line is kept for the log.
 export function parseMxcDryRunOutput(exitCode: number | null, stdout: string, stderr: string, probedTier: string | undefined): MxcDryRunResult {
   const lines = outputLines(stdout, stderr);
   const otherTier = lines.find((line) => /selected isolation tier/i.test(line) && !/selected isolation tier: base-container$/i.test(line));
@@ -157,14 +150,14 @@ export function classifyMxcStartProbe(
   return { ok: false, reason: "powershell-start-failed", detail };
 }
 
-// Decide, once at boot, whether agent shells can run in MXC on this host. The OS build number is not the gate: MXC no longer requires PSEC 1.1 for an identity-less loopback proxy (the launcher queries host support, and the directions depend on the Windows build), so a build floor would not establish that the host can carry the request. The gate is what the shipped binary reports: its sha256 must match the pin, `--probe` of the request shape Ave launches (proxy mode, DACL fallback refused) must report `base-container` (the ProcessContainer backend can serve it), `--dry-run` of that request must validate, and System32 Windows PowerShell 5.1 must actually start (`exit 0`) in a real container of that shape with the loopback proxy; that launch carries the network-policy and PSEC checks the probe does not make. Any failure leaves the shells on the approved-host route.
+// Decide, once at boot, whether agent shells can run in MXC on this host. The OS build number is not the gate: MXC no longer requires PSEC 1.1 for an identity-less loopback proxy (the launcher queries host support, and the directions depend on the Windows build), so a build floor would not establish that the host can carry the request. The gate is what the shipped binary reports: its sha256 must match the pin, `--probe` of the request shape Ave launches (proxy mode, DACL fallback refused) must serve it (the container tier, no DACL changes; an unserved request has no tier and an error), `--dry-run` of that request must validate, and System32 Windows PowerShell 5.1 must actually start (`exit 0`) in a real container of that shape with the loopback proxy; that launch carries the network-policy and PSEC checks the probe does not make. Any failure leaves the shells on the approved-host route.
 export async function detectMxcSupport(deps: DetectMxcSupportDeps): Promise<MxcSupport> {
   const prerequisites = await detectMxcPrerequisites(deps);
   if (prerequisites.state === "unavailable") return prerequisites;
   return await probeMxcPowerShellStart(deps);
 }
 
-// The fast half of detectMxcSupport, run on the boot path: platform, arch, launcher present and pinned, `--probe` tier, `--dry-run` of the shipped request shape. "available" here means only that the start probe is worth running; MXC is not claimed until probeMxcPowerShellStart passes.
+// The fast half of detectMxcSupport, run on the boot path: platform, arch, launcher present and pinned, `--probe` serves the request, `--dry-run` of the shipped request shape. "available" here means only that the start probe is worth running; MXC is not claimed until probeMxcPowerShellStart passes.
 export async function detectMxcPrerequisites(deps: DetectMxcSupportDeps): Promise<MxcSupport> {
   const unavailable = (reason: MxcUnavailableReason, detail: string): MxcSupport => ({
     state: "unavailable",
@@ -205,7 +198,16 @@ export async function detectMxcPrerequisites(deps: DetectMxcSupportDeps): Promis
       ? unavailable("probe-failed", `--probe exit ${String(probe.code)}`)
       : unavailable("request-rejected", rejected.slice(0, 500));
   }
-  if (report.tier !== MXC_CONTAINER_TIER) return unavailable("tier-unsupported", unsupportedTierDetail(report));
+  // The probe either serves the request (the container tier, no DACL changes) or omits the tier and gives an error with the host facts. Anything else is not an answer.
+  if (report.tier === undefined && report.error !== undefined) {
+    return {
+      ...unavailable("container-unavailable", `${report.error.slice(0, 400)} (container API ${String(report.baseContainerApiPresent)})`),
+      ...(report.baseContainerApiPresent === undefined ? {} : { baseContainerApiPresent: report.baseContainerApiPresent }),
+    };
+  }
+  if (report.tier !== MXC_CONTAINER_TIER || report.needsDaclAugmentation !== false) {
+    return unavailable("probe-failed", `unexpected probe answer: tier ${String(report.tier).slice(0, 100)}, needsDaclAugmentation ${String(report.needsDaclAugmentation)}`);
+  }
   if (probe.code !== 0) return unavailable("probe-failed", `--probe exit ${String(probe.code)}`);
 
   let dryRun: MxcRunResult;

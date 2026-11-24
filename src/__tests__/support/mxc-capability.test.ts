@@ -15,31 +15,30 @@ beforeEach(() => {
 afterEach(() => { vi.restoreAllMocks(); });
 
 describe("requireMxcCapability", () => {
-  it("skips a recognized unsupported tier with its actual reason in the log", async () => {
+  it("skips a host whose probe reports no container API, with the actual reason in the log", async () => {
     vi.mocked(detectHostMxcPrerequisites).mockResolvedValue({ state: "unavailable", windowsBuild: "10.0.26100",
-      reason: "tier-unsupported", detail: "tier none (no container API): backend unavailable" });
+      reason: "container-unavailable", detail: "backend unavailable (container API false)", baseContainerApiPresent: false });
     const logged = vi.spyOn(console, "info").mockImplementation(() => undefined);
     const skipped = new Error("test skipped");
     const skip = vi.fn((): never => { throw skipped; });
     await expect(requireMxcCapability(skip)).rejects.toBe(skipped);
-    expect(skip).toHaveBeenCalledExactlyOnceWith("Native container prerequisite: tier-unsupported: tier none (no container API): backend unavailable");
-    expect(logged).toHaveBeenCalledExactlyOnceWith("Native container prerequisite: tier-unsupported: tier none (no container API): backend unavailable");
+    expect(skip).toHaveBeenCalledExactlyOnceWith("Native container prerequisite: container-unavailable: backend unavailable (container API false)");
+    expect(logged).toHaveBeenCalledExactlyOnceWith("Native container prerequisite: container-unavailable: backend unavailable (container API false)");
     expect(probeHostMxcPowerShellStart).not.toHaveBeenCalled();
   });
 
   it.each([
-    ["launcher-mismatch", "launcher hash mismatch"],
-    ["probe-failed", "--probe exit 1"],
-    ["probe-failed", "tier none (no container API): backend unavailable"],
-    ["tier-unsupported", "tier appcontainer-dacl"],
-    ["tier-unsupported", "tier unknown: backend unavailable (container API true)"],
-    ["tier-unsupported", "tier unknown: tier none (no container API): x (container API undefined)"],
-    ["tier-unsupported", "tier unknown"],
-    ["tier-unsupported", "tier future-container"],
-    ["request-rejected", "validation rejected"],
-    ["binary-missing", "missing launcher"],
-  ] as const)("fails for prerequisite %s (%s)", async (reason, detail) => {
-    vi.mocked(detectHostMxcPrerequisites).mockResolvedValue({ state: "unavailable", windowsBuild: "10.0.26100", reason, detail });
+    ["launcher-mismatch", "launcher hash mismatch", undefined],
+    ["probe-failed", "--probe exit 1", undefined],
+    ["probe-failed", "unexpected tier appcontainer-dacl", false],
+    ["probe-failed", "unexpected tier future-container", undefined],
+    ["container-unavailable", "backend unavailable (container API true)", true],
+    ["container-unavailable", "backend unavailable (container API false)", undefined],
+    ["request-rejected", "validation rejected", undefined],
+    ["binary-missing", "missing launcher", undefined],
+  ] as const)("fails for prerequisite %s (%s, container API %s)", async (reason, detail, baseContainerApiPresent) => {
+    vi.mocked(detectHostMxcPrerequisites).mockResolvedValue({ state: "unavailable", windowsBuild: "10.0.26100", reason, detail,
+      ...(baseContainerApiPresent === undefined ? {} : { baseContainerApiPresent }) });
     const skip = vi.fn((): never => { throw new Error("Unexpected capability skip"); });
     await expect(requireMxcCapability(skip)).rejects.toThrow(`Native container prerequisite: ${reason}: ${detail}`);
     expect(skip).not.toHaveBeenCalled();

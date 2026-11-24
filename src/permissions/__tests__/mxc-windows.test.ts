@@ -29,7 +29,7 @@ const PROBE_BASE_CONTAINER = `{
     "baseContainerSupportsIngressHostLoopbackAllow": true }
 }
 `;
-// What the 1.1.0 launcher reports when the container backend cannot serve the request: no tier, an `error`, and the host facts (the shape its API validates; not captured on such a host).
+// The 1.1.0 probe of a request the backend cannot serve: no tier, an `error`, the host facts (the shape its API validates; not captured on such a host).
 const PROBE_NO_TIER = (apiPresent: boolean, error: unknown = "the container backend is unavailable on this host"): string => JSON.stringify({
   warnings: [],
   probes: { baseContainerApiPresent: apiPresent, baseContainerSupportsDenyPaths: false },
@@ -192,8 +192,12 @@ describe("detectMxcSupport", () => {
     [{ runs: { "--probe": { code: 1, stdout: "", stderr: "boom" } } }, "probe-failed"],
     [{ runs: { "--probe": new Error("spawn EACCES") } }, "probe-failed"],
     [{ runs: { "--probe": { code: 1, stdout: PROBE_BASE_CONTAINER, stderr: "" } } }, "probe-failed"],
-    [{ runs: { "--probe": { code: 0, stdout: PROBE_BASE_CONTAINER.replace("base-container", "appcontainer-dacl"), stderr: "" } } }, "tier-unsupported"],
-    [{ runs: { "--probe": { code: 0, stdout: PROBE_BASE_CONTAINER.replace('"tier": "base-container",', ""), stderr: "" } } }, "tier-unsupported"],
+    [{ runs: { "--probe": { code: 0, stdout: PROBE_BASE_CONTAINER.replace("base-container", "appcontainer-dacl"), stderr: "" } } }, "probe-failed"],
+    [{ runs: { "--probe": { code: 0, stdout: PROBE_BASE_CONTAINER.replace("base-container", "future-container"), stderr: "" } } }, "probe-failed"],
+    [{ runs: { "--probe": { code: 0, stdout: PROBE_BASE_CONTAINER.replace('"tier": "base-container",', ""), stderr: "" } } }, "probe-failed"],
+    [{ runs: { "--probe": { code: 0, stdout: PROBE_BASE_CONTAINER.replace('"needsDaclAugmentation": false', '"needsDaclAugmentation": true'), stderr: "" } } }, "probe-failed"],
+    [{ runs: { "--probe": { code: 0, stdout: PROBE_BASE_CONTAINER.replace('"needsDaclAugmentation": false,', ""), stderr: "" } } }, "probe-failed"],
+    [{ runs: { "--probe": { code: 0, stdout: PROBE_NO_TIER(false), stderr: "" } } }, "container-unavailable"],
     [{ runs: { "--probe": { code: 1, stdout: "", stderr: DRY_RUN_NON_LOOPBACK } } }, "request-rejected"],
     [{ runs: { "--dry-run": { code: 0, stdout: "", stderr: "" } } }, "request-rejected"],
     [{ runs: { "--dry-run": { code: 0, stdout: DRY_RUN_PASSED_WITH_TIER.replace("base-container", "appcontainer"), stderr: "" } } }, "request-rejected"],
@@ -205,23 +209,27 @@ describe("detectMxcSupport", () => {
     await expect(detectMxcSupport(deps(override))).resolves.toMatchObject({ state: "unavailable", reason });
   });
 
-  it.each([0, 1])("names a host without the container API when the tier-less probe says so (exit %i)", async (code) => {
-    const d = deps({ runs: { "--probe": { code, stdout: PROBE_NO_TIER(false), stderr: "" } } });
-    await expect(detectMxcPrerequisites(d)).resolves.toEqual({
-      state: "unavailable", reason: "tier-unsupported", windowsBuild: "10.0.26300",
-      detail: "tier none (no container API): the container backend is unavailable on this host",
+  it.each([[0, false], [1, false], [0, true]] as const)("reports an unserved request with the probe's error and container API fact (exit %i, API %s)", async (code, apiPresent) => {
+    const d = deps({ runs: { "--probe": { code, stdout: PROBE_NO_TIER(apiPresent), stderr: "" } } });
+    await expect(detectMxcPrerequisites(d)).resolves.toStrictEqual({
+      state: "unavailable", reason: "container-unavailable", windowsBuild: "10.0.26300",
+      detail: `the container backend is unavailable on this host (container API ${String(apiPresent)})`,
+      baseContainerApiPresent: apiPresent,
     });
     expect(d.calls.map((c) => c[0])).toEqual(["--probe"]);
   });
 
   it.each([
-    ["an error on a host that has the container API", PROBE_NO_TIER(true), "tier unknown: the container backend is unavailable on this host (container API true)"],
-    ["no error string", PROBE_NO_TIER(false, { code: "malformed_request" }), "tier unknown: no probe error (container API false)"],
-    ["no host facts", JSON.stringify({ error: { code: "malformed_request", message: "failed to load probe config" } }), "tier unknown: no probe error (container API undefined)"],
-    ["another tier", PROBE_BASE_CONTAINER.replace("base-container", "appcontainer-dacl"), "tier appcontainer-dacl"],
-  ])("keeps a tier-less probe with %s unrecognised", async (_name, stdout, detail) => {
-    await expect(detectMxcPrerequisites(deps({ runs: { "--probe": { code: 0, stdout, stderr: "" } } })))
-      .resolves.toMatchObject({ state: "unavailable", reason: "tier-unsupported", detail });
+    ["no error string", PROBE_NO_TIER(false, { code: "malformed_request" })],
+    ["no host facts or error string", JSON.stringify({ error: { code: "malformed_request", message: "failed to load probe config" } })],
+    ["a legacy tier name", PROBE_BASE_CONTAINER.replace("base-container", "appcontainer-dacl").replace('"baseContainerApiPresent": true', '"baseContainerApiPresent": false')],
+    ["a container that needs DACL changes", PROBE_BASE_CONTAINER.replace('"needsDaclAugmentation": false', '"needsDaclAugmentation": true')],
+  ])("reads a probe with %s as an unrecognised answer, with no host fact to excuse it", async (_name, stdout) => {
+    const d = deps({ runs: { "--probe": { code: 0, stdout, stderr: "" } } });
+    const result = await detectMxcPrerequisites(d);
+    expect(result).toMatchObject({ state: "unavailable", reason: "probe-failed" });
+    expect(result).not.toHaveProperty("baseContainerApiPresent");
+    expect(d.calls.map((c) => c[0])).toEqual(["--probe"]);
   });
 });
 
