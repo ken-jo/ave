@@ -62,10 +62,20 @@ function readUpstreamSrtWinInput(vendorDirectory, arch) {
 function assertUpstreamSrtWinVendor(vendorDirectory, arches = Object.keys(pins.sha256)) {
   for (const arch of arches) readUpstreamSrtWinInput(vendorDirectory, arch);
 }
-function assertSrtWinBuildInputs(vendorDirectory) {
-  if (digest(readPlainFile(join(vendorDirectory, "srt-win", "object-only-parent-guard.patch"))) !== pins.nativePatchSha256) {
+function readSrtWinBuildPatch(vendorDirectory) {
+  const bytes = readPlainFile(join(vendorDirectory, "srt-win", "object-only-parent-guard.patch"));
+  if (digest(bytes) !== pins.nativePatchSha256) {
     throw new Error("srt-win-native-patch-integrity-mismatch");
   }
+  return bytes;
+}
+function assertSrtWinBuildInputs(vendorDirectory) { readSrtWinBuildPatch(vendorDirectory); }
+function srtWinBuildInputDigests(vendorDirectory) {
+  return {
+    nativePatchSha256: digest(readSrtWinBuildPatch(vendorDirectory)),
+    upstream: Object.fromEntries(Object.keys(TARGETS).map(arch => [arch, digest(readUpstreamSrtWinInput(vendorDirectory, arch))])),
+  };
 }
 module.exports = { TARGETS, RECEIPTS_DIRECTORY, digest, readPlainFile, assertBuildReceipt, readBuildReceipts,
-  assertSrtWinVendor, readUpstreamSrtWinInput, assertUpstreamSrtWinVendor, assertSrtWinBuildInputs, assertSrtWinReceiptModule };
+  assertSrtWinVendor, readUpstreamSrtWinInput, assertUpstreamSrtWinVendor, assertSrtWinBuildInputs, assertSrtWinReceiptModule,
+  readSrtWinBuildPatch, srtWinBuildInputDigests };

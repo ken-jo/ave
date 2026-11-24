@@ -4,41 +4,15 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSy
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { writeMxcRuntimePackage } from "../../src/__tests__/support/mxc-runtime-package.js";
 import { verifyMxcSdk } from "../../scripts/lib/mxc-sdk-integrity.mjs";
 // @ts-expect-error standalone packaging check has no declaration output
-import { assertNoPackagedBuildHeaders, assertPackagingStagePaths, copyPackagingDependencies, finishPackagingCheck, packagingCheckArchitectures, packagingCheckCache, packagingCheckConfiguration, packagingInstalledInputFiles, readInstalledPtyHeaders, verifyInstalledPackagingInputs } from "../../scripts/check-mxc-packaging.mjs";
-import { restoreWindowsPreparation, sealWindowsPreparation } from "../../scripts/lib/windows-preparation-cache.mjs";
+import { assertNoPackagedBuildHeaders, assertPackagingStagePaths, copyPackagingDependencies, finishPackagingCheck, packagingCheckArchitectures, packagingCheckCache, packagingCheckConfiguration } from "../../scripts/check-mxc-packaging.mjs";
 
 const require = createRequire(import.meta.url);
 
 describe("native payload packager integration", () => {
-  it("rejects an exact warm hit with the same missing installed input as a cold build", async () => {
-    const root = mkdtempSync(path.join(tmpdir(), "ave-package-input-"));
-    try {
-      const header = "node_modules/node-pty/node_modules/node-addon-api/package.json";
-      expect(packagingInstalledInputFiles(process.cwd())).toContain(header);
-      mkdirSync(path.dirname(path.join(root, header)), { recursive: true });
-      writeFileSync(path.join(root, header), '{"name":"node-addon-api","version":"1"}');
-      const modules = path.join(root, "node_modules");
-      await expect(readInstalledPtyHeaders(modules)).resolves.toMatchObject({ name: "node-addon-api" });
-      const output = path.join(root, "verified");
-      mkdirSync(output);
-      writeFileSync(path.join(output, "package.bin"), "valid cached output");
-      const required = ["package.bin"], key = "exact-hit";
-      await sealWindowsPreparation(output, key, required);
-      rmSync(path.join(root, header));
-      const cold = await readInstalledPtyHeaders(modules).catch((error: Error) => error.message);
-      expect(cold).toMatch(/ENOENT.*node-addon-api/);
-      const verifyIdentity = vi.fn();
-      await expect(restoreWindowsPreparation(output, key, required, true, {
-        verifyIdentity, verifyInputs: () => verifyInstalledPackagingInputs(root, ["x64"]),
-      })).rejects.toThrow(cold);
-      expect(verifyIdentity).not.toHaveBeenCalled();
-    } finally { rmSync(root, { recursive: true, force: true }); }
-  });
-
   it("copies the complete dependency graph and links into independent architecture trees", async () => {
     const root = realpathSync(mkdtempSync(path.join(tmpdir(), "ave-dependency-copy-")));
     try {

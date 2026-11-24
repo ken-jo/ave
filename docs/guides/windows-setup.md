@@ -169,7 +169,7 @@ bun run test -- src/permissions/__tests__/allowed-directories.test.ts src/permis
 
 When CI requires native platform checks, three Windows shards run the union of the committed permission, native and application inventories. Each suite runs once even if it appears in multiple inventories. The inventory drift locks also run on affected Linux plans. Removing the last Windows lane for a suite requires a new or revised record in `config/windows-test-removals.json`.
 
-One preparation job supplies the helpers to all three shards. It can reuse compiled helpers and both payload packages when the tracked inputs, toolchain and runner image match. The job verifies the cached digests and existing binary identity checks before use, and rebuilds if verification fails. Native tests and package checks run on both paths. Only default-branch runs save preparation outputs.
+One preparation job supplies the helpers to all three shards. It reuses only native helper build outputs when the tracked inputs, toolchain, runner image, and installed pinned patch and upstream binaries match. The job verifies the cached digests and binary identities before use, and rebuilds if verification fails. Every run builds and verifies both payload packages and runs the native tests. Only default-branch runs save helper outputs.
 
 Use `bun run test`, not `bun test`. The suite runs under Vitest through `scripts/run-vitest-under-electron.mjs`.
 

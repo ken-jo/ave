@@ -18,7 +18,7 @@ function canonicalJson(value: unknown): string {
 }
 
 export function windowsPreparationKey(manifest: WindowsPreparationManifest) {
-  return `ave-windows-preparation-v1-${createHash("sha256").update(canonicalJson(manifest)).digest("hex")}`;
+  return `ave-windows-native-helpers-v2-${createHash("sha256").update(canonicalJson(manifest)).digest("hex")}`;
 }
 
 async function hashFile(path: string) {
@@ -27,15 +27,12 @@ async function hashFile(path: string) {
   return hash.digest("hex");
 }
 
-// Inventory the tracked build, workflow and packaging input trees. The payload
-// check writes a generated application entry, and imports its tracked pins
-// under src/permissions. Also bind the installed files the packager validates.
-const INPUT_TREES = /^(?:\.github|build|config|native|patches|resources|scripts|src\/permissions)\//u;
+// Inventory the tracked build and workflow input trees, including source pins.
+const INPUT_TREES = /^(?:\.github|native|patches|resources|scripts|src\/permissions)\//u;
 
 export async function windowsPreparationInputs(
   root: string,
   identity: WindowsPreparationManifest["identity"],
-  installed: readonly string[] = [],
 ): Promise<WindowsPreparationManifest> {
   const paths = execFileSync("git", ["-C", root, "ls-files", "-z"], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 })
     .split("\0").filter(path => path && (!path.includes("/") || INPUT_TREES.test(path))).sort();
@@ -45,12 +42,6 @@ export async function windowsPreparationInputs(
     const path = join(root, file);
     if (!lstatSync(path).isFile()) throw new Error(`Invalid preparation input: ${file}`);
     files[file] = await hashFile(path);
-  }
-  for (const file of installed) {
-    if (!file.startsWith("node_modules/") || file.split("/").includes("..")) throw new Error(`Invalid installed preparation input: ${file}`);
-    const path = join(root, file);
-    const stat = lstatSync(path, { throwIfNoEntry: false });
-    files[file] = stat?.isFile() ? await hashFile(path) : stat ? "not a regular file" : "missing";
   }
   return { identity, files };
 }
@@ -71,18 +62,19 @@ function assertExpectedFile(expected: Readonly<Record<string, string>>, file: st
   if (!Object.hasOwn(expected, file)) throw new Error(`Unexpected preparation output: ${file}`);
 }
 
-async function outputFiles(root: string, expected?: Readonly<Record<string, string>>) {
+async function outputFiles(root: string, required: readonly string[]) {
+  const allowed = new Set(required);
   const files = Object.create(null) as Record<string, string>;
   for (const file of outputPaths(root)) {
-    if (expected) assertExpectedFile(expected, file);
+    if (!allowed.has(file)) throw new Error(`Unexpected preparation output: ${file}`);
     files[file] = await hashFile(join(root, file));
   }
+  if (required.some(file => !Object.hasOwn(files, file))) throw new Error("Missing preparation output");
   return files;
 }
 
 export async function sealWindowsPreparation(root: string, key: string, required: readonly string[]) {
-  const files = await outputFiles(root);
-  if (required.some(file => !Object.hasOwn(files, file))) throw new Error("Missing preparation output");
+  const files = await outputFiles(root, required);
   const manifest = `${JSON.stringify({ key, files })}\n`;
   writeFileSync(join(root, OUTPUT_MANIFEST), manifest, { flag: "wx" });
   return createHash("sha256").update(manifest).digest("hex");
@@ -100,8 +92,8 @@ function readOutputManifest(root: string, digest?: string): { key: string; files
 }
 
 async function verifyWindowsPreparation(root: string, key: string, required: readonly string[], expected: ReturnType<typeof readOutputManifest>) {
-  const files = await outputFiles(root, expected.files);
-  if (expected.key !== key || required.some(file => !Object.hasOwn(files, file))
+  const files = await outputFiles(root, required);
+  if (expected.key !== key
     || canonicalJson(expected.files) !== canonicalJson(files) || canonicalJson(readOutputManifest(root)) !== canonicalJson(expected)) {
     throw new Error("Windows preparation cache digest mismatch");
   }

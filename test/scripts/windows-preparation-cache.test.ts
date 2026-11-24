@@ -15,24 +15,6 @@ afterAll(() => tracker.cleanup());
 const identity = { image: "windows", imageVersion: "1", compiler: { msvc: "14.44", sdk: "10.0.26100" } } satisfies WindowsPreparationManifest["identity"];
 
 describe("Windows preparation inputs", () => {
-  it("changes the key when an installed input is changed or removed", async () => {
-    const root = makeDir();
-    execFileSync("git", ["-C", root, "init", "--quiet"]);
-    writeFileSync(join(root, "bun.lock"), "lock");
-    execFileSync("git", ["-C", root, "add", "bun.lock"]);
-    const header = "node_modules/node-pty/node_modules/node-addon-api/package.json";
-    mkdirSync(dirname(join(root, header)), { recursive: true });
-    const manifest = () => windowsPreparationInputs(root, identity, [header]);
-    writeFileSync(join(root, header), '{"name":"node-addon-api","version":"1"}');
-    const first = await manifest();
-    expect(first.files[header]).toMatch(/^[a-f0-9]{64}$/);
-    writeFileSync(join(root, header), '{"name":"node-addon-api","version":"2"}');
-    const second = await manifest();
-    expect(windowsPreparationKey(second)).not.toBe(windowsPreparationKey(first));
-    rmSync(join(root, header));
-    expect(windowsPreparationKey(await manifest())).not.toBe(windowsPreparationKey(second));
-  });
-
   it("changes the key when a tracked source, lockfile, runner image, compiler or SDK changes", async () => {
     const root = makeDir();
     const git = (...args: string[]) => execFileSync("git", ["-C", root, ...args]);
@@ -50,6 +32,7 @@ describe("Windows preparation inputs", () => {
       { ...identity, imageVersion: "2" },
       { ...identity, compiler: { ...identity.compiler, msvc: "14.45" } },
       { ...identity, compiler: { ...identity.compiler, sdk: "10.0.26200" } },
+      { ...identity, srtWin: { nativePatchSha256: "changed" } },
     ]) expect(windowsPreparationKey(await windowsPreparationInputs(root, changed))).not.toBe(key);
     writeFileSync(source, "changed");
     expect(windowsPreparationKey(await windowsPreparationInputs(root, identity))).not.toBe(key);
@@ -62,7 +45,7 @@ describe("Windows preparation inputs", () => {
 describe("Windows preparation output cache", () => {
   const key = windowsPreparationKey({ identity, files: { "bun.lock": "digest" } });
   const helper = "native/helper.exe";
-  const required = [helper, "payload/x64/app.exe"];
+  const required = [helper, "native/path-classifier.exe"];
   async function sealed() {
     const root = makeDir();
     for (const file of required) {
@@ -72,6 +55,15 @@ describe("Windows preparation output cache", () => {
     await sealWindowsPreparation(root, key, required);
     return root;
   }
+
+  it("refuses to seal packaged output alongside the helper inventory", async () => {
+    const root = makeDir();
+    mkdirSync(join(root, "native"));
+    writeFileSync(join(root, helper), "verified");
+    mkdirSync(join(root, "payload"));
+    writeFileSync(join(root, "payload", "app.exe"), "package");
+    await expect(sealWindowsPreparation(root, key, [helper])).rejects.toThrow("Unexpected preparation output");
+  });
 
   it("rechecks the sealed outputs before publication and refuses a replacement seal", async () => {
     const root = makeDir();
@@ -157,10 +149,10 @@ describe("Windows preparation output cache", () => {
     expect(existsSync(root)).toBe(false);
   });
 
-  it("refuses to seal a file named __proto__ even inside a payload directory", async () => {
+  it("refuses to seal a file named __proto__ even inside a helper directory", async () => {
     const root = makeDir();
-    mkdirSync(join(root, "payload"));
-    writeFileSync(join(root, "payload/__proto__"), "unexpected bytes");
+    mkdirSync(join(root, "native"));
+    writeFileSync(join(root, "native/__proto__"), "unexpected bytes");
     await expect(sealWindowsPreparation(root, key, [])).rejects.toThrow("Unexpected preparation output");
   });
 });

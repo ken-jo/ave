@@ -7,7 +7,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 const require = createRequire(import.meta.url);
 const pins = require("../src/permissions/srt-win-pins.json");
-const { TARGETS, RECEIPTS_DIRECTORY, digest, readPlainFile, readBuildReceipts, readUpstreamSrtWinInput, assertBuildReceipt, assertSrtWinVendor, assertSrtWinBuildInputs, assertSrtWinReceiptModule } = require("./lib/srt-win-integrity.cjs");
+const { TARGETS, RECEIPTS_DIRECTORY, digest, readPlainFile, readBuildReceipts, readUpstreamSrtWinInput, assertBuildReceipt, assertSrtWinVendor, readSrtWinBuildPatch, assertSrtWinReceiptModule } = require("./lib/srt-win-integrity.cjs");
 
 export function parseBuildOptions(args) {
   const options = { arches: Object.keys(TARGETS), testNative: false, sourceArchive: undefined };
@@ -122,7 +122,7 @@ export async function buildSrtWin(options) {
   if (process.platform !== "win32") throw new Error("Native helper builds require Windows");
   require("./prepare-srt-win-receipts.cjs").prepareSrtWinReceipts();
   const vendor = join(dirname(require.resolve(`${pins.package}/package.json`)), "vendor");
-  assertSrtWinBuildInputs(vendor);
+  const patch = readSrtWinBuildPatch(vendor);
   if (options.testNative && !options.arches.includes(process.arch)) throw new Error("Native tests require the host architecture");
   retainUpstreamSrtWinInputs(vendor, options.arches);
   if (!options.testNative && !options.sourceArchive) {
@@ -132,7 +132,6 @@ export async function buildSrtWin(options) {
       return;
     }
   }
-  const patch = readPlainFile(join(vendor, "srt-win", "object-only-parent-guard.patch"));
   const reuseNative = options.testNative && !options.sourceArchive
     && process.env.GITHUB_ACTIONS === "true" && process.env.AVE_WINDOWS_PREP_VERIFIED === "true";
   if (reuseNative) {

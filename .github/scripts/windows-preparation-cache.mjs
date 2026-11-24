@@ -7,16 +7,23 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { packagingInstalledInputFiles, verifyInstalledPackagingInputs, verifyPackagingOutput } from "../../scripts/check-mxc-packaging.mjs";
 import {
   restoreWindowsPreparation, sealWindowsPreparation, verifySealedWindowsPreparation, windowsPreparationInputs, windowsPreparationKey,
 } from "../../scripts/lib/windows-preparation-cache.mts";
 
 const require = createRequire(import.meta.url);
-const { TARGETS, assertSrtWinReceiptModule, assertSrtWinVendor, assertUpstreamSrtWinVendor } = require("../../scripts/lib/srt-win-integrity.cjs");
+const { TARGETS, assertSrtWinReceiptModule, assertSrtWinVendor, assertUpstreamSrtWinVendor, srtWinBuildInputDigests } = require("../../scripts/lib/srt-win-integrity.cjs");
 const VENDOR = "node_modules/@anthropic-ai/sandbox-runtime/vendor";
 const RECEIPTS = "src/permissions/generated/srt-win-build-receipts";
 const ARCHES = Object.keys(TARGETS);
+
+function installedSrtInputs(root) {
+  const packageId = require("../../src/permissions/srt-win-pins.json").package;
+  const resolveFromRoot = createRequire(join(root, "package.json")).resolve;
+  const vendor = join(dirname(resolveFromRoot(`${packageId}/package.json`)), "vendor");
+  if (vendor !== realpathSync(join(root, VENDOR))) throw new Error("Unexpected installed native helper package");
+  return srtWinBuildInputDigests(vendor);
+}
 
 function nativeFiles(arch) {
   return [
@@ -66,31 +73,26 @@ async function main(operation, root, env) {
       console.log("Runner image identity unavailable, building preparation outputs");
       return;
     }
-    const manifest = await windowsPreparationInputs(root, compilerIdentity(root, env), packagingInstalledInputFiles(root));
+    const manifest = await windowsPreparationInputs(root, { ...compilerIdentity(root, env), srtWin: installedSrtInputs(root) });
     writeFileSync(join(temp, "windows-preparation-inputs.json"), JSON.stringify(manifest, null, 2) + "\n");
     appendFileSync(outputs, `key=${windowsPreparationKey(manifest)}\n`);
     return;
   }
-  if (key && !/^ave-windows-preparation-v1-[a-f0-9]{64}$/u.test(key)) throw new Error("Invalid Windows preparation key");
+  if (key && !/^ave-windows-native-helpers-v2-[a-f0-9]{64}$/u.test(key)) throw new Error("Invalid Windows preparation key");
   const native = nativeFiles(process.arch);
   const pinTest = "ave-path-pin-test.exe";
-  const productName = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).build.productName;
-  const required = [
-    ...[...native, pinTest].map(file => `native/${file}`),
-    ...ARCHES.flatMap(arch => [`payload/${arch}/${productName}.exe`, `payload/${arch}/resources/app.asar`]),
-  ];
+  const required = [...native, pinTest].map(file => `native/${file}`);
   if (operation === "restore") {
     const exactHit = env.AVE_WINDOWS_PREP_EXACT_HIT === "true";
     const directory = key && exactHit ? mkdtempSync(join(realpathSync(temp), "windows-preparation-use-")) : undefined;
     const verified = await restoreWindowsPreparation(store, key, required, exactHit, {
-      verifyInputs: () => verifyInstalledPackagingInputs(root, ARCHES),
-      async verifyIdentity(directory) {
+      verifyInputs: () => installedSrtInputs(root),
+      verifyIdentity(directory) {
         const vendor = join(directory, "native", VENDOR);
         const receipts = JSON.parse(readFileSync(join(directory, "native", `${RECEIPTS}.json`), "utf8"));
         assertSrtWinReceiptModule(dirname(join(directory, "native", RECEIPTS)));
         assertSrtWinVendor(vendor, ARCHES, receipts);
         assertUpstreamSrtWinVendor(vendor);
-        for (const arch of ARCHES) await verifyPackagingOutput(join(directory, "payload", arch), arch, productName);
       },
       stage: directory && {
         directory,
