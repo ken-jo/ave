@@ -1164,8 +1164,53 @@ Important rules:
   that says nothing for `browserDownloadHelperStallMs`, or does not end that
   long after a cancel, is killed and its exit awaited before the step fails;
   a killed copy's temporary file is removed through the chosen folder, held
-  anew, and the log names any that may remain (README in
-  `native/macos-dir-ops`). A closed dialog, a failed download or a failed
+  anew, only after it is moved aside and checked to be the file the copy
+  wrote, a helper that stops a copy itself removes its temporary file the
+  same way. The writing handle supplies ownership. Record reads, record
+  writes, removal retries and restoration use held directories. The sweep
+  compares the recorded fingerprint inside the held operation before
+  restoring a mismatched file by an exclusive copy. The source stays if
+  the destination cannot be verified against the new writing handle.
+  When exclusive isolation is unavailable, cleanup keeps and records the
+  entry. Cross-volume publication verifies the part and the final entry
+  around an exclusive rename. It identifies the previous target before
+  copying, moves it aside exclusively before commit, and verifies it before
+  retirement. A failed commit restores the previous target exclusively or
+  records a leftover. See the [helper protocol](../../native/macos-dir-ops/README.md).
+
+  I1. The host touches part, hidden and record entries only through held
+  directory operations.
+
+  I2. The part's identity comes only from the writing handle.
+
+  I3. Destructive cleanup requires exclusive isolation and handle
+  verification. If that proof is unavailable, cleanup leaves and records
+  the entry.
+
+  I4. A displaced original moves only by identity-preserving rename.
+  Startup uses the separate target recovery operation for its record.
+  Copy-back applies only to copy-part recovery.
+
+  I5. Before authorizing isolation, the host syncs a record containing the
+  hidden name, the original and writer identities, and the copy session.
+  Startup reads target records first. A target matching the writer confirms
+  commit and any remaining hidden original is retired by identity. An absent
+  hidden entry and a target matching the original confirm rollback. A vacant
+  target permits exclusive restoration of the verified hidden original.
+  Other observations keep the record and are logged. The recorded part is
+  removed by identity before the record is removed. Failed or unconfirmed
+  retirement keeps the record for the next startup.
+
+  I6. The copy session binds the old target identity captured before ready
+  and the writing identity from the part handle. A target leftover must
+  match the authorized original and hidden name on the held destination volume.
+  A named copy-part leftover must carry the writing identity.
+
+  Accepted residual.
+
+  (a) the gap between the final fd verify and the unlink of a random hidden name; (b) anything after a verified restore or commit (the user's own act). Nothing else.
+
+  A closed dialog, a failed download or a failed
   move removes the staged file and is reported cancelled or failed.
   Staged files a crash left behind are removed at the next start. At most 4
   downloads wait for a dialog at once, and a waiting one that writes more
