@@ -226,7 +226,7 @@ async function recoveryTests() {
     assert.deepEqual(readdirSync(dir).sort(), existing ? ["source", "target"] : ["source"]);
     if (existing) assert.equal(readFileSync(join(dir, "target"), "utf8"), "old bytes");
   });
-  add("a volume without file-ID opens refuses the copy before the existing target is opened", (dir) => {
+  for (const [mode, refusal] of [["volume-without-file-ids", "refused volume"], ["volume-query-fails", "refused volume-unknown"]]) add(`${mode} refuses the copy before the existing target is opened`, (dir) => {
     writeFileSync(join(dir, "source"), "source");
     writeFileSync(join(dir, "target"), "old bytes");
     // Held with no sharing (libuv's UV_FS_O_EXLOCK), so any open of the target by the helper fails instead of answering the refusal.
@@ -235,14 +235,14 @@ async function recoveryTests() {
     try {
       assert.throws(() => readFileSync(join(dir, "target")), { code: "EBUSY" });
       result = spawnSync(join(tmpdir(), "ave-path-pin-test.exe"),
-        ["volume-without-file-ids", "--dir-copy", ...held(dir), "source", ...held(dir), "target", part, hidden],
+        [mode, "--dir-copy", ...held(dir), "source", ...held(dir), "target", part, hidden],
         { input: "c", windowsHide: true, shell: false, env: {}, timeout: 10_000, encoding: "utf8" });
     } finally {
       closeSync(locked);
     }
     assert.ifError(result.error);
     assert.equal(result.status, 3, result.stdout);
-    assert.deepEqual(result.stdout.trimEnd().split(/\r?\n/u), ["refused volume"]);
+    assert.deepEqual(result.stdout.trimEnd().split(/\r?\n/u), [refusal]);
     assert.equal(readFileSync(join(dir, "target"), "utf8"), "old bytes");
   });
   add("record round trip and exclusive collision", (dir) => {

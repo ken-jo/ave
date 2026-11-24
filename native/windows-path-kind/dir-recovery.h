@@ -166,16 +166,22 @@ inline bool time_ns(LARGE_INTEGER ticks, ULONGLONG& ns) {
 bool test_volume_flags(bool queried, DWORD& flags);
 #endif
 
-// The evidence class comes from the volume that holds the entry, never from the OS. A volume that opens files by persistent ID
-// (NTFS, ReFS) backs `creation`; any other volume (the FAT family among them) backs no class, so every stamp there is unresolved.
-inline bool creation_volume(HANDLE file) {
+enum class VolumeKind { kFileIds, kNoFileIds, kUnknown };
+
+inline VolumeKind volume_kind(HANDLE file) {
   DWORD flags = 0;
   bool queried = GetVolumeInformationByHandleW(file, nullptr, 0, nullptr, nullptr, &flags, nullptr, 0) != 0;
 #if defined(AVE_TEST_DIR_RECOVERY)
   queried = test_volume_flags(queried, flags);
 #endif
-  return queried && (flags & FILE_SUPPORTS_OPEN_BY_FILE_ID) != 0;
+  if (!queried) return VolumeKind::kUnknown;
+  return (flags & FILE_SUPPORTS_OPEN_BY_FILE_ID) != 0 ? VolumeKind::kFileIds : VolumeKind::kNoFileIds;
 }
+
+// The evidence class comes from the volume that holds the entry, never from the OS. A volume that opens files by persistent ID
+// (NTFS, ReFS) backs `creation`; any other volume (the FAT family among them), or one that cannot be queried, backs no class, so
+// every stamp there is unresolved.
+inline bool creation_volume(HANDLE file) { return volume_kind(file) == VolumeKind::kFileIds; }
 
 inline bool read_birth(HANDLE file, ULONGLONG& birth) {
   FILE_BASIC_INFO basic{};

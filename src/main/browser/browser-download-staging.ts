@@ -181,16 +181,21 @@ function withVerifiedRoot<T>(root: HeldDirectory, use: (fd: number | undefined) 
 }
 
 const ROOT_REPLACED = "the download staging folder was replaced";
-const STAGING_REFUSALS: Readonly<Record<Exclude<HeldRefusal, "volume">, string>> = {
+const STAGING_REFUSALS: Readonly<Record<Exclude<HeldRefusal, "volume" | "volume-unknown">, string>> = {
   from: ROOT_REPLACED,
   to: "the chosen folder could not be verified",
   source: "the staged file was replaced",
   target: "the chosen file could not be safely replaced",
 };
 
-/** What a held operation's refusal says; a chosen folder whose volume cannot replace a file safely is told so in the user's language. */
+/**
+ * What a held operation's refusal says; a chosen folder whose volume cannot replace a file safely, or whose volume could not be checked,
+ * is told so in the user's language.
+ */
 export function stagingRefusal(refusal: HeldRefusal): string {
-  return refusal === "volume" ? t("browserDownload.unsupportedVolume") : STAGING_REFUSALS[refusal];
+  if (refusal === "volume") return t("browserDownload.unsupportedVolume");
+  if (refusal === "volume-unknown") return t("browserDownload.volumeUnknown");
+  return STAGING_REFUSALS[refusal];
 }
 
 // A held directory operation's refusal is a staging refusal; every other error passes through unchanged.

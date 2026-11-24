@@ -20,9 +20,14 @@ std::string stop_boundary;
 int file_id_query_to_fault = 0;
 bool zero_file_id = false;
 bool volume_without_file_ids = false;
+bool volume_query_fails = false;
 
 bool test_volume_flags(bool queried, DWORD& flags) {
   if (volume_without_file_ids) flags &= ~static_cast<DWORD>(FILE_SUPPORTS_OPEN_BY_FILE_ID);
+  if (volume_query_fails) {
+    SetLastError(ERROR_INVALID_FUNCTION);
+    return false;
+  }
   return queried;
 }
 
@@ -248,8 +253,9 @@ int wmain(int argc, wchar_t** argv) {
       dir_ops::zero_file_id = test.find(L"zero") != std::wstring::npos;
       return dir_ops::run(argc - 1, argv + 1);
     }
-    if (test == L"volume-without-file-ids") {
-      dir_ops::volume_without_file_ids = true;
+    if (test == L"volume-without-file-ids" || test == L"volume-query-fails") {
+      dir_ops::volume_without_file_ids = test == L"volume-without-file-ids";
+      dir_ops::volume_query_fails = test == L"volume-query-fails";
       return dir_ops::run(argc - 1, argv + 1);
     }
     if (argc == 13 && test.substr(0, 5) == L"stop-") {

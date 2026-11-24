@@ -142,7 +142,8 @@ original part name.
 `--dir-copy` takes the hidden name after the part name and checks source
 and target before `ready`. A destination volume without
 `FILE_SUPPORTS_OPEN_BY_FILE_ID` (FAT, exFAT, and network shares that do
-not offer it) is `refused volume` before `ready`. It emits
+not offer it) is `refused volume` before `ready`, and one whose volume
+information cannot be read is `refused volume-unknown`. It emits
 `destination-id <token>` from the held destination directory and uses the full
 volume serial to bind all subsequent file identities. Its exclusive create
 can fail with plain `failed EEXIST`. On success it emits `writing <token>`

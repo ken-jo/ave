@@ -355,8 +355,10 @@ inline int run_copy(wchar_t** argv) {
   int status = hold_directory(argv[0], argv[1], argv[2], "from", from);
   if (status == 0) status = hold_directory(argv[4], argv[5], argv[6], "to", to);
   if (status != 0) return status;
-  // A volume that cannot open files by ID (FAT, many network shares) cannot replace a file with the checks below: refused by name.
-  if (!creation_volume(to.handle())) return refused("volume");
+  // A volume that cannot open files by ID (FAT, many network shares) cannot replace a file with the checks below: refused by name, as
+  // is one whose kind cannot be read.
+  const VolumeKind volume = volume_kind(to.handle());
+  if (volume != VolumeKind::kFileIds) return refused(volume == VolumeKind::kUnknown ? "volume-unknown" : "volume");
   HANDLE opened = INVALID_HANDLE_VALUE;
   const NTSTATUS opening = open_relative(from.handle(), name, FILE_READ_DATA | FILE_READ_ATTRIBUTES, FILE_SHARE_READ, kOpenExisting,
     kOpenReparsePoint | kSequentialOnly, opened);

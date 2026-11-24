@@ -1457,6 +1457,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "browserContextMenu.reload": "새로 고침",
   "browserContextMenu.openInSystemBrowser": "시스템 브라우저에서 페이지 열기",
   "browserDownload.unsupportedVolume": "이 위치는 안전한 교체를 지원하지 않습니다. 로컬 NTFS 폴더를 선택하세요.",
+  "browserDownload.volumeUnknown": "이 위치가 안전한 교체를 지원하는지 확인하지 못했습니다. 다시 시도하거나 로컬 NTFS 폴더를 선택하세요.",
   "browserPagePrompt.downloadBlocked.title": "다운로드 차단됨",
   "browserPagePrompt.downloadBlocked.rate": "이 사이트의 저장 창을 여러 번 취소해서 다운로드를 차단했습니다:",
   "browserPagePrompt.downloadBlocked.queue": "저장 위치를 고르기를 기다리는 다운로드가 이미 여러 개라서 다운로드를 시작하지 않았습니다:",

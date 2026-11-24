@@ -28,7 +28,7 @@ type Proceed = (step: HeldStep) => boolean;
  * What refused an operation before it acted: `from` or `to` is not the verified directory (gone, unreadable, a link, or another
  * directory now at its path), the `source` entry is not an ordinary file, or the `target` name holds something other than an ordinary file.
  */
-export type HeldRefusal = "from" | "to" | "source" | "target" | "volume";
+export type HeldRefusal = "from" | "to" | "source" | "target" | "volume" | "volume-unknown";
 
 export class HeldDirectoryRefusedError extends Error {
   constructor(readonly refusal: HeldRefusal) {
@@ -881,7 +881,7 @@ function descriptorFileOperations(beforeRename?: (from: string, to: string) => v
 const EXIT_DONE = 0;
 const EXIT_REFUSED = 3;
 const EXIT_FAILED = 4;
-const REFUSALS: ReadonlySet<string> = new Set<HeldRefusal>(["from", "to", "source", "target", "volume"]);
+const REFUSALS: ReadonlySet<string> = new Set<HeldRefusal>(["from", "to", "source", "target", "volume", "volume-unknown"]);
 const PROGRESS = /^progress (\d+)$/u;
 // Every identity a frame carries is one evidence token, `<dev>:<id>:<class>:<value>`.
 const TARGET_ID = /^target-id (\S+)$/u;
@@ -984,7 +984,7 @@ function helperOutcome(helper: string, status: number | null, signal: NodeJS.Sig
     if (left !== null) helperLeftParts.set(error, left);
     return error;
   };
-  const refused = /^refused (\w+)(?: (?:removed|changed))?$/u.exec(answer);
+  const refused = /^refused (\w+(?:-\w+)?)(?: (?:removed|changed))?$/u.exec(answer);
   const refusal = refused?.[1];
   if (status === EXIT_REFUSED && refusal !== undefined && REFUSALS.has(refusal)) {
     const error = new HeldDirectoryRefusedError(refusal as HeldRefusal);
@@ -1182,7 +1182,7 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
         return /^failed E[A-Z0-9_]+$/u.test(answer);
       }
       if (/^refused (from|to|source|target)$/u.test(line)) return mode !== "--dir-copy" || phase === "holding";
-      if (line === "refused volume") return mode === "--dir-copy" && phase === "holding";
+      if (line === "refused volume" || line === "refused volume-unknown") return mode === "--dir-copy" && phase === "holding";
       if (line === "refused target removed" || line === "refused target changed") return mode === "--dir-copy" && passed === "copied";
       if (/^failed E[A-Z0-9_]+$/u.test(line)) return true;
       if (line === "cancelled") return phase !== "holding" && stopping;

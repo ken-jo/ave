@@ -1169,11 +1169,14 @@ describe("a chosen folder whose volume cannot replace a file safely", () => {
   afterEach(() => { setLocale("en"); });
 
   it.each([
-    ["en", "This location does not support safe replacement; choose a local NTFS folder."],
-    ["ko", "이 위치는 안전한 교체를 지원하지 않습니다. 로컬 NTFS 폴더를 선택하세요."],
-  ] as const)("is refused by name, worded in %s", (locale, wording) => {
+    ["en", "This location does not support safe replacement; choose a local NTFS folder.",
+      "Ave could not check whether this location supports safe replacement; try again or choose a local NTFS folder."],
+    ["ko", "이 위치는 안전한 교체를 지원하지 않습니다. 로컬 NTFS 폴더를 선택하세요.",
+      "이 위치가 안전한 교체를 지원하는지 확인하지 못했습니다. 다시 시도하거나 로컬 NTFS 폴더를 선택하세요."],
+  ] as const)("is refused by name, worded in %s", (locale, unsupported, unknown) => {
     setLocale(locale);
-    expect(stagingRefusal("volume")).toBe(wording);
+    expect(stagingRefusal("volume")).toBe(unsupported);
+    expect(stagingRefusal("volume-unknown")).toBe(unknown);
     expect(stagingRefusal("to")).not.toMatch(/file IDs/u);
   });
 });

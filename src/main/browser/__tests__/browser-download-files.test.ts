@@ -331,13 +331,13 @@ describe("a helper that does not keep to its protocol", () => {
     else expect(run.error).toBeInstanceOf(HeldFileHelperUnavailableError);
   });
 
-  it("names the refusal of a chosen folder whose volume cannot replace a file safely", async () => {
+  it.each(["volume", "volume-unknown"] as const)("names the refusal of a chosen folder whose volume cannot be shown to replace a file safely (%s)", async (refusal) => {
     const windows = _helperFileOperationsForTest("/helper/ave-path-kind.exe", BOUNDS, true);
-    script((helper) => { helper.say("refused volume"); helper.exit(3); });
+    script((helper) => { helper.say(`refused ${refusal}`); helper.exit(3); });
     const run = follow(windows.copy(from, "staged", to, "report.pdf", ".part", () => true, UNSTOPPED));
     await flush();
     expect(run.error).toBeInstanceOf(HeldDirectoryRefusedError);
-    expect((run.error as InstanceType<typeof HeldDirectoryRefusedError>).refusal).toBe("volume");
+    expect((run.error as InstanceType<typeof HeldDirectoryRefusedError>).refusal).toBe(refusal);
   });
 
   it("keeps the entire Windows writer identity when rejecting a plain refusal after progress", async () => {
