@@ -53,7 +53,7 @@ export class HostGitError extends Error {
 
 /** The git a host call starts: an absolute program and, for the installation the app bundles, the search path and system folder its
  * discovery probed it with. */
-export interface HostGitProgram { path: string; identity: string; bundled?: { searchPath: string; systemRoot: string } }
+interface HostGitProgram { path: string; identity: string; bundled?: { searchPath: string; systemRoot: string } }
 /** Runs `use` with the git the host resolved, or null when it resolved none; a program that could not be started is resolved again. */
 export type HostGitResolver = <T>(use: (git: HostGitProgram | null) => Promise<T>) => Promise<T>;
 
