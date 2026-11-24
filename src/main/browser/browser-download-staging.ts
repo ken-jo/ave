@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { randomBytes } from "node:crypto";
 import {
-  closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, writeFileSync,
+  closeSync, constants, existsSync, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, writeFileSync,
   type BigIntStats,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join } from "node:path";
@@ -206,8 +206,10 @@ export async function sweepBrowserDownloadStaging(root: BrowserDownloadStagingRo
   try {
     swept = await root.files.sweep(root);
   } catch (error) {
-    // The old records may remain: only a file now known otherwise than its record says is recorded anew.
-    for (const { record, was } of stillLeft) if (!sameLeftPart(record.at, was)) tryWritePartRecord(root, record);
+    // A failed sweep may already have removed some records.
+    for (const { path, record, was } of stillLeft) {
+      if (!sameLeftPart(record.at, was) || !existsSync(path)) tryWritePartRecord(root, record);
+    }
     if (error instanceof HeldDirectoryRefusedError) throw new BrowserDownloadStagingError(STAGING_REFUSALS[error.refusal], { cause: error });
     if (error instanceof HeldFileHelperUnavailableError) throw new BrowserDownloadStagingError(error.message, { cause: error });
     throw error;
@@ -449,8 +451,8 @@ function readRecordFile(path: string): PartRecord | null {
 // At start, before the sweep removes the records with every other file in the staging folder, act on each once. Returns the records of
 // files left where they can still be found, by the name they have now and how they are known there, with what their record said. Never throws: a record that cannot
 // be read or acted on is logged and what it names is left, without refusing downloads.
-async function removeRecordedParts(root: BrowserDownloadStagingRoot): Promise<{ readonly record: PartRecord; readonly was: LeftPart }[]> {
-  const stillLeft: { readonly record: PartRecord; readonly was: LeftPart }[] = [];
+async function removeRecordedParts(root: BrowserDownloadStagingRoot): Promise<{ readonly path: string; readonly record: PartRecord; readonly was: LeftPart }[]> {
+  const stillLeft: { readonly path: string; readonly record: PartRecord; readonly was: LeftPart }[] = [];
   let names: string[];
   try {
     names = withVerifiedRoot(root, () => readdirSync(root.path)).filter((name) => PART_RECORD.test(name));
@@ -469,7 +471,7 @@ async function removeRecordedParts(root: BrowserDownloadStagingRoot): Promise<{ 
       const result = await removeRecordedPart(root, record);
       log.info({ path: join(record.folder.path, record.part), partialCopy: result.outcome, leftAs: result.outcome === "left" ? result.at?.name : undefined },
         "a previous run's stopped browser download copy's temporary file was checked");
-      if (result.outcome === "left" && result.at !== null) stillLeft.push({ record: { ...record, at: result.at }, was: record.at });
+      if (result.outcome === "left" && result.at !== null) stillLeft.push({ path, record: { ...record, at: result.at }, was: record.at });
     } catch (error) {
       log.warn({ path, error: (error as Error).message }, "a browser download cleanup record could not be acted on; nothing it names is removed");
     }

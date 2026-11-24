@@ -1330,6 +1330,36 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
     }
   });
 
+  it("restores a still-needed record deleted by a sweep that fails part-way", async () => {
+    const { root, staging, chosen, part } = await stalledCopy();
+    const [oldRecord] = records(staging);
+    expect(oldRecord).toBeDefined();
+    const moved = join(base, "moved");
+    fs.renameSync(chosen, moved);
+    const failed = new Error("the sweep failed after deleting a record");
+    const failing = {
+      ...root,
+      files: {
+        ...root.files,
+        sweep: async () => {
+          fs.unlinkSync(join(staging, oldRecord ?? ""));
+          throw failed;
+        },
+      },
+    };
+
+    await expect(sweepBrowserDownloadStaging(failing)).rejects.toBe(failed);
+    expect(recordedAt(staging)).toEqual([basename(part)]);
+
+    fs.renameSync(moved, chosen);
+    const swept = follow(sweepBrowserDownloadStaging(root));
+    await flush();
+    await flush();
+    expect(swept).toMatchObject({ settled: true, value: 1 });
+    expect(fs.existsSync(part)).toBe(false);
+    expect(records(staging)).toEqual([]);
+  });
+
   it("records anew, at the next start, a file the sweep left under another name", async () => {
     let chosenFolder = "";
     let original = "";
