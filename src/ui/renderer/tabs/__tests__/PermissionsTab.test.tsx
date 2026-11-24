@@ -1483,7 +1483,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     expect(privacy.textContent).toContain(t("permissionsTab.osSandboxWindowsHomePrivacyError", { path: "D:/ave-home", reason }));
   });
 
-  it("says that shell commands ask even when the privacy failure carries no category", async () => {
+  it("claims no shell outcome when the privacy failure carries no category", async () => {
     const { ave } = installApiWithWindows();
     ave.permission.sandboxCapability.mockResolvedValueOnce({
       platform: "win32", enabled: true, available: true, kind: "partial", reason: "r", potentialReason: "r",
@@ -1491,8 +1491,9 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       boot: { action: "degrade", reason: "degrade-ave-home-privacy-failed", onSignal: "default-settings", causes: ["ave-home-privacy-failed"] },
     } as never);
     await act(async () => { render(<PermissionsTab />); });
+    // Without a category the shell outcome (ask or off until restart) is unknown, so the line names neither.
     await waitFor(() => expect(screen.getByTestId("os-sandbox-boot-degraded-detail").textContent)
-      .toBe(`${t("permissionsTab.homePrivacyBootFailed")}. ${t("permissionsTab.homePrivacyShellAsk")}`));
+      .toBe(`${t("permissionsTab.homePrivacyBootFailed")}.`));
   });
 
   describe("AVE_HOME privacy fix guidance per category", () => {

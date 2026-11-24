@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { t } from "../../i18n/runtime.js";
-import { buildHostShellExecutionPlan } from "../../permissions/host-shell-execution-plan.js";
+import { getLocale, setLocale, t } from "../../i18n/runtime.js";
+import { buildHostShellExecutionPlan, HOME_PRIVACY_HELPER_UNAVAILABLE_SHELL_DENIAL } from "../../permissions/host-shell-execution-plan.js";
 import { shellExecutionEnvironmentLines, shellExecutionEnvironmentPrompt } from "../shell-execution-environment.js";
+
+function helperUnavailablePlan() {
+  return buildHostShellExecutionPlan({ platform: "win32", requestedSandbox: false,
+    activeCapability: { reason: "Fixture", kind: "none", confidence: "verified", platform: "win32" }, unconfinedShellDenied: true });
+}
 
 function plan(sandbox: boolean) {
   return buildHostShellExecutionPlan({
@@ -22,6 +27,27 @@ describe("shell execution environment", () => {
     const denied = buildHostShellExecutionPlan({ platform: "win32", requestedSandbox: false,
       activeCapability: { reason: "Fixture", kind: "none", confidence: "verified", platform: "win32" }, unconfinedShellDenied: true });
     expect(shellExecutionEnvironmentLines(denied)).toEqual([t("shellExecution.homePrivacyHelperUnavailable")]);
+  });
+
+  it.each([
+    ["en", "Shell commands and hooks are off: Ave could not check its home folder privacy at startup. Restart Ave; if it persists, reinstall Ave."],
+    ["ko", "시작할 때 Ave가 홈 폴더 보호를 확인하지 못해 셸 명령과 훅이 꺼져 있습니다. Ave를 다시 시작하세요. 문제가 계속되면 Ave를 다시 설치하세요."],
+  ] as const)("words the helper-unavailable line in %s, and the denial reason is the English line", (locale, line) => {
+    const previous = getLocale();
+    setLocale(locale);
+    try {
+      expect(shellExecutionEnvironmentLines(helperUnavailablePlan())).toEqual([line]);
+    } finally {
+      setLocale(previous);
+    }
+    if (locale === "en") expect(HOME_PRIVACY_HELPER_UNAVAILABLE_SHELL_DENIAL.reason).toBe(line);
+  });
+
+  it("offers no host-execution request while the helper-unavailable plan blocks every shell", () => {
+    const prompt = shellExecutionEnvironmentPrompt(helperUnavailablePlan(), true);
+    expect(prompt).toContain(t("shellExecution.homePrivacyHelperUnavailable"));
+    expect(prompt).not.toContain(t("shellExecution.hostRequest"));
+    expect(shellExecutionEnvironmentPrompt(plan(false), true)).toContain(t("shellExecution.hostRequest"));
   });
 
   it("separates the host location from the temporary home and authentication boundary", () => {

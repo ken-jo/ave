@@ -38,7 +38,9 @@ export function shellExecutionEnvironmentPrompt(plan: ShellEnvironmentPlan, inte
     t("shellExecution.defaultRoute"),
     // Bash cannot start in Windows containers; model guidance and tool refusal must agree.
     ...(plan.mode === "asrt" && plan.substrate === "mxc" ? [t("shellExecution.mxcBashUnavailable")] : []),
-    interactive ? t("shellExecution.hostRequest") : t("shellExecution.noInteractiveApproval"),
+    // A helper-unavailable plan blocks the host route too, so no host request is offered.
+    ...(!interactive ? [t("shellExecution.noInteractiveApproval")]
+      : plan.fallbackReason === "home-privacy-helper-unavailable" ? [] : [t("shellExecution.hostRequest")]),
     t("shellExecution.pipelineStatus"),
     "</shell-execution-environment>",
   ].join("\n");

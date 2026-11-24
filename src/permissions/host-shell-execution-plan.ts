@@ -1,6 +1,7 @@
 // Path-string ACL grants cannot make one-shot filesystem leases reparse-safe; until handle-bound/no-follow grants exist, the plain-host Windows route requires per-invocation consent.
 
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
+import { en } from "../i18n/messages/en.js";
 import type { DisposableSubstrate, SandboxCapability } from "./sandbox-capability.js";
 import { egressProtocolCoverageFor, type EgressProtocolCoverage, type SandboxConfinement } from "../shared/sandbox-capability-info.js";
 import { isRecord } from "../shared/is-record.js";
@@ -362,7 +363,7 @@ const ASK_EVERY_COMMAND_SUFFIX = ":ask";
 // The deny for a "home-privacy-helper-unavailable" plan: shells, hooks and their tool results all carry this restart notice.
 export const HOME_PRIVACY_HELPER_UNAVAILABLE_SHELL_DENIAL = Object.freeze({
   code: "home-privacy-helper-unavailable",
-  reason: "Shell commands and hooks are off: Ave could not check its home folder privacy at startup. Restart Ave; if it persists, reinstall Ave.",
+  reason: en["shellExecution.homePrivacyHelperUnavailable"],
 });
 
 export function isHomePrivacyHelperUnavailablePlan(plan: Pick<HostShellExecutionPlan, "mode" | "fallbackReason"> | undefined): boolean {

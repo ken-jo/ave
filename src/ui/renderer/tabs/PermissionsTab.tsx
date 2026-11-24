@@ -1394,7 +1394,7 @@ export function PermissionsTab({
                           path: sandboxCapability.homePrivacyError.path,
                           reason: homePrivacyReasonText(sandboxCapability.homePrivacyError),
                         }), sandboxCapability.homePrivacyError)
-                      : `${t("permissionsTab.homePrivacyBootFailed")}. ${t("permissionsTab.homePrivacyShellAsk")}`
+                      : `${t("permissionsTab.homePrivacyBootFailed")}.`
                     : sandboxBoot.causes.includes("windows-sandbox-integrity-failed")
                     ? t("permissionsTab.osSandboxWindowsHelperIntegrityError")
                     : sandboxBoot.causes.includes("windows-sandbox-missing")
