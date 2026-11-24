@@ -633,6 +633,8 @@ async function removeRecordedParts(root: BrowserDownloadStagingRoot): Promise<nu
   return removed;
 }
 
+const ABSENT_STAMP_PAUSE_MS = 1_000;
+
 class StagedDownload extends EventEmitter implements ObservedDownload {
   private savedPath = "";
   private ended = false;
@@ -642,6 +644,8 @@ class StagedDownload extends EventEmitter implements ObservedDownload {
   stagedFile: FileIdentity | null = null;
   private stampFailed = false;
   private stamping: Promise<void> | null = null;
+  // Before this time a staged file just found absent is not looked for again, so progress events do not each start a helper.
+  private nextStamp = 0;
   constructor(private readonly item: StageableDownloadItem, private readonly root: BrowserDownloadStagingRoot, private readonly name: string) { super(); }
   getFilename(): string { return this.item.getFilename(); }
   getURL(): string { return this.item.getURL(); }
@@ -668,11 +672,16 @@ class StagedDownload extends EventEmitter implements ObservedDownload {
   }
   /**
    * Identify the staged file the first time it is seen, once. A file not there yet is looked for again at the next observation; an identity
-   * that could not be read is never taken again by name, since another file may have that name by then.
+   * that could not be read is never taken again by name, since another file may have that name by then. `now` looks without waiting
+   * out the pause after an absent file.
    */
-  observe(): Promise<void> {
+  observe(now = false): Promise<void> {
     if (this.stagedFile !== null || this.stampFailed) return Promise.resolve();
-    this.stamping ??= this.root.files.stamp(this.root, this.name).then((file) => { this.stagedFile = file; }, (error: unknown) => {
+    if (this.stamping === null && !now && Date.now() < this.nextStamp) return Promise.resolve();
+    this.stamping ??= this.root.files.stamp(this.root, this.name).then((file) => {
+      this.stagedFile = file;
+      if (file === null) this.nextStamp = Date.now() + ABSENT_STAMP_PAUSE_MS;
+    }, (error: unknown) => {
       this.stampFailed = true;
       log.warn({ error: (error as Error).message }, "a browser download's staged file could not be identified");
     }).finally(() => { this.stamping = null; });
@@ -730,7 +739,7 @@ export function stageBrowserDownload(item: StageableDownloadItem, deps: BrowserD
     }
     await download.observe();
     // A stamp already in flight may have looked before the browser created the file; the completed file is there now.
-    await download.observe();
+    await download.observe(true);
     return download.stagedFile;
   });
   const save = async (destination: Destination): Promise<void> => {

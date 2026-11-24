@@ -894,6 +894,34 @@ describe("what `done` reports when the staged file cannot be removed", () => {
     expect(stamps.length).toBeLessThanOrEqual(1);
   });
 
+  it("stamps a staged file that is not there yet at most once in a while, and again once the download completes", async () => {
+    const prepared = prepare();
+    const stamps: string[] = [];
+    const root = withFiles(prepared, (files) => ({
+      stamp: async (folder, name) => {
+        stamps.push(name);
+        return existsSync(join(folder.path, name)) ? files.stamp(folder, name) : null;
+      },
+    }));
+    const { asked, askSavePath } = dialogs();
+    const item = fakeItem();
+    const staged = stageBrowserDownload(item, { root, askSavePath }, Promise.resolve());
+    const done = doneOutcome(staged.download);
+    await settled();
+    mkdirSync(join(home, "chosen"));
+    asked[0]?.answer(join(home, "chosen", "report.pdf"));
+    await settled();
+    for (let index = 0; index < 5; index += 1) {
+      item.emit("updated", {}, "progressing");
+      await settled();
+    }
+    expect(stamps).toHaveLength(1);
+    item.complete("whole");
+    expect(await done).toEqual({ state: "completed", cleanup: "removed" });
+    expect(stamps).toHaveLength(2);
+    expect(readFileSync(join(home, "chosen", "report.pdf"), "utf8")).toBe("whole");
+  });
+
   it.each(["cancelled", "completed"] as const)("leaves a %s download's staged file whose stamp failed, without stamping it again", async (ending) => {
     const prepared = prepare();
     const { stamps, root } = countingStamps(prepared, true);
