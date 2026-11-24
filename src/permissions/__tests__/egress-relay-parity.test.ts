@@ -1,0 +1,599 @@
+// The same cases against the relay the routes use today and the relay in `egress-relay/`. RECORDED is the pin: one value per row means both
+// relays must give it; a row with two values is an intended difference and is listed in DIFFERENCES. Direct sockets from a contained process
+// (P1) and its reach to other loopback ports (P5) are properties of the container request and are measured natively, not here.
+import http from "node:http";
+import net from "node:net";
+import { resolve } from "node:path";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ParentProxyRouter, SandboxAskCallback } from "@anthropic-ai/sandbox-runtime";
+import { setDestinationResolverForTesting } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-manager.js";
+import { useTempDirs as tempDirs } from "../../__tests__/test-helpers.js";
+import { configureHostResources } from "../../main/host-resources.js";
+import * as policyHome from "../../shared/policy-home.js";
+import {
+  closeAllEgressConnections,
+  closeEgressConnections,
+  initializeAsrtSandbox,
+  resetAsrtSandbox,
+  subscribeAsrtViolations,
+  type AsrtViolationRecord,
+} from "../asrt-sandbox.js";
+import { startEgressDenyMonitor } from "../egress-deny-monitor.js";
+import { openHostEgressListener } from "../egress-host-listener.js";
+import { openInvocationProxyListener, type InvocationProxyAdmission } from "../egress-invocation-listener.js";
+import { openEgressInvocation, releaseEgressInvocation } from "../egress-invocations.js";
+import {
+  closeAllEgressRelayConnections,
+  closeEgressRelayConnections,
+  openEgressRelay,
+  setEgressRelayRouter,
+  startEgressRelayService,
+  stopEgressRelayService,
+  subscribeEgressRelayViolations,
+  type EgressRelayAsk,
+  type EgressRelayRouter,
+} from "../egress-relay/relay.js";
+
+type RelayName = "today" | "new";
+
+// The recorded behaviour. `both` rows were measured on today's relay first and are the acceptance value for the new one.
+const RECORDED = {
+  // P17
+  connectReply: { today: "HTTP/1.1 200 Connection Established", new: "HTTP/1.0 200 Connection Established" },
+  // P18: an entry with a port admits that port only, on both.
+  portlessAllowEntry: { today: "admits every port", new: "refused when the service starts" },
+  // P14
+  noAskCallback: { today: "403 host is not on the allow list", new: "the service does not start" },
+  // P15
+  openBeforeStart: { today: "the sandbox proxy is not running", new: "the service is not started" },
+  denied: { both: "HTTP/1.1 403 no" },
+  unauthenticated: { both: "HTTP/1.1 407 Proxy Authentication Required" },
+  reservedAddress: { both: "HTTP/1.1 403 destination resolves to this host or a reserved address" },
+  relayListener: { both: "HTTP/1.1 403 sandbox proxy listener" },
+  upstreamAuth: { both: "HTTP/1.1 403 upstream proxy requires authentication" },
+  promptFailed: { both: "HTTP/1.1 403 permission prompt failed" },
+  notABoolean: { both: "HTTP/1.1 403 user denied" },
+  reusedToken: { both: "the invocation already had a relay" },
+} as const;
+
+// Every row where the two relays differ, and why that is intended.
+const DIFFERENCES = [
+  { row: "P17", today: RECORDED.connectReply.today, new: RECORDED.connectReply.new, why: "a client that accepts only an HTTP/1.0 status line must get its tunnel" },
+  { row: "P18", today: RECORDED.portlessAllowEntry.today, new: RECORDED.portlessAllowEntry.new, why: "an allow entry is a host and a port" },
+  { row: "P14", today: RECORDED.noAskCallback.today, new: RECORDED.noAskCallback.new, why: "the ask callback is a precondition of the service" },
+  { row: "P15", today: RECORDED.openBeforeStart.today, new: RECORDED.openBeforeStart.new, why: "same refusal, the relay's own wording" },
+  { row: "P16", today: "4096 relays, not exercised here", new: "4096 relays, exercised with a lower injected limit", why: "same limit" },
+  { row: "ended listener", today: "its port is held back for 30 minutes", new: "the port is released; a later relay on it refuses the old credential (407)", why: "each relay has its own secret, so a reused port admits nothing from an earlier invocation" },
+  { row: "listener", today: "a port outside the shared proxy range", new: "any ephemeral loopback port", why: "the container makes the connection, so no range has to match a host rule" },
+] as const;
+
+type Ask = EgressRelayAsk;
+interface StartOptions {
+  readonly ask?: Ask;
+  readonly router?: EgressRelayRouter;
+  readonly allow?: readonly string[];
+  readonly resolve?: (name: string) => Promise<readonly { address: string; family?: number }[]>;
+  readonly maxRelays?: number;
+}
+interface RelayUnderTest {
+  readonly port: number;
+  readonly proxyAuthorization: string;
+  registerPort(port: number): void;
+  close(): Promise<void>;
+}
+interface Adapter {
+  readonly name: RelayName;
+  start(options: StartOptions): Promise<void>;
+  open(token: string, admission?: InvocationProxyAdmission): Promise<RelayUnderTest & { recordRefusal(destination: string, reason: string): void }>;
+  setRouter(router: EgressRelayRouter): void;
+  closeConnections(tokens: readonly string[], host: string, port: number): number;
+  closeAll(): number;
+  subscribe(listener: (violations: readonly AsrtViolationRecord[]) => void): Promise<() => void>;
+  stop(): Promise<void>;
+}
+
+// The contracts boot wires today are the ones the new relay takes.
+const contracts = (ask: SandboxAskCallback, router: ParentProxyRouter): [EgressRelayAsk, EgressRelayRouter] => [ask, router];
+
+const today: Adapter = {
+  name: "today",
+  async start(options) {
+    setDestinationResolverForTesting(options.resolve);
+    await initializeAsrtSandbox({
+      allowedDomains: [...(options.allow ?? [])],
+      strictAllowlist: false,
+      windows: { externalConfinement: true },
+      ...(options.router ? { upstreamRouter: options.router } : {}),
+    }, options.ask as SandboxAskCallback | undefined);
+  },
+  open: (token, admission) => openHostEgressListener(token, admission),
+  setRouter: () => { throw new Error("today's router is installed at start"); },
+  closeConnections: closeEgressConnections,
+  closeAll: closeAllEgressConnections,
+  subscribe: subscribeAsrtViolations,
+  async stop() {
+    await resetAsrtSandbox();
+    setDestinationResolverForTesting(undefined);
+  },
+};
+
+const next: Adapter = {
+  name: "new",
+  async start(options) {
+    startEgressRelayService({ ...options, ask: options.ask as Ask });
+  },
+  async open(token, admission) {
+    const relay = await openEgressRelay(token, admission);
+    return { ...relay, recordRefusal: (destination, reason) => relay.recordRefusal(destination, undefined, reason) };
+  },
+  setRouter: setEgressRelayRouter,
+  closeConnections: closeEgressRelayConnections,
+  closeAll: closeAllEgressRelayConnections,
+  subscribe: async (listener) => subscribeEgressRelayViolations(listener),
+  stop: stopEgressRelayService,
+};
+
+const cleanups: Array<() => Promise<void> | void> = [];
+const policyFixture = tempDirs("egress-relay-parity-");
+const PUBLIC = "93.184.216.34";
+
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
+beforeEach(() => {
+  vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([policyFixture()]);
+});
+
+function newToken(): string {
+  const { token } = openEgressInvocation({ kind: "worker", role: "worker", pluginId: undefined });
+  cleanups.push(() => releaseEgressInvocation(token));
+  return token;
+}
+
+// A loopback upstream proxy: answers CONNECT with `status` and echoes tunnel bytes. No destination traffic leaves this process.
+async function startUpstream(status = 200) {
+  const sockets = new Set<net.Socket>();
+  const connects: string[] = [];
+  const server = net.createServer((socket) => {
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+    socket.on("error", () => {});
+    let head = "";
+    const onHead = (chunk: Buffer): void => {
+      head += chunk.toString("latin1");
+      if (!head.includes("\r\n\r\n")) return;
+      connects.push(head);
+      socket.off("data", onHead);
+      if (status !== 200) {
+        socket.end(`HTTP/1.1 ${status} Refused\r\n\r\n`);
+        return;
+      }
+      socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+      socket.on("data", (data: Buffer) => socket.write(data));
+    };
+    socket.on("data", onHead);
+  });
+  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+  cleanups.push(async () => {
+    for (const socket of sockets) socket.destroy();
+    await new Promise<void>((done) => server.close(() => done()));
+  });
+  const port = (server.address() as net.AddressInfo).port;
+  const router: EgressRelayRouter = async () => ({ routes: [{ kind: "http", host: "127.0.0.1", port }] });
+  return { port, connects, sockets, router };
+}
+
+function send(port: number, request: string) {
+  let output = "";
+  const socket = net.connect(port, "127.0.0.1", () => socket.write(request));
+  socket.on("data", (chunk: Buffer) => { output += chunk.toString("latin1"); });
+  socket.on("error", () => {});
+  cleanups.push(() => { socket.destroy(); });
+  return { socket, output: () => output, statusLine: () => output.split("\r\n")[0] ?? "" };
+}
+
+function connect(relay: { port: number; proxyAuthorization?: string }, authority: string) {
+  const auth = relay.proxyAuthorization !== undefined ? `Proxy-Authorization: ${relay.proxyAuthorization}\r\n` : "";
+  return send(relay.port, `CONNECT ${authority} HTTP/1.1\r\nHost: ${authority}\r\n${auth}\r\n`);
+}
+
+async function openTunnel(relay: { port: number; proxyAuthorization?: string }, authority: string) {
+  const client = connect(relay, authority);
+  await expect.poll(client.output).toContain("\r\n\r\n");
+  expect(client.statusLine()).toMatch(/^HTTP\/1\.[01] 200 /u);
+  client.socket.write("ping");
+  await expect.poll(client.output).toContain("ping");
+  return client;
+}
+
+async function refused(relay: { port: number; proxyAuthorization?: string }, authority: string): Promise<string> {
+  const client = connect(relay, authority);
+  await expect.poll(client.output).toContain("\r\n\r\n");
+  return client.statusLine();
+}
+
+const resolverFor = (table: Record<string, string[]>) => vi.fn(async (name: string) => {
+  const addresses = table[name];
+  if (addresses === undefined) throw Object.assign(new Error(`getaddrinfo ENOTFOUND ${name}`), { code: "ENOTFOUND" });
+  return addresses.map((address) => ({ address, family: net.isIP(address) }));
+});
+
+afterEach(async () => {
+  for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+  vi.restoreAllMocks();
+});
+
+it("takes the ask callback and the router boot builds today", () => {
+  expect(contracts).toBeTypeOf("function");
+  expect(DIFFERENCES.map((difference) => difference.row)).toEqual(["P17", "P18", "P14", "P15", "P16", "ended listener", "listener"]);
+});
+
+describe.each([today, next])("egress relay parity: $name relay", (adapter) => {
+  const supported = adapter.name === "new" || process.platform === "win32";
+  const recorded = <K extends keyof typeof RECORDED>(row: K): string => {
+    const value: Partial<Record<RelayName | "both", string>> = RECORDED[row];
+    return value.both ?? value[adapter.name] ?? "";
+  };
+  const start = async (options: StartOptions): Promise<void> => {
+    await adapter.start(options);
+    cleanups.push(adapter.stop);
+  };
+  const open = async (token = newToken(), admission?: InvocationProxyAdmission) => {
+    const relay = await adapter.open(token, admission);
+    cleanups.push(relay.close);
+    return relay;
+  };
+
+  describe.skipIf(!supported)("cases", () => {
+    it("P2, P8, P12, P17: an allowed host:port gets a working tunnel, resolved once and sent upstream as that address", async () => {
+      const upstream = await startUpstream();
+      let answer = PUBLIC;
+      const resolveName = vi.fn(async () => {
+        const address = answer;
+        answer = "93.184.216.99";
+        return [{ address, family: 4 }];
+      });
+      const ask = vi.fn<Ask>(async () => false);
+      await start({ ask, allow: ["allowed.example:443"], router: upstream.router, resolve: resolveName });
+      const relay = await open();
+
+      const tunnel = await openTunnel(relay, "allowed.example:443");
+
+      expect(tunnel.statusLine()).toBe(recorded("connectReply"));
+      expect(ask).not.toHaveBeenCalled();
+      expect(resolveName).toHaveBeenCalledTimes(1);
+      expect(upstream.connects).toHaveLength(1);
+      expect(upstream.connects[0]).toMatch(new RegExp(`^CONNECT ${PUBLIC.replaceAll(".", "\\.")}:443 HTTP/1\\.1\\r\\n`, "u"));
+      expect(upstream.connects[0]).not.toContain("allowed.example");
+    });
+
+    it("P3: a host the callback denies gets 403 with the callback's reason, before any lookup or route", async () => {
+      const upstream = await startUpstream();
+      const resolveName = resolverFor({ "denied.example": [PUBLIC] });
+      const router = vi.fn(upstream.router);
+      await start({ ask: async () => ({ allow: false, reason: "no" }), router, resolve: resolveName });
+      const relay = await open();
+
+      expect(await refused(relay, "denied.example:443")).toBe(recorded("denied"));
+      expect(resolveName).not.toHaveBeenCalled();
+      expect(router).not.toHaveBeenCalled();
+      expect(upstream.connects).toEqual([]);
+    });
+
+    it("P4: a plain HTTP request to a denied host gets 403", async () => {
+      await start({ ask: async () => ({ allow: false, reason: "no" }), resolve: resolverFor({}) });
+      const relay = await open();
+
+      const client = send(relay.port, `GET http://denied.example/path HTTP/1.1\r\nHost: denied.example\r\nProxy-Authorization: ${relay.proxyAuthorization}\r\n\r\n`);
+      await expect.poll(client.output).toContain("\r\n\r\n");
+
+      expect(client.statusLine()).toMatch(/^HTTP\/1\.1 403 /u);
+    });
+
+    it("P4: a plain HTTP request the callback allows is forwarded to the address it named", async () => {
+      const origin = http.createServer((req, res) => res.end(`origin saw ${req.method} ${req.url} for ${req.headers.host}`));
+      await new Promise<void>((done) => origin.listen(0, "127.0.0.1", done));
+      cleanups.push(() => new Promise<void>((done) => { origin.closeAllConnections(); origin.close(() => done()); }));
+      const port = (origin.address() as net.AddressInfo).port;
+      await start({ ask: async () => true });
+      const relay = await open();
+
+      const client = send(relay.port, `GET http://127.0.0.1:${port}/path?q=1 HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nProxy-Authorization: ${relay.proxyAuthorization}\r\nConnection: close\r\n\r\n`);
+
+      await expect.poll(client.output).toContain(`origin saw GET /path?q=1 for 127.0.0.1:${port}`);
+      expect(client.statusLine()).toMatch(/^HTTP\/1\.1 200 /u);
+    });
+
+    it("P5: a relay listener is never a destination, by literal or through the listener a container is given", async () => {
+      await start({ ask: async () => true });
+      const relay = await open();
+      const other = await open();
+      const front = await openInvocationProxyListener({ upstream: () => ({ host: "127.0.0.1", port: relay.port, proxyAuthorization: relay.proxyAuthorization }) });
+      cleanups.push(front.close);
+      relay.registerPort(front.port);
+
+      expect(await refused(relay, `127.0.0.1:${other.port}`)).toBe(recorded("relayListener"));
+      expect(await refused(relay, `127.0.0.1:${front.port}`)).toBe(recorded("relayListener"));
+      expect(await refused(front, `127.0.0.1:${other.port}`)).toMatch(/^HTTP\/1\.1 403 /u);
+    });
+
+    it("P6: an unlisted host is asked by name, then with what it resolved to, under the invocation's token", async () => {
+      const upstream = await startUpstream();
+      const ask = vi.fn<Ask>(async () => true);
+      await start({ ask, router: upstream.router, resolve: resolverFor({ "asked.example": [PUBLIC] }) });
+      const token = newToken();
+      const relay = await open(token);
+
+      await openTunnel(relay, "asked.example:8443");
+
+      expect(ask.mock.calls).toEqual([
+        [{ host: "asked.example", port: 8443 }, { attributionKey: token, identity: "listener", phase: "name" }],
+        [{ host: "asked.example", port: 8443 }, { attributionKey: token, identity: "listener", phase: "resolved", addresses: [PUBLIC], resolution: "pinned" }],
+      ]);
+    });
+
+    it("P6: only `true` allows; a thrown callback or another answer is a refusal", async () => {
+      let answer: () => ReturnType<Ask> = async () => { throw new Error("card failed"); };
+      await start({ ask: () => answer(), resolve: resolverFor({}) });
+      const relay = await open();
+
+      expect(await refused(relay, "asked.example:443")).toBe(recorded("promptFailed"));
+      answer = async () => ({ allow: true }) as unknown as boolean;
+      expect(await refused(relay, "asked.example:443")).toBe(recorded("notABoolean"));
+      answer = () => { throw new Error("card failed early"); };
+      expect(await refused(relay, "asked.example:443")).toBe(recorded("promptFailed"));
+    });
+
+    it.each([
+      ["loopback", "127.0.0.1"],
+      ["link-local metadata", "169.254.169.254"],
+      ["IPv4-mapped loopback", "::ffff:127.0.0.1"],
+    ])("P7: an allowed name that resolves to a %s address is refused", async (_label, address) => {
+      const upstream = await startUpstream();
+      await start({ ask: async () => true, allow: ["allowed.example:443"], router: upstream.router, resolve: resolverFor({ "allowed.example": [PUBLIC, address] }) });
+      const relay = await open();
+
+      expect(await refused(relay, "allowed.example:443")).toBe(recorded("reservedAddress"));
+      expect(upstream.connects).toEqual([]);
+    });
+
+    it("P7: a private-use address is left to the callback, which is told the address", async () => {
+      const upstream = await startUpstream();
+      const ask = vi.fn<Ask>(async (_destination, context) => context.phase === "name");
+      await start({ ask, router: upstream.router, resolve: resolverFor({ "intranet.example": ["10.0.0.5"] }) });
+      const relay = await open();
+
+      expect(await refused(relay, "intranet.example:443")).toMatch(/^HTTP\/1\.1 403 /u);
+      expect(ask.mock.calls[1]?.[1]).toMatchObject({ phase: "resolved", addresses: ["10.0.0.5"], resolution: "pinned" });
+      expect(upstream.connects).toEqual([]);
+    });
+
+    it("P9: a refusal is recorded under the invocation and reaches the deny monitor", async () => {
+      const emit = vi.fn(async () => {});
+      cleanups.push(await startEgressDenyMonitor({ subscribe: adapter.subscribe, emit, capability: () => ({ kind: "none", confidence: "low" }) as never }));
+      await start({ ask: async () => ({ allow: false, reason: "no" }), resolve: resolverFor({}) });
+      const token = newToken();
+      const relay = await open(token);
+      const records: AsrtViolationRecord[] = [];
+      cleanups.push(await adapter.subscribe((violations) => { records.splice(0, records.length, ...violations); }));
+
+      await refused(relay, "denied.example:443");
+      relay.recordRefusal("localhost", "loopback destination");
+
+      // The record tail outlives a restart, so only this invocation's rows are compared.
+      const mine = records.map((record) => [record.line, Buffer.from(record.encodedCommand ?? "", "base64").toString()]).filter(([, key]) => key === token);
+      expect(mine).toEqual([
+        ["deny network-outbound denied.example:443 (no)", token],
+        ["deny http-request CONNECT localhost (loopback destination)", token],
+      ]);
+      expect(emit).toHaveBeenCalledWith(expect.objectContaining({
+        deny: expect.objectContaining({ action: "network-outbound", host: "denied.example", port: 443, reason: "no" }),
+        invocation: expect.objectContaining({ kind: "worker" }),
+      }));
+    });
+
+    it("P10: revoking one invocation's destination closes its tunnels and no other", async () => {
+      const upstream = await startUpstream();
+      await start({ ask: async () => true, router: upstream.router, resolve: resolverFor({ "asked.example": [PUBLIC] }) });
+      const token = newToken();
+      const relay = await open(token);
+      const other = await open();
+      const revokedTunnel = await openTunnel(relay, "asked.example:443");
+      const otherPort = await openTunnel(relay, "asked.example:8443");
+      const otherInvocation = await openTunnel(other, "asked.example:443");
+
+      expect(adapter.closeConnections([token], "asked.example", 443)).toBe(1);
+
+      await expect.poll(() => revokedTunnel.socket.destroyed).toBe(true);
+      await expect.poll(() => upstream.sockets.size).toBe(2);
+      expect(otherPort.socket.destroyed).toBe(false);
+      expect(otherInvocation.socket.destroyed).toBe(false);
+      expect(adapter.closeConnections([token], "asked.example", 443)).toBe(0);
+    });
+
+    it("P11: an upstream change closes every open tunnel, and new traffic takes the new route", async () => {
+      const first = await startUpstream();
+      const second = await startUpstream();
+      let port = first.port;
+      let generation = 0;
+      const router: EgressRelayRouter = Object.assign(
+        async () => ({ routes: [{ kind: "http" as const, host: "127.0.0.1", port }] }),
+        { generation: () => generation },
+      );
+      await start({ ask: async () => true, router, resolve: resolverFor({ "asked.example": [PUBLIC] }) });
+      const relay = await open();
+      const other = await open();
+      const old = [await openTunnel(relay, "asked.example:443"), await openTunnel(other, "asked.example:443")];
+
+      port = second.port;
+      generation++;
+      expect(adapter.closeAll()).toBe(2);
+
+      for (const tunnel of old) await expect.poll(() => tunnel.socket.destroyed).toBe(true);
+      await openTunnel(relay, "asked.example:443");
+      expect(first.connects).toHaveLength(2);
+      expect(second.connects).toHaveLength(1);
+    });
+
+    it("P12: the upstream's credentials go to the upstream only, and an upstream that wants others is a refusal", async () => {
+      const upstream = await startUpstream();
+      const locked = await startUpstream(407);
+      let target = upstream.port;
+      const router: EgressRelayRouter = async () => ({ routes: [{ kind: "http", host: "127.0.0.1", port: target, auth: { username: "alice", password: "example" } }] });
+      await start({ ask: async () => true, router, resolve: resolverFor({ "asked.example": [PUBLIC] }) });
+      const relay = await open();
+
+      const tunnel = await openTunnel(relay, "asked.example:443");
+      target = locked.port;
+
+      expect(upstream.connects[0]).toContain(`Proxy-Authorization: Basic ${Buffer.from("alice:example").toString("base64")}\r\n`);
+      expect(upstream.connects[0]).not.toContain(relay.proxyAuthorization);
+      expect(tunnel.output()).not.toContain("alice");
+      expect(await refused(relay, "asked.example:443")).toBe(recorded("upstreamAuth"));
+    });
+
+    it("P12: a route that cannot be reached falls over to the next one", async () => {
+      const upstream = await startUpstream();
+      const dead = net.createServer();
+      await new Promise<void>((done) => dead.listen(0, "127.0.0.1", done));
+      const deadPort = (dead.address() as net.AddressInfo).port;
+      await new Promise<void>((done) => dead.close(() => done()));
+      const router: EgressRelayRouter = async () => ({ routes: [{ kind: "http", host: "127.0.0.1", port: deadPort }, { kind: "http", host: "127.0.0.1", port: upstream.port }] });
+      await start({ ask: async () => true, router, resolve: resolverFor({ "asked.example": [PUBLIC] }) });
+      const relay = await open();
+
+      await openTunnel(relay, "asked.example:443");
+
+      expect(upstream.connects).toHaveLength(1);
+    });
+
+    it("P13: a closed relay drops its tunnels, accepts nothing, and its token cannot open another", async () => {
+      const upstream = await startUpstream();
+      await start({ ask: async () => true, router: upstream.router, resolve: resolverFor({ "asked.example": [PUBLIC] }) });
+      const token = newToken();
+      const relay = await open(token);
+      const tunnel = await openTunnel(relay, "asked.example:443");
+
+      await relay.close();
+
+      await expect.poll(() => tunnel.socket.destroyed).toBe(true);
+      await expect.poll(() => upstream.sockets.size).toBe(0);
+      const late = connect(relay, "asked.example:443");
+      await expect.poll(() => late.socket.destroyed).toBe(true);
+      expect(late.output()).toBe("");
+      await expect(adapter.open(token)).rejects.toThrow(recorded("reusedToken"));
+    });
+
+    it("P13: an aborted admission stops every forward at once and adopts the close", async () => {
+      const upstream = await startUpstream();
+      await start({ ask: async () => true, router: upstream.router, resolve: resolverFor({ "asked.example": [PUBLIC] }) });
+      const abort = new AbortController();
+      let adopted: (() => Promise<void>) | undefined;
+      let admitted = false;
+      const admission: InvocationProxyAdmission = {
+        signal: abort.signal,
+        assertCanBind: () => abort.signal.throwIfAborted(),
+        acceptsConnections: () => admitted,
+        adopt: (close) => { adopted = close; },
+      };
+      const relay = await open(newToken(), admission);
+      expect(adopted).toBeTypeOf("function");
+      const early = connect(relay, "asked.example:443");
+      await expect.poll(() => early.socket.destroyed).toBe(true);
+      admitted = true;
+      const tunnel = await openTunnel(relay, "asked.example:443");
+
+      abort.abort();
+
+      await expect.poll(() => tunnel.socket.destroyed).toBe(true);
+      expect(await refused(relay, "asked.example:443").catch(() => "closed")).not.toMatch(/ 200 /u);
+      await expect(adapter.open(newToken(), admission)).rejects.toThrow();
+    });
+
+    it("P14: without an ask callback nothing unlisted is reachable", async () => {
+      if (adapter.name === "new") {
+        expect(() => startEgressRelayService({ ask: undefined as unknown as Ask })).toThrow(/ask callback is required/u);
+        await expect(openEgressRelay(newToken())).rejects.toThrow(recorded("openBeforeStart"));
+        return;
+      }
+      await start({ resolve: resolverFor({}) });
+      const relay = await open();
+      expect(`${(await refused(relay, "asked.example:443")).slice("HTTP/1.1 ".length)}`).toBe(recorded("noAskCallback"));
+    });
+
+    it("P15: a relay cannot be opened before the service is started", async () => {
+      await expect(adapter.open(newToken())).rejects.toThrow(recorded("openBeforeStart"));
+    });
+
+    // Today's limit is the same constant (the package manager module's MAX_INVOCATION_LISTENERS); opening 4096 listeners is not a unit test.
+    it.runIf(adapter.name === "new")("P16: the relay limit is enforced", async () => {
+      await start({ ask: async () => true, maxRelays: 2 });
+      await open();
+      const second = await open();
+
+      await expect(adapter.open(newToken())).rejects.toThrow(/too many invocation relays/u);
+      await second.close();
+      await open();
+    });
+
+    it("P17: the reply reaches a client behind the forwarding listener unchanged", async () => {
+      const upstream = await startUpstream();
+      await start({ ask: async () => true, router: upstream.router, resolve: resolverFor({ "asked.example": [PUBLIC] }) });
+      const relay = await open();
+      const front = await openInvocationProxyListener({ upstream: () => ({ host: "127.0.0.1", port: relay.port, proxyAuthorization: relay.proxyAuthorization }) });
+      cleanups.push(front.close);
+      relay.registerPort(front.port);
+
+      const tunnel = await openTunnel(front, "asked.example:443");
+
+      expect(tunnel.statusLine()).toBe(recorded("connectReply"));
+    });
+
+    it("P18: an allow entry admits its port only", async () => {
+      const upstream = await startUpstream();
+      const ask = vi.fn<Ask>(async () => ({ allow: false, reason: "no" }));
+      await start({ ask, allow: ["allowed.example:443", "*.wild.example:443"], router: upstream.router, resolve: resolverFor({ "allowed.example": [PUBLIC], "a.wild.example": [PUBLIC] }) });
+      const relay = await open();
+
+      await openTunnel(relay, "allowed.example:443");
+      await openTunnel(relay, "a.wild.example:443");
+      expect(ask).not.toHaveBeenCalled();
+      expect(await refused(relay, "allowed.example:22")).toBe(recorded("denied"));
+      expect(await refused(relay, "a.wild.example:8443")).toBe(recorded("denied"));
+      expect(await refused(relay, "wild.example:443")).toBe(recorded("denied"));
+      expect(ask.mock.calls.map(([destination]) => `${destination.host}:${destination.port}`)).toEqual(["allowed.example:22", "a.wild.example:8443", "wild.example:443"]);
+    });
+
+    it("P18: an allow entry without a port", async () => {
+      if (adapter.name === "new") {
+        expect(() => startEgressRelayService({ ask: async () => true, allow: ["allowed.example"] })).toThrow(/needs host:port/u);
+        return;
+      }
+      const upstream = await startUpstream();
+      const ask = vi.fn<Ask>(async () => false);
+      await start({ ask, allow: ["allowed.example"], router: upstream.router, resolve: resolverFor({ "allowed.example": [PUBLIC] }) });
+      const relay = await open();
+      await openTunnel(relay, "allowed.example:443");
+      await openTunnel(relay, "allowed.example:22");
+      expect(ask).not.toHaveBeenCalled();
+    });
+
+    it("refuses a client that does not present the relay's own credential", async () => {
+      const ask = vi.fn<Ask>(async () => true);
+      await start({ ask, resolve: resolverFor({}) });
+      const relay = await open();
+      const other = await open();
+
+      expect(await refused({ port: relay.port }, "asked.example:443")).toBe(recorded("unauthenticated"));
+      expect(await refused({ port: relay.port, proxyAuthorization: other.proxyAuthorization }, "asked.example:443")).toBe(recorded("unauthenticated"));
+      expect(ask).not.toHaveBeenCalled();
+    });
+
+    it("refuses a CONNECT target that is not host:port", async () => {
+      const ask = vi.fn<Ask>(async () => true);
+      await start({ ask, resolve: resolverFor({}) });
+      const relay = await open();
+
+      expect(await refused(relay, "asked.example")).toMatch(/^HTTP\/1\.1 400 /u);
+      expect(ask).not.toHaveBeenCalled();
+    });
+  });
+});
