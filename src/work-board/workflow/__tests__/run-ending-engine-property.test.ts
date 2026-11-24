@@ -329,7 +329,8 @@ async function runCell(cell: Cell, fixture: Awaited<ReturnType<typeof prepareBoa
     }
   } finally {
     for (const c of h.children) c.finish();
-    await h.drainRunWork();
+    // Booted cells replace the engine; drain both engines' work.
+    await h.drainAllRunWork();
     heldInputs.delete(runsPath(h));
     restoreSettleSpy?.();
     await h.cleanup();

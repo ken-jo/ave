@@ -1,4 +1,4 @@
-import { expect, it, vi } from "vitest";
+import { expect, it } from "vitest";
 import { boardRunState } from "../run-state.js";
 import { stageOf } from "./stage-fixtures.js";
 import { stageRunHarness } from "./stage-run-harness.js";
@@ -25,15 +25,15 @@ it("a failed scheduler read retains link and completion identities for the origi
     const identity = { itemId: id, runId, stage: "a", attempt: 1 };
     const linked = { ...identity, kind: "stage_linked" };
     const ended = { ...identity, kind: "stage_ended" };
-    await vi.waitFor(async () => expect(await h.board.runs.heldEvents(identity)).toEqual([linked]));
+    await h.untilRunFile(async () => expect(await h.board.runs.heldEvents(identity)).toEqual([linked]));
     child.finish();
-    await vi.waitFor(async () => expect(await h.board.runs.heldEvents(identity)).toEqual([linked, ended]));
+    await h.untilRunFile(async () => expect(await h.board.runs.heldEvents(identity)).toEqual([linked, ended]));
     expect((await h.runOf(runId))?.settled).toBeUndefined();
     unreadable = false;
     await h.engine.adoptParkedTemplateRuns();
     const recovered = await h.untilStage(id, "a", "awaiting_gate");
     expect(recovered.stageRuns[0]).toMatchObject({ attempt: 1, childSessionId: child.sessionId, output: `output of ${child.sessionId}` });
-    await vi.waitFor(async () => expect(await h.board.runs.heldEvents(identity)).toEqual([]));
+    await h.untilRunFile(async () => expect(await h.board.runs.heldEvents(identity)).toEqual([]));
     expect(h.children).toHaveLength(1);
     expect(h.events.some(event => event.phase === "error")).toBe(false);
   } finally {

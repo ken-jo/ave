@@ -131,5 +131,9 @@ it("resuming a parked join does not spawn the next step at boot", async () => {
     await h.drainRunWork();
     expect((await h.stageRun(id, "b")).status).toBe("waiting");
     expect(h.children).toHaveLength(1);
-  } finally { await h.cleanup(); }
+  } finally {
+    // The replaced engine stays parked on its integration; only the current engine's work is drained.
+    await h.drainRunWork();
+    await h.cleanup();
+  }
 });
