@@ -10,6 +10,7 @@ import { auditUnauthorized, UNAUTHORIZED_FRAME, validateHostRendererSender } fro
 import { PARENT_DIRECTIVE_MAX_CHARS } from "../../../engine/parent-directive.js";
 import { MAX_PLAN_NOTE_LENGTH } from "../../../shared/work-board-types.js";
 import { registeredIpcHandlers } from "./test-helpers.js";
+import { untilAsserted } from "../../../__tests__/support/signal-wait.js";
 
 const ipc = vi.hoisted(() => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
@@ -151,7 +152,12 @@ const INPUT = { runId: "run-1", planHash: HASH, decision: "approve" } as const;
 
 function setupDecide(opts: { privacy?: { piiRedactEnabled: boolean }; continuation?: Promise<unknown> } = {}) {
   const sent: Array<[string, unknown]> = [];
-  const owner = { isDestroyed: () => false, mainFrame: { url: "file:///index.html" }, send: (channel: string, payload: unknown) => sent.push([channel, payload]) };
+  const sends = new Set<() => void>();
+  const onSend = (wake: () => void) => { sends.add(wake); return () => { sends.delete(wake); }; };
+  const owner = { isDestroyed: () => false, mainFrame: { url: "file:///index.html" }, send: (channel: string, payload: unknown) => {
+    sent.push([channel, payload]);
+    for (const wake of sends) wake();
+  } };
   const window = { isDestroyed: () => false, webContents: owner };
   const decidePlan = vi.fn(async (_id: number, input: { decision: string }) => ({
     result: { ok: true as const, status: input.decision === "approve" ? "approved" : input.decision === "reject" ? "rejected" : "changes_requested" },
@@ -171,7 +177,7 @@ function setupDecide(opts: { privacy?: { piiRedactEnabled: boolean }; continuati
     getAppWindows: () => [window],
   } as unknown as IpcDeps);
   const event = { sender: owner, senderFrame: owner.mainFrame };
-  return { event, decidePlan, log, sent, owner };
+  return { event, decidePlan, log, sent, onSend, owner };
 }
 
 describe("work-board decide-plan IPC", () => {
@@ -189,12 +195,12 @@ describe("work-board decide-plan IPC", () => {
   it("broadcasts the continued run as resumed, then its result", async () => {
     let settle!: (value: unknown) => void;
     const continuation = new Promise((r) => { settle = r; });
-    const { event, sent } = setupDecide({ continuation });
+    const { event, sent, onSend } = setupDecide({ continuation });
     await handler(WORK_BOARD.decidePlan)(event, 7, INPUT, GESTURE);
     expect(sent.find(([channel]) => channel === WORK_BOARD.runStarted)?.[1]).toMatchObject({ itemId: 7, resumed: true });
     expect(sent.some(([channel]) => channel === WORK_BOARD.runFinished)).toBe(false);
     settle({ status: "completed" });
-    await vi.waitFor(() => expect(sent.find(([channel]) => channel === WORK_BOARD.runFinished)?.[1]).toMatchObject({ itemId: 7, status: "completed" }));
+    await untilAsserted(onSend, () => expect(sent.find(([channel]) => channel === WORK_BOARD.runFinished)?.[1]).toMatchObject({ itemId: 7, status: "completed" }), "the completed run-finished send");
   });
 
   it.each([

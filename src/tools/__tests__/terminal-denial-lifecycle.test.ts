@@ -23,7 +23,7 @@ type Source =
   | "rule" | "unknown-tool" | "human" | "hook-mutation" | "host" | "integrity" | "plugin-generation"
   | "user-abort" | "host-shutdown" | "deadline" | "mid-execution" | "plugin-generation-shutdown"
   | "card-quit" | "card-abort" | "card-deny-then-abort" | "governed-operation" | "governed-auth"
-  | "dir-hook-abort" | "dir-hook-inherited-abort" | "shell-prep-abort"
+  | "dir-hook-abort" | "dir-hook-inherited-abort" | "dir-human-deny-then-abort" | "dir-host-deny-then-abort" | "shell-prep-abort"
   | "human-then-abort" | "human-then-quit" | "headless-then-abort";
 
 /** Each probe loads a fresh module graph, so a sealed or drained ledger never leaks into another case. */
@@ -63,8 +63,10 @@ async function setup(source: Source, { disarmChain = false } = {}) {
   const generation = source === "plugin-generation" || source === "plugin-generation-shutdown";
   const governed = source === "governed-operation";
   const dirHook = source === "dir-hook-abort" || source === "dir-hook-inherited-abort";
+  const directoryDeny = source === "dir-human-deny-then-abort" || source === "dir-host-deny-then-abort";
+  const directoryCard = dirHook || directoryDeny;
   const humanThen = source === "human-then-abort" || source === "human-then-quit";
-  const headlessThen = source === "headless-then-abort";
+  const headlessThen = source === "headless-then-abort" || source === "dir-host-deny-then-abort";
   const liveCard = source === "card-quit" || source === "card-abort" || source === "card-deny-then-abort";
   const outside = mkdtempSync(join(tmpdir(), "ave-denial-outside-"));
   roots.push(outside);
@@ -74,13 +76,13 @@ async function setup(source: Source, { disarmChain = false } = {}) {
     registry.register(new BashTool());
   }
   registry.register(createDynamicTool({ name: TOOL, description: "Performs a bounded operation",
-    ...(dirHook ? { pathFields: ["path"] } : {}),
+    ...(directoryCard ? { pathFields: ["path"] } : {}),
     ...(generation || governed
       ? { source: "plugin" as const, pluginId: "probe-plugin", pluginGeneration: { pluginId: "probe-plugin", generationId: "gen-1" } }
       : { source: "builtin" as const }),
     ...(governed ? { operationPolicy: { discriminant: "operation", operations: { status: { kind: "read" as const, minimumRisk: "read" as const } } } } : {}),
     category: "write", isReadOnly: () => false,
-    jsonSchema: { type: "object", properties: dirHook ? { path: { type: "string" } } : {} },
+    jsonSchema: { type: "object", properties: directoryCard ? { path: { type: "string" } } : {} },
     execute: async () => {
       started();
       if (holds) await held;
@@ -88,7 +90,7 @@ async function setup(source: Source, { disarmChain = false } = {}) {
     } }));
   const permissions = new PermissionManager(join(root, "permissions.json"));
   if (source === "rule" || source === "governed-operation" || source === "governed-auth") permissions.setRules([{ pattern: TOOL, action: "deny" }]);
-  if (source === "human" || source === "host" || source === "integrity" || liveCard || humanThen || headlessThen) {
+  if (source === "human" || source === "host" || source === "integrity" || liveCard || humanThen || headlessThen || directoryDeny) {
     permissions.setRules([{ pattern: TOOL, action: "ask" }]);
   }
   if (holds || generation || source === "host-shutdown") permissions.setRules([{ pattern: TOOL, action: "allow" }]);
@@ -138,7 +140,7 @@ async function setup(source: Source, { disarmChain = false } = {}) {
     return answeredApprovalDecision(
       { requestId: request.id, choice: source === "host" ? "allow-once" : humanThen ? "deny-always" : "deny-once" },
       headlessThen ? "headless-exec" : "desk", request.toolName,
-      source === "human" || humanThen || headlessThen ? request.invocationToolUseId : "another-call");
+      source === "human" || humanThen || headlessThen || directoryDeny ? request.invocationToolUseId : "another-call");
   });
   const lease = { generation: { generationId: "gen-1", state: { runtime: {} } }, release: () => {} };
   const access = {
@@ -176,14 +178,14 @@ async function setup(source: Source, { disarmChain = false } = {}) {
     beforeHandler: () => {}, completeSuccess: () => {}, completeFailure: () => {} } satisfies HostPluginAuthLifecycle;
   const ids = source === "user-abort" ? ["held-call", "denied-call"] : ["denied-call"];
   const input = governed ? { operation: "status" }
-    : dirHook ? { path: join(outside, "file.txt") }
+    : directoryCard ? { path: join(outside, "file.txt") }
     : source === "shell-prep-abort" ? { command: SHELL_COMMAND, executionMode: "host", justification: "Print the lock fixture" }
     : {};
   const name = source === "unknown-tool" ? "missing_probe" : source === "shell-prep-abort" ? "bash" : TOOL;
   const { turnExtensionPolicyContext } = await import("../../shared/turn-extension-policy.js");
   const execute = () => executor.executeAll(ids.map((id) => ({ id, name, input })), {
-    sessionId: "denial-session", executionCwd: root, permissionContext: userPermissionContext(dirHook ? { trustOrigin: "llm-tool-arg" } : {}), abortSignal: controller.signal,
-    ...(headlessThen ? { callbacks: { onToolEnd: () => { controller.abort(); } } } : {}),
+    sessionId: "denial-session", executionCwd: root, permissionContext: userPermissionContext(directoryCard ? { trustOrigin: "llm-tool-arg" } : {}), abortSignal: controller.signal,
+    ...(headlessThen || directoryDeny ? { callbacks: { onToolEnd: () => { controller.abort(); } } } : {}),
     ...(source === "governed-auth" ? { pluginAuthLifecycle: authLifecycle } : {}),
   });
   const run = () => source === "dir-hook-inherited-abort"
@@ -194,7 +196,7 @@ async function setup(source: Source, { disarmChain = false } = {}) {
   const rows = (id = "denied-call") => allRows().filter((row) => row.toolUseId === id);
   const denials = () => lifecycle.mock.calls.filter(([event]) => event === "PermissionDenied");
   const cancelledMessage = t("be_executor.toolExecutionCancelled");
-  return { ledger, audit, root, permissions, run, rows, denials, running, release, controller, inherited, cardOpen, gate: realGate, saveStarted, persisted, source, cancelledMessage };
+  return { ledger, audit, root, permissions, requestAndWait, run, rows, denials, running, release, controller, inherited, cardOpen, gate: realGate, saveStarted, persisted, source, cancelledMessage };
 }
 
 type Probe = Awaited<ReturnType<typeof setup>>;
@@ -210,13 +212,13 @@ async function settledRow(probe: Probe, id = "denied-call"): Promise<Record<stri
   return probe.rows(id)[0] as Record<string, unknown>;
 }
 
-async function expectOneDenial(probe: Probe, reason: string | RegExp): Promise<void> {
+async function expectOneDenial(probe: Probe, reason: string | RegExp, invocationOrigin = "user-keyboard"): Promise<void> {
   const row = await settledRow(probe);
   await vi.waitFor(() => expect(probe.denials()).toHaveLength(1));
   expect(row).toMatchObject({ decision: "deny", terminalKind: "denied" });
   expect(terminalDenyKindOf(row as never)).toBe("denied");
   expect(firstReason(row)).toMatch(reason);
-  expect(probe.denials()).toEqual([["PermissionDenied", "denial-session", "user-keyboard",
+  expect(probe.denials()).toEqual([["PermissionDenied", "denial-session", invocationOrigin,
     expect.objectContaining({ toolName: expect.stringMatching(/_probe$/), denyReason: expect.objectContaining({ source: "tool-executor" }) }), expect.anything()]]);
 }
 
@@ -475,6 +477,23 @@ describe("a permission denial fires one PermissionDenied; a cancellation and a g
       expect(probe.controller.signal.aborted).toBe(true);
       await expectNoDenial(probe, "user aborted turn");
       expect(reasons(await settledRow(probe))[1]).toBe("user denied approval request");
+    });
+  });
+
+  it("keeps a settled directory Deny when Stop lands before its row", async () => {
+    await run("dir-human-deny-then-abort", async (probe) => {
+      expect(probe.requestAndWait).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ kind: "out-of-allowed-dir" }));
+      expect(probe.controller.signal.aborted).toBe(true);
+      await expectOneDenial(probe, TOOL, "llm-tool-arg");
+      expect(await settledRow(probe)).toMatchObject({ trustOrigin: "user-keyboard" });
+    });
+  });
+
+  it("cancels a non-human directory denial when Stop lands before its row", async () => {
+    await run("dir-host-deny-then-abort", async (probe) => {
+      expect(probe.requestAndWait).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ kind: "out-of-allowed-dir" }));
+      expect(probe.controller.signal.aborted).toBe(true);
+      await expectNoDenial(probe, "user aborted turn");
     });
   });
 

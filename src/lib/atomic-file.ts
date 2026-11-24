@@ -24,6 +24,7 @@ import {
 export const PRIVATE_FILE_MODE = 0o600;
 export const PRIVATE_DIR_MODE = 0o700;
 const DIRECTORY_SYNC_ERROR_CODE = "ATOMIC_FILE_DIRECTORY_SYNC_FAILED";
+const ATOMIC_WRITE_REFUSED = Symbol("Atomic write precondition failed");
 
 interface ParentDirectorySyncRuntime {
   platform: NodeJS.Platform;
@@ -160,16 +161,19 @@ function syncParentDirectoryAfterRename(
     }
   }
 
-  if (syncError !== undefined) {
-    throw Object.assign(
-      new Error("atomic file rename committed but parent directory sync failed"),
-      {
-        code: DIRECTORY_SYNC_ERROR_CODE,
-        committed: true as const,
-        cause: syncError,
-      },
-    );
-  }
+  if (syncError !== undefined) throw committedDirectorySyncError(syncError);
+}
+
+/** The error a writer throws when its rename landed and only the parent-directory sync failed: the write is committed. */
+export function committedDirectorySyncError(cause: unknown): Error & { committed: true } {
+  return Object.assign(
+    new Error("atomic file rename committed but parent directory sync failed"),
+    {
+      code: DIRECTORY_SYNC_ERROR_CODE,
+      committed: true as const,
+      cause,
+    },
+  );
 }
 
 /** Whether `error` is the one thrown above: the rename landed, only the parent-directory sync did not. A caller that can verify the bytes on disk treats it as a commit; every other error is a failed write. Strict
@@ -241,12 +245,14 @@ function writeUtf8FileAtomicSyncInternal(
     fd = undefined;
     // The adjacent precondition and rename are not compare-and-swap: another same-user writer may win the whole-file race.
     // Mismatches fail closed; staging still prevents partial files or outside-path writes.
-    if (precondition && !precondition()) return false;
-    replaceStagedFile(tempPath, filePath, directorySyncRuntime);
+    replaceStagedFile(tempPath, filePath, directorySyncRuntime, precondition && (() => {
+      if (!precondition()) throw ATOMIC_WRITE_REFUSED;
+    }));
     committed = true;
     syncParentDirectoryAfterRename(parentDir, directorySyncRuntime);
     return true;
   } catch (error) {
+    if (error === ATOMIC_WRITE_REFUSED) return false;
     operationError = error;
     throw error;
   } finally {

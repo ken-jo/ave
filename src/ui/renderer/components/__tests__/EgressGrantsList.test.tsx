@@ -160,6 +160,16 @@ describe("EgressGrantsList", () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
+  it("removes the row and shows a durability sync warning for a completed revoke", async () => {
+    const fetcher = vi.fn().mockResolvedValueOnce({ ok: true, grants: [alwaysGrant] }).mockResolvedValue({ ok: true, grants: [] });
+    render(<EgressGrantsList fetcher={fetcher} revoker={async () => ({ ok: true, durabilitySyncFailed: true })} />);
+    await screen.findByTestId("egress-grant-row");
+    fireEvent.click(screen.getByTestId("egress-grant-revoke"));
+    await screen.findByTestId("egress-grants-empty");
+    expect((await screen.findByRole("status")).textContent).toContain("The grant was removed, but a disk sync failed.");
+    expect(screen.queryByTestId("egress-grants-error")).toBeNull();
+  });
+
   it("refreshes grants after a transient list failure", async () => {
     const fetcher = vi.fn().mockRejectedValueOnce(new Error("private diagnostic")).mockResolvedValue({ ok: true, grants: [alwaysGrant] });
     render(<EgressGrantsList fetcher={fetcher} />);

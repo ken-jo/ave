@@ -6,6 +6,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { WorkBoardStore } from "../../main/work-board-store.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { deferred } from "../../__tests__/support/deferred.js";
+import { untilAsserted, within } from "../../__tests__/support/signal-wait.js";
 import { createWorkBoardEngine } from "../work-board-engine.js";
 import type {
   SubAgentRunner,
@@ -431,18 +433,18 @@ describe("WorkBoardEngine — execute child id is exposed when it links (WB-1)",
       const engine = createWorkBoardEngine({ store, getRunner: () => runner, emitProgress: (e) => events.push(e) });
 
       const run = runThroughDecision(engine, store, id, "approve");
-      const execChild = await linked;
+      const execChild = await within(linked, "the child to link");
       expect(execChild).toBe(`work-board:${id}::exec`);
 
       const linkedEvent = events.find((e) => e.phase === "executing" && e.runSessionId !== undefined);
       expect(linkedEvent?.runSessionId).toBe(execChild);
       // The plan child id stored at approval time must be replaced by the execute child id mid-run.
-      await vi.waitFor(async () => {
+      await untilAsserted(wake => store.boardChanged.subscribe(wake), async () => {
         const got = await store.get(id);
         if (got.status !== "found") throw new Error("missing item");
         expect(got.item.runStatus).toBe("executing");
         expect(got.item.runSessionId).toBe(execChild);
-      });
+      }, "the row to show the execute child");
 
       release();
       expect((await run).status).toBe("completed");
@@ -461,7 +463,7 @@ describe("WorkBoardEngine — execute child id is exposed when it links (WB-1)",
       const { runner, release, linked } = linkingRunner();
       const engine = createWorkBoardEngine({ store, getRunner: () => runner, emitProgress: () => {} });
       const run = runThroughDecision(engine, store, id, "approve");
-      await linked;
+      await within(linked, "the child to link");
       release();
       expect((await run).status).toBe("completed");
 
@@ -497,7 +499,7 @@ describe("WorkBoardEngine — execute child id is exposed when it links (WB-1)",
       const engine = createWorkBoardEngine({ store, getRunner: () => runner, emitProgress: (e) => events.push(e) });
 
       const run = runThroughDecision(engine, store, id, "approve");
-      await linked;
+      await within(linked, "the child to link");
       release();
       const result = await run;
       expect(result).toMatchObject({ status: "error", reason: "disk full" });
@@ -607,7 +609,7 @@ describe("WorkBoardEngine — steer and stop a running execution (WB-3)", () => 
       const engine = createWorkBoardEngine({ store, getRunner: () => runner, emitProgress: () => {} });
       expect(engine.executingChildSessionId(id)).toBeUndefined();
       const run = runThroughDecision(engine, store, id, "approve");
-      const child = await linked;
+      const child = await within(linked, "the child to link");
       expect(engine.executingChildSessionId(id)).toBe(child);
       release();
       expect((await run).status).toBe("completed");
@@ -627,7 +629,7 @@ describe("WorkBoardEngine — steer and stop a running execution (WB-3)", () => 
       const { runner, linked, release, steerCalls } = controllableRunner();
       const engine = createWorkBoardEngine({ store, getRunner: () => runner, emitProgress: () => {} });
       const run = runThroughDecision(engine, store, id, "approve");
-      const child = await linked;
+      const child = await within(linked, "the child to link");
       expect(await engine.steerRun(id, "also cover the edge cases")).toEqual({ ok: true, messageId: "m-1" });
       expect(steerCalls).toEqual([[`work-board:${id}`, child, "also cover the edge cases"]]);
       release();
@@ -648,7 +650,7 @@ describe("WorkBoardEngine — steer and stop a running execution (WB-3)", () => 
       const transcriptStorage = memTranscriptStorage();
       const engine = createWorkBoardEngine({ store, getRunner: () => runner, emitProgress: (e) => events.push(e), transcriptStorage });
       const run = runThroughDecision(engine, store, id, "approve");
-      const child = await linked;
+      const child = await within(linked, "the child to link");
 
       expect(engine.cancelRun(id)).toEqual({ ok: true });
       expect(interruptCalls).toEqual([[child, `work-board:${id}`]]);
@@ -685,7 +687,7 @@ describe("WorkBoardEngine — steer and stop a running execution (WB-3)", () => 
       interruptAccepted.value = false;
       const engine = createWorkBoardEngine({ store, getRunner: () => runner, emitProgress: () => {} });
       const run = runThroughDecision(engine, store, id, "approve");
-      await linked;
+      await within(linked, "the child to link");
       expect(engine.cancelRun(id)).toEqual({ ok: false, reason: "not-running" });
       // The refused call must not leave its mark behind, or this stop would short-circuit without interrupting.
       interruptAccepted.value = true;
@@ -707,7 +709,7 @@ describe("WorkBoardEngine — steer and stop a running execution (WB-3)", () => 
       const events: WorkBoardRunEvent[] = [];
       const engine = createWorkBoardEngine({ store, getRunner: () => runner, emitProgress: (e) => events.push(e) });
       const run = runThroughDecision(engine, store, id, "approve");
-      await linked;
+      await within(linked, "the child to link");
       expect(engine.cancelRun(id)).toEqual({ ok: true });
       expect(engine.cancelRun(id)).toEqual({ ok: true });
       expect(interruptCalls).toHaveLength(1);
@@ -731,7 +733,7 @@ describe("WorkBoardEngine — steer and stop a running execution (WB-3)", () => 
       const events: WorkBoardRunEvent[] = [];
       const engine = createWorkBoardEngine({ store, getRunner: () => runner, emitProgress: (e) => events.push(e) });
       const run = runThroughDecision(engine, store, id, "approve");
-      await linked;
+      await within(linked, "the child to link");
       interruptFromElsewhere();
       expect((await run).status).toBe("error");
       expect(events.some((e) => e.phase === "cancelled")).toBe(false);
@@ -949,6 +951,7 @@ describe("WorkBoardEngine — plan decisions (work approvals)", () => {
         return write(rel, data);
       };
       let early: Promise<Awaited<ReturnType<typeof engine.decidePlan>>> | null = null;
+      const decisionSent = deferred<void>();
       const engine = createWorkBoardEngine({
         store,
         getRunner: () => runner,
@@ -961,10 +964,12 @@ describe("WorkBoardEngine — plan decisions (work approvals)", () => {
             if (got.status !== "found") throw new Error("missing");
             return engine.decidePlan(created.itemId, { runId: got.item.runId!, planHash: got.item.planApproval!.planHash, decision: "approve" });
           })();
+          decisionSent.resolve();
         },
       });
       const run = engine.runItem(created.itemId);
-      await vi.waitFor(() => expect(early).not.toBeNull());
+      await within(decisionSent.promise, "the plan decision to be sent");
+      expect(early).not.toBeNull();
       expect((await early!).result).toEqual({ ok: false, reason: "plan_settling" });
       releaseFlush();
       expect((await run).status).toBe("awaiting_approval");

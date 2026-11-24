@@ -4348,6 +4348,7 @@ export const en = {
   "permissionsTab.networkGrantsLoadFailed": "The allowed hosts could not be read.",
   "permissionsTab.networkGrantsRefresh": "Refresh",
   "permissionsTab.networkGrantRevokeFailed": "Could not revoke this host grant.",
+  "permissionsTab.networkGrantRevokeSyncFailed": "The grant was removed, but a disk sync failed.",
   "permissionsTab.networkDenialsHeading": "Recent denials (24 h)",
   "permissionsTab.networkDenialsRefresh": "Refresh",
   "permissionsTab.networkDenialsLoading": "Loading…",

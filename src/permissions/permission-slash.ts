@@ -4,6 +4,7 @@ import {
   buildAllowedScope,
 } from "./allowed-directories.js";
 import type { TrustOriginWithUnknown } from "../shared/chat-origin.js";
+import { ApprovalPersistenceError, type ApprovalPersistenceGuard } from "./approval-persistence-guard.js";
 import {
   addAllowedDirectoryPersist,
   removeAllowedDirectoryPersist,
@@ -60,6 +61,7 @@ export interface PermissionDirectoryLifecycle {
   allowDirectory(
     root: string,
     source: "permission-slash",
+    authority?: ApprovalPersistenceGuard,
   ): Promise<string[]>;
   denyDirectory(
     root: string,
@@ -154,6 +156,7 @@ export async function dispatchPermissionDirCommand(
   cmd: PermissionDirCommand,
   pathOverride?: string,
   lifecycle?: PermissionDirectoryLifecycle,
+  authority?: ApprovalPersistenceGuard,
 ): Promise<PermissionDirResult> {
   if (cmd.verb === "list") {
     const current = readPermissionSettings(pathOverride);
@@ -191,9 +194,10 @@ export async function dispatchPermissionDirCommand(
     let next: string[];
     try {
       next = lifecycle && !pathOverride
-        ? await lifecycle.allowDirectory(validation.canonicalPath, "permission-slash")
-        : await addAllowedDirectoryPersist(validation.canonicalPath, pathOverride);
-    } catch {
+        ? await lifecycle.allowDirectory(validation.canonicalPath, "permission-slash", ...(authority ? [authority] as const : []))
+        : await addAllowedDirectoryPersist(validation.canonicalPath, pathOverride, authority);
+    } catch (error) {
+      if (error instanceof ApprovalPersistenceError) throw error;
       return { ok: false, error: "workspace lifecycle update failed" };
     }
     return {

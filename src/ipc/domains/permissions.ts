@@ -459,7 +459,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     const destination = { host, port, ...(network === undefined ? {} : { network }) };
     const { revokeEgressGrant } = await import("../../permissions/egress-runtime.js");
     try {
-      const { removed, closed } = await revokeEgressGrant(
+      const { removed, closed, durabilitySyncFailed } = await revokeEgressGrant(
         scope === "session" ? { scope, sessionId: sessionId as string, ...destination }
         : scope === "tab" ? { scope, tabId: tabId as string, ...destination }
         : scope === "project" ? { scope, origin: "shell", projectRoot: projectRoot as string, ...destination }
@@ -469,9 +469,11 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
         timestamp: new Date().toISOString(),
         sessionId: "settings",
         type: "approval",
-        output: `[egress-grant:revoke] scope=${scope}${persistent ? ` origin=${String(origin)}` : ""} host=${host} port=${port} removed=${removed} closedConnections=${closed}`,
+        output: `[egress-grant:revoke] scope=${scope}${persistent ? ` origin=${String(origin)}` : ""} host=${host} port=${port} removed=${removed} closedConnections=${closed}${durabilitySyncFailed ? " durabilitySyncFailed=true" : ""}`,
       });
-      return removed ? { ok: true } : { ok: false, error: "not-found", message: "revoke: no such grant" };
+      // A removal that landed is a completed revoke; the failed sync is reported beside it, not as a failure.
+      if (!removed) return { ok: false, error: "not-found", message: "revoke: no such grant" };
+      return durabilitySyncFailed ? { ok: true, durabilitySyncFailed } : { ok: true };
     } catch (error) {
       return { ok: false, error: "egress-grant-store-unreadable", message: errorMessage(error) };
     }

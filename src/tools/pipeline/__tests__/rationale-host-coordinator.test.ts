@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { answeredApprovalDecision } from "../../../__tests__/support/answering-approval-gate.js";
 import { HookRunner } from "../../../hooks/hook-runner.js";
 import { captureRationalePolicySnapshot, type RationalePolicySnapshot } from "../rationale-policy-epoch.js";
-import { answeredProvenanceRecord, ApprovalGate } from "../../../permissions/approval-gate.js";
+import { answeredProvenanceRecord, ApprovalGate, isHostApprovalCancelledDecision } from "../../../permissions/approval-gate.js";
 import type {
   ApprovalChoice,
   ApprovalDecision,
@@ -874,6 +874,35 @@ describe("RationaleHostCoordinator", () => {
       state: "cancelled",
       terminalReason: "caller-abort",
     });
+  });
+
+  it("marks the pending card when the rationale coordinator's abort listener settles it first", async () => {
+    const nativeWebContents = { send: vi.fn(), isDestroyed: () => false };
+    const gate = new ApprovalGate(nativeWebContents as never);
+    const cancel = vi.spyOn(gate, "cancelPendingRequest");
+    const settled = vi.fn();
+    gate.observePendingApprovals({ onPending: () => {}, onSettled: settled });
+    const state = setup({ approvalGate: gate, executionCwd: process.cwd() });
+    const { control } = materialize(state);
+    await state.coordinator.handleRationaleRoundResult({
+      ticketId: control.ticketId,
+      result: { kind: "generation-failure", generationOutcome: "generation-error" },
+      now: NOW + 1,
+    });
+    const caller = new AbortController();
+    const pending = state.coordinator.promptForApproval(control.ticketId, { abortSignal: caller.signal, now: NOW + 2 });
+    try {
+      await vi.waitFor(() => expect(gate.pendingCount).toBe(1));
+      caller.abort();
+      await expect(pending).resolves.toBeNull();
+      expect(cancel).toHaveBeenCalledWith(control.ticketId, control.anchor.sessionId, "caller-abort");
+      expect(settled).toHaveBeenCalledExactlyOnceWith(control.ticketId, expect.objectContaining({
+        choice: "deny-once", rememberPattern: "approval cancelled: caller-abort",
+      }));
+      expect(isHostApprovalCancelledDecision(settled.mock.calls[0]?.[1] as ApprovalDecision)).toBe(true);
+    } finally {
+      gate.disposeAll();
+    }
   });
 
   it("settles an abort when gate cancellation throws and approval never settles", async () => {

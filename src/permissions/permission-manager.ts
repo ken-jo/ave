@@ -99,7 +99,8 @@ import { errorMessage } from "../shared/error-message.js";
 import type { ExecutionMode } from "../shared/permission-mode.js";
 import type { ApprovalSurface } from "../shared/authorization-required.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
-import { capturePersistedPolicyVersion, isPersistedPolicyVersionCurrent, persistedPolicyVersionForContent, type PersistedPolicyVersion } from "./persisted-policy-version.js";
+import { createSerialQueue } from "../lib/with-file-lock.js";
+import { capturePersistedPolicyVersion, isPersistedPolicyVersionCurrent, persistedPolicyVersionForContent, STALE_PERMISSION_POLICY, type PersistedPolicyVersion } from "./persisted-policy-version.js";
 import {
   captureShellWorkingDirectoryIdentity,
   matchesShellWorkingDirectoryIdentity,
@@ -533,6 +534,10 @@ export interface NetworkPermissionEvaluation {
   rule?: { decision: "deny" | "ask" | "allow"; pattern: string; scope: NetworkRuleScope };
 }
 
+type NetworkRuleDecision = NonNullable<NetworkPermissionEvaluation["rule"]>;
+type NetworkRuleSubject = { host: string; port: number; sessionId?: string; projectCwd?: string };
+type NetworkPermissionDestination = { host: string; port: number; source: ToolSource; network: "public" | "local" | "unverified"; ruleScopes?: readonly NetworkRuleScope[] };
+
 /** Whether a stored path grant falls under a removed root, sparing separately registered descendant roots. Shared by the prune and its preview. */
 function pathGrantRemovalMatcher(root: string, preserveRoots: readonly string[] = []): (pattern: string) => boolean {
   // Dual-form roots (item-5): canonical (realpath'd) and raw (pathResolve only).
@@ -579,6 +584,14 @@ function pathGrantRemovalMatcher(root: string, preserveRoots: readonly string[] 
 
 export class PermissionManager {
   private rules: PermissionRule[] = [];
+  // The rules set in memory before the user file merges in (boot's standing allows): a refresh starts again from these.
+  private baseRules: PermissionRule[] = [];
+  private userRulesRefresh: Promise<void> | undefined;
+  // Writes of the user rule file and user-rule reloads run one at a time, so no writer interleaves between a reload's read and its assignment.
+  private readonly userRulesQueue = createSerialQueue();
+  // Deny and ask rules active in memory that the file may not hold: inserted before their write, kept when that write fails. A reload
+  // keeps them, because a fail-closed rule must never be dropped by a reload. Cleared when a later write persists it or it is removed in-app.
+  private readonly unpersistedRestrictions: PermissionRule[] = [];
   // Unread deny rules fail admission closed for every tool category.
   private rulesLoadError: PermissionRulesFileCorruptError | undefined;
   private readonly projectRuleScopes: ProjectRuleScopes;
@@ -886,6 +899,7 @@ export class PermissionManager {
   }
 
   setRules(rules: PermissionRule[]): void {
+    this.baseRules = rules.map((rule) => ({ ...rule }));
     this.rules = rules.map((rule) => ({ ...rule }));
     this.policyGeneration += 1;
   }
@@ -941,6 +955,8 @@ export class PermissionManager {
       this.rules.unshift({ pattern, action: "deny" });
       this.policyGeneration += 1;
     }
+    const restriction = { pattern, action: "deny" as const };
+    if (!this.unpersistedRestrictions.some((r) => sameRule(r, restriction))) this.unpersistedRestrictions.push(restriction);
     // Persistent file.
     await this.updateRulesFile((file) => {
       const fileExists = file.rules.some(
@@ -950,6 +966,7 @@ export class PermissionManager {
         file.rules.unshift({ pattern, action: "deny" });
       }
     });
+    this.forgetUnpersisted(restriction);
     this.policyGeneration += 1;
     this.broadcastConfigChanged?.();
     // Deny added → outstanding bearers MUST be aborted so a plugin that held a bearer captured in a closure can't continue calling the upstream provider after the user revoked access.
@@ -1131,16 +1148,18 @@ export class PermissionManager {
 
   // The `Network(<host>[:port])` rule that decides a sandboxed shell's or terminal's connection, from the user rules, the project's rules (a shell call with a project) and the conversation's "This session" rules, with the precedence of every rule kind: deny, then ask (no grant is consulted and the card asks), then allow. Undefined when no rule matches; the grant store and the card then decide. The network card's "Always deny" and its edited rules are stored as these rules (owner 2026-10-25). A corrupt project rules file throws, which the egress callback turns into an audited deny.
   // `scope` names where the deciding rule is stored, so the egress callback can hold an allow to the lifetimes the connection's identity may use.
-  async networkRuleDecision(subject: { host: string; port: number; sessionId?: string; projectCwd?: string }): Promise<{ decision: "deny" | "ask" | "allow"; pattern: string; scope: NetworkRuleScope } | undefined> {
-    let projectRules: readonly PermissionRule[] = [];
-    if (subject.projectCwd !== undefined) {
-      const state = await this.projectRuleScopes.ensureLoaded(subject.projectCwd);
-      if (!state.ok) throw state.error;
-      projectRules = state.rules;
-    }
+  async networkRuleDecision(subject: NetworkRuleSubject): Promise<NetworkRuleDecision | undefined> {
+    await this.refreshUserRulesIfChanged();
+    if (subject.projectCwd !== undefined) await this.projectRuleScopes.ensureLoaded(subject.projectCwd);
+    return this.matchLoadedNetworkRule(subject);
+  }
+
+  private matchLoadedNetworkRule(subject: NetworkRuleSubject): NetworkRuleDecision | undefined {
+    const state = subject.projectCwd === undefined ? undefined : this.projectRuleScopes.stateFor(subject.projectCwd);
+    if (state?.ok === false) throw state.error;
     const sessionRules = this.sessionRulesInScope(subject.sessionId);
     const matched: { deny?: { pattern: string; scope: NetworkRuleScope }; ask?: { pattern: string; scope: NetworkRuleScope }; allow?: { pattern: string; scope: NetworkRuleScope } } = {};
-    const scoped: Array<[NetworkRuleScope, readonly PermissionRule[]]> = [["user", this.rules], ["project", projectRules], ["session", sessionRules]];
+    const scoped: Array<[NetworkRuleScope, readonly PermissionRule[]]> = [["user", this.rules], ["project", state?.rules ?? []], ["session", sessionRules]];
     for (const [scope, rules] of scoped) {
       for (const rule of rules) {
         if (rule.source || storedRuleInvalidReason(rule) !== null || !isRuleSpecifier(rule.pattern)) continue;
@@ -1158,26 +1177,60 @@ export class PermissionManager {
 
   // Every actual connection has its own request; an enclosing shell's rule or grant is not network consent.
   async checkNetworkPermission(
-    destination: { host: string; port: number; source: ToolSource; network: "public" | "local" | "unverified"; ruleScopes?: readonly NetworkRuleScope[] },
+    destination: NetworkPermissionDestination,
     context: PermissionCheckContext = {},
   ): Promise<NetworkPermissionEvaluation> {
-    const canonicalHost = canonicalEgressHost(destination.host);
-    const valid = canonicalHost !== undefined && isValidEgressPort(destination.port);
-    const host = canonicalHost ?? destination.host;
-    const exactDestination = Object.freeze({ host, port: destination.port });
-    const identity = canonicalStringify({ kind: "network", ...exactDestination, source: destination.source });
-    let admissionDenial = context.admissionDenial;
-    let rule: NetworkPermissionEvaluation["rule"];
-    if (!valid) admissionDenial ??= { code: "invalid-network-destination", reason: "Network destination is invalid" };
-    else {
-      try {
-        const matched = await this.networkRuleDecision({ host, port: destination.port, sessionId: context.sessionId, projectCwd: context.projectRulesCwd });
-        if (matched?.decision !== "allow" || destination.network === "public" && destination.ruleScopes?.includes(matched.scope)) rule = matched;
-      } catch (error) {
-        if (!(error instanceof PermissionRulesFileCorruptError)) throw error;
-        admissionDenial ??= { code: "policy-unreadable", reason: error.message };
+    const subject = this.networkRuleSubject(destination, context);
+    try {
+      const rule = subject === undefined ? undefined : await this.networkRuleDecision(subject);
+      return this.evaluateNetworkPermission(destination, context, subject, rule);
+    } catch (error) {
+      if (!(error instanceof PermissionRulesFileCorruptError)) throw error;
+      return this.evaluateNetworkPermission(destination, context, subject, undefined, error);
+    }
+  }
+
+  // Re-evaluate the live scopes at the resolved connection boundary, without another wait.
+  checkLoadedNetworkPermission(destination: NetworkPermissionDestination, context: PermissionCheckContext): NetworkPermissionEvaluation {
+    const subject = this.networkRuleSubject(destination, context);
+    if (subject !== undefined) {
+      const versions = [this.userRulesVersion];
+      if (subject.projectCwd !== undefined) versions.push(this.projectRuleScopes.policyVersionFor(subject.projectCwd));
+      if (versions.some(version => version === undefined || !isPersistedPolicyVersionCurrent(version))) {
+        return this.evaluateNetworkPermission(destination, {
+          ...context,
+          admissionDenial: context.admissionDenial ?? STALE_PERMISSION_POLICY,
+        }, subject, undefined);
       }
     }
+    try {
+      const rule = subject === undefined ? undefined : this.matchLoadedNetworkRule(subject);
+      return this.evaluateNetworkPermission(destination, context, subject, rule);
+    } catch (error) {
+      if (!(error instanceof PermissionRulesFileCorruptError)) throw error;
+      return this.evaluateNetworkPermission(destination, context, subject, undefined, error);
+    }
+  }
+
+  private networkRuleSubject(destination: NetworkPermissionDestination, context: PermissionCheckContext): NetworkRuleSubject | undefined {
+    const host = canonicalEgressHost(destination.host);
+    if (host === undefined || !isValidEgressPort(destination.port)) return undefined;
+    return { host, port: destination.port, sessionId: context.sessionId, projectCwd: context.projectRulesCwd };
+  }
+
+  private evaluateNetworkPermission(
+    destination: NetworkPermissionDestination,
+    context: PermissionCheckContext,
+    subject: NetworkRuleSubject | undefined,
+    matched: NetworkRuleDecision | undefined,
+    rulesError?: PermissionRulesFileCorruptError,
+  ): NetworkPermissionEvaluation {
+    const exactDestination = Object.freeze({ host: subject?.host ?? canonicalEgressHost(destination.host) ?? destination.host, port: destination.port });
+    const identity = canonicalStringify({ kind: "network", ...exactDestination, source: destination.source });
+    let admissionDenial = context.admissionDenial;
+    if (subject === undefined) admissionDenial ??= { code: "invalid-network-destination", reason: "Network destination is invalid" };
+    if (rulesError) admissionDenial ??= { code: "policy-unreadable", reason: rulesError.message };
+    const rule = matched?.decision !== "allow" || destination.network === "public" && destination.ruleScopes?.includes(matched.scope) ? matched : undefined;
     const base = this.evaluatePermission("sandbox_network", destination.source, "network", undefined, {
       headless: context.headless, ownerUnattended: context.ownerUnattended, approvalSurface: context.approvalSurface,
       sessionId: context.sessionId, projectRulesCwd: context.projectRulesCwd, permissionStoreError: context.permissionStoreError,
@@ -1255,6 +1308,7 @@ export class PermissionManager {
     this.rules = this.rules.filter(
       (r) => !(r.pattern === pattern && r.action === action && r.source === source),
     );
+    if (source === undefined) this.forgetUnpersisted({ pattern, action });
     if (action === "allow" && source === undefined) this.alwaysAllowed.delete(pattern);
     this.policyGeneration += 1;
 
@@ -1307,7 +1361,7 @@ export class PermissionManager {
 
   // Called during app boot. Merges permissions.json into memory. Missing file is a normal no-op.
   async loadRulesFromFile(): Promise<void> {
-    const policyVersion = capturePersistedPolicyVersion(this.permissionsFilePath);
+    const policyVersion = capturePersistedPolicyVersion(this.permissionsFilePath, { withheld: true });
     let file: Awaited<ReturnType<typeof readPermissionsFile>>;
     try {
       file = await readPermissionsFile(this.permissionsFilePath);
@@ -1320,15 +1374,54 @@ export class PermissionManager {
       return;
     }
     this.policyGeneration += 1;
-    this.userRulesVersion = policyVersion !== undefined &&
-      policyVersion.contentsDigest === sha256Hex(canonicalStringify(file)) &&
-      isPersistedPolicyVersionCurrent(policyVersion) ? policyVersion : undefined;
+    this.userRulesVersion = loadedUserRulesVersion(policyVersion, file);
     this.rulesLoadError = undefined;
     if (!file) return;
 
     // Sync mode.
     if (file.mode) this.mode = file.mode;
+    this.mergeFileRules(file);
+  }
 
+  // Before a connection's asynchronous decision, reload the user rules when the file no longer matches the captured version (a hand
+  // edit, or a completed home-content review). The reload replaces what the file supplied, so local and remote decide on the same
+  // rules; a change after this point is caught by the final synchronous check. Concurrent connections share one reload.
+  private async refreshUserRulesIfChanged(): Promise<void> {
+    if (this.userRulesVersion !== undefined && isPersistedPolicyVersionCurrent(this.userRulesVersion)) return;
+    this.userRulesRefresh ??= this.userRulesQueue(async () => {
+      // Checked again under the queue: a writer that ran first may already have published the current version.
+      if (this.userRulesVersion !== undefined && isPersistedPolicyVersionCurrent(this.userRulesVersion)) return;
+      await this.reloadUserRules();
+    }).finally(() => { this.userRulesRefresh = undefined; });
+    await this.userRulesRefresh;
+  }
+
+  // The mode is not reloaded: a session-scoped mode deliberately differs from the file, and durable changes write both.
+  private async reloadUserRules(): Promise<void> {
+    const policyVersion = capturePersistedPolicyVersion(this.permissionsFilePath, { withheld: true });
+    let file: Awaited<ReturnType<typeof readPermissionsFile>>;
+    try {
+      file = await readPermissionsFile(this.permissionsFilePath);
+    } catch (error) {
+      if (!(error instanceof PermissionRulesFileCorruptError)) throw error;
+      console.error(`[permission] ${error.message}`);
+      this.rulesLoadError = error;
+      this.userRulesVersion = undefined;
+      this.policyGeneration += 1;
+      return;
+    }
+    this.rules = this.baseRules.map((rule) => ({ ...rule }));
+    this.alwaysAllowed.clear();
+    if (file) this.mergeFileRules(file);
+    for (const rule of this.unpersistedRestrictions) {
+      if (!this.rules.some((r) => sameRule(r, rule) && !r.source)) this.rules.unshift({ ...rule });
+    }
+    this.userRulesVersion = loadedUserRulesVersion(policyVersion, file);
+    this.rulesLoadError = undefined;
+    this.policyGeneration += 1;
+  }
+
+  private mergeFileRules(file: PermissionsFile): void {
     // Merge rules: add file rules after existing in-memory rules, deduplicated.
     for (const rule of file.rules) {
       const dup = this.rules.some(
@@ -1376,11 +1469,20 @@ export class PermissionManager {
 
   // Retain the version actually written, never adopt another writer's unseen rules.
   private async updateRulesFile(mutator: Parameters<typeof updatePermissionsFile>[1], authority?: ApprovalPersistenceGuard): Promise<void> {
+    await this.userRulesQueue(() => this.updateRulesFileNow(mutator, authority));
+  }
+
+  private forgetUnpersisted(rule: Pick<PermissionRule, "pattern" | "action">): void {
+    const index = this.unpersistedRestrictions.findIndex((r) => sameRule(r, rule));
+    if (index >= 0) this.unpersistedRestrictions.splice(index, 1);
+  }
+
+  private async updateRulesFileNow(mutator: Parameters<typeof updatePermissionsFile>[1], authority?: ApprovalPersistenceGuard): Promise<void> {
     const previous = this.userRulesVersion;
     let written: PermissionsFile | undefined;
     let knownPolicy = false;
     await updatePermissionsFile(this.permissionsFilePath, async (file) => {
-      knownPolicy = previous !== undefined && (
+      knownPolicy = previous !== undefined && previous.withheld !== true && (
         previous.contentsDigest === sha256Hex(canonicalStringify(file)) ||
         (previous.contentsDigest === sha256Hex("null") && file.rules.length === 0)
       );
@@ -1485,7 +1587,7 @@ export class PermissionManager {
     this.pipelineRequests.delete(result);
     const stale = issued.policyEpoch !== this.getPolicyEpoch();
     const refreshed = this.pipelineResult({ ...issued.request,
-      ...(stale ? { admissionDenial: { code: "policy-changed", reason: "Permission policy changed before execution." } } : {}),
+      ...(stale ? { admissionDenial: STALE_PERMISSION_POLICY } : {}),
     }, issued.hostTerminalContext);
     const shellRule = issuedShellAllowRuleDecisions.get(result);
     issuedShellAllowRuleDecisions.delete(result);
@@ -1730,7 +1832,7 @@ export class PermissionManager {
       issuedFloorSessionDecisions.set(result, Object.freeze({ toolName, dialect: requestedRuleSubject.dialect, command: requestedRuleSubject.command, cwd: requestedRuleSubject.cwd,
         planIdentity: context.hostShellExecutionPlan.identity, issuer: this, policyEpoch: this.getPolicyEpoch() }));
     }
-    if (result.decision === "allow" && result.reasonCode === "rule-allow" && context.hostShellExecutionPlan?.executionRequest === "host" && requestedRuleSubject?.cwd !== undefined && cwdIdentity && this.userRulesVersion && projectPolicyVersion && isPersistedPolicyVersionCurrent(this.userRulesVersion) && isPersistedPolicyVersionCurrent(projectPolicyVersion)) {
+    if (result.decision === "allow" && result.reasonCode === "rule-allow" && context.hostShellExecutionPlan?.executionRequest === "host" && requestedRuleSubject?.cwd !== undefined && cwdIdentity && this.userRulesVersion && this.userRulesVersion.withheld !== true && projectPolicyVersion && projectPolicyVersion.withheld !== true && isPersistedPolicyVersionCurrent(this.userRulesVersion) && isPersistedPolicyVersionCurrent(projectPolicyVersion)) {
       issuedShellAllowRuleDecisions.set(result, Object.freeze({ toolName, dialect: requestedRuleSubject.dialect, command: requestedRuleSubject.command, cwd: requestedRuleSubject.cwd, cwdIdentity, issuer: this, policyEpoch: this.getPolicyEpoch(), persistedPolicyVersions: Object.freeze([this.userRulesVersion, projectPolicyVersion]) }));
     }
     return result;
@@ -2310,4 +2412,16 @@ function normalizeApprovalCacheKey(key: string | undefined): string | null {
 function redactVerdictReason(verdict: RiskVerdict): RiskVerdict {
   const masked = maskSensitiveData(verdict.reason).masked;
   return masked === verdict.reason ? verdict : { ...verdict, reason: masked };
+}
+
+// The version a load may publish: the bytes it parsed must still be on disk, and for a trusted file they must describe the rules it
+// loaded. A withheld file loaded its restriction overlay, which no contents digest describes.
+function loadedUserRulesVersion(version: PersistedPolicyVersion | undefined, file: PermissionsFile | null): PersistedPolicyVersion | undefined {
+  if (version === undefined || !isPersistedPolicyVersionCurrent(version)) return undefined;
+  if (version.withheld === true) return version;
+  return version.contentsDigest === sha256Hex(canonicalStringify(file)) ? version : undefined;
+}
+
+function sameRule(left: Pick<PermissionRule, "pattern" | "action">, right: Pick<PermissionRule, "pattern" | "action">): boolean {
+  return left.pattern === right.pattern && left.action === right.action;
 }

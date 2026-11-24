@@ -1,13 +1,410 @@
-import { expect, it, vi } from "vitest";
+import { expect, it, type MockInstance, vi } from "vitest";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { setImmediate } from "node:timers/promises";
 import { deferred } from "../../../__tests__/support/deferred.js";
+import * as namespace from "../../../main/storage/feature-namespace.js";
+import { WorkBoardStore } from "../../../main/work-board-store.js";
 import { boardRunState } from "../run-state.js";
 import { autoStageOf, stageOf } from "./stage-fixtures.js";
 import { workBoardOriginSessionId } from "../../../shared/work-board-types.js";
 import type { StageWorkspaceProvider } from "../stage-workspace.js";
 import { stageRunHarness } from "./stage-run-harness.js";
+
+it("checks board and run changes without advancing timers", async () => {
+  const h = await stageRunHarness();
+  const release = deferred<void>();
+  try {
+    const version = await h.confirm([autoStageOf("a")]);
+    const id = await h.addItem(version);
+    const runId = "run-1";
+    expect(await h.board.beginRun(id, runId, "2026-11-16T00:00:00.000Z", {
+      ...h.pinOf(version), source: h.local(version), stageRuns: [{ stageId: "a", attempt: 1, status: "waiting" }],
+    })).toMatchObject({ status: "updated" });
+    const board = h.board;
+    const boardRead = await board.get(id);
+    const runRead = await board.runs.get(runId);
+    if (boardRead.status !== "found" || runRead.status !== "found") throw new Error("Missing wait fixture");
+    let boardSnapshot = boardRead;
+    let runSnapshot = runRead;
+    vi.spyOn(board, "get").mockImplementation(async () => boardSnapshot);
+    const read = vi.spyOn(board.runs, "get").mockImplementation(async () => runSnapshot);
+
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const matches = vi.fn((item: Awaited<ReturnType<typeof h.item>>) => h.statusOf(item, "a") === "running");
+    const current = h.until(id, matches);
+    const stage = h.untilStage(id, "a", "running");
+    const done = Promise.all([current, stage]);
+    const settled = vi.fn();
+    void done.then(settled, settled);
+    await setImmediate();
+    expect(matches.mock.calls).toEqual([[expect.objectContaining({ title: "Work" })]]);
+    expect(read).toHaveBeenCalledTimes(2);
+
+    read.mockImplementationOnce(async () => {
+      await release.promise;
+      return runRead;
+    });
+    boardSnapshot = { ...boardRead, item: { ...boardRead.item, title: "Renamed" } };
+    board.boardChanged.emit();
+    await setImmediate();
+    expect(read).toHaveBeenCalledTimes(4);
+    expect(settled).not.toHaveBeenCalled();
+
+    runSnapshot = { ...runRead, run: { ...runRead.run, stageRuns: [{ ...runRead.run.stageRuns[0], status: "running" }] } };
+    board.runs.runChanged.emit(runId);
+    release.resolve();
+    await setImmediate();
+    expect(settled).toHaveBeenCalledTimes(1);
+    expect(matches.mock.calls).toEqual([
+      [expect.objectContaining({ title: "Work" })],
+      [expect.objectContaining({ title: "Renamed" })],
+    ]);
+    for (const item of await done) {
+      expect(item.title).toBe("Renamed");
+      expect(h.statusOf(item, "a")).toBe("running");
+    }
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    release.resolve();
+    vi.useRealTimers();
+    await h.cleanup();
+  }
+});
+
+it("discards a matching snapshot read across board and run wakes", async () => {
+  const h = await stageRunHarness();
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  try {
+    const version = await h.confirm([autoStageOf("a")]);
+    const id = await h.addItem(version);
+    const runId = "run-1";
+    expect(await h.board.beginRun(id, runId, "2026-11-16T00:00:00.000Z", {
+      ...h.pinOf(version), source: h.local(version), stageRuns: [{ stageId: "a", attempt: 1, status: "waiting" }],
+    })).toMatchObject({ status: "updated" });
+    const runs = h.board.runs;
+    const getRun = runs.get.bind(runs);
+    const read = vi.spyOn(runs, "get").mockImplementationOnce(async key => {
+      entered.resolve();
+      await release.promise;
+      return getRun(key);
+    });
+    const matches = vi.fn((item: Awaited<ReturnType<typeof h.item>>) => h.statusOf(item, "a") === "running");
+    const waiting = h.until(id, matches);
+    void waiting.catch(() => {});
+    await entered.promise;
+    expect(await h.board.update(id, { title: "Renamed" })).toMatchObject({ status: "updated" });
+    expect(await runs.update(runId, run => ({ ...run, stageRuns: [{ ...run.stageRuns[0], status: "running" }] })))
+      .toMatchObject({ status: "stored" });
+    expect(matches).not.toHaveBeenCalled();
+    release.resolve();
+
+    await expect(waiting).resolves.toMatchObject({ title: "Renamed" });
+    expect(read.mock.calls).toEqual([[runId], [runId]]);
+    expect(matches.mock.calls).toEqual([[expect.objectContaining({ title: "Renamed" })]]);
+  } finally {
+    release.resolve();
+    await h.cleanup();
+  }
+});
+
+it("ignores a late read rejection from a replaced wait source", async () => {
+  const h = await stageRunHarness();
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  try {
+    const id = await h.addItem(await h.confirm([autoStageOf("a")]));
+    vi.spyOn(h.board, "get").mockImplementationOnce(async () => {
+      entered.resolve();
+      await release.promise;
+      throw new Error("retired board read failed");
+    });
+    const waiting = h.until(id, item => item.title === "Renamed");
+    void waiting.catch(() => {});
+    await entered.promise;
+    h.editRow(id, row => ({ ...row, title: "Renamed" }));
+    h.makeEngine();
+    release.resolve();
+
+    await expect(waiting).resolves.toMatchObject({ title: "Renamed" });
+  } finally {
+    release.resolve();
+    await h.cleanup();
+  }
+});
+
+it("checks the replacement while a retired board read is held", async () => {
+  const h = await stageRunHarness();
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  try {
+    const id = await h.addItem(await h.confirm([autoStageOf("a")]));
+    const snapshot = await h.board.get(id);
+    if (snapshot.status !== "found") throw new Error("Missing wait fixture");
+    vi.spyOn(h.board, "get").mockImplementationOnce(async () => {
+      entered.resolve();
+      await release.promise;
+      return snapshot;
+    });
+    const matches = vi.fn(() => true);
+    const waiting = h.until(id, matches);
+    void waiting.catch(() => {});
+    await entered.promise;
+
+    const replacement = vi.spyOn(WorkBoardStore.prototype, "get").mockResolvedValueOnce({
+      ...snapshot, item: { ...snapshot.item, title: "Replacement" },
+    });
+    try {
+      h.makeEngine();
+      expect(await Promise.race([waiting, setImmediate("still pending")]))
+        .toMatchObject({ title: "Replacement" });
+      release.resolve();
+      await setImmediate();
+      expect(matches.mock.calls).toHaveLength(1);
+    } finally {
+      replacement.mockRestore();
+    }
+  } finally {
+    release.resolve();
+    await h.cleanup();
+  }
+});
+
+it("checks a shared run file commit made by the retired store after cutover", async () => {
+  const h = await stageRunHarness();
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  let writing: Promise<unknown> | undefined;
+  try {
+    const version = await h.confirm([autoStageOf("a")]);
+    const id = await h.addItem(version);
+    const runId = "run-1";
+    const oldBoard = h.board;
+    expect(await oldBoard.beginRun(id, runId, "2026-11-16T00:00:00.000Z", {
+      ...h.pinOf(version), source: h.local(version), stageRuns: [{ stageId: "a", attempt: 1, status: "waiting" }],
+    })).toMatchObject({ status: "updated" });
+    const row = await oldBoard.get(id);
+    const persist = namespace.writeFileAtomicAtPath;
+    const write = vi.spyOn(namespace, "writeFileAtomicAtPath").mockImplementationOnce(async (...args) => {
+      entered.resolve();
+      await release.promise;
+      await persist(...args);
+    });
+    try {
+      writing = oldBoard.runs.update(runId, run => ({
+        ...run, stageRuns: [{ ...run.stageRuns[0], status: "running" }],
+      }));
+      await entered.promise;
+      const initial = deferred<void>();
+      const replacement = deferred<void>();
+      const waiting = h.until(id, item => {
+        if (h.statusOf(item, "a") === "running") return true;
+        (h.board === oldBoard ? initial : replacement).resolve();
+        return false;
+      });
+      void waiting.catch(() => {});
+      await initial.promise;
+      // Bootstrapping the row-id floor also takes the run file queue held by the write.
+      const firstRead = vi.spyOn(WorkBoardStore.prototype, "get").mockResolvedValueOnce(row);
+      try {
+        h.makeEngine();
+        await replacement.promise;
+      } finally {
+        firstRead.mockRestore();
+      }
+      const read = vi.spyOn(h.board, "get");
+
+      release.resolve();
+      expect(await writing).toMatchObject({ status: "stored" });
+      expect(read.mock.calls).toEqual([[id]]);
+      await expect(waiting).resolves.toMatchObject({ stageRuns: [{ stageId: "a", status: "running" }] });
+    } finally {
+      release.resolve();
+      await writing;
+      write.mockRestore();
+    }
+  } finally {
+    await h.cleanup();
+  }
+});
+
+async function waitSnapshots(h: Awaited<ReturnType<typeof stageRunHarness>>) {
+  const version = await h.confirm([autoStageOf("a")]);
+  const id = await h.addItem(version);
+  const runId = "run-1";
+  expect(await h.board.beginRun(id, runId, "2026-11-16T00:00:00.000Z", {
+    ...h.pinOf(version), source: h.local(version), stageRuns: [{ stageId: "a", attempt: 1, status: "waiting" }],
+  })).toMatchObject({ status: "updated" });
+  const row = await h.board.get(id);
+  const run = await h.board.runs.get(runId);
+  if (row.status !== "found" || run.status !== "found") throw new Error("Missing wait fixture");
+  return { id, runId, row, run };
+}
+
+it("makes progress through unrelated wakes and preserves a relevant wake before the row key is known", async () => {
+  const h = await stageRunHarness();
+  try {
+    const { id, runId, row, run } = await waitSnapshots(h);
+    const { runs } = h.board;
+    const readRow = vi.spyOn(h.board, "get").mockImplementation(async () => {
+      if (readRow.mock.calls.length <= 100) runs.runChanged.emit("other-before");
+      if (readRow.mock.calls.length === 1) runs.runChanged.emit(runId);
+      return row;
+    });
+    const readRun = vi.spyOn(runs, "get").mockImplementation(async () => {
+      if (readRun.mock.calls.length <= 100) runs.runChanged.emit("other-after");
+      const output = readRun.mock.calls.length === 1 ? "stale" : "fresh";
+      return { ...run, run: { ...run.run, stageRuns: [{ ...run.run.stageRuns[0], output }] } };
+    });
+    const matches = vi.fn(() => true);
+    const result = h.until(id, matches);
+    void result.catch(() => {});
+
+    expect(await Promise.race([result, setImmediate("still pending")]))
+      .toMatchObject({ stageRuns: [{ output: "fresh" }] });
+    expect(readRun.mock.calls).toEqual([[runId], [runId]]);
+    expect(matches).toHaveBeenCalledTimes(1);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+it("yields with a pending wake so continuous invalidations cannot starve the deadline", async () => {
+  const h = await stageRunHarness();
+  try {
+    const { id, runId, row, run } = await waitSnapshots(h);
+    const { runs } = h.board;
+    vi.spyOn(h.board, "get").mockResolvedValue(row);
+    const burstLimit = 100;
+    const readRun = vi.spyOn(runs, "get").mockImplementation(async () => {
+      runs.runChanged.emit("other-run");
+      // The cap lets a monopolized event loop recover and report a failed assertion.
+      if (readRun.mock.calls.length >= burstLimit) return new Promise<never>(() => {});
+      runs.runChanged.emit(runId);
+      return run;
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const matches = vi.fn(() => false);
+    const result = h.until(id, matches);
+    void result.catch(() => {});
+
+    await setImmediate();
+    const firstTurn = readRun.mock.calls.length;
+    await setImmediate();
+    const secondTurn = readRun.mock.calls.length;
+    expect(secondTurn).toBeLessThan(burstLimit);
+    expect(secondTurn).toBeGreaterThan(firstTurn);
+    expect(matches).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(30_000);
+    await expect(result).rejects.toThrow(`timed out waiting for item ${id} to satisfy its predicate`);
+    await setImmediate();
+    expect(readRun).toHaveBeenCalledTimes(secondTurn);
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    vi.useRealTimers();
+    await h.cleanup();
+  }
+});
+
+async function replaceOnRead(
+  h: Awaited<ReturnType<typeof stageRunHarness>>,
+  read: MockInstance<WorkBoardStore["get"]>,
+  limit: number,
+): Promise<number> {
+  const { id, row } = await waitSnapshots(h);
+  read.mockClear().mockImplementation(async () => {
+    const count = read.mock.calls.length;
+    if (count < limit) queueMicrotask(() => h.makeEngine());
+    return { ...row, item: { ...row.item, runId: undefined, title: `Read ${count}` } };
+  });
+  return id;
+}
+
+it("bounds a burst of replacement reads and resumes from the active source", async () => {
+  const h = await stageRunHarness();
+  const read = vi.spyOn(WorkBoardStore.prototype, "get");
+  try {
+    const id = await replaceOnRead(h, read, 12);
+    const result = h.until(id, item => item.title === "Read 12");
+    void result.catch(() => {});
+
+    await setImmediate();
+    expect(read).toHaveBeenCalledTimes(8);
+    h.makeEngine();
+    const active = h.board;
+    expect(read).toHaveBeenCalledTimes(8);
+
+    await expect(result).resolves.toMatchObject({ title: "Read 12" });
+    expect(read).toHaveBeenCalledTimes(12);
+    expect(read.mock.contexts[8]).toBe(active);
+  } finally {
+    read.mockRestore();
+    await h.cleanup();
+  }
+});
+
+it("delivers the deadline during continued replacement churn", async () => {
+  const h = await stageRunHarness();
+  const read = vi.spyOn(WorkBoardStore.prototype, "get");
+  try {
+    const limit = 100;
+    const id = await replaceOnRead(h, read, limit);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const result = h.until(id, () => false);
+    void result.catch(() => {});
+
+    await setImmediate();
+    const firstTurn = read.mock.calls.length;
+    await setImmediate();
+    const secondTurn = read.mock.calls.length;
+    expect(secondTurn).toBeLessThan(limit);
+    expect(secondTurn).toBeGreaterThan(firstTurn);
+
+    vi.advanceTimersByTime(30_000);
+    await expect(result).rejects.toThrow(`timed out waiting for item ${id} to satisfy its predicate`);
+    await setImmediate();
+    expect(read).toHaveBeenCalledTimes(secondTurn);
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    vi.useRealTimers();
+    read.mockRestore();
+    await h.cleanup();
+  }
+});
+
+it("checks state already committed before a wait attaches", async () => {
+  const h = await stageRunHarness();
+  try {
+    const id = await h.addItem(await h.confirm([autoStageOf("a")]));
+    expect(await h.board.update(id, { title: "Renamed" })).toMatchObject({ status: "updated" });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    await expect(h.until(id, item => item.title === "Renamed")).resolves.toMatchObject({ title: "Renamed" });
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    vi.useRealTimers();
+    await h.cleanup();
+  }
+});
+
+it("names the item, stage and status when no signal arrives within the bound", async () => {
+  const h = await stageRunHarness();
+  try {
+    const id = await h.addItem(await h.confirm([autoStageOf("a")]));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const result = h.untilStage(id, "a", "passed").catch((error: Error) => error.message);
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(await Promise.race([result, setImmediate("still pending")])).toBe("still pending");
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await Promise.race([result, setImmediate("still pending")]))
+      .toBe(`timed out waiting for item ${id} stage a to reach passed`);
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    vi.useRealTimers();
+    await h.cleanup();
+  }
+});
 
 it.each(["refused", "failed", "ended", "cancelled"] as const)("settles child waits when the expected run is %s", async outcome => {
   const preparing = deferred<void>();
@@ -1113,22 +1510,30 @@ it("a progress wait whose signal never comes stays pending past 2 s and at 30 s 
   }
 });
 
-it("cleanup ends pending progress and child waits at once and leaves no listener or timer behind", async () => {
+it("cleanup ends every pending wait at once and leaves no listener or timer behind", async () => {
   const h = await stageRunHarness();
   let cleaned: Promise<void> | undefined;
   try {
+    const id = await h.addItem(await h.confirm([stageOf("a")]));
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const outcome = (wait: Promise<unknown>) => wait.then(() => "resolved", (error: unknown) => String(error));
-    const waits = Promise.all([outcome(h.settleEvent()), outcome(h.untilLive(1))]);
-    expect(h.pendingWaits()).toBe(2);
-    expect(vi.getTimerCount()).toBe(2);
+    const never = () => expect("waiting").toBe("passed");
+    const waits = Promise.all([outcome(h.settleEvent()), outcome(h.untilLive(1)), outcome(h.until(id, () => false, "a predicate that never holds")),
+      outcome(h.untilRunFile(never, "the stage to pass")), outcome(h.untilObserved(never)), outcome(h.untilWorkspaceCalls(never))]);
+    expect(h.pendingWaits()).toBe(6);
+    expect(vi.getTimerCount()).toBe(6);
     cleaned = h.cleanup();
     expect(h.pendingWaits()).toBe(0);
     expect(vi.getTimerCount()).toBe(0);
     // Past every bound before the directory removal can schedule anything: no wait fails late.
     vi.advanceTimersByTime(30_000);
     vi.useRealTimers();
-    expect(await waits).toEqual(["Error: Progress wait ended: harness cleaned up", "Error: Child wait ended: harness cleaned up"]);
+    // An assertion wait names what it waited for, says cleanup ended it, and keeps the assertion's last failure.
+    const unmet = (what: string) => `Error: the harness was cleaned up while waiting for ${what}; last failure: expected 'waiting' to be 'passed' // Object.is equality`;
+    expect(await waits).toEqual(["Error: Progress wait ended: harness cleaned up", "Error: Child wait ended: harness cleaned up",
+      "Error: Wait for a predicate that never holds ended: harness cleaned up", unmet("the stage to pass"),
+      unmet("a run-file commit or progress event that passes the assertion"), unmet("a workspace call or sweep that passes the assertion")]);
+    expect(await outcome(h.untilRunFile(never, "a late wait"))).toBe("Error: the harness was cleaned up before waiting for a late wait");
     expect(await outcome(h.settleEvent())).toBe("Error: Progress wait ended: harness cleaned up");
   } finally {
     vi.useRealTimers();
@@ -1240,4 +1645,113 @@ it.each(["accepted", "refused"] as const)("a late %s call that closes after its 
     await Promise.allSettled(runs);
     await h.cleanup();
   }
+});
+
+it("untilRunFile reruns its assertion on each run-file commit, a retired store's too, and not on a board write", async () => {
+  const h = await stageRunHarness();
+  try {
+    const version = await h.confirm([autoStageOf("a")]);
+    const id = await h.addItem(version);
+    const runId = "run-1";
+    expect(await h.board.beginRun(id, runId, "2026-11-16T00:00:00.000Z", {
+      ...h.pinOf(version), source: h.local(version), stageRuns: [{ stageId: "a", attempt: 1, status: "waiting" }],
+    })).toMatchObject({ status: "updated" });
+    const retired = h.board;
+    h.makeEngine();
+    const assertion = vi.fn(async () => expect((await h.runOf(runId, retired))?.stageRuns[0]?.status).toBe("running"));
+    const waiting = h.untilRunFile(assertion);
+    await setImmediate();
+    expect(assertion).toHaveBeenCalledTimes(1);
+    expect(await h.board.update(id, { title: "Renamed" })).toMatchObject({ status: "updated" });
+    await setImmediate();
+    expect(assertion).toHaveBeenCalledTimes(1);
+    expect(await retired.runs.update(runId, run => ({ ...run, stageRuns: [{ ...run.stageRuns[0], status: "running" }] })))
+      .toMatchObject({ status: "stored" });
+    await waiting;
+    expect(assertion).toHaveBeenCalledTimes(2);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+it("untilObserved reruns its assertion on progress events and passes once the run's end event is out", async () => {
+  const h = await stageRunHarness();
+  try {
+    const version = await h.confirm([autoStageOf("a")]);
+    const id = await h.addItem(version);
+    const run = h.start(id, h.local(version));
+    const [child] = await h.untilLive(1);
+    const ended = h.untilObserved(() => expect(h.events.some(event => event.itemId === id && event.phase === "done")).toBe(true));
+    child.finish();
+    await ended;
+    expect(await run).toMatchObject({ status: "completed" });
+  } finally {
+    await h.cleanup();
+  }
+});
+
+it("untilWorkspaceCalls wakes on the calls of a replaced workspace part as on the harness's own", async () => {
+  const sealed: string[] = [];
+  const release = deferred<void>();
+  // The seal holds the run, so no later workspace call of the harness's own can wake the wait.
+  const h = await stageRunHarness({ workspace: { seal: async (_run, stageId) => { sealed.push(stageId); await release.promise; return { ok: true }; } } });
+  try {
+    const version = await h.confirm([autoStageOf("a")]);
+    const id = await h.addItem(version);
+    const run = h.start(id, h.local(version));
+    const [child] = await h.untilLive(1);
+    const seen = h.untilWorkspaceCalls(() => expect(sealed).toEqual(["a"]));
+    child.finish();
+    await seen;
+    release.resolve();
+    expect(await run).toMatchObject({ status: "completed" });
+  } finally {
+    release.resolve();
+    await h.cleanup();
+  }
+});
+
+/** A join whose integration never returns holds the run's observed work; `armDrain` hands over the drain bound's expiry once armed. */
+async function heldJoinHarness() {
+  const integrating = deferred<void>();
+  const h = await stageRunHarness({ observeRunWork: true, integrate: () => { integrating.resolve(); return new Promise(() => undefined); } });
+  const armed = deferred<(reason?: string) => void>();
+  const armDrain = (expire: (reason?: string) => void) => { armed.resolve(expire); return () => undefined; };
+  const holdJoin = async () => {
+    const version = await h.confirm([autoStageOf("a")]);
+    const id = await h.addItem(version);
+    void h.start(id, h.local(version));
+    (await h.untilLive(1, id))[0].finish();
+    await integrating.promise;
+  };
+  /** Waits for the drain to arm its bound, shows the drain is held, then expires the bound. */
+  const expireHeldDrain = async () => {
+    const expire = await armed.promise;
+    const drained = vi.fn();
+    void h.drainAllRunWork().then(drained);
+    await setImmediate();
+    expect(drained).not.toHaveBeenCalled();
+    expire();
+  };
+  return { h, armDrain, holdJoin, expireHeldDrain };
+}
+const failureOf = (work: Promise<unknown>) => work.then(() => "resolved", (error: unknown) => error instanceof Error ? error.message : String(error));
+
+it("runThenEnd rethrows the body's own failure when run work is still held, not the drain's", async () => {
+  const { h, armDrain, holdJoin, expireHeldDrain } = await heldJoinHarness();
+  const ended = failureOf(h.runThenEnd(async () => {
+    await holdJoin();
+    throw new Error("the body's own failure");
+  }, { bound: armDrain }));
+  await expireHeldDrain();
+  expect(await ended).toBe("the body's own failure");
+  expect(h.pendingWaits()).toBe(0);
+});
+
+it("runThenEnd fails naming the drain once held run work outlasts its bound after a passing body, and still cleans up", async () => {
+  const { h, armDrain, holdJoin, expireHeldDrain } = await heldJoinHarness();
+  const ended = failureOf(h.runThenEnd(holdJoin, { bound: armDrain }));
+  await expireHeldDrain();
+  expect(await ended).toBe("timed out waiting for the run work to drain");
+  expect(await failureOf(h.untilRunFile(() => undefined, "a wait after cleanup"))).toBe("the harness was cleaned up before waiting for a wait after cleanup");
 });

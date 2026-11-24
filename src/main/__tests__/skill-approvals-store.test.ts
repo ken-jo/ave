@@ -163,7 +163,8 @@ describe("SkillApprovalsStore — corrupt file recovery", () => {
     const file = tmpFile();
     const store = new SkillApprovalsStore(file);
     await store.approve("previous", "body");
-    await expect(store.approve("new-skill", "body", () => false)).rejects.toThrow("Skill approval authority is unavailable");
+    await expect(store.approve("new-skill", "body", { refresh: async () => true, isCurrent: () => false }))
+      .rejects.toThrow("Approval authority is unavailable");
     const reloaded = new SkillApprovalsStore(file);
     expect(await reloaded.isApproved("previous", "body")).toBe(true);
     expect(await reloaded.isApproved("new-skill", "body")).toBe(false);
