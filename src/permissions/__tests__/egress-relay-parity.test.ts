@@ -48,6 +48,7 @@ const RECORDED = {
   openBeforeStart: { today: "the sandbox proxy is not running", new: "the service is not started" },
   denied: { both: "HTTP/1.1 403 no" },
   unauthenticated: { both: "HTTP/1.1 407 Proxy Authentication Required" },
+  otherInvocationName: { both: "HTTP/1.1 403 proxy username does not match the listener" },
   reservedAddress: { both: "HTTP/1.1 403 destination resolves to this host or a reserved address" },
   relayListener: { both: "HTTP/1.1 403 sandbox proxy listener" },
   upstreamAuth: { both: "HTTP/1.1 403 upstream proxy requires authentication" },
@@ -63,7 +64,8 @@ const DIFFERENCES = [
   { row: "P14", today: RECORDED.noAskCallback.today, new: RECORDED.noAskCallback.new, why: "the ask callback is a precondition of the service" },
   { row: "P15", today: RECORDED.openBeforeStart.today, new: RECORDED.openBeforeStart.new, why: "same refusal, the relay's own wording" },
   { row: "P16", today: "4096 relays, not exercised here", new: "4096 relays, exercised with a lower injected limit", why: "same limit" },
-  { row: "ended listener", today: "its port is held back for 30 minutes", new: "the port is released; a later relay on it refuses the old credential (407)", why: "each relay has its own secret, so a reused port admits nothing from an earlier invocation" },
+  { row: "ended listener", today: "its port is held back for 30 minutes", new: "the port is released; a later relay refuses the ended relay's credential (407)", why: "not ruled on yet: to be settled before a route uses this relay" },
+  { row: "407 challenge", today: "its own realm name", new: 'realm "egress relay"', why: "nothing reads the realm" },
   { row: "listener", today: "a port outside the shared proxy range", new: "any ephemeral loopback port", why: "the container makes the connection, so no range has to match a host rule" },
 ] as const;
 
@@ -223,7 +225,7 @@ afterEach(async () => {
 
 it("takes the ask callback and the router boot builds today", () => {
   expect(contracts).toBeTypeOf("function");
-  expect(DIFFERENCES.map((difference) => difference.row)).toEqual(["P17", "P18", "P14", "P15", "P16", "ended listener", "listener"]);
+  expect(DIFFERENCES.map((difference) => difference.row)).toEqual(["P17", "P18", "P14", "P15", "P16", "ended listener", "407 challenge", "listener"]);
 });
 
 describe.each([today, next])("egress relay parity: $name relay", (adapter) => {
@@ -584,6 +586,21 @@ describe.each([today, next])("egress relay parity: $name relay", (adapter) => {
 
       expect(await refused({ port: relay.port }, "asked.example:443")).toBe(recorded("unauthenticated"));
       expect(await refused({ port: relay.port, proxyAuthorization: other.proxyAuthorization }, "asked.example:443")).toBe(recorded("unauthenticated"));
+      expect(ask).not.toHaveBeenCalled();
+    });
+
+    it("refuses its own secret under another invocation's name, and an ended relay's credential", async () => {
+      const ask = vi.fn<Ask>(async () => true);
+      await start({ ask, resolve: resolverFor({}) });
+      const relay = await open();
+      const ended = await open();
+      const [, secret] = Buffer.from(relay.proxyAuthorization.slice("Basic ".length), "base64").toString().split(":");
+      const [otherName] = Buffer.from(ended.proxyAuthorization.slice("Basic ".length), "base64").toString().split(":");
+      const renamed = `Basic ${Buffer.from(`${otherName}:${secret}`).toString("base64")}`;
+      await ended.close();
+
+      expect(await refused({ port: relay.port, proxyAuthorization: renamed }, "asked.example:443")).toBe(recorded("otherInvocationName"));
+      expect(await refused({ port: relay.port, proxyAuthorization: ended.proxyAuthorization }, "asked.example:443")).toBe(recorded("unauthenticated"));
       expect(ask).not.toHaveBeenCalled();
     });
 
