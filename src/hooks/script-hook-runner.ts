@@ -327,8 +327,8 @@ export async function runOneHookScript(
       return deny(`sandbox unavailable: ${(error as Error).message}`);
     }
   }
-  // The owner holds the hook's sandbox teardown; this runner sees only the handle.
-  const hookResources = createManagedResources();
+  // The owner holds a POSIX hook's sandbox teardown; this runner sees only the handle. A Windows hook gets none.
+  const hookResources = process.platform === "win32" ? undefined : createManagedResources();
   let noteProcessGroup: ((pid: number) => void) | undefined;
   let windowsSpawn: WindowsBundledSpawn | undefined;
   let sandboxArgv = false;
@@ -399,7 +399,7 @@ export async function runOneHookScript(
     } catch (error) {
       return deny(`sandbox unavailable: ${(error as Error).message}`);
     }
-  } else if (sandboxEnabled && process.platform !== "win32") {
+  } else if (sandboxEnabled && hookResources) {
     try {
       const wrapped = await wrapManagedBundledCommand({ command: spawnCmd, args: spawnArgs,
         resources: hookResources,
@@ -424,7 +424,7 @@ export async function runOneHookScript(
       stopPreparedHolder(contained, runnable.id);
     } else if (windowsSpawn) {
       windowsSpawn.releaseHold();
-    } else {
+    } else if (hookResources) {
       void abandonManagedLaunch(hookResources).catch((error: unknown) => log.warn("hook sandbox release failed: %s (%s)", runnable.id, (error as Error).message));
     }
   };
@@ -466,7 +466,7 @@ export async function runOneHookScript(
     { cwd, env: spawnEnv, stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32" },
     { label: "hook:script" }, onSpawn,
   );
-  if (process.platform !== "win32") {
+  if (hookResources) {
     return runPosixHook({ start: startHook, stdinJson, timeoutMs, abortSignal, hookId: runnable.id, deny,
       noteProcessGroup: (pid) => noteProcessGroup?.(pid),
       resources: hookResources,

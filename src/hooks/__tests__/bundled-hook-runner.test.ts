@@ -20,6 +20,8 @@ vi.mock("../../main/managed-child-processes.js", async (original) => {
   const real = await original<typeof import("../../main/managed-child-processes.js")>();
   return {
     ...real,
+    createManagedResources: vi.fn(real.createManagedResources),
+    abandonManagedLaunch: vi.fn(real.abandonManagedLaunch),
     assertManagedChildProcessAdmissionOpen: (label: string) => {
       if (!admissionOpen) throw new Error("hook admission closed");
       return real.assertManagedChildProcessAdmissionOpen(label);
@@ -90,7 +92,7 @@ vi.mock("../../sandbox/wrap-bundled-command.js", async (original) => {
 
 import { resolveHostProgram } from "../../shared/host-program-path.js";
 import { runOneHookScript } from "../script-hook-runner.js";
-import { createManagedResources, observeManagedProcessGroup, releaseManagedResources } from "../../main/managed-child-processes.js";
+import { abandonManagedLaunch, createManagedResources, observeManagedProcessGroup, releaseManagedResources } from "../../main/managed-child-processes.js";
 import { wrapManagedBundledCommand } from "../../sandbox/wrap-bundled-command.js";
 import { appOwnedSandboxPrivateRoots, cleanupAsrtSandboxAfterCommand, type SandboxTempPrincipal } from "../../permissions/asrt-sandbox.js";
 import {
@@ -190,6 +192,19 @@ describe("bundled hook runner", () => {
     const result = await runOneHookScript({ ...userHook, command: [node, script] }, payload, { cwd: dataDir });
     expect(result.decision, result.reason).toBe("allow");
     expect(wrap).not.toHaveBeenCalled();
+  });
+
+  it("creates and abandons no managed handle on the direct Windows hook path", async () => {
+    writeFileSync(script, "process.stdout.write(JSON.stringify({action:'allow',reason:'direct windows hook'}))");
+    const node = resolveHostProgram("node");
+    vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    vi.mocked(createManagedResources).mockClear();
+    vi.mocked(abandonManagedLaunch).mockClear();
+    const { confinement: _confinement, ...userHook } = runnable();
+    const result = await runOneHookScript({ ...userHook, command: [node, script] }, payload, { cwd: dataDir });
+    expect(result.decision, result.reason).toBe("allow");
+    expect(createManagedResources).not.toHaveBeenCalled();
+    expect(abandonManagedLaunch).not.toHaveBeenCalled();
   });
 
   it("spawns the script with the sealed cwd, scoped env, and stdin envelope", async () => {
