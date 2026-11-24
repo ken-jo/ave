@@ -751,6 +751,8 @@ export interface OutOfProcessPluginSpec {
     readonly command: string;
     readonly args: readonly string[];
     readonly cwd: string;
+    /** Where the plugin's data lives; its host-only storage sibling is named from it. */
+    readonly pluginDataDir: string;
     /** The child's environment; the planner refuses a loader or SDK override in it before it creates anything. */
     readonly baseEnv: NodeJS.ProcessEnv;
     readonly envelope: DelegatedWorkerConfinement;
@@ -841,7 +843,7 @@ export function createOutOfProcessPluginFactory(
         const intent = { pluginId, command: process.execPath, args: [childEntryPath], cwd: context.pluginRoot,
           baseEnv: buildSafeChildEnv({ ELECTRON_RUN_AS_NODE: "1" }) };
         const floorPierces = declaredHostDirectoryFloorPierces(spec.manifest.sandbox);
-        const launch = await spec.prepareMxcChild({ ...intent, envelope });
+        const launch = await spec.prepareMxcChild({ ...intent, pluginDataDir: context.pluginDataDir, envelope });
         // The incumbent may have begun terminating, or been quarantined, while admission was awaited:
         // recheck synchronously right before spawn (and again after it) through the registration.
         const native = await spawnMxcPluginChild({

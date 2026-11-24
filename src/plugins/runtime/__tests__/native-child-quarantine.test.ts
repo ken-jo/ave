@@ -238,7 +238,8 @@ describe("native plugin child quarantine through the runtime", () => {
       expect(spec.filesystemOwnership.readRoots).toEqual([spec.cwd]);
       expect(spec.filesystemOwnership.writeRoots).toEqual(spec.allowWrite);
       expect(spec.allowWrite?.at(-1)).toBe(staging);
-      expect(spec.filesystemOwnership.hostStorageRoots).toEqual([]);
+      // Host-only storage beside the data directory (the first envelope write root) is named, so row 2 keeps it denied.
+      expect(spec.filesystemOwnership.hostStorageRoots).toEqual([winPath.join(winPath.dirname(spec.allowWrite?.[0] ?? ""), "storage")]);
       expect(spec.egressOwner).toEqual({ kind: "worker", role: "plugin-child", pluginId: PLUGIN_ID });
       expect(spec.floorPierces).toEqual([]);
       await spec.probe({ command: windowsCommandLine(spec.command, spec.args), workingDirectory: spec.cwd } as never, new AbortController().signal);

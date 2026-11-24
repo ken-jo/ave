@@ -151,6 +151,7 @@ const {
   spawnMxcBundledHolder,
 } = holderModule;
 const { prepareMxcPluginChildLaunch } = await import("../../plugins/isolation/mxc-plugin-child-launch.js");
+const { resolvePluginHostStorageDir } = await import("../../plugins/plugin-storage-layout.js");
 const { planWindowsExtensionHolder } = await import("../../permissions/mxc-extension-readiness.js");
 const { MxcCapabilityUnavailableError, MxcProcessCleanupError, MxcProcessContractError } = await import("../../permissions/mxc-extension-errors.js");
 const { setProcessPlatform } = await import("../../__tests__/support/process-platform.js");
@@ -643,7 +644,7 @@ describe("plugin child start resources", () => {
   const GEN = "C:\\ave\\plugins\\fs\\gen";
   const DATA = "C:\\ave\\mcp\\fs\\sandbox";
   const intent = (overrides: Partial<Parameters<typeof prepareMxcPluginChildLaunch>[0]> = {}): Parameters<typeof prepareMxcPluginChildLaunch>[0] =>
-    ({ pluginId: "fs", command: NODE, cwd: GEN, baseEnv: { SYSTEMROOT: "C:\\Windows", ELECTRON_RUN_AS_NODE: "1" }, envelope: { read: [GEN, DATA], write: [DATA] }, ...overrides });
+    ({ pluginId: "fs", command: NODE, cwd: GEN, pluginDataDir: DATA, baseEnv: { SYSTEMROOT: "C:\\Windows", ELECTRON_RUN_AS_NODE: "1" }, envelope: { read: [GEN, DATA], write: [DATA] }, ...overrides });
   const stagingExists = (): boolean => [...state.dirs].some((dir) => dir.includes("mxc-staging\\"));
 
   it("lays out a fresh staging HOME/temp, the captured ownership and the registered probe, and spawns nothing", async () => {
@@ -652,7 +653,7 @@ describe("plugin child start resources", () => {
     expect(staging).toMatch(/^C:\\ave\\mxc-staging\\[0-9a-f]{32}$/u);
     expect(launch.temp).toBe(winPath.join(staging, "temp"));
     expect(state.dirs.has(launch.home) && state.dirs.has(launch.temp)).toBe(true);
-    expect(launch.filesystemOwnership).toEqual({ readRoots: [GEN], writeRoots: [DATA, staging], hostStorageRoots: [] });
+    expect(launch.filesystemOwnership).toEqual({ readRoots: [GEN], writeRoots: [DATA, staging], hostStorageRoots: [resolvePluginHostStorageDir(DATA)] });
     expect(launch.probe).toBe(probe);
     expect(launch.signal.aborted).toBe(false);
     expect(state.spawn).not.toHaveBeenCalled();

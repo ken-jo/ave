@@ -1,5 +1,6 @@
 import { MxcProcessContractError } from "../../permissions/mxc-extension-errors.js";
 import { isMxcExtensionBackendSelected, prepareMxcHolderStart } from "../../sandbox/wrap-bundled-command.js";
+import { resolvePluginHostStorageDir } from "../plugin-storage-layout.js";
 import type { DelegatedWorkerConfinement } from "./host-api-dispatcher.js";
 import type { MxcPluginChildLaunch } from "./mxc-plugin-child.js";
 
@@ -12,6 +13,7 @@ export async function prepareMxcPluginChildLaunch(intent: {
   readonly command: string;
   /** The plugin's generation root. */
   readonly cwd: string;
+  readonly pluginDataDir: string;
   readonly baseEnv: NodeJS.ProcessEnv;
   readonly envelope: DelegatedWorkerConfinement;
 }): Promise<MxcPluginChildLaunch> {
@@ -20,7 +22,9 @@ export async function prepareMxcPluginChildLaunch(intent: {
   return {
     home: start.home,
     temp: start.temp,
-    filesystemOwnership: { readRoots: [intent.cwd], writeRoots: [...intent.envelope.write, start.root], hostStorageRoots: [] },
+    // The host-only storage beside the data directory is named, so admission refuses any grant reaching it.
+    filesystemOwnership: { readRoots: [intent.cwd], writeRoots: [...intent.envelope.write, start.root],
+      hostStorageRoots: [resolvePluginHostStorageDir(intent.pluginDataDir)] },
     probe: start.probe,
     // Revocation reaches the child through `assertCurrent` and the envelope registration.
     signal: new AbortController().signal,
