@@ -1,4 +1,4 @@
-import { resolveVerifiedExecutable, type VerifiedExecutableCandidate } from "../../shared/verified-executable.js";
+import { resolveVerifiedExecutableAsync, type VerifiedExecutableCandidate } from "../../shared/verified-executable.js";
 import type { VerifiedNativePlan } from "./verified-native-plan.js";
 
 interface LauncherRecipe {
@@ -19,7 +19,7 @@ const LAUNCHER_RECIPES: readonly LauncherRecipe[] = Object.freeze([
 ]);
 
 /** Requires literal parsed argv; the host must bind the resulting image and retain payload inspection. */
-export function proveVerifiedLauncherArgv(argv: readonly string[]): VerifiedNativePlan | null {
+export async function proveVerifiedLauncherArgv(argv: readonly string[]): Promise<VerifiedNativePlan | null> {
   for (const recipe of LAUNCHER_RECIPES) {
     const payloadIndex = recipe.prefix.length;
     if (argv.length !== payloadIndex + 1 || !recipe.prefix.every((value, index) => argv[index] === value)) continue;
@@ -27,7 +27,7 @@ export function proveVerifiedLauncherArgv(argv: readonly string[]): VerifiedNati
     if (payload.length === 0 || payload.includes("\0")) return null;
     const candidates = recipe.installations[process.platform];
     if (candidates === undefined) return null;
-    const verified = resolveVerifiedExecutable(candidates, process.platform);
+    const verified = await resolveVerifiedExecutableAsync(candidates, process.platform);
     if (verified === null) return null;
     return Object.freeze({
       executable: verified.executable,

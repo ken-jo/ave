@@ -1,5 +1,5 @@
-import { execFileSync } from "node:child_process";
-import { lstatSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { lstat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { isHostGitWorkspaceAvailable } from "../shared/host-git.js";
 import { resolveHostGit, supportsVerifiedHostGit } from "../shared/host-git-executable.js";
@@ -22,37 +22,43 @@ declare const verifiedShellBrand: unique symbol;
 export interface VerifiedShellCommand { readonly [verifiedShellBrand]: true }
 interface VerifiedState { readonly identity: VerifiedShellIdentity; readonly parsed: ParsedShellCommand | ParsedPowerShellCommand; readonly plan: VerifiedNativePlan }
 const issued = new WeakMap<VerifiedShellCommand, VerifiedState>();
-const gitVersions = new Map<string, boolean>();
+const gitVersions = new Map<string, Promise<boolean>>();
 const REPOSITORY_RESULT_REFUSAL = "Read-only Git output discarded: repository metadata changed during execution.";
 
-function proveNative(argv: readonly string[], cwd: string): VerifiedNativePlan | undefined {
+/** Any launch, exit, timeout, output-limit or parse failure is an unsupported version. */
+function probeGitVersion(executable: string, env: Record<string, string>): Promise<boolean> {
+  return new Promise<boolean>((resolveVersion, reject) => {
+    execFile(executable, ["--version"], {
+      encoding: "utf8", cwd: dirname(executable), env,
+      timeout: TOOL_TIMEOUT_POLICY.windowsAclRequestMs, maxBuffer: 4096,
+    }, (error, stdout) => {
+      try { resolveVersion(error === null && isSupportedGitVersion(stdout)); } catch (parseError) { reject(parseError); }
+    });
+  }).catch(() => false);
+}
+
+async function proveNative(argv: readonly string[], cwd: string): Promise<VerifiedNativePlan | undefined> {
   if (encodedPowerShellExecutionReason(argv) !== null) return undefined;
   const args = readOnlyGitArguments(argv);
   if (args !== null) {
     if (!supportsVerifiedHostGit() || !isHostGitWorkspaceAvailable(cwd)) return undefined;
     const repository = inspectGitRepository(cwd);
     if (repository === null) return undefined;
-    const executable = resolveHostGit("verified");
+    const executable = await resolveHostGit("verified");
     if (executable === null) return undefined;
     // Even revision-only plumbing reads an index. Select a protected absent path
     // so shared-index readers cannot refresh a repository file timestamp.
     const indexFile = join(dirname(executable), ".ave-readonly-index");
-    try { lstatSync(indexFile); return undefined; } catch (error) {
+    try { await lstat(indexFile); return undefined; } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") return undefined;
     }
+    // A failed or unsupported probe is cached as a refusal for this executable.
     let supported = gitVersions.get(executable);
     if (supported === undefined) {
-      try {
-        const version = execFileSync(executable, ["--version"], {
-          encoding: "utf8", cwd: dirname(executable),
-          env: gitReadOnlyEnvironment({ LANG: "C", LC_ALL: "C" }, repository, indexFile),
-          timeout: TOOL_TIMEOUT_POLICY.windowsAclRequestMs, maxBuffer: 4096,
-        });
-        supported = isSupportedGitVersion(version);
-      } catch { supported = false; }
+      supported = probeGitVersion(executable, gitReadOnlyEnvironment({ LANG: "C", LC_ALL: "C" }, repository, indexFile));
       gitVersions.set(executable, supported);
     }
-    if (!supported) return undefined;
+    if (!(await supported)) return undefined;
     const prepareEnvironment = (base: Readonly<Record<string, string>>): Record<string, string> => gitReadOnlyEnvironment(base, repository, indexFile);
     return Object.freeze({
       executable,
@@ -64,11 +70,15 @@ function proveNative(argv: readonly string[], cwd: string): VerifiedNativePlan |
       proof: Object.freeze({ kind: "static-complete", changesState: false }),
     });
   }
-  return proveVerifiedLauncherArgv(argv) ?? undefined;
+  return (await proveVerifiedLauncherArgv(argv)) ?? undefined;
+}
+
+function literalArgv(argv: readonly (string | undefined)[]): argv is readonly string[] {
+  return argv.length !== 0 && argv.every((word): word is string => word !== undefined);
 }
 
 /** Host tools bind one literal simple command; other callers retain default refusal. */
-export function prepareVerifiedShellCommand(identity: VerifiedShellIdentity, executionPlan?: HostShellExecutionPlan): VerifiedShellCommand | undefined {
+export async function prepareVerifiedShellCommand(identity: VerifiedShellIdentity, executionPlan?: HostShellExecutionPlan): Promise<VerifiedShellCommand | undefined> {
   if (identity.command.length > MAX_LITERAL_COMMAND_LENGTH
     || !/^[\t ]*(?:git|bash)(?:[\t ]|$)/.test(identity.command)) return undefined;
   if (identity.dialect === "powershell" && !isPowerShellStartupPinned(executionPlan?.platform, executionPlan)) return undefined;
@@ -81,14 +91,27 @@ export function prepareVerifiedShellCommand(identity: VerifiedShellIdentity, exe
     const command = root.kind === "command" ? root : root.kind === "sequence" && root.statements.length === 1 ? root.statements[0] : undefined;
     if (command?.kind !== "command" || command.assignments.length !== 0 || command.redirects.length !== 0 || command.testForm !== undefined) return undefined;
     const argv = command.words.map(literalShellWord);
-    if (argv.length === 0 || !argv.every((word): word is string => word !== undefined)) return undefined;
-    plan = proveNative(argv, identity.cwd);
+    if (!literalArgv(argv)) return undefined;
+    plan = await proveNative(argv, identity.cwd);
     if (plan === undefined) return undefined;
     bindVerifiedArgvProof(command, plan.proof);
   } else {
+    // The parser asks for argv proof synchronously. A first parse only records the
+    // literal argv it would prove; each is proven asynchronously, then the binding
+    // parse answers from those results. Unrecorded argv receives no proof.
+    const requested: string[][] = [];
+    parsePowerShellCommand(identity.command, (argv) => {
+      if (literalArgv(argv)) requested.push([...argv]);
+      return undefined;
+    });
+    const plans = new Map<string, VerifiedNativePlan | undefined>();
+    for (const argv of requested) {
+      const key = JSON.stringify(argv);
+      if (!plans.has(key)) plans.set(key, await proveNative(argv, identity.cwd));
+    }
     parsed = parsePowerShellCommand(identity.command, (argv) => {
-      if (argv.length === 0 || !argv.every((word): word is string => word !== undefined)) return undefined;
-      plan = proveNative(argv, identity.cwd);
+      if (!literalArgv(argv)) return undefined;
+      plan = plans.get(JSON.stringify(argv));
       return plan?.proof;
     });
     if (parsed.analysisLimited || plan === undefined) return undefined;

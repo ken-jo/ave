@@ -3,10 +3,36 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const filesystem = vi.hoisted(() => ({ stat: vi.fn(), entries: vi.fn(), realpath: vi.fn(), access: vi.fn() }));
 const nativeFacts = vi.hoisted(() => ({ read: vi.fn() }));
 const systemHelper = vi.hoisted(() => ({ exec: vi.fn() }));
-vi.mock("node:child_process", async (importOriginal) => ({ ...await importOriginal<typeof import("node:child_process")>(), execFileSync: systemHelper.exec }));
+// The non-blocking driver observes the same fixture through its own entry points,
+// so a test can prove which driver performed each check.
+const asynchronous = vi.hoisted(() => {
+  const settle = <T>(read: () => T): Promise<T> => new Promise((resolve, reject) => setImmediate(() => {
+    try { resolve(read()); } catch (error) { reject(error); }
+  }));
+  return {
+    stat: vi.fn((path: string) => settle(() => filesystem.stat(path))),
+    entries: vi.fn((path: string) => settle(() => filesystem.entries(path))),
+    realpath: vi.fn((path: string) => settle(() => filesystem.realpath(path))),
+    access: vi.fn((path: string, mode: number) => settle(() => filesystem.access(path, mode))),
+    exec: vi.fn((file: string, args: readonly string[], options: unknown, callback: (error: Error | null, stdout?: string) => void) => {
+      setImmediate(() => {
+        let stdout: string;
+        try { stdout = systemHelper.exec(file, args, options); } catch (error) { callback(error as Error); return; }
+        callback(null, stdout);
+      });
+    }),
+  };
+});
+vi.mock("node:child_process", async (importOriginal) => ({
+  ...await importOriginal<typeof import("node:child_process")>(), execFileSync: systemHelper.exec, execFile: asynchronous.exec,
+}));
 vi.mock("node:fs", async (importOriginal) => ({
   ...await importOriginal<typeof import("node:fs")>(),
   lstatSync: filesystem.stat, readdirSync: filesystem.entries, realpathSync: filesystem.realpath, accessSync: filesystem.access,
+}));
+vi.mock("node:fs/promises", async (importOriginal) => ({
+  ...await importOriginal<typeof import("node:fs/promises")>(),
+  lstat: asynchronous.stat, readdir: asynchronous.entries, realpath: asynchronous.realpath, access: asynchronous.access,
 }));
 vi.mock("../windows-path-facts.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../windows-path-facts.js")>(), readWindowsDacls: nativeFacts.read,
@@ -43,6 +69,7 @@ beforeEach(() => {
   Object.defineProperty(process, "geteuid", { configurable: true, value: () => 1001 });
   entries.clear();
   for (const mock of [...Object.values(filesystem), nativeFacts.read, systemHelper.exec]) mock.mockReset();
+  for (const mock of Object.values(asynchronous)) mock.mockClear();
   declareEntries({
     directories: ["/", "/opt", "/opt/tools", INSTALLATION, `${INSTALLATION}/lib`, "/usr", "/usr/lib", DEPENDENCIES],
     files: [EXECUTABLE, `${INSTALLATION}/lib/startup`, `${DEPENDENCIES}/startup`],
@@ -241,6 +268,130 @@ describe("verified executable installations", () => {
     Object.defineProperty(process, "geteuid", { configurable: true, value: () => 0 });
     const { resolveVerifiedExecutable } = await import("../verified-executable.js");
     expect(resolveVerifiedExecutable([{ executable: EXECUTABLE }], "linux")).toBeNull();
+  });
+});
+
+function fixtureEntry(path: string): Entry {
+  const entry = entries.get(path);
+  if (entry === undefined) throw new Error(`Missing fixture entry ${path}`);
+  return entry;
+}
+
+type Resolver = typeof import("../verified-executable.js");
+type Driver = "sync" | "async";
+
+function resolveWith(module: Resolver, driver: Driver, candidates: Parameters<Resolver["resolveVerifiedExecutable"]>[0], platform: NodeJS.Platform) {
+  return driver === "sync" ? Promise.resolve(module.resolveVerifiedExecutable(candidates, platform))
+    : module.resolveVerifiedExecutableAsync(candidates, platform);
+}
+
+function declareDarwinHelper(output?: (path: string) => string | undefined): void {
+  declareEntries({ directories: ["/bin"], files: ["/bin/ls"] });
+  systemHelper.exec.mockImplementation((_image: string, args: readonly string[]) => args.slice(1).map(path =>
+    output?.(path) ?? `${entries.get(path)?.directory ? "d" : "-"}rwxr-xr-x 1 root wheel ${path}\n`).join(""));
+}
+
+const PARITY_CASES: readonly {
+  readonly name: string;
+  readonly platform: "linux" | "darwin";
+  readonly candidates: Parameters<Resolver["resolveVerifiedExecutable"]>[0];
+  readonly arrange?: () => void;
+}[] = [
+  { name: "default directory root", platform: "linux", candidates: [{ executable: EXECUTABLE }] },
+  { name: "missing first candidate", platform: "linux", candidates: [{ executable: "/opt/missing/reader" }, { executable: EXECUTABLE }] },
+  { name: "mixed roots", platform: "linux", candidates: [{ executable: EXECUTABLE, installationRoots: [EXECUTABLE, DEPENDENCIES] }] },
+  { name: "unprotected dependency", platform: "linux", candidates: [{ executable: EXECUTABLE, installationRoots: [INSTALLATION, DEPENDENCIES] }],
+    arrange: () => { fixtureEntry(`${DEPENDENCIES}/startup`).uid = 1001; } },
+  { name: "writable ancestor", platform: "linux", candidates: [{ executable: EXECUTABLE }], arrange: () => { fixtureEntry("/opt/tools").mode = 0o40777; } },
+  { name: "image link", platform: "linux", candidates: [{ executable: EXECUTABLE }], arrange: () => { fixtureEntry(EXECUTABLE).link = true; } },
+  { name: "realpath mismatch", platform: "linux", candidates: [{ executable: EXECUTABLE }], arrange: () => { filesystem.realpath.mockImplementation(() => "/elsewhere"); } },
+  { name: "writable image probe", platform: "linux", candidates: [{ executable: EXECUTABLE }], arrange: () => { filesystem.access.mockImplementation(() => undefined); } },
+  { name: "unexpected access failure", platform: "linux", candidates: [{ executable: EXECUTABLE }],
+    arrange: () => { filesystem.access.mockImplementation(() => { throw Object.assign(new Error("I/O"), { code: "EIO" }); }); } },
+  { name: "depth boundary", platform: "linux", candidates: [{ executable: EXECUTABLE }],
+    arrange: () => declareEntries({ directories: Array.from({ length: 65 }, (_, index) => INSTALLATION + "/nested".repeat(index + 1)) }) },
+  { name: "ambiguous path", platform: "linux", candidates: [{ executable: `${INSTALLATION}/lib/../reader` }] },
+  { name: "darwin plain access", platform: "darwin", candidates: [{ executable: EXECUTABLE, installationRoots: [EXECUTABLE] }], arrange: () => declareDarwinHelper() },
+  { name: "darwin extended access", platform: "darwin", candidates: [{ executable: EXECUTABLE }],
+    arrange: () => declareDarwinHelper((path) => path === `${INSTALLATION}/lib` ? `drwxr-xr-x+ 1 root wheel ${path}\n` : undefined) },
+  { name: "darwin helper failure", platform: "darwin", candidates: [{ executable: EXECUTABLE }],
+    arrange: () => { declareDarwinHelper(); systemHelper.exec.mockImplementation(() => { throw new Error("helper timed out"); }); } },
+];
+
+describe("asynchronous verified executable driver", () => {
+  function snapshot(): Record<string, unknown[][]> {
+    return {
+      stat: [...filesystem.stat.mock.calls], entries: [...filesystem.entries.mock.calls],
+      realpath: [...filesystem.realpath.mock.calls], access: [...filesystem.access.mock.calls], helper: [...systemHelper.exec.mock.calls],
+    };
+  }
+
+  it.each(PARITY_CASES)("returns the synchronous proof and performs the same checks: $name", async ({ platform, candidates, arrange }) => {
+    arrange?.();
+    const outcomes: Record<Driver, { result: unknown; checks: Record<string, unknown[][]> }> = {} as never;
+    for (const driver of ["sync", "async"] as const) {
+      for (const mock of [...Object.values(filesystem), systemHelper.exec, ...Object.values(asynchronous)]) mock.mockClear();
+      vi.resetModules();
+      const module = await import("../verified-executable.js");
+      const result = await resolveWith(module, driver, candidates, platform);
+      outcomes[driver] = { result, checks: snapshot() };
+      if (driver === "async") {
+        // Every fixture observation came through a non-blocking entry point.
+        expect(asynchronous.stat.mock.calls).toEqual(filesystem.stat.mock.calls);
+        expect(asynchronous.entries.mock.calls).toEqual(filesystem.entries.mock.calls);
+        expect(asynchronous.realpath.mock.calls).toEqual(filesystem.realpath.mock.calls);
+        expect(asynchronous.access.mock.calls).toEqual(filesystem.access.mock.calls);
+        expect(asynchronous.exec.mock.calls.map(([file, args]) => [file, args])).toEqual(systemHelper.exec.mock.calls.map(([file, args]) => [file, args]));
+      } else {
+        for (const mock of Object.values(asynchronous)) expect(mock).not.toHaveBeenCalled();
+      }
+    }
+    expect(outcomes.async.result).toEqual(outcomes.sync.result);
+    expect(outcomes.async.checks).toEqual(outcomes.sync.checks);
+  });
+
+  it("passes the helper the synchronous options", async () => {
+    declareDarwinHelper();
+    const { resolveVerifiedExecutableAsync } = await import("../verified-executable.js");
+    await expect(resolveVerifiedExecutableAsync([{ executable: EXECUTABLE, installationRoots: [EXECUTABLE] }], "darwin")).resolves.toEqual({ executable: EXECUTABLE });
+    const { TOOL_TIMEOUT_POLICY } = await import("../tool-timeout-policy.js");
+    expect(asynchronous.exec).toHaveBeenCalledWith("/bin/ls", ["-lde", EXECUTABLE], {
+      encoding: "utf8", env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" }, timeout: TOOL_TIMEOUT_POLICY.windowsAclRequestMs, maxBuffer: 1024 * 1024,
+    }, expect.any(Function));
+  });
+
+  it("shares one in-flight proof and one cache with the synchronous driver", async () => {
+    const candidates = [{ executable: EXECUTABLE }];
+    const { resolveVerifiedExecutable, resolveVerifiedExecutableAsync } = await import("../verified-executable.js");
+    const [first, second] = await Promise.all([resolveVerifiedExecutableAsync(candidates, "linux"), resolveVerifiedExecutableAsync(candidates, "linux")]);
+    expect(first).toEqual({ executable: EXECUTABLE });
+    expect(second).toBe(first);
+    expect(filesystem.realpath).toHaveBeenCalledTimes(1);
+    const inspections = filesystem.stat.mock.calls.length;
+    expect(resolveVerifiedExecutable(candidates, "linux")).toBe(first);
+    await expect(resolveVerifiedExecutableAsync(candidates, "linux")).resolves.toBe(first);
+    expect(filesystem.stat.mock.calls).toHaveLength(inspections);
+  });
+
+  it("shares cached refusals with the synchronous driver", async () => {
+    const candidates = [{ executable: EXECUTABLE, installationRoots: [INSTALLATION, DEPENDENCIES] }];
+    fixtureEntry(`${DEPENDENCIES}/startup`).uid = 1001;
+    const { resolveVerifiedExecutable, resolveVerifiedExecutableAsync } = await import("../verified-executable.js");
+    expect(resolveVerifiedExecutable(candidates, "linux")).toBeNull();
+    const inspections = filesystem.stat.mock.calls.length;
+    fixtureEntry(`${DEPENDENCIES}/startup`).uid = 0;
+    await expect(resolveVerifiedExecutableAsync(candidates, "linux")).resolves.toBeNull();
+    expect(filesystem.stat.mock.calls).toHaveLength(inspections);
+  });
+
+  it("refuses Windows proof clearly without caching a result", async () => {
+    nativeFacts.read.mockReturnValue([]);
+    const { resolveVerifiedExecutable, resolveVerifiedExecutableAsync } = await import("../verified-executable.js");
+    await expect(resolveVerifiedExecutableAsync([{ executable: String.raw`C:\Tools\Reader\reader.exe` }], "win32"))
+      .rejects.toThrow("Asynchronous verified-executable proof is not available on Windows");
+    expect(nativeFacts.read).not.toHaveBeenCalled();
+    resolveVerifiedExecutable([{ executable: String.raw`C:\Tools\Reader\reader.exe` }], "win32");
+    expect(nativeFacts.read).toHaveBeenCalled();
   });
 });
 

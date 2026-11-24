@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import * as childProcess from "node:child_process";
 import * as shellResolver from "../../lib/shell-resolver.js";
-import { resolveVerifiedExecutable } from "../../shared/verified-executable.js";
+import { resolveVerifiedExecutableAsync } from "../../shared/verified-executable.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import * as verifiedCommands from "../../permissions/verified-shell-command.js";
 import { VerdictCache } from "../../permissions/reviewer/verdict-cache.js";
@@ -28,7 +28,7 @@ import { userPermissionContext } from "./tool-context-fixture.js";
 vi.mock("node:fs", { spy: true });
 vi.mock("node:child_process", { spy: true });
 vi.mock("../../permissions/verified-shell-command.js", { spy: true });
-vi.mock("../../shared/verified-executable.js", () => ({ resolveVerifiedExecutable: vi.fn() }));
+vi.mock("../../shared/verified-executable.js", () => ({ resolveVerifiedExecutable: vi.fn(), resolveVerifiedExecutableAsync: vi.fn() }));
 vi.mock("../../lib/shell-resolver.js", { spy: true });
 const originalPlatform = process.platform;
 const COMMAND = "bash --noprofile --norc -p -c 'printf ready'";
@@ -52,11 +52,15 @@ beforeEach(() => {
   manager.setMode("default");
   __resetActiveSandboxCapabilityForTest();
   setShellSandboxRequestedAtBoot(false);
-  vi.mocked(resolveVerifiedExecutable).mockImplementation((candidates) => candidates[0] === undefined ? null : { executable: candidates[0].executable });
-  vi.mocked(childProcess.execFileSync).mockImplementation((executable, args) => {
-    if (executable === "/usr/bin/git" && args?.includes("--version")) return "git version 2.54.0\n";
-    throw new Error("Unexpected native probe in permission fixture");
-  });
+  vi.mocked(resolveVerifiedExecutableAsync).mockImplementation(async (candidates) => candidates[0] === undefined ? null : { executable: candidates[0].executable });
+  // The verified lookup never blocks on a native probe.
+  vi.mocked(childProcess.execFileSync).mockImplementation(() => { throw new Error("Unexpected blocking native probe in permission fixture"); });
+  vi.mocked(childProcess.execFile).mockImplementation(((executable: string, args: readonly string[] | undefined, ...rest: unknown[]) => {
+    if (executable !== "/usr/bin/git" || !args?.includes("--version")) throw new Error("Unexpected native probe in permission fixture");
+    const callback = rest.at(-1) as (error: Error | null, stdout: string, stderr: string) => void;
+    setImmediate(() => callback(null, "git version 2.54.0\n", ""));
+    return {} as childProcess.ChildProcess;
+  }) as unknown as typeof childProcess.execFile);
   vi.mocked(shellResolver.resolveShell).mockReturnValue({ cmd: "/bin/bash", shellArgs: (command) => ["-c", command] });
   vi.mocked(shellResolver.shellEnvForChild).mockImplementation((_, environment) => ({ ...environment, LD_PRELOAD: "/untrusted-loader", DYLD_INSERT_LIBRARIES: "/untrusted-loader" }));
   vi.mocked(shellResolver.getBashCapabilities).mockReturnValue({ unicodeEscapes: true, prefixAssignmentRhs: "sequential" });
@@ -226,7 +230,7 @@ it.each([
   expect(backend).not.toHaveBeenCalled();
   expect(f.wc.send).not.toHaveBeenCalled();
   expect(verifiedCommands.prepareVerifiedShellCommand).toHaveBeenCalledWith({ command, dialect: "bash", cwd }, expect.objectContaining({ mode: expect.any(String) }));
-  expect(verifiedCommands.prepareVerifiedShellCommand).toHaveReturnedWith(undefined);
+  expect(verifiedCommands.prepareVerifiedShellCommand).toHaveResolvedWith(undefined);
   expect(childProcess.spawn).not.toHaveBeenCalled();
 });
 
@@ -241,5 +245,5 @@ it("rejects unsafe repository inputs despite persisted exact and broad grants", 
   expect(result!.is_error).toBe(true);
   expect(f.execute).not.toHaveBeenCalled();
   expect(f.wc.send).not.toHaveBeenCalled();
-  expect(verifiedCommands.prepareVerifiedShellCommand).toHaveReturnedWith(undefined);
+  expect(verifiedCommands.prepareVerifiedShellCommand).toHaveResolvedWith(undefined);
 });

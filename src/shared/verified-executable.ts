@@ -1,6 +1,8 @@
-import { execFileSync } from "node:child_process";
-import { accessSync, constants, lstatSync, readdirSync, realpathSync } from "node:fs";
+import { execFile, execFileSync } from "node:child_process";
+import { accessSync, constants, lstatSync, readdirSync, realpathSync, type Stats } from "node:fs";
+import { access, lstat, readdir, realpath } from "node:fs/promises";
 import { posix, win32 } from "node:path";
+import { check, runChecksAsync, runChecksSync, type Checks } from "./sync-async-checks.js";
 import { admitWindowsReparse, mapWindowsGenericRights, readWindowsDacls, type WindowsDaclFacts } from "./windows-path-facts.js";
 import { TOOL_TIMEOUT_POLICY } from "./tool-timeout-policy.js";
 
@@ -20,32 +22,66 @@ const trustedWindowsWriters = new Set([
 const MAX_INSTALLATION_ENTRIES = 65_536;
 const MAX_INSTALLATION_DEPTH = 64;
 const installationProofs = new Map<string, VerifiedExecutable | null>();
+const pendingProofs = new Map<string, Promise<VerifiedExecutable | null>>();
 
 /** Candidates and installation roots must be host-owned constants, never command or PATH input. */
 export function resolveVerifiedExecutable(
   candidates: readonly VerifiedExecutableCandidate[],
   platform: NodeJS.Platform = process.platform,
 ): VerifiedExecutable | null {
+  return runChecksSync(resolveCandidates(candidates, platform));
+}
+
+/**
+ * The same proof and cache as {@link resolveVerifiedExecutable}, performed without blocking the event loop.
+ * Windows installations are proven only by the synchronous native DACL helper, so they are refused here.
+ */
+export function resolveVerifiedExecutableAsync(
+  candidates: readonly VerifiedExecutableCandidate[],
+  platform: NodeJS.Platform = process.platform,
+): Promise<VerifiedExecutable | null> {
+  if (platform === "win32") return Promise.reject(new Error("Asynchronous verified-executable proof is not available on Windows"));
+  return runChecksAsync(resolveCandidates(candidates, platform));
+}
+
+function* resolveCandidates(candidates: readonly VerifiedExecutableCandidate[], platform: NodeJS.Platform): Checks<VerifiedExecutable | null> {
   const parent = platform === "win32" ? win32.dirname : posix.dirname;
   for (const candidate of candidates) {
     const roots = candidate.installationRoots ?? [parent(candidate.executable)];
     const key = JSON.stringify([platform, candidate.executable, roots]);
-    const cached = installationProofs.get(key);
-    if (cached !== undefined) {
-      if (cached !== null) return cached;
-      continue;
+    let verified = installationProofs.get(key);
+    if (verified === undefined) {
+      verified = yield* check(
+        () => proveCandidateSync(candidate.executable, roots, platform),
+        () => proveCandidateAsync(key, candidate.executable, roots, platform),
+      );
+      // Protected objects cannot change under agent authority. Cache refusals too:
+      // a new or repaired installation needs restart, never repeated startup I/O.
+      const settled = installationProofs.get(key);
+      if (settled === undefined) installationProofs.set(key, verified);
+      else verified = settled;
     }
-    const verified = hasValidInstallationRoots(candidate.executable, roots, platform)
-      ? platform === "win32"
-        ? verifyWindowsInstallation(candidate.executable, roots)
-        : verifyPosixInstallation(candidate.executable, roots, platform)
-      : null;
-    // Protected objects cannot change under agent authority. Cache refusals too:
-    // a new or repaired installation needs restart, never repeated startup I/O.
-    installationProofs.set(key, verified);
     if (verified !== null) return verified;
   }
   return null;
+}
+
+function proveCandidateSync(executable: string, roots: readonly string[], platform: NodeJS.Platform): VerifiedExecutable | null {
+  if (!hasValidInstallationRoots(executable, roots, platform)) return null;
+  return platform === "win32"
+    ? verifyWindowsInstallation(executable, roots)
+    : runChecksSync(verifyPosixInstallation(executable, roots, platform));
+}
+
+function proveCandidateAsync(key: string, executable: string, roots: readonly string[], platform: NodeJS.Platform): Promise<VerifiedExecutable | null> {
+  const pending = pendingProofs.get(key);
+  if (pending !== undefined) return pending;
+  const proof = (hasValidInstallationRoots(executable, roots, platform)
+    ? runChecksAsync(verifyPosixInstallation(executable, roots, platform))
+    : Promise.resolve(null))
+    .finally(() => { if (pendingProofs.get(key) === proof) pendingProofs.delete(key); });
+  pendingProofs.set(key, proof);
+  return proof;
 }
 
 function hasValidInstallationRoots(executable: string, roots: readonly string[], platform: NodeJS.Platform): boolean {
@@ -57,11 +93,20 @@ function hasValidInstallationRoots(executable: string, roots: readonly string[],
   });
 }
 
-function isPosixEntryProtected(path: string): boolean {
-  const entry = lstatSync(path);
+function* lstatEntry(path: string): Checks<Stats> {
+  return yield* check(() => lstatSync(path), () => lstat(path));
+}
+
+function* isPosixEntryProtected(path: string): Checks<boolean> {
+  const entry = yield* lstatEntry(path);
   if (entry.uid !== 0 || (entry.mode & 0o022) !== 0 || entry.isSymbolicLink()) return false;
-  try { accessSync(path, constants.W_OK); return false; }
+  try { yield* check(() => accessSync(path, constants.W_OK), () => access(path, constants.W_OK)); return false; }
   catch (error) { return (error as NodeJS.ErrnoException).code === "EACCES" || (error as NodeJS.ErrnoException).code === "EROFS"; }
+}
+
+function* everyPosixEntryProtected(paths: readonly string[]): Checks<boolean> {
+  for (const path of paths) if (!(yield* isPosixEntryProtected(path))) return false;
+  return true;
 }
 
 function ancestors(path: string, parent: (value: string) => string): string[] {
@@ -72,53 +117,63 @@ function ancestors(path: string, parent: (value: string) => string): string[] {
   }
 }
 
-function installationEntries(root: string, platform: NodeJS.Platform, inspected: number): string[] {
+function* installationEntries(root: string, platform: NodeJS.Platform, inspected: number): Checks<string[]> {
   const paths: string[] = [];
   const pending = [{ path: root, depth: 0 }];
   while (pending.length > 0) {
     const { path, depth } = pending.pop()!;
     if (depth > MAX_INSTALLATION_DEPTH || inspected + paths.length >= MAX_INSTALLATION_ENTRIES) throw new Error("Executable installation exceeds structural limits");
-    if (!isPosixEntryProtected(path)) throw new Error("Executable installation is not protected");
-    const entry = lstatSync(path);
+    if (!(yield* isPosixEntryProtected(path))) throw new Error("Executable installation is not protected");
+    const entry = yield* lstatEntry(path);
     if (entry.isSymbolicLink() || (!entry.isDirectory() && !entry.isFile())) throw new Error("Executable installation contains unsupported entries");
     paths.push(path);
     if (entry.isDirectory()) {
-      if (platform === "darwin" && !hasNoDarwinExtendedAcl([path])) throw new Error("Executable installation has extended access");
-      for (const name of readdirSync(path)) pending.push({ path: posix.join(path, name), depth: depth + 1 });
+      if (platform === "darwin" && !(yield* hasNoDarwinExtendedAcl([path]))) throw new Error("Executable installation has extended access");
+      const names = yield* check(() => readdirSync(path), () => readdir(path));
+      for (const name of names) pending.push({ path: posix.join(path, name), depth: depth + 1 });
     }
   }
   return paths;
 }
 
-function verifyPosixInstallation(candidate: string, roots: readonly string[], platform: NodeJS.Platform): VerifiedExecutable | null {
+function* verifyPosixInstallation(candidate: string, roots: readonly string[], platform: NodeJS.Platform): Checks<VerifiedExecutable | null> {
   try {
     if (typeof process.getuid !== "function" || process.getuid() === 0 || process.geteuid?.() === 0) return null;
-    const executable = realpathSync(candidate);
-    if (executable !== candidate || !lstatSync(executable).isFile()) return null;
+    const executable = yield* check(() => realpathSync(candidate), () => realpath(candidate));
+    if (executable !== candidate || !(yield* lstatEntry(executable)).isFile()) return null;
     let inspected = 0;
     for (const root of roots) {
       const parents = ancestors(root, posix.dirname);
-      if (!parents.every(isPosixEntryProtected)) return null;
-      if (platform === "darwin" && !hasNoDarwinExtendedAcl(parents)) return null;
-      const paths = installationEntries(root, platform, inspected);
+      if (!(yield* everyPosixEntryProtected(parents))) return null;
+      if (platform === "darwin" && !(yield* hasNoDarwinExtendedAcl(parents))) return null;
+      const paths = yield* installationEntries(root, platform, inspected);
       inspected += paths.length;
-      if (platform === "darwin" && !hasNoDarwinExtendedAcl(paths)) return null;
+      if (platform === "darwin" && !(yield* hasNoDarwinExtendedAcl(paths))) return null;
     }
-    accessSync(executable, constants.X_OK);
+    yield* check(() => accessSync(executable, constants.X_OK), () => access(executable, constants.X_OK));
     return Object.freeze({ executable });
   } catch { return null; }
 }
 
-function hasNoDarwinExtendedAcl(paths: readonly string[]): boolean {
+const DARWIN_ACL_HELPER = "/bin/ls";
+const darwinAclOptions = Object.freeze({
+  encoding: "utf8" as const, env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" },
+  timeout: TOOL_TIMEOUT_POLICY.windowsAclRequestMs, maxBuffer: 1024 * 1024,
+});
+
+function listDarwinAclsAsync(args: readonly string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(DARWIN_ACL_HELPER, args, darwinAclOptions, (error, stdout) => { if (error) reject(error); else resolve(stdout); });
+  });
+}
+
+function* hasNoDarwinExtendedAcl(paths: readonly string[]): Checks<boolean> {
   // Ordinary mode bits do not describe extended security-change grants.
   // The fixed system helper runs with no inherited loader or search settings.
-  const helper = "/bin/ls";
-  if (!ancestors(helper, posix.dirname).every(isPosixEntryProtected)) return false;
+  if (!(yield* everyPosixEntryProtected(ancestors(DARWIN_ACL_HELPER, posix.dirname)))) return false;
   for (let offset = 0; offset < paths.length; offset += 32) {
-    const output = execFileSync(helper, ["-lde", ...paths.slice(offset, offset + 32)], {
-      encoding: "utf8", env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" },
-      timeout: TOOL_TIMEOUT_POLICY.windowsAclRequestMs, maxBuffer: 1024 * 1024,
-    });
+    const args = ["-lde", ...paths.slice(offset, offset + 32)];
+    const output = yield* check(() => execFileSync(DARWIN_ACL_HELPER, args, darwinAclOptions), () => listDarwinAclsAsync(args));
     const rows = output.split("\n");
     if (rows.pop() !== "" || rows.length !== Math.min(32, paths.length - offset)
       || !rows.every((row) => /^[d-][rwxstST-]{9} /.test(row))) return false;

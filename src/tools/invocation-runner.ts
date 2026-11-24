@@ -1956,7 +1956,7 @@ async function runToolInvocationAttempt(
     if ((hostShellToolName === "bash" || hostShellToolName === "powershell") && hostShellExecutionPlan !== undefined
       && hostShellExecutionPlan.substrate !== "mxc" && invocationPermissionContext.disposableSubstrate === undefined
       && !brokeredHostShellRouteSelected() && typeof finalInput.command === "string") {
-      verifiedShellCommand = prepareVerifiedShellCommand({ command: finalInput.command, dialect: hostShellToolName,
+      verifiedShellCommand = await prepareVerifiedShellCommand({ command: finalInput.command, dialect: hostShellToolName,
         cwd: resolveHostShellWorkingDirectory(executionCwd, typeof finalInput.cwd === "string" ? finalInput.cwd : undefined) }, hostShellExecutionPlan);
     }
 
