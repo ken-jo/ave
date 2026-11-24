@@ -35,6 +35,8 @@ const between = vi.hoisted(() => ({
   /** A file that cannot be opened. */
   unopened: undefined as string | undefined,
   configHandle: undefined as ((path: string, handle: FileHandle) => void) | undefined,
+  configIdentified: undefined as ((path: string) => void) | undefined,
+  configOpening: undefined as ((path: string) => void) | undefined,
 }));
 
 vi.mock("../../../shared/ave-home.js", async (original) => {
@@ -62,6 +64,7 @@ vi.mock("node:fs", async (original) => {
 vi.mock("node:fs/promises", async (original) => {
   const real = await original<typeof import("node:fs/promises")>();
   const open: typeof real.open = async (file, flags, mode) => {
+    between.configOpening?.(String(file));
     const handle = await real.open(file, flags, mode);
     between.configHandle?.(String(file), handle);
     return handle;
@@ -79,6 +82,11 @@ vi.mock("../owned-fs.js", async (original) => {
       if (key === "make" && depth === 2) return (name: string) => { between.act?.(target.path); return target.make(name); };
       if (key === "list" && between.unlisted === basename(target.path)) return () => { throw Object.assign(new Error("fixture: the folder cannot be listed"), { code: "EACCES" }); };
       if (key === "child") return (name: string, id: string) => { const found = target.child(name, id); between.child?.(found?.path); return found; };
+      if (key === "entryId") return (name: string) => {
+        const id = target.entryId(name);
+        if (name === "config" && id !== undefined) between.configIdentified?.(join(target.path, name));
+        return id;
+      };
       if (key === "list") return () => { const names = target.list(); between.listed?.(target.path); return names; };
       const value = Reflect.get(target, key) as unknown;
       return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
@@ -419,7 +427,9 @@ const onWindows = it.skipIf(process.platform !== "win32");
 const relink = (stage: string, link: string): void => { rmSync(join(stage, ".git")); writeFileSync(join(stage, ".git"), link); };
 const slashed = (path: string, volume: string): string => path.slice(volume.length).replaceAll("\\", "/");
 
-it.each(["missing", "readable", "replaced", "over-cap", "timeout", "incomplete"] as const)("partial release verifies a %s repository config before removing its stage", async (scenario) => {
+it.each([
+  "missing", "readable", "replaced", "over-cap", "timeout", "incomplete", "replaced-after-id", "replaced-during-open",
+] as const)("partial release verifies a %s repository config before removing its stage", async (scenario) => {
   const fx = gitFixture();
   const config = join(fx.repo, ".git", "config");
   const saved = join(fx.repo, ".git", "config-saved");
@@ -452,6 +462,16 @@ it.each(["missing", "readable", "replaced", "over-cap", "timeout", "incomplete"]
       renameSync(config, saved);
       writeFileSync(config, readFileSync(saved, "utf8") + "# fixture\n".repeat(110_000));
     }
+    if (scenario === "replaced-after-id") between.configIdentified = (file) => {
+      if (file !== config) return;
+      between.configIdentified = undefined;
+      replace();
+    };
+    if (scenario === "replaced-during-open") between.configOpening = (file) => {
+      if (file !== config) return;
+      between.configOpening = undefined;
+      replace();
+    };
     if (scenario === "timeout" || scenario === "incomplete") {
       if (scenario === "timeout") vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       between.configHandle = (file, handle) => {
@@ -489,6 +509,8 @@ it.each(["missing", "readable", "replaced", "over-cap", "timeout", "incomplete"]
     }
   } finally {
     between.configHandle = undefined;
+    between.configIdentified = undefined;
+    between.configOpening = undefined;
     vi.useRealTimers();
     pending.resolve({ bytesRead: 0, buffer: Buffer.alloc(0) });
     if (existsSync(saved)) {
