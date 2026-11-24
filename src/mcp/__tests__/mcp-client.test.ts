@@ -710,7 +710,7 @@ describe("HttpTransport — SSE streaming", () => {
 describe("StdioTransport — regression", () => {
   it.each([false, true])("uses the host alias directory with child LOCALAPPDATA override %s", async (override) => {
     const alias = windowsAppAliasFixture();
-    const env = override ? { PATH: alias.outside, LOCALAPPDATA: alias.outsideLocal } : { PATH: alias.aliases };
+    const env: Record<string, string> = override ? { PATH: alias.outside, LOCALAPPDATA: alias.outsideLocal } : { PATH: alias.aliases };
     const resolve = vi.spyOn(hostPrograms, "resolveHostProgram").mockImplementationOnce((command, lookupEnv) => {
       const found = hostPrograms.findHostProgram(command, lookupEnv, "win32", alias.fs);
       if (found === null) throw new hostPrograms.HostProgramNotFoundError("Program was not found on PATH");
