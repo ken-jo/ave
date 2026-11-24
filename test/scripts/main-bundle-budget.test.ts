@@ -70,8 +70,8 @@ describe("main bundle budget", () => {
     expect(MAIN_BUNDLE_BUDGETS).toEqual({
       entryBytes: 1_700_000,
       initialBytes: 8_000_000,
-      lazyAllowanceBytes: 4_600_000,
-      totalBytes: 14_300_000,
+      lazyAllowanceBytes: 10_300_000,
+      totalBytes: 20_000_000,
     });
     const inputs = { entryBytes: 100, initialBytes: 150, lazyAllowanceBytes: 150 };
     expect(createMainBundleBudgets(inputs).totalBytes).toBe(400);

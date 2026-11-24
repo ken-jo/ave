@@ -64,6 +64,23 @@ function freezeFileMetadata(path: string): void {
   }) as typeof fs.fstatSync);
 }
 
+function waitForFixtureTimestampAdvance(): void {
+  const probeDirectory = join(root, "timestamp-probe");
+  let probe = join(probeDirectory, "entry");
+  let movedProbe = join(probeDirectory, "moved-entry");
+  nativeFs.mkdirSync(probeDirectory);
+  nativeFs.mkdirSync(probe);
+  const fixtureStats = [root, cwd].map(path => nativeFs.lstatSync(path, { bigint: true }));
+  const maxRenames = 1_000;
+  for (let attempt = 0; attempt < maxRenames; attempt++) {
+    nativeFs.renameSync(probe, movedProbe);
+    [probe, movedProbe] = [movedProbe, probe];
+    const { ctimeNs } = nativeFs.lstatSync(probe, { bigint: true });
+    if (fixtureStats.every(stat => ctimeNs > stat.mtimeNs && ctimeNs > stat.ctimeNs)) return;
+  }
+  throw new Error(`Fixture timestamps did not advance after ${maxRenames} probe renames`);
+}
+
 describe("checked repository metadata inputs", () => {
   it("captures stable metadata evidence without depending on access timestamps", () => {
     const first = inspectGitRepository(cwd);
@@ -84,6 +101,7 @@ describe("checked repository metadata inputs", () => {
   });
 
   it("changes evidence after the workspace root is renamed and restored", () => {
+    waitForFixtureTimestampAdvance();
     const first = inspectGitRepository(cwd);
     expect(first).not.toBeNull();
     const moved = join(root, "detached-workspace");
@@ -95,6 +113,7 @@ describe("checked repository metadata inputs", () => {
   });
 
   it("changes evidence after a physical ancestor is renamed and restored", () => {
+    waitForFixtureTimestampAdvance();
     const first = inspectGitRepository(cwd);
     expect(first).not.toBeNull();
     const moved = root + "-detached";
@@ -103,6 +122,17 @@ describe("checked repository metadata inputs", () => {
     const second = inspectGitRepository(cwd);
     expect(second).not.toBeNull();
     expect(second!.stateFingerprint).not.toBe(first!.stateFingerprint);
+  });
+
+  it("cannot distinguish a same-object rename and restore with unchanged timestamps", () => {
+    freezeFileMetadata(cwd);
+    freezeFileMetadata(root);
+    const firstFingerprint = inspectGitRepository(cwd)?.stateFingerprint;
+    expect(firstFingerprint).toBeDefined();
+    const moved = join(root, "detached-workspace");
+    fs.renameSync(cwd, moved);
+    fs.renameSync(moved, cwd);
+    expect(inspectGitRepository(cwd)?.stateFingerprint).toBe(firstFingerprint);
   });
 
   it("bounds physical ancestor depth", () => {

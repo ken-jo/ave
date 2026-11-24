@@ -31,19 +31,37 @@ import { runWithToolExecutionCwd } from "../execution-context.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
 import { type AuditEntry, AuditLogger } from "../../audit/audit-logger.js";
 import type { PermissionAuditEntryInput } from "../../audit/audit-schema.js";
+import { emitSandboxAudit, flushSandboxAudit } from "../../audit/sandbox-audit-sink.js";
+import { buildSandboxAuditEntry } from "../../audit/sandbox-audit.js";
+import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
 const processProbe = vi.hoisted(() => ({ execFileSync: vi.fn() }));
 vi.mock("node:child_process", async (original) => ({
   ...await original<typeof import("node:child_process")>(), execFileSync: processProbe.execFileSync,
 }));
+const fsProbe = vi.hoisted(() => ({ beforeMkdir: undefined as ((path: unknown) => Promise<void>) | undefined }));
+vi.mock("node:fs/promises", async (original) => {
+  const actual = await original<typeof import("node:fs/promises")>();
+  const mkdir = (async (...args: Parameters<typeof actual.mkdir>) => {
+    await fsProbe.beforeMkdir?.(args[0]);
+    return actual.mkdir(...args);
+  }) as typeof actual.mkdir;
+  return { ...actual, mkdir };
+});
 const reviewResources = new PermissionTestResources();
 const originalPlatform = process.platform;
 const fixtureDirectories: string[] = [];
 let directory: string;
-function makeFixtureDirectory(prefix: string): string {
-  const fixture = reviewResources.makeTmpDir(prefix);
+function makeFixtureDirectory(prefix: string, resources = reviewResources): string {
+  const fixture = resources.makeTmpDir(prefix);
   fixtureDirectories.push(fixture);
   return realpathSync.native(fixture);
+}
+const sandboxAuditDrain = { flush: flushSandboxAudit };
+// AVE_HOME lives in the fixture, and the reviewer's sandbox audit row is written unawaited; drain it before removal.
+async function releaseFixtures(resources: PermissionTestResources): Promise<void> {
+  resources.trackFlushable(sandboxAuditDrain);
+  await resources.cleanup();
 }
 beforeEach(() => {
   directory = makeFixtureDirectory("executor-sandbox-escalation-");
@@ -57,6 +75,7 @@ beforeEach(() => {
     confines: { filesystem: true, process: true, network: true } });
 });
 afterEach(async () => {
+  fsProbe.beforeMkdir = undefined;
   try {
     __resetActiveSandboxCapabilityForTest();
     __resetSandboxRequestedAtBootForTest();
@@ -65,7 +84,7 @@ afterEach(async () => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
   } finally {
-    await reviewResources.cleanup();
+    await releaseFixtures(reviewResources);
   }
 });
 afterAll(async () => {
@@ -368,4 +387,33 @@ it("runs one real safe host effect after primary high and one verified-quote low
   expect(classify).toHaveBeenCalledOnce();
   expect(scopeComplete).toHaveBeenCalledOnce();
   expect(requestAndWait).not.toHaveBeenCalled();
+});
+
+it("drains an unawaited sandbox audit write before removing its fixture", async () => {
+  let writing = false;
+  const removalStartedWhileWriting: boolean[] = [];
+  let release!: () => void;
+  const removed = new Promise<void>((resolve) => { release = resolve; });
+  const resources = new PermissionTestResources(async (dir) => {
+    removalStartedWhileWriting.push(writing);
+    await cleanupTmpDir(dir);
+    release();
+  });
+  const home = makeFixtureDirectory("executor-sandbox-audit-", resources);
+  vi.stubEnv("AVE_HOME", join(home, "profile"));
+  fsProbe.beforeMkdir = async (path) => {
+    if (!String(path).startsWith(home)) return;
+    writing = true;
+    await Promise.race([removed, new Promise((resolve) => setTimeout(resolve, 50))]);
+    writing = false;
+  };
+  const write = emitSandboxAudit(buildSandboxAuditEntry({
+    tool: { name: "bash", args: '{"command":"mkdir ordinary"}', source: "user-keyboard" },
+    sandbox: { kind: "none", confidence: "verified", events: [], spawnLatencyMs: 0, overheadPercent: 0 },
+    reviewer: { ruleVerdict: "low", llmVerdict: "high", finalVerdict: "high", compositionRulesTriggered: [], userApprovalUsed: null },
+  }));
+  await releaseFixtures(resources);
+  await write;
+  expect(removalStartedWhileWriting).toEqual([false]);
+  await expect(lstat(home)).rejects.toMatchObject({ code: "ENOENT" });
 });
