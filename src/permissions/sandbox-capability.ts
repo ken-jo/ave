@@ -1,7 +1,7 @@
 // Reviewer relaxation requires live OS isolation; none forbids intent-only downgrades from MEDIUM/HIGH to LOW. Inactive gates publish verified none; audit stores the resulting verdict rather than the full capability (docs/architecture/permission-policy-design.md).
 
 import { assertSandboxWindowsExtensionPlan, egressProtocolCoverageFor } from "../shared/sandbox-capability-info.js";
-import { isAveHomeBoundaryUnverifiedAtBoot } from "../shared/ave-home.js";
+import { getAveHomePrivacyFailure, isAveHomePrivacyApprovable } from "../shared/ave-home.js";
 import { t } from "../i18n/index.js";
 import type { ToolCategory, ToolSource } from "../tools/types.js";
 import type {
@@ -389,13 +389,15 @@ export function detectPluginWorkerSandboxCapability(): SandboxCapability {
 export function getHostShellExecutionPlan(executionMode: HostShellExecutionRequest = "default"): HostShellExecutionPlan {
   const generation = getSandboxGeneration();
   const mxc = detectMxcShellCapability();
+  const privacyFailure = getAveHomePrivacyFailure();
   const plan = buildHostShellExecutionPlan({
     platform: process.platform,
     requestedSandbox: isShellSandboxRequestedAtBoot(),
     activeCapability: mxc ?? detectShellSandboxCapability(),
     shellSubstrate: mxc === undefined ? "asrt" : "mxc",
     executionMode,
-    unavailableSandboxRequiresAsk: isAveHomeBoundaryUnverifiedAtBoot(),
+    unavailableSandboxRequiresAsk: privacyFailure !== undefined,
+    unconfinedShellDenied: privacyFailure !== undefined && !isAveHomePrivacyApprovable(privacyFailure.category),
   });
   recordIssuedHostShellExecutionPlan(plan, generation);
   windowsShellPlanRevisions.set(plan, windowsShellLocalNetworkRevision);

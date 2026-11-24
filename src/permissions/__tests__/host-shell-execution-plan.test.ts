@@ -6,6 +6,8 @@ import {
   getHostShellExecutionPlanCacheIdentity,
   isIssuedHostShellExecutionPlanAuditProjection,
   requiresExplicitHostShellApproval,
+  isHomePrivacyHelperUnavailablePlan,
+  requiresUnsandboxedShellAsk,
 } from "../host-shell-execution-plan.js";
 
 const FULL_ASRT = {
@@ -336,5 +338,55 @@ describe("host shell execution plan — Windows MXC substrate", () => {
       expect(plan.mode).not.toBe("asrt");
       expect(plan.substrate).toBe("none");
     }
+  });
+});
+
+// A boot home-privacy failure sets the ask flag; on Windows every plan branch then confines, refuses, or asks a human for each command.
+describe("host shell execution plan — Windows under a boot home-privacy failure", () => {
+  const MXC = { ...WINDOWS_PARTIAL_ASRT, reason: "MXC BaseContainer", confines: { filesystem: true, process: true, network: true } };
+  const branches = [
+    { label: "explicit host", requestedSandbox: true, activeCapability: MXC, executionMode: "host", expected: "ask" },
+    { label: "shell scope off", requestedSandbox: false, activeCapability: NONE, expected: "ask" },
+    { label: "requested sandbox unavailable", requestedSandbox: true, activeCapability: NONE, expected: "ask" },
+    { label: "partial ASRT", requestedSandbox: true, activeCapability: WINDOWS_PARTIAL_ASRT, expected: "ask" },
+    { label: "MXC", requestedSandbox: true, activeCapability: MXC, shellSubstrate: "mxc", expected: "confined" },
+    { label: "full ASRT", requestedSandbox: true, activeCapability: MXC, expected: "confined" },
+    { label: "uncontained capability", requestedSandbox: true, activeCapability: { ...NONE, kind: "asrt" as const, platform: "linux" as const }, platform: "linux", expected: "refused" },
+  ] as const;
+
+  it.each(branches)("$label: $expected", (branch) => {
+    const plan = buildHostShellExecutionPlan({
+      platform: "platform" in branch ? branch.platform : "win32",
+      requestedSandbox: branch.requestedSandbox,
+      activeCapability: branch.activeCapability,
+      ...("shellSubstrate" in branch ? { shellSubstrate: branch.shellSubstrate } : {}),
+      ...("executionMode" in branch ? { executionMode: branch.executionMode } : {}),
+      unavailableSandboxRequiresAsk: true,
+    });
+    const outcome = plan.sandboxed ? "confined" : plan.mode === "blocked" ? "refused"
+      : requiresUnsandboxedShellAsk(plan) && requiresExplicitHostShellApproval(plan) ? "ask" : "unconfined-without-ask";
+    expect(outcome).toBe(branch.expected);
+  });
+
+  // Helper-unavailable (owner 2026-11-24): every unconfined branch is refused with the restart notice; confined routes are unchanged.
+  it.each(branches)("helper-unavailable, $label: refused unless confined", (branch) => {
+    const plan = buildHostShellExecutionPlan({
+      platform: "platform" in branch ? branch.platform : "win32",
+      requestedSandbox: branch.requestedSandbox,
+      activeCapability: branch.activeCapability,
+      ...("shellSubstrate" in branch ? { shellSubstrate: branch.shellSubstrate } : {}),
+      ...("executionMode" in branch ? { executionMode: branch.executionMode } : {}),
+      unavailableSandboxRequiresAsk: true,
+      unconfinedShellDenied: true,
+    });
+    if (branch.expected === "confined") {
+      expect(plan).toMatchObject({ mode: "asrt", sandboxed: true });
+      return;
+    }
+    expect(plan).toMatchObject({ mode: "blocked", sandboxed: false, fallbackReason: "home-privacy-helper-unavailable", requiresExplicitUserApproval: false,
+      executionRequest: "executionMode" in branch ? branch.executionMode : "default" });
+    expect(isHomePrivacyHelperUnavailablePlan(plan)).toBe(true);
+    expect(requiresExplicitHostShellApproval(plan)).toBe(false);
+    expect(plan.capability.reason).toContain("Restart Ave; if it persists, reinstall Ave.");
   });
 });

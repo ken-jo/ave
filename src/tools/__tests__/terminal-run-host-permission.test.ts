@@ -24,6 +24,8 @@ import { runWithHostTerminalTurn } from "../host-terminal-turn.js";
 import { PATH_POLICY_DECISION_MISMATCH_ERROR } from "../../permissions/execution-router.js";
 import type { OperatorContainerCapability } from "../../permissions/operator-container-attestation.js";
 import type { ToolPermissionContext } from "../executor.js";
+import { _resetAveHomePrivacyForTest, setAveHomePrivacyAtBoot } from "../../shared/ave-home.js";
+import { HOME_PRIVACY_HELPER_UNAVAILABLE_SHELL_DENIAL } from "../../permissions/host-shell-execution-plan.js";
 
 // A published operator container makes the host rebuild shell effects onto a disposable route; the harness lets a test publish one mid-command.
 const operatorHarness = vi.hoisted(() => ({ current: null as object | null, issued: new WeakSet<object>(), leases: new WeakMap<object, object>() }));
@@ -66,6 +68,7 @@ beforeEach(() => { dir = realpathSync(mkdtempSync(join(tmpdir(), "ave-terminal-r
 afterEach(() => {
   vi.unstubAllEnvs();
   operatorHarness.current = null;
+  _resetAveHomePrivacyForTest();
   __resetTerminalBlocksForTest();
   __resetActiveSandboxCapabilityForTest();
   __resetSandboxRequestedAtBootForTest();
@@ -256,6 +259,38 @@ describe("terminal_run host permission", () => {
     expect(changed.typed).toEqual([]);
     expect(changed.result.is_error).toBe(true);
   });
+
+  it("carries no host shell plan while the home privacy check passed", async () => {
+    const { context } = await run("printf ready");
+    expect(context?.hostShellExecutionPlan).toBeUndefined();
+  });
+
+  it.each([false, true])("denies with the restart notice when the home privacy helper gave no answer (headless %s)", async (headless) => {
+    setAveHomePrivacyAtBoot({ enforcement: "none", home: dir, category: "helper-unavailable", reason: "no answer" });
+    const denied = await run("printf ready", {
+      mode: "allow", surfaceChoice: "allow", choice: "allow-once", headless,
+      rules: [{ pattern: hostRule("printf ready"), action: "allow" }],
+    });
+    expect(denied.decision).toMatchObject({ decision: "deny", reason: HOME_PRIVACY_HELPER_UNAVAILABLE_SHELL_DENIAL.reason });
+    expect(denied.requestAndWait).not.toHaveBeenCalled();
+    expect(denied.review).not.toHaveBeenCalled();
+    expect(denied.typed).toEqual([]);
+    expect(denied.result.is_error).toBe(true);
+    expect(denied.result.content).toContain(HOME_PRIVACY_HELPER_UNAVAILABLE_SHELL_DENIAL.reason);
+  });
+
+  it.each(["boundary-link", "boundary-unlisted", "read-back-failed"] as const)(
+    "forces a card for every command after a %s home privacy failure; saved rules and the session choice do not pass it", async (category) => {
+      setAveHomePrivacyAtBoot({ enforcement: "none", home: dir, category, reason: "privacy failed" });
+      const options = { mode: "allow" as const, surfaceChoice: "allow" as const, rules: [{ pattern: hostRule("printf ready"), action: "allow" as const }] };
+      const denied = await run("printf ready", options);
+      expect(denied.decision).toMatchObject({ decision: "ask", reasonCode: "sandbox-unavailable", forceModal: true });
+      expect(denied.requestAndWait).toHaveBeenCalledOnce();
+      expect(denied.typed).toEqual([]);
+      const approved = await run("printf ready", { ...options, choice: "allow-once" });
+      expect(approved.requestAndWait).toHaveBeenCalledOnce();
+      expect(approved.typed).toEqual(["printf ready"]);
+    });
 });
 
 for (const surfaceChoice of ["allow", "auto", "ask"] as const) {
