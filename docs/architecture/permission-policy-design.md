@@ -1579,7 +1579,34 @@ check; directory rename/replacement after the host check remains a limitation
 on that platform. Their final policy validation and native spawn share the same
 serial queue.
 
-A sandbox requested but unavailable carries `fallbackReason: "requested-sandbox-unavailable"` and `sandboxed: false` in its host execution plan. The card, model environment and tool result disclose the missing isolation. Explicit environment activation failures retain the startup refusal described above. When a plain host route is available, it uses the decision tree's host-shell mode/human path; ordinary approval may offer prefix rules. Protected floors and host credential-store admission denial remain authoritative. Plan issuance, approval and execution permits must describe the same exact route.
+A sandbox requested but unavailable carries `fallbackReason: "requested-sandbox-unavailable"`
+and `sandboxed: false` in its host execution plan. The card, model environment
+and tool result disclose the missing isolation. Explicit environment activation
+failures retain the startup refusal described above. Every shell and hook
+command on this plan takes the `sandbox-unavailable` forced ask on every OS:
+the person approves it once or waives the ask for the conversation; nothing is
+saved; saved rules, allow mode and auto review do not stand in for the answer;
+a headless run denies. Deny rules and the other protected floors keep their
+place in the decision order, and host credential-store admission denial remains
+authoritative. Such a shell runs in the foreground and spawns only on the
+one-shot permit minted from that answer. An explicit `executionMode: "host"`
+request is a separate plan and keeps the host-shell mode/human path. Plan
+issuance, approval and execution permits must describe the same exact route.
+
+#### Hosts with no usable sandbox backend
+
+A host is on the unavailable plan when the sandbox is turned on and its start
+fails or its requirements are not met. The requirements per OS:
+
+| OS | Needed for a sandbox backend | Notice hint |
+|---|---|---|
+| Windows | The container launcher reports the base container tier, the dry run of the shipped request validates and the start check passes; or the partial shell backend is ready, which is the explicit host approval route and not this plan. A proxy-only start that itself fails lands here. | none |
+| macOS | macOS 15 or later on arm64 for the container backend; the profile-based backend otherwise has to start and pass its runtime check. | none |
+| Linux | bubblewrap, socat and ripgrep installed; unprivileged user and network namespaces; for the container backend also slirp4netns, unshare, nsenter, ip and iptables, with proxy enforcement reported as supported. | names the missing package among bubblewrap, socat and ripgrep |
+
+The notice on the card and in the model environment says the sandbox is
+unavailable and, where a missing package is the cause, what to install; the
+sandbox returns after the install and a restart.
 
 Inside a live operator-attested disposable one-shot, `executionMode: "host"`
 means the strongest shell authority reachable by that process, which is still
