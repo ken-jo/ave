@@ -2768,21 +2768,17 @@ export function ensureSandboxTempPrincipalDir(principal: SandboxTempPrincipal): 
   return { dir, root };
 }
 
-// The launcher that sets a principal's temp directory: `/usr/bin/env TMPDIR=<dir> TMP=<dir> TEMP=<dir> <command> <args>`, run INSIDE the wrap. ASRT writes its own `TMPDIR=` (from `CLAUDE_CODE_TMPDIR`) ahead of the sandboxed command on both platforms — `env` arguments on macOS, a bwrap `--setenv` on Linux — so a value in the spawn environment never reaches the child; one assigned by a process already inside the sandbox does. `env` reads an operand containing `=` as an assignment, so a command with one would be split rather than run; it is refused.
+// The sandbox wrapper supplies its own TMPDIR. Set the principal's temp variables inside the sandbox.
 export function sandboxTempEnvLaunch(
   dir: string,
   command: string,
   args: readonly string[],
 ): { readonly command: string; readonly args: string[] } {
-  if (command.includes("=")) {
-    throw new Error(
-      `sandbox temp: the command '${command}' contains '=', which env(1) would read as an assignment; `
-        + "move it to a path without '='",
-    );
-  }
+  // env(1) reads an executable containing '=' as an assignment. Pass that pathname as a positional argument.
+  const launch = command.includes("=") ? ["/bin/bash", "-c", 'exec -- "$@"', "sandbox-temp", command, ...args] : [command, ...args];
   return {
     command: SANDBOX_TEMP_ENV_LAUNCHER,
-    args: [`TMPDIR=${dir}`, `TMP=${dir}`, `TEMP=${dir}`, command, ...args],
+    args: [`TMPDIR=${dir}`, `TMP=${dir}`, `TEMP=${dir}`, ...launch],
   };
 }
 
