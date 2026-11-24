@@ -813,7 +813,8 @@ function helperOutcome(helper: string, status: number | null, signal: NodeJS.Sig
     return leaving(Object.assign(new Error(`the download file helper failed (${failed[1]})`), { code: failed[1] }));
   }
   const why = signal !== null ? `signal ${signal}` : `exit ${status ?? "unknown"}`;
-  return new HeldFileHelperUnavailableError(helper, `it ended unexpectedly (${why}, ${JSON.stringify(last)}${stderr.trim() ? `: ${stderr.trim()}` : ""})`);
+  const diagnostic = last.startsWith("record ") ? "record [redacted]" : last;
+  return new HeldFileHelperUnavailableError(helper, `it ended unexpectedly (${why}, ${JSON.stringify(diagnostic)}${stderr.trim() ? `: ${stderr.trim()}` : ""})`);
 }
 
 // The status a helper that printed `last` and then exited would have ended with: a kill that lands after the outcome line does not change it.

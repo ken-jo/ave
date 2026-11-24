@@ -715,6 +715,20 @@ describe("a helper that does not keep to its protocol", () => {
   });
 });
 
+it("redacts a record frame when the helper exits abnormally", async () => {
+  const payload = Buffer.from('{"unexpected":"private record contents"}').toString("hex");
+  script((helper) => {
+    helper.say("ready");
+    helper.once("input", () => { helper.say(`record ${payload}`); helper.exit(7); });
+  });
+  const run = follow(files.readRecord(from, "0".repeat(32) + ".cleanup.json", 8192));
+  await flush();
+  expect(run.error).toBeInstanceOf(HeldFileHelperUnavailableError);
+  const error = run.error as Error;
+  expect(error.message).toContain("exit 7");
+  expect(error.message).not.toContain(payload);
+});
+
 it("keeps the Windows writer identity for recording when isolation leaves its part in place", async () => {
   const windows = _helperFileOperationsForTest("/helper/ave-path-kind.exe", BOUNDS, true);
   const fileId = "fedcba9876543210123456789abcdef0";
