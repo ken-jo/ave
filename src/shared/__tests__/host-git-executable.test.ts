@@ -184,11 +184,17 @@ describe("resolveHostGit", () => {
     vi.stubEnv("PATH", [held, host].join(delimiter));
     vi.mocked(statSync).mockReturnValue({ isFile: () => true } as ReturnType<typeof statSync>);
     const heldChild = gitProbeChild(() => {});
-    vi.mocked(spawn).mockImplementationOnce(() => heldChild)
-      .mockImplementationOnce(() => gitProbeChild((complete) => complete("git version 2.56.0")));
+    const heldSpawned = deferred<void>();
+    vi.mocked(spawn).mockImplementationOnce(() => {
+      heldSpawned.resolve();
+      return heldChild;
+    }).mockImplementationOnce(() => gitProbeChild((complete) => complete("git version 2.56.0")));
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
       const discovery = discoverHostGitAsync(null);
+      // Candidate checks before the spawn may need real I/O (darwin compares each candidate with the /usr/bin/git shim
+      // through realpath), so advance the clock only once the probe deadline is armed.
+      await heldSpawned.promise;
       await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.projectGitQueryMs);
       await expect(discovery).resolves.toMatchObject({ git: { path: selected } });
       expect(vi.mocked(spawn).mock.calls.map(([file]) => file)).toEqual([join(held, binary), selected]);
