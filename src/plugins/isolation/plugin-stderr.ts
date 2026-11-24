@@ -108,25 +108,37 @@ export function capturePluginStderr(stream: Readable, pluginId: string, resolved
     append(buffer.subarray(start));
   };
   let pending: Buffer | undefined;
+  // Leading bytes of `pending` already inside a masked interval whose marker was emitted.
+  let pendingCovered = 0;
   const redactChunk = (chunk: Buffer, final = false): void => {
     const buffer = pending ? Buffer.concat([pending, chunk]) : chunk;
     pending = undefined;
-    let plainStart = 0;
+    // Overlapping matches merge into one masked interval ending at coverEnd.
+    let coverEnd = pendingCovered;
+    pendingCovered = 0;
+    let plainStart = coverEnd;
     for (let offset = 0; offset < buffer.length; offset++) {
       const match = valuesByFirstByte.get(buffer.readUInt8(offset))?.find(value => {
         const length = Math.min(value.length, buffer.length - offset);
         return (!final || length === value.length) && value.compare(buffer, offset, offset + length, 0, length) === 0;
       });
       if (!match) continue;
-      captureChunk(buffer.subarray(plainStart, offset));
       if (match.length > buffer.length - offset) {
         // Look ahead only when a value could continue in the next chunk.
+        if (offset > plainStart) captureChunk(buffer.subarray(plainStart, offset));
         pending = Buffer.from(buffer.subarray(offset));
+        pendingCovered = Math.max(0, coverEnd - offset);
         return;
       }
-      append(REDACTED_ENV_VALUE, match.length);
-      offset += match.length - 1;
-      plainStart = offset + 1;
+      const end = offset + match.length;
+      if (offset < coverEnd) {
+        if (end > coverEnd) append(Buffer.alloc(0), end - coverEnd);
+      } else {
+        captureChunk(buffer.subarray(plainStart, offset));
+        append(REDACTED_ENV_VALUE, match.length);
+      }
+      coverEnd = Math.max(coverEnd, end);
+      plainStart = coverEnd;
     }
     captureChunk(buffer.subarray(plainStart));
   };

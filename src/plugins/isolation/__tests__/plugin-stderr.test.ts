@@ -108,6 +108,24 @@ describe("plugin stderr capture", () => {
     } finally { stream.destroy(); info.mockRestore(); }
   });
 
+  it.each([
+    ["overlapping values", ["abcdefgh12", "12345678xy"], "abcdefgh12345678xy"],
+    ["a self-overlapping value", ["SECRETSE"], "SECRETSECRETSE"],
+  ])("masks the union of %s, whole and byte by byte", (_name, values, text) => {
+    for (const chunked of [false, true]) {
+      const stream = new PassThrough();
+      const info = vi.spyOn(console, "log").mockImplementation(() => {});
+      try {
+        capturePluginStderr(stream, "overlap-env", values);
+        const diagnostic = Buffer.from(`before ${text} after\n`);
+        if (chunked) for (const byte of diagnostic) stream.write(Buffer.from([byte]));
+        else stream.write(diagnostic);
+        stream.end();
+        expect(info).toHaveBeenCalledExactlyOnceWith("[plugin-stderr] before [REDACTED] after", { pluginId: "overlap-env" });
+      } finally { stream.destroy(); info.mockRestore(); }
+    }
+  });
+
   it("redacts a credential crossing the output byte cap before truncation", () => {
     const stream = new PassThrough();
     const info = vi.spyOn(console, "log").mockImplementation(() => {});
