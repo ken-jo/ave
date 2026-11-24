@@ -229,7 +229,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     if (result.code !== 0) throw new Error(`git ${args[0] ?? ""} failed (${result.code}): ${result.stderr.trim().slice(0, 300)}`);
     return result.stdout;
   };
-  const gitOut = async (cwd: string, args: readonly string[], call?: Parameters<HostGit["run"]>[2]): Promise<string> => answered(args, await git.run(cwd, args, call));
+  const gitOut = async (cwd: string, args: readonly string[], call?: Parameters<HostGit["run"]>[2]): Promise<string> => answered(args, await git.run(cwd, args, { ...call, requiresFloor: true }));
 
   /**
    * Git in a folder of the run. Git writes where the folder's `.git` file points, and that file is text anyone could have put there:
@@ -238,7 +238,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
    * it never reads the `.git` file: one swapped after this check directs nothing.
    */
   function gitIn(at: Held, key: string, folder: OwnedDir): (args: readonly string[], call?: Parameters<HostGit["run"]>[2]) => ReturnType<HostGit["run"]> {
-    return async (args, call) => git.run(folder.path, args, { ...call, worktree: ownWorktree(at, key, folder) });
+    return async (args, call) => git.run(folder.path, args, { ...call, worktree: ownWorktree(at, key, folder), requiresFloor: true });
   }
 
   function ownWorktree(at: Held, key: string, folder: OwnedDir): { gitDir: string; workTree: string } {
@@ -251,7 +251,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
 
   /** The drivers to switch off for git in a folder of the run, read the way git reads its configuration there, under the same check. */
   async function driversIn(at: Held, key: string, folder: OwnedDir): ReturnType<HostGit["drivers"]> {
-    return git.drivers(folder.path, ownWorktree(at, key, folder));
+    return git.drivers(folder.path, ownWorktree(at, key, folder), { requiresFloor: true });
   }
 
   /**
@@ -315,7 +315,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
 
   async function identityOf(root: string): Promise<boolean> {
     for (const key of ["user.name", "user.email"]) {
-      const value = await git.run(root, ["config", "--get", key]);
+      const value = await git.run(root, ["config", "--get", key], { requiresFloor: true });
       if (value.code !== 0 || value.stdout.trim() === "") return false;
     }
     return true;
@@ -350,7 +350,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
    * with nothing written is no format named, a list of formats is one, and anything else is none. Asked at open and before every step
    * that changes the repository. */
   async function refStoreOf(root: string, gitDir: string): Promise<"own" | "elsewhere" | undefined> {
-    const read = await git.run(root, ["config", "--file", join(gitDir, "config"), "--get-all", "extensions.refStorage"], { isolated: true, exact: true });
+    const read = await git.run(root, ["config", "--file", join(gitDir, "config"), "--get-all", "extensions.refStorage"], { isolated: true, exact: true, requiresFloor: true });
     if (read.stderr !== "") return undefined;
     if (read.code === 1 && read.stdout === "") return "own";
     if (read.code !== 0 || !read.stdout.endsWith("\n")) return undefined;
@@ -429,7 +429,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       const found = project === undefined ? { inWorkTree: false } : await gitProject(project.root);
       if (project !== undefined && "baseCommit" in found) {
         if (!(await git.floorHolds())) return refused("git-unavailable");
-        const drivers = await git.drivers(project.root);
+        const drivers = await git.drivers(project.root, undefined, { requiresFloor: true });
         // A filter the repository requires for checkout is never run, so such a repository gets no git workspace.
         if (drivers.requiredFilters.length > 0 && await usesFilter(project.root, drivers.requiredFilters)) return refused("git-unavailable");
         const repo = await commonDirOf(project.root);
@@ -493,12 +493,12 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       // recorded once git answered that it made it, and only a recorded ref is ever deleted.
       const ref = `refs/heads/${branch}`;
       await assertRepository(at);
-      if ((await git.run(project.root, ["update-ref", END_OF_OPTIONS, ref, baseCommit, ""])).code !== 0) throw new Error("the run's branch is taken");
+      if ((await git.run(project.root, ["update-ref", END_OF_OPTIONS, ref, baseCommit, ""], { requiresFloor: true })).code !== 0) throw new Error("the run's branch is taken");
       file.refs = [{ name: ref, oid: baseCommit }];
       writeRunFile(at, file);
       await assertRepository(at);
       joined.check();
-      const added = await git.run(project.root, ["worktree", "add", "--no-checkout", END_OF_OPTIONS, joined.path, branch], { drivers: [...gitRun.drivers.config, ...ABSOLUTE_LINKS] }).catch(() => undefined);
+      const added = await git.run(project.root, ["worktree", "add", "--no-checkout", END_OF_OPTIONS, joined.path, branch], { drivers: [...gitRun.drivers.config, ...ABSOLUTE_LINKS], requiresFloor: true }).catch(() => undefined);
       if (recordRegistration(at, JOIN_DIR, at.run.child(JOIN_DIR, joined.id)) === undefined || added?.code !== 0) throw new Error("the integration worktree was not made");
       joined.check();
       await checkOut(at, JOIN_DIR, joined, gitRun.drivers.requiredFilters);
@@ -540,12 +540,12 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     const root = at.live?.root;
     if (root === undefined || file.branch === undefined) return "workspace-unavailable";
     try {
-      const drivers = await git.drivers(root);
+      const drivers = await git.drivers(root, undefined, { requiresFloor: true });
       const head = (await gitOut(root, ["rev-parse", "--verify", END_OF_OPTIONS, `refs/heads/${file.branch}^{commit}`])).trim();
       // The stage folder is the host's own before git fills it, and still that folder each time something is removed from it.
       await assertRepository(at);
       held.check();
-      const added = await git.run(root, ["worktree", "add", "--detach", "--no-checkout", END_OF_OPTIONS, held.path, head], { drivers: [...drivers.config, ...ABSOLUTE_LINKS] }).catch(() => undefined);
+      const added = await git.run(root, ["worktree", "add", "--detach", "--no-checkout", END_OF_OPTIONS, held.path, head], { drivers: [...drivers.config, ...ABSOLUTE_LINKS], requiresFloor: true }).catch(() => undefined);
       if (recordRegistration(at, stage.id, at.run.child(stageDirName(stage.id), held.id)) === undefined || added?.code !== 0) throw new Error("the stage worktree was not made");
       held.check();
       await checkOut(at, stage.id, held, drivers.requiredFilters);
@@ -926,7 +926,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     if (root === undefined) return;
     for (const ref of [...file.refs]) {
       await assertRepository(at);
-      const deleted = await git.run(root, ["update-ref", "-d", END_OF_OPTIONS, ref.name, ref.oid]).catch(() => undefined);
+      const deleted = await git.run(root, ["update-ref", "-d", END_OF_OPTIONS, ref.name, ref.oid], { requiresFloor: true }).catch(() => undefined);
       if (deleted?.code !== 0) continue;
       file.refs = file.refs.filter(entry => entry !== ref);
       writeRunFile(at, file);

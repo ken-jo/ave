@@ -44,7 +44,7 @@ interface HostGitResult { code: number; stdout: string; stderr: string }
  * `exact`: the answer holds names the caller compares, looks up on disk or hands back to git, so it must be text as it stands: one
  * that is not would be read as other names, and is refused as `not-text`. `paths`: the paths the call is about, each given to git as
  * that one path and never as a pattern; an argument list carries none. */
-interface HostGitCall { stdin?: string; drivers?: readonly string[]; isolated?: boolean; exact?: boolean; worktree?: { gitDir: string; workTree: string }; paths?: readonly string[] }
+interface HostGitCall { stdin?: string; drivers?: readonly string[]; isolated?: boolean; exact?: boolean; worktree?: { gitDir: string; workTree: string }; paths?: readonly string[]; requiresFloor?: boolean }
 /** Bytes as the text they are and nothing else: no byte replaced, no leading mark dropped. Throws for bytes that are no text. */
 const STRICT_TEXT = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 export class HostGitError extends Error {
@@ -74,8 +74,8 @@ export interface HostGit {
   /** `-c` entries that switch off every filter and merge driver the repository's configuration names, and the filter drivers it marks
    * required. With `worktree`, the configuration is read as a call given that worktree reads it: a file included for that
    * registration or its branch, and the worktree's own, name drivers that git in the project root never sees. */
-  drivers(cwd: string, worktree?: HostGitCall["worktree"]): Promise<{ config: string[]; requiredFilters: string[] }>;
-  /** Whether the host floor holds on the very program these calls start (`floorHoldsOn`); no program resolved is no. */
+  drivers(cwd: string, worktree?: HostGitCall["worktree"], options?: Pick<HostGitCall, "requiresFloor">): Promise<{ config: string[]; requiredFilters: string[] }>;
+  /** Preflight the current program. A call with `requiresFloor` also checks the resolved program on each launch attempt. */
   floorHolds(): Promise<boolean>;
 }
 
@@ -119,7 +119,12 @@ export function createHostGit(options: { env?: NodeJS.ProcessEnv; resolve?: Host
       ...args,
       ...call.paths === undefined ? [] : ["--", ...call.paths.map(path => `:(literal)${path}`)],
     ];
-    return resolve(git => start(git, cwd, buildHostGitArgs(full, { configArgs }), call));
+    return resolve(async (git) => {
+      if (call.requiresFloor && (git === null || !isAbsolute(git.path) || !(await floorHoldsOn(git, base)))) {
+        throw new HostGitError("unavailable", "the selected git has not passed the hook floor probe");
+      }
+      return start(git, cwd, buildHostGitArgs(full, { configArgs }), call);
+    });
   }
 
   function start(git: HostGitProgram | null, cwd: string, args: string[], call: HostGitCall): Promise<{ code: number; stdout: Buffer; stderr: Buffer }> {
@@ -183,14 +188,14 @@ export function createHostGit(options: { env?: NodeJS.ProcessEnv; resolve?: Host
     try { return { code, stdout: STRICT_TEXT.decode(stdout), stderr: stderr.toString("utf8") }; } catch { throw new HostGitError("not-text", "git's answer holds a name that is no text"); }
   }
 
-  async function drivers(cwd: string, worktree?: HostGitCall["worktree"]): Promise<{ config: string[]; requiredFilters: string[] }> {
+  async function drivers(cwd: string, worktree?: HostGitCall["worktree"], options: Pick<HostGitCall, "requiresFloor"> = {}): Promise<{ config: string[]; requiredFilters: string[] }> {
     const unread = (): HostGitError => new HostGitError("unavailable", "git configuration could not be read");
     // An answer is taken only in the form the command writes it: each entry ended by NUL, its key first and, after a line break, its
     // value, or the key alone where the configuration gives it none. Nothing configured is exit 1 with nothing written at all. Any
     // other failure is a configuration git itself does not take, and any other form is no answer. It is read byte for byte, each
     // byte one character here: a name is a file's bytes, and read as text first, one that is no text would come out as another.
     const listed = async (...args: string[]): Promise<[key: string, value: string | undefined][]> => {
-      const read = await raw(cwd, ["config", "--null", ...args], worktree === undefined ? {} : { worktree });
+      const read = await raw(cwd, ["config", "--null", ...args], { ...options, worktree });
       if (read.code === 1 && read.stdout.length === 0 && read.stderr.length === 0) return [];
       const bytes = read.stdout.toString("latin1");
       if (read.code !== 0 || !bytes.endsWith("\0")) throw unread();

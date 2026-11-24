@@ -1,8 +1,9 @@
 // windows-native: the Windows job runs this file from config/windows-native-tests.txt.
-import { accessSync, existsSync, statSync } from "node:fs";
+import { accessSync, existsSync, statSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setProcessPlatform } from "../../../__tests__/support/process-platform.js";
@@ -46,6 +47,47 @@ afterEach(() => {
 });
 
 describe("the git a stage workspace starts is the one the host's discovery resolved", () => {
+  it("does not run a floor-dependent repository operation on an unproven replacement after a launch failure", async () => {
+    setProcessPlatform("linux");
+    const first = "/fixture-first/git";
+    const replacement = "/fixture-second/git";
+    const workspace = tmpdir();
+    vi.stubEnv("PATH", [dirname(first), dirname(replacement)].join(":"));
+    const fs = await vi.importActual<typeof import("node:fs")>("node:fs");
+    vi.mocked(accessSync).mockImplementation((path) => {
+      if (path !== first && path !== replacement) throw new Error("missing");
+    });
+    vi.mocked(existsSync).mockImplementation(fs.existsSync);
+    vi.mocked(statSync).mockImplementation(((path: string) => {
+      if (path !== first && path !== replacement) return fs.statSync(path);
+      return { isFile: () => true, dev: 1n, ino: path === first ? 1n : 2n, size: 1n, mtimeNs: 1n, mtimeMs: 1 };
+    }) as typeof statSync);
+    vi.mocked(spawn).mockImplementation(((program: string, args: string[], options: { cwd?: string }) => {
+      if (args.includes("--version")) return ended(0, `git version ${program === first ? "2.56.0" : "2.45.1"}\n`);
+      if (args.includes("init")) return ended(0);
+      if (args.includes("--allow-unknown-hook-name")) {
+        if (program === replacement) return ended(129);
+        writeFileSync(join(options.cwd!, "ran"), "ran");
+      }
+      if (program === first && args.includes("worktree")) {
+        const child = new EventEmitter();
+        queueMicrotask(() => child.emit("error", Object.assign(new Error("unavailable image"), { code: "EACCES", path: first })));
+        return Object.assign(child, { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough() });
+      }
+      return ended(0);
+    }) as typeof spawn);
+    const { createHostGit } = await import("../host-git.js");
+    const git = createHostGit();
+
+    expect(await git.floorHolds()).toBe(true);
+    await expect.soft(git.run(workspace, ["worktree", "add", "--no-checkout", "fixture", "main"], { requiresFloor: true }))
+      .rejects.toMatchObject({ reason: "unavailable" });
+    const calls = vi.mocked(spawn).mock.calls;
+    expect(calls.some(([program, args]) => program === first && args?.includes("worktree"))).toBe(true);
+    expect(calls.some(([program, args]) => program === replacement && args?.includes("--version"))).toBe(true);
+    expect(calls.filter(([program, , options]) => program === replacement && options?.cwd === workspace)).toEqual([]);
+  });
+
   it("on macOS without the command line tools the system shim is not started: the call is refused and nothing but the tools check runs", async () => {
     setProcessPlatform("darwin");
     vi.stubEnv("PATH", "/usr/bin");
