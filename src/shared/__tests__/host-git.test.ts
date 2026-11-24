@@ -195,6 +195,7 @@ describe("host git starts only where the hold is asked", () => {
     ["main/managed-child-processes.ts", "_spawnGatedManagedProcessForTest"],
     ["main/managed-child-processes.ts", "spawnGatedManagedProcess"],
     ["main/managed-child-processes.ts", "spawnManaged"],
+    ["main/tailnet-cli.ts", "runTailscaleCommand"],
     ["main/windows-job-launcher.ts", "spawnWindowsJobProcess"],
     ["marketplace/git/global-config.ts", "readCopiedCredentialConfig"],
     ["marketplace/git/run-git.ts", "GitRunner"],
