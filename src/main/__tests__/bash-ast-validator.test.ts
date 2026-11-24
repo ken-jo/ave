@@ -280,7 +280,18 @@ describe("BashAstValidator — bash 도구 이름 매칭", () => {
 });
 
 describe("BashAstValidator — cd fallback", () => {
-  it("does not walk the fallback of a cd whose destination exists", () => {
+  it("walks that fallback on an unsandboxed host, where the cd can still fail", () => {
+    const cwd = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-validator-cd-")));
+    try {
+      mkdirSync(join(cwd, "sub"));
+      const r = new BashAstValidator().validate("bash", makeInput("cd sub || sudo ls"), { cwd, facts: { dialect: "bash", environment: {}, hostCdFaults: true } });
+      assert.equal(r.decision, "deny");
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not walk the fallback of a cd whose destination exists off the host route", () => {
     const cwd = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-validator-cd-")));
     try {
       mkdirSync(join(cwd, "sub"));
