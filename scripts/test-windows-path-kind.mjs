@@ -229,7 +229,7 @@ async function recoveryTests() {
   for (const [mode, refusal] of [["volume-without-file-ids", "refused volume"], ["volume-query-fails", "refused volume-unknown"]]) add(`${mode} refuses the copy before the existing target is opened`, (dir) => {
     writeFileSync(join(dir, "source"), "source");
     writeFileSync(join(dir, "target"), "old bytes");
-    // Held with no sharing (libuv's UV_FS_O_EXLOCK), so any open of the target by the helper fails instead of answering the refusal.
+    // Opened with no sharing (the exclusive-lock open flag), so any open of the target by the helper fails instead of answering the refusal.
     const locked = openSync(join(dir, "target"), constants.O_RDONLY | 0x10000000);
     let result;
     try {
