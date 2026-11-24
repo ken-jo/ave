@@ -121,8 +121,9 @@ recovery outcomes use exit 0, filesystem failures use exit 4, and usage
 errors use exit 2. A failed native call may print its translated Windows
 error and captured status in the one stderr diagnostic.
 
-Cleanup moves a verified file handle exclusively to a fresh hidden name,
-checks the hidden entry, and only then sets delete disposition. Restore
+Cleanup verifies the file's stamp on a handle opened without delete sharing,
+sets disposition on that handle, closes it, and checks that its name is absent.
+A pending part keeps its recorded name and returns `left remove-failed`. Restore
 keeps the hidden source until the synced part is verified against its
 still-open writing handle. A failed copy-back leaves both entries. If full
 file identity or exclusive isolation is unavailable, the helper leaves

@@ -1,7 +1,7 @@
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { chmodSync, linkSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statfsSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, linkSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, statfsSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -537,7 +537,7 @@ describe("a staged download", () => {
     expect(await restarted.files.listRecords(restarted)).toHaveLength(occupied ? 1 : 0);
   });
 
-  it.each(["before move", "after move", "after commit", "after retirement", "competing target", "replaced part", "writer birth mismatch", "missing writer birth"] as const)("restarts after a stopped replacement: %s", async (boundary) => {
+  it.each(["before move", "after move", "after commit", "after retirement", "competing target", "replaced part", "writer birth mismatch", "missing writer birth", "part reader"] as const)("restarts after a stopped replacement: %s", async (boundary) => {
     const prepared = prepare();
     const chosen = join(home, "chosen");
     mkdirSync(chosen);
@@ -602,6 +602,16 @@ describe("a staged download", () => {
         return files.remove(folder, name, proceed, stop);
       },
     }));
+    if (boundary === "part reader" && windows) {
+      const reader = openSync(partPath, "r");
+      try {
+        await sweepBrowserDownloadStaging(restarted);
+        expect(await restarted.files.listRecords(restarted)).toEqual(records);
+        expect(readdirSync(chosen)).toContain(basename(partPath));
+      } finally {
+        closeSync(reader);
+      }
+    }
     await sweepBrowserDownloadStaging(restarted);
     if (unverifiedWriter) {
       expect(readFileSync(target, "utf8")).toBe("new bytes");

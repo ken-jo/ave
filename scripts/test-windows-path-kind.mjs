@@ -333,6 +333,25 @@ async function recoveryTests() {
     expect(["--dir-remove", ...held(root), record], ["ready", "removed"]);
   });
 
+  add("keeps the journal while the recorded writer part is delete-pending", (dir) => {
+    const partPath = join(dir, part);
+    writeFileSync(partPath, "writer bytes");
+    const known = snapshot(partPath);
+    expect(["--dir-write-record", ...held(dir), record, "7b7d"], ["ready", "written"]);
+    const reader = openSync(partPath, "r");
+    try {
+      const result = answered(["--dir-remove-id", ...held(dir), part, ...known]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.match(result.lines.at(-1), /^left(?: .*)?$/u);
+      assert.ok(readdirSync(dir).includes(part), "pending cleanup keeps the recorded part name observable");
+      assert.ok(existsSync(join(dir, record)));
+    } finally {
+      closeSync(reader);
+    }
+    expect(["--dir-remove-id", ...held(dir), part, ...known], ["ready", "absent"]);
+    expect(["--dir-remove", ...held(dir), record], ["ready", "removed"]);
+  });
+
   for (const boundary of ["before-move", "after-move", "after-commit", "leftover"]) {
     add(`replacement restart after ${boundary}`, async (dir) => {
       const root = join(dir, "records");

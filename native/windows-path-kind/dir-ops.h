@@ -286,9 +286,20 @@ inline FileFailure rename_into(HANDLE file, HANDLE directory, const std::wstring
 
 // Delete the file this handle is open on, once the handle closes.
 inline FileFailure delete_on_close(HANDLE file) {
-  // Native FileDispositionInformation (class 13) contains one BOOLEAN and names only the open file.
-  BOOLEAN disposition = TRUE;
-  return set_file_information(file, &disposition, static_cast<ULONG>(sizeof(disposition)), static_cast<FILE_INFORMATION_CLASS>(13));
+  FILE_DISPOSITION_INFO disposition{TRUE};
+  return SetFileInformationByHandle(file, FileDispositionInfo, &disposition, sizeof(disposition))
+    ? FileFailure{} : FileFailure{GetLastError()};
+}
+
+inline FileFailure dispose_and_observe(HANDLE directory, const std::wstring& name, PinnedHandle& entry) {
+  const FileFailure removal = delete_on_close(entry.value);
+  if (removal.error != ERROR_SUCCESS) return removal;
+  CloseHandle(entry.value);
+  entry.value = INVALID_HANDLE_VALUE;
+  Entry observed = Entry::kOther;
+  const FileFailure probe = classify(directory, name, observed);
+  if (probe.error != ERROR_SUCCESS) return probe;
+  return observed == Entry::kAbsent ? FileFailure{} : FileFailure{ERROR_ACCESS_DENIED};
 }
 
 // Write all of `length` bytes, however many each write takes; a write that makes no progress fails the copy.
@@ -419,7 +430,7 @@ inline int run_copy(wchar_t** argv) {
   const auto writer_stamp = [&] { return id_text(written, ' ') + " " + std::to_string(written_birth); };
   say(("writing " + writer_stamp()).c_str());
   const auto abandon = [&](FileFailure failure) {
-    return stopped_copy(to.handle(), part_name, part.value, written, failure, false);
+    return stopped_copy(to.handle(), part_name, part, written, written_birth, failure, false);
   };
   std::vector<BYTE> buffer(kCopyChunk);
   ULONGLONG copied = 0;
@@ -480,11 +491,11 @@ inline int run_copy(wchar_t** argv) {
 #endif
     if (check_name(to.handle(), target, old_id) != NameIdentity::kMatches ||
         rename_into(old.value, to.handle(), aside, false).error != ERROR_SUCCESS) {
-      return stopped_copy(to.handle(), part_name, part.value, written, {}, true);
+      return stopped_copy(to.handle(), part_name, part, written, final_birth, {}, true);
     }
     if (check_name(to.handle(), aside, old_id) != NameIdentity::kMatches) {
       restore_target();
-      return stopped_copy(to.handle(), part_name, part.value, written, {}, true);
+      return stopped_copy(to.handle(), part_name, part, written, final_birth, {}, true);
     }
 #if defined(AVE_TEST_DIR_RECOVERY)
     test_stop_replacement("after-move");
@@ -502,7 +513,7 @@ inline int run_copy(wchar_t** argv) {
     classify(to.handle(), target, target_entry);
     if ((!replacing && target_entry != Entry::kAbsent) || renamed.error == ERROR_ALREADY_EXISTS || renamed.error == ERROR_FILE_EXISTS
         || renamed.error == ERROR_NOT_SUPPORTED || renamed.error == ERROR_INVALID_FUNCTION || renamed.error == ERROR_INVALID_PARAMETER) {
-      return stopped_copy(to.handle(), part_name, part.value, written, {}, true);
+      return stopped_copy(to.handle(), part_name, part, written, final_birth, {}, true);
     }
     return abandon(renamed);
   }
@@ -519,14 +530,9 @@ inline int run_copy(wchar_t** argv) {
 #if defined(AVE_TEST_DIR_RECOVERY)
     test_stop_replacement("after-commit");
 #endif
-    if (check_name(to.handle(), aside, old_id) != NameIdentity::kMatches ||
-        delete_on_close(old.value).error != ERROR_SUCCESS) report_target_left(true);
-    else {
-      CloseHandle(old.value);
-      old.value = INVALID_HANDLE_VALUE;
-      if (check_name(to.handle(), aside, old_id) == NameIdentity::kAbsent) say("target-retired");
-      else report_target_left(true);
-    }
+    if (check_name(to.handle(), aside, old_id, old_birth) != NameIdentity::kMatches ||
+        dispose_and_observe(to.handle(), aside, old).error != ERROR_SUCCESS) report_target_left(true);
+    else say("target-retired");
   }
   return done("committed");
 }
@@ -541,11 +547,11 @@ inline int remove_entry(HANDLE directory, const std::wstring& name, bool& remove
     const DWORD error = status_error(status);
     return error == ERROR_FILE_NOT_FOUND ? 0 : failed(native_failure(status, "NtCreateFile"));
   }
-  const PinnedHandle entry(opened);
+  PinnedHandle entry(opened);
   FILE_ATTRIBUTE_TAG_INFO tag{};
   if (!GetFileInformationByHandleEx(entry.value, FileAttributeTagInfo, &tag, sizeof(tag))) return failed(GetLastError());
   if ((tag.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 && (tag.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0) return failed(kIsADirectory);
-  const FileFailure removal = delete_on_close(entry.value);
+  const FileFailure removal = dispose_and_observe(directory, name, entry);
   if (removal.error != ERROR_SUCCESS) return failed(removal);
   removed = true;
   return 0;

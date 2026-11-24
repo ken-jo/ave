@@ -45,9 +45,9 @@ DWORD test_restore_write_result(DWORD result) {
   return fail_write ? ERROR_WRITE_FAULT : result;
 }
 
-FileFailure test_isolation_result(HANDLE file, HANDLE directory, const std::wstring& aside) {
-  if (recovery_boundary != RecoveryBoundary::kUnsupportedIsolation) return rename_into(file, directory, aside, false);
-  // Try introducing a directory at the source name just as exclusive isolation becomes unavailable.
+FileFailure test_remove_result() {
+  if (recovery_boundary != RecoveryBoundary::kUnsupportedIsolation) return {};
+  // Try introducing a directory at the source name just as disposition becomes unavailable.
   if (MoveFileExW(boundary_path.c_str(), (boundary_path + L".moved").c_str(), 0)) {
     CreateDirectoryW(boundary_path.c_str(), nullptr);
   } else if (sharing_blocked()) {

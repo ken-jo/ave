@@ -732,7 +732,7 @@ const DESTINATION_ID = /^destination-id ([0-9]+) ([0-9a-f]+) ([0-9]+)$/u;
 const WRITING = /^(writing|copy-id) (0|[1-9][0-9]{0,19}) ([0-9a-f]{1,32}) ([1-9][0-9]{0,19})$/u;
 const FAILURE_DIAGNOSTIC = /^Windows error \d+(?: \(NTSTATUS 0x[0-9A-F]{8}, (?:NtCreateFile|NtSetInformationFile)\))?\r?\n$/u;
 // A stopped copy may add ` left`, or ` left <hidden name> <dev> <ino> <verdict>` when a file stays at the moved-aside name.
-const PART_LEFT = /(?:^| )left(?: (\.[0-9a-f]{32}\.removing) (\d{1,20}) ([0-9a-f]{1,32}) (mismatch|remove-failed) ([^ ]+)( part-left)?)?$/u;
+const PART_LEFT = /(?:^| )left(?: (?:remove-failed|(\.[0-9a-f]{32}\.removing) (\d{1,20}) ([0-9a-f]{1,32}) (mismatch|remove-failed) ([^ ]+)( part-left)?))?$/u;
 const MAX_HELPER_FILE_ID = (1n << 64n) - 1n;
 interface HelperLeftPart {
   readonly name: string;

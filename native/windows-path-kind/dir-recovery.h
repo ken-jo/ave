@@ -10,7 +10,7 @@ namespace dir_ops {
 
 #if defined(AVE_TEST_DIR_RECOVERY)
 DWORD test_restore_write_result(DWORD result);
-FileFailure test_isolation_result(HANDLE file, HANDLE directory, const std::wstring& aside);
+FileFailure test_remove_result();
 #endif
 
 constexpr size_t kRecordLimit = 8192;
@@ -217,12 +217,6 @@ inline std::string snapshot(HANDLE file, const FILE_ID_INFO& id) {
   return id_text(id, ':') + ":" + std::to_string(birth) + ":" + content;
 }
 
-inline std::string fresh_hidden_name() {
-  BYTE random[16];
-  if (BCryptGenRandom(nullptr, random, sizeof(random), BCRYPT_USE_SYSTEM_PREFERRED_RNG) < 0) return {};
-  return "." + hex_bytes(random, sizeof(random)) + ".removing";
-}
-
 inline bool hidden_name(const std::wstring& name) {
   BYTE random[16];
   return name.size() == 42 && name.front() == L'.' && name.substr(33) == L".removing"
@@ -235,32 +229,22 @@ struct Retirement {
   std::string leftover = "left";
 };
 
-inline Retirement retire(HANDLE directory, const std::wstring& name, HANDLE file, const FILE_ID_INFO& id) {
-  Retirement result{check_name(directory, name, id)};
+inline Retirement retire(HANDLE directory, const std::wstring& name, PinnedHandle& file, const FILE_ID_INFO& id, ULONGLONG birth) {
+  Retirement result{check_name(directory, name, id, birth)};
   if (result.original != NameIdentity::kMatches) return result;
-  const std::string hidden = fresh_hidden_name();
-  if (hidden.empty()) return result;
-  const std::wstring aside(hidden.begin(), hidden.end());
-  // No plain rename fallback. The file is held without delete sharing across isolation, verification and disposition.
+  // The handle excludes deleters while it verifies the name and sets disposition.
+  // Keep the recorded name so a pending disposition can be observed on restart.
 #if defined(AVE_TEST_DIR_RECOVERY)
-  const FileFailure isolation = test_isolation_result(file, directory, aside);
-#else
-  const FileFailure isolation = rename_into(file, directory, aside, false);
+  if (test_remove_result().error != ERROR_SUCCESS) return result;
 #endif
-  if (isolation.error != ERROR_SUCCESS) return result;
-  const bool verified = check_name(directory, aside, id) == NameIdentity::kMatches;
-  if (verified && delete_on_close(file).error == ERROR_SUCCESS) {
-    result.removed = true;
-  } else {
-    result.leftover += " " + hidden + " " + id_text(id, ' ')
-      + (verified ? " remove-failed " + snapshot(file, id) : " mismatch -");
-  }
+  result.removed = dispose_and_observe(directory, name, file).error == ERROR_SUCCESS;
+  if (!result.removed) result.leftover = "left remove-failed";
   return result;
 }
 
-inline int stopped_copy(HANDLE directory, const std::wstring& name, HANDLE file, const FILE_ID_INFO& id,
+inline int stopped_copy(HANDLE directory, const std::wstring& name, PinnedHandle& file, const FILE_ID_INFO& id, ULONGLONG birth,
     FileFailure failure, bool refused_commit) {
-  const Retirement result = retire(directory, name, file, id);
+  const Retirement result = retire(directory, name, file, id, birth);
   const bool gone = result.removed || result.original == NameIdentity::kAbsent;
   const std::string suffix = gone ? "" : " " + result.leftover;
   if (refused_commit) return refused(gone ? "target removed" : ("target" + suffix).c_str());
@@ -296,10 +280,7 @@ inline int recover_target(HANDLE directory, const std::wstring& hidden, const st
   }
   if (!matches(source.value, old) || check_name(directory, hidden, old.id, old.birth) != NameIdentity::kMatches) return done("left");
   if (committed) {
-    if (delete_on_close(source.value).error != ERROR_SUCCESS) return done("left");
-    CloseHandle(source.value);
-    source.value = INVALID_HANDLE_VALUE;
-    return done(check_name(directory, hidden, old.id) == NameIdentity::kAbsent ? "resolved" : "left");
+    return done(dispose_and_observe(directory, hidden, source).error == ERROR_SUCCESS ? "resolved" : "left");
   }
   if (!vacant || rename_into(source.value, directory, target, false).error != ERROR_SUCCESS) return done("left");
   if (check_name(directory, target, old.id, old.birth) == NameIdentity::kMatches) return done("resolved");
@@ -342,7 +323,7 @@ inline int run_recovery(int argc, wchar_t** argv, RecoveryMode mode) {
   PinnedHandle source(opened);
   if (!matches(source.value, expected)) return done("left");
   if (!restore) {
-    const Retirement result = retire(directory.handle(), name, source.value, expected.id);
+    const Retirement result = retire(directory.handle(), name, source, expected.id, expected.birth);
     if (result.removed) return done("removed");
     return done(result.original == NameIdentity::kAbsent ? "absent" : result.leftover.c_str());
   }
@@ -367,10 +348,8 @@ inline int run_recovery(int argc, wchar_t** argv, RecoveryMode mode) {
   }
   // Keep both names on a failed copy or verification. Retire the source while the target still excludes writers and deleters.
   if (!FlushFileBuffers(target.value) || check_name(directory.handle(), part_name, target_id) != NameIdentity::kMatches) return done("left");
-  const Retirement result = retire(directory.handle(), name, source.value, expected.id);
+  const Retirement result = retire(directory.handle(), name, source, expected.id, expected.birth);
   if (!result.removed) return done(result.leftover.c_str());
-  CloseHandle(source.value);
-  source.value = INVALID_HANDLE_VALUE;
   return done("restored");
 }
 
