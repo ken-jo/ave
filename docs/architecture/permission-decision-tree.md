@@ -223,7 +223,8 @@ Notes that are part of the contract:
   for approval once or for the session, for every boot privacy-failure category.
 - Privacy helper unavailable (boot category helper-unavailable: the Windows path-kind or ACL helper did not answer; owner decision
   2026-11-24): Ave cannot judge the home's protection, so host shells and host hooks are denied, and so is a confined shell whose home
-  denies were skipped or could not be applied without that helper; no extension is offered a start without isolation. The notice tells the user to restart Ave. No approval, session grant or rule passes this denial.
+  denies were skipped or could not be applied without that helper; no extension is offered a start without isolation. A disposable
+  container run (operator container or workload broker) whose plan mounts no host Ave-home path is not a host shell and is unaffected. The notice tells the user to restart Ave. No approval, session grant or rule passes this denial.
 - Limit of file rows (home dotfiles such as `.gitconfig` and `.npmrc`, and the top-level files of a Windows profile-child Ave home):
   Linux bind masks and Windows ACL stamps are bound to the file object present at spawn, so a long-lived confined child can read a
   file the host replaces by rename-over. A file absent at spawn has no object to bind; it is held only by that backend's absent-path
