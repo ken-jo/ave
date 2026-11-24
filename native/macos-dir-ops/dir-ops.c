@@ -296,6 +296,9 @@ static int remove_own_part(int to, const char *part, const struct written_file *
   char aside[HIDDEN_NAME_SIZE];
   fresh_hidden_name(aside);
   hidden[0] = '\0';
+  struct stat part_info;
+  if (fstatat(to, part, &part_info, AT_SYMLINK_NOFOLLOW) != 0) return errno == ENOENT;
+  if (!S_ISREG(part_info.st_mode)) return 0;
   int exclusive = 1;
   if (renameatx_np(to, part, to, aside, RENAME_EXCL) != 0) {
     if (errno == ENOENT) return 1;
@@ -316,7 +319,7 @@ static int remove_own_part(int to, const char *part, const struct written_file *
     return 0;
   }
   const int same_id = moved.st_dev == own.st_dev && moved.st_ino == own.st_ino;
-  if (same_id && (exclusive || same_content(to, aside, written->fd))) {
+  if (S_ISREG(moved.st_mode) && same_id && (exclusive || same_content(to, aside, written->fd))) {
     if (unlinkat(to, aside, 0) == 0) return 1;
     if (errno != ENOENT) memcpy(hidden, aside, HIDDEN_NAME_SIZE);
     return 0;

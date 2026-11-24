@@ -1128,7 +1128,7 @@ const ENDINGS = ["cancelled", "failed", "refused"] as const;
 const theTarget: Record<Ending, string[]> = { cancelled: [], failed: ["report.pdf"], refused: ["report.pdf"] };
 // A folder's entries, without the `._` entries a volume without extended attributes (exFAT) keeps them in.
 const entriesOf = (folder: string): string[] => readdirSync(folder).filter((name) => !name.startsWith("._")).sort();
-async function stoppedNativeCopy(ending: Ending, swap: boolean | "absent", base: string) {
+async function stoppedNativeCopy(ending: Ending, swap: boolean | "absent" | "directory" | "symlink", base: string) {
   const chosen = join(base, "chosen");
   mkdirSync(chosen);
   const target = join(chosen, "report.pdf");
@@ -1145,7 +1145,9 @@ async function stoppedNativeCopy(ending: Ending, swap: boolean | "absent", base:
     } else if (swap) {
       swapped = join(chosen, part ?? "");
       moveAside(swapped, join(base, "the copy's own file"));
-      writeFileSync(swapped, "the user's file");
+      if (swap === "directory") mkdirSync(swapped);
+      else if (swap === "symlink") symlinkSync(target, swapped);
+      else writeFileSync(swapped, "the user's file");
     }
     if (ending === "refused") mkdirSync(target);
     if (ending === "cancelled") download.cancel();
@@ -1187,6 +1189,11 @@ describe.runIf(process.platform === "darwin")("a stopped native copy's temporary
     expect(entriesOf(chosen)).toEqual(theTarget[ending]);
     expect(outcome).toEqual({ state: ending === "cancelled" ? "cancelled" : "interrupted", cleanup: "removed" });
   });
+  it("leaves a symlink at the temporary file's name", async () => {
+    const { outcome, chosen, swapped } = await stoppedNativeCopy("cancelled", "symlink", home);
+    expect(entriesOf(chosen)).toEqual([basename(swapped)]);
+    expect(outcome).toEqual({ state: "interrupted", cleanup: "part-left" });
+  });
 });
 
 // The same on a volume without an exclusive rename, where the helper moves the file aside under a name it checked is free and knows its own
@@ -1222,6 +1229,12 @@ describe.runIf(process.platform === "darwin")("a stopped native copy's temporary
 
   it.for(ENDINGS)("leaves a file put at the temporary file's name when the copy is %s", (ending, { skip }) => expectSwappedFileLeft(ending, onVolume(skip)));
   it.for(ENDINGS)("removes its own temporary file when the copy is %s", (ending, { skip }) => expectOwnFileRemoved(ending, onVolume(skip)));
+  it("leaves a directory at the temporary file's name", async ({ skip }) => {
+    const { outcome, chosen, swapped } = await stoppedNativeCopy("cancelled", "directory", onVolume(skip));
+    expect(entriesOf(chosen)).toEqual([basename(swapped)]);
+    expect(statSync(swapped).isDirectory()).toBe(true);
+    expect(outcome).toEqual({ state: "interrupted", cleanup: "part-left" });
+  });
 });
 
 describe.runIf(process.platform === "linux")("a Linux copy whose temporary file cannot be removed when it stops", () => {
