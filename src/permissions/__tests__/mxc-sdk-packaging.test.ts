@@ -106,9 +106,23 @@ describe("installed SDK integrity", () => {
     }
   });
 
-  it.each(["MXC_FFI_DIR", "mxc_ffi_dir", "MXC_BIN_DIR", "mxc_bin_dir", "NODE_OPTIONS", "NODE_PATH"])("rejects loader override %s", (key) => {
+  it.each(["MXC_FFI_DIR", "mxc_ffi_dir", "MXC_BIN_DIR", "mxc_bin_dir", "MXC_ANYTHING", "NODE_OPTIONS", "NODE_PATH"])("rejects loader override %s", (key) => {
     const { root, pins } = installation();
     expect(() => verifyMxcSdk(root, "x64", pins, { [key]: "" })).toThrow(MxcIntegrityError);
+  });
+
+  it("refuses a source-build tree beside the installation", () => {
+    const { root, pins } = installation();
+    mkdirSync(path.join(root, "src", "target", "release"), { recursive: true });
+    expect(() => verifyMxcSdk(root, "x64", pins, {})).toThrow(/source-build fallback refused/);
+  });
+
+  it("refuses a resolvable optional runtime package", () => {
+    const { root, pins } = installation();
+    const runtime = path.join(root, "@microsoft", "mxc-sdk-nvx-runtime-win32-x64");
+    mkdirSync(runtime, { recursive: true });
+    writeFileSync(path.join(runtime, "package.json"), JSON.stringify({ name: "@microsoft/mxc-sdk-nvx-runtime-win32-x64", version: "1.1.0" }));
+    expect(() => verifyMxcSdk(root, "x64", pins, {})).toThrow(/optional runtime package refused/);
   });
 
   it("rejects mutated DLL, JS and addon bytes", () => {

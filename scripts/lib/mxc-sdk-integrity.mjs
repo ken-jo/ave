@@ -45,7 +45,7 @@ export function verifyMxcSdk(nodeModules, arch, pins, environment = process.env,
     throw new MxcIntegrityError("Unsupported SDK installation or architecture");
   }
   for (const key of Object.keys(environment)) {
-    if (/^(MXC_FFI_DIR|MXC_BIN_DIR|NODE_OPTIONS|NODE_PATH)$/i.test(key) && environment[key] !== undefined) {
+    if (/^(MXC_.*|NODE_OPTIONS|NODE_PATH)$/i.test(key) && environment[key] !== undefined) {
       throw new MxcIntegrityError(`Native loader override refused: ${key}`);
     }
   }
@@ -71,6 +71,22 @@ export function verifyMxcSdk(nodeModules, arch, pins, environment = process.env,
     assertMxcSdkInventory(root, pins, strictNativeDirectories ? arch : undefined);
     const sdkRoot = path.join(root, "@microsoft", "mxc-sdk");
     const require = createRequire(pathToFileURL(path.join(sdkRoot, "package.json")));
+    // The loader falls back to a source-build tree beside the installation, and registers an optional runtime package
+    // with the native library when one resolves. Neither is pinned, so neither may exist.
+    let sourceBuild = true;
+    try { lstatSync(path.join(root, "src", "target")); } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+      sourceBuild = false;
+    }
+    if (sourceBuild) throw new MxcIntegrityError("Native source-build fallback refused: src/target");
+    let optionalRuntime;
+    try {
+      optionalRuntime = createRequire(pathToFileURL(path.join(sdkRoot, "dist", "native-library.js")))
+        .resolve("@microsoft/mxc-sdk-nvx-runtime-win32-x64/package.json");
+    } catch (error) {
+      if (error?.code !== "MODULE_NOT_FOUND" && error?.code !== "ERR_MODULE_NOT_FOUND") throw error;
+    }
+    if (optionalRuntime !== undefined) throw new MxcIntegrityError("Unpinned optional runtime package refused");
     for (const [name, version] of Object.entries(pins.sdk.versions)) {
       const packageRoot = path.join(root, ...pins.sdk.packages[name].split("/"));
       const file = path.join(packageRoot, "package.json");
