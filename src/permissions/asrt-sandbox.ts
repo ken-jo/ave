@@ -39,6 +39,7 @@ import { prepareSandboxBareRepositoryCleanup } from "./sandbox-bare-repository-c
 import { createLogger } from "../lib/logger.js";
 import { createSerialQueue } from "../lib/with-file-lock.js";
 import { errorMessage } from "../shared/error-message.js";
+import { findHostProgram, hostProgramSearchDirectories } from "../shared/host-program-path.js";
 import { t } from "../i18n/index.js";
 import { hostDirectoryFloorPierces } from "../plugins/sandbox-authority.js";
 import { resolvePluginPaths } from "../plugins/plugin-paths.js";
@@ -355,6 +356,7 @@ interface WindowsWrapDenies {
 type WindowsDocumentsQuery = (signal?: AbortSignal) => Promise<string>;
 
 interface AsrtSandboxSession {
+  readonly linuxWrapperPrograms?: LinuxWrapperPrograms;
   readonly queryWindowsDocumentsPath?: WindowsDocumentsQuery;
   sharedWindowsDocumentsPath?: () => string;
   readonly windowsLiveGrants: Map<string, WindowsLiveGrantCounts>;
@@ -2014,11 +2016,39 @@ function buildSensitiveWriteFloor(userDataDir: string | undefined, resolveDocume
   return { entries: out, bounded: profiles?.bounded ?? true };
 }
 
-const LINUX_WRAPPER_PROGRAMS = {
-  bwrapPath: "/usr/bin/bwrap",
-  socatPath: "/usr/bin/socat",
-  ripgrep: { command: "/usr/bin/rg" },
-};
+interface LinuxWrapperPrograms {
+  readonly bwrapPath: string;
+  readonly socatPath: string;
+  readonly ripgrep: { readonly command: string };
+}
+
+function discoverLinuxWrapperPrograms(): { programs: LinuxWrapperPrograms } | { errors: string[] } {
+  const bwrapPath = findHostProgram("bwrap");
+  const socatPath = findHostProgram("socat");
+  const rg = findHostProgram("rg");
+  if (bwrapPath && socatPath && rg) return { programs: { bwrapPath, socatPath, ripgrep: { command: rg } } };
+
+  const searched = hostProgramSearchDirectories().join(":") || "(no fully qualified entries)";
+  const errors: string[] = [];
+  if (rg === null) errors.push(`ripgrep (rg) not found on PATH. Searched ${searched}`);
+  if (bwrapPath === null) errors.push(`bubblewrap (bwrap) not installed on PATH. Searched ${searched}`);
+  if (socatPath === null) errors.push(`socat not installed on PATH. Searched ${searched}`);
+  return { errors };
+}
+
+function requireLinuxWrapperPrograms(): LinuxWrapperPrograms {
+  const result = discoverLinuxWrapperPrograms();
+  if ("errors" in result) throw new Error(result.errors.join("\n"));
+  return result.programs;
+}
+
+function configuredLinuxWrapperPrograms(): LinuxWrapperPrograms | undefined {
+  if (process.platform !== "linux") return undefined;
+  if (sandboxSession?.linuxWrapperPrograms !== undefined) return sandboxSession.linuxWrapperPrograms;
+  // Tests can compose a configuration outside a session. Initialization requires every program before installing it.
+  const result = discoverLinuxWrapperPrograms();
+  return "programs" in result ? result.programs : undefined;
+}
 
 // Build a fully-resolved SandboxRuntimeConfig from TRUSTED settings. Deny-by-default: when no `allowedDomains` are supplied the network section has an empty allow-list, which ASRT treats as "no egress". Weakening flags default to `false`/absent and are only set when explicitly present in the trusted `weakening` object. @internal Exported for unit tests only (the Windows-logic tests assert the win32 `windows.proxyPortRange` emission with `process.platform` forced). Not part of the module's runtime API — boot uses initializeAsrtSandbox.
 export function buildSandboxConfig(
@@ -2139,7 +2169,7 @@ export function buildSandboxConfig(
     filesystem: finishFilesystemPolicy(filesystem, trustedSettings, trustedSettings.denyWrite ?? [], hasConfiguredDenies(trustedSettings)) as FilesystemConfig,
     ...(windows !== undefined ? { windows } : {}),
     ...(applySeccompPath !== undefined ? { seccomp: { applyPath: applySeccompPath } } : {}),
-    ...(process.platform === "linux" ? LINUX_WRAPPER_PROGRAMS : {}),
+    ...configuredLinuxWrapperPrograms(),
     ...(process.platform === "darwin" || process.platform === "linux"
       ? { javaAgentJarPath: getVendoredJavaProxyAgentJarPath() }
       : {}),
@@ -2494,6 +2524,7 @@ async function initializeSandboxRuntime(
   }
   const SandboxManager = await loadSandboxManager();
   startupSignal?.throwIfAborted();
+  const linuxWrapperPrograms = process.platform === "linux" ? requireLinuxWrapperPrograms() : undefined;
   const backgroundInitialization = process.platform === "win32"
     && trustedSettings.windows?.backgroundInitialization === true
     && trustedSettings.windows.externalConfinement !== true;
@@ -2502,7 +2533,7 @@ async function initializeSandboxRuntime(
     : trustedSettings;
   // Remember the base settings so worker-UDS register/unregister can rebuild the SHARED config additively (see the WORKER UDS header). On a fresh init there are no registered worker sockets yet, so the effective config equals the base; withWorkerUnixSockets is a no-op until a worker registers.
   _baseTrustedSettings = initialSettings;
-  sandboxSession = { queryWindowsDocumentsPath, sharedWindowsDocumentsPath: trustedSettings.resolveWindowsDocumentsPath,
+  sandboxSession = { linuxWrapperPrograms, queryWindowsDocumentsPath, sharedWindowsDocumentsPath: trustedSettings.resolveWindowsDocumentsPath,
     windowsLiveGrants: new Map(), windowsLiveGrantCount: 0, windowsLiveGrantRevision: 0, windowsWrapDenyRead: new Set(), windowsWrapDenyWrite: new Map(), windowsPendingWrapDenies: new Set(), windowsDenyRevision: 0 };
   const session = sandboxSession;
   let fullConfig: SandboxRuntimeConfig;
@@ -2579,6 +2610,18 @@ export async function checkAsrtDependencies(): Promise<{
     return mod.checkWindowsDependenciesAsync({ srtWin });
   }
   const SandboxManager = await loadSandboxManager();
+  if (process.platform === "linux" && SandboxManager.isSupportedPlatform()) {
+    const result = discoverLinuxWrapperPrograms();
+    if ("errors" in result) return { errors: result.errors, warnings: [] };
+    const [{ checkLinuxDependencies }, { getApplySeccompBinaryPathAsync }] = await Promise.all([
+      import("@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js"),
+      import("@anthropic-ai/sandbox-runtime/dist/sandbox/generate-seccomp-filter.js"),
+    ]);
+    const { bwrapPath, socatPath } = result.programs;
+    const applyPath = getVendoredApplySeccompPath();
+    await getApplySeccompBinaryPathAsync(applyPath);
+    return checkLinuxDependencies({ bwrapPath, socatPath, seccompConfig: { applyPath } });
+  }
   return SandboxManager.checkDependenciesAsync();
 }
 

@@ -78,7 +78,10 @@ function captureHostWindowsApps(): WindowsDirectoryIdentity | null {
 
 const hostFs: ProgramFs = { statSync, lstatSync, accessSync, pinWindowsDirectory, windowsApps: captureHostWindowsApps() };
 
-function pathEntries(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string[] {
+export function hostProgramSearchDirectories(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): string[] {
   return searchPath(env, platform)
     .split(platform === "win32" ? ";" : ":")
     .map((entry) => (platform === "win32" ? entry.trim().replace(/^"(.*)"$/u, "$1") : entry))
@@ -124,7 +127,7 @@ export function findHostProgram(
   const names = platform === "win32"
     ? [...(win32.extname(program) ? [program] : []), `${program}.com`, `${program}.exe`]
     : [program];
-  for (const entry of pathEntries(env, platform)) {
+  for (const entry of hostProgramSearchDirectories(env, platform)) {
     for (const name of names) {
       const candidate = runnableProgramPath(paths.join(entry, name), platform, fs);
       if (candidate !== null) return candidate;

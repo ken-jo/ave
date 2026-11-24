@@ -124,12 +124,10 @@ describe("host program launch source guard", () => {
     expect(file?.text, site).toMatch(/\b(?:resolveHostProgram|findHostProgram)\(/u);
   });
 
-  it.each(["permissions/asrt-sandbox.ts", "permissions/offline-process-sandbox.ts"])(
-    "%s does not search PATH for its fixed wrapper programs",
-    (site) => {
-      const file = files.find(({ path }) => path === site);
-      expect(file?.text, site).toBeDefined();
-      expect(file?.text, site).not.toMatch(/\b(?:resolveHostProgram|findHostProgram)\b/u);
-    },
-  );
+  it("does not search PATH for offline wrapper programs", () => {
+    const site = "permissions/offline-process-sandbox.ts";
+    const file = files.find(({ path }) => path === site);
+    expect(file?.text, site).toBeDefined();
+    expect(file?.text, site).not.toMatch(/\b(?:resolveHostProgram|findHostProgram)\b/u);
+  });
 });
