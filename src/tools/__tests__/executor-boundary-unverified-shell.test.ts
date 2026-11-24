@@ -15,7 +15,6 @@ vi.mock("node:child_process", async (importOriginal) => ({
 }));
 
 import { NO_APPROVER_MESSAGE } from "../../permissions/decision-pipeline.js";
-import { saveApprovalCardRule } from "../../permissions/approval-rule-save.js";
 import { HOST_SHELL_AUTHORIZATION_REVOKED_ERROR } from "../../permissions/host-shell-execution-permit.js";
 import { SHELL_RULE_CANONICAL_VERSION } from "../../shared/shell-rule-version.js";
 import { reviewerJudgeOutcomeForTest, setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
