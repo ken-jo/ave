@@ -189,7 +189,7 @@ const MXC_UNAVAILABLE_REASON_KEY = {
   "unsupported-arch": "permissionsTab.osSandboxWindowsMxcReasonUnsupportedArch",
   "binary-missing": "permissionsTab.osSandboxWindowsMxcReasonBinaryMissing",
   "probe-failed": "permissionsTab.osSandboxWindowsMxcReasonProbeFailed",
-  "tier-unsupported": "permissionsTab.osSandboxWindowsMxcReasonTierUnsupported",
+  "container-unavailable": "permissionsTab.osSandboxWindowsMxcReasonContainerUnavailable",
   "request-rejected": "permissionsTab.osSandboxWindowsMxcReasonRequestRejected",
   "launcher-mismatch": "permissionsTab.osSandboxWindowsMxcReasonLauncherMismatch",
   "powershell-start-failed": "permissionsTab.osSandboxWindowsMxcReasonPowershellStartFailed",

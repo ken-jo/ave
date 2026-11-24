@@ -40,7 +40,7 @@ vi.mock("../../lib/logger.js", () => ({
 
 // Use a Windows host with neither supported confinement substrate available.
 vi.mock("../../permissions/mxc-windows.js", () => ({
-  detectHostMxcPrerequisites: async () => ({ state: "unavailable", reason: "tier-unsupported", windowsBuild: null, detail: "test host" }),
+  detectHostMxcPrerequisites: async () => ({ state: "unavailable", reason: "container-unavailable", windowsBuild: null, detail: "test host" }),
 }));
 
 vi.mock("../../permissions/asrt-sandbox.js", async () => {

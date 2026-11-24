@@ -698,7 +698,7 @@ describe("sandbox-capability — Windows MXC substrate", () => {
     const { substrate } = planWindowsSandbox({
       shellRequested: true, shellLocalNetworkAccess: true,
       workerRequested: false,
-      mxc: { state: "unavailable", reason: "tier-unsupported" },
+      mxc: { state: "unavailable", reason: "container-unavailable" },
       windowsBuild: null,
       srtWinReady: true,
     });
