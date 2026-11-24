@@ -8,10 +8,10 @@ import net from "node:net";
 import type { Duplex } from "node:stream";
 import tls from "node:tls";
 import type { InvocationProxyAdmission } from "../egress-invocation-listener.js";
+import { isLoopbackName } from "./address-set.js";
 import {
   canonicalRelayHost,
   isLoopbackAddress,
-  isLoopbackName,
   isReservedAddress,
   isThisHostAddress,
   isValidRelayHost,

@@ -8,7 +8,9 @@ import * as runtimeHost from "@anthropic-ai/sandbox-runtime/dist/sandbox/parent-
 import * as runtimePath from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
 import { describe, expect, expectTypeOf, it } from "vitest";
 import * as address from "../egress-relay/address-set.js";
-import { canonicalRelayHost, formatAuthority, isValidRelayHost } from "../egress-relay/destination.js";
+import {
+  canonicalRelayHost, formatAuthority, isLoopbackAddress, isReservedAddress, isThisHostAddress, isValidRelayHost, resolvedAddressPermitted,
+} from "../egress-relay/destination.js";
 import { matchesDomainPatternWithPort } from "../egress-relay/domain-pattern.js";
 import type { EgressRelayRoute, EgressRelayRouter } from "../egress-relay/relay.js";
 import * as spelling from "../sandbox-path-spelling.js";
@@ -205,6 +207,30 @@ describe("path spelling", () => {
     expect(spelling.expandWindowsEnvRefs("%userprofile%\\x")).toBe(`${home}\\x`);
     expect(spelling.expandWindowsEnvRefs("%HOMEDRIVE%%HOMEPATH%")).toBe(home);
     expect(spelling.expandWindowsEnvRefs("%APPDATA%\\x")).toBe("%APPDATA%\\x");
+  });
+});
+
+describe("relay resolved-address check", () => {
+  const PUBLIC = "93.184.216.34";
+
+  it.each([
+    ["LOCALHOST.", PUBLIC],
+    ["a.Localhost", PUBLIC],
+    ["allowed.example", "::"],
+    ["allowed.example", "::1"],
+    ["allowed.example", "::ffff:127.0.0.1%eth0"],
+  ])("refuses %s at %s", (host, resolved) => {
+    expect(resolvedAddressPermitted(host, resolved, 443, [], [])).toBe(false);
+  });
+
+  it("keeps the unspecified and loopback addresses in their own classes", () => {
+    expect([isReservedAddress("::"), isLoopbackAddress("::")]).toEqual([true, false]);
+    expect([isReservedAddress("::1"), isLoopbackAddress("::1")]).toEqual([false, true]);
+    expect([isReservedAddress("::1%lo0"), isThisHostAddress("::1%lo0", [])]).toEqual([false, true]);
+    expect(isReservedAddress("::ffff:0.0.0.1")).toBe(true);
+    expect(isThisHostAddress("::ffff:127.0.0.1%eth0", [])).toBe(true);
+    expect(resolvedAddressPermitted("localhost", "::1", 443, [], [])).toBe(true);
+    expect(resolvedAddressPermitted("allowed.example", PUBLIC, 443, [], [])).toBe(true);
   });
 });
 
