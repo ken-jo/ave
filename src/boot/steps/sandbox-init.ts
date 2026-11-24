@@ -24,7 +24,7 @@ import { classifySandboxDependencyErrors } from "../../permissions/sandbox-start
 import { errorMessage } from "../../shared/error-message.js";
 import { checkSandboxSweepRoot } from "../../shared/ave-home-test-guard.js";
 import { removeOwnedPluginTree } from "../../plugins/installed-entry-fs.js";
-import { AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE, aveHomeBoundaryFailure, getAveHomePrivacyFailure, setAveHomePrivacyAtBoot, setAveHomePrivacyRefusalReporter } from "../../shared/ave-home.js";
+import { AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE, aveHomeBoundaryFailure, getAveHomePrivacyFailure, isAveHomePrivacyApprovable, setAveHomePrivacyAtBoot, setAveHomePrivacyRefusalReporter } from "../../shared/ave-home.js";
 import { isAveHomeTrustPendingAtBoot } from "../../shared/ave-home-trust.js";
 import type { ProcessRunStateProbe } from "../../permissions/windows-process-start-time.js";
 import type { AsrtSandboxInitialization } from "../../permissions/asrt-sandbox.js";
@@ -212,7 +212,10 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
       const privacyFailure = getAveHomePrivacyFailure();
       if (privacyFailure !== undefined && windowsStart !== "proxy-only") {
         const path = privacyFailure.failedPath ?? privacyFailure.home;
-        log.warn("boot: extension isolation is OFF; AVE_HOME privacy failed (%s, %s). Extensions require session approval in Settings > Permissions.", privacyFailure.category, path);
+        log.warn("boot: extension isolation is OFF; AVE_HOME privacy failed (%s, %s). %s", privacyFailure.category, path,
+          isAveHomePrivacyApprovable(privacyFailure.category)
+            ? "Extensions require session approval in Settings > Permissions."
+            : "Extensions stay blocked until a restart; if it persists, reinstall Ave.");
         recordWindows("none", true);
         recordGate("degrade", "degrade-ave-home-privacy-failed", [privacyFailure.reason], ["ave-home-privacy-failed"]);
       } else if (decision.action === "abort") {

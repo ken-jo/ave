@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { checkResolvedAveHome } from "./ave-home-test-guard.js";
 import { windowsPowerShellEnv } from "./windows-powershell-env.js";
+import { isWindowsPathKindHelperUnavailable } from "../main/windows-path-kind-launcher.js";
 import { admitWindowsReparse, isOwnerOnlyDacl, pinWindowsPaths, readWindowsDacls, windowsGrantingRules, windowsObjectKey, windowsOwnerRules, type WindowsDaclFacts } from "./windows-path-facts.js";
 import { TOOL_TIMEOUT_POLICY } from "./tool-timeout-policy.js";
 import { win32SystemBinary, windowsSystemRoot } from "./windows-system-path.js";
@@ -468,6 +469,8 @@ export type AveHomePrivacyFailureCategory =
   | "identity-failed"
   | "icacls-failed"
   | "read-back-failed"
+  // Windows: the path-facts helper is missing, could not start, or did not answer in time; a restart can recover it, an approval cannot.
+  | "helper-unavailable"
   | "extra-principals"
   | "workspace-extra-principals"
   | "not-protected"
@@ -560,7 +563,7 @@ export function readWindowsDirectoryDacls(paths: readonly string[], protect = fa
   }
   const writes: WindowsDirectoryDacl[] = protect ? protectWindowsDirectories(paths, claimableRuntimeRoot, repairRoot) : paths.map(path => ({ path }));
   const protectedRows = new Map<number, WindowsDaclFacts>();
-  let protectedReadError: string | undefined;
+  let protectedReadError: unknown;
   if (protect) {
     const pending = paths.map((path, index) => ({ path, index, write: writes[index] })).filter(({ write }) => write && !("error" in write));
     if (pending.length) {
@@ -573,7 +576,7 @@ export function readWindowsDirectoryDacls(paths: readonly string[], protect = fa
         });
       } catch (error) {
         // Native batches return no partial facts; every unread descriptor must fail closed.
-        protectedReadError = (error as Error).message;
+        protectedReadError = error;
       }
     }
   }
@@ -581,16 +584,20 @@ export function readWindowsDirectoryDacls(paths: readonly string[], protect = fa
     const write = writes[index]!;
     if ("error" in write) return write;
     try {
-      if (protectedReadError !== undefined) throw new Error(protectedReadError);
+      if (protectedReadError !== undefined) throw protectedReadError;
       const row = protect ? protectedRows.get(index) : readWindowsDacls([resolve(path)])[0];
       if (!row) throw new Error("Directory DACL read-back is missing");
       if (!row.exists || !row.directory) return { path, category: "directory-failed", error: "Path is not a directory" };
       const descriptor = { ...write, ...directoryDescriptor(path, row) };
       return protect && index === 0 && !("error" in descriptor) ? { ...descriptor, ...workspaceFacts(path) } : descriptor;
     } catch (error) {
-      return { path, category: "read-back-failed", error: (error as Error).message };
+      return { path, category: readFailureCategory(error), error: (error as Error).message };
     }
   });
+}
+
+function readFailureCategory(error: unknown): "helper-unavailable" | "read-back-failed" {
+  return isWindowsPathKindHelperUnavailable(error) ? "helper-unavailable" : "read-back-failed";
 }
 
 export function windowsDirectoryProtectionRequest(paths: readonly string[], claimableRuntimeRoot?: string, repairRoot = false) {
@@ -738,7 +745,8 @@ export function areExtensionsWithoutIsolationApproved(): boolean {
 
 /** Called only by the trusted, gesture-checked permissions IPC handler. */
 export function approveExtensionsWithoutIsolation(): void {
-  if (getAveHomePrivacyFailure() === undefined) throw new Error("Home privacy approval is not applicable");
+  const failure = getAveHomePrivacyFailure();
+  if (failure === undefined || !isAveHomePrivacyApprovable(failure.category)) throw new Error("Home privacy approval is not applicable");
   extensionsWithoutIsolationApproved = true;
 }
 
@@ -758,6 +766,11 @@ export function isAveHomeBoundaryCategory(category: string | undefined): categor
   return category === "boundary-link" || category === "boundary-unlisted";
 }
 
+/** A helper that gave no answer is no evidence about the folder, so it offers no run without isolation: a restart retries the check. */
+export function isAveHomePrivacyApprovable(category: AveHomePrivacyFailureCategory): boolean {
+  return category !== "helper-unavailable";
+}
+
 export function isAveHomePrivacyUnverifiedAtBoot(): boolean {
   return getAveHomePrivacyFailure() !== undefined;
 }
@@ -773,7 +786,10 @@ export function assertAveHomePrivacyForConfinement(): void {
     const principals = failure.extraPrincipals?.map(({ sid, account }) => account ? `${sid} (${account})` : sid).join(", ");
     // A read-boundary refusal names no path: its message reaches the host log, which carries codes only for it.
     const where = isAveHomeBoundaryCategory(failure.category) ? "" : `, ${failure.failedPath ?? failure.home}`;
-    const message = `Extension isolation is off: AVE_HOME privacy could not be established (${failure.category}${where}). Approve running without isolation in Settings > Permissions, or fix the folder permissions.${principals ? ` Extra principals: ${principals}.` : ""}`;
+    const remedy = isAveHomePrivacyApprovable(failure.category)
+      ? "Approve running without isolation in Settings > Permissions, or fix the folder permissions."
+      : "Restart Ave; if it persists, reinstall Ave.";
+    const message = `Extension isolation is off: AVE_HOME privacy could not be established (${failure.category}${where}). ${remedy}${principals ? ` Extra principals: ${principals}.` : ""}`;
     reportPrivacyRefusal?.(message);
     throw new Error(message);
   }
@@ -1027,7 +1043,7 @@ export function ensureAveHomePrivate(
     if (workspaceReaders.length > 0) diagnostics.push(`Directory "workspace" has foreign read-only access: ${[...new Set(workspaceReaders.map((rule) => rule.sid))].join(", ")}`);
     return { enforcement: "win32-dacl", home, sid, ...(repairs.length ? { repairs } : {}), ...(diagnostics.length ? { diagnostics } : {}) };
   } catch (err) {
-    return { enforcement: "none", home, failedPath: path, category, reason: (err as Error).message,
+    return { enforcement: "none", home, failedPath: path, category: category === "read-back-failed" ? readFailureCategory(err) : category, reason: (err as Error).message,
       ...(repairs.length ? { repairs } : {}), ...(diagnostics.length ? { diagnostics } : {}) };
   }
 }

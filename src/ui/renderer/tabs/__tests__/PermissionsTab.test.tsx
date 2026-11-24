@@ -27,6 +27,7 @@ import { SettingsEditorProvider } from "../../context/SettingsEditorContext.js";
 import { makeHookTrustRow as hook } from "./test-helpers.js";
 import { renderPermissionsTab } from "./support/render-permissions-tab.js";
 import type { HookTrustRow, PermissionReviewerDispatchResult, ScopedPermissionRuleError } from "../../types.js";
+import type { AveHomePrivacyFailureCategory } from "../../../../shared/ave-home.js";
 import { isPolicyUserEditable, type AdminPolicyDiagnostic, type PolicySource } from "../../../../shared/policy-editability.js";
 import { getLocale, setLocale, t } from "../../../../i18n/runtime.js";
 import { TEST_IDS, execModeTestId } from "../../../../shared/test-ids.js";
@@ -1484,12 +1485,15 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
 
   describe("AVE_HOME privacy fix guidance per category", () => {
     // The spec: each cause gets its own fix; a cause whose text already says what to do gets none appended.
-    const FIX: Record<string, string | null> = {
+    // Every Windows category except the two whose panels have their own suites (workspace principals, POSIX roots).
+    type WindowsCategory = Exclude<AveHomePrivacyFailureCategory, "workspace-extra-principals" | "posix-root-unsafe">;
+    const FIX: Record<WindowsCategory, string | null> = {
       "directory-failed": "permissionsTab.homePrivacyFixDirectory",
       "system-root-missing": "permissionsTab.homePrivacyFixSystemRoot",
       "identity-failed": "permissionsTab.homePrivacyFixIdentity",
       "icacls-failed": "permissionsTab.homePrivacyFixPermissions",
       "read-back-failed": "permissionsTab.homePrivacyFixPermissions",
+      "helper-unavailable": "permissionsTab.homePrivacyFixHelperUnavailable",
       "not-protected": "permissionsTab.homePrivacyFixPermissions",
       "invalid-owner-grant": "permissionsTab.homePrivacyFixPermissions",
       "owner-claim-failed": null,
@@ -1498,12 +1502,13 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       "boundary-link": "permissionsTab.homePrivacyFixBoundaryLink",
       "boundary-unlisted": "permissionsTab.homePrivacyFixBoundaryUnlisted",
     };
-    const REASON: Record<string, string> = {
+    const REASON: Record<WindowsCategory, string> = {
       "directory-failed": "permissionsTab.homePrivacyDirectoryFailed",
       "system-root-missing": "permissionsTab.homePrivacySystemRootMissing",
       "identity-failed": "permissionsTab.homePrivacyIdentityFailed",
       "icacls-failed": "permissionsTab.homePrivacyIcaclsFailed",
       "read-back-failed": "permissionsTab.homePrivacyReadBackFailed",
+      "helper-unavailable": "permissionsTab.homePrivacyHelperUnavailable",
       "not-protected": "permissionsTab.homePrivacyNotProtected",
       "invalid-owner-grant": "permissionsTab.homePrivacyInvalidOwnerGrant",
       "owner-claim-failed": "permissionsTab.homePrivacyOwnerClaimFailed",
@@ -1512,7 +1517,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       "boundary-link": "permissionsTab.homePrivacyBoundaryLink",
       "boundary-unlisted": "permissionsTab.homePrivacyBoundaryUnlisted",
     };
-    const rows = (["en", "ko"] as const).flatMap((locale) => Object.keys(FIX).map((category) => [locale, category] as const));
+    const rows = (["en", "ko"] as const).flatMap((locale) => (Object.keys(FIX) as WindowsCategory[]).map((category) => [locale, category] as const));
     let previousLocale: ReturnType<typeof getLocale>;
     beforeEach(() => { previousLocale = getLocale(); });
     afterEach(() => { setLocale(previousLocale); });
@@ -1539,7 +1544,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
         expect(screen.getByTestId("os-sandbox-boot-degraded").textContent)
           .toContain(t("permissionsTab.osSandboxBootDegradedReason", { reason: "degrade-ave-home-boundary-unverified" }));
       }
-      const reason = t(REASON[category]!, { principals: "S-1-5-11" });
+      const reason = t(REASON[category], { principals: "S-1-5-11" });
       // Both boundary reasons tell the user that shell commands now ask, once or for the session.
       if (category.startsWith("boundary-")) expect(reason).toContain(locale === "en" ? "shell commands will ask for approval once or for the session" : "셸 명령은 한 번 또는 이 세션 동안의 승인을 요청함");
       const fix = FIX[category];
@@ -1553,8 +1558,15 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       }
       await waitFor(() => expect(screen.getByTestId("os-sandbox-boot-degraded-detail").textContent)
         .toBe(t("permissionsTab.osSandboxBootDegradedHomePrivacy", { path: "D:/ave-home", reason }) + tail));
+      // A helper that gave no answer offers no run without isolation: the panel says to restart, with no approval hint or button.
+      const offer = category === "helper-unavailable" ? "" : ` ${t("permissionsTab.homePrivacyApproveHint")}`;
       await waitFor(() => expect(screen.getByTestId("os-sandbox-windows-home-privacy-error").textContent)
-        .toContain(`${t("permissionsTab.osSandboxWindowsHomePrivacyError", { path: "D:/ave-home", reason })}${tail} ${t("permissionsTab.homePrivacyApproveHint")}`));
+        .toContain(`${t("permissionsTab.osSandboxWindowsHomePrivacyError", { path: "D:/ave-home", reason })}${tail}${offer}`));
+      if (category === "helper-unavailable") {
+        expect(screen.getByTestId("os-sandbox-windows-home-privacy-error").textContent).not.toContain(t("permissionsTab.homePrivacyApproveHint"));
+        expect(t(fix!)).toBe(locale === "en" ? "Restart Ave; if it persists, reinstall Ave." : "Ave를 다시 시작하세요. 문제가 계속되면 Ave를 다시 설치하세요.");
+        expect(screen.queryByRole("button", { name: t("permissionsTab.homePrivacyApproveForSession") })).toBeNull();
+      }
     });
   });
 

@@ -225,6 +225,17 @@ describe("extension isolation session approval", () => {
     expect(logged).not.toContain(JSON.stringify(path).slice(1, -1));
     expect(logged).not.toContain("logs");
   });
+  it("cannot approve, and audits nothing, when the path-facts helper gave no answer", async () => {
+    setProcessPlatform("win32");
+    setAveHomePrivacyAtBoot({ enforcement: "none", home: home(), category: "helper-unavailable", reason: "Windows path facts helper did not answer within 15000 ms" });
+    const { registerPermissionsHandlers } = await import("../permissions.js");
+    const deps = { ...makeDeps({ pluginWorkerConfinement: true }), settingsService: { get: vi.fn(() => ({ pluginWorkerConfinement: true })), set: vi.fn() } };
+    registerPermissionsHandlers(deps as never);
+    expect(await invoke(PERMISSIONS.approveExtensionsWithoutIsolation, hostFrameEvent(), { intent: USER_INTENT }))
+      .toMatchObject({ ok: false, error: "not-applicable" });
+    expect(areExtensionsWithoutIsolationApproved()).toBe(false);
+    expect((deps.auditLogger.log.mock.calls as unknown as [{ type: string }][]).filter(([entry]) => entry.type === "approval")).toHaveLength(0);
+  });
   it("cannot approve when the home is protected", async () => {
     setProcessPlatform("win32"); await setup();
     expect(await invoke(PERMISSIONS.approveExtensionsWithoutIsolation, hostFrameEvent(), { intent: USER_INTENT }))

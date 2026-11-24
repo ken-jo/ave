@@ -11,6 +11,7 @@ import { WINDOWS_HOME_BOUNDARY_SOURCE } from "../windows-home-boundary.js";
 import { permissionSettingsPath } from "../../permissions/permission-settings-store.js";
 import { TOOL_TIMEOUT_POLICY } from "../tool-timeout-policy.js";
 import { configureHostResources } from "../../main/host-resources.js";
+import { windowsPathKindHelperUnavailable } from "../../main/windows-path-kind-launcher.js";
 import * as windowsPathFacts from "../windows-path-facts.js";
 import * as windowsNativeHost from "../windows-native-host.js";
 
@@ -521,6 +522,28 @@ describe("ensureAveHomePrivate", () => {
       { path: paths[2], category: "read-back-failed", error: "Invalid native result" },
     ]);
     expect(read.mock.calls.map(([targets]) => targets)).toEqual([[resolve(dir)], [resolve(dir), resolve(join(dir, "config"))]]);
+  });
+  it("classifies a path-facts helper that gave no answer as helper-unavailable, per row, per protected batch and at the root read", () => {
+    const dir = home();
+    const unavailable = () => windowsPathKindHelperUnavailable("Windows path facts helper did not answer within 15000 ms", "ETIMEDOUT");
+    vi.spyOn(windowsPathFacts, "readWindowsDacls").mockImplementation(() => { throw unavailable(); });
+    expect(readWindowsDirectoryDacls([dir])).toEqual([{ path: dir, category: "helper-unavailable", error: "Windows path facts helper did not answer within 15000 ms" }]);
+
+    const paths = [dir, join(dir, "secrets")];
+    vi.spyOn(windowsNativeHost, "runWindowsNative").mockImplementation(operation => operation());
+    vi.mocked(execFileSync).mockImplementationOnce(() => JSON.stringify(paths.map(path => ({ path }))));
+    vi.mocked(windowsPathFacts.readWindowsDacls).mockReset().mockImplementationOnce(targets => targets.map(path => nativeDescriptor(path)))
+      .mockImplementation(() => { throw unavailable(); });
+    expect(readWindowsDirectoryDacls(paths, true).map(row => row.category)).toEqual(["helper-unavailable", "helper-unavailable"]);
+
+    vi.mocked(windowsPathFacts.readWindowsDacls).mockReset().mockImplementation(() => { throw unavailable(); });
+    expect(ensureAveHomePrivate(dir, { platform: "win32", readDacls: readWindowsDirectoryDacls }))
+      .toMatchObject({ enforcement: "none", category: "helper-unavailable" });
+  });
+  it("keeps any other timed-out read, such as the protection command's, a read-back failure", () => {
+    const timedOut = Object.assign(new Error("spawnSync powershell.exe ETIMEDOUT"), { code: "ETIMEDOUT", syscall: "spawnSync powershell.exe" });
+    expect(ensureAveHomePrivate(home(), { platform: "win32", readDacls: () => { throw timedOut; } }))
+      .toMatchObject({ enforcement: "none", category: "read-back-failed" });
   });
   it("reports a directory the protecting step could not create", () => {
     const dir = home();

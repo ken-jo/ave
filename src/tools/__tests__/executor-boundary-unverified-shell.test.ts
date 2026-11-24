@@ -35,6 +35,7 @@ import { setProcessPlatform } from "../../__tests__/support/process-platform.js"
 import { __resetShellResolverCache } from "../../lib/shell-resolver.js";
 import { _resetAveHomePrivacyForTest, setAveHomePrivacyAtBoot, ensureAveHomePrivate, AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE, type AveHomePrivacyFailureCategory } from "../../shared/ave-home.js";
 import { shellExecutionEnvironmentLines } from "../../shared/shell-execution-environment.js";
+import { windowsPathKindHelperUnavailable } from "../../main/windows-path-kind-launcher.js";
 import { t } from "../../i18n/runtime.js";
 import { userPermissionContext as permissionContext } from "./tool-context-fixture.js";
 import { sentApprovalCards } from "../../__tests__/test-helpers.js";
@@ -393,10 +394,10 @@ describe("host shells under an unverifiable Ave home boundary", () => {
   }
 
   const privacyFailures: readonly { label: string; category: AveHomePrivacyFailureCategory; helperError?: Error }[] = [
-    { label: "path-kind helper timeout", category: "read-back-failed", helperError: Object.assign(new Error("Path facts timed out"), { code: "ETIMEDOUT" }) },
+    { label: "path-kind helper timeout", category: "helper-unavailable", helperError: windowsPathKindHelperUnavailable("Windows path facts helper did not answer within 15000 ms", "ETIMEDOUT") },
     { label: "path-kind helper error", category: "read-back-failed", helperError: new Error("Invalid Windows path facts response") },
     ...([
-      "system-root-missing", "directory-failed", "identity-failed", "icacls-failed", "read-back-failed",
+      "system-root-missing", "directory-failed", "identity-failed", "icacls-failed", "read-back-failed", "helper-unavailable",
       "extra-principals", "workspace-extra-principals", "not-protected", "invalid-owner-grant", "owner-claim-failed", "reparse-point",
     ] as const).map(category => ({ label: category, category })),
   ];

@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { isAbsolute, win32 } from "node:path";
 import { toUSVString } from "node:util";
-import { resolveWindowsPathKindHelper } from "../main/windows-path-kind-launcher.js";
+import { isWindowsPathKindHelperTimeout, resolveWindowsPathKindHelper, windowsPathKindHelperUnavailable } from "../main/windows-path-kind-launcher.js";
 import { WINDOWS_COMMAND_LINE_LIMIT, windowsCommandLineLength } from "./windows-command-line.js";
 import { decodeWindowsNativeReply, runWindowsNative } from "./windows-native-host.js";
 import { TOOL_TIMEOUT_POLICY } from "./tool-timeout-policy.js";
@@ -149,6 +149,13 @@ function helperExitFailure(error: unknown): (Error & { status: number | null }) 
   return Object.assign(new Error(status === null ? "Windows path facts helper failed" : `Windows path facts helper failed (exit ${status})`), { status });
 }
 
+// An output overrun (ENOBUFS) is a reply, not a failed start.
+function helperLaunchFailureCode(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null || !("syscall" in error)) return undefined;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" && /^E[A-Z0-9]{1,31}$/u.test(code) && code !== "ENOBUFS" ? code : undefined;
+}
+
 function request(paths: readonly string[], mode: "--pin" | "--dacl", flags: readonly string[] = []): WindowsPathFacts[] {
   if (paths.length === 0) return [];
   const framed = mode === "--dacl" && flags.includes("--parent") && !flags.includes("--content");
@@ -168,6 +175,12 @@ function request(paths: readonly string[], mode: "--pin" | "--dacl", flags: read
       });
     });
   } catch (error) {
+    // Spawn and timeout errors name the helper's install path; only their code is kept.
+    if (isWindowsPathKindHelperTimeout(error)) {
+      throw windowsPathKindHelperUnavailable(`Windows path facts helper did not answer within ${TOOL_TIMEOUT_POLICY.windowsAclRequestMs} ms`, "ETIMEDOUT");
+    }
+    const launchCode = helperLaunchFailureCode(error);
+    if (launchCode !== undefined) throw windowsPathKindHelperUnavailable(`Windows path facts helper could not start (${launchCode})`, launchCode);
     const failure = helperExitFailure(error);
     if (flags.includes("--content") && failure?.status === CONTENT_TOO_LARGE_EXIT_CODE) {
       const oversized: NodeJS.ErrnoException = new Error("Windows file content exceeds the native read limit", { cause: failure });

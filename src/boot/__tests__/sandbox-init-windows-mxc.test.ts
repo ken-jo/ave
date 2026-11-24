@@ -118,9 +118,12 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-it("degrades before initializing the extension backend when private-directory protection fails", async () => {
+it.each([
+  { category: "read-back-failed", remedy: "Extensions require session approval in Settings > Permissions.", refusal: "Settings > Permissions" },
+  { category: "helper-unavailable", remedy: "Extensions stay blocked until a restart; if it persists, reinstall Ave.", refusal: "Restart Ave; if it persists, reinstall Ave." },
+] as const)("degrades before initializing the extension backend when private-directory protection fails ($category)", async ({ category, remedy, refusal }) => {
   const path = "D:/private-state/secrets";
-  setAveHomePrivacyAtBoot({ enforcement: "none", home: "D:/private-state", failedPath: path, category: "read-back-failed", reason: "read-back failed" });
+  setAveHomePrivacyAtBoot({ enforcement: "none", home: "D:/private-state", failedPath: path, category, reason: "read-back failed" });
   h.checkDeps.mockResolvedValue({ errors: [], warnings: [] });
   h.detectMxc.mockResolvedValue(MXC_OK);
   h.initialize.mockImplementation(async (settings) => {
@@ -135,8 +138,8 @@ it("degrades before initializing the extension backend when private-directory pr
   expect(h.initialize).not.toHaveBeenCalled();
   expect(getSandboxBootOutcome()).toMatchObject({ action: "degrade", reason: "degrade-ave-home-privacy-failed", causes: ["ave-home-privacy-failed"] });
   expect(detectPluginWorkerSandboxCapability().kind).toBe("none");
-  expect(h.logger.warn).toHaveBeenCalledWith(expect.stringContaining("isolation is OFF"), "read-back-failed", path);
-  expect(() => assertAveHomePrivacyForConfinement()).toThrow("Settings > Permissions");
+  expect(h.logger.warn).toHaveBeenCalledWith(expect.stringContaining("isolation is OFF"), category, path, remedy);
+  expect(() => assertAveHomePrivacyForConfinement()).toThrow(refusal);
   expect(logRefusal).toHaveBeenCalledWith(expect.objectContaining({ type: "error", output: expect.stringContaining("ave_home_privacy_refused") }));
   await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({ extensions: "none" }));
 });
