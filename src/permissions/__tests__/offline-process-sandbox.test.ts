@@ -56,6 +56,18 @@ import { assertCodexExecutableLocation } from "../../main/codex-executable-locat
 import { wrapCommandWithSandboxMacOS } from "@anthropic-ai/sandbox-runtime/dist/sandbox/macos-sandbox-utils.js";
 import { wrapCommandWithSandboxLinux, cleanupBwrapMountPoints } from "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js";
 
+const registration = vi.hoisted(() => ({ refuse: false }));
+vi.mock("../../main/process-group-reaper.js", async (original) => {
+  const actual = await original<typeof import("../../main/process-group-reaper.js")>();
+  return { ...actual, createProcessGroupReaper: (...args: Parameters<typeof actual.createProcessGroupReaper>) => {
+    const reaper = actual.createProcessGroupReaper(...args);
+    return { ...reaper, retain: (pgid: number) => {
+      if (registration.refuse) throw new Error("Injected scanner registration failure");
+      reaper.retain(pgid);
+    } };
+  } };
+});
+
 const HOST_PLATFORM = process.platform;
 const HOST_CWD = process.cwd();
 const LINUX_WRAPPER = "bwrap --disable-userns --unshare-net -- /bin/sh -c command";
@@ -294,6 +306,52 @@ describe("offline process confinement", () => {
     } finally {
       controller.abort(reason);
       if (await Promise.race([launched.promise.then(() => true), settlement.then(() => false)])) await nativeClose.promise;
+      vi.useRealTimers();
+    }
+  });
+
+  it("retains scan scratch when registration fails after acquiring a live group", async () => {
+    setProcessPlatform("linux");
+    registration.refuse = true;
+    const child = Object.assign(new EventEmitter(), { pid: 14001, spawnfile: "/usr/bin/rg", exitCode: null, signalCode: null });
+    const spawned = deferred<void>();
+    const nativeKill = process.kill;
+    const kill = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+      if (Math.abs(pid) === child.pid) {
+        if (signal === 0) return true;
+        throw Object.assign(new Error("Injected group kill failure"), { code: "EPERM" });
+      }
+      return nativeKill(pid, signal);
+    });
+    vi.mocked(wrapCommandWithSandboxLinux).mockImplementation(async ({ ripgrepConfig, abortSignal }) => {
+      if (!ripgrepConfig?.run || !abortSignal) throw new Error("Expected the managed scanner.");
+      await ripgrepConfig.run(ripgrepConfig.command, [], abortSignal, TOOL_TIMEOUT_POLICY.processTreeKillMs);
+      return LINUX_WRAPPER;
+    });
+    vi.spyOn(childProcess, "spawn").mockImplementation(() => {
+      spawned.resolve();
+      return child as unknown as ChildProcess;
+    });
+    syncBuiltinESMExports();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const controller = new AbortController();
+    const settlement = wrapOfflineProcess({ ...request(), signal: controller.signal }).catch((error: unknown) => error);
+    try {
+      await spawned.promise;
+      controller.abort(new Error("Stopped after spawn"));
+      await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.processTreeKillMs);
+      expect(await settlement).toMatchObject({
+        code: "engine-confinement-unavailable", message: "Offline scanner termination was not confirmed.",
+      });
+      expect(kill).toHaveBeenCalledWith(-child.pid, "SIGKILL");
+      expect(await fs.promises.readdir(root)).toEqual(expect.arrayContaining([expect.stringMatching(/^\.offline-scan-/u)]));
+    } finally {
+      kill.mockImplementation((pid, signal) => {
+        if (Math.abs(pid) === child.pid) throw Object.assign(new Error("Group exited"), { code: "ESRCH" });
+        return nativeKill(pid, signal);
+      });
+      child.emit("close", null, "SIGKILL");
+      registration.refuse = false;
       vi.useRealTimers();
     }
   });

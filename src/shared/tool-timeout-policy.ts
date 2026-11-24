@@ -117,6 +117,7 @@ export const TOOL_TIMEOUT_POLICY = {
   shutdownCleanupMs: 60_000,
   // Bounded POSIX child-list lookup during process tree termination.
   processTreeKillMs: 1_000,
+  processGroupExitPollMs: 25,
   // Allow loaded Windows hosts enough time to enumerate and terminate process trees.
   windowsProcessTreeKillMs: 10_000,
   // Outlast the pinned PTY dependency's five-second console lookup and allow exit cleanup.

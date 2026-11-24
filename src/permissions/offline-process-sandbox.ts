@@ -7,7 +7,7 @@ import { noteConfinedProcessesMayRun } from "../lib/confined-process-phase.js";
 import { buildSafeChildEnv } from "../tools/safe-env.js";
 import { runWithCeiling } from "../tools/executor-ceiling.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
-import { forceKillManagedChildProcess, spawnManaged } from "../main/managed-child-processes.js";
+import { spawnManaged, waitForManagedProcessGroupExit } from "../main/managed-child-processes.js";
 import { resolveWindowsJobLauncher } from "../main/windows-job-launcher.js";
 import { TableDocumentError } from "../tools/table-document-error.js";
 import { assertCodexExecutableLocation } from "../main/codex-executable-location.js";
@@ -50,19 +50,22 @@ export class OfflineScanExitUnconfirmedError extends TableDocumentError {
 async function runOfflineScan(command: string, args: string[], signal: AbortSignal, timeoutMs: number, scanDirectory: string) {
   const jobReceipt = process.platform === "win32" ? join(scanDirectory, "job-empty") : undefined;
   if (jobReceipt !== undefined) await writeFile(jobReceipt, "", { flag: "wx" });
-  const start = () => jobReceipt === undefined
-    ? spawnManaged(command, args, { detached: true, stdio: ["ignore", "pipe", "pipe"] }, { label: "offline-scanner" })
+  const start = (onSpawn: (child: ChildProcess) => void) => jobReceipt === undefined
+    ? spawnManaged(command, args, { detached: true, stdio: ["ignore", "pipe", "pipe"] }, { label: "offline-scanner" }, onSpawn)
     : spawnManaged(resolveWindowsJobLauncher(), ["--receipt", jobReceipt, command, ...args], {
       stdio: ["pipe", "pipe", "pipe"],
-    }, { label: "offline-scanner" });
+    }, { label: "offline-scanner" }, onSpawn);
   let running: { child: ChildProcess; closed: Promise<number | null> } | undefined;
 
   // The ceiling links cancellation before calling start, and the interruption path owns the child until its exit is confirmed.
   const scan = await runWithCeiling(async (stop) => {
     stop.throwIfAborted();
-    const child = start();
-    const closed = new Promise<number | null>(resolve => child.once("close", resolve));
-    running = { child, closed };
+    const child = start(acquired => {
+      const closed = new Promise<number | null>(resolve => acquired.once("close", resolve));
+      running = { child: acquired, closed };
+    });
+    const closed = running?.closed;
+    if (!closed) throw new Error("Offline scanner exit is unowned.");
     child.stdin?.on("error", () => {});
     const failed = new Promise<never>((_resolve, reject) => child.once("error", reject));
     if (!child.stdout || !child.stderr) throw new Error("Offline scanner output is unavailable.");
@@ -79,14 +82,16 @@ async function runOfflineScan(command: string, args: string[], signal: AbortSign
   }
   if (running && running.child.pid !== undefined) {
     const { child, closed } = running;
-    const killDeadline = jobReceipt === undefined ? TOOL_TIMEOUT_POLICY.processTreeKillMs : TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs;
-    const stopped = await runWithCeiling(async () => {
-      if (jobReceipt === undefined) await forceKillManagedChildProcess(child, "offline scan interrupted");
-      else child.stdin?.destroy();
-      await closed;
-      return await jobEmptied();
-    }, killDeadline, undefined, "offline scanner termination");
-    if (!stopped.ok || !stopped.value) throw new OfflineScanExitUnconfirmedError();
+    if (jobReceipt === undefined) {
+      if (!await waitForManagedProcessGroupExit(child, closed, "offline scan interrupted")) throw new OfflineScanExitUnconfirmedError();
+    } else {
+      const stopped = await runWithCeiling(async () => {
+        child.stdin?.destroy();
+        await closed;
+        return await jobEmptied();
+      }, TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs, undefined, "offline scanner termination");
+      if (!stopped.ok || !stopped.value) throw new OfflineScanExitUnconfirmedError();
+    }
   }
   signal.throwIfAborted();
   throw scan.error;

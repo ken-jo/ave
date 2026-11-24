@@ -5,6 +5,7 @@ import { findHostProgram } from "../shared/host-program-path.js";
 import { createLogger } from "../lib/logger.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { errorMessage } from "../shared/error-message.js";
+import { sleep } from "../shared/abortable-deadline.js";
 import { runWithCeiling } from "../tools/executor-ceiling.js";
 import { createProcessGroupReaper, type ProcessGroupReaper } from "./process-group-reaper.js";
 
@@ -154,6 +155,7 @@ export function spawnManaged(
   args: ReadonlyArray<string>,
   spawnOptions: SpawnOptions,
   trackOptions: TrackManagedChildProcessOptions = {},
+  onSpawn?: (child: ChildProcess) => void,
 ): ChildProcess {
   const label = trackOptions.label ?? "child-process";
   assertManagedChildProcessAdmissionOpen(label);
@@ -161,12 +163,13 @@ export function spawnManaged(
   // ESLint-style guardrail: callers MUST go through this helper. Direct `spawn()` imports outside of `managed-child-processes.ts` should be flagged by a
   // future lint rule (`no-restricted-imports` allowlisting this module only).
   const child = spawn(command, args, { windowsHide: true, ...spawnOptions });
+  onSpawn?.(child);
   const inferredGroupKill =
     spawnOptions.detached === true && process.platform !== "win32";
-  trackManagedChildProcess(child, {
+  trackChild(child, {
     ...trackOptions,
     killProcessGroup: trackOptions.killProcessGroup ?? inferredGroupKill,
-  });
+  }, undefined, onSpawn !== undefined);
   return child;
 }
 
@@ -181,6 +184,7 @@ function trackChild(
   child: ChildProcess,
   options: TrackManagedChildProcessOptions,
   launchReaper?: ProcessGroupReaper,
+  retainOnRegistrationFailure = false,
 ): () => void {
   if (typeof child.once !== "function" || typeof child.off !== "function") {
     return () => {};
@@ -228,14 +232,14 @@ function trackChild(
   // group and kills it when the host's end of its pipe closes. Disposal releases it: at once when the leader exits with no group left, and
   // otherwise on the disposal poll (processGroupPollMs, 1 s) that first sees the group gone. The one case the reaper could signal the wrong
   // group: the leader exited while descendants remained, the last of them exits, and within that poll interval the pgid is reused and the host
-  // dies. A registration that fails is undone whole: the child is killed, since no owner would end it, and no half-tracked entry is left behind.
+  // dies. A caller that acquired an exit waiter keeps its managed group entry if registration fails.
   if (reaperHeldGroup !== undefined) {
     try {
       const reaper = launchReaper ?? hostDeathReaper();
       reaper.retain(reaperHeldGroup);
       releaseGroup = () => reaper.release(reaperHeldGroup);
     } catch (error) {
-      dispose();
+      if (!retainOnRegistrationFailure) dispose();
       try {
         forceKillProcessTreeSync(child, entry.killProcessGroup, entry.processGroupId);
       } catch (killError) {
@@ -465,6 +469,17 @@ export async function forceKillAndDrainManagedChildProcesses(
     );
   }
   return { killedCount, unresolvedCount: unresolved.length };
+}
+
+export async function waitForManagedProcessGroupExit(child: ChildProcess, closed: Promise<unknown>, stopReason?: string): Promise<boolean> {
+  const pid = child.pid;
+  if (pid === undefined) return true;
+  if (stopReason !== undefined) void forceKillManagedChildProcess(child, stopReason);
+  const result = await runWithCeiling(async signal => {
+    await closed;
+    while (processExists(-pid)) await sleep(TOOL_TIMEOUT_POLICY.processGroupExitPollMs, signal);
+  }, PROCESS_TREE_KILL_TIMEOUT_MS, undefined, "managed process group termination");
+  return result.ok;
 }
 
 // Await Windows tree termination before releasing owned resources; cancellation has the same bounded tree-kill semantics as shutdown.
