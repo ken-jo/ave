@@ -29,7 +29,7 @@ import {
   type WorkerStdioControl,
 } from "./worker-stdio-control.js";
 import { buildSafeChildEnv } from "../tools/safe-env.js";
-import { resolveHostProgram } from "../shared/host-program-path.js";
+import { assertHostProgramNotRelative, resolveHostProgram } from "../shared/host-program-path.js";
 import { spawnConfinedChild } from "./confined-child.js";
 import {
   assertManagedChildProcessAdmissionOpen,
@@ -238,6 +238,7 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
     throw new Error(`[worker-spawn] worker ${safePlugin}/${safeWorker} may not set ${WORKER_STATE_DIR_ENV}; the host names the state directory`);
   }
   const label = `worker:${safePlugin}:${safeWorker}`;
+  assertHostProgramNotRelative(spec.command);
   const args = [...(spec.args ?? [])];
 
   // Secret-stripped base env (Least Privilege), shared with other child process spawners so Windows runtime variables stay complete without forwarding provider/API-key secrets.

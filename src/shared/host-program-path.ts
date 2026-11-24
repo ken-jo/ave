@@ -1,6 +1,8 @@
 import { accessSync, constants, lstatSync, statSync } from "node:fs";
 import { posix, win32 } from "node:path";
 
+export const HOST_PROGRAM_PATH_GUIDANCE = "Use an absolute path or a program name on PATH.";
+
 export class HostProgramNotFoundError extends Error {
   readonly code = "HOST_PROGRAM_NOT_FOUND" as const;
 
@@ -14,6 +16,17 @@ function isFullyQualified(entry: string, platform: NodeJS.Platform): boolean {
   return platform === "win32"
     ? /^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+)/u.test(entry)
     : posix.isAbsolute(entry);
+}
+
+export function isRelativeHostProgram(program: string, platform: NodeJS.Platform = process.platform): boolean {
+  const paths = platform === "win32" ? win32 : posix;
+  return !paths.isAbsolute(program) && (/[\\/]/u.test(program) || (platform === "win32" && program.includes(":")));
+}
+
+export function assertHostProgramNotRelative(program: string, platform: NodeJS.Platform = process.platform): void {
+  if (isRelativeHostProgram(program, platform)) {
+    throw new HostProgramNotFoundError(`Program '${program}' is a relative path. ${HOST_PROGRAM_PATH_GUIDANCE}`);
+  }
 }
 
 type ProgramFs = {
@@ -75,7 +88,7 @@ export function findHostProgram(
   if (program === "" || program.includes("\0")) return null;
   const paths = platform === "win32" ? win32 : posix;
   if (paths.isAbsolute(program)) return program;
-  if (/[\\/]/u.test(program) || (platform === "win32" && program.includes(":"))) return null;
+  if (isRelativeHostProgram(program, platform)) return null;
   // Windows launches only .com and .exe images without a shell; an explicit extension is tried as written first.
   const names = platform === "win32"
     ? [...(win32.extname(program) ? [program] : []), `${program}.com`, `${program}.exe`]
@@ -97,9 +110,6 @@ export function resolveHostProgram(
 ): string {
   const found = findHostProgram(program, env, platform);
   if (found !== null) return found;
-  throw new HostProgramNotFoundError(
-    /[\\/]/u.test(program) || (platform === "win32" && program.includes(":"))
-      ? `Program '${program}' is a relative path; use an absolute path or a program name on PATH`
-      : `Program '${program}' was not found on PATH`,
-  );
+  assertHostProgramNotRelative(program, platform);
+  throw new HostProgramNotFoundError(`Program '${program}' was not found on PATH`);
 }

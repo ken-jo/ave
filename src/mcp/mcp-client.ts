@@ -75,7 +75,8 @@ import {
 } from "../sandbox/wrap-bundled-command.js";
 import type { EgressInvocation } from "../permissions/egress-invocations.js";
 import { buildSafeChildEnv } from "../tools/safe-env.js";
-import { resolveHostProgram } from "../shared/host-program-path.js";
+import { HOST_PROGRAM_PATH_GUIDANCE, isRelativeHostProgram, resolveHostProgram } from "../shared/host-program-path.js";
+import { MCP_COMMAND_RELATIVE_PATH } from "../shared/mcp-error-code.js";
 import type { Readable, Writable } from "node:stream";
 import { terminateChildProcess } from "../tools/terminate-child-process.js";
 import { createSandboxProcessHome } from "../permissions/sandbox-process-home.js";
@@ -1774,6 +1775,9 @@ class StdioTransport implements McpTransport {
       );
     }
     const spawnCommand = resolveStdioSpawnCommand(this.config.command, this.config.args ?? []);
+    if (isRelativeHostProgram(spawnCommand.command)) {
+      throw new Error(`${MCP_COMMAND_RELATIVE_PATH}: ${HOST_PROGRAM_PATH_GUIDANCE}`);
+    }
 
     // Minimal, secret-stripped base env (Least Privilege). On the PLAIN path this is the spawn env verbatim; on
     // the WRAPPED path it is the baseline that the ASRT proxy keys are merged onto (see buildWrappedStdioEnv).

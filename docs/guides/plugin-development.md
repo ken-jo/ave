@@ -270,7 +270,7 @@ worker.onExit(({ reason }) => {
 const status = await worker.request("index_status", { scope: "all" });
 ```
 
-`command` is an absolute path or a program name the host finds on `PATH`, never in a current directory; a relative path is refused.
+For a worker or a stdio server entered in MCP settings, use an absolute `command` path or a program name on `PATH`.
 
 `spawnWorker` resolves only after the hello. A worker that writes anything else
 first, answers wrongly or never answers is stopped and the call rejects with

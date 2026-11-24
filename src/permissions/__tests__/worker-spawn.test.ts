@@ -383,7 +383,7 @@ describe("spawnWorker — gate OFF (default)", () => {
     await withPlantedProgram(["ave-planted-worker"], async () => {
       for (const [command, message] of [
         ["ave-planted-worker", /'ave-planted-worker' was not found on PATH/u],
-        ["./ave-planted-worker", /'\.\/ave-planted-worker' is a relative path; use an absolute path or a program name on PATH/u],
+        ["./ave-planted-worker", /'\.\/ave-planted-worker' is a relative path\. Use an absolute path or a program name on PATH/u],
       ] as const) {
         await expect(spawnWorker(workerOptions({ command }))).rejects.toThrow(message);
       }
@@ -432,6 +432,16 @@ describe("spawnWorker — gate OFF (default)", () => {
 // Gate ON (macOS) — wrapped spawn + state directory + reviewer; no socket on any platform
 
 describe("spawnWorker — gate ON (macOS)", () => {
+  it("refuses a relative command with guidance before allocating or wrapping a worker", async () => {
+    setProcessPlatform("darwin");
+    gateActive = true;
+    await expect(spawnWorker(workerOptions({ command: "./worker", stateDirectory: true })))
+      .rejects.toThrow(/use an absolute path or a program name on PATH/iu);
+    expect(mkdirMock).not.toHaveBeenCalled();
+    expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
   it("wraps with the FS jail only, grants the host-made state dir, registers no socket, marks wrapped", async () => {
     setProcessPlatform("darwin");
     gateActive = true;

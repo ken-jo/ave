@@ -20,12 +20,15 @@ import { t } from "../../../i18n/runtime.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { formatDateTime } from "../../../shared/format-time.js";
 import { errorMessage } from "../../../shared/error-message.js";
-import { MCP_CONFIG_RECOVERY_REQUIRED, MCP_CREDENTIAL_MIGRATION_FAILED, MCP_GOVERNANCE_UNAPPROVED_SERVER } from "../../../shared/mcp-error-code.js";
+import { MCP_COMMAND_RELATIVE_PATH, MCP_CONFIG_RECOVERY_REQUIRED, MCP_CREDENTIAL_MIGRATION_FAILED, MCP_GOVERNANCE_UNAPPROVED_SERVER } from "../../../shared/mcp-error-code.js";
 import { invokeErrorCode, invokeErrorDetail } from "../format-ipc-error.js";
 import { isValidOAuthClientId, MAX_OAUTH_CLIENT_ID_LEN } from "../../../mcp/safe-names.js";
 
-function getMcpRecoveryError(error: unknown): string | undefined {
-  return errorMessage(error).includes(`${MCP_CONFIG_RECOVERY_REQUIRED}:`) ? t("mcpTab.configRecoveryRequired") : undefined;
+function getMcpConfigError(error: unknown): string | undefined {
+  const message = errorMessage(error);
+  if (message.includes(`${MCP_CONFIG_RECOVERY_REQUIRED}:`)) return t("mcpTab.configRecoveryRequired");
+  if (message.includes(`${MCP_COMMAND_RELATIVE_PATH}:`)) return t("mcpTab.commandRelativePath");
+  return undefined;
 }
 
 type Transport = "stdio" | "http";
@@ -303,7 +306,7 @@ export function McpTab({ onNavigate, active = true }: { onNavigate?: (tab: strin
     } catch (e) {
       if (managementRequestId !== managementRequestRef.current || editorRevision !== editorRevisionRef.current) return;
       const message = errorMessage(e);
-      setError(message.includes(`${MCP_CREDENTIAL_MIGRATION_FAILED}:`) ? t("mcpTab.credentialMigrationFailed") : (getMcpRecoveryError(e) ?? message) || t("mcpTab.fetchError"));
+      setError(message.includes(`${MCP_CREDENTIAL_MIGRATION_FAILED}:`) ? t("mcpTab.credentialMigrationFailed") : (getMcpConfigError(e) ?? message) || t("mcpTab.fetchError"));
     } finally {
       if (managementRequestId === managementRequestRef.current && editorRevision === editorRevisionRef.current) setLoading(false);
     }
@@ -372,7 +375,7 @@ export function McpTab({ onNavigate, active = true }: { onNavigate?: (tab: strin
         showBanner("success", t("mcpTab.killSuccess", { id }));
         void fetchAll();
       } catch (e) {
-        showBanner("error", getMcpRecoveryError(e) ?? errorMessage(e));
+        showBanner("error", getMcpConfigError(e) ?? errorMessage(e));
       }
     },
     [fetchAll, showBanner],
@@ -410,7 +413,7 @@ export function McpTab({ onNavigate, active = true }: { onNavigate?: (tab: strin
         showBanner("success", t("mcpTab.removeSuccess", { id }));
         notifySaved();
       } catch (e) {
-        showBanner("error", getMcpRecoveryError(e) ?? errorMessage(e));
+        showBanner("error", getMcpConfigError(e) ?? errorMessage(e));
       } finally {
         removingIdRef.current = null;
         setRemovingId(null);
@@ -421,8 +424,8 @@ export function McpTab({ onNavigate, active = true }: { onNavigate?: (tab: strin
 
   const managementError = useCallback((error: unknown, fallbackKey = "mcpTab.startFailed") => {
     const message = errorMessage(error);
-    const recoveryError = getMcpRecoveryError(error);
-    if (recoveryError) return recoveryError;
+    const configError = getMcpConfigError(error);
+    if (configError) return configError;
     if (message.includes("user-keyboard-required:")) return t("formatIpcError.userKeyboardRequired");
     if (message.includes("mcp-api-key-required:")) return t("mcpTab.missingApiKey");
     if (message.includes("mcp-trust-stale:")) return t("mcpTab.trustStale");
@@ -481,11 +484,11 @@ export function McpTab({ onNavigate, active = true }: { onNavigate?: (tab: strin
         result.connected ? "success" : "error",
         result.connected
           ? t("mcpTab.apiKeySavedConnected", { id: credentialTargetId })
-          : t("mcpTab.apiKeySavedNotConnected", { id: credentialTargetId, warning: result.warning === "mcp-trust-required" ? t("mcpTab.trustRequired") : result.warning ?? t("mcpTab.unknownCause") }),
+          : t("mcpTab.apiKeySavedNotConnected", { id: credentialTargetId, warning: result.warning === "mcp-trust-required" ? t("mcpTab.trustRequired") : getMcpConfigError(result.warning) ?? result.warning ?? t("mcpTab.unknownCause") }),
       );
       notifySaved();
     } catch (e) {
-      showBanner("error", getMcpRecoveryError(e) ?? errorMessage(e));
+      showBanner("error", getMcpConfigError(e) ?? errorMessage(e));
     } finally {
       setCredentialBusy(false);
     }
@@ -553,7 +556,7 @@ export function McpTab({ onNavigate, active = true }: { onNavigate?: (tab: strin
         };
       }
     } catch (e) {
-      showBanner("error", getMcpRecoveryError(e) ?? errorMessage(e));
+      showBanner("error", getMcpConfigError(e) ?? errorMessage(e));
       return;
     }
 
@@ -571,12 +574,12 @@ export function McpTab({ onNavigate, active = true }: { onNavigate?: (tab: strin
             ? t("mcpTab.serverSavedAuthRequired", { id: config.id })
             : result.errorCode
               ? getAuthErrorMessage(result.errorCode)
-              : t("mcpTab.serverAddedNotConnected", { id: config.id, warning: result.warning ?? t("mcpTab.unknownCause") }),
+              : t("mcpTab.serverAddedNotConnected", { id: config.id, warning: getMcpConfigError(result.warning) ?? result.warning ?? t("mcpTab.unknownCause") }),
       );
       notifySaved();
       void fetchAll();
     } catch (e) {
-      const message = getMcpRecoveryError(e) ?? invokeErrorDetail(e) ?? errorMessage(e);
+      const message = getMcpConfigError(e) ?? invokeErrorDetail(e) ?? errorMessage(e);
       showBanner("error", message, invokeErrorCode(e) === MCP_GOVERNANCE_UNAPPROVED_SERVER);
     } finally {
       setFormBusy(false);
@@ -743,7 +746,7 @@ export function McpTab({ onNavigate, active = true }: { onNavigate?: (tab: strin
                         {st?.lastError && (
                           <p className="mt-1 text-dense text-destructive line-clamp-2">{
                             authStatus === "required" ? t("mcpTab.authRequiredMessage")
-                              : authStatus === "error" ? t("mcpTab.authFailedMessage") : st.lastError
+                              : authStatus === "error" ? t("mcpTab.authFailedMessage") : getMcpConfigError(st.lastError) ?? st.lastError
                           }</p>
                         )}
                         {st?.containedQuarantined && (

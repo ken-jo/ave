@@ -1129,6 +1129,18 @@ describe("spawnWorker crosses as an id, never as a live handle", () => {
     expect(harness.child.openSubscriptionCount).toBe(0);
   });
 
+  it("returns actionable validation for a relative worker command to the plugin", async () => {
+    const spawnWorker = vi.fn(async () => makeFakeWorker());
+    const harness = await createServiceHarness({ spawnWorker });
+    await expect(harness.child.hostApi.spawnWorker!({
+      workerId: "indexer", control: "output-only-v1", command: "./worker",
+    })).rejects.toMatchObject({
+      code: "argument-marshalling-rejected",
+      message: expect.stringContaining("Use an absolute path or a program name on PATH"),
+    });
+    expect(spawnWorker).not.toHaveBeenCalled();
+  });
+
   it("releases the host handle when worker listener setup fails", async () => {
     const worker = makeFakeWorker();
     const brokenWorker: SpawnedPluginWorker = {

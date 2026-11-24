@@ -3648,6 +3648,7 @@ export const en = {
   "mcpTab.apiKeyWriteOnlyLabel": "API Key (write-only)",
   "mcpTab.apiKeyPlaceholder": "API key",
   "mcpTab.commandRequiredLabel": "Command *",
+  "mcpTab.commandRelativePath": "Use an absolute path or a program name on PATH.",
   "mcpTab.commandHint": "Enter just the executable or the full command line — arguments will be split automatically. Use an absolute path or a program name on PATH.",
   "mcpTab.argsLabel": "Args (additional arguments)",
   "mcpTab.envWriteOnlyLabel": "Env (KEY=value, write-only)",

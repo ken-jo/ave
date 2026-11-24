@@ -718,7 +718,7 @@ describe("StdioTransport — regression", () => {
     await withPlantedProgram(["ave-planted-mcp"], async () => {
       for (const [command, message] of [
         ["ave-planted-mcp", /'ave-planted-mcp' was not found on PATH/u],
-        ["./ave-planted-mcp", /'\.\/ave-planted-mcp' is a relative path; use an absolute path or a program name on PATH/u],
+        ["./ave-planted-mcp", /mcp-command-relative-path: Use an absolute path or a program name on PATH/u],
       ] as const) {
         const client = new McpClient({ id: "planted", transport: "stdio", command },
           governanceWithPolicy(buildPolicy([stdioApproval("planted", command)])), new ToolRegistry(), stubbedGlobalNetworkFetch);

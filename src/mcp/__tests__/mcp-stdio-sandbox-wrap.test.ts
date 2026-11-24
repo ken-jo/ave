@@ -1,7 +1,11 @@
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original(), "linux"));
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 // The platform is simulated, so the plain route's PATH lookup is pinned by name rather than run against this host.
-vi.mock("../../shared/host-program-path.js", () => ({ findHostProgram: (name: string) => `/resolved/${name}`, resolveHostProgram: (name: string) => `/resolved/${name}` }));
+vi.mock("../../shared/host-program-path.js", async (original) => ({
+  ...await original<typeof import("../../shared/host-program-path.js")>(),
+  findHostProgram: (name: string) => `/resolved/${name}`,
+  resolveHostProgram: (name: string) => `/resolved/${name}`,
+}));
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
 
 /** Check external stdio-worker confinement wiring, sensitive-path denial, sanitized spawn environment, and capability attribution.
@@ -276,6 +280,16 @@ describe("StdioTransport — boot sandbox gate undecided (fail closed)", () => {
 });
 
 describe("StdioTransport ASRT wrap — gate ON", () => {
+  it("refuses a relative command with guidance before wrapping the server", async () => {
+    gateActive = true;
+    const command = "./server";
+    const gov = governanceWithPolicy(buildPolicy([stdioApproval("relative", command)]));
+    const client = new McpClient({ id: "relative", transport: "stdio", command }, gov, new ToolRegistry(), unusedNetworkFetch);
+    await expect(client.connect()).rejects.toThrow(/mcp-command-relative-path: Use an absolute path or a program name on PATH/u);
+    expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
   it("routes the spawn through wrapWorkerCommand with the FS jail + sensitive read deny-list", async () => {
     gateActive = true;
     const sandboxRoot = join(aveHome(), "mcp", "fs", "sandbox");
