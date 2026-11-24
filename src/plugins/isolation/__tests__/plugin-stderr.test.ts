@@ -1,5 +1,8 @@
 import { tsxChildEnv } from "../../../__tests__/support/tsx-child-env.js";
 import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import { capturePluginStderr } from "../plugin-stderr.js";
@@ -19,7 +22,64 @@ stream.end("visible diagnostic\\nWARN raised warning\\nERROR raised error\\n");
 process.stderr.write(JSON.stringify({ level: logger.level }));
 `;
 
+const LOCALE_PROBE = `
+Object.defineProperty(process.versions, "electron", { value: "45.1.0", configurable: true });
+delete process.defaultApp;
+const { spawn } = await import("node:child_process");
+const { once } = await import("node:events");
+const { initFileLogSink, closeFileLogSink } = await import("./src/lib/logger.ts");
+const { capturePluginStderr } = await import("./src/plugins/isolation/plugin-stderr.ts");
+const { prepareSandboxTargetLaunch } = await import("./src/permissions/launcher-environment.ts");
+const [dir, canary] = process.argv.slice(1);
+const target = prepareSandboxTargetLaunch("/usr/bin/awk", [
+  'BEGIN { print ENVIRON["LC_ALL"]; print "target diagnostic" > "/dev/stderr" }',
+], { LC_ALL: canary });
+const sink = initFileLogSink({ dir });
+if (!sink) throw new Error("Fixture file sink unavailable");
+const run = async (invalidFrame) => {
+  const child = spawn("/bin/bash", ["--noprofile", "--norc", "-c", target.command], {
+    env: {}, stdio: target.withStdio(["ignore", "pipe", "pipe"]),
+  });
+  const closed = once(child, "close");
+  let stdout = "";
+  let stderr = "";
+  capturePluginStderr(child.stderr, "locale-probe");
+  child.stdout.on("data", chunk => { stdout += chunk; });
+  child.stderr.on("data", chunk => { stderr += chunk; });
+  if (invalidFrame) child.stdio[4].end("LC_ALL=" + canary + "\\0invalid-name=" + canary + "\\0\\0");
+  else target.sendEnvironment(child);
+  const [code] = await closed;
+  return { code, stdout, stderr };
+};
+const complete = await run(false);
+const failed = await run(true);
+closeFileLogSink();
+process.stderr.write(JSON.stringify({ complete, failed, file: sink.currentFile }));
+`;
+
 describe("plugin stderr capture", () => {
+  it.runIf(process.platform === "linux" || process.platform === "darwin")(
+    "persists target stderr without persisting diagnostics from environment setup",
+    () => {
+      const dir = mkdtempSync(join(tmpdir(), "plugin-stderr-locale-"));
+      const canary = "invalid-locale-fixture-canary";
+      try {
+        const result = spawnSync(process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath, [
+          "--import", "tsx", "--input-type=module", "-e", LOCALE_PROBE, dir, canary,
+        ], { encoding: "utf8", env: tsxChildEnv({ ELECTRON_RUN_AS_NODE: "1", LOG_LEVEL: "info" }) });
+        expect(result.status, result.stderr).toBe(0);
+        const { complete, failed, file } = JSON.parse(result.stderr);
+        const persisted = readFileSync(file, "utf8");
+        expect(complete).toEqual({ code: 0, stdout: `${canary}\n`, stderr: "target diagnostic\n" });
+        expect(failed).toEqual({ code: 1, stdout: "", stderr: "" });
+        expect(persisted).toContain("target diagnostic");
+        expect(persisted).not.toContain(canary);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("redacts a credential crossing the output byte cap before truncation", () => {
     const stream = new PassThrough();
     const info = vi.spyOn(console, "log").mockImplementation(() => {});

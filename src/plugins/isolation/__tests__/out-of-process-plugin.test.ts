@@ -1600,6 +1600,39 @@ describe("the factory's launch reaches the spawn as decided", () => {
     }
   });
 
+  it("reports sandbox environment setup failure without the resolved value", async () => {
+    const roots = spawnableRoots();
+    const platform = process.platform;
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    const canary = "invalid-locale-fixture-canary";
+    const launch = processLaunch(roots.context.pluginRoot!);
+    const child = Object.assign(new EventEmitter(), { exitCode: 1, signalCode: null, stdin, stdout });
+    spawnConfinedChild.mockResolvedValueOnce({ child, confinement: "linux-bubblewrap" });
+    sandbox.active = true;
+    fakeSandboxHome.on = true;
+    setProcessPlatform("linux");
+    try {
+      const spawned = await spawnConfinedPluginChild({
+        pluginId: PROCESS_MANIFEST.id,
+        socketDir: resolvePluginSocketDir(launch.env.PLUGIN_DATA),
+        envelope: { read: [], write: [] },
+        launch: { ...launch, env: { ...launch.env, LC_ALL: canary } },
+      });
+      const reason = await new Promise<string>(resolve => spawned.link.onGone(resolve));
+      expect(reason).toBe(`[out-of-process-plugin] ${PROCESS_MANIFEST.id}: sandbox target environment setup failed`);
+      expect(reason).not.toContain(canary);
+    } finally {
+      setProcessPlatform(platform);
+      sandbox.active = false;
+      fakeSandboxHome.on = false;
+      spawnConfinedChild.mockReset();
+      stdin.destroy();
+      stdout.destroy();
+      roots.remove();
+    }
+  });
+
   it.runIf(process.platform === "linux" || process.platform === "darwin")(
     "kills a process launch that comes back unconfined before exposing it to the session",
     async () => {

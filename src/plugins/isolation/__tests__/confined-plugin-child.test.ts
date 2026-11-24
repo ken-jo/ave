@@ -2888,6 +2888,7 @@ function processContext(fx: Fixture, plugin: InstalledPlugin): PluginRuntimeCont
 
 describe("a process entry, spawned under the real wrap", () => {
   const PROCESS_ENV_CANARY = "process-entry-private-canary";
+  const PROCESS_LOCALE_CANARY = "invalid-process-locale-canary";
 
   /** The executable the manifest names: a shell script that `exec`s this host's own binary, as Node, on a small protocol responder. It
    * stands in for a plugin's own launcher, so the spawn and the environment are the production ones and only the program at the end differs. */
@@ -2910,6 +2911,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       PLUGIN_DATA: process.env.PLUGIN_DATA,
       SMOKE_VENDOR_DIR: process.env.SMOKE_VENDOR_DIR,
       PROCESS_CANARY: process.env.PROCESS_CANARY,
+      LC_ALL: process.env.LC_ALL,
       argv: process.argv.slice(2),
       entryPath: frame.params.entryPath,
     }));
@@ -2928,7 +2930,7 @@ process.stdin.on("end", () => process.exit(0));
     writeFileSync(
       launcher,
       `#!/bin/sh
-if (true <&3) 2>/dev/null || (true <&4) 2>/dev/null; then exit 90; fi
+if (true <&3) 2>/dev/null || (true <&4) 2>/dev/null || (true >&9) 2>/dev/null; then exit 90; fi
 ELECTRON_RUN_AS_NODE=1 exec ${JSON.stringify(process.execPath)} "$PLUGIN_ROOT/invoker.mjs" "$@"
 `,
       "utf-8",
@@ -2943,7 +2945,7 @@ ELECTRON_RUN_AS_NODE=1 exec ${JSON.stringify(process.execPath)} "$PLUGIN_ROOT/in
         process: {
           command: "./bin/plugin",
           args: ["--ordinary"],
-          env: { SMOKE_VENDOR_DIR: "${PLUGIN_ROOT}/vendor", PROCESS_CANARY: PROCESS_ENV_CANARY },
+          env: { SMOKE_VENDOR_DIR: "${PLUGIN_ROOT}/vendor", PROCESS_CANARY: PROCESS_ENV_CANARY, LC_ALL: PROCESS_LOCALE_CANARY },
         },
         requires: { minAppVersion: "0.13.0", hostProtocol: "5" },
         description: "a process entry whose environment is measured",
@@ -2986,6 +2988,7 @@ ELECTRON_RUN_AS_NODE=1 exec ${JSON.stringify(process.execPath)} "$PLUGIN_ROOT/in
           PLUGIN_DATA: realpathSync(plugin.pluginDataDir),
           SMOKE_VENDOR_DIR: join(realpathSync(plugin.pluginRoot), "vendor"),
           PROCESS_CANARY: PROCESS_ENV_CANARY,
+          LC_ALL: PROCESS_LOCALE_CANARY,
           argv: ["--ordinary"],
           // Construct's entryPath is the resolved command for a process launch.
           entryPath: join(realpathSync(plugin.pluginRoot), "bin", "plugin"),

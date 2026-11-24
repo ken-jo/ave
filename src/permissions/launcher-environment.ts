@@ -6,6 +6,7 @@ import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-p
 const LAUNCHER_PATH = "/usr/bin:/bin:/usr/sbin:/sbin";
 // fd 3 is used by the process-group launch gate or by the plugin protocol.
 const TARGET_ENV_FD = 4;
+export const SANDBOX_TARGET_ENV_FAILURE_EXIT_CODE = 1;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 const WINDOWS_LAUNCHER_ROOT_KEYS = new Set(["SYSTEMROOT", "WINDIR", "SYSTEMDRIVE"]);
 const STARTUP_ENV_GROUPS = [
@@ -68,6 +69,8 @@ export function buildLauncherEnvironment(platform: NodeJS.Platform = process.pla
 }
 
 const TARGET_ENV_SHIM = [
+  // Keep setup diagnostics private. The gate uses fd 3 and the payload uses fd 4.
+  "exec 9>&2 2>/dev/null",
   "apply_target_env() {",
   "  unset name assignment target_env runtime_env",
   '  export -- "$@"',
@@ -85,13 +88,13 @@ const TARGET_ENV_SHIM = [
   '  if [[ -z "$assignment" ]]; then',
   `    exec ${TARGET_ENV_FD}<&-`,
   "    unset OLDPWD",
-  `    apply_target_env "\${target_env[@]}" "\${runtime_env[@]}" || exit 1`,
-  '    exec -- "$@"',
+  `    apply_target_env "\${target_env[@]}" "\${runtime_env[@]}" || exit ${SANDBOX_TARGET_ENV_FAILURE_EXIT_CODE}`,
+  '    exec 2>&9 9>&- -- "$@"',
   "  fi",
   '  target_env+=("$assignment")',
   "done",
   // A complete frame ends with an empty record. A closed or truncated pipe cannot start the target.
-  "exit 1",
+  `exit ${SANDBOX_TARGET_ENV_FAILURE_EXIT_CODE}`,
 ].join("\n");
 
 function targetAssignments(env: NodeJS.ProcessEnv): string[] {

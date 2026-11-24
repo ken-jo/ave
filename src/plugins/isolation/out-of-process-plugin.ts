@@ -9,6 +9,7 @@ import { isAbsolute, join, resolve as resolvePath } from "node:path";
 import { createLogger } from "../../lib/logger.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { capturePluginStderr } from "./plugin-stderr.js";
+import { SANDBOX_TARGET_ENV_FAILURE_EXIT_CODE } from "../../permissions/launcher-environment.js";
 import {
   NODE_PRESERVE_SYMLINK_FLAGS,
   resolvePluginChildEntryPath,
@@ -576,7 +577,9 @@ export async function spawnConfinedPluginChild(
     // Why the child is gone, settled from here on: a child that dies before anyone asks; while the channel is still being set up, or before the caller attaches `onGone`; is
     // still reported, and one that had already exited by the time the launch handed it back (`exitCode`/`signalCode` set, its `exit` possibly already emitted) is reported at once.
     const exitedReason = (code: number | null, signal: NodeJS.Signals | null): string =>
-      `[out-of-process-plugin] ${spec.pluginId}: child exited code=${String(code)} signal=${String(signal)}`;
+      processLaunch && code === SANDBOX_TARGET_ENV_FAILURE_EXIT_CODE
+        ? `[out-of-process-plugin] ${spec.pluginId}: sandbox target environment setup failed`
+        : `[out-of-process-plugin] ${spec.pluginId}: child exited code=${String(code)} signal=${String(signal)}`;
     const gone = new Promise<string>((resolve) => {
       if (alreadyExited) {
         resolve(exitedReason(child.exitCode, child.signalCode));
