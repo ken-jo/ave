@@ -2947,6 +2947,11 @@ reaches the `cmd.exe` line, a batch file (`.cmd`/`.bat`, or a bare name such as
 relay nor `cmd.exe` is refused, because srt-win's PowerShell launch loses stdin,
 environment and exit code alike.
 
+Whole-job exit for the Windows stdio relay and direct or relayed hooks remains
+best-effort. The pinned `srt-win` runner cannot certify that its restricted job
+is empty. The devpath/srtwin lane (`wip/devpath-srtwin-native-r10`) closes this
+gap with a `job-empty` receipt before grant, HOME, or wrap release.
+
 A plugin root holds two state directories. `data/` is the plugin's own: its
 confined child writes there. `storage/` beside it is host-only: the HostApi
 `storage` surface and the webview bridge's `ui-storage/` operate there on the
