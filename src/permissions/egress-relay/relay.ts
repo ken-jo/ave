@@ -63,9 +63,12 @@ export interface EgressRelayServiceOptions {
   readonly allow?: readonly string[];
   readonly resolve?: EgressRelayResolver;
   readonly maxRelays?: number;
-  // Tests shorten the hold-back; production uses ENDED_PORT_HOLD.
-  readonly endedPortHold?: EndedPortHold;
+  // Tests shorten a route's hold-back; production uses ENDED_PORT_HOLD.
+  readonly endedPortHold?: Partial<Record<RelayKind, EndedPortHold>>;
 }
+
+// Which route the relay serves: one invocation's own listener, or the listener of a wrapped command.
+type RelayKind = "invocation" | "wrapped-command";
 
 interface EndedPortHold {
   readonly ms: number;
@@ -80,12 +83,16 @@ export interface EgressRelay {
   // A loopback port that forwards to this relay; it is never a destination.
   registerPort(port: number): void;
   recordRefusal(host: string, port: number | undefined, reason: string): void;
-  // The relay stops at once. Its ports stay bound and refused as destinations for the hold-back, longer while `processGroup` has a process.
+  // The relay stops at once. On a route with a hold-back its ports stay bound and refused as destinations for it, longer while `processGroup` has a process.
   close(options?: { readonly processGroup?: number }): Promise<void>;
 }
 
-// How long an ended relay's ports are held back, and the bound on extending that for a live process group.
-const ENDED_PORT_HOLD = { ms: 30 * 60 * 1000, maxMs: 24 * 60 * 60 * 1000 } as const;
+// Per route: how long an ended relay's ports are held back, and the bound on extending that for a live process group. None means freed at close.
+const ENDED_PORT_HOLD: Readonly<Record<RelayKind, EndedPortHold | undefined>> = {
+  invocation: undefined,
+  "wrapped-command": { ms: 30 * 60 * 1000, maxMs: 24 * 60 * 60 * 1000 },
+};
+const MAX_BIND_ATTEMPTS = 32;
 const MAX_RELAYS = 4096;
 const MIN_TOKEN_LENGTH = 22;
 const MAX_ROUTING_ATTEMPTS = 32;
@@ -125,7 +132,7 @@ interface Service {
   readonly allow: readonly RelayAllowEntry[];
   readonly resolve: EgressRelayResolver;
   readonly maxRelays: number;
-  readonly endedPortHold: EndedPortHold;
+  readonly endedPortHold: Readonly<Record<RelayKind, EndedPortHold | undefined>>;
   router: EgressRelayRouter | undefined;
   routerInstalls: number;
 }
@@ -149,6 +156,8 @@ let service: Service | undefined;
 const lanes = new Map<string, Lane & { close(): Promise<void> }>();
 const retiredKeys = new Set<string>();
 const heldBack = new Set<{ readonly ports: ReadonlySet<number>; release(): Promise<void> }>();
+// Port numbers of listeners whose hold-back has passed: refused as destinations and never a relay's port again while the service runs.
+const retiredPorts = new Set<number>();
 const liveConnections = new Map<string, Set<Duplex>>();
 let violations: EgressRelayViolation[] = [];
 const violationListeners = new Set<(violations: readonly EgressRelayViolation[]) => void>();
@@ -193,7 +202,7 @@ export function startEgressRelayService(options: EgressRelayServiceOptions): voi
     allow: (options.allow ?? []).map(parseRelayAllowEntry),
     resolve: options.resolve ?? ((name) => lookup(name, { all: true, verbatim: true })),
     maxRelays,
-    endedPortHold: options.endedPortHold ?? ENDED_PORT_HOLD,
+    endedPortHold: { ...ENDED_PORT_HOLD, ...options.endedPortHold },
     router: options.router,
     routerInstalls: 0,
   };
@@ -203,6 +212,7 @@ export async function stopEgressRelayService(): Promise<void> {
   service = undefined;
   const results = await Promise.allSettled([...lanes.values()].map((lane) => lane.close()));
   await Promise.allSettled([...heldBack].map((held) => held.release()));
+  retiredPorts.clear();
   retiredKeys.clear();
   violations = [];
   const failed = results.find((result) => result.status === "rejected");
@@ -228,6 +238,7 @@ function routingIsCurrent(current: Service, stamp: RoutingStamp): boolean {
 function relayPorts(): Set<number> {
   const ports = new Set<number>();
   for (const owner of [...lanes.values(), ...heldBack]) for (const port of owner.ports) ports.add(port);
+  for (const port of retiredPorts) ports.add(port);
   return ports;
 }
 
@@ -822,14 +833,14 @@ function processGroupAlive(group: number): boolean {
 }
 
 // Open the invocation's relay. Throws unless the service is started (which requires the ask callback); a token has one relay for the session.
-export async function openEgressRelay(token: string, admission?: InvocationProxyAdmission): Promise<EgressRelay> {
+export async function openEgressRelay(token: string, admission?: InvocationProxyAdmission, kind: RelayKind = "invocation"): Promise<EgressRelay> {
   const current = service;
   if (current === undefined) throw new Error("egress relay: the service is not started");
   if (typeof token !== "string" || token.length < MIN_TOKEN_LENGTH || token.length > 100 || !/^[\x21-\x7e]+$/u.test(token)) {
     throw new Error("egress relay: the invocation token is not usable");
   }
   admission?.assertCanBind();
-  if (lanes.size >= current.maxRelays) throw new Error("egress relay: too many invocation relays");
+  if (lanes.size + heldBack.size >= current.maxRelays) throw new Error("egress relay: too many invocation relays");
   if (retiredKeys.has(token) || lanes.has(token)) throw new Error("egress relay: the invocation already had a relay");
   const state: Lane = {
     key: token,
@@ -881,6 +892,7 @@ export async function openEgressRelay(token: string, admission?: InvocationProxy
   // The ended relay keeps its port bound, answering nothing, so no later listener gets it and it stays refused as a destination.
   const holdBack = (hold: EndedPortHold, processGroup: number | undefined): void => {
     const endedAt = Date.now();
+    const ownPort = (server.address() as net.AddressInfo).port;
     let timer: NodeJS.Timeout;
     const held = {
       ports: state.ports,
@@ -893,8 +905,13 @@ export async function openEgressRelay(token: string, admission?: InvocationProxy
     const arm = (): void => {
       timer = setTimeout(() => {
         const alive = processGroup !== undefined && (hold.groupAlive ?? processGroupAlive)(processGroup);
-        if (alive && Date.now() - endedAt + hold.ms <= hold.maxMs) arm();
-        else void held.release().catch(() => {});
+        if (alive && Date.now() - endedAt + hold.ms <= hold.maxMs) {
+          arm();
+          return;
+        }
+        // The number outlives the hold; the forwarding ports do not.
+        retiredPorts.add(ownPort);
+        void held.release().catch(() => {});
       }, hold.ms);
       timer.unref();
     };
@@ -906,7 +923,7 @@ export async function openEgressRelay(token: string, admission?: InvocationProxy
     admission?.signal.removeEventListener("abort", revoke);
     closing ??= (async () => {
       await binding?.catch(() => {});
-      const hold = service === current ? current.endedPortHold : undefined;
+      const hold = service === current ? current.endedPortHold[kind] : undefined;
       if (server.listening && hold !== undefined && hold.ms > 0) {
         const group = options?.processGroup;
         holdBack(hold, Number.isInteger(group) && (group as number) > 1 ? group : undefined);
@@ -928,17 +945,26 @@ export async function openEgressRelay(token: string, admission?: InvocationProxy
   admission?.signal.addEventListener("abort", revoke, { once: true });
   let port: number;
   try {
-    binding = new Promise<void>((resolve, reject) => {
+    const listen = (): Promise<number> => new Promise<number>((resolve, reject) => {
       server.once("error", reject);
       server.listen(0, "127.0.0.1", () => {
         server.off("error", reject);
-        resolve();
+        const address = server.address();
+        if (address === null || typeof address === "string") reject(new Error("egress relay: the listener has no TCP address"));
+        else resolve(address.port);
       });
     });
-    await binding;
-    const address = server.address();
-    if (address === null || typeof address === "string") throw new Error("egress relay: the listener has no TCP address");
-    port = address.port;
+    // A retired number is never a relay's port again: bind another.
+    const bound = (async (): Promise<number> => {
+      for (let attempt = 0; attempt < MAX_BIND_ATTEMPTS; attempt++) {
+        const candidate = await listen();
+        if (!retiredPorts.has(candidate)) return candidate;
+        await unbind();
+      }
+      throw new Error("egress relay: no port outside the retired ones");
+    })();
+    binding = bound.then(() => {});
+    port = await bound;
     state.ports.add(port);
     // A listener error after this point ends the relay instead of reaching the process.
     server.on("error", () => void close().catch(() => {}));

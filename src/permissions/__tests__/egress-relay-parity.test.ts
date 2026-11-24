@@ -6,7 +6,7 @@ import net from "node:net";
 import { resolve } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ParentProxyRouter, SandboxAskCallback } from "@anthropic-ai/sandbox-runtime";
-import { setDestinationResolverForTesting, setListenerQuarantineForTesting } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-manager.js";
+import { setDestinationResolverForTesting } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-manager.js";
 import { useTempDirs as tempDirs } from "../../__tests__/test-helpers.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import * as policyHome from "../../shared/policy-home.js";
@@ -56,8 +56,10 @@ const RECORDED = {
   notABoolean: { both: "HTTP/1.1 403 user denied" },
   // P21: the same reserved address in every spelling. Today asks about each one, then dials.
   reservedLiteral: { today: "asked", new: "HTTP/1.1 403 destination is a reserved address" },
-  // P24
-  endedPortHop: { today: "asked", new: "HTTP/1.1 403 sandbox proxy listener" },
+  // P24, per-invocation route: the ports are freed at close and are ordinary loopback ports again.
+  endedPortHop: { both: "asked" },
+  // P21: the allow list does not exempt a reserved literal on the new relay.
+  allowedReservedLiteral: { today: "tunnelled", new: "HTTP/1.1 403 destination is a reserved address" },
   oversizedHeader: { both: "HTTP/1.1 431 Request Header Fields Too Large" },
   reusedToken: { both: "the invocation already had a relay" },
 } as const;
@@ -69,11 +71,17 @@ const DIFFERENCES = [
   { row: "P14", today: RECORDED.noAskCallback.today, new: RECORDED.noAskCallback.new, why: "the ask callback is a precondition of the service" },
   { row: "P15", today: RECORDED.openBeforeStart.today, new: RECORDED.openBeforeStart.new, why: "same refusal, the relay's own wording" },
   { row: "P16", today: "4096 relays, not exercised here", new: "4096 relays, exercised with a lower injected limit", why: "same limit" },
-  { row: "P21", today: "a reserved address literal is asked about, then dialled", new: RECORDED.reservedLiteral.new, why: "no spelling of a link-local, metadata, multicast or unspecified address is a destination; loopback and private-use literals are asked as today; the allow list does not exempt a literal" },
-  { row: "P24", today: "this relay frees its ports when it closes, and they are asked about like any loopback port", new: "the ports stay bound and refused for 30 minutes, up to 24 hours while the process group lives", why: "the hold-back today's wrapped-command listener has; parked for the owner" },
+  { row: "P21", today: "a reserved address literal is asked about, then dialled", new: RECORDED.reservedLiteral.new, why: "no spelling of a link-local, metadata, multicast or unspecified address is a destination; loopback and private-use literals are asked as today; the allow list does not exempt a literal (today an allow-listed one is tunnelled without an ask)" },
   { row: "407 challenge", today: "its own realm name", new: 'realm "egress relay"', why: "nothing reads the realm" },
   { row: "listener", today: "a port outside the shared proxy range", new: "any ephemeral loopback port", why: "the container makes the connection, so no range has to match a host rule" },
 ] as const;
+
+// P24 on the wrapped-command route. Today has it on one OS only, where this suite's today adapter cannot run, so today's column is read
+// from the package manager module and the new relay is pinned to it: an ended listener keeps its port bound and refused for 30 minutes,
+// up to 24 hours while its process group lives (:147-152, :1887-1914); held listeners count toward the limit (:1738, :1907); after the hold
+// the port number stays refused and is never given out again until reset (:1158, :1762, :1910, :3739).
+const HELD = "HTTP/1.1 403 sandbox proxy listener";
+type RouteKind = "invocation" | "wrapped-command";
 
 type Ask = EgressRelayAsk;
 interface StartOptions {
@@ -93,7 +101,7 @@ interface RelayUnderTest {
 interface Adapter {
   readonly name: RelayName;
   start(options: StartOptions): Promise<void>;
-  open(token: string, admission?: InvocationProxyAdmission): Promise<RelayUnderTest & { recordRefusal(destination: string, reason: string): void }>;
+  open(token: string, admission?: InvocationProxyAdmission, kind?: RouteKind): Promise<RelayUnderTest & { recordRefusal(destination: string, reason: string): void }>;
   setRouter(router: EgressRelayRouter): void;
   closeConnections(tokens: readonly string[], host: string, port: number): number;
   closeAll(): number;
@@ -108,7 +116,6 @@ const today: Adapter = {
   name: "today",
   async start(options) {
     setDestinationResolverForTesting(options.resolve);
-    setListenerQuarantineForTesting(options.endedPortHold?.ms);
     await initializeAsrtSandbox({
       allowedDomains: [...(options.allow ?? [])],
       strictAllowlist: false,
@@ -124,17 +131,17 @@ const today: Adapter = {
   async stop() {
     await resetAsrtSandbox();
     setDestinationResolverForTesting(undefined);
-    setListenerQuarantineForTesting(undefined);
   },
 };
 
 const next: Adapter = {
   name: "new",
   async start(options) {
-    startEgressRelayService({ ...options, ask: options.ask as Ask });
+    const { endedPortHold, ...rest } = options;
+    startEgressRelayService({ ...rest, ask: options.ask as Ask, ...(endedPortHold ? { endedPortHold: { "wrapped-command": endedPortHold } } : {}) });
   },
-  async open(token, admission) {
-    const relay = await openEgressRelay(token, admission);
+  async open(token, admission, kind) {
+    const relay = await openEgressRelay(token, admission, kind);
     return { ...relay, recordRefusal: (destination, reason) => relay.recordRefusal(destination, undefined, reason) };
   },
   setRouter: setEgressRelayRouter,
@@ -234,7 +241,7 @@ afterEach(async () => {
 
 it("takes the ask callback and the router boot builds today", () => {
   expect(contracts).toBeTypeOf("function");
-  expect(DIFFERENCES.map((difference) => difference.row)).toEqual(["P17", "P18", "P14", "P15", "P16", "P21", "P24", "407 challenge", "listener"]);
+  expect(DIFFERENCES.map((difference) => difference.row)).toEqual(["P17", "P18", "P14", "P15", "P16", "P21", "407 challenge", "listener"]);
 });
 
 describe.each([today, next])("egress relay parity: $name relay", (adapter) => {
@@ -247,8 +254,8 @@ describe.each([today, next])("egress relay parity: $name relay", (adapter) => {
     await adapter.start(options);
     cleanups.push(adapter.stop);
   };
-  const open = async (token = newToken(), admission?: InvocationProxyAdmission) => {
-    const relay = await adapter.open(token, admission);
+  const open = async (token = newToken(), admission?: InvocationProxyAdmission, kind?: RouteKind) => {
+    const relay = await adapter.open(token, admission, kind);
     cleanups.push(relay.close);
     return relay;
   };
@@ -406,6 +413,11 @@ describe.each([today, next])("egress relay parity: $name relay", (adapter) => {
         "[fe80::1]",
         "0.0.0.0",
         "224.0.0.1",
+        "[::a9fe:a9fe]",
+        "[64:ff9b::a9fe:a9fe]",
+        "[2002:a9fe:a9fe::1]",
+        "169.254.43518",
+        "169.254.169.254.",
       ];
 
       const outcomes: Record<string, string> = {};
@@ -488,62 +500,136 @@ describe.each([today, next])("egress relay parity: $name relay", (adapter) => {
       await expect.poll(() => closed, { timeout: 5000 }).toBe(true);
     });
 
-    it("P24: an ended relay's ports stay refused as destinations while they are held back", async () => {
+    it("P21: a reserved literal on the allow list", async () => {
+      const upstream = await startUpstream();
       const ask = vi.fn<Ask>(async () => ({ allow: false, reason: "asked" }));
-      await start({ ask, endedPortHold: { ms: 1500, maxMs: 6000 } });
-      const ended = await open();
+      await start({ ask, allow: ["169.254.169.254:80"], router: upstream.router });
+      const relay = await open();
+
+      const client = connect(relay, "169.254.169.254:80");
+      await expect.poll(client.output).toContain("\r\n\r\n");
+
+      expect(/ 200 /u.test(client.statusLine()) ? "tunnelled" : client.statusLine()).toBe(recorded("allowedReservedLiteral"));
+      expect(ask).not.toHaveBeenCalled();
+    });
+
+    const unbound = (port: number): Promise<boolean> => new Promise((done) => {
+      const socket = net.connect(port, "127.0.0.1");
+      socket.once("connect", () => { socket.destroy(); done(false); });
+      socket.once("error", (error: NodeJS.ErrnoException) => done(error.code === "ECONNREFUSED"));
+    });
+    const hopOutcome = async (relay: { port: number; proxyAuthorization: string }, ask: ReturnType<typeof vi.fn<Ask>>, port: number): Promise<string> => {
+      ask.mockClear();
+      const status = await refused(relay, `127.0.0.1:${port}`);
+      return ask.mock.calls.length > 0 ? "asked" : status;
+    };
+    const forwardingPort = async (): Promise<number> => {
       const front = net.createServer();
       await new Promise<void>((done) => front.listen(0, "127.0.0.1", done));
       cleanups.push(() => new Promise<void>((done) => { front.close(() => done()); }));
-      const frontPort = (front.address() as net.AddressInfo).port;
+      return (front.address() as net.AddressInfo).port;
+    };
+
+    it("P24, per-invocation route: an ended relay frees its port and its forwarding ports at once", async () => {
+      const ask = vi.fn<Ask>(async () => ({ allow: false, reason: "asked" }));
+      await start({ ask, endedPortHold: { ms: 1500, maxMs: 6000 } });
+      const ended = await open();
+      const frontPort = await forwardingPort();
       ended.registerPort(frontPort);
       await ended.close();
       const relay = await open();
 
-      const during: string[] = [];
-      for (const port of [ended.port, frontPort]) {
-        ask.mockClear();
-        const status = await refused(relay, `127.0.0.1:${port}`);
-        during.push(ask.mock.calls.length > 0 ? "asked" : status);
-      }
+      expect(await unbound(ended.port)).toBe(true);
+      expect([await hopOutcome(relay, ask, ended.port), await hopOutcome(relay, ask, frontPort)]).toEqual([recorded("endedPortHop"), recorded("endedPortHop")]);
+    });
 
-      expect(relay.port).not.toBe(ended.port);
-      expect(during).toEqual([recorded("endedPortHop"), recorded("endedPortHop")]);
-      if (adapter.name === "today") return;
+    it.runIf(adapter.name === "new")("P24, wrapped-command route: an ended relay's ports are held back, then its port number is retired", async () => {
+      const ask = vi.fn<Ask>(async () => ({ allow: false, reason: "asked" }));
+      await start({ ask, endedPortHold: { ms: 1500, maxMs: 6000 } });
+      const ended = await open(newToken(), undefined, "wrapped-command");
+      const frontPort = await forwardingPort();
+      ended.registerPort(frontPort);
+      await ended.close();
+      const relay = await open();
+
+      expect([await hopOutcome(relay, ask, ended.port), await hopOutcome(relay, ask, frontPort)]).toEqual([HELD, HELD]);
       // The held port is still bound, and answers nothing.
       const late = connect({ port: ended.port, proxyAuthorization: ended.proxyAuthorization }, "asked.example:443");
       await expect.poll(() => late.socket.destroyed).toBe(true);
       expect(late.output()).toBe("");
-      // Once the hold-back has passed the port is an ordinary loopback destination again.
-      await expect.poll(async () => {
-        ask.mockClear();
-        await refused(relay, `127.0.0.1:${ended.port}`);
-        return ask.mock.calls.length;
-      }, { timeout: 5000, interval: 100 }).toBeGreaterThan(0);
+
+      // After the hold the port is unbound, its number stays refused, and the forwarding port is an ordinary port again.
+      await expect.poll(() => unbound(ended.port), { timeout: 8000, interval: 100 }).toBe(true);
+      expect(await hopOutcome(relay, ask, ended.port)).toBe(HELD);
+      expect(await hopOutcome(relay, ask, frontPort)).toBe("asked");
     });
 
-    it.runIf(adapter.name === "new")("P24: a live process group extends the hold-back, up to the maximum", async () => {
+    it.runIf(adapter.name === "new")("P24, wrapped-command route: a retired port number is never given to a later relay", async () => {
+      await start({ ask: async () => true, endedPortHold: { ms: 200, maxMs: 1000 } });
+      const ended = await open(newToken(), undefined, "wrapped-command");
+      await ended.close();
+      await expect.poll(() => unbound(ended.port), { timeout: 8000, interval: 100 }).toBe(true);
+      // The next listener is told it got the retired number once.
+      const address = vi.spyOn(net.Server.prototype, "address").mockImplementationOnce(() => ({ address: "127.0.0.1", family: "IPv4", port: ended.port }));
+
+      const relay = await open();
+      address.mockRestore();
+
+      expect(relay.port).not.toBe(ended.port);
+      expect(await refused({ port: relay.port }, "asked.example:443")).toBe(recorded("unauthenticated"));
+    });
+
+    it.runIf(adapter.name === "new")("P24, wrapped-command route: held relays count toward the relay limit", async () => {
+      await start({ ask: async () => true, maxRelays: 2, endedPortHold: { ms: 1500, maxMs: 6000 } });
+      const ended = await open(newToken(), undefined, "wrapped-command");
+      await open();
+      await ended.close();
+
+      await expect(adapter.open(newToken())).rejects.toThrow(/too many invocation relays/u);
+      await expect.poll(() => unbound(ended.port), { timeout: 8000, interval: 100 }).toBe(true);
+      await open();
+    });
+
+    it.runIf(adapter.name === "new")("P24, wrapped-command route: stopping the service frees held ports and forgets retired ones", async () => {
+      const ask = vi.fn<Ask>(async () => ({ allow: false, reason: "asked" }));
+      startEgressRelayService({ ask, endedPortHold: { "wrapped-command": { ms: 200, maxMs: 1000 } } });
+      const retired = await openEgressRelay(newToken(), undefined, "wrapped-command");
+      await retired.close();
+      await expect.poll(() => unbound(retired.port), { timeout: 8000, interval: 100 }).toBe(true);
+      await stopEgressRelayService();
+      startEgressRelayService({ ask, endedPortHold: { "wrapped-command": { ms: 60_000, maxMs: 120_000 } } });
+      cleanups.push(stopEgressRelayService);
+      const held = await openEgressRelay(newToken(), undefined, "wrapped-command");
+      await held.close();
+      expect(await unbound(held.port)).toBe(false);
+
+      await stopEgressRelayService();
+
+      expect(await unbound(held.port)).toBe(true);
+      startEgressRelayService({ ask });
+      const relay = await open();
+      expect([await hopOutcome(relay, ask, held.port), await hopOutcome(relay, ask, retired.port)]).toEqual(["asked", "asked"]);
+    });
+
+    it.runIf(adapter.name === "new")("P24, wrapped-command route: a live process group extends the hold-back, up to the maximum", async () => {
       let alive = true;
       const groupAlive = vi.fn(() => alive);
       const ask = vi.fn<Ask>(async () => ({ allow: false, reason: "asked" }));
-      startEgressRelayService({ ask, endedPortHold: { ms: 500, maxMs: 1750, groupAlive } });
-      cleanups.push(stopEgressRelayService);
-      const first = await openEgressRelay(newToken());
-      const relay = await open();
-      const heldBack = async (port: number): Promise<boolean> => (await refused(relay, `127.0.0.1:${port}`)) === recorded("endedPortHop");
+      await start({ ask, endedPortHold: { ms: 500, maxMs: 1750, groupAlive } });
+      const first = await openEgressRelay(newToken(), undefined, "wrapped-command");
+      const second = await openEgressRelay(newToken(), undefined, "wrapped-command");
 
       await first.close({ processGroup: 4242 });
       await expect.poll(() => groupAlive.mock.calls.length, { timeout: 5000 }).toBeGreaterThanOrEqual(1);
       expect(groupAlive).toHaveBeenCalledWith(4242);
-      expect(await heldBack(first.port)).toBe(true);
+      expect(await unbound(first.port)).toBe(false);
       // The maximum ends it although the group still looks alive.
-      await expect.poll(() => heldBack(first.port), { timeout: 5000, interval: 50 }).toBe(false);
+      await expect.poll(() => unbound(first.port), { timeout: 8000, interval: 50 }).toBe(true);
 
-      const second = await openEgressRelay(newToken());
       alive = false;
       await second.close({ processGroup: 4243 });
-      expect(await heldBack(second.port)).toBe(true);
-      await expect.poll(() => heldBack(second.port), { timeout: 5000, interval: 50 }).toBe(false);
+      expect(await unbound(second.port)).toBe(false);
+      await expect.poll(() => unbound(second.port), { timeout: 8000, interval: 50 }).toBe(true);
       expect(groupAlive).toHaveBeenCalledWith(4243);
     });
 
