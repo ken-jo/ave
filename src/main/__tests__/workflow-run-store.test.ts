@@ -591,6 +591,22 @@ it("announces the settled runs a write's retention removed once that write is on
   expect(await store.get("run-1")).toEqual({ status: "not-found" });
 });
 
+it("keeps the run a put re-stores out of that put's retention, so a settled run is neither dropped nor announced", async () => {
+  const store = new WorkflowRunStore(file);
+  const announced = vi.fn();
+  store.onRunsRemoved = announced;
+  await store.put(run());
+  const ended = await store.settleRun("run-1", value => ({ run: value, ends: "stopped", at: "2026-01-02T00:00:00.000Z" }), () => true);
+  if (ended.status !== "stored") throw new Error(`settleRun returned ${ended.status}`);
+  await store.put(run({ runId: "run-2", itemId: 2 }));
+  const retain = vi.fn((value: WorkflowRunRecord) => value.settled === undefined ? value : null);
+
+  expect(await store.put(ended.run, retain)).toEqual({ status: "stored", run: ended.run });
+  expect(retain.mock.calls.map(([value]) => value.runId)).toEqual(["run-2"]);
+  expect(announced).not.toHaveBeenCalled();
+  expect(await store.get("run-1")).toEqual({ status: "found", run: ended.run });
+});
+
 it("reads a delete as unknown while the file holds its marker or the store holds it in memory, and resolves it only as told, confirmed by reading the file again", async () => {
   const store = new WorkflowRunStore(file);
   const intent = { itemId: run().itemId, runId: "run-1" };

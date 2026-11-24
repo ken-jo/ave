@@ -48,9 +48,9 @@ export interface WorkflowRunView {
   get(runId: string): WorkflowRunReadResult;
   missing?(runId: string): boolean;
 }
-/** What a write does with another readable run: null removes it, a record replaces it (same item, pin, start authority and end). */
 /** A settled run a write removed, with what authorised it as the file held it: the project the run worked on is told from that. */
 export interface RemovedRun { runId: string; itemId: number; runStartedBy: RunAuthoritySource }
+/** What a write does with another readable run: null removes it, a record replaces it (same item, pin, start authority and end). */
 export type WorkflowRunRetention = (run: WorkflowRunRecord) => WorkflowRunRecord | null;
 
 /** Why a template run ends (work-board-run-ending.md, One settle point). */
