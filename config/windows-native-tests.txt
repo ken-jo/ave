@@ -119,6 +119,7 @@ src/main/storage/__tests__/feature-namespace.test.ts
 src/main/terminal/__tests__/changed-file-evidence.test.ts
 src/main/terminal/__tests__/host-shell-integration.test.ts
 src/main/terminal/__tests__/manual-shell.test.ts
+src/main/terminal/__tests__/pty-dependency-kill.test.ts
 src/main/terminal/__tests__/pty-manager-host-control.test.ts
 src/main/terminal/__tests__/pty-manager.test.ts
 src/main/terminal/__tests__/pty-native-binding.test.ts
@@ -193,6 +194,7 @@ src/permissions/__tests__/mxc-extension-admission-token.test.ts
 src/permissions/__tests__/mxc-extension-admission.test.ts
 src/permissions/__tests__/mxc-policy-pipe.test.ts
 src/permissions/__tests__/mxc-sdk-packaging.test.ts
+src/permissions/__tests__/mxc-supervisor-bootstrap.test.ts
 src/permissions/__tests__/mxc-windows-missing-denies.test.ts
 src/permissions/__tests__/mxc-windows-transport.test.ts
 src/permissions/__tests__/mxc-windows.test.ts
@@ -393,11 +395,13 @@ src/workload/__tests__/capability-file-identity.test.ts
 src/workload/__tests__/runtime.test.ts
 test/scripts/asrt-bwrap-ownership.test.ts
 test/scripts/asrt-mount-ownership-races.test.ts
+test/scripts/builder-download-auth.test.ts
 test/scripts/check-release-repository.test.ts
 test/scripts/check-sandboxed-preloads.test.ts
 test/scripts/document-consumer-guard.test.ts
 test/scripts/e2e-electron-quit.test.ts
 test/scripts/e2e-native-fixture-runtime.test.ts
+test/scripts/electron-download-auth.test.ts
 test/scripts/install-windows-git.test.ts
 test/scripts/linux-package-arch.test.ts
 test/scripts/mxc-builder-packaging.test.ts
@@ -408,7 +412,10 @@ test/scripts/pre-push-source-policy.test.ts
 test/scripts/release-channel.test.ts
 test/scripts/restore-node-pty-exec-bit.test.ts
 test/scripts/ripgrep-runtime-files.test.ts
+test/scripts/runtime-download-cache.test.ts
 test/scripts/setup-bun-cache.test.ts
+test/scripts/skill-script-inventory.test.ts
 test/scripts/smoke-windows-nsis-installer.test.ts
 test/scripts/update-mxc-pins.test.ts
 test/scripts/webpack-cache.test.ts
+test/scripts/windows-native-test-inventory.test.ts

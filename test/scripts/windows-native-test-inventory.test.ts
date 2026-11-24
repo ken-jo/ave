@@ -66,6 +66,39 @@ function nativeImportChains(modules: Map<string, string>): Map<string, string[]>
 }
 
 describe("Windows runtime imports", () => {
+  it.each([
+    'import { createRequire } from "node:module"; const load = createRequire(new URL("../../main/anchor.cjs", import.meta.url)); load("./windows-probe.cjs").read();',
+    'import { createRequire as factory } from "node:module"; const anchor = new URL("../../main/", import.meta.url); const loader = factory(anchor); const load = loader; const { read } = load("./windows-probe.cjs"); read();',
+    'import * as mod from "node:module"; const factory = mod.createRequire; factory(new URL("../../main/anchor.cjs", import.meta.url))("./windows-probe.cjs").read();',
+    'const { createRequire: factory } = require("module"); const load = factory(new URL("../../main/anchor.cjs", import.meta.url)); load("./windows-probe.cjs").read();',
+  ])("resolves a loader against its actual anchor: %s", source => {
+    const file = "src/core/__tests__/probe.test.ts", target = "src/main/windows-probe.cjs";
+    const modules = new Map([[file, source], [target, "exports.read = () => 'checked';"]]);
+    expect(windowsImportGraph(modules).get(file)?.dependencies).toContainEqual(expect.objectContaining({ file: target, actual: true }));
+    expect(nativeBackedTestFiles(modules).get(file)).toEqual([file, target]);
+  });
+
+  it.each([
+    'const load = createRequire(platformAnchor()); load("./safe.js");',
+    'const load = createRequire(import.meta.url); const alias = wrap(load); alias("./safe.js");',
+    'const load = createRequire(import.meta.url); const box = { load }; box.load("./safe.js");',
+    'const load = createRequire(import.meta.url); load(id);',
+  ])("retains a test whose real loader cannot be resolved: %s", source => {
+    expect(nativeBackedTestFiles(sources(`import { createRequire } from "node:module"; ${source}`)).has(SUITE)).toBe(true);
+  });
+
+  it("does not attribute an unrelated same-name function to the module loader", () => {
+    const source = 'function createRequire(anchor) { return () => anchor; } createRequire(opaque)("./safe.js");';
+    expect(nativeBackedTestFiles(sources(source)).has(SUITE)).toBe(false);
+  });
+
+  it("does not resolve an anchored binding named require relative to its caller", () => {
+    const file = "src/core/__tests__/probe.test.ts", target = "src/main/windows-probe.cjs";
+    const other = "src/core/__tests__/windows-probe.cjs";
+    const source = 'import { createRequire } from "node:module"; const require = createRequire(new URL("../../main/anchor.cjs", import.meta.url)); require("./windows-probe.cjs").read();';
+    const modules = new Map([[file, source], [target, "exports.read = () => 'checked';"], [other, "exports.read = () => 'wrong';"]]);
+    expect(windowsImportGraph(modules).get(file)?.dependencies.map(edge => edge.file)).toEqual(["node:module", target]);
+  });
 
   it("selects a mock flow that reaches the actual module through a loader property value", () => {
     expect(platform()).toBe(process.platform);
@@ -305,7 +338,7 @@ describe("Windows runtime imports", () => {
         platform: "node",
         format: "cjs",
         write: false,
-        external: ["esbuild", "typescript/unstable/ast/scanner"],
+        external: ["esbuild", "typescript/unstable/*"],
         define: { "import.meta.url": JSON.stringify(import.meta.url) },
         banner: { js: `
 require = require("node:module").createRequire(${JSON.stringify(inventoryPath)});

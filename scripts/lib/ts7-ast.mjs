@@ -1,6 +1,7 @@
 // Use the native compiler service for parsing; the unstable AST module has visitors but no text parser.
 import { API } from "typescript/unstable/sync";
 import { createVirtualFileSystem } from "typescript/unstable/fs";
+import { isShorthandPropertyAssignment } from "typescript/unstable/ast";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
@@ -82,13 +83,17 @@ export function withParsedSourceTexts(texts, inspect) {
         projectsByInput.set(input, project);
       }
     }
-    return inspect(sourceFiles, (path, identifiers) => {
+    return inspect(sourceFiles, (path, identifiers, { shorthandValues = false } = {}) => {
       const project = projectsByInput.get(path);
       if (!project) throw new Error("Source binding context is unavailable");
       const symbols = identifiers.length > 0 ? project.checker.getSymbolAtLocation(identifiers) : [];
       if (symbols.length !== identifiers.length) throw new Error("Source binding resolution is incomplete");
-      return new Map(identifiers.map((identifier, index) => [identifier,
-        symbols[index]?.declarations.length === 1 ? symbols[index].declarations[0].resolve(project) : undefined]));
+      return new Map(identifiers.map((identifier, index) => {
+        const parent = identifier.parent;
+        const symbol = shorthandValues && isShorthandPropertyAssignment(parent) && parent.name === identifier
+          ? project.checker.getShorthandAssignmentValueSymbol(parent) : symbols[index];
+        return [identifier, symbol?.declarations.length === 1 ? symbol.declarations[0].resolve(project) : undefined];
+      }));
     });
   } finally {
     api.close();

@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { MessageChannel, receiveMessageOnPort, Worker } from "node:worker_threads";
 import { createScanner } from "typescript/unstable/ast/scanner";
 import { conditionalGates } from "./windows-test-gates.js";
+import { windowsCreateRequireLoads } from "./windows-create-require.js";
 import { isCollectedVitestFile } from "../../scripts/lib/vitest-collection.mjs";
 import { assertWindowsMarkerPlacement, hasWindowsInventoryMarker } from "../../scripts/windows-test-inventory.mjs";
 
@@ -116,7 +117,7 @@ function isPossibleRequireLoad(tokens: readonly string[], index: number): boolea
   return false;
 }
 
-function runtimeImports(tokens: readonly string[]): { imports: string[]; actualImports: string[]; mocks: string[] } {
+function runtimeImports(tokens: readonly string[], reanchored?: ReadonlySet<string>): { imports: string[]; actualImports: string[]; mocks: string[] } {
   const imports = new Set<string>();
   const actualImports = new Set<string>();
   const mocks = new Set<string>();
@@ -129,7 +130,8 @@ function runtimeImports(tokens: readonly string[]): { imports: string[]; actualI
     const nextLiteral = literal(next);
     const argument = literal(tokens[i + 2]);
     const requireIndex = requireCallArgumentIndex(tokens, i);
-    const requireArgument = requireIndex === undefined ? undefined : literal(tokens[requireIndex]);
+    const required = requireIndex === undefined ? undefined : literal(tokens[requireIndex]);
+    const requireArgument = required !== undefined && !reanchored?.has(required) ? required : undefined;
     if (token === "import" && nextLiteral !== undefined) imports.add(nextLiteral);
     else if (token === "import" && next === "(" && argument !== undefined) imports.add(argument);
     else if (requireArgument !== undefined) imports.add(requireArgument);
@@ -243,8 +245,8 @@ function* transformedSources(sources: ReadonlyMap<string, string>, replyTimeoutM
   }
 }
 
-type Edge = { file: string; actual: boolean; specifier: string };
-type RuntimeModule = { dependencies: Edge[]; mocks: Set<string>; tokens: string[] };
+type Edge = { file: string; actual: boolean; specifier: string; load?: true };
+type RuntimeModule = { dependencies: Edge[]; mocks: Set<string>; tokens: string[]; uncertainLoad: boolean };
 
 const WINDOWS_MODULE = /^src\/(?!.*\/__tests__\/)(?:.*\/)?(?:windows-|win32-)[^/]+\.[cm]?[jt]sx?$/u;
 const WINDOWS_EXTERNAL = /^(?:@?win32[-/]|winreg$|@microsoft\/mxc-sdk(?:\/|$)|@koromix\/koffi-win32-)/u;
@@ -275,15 +277,20 @@ export function windowsImportGraph(sources: ReadonlyMap<string, string>, replyTi
       path.replace(/\.cjs$/, ".cts"), ...[".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"]
         .flatMap(extension => [path + extension, `${path}/index${extension}`])].find(candidate => sources.has(candidate));
   };
+  const requires = windowsCreateRequireLoads(sources);
   const graph = new Map<string, RuntimeModule>();
   for (const [file, source, transformed] of transformedSources(sources, replyTimeoutMs)) {
     const tokens = runtimeTokens(file, source, transformed);
-    const parsed = runtimeImports(tokens);
-    const dependencies = parsed.imports.map(specifier => ({
+    const anchored = requires.get(file);
+    const parsed = runtimeImports(tokens, anchored?.reanchored);
+    const dependencies: Edge[] = parsed.imports.map(specifier => ({
       file: resolveImport(file, specifier) ?? specifier, actual: parsed.actualImports.includes(specifier), specifier,
     }));
+    for (const { anchor, specifier } of anchored?.loads ?? []) {
+      dependencies.push({ file: resolveImport(anchor, specifier) ?? specifier, specifier, actual: true, load: true });
+    }
     const mocks = new Set(parsed.mocks.map(specifier => resolveImport(file, specifier) ?? specifier));
-    graph.set(file, { dependencies, mocks, tokens });
+    graph.set(file, { dependencies, mocks, tokens, uncertainLoad: anchored?.uncertain ?? false });
   }
   return graph;
 }
@@ -547,7 +554,7 @@ function scanNativeBackedTestFiles(sources: ReadonlyMap<string, string>, replyTi
     if (!isCollectedVitestFile(file)) continue;
     const source = sources.get(file);
     if (source === undefined) throw new Error(`Missing Windows test source: ${file}`);
-    if (hasWindowsInventoryMarker(source, "windows-native") || file.endsWith(".windows.test.ts")
+    if (hasWindowsInventoryMarker(source, "windows-native") || file.endsWith(".windows.test.ts") || module.uncertainLoad
       || callsNativeHelper(module.tokens, module.mocks) || exercisesFilesystemLinks(module.tokens, module.mocks) || checksWindowsPlatform(source, module.tokens, module.mocks)) {
       required.set(file, [file]);
       continue;
@@ -560,11 +567,19 @@ function scanNativeBackedTestFiles(sources: ReadonlyMap<string, string>, replyTi
         required.set(file, [file, edge.file]);
         break;
       }
-      if (!isNative(edge) && !importer?.dependencies.some(isNative)) continue;
+      if (isNative(edge) && edge.load) {
+        required.set(file, [file, edge.file]);
+        break;
+      }
+      if (!isNative(edge) && !importer?.uncertainLoad && !importer?.dependencies.some(isNative)) continue;
       const used = usedMembers(module.tokens, edge.specifier);
       if (used.size === 0) continue;
+      if (importer?.uncertainLoad) {
+        required.set(file, [file, edge.file]);
+        break;
+      }
       const native = importer?.dependencies.find(candidate => isNative(candidate) && isActual(candidate) && (candidate.actual || !importer.mocks.has(candidate.file))
-        && [...used].some(member => forwardsNative(importer, member, candidate)));
+        && (candidate.load || [...used].some(member => forwardsNative(importer, member, candidate))));
       if (isNative(edge) || native) {
         required.set(file, native ? [file, edge.file, native.file] : [file, edge.file]);
         break;
