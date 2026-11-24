@@ -65,7 +65,7 @@ describe.skipIf(process.platform==="win32")("typed shell execution and native ar
     String.raw`TARGET=./safe; if false; then TARGET=./other; fi; printf '%s\0' "$TARGET"`,
     String.raw`TARGET=./safe; false && TARGET=./other; printf '%s\0' "$TARGET"`,
     String.raw`TARGET=./safe; true || TARGET=./other; printf '%s\0' "$TARGET"`,
-    String.raw`cd deep/nested; (cd ../..); printf '%s\0' "$PWD"`,
+    String.raw`cd deep/nested && { (cd ../.. || :); printf '%s\0' "$PWD"; }`,
     String.raw`HOME=./safe printf '%s\0' "$HOME"; printf '%s\0' "$HOME"`,
     String.raw`HOME=./safe bash -c 'printf "%s\0" "$HOME"'`,
     String.raw`TARGET=./safe; emit(){ printf '%s\0' "$TARGET" "$1"; }; TARGET=./other emit value; printf '%s\0' "$TARGET"`,
@@ -151,9 +151,10 @@ describe.skipIf(process.platform==="win32")("typed shell execution and native ar
   it("retains cwd and loop state at a known lexical break", () => {
     const { cwd, environment } = fixture();
     mkdirSync(join(cwd, "stage/first"), { recursive: true });
-    const command = String.raw`cd stage; for item in first stop after; do if [ "$item" = stop ]; then break; fi; cd "$item"; done; printf '%s\0' "$PWD" "$item"`;
-    expect(emitted(command, cwd, environment)).toEqual([join(cwd, "stage/first"), "stop"]);
-    expect(emitted(command, cwd, environment)).toEqual(native(command, cwd, environment));
+    const command = String.raw`cd stage && { for item in first stop after; do if [ "$item" = stop ]; then break; fi; cd "$item"; done; printf '%s\0' "$PWD" "$item"; }`;
+    // A host cd keeps its failure state; the native run takes one of the modeled outcomes.
+    expect(new Set(emitted(command, cwd, environment))).toEqual(new Set([join(cwd, "stage/first"), join(cwd, "stage"), "stop"]));
+    expect(emitted(command, cwd, environment)).toEqual(expect.arrayContaining(native(command, cwd, environment)));
   });
 
   it("propagates break through nested lexical loops and stops the remaining bodies", () => {
@@ -178,8 +179,8 @@ describe.skipIf(process.platform==="win32")("typed shell execution and native ar
     String.raw`until false; do cd safe; break; cd ../other; done; printf '%s\0' "$PWD"`,
   ])("retains state when break exits a conditional loop: %s", command => {
     const { cwd, environment } = fixture();
-    expect(emitted(command, cwd, environment)).toEqual([join(cwd, "safe")]);
-    expect(emitted(command, cwd, environment)).toEqual(native(command, cwd, environment));
+    expect(new Set(emitted(command, cwd, environment))).toEqual(new Set([join(cwd, "safe"), cwd]));
+    expect(emitted(command, cwd, environment)).toEqual(expect.arrayContaining(native(command, cwd, environment)));
   });
 
   it("consumes a break from the while condition itself", () => {
@@ -299,5 +300,10 @@ describe("host cd outcome", () => {
   it("inspects the success body of a cd whose destination is missing during analysis", () => {
     const { cwd, environment } = fixture();
     expect(commands("cd missing && cat body.txt", cwd, environment)).toContainEqual(["cat", "body.txt"]);
+  });
+
+  it("inspects the failure body of a cd whose destination exists during analysis", () => {
+    const { cwd, environment } = fixture();
+    expect(commands("cd safe || cat body.txt", cwd, environment)).toContainEqual(["cat", "body.txt"]);
   });
 });

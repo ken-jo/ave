@@ -1,4 +1,3 @@
-import { accessSync, constants, statSync } from "node:fs";
 import { isAbsolute, posix, resolve as pathResolve } from "node:path";
 import { analyzeShell, literalWord, staticShellWord, validatePreparedShellAnalysis, type PreparedShellAnalysis, type ShellAnalysis, type ShellCommand, type ShellRedirect, type ShellStatement, type ShellWord, type ShellWordPart } from "./shell-analysis.js";
 import { effectiveShellCommand, stripCommandPath, type EffectiveShellCommand } from "./shell-effective-command.js";
@@ -149,8 +148,6 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
     ? posix.normalize(facts.guestCwd) : null : cwd;
   const initial: ShellState = { cwd: initialCwd, dialect: "bash", unicodeEscapes: facts.unicodeEscapes, prefixAssignmentRhs: facts.prefixAssignmentRhs, variables: new Map(Object.entries(facts.environment)), arrays: new Map(), exported: new Set(Object.keys(facts.environment)), functions: new Map(), readonlyVariables: new Set(), unsetVariables: new Set(), backquote: false, fromPipe: false, activeFunctions: [] };
   initial.variables.set("PWD", initialCwd ?? undefined);
-  // Filesystem effects cross process scopes; after possible mutation, pre-execution stat cannot prove a later chdir outcome. Keep this flag analysis-local.
-  let filesystemMayChange = false;
   let steps = 0;
   let nextExecutionBoundary = 0;
   const failedCommandRedirects = new WeakMap<ShellExecutionError, CommandRedirectObservation>();
@@ -312,9 +309,6 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
     }
     walk(nested.program, state, depth + 1, freshExecutionContext());
   };
-  const markRedirectEffects = (redirects: readonly ShellRedirect[]): void => {
-    if (redirects.some((redirect) => redirect.effect === "write" && redirect.target)) filesystemMayChange = true;
-  };
   const inspectRedirects = (redirects: readonly ShellRedirect[], state: ShellState, depth: number): void => {
     for (const redirect of redirects) {
       if (redirect.target) {
@@ -341,7 +335,6 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
     const assignmentEvaluation: WordEvaluation = {};
     applyAssignments(node, assigned, incoming, depth, assignmentEvaluation);
     redirects.state = cloneState(assigned);
-    markRedirectEffects(node.redirects);
     if (node.words.length === 0) {
       inspectRedirects(node.redirects, assigned, depth);
       redirects.inspected = true;
@@ -468,9 +461,6 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
       // Special builtins retain prefix assignments, but outer argv expansion uses incoming state.
       for (const assignment of node.assignments) setScalar(state, assignment.name, assigned.variables.get(assignment.name));
     }
-    if (!functionBody && (!shellBuiltin || !["echo", "printf", "tr", "true", "false", ":", "pwd", "cd", "test", "[", "break", "set", "export", "readonly", "unset", "read"].includes(verb))) {
-      filesystemMayChange = true;
-    }
     const knownArgv = argv.map((argument) => argument ?? "");
     if (["eval", "source", ".", "exec", "builtin", "shopt", "trap", "alias", "unalias", "pushd", "popd", "continue", "return", "shift", "getopts", "mapfile", "readarray", "let", "enable", "hash"].includes(verb)) decline(`unsupported execution-state operation: ${verb}`, effective.words[0]);
     if (breakControl) return [{ state, status: "success", control: breakControl }];
@@ -587,19 +577,10 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
       }
       // Logical cd collapses .., but original components must still be searchable; physical cd follows links.
       checkPath(destination, label, state, "write", "directory");
-      let observedDirectory = false;
-      try {
-        const original = process.platform === "win32" ? modeledTarget : isAbsolute(target) ? target : `${state.cwd!}/${target}`;
-        observedDirectory = statSync(original).isDirectory();
-        accessSync(original, constants.X_OK);
-        accessSync(destination, constants.X_OK);
-      } catch { observedDirectory = false; }
       const changed = cloneState(state);
       changed.variables.set("OLDPWD", state.cwd ?? undefined); changed.cwd = destination; changed.variables.set("PWD", destination);
-      // Another process can create the destination before execution.
-      return !observedDirectory || filesystemMayChange
-        ? [{ state: changed, status: "success" }, { state, status: "failure" }]
-        : [{ state: changed, status: "success" }];
+      // Another process can create or remove the destination before execution.
+      return [{ state: changed, status: "success" }, { state, status: "failure" }];
     }
     return [{ state, status: shellBuiltin && ["true", ":"].includes(verb) ? "success" : shellBuiltin && verb === "false" ? "failure" : "unknown" }];
   };
@@ -624,7 +605,6 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
       case "unsupported": decline(node.reason);
       case "command": return inspectCommand(node, state, depth, context);
       case "redirected": {
-        markRedirectEffects(node.redirects);
         inspectRedirects(node.redirects, state, depth);
         const bodyState = cloneState(state);
         bodyState.inputRedirect = standardInputRedirect(node.redirects, state.inputRedirect);
@@ -737,7 +717,6 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
       uncertain.cwd = null;
       uncertain.variables.clear(); uncertain.arrays.clear(); uncertain.exported.clear();
       uncertain.readonlyVariables.clear(); uncertain.unsetVariables.clear();
-      filesystemMayChange = true;
       // Redirections are recognizable effects even when the executable or its state is opaque.
       const commandRedirects = failedCommandRedirects.get(error);
       if (node.kind === "command" && !commandRedirects?.inspected) for (const redirect of node.redirects) {
