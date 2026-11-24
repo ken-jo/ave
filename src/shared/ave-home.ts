@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { checkResolvedAveHome } from "./ave-home-test-guard.js";
 import { windowsPowerShellEnv } from "./windows-powershell-env.js";
+import { isWindowsPathKindHelperUnavailable } from "../main/windows-path-kind-launcher.js";
 import { admitWindowsReparse, isOwnerOnlyDacl, pinWindowsPaths, readWindowsDacls, windowsGrantingRules, windowsObjectKey, windowsOwnerRules, type WindowsDaclFacts } from "./windows-path-facts.js";
 import { TOOL_TIMEOUT_POLICY } from "./tool-timeout-policy.js";
 import { win32SystemBinary, windowsSystemRoot } from "./windows-system-path.js";
@@ -407,12 +408,15 @@ export function assertAveHomeRuntimeBoundary(home = aveHome()): void {
     protectedBoundary = entry.exists === true && entry.directory === true && admitWindowsReparse(entry, "evidence") === true
       && entry.dacl?.protected === true && isOwnerOnlyDacl(directoryDescriptor(path, entry), entry.currentUserSid);
     // A boundary that fails under a refused or unverified home is not something a restart repairs: boot creates and repairs it only
-    // under a protected root, so the message points to the home's permissions instead.
+    // under a protected root, so the message points to the home's permissions instead. A helper that gave no answer checked nothing
+    // about the folder, so that user is told to restart.
     const failure = getAveHomePrivacyFailure();
     if (!protectedBoundary && (failure !== undefined || !admitWindowsReparse(root, "evidence") || !isWindowsHomeRootSafe(root))) {
       const detail = failure !== undefined ? `${failure.category}, ${failure.failedPath ?? failure.home}` : `home ${resolve(home)} is not protected`;
       throw new Error(`Ave runtime folder ${path} is unavailable because AVE_HOME protection is not established (${detail}). `
-        + "Fix the folder permissions shown in Settings > Permissions, then restart Ave.");
+        + (failure !== undefined && !isAveHomePrivacyApprovable(failure.category)
+          ? "Restart Ave; if it persists, reinstall Ave."
+          : "Fix the folder permissions shown in Settings > Permissions, then restart Ave."));
     }
   } else {
     const entry = lstatSync(path, { throwIfNoEntry: false });
@@ -468,6 +472,8 @@ export type AveHomePrivacyFailureCategory =
   | "identity-failed"
   | "icacls-failed"
   | "read-back-failed"
+  // Windows: the path-facts helper is missing, could not start, or did not answer in time; a restart can recover it, an approval cannot.
+  | "helper-unavailable"
   | "extra-principals"
   | "workspace-extra-principals"
   | "not-protected"
@@ -485,11 +491,13 @@ export type AveHomePrivacyFailureCategory =
 export const AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE = "ave-home-boundary-unverified";
 
 /** The refused home and privacy category of an `ave-home-boundary-unverified` error, or undefined for any other value. Duck-typed
- * on the code so a boundary error raised through another module instance still classifies. */
-export function aveHomeBoundaryFailure(error: unknown): { home: string; category: "boundary-link" | "boundary-unlisted" } | undefined {
+ * on the code so a boundary error raised through another module instance still classifies. A boundary pin that failed because the
+ * path-facts helper gave no answer is helper-unavailable, never an approvable boundary category. */
+export function aveHomeBoundaryFailure(error: unknown): { home: string; category: "boundary-link" | "boundary-unlisted" | "helper-unavailable" } | undefined {
   if (typeof error !== "object" || error === null) return undefined;
   const { code, reason, home } = error as { code?: unknown; reason?: unknown; home?: unknown };
   if (code !== AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE || typeof home !== "string") return undefined;
+  if (isWindowsPathKindHelperUnavailable(error)) return { home, category: "helper-unavailable" };
   return { home, category: reason === "link" ? "boundary-link" : "boundary-unlisted" };
 }
 
@@ -560,7 +568,7 @@ export function readWindowsDirectoryDacls(paths: readonly string[], protect = fa
   }
   const writes: WindowsDirectoryDacl[] = protect ? protectWindowsDirectories(paths, claimableRuntimeRoot, repairRoot) : paths.map(path => ({ path }));
   const protectedRows = new Map<number, WindowsDaclFacts>();
-  let protectedReadError: string | undefined;
+  let protectedReadError: unknown;
   if (protect) {
     const pending = paths.map((path, index) => ({ path, index, write: writes[index] })).filter(({ write }) => write && !("error" in write));
     if (pending.length) {
@@ -573,7 +581,7 @@ export function readWindowsDirectoryDacls(paths: readonly string[], protect = fa
         });
       } catch (error) {
         // Native batches return no partial facts; every unread descriptor must fail closed.
-        protectedReadError = (error as Error).message;
+        protectedReadError = error;
       }
     }
   }
@@ -581,16 +589,20 @@ export function readWindowsDirectoryDacls(paths: readonly string[], protect = fa
     const write = writes[index]!;
     if ("error" in write) return write;
     try {
-      if (protectedReadError !== undefined) throw new Error(protectedReadError);
+      if (protectedReadError !== undefined) throw protectedReadError;
       const row = protect ? protectedRows.get(index) : readWindowsDacls([resolve(path)])[0];
       if (!row) throw new Error("Directory DACL read-back is missing");
       if (!row.exists || !row.directory) return { path, category: "directory-failed", error: "Path is not a directory" };
       const descriptor = { ...write, ...directoryDescriptor(path, row) };
       return protect && index === 0 && !("error" in descriptor) ? { ...descriptor, ...workspaceFacts(path) } : descriptor;
     } catch (error) {
-      return { path, category: "read-back-failed", error: (error as Error).message };
+      return { path, category: readFailureCategory(error), error: (error as Error).message };
     }
   });
+}
+
+function readFailureCategory(error: unknown): "helper-unavailable" | "read-back-failed" {
+  return isWindowsPathKindHelperUnavailable(error) ? "helper-unavailable" : "read-back-failed";
 }
 
 export function windowsDirectoryProtectionRequest(paths: readonly string[], claimableRuntimeRoot?: string, repairRoot = false) {
@@ -738,7 +750,8 @@ export function areExtensionsWithoutIsolationApproved(): boolean {
 
 /** Called only by the trusted, gesture-checked permissions IPC handler. */
 export function approveExtensionsWithoutIsolation(): void {
-  if (getAveHomePrivacyFailure() === undefined) throw new Error("Home privacy approval is not applicable");
+  const failure = getAveHomePrivacyFailure();
+  if (failure === undefined || !isAveHomePrivacyApprovable(failure.category)) throw new Error("Home privacy approval is not applicable");
   extensionsWithoutIsolationApproved = true;
 }
 
@@ -758,9 +771,9 @@ export function isAveHomeBoundaryCategory(category: string | undefined): categor
   return category === "boundary-link" || category === "boundary-unlisted";
 }
 
-/** Boot published an unverifiable profile-child read boundary; host shells then ask a human for every command. */
-export function isAveHomeBoundaryUnverifiedAtBoot(): boolean {
-  return isAveHomeBoundaryCategory(getAveHomePrivacyFailure()?.category);
+/** A helper that gave no answer is no evidence about the folder, so it offers no run without isolation: a restart retries the check. */
+export function isAveHomePrivacyApprovable(category: AveHomePrivacyFailureCategory): boolean {
+  return category !== "helper-unavailable";
 }
 
 /** Guard initialization and each confined extension effect boundary. */
@@ -774,7 +787,10 @@ export function assertAveHomePrivacyForConfinement(): void {
     const principals = failure.extraPrincipals?.map(({ sid, account }) => account ? `${sid} (${account})` : sid).join(", ");
     // A read-boundary refusal names no path: its message reaches the host log, which carries codes only for it.
     const where = isAveHomeBoundaryCategory(failure.category) ? "" : `, ${failure.failedPath ?? failure.home}`;
-    const message = `Extension isolation is off: AVE_HOME privacy could not be established (${failure.category}${where}). Approve running without isolation in Settings > Permissions, or fix the folder permissions.${principals ? ` Extra principals: ${principals}.` : ""}`;
+    const remedy = isAveHomePrivacyApprovable(failure.category)
+      ? "Approve running without isolation in Settings > Permissions, or fix the folder permissions."
+      : "Restart Ave; if it persists, reinstall Ave.";
+    const message = `Extension isolation is off: AVE_HOME privacy could not be established (${failure.category}${where}). ${remedy}${principals ? ` Extra principals: ${principals}.` : ""}`;
     reportPrivacyRefusal?.(message);
     throw new Error(message);
   }
@@ -1028,7 +1044,7 @@ export function ensureAveHomePrivate(
     if (workspaceReaders.length > 0) diagnostics.push(`Directory "workspace" has foreign read-only access: ${[...new Set(workspaceReaders.map((rule) => rule.sid))].join(", ")}`);
     return { enforcement: "win32-dacl", home, sid, ...(repairs.length ? { repairs } : {}), ...(diagnostics.length ? { diagnostics } : {}) };
   } catch (err) {
-    return { enforcement: "none", home, failedPath: path, category, reason: (err as Error).message,
+    return { enforcement: "none", home, failedPath: path, category: category === "read-back-failed" ? readFailureCategory(err) : category, reason: (err as Error).message,
       ...(repairs.length ? { repairs } : {}), ...(diagnostics.length ? { diagnostics } : {}) };
   }
 }

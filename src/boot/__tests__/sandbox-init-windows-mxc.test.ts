@@ -21,10 +21,12 @@ const h = vi.hoisted(() => ({
   detectMxc: vi.fn(),
   startProbe: vi.fn(),
   logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+  handlers: new Map<string, (...args: unknown[]) => unknown>(),
 }));
 
 vi.mock("electron", () => ({
   app: { getPath: vi.fn(() => "/tmp/ave-sandbox-init-windows-test") },
+  ipcMain: { handle: vi.fn((channel: string, fn: (...args: unknown[]) => unknown) => { h.handlers.set(channel, fn); }) },
 }));
 
 vi.mock("../../lib/logger.js", () => ({
@@ -56,13 +58,17 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
     isAsrtLinuxRuntimeProbeError: () => false,
     isAsrtMacRuntimeProbeError: () => false,
     closeAllEgressConnections: () => 0,
+    getWindowsProfileReadDenyWarnings: () => [],
   };
 });
 
 import { initSandboxGate } from "../steps/sandbox-init.js";
 import { decidePermission } from "../../permissions/decision-pipeline.js";
 import { requiresUnsandboxedShellAsk } from "../../permissions/host-shell-execution-plan.js";
-import { assertAveHomePrivacyForConfinement, getAveHomePrivacyFailure, setAveHomePrivacyAtBoot, _resetAveHomePrivacyForTest } from "../../shared/ave-home.js";
+import { areExtensionsWithoutIsolationApproved, assertAveHomePrivacyForConfinement, getAveHomePrivacyFailure, setAveHomePrivacyAtBoot, _resetAveHomePrivacyForTest } from "../../shared/ave-home.js";
+import { windowsPathKindHelperUnavailable } from "../../main/windows-path-kind-launcher.js";
+import { PERMISSIONS } from "../../shared/ipc-channels.js";
+import { hostFrameEvent, makeRegisteredHandlerInvoker } from "../../__tests__/test-helpers.js";
 import {
   __resetActiveSandboxCapabilityForTest,
   __resetSandboxBootOutcomeForTest,
@@ -82,7 +88,7 @@ const ORIGINAL_PLATFORM = process.platform;
 const SRT_WIN_MISSING = { errors: ["no srt-win path configured"], warnings: [] };
 // Boot-path checks precede the shell start probe.
 const MXC_OK = { state: "available", windowsBuild: "10.0.26300.9711" };
-const MXC_OLD = { state: "unavailable", reason: "tier-unsupported", windowsBuild: "10.0.22631.4317", detail: "tier none" };
+const MXC_OLD = { state: "unavailable", reason: "container-unavailable", windowsBuild: "10.0.22631.4317", detail: "no container API" };
 
 let harness: SandboxBootHarness;
 
@@ -118,9 +124,12 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-it("degrades before initializing the extension backend when private-directory protection fails", async () => {
+it.each([
+  { category: "read-back-failed", remedy: "Extensions require session approval in Settings > Permissions.", refusal: "Settings > Permissions" },
+  { category: "helper-unavailable", remedy: "Extensions stay blocked until a restart; if it persists, reinstall Ave.", refusal: "Restart Ave; if it persists, reinstall Ave." },
+] as const)("degrades before initializing the extension backend when private-directory protection fails ($category)", async ({ category, remedy, refusal }) => {
   const path = "D:/private-state/secrets";
-  setAveHomePrivacyAtBoot({ enforcement: "none", home: "D:/private-state", failedPath: path, category: "read-back-failed", reason: "read-back failed" });
+  setAveHomePrivacyAtBoot({ enforcement: "none", home: "D:/private-state", failedPath: path, category, reason: "read-back failed" });
   h.checkDeps.mockResolvedValue({ errors: [], warnings: [] });
   h.detectMxc.mockResolvedValue(MXC_OK);
   h.initialize.mockImplementation(async (settings) => {
@@ -135,8 +144,8 @@ it("degrades before initializing the extension backend when private-directory pr
   expect(h.initialize).not.toHaveBeenCalled();
   expect(getSandboxBootOutcome()).toMatchObject({ action: "degrade", reason: "degrade-ave-home-privacy-failed", causes: ["ave-home-privacy-failed"] });
   expect(detectPluginWorkerSandboxCapability().kind).toBe("none");
-  expect(h.logger.warn).toHaveBeenCalledWith(expect.stringContaining("isolation is OFF"), "read-back-failed", path);
-  expect(() => assertAveHomePrivacyForConfinement()).toThrow("Settings > Permissions");
+  expect(h.logger.warn).toHaveBeenCalledWith(expect.stringContaining("isolation is OFF"), category, path, remedy);
+  expect(() => assertAveHomePrivacyForConfinement()).toThrow(refusal);
   expect(logRefusal).toHaveBeenCalledWith(expect.objectContaining({ type: "error", output: expect.stringContaining("ave_home_privacy_refused") }));
   await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({ extensions: "none" }));
 });
@@ -332,14 +341,14 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     expect(getWindowsSandboxSubstrate()).toMatchObject({
       shells: "approved-host",
       shellEgressIdentity: "shared",
-      mxc: { state: "unavailable", reason: "tier-unsupported" },
+      mxc: { state: "unavailable", reason: "container-unavailable" },
     });
     expect(getHostShellExecutionPlan()).toMatchObject({ mode: "plain", substrate: "none", requiresExplicitUserApproval: true });
     expect(h.logger.warn).toHaveBeenCalledWith(
       expect.stringContaining("Microsoft Execution Containers cannot confine agent shells"),
-      "tier-unsupported",
+      "container-unavailable",
       "10.0.22631.4317",
-      "tier none",
+      "no container API",
     );
   });
 
@@ -397,7 +406,8 @@ describe("initSandboxGate — Windows MXC substrate", () => {
       expect(getAveHomePrivacyFailure()).toMatchObject({ enforcement: "none", home, category });
       expect(() => assertAveHomePrivacyForConfinement()).toThrow("Approve running without isolation in Settings > Permissions");
       expect(detectPluginWorkerSandboxCapability().kind).toBe("none");
-      expect(h.logger.warn).toHaveBeenCalledWith(expect.stringContaining("read boundary could not be verified"), "ave-home-boundary-unverified", category);
+      expect(h.logger.warn).toHaveBeenCalledWith(expect.stringContaining("read boundary could not be verified"), "ave-home-boundary-unverified", category,
+        "Extensions require session approval in Settings > Permissions.");
       // Logs carry codes only: the error's paths never reach the boot log.
       for (const call of [...h.logger.warn.mock.calls, ...h.logger.error.mock.calls, ...h.logger.info.mock.calls]) {
         expect(JSON.stringify(call)).not.toContain("alice");
@@ -422,6 +432,67 @@ describe("initSandboxGate — Windows MXC substrate", () => {
       expect(requiresUnsandboxedShellAsk(plan)).toBe(true);
       expect(requiresUnsandboxedShellAsk(getHostShellExecutionPlan("host"))).toBe(true);
     });
+
+  // The boundary pin wraps a helper failure as an unlisted boundary with the marked error as its cause (asrt-sandbox.ts pinBoundaryFacts).
+  it.each([
+    ["timeout", windowsPathKindHelperUnavailable("Windows path facts helper did not answer within 15000 ms", "ETIMEDOUT")],
+    ["launch failure", windowsPathKindHelperUnavailable("Windows path facts helper could not start (ENOENT)", "ENOENT")],
+  ] as const)("publishes a path-facts helper %s during the boundary pin as helper-unavailable: no waiver, shells are denied", async (_label, cause) => {
+    h.checkDeps.mockResolvedValue({ errors: [], warnings: [] });
+    h.detectMxc.mockResolvedValue(MXC_OK);
+    h.initialize.mockRejectedValue(Object.assign(new Error("sandbox: refusing confinement, the Ave home read boundary cannot be projected", { cause }),
+      { code: "ave-home-boundary-unverified", reason: "unlisted", home: "C:\\Users\\alice\\.ave" }));
+
+    const context = harness.context(false, true, true);
+    context.bootAuditLogger.log = vi.fn();
+    await initSandboxGate(context);
+
+    expect(getAveHomePrivacyFailure()).toMatchObject({ enforcement: "none", category: "helper-unavailable" });
+    expect(() => assertAveHomePrivacyForConfinement()).toThrow("Restart Ave; if it persists, reinstall Ave.");
+    expect(h.logger.warn).toHaveBeenCalledWith(expect.stringContaining("read boundary could not be verified"), "ave-home-boundary-unverified", "helper-unavailable",
+      "Extensions stay blocked until a restart; if it persists, reinstall Ave.");
+    h.handlers.clear();
+    const { registerPermissionsHandlers } = await import("../../ipc/domains/permissions.js");
+    const auditLogger = { log: vi.fn() };
+    registerPermissionsHandlers({ auditLogger, settingsService: { get: vi.fn(() => ({ pluginWorkerConfinement: true })), set: vi.fn() } } as never);
+    expect(await makeRegisteredHandlerInvoker(h.handlers)(PERMISSIONS.approveExtensionsWithoutIsolation, hostFrameEvent(),
+      { intent: { inputOrigin: "user-keyboard", userActivation: true } })).toMatchObject({ ok: false, error: "not-applicable" });
+    expect(areExtensionsWithoutIsolationApproved()).toBe(false);
+    expect(auditLogger.log).not.toHaveBeenCalled();
+    for (const plan of [getHostShellExecutionPlan(), getHostShellExecutionPlan("host")]) {
+      expect(plan).toMatchObject({ mode: "blocked", fallbackReason: "home-privacy-helper-unavailable", requiresExplicitUserApproval: false });
+      expect(requiresUnsandboxedShellAsk(plan)).toBe(false);
+    }
+  });
+
+  // A profile-child home's container deny rows are pinned through the same helper, so a proxy-only start cannot isolate it.
+  it("refuses contained shells on a proxy-only start when the home privacy helper gave no answer", async () => {
+    setAveHomePrivacyAtBoot({ enforcement: "none", home: "C:\\Users\\alice\\.ave", category: "helper-unavailable", reason: "no answer" });
+    h.checkDeps.mockResolvedValue(SRT_WIN_MISSING);
+    h.detectMxc.mockResolvedValue(MXC_OK);
+    const context = harness.context(true, true, true);
+    context.bootAuditLogger.log = vi.fn();
+
+    await initSandboxGate(context);
+
+    expect(h.initialize).not.toHaveBeenCalled();
+    expect(getSandboxBootOutcome()).toMatchObject({ action: "degrade", reason: "degrade-ave-home-privacy-failed" });
+    await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({ shells: "none" }));
+    for (const plan of [getHostShellExecutionPlan(), getHostShellExecutionPlan("host")]) {
+      expect(plan).toMatchObject({ mode: "blocked", sandboxed: false, substrate: "none", fallbackReason: "home-privacy-helper-unavailable" });
+    }
+  });
+
+  it("keeps the proxy-only container route for an approvable home privacy failure", async () => {
+    setAveHomePrivacyAtBoot({ enforcement: "none", home: "C:\\Users\\alice\\.ave", category: "read-back-failed", reason: "read-back failed" });
+    h.checkDeps.mockResolvedValue(SRT_WIN_MISSING);
+    h.detectMxc.mockResolvedValue(MXC_OK);
+
+    await initSandboxGate(harness.context(true, true, true));
+
+    expect(getSandboxBootOutcome()).toMatchObject({ action: "activate", reason: "activate-windows-mxc-proxy-only" });
+    await vi.waitFor(() => expect(getHostShellExecutionPlan()).toMatchObject({ mode: "asrt", substrate: "mxc" }));
+  });
 
   it("keeps the ordinary sandbox-off plan when a worker-only boot fails for another reason", async () => {
     h.checkDeps.mockResolvedValue({ errors: [], warnings: [] });

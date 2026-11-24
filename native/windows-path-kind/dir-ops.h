@@ -11,7 +11,9 @@
 #include <cstdio>
 #include <cstring>
 #include <cwchar>
+#include <initializer_list>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace dir_ops {
@@ -50,6 +52,7 @@ inline const char* error_name(DWORD error) {
     case ERROR_NOT_SAME_DEVICE: return "EXDEV";
     case ERROR_DISK_FULL:
     case ERROR_HANDLE_DISK_FULL: return "ENOSPC";
+    case ERROR_FILE_TOO_LARGE: return "EFBIG";
     case ERROR_DIR_NOT_EMPTY: return "ENOTEMPTY";
     case ERROR_DIRECTORY: return "ENOTDIR";
     case kIsADirectory: return "EISDIR";
@@ -98,8 +101,8 @@ inline int done(const char* outcome) {
   return kExitDone;
 }
 
-inline int failed(FileFailure failure) {
-  std::printf("failed %s\n", error_name(failure.error));
+inline int failed(FileFailure failure, const char* suffix = "") {
+  std::printf("failed %s%s\n", error_name(failure.error), suffix);
   std::fflush(stdout);
   if (failure.operation == nullptr) {
     std::fprintf(stderr, "Windows error %lu\n", static_cast<unsigned long>(failure.error));
@@ -154,7 +157,7 @@ inline bool plain_name(const wchar_t* text) {
 
 // Open `name` through the directory handle `parent`; the name is resolved by that directory object, never by a path.
 inline NTSTATUS open_relative(HANDLE parent, const std::wstring& name, ACCESS_MASK access, ULONG share, ULONG disposition,
-    ULONG options, HANDLE& handle) {
+    ULONG options, HANDLE& handle, PSECURITY_DESCRIPTOR security = nullptr) {
   const auto create = ntdll_function<decltype(&NtCreateFile)>("NtCreateFile");
   if (create == nullptr) return static_cast<NTSTATUS>(0xc0000002);  // STATUS_NOT_IMPLEMENTED
   UNICODE_STRING text{};
@@ -166,6 +169,7 @@ inline NTSTATUS open_relative(HANDLE parent, const std::wstring& name, ACCESS_MA
   attributes.RootDirectory = parent;
   attributes.ObjectName = &text;
   attributes.Attributes = kCaseInsensitive;
+  attributes.SecurityDescriptor = security;
   IO_STATUS_BLOCK io{};
   return create(&handle, access | SYNCHRONIZE, &attributes, &io, nullptr, FILE_ATTRIBUTE_NORMAL, share, disposition,
     options | kSynchronousIo, nullptr, 0);
@@ -248,59 +252,6 @@ inline FileFailure classify(HANDLE directory, const std::wstring& name, Entry& e
   return {};
 }
 
-// The chosen name may hold nothing yet, or an ordinary file the user agreed to replace; never a link or anything else.
-// Returns 0 or the exit code to end with.
-inline int check_replaceable(HANDLE directory, const std::wstring& name) {
-  Entry entry = Entry::kAbsent;
-  const FileFailure failure = classify(directory, name, entry);
-  if (failure.error != ERROR_SUCCESS) return failed(failure);
-  return entry == Entry::kOther ? refused("target") : 0;
-}
-
-inline FileFailure set_file_information(HANDLE file, void* information, ULONG length, FILE_INFORMATION_CLASS kind) {
-  using SetInformation = NTSTATUS(NTAPI*)(HANDLE, IO_STATUS_BLOCK*, void*, ULONG, FILE_INFORMATION_CLASS);
-  const auto set_information = ntdll_function<SetInformation>("NtSetInformationFile");
-  if (set_information == nullptr) {
-    return {ERROR_INVALID_FUNCTION};
-  }
-  IO_STATUS_BLOCK io{};
-  const NTSTATUS status = set_information(file, &io, information, length, kind);
-  return status < 0 ? native_failure(status, "NtSetInformationFile") : FileFailure{};
-}
-
-// Rename the open file `file` to `name` in the held directory `directory`, replacing an ordinary file there.
-inline FileFailure rename_into(HANDLE file, HANDLE directory, const std::wstring& name) {
-  const DWORD name_bytes = static_cast<DWORD>(name.size() * sizeof(wchar_t));
-  std::vector<BYTE> bytes(sizeof(FILE_RENAME_INFO) + name_bytes);
-  auto info = reinterpret_cast<FILE_RENAME_INFO*>(bytes.data());
-  info->ReplaceIfExists = TRUE;
-  info->RootDirectory = directory;
-  info->FileNameLength = name_bytes;
-  std::memcpy(info->FileName, name.data(), name_bytes);
-  // Preserve the relative name and its directory handle at the native boundary; the path wrapper normalizes the name.
-  // FileRenameInformation is native class 10, distinct from the path wrapper's FileRenameInfo class 3.
-  return set_file_information(file, info, static_cast<ULONG>(bytes.size()), static_cast<FILE_INFORMATION_CLASS>(10));
-}
-
-// Delete the file this handle is open on, once the handle closes.
-inline FileFailure delete_on_close(HANDLE file) {
-  // Native FileDispositionInformation (class 13) contains one BOOLEAN and names only the open file.
-  BOOLEAN disposition = TRUE;
-  return set_file_information(file, &disposition, static_cast<ULONG>(sizeof(disposition)), static_cast<FILE_INFORMATION_CLASS>(13));
-}
-
-// Remove the partial copy through its own handle. Then report `failure`, or `cancelled` when there is none; a partial copy that
-// cannot be removed is itself the failure reported.
-inline int abandon(PinnedHandle& part, FileFailure failure) {
-  const FileFailure removal = delete_on_close(part.value);
-  CloseHandle(part.value);
-  part.value = INVALID_HANDLE_VALUE;
-  if (removal.error != ERROR_SUCCESS) return failed(removal);
-  return failure.error != ERROR_SUCCESS ? failed(failure) : done("cancelled");
-}
-
-inline int abandon(PinnedHandle& part, DWORD error) { return abandon(part, FileFailure{error}); }
-
 // Write all of `length` bytes, however many each write takes; a write that makes no progress fails the copy.
 inline DWORD write_all(HANDLE target, const BYTE* bytes, DWORD length) {
   while (length > 0) {
@@ -313,8 +264,44 @@ inline DWORD write_all(HANDLE target, const BYTE* bytes, DWORD length) {
   return ERROR_SUCCESS;
 }
 
-inline int run_rename(wchar_t** argv) {
-  if (!plain_name(argv[3]) || !plain_name(argv[7])) return kExitUsage;
+struct Options {
+  std::vector<std::pair<std::wstring, std::wstring>> values;
+  const std::wstring* get(const wchar_t* name) const {
+    for (const auto& value : values) {
+      if (value.first == name) return &value.second;
+    }
+    return nullptr;
+  }
+};
+
+// Named options after `first` positional arguments: each known name at most once, nothing else.
+inline bool parse_options(int argc, wchar_t** argv, int first, std::initializer_list<const wchar_t*> valued,
+    std::initializer_list<const wchar_t*> flags, Options& options) {
+  if (argc < first) return false;
+  for (int index = first; index < argc; ++index) {
+    const std::wstring name(argv[index]);
+    bool known = false;
+    bool takes_value = false;
+    for (const wchar_t* candidate : valued) takes_value = takes_value || name == candidate;
+    for (const wchar_t* candidate : flags) known = known || name == candidate;
+    known = known || takes_value;
+    if (!known || options.get(name.c_str()) != nullptr || (takes_value && index + 1 >= argc)) return false;
+    options.values.emplace_back(name, takes_value ? std::wstring(argv[++index]) : std::wstring());
+  }
+  return true;
+}
+
+}  // namespace dir_ops
+
+#include "dir-recovery.h"
+
+namespace dir_ops {
+
+inline int run_rename(int argc, wchar_t** argv) {
+  Options options;
+  ExpectedFile expected;
+  if (!plain_name(argv[3]) || !plain_name(argv[7]) || !parse_options(argc, argv, 8, {L"--expect"}, {}, options) ||
+      options.get(L"--expect") == nullptr || !parse_token(*options.get(L"--expect"), expected)) return kExitUsage;
   const std::wstring name(argv[3]);
   const std::wstring target(argv[7]);
   HeldDirectory from;
@@ -330,30 +317,48 @@ inline int run_rename(wchar_t** argv) {
     const DWORD error = status_error(opening);
     return error == ERROR_FILE_NOT_FOUND ? refused("source") : failed(native_failure(opening, "NtCreateFile"));
   }
-  const PinnedHandle source(opened);
-  FILE_ATTRIBUTE_TAG_INFO tag{};
-  if (!GetFileInformationByHandleEx(source.value, FileAttributeTagInfo, &tag, sizeof(tag))) return failed(GetLastError());
-  if ((tag.FileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) return refused("source");
-  status = check_replaceable(to.handle(), target);
-  if (status != 0) return status;
-  const FileFailure renamed = rename_into(source.value, to.handle(), target);
+  PinnedHandle source(opened);
+  if (!matches(source.value, expected)) return refused("source");
+  Entry target_entry = Entry::kAbsent;
+  const FileFailure checked = classify(to.handle(), target, target_entry);
+  if (checked.error != ERROR_SUCCESS) return failed(checked);
+  if (target_entry == Entry::kOther) return refused("target");
+  if (target_entry == Entry::kOrdinary) return done("replace");
+  ExpectedFile moved;
+  const FileFailure renamed = mutate_entry(from.handle(), name, source,
+    {EntryMode::kRenameAway, &expected, to.handle(), &target, nullptr, 0, nullptr, false, &moved});
   if (renamed.error != ERROR_SUCCESS) {
+    if (renamed.error == ERROR_ALREADY_EXISTS || renamed.error == ERROR_FILE_EXISTS) return refused("target");
     return renamed.error == ERROR_NOT_SAME_DEVICE ? done("cross-volume") : failed(renamed);
   }
+  say(("published " + token_text(moved.id, moved.birth)).c_str());
   return done("committed");
 }
+
+#if defined(AVE_TEST_DIR_RECOVERY)
+bool test_fail_replacement_rename(bool restoring);
+void test_stop_replacement(const char* boundary);
+#endif
 
 inline int run_copy(wchar_t** argv) {
   if (!plain_name(argv[3]) || !plain_name(argv[7]) || !plain_name(argv[8])) return kExitUsage;
   const std::wstring name(argv[3]);
   const std::wstring target(argv[7]);
   const std::wstring part_name(argv[8]);
-  if (_wcsicmp(part_name.c_str(), target.c_str()) == 0) return kExitUsage;
+  const std::wstring aside(argv[9]);
+  if (!hidden_name(aside) || _wcsicmp(part_name.c_str(), target.c_str()) == 0 ||
+      _wcsicmp(aside.c_str(), target.c_str()) == 0 || _wcsicmp(aside.c_str(), part_name.c_str()) == 0) return kExitUsage;
+  std::string hidden;
+  for (const wchar_t character : aside) hidden += static_cast<char>(character);
   HeldDirectory from;
   HeldDirectory to;
   int status = hold_directory(argv[0], argv[1], argv[2], "from", from);
   if (status == 0) status = hold_directory(argv[4], argv[5], argv[6], "to", to);
   if (status != 0) return status;
+  // A volume that cannot open files by ID (FAT, many network shares) cannot replace a file with the checks below: refused by name, as
+  // is one whose kind cannot be read.
+  const VolumeKind volume = volume_kind(to.handle());
+  if (volume != VolumeKind::kFileIds) return refused(volume == VolumeKind::kUnknown ? "volume-unknown" : "volume");
   HANDLE opened = INVALID_HANDLE_VALUE;
   const NTSTATUS opening = open_relative(from.handle(), name, FILE_READ_DATA | FILE_READ_ATTRIBUTES, FILE_SHARE_READ, kOpenExisting,
     kOpenReparsePoint | kSequentialOnly, opened);
@@ -365,111 +370,279 @@ inline int run_copy(wchar_t** argv) {
   FILE_ATTRIBUTE_TAG_INFO tag{};
   if (!GetFileInformationByHandleEx(source.value, FileAttributeTagInfo, &tag, sizeof(tag))) return failed(GetLastError());
   if ((tag.FileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) return refused("source");
+  HANDLE previous = INVALID_HANDLE_VALUE;
+  NTSTATUS opening_target = open_relative(to.handle(), target, FILE_READ_DATA | FILE_READ_ATTRIBUTES | DELETE,
+    FILE_SHARE_READ, kOpenExisting, kOpenReparsePoint, previous);
+  if (opening_target < 0 && status_error(opening_target) == ERROR_ACCESS_DENIED) {
+    opening_target = open_relative(to.handle(), target, FILE_READ_ATTRIBUTES | DELETE, FILE_SHARE_READ,
+      kOpenExisting, kOpenReparsePoint, previous);
+  }
+  if (opening_target < 0 && !missing(status_error(opening_target))) {
+    return failed(native_failure(opening_target, "NtCreateFile"));
+  }
+  PinnedHandle old(previous);
+  const bool replacing = old.value != INVALID_HANDLE_VALUE;
+  FILE_ID_INFO old_id{};
+  ULONGLONG old_birth = 0;
+  if (replacing && (!ordinary(old.value) || !read_id(old.value, old_id))) return refused("target");
+  FILE_ID_INFO directory_id{};
+  ULONGLONG directory_birth = 0;
+  if (!read_id(to.handle(), directory_id) || !read_birth(to.handle(), directory_birth)) return refused("to");
+  say(("destination-id " + token_text(directory_id, directory_birth)).c_str());
+  if (replacing) {
+    if (old_id.VolumeSerialNumber != directory_id.VolumeSerialNumber ||
+        !read_birth(old.value, old_birth)) return refused("target");
+    say(("target-id " + token_text(old_id, old_birth)).c_str());
+  }
+  // Every rename of the old file reads its creation time again: name tunnelling may change it.
+  ExpectedFile old_stamp{old_id, true, old_birth, {}};
+  const auto moved_old = [&](EntryMode mode, const std::wstring& from_name, const std::wstring& to_name) {
+    const FileFailure moving = mutate_entry(to.handle(), from_name, old,
+      {mode, &old_stamp, to.handle(), &to_name, nullptr, 0, nullptr, false, &old_stamp});
+    old_birth = old_stamp.birth;
+    return moving;
+  };
   if (!proceed("ready")) return done("cancelled");
-  status = check_replaceable(to.handle(), target);
-  if (status != 0) return status;
-  // The temporary file is created exclusively in the held folder and kept open, unshared, until it is renamed or removed.
+  // The temporary file is created exclusively and stays open without write or delete sharing through commit or retirement.
   HANDLE created = INVALID_HANDLE_VALUE;
-  const NTSTATUS creating = open_relative(to.handle(), part_name, FILE_WRITE_DATA | FILE_READ_ATTRIBUTES | DELETE, 0, kCreateNew,
-    kNonDirectoryFile | kSequentialOnly, created);
-  if (creating < 0) return failed(native_failure(creating, "NtCreateFile"));
+  const NTSTATUS creating = open_relative(to.handle(), part_name, FILE_READ_DATA | FILE_WRITE_DATA | FILE_READ_ATTRIBUTES | DELETE,
+    FILE_SHARE_READ, kCreateNew, kNonDirectoryFile | kOpenReparsePoint | kSequentialOnly, created);
+  if (creating < 0) {
+    const FileFailure failure = native_failure(creating, "NtCreateFile");
+    if (failure.error == ERROR_ACCESS_DENIED) {
+      Entry occupied = Entry::kAbsent;
+      if (classify(to.handle(), part_name, occupied).error == ERROR_SUCCESS && occupied != Entry::kAbsent) {
+        return failed(ERROR_FILE_EXISTS);
+      }
+    }
+    return failed(failure);
+  }
   PinnedHandle part(created);
+  FILE_ID_INFO written{};
+  ULONGLONG written_birth = 0;
+  if (!read_id(part.value, written) || !read_birth(part.value, written_birth))
+    return failed(FileFailure{ERROR_NOT_SUPPORTED}, " left");
+  if (written.VolumeSerialNumber != directory_id.VolumeSerialNumber || (replacing && same_id(written, old_id)))
+    return failed(FileFailure{ERROR_NOT_SUPPORTED}, " left");
+  const auto writer_stamp = [&] { return token_text(written, written_birth); };
+  say(("writing " + writer_stamp()).c_str());
+  const auto abandon = [&](FileFailure failure) {
+    return stopped_copy(to.handle(), part_name, part, written, written_birth, failure, false);
+  };
   std::vector<BYTE> buffer(kCopyChunk);
   ULONGLONG copied = 0;
   ULONGLONG unsynced = 0;
   for (;;) {
-    if (stop_requested()) return abandon(part, ERROR_SUCCESS);
+    if (stop_requested()) return abandon({});
     DWORD count = 0;
-    if (!ReadFile(source.value, buffer.data(), kCopyChunk, &count, nullptr)) return abandon(part, GetLastError());
+    if (!ReadFile(source.value, buffer.data(), kCopyChunk, &count, nullptr)) return abandon({GetLastError()});
     if (count == 0) break;
     const DWORD writing = write_all(part.value, buffer.data(), count);
-    if (writing != ERROR_SUCCESS) return abandon(part, writing);
+    if (writing != ERROR_SUCCESS) return abandon({writing});
     copied += count;
     unsynced += count;
     if (unsynced >= kSyncInterval) {
-      if (!FlushFileBuffers(part.value)) return abandon(part, GetLastError());
+      if (!FlushFileBuffers(part.value)) return abandon({GetLastError()});
       unsynced = 0;
     }
     // Each chunk is progress the caller hears, so only a copy that stops moving looks stalled.
     std::printf("progress %llu\n", copied);
     std::fflush(stdout);
   }
-  if (!FlushFileBuffers(part.value)) return abandon(part, GetLastError());
+  if (!FlushFileBuffers(part.value)) return abandon({GetLastError()});
+  FILE_ID_INFO final_id{};
+  ULONGLONG final_birth = 0;
+  if (!read_id(part.value, final_id) || !read_birth(part.value, final_birth) ||
+      !same_id(final_id, written) || final_birth != written_birth) return abandon({ERROR_NOT_SUPPORTED});
+  if (replacing) say(("copy-id " + writer_stamp()).c_str());
+  ExpectedFile writer_stamp_final{final_id, true, final_birth, {}};
+  const auto moved_writer = [&](EntryMode mode, const std::wstring& from_name, const std::wstring& to_name) {
+    const FileFailure moving = mutate_entry(to.handle(), from_name, part,
+      {mode, &writer_stamp_final, to.handle(), &to_name, nullptr, 0, nullptr, false, &writer_stamp_final});
+    final_birth = writer_stamp_final.birth;
+    return moving;
+  };
   // The rename below is the commit point: the caller answers here whether the copy is still wanted.
-  if (!proceed("copied")) return abandon(part, ERROR_SUCCESS);
-  Entry entry = Entry::kAbsent;
-  const FileFailure checking = classify(to.handle(), target, entry);
-  if (checking.error != ERROR_SUCCESS) return abandon(part, checking);
-  if (entry == Entry::kOther) {
-    const FileFailure removal = delete_on_close(part.value);
-    if (removal.error != ERROR_SUCCESS) return failed(removal);
-    return refused("target");
+  if (!proceed("copied")) return abandon({});
+  const NameIdentity current = check_name(to.handle(), part_name, written, final_birth);
+  if (current == NameIdentity::kAbsent) return refused("target removed");
+  if (current != NameIdentity::kMatches) return refused("target left");
+  const auto report_target_left = [&](bool retiring) {
+    const bool verified = check_name(to.handle(), aside, old_id, old_birth) == NameIdentity::kMatches;
+    say(("target-left left " + hidden + " " + token_text(old_id, old_birth)
+      + (retiring ? " remove-failed " : " mismatch ")
+      + (verified && old.value != INVALID_HANDLE_VALUE ? snapshot(old.value, old_id) : "-")).c_str());
+#if defined(AVE_TEST_DIR_RECOVERY)
+    test_stop_replacement("leftover");
+#endif
+  };
+  const auto restore_target = [&]() {
+    if (!replacing) return;
+#if defined(AVE_TEST_DIR_RECOVERY)
+    if (test_fail_replacement_rename(true)) {
+      report_target_left(false);
+      return;
+    }
+#endif
+    if (moved_old(EntryMode::kRestore, aside, target).error != ERROR_SUCCESS)
+      report_target_left(false);
+    else say("target-restored");
+  };
+  if (replacing) {
+#if defined(AVE_TEST_DIR_RECOVERY)
+    test_stop_replacement("before-move");
+#endif
+    if (moved_old(EntryMode::kRenameAway, target, aside).error != ERROR_SUCCESS) {
+      return stopped_copy(to.handle(), part_name, part, written, final_birth, {}, true);
+    }
+    if (check_name(to.handle(), aside, old_id, old_birth) != NameIdentity::kMatches) {
+      restore_target();
+      return stopped_copy(to.handle(), part_name, part, written, final_birth, {}, true);
+    }
+#if defined(AVE_TEST_DIR_RECOVERY)
+    test_stop_replacement("after-move");
+#endif
   }
-  const FileFailure renamed = rename_into(part.value, to.handle(), target);
-  if (renamed.error != ERROR_SUCCESS) return abandon(part, renamed);
+  FileFailure renamed;
+#if defined(AVE_TEST_DIR_RECOVERY)
+  if (replacing && test_fail_replacement_rename(false)) renamed = {ERROR_WRITE_FAULT};
+  else
+#endif
+  renamed = moved_writer(EntryMode::kRenameAway, part_name, target);
+  if (renamed.error != ERROR_SUCCESS) {
+    restore_target();
+    Entry target_entry = Entry::kAbsent;
+    classify(to.handle(), target, target_entry);
+    if ((!replacing && target_entry != Entry::kAbsent) || renamed.error == ERROR_ALREADY_EXISTS || renamed.error == ERROR_FILE_EXISTS
+        || renamed.error == ERROR_NOT_SUPPORTED || renamed.error == ERROR_INVALID_FUNCTION || renamed.error == ERROR_INVALID_PARAMETER) {
+      return stopped_copy(to.handle(), part_name, part, written, final_birth, {}, true);
+    }
+    return abandon(renamed);
+  }
+  NameIdentity published = check_name(to.handle(), target, written, final_birth);
+#if defined(AVE_TEST_DIR_RECOVERY)
+  published = test_commit_result(published);
+#endif
+  if (published != NameIdentity::kMatches) {
+    const FileFailure rolled_back = moved_writer(EntryMode::kRestore, target, part_name);
+    restore_target();
+    return refused(rolled_back.error == ERROR_SUCCESS ? "target left" : "target changed");
+  }
+  // The creation time the published file has now; the caller records it before it treats the commit as settled.
+  say(("published " + token_text(final_id, final_birth)).c_str());
+  if (replacing) {
+#if defined(AVE_TEST_DIR_RECOVERY)
+    test_stop_replacement("after-commit");
+#endif
+    if (mutate_entry(to.handle(), aside, old, {EntryMode::kRetireHidden, &old_stamp}).error != ERROR_SUCCESS) report_target_left(true);
+    else say("target-retired");
+  }
   return done("committed");
 }
 
-// Remove `name` from the held directory through its own handle; a directory there (not a link) is not removed.
-inline int remove_entry(HANDLE directory, const std::wstring& name, bool& removed) {
+// Remove `name` from the held directory through its own handle, only while it is still the stamped entry; `kept` reports one that is
+// not. A directory there (not a link) is not removed.
+inline int remove_entry(HANDLE directory, const std::wstring& name, const ExpectedFile& expected, bool& removed, bool& kept) {
   removed = false;
+  kept = false;
   HANDLE opened = INVALID_HANDLE_VALUE;
-  const NTSTATUS status = open_relative(directory, name, DELETE | FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+  const NTSTATUS status = open_relative(directory, name, DELETE | FILE_READ_ATTRIBUTES, FILE_SHARE_READ,
     kOpenExisting, kOpenReparsePoint, opened);
   if (status < 0) {
     const DWORD error = status_error(status);
     return error == ERROR_FILE_NOT_FOUND ? 0 : failed(native_failure(status, "NtCreateFile"));
   }
-  const PinnedHandle entry(opened);
+  PinnedHandle entry(opened);
   FILE_ATTRIBUTE_TAG_INFO tag{};
   if (!GetFileInformationByHandleEx(entry.value, FileAttributeTagInfo, &tag, sizeof(tag))) return failed(GetLastError());
   if ((tag.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 && (tag.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0) return failed(kIsADirectory);
-  const FileFailure removal = delete_on_close(entry.value);
+  ExpectedFile observed;
+  if (!expected.check_birth || !read_stamp(entry.value, observed) || !same_id(observed.id, expected.id) ||
+      observed.birth != expected.birth) {
+    kept = true;
+    return 0;
+  }
+  const FileFailure removal = mutate_entry(directory, name, entry,
+    {EntryMode::kRemove, &expected, INVALID_HANDLE_VALUE, nullptr, nullptr, 0, nullptr, true});
   if (removal.error != ERROR_SUCCESS) return failed(removal);
   removed = true;
   return 0;
 }
 
-inline int run_remove(wchar_t** argv) {
-  if (!plain_name(argv[3])) return kExitUsage;
+inline int run_remove(int argc, wchar_t** argv) {
+  Options options;
+  ExpectedFile expected;
+  if (!plain_name(argv[3]) || record_name(argv[3]) || !parse_options(argc, argv, 4, {L"--expect"}, {}, options) ||
+      options.get(L"--expect") == nullptr || !parse_token(*options.get(L"--expect"), expected)) return kExitUsage;
   HeldDirectory directory;
   const int status = hold_directory(argv[0], argv[1], argv[2], "from", directory);
   if (status != 0) return status;
   if (!proceed("ready")) return done("cancelled");
   bool removed = false;
-  const int removal = remove_entry(directory.handle(), argv[3], removed);
+  bool kept = false;
+  const int removal = remove_entry(directory.handle(), argv[3], expected, removed, kept);
   if (removal != 0) return removal;
+  if (kept) return refused("source");
   return done(removed ? "removed" : "absent");
 }
 
-// Remove the files and links directly in the held folder; directories and anything else stay, and nothing is removed recursively.
-inline int run_sweep(wchar_t** argv) {
+// The stamp of `name` in the held directory, which a later move or removal of that entry must carry.
+inline int run_stamp(wchar_t** argv) {
+  if (!plain_name(argv[3]) || record_name(argv[3])) return kExitUsage;
   HeldDirectory directory;
   const int status = hold_directory(argv[0], argv[1], argv[2], "from", directory);
   if (status != 0) return status;
   if (!proceed("ready")) return done("cancelled");
-  std::vector<std::wstring> staged;
+  HANDLE opened = INVALID_HANDLE_VALUE;
+  const NTSTATUS opening = open_relative(directory.handle(), argv[3], FILE_READ_ATTRIBUTES, FILE_SHARE_READ, kOpenExisting,
+    kOpenReparsePoint, opened);
+  if (opening < 0) return missing(status_error(opening)) ? done("absent") : failed(native_failure(opening, "NtCreateFile"));
+  const PinnedHandle entry(opened);
+  ExpectedFile stamp;
+  if (!ordinary(entry.value) || !read_stamp(entry.value, stamp)) return refused("source");
+  return done(("stamp " + token_text(stamp.id, stamp.birth)).c_str());
+}
+
+// Remove the files and links directly in the held folder, each only while it is still the entry the listing stamped; directories and
+// anything else stay, and nothing is removed recursively.
+inline int run_sweep(int argc, wchar_t** argv) {
+  Options options;
+  if (!parse_options(argc, argv, 3, {}, {L"--keep-records"}, options)) return kExitUsage;
+  HeldDirectory directory;
+  const int status = hold_directory(argv[0], argv[1], argv[2], "from", directory);
+  if (status != 0) return status;
+  if (!proceed("ready")) return done("cancelled");
+  FILE_ID_INFO held{};
+  if (!read_id(directory.handle(), held)) return refused("from");
+  std::vector<std::pair<std::wstring, ExpectedFile>> staged;
   std::vector<BYTE> buffer(64 * 1024);
   for (bool first = true;; first = false) {
-    if (!GetFileInformationByHandleEx(directory.handle(), first ? FileIdBothDirectoryRestartInfo : FileIdBothDirectoryInfo,
+    if (!GetFileInformationByHandleEx(directory.handle(), first ? FileIdExtdDirectoryRestartInfo : FileIdExtdDirectoryInfo,
         buffer.data(), static_cast<DWORD>(buffer.size()))) {
       const DWORD error = GetLastError();
       if (error == ERROR_NO_MORE_FILES) break;
       return failed(error);
     }
     for (size_t offset = 0;;) {
-      const auto entry = reinterpret_cast<const FILE_ID_BOTH_DIR_INFO*>(buffer.data() + offset);
+      const auto entry = reinterpret_cast<const FILE_ID_EXTD_DIR_INFO*>(buffer.data() + offset);
       const std::wstring entry_name(entry->FileName, entry->FileNameLength / sizeof(wchar_t));
       const bool directory_only = (entry->FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 && (entry->FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0;
-      if (entry_name != L"." && entry_name != L".." && !directory_only) staged.push_back(entry_name);
+      if (entry_name != L"." && entry_name != L".." && !directory_only && !record_name(entry_name)) {
+        ExpectedFile stamp;
+        stamp.id.VolumeSerialNumber = held.VolumeSerialNumber;
+        stamp.id.FileId = entry->FileId;
+        stamp.check_birth = time_ns(entry->CreationTime, stamp.birth) && stamp.birth != 0;
+        staged.emplace_back(entry_name, stamp);
+      }
       if (entry->NextEntryOffset == 0) break;
       offset += entry->NextEntryOffset;
     }
   }
   unsigned long count = 0;
-  for (const auto& entry_name : staged) {
+  for (const auto& entry : staged) {
     bool removed = false;
-    const int removal = remove_entry(directory.handle(), entry_name, removed);
+    bool kept = false;
+    const int removal = remove_entry(directory.handle(), entry.first, entry.second, removed, kept);
     if (removal != 0) return removal;
     if (removed) count += 1;
   }
@@ -480,11 +653,22 @@ inline int run_sweep(wchar_t** argv) {
 
 inline int run(int argc, wchar_t** argv) {
   const std::wstring mode(argv[1]);
-  if (argc == 10 && mode == L"--dir-rename") return run_rename(argv + 2);
-  if (argc == 11 && mode == L"--dir-copy") return run_copy(argv + 2);
-  if (argc == 6 && mode == L"--dir-remove") return run_remove(argv + 2);
-  if (argc == 5 && mode == L"--dir-sweep") return run_sweep(argv + 2);
-  std::fputs("usage: ave-path-kind.exe --dir-rename|--dir-copy|--dir-remove|--dir-sweep <arguments>\n", stderr);
+  const int count = argc - 2;
+  wchar_t** const rest = argv + 2;
+  if (mode == L"--dir-rename" && count >= 8) return run_rename(count, rest);
+  if (mode == L"--dir-copy" && count == 10) return run_copy(rest);
+  if (mode == L"--dir-remove" && count >= 4) return run_remove(count, rest);
+  if (mode == L"--dir-stamp" && count == 4) return run_stamp(rest);
+  if (mode == L"--dir-sweep" && count >= 3) return run_sweep(count, rest);
+  if (mode == L"--dir-list-records" && count == 3) return run_list_records(rest);
+  if (mode == L"--dir-read" && count == 5) return run_record(count, rest, RecordMode::kRead);
+  if (mode == L"--dir-write-record" && count == 5) return run_record(count, rest, RecordMode::kWrite);
+  if (mode == L"--dir-sweep-record" && count == 5) return run_record(count, rest, RecordMode::kSweep);
+  if (mode == L"--dir-remove-record" && count >= 4) return run_record(count, rest, RecordMode::kRemove);
+  if (mode == L"--dir-remove-id" && count >= 4) return run_recovery(count, rest, RecoveryMode::kRemove);
+  if (mode == L"--dir-restore" && count >= 5) return run_recovery(count, rest, RecoveryMode::kRestorePart);
+  if (mode == L"--dir-restore-target" && count >= 5) return run_recovery(count, rest, RecoveryMode::kRestoreTarget);
+  std::fputs("usage: ave-path-kind.exe --dir-<mode> <arguments>\n", stderr);
   return kExitUsage;
 }
 

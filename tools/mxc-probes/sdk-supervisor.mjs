@@ -29,7 +29,7 @@ const quote = (args) => args.map(windowsQuote).join(" ");
 async function initialize() {
   const packageFile = path.join(options["sdk-root"], "package.json");
   const pkg = JSON.parse(await readFile(packageFile));
-  if (pkg.name !== "@microsoft/mxc-sdk" || pkg.version !== pins.version) throw new Error("Expected staged SDK 1.0.1");
+  if (pkg.name !== "@microsoft/mxc-sdk" || pkg.version !== pins.version) throw new Error(`Expected staged SDK ${pins.version}`);
   const bin = path.join(options["sdk-root"], "bin", process.arch);
   const dll = path.join(bin, "mxc_ffi.dll");
   const digest = createHash("sha256").update(await readFile(dll)).digest("hex");

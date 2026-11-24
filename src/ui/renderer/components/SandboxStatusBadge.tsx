@@ -45,7 +45,8 @@ export function SandboxStatusBadge({
       : plan?.fallbackReason === "disabled-by-setting"
         ? t("sandboxStatus.disabled")
         : plan?.fallbackReason === "windows-partial-shell-acl-unsafe" ||
-            plan?.fallbackReason === "active-sandbox-not-shell-contained"
+            plan?.fallbackReason === "active-sandbox-not-shell-contained" ||
+            plan?.fallbackReason === "home-privacy-helper-unavailable"
           ? t("sandboxStatus.shellUnavailable")
           : t("sandboxStatus.unavailable");
   const label = statusQueryFailed

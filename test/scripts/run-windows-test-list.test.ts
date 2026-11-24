@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import { parse } from "yaml";
 import { planWindowsTests } from "../../scripts/plan-windows-tests.js";
 import { collectedVitestFiles } from "../../scripts/lib/vitest-collection.mjs";
-import { windowsTestCommands } from "../../scripts/run-windows-test-list.mjs";
+import { WINDOWS_TEST_SHARDS, windowsTestCommands } from "../../scripts/run-windows-test-list.mjs";
 import { COMMAND_LINE_BUDGET_CHARS, commandLineLength } from "../../scripts/hooks/spawn-command.mjs";
 import { githubExpression } from "../../src/__tests__/test-helpers.js";
 
@@ -68,9 +68,10 @@ describe("Windows test shard runner entry point", () => {
   });
   it("refuses an unknown shard ID and a plan that omits a collected suite", () => {
     withPlan(() => {}, path => {
-      const result = run({ AVE_WINDOWS_TEST_PLAN: path, AVE_WINDOWS_TEST_SHARD: "6" });
+      const unknown = String(WINDOWS_TEST_SHARDS.length + 1);
+      const result = run({ AVE_WINDOWS_TEST_PLAN: path, AVE_WINDOWS_TEST_SHARD: unknown });
       expect(result.status).not.toBe(0);
-      expect(result.stderr).toContain("Invalid Windows test shard: 6");
+      expect(result.stderr).toContain(`Invalid Windows test shard: ${unknown}`);
     });
     withPlan(plan => { plan.shards[0]?.files.shift(); }, path => {
       const result = run({ AVE_WINDOWS_TEST_PLAN: path, AVE_WINDOWS_TEST_SHARD: "1" });

@@ -27,6 +27,8 @@ const DEVELOPMENT_ENV_POLICY = [
   { name: "AVE_TEST_SANDBOX_BASE", lifecycle: "active", packaged: "scrub" },
   // Isolated scratch root selected by the test launcher, never product configuration.
   { name: "AVE_TEST_TMP_ROOT", lifecycle: "active", packaged: "scrub" },
+  // A test folder on a volume that tunnels names, for the download replacement tests.
+  { name: "AVE_TEST_TUNNEL_ROOT", lifecycle: "active", packaged: "scrub" },
   // The directory vitest.globalSetup.ts makes each test file its Ave home in.
   { name: "AVE_TEST_RUN_HOME", lifecycle: "active", packaged: "scrub" },
   { name: "AVE_RESOURCE_ROOT", lifecycle: "active", packaged: "scrub" },

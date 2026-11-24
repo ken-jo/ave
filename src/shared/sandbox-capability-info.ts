@@ -153,7 +153,8 @@ export interface ShellSandboxStatusInput {
     | "platform-unsupported"
     | "windows-partial-shell-acl-unsafe"
     | "requested-sandbox-unavailable"
-    | "active-sandbox-not-shell-contained";
+    | "active-sandbox-not-shell-contained"
+    | "home-privacy-helper-unavailable";
 }
 
 /** Decide the shell sandbox state from what the host observed. The one place that decides it: the IPC snapshot calls it, the renderer only renders
@@ -182,6 +183,9 @@ export function describeShellSandboxStatus(input: ShellSandboxStatusInput): Shel
   }
   if (input.shellPlanFallback === "windows-partial-shell-acl-unsafe") {
     return { ...base, state: "unavailable", causes: ["windows-shell-not-contained"] };
+  }
+  if (input.shellPlanFallback === "home-privacy-helper-unavailable") {
+    return { ...base, state: "unavailable", causes: ["ave-home-privacy-failed"] };
   }
   if (input.shellPlanFallback === "active-sandbox-not-shell-contained") {
     return { ...base, state: "unavailable", causes: ["shell-not-contained"] };
@@ -249,7 +253,7 @@ export function maxEgressGrantScope(strength: EgressIdentityStrength): EgressGra
 /** Why Microsoft Execution Containers cannot carry agent shells on this host (`mxc-windows.ts`). */
 const MXC_UNAVAILABLE_REASONS = {
   "not-windows": true, "unsupported-arch": true, "binary-missing": true, "probe-failed": true,
-  "tier-unsupported": true, "request-rejected": true,
+  "container-unavailable": true, "request-rejected": true,
   /** Installed launcher integrity does not match its pin. */
   "launcher-mismatch": true,
   "powershell-start-failed": true,
