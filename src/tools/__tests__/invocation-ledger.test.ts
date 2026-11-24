@@ -229,6 +229,30 @@ it.each([
   expect(fired).toHaveLength(1);
 });
 
+it("records a pre-enqueue writer failure after Stop as one host integrity denial", async () => {
+  const ledger = await import("../invocation-ledger.js");
+  const logger = { appendPermissionAuditEntry: vi.fn(async (entry: unknown) => entry as never) };
+  const fire = vi.fn(async (_denial: TerminalDenial) => {});
+  const stop = new AbortController();
+  const admission = ledger.admitToolInvocation("integrity", stop.signal);
+  const write = vi.fn((_cause: string, detail: string, _selected: unknown, row: TerminalRowWriter) =>
+    row({ logger, entry: { ...ENTRY, denyReasons: [{ reason: detail, source: "tool-executor" }] }, kind: "denied" }));
+  admission.terminal.hostTerminal(write, { governed: () => false, fire });
+  admission.terminal.select("selected outcome");
+  stop.abort();
+
+  const failure = new Error("terminal audit metadata unavailable");
+  await expect(admission.terminal.commit(() => { throw failure; })).rejects.toBe(failure);
+  admission.settle(failure);
+  await vi.waitFor(() => expect(admission.terminal.state).toBe("failed"));
+  const reason = "the terminal row failed its integrity check: terminal audit metadata unavailable";
+  expect(write).toHaveBeenCalledExactlyOnceWith("error", reason, undefined, expect.any(Function));
+  expect(logger.appendPermissionAuditEntry).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+    terminalKind: "denied", denyReasons: [{ reason, source: "tool-executor" }],
+  }));
+  expect(fire.mock.calls.map(([denial]) => denial.reason)).toEqual([reason]);
+});
+
 it("gives an attempt the host's row only while it is unclaimed, keeping a selected outcome", async () => {
   const ledger = await import("../invocation-ledger.js");
   const write = vi.fn(hostRow);

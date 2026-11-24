@@ -3617,24 +3617,30 @@ host on an invocation or integrity failure. A cancellation is a stop that no
 permission decided, and it is `cancelled`. Its sources are a user abort, the
 host shutdown seal, the shutdown deadline drain, an abort during execution,
 plugin generation admission ended by runtime shutdown, a stopped rationale
-card, and a stop or quit that ends an open approval card. A human refusal the
-invocation already accepted keeps its `denied` kind, even when the host writes
-the row.
+card, and a stop or quit that ends an open approval card. A bound human refusal
+keeps its `denied` kind when an abort follows the gate's acceptance, including
+before the runner resumes and when the host writes the row.
 
-The ledger also applies one rule at commit time. If the invocation's abort
-signal has fired when a `denied` row commits, the row is recorded as
-`cancelled`, unless it is a deny a person settled or the host's own integrity
-refusal. Its first deny reason becomes the abort's (`user aborted turn`, or
-`host-shutdown` for the quit), and the writer's reason follows it. This covers
-any site that turns an abort into a deny: a hook the stop cancelled, an escaped
-`AbortError` that reaches the admission's failure settle, and a shell
-preparation that throws because the call was aborted. The ledger writes the
-kind on every terminal deny row as `terminalKind`. Audit readers call
-`terminalDenyKindOf` (`src/audit/audit-schema.ts`), which reads that field and
-falls back to the first deny reason for older rows. The reason alone does not
-always decide the kind, so the field is persisted. A deny entry that reaches the
-row writer without a valid kind is refused as an integrity failure, and the host
-writes the attempt's one integrity denial instead.
+At commit time the ledger checks the effective invocation abort signal, which
+includes admission, inherited turn, and coordinator approval signals. When it
+has fired, a `denied` row becomes `cancelled` unless a person settled it or the
+host is writing a replacement integrity refusal. The abort's reason
+(`user aborted turn` or `host-shutdown`) comes first and the writer's reason
+follows. The rule covers a hook cancelled by Stop, an escaped `AbortError` that
+reaches admission settlement, and a shell preparation that throws after abort.
+
+If the invocation or rationale writer throws or rejects before enqueue, the
+host clears any selected answer and attempts one replacement integrity denial.
+The scope includes a missing or invalid deny kind and any other failure before
+the writer claims the row. That replacement remains `denied` after abort and
+fires `PermissionDenied` for a non-governed call. The attempt ends failed.
+If the host's own writer fails before enqueue, the ledger records an audit
+failure. An append failure after enqueue marks the attempt failed without a
+replacement row.
+
+The ledger persists the kind on every terminal deny row as `terminalKind`.
+`terminalDenyKindOf` (`src/audit/audit-schema.ts`) reads it and falls back to
+the first reason for older rows.
 
 The ledger fires one `PermissionDenied` lifecycle event for each `denied` row
 it commits, whatever the source. A `cancelled` row fires none. Governed tools
