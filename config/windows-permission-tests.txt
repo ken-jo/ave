@@ -42,6 +42,7 @@ src/permissions/__tests__/mxc-extension-admission.test.ts
 src/permissions/__tests__/mxc-sdk-packaging.test.ts
 src/permissions/__tests__/asrt-linux-runtime-probe.test.ts
 src/permissions/__tests__/asrt-sandbox.test.ts
+src/permissions/__tests__/asrt-wrapper-programs.test.ts
 src/permissions/__tests__/git-readonly-argv.test.ts
 src/permissions/__tests__/git-readonly-controls.test.ts
 src/permissions/__tests__/git-repository-inputs.test.ts

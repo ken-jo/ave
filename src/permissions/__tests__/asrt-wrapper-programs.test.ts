@@ -1,3 +1,4 @@
+// windows-permission
 // The Linux wrapper's own host programs are named by absolute paths, so its lookup never reaches a current directory.
 import { afterEach, describe, expect, it } from "vitest";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";

@@ -1,3 +1,4 @@
+// windows-native
 // Host programs resolve to an absolute path from PATH only; a current directory is never searched.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";

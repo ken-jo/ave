@@ -1,3 +1,4 @@
+// windows-native
 // The tailnet command-line program is launched from an absolute path, never from the current directory.
 import { describe, expect, it } from "vitest";
 import { withPlantedProgram } from "../../__tests__/support/planted-program.js";

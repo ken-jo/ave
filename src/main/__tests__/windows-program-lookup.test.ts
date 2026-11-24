@@ -1,3 +1,4 @@
+// windows-native: the Windows job runs this file from config/windows-native-tests.txt.
 // The process-wide Windows setting that stops a bare program name from being looked up in the current directory.
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { spawnSync } from "node:child_process";

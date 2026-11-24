@@ -1,3 +1,4 @@
+// windows-native
 // Main-process code launches host programs by absolute path: a literal program name must be absolute, and the sites that launch a variable bare name resolve it through the shared PATH-only resolver.
 import { describe, expect, it } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";

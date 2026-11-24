@@ -1,10 +1,23 @@
+import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
 import { describe, expect, it, vi } from "vitest";
-import { forceKillManagedChildProcess, getManagedChildProcessCount, spawnManaged } from "../managed-child-processes.js";
+import { forceKillManagedChildProcess, getManagedChildProcessCount, spawnManaged, trackManagedChildProcess } from "../managed-child-processes.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
+import { withPlantedProgram } from "../../__tests__/support/planted-program.js";
 
 describe.skipIf(process.platform === "win32")("managed child group lifetime", () => {
+  it("never runs a pgrep planted in the cwd or reached through an empty or relative PATH entry", async () => {
+    const child = spawn("/bin/sleep", ["30"], { stdio: "ignore" });
+    trackManagedChildProcess(child, { label: "pgrep-lookup" });
+    const exited = once(child, "exit");
+    await withPlantedProgram(["pgrep"], async (planted) => {
+      await forceKillManagedChildProcess(child, "pgrep lookup test");
+      await exited;
+      expect(planted.ran()).toBe(false);
+    });
+  });
+
   it("terminates a same-group worker after root exit and the retention warning", async () => {
     const trackedBefore = getManagedChildProcessCount();
     const node = process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath;
