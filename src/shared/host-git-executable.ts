@@ -255,7 +255,7 @@ function* probeInstallerGit(install: InstallerGitInstall): GitChecks<GitCandidat
     const pathEntries = [cwd, join(install.root, install.prefix, "bin"), join(install.root, "usr", "bin")];
     if (pathEntries.some((entry) => entry.includes(";"))) return null;
     const systemDirectory = yield* check(queryWindowsSystemDirectorySync,
-      deadline => queryWindowsSystemDirectory(Math.min(TOOL_TIMEOUT_POLICY.projectGitQueryMs, (deadline ?? Infinity) - performance.now())));
+      deadline => queryWindowsSystemDirectory(TOOL_TIMEOUT_POLICY.projectGitQueryMs, deadline));
     const systemRoot = win32.dirname(systemDirectory);
     if (systemDirectory.includes(";")) return null;
     const lookupSwitch = process.env.NoDefaultCurrentDirectoryInExePath;

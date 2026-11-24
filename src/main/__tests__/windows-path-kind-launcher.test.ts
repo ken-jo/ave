@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { deferred } from "../../__tests__/support/deferred.js";
 
 const mocks = vi.hoisted(() => ({ execFile: vi.fn(), execFileSync: vi.fn(), existsSync: vi.fn(), access: vi.fn() }));
 vi.mock("node:child_process", () => ({ execFile: mocks.execFile, execFileSync: mocks.execFileSync }));
@@ -126,6 +127,28 @@ describe("native system directory launcher", () => {
     vi.stubGlobal("process", { ...process, platform: "win32", arch: "x64" });
   });
   afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
+
+  it.each([7, 10])("counts %i ms of helper access against the launch deadline", async (elapsed) => {
+    const access = deferred<void>();
+    mocks.access.mockReturnValueOnce(access.promise);
+    mocks.execFile.mockImplementation(helperReply("D:\\OperatingSystem\\System32\n"));
+    vi.useFakeTimers({ toFake: ["performance"] });
+    try {
+      const pending = queryWindowsSystemDirectory(10, performance.now() + 10);
+      expect(mocks.access).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(elapsed);
+      access.resolve();
+      if (elapsed === 10) {
+        await expect(pending).rejects.toMatchObject({ name: "TimeoutError" });
+        expect(mocks.execFile).not.toHaveBeenCalled();
+      } else {
+        await expect(pending).resolves.toBe("D:\\OperatingSystem\\System32");
+        expect(mocks.execFile).toHaveBeenCalledWith(expect.any(String), ["--system-directory"], expect.objectContaining({ timeout: 3 }), expect.any(Function));
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it("simulates the OS answer through the packaged helper with no inherited environment", async () => {
     vi.stubEnv("SystemRoot", "Z:\\untrusted");

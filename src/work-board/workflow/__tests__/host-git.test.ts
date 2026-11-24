@@ -27,6 +27,7 @@ vi.mock("node:child_process", async (original) => {
 });
 /** `failures`: how many more times the floor probe's scratch folder refuses to be taken away, as a folder a process holds does. */
 const removal = vi.hoisted(() => ({ failures: 0, scratch: undefined as string | undefined }));
+const workspaceStat = vi.hoisted(() => ({ before: undefined as ((path: unknown) => void) | undefined }));
 vi.mock("node:fs", async (original) => {
   const real = await original<typeof import("node:fs")>();
   const rmSync = ((path: Parameters<typeof real.rmSync>[0], options?: Parameters<typeof real.rmSync>[1]) => {
@@ -37,7 +38,11 @@ vi.mock("node:fs", async (original) => {
     }
     real.rmSync(path, options);
   }) as typeof real.rmSync;
-  return { ...real, rmSync, default: { ...real, rmSync } };
+  const statSync = ((...args: Parameters<typeof real.statSync>) => {
+    workspaceStat.before?.(args[0]);
+    return real.statSync(...args);
+  }) as typeof real.statSync;
+  return { ...real, rmSync, statSync, default: { ...real, rmSync } };
 });
 const warned = vi.hoisted(() => ({ lines: [] as string[] }));
 vi.mock("../../../lib/logger.js", () => {
@@ -107,6 +112,31 @@ describe("host git", () => {
       expect(await result).toBe("timeout");
       expect(killedAtDeadline).toBe(1);
     } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("starts no child when validating the working directory consumes the deadline", async () => {
+    const { git } = await discoverHostGitAsync(null);
+    if (git === null) throw new Error("expected fixture git");
+    spawned.fake = () => {
+      const { child } = hangingChild();
+      queueMicrotask(() => child.emit("close", 0));
+      return child;
+    };
+    vi.useFakeTimers({ toFake: ["performance"] });
+    let elapsed = 0;
+    workspaceStat.before = path => {
+      if (path !== base) return;
+      elapsed += 10;
+      vi.advanceTimersByTime(10);
+    };
+    try {
+      const host = createHostGit({ env, resolve: use => use(git) });
+      const reason = await reasonOf(host.run(base, ["--version"], { deadline: performance.now() + 10 }));
+      expect([elapsed, reason, spawned.calls]).toEqual([10, "timeout", 0]);
+    } finally {
+      workspaceStat.before = undefined;
       vi.useRealTimers();
     }
   });

@@ -91,7 +91,7 @@ export function queryDosDevice(drive: string): Promise<string | null> {
 }
 
 // The packaged helper asks the OS directly; environment variables cannot choose a system verifier.
-export async function queryWindowsSystemDirectory(timeout: number = TOOL_TIMEOUT_POLICY.globalCeilingMs): Promise<string> {
+export async function queryWindowsSystemDirectory(timeout: number = TOOL_TIMEOUT_POLICY.globalCeilingMs, deadline?: number): Promise<string> {
   if (process.platform !== "win32") throw new Error("Windows system directory query requires Windows");
   const helper = windowsPathKindHelperIn(getHostResources().resourcePath);
   try {
@@ -100,8 +100,14 @@ export async function queryWindowsSystemDirectory(timeout: number = TOOL_TIMEOUT
     throw missingWindowsPathKindHelper(helper);
   }
   return new Promise((resolve, reject) => {
+    const options = windowsSystemDirectorySpawnOptions(helper);
+    const remaining = deadline === undefined ? timeout : Math.min(timeout, deadline - performance.now());
+    if (deadline !== undefined && remaining <= 0) {
+      reject(new DOMException("Windows system directory query timed out", "TimeoutError"));
+      return;
+    }
     execFile(helper, ["--system-directory"], {
-      ...windowsSystemDirectorySpawnOptions(helper), timeout, encoding: "buffer",
+      ...options, timeout: Math.ceil(remaining), encoding: "buffer",
     }, (error, stdout, stderr) => {
       if (error || stderr.length > 0) {
         reject(new Error(`Windows system directory query failed. ${REPAIR}`, { cause: error ?? undefined }));
