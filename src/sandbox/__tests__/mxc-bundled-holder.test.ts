@@ -150,6 +150,7 @@ const {
   registerMxcHolderReadinessProbe,
   spawnMxcBundledHolder,
 } = holderModule;
+const { prepareMxcPluginChildLaunch } = await import("../../plugins/isolation/mxc-plugin-child-launch.js");
 const { planWindowsExtensionHolder } = await import("../../permissions/mxc-extension-readiness.js");
 const { MxcCapabilityUnavailableError, MxcProcessCleanupError, MxcProcessContractError } = await import("../../permissions/mxc-extension-errors.js");
 const { setProcessPlatform } = await import("../../__tests__/support/process-platform.js");
@@ -625,5 +626,54 @@ describe("container refusal copy (row 6 disclosure)", () => {
     } finally {
       setLocale(previous);
     }
+  });
+});
+
+describe("plugin child start resources", () => {
+  const GEN = "C:\\ave\\plugins\\fs\\gen";
+  const DATA = "C:\\ave\\mcp\\fs\\sandbox";
+  const intent = (overrides: Partial<Parameters<typeof prepareMxcPluginChildLaunch>[0]> = {}): Parameters<typeof prepareMxcPluginChildLaunch>[0] =>
+    ({ pluginId: "fs", command: NODE, cwd: GEN, envelope: { read: [GEN, DATA], write: [DATA] }, ...overrides });
+  const stagingExists = (): boolean => [...state.dirs].some((dir) => dir.includes("mxc-staging\\"));
+
+  it("lays out a fresh staging HOME/temp, the captured ownership and the registered probe, and spawns nothing", async () => {
+    const launch = await prepareMxcPluginChildLaunch(intent());
+    const staging = winPath.dirname(launch.home);
+    expect(staging).toMatch(/^C:\\ave\\mxc-staging\\[0-9a-f]{32}$/u);
+    expect(launch.temp).toBe(winPath.join(staging, "temp"));
+    expect(state.dirs.has(launch.home) && state.dirs.has(launch.temp)).toBe(true);
+    expect(launch.filesystemOwnership).toEqual({ readRoots: [GEN], writeRoots: [DATA, staging], hostStorageRoots: [] });
+    expect(launch.probe).toBe(probe);
+    expect(launch.signal.aborted).toBe(false);
+    expect(state.spawn).not.toHaveBeenCalled();
+    const second = await prepareMxcPluginChildLaunch(intent());
+    expect(winPath.dirname(second.home)).not.toBe(staging);
+    await launch.release();
+    expect(state.dirs.has(launch.home) || state.dirs.has(staging)).toBe(false);
+    expect(state.dirs.has(second.home)).toBe(true);
+  });
+
+  it("refuses with capability-unavailable while no readiness probe is registered, before any staging exists", async () => {
+    unregister?.();
+    unregister = undefined;
+    await expect(prepareMxcPluginChildLaunch(intent())).rejects.toBeInstanceOf(MxcCapabilityUnavailableError);
+    expect(stagingExists()).toBe(false);
+  });
+
+  it("refuses when the container backend is not selected, and revokes a prepared launch once it is withdrawn", async () => {
+    const launch = await prepareMxcPluginChildLaunch(intent());
+    expect(() => launch.assertCurrent()).not.toThrow();
+    state.plan = FALLBACK;
+    expect(() => launch.assertCurrent()).toThrow(MxcProcessContractError);
+    await expect(prepareMxcPluginChildLaunch(intent())).rejects.toBeInstanceOf(MxcProcessContractError);
+  });
+
+  it("refuses an executable inside its write roots or a live workspace writer, before any staging exists", async () => {
+    await expect(prepareMxcPluginChildLaunch(intent({ command: "C:\\ave\\mcp\\fs\\sandbox\\tool.exe" })))
+      .rejects.toBeInstanceOf(MxcExecutableNotAdmissibleError);
+    state.live = ["D:\\work\\out"];
+    await expect(prepareMxcPluginChildLaunch(intent({ envelope: { read: [GEN, "D:\\work"], write: ["D:\\work"] } })))
+      .rejects.toBeInstanceOf(MxcHolderWorkspaceBusyError);
+    expect(stagingExists()).toBe(false);
   });
 });

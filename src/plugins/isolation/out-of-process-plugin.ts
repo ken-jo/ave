@@ -53,7 +53,7 @@ import {
 } from "../../permissions/sensitive-paths.js";
 import { assertAveHomeRuntimeBoundary, AVE_HOME_RUNTIME_DIRECTORY, aveHome } from "../../shared/ave-home.js";
 import { isPathWithin } from "../plugin-storage-containment.js";
-import { HOST_DIRECTORY_CATALOG, hostDirectoryFloorPierces } from "../sandbox-authority.js";
+import { declaredHostDirectoryFloorPierces, HOST_DIRECTORY_CATALOG, hostDirectoryFloorPierces } from "../sandbox-authority.js";
 import type {
   PluginManifest,
   PluginRuntimeContext,
@@ -802,7 +802,8 @@ export function createOutOfProcessPluginFactory(
   }
 
   const factory = async (context: PluginRuntimeContext): Promise<RuntimePlugin> => {
-    assertExtensionStartAllowed();
+    // A native launch is admitted by row 2's own native-entry guard; the legacy guard refuses a selected container plan.
+    if (!spec.prepareMxcChild) assertExtensionStartAllowed();
     // Refused before anything is spawned. `runtime/index.ts` refuses the same manifest at every load path; this is the spawn path's
     // own copy of the rule, so a factory reached any other way cannot start a child that would be told a version it does not speak.
     const hostProtocolVersion = connectionHostProtocol(spec.manifest);
@@ -847,7 +848,7 @@ export function createOutOfProcessPluginFactory(
         }, {
           ...intent,
           envelope,
-          floorPierces: envelope.read.filter((path) => hostDirectoryFloorPierces().includes(path)),
+          floorPierces: declaredHostDirectoryFloorPierces(spec.manifest.sandbox),
           baseEnv: buildSafeChildEnv({ ELECTRON_RUN_AS_NODE: "1" }),
         }, () => {
           nativeRevoked = true;

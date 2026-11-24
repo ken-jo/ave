@@ -5,7 +5,7 @@ vi.mock("node:fs", async original => (await import("../../../__tests__/support/s
 import { writePermissionSettingsFixture } from "../../../__tests__/support/permission-settings-fixture.js";
 import { deferred } from "../../../__tests__/support/deferred.js";
 import { setFixtureOwner } from "../../../__tests__/support/fixture-owner.js";
-import { ensureAveHomePrivate } from "../../../shared/ave-home.js";
+import { aveHome, ensureAveHomePrivate } from "../../../shared/ave-home.js";
 /** Exercise the real child runtime and factory; recorded spawn calls alone do not prove confinement. */
 import { beforeAll, describe, expect, it, type TestContext, vi } from "vitest";
 import { configureHostResources } from "../../../main/host-resources.js";
@@ -1124,6 +1124,29 @@ describe("native factory failures with unverified termination", () => {
       expect(registration.terminating).toHaveBeenCalledOnce();
       expect(release).not.toHaveBeenCalled();
     } finally { roots.remove(); for (const cleanup of cleanups.splice(0)) cleanup(); }
+  });
+});
+
+describe("native floor pierces", () => {
+  it("pierces the read floor only for the reviewed host directories the manifest declares", async () => {
+    const roots = spawnableRoots();
+    const registration = { assertCurrent: vi.fn(), dispose: vi.fn(), quarantine: vi.fn(), terminating: vi.fn() };
+    const { dir, entryPath } = writePluginModule();
+    spawnNativeChild.mockReset().mockRejectedValue(new Error("stop at admission"));
+    try {
+      const pierces = async (sandbox?: PluginManifest["sandbox"]): Promise<unknown> => {
+        const factory = createOutOfProcessPluginFactory({ manifest: { ...MANIFEST, ...(sandbox ? { sandbox } : {}) }, launch: { kind: "entry", entryPath },
+          prepareMxcChild: async () => nativePluginLaunch(), registerSandboxEnvelope: () => registration });
+        await Promise.resolve().then(() => factory(hostContext(fakeHostApi(), roots.context))).catch(() => undefined);
+        const [admitted] = spawnNativeChild.mock.lastCall as [{ floorPierces: unknown }];
+        return admitted.floorPierces;
+      };
+      await expect(pierces()).resolves.toEqual([]);
+      await expect(pierces({ read: [{ kind: "hostDirectory", segments: ["runtime"], why: "Managed runtimes." }] })).resolves.toEqual([]);
+      await expect(pierces({ read: [{ kind: "hostDirectory", segments: ["certs"], why: "Trust anchors." }] }))
+        .resolves.toEqual([join(aveHome(), "certs")]);
+      expect(spawnNativeChild).toHaveBeenCalledTimes(3);
+    } finally { roots.remove(); rmSync(dir, { recursive: true, force: true }); }
   });
 });
 

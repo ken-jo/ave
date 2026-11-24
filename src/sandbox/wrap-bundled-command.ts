@@ -582,6 +582,27 @@ export interface MxcBundledHolder {
   readonly quarantined: boolean;
 }
 
+/** What a plugin child's planner needs from this adapter: the registered readiness probe and a fresh staging tree. The
+ * plugin-child adapter drives row 2 itself, so nothing is spawned here. Every refusal comes before the staging tree
+ * exists; with no registered probe the start is refused, never run another way. */
+export function prepareMxcHolderStart(input: { readonly label: string; readonly executable: string; readonly allowWrite: readonly string[] }): {
+  readonly probe: MxcConfinedChildSpec["probe"];
+  readonly root: string;
+  readonly home: string;
+  readonly temp: string;
+  /** Only after verified termination, or for a start that never reached native creation. */
+  release(): Promise<void>;
+} {
+  if (!isMxcExtensionBackendSelected()) throw new MxcProcessContractError(`${input.label}: the extension container backend is not selected`);
+  const probe = registeredHolderReadinessProbe();
+  const executable = resolveHolderExecutable(input.executable, {});
+  assertMxcHolderNotBashForm(executable);
+  assertExecutableAdmissible(executable, input.allowWrite, []);
+  assertNoLiveWorkspaceWriter(input.allowWrite, []);
+  const staging = createHolderStaging();
+  return { probe, root: staging.root, home: staging.home, temp: staging.temp, release: () => removeHolderStaging(staging.root) };
+}
+
 /** One holder incarnation per call: its own sibling roots and staging, never the caller's plan passed through. */
 export async function spawnMxcBundledHolder(input: MxcBundledHolderInput): Promise<MxcBundledHolder> {
   if (!isMxcExtensionBackendSelected()) throw new MxcProcessContractError(`${input.label}: the extension container backend is not selected`);
