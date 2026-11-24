@@ -215,7 +215,7 @@ export function buildHostShellExecutionPlan(input: {
       capability: noneCapability(route.platform, HOME_PRIVACY_HELPER_UNAVAILABLE_SHELL_DENIAL.reason),
       fallbackReason,
       requiresExplicitUserApproval: false,
-      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + route.platform + ":" + (route.executionRequest === "host" ? "explicit-host" : "default") + ":" + fallbackReason,
+      identity: `${HOST_SHELL_EXECUTION_PLAN_VERSION}:${route.platform}:${route.executionRequest === "host" ? "explicit-host" : "default"}:${fallbackReason}`,
     });
   }
   const shellSubstrate = input.shellSubstrate ?? "asrt";
