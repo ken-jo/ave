@@ -75,14 +75,20 @@ async function outputFiles(root: string) {
 export async function sealWindowsPreparation(root: string, key: string, required: readonly string[]) {
   const files = await outputFiles(root);
   if (required.some(file => !Object.hasOwn(files, file))) throw new Error("Missing preparation output");
-  writeFileSync(join(root, OUTPUT_MANIFEST), `${JSON.stringify({ key, files })}\n`, { flag: "wx" });
+  const manifest = `${JSON.stringify({ key, files })}\n`;
+  writeFileSync(join(root, OUTPUT_MANIFEST), manifest, { flag: "wx" });
+  return createHash("sha256").update(manifest).digest("hex");
 }
 
-function readOutputManifest(root: string): { key: string; files: Record<string, string> } {
+function readOutputManifest(root: string, digest?: string): { key: string; files: Record<string, string> } {
   const path = join(root, OUTPUT_MANIFEST);
   const stat = lstatSync(path);
   if (!stat.isFile() || stat.nlink !== 1) throw new Error("Invalid preparation output manifest");
-  return JSON.parse(readFileSync(path, "utf8"));
+  const manifest = readFileSync(path);
+  if (digest !== undefined && createHash("sha256").update(manifest).digest("hex") !== digest) {
+    throw new Error("Windows preparation seal changed");
+  }
+  return JSON.parse(manifest.toString("utf8"));
 }
 
 async function verifyWindowsPreparation(root: string, key: string, required: readonly string[], expected: ReturnType<typeof readOutputManifest>) {
@@ -91,6 +97,11 @@ async function verifyWindowsPreparation(root: string, key: string, required: rea
     || canonicalJson(expected.files) !== canonicalJson(files) || canonicalJson(readOutputManifest(root)) !== canonicalJson(expected)) {
     throw new Error("Windows preparation cache digest mismatch");
   }
+}
+
+export async function verifySealedWindowsPreparation(root: string, key: string, required: readonly string[], digest: string | undefined) {
+  if (!digest || !/^[a-f0-9]{64}$/u.test(digest)) throw new Error("Missing preparation seal digest");
+  await verifyWindowsPreparation(root, key, required, readOutputManifest(root, digest));
 }
 
 type RestoreChecks = {

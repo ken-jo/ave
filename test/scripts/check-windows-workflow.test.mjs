@@ -246,7 +246,7 @@ it("accepts the workflow's contained commands and stated exemptions from parsed 
 const EXEMPTIONS = [
   "bun install --frozen-lockfile",
   "node .github/scripts/check-windows-workflow.mjs",
-  ...["key", "restore", "seal"].map(operation => `node .github/scripts/windows-preparation-cache.mjs ${operation}`),
+  ...["key", "restore", "seal", "verify-publication"].map(operation => `node .github/scripts/windows-preparation-cache.mjs ${operation}`),
   "node scripts/fetch-uv.mjs",
   "node .github/scripts/python-archive-cache.mjs",
   ...["", " -FailureFixture", " -QueryFailureFixture", " -Helper path-kind"]
@@ -403,6 +403,26 @@ it("rejects either Windows job bypassing the native platform gate", () => {
   }
 });
 
+it("cannot publish when containment cleanup fails after sealing", () => {
+  const steps = parse(workflow).jobs["windows-native-preparation"].steps;
+  const seal = steps.findIndex(step => step.name === "Seal Windows preparation outputs");
+  const cleanup = steps.findIndex(step => step.name === "Remove isolated system-volume job directory");
+  const verified = steps.findIndex(step => step.name === "Verify sealed Windows preparation outputs");
+  const save = steps.findIndex(step => step.name === "Save Windows preparation outputs");
+  assert.ok(seal >= 0 && seal < cleanup && cleanup < verified && verified < save);
+  assert.equal(save, steps.length - 1);
+  assert.match(steps[save].if, /^success\(\) && /);
+  assert.ok(steps[verified].if.includes(`steps.${steps[cleanup].id}.outcome == 'success'`));
+  assert.ok(steps[save].if.includes(`steps.${steps[verified].id}.outcome == 'success'`));
+  const publishedDespiteFailure = changedWorkflow((_steps, get) => {
+    const step = get("Verify sealed Windows preparation outputs");
+    step.if = step.if
+      .replace("success() && ", "always() && ")
+      .replace(" && steps.windows-job-cleanup.outcome == 'success'", "");
+  });
+  assert.throws(() => checkWindowsWorkflow(publishedDespiteFailure, parsedLines), /must seal new outputs before saving on main/);
+});
+
 for (const [name, change, expected] of [
   ["a cache key without the generated manifest", (_steps, get) => {
     get("Restore Windows preparation outputs").with.key = "windows-preparation";
@@ -424,6 +444,16 @@ for (const [name, change, expected] of [
   ["saving prep outputs from an untrusted ref", (_steps, get) => {
     get("Save Windows preparation outputs").if = CONDITION;
   }, /must seal new outputs before saving on main/],
+  ["running more preparation after publishing", steps => {
+    steps.push({ name: "Later check", run: "node late-check.mjs" });
+  }, /after successful containment cleanup/],
+  ["publishing before cleanup completes", (steps, get) => {
+    const save = steps.pop();
+    steps.splice(steps.indexOf(get("Remove isolated system-volume job directory")), 0, save);
+  }, /after successful containment cleanup/],
+  ["publishing without a seal tied to the preparation checks", (_steps, get) => {
+    delete get("Verify sealed Windows preparation outputs").env.AVE_WINDOWS_PREP_SEAL_DIGEST;
+  }, /after successful containment cleanup/],
 ]) {
   it(`rejects ${name}`, () => {
     assert.throws(() => checkWindowsWorkflow(changedWorkflow(change), parsedLines), expected);

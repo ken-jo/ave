@@ -855,17 +855,12 @@ jobs:
       # Only the default branch writes this cache. PR merge-ref caches cannot
       # cross into the base branch. Release tags build without this cache.
       - name: Seal Windows preparation outputs
+        id: windows-preparation-seal
         if: steps.docs-impact.outputs.docs_only != 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && env.AVE_WINDOWS_PREP_STORE != '' && env.AVE_WINDOWS_PREP_VERIFIED == 'false'
         working-directory: ave
         env:
           AVE_WINDOWS_PREP_KEY: ${{ steps.windows-preparation-key.outputs.key }}
         run: node .github/scripts/windows-preparation-cache.mjs seal
-      - name: Save Windows preparation outputs
-        if: steps.docs-impact.outputs.docs_only != 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && env.AVE_WINDOWS_PREP_STORE != '' && env.AVE_WINDOWS_PREP_VERIFIED == 'false'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ runner.temp }}/windows-preparation-cache
-          key: ${{ steps.windows-preparation-key.outputs.key }}
 
       # Each run-in-job line above is a manifest step: its wrapper registers the
       # step id and job-root identity in the step's receipt, and its launcher
@@ -893,9 +888,24 @@ jobs:
       # verified job root.
       - &windows-cleanup
         name: Remove isolated system-volume job directory
+        id: windows-job-cleanup
         if: steps.docs-impact.outputs.docs_only != 'true' && always() && env.AVE_CI_JOB_ROOT != ''
         shell: powershell
         run: node ave/.github/scripts/isolate-job-home.mjs --cleanup
+      - name: Verify sealed Windows preparation outputs
+        id: windows-preparation-publication
+        if: success() && steps.docs-impact.outputs.docs_only != 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && env.AVE_WINDOWS_PREP_STORE != '' && env.AVE_WINDOWS_PREP_VERIFIED == 'false' && steps.windows-preparation-seal.outcome == 'success' && steps.windows-job-cleanup.outcome == 'success'
+        working-directory: ave
+        env:
+          AVE_WINDOWS_PREP_KEY: ${{ steps.windows-preparation-key.outputs.key }}
+          AVE_WINDOWS_PREP_SEAL_DIGEST: ${{ steps.windows-preparation-seal.outputs.digest }}
+        run: node .github/scripts/windows-preparation-cache.mjs verify-publication
+      - name: Save Windows preparation outputs
+        if: success() && steps.docs-impact.outputs.docs_only != 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && env.AVE_WINDOWS_PREP_STORE != '' && env.AVE_WINDOWS_PREP_VERIFIED == 'false' && steps.windows-preparation-publication.outcome == 'success'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/windows-preparation-cache
+          key: ${{ steps.windows-preparation-key.outputs.key }}
 
   windows-permission-tests:
     name: Windows permission path tests (${{ matrix.shard }})

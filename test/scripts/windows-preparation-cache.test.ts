@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import {
-  restoreWindowsPreparation, sealWindowsPreparation, windowsPreparationInputs, windowsPreparationKey,
+  restoreWindowsPreparation, sealWindowsPreparation, verifySealedWindowsPreparation, windowsPreparationInputs, windowsPreparationKey,
   type WindowsPreparationManifest,
 } from "../../scripts/lib/windows-preparation-cache.mjs";
 import { createTmpDirTracker } from "../../src/__tests__/support/tmp-dir-teardown.js";
@@ -72,6 +72,19 @@ describe("Windows preparation output cache", () => {
     await sealWindowsPreparation(root, key, required);
     return root;
   }
+
+  it("rechecks the sealed outputs before publication and refuses a replacement seal", async () => {
+    const root = makeDir();
+    const output = "helper.exe";
+    writeFileSync(join(root, output), "verified");
+    const digest = await sealWindowsPreparation(root, key, [output]);
+    await expect(verifySealedWindowsPreparation(root, key, [output], digest)).resolves.toBeUndefined();
+    writeFileSync(join(root, output), "changed after sealing");
+    await expect(verifySealedWindowsPreparation(root, key, [output], digest)).rejects.toThrow("digest mismatch");
+    rmSync(join(root, "outputs.json"));
+    await sealWindowsPreparation(root, key, [output]);
+    await expect(verifySealedWindowsPreparation(root, key, [output], digest)).rejects.toThrow("seal changed");
+  });
 
   it("uses an exact entry after its bytes and identity both pass", async () => {
     const root = await sealed();

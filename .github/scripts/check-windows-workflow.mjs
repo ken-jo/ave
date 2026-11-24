@@ -55,7 +55,7 @@ const WRAPPER = ["node", ".github/scripts/run-in-job.mjs"];
 const UNCONTAINED_COMMANDS = new Map([
   ["bun install --frozen-lockfile", "installs dependencies; runs no test code"],
   ["node .github/scripts/check-windows-workflow.mjs", "this guard"],
-  ...["key", "restore", "seal"].map(operation => ["node .github/scripts/windows-preparation-cache.mjs " + operation, "inventories or verifies preparation bytes"]),
+  ...["key", "restore", "seal", "verify-publication"].map(operation => ["node .github/scripts/windows-preparation-cache.mjs " + operation, "inventories or verifies preparation bytes"]),
   ["node scripts/fetch-uv.mjs", "fetches a pinned tool"],
   ["node .github/scripts/python-archive-cache.mjs", "computes a cache key"],
   ...["", " -FailureFixture", " -QueryFailureFixture", " -Helper path-kind"].map(option => [
@@ -292,6 +292,8 @@ function checkPreparationCache(job) {
   const verify = find("Verify Windows preparation outputs or rebuild");
   const build = find("Build Windows launcher and classification helpers");
   const seal = find("Seal Windows preparation outputs");
+  const cleanup = find("Remove isolated system-volume job directory");
+  const publication = find("Verify sealed Windows preparation outputs");
   const save = find("Save Windows preparation outputs");
   const before = (first, second) => first && second && steps.indexOf(first) < steps.indexOf(second);
   const exact = (step, action) => step?.uses?.startsWith("actions/cache/" + action + "@")
@@ -323,10 +325,20 @@ function checkPreparationCache(job) {
       throw new Error("Only the Windows preparation verifier may set the cache state");
     }
   }
-  if (seal?.run !== PREPARATION_CACHE_COMMAND + " seal" || seal.if !== PREPARATION_CACHE_MAIN_SAVE
+  const saveOnlyOnSuccess = "success() && " + PREPARATION_CACHE_MAIN_SAVE;
+  const verifiedAfterCleanup = saveOnlyOnSuccess
+    + " && steps.windows-preparation-seal.outcome == 'success' && steps.windows-job-cleanup.outcome == 'success'";
+  if (seal?.id !== "windows-preparation-seal" || seal.run !== PREPARATION_CACHE_COMMAND + " seal" || seal.if !== PREPARATION_CACHE_MAIN_SAVE
     || seal["working-directory"] !== "ave" || seal.env?.AVE_WINDOWS_PREP_KEY !== PREPARATION_CACHE_KEY
-    || !exact(save, "save") || save.if !== PREPARATION_CACHE_MAIN_SAVE || !before(seal, save)) {
-    throw new Error("Windows preparation must seal new outputs before saving on main");
+    || cleanup?.id !== "windows-job-cleanup" || cleanup.run !== SETUP_COMMAND + " --cleanup"
+    || cleanup.if !== REGRESSION_CONDITION + " && always() && env.AVE_CI_JOB_ROOT != ''"
+    || publication?.id !== "windows-preparation-publication" || publication.run !== PREPARATION_CACHE_COMMAND + " verify-publication"
+    || publication.if !== verifiedAfterCleanup || publication["working-directory"] !== "ave"
+    || publication.env?.AVE_WINDOWS_PREP_KEY !== PREPARATION_CACHE_KEY
+    || publication.env?.AVE_WINDOWS_PREP_SEAL_DIGEST !== "${{ steps.windows-preparation-seal.outputs.digest }}"
+    || !before(seal, cleanup) || !before(cleanup, publication) || !before(publication, save) || save !== steps.at(-1)
+    || !exact(save, "save") || save.if !== saveOnlyOnSuccess + " && steps.windows-preparation-publication.outcome == 'success'") {
+    throw new Error("Windows preparation must seal new outputs before saving on main after successful containment cleanup");
   }
 }
 

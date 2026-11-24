@@ -9,7 +9,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { packagingInstalledInputFiles, verifyInstalledPackagingInputs, verifyPackagingOutput } from "../../scripts/check-mxc-packaging.mjs";
 import {
-  restoreWindowsPreparation, sealWindowsPreparation, windowsPreparationInputs, windowsPreparationKey,
+  restoreWindowsPreparation, sealWindowsPreparation, verifySealedWindowsPreparation, windowsPreparationInputs, windowsPreparationKey,
 } from "../../scripts/lib/windows-preparation-cache.mts";
 
 const require = createRequire(import.meta.url);
@@ -113,10 +113,16 @@ async function main(operation, root, env) {
     console.log(verified ? "Using verified Windows preparation outputs" : "Building Windows preparation outputs");
     return;
   }
-  if (operation !== "seal" || !key || env.AVE_WINDOWS_PREP_STORE !== store || env.AVE_WINDOWS_PREP_VERIFIED !== "false") throw new Error("Expected newly built Windows preparation outputs");
+  if (!key || env.AVE_WINDOWS_PREP_STORE !== store || env.AVE_WINDOWS_PREP_VERIFIED !== "false") throw new Error("Expected newly built Windows preparation outputs");
+  if (operation === "verify-publication") {
+    await verifySealedWindowsPreparation(store, key, required, env.AVE_WINDOWS_PREP_SEAL_DIGEST);
+    return;
+  }
+  if (operation !== "seal") throw new Error("Unknown Windows preparation command");
   for (const file of native) copyOutput(join(root, file), join(store, "native", file));
   copyOutput(join(tmpdir(), pinTest), join(store, "native", pinTest));
-  await sealWindowsPreparation(store, key, required);
+  const digest = await sealWindowsPreparation(store, key, required);
+  appendFileSync(outputs, `digest=${digest}\n`);
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
