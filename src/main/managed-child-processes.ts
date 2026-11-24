@@ -577,7 +577,11 @@ function overlaps(left: string, right: string): boolean {
 /** Refuses, at the record call, a path equal to, inside or containing one that another live handle recorded. */
 export function recordManagedPaths(resources: ManagedResources, ...paths: readonly PathToRemove[]): void {
   // Each argument field is read once, resolved against the record-time cwd; fold, check and store use only this snapshot.
-  const entries = paths.map(({ path, recursive }) => Object.freeze({ path: resolve(String(path)), recursive: Boolean(recursive) }));
+  const entries = paths.map(({ path, recursive }) => {
+    if (typeof path !== "string" || path === "") throw new TypeError("Managed path must be a non-empty string.");
+    if (recursive !== undefined && typeof recursive !== "boolean") throw new TypeError("Managed path recursive must be a boolean.");
+    return Object.freeze({ path: resolve(path), recursive: recursive ?? false });
+  });
   const state = recordableState(resources);
   const folded = entries.map(entry => foldedPath(entry.path));
   const own = new Set(lineage(state));

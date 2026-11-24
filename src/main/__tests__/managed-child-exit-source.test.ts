@@ -635,6 +635,34 @@ describe("managed child receipts", () => {
     await abandonManagedLaunch(next);
   });
 
+  it("refuses a record argument that breaks the path contract before storing any of the call", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "ave-managed-contract-"));
+    const start = process.cwd();
+    const sentinel = join(directory, "sentinel");
+    try {
+      writeFileSync(sentinel, "x");
+      process.chdir(directory);
+      const resources = createManagedResources();
+      const valid = join(directory, "valid");
+      for (const invalid of [{ path: "" }, { path: undefined }, { path: 0 }, { path: ".", recursive: "yes" }]) {
+        expect(() => recordManagedPaths(resources, { path: valid, recursive: true }, invalid as never)).toThrow(TypeError);
+      }
+      const other = createManagedResources();
+      recordManagedPaths(other, { path: valid, recursive: true });
+      await abandonManagedLaunch(other);
+      const later = join(directory, "later");
+      mkdirSync(later);
+      recordManagedPaths(resources, { path: later, recursive: true });
+      await abandonManagedLaunch(resources);
+      process.chdir(start);
+      expect(existsSync(later)).toBe(false);
+      expect(existsSync(sentinel)).toBe(true);
+    } finally {
+      process.chdir(start);
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("lets an ancestor record a path containing one its live descendant recorded", async () => {
     const directory = join(tmpdir(), `ave-managed-descendant-${process.pid}-${Date.now()}`);
     const ancestor = createManagedResources();
