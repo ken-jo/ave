@@ -546,7 +546,9 @@ describe("initializeAsrtSandbox — Linux configured-wrapper runtime probe", () 
     const socketPath = join(root, "bridge.sock");
     writeFileSync(socketPath, "");
     vi.stubEnv("PATH", "relative:/usr/local/bin");
-    await expect(checkAsrtDependencies()).resolves.toEqual({ errors: [], warnings: ["fixture warning"] });
+    await expect(checkAsrtDependencies()).resolves.toEqual({ errors: [], warnings: ["fixture warning"], linuxWrapperPrograms: {
+      bwrapPath: "/usr/local/bin/bwrap", socatPath: "/usr/local/bin/socat", ripgrep: { command: "/usr/local/bin/rg" },
+    } });
     expect(h.checkDependenciesAsync).not.toHaveBeenCalled();
     expect(h.checkLinuxDependencies).toHaveBeenCalledWith(expect.objectContaining({
       bwrapPath: "/usr/local/bin/bwrap", socatPath: "/usr/local/bin/socat",
@@ -575,6 +577,24 @@ describe("initializeAsrtSandbox — Linux configured-wrapper runtime probe", () 
       expect(command).toContain("/usr/local/bin/bwrap");
       expect(command).toContain("/usr/local/bin/socat");
     }
+  });
+
+  it("initializes with the preflight's helpers when PATH changes before initialization", async () => {
+    vi.stubEnv("PATH", "/usr/local/bin");
+    const deps = await checkAsrtDependencies();
+    expect(deps.errors).toEqual([]);
+    vi.stubEnv("PATH", "/another-install/bin");
+    await initializeAsrtSandbox({ allowedDomains: [], linuxWrapperPrograms: deps.linuxWrapperPrograms });
+    expect(h.initialize.mock.lastCall?.[0]).toMatchObject({
+      bwrapPath: "/usr/local/bin/bwrap", socatPath: "/usr/local/bin/socat", ripgrep: { command: "/usr/local/bin/rg" },
+    });
+  });
+
+  it("names the absent helper when initialization resolves its own helpers", async () => {
+    vi.stubEnv("PATH", "/usr/local/bin");
+    h.missingHelper = "/usr/local/bin/bwrap";
+    await expect(initializeAsrtSandbox({ allowedDomains: [] })).rejects.toThrow("bubblewrap (bwrap) not installed on PATH");
+    expect(h.initialize).not.toHaveBeenCalled();
   });
 
   it.each(["linux", "darwin"] as const)("renders the fixed default and explicit shell at both wrapper layers on %s", async (platform) => {
