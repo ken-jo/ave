@@ -92,6 +92,7 @@ src/main/__tests__/editor-command.test.ts
 src/main/__tests__/ensure-workspace-cwd.test.ts
 src/main/__tests__/exec-mode.test.ts
 src/main/__tests__/headless-runtime-identity.test.ts
+src/main/__tests__/host-runtime-resources.test.ts
 src/main/__tests__/managed-child-group-lifetime.test.ts
 src/main/__tests__/managed-child-host-death.test.ts
 src/main/__tests__/managed-child-tree-kill-starved.test.ts

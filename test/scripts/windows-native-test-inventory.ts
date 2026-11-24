@@ -359,6 +359,7 @@ function usedMembers(tokens: readonly string[], specifier: string): Set<string> 
 
 const NATIVE_COMMANDS = new Set(["spawn", "spawnSync", "execFile", "execFileSync", "exec", "execSync"]);
 const LINK_METHODS = new Set(["symlink", "symlinkSync", "readlink", "readlinkSync"]);
+const FILESYSTEM_MODULES = ["node:fs", "fs", "node:fs/promises", "fs/promises"];
 
 function bindingsFor(tokens: readonly string[], mocks: ReadonlySet<string>, specifiers: string[]) {
   return new Map(specifiers.filter(specifier => !mocks.has(specifier)).flatMap(specifier => [...moduleBindings(tokens, specifier).bindings]));
@@ -388,7 +389,7 @@ function callsNativeHelper(tokens: readonly string[], mocks: ReadonlySet<string>
 }
 
 function exercisesFilesystemLinks(tokens: readonly string[], mocks: ReadonlySet<string>): boolean {
-  const bindings = bindingsFor(tokens, mocks, ["node:fs", "fs", "node:fs/promises", "fs/promises"]);
+  const bindings = bindingsFor(tokens, mocks, FILESYSTEM_MODULES);
   for (let i = 0; i < tokens.length; i++) {
     const call = memberCall(tokens, bindings, i);
     if (call && LINK_METHODS.has(call.member)) return true;
@@ -399,8 +400,12 @@ function exercisesFilesystemLinks(tokens: readonly string[], mocks: ReadonlySet<
   return false;
 }
 
+function stubsProcessPlatform(source: string): boolean {
+  return /\b(?:setProcessPlatform\s*\(|stubGlobal\s*\(\s*["']process|(?:defineProperty|replaceProperty|spyOn)\s*\(\s*process\s*,\s*["']platform|process\.platform\s*=(?!=))/u.test(source);
+}
+
 function checksWindowsPlatform(source: string, tokens: readonly string[], mocks: ReadonlySet<string>): boolean {
-  if (/\b(?:setProcessPlatform\s*\(|stubGlobal\s*\(\s*["']process|(?:defineProperty|replaceProperty|spyOn)\s*\(\s*process\s*,\s*["']platform|process\.platform\s*=(?!=))/u.test(source)) return false;
+  if (stubsProcessPlatform(source)) return false;
   if (!mocks.has("node:os") && !mocks.has("os") && conditionalGates(source).some(gate => gate.classification === "win32-only")) return true;
   if (!tokens.some(token => literal(token) === "win32")) return false;
   const bindings = bindingsFor(tokens, mocks, ["node:os", "os"]);
@@ -424,7 +429,8 @@ function checksWindowsPlatform(source: string, tokens: readonly string[], mocks:
     if (windowsValue(i + 3) && tokens[i + 4] === ";") windowsAliases.add(name);
   }
   for (let i = 0; i < tokens.length; i++) {
-    const end = platformEnd(i);
+    const platform = platformEnd(i);
+    const end = platform !== undefined && tokens[i - 1] === "??" && tokens[platform] === ")" ? platform + 1 : platform;
     if (end !== undefined && comparisons.has(tokens[end] ?? "") && windowsValue(end + 1)) return true;
     if (windowsValue(i) && comparisons.has(tokens[i + 1] ?? "") && platformEnd(i + 2) !== undefined) return true;
     if (tokens[i] === "switch" && tokens[i + 1] === "(" && platformEnd(i + 2) !== undefined
@@ -442,6 +448,62 @@ function declarationEnd(tokens: readonly string[], start: number): number {
     if (["}", ")", "]"].includes(token) && --depth === 0 && token === "}" && tokens[start - 1] === "function") return i;
   }
   return tokens.length;
+}
+
+function callsFilesystem(tokens: readonly string[], mocks: ReadonlySet<string>, methods: ReadonlySet<string>): boolean {
+  const bindings = bindingsFor(tokens, mocks, FILESYSTEM_MODULES);
+  return tokens.some((_, i) => {
+    const call = memberCall(tokens, bindings, i);
+    return call !== undefined && methods.has(call.member);
+  });
+}
+
+const FILE_OBSERVATIONS = new Set(["readFile", "readFileSync", "stat", "statSync", "existsSync"]);
+const FILE_WRITES = new Set(["writeFile", "writeFileSync", "copyFile", "copyFileSync"]);
+const FILE_MODES = new Set(["chmod", "chmodSync"]);
+
+function usesHostFilesystemOutput(
+  suite: RuntimeModule,
+  imported: RuntimeModule,
+  source: string,
+  specifier: string,
+): boolean {
+  // A fixture observing a real file can exercise host-specific materialization
+  // through an ordinary module. A simulated platform or filesystem cannot.
+  if (stubsProcessPlatform(source) || suite.tokens.some((token, i) => token === "platform" && suite.tokens[i + 1] === ":")
+    || !callsFilesystem(suite.tokens, suite.mocks, FILE_OBSERVATIONS)) return false;
+  const used = usedMembers(suite.tokens, specifier);
+  if (!used.size) return false;
+  const { tokens } = imported;
+  const mocks = new Set([...suite.mocks, ...imported.mocks]);
+  const functions = new Map<string, { exported: boolean; body: string[] }>();
+  const filesystemImports = tokens.flatMap((token, index) => {
+    if (token !== "import" || tokens[index + 1] === "(") return [];
+    const end = tokens.indexOf(";", index);
+    return end >= 0 && FILESYSTEM_MODULES.includes(literal(tokens[end - 1]) ?? "") ? tokens.slice(index, end + 1) : [];
+  });
+  for (let i = 0; i < tokens.length - 2; i++) {
+    const name = tokens[i + 1];
+    if (tokens[i] !== "function" || !name || tokens[i + 2] !== "(") continue;
+    functions.set(name, {
+      exported: tokens[i - 1] === "export" || (tokens[i - 1] === "async" && tokens[i - 2] === "export"),
+      body: tokens.slice(i + 2, declarationEnd(tokens, i + 1)),
+    });
+  }
+  function materializes(body: string[]) {
+    if (!checksWindowsPlatform("", body, mocks)) return false;
+    const withImports = [...filesystemImports, ...body];
+    return callsFilesystem(withImports, mocks, FILE_WRITES) && callsFilesystem(withImports, mocks, FILE_MODES);
+  }
+  for (const name of used) {
+    const entry = functions.get(name);
+    if (!entry?.exported) continue;
+    if (materializes(entry.body) || entry.body.some((token, i) => {
+      const helper = functions.get(token);
+      return helper && !helper.exported && entry.body[i + 1] === "(" && materializes(helper.body);
+    })) return true;
+  }
+  return false;
 }
 
 function forwardsNative(module: RuntimeModule, member: string, native: Edge): boolean {
@@ -494,6 +556,10 @@ function scanNativeBackedTestFiles(sources: ReadonlyMap<string, string>, replyTi
     const isNative = (edge: Edge) => WINDOWS_MODULE.test(edge.file) || WINDOWS_EXTERNAL.test(edge.specifier);
     for (const edge of module.dependencies.filter(isActual)) {
       const importer = graph.get(edge.file);
+      if (importer && usesHostFilesystemOutput(module, importer, source, edge.specifier)) {
+        required.set(file, [file, edge.file]);
+        break;
+      }
       if (!isNative(edge) && !importer?.dependencies.some(isNative)) continue;
       const used = usedMembers(module.tokens, edge.specifier);
       if (used.size === 0) continue;

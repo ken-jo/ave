@@ -21,6 +21,28 @@ function sources(test: string, store = 'export { read } from "../shared/windows-
   return new Map([[SUITE, test], [STORE, store], [NATIVE, "export const read = () => {};"]]);
 }
 
+it("selects an actual platform-dependent filesystem output reached through an exported function", () => {
+  const builder = `
+    import { chmodSync, writeFileSync } from "node:fs";
+    export function materialize(file, options = {}) { return write(file, options); }
+    export function status() { return true; }
+    function write(file, options) {
+      writeFileSync(file, "checked");
+      if ((options.platform ?? process.platform) !== "win32") chmodSync(file, 0o700);
+      return file;
+    }
+  `;
+  const fixture = 'import { readFileSync } from "node:fs"; import { materialize, status } from "../store.js"; ';
+  expect(nativeBackedTestFiles(sources(`${fixture}expect(readFileSync(materialize(file))).toEqual(bytes);`, builder)).get(SUITE))
+    .toEqual([SUITE, STORE]);
+  for (const source of [
+    `${fixture}expect(readFileSync(file)).toEqual(bytes); status();`,
+    `${fixture}expect(readFileSync(materialize(file, { platform: "win32" }))).toEqual(bytes);`,
+    `${fixture}vi.mock("../store.js", () => ({ materialize: vi.fn() })); readFileSync(materialize(file));`,
+    `${fixture}vi.mock("node:fs", () => ({ readFileSync: vi.fn() })); readFileSync(materialize(file));`,
+  ]) expect(nativeBackedTestFiles(sources(source, builder)).has(SUITE)).toBe(false);
+});
+
 // Check the import parser independently of the evidence used to select Windows tests.
 function nativeImportChains(modules: Map<string, string>): Map<string, string[]> {
   const graph = windowsImportGraph(modules);
