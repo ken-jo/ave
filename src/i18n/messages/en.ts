@@ -4972,6 +4972,8 @@ export const en = {
   "sandboxPolicy.quarantineFailed": "Sandbox quarantine failed for {path}: {reason}. No deletion was attempted. Already moved entries remain at:\n{moves}",
   "sandboxPolicy.watchedQuarantined": "[{code}] A contained process created a protected path that did not exist when it started. Ave moved it to quarantine (not deleted):\n{moves}\nIf you made this change yourself, restore it from Ave's quarantine list.",
   "sandboxPolicy.watchedQuarantineFailed": "A contained process created the protected path {path}, and Ave could not move it to quarantine: {reason}. Nothing was deleted. Ave will not run its own Git in that folder until you remove or move the path.",
+  "sandboxPolicy.watchedQuarantineRestoreFailed": "Ave could not restore the quarantined path. It stays in quarantine; nothing was deleted.",
+  "sandboxPolicy.watchedQuarantineUnreadable": "Ave could not read its quarantine list.",
   "sandboxPolicy.placeholderLeftovers": "An earlier Ave version left empty placeholder entries at these protected paths. Ave did not remove them; check each one and delete it if you do not use it:\n{paths}",
   "sandboxPolicy.scanNarrowed": "{reason}; write access narrowed to {roots}. Unscanned or withheld roots: {removed}.",
   "sandboxPolicy.scanEntryBudget": "Project too large to scan for nested repositories within the directory-entry budget",
