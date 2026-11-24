@@ -545,10 +545,10 @@ async function recoveryTests() {
     const record = `${"a".repeat(32)}.cleanup.json`;
     const target = join(dir, "target");
     const hiddenPath = join(dir, hidden);
-    writeFileSync(join(dir, "source"), "new bytes");
-    writeFileSync(target, "old bytes");
+    freedLater(dir, "target", "old bytes");
     const old = snapshot(target);
     let writer;
+    let published;
     const reader = openSync(target, "r");
     try {
       const result = await runCopy(["--dir-copy", ...held(dir), "source", ...held(dir), "target", part, hidden], (line, stdin) => {
@@ -559,22 +559,27 @@ async function recoveryTests() {
           expect(["--dir-write-record", ...held(root), record, body], ["ready", "written"]);
           stdin.end("c");
         }
+        if (line.startsWith("published ")) published = line.slice("published ".length);
       });
       assert.equal(result.code, 0);
+      // The commit rename tunnels the old creation time onto the writer, so recovery names it as published, as the journal does.
+      assert.equal(published, tokenOf(target));
+      assert.notEqual(published, writer);
       assert.match(result.lines.at(-2), /^target-left left \.[0-9a-f]{32}\.removing \d+:[0-9a-f]{32}:creation:[1-9]\d* remove-failed (?:-|\S+)$/u);
       assert.equal(result.lines.at(-1), "committed");
       assert.ok(readdirSync(dir).includes(hidden));
-      expect(["--dir-restore-target", ...held(dir), hidden, "target", ...old, "--writer", writer], ["ready", "left"]);
+      expect(["--dir-restore-target", ...held(dir), hidden, "target", ...old, "--writer", published], ["ready", "left"]);
       expect(["--dir-sweep", ...held(root), "--keep-records"], ["ready", "swept 0"]);
       assert.ok(existsSync(join(root, record)));
     } finally {
       closeSync(reader);
     }
     assert.ok(!existsSync(hiddenPath));
-    expect(["--dir-restore-target", ...held(dir), hidden, "target", ...old, "--writer", writer], ["ready", "resolved"]);
+    expect(["--dir-restore-target", ...held(dir), hidden, "target", ...old, "--writer", writer], ["ready", "left"]);
+    expect(["--dir-restore-target", ...held(dir), hidden, "target", ...old, "--writer", published], ["ready", "resolved"]);
     assert.equal(readFileSync(target, "utf8"), "new bytes");
     expect(removeRecord(root, record), ["ready", "removed"]);
-  });
+  }, tunnelling);
 
   add("keeps the journal while the recorded writer part is delete-pending", (dir) => {
     const partPath = join(dir, part);
