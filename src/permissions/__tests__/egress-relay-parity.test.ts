@@ -6,7 +6,7 @@ import net from "node:net";
 import { resolve } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ParentProxyRouter, SandboxAskCallback } from "@anthropic-ai/sandbox-runtime";
-import { setDestinationResolverForTesting } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-manager.js";
+import { setDestinationResolverForTesting, setListenerQuarantineForTesting } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-manager.js";
 import { useTempDirs as tempDirs } from "../../__tests__/test-helpers.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import * as policyHome from "../../shared/policy-home.js";
@@ -54,6 +54,11 @@ const RECORDED = {
   upstreamAuth: { both: "HTTP/1.1 403 upstream proxy requires authentication" },
   promptFailed: { both: "HTTP/1.1 403 permission prompt failed" },
   notABoolean: { both: "HTTP/1.1 403 user denied" },
+  // P21: the same reserved address in every spelling. Today asks about each one, then dials.
+  reservedLiteral: { today: "asked", new: "HTTP/1.1 403 destination is a reserved address" },
+  // P24
+  endedPortHop: { today: "asked", new: "HTTP/1.1 403 sandbox proxy listener" },
+  oversizedHeader: { both: "HTTP/1.1 431 Request Header Fields Too Large" },
   reusedToken: { both: "the invocation already had a relay" },
 } as const;
 
@@ -64,7 +69,8 @@ const DIFFERENCES = [
   { row: "P14", today: RECORDED.noAskCallback.today, new: RECORDED.noAskCallback.new, why: "the ask callback is a precondition of the service" },
   { row: "P15", today: RECORDED.openBeforeStart.today, new: RECORDED.openBeforeStart.new, why: "same refusal, the relay's own wording" },
   { row: "P16", today: "4096 relays, not exercised here", new: "4096 relays, exercised with a lower injected limit", why: "same limit" },
-  { row: "ended listener", today: "its port is held back for 30 minutes", new: "the port is released; a later relay refuses the ended relay's credential (407)", why: "not ruled on yet: to be settled before a route uses this relay" },
+  { row: "P21", today: "a reserved address literal is asked about, then dialled", new: RECORDED.reservedLiteral.new, why: "no spelling of a link-local, metadata, multicast or unspecified address is a destination; loopback and private-use literals are asked as today" },
+  { row: "P24", today: "this relay frees its ports when it closes, and they are asked about like any loopback port", new: "the ports stay bound and refused for 30 minutes, up to 24 hours while the process group lives", why: "the hold-back today's wrapped-command listener has; parked for the owner" },
   { row: "407 challenge", today: "its own realm name", new: 'realm "egress relay"', why: "nothing reads the realm" },
   { row: "listener", today: "a port outside the shared proxy range", new: "any ephemeral loopback port", why: "the container makes the connection, so no range has to match a host rule" },
 ] as const;
@@ -76,6 +82,7 @@ interface StartOptions {
   readonly allow?: readonly string[];
   readonly resolve?: (name: string) => Promise<readonly { address: string; family?: number }[]>;
   readonly maxRelays?: number;
+  readonly endedPortHold?: { readonly ms: number; readonly maxMs: number; readonly groupAlive?: (group: number) => boolean };
 }
 interface RelayUnderTest {
   readonly port: number;
@@ -101,6 +108,7 @@ const today: Adapter = {
   name: "today",
   async start(options) {
     setDestinationResolverForTesting(options.resolve);
+    setListenerQuarantineForTesting(options.endedPortHold?.ms);
     await initializeAsrtSandbox({
       allowedDomains: [...(options.allow ?? [])],
       strictAllowlist: false,
@@ -116,6 +124,7 @@ const today: Adapter = {
   async stop() {
     await resetAsrtSandbox();
     setDestinationResolverForTesting(undefined);
+    setListenerQuarantineForTesting(undefined);
   },
 };
 
@@ -225,7 +234,7 @@ afterEach(async () => {
 
 it("takes the ask callback and the router boot builds today", () => {
   expect(contracts).toBeTypeOf("function");
-  expect(DIFFERENCES.map((difference) => difference.row)).toEqual(["P17", "P18", "P14", "P15", "P16", "ended listener", "407 challenge", "listener"]);
+  expect(DIFFERENCES.map((difference) => difference.row)).toEqual(["P17", "P18", "P14", "P15", "P16", "P21", "P24", "407 challenge", "listener"]);
 });
 
 describe.each([today, next])("egress relay parity: $name relay", (adapter) => {
@@ -348,6 +357,7 @@ describe.each([today, next])("egress relay parity: $name relay", (adapter) => {
       ["loopback", "127.0.0.1"],
       ["link-local metadata", "169.254.169.254"],
       ["IPv4-mapped loopback", "::ffff:127.0.0.1"],
+      ["IPv4-translated loopback", "::ffff:0:127.0.0.1"],
     ])("P7: an allowed name that resolves to a %s address is refused", async (_label, address) => {
       const upstream = await startUpstream();
       await start({ ask: async () => true, allow: ["allowed.example:443"], router: upstream.router, resolve: resolverFor({ "allowed.example": [PUBLIC, address] }) });
@@ -366,6 +376,192 @@ describe.each([today, next])("egress relay parity: $name relay", (adapter) => {
       expect(await refused(relay, "intranet.example:443")).toMatch(/^HTTP\/1\.1 403 /u);
       expect(ask.mock.calls[1]?.[1]).toMatchObject({ phase: "resolved", addresses: ["10.0.0.5"], resolution: "pinned" });
       expect(upstream.connects).toEqual([]);
+    });
+
+    it("P7, P21: a name is refused at the address it resolved to, after the lookup and before any dial", async () => {
+      const upstream = await startUpstream();
+      const resolveName = resolverFor({ "allowed.example": ["169.254.169.254"] });
+      await start({ ask: async () => true, allow: ["allowed.example:80"], router: upstream.router, resolve: resolveName });
+      const relay = await open();
+
+      expect(await refused(relay, "allowed.example:80")).toBe(recorded("reservedAddress"));
+      expect(resolveName).toHaveBeenCalledTimes(1);
+      expect(upstream.connects).toEqual([]);
+    });
+
+    it("P21: a reserved address is refused in every spelling of it", async () => {
+      const upstream = await startUpstream();
+      const ask = vi.fn<Ask>(async () => ({ allow: false, reason: "asked" }));
+      const router = vi.fn(upstream.router);
+      await start({ ask, router, resolve: resolverFor({}) });
+      const relay = await open();
+      const spellings = [
+        "169.254.169.254",
+        "2852039166",
+        "0251.0376.0251.0376",
+        "0xa9fea9fe",
+        "[::ffff:169.254.169.254]",
+        "[::ffff:a9fe:a9fe]",
+        "[::ffff:0:169.254.169.254]",
+        "[fe80::1]",
+        "0.0.0.0",
+        "224.0.0.1",
+      ];
+
+      const outcomes: Record<string, string> = {};
+      for (const spelling of spellings) {
+        ask.mockClear();
+        const status = await refused(relay, `${spelling}:80`);
+        outcomes[spelling] = ask.mock.calls.length > 0 ? "asked" : status;
+      }
+      // A zone id is not a destination on either relay.
+      ask.mockClear();
+      const zoned = await refused(relay, "[fe80::1%25eth0]:80");
+
+      expect(outcomes).toEqual(Object.fromEntries(spellings.map((spelling) => [spelling, recorded("reservedLiteral")])));
+      expect(zoned).toMatch(/^HTTP\/1\.1 40[03] /u);
+      expect(ask).not.toHaveBeenCalled();
+      expect(router).not.toHaveBeenCalled();
+      expect(upstream.connects).toEqual([]);
+    });
+
+    it("P21: a loopback literal is asked about and then dialled", async () => {
+      const echo = net.createServer((socket) => { socket.on("error", () => {}); socket.pipe(socket); });
+      await new Promise<void>((done) => echo.listen(0, "127.0.0.1", done));
+      cleanups.push(() => new Promise<void>((done) => { echo.close(() => done()); }));
+      const port = (echo.address() as net.AddressInfo).port;
+      const ask = vi.fn<Ask>(async () => true);
+      await start({ ask });
+      const relay = await open();
+
+      const tunnel = await openTunnel(relay, `127.0.0.1:${port}`);
+      tunnel.socket.destroy();
+
+      expect(ask.mock.calls.map(([destination, context]) => [destination.host, context.phase])).toEqual([["127.0.0.1", "name"], ["127.0.0.1", "resolved"]]);
+    });
+
+    it("P21: a private-use literal is asked about", async () => {
+      const ask = vi.fn<Ask>(async () => ({ allow: false, reason: "no" }));
+      await start({ ask });
+      const relay = await open();
+
+      expect(await refused(relay, "10.0.0.5:443")).toBe(recorded("denied"));
+      expect(ask.mock.calls.map(([destination]) => destination.host)).toEqual(["10.0.0.5"]);
+    });
+
+    it("P5: a name that resolves to an allowed loopback address is still refused on a relay listener's port", async () => {
+      const held = net.createServer();
+      await new Promise<void>((done) => held.listen(0, "127.0.0.1", done));
+      cleanups.push(() => new Promise<void>((done) => { held.close(() => done()); }));
+      const port = (held.address() as net.AddressInfo).port;
+      await start({ ask: async () => true, allow: [`127.0.0.1:${port}`], resolve: resolverFor({ "hop.example": ["127.0.0.1"] }) });
+      const relay = await open();
+      relay.registerPort(port);
+
+      expect(await refused(relay, `hop.example:${port}`)).toBe(recorded("relayListener"));
+    });
+
+    it("P4: when the origin dies in the middle of a body, the client's connection is closed", async () => {
+      const origin = net.createServer((socket) => {
+        socket.on("error", () => {});
+        socket.once("data", () => {
+          socket.write("HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\npartial", () => socket.destroy());
+        });
+      });
+      await new Promise<void>((done) => origin.listen(0, "127.0.0.1", done));
+      cleanups.push(() => new Promise<void>((done) => { origin.close(() => done()); }));
+      const port = (origin.address() as net.AddressInfo).port;
+      await start({ ask: async () => true });
+      const relay = await open();
+
+      const client = send(relay.port, `GET http://127.0.0.1:${port}/ HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nProxy-Authorization: ${relay.proxyAuthorization}\r\n\r\n`);
+      let closed = false;
+      client.socket.once("close", () => { closed = true; });
+
+      await expect.poll(client.output).toContain("partial");
+      await expect.poll(() => closed, { timeout: 5000 }).toBe(true);
+    });
+
+    it("P24: an ended relay's ports stay refused as destinations while they are held back", async () => {
+      const ask = vi.fn<Ask>(async () => ({ allow: false, reason: "asked" }));
+      await start({ ask, endedPortHold: { ms: 400, maxMs: 2000 } });
+      const ended = await open();
+      const front = net.createServer();
+      await new Promise<void>((done) => front.listen(0, "127.0.0.1", done));
+      cleanups.push(() => new Promise<void>((done) => { front.close(() => done()); }));
+      const frontPort = (front.address() as net.AddressInfo).port;
+      ended.registerPort(frontPort);
+      await ended.close();
+      const relay = await open();
+
+      const during: string[] = [];
+      for (const port of [ended.port, frontPort]) {
+        ask.mockClear();
+        const status = await refused(relay, `127.0.0.1:${port}`);
+        during.push(ask.mock.calls.length > 0 ? "asked" : status);
+      }
+
+      expect(relay.port).not.toBe(ended.port);
+      expect(during).toEqual([recorded("endedPortHop"), recorded("endedPortHop")]);
+      if (adapter.name === "today") return;
+      // The held port is still bound, and answers nothing.
+      const late = connect({ port: ended.port, proxyAuthorization: ended.proxyAuthorization }, "asked.example:443");
+      await expect.poll(() => late.socket.destroyed).toBe(true);
+      expect(late.output()).toBe("");
+      // Once the hold-back has passed the port is an ordinary loopback destination again.
+      await expect.poll(async () => {
+        ask.mockClear();
+        await refused(relay, `127.0.0.1:${ended.port}`);
+        return ask.mock.calls.length;
+      }, { timeout: 5000, interval: 100 }).toBeGreaterThan(0);
+    });
+
+    it.runIf(adapter.name === "new")("P24: a live process group extends the hold-back, up to the maximum", async () => {
+      let alive = true;
+      const groupAlive = vi.fn(() => alive);
+      const ask = vi.fn<Ask>(async () => ({ allow: false, reason: "asked" }));
+      startEgressRelayService({ ask, endedPortHold: { ms: 100, maxMs: 350, groupAlive } });
+      cleanups.push(stopEgressRelayService);
+      const first = await openEgressRelay(newToken());
+      const relay = await open();
+      const heldBack = async (port: number): Promise<boolean> => (await refused(relay, `127.0.0.1:${port}`)) === recorded("endedPortHop");
+
+      await first.close({ processGroup: 4242 });
+      await expect.poll(() => groupAlive.mock.calls.length, { timeout: 2000 }).toBeGreaterThanOrEqual(1);
+      expect(groupAlive).toHaveBeenCalledWith(4242);
+      expect(await heldBack(first.port)).toBe(true);
+      // The maximum ends it although the group still looks alive.
+      await expect.poll(() => heldBack(first.port), { timeout: 3000, interval: 50 }).toBe(false);
+
+      const second = await openEgressRelay(newToken());
+      alive = false;
+      await second.close({ processGroup: 4243 });
+      expect(await heldBack(second.port)).toBe(true);
+      await expect.poll(() => heldBack(second.port), { timeout: 3000, interval: 50 }).toBe(false);
+      expect(groupAlive).toHaveBeenCalledWith(4243);
+    });
+
+    it.runIf(adapter.name === "new")("ends the relay when its listener reports an error", async () => {
+      const created = vi.spyOn(http, "createServer");
+      await start({ ask: async () => true });
+      const relay = await open();
+      const server = created.mock.results.at(-1)?.value as http.Server;
+
+      expect(() => server.emit("error", Object.assign(new Error("accept failed"), { code: "EMFILE" }))).not.toThrow();
+
+      const late = connect(relay, "asked.example:443");
+      await expect.poll(() => late.socket.destroyed).toBe(true);
+      expect(late.output()).toBe("");
+    });
+
+    it("answers a request whose header is too large before closing", async () => {
+      await start({ ask: async () => true });
+      const relay = await open();
+
+      const client = send(relay.port, `CONNECT asked.example:443 HTTP/1.1\r\nHost: asked.example:443\r\nProxy-Authorization: ${relay.proxyAuthorization}\r\nX-Fill: ${"a".repeat(20_000)}\r\n\r\n`);
+      await expect.poll(client.output).toContain("\r\n\r\n");
+
+      expect(client.statusLine()).toBe(recorded("oversizedHeader"));
     });
 
     it("P9: a refusal is recorded under the invocation and reaches the deny monitor", async () => {
@@ -439,7 +635,12 @@ describe.each([today, next])("egress relay parity: $name relay", (adapter) => {
       const upstream = await startUpstream();
       const locked = await startUpstream(407);
       let target = upstream.port;
-      const router: EgressRelayRouter = async () => ({ routes: [{ kind: "http", host: "127.0.0.1", port: target, auth: { username: "alice", password: "example" } }] });
+      const router: EgressRelayRouter = async () => ({
+        routes: [
+          { kind: "http", host: "127.0.0.1", port: target, auth: { username: "alice", password: "example" } },
+          ...(target === upstream.port ? [] : [{ kind: "http" as const, host: "127.0.0.1", port: upstream.port }]),
+        ],
+      });
       await start({ ask: async () => true, router, resolve: resolverFor({ "asked.example": [PUBLIC] }) });
       const relay = await open();
 
@@ -450,6 +651,8 @@ describe.each([today, next])("egress relay parity: $name relay", (adapter) => {
       expect(upstream.connects[0]).not.toContain(relay.proxyAuthorization);
       expect(tunnel.output()).not.toContain("alice");
       expect(await refused(relay, "asked.example:443")).toBe(recorded("upstreamAuth"));
+      // P26: the refusal is final, the next route is not tried.
+      expect(upstream.connects).toHaveLength(1);
     });
 
     it("P12: a route that cannot be reached falls over to the next one", async () => {

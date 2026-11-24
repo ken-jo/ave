@@ -28,12 +28,13 @@ function dottedQuad(high: number, low: number): string {
   return `${high >> 8}.${high & 0xff}.${low >> 8}.${low & 0xff}`;
 }
 
-// The IPv4 address an IPv6 address is delivered to (mapped, compatible, 64:ff9b::/96, 2002::/16), if any.
+// The IPv4 address an IPv6 address is delivered to (mapped, translated, compatible, 64:ff9b::/96, 2002::/16), if any.
 function embeddedIPv4(address: string): string | undefined {
   const g = hextets(address);
   if (g === undefined) return undefined;
   const zeroPrefix = g.slice(0, 5).every((group) => group === 0);
   if (zeroPrefix && g[5] === 0xffff) return dottedQuad(g[6], g[7]);
+  if (g.slice(0, 4).every((group) => group === 0) && g[4] === 0xffff && g[5] === 0) return dottedQuad(g[6], g[7]);
   if (zeroPrefix && g[5] === 0 && (g[6] !== 0 || g[7] > 1)) return dottedQuad(g[6], g[7]);
   if (g[0] === 0x64 && g[1] === 0xff9b && g.slice(2, 6).every((group) => group === 0)) return dottedQuad(g[6], g[7]);
   if (g[0] === 0x2002) return dottedQuad(g[1], g[2]);
@@ -116,6 +117,11 @@ for (const address of ["fd20:ce::254", "fd00:c1::a9fe:a9fe", "fd00:42::42", "fd0
 function inList(list: net.BlockList, address: string): boolean {
   const family = net.isIP(address);
   return family !== 0 && list.check(address, family === 6 ? "ipv6" : "ipv4");
+}
+
+// A literal no destination may be: unspecified, link-local, multicast, broadcast or an instance-metadata endpoint. Loopback is not in it.
+export function isReservedAddress(address: string): boolean {
+  return [address, embeddedIPv4(address)].some((form) => form !== undefined && inList(RESERVED, form));
 }
 
 export function isLoopbackAddress(address: string): boolean {
