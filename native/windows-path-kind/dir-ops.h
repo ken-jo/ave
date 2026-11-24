@@ -602,7 +602,8 @@ inline int run(int argc, wchar_t** argv) {
   if (argc == 7 && mode == L"--dir-write-record") return run_record(argv + 2, true);
   if ((argc == 8 || argc == 9) && mode == L"--dir-remove-id") return run_recovery(argc - 2, argv + 2, RecoveryMode::kRemove);
   if (argc == 10 && mode == L"--dir-restore") return run_recovery(argc - 2, argv + 2, RecoveryMode::kRestorePart);
-  if (argc == 10 && mode == L"--dir-restore-target") return run_recovery(argc - 2, argv + 2, RecoveryMode::kRestoreTarget);
+  if ((argc == 10 || argc == 11) && mode == L"--dir-restore-target")
+    return run_recovery(argc - 2, argv + 2, RecoveryMode::kRestoreTarget);
   std::fputs("usage: ave-path-kind.exe --dir-<mode> <arguments>\n", stderr);
   return kExitUsage;
 }

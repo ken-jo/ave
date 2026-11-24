@@ -260,6 +260,44 @@ inline int stopped_copy(HANDLE directory, const std::wstring& name, HANDLE file,
 
 enum class RecoveryMode { kRemove, kRestorePart, kRestoreTarget };
 
+inline int recover_target(HANDLE directory, const std::wstring& hidden, const std::wstring& target,
+    const ExpectedFile& old, const wchar_t* replacement, const FILE_ID_INFO& writer) {
+  const bool retire_only = replacement != nullptr && std::wcscmp(replacement, L"retire") == 0;
+  const ACCESS_MASK read_access = FILE_READ_ATTRIBUTES | (old.content.empty() ? 0 : FILE_READ_DATA);
+  PinnedHandle published(INVALID_HANDLE_VALUE);
+  bool vacant = false;
+  bool committed = retire_only;
+  if (!retire_only) {
+    const NTSTATUS opening = open_relative(directory, target, read_access, FILE_SHARE_READ,
+      kOpenExisting, kOpenReparsePoint, published.value);
+    vacant = opening < 0 && missing(status_error(opening));
+    if (opening < 0 && !vacant) return done("left");
+    FILE_ID_INFO actual{};
+    committed = !vacant && replacement != nullptr && ordinary(published.value) && read_id(published.value, actual)
+      && same_id(actual, writer) && check_name(directory, target, writer) == NameIdentity::kMatches;
+  }
+  PinnedHandle source(INVALID_HANDLE_VALUE);
+  const NTSTATUS opening = open_relative(directory, hidden, read_access | DELETE, FILE_SHARE_READ,
+    kOpenExisting, kOpenReparsePoint, source.value);
+  if (opening < 0) {
+    if (!missing(status_error(opening))) return done("left");
+    const bool restored = published.value != INVALID_HANDLE_VALUE && matches(published.value, old)
+      && check_name(directory, target, old.id) == NameIdentity::kMatches;
+    return done(committed || restored ? "resolved" : "left");
+  }
+  if (!matches(source.value, old) || check_name(directory, hidden, old.id) != NameIdentity::kMatches) return done("left");
+  if (committed) {
+    if (delete_on_close(source.value).error != ERROR_SUCCESS) return done("left");
+    CloseHandle(source.value);
+    source.value = INVALID_HANDLE_VALUE;
+    return done(check_name(directory, hidden, old.id) == NameIdentity::kAbsent ? "resolved" : "left");
+  }
+  if (!vacant || rename_into(source.value, directory, target, false).error != ERROR_SUCCESS) return done("left");
+  if (check_name(directory, target, old.id) == NameIdentity::kMatches) return done("resolved");
+  (void)rename_into(source.value, directory, hidden, false);
+  return done("left");
+}
+
 inline int run_recovery(int argc, wchar_t** argv, RecoveryMode mode) {
   const bool restore = mode != RecoveryMode::kRemove;
   const std::wstring name(argv[3]);
@@ -270,22 +308,21 @@ inline int run_recovery(int argc, wchar_t** argv, RecoveryMode mode) {
   ExpectedFile expected;
   if (!parse_id(argv[id], argv[id + 1], expected.id)
       || (argc > id + 2 && !parse_fingerprint(argv[id + 2], mode == RecoveryMode::kRestorePart, expected))) return kExitUsage;
+  const wchar_t* replacement = mode == RecoveryMode::kRestoreTarget && argc > id + 3 ? argv[id + 3] : nullptr;
+  FILE_ID_INFO writer{};
+  if (replacement != nullptr && std::wcscmp(replacement, L"retire") != 0
+      && (!parse_id(argv[id], replacement, writer) || same_id(writer, expected.id))) return kExitUsage;
   HeldDirectory directory;
   const int status = hold_directory(argv[0], argv[1], argv[2], "from", directory);
   if (status != 0) return status;
   if (!proceed("ready")) return done("cancelled");
+  if (mode == RecoveryMode::kRestoreTarget)
+    return recover_target(directory.handle(), name, part_name, expected, replacement, writer);
   HANDLE opened = INVALID_HANDLE_VALUE;
-  const ACCESS_MASK read_access = mode == RecoveryMode::kRestoreTarget && expected.content.empty() ? FILE_READ_ATTRIBUTES : FILE_READ_DATA | FILE_READ_ATTRIBUTES;
-  const NTSTATUS opening = open_relative(directory.handle(), name, read_access | DELETE,
+  const NTSTATUS opening = open_relative(directory.handle(), name, FILE_READ_DATA | FILE_READ_ATTRIBUTES | DELETE,
     FILE_SHARE_READ, kOpenExisting, kOpenReparsePoint, opened);
   if (opening < 0) {
-    if (!missing(status_error(opening))) return done("left");
-    if (mode != RecoveryMode::kRestoreTarget) return done("absent");
-    if (open_relative(directory.handle(), part_name, read_access, FILE_SHARE_READ, kOpenExisting, kOpenReparsePoint, opened) < 0)
-      return done("left");
-    const PinnedHandle target(opened);
-    return done(matches(target.value, expected) &&
-      check_name(directory.handle(), part_name, expected.id) == NameIdentity::kMatches ? "restored" : "left");
+    return done(missing(status_error(opening)) ? "absent" : "left");
   }
   PinnedHandle source(opened);
   if (!matches(source.value, expected)) return done("left");
@@ -293,14 +330,6 @@ inline int run_recovery(int argc, wchar_t** argv, RecoveryMode mode) {
     const Retirement result = retire(directory.handle(), name, source.value, expected.id);
     if (result.removed) return done("removed");
     return done(result.original == NameIdentity::kAbsent ? "absent" : result.leftover.c_str());
-  }
-
-  if (mode == RecoveryMode::kRestoreTarget) {
-    if (check_name(directory.handle(), name, expected.id) != NameIdentity::kMatches ||
-        rename_into(source.value, directory.handle(), part_name, false).error != ERROR_SUCCESS) return done("left");
-    if (check_name(directory.handle(), part_name, expected.id) == NameIdentity::kMatches) return done("restored");
-    (void)rename_into(source.value, directory.handle(), name, false);
-    return done("left");
   }
 
   HANDLE created = INVALID_HANDLE_VALUE;

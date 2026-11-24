@@ -806,7 +806,7 @@ describe("a copy whose helper says it left its temporary file", () => {
     const journal = { hidden: HIDDEN, write, resolved };
     const run = follow(files.copy(from, "staged", to, "report.pdf", ".0123.part", () => true, UNSTOPPED, journal));
     await flush();
-    expect(write).toHaveBeenCalledExactlyOnceWith({ dev: 1n, ino: 3n, birthtimeNs: 15n });
+    expect(write).toHaveBeenCalledExactlyOnceWith({ dev: 1n, ino: 3n, birthtimeNs: 15n }, { dev: 1n, ino: 2n });
     expect(moveAuthorized).toBe(false);
     finishWrite();
     await flush();

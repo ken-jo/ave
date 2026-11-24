@@ -290,9 +290,9 @@ async function publish(root: BrowserDownloadStagingRoot, name: string, destinati
   try {
     copied = await refusingAsStaging(() => root.files.copy(root, name, destination.folder, destination.name, part, proceed, cancel, {
       hidden,
-      write: async (file) => {
+      write: async (file, writer) => {
         record = await writePartRecord(root, {
-          folder: destination.folder, part, target: destination.name, session,
+          folder: destination.folder, part, target: destination.name, session, writer,
           at: { name: hidden, identity: { kind: "fileId", file } },
         });
       },
@@ -339,6 +339,7 @@ interface PartRecord {
   readonly at: LeftPart;
   readonly target?: string;
   readonly session?: string;
+  readonly writer?: FileIdentity;
 }
 
 const PART_RECORD = /^[0-9a-f]{32}\.cleanup\.json$/u;
@@ -406,6 +407,7 @@ async function writePartRecord(root: BrowserDownloadStagingRoot, record: PartRec
     part: record.part,
     target: record.target,
     session: record.session,
+    writer: record.writer,
     at: record.at.name,
     identity: known,
   }, (_key, value: unknown) => typeof value === "bigint" ? value.toString() : value);
@@ -433,7 +435,8 @@ function readPartRecord(text: string, name: string): PartRecord | null {
     decimal(size) && decimal(mtimeNs) && digest(head) && digest(tail) ? { size: BigInt(size), mtimeNs: BigInt(mtimeNs), head, tail } : null;
   if ((!exactly(value, ["folder", "part", "at", "identity"]) &&
        !exactly(value, ["folder", "part", "at", "identity", "target"]) &&
-       !exactly(value, ["folder", "part", "at", "identity", "target", "session"])) || !exactly(value.folder, ["path", "dev", "ino"])) return null;
+       !exactly(value, ["folder", "part", "at", "identity", "target", "session"]) &&
+       !exactly(value, ["folder", "part", "at", "identity", "target", "session", "writer"])) || !exactly(value.folder, ["path", "dev", "ino"])) return null;
   const { folder, part, at, identity, target, session } = value;
   if (typeof folder.path !== "string" || !isAbsolute(folder.path) || !decimal(folder.dev) || !decimal(folder.ino)) return null;
   if (typeof part !== "string" || !PART_NAME.test(part) || typeof at !== "string" || (at !== part && !MOVED_ASIDE_NAME.test(at))) return null;
@@ -472,17 +475,29 @@ function readPartRecord(text: string, name: string): PartRecord | null {
         known.kind !== "fileId" || known.file.birthtimeNs === undefined) return null;
   } else if (target !== undefined && (known.kind !== "helper" ||
       (known.observed !== null && (known.observed.file.dev !== known.dev || known.observed.file.ino !== known.ino)))) return null;
-  return { folder: { path: folder.path, dev: BigInt(folder.dev), ino: BigInt(folder.ino) }, part, at: { name: at, identity: known }, target, session };
+  let writer: FileIdentity | undefined;
+  if ("writer" in value) {
+    const raw = value.writer;
+    if (session === undefined || known.kind !== "fileId" ||
+        (!exactly(raw, ["dev", "ino"]) && !exactly(raw, ["dev", "ino", "birthtimeNs"])) ||
+        !decimal(raw.dev) || !fileInode(raw.ino) || ("birthtimeNs" in raw && !decimal(raw.birthtimeNs))) return null;
+    writer = { dev: BigInt(raw.dev), ino: BigInt(raw.ino), ...(decimal(raw.birthtimeNs) ? { birthtimeNs: BigInt(raw.birthtimeNs) } : {}) };
+    if (writer.dev !== known.file.dev || writer.ino === known.file.ino) return null;
+  }
+  return { folder: { path: folder.path, dev: BigInt(folder.dev), ino: BigInt(folder.ino) }, part, at: { name: at, identity: known }, target, session, writer };
 }
 
 // Retry through the file backend. The decoded record never gives the host authority to open an entry by path.
-async function removeRecordedPart(root: BrowserDownloadStagingRoot, { folder, part, at, target }: PartRecord) {
+async function removeRecordedPart(root: BrowserDownloadStagingRoot, { folder, part, at, target, writer }: PartRecord) {
   if (target === undefined) return root.files.recover(folder, at.name, part, at.identity);
   const observed = at.identity.kind === "helper" ? at.identity.observed : null;
   const file = at.identity.kind === "fileId" ? at.identity.file : observed?.file;
+  const replacement = at.identity.kind === "helper" && at.identity.verdict === "remove-failed" ? "retire" : writer;
   if (file !== undefined) {
     try {
-      if (await root.files.recoverTarget(folder, at.name, target, file, observed?.content) === "restored") return { outcome: "restored" as const };
+      if (await root.files.recoverTarget(folder, at.name, target, file, observed?.content, replacement) === "resolved") {
+        return { outcome: "resolved" as const };
+      }
     } catch (error) {
       if (error instanceof HeldFileHelperStalledError && error.stillRunning) throw error;
       log.warn({ path: join(folder.path, target), error: (error as Error).message }, "the previous download target could not be recovered");
@@ -495,7 +510,7 @@ async function finishRecord(root: BrowserDownloadStagingRoot, name: string): Pro
   try {
     return await root.files.remove(root, name, proceedAlways, UNSTOPPED) === "removed";
   } catch (error) {
-    log.warn({ path: join(root.path, name), error: (error as Error).message }, "a resolved browser download record could not be removed");
+    log.warn({ path: join(root.path, name), error: (error as Error).message }, "a browser download cleanup record could not be removed");
     return false;
   }
 }

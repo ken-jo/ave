@@ -428,7 +428,44 @@ static int hidden_name(const char *name) {
 
 enum recovery_mode { RECOVER_REMOVE, RECOVER_RESTORE_PART, RECOVER_RESTORE_TARGET };
 
-static int run_recovery(char **argv, enum recovery_mode mode, int with_fingerprint) {
+static int entry_absent(int directory, const char *name) {
+  struct stat entry;
+  return fstatat(directory, name, &entry, AT_SYMLINK_NOFOLLOW) != 0 && errno == ENOENT;
+}
+
+static int recover_target(int directory, const char *hidden, const char *target, uint64_t dev, uint64_t ino,
+    uint64_t birth, const char *expected, const char *replacement, uint64_t writer) {
+  const int retire_only = replacement != NULL && strcmp(replacement, "retire") == 0;
+  const int flags = (expected == NULL ? O_EVTONLY : O_RDONLY) | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC;
+  int published = -1;
+  int vacant = 0;
+  int committed = retire_only;
+  if (!retire_only) {
+    published = openat(directory, target, flags);
+    vacant = published < 0 && errno == ENOENT;
+    if (published < 0 && !vacant) return done("left");
+    committed = published >= 0 && replacement != NULL && matches_file(published, dev, writer, NULL) &&
+      names_file(directory, target, published);
+  }
+  const int fd = openat(directory, hidden, flags);
+  if (fd < 0) {
+    if (errno != ENOENT) return done("left");
+    const int restored = published >= 0 && matches_file(published, dev, ino, &birth) &&
+      (expected == NULL || fingerprint_matches(published, expected)) && names_file(directory, target, published);
+    return done(committed || restored ? "resolved" : "left");
+  }
+  if (!matches_file(fd, dev, ino, &birth) || (expected != NULL && !fingerprint_matches(fd, expected)) ||
+      !names_file(directory, hidden, fd)) return done("left");
+  if (committed) {
+    return done(unlinkat(directory, hidden, 0) == 0 && entry_absent(directory, hidden) ? "resolved" : "left");
+  }
+  if (!vacant || renameatx_np(directory, hidden, directory, target, RENAME_EXCL) != 0) return done("left");
+  if (names_file(directory, target, fd)) return done("resolved");
+  (void)renameatx_np(directory, target, directory, hidden, RENAME_EXCL);
+  return done("left");
+}
+
+static int run_recovery(char **argv, enum recovery_mode mode, int with_fingerprint, const char *replacement) {
   const int restore = mode != RECOVER_REMOVE;
   const char *name = argv[3];
   const char *part = restore ? argv[4] : NULL;
@@ -438,6 +475,9 @@ static int run_recovery(char **argv, enum recovery_mode mode, int with_fingerpri
   if (!plain_name(name) || (restore && (!plain_name(part) || strcmp(name, part) == 0)) ||
       !parse_u64(argv[file_arg], &dev) || !parse_u64(argv[file_arg + 1], &ino)) return EXIT_USAGE;
   if (mode == RECOVER_RESTORE_TARGET && !hidden_name(name)) return EXIT_USAGE;
+  uint64_t writer = 0;
+  if (replacement != NULL && strcmp(replacement, "retire") != 0 &&
+      (!parse_u64(replacement, &writer) || writer == ino)) return EXIT_USAGE;
   if (with_fingerprint) {
     const char *token = argv[file_arg + 2];
     const char *colon = strchr(token, ':');
@@ -453,23 +493,12 @@ static int run_recovery(char **argv, enum recovery_mode mode, int with_fingerpri
   const int status = hold_directory(argv[0], argv[1], argv[2], "from", &directory);
   if (status != 0) return status;
   if (!proceed("ready")) return done("cancelled");
-  const int flags = O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC;
-  const int fd = mode == RECOVER_RESTORE_TARGET && expected == NULL ? openat(directory, name, O_EVTONLY | flags)
-    : open_regular(directory, name);
+  if (mode == RECOVER_RESTORE_TARGET) return recover_target(directory, name, part, dev, ino, birth, expected, replacement, writer);
+  const int fd = open_regular(directory, name);
   if (fd < 0) {
-    if (errno != ENOENT) return done("left");
-    if (mode != RECOVER_RESTORE_TARGET) return done("absent");
-    const int target = openat(directory, part, (expected == NULL ? O_EVTONLY : O_RDONLY) | flags);
-    return done(target >= 0 && matches_file(target, dev, ino, &birth) &&
-      (expected == NULL || fingerprint_matches(target, expected)) && names_file(directory, part, target) ? "restored" : "left");
+    return done(errno == ENOENT ? "absent" : "left");
   }
   if (!matches_file(fd, dev, ino, with_fingerprint ? &birth : NULL) || (expected != NULL && !fingerprint_matches(fd, expected))) return done("left");
-  if (mode == RECOVER_RESTORE_TARGET) {
-    if (!names_file(directory, name, fd) || renameatx_np(directory, name, directory, part, RENAME_EXCL) != 0) return done("left");
-    if (names_file(directory, part, fd)) return done("restored");
-    (void)renameatx_np(directory, part, directory, name, RENAME_EXCL);
-    return done("left");
-  }
   struct left_part left = { .observed = -1 };
   if (restore) {
     const enum restore_result restored = copy_held_source(directory, fd, part, expected);
@@ -794,6 +823,15 @@ static int run_copy(char **argv) {
   if (failure == 0 && fsync(copy) != 0) failure = errno;
   if (close(copy) != 0 && failure == 0) failure = errno;
   if (failure != 0) return abandon(to, part, &written, failure);
+  if (old >= 0) {
+    struct stat final;
+    if (fstat(written.fd, &final) != 0) return abandon(to, part, &written, errno);
+    if (final.st_dev != identity.st_dev || final.st_ino == old_identity.st_ino) return abandon(to, part, &written, EIO);
+    if (final.st_ino != identity.st_ino) {
+      printf("copy-id %" PRIu64 " %" PRIu64 "\n", (uint64_t)final.st_dev, (uint64_t)final.st_ino);
+      fflush(stdout);
+    }
+  }
   // The rename below is the commit point: the caller answers here whether the copy is still wanted.
   if (!proceed("copied")) return abandon(to, part, &written, 0);
   if (!names_file(to, part, written.fd)) {
@@ -912,9 +950,10 @@ int main(int argc, char **argv) {
   if (argc == 5 && strcmp(argv[1], "--dir-list-records") == 0) return run_records(argv + 2);
   if (argc == 7 && strcmp(argv[1], "--dir-read") == 0) return run_record(argv + 2, 0);
   if (argc == 7 && strcmp(argv[1], "--dir-write-record") == 0) return run_record(argv + 2, 1);
-  if ((argc == 8 || argc == 9) && strcmp(argv[1], "--dir-remove-id") == 0) return run_recovery(argv + 2, RECOVER_REMOVE, argc == 9);
-  if (argc == 10 && strcmp(argv[1], "--dir-restore") == 0) return run_recovery(argv + 2, RECOVER_RESTORE_PART, 1);
-  if (argc == 10 && strcmp(argv[1], "--dir-restore-target") == 0) return run_recovery(argv + 2, RECOVER_RESTORE_TARGET, 1);
+  if ((argc == 8 || argc == 9) && strcmp(argv[1], "--dir-remove-id") == 0) return run_recovery(argv + 2, RECOVER_REMOVE, argc == 9, NULL);
+  if (argc == 10 && strcmp(argv[1], "--dir-restore") == 0) return run_recovery(argv + 2, RECOVER_RESTORE_PART, 1, NULL);
+  if ((argc == 10 || argc == 11) && strcmp(argv[1], "--dir-restore-target") == 0)
+    return run_recovery(argv + 2, RECOVER_RESTORE_TARGET, 1, argc == 11 ? argv[10] : NULL);
   fputs("usage: ave-dir-ops --dir-rename|--dir-copy|--dir-remove|--dir-sweep <arguments>\n", stderr);
   return EXIT_USAGE;
 }

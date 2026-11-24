@@ -302,10 +302,13 @@ async function recoveryTests() {
       writeFileSync(target, "old bytes");
       const old = snapshot(target);
       const birth = old[2].split(":")[0];
-      const saved = Buffer.from(JSON.stringify({ hidden, old, session: "download-session" })).toString("hex");
+      let saved;
+      let writer;
       const result = await runCopy([`stop-${boundary}`, "--dir-copy", ...held(dir), "source", ...held(dir), "target", part, hidden], (line, stdin) => {
         if (line === "ready") stdin.write("c");
+        if (line.startsWith("writing ")) writer = line.split(" ").at(-1);
         if (line === "copied") {
+          saved = Buffer.from(JSON.stringify({ hidden, old, writer })).toString("hex");
           expect(["--dir-write-record", ...held(root), record, saved], ["ready", "written"]);
           stdin.end("c");
         }
@@ -321,18 +324,14 @@ async function recoveryTests() {
       } else {
         assert.deepEqual(snapshot(join(dir, hidden)), old);
       }
-      const occupied = boundary === "after-commit";
-      expect(["--dir-restore-target", ...held(dir), hidden, "target", old[0], old[1], `${birth}:-`],
-        ["ready", occupied ? "left" : "restored"]);
-      if (occupied) {
+      expect(["--dir-restore-target", ...held(dir), hidden, "target", old[0], old[1], `${birth}:-`, writer],
+        ["ready", "resolved"]);
+      if (boundary === "after-commit") {
         assert.equal(readFileSync(target, "utf8"), "new bytes");
-        assert.deepEqual(snapshot(join(dir, hidden)), old);
-        expect(["--dir-sweep", ...held(root), "keep-records"], ["ready", "swept 0"]);
-        expect(["--dir-read", ...held(root), record, "8192"], ["ready", `record ${saved}`]);
       } else {
         assert.deepEqual(snapshot(target), old);
-        assert.ok(!existsSync(join(dir, hidden)));
       }
+      assert.ok(!existsSync(join(dir, hidden)));
     });
   }
   for (const fault of ["query-failure", "zero"]) {

@@ -537,33 +537,38 @@ describe("a staged download", () => {
     expect(await restarted.files.listRecords(restarted)).toHaveLength(occupied ? 1 : 0);
   });
 
-  it.each(["before move", "after move", "after commit"] as const)("restarts after a stopped replacement: %s", async (boundary) => {
+  it.each(["before move", "after move", "after commit", "after retirement", "competing target"] as const)("restarts after a stopped replacement: %s", async (boundary) => {
     const prepared = prepare();
     const chosen = join(home, "chosen");
     mkdirSync(chosen);
     const target = join(chosen, "report.pdf");
     writeFileSync(target, "old bytes");
-    const original = statSync(target, { bigint: true });
     const windows = process.platform === "win32";
-    const [facts] = windows ? JSON.parse(execFileSync(WINDOWS_PATH_KIND, ["--pin", target], { encoding: "utf8" })) : [];
-    const identity = {
-      dev: windows ? BigInt(facts.volumeSerial) : original.dev,
-      ino: windows ? BigInt(facts.fileId) : original.ino,
-      birthtimeNs: original.birthtimeNs + (windows ? 11644473600000000000n : 0n),
+    const fileId = (path: string) => {
+      const info = statSync(path, { bigint: true });
+      const [facts] = windows ? JSON.parse(execFileSync(WINDOWS_PATH_KIND, ["--pin", path], { encoding: "utf8" })) : [];
+      return { dev: windows ? BigInt(facts.volumeSerial) : info.dev, ino: windows ? BigInt(facts.fileId) : info.ino };
     };
+    const original = statSync(target, { bigint: true });
+    const identity = { ...fileId(target), birthtimeNs: original.birthtimeNs + (windows ? 11644473600000000000n : 0n) };
     let hidden = "";
+    let partPath = "";
+    let writer: ReturnType<typeof fileId> | undefined;
+    const committed = boundary === "after commit" || boundary === "after retirement";
     const root = withFiles(acrossVolumes(prepared), () => ({
       copy: async (_from, _name, _to, _target, part, _proceed, _stop, journal) => {
         if (!journal) throw new Error("missing write-ahead record");
         hidden = journal.hidden;
-        await journal.write(identity);
-        const [record = ""] = await prepared.files.listRecords(prepared);
-        expect(JSON.parse(readFileSync(join(prepared.path, record), "utf8"))).toMatchObject({
-          session: part.slice(1, -5), at: hidden, target: "report.pdf",
-          identity: { dev: String(identity.dev), ino: String(identity.ino), birthtimeNs: String(identity.birthtimeNs) },
-        });
-        if (boundary !== "before move") moveAside(target, join(chosen, hidden));
-        if (boundary === "after commit") writeFileSync(target, "new bytes");
+        partPath = join(chosen, part);
+        writeFileSync(partPath, "new bytes");
+        writer = fileId(partPath);
+        await journal.write(identity, writer);
+        if (boundary !== "before move") {
+          moveAside(target, join(chosen, hidden));
+        }
+        if (committed) moveAside(partPath, target);
+        if (boundary === "after retirement") removeEntry(join(chosen, hidden));
+        if (boundary === "competing target") writeFileSync(target, "competing bytes");
         throw new Error("copy process stopped");
       },
     }));
@@ -578,16 +583,21 @@ describe("a staged download", () => {
     expect(await done).toEqual({ state: "interrupted", cleanup: "removed" });
     const records = await prepared.files.listRecords(prepared);
     expect(records).toHaveLength(1);
+    expect(JSON.parse(readFileSync(join(prepared.path, records[0] ?? ""), "utf8"))).toMatchObject({
+      session: basename(partPath).slice(1, -5), at: hidden, target: "report.pdf",
+      identity: { dev: String(identity.dev), ino: String(identity.ino), birthtimeNs: String(identity.birthtimeNs) },
+      writer: { dev: String(writer?.dev), ino: String(writer?.ino) },
+    });
 
     const restarted = prepare();
     await sweepBrowserDownloadStaging(restarted);
-    if (boundary === "after commit") {
-      expect(readFileSync(target, "utf8")).toBe("new bytes");
+    if (boundary === "competing target") {
+      expect(readFileSync(target, "utf8")).toBe("competing bytes");
       expect(statSync(join(chosen, hidden), { bigint: true }).ino).toBe(original.ino);
       expect(await restarted.files.listRecords(restarted)).toEqual(records);
     } else {
-      expect(readFileSync(target, "utf8")).toBe("old bytes");
-      expect(statSync(target, { bigint: true }).ino).toBe(original.ino);
+      expect(readFileSync(target, "utf8")).toBe(committed ? "new bytes" : "old bytes");
+      if (!committed) expect(statSync(target, { bigint: true }).ino).toBe(original.ino);
       expect(existsSync(join(chosen, hidden))).toBe(false);
       expect(await restarted.files.listRecords(restarted)).toEqual([]);
     }
