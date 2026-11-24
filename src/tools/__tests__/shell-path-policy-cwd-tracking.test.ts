@@ -360,7 +360,7 @@ describe("shell path policy — working directory tracking", () => {
     });
 
 
-    // A removal that failed a recorded destination fails a later cd iff it also contains the target,
+    // For lexical, link-free paths, a removal that failed a recorded destination fails a later cd iff it also contains the target,
     // possible iff the deepest directory containing both does not contain the fault path cwd.
     it.each([
       ["REL-anc-ancq", "cd sub/s2; cd \"$R\"; ls", null],
@@ -381,8 +381,9 @@ describe("shell path policy — working directory tracking", () => {
       expect(verdict(command)).toBe(kind);
     });
 
-    it("keeps a fault path ended where it leaves the starting directory, before a recorded ancestor (ANC4)", () => {
+    it("keeps a fault path ended where it leaves the starting directory (known gap, owner carve-out (y)): ANC4, Y1", () => {
       expect(verdict("cd \"$R/sub/s2\"; cd ..; cd \"$R/sub\"; touch ../x")).toBeNull();
+      expect(verdict("cd sub; cd ..; touch x")).toBeNull();
     });
 
     it("keeps condition ladders without a cd as they are on main", () => {
