@@ -1,0 +1,394 @@
+#pragma once
+
+#include <bcrypt.h>
+#include <sddl.h>
+
+#pragma comment(lib, "bcrypt.lib")
+#pragma comment(lib, "advapi32.lib")
+
+namespace dir_ops {
+
+#if defined(AVE_TEST_DIR_RECOVERY)
+DWORD test_restore_write_result(DWORD result);
+FileFailure test_isolation_result(HANDLE file, HANDLE directory, const std::wstring& aside);
+#endif
+
+constexpr size_t kRecordLimit = 8192;
+constexpr size_t kDigestSpan = 64 * 1024;
+constexpr char kHex[] = "0123456789abcdef";
+constexpr ULONGLONG kTicksToNs = 100;
+
+inline std::string hex_bytes(const BYTE* bytes, size_t length) {
+  std::string result;
+  result.reserve(length * 2);
+  for (size_t index = 0; index < length; ++index) {
+    result += kHex[bytes[index] >> 4];
+    result += kHex[bytes[index] & 15];
+  }
+  return result;
+}
+
+inline int hex_digit(wchar_t digit) {
+  if (digit >= L'0' && digit <= L'9') return digit - L'0';
+  if (digit >= L'a' && digit <= L'f') return digit - L'a' + 10;
+  return -1;
+}
+
+inline bool decode_hex(const std::wstring& text, BYTE* bytes, size_t length) {
+  if (text.size() != length * 2) return false;
+  for (size_t index = 0; index < length; ++index) {
+    const int high = hex_digit(text[2 * index]);
+    const int low = hex_digit(text[2 * index + 1]);
+    if (high < 0 || low < 0) return false;
+    bytes[index] = static_cast<BYTE>(16 * high + low);
+  }
+  return true;
+}
+
+inline bool missing(DWORD error) {
+  return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND;
+}
+
+inline bool read_id(HANDLE file, FILE_ID_INFO& id) {
+  if (!GetFileInformationByHandleEx(file, FileIdInfo, &id, sizeof(id))) return false;
+  const FILE_ID_128 empty{};
+  if (std::memcmp(&id.FileId, &empty, sizeof(empty)) != 0) return true;
+  SetLastError(ERROR_NOT_SUPPORTED);
+  return false;
+}
+
+inline bool same_id(const FILE_ID_INFO& first, const FILE_ID_INFO& second) {
+  return first.VolumeSerialNumber == second.VolumeSerialNumber
+    && std::memcmp(&first.FileId, &second.FileId, sizeof(first.FileId)) == 0;
+}
+
+inline std::string id_text(const FILE_ID_INFO& id, char separator) {
+  BYTE big_endian[sizeof(id.FileId.Identifier)];
+  for (size_t index = 0; index < sizeof(big_endian); ++index) {
+    big_endian[index] = id.FileId.Identifier[sizeof(big_endian) - 1 - index];
+  }
+  return std::to_string(id.VolumeSerialNumber) + separator + hex_bytes(big_endian, sizeof(big_endian));
+}
+
+inline bool parse_id(const wchar_t* volume, const wchar_t* number, FILE_ID_INFO& id) {
+  BYTE big_endian[sizeof(id.FileId.Identifier)];
+  if (!parse_number(volume, id.VolumeSerialNumber) || !decode_hex(number, big_endian, sizeof(big_endian))) return false;
+  for (size_t index = 0; index < sizeof(big_endian); ++index) {
+    id.FileId.Identifier[index] = big_endian[sizeof(big_endian) - 1 - index];
+  }
+  return true;
+}
+
+inline bool ordinary(HANDLE file) {
+  FILE_ATTRIBUTE_TAG_INFO tag{};
+  return GetFileInformationByHandleEx(file, FileAttributeTagInfo, &tag, sizeof(tag))
+    && (tag.FileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) == 0;
+}
+
+enum class NameIdentity { kAbsent, kMatches, kUnverified };
+
+#if defined(AVE_TEST_DIR_RECOVERY)
+NameIdentity test_commit_result(NameIdentity result);
+#endif
+
+inline NameIdentity check_name(HANDLE directory, const std::wstring& name, const FILE_ID_INFO& wanted) {
+  HANDLE opened = INVALID_HANDLE_VALUE;
+  const NTSTATUS status = open_relative(directory, name, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+    kOpenExisting, kOpenReparsePoint, opened);
+  if (status < 0) return missing(status_error(status)) ? NameIdentity::kAbsent : NameIdentity::kUnverified;
+  const PinnedHandle entry(opened);
+  FILE_ID_INFO actual{};
+  return ordinary(entry.value) && read_id(entry.value, actual) && same_id(actual, wanted)
+    ? NameIdentity::kMatches : NameIdentity::kUnverified;
+}
+
+inline bool seek_to(HANDLE file, LONGLONG offset) {
+  LARGE_INTEGER position{};
+  position.QuadPart = offset;
+  return SetFilePointerEx(file, position, nullptr, FILE_BEGIN) != 0;
+}
+
+inline bool hash_span(HANDLE file, LONGLONG offset, DWORD length, std::string& digest) {
+  if (!seek_to(file, offset)) return false;
+  std::vector<BYTE> data(length == 0 ? 1 : length);
+  DWORD used = 0;
+  while (used < length) {
+    DWORD count = 0;
+    if (!ReadFile(file, data.data() + used, length - used, &count, nullptr) || count == 0) return false;
+    used += count;
+  }
+  BCRYPT_ALG_HANDLE algorithm = nullptr;
+  if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) < 0) return false;
+  BYTE bytes[32];
+  const NTSTATUS status = BCryptHash(algorithm, nullptr, 0, data.data(), length, bytes, sizeof(bytes));
+  BCryptCloseAlgorithmProvider(algorithm, 0);
+  if (status < 0) return false;
+  digest = hex_bytes(bytes, sizeof(bytes));
+  return true;
+}
+
+inline bool time_ns(LARGE_INTEGER ticks, ULONGLONG& ns) {
+  if (ticks.QuadPart < 0 || static_cast<ULONGLONG>(ticks.QuadPart) > ULLONG_MAX / kTicksToNs) return false;
+  ns = static_cast<ULONGLONG>(ticks.QuadPart) * kTicksToNs;
+  return true;
+}
+
+inline bool fingerprint(HANDLE file, const FILE_BASIC_INFO& before, std::string& result) {
+  LARGE_INTEGER size{};
+  ULONGLONG mtime = 0;
+  if (!time_ns(before.LastWriteTime, mtime) || !GetFileSizeEx(file, &size) || size.QuadPart < 0) return false;
+  const DWORD span = size.QuadPart < static_cast<LONGLONG>(kDigestSpan)
+    ? static_cast<DWORD>(size.QuadPart) : static_cast<DWORD>(kDigestSpan);
+  std::string head;
+  std::string tail;
+  if (!hash_span(file, 0, span, head) || !hash_span(file, size.QuadPart - span, span, tail)) return false;
+  FILE_BASIC_INFO after{};
+  LARGE_INTEGER size_after{};
+  if (!GetFileInformationByHandleEx(file, FileBasicInfo, &after, sizeof(after)) || !GetFileSizeEx(file, &size_after)
+      || before.ChangeTime.QuadPart != after.ChangeTime.QuadPart || before.LastWriteTime.QuadPart != after.LastWriteTime.QuadPart
+      || size.QuadPart != size_after.QuadPart) return false;
+  result = std::to_string(size.QuadPart) + ":" + std::to_string(mtime) + ":" + head + ":" + tail;
+  return true;
+}
+
+struct ExpectedFile {
+  FILE_ID_INFO id{};
+  bool check_birth = false;
+  ULONGLONG birth = 0;
+  std::string content;
+};
+
+inline bool parse_fingerprint(const std::wstring& token, bool restore, ExpectedFile& expected) {
+  const size_t first = token.find(L':');
+  if (first == std::wstring::npos || !parse_number(token.substr(0, first).c_str(), expected.birth)) return false;
+  expected.check_birth = true;
+  const auto body = token.substr(first + 1);
+  if (!restore && body == L"-") return true;
+  const size_t size_end = body.find(L':');
+  if (size_end == std::wstring::npos) return false;
+  const size_t time_end = body.find(L':', size_end + 1);
+  if (time_end == std::wstring::npos || body.size() != time_end + 130 || body[time_end + 65] != L':') return false;
+  ULONGLONG number = 0;
+  BYTE digest[32];
+  if (!parse_number(body.substr(0, size_end).c_str(), number)
+      || !parse_number(body.substr(size_end + 1, time_end - size_end - 1).c_str(), number)
+      || !decode_hex(body.substr(time_end + 1, 64), digest, sizeof(digest))
+      || !decode_hex(body.substr(time_end + 66), digest, sizeof(digest))) return false;
+  for (const wchar_t digit : body) expected.content += static_cast<char>(digit);
+  return true;
+}
+
+inline bool matches(HANDLE file, const ExpectedFile& expected) {
+  FILE_ID_INFO actual{};
+  if (!ordinary(file) || !read_id(file, actual) || !same_id(actual, expected.id)) return false;
+  if (!expected.check_birth) return true;
+  FILE_BASIC_INFO basic{};
+  ULONGLONG birth = 0;
+  if (!GetFileInformationByHandleEx(file, FileBasicInfo, &basic, sizeof(basic))
+      || !time_ns(basic.CreationTime, birth) || birth != expected.birth) return false;
+  std::string content;
+  return expected.content.empty() || (fingerprint(file, basic, content) && content == expected.content);
+}
+
+inline std::string snapshot(HANDLE file, const FILE_ID_INFO& id) {
+  FILE_BASIC_INFO basic{};
+  ULONGLONG birth = 0;
+  std::string content;
+  if (!GetFileInformationByHandleEx(file, FileBasicInfo, &basic, sizeof(basic))
+      || !time_ns(basic.CreationTime, birth) || !fingerprint(file, basic, content)) return "-";
+  return id_text(id, ':') + ":" + std::to_string(birth) + ":" + content;
+}
+
+struct Retirement {
+  NameIdentity original;
+  bool removed = false;
+  std::string leftover = "left";
+};
+
+inline Retirement retire(HANDLE directory, const std::wstring& name, HANDLE file, const FILE_ID_INFO& id) {
+  Retirement result{check_name(directory, name, id)};
+  if (result.original != NameIdentity::kMatches) return result;
+  BYTE random[16];
+  if (BCryptGenRandom(nullptr, random, sizeof(random), BCRYPT_USE_SYSTEM_PREFERRED_RNG) < 0) return result;
+  const std::string hidden = "." + hex_bytes(random, sizeof(random)) + ".removing";
+  const std::wstring aside(hidden.begin(), hidden.end());
+  // No plain rename fallback. The file is held without delete sharing across isolation, verification and disposition.
+#if defined(AVE_TEST_DIR_RECOVERY)
+  const FileFailure isolation = test_isolation_result(file, directory, aside);
+#else
+  const FileFailure isolation = rename_into(file, directory, aside, false);
+#endif
+  if (isolation.error != ERROR_SUCCESS) return result;
+  const bool verified = check_name(directory, aside, id) == NameIdentity::kMatches;
+  if (verified && delete_on_close(file).error == ERROR_SUCCESS) {
+    result.removed = true;
+  } else {
+    result.leftover += " " + hidden + " " + id_text(id, ' ')
+      + (verified ? " remove-failed " + snapshot(file, id) : " mismatch -");
+  }
+  return result;
+}
+
+inline int stopped_copy(HANDLE directory, const std::wstring& name, HANDLE file, const FILE_ID_INFO& id,
+    FileFailure failure, bool refused_commit) {
+  const Retirement result = retire(directory, name, file, id);
+  const bool gone = result.removed || result.original == NameIdentity::kAbsent;
+  const std::string suffix = gone ? "" : " " + result.leftover;
+  if (refused_commit) return refused(gone ? "target removed" : ("target" + suffix).c_str());
+  if (failure.error != ERROR_SUCCESS) return failed(failure, suffix.c_str());
+  return done(("cancelled" + suffix).c_str());
+}
+
+inline int run_recovery(int argc, wchar_t** argv, bool restore) {
+  const std::wstring name(argv[3]);
+  const wchar_t* part_name = restore ? argv[4] : L"";
+  if (!plain_name(argv[3]) || (restore && (!plain_name(part_name) || _wcsicmp(argv[3], part_name) == 0))) return kExitUsage;
+  const int id = restore ? 5 : 4;
+  ExpectedFile expected;
+  if (!parse_id(argv[id], argv[id + 1], expected.id)
+      || (argc > id + 2 && !parse_fingerprint(argv[id + 2], restore, expected))) return kExitUsage;
+  HeldDirectory directory;
+  const int status = hold_directory(argv[0], argv[1], argv[2], "from", directory);
+  if (status != 0) return status;
+  if (!proceed("ready")) return done("cancelled");
+  HANDLE opened = INVALID_HANDLE_VALUE;
+  const NTSTATUS opening = open_relative(directory.handle(), name, FILE_READ_DATA | FILE_READ_ATTRIBUTES | DELETE,
+    FILE_SHARE_READ, kOpenExisting, kOpenReparsePoint, opened);
+  if (opening < 0) return done(missing(status_error(opening)) ? "absent" : "left");
+  PinnedHandle source(opened);
+  if (!matches(source.value, expected)) return done("left");
+  if (!restore) {
+    const Retirement result = retire(directory.handle(), name, source.value, expected.id);
+    if (result.removed) return done("removed");
+    return done(result.original == NameIdentity::kAbsent ? "absent" : result.leftover.c_str());
+  }
+
+  HANDLE created = INVALID_HANDLE_VALUE;
+  const NTSTATUS creating = open_relative(directory.handle(), part_name, FILE_WRITE_DATA | FILE_READ_ATTRIBUTES,
+    0, kCreateNew, kNonDirectoryFile | kSequentialOnly, created);
+  if (creating < 0) return done("left");
+  const PinnedHandle target(created);
+  FILE_ID_INFO target_id{};
+  if (!read_id(target.value, target_id) || !seek_to(source.value, 0)) return done("left");
+  std::vector<BYTE> buffer(kCopyChunk);
+  for (;;) {
+    DWORD count = 0;
+    if (!ReadFile(source.value, buffer.data(), kCopyChunk, &count, nullptr)) return done("left");
+    if (count == 0) break;
+    DWORD written = write_all(target.value, buffer.data(), count);
+#if defined(AVE_TEST_DIR_RECOVERY)
+    written = test_restore_write_result(written);
+#endif
+    if (written != ERROR_SUCCESS) return done("left");
+  }
+  // Keep both names on a failed copy or verification. Retire the source while the target still excludes writers and deleters.
+  if (!FlushFileBuffers(target.value) || check_name(directory.handle(), part_name, target_id) != NameIdentity::kMatches) return done("left");
+  const Retirement result = retire(directory.handle(), name, source.value, expected.id);
+  if (!result.removed) return done(result.leftover.c_str());
+  CloseHandle(source.value);
+  source.value = INVALID_HANDLE_VALUE;
+  return done("restored");
+}
+
+inline bool record_name(const std::wstring& name) {
+  if (name.size() != 45 || name.compare(32, 13, L".cleanup.json") != 0) return false;
+  for (size_t index = 0; index < 32; ++index) {
+    if (hex_digit(name[index]) < 0) return false;
+  }
+  return true;
+}
+
+inline int run_list_records(wchar_t** argv) {
+  HeldDirectory directory;
+  const int status = hold_directory(argv[0], argv[1], argv[2], "from", directory);
+  if (status != 0) return status;
+  if (!proceed("ready")) return done("cancelled");
+  std::string outcome = "records";
+  std::vector<BYTE> buffer(64 * 1024);
+  for (bool first = true;; first = false) {
+    if (!GetFileInformationByHandleEx(directory.handle(), first ? FileFullDirectoryRestartInfo : FileFullDirectoryInfo,
+        buffer.data(), static_cast<DWORD>(buffer.size()))) {
+      const DWORD error = GetLastError();
+      return error == ERROR_NO_MORE_FILES ? done(outcome.c_str()) : failed(error);
+    }
+    for (size_t offset = 0;;) {
+      const auto entry = reinterpret_cast<const FILE_FULL_DIR_INFO*>(buffer.data() + offset);
+      const std::wstring name(entry->FileName, entry->FileNameLength / sizeof(wchar_t));
+      if (record_name(name)) {
+        if (outcome.size() + 47 > 1024 * 1024) return failed(ERROR_FILE_TOO_LARGE);
+        outcome += ' ';
+        for (const wchar_t digit : name) outcome += static_cast<char>(digit);
+      }
+      if (entry->NextEntryOffset == 0) break;
+      offset += entry->NextEntryOffset;
+    }
+  }
+}
+
+inline DWORD create_private_record(HANDLE directory, const std::wstring& name, const BYTE* bytes, DWORD length, FileFailure& failure) {
+  HANDLE raw_token = nullptr;
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw_token)) return GetLastError();
+  const PinnedHandle token(raw_token);
+  DWORD needed = 0;
+  GetTokenInformation(token.value, TokenUser, nullptr, 0, &needed);
+  if (needed == 0) return GetLastError();
+  std::vector<BYTE> storage(needed);
+  if (!GetTokenInformation(token.value, TokenUser, storage.data(), needed, &needed)) return GetLastError();
+  wchar_t* sid = nullptr;
+  if (!ConvertSidToStringSidW(reinterpret_cast<const TOKEN_USER*>(storage.data())->User.Sid, &sid)) return GetLastError();
+  const std::wstring sddl = std::wstring(L"D:P(A;;FA;;;") + sid + L")";
+  LocalFree(sid);
+  PSECURITY_DESCRIPTOR security = nullptr;
+  if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1, &security, nullptr)) return GetLastError();
+  HANDLE opened = INVALID_HANDLE_VALUE;
+  const NTSTATUS creating = open_relative(directory, name, FILE_WRITE_DATA, 0, kCreateNew, kNonDirectoryFile, opened, security);
+  LocalFree(security);
+  if (creating < 0) {
+    failure = native_failure(creating, "NtCreateFile");
+    return failure.error;
+  }
+  const PinnedHandle entry(opened);
+  const DWORD written = write_all(entry.value, bytes, length);
+  if (written != ERROR_SUCCESS) return written;
+  return FlushFileBuffers(entry.value) ? ERROR_SUCCESS : GetLastError();
+}
+
+inline int run_record(wchar_t** argv, bool writing) {
+  const std::wstring name(argv[3]);
+  if (!record_name(name)) return kExitUsage;
+  ULONGLONG limit = 0;
+  BYTE bytes[kRecordLimit + 1];
+  if (writing) {
+    const std::wstring payload(argv[4]);
+    limit = payload.size() / 2;
+    if (limit > kRecordLimit || !decode_hex(payload, bytes, static_cast<size_t>(limit))) return kExitUsage;
+  } else if (!parse_number(argv[4], limit) || limit == 0 || limit > kRecordLimit) {
+    return kExitUsage;
+  }
+  HeldDirectory directory;
+  const int status = hold_directory(argv[0], argv[1], argv[2], "from", directory);
+  if (status != 0) return status;
+  if (!proceed("ready")) return done("cancelled");
+  if (writing) {
+    FileFailure failure;
+    const DWORD error = create_private_record(directory.handle(), name, bytes, static_cast<DWORD>(limit), failure);
+    if (error == ERROR_SUCCESS) return done("written");
+    return failure.error == ERROR_SUCCESS ? failed(error) : failed(failure);
+  }
+  HANDLE opened = INVALID_HANDLE_VALUE;
+  const NTSTATUS opening = open_relative(directory.handle(), name, FILE_READ_DATA | FILE_READ_ATTRIBUTES,
+    FILE_SHARE_READ, kOpenExisting, kOpenReparsePoint, opened);
+  if (opening < 0) return missing(status_error(opening)) ? done("absent") : failed(native_failure(opening, "NtCreateFile"));
+  const PinnedHandle entry(opened);
+  if (!ordinary(entry.value)) return done("absent");
+  DWORD used = 0;
+  while (used <= limit) {
+    DWORD count = 0;
+    if (!ReadFile(entry.value, bytes + used, static_cast<DWORD>(limit) + 1 - used, &count, nullptr)) return failed(GetLastError());
+    if (count == 0) break;
+    used += count;
+  }
+  return used > limit ? failed(ERROR_FILE_TOO_LARGE) : done(("record " + hex_bytes(bytes, used)).c_str());
+}
+
+}  // namespace dir_ops

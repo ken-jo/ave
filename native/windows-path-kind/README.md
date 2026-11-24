@@ -44,12 +44,16 @@ The Windows CI job runs the test.
 
 ## Held directory operations
 
-The `--dir-rename`, `--dir-copy`, `--dir-remove` and `--dir-sweep` modes
-(`dir-ops.h`) put a browser download where the user chose and remove staged
-files. They take the same arguments, follow the same stdin/stdout protocol and
-exit with the same codes as the macOS helper (`native/macos-dir-ops/README.md`);
-the directory identity is the volume serial number and 64-bit file index that
-Node reports as `dev` and `ino`. These modes are the helper's only writes.
+The held modes put a browser download where the user chose, remove staged
+files, and manage recovery records. They use the
+[held directory protocol](../macos-dir-ops/README.md). The directory arguments
+use the legacy volume serial and 64-bit file index Node reports as `dev` and
+`ino`, in decimal. File ownership operands and replies use the full
+`FileIdInfo` volume serial in decimal and the full 128-bit file ID as exactly
+32 lowercase hex digits, most significant digit first. The host stores file
+IDs as decimal integers in recovery records. Birth and modification times
+are creation and last-write ticks multiplied by 100, in decimal nanoseconds
+since the system file-time epoch.
 
 Each held directory is opened component by component from the volume root,
 every component through the handle of the one above it (`NtCreateFile` with a
@@ -58,17 +62,57 @@ at any component is refused. The handles have traverse access and share read
 and write but not delete, so neither the held directory nor any folder above it
 can be renamed or removed until the mode ends; attribute-only handles would not
 block that. Every file is opened, created exclusively and removed relative to
-those handles, a rename names its target folder by handle
-(`NtSetInformationFile`, native `FileRenameInformation` class 10 with
-`RootDirectory` and a single relative name), and a removal uses native
-`FileDispositionInformation` class 13 on the file's own handle. A failure keeps
-the captured `NTSTATUS` with its translated error code, including through partial
-copy cleanup, and prints both in its one stderr diagnostic. A copy reports `progress <bytes copied>` after each chunk
-and flushes `part` every 16 MiB. `src/main/browser/browser-download-files.ts`
-runs the modes under the same stall bound and kill path as on macOS, removing a
-killed copy's `part` the same way, and `scripts/test-windows-path-kind.mjs`
-covers each mode, refusals, and renames of held folders failing while a copy
-waits at its commit.
+those handles. Renames submit native `FileRenameInformation` with
+`RootDirectory` and a single component. Exclusive operations set
+`ReplaceIfExists=FALSE` and hold the source without delete sharing.
+Disposition uses the file's own handle.
+
+Each mode sends `ready` after checking its directories. One `c` byte
+authorizes the action. Other input or EOF stops it. The recovery modes are:
+
+| Mode and operands after `<dir> <dir-dev> <dir-ino>` | Terminal replies |
+| --- | --- |
+| `--dir-list-records` | `records` with zero or more space-separated `<32 lowercase hex>.cleanup.json` names |
+| `--dir-read <name> <max>` | `record <lowercase hex>` or `absent`, with a 1–8192 byte limit. Empty data is `record ` with its space. Over the limit is `failed EFBIG`. |
+| `--dir-write-record <name> <hex>` | `written` after exclusive creation with a protected current-user DACL, write and sync. Maximum 8192 bytes. |
+| `--dir-remove-id <name> <file-dev> <file-ino> [<birth-ns>:<fingerprint>]` | `removed`, `absent`, or `left` with an optional named leftover. A birth-only token uses `<birth-ns>:-`. |
+| `--dir-restore <hidden> <part> <file-dev> <file-ino> <birth-ns>:<fingerprint>` | `restored` after verification and source retirement, `absent` if the source is missing, or `left` with an optional named leftover. |
+
+A fingerprint is `<size>:<mtime-ns>:<head>:<tail>`. The digests are lowercase
+SHA-256 of the first and last 64 KiB, each truncated to the file size. The
+named leftover is
+`left <hidden> <own-dev> <own-ino> <mismatch|remove-failed> <snapshot> [part-left]`.
+The hidden name is `.<32 lowercase hex>.removing`. The snapshot is
+`<dev>:<ino>:<birth-ns>:<fingerprint>` from the retained file handle, or `-`
+when unavailable. `part-left` reports incomplete or unverified copy-back at
+the original part name.
+
+`--dir-copy` checks source and target before `ready`. Its exclusive create
+can fail with plain `failed EEXIST`. On success it emits `writing <dev> <ino>`
+from the open part handle before progress or `copied`. It reports progress
+per 1 MiB chunk and flushes every 16 MiB. It keeps the handle open across
+`copied` and checks the part's identity before exclusive rename and the
+target's identity after rename. A post-rename mismatch triggers exclusive
+rollback. Commit refusals are `refused target removed` when the part is gone,
+`refused target left` with the optional named leftover when it remains, or
+`refused target changed` if rollback fails. All use exit 3. Plain copy
+refusals precede `ready`. A stopped copy can suffix `cancelled` or
+`failed <errno>` with the same leftover form. Success, cancellation and
+recovery outcomes use exit 0, filesystem failures use exit 4, and usage
+errors use exit 2. A failed native call may print its translated Windows
+error and captured status in the one stderr diagnostic.
+
+Cleanup moves a verified file handle exclusively to a fresh hidden name,
+checks the hidden entry, and only then sets delete disposition. Restore
+keeps the hidden source until the synced part is verified against its
+still-open writing handle. A failed copy-back leaves both entries. If full
+file identity or exclusive isolation is unavailable, the helper leaves
+existing entries in place. The host retains an existing recovery record or
+records the writing identity when available.
+
+(a) the gap between the final fd verify and the unlink of a random hidden name;
+(b) anything after a verified restore or commit (the user's own act).
+Nothing else.
 
 ## OS system directory
 

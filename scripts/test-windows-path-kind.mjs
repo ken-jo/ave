@@ -2,6 +2,7 @@
 // Output must contain only the resolved mapping.
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -19,6 +20,252 @@ function runWithInput(args, input) {
 function run(...args) {
   return runWithInput(args);
 }
+
+function held(path) {
+  const { dev, ino } = lstatSync(path, { bigint: true });
+  return [path, String(dev), String(ino)];
+}
+
+function answered(args, input = "c") {
+  const { code, stdout, stderr } = runWithInput(args, input);
+  return { code, lines: stdout.replace(/\r?\n$/u, "").split(/\r?\n/u), stderr };
+}
+
+function runCopy(args, onLine, executable = helper) {
+  const child = spawn(executable, args, { windowsHide: true, shell: false, env: {} });
+  return new Promise((resolveCopy, rejectCopy) => {
+    const lines = [];
+    let pending = "";
+    let stderr = "";
+    let failure;
+    const timeout = setTimeout(() => {
+      failure = new Error("copy did not finish");
+      child.kill();
+    }, 10_000);
+    child.stdin.on("error", (error) => { failure ??= error; });
+    child.stderr.setEncoding("utf8").on("data", (data) => { stderr += data; });
+    child.stdout.setEncoding("utf8").on("data", (data) => {
+      pending += data;
+      const available = pending.split(/\r?\n/u);
+      pending = available.pop();
+      try {
+        for (const line of available) {
+          lines.push(line);
+          onLine(line, child.stdin);
+        }
+      } catch (error) {
+        failure ??= error;
+        child.kill();
+      }
+    });
+    child.once("error", (error) => { failure ??= error; });
+    child.once("close", (code) => {
+      clearTimeout(timeout);
+      if (failure) rejectCopy(failure);
+      else resolveCopy({ code, lines, stderr });
+    });
+  });
+}
+
+async function recoveryTests() {
+  const record = `${"a".repeat(32)}.cleanup.json`;
+  const hidden = `.${"b".repeat(32)}.removing`;
+  const part = ".download.part";
+  const tests = [];
+  const add = (label, test) => tests.push([label, test]);
+  const expect = (args, lines, code = 0) => {
+    const result = answered(args);
+    assert.equal(result.code, code, JSON.stringify(result));
+    assert.deepEqual(result.lines, lines);
+    if (code !== 4) assert.equal(result.stderr, "");
+  };
+  const snapshot = (path) => {
+    const [facts] = JSON.parse(run("--pin", path).stdout);
+    const { birthtimeNs, mtimeNs, size } = lstatSync(path, { bigint: true });
+    const bytes = readFileSync(path);
+    const digest = (span) => createHash("sha256").update(span).digest("hex");
+    const epoch = 11644473600000000000n;
+    return [String(BigInt(facts.volumeSerial)), facts.fileId.slice(2),
+      `${birthtimeNs + epoch}:${size}:${mtimeNs + epoch}:${digest(bytes.subarray(0, 65536))}:${digest(bytes.subarray(-65536))}`];
+  };
+  add("record round trip and exclusive collision", (dir) => {
+    const folder = held(dir);
+    expect(["--dir-list-records", ...folder], ["ready", "records"]);
+    expect(["--dir-write-record", ...folder, record, "0061ff"], ["ready", "written"]);
+    const [facts] = JSON.parse(run("--dacl", join(dir, record)).stdout);
+    assert.equal(facts.protected, true);
+    assert.equal(facts.aces.length, 1);
+    expect(["--dir-write-record", ...folder, record, "62"], ["ready", "failed EEXIST"], 4);
+    expect(["--dir-list-records", ...folder], ["ready", `records ${record}`]);
+    expect(["--dir-read", ...folder, record, "3"], ["ready", "record 0061ff"]);
+    expect(["--dir-read", ...folder, record, "2"], ["ready", "failed EFBIG"], 4);
+    writeFileSync(join(dir, record), "");
+    expect(["--dir-read", ...folder, record, "1"], ["ready", "record "]);
+  });
+  add("stale fingerprint never restores or removes its source", (dir) => {
+    const source = join(dir, hidden);
+    writeFileSync(source, "original");
+    const known = snapshot(source);
+    writeFileSync(source, "modified");
+    expect(["--dir-restore", ...held(dir), hidden, part, ...known], ["ready", "left"]);
+    expect(["--dir-remove-id", ...held(dir), hidden, ...known], ["ready", "left"]);
+    const [dev, ino, current] = snapshot(source);
+    const staleContent = [...current.split(":").slice(0, 3), ...known[2].split(":").slice(3)].join(":");
+    expect(["--dir-restore", ...held(dir), hidden, part, dev, ino, staleContent], ["ready", "left"]);
+    assert.equal(readFileSync(source, "utf8"), "modified");
+    assert.ok(!existsSync(join(dir, part)));
+  });
+  add("restore and identity removal complete when both names verify", (dir) => {
+    const source = join(dir, hidden);
+    const bytes = Buffer.from(Array.from({ length: 150_000 }, (_, index) => index % 251));
+    writeFileSync(source, bytes);
+    expect(["--dir-restore", ...held(dir), hidden, part, ...snapshot(source)], ["ready", "restored"]);
+    assert.ok(!existsSync(source));
+    const restored = join(dir, part);
+    assert.deepEqual(readFileSync(restored), bytes);
+    const [dev, ino, fingerprint] = snapshot(restored);
+    expect(["--dir-remove-id", ...held(dir), part, dev, ino, `${fingerprint.split(":")[0]}:-`], ["ready", "removed"]);
+    expect(["--dir-remove-id", ...held(dir), part, dev, ino], ["ready", "absent"]);
+  });
+  add("occupied restore target and nonregular cleanup source stay in place", (dir) => {
+    const source = join(dir, hidden);
+    writeFileSync(source, "hidden bytes");
+    const known = snapshot(source);
+    mkdirSync(join(dir, part));
+    expect(["--dir-restore", ...held(dir), hidden, part, ...known], ["ready", "left"]);
+    expect(["--dir-remove-id", ...held(dir), part, ...known], ["ready", "left"]);
+    assert.equal(readFileSync(source, "utf8"), "hidden bytes");
+    assert.ok(lstatSync(join(dir, part)).isDirectory());
+  });
+  for (const [boundary, outcome] of [["restore-target", "restored"], ["restore-write-error", "left"], ["no-exclusive-rename", "left"]]) {
+    add(boundary, (dir) => {
+      const source = join(dir, hidden);
+      const bytes = Buffer.alloc(2 * 1024 * 1024, 42);
+      writeFileSync(source, bytes);
+      const restore = boundary !== "no-exclusive-rename";
+      const args = restore ? ["--dir-restore", ...held(dir), hidden, part, ...snapshot(source)]
+        : ["--dir-remove-id", ...held(dir), hidden, ...snapshot(source)];
+      const result = spawnSync(join(tmpdir(), "ave-path-pin-test.exe"), [boundary, ...args], {
+        input: "c", windowsHide: true, shell: false, env: {}, timeout: 10_000, encoding: "utf8",
+      });
+      assert.ifError(result.error);
+      assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual(result.stdout.trimEnd().split(/\r?\n/u), ["ready", outcome]);
+      assert.equal(result.stderr.trim(), "boundary reached; replacement blocked");
+      if (outcome === "restored") {
+        assert.deepEqual(readFileSync(join(dir, part)), bytes);
+        assert.ok(!existsSync(source));
+      } else {
+        assert.deepEqual(readFileSync(source), bytes);
+        if (restore) assert.deepEqual(readFileSync(join(dir, part)), bytes.subarray(0, 1024 * 1024));
+        else assert.deepEqual(readdirSync(dir), [hidden]);
+      }
+    });
+  }
+  for (const replaceAncestor of [false, true]) {
+    for (const [mode, args] of [
+      ["list-records", () => []], ["read", () => [record, "64"]], ["write-record", () => [record, "61"]],
+      ["remove-id", (known) => [hidden, ...known]], ["restore", (known) => [hidden, part, ...known]],
+    ]) {
+      add(`${mode} refuses a replaced ${replaceAncestor ? "ancestor" : "directory"}`, (fixture) => {
+        const above = join(fixture, "above");
+        const dir = join(above, "chosen");
+        mkdirSync(dir, { recursive: true });
+        const folder = held(dir);
+        writeFileSync(join(dir, hidden), "trusted source");
+        const operands = args(snapshot(join(dir, hidden)));
+        writeFileSync(join(dir, record), "trusted record");
+        if (mode === "read") expect(["--dir-read", ...folder, record, "64"], ["ready", "record 74727573746564207265636f7264"]);
+        const swapped = replaceAncestor ? above : dir;
+        renameSync(swapped, `${swapped}-moved`);
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, hidden), "replacement source");
+        if (mode !== "write-record") writeFileSync(join(dir, record), "replacement record");
+        expect([`--dir-${mode}`, ...folder, ...operands], ["refused from"], 3);
+        assert.equal(readFileSync(join(dir, hidden), "utf8"), "replacement source");
+        assert.equal(readFileSync(join(replaceAncestor ? join(`${above}-moved`, "chosen") : `${dir}-moved`, hidden), "utf8"), "trusted source");
+        assert.ok(!existsSync(join(dir, part)));
+        if (mode === "write-record") assert.ok(!existsSync(join(dir, record)));
+      });
+    }
+  }
+  add("copy refuses nonregular target before ready", (dir) => {
+    writeFileSync(join(dir, "source"), "source");
+    mkdirSync(join(dir, "target"));
+    expect(["--dir-copy", ...held(dir), "source", ...held(dir), "target", part], ["refused target"], 3);
+    assert.ok(!existsSync(join(dir, part)));
+  });
+  add("copy part collision stays a plain EEXIST", (dir) => {
+    writeFileSync(join(dir, "source"), "source");
+    writeFileSync(join(dir, part), "preexisting");
+    expect(["--dir-copy", ...held(dir), "source", ...held(dir), "target", part], ["ready", "failed EEXIST"], 4);
+    assert.equal(readFileSync(join(dir, part), "utf8"), "preexisting");
+  });
+  add("copy identifies its locked writer before progress and verifies the committed name", async (dir) => {
+    writeFileSync(join(dir, "source"), "source");
+    const result = await runCopy(["--dir-copy", ...held(dir), "source", ...held(dir), "target", part], (line, stdin) => {
+      if (line === "ready") stdin.write("c");
+      if (line.startsWith("writing ")) {
+        assert.throws(() => renameSync(join(dir, part), join(dir, "moved")), /EBUSY|EPERM|EACCES/u);
+        assert.throws(() => rmSync(join(dir, part)), /EBUSY|EPERM|EACCES/u);
+      }
+      if (line === "copied") stdin.end("c");
+    });
+    assert.equal(result.code, 0, result.stderr);
+    const [dev, ino] = snapshot(join(dir, "target"));
+    assert.deepEqual(result.lines, ["ready", `writing ${dev} ${ino}`, "progress 6", "copied", "committed"]);
+    assert.ok(!existsSync(join(dir, part)));
+    assert.ok(!existsSync(join(dir, "moved")));
+  });
+  add("commit refuses a late target and keeps it intact", async (dir) => {
+    writeFileSync(join(dir, "source"), "source");
+    const result = await runCopy(["--dir-copy", ...held(dir), "source", ...held(dir), "target", part], (line, stdin) => {
+      if (line === "ready") stdin.write("c");
+      if (line === "copied") {
+        writeFileSync(join(dir, "target"), "unrelated bytes");
+        stdin.end("c");
+      }
+    });
+    assert.equal(result.code, 3, JSON.stringify(result));
+    assert.match(result.lines[1], /^writing \d+ [0-9a-f]{32}$/u);
+    assert.deepEqual(result.lines.slice(2), ["progress 6", "copied", "refused target removed"]);
+    assert.equal(readFileSync(join(dir, "target"), "utf8"), "unrelated bytes");
+    assert.ok(!existsSync(join(dir, part)));
+  });
+  for (const blocked of [false, true]) {
+    add(`commit identity mismatch with ${blocked ? "occupied" : "vacant"} rollback name`, async (dir) => {
+      writeFileSync(join(dir, "source"), "source");
+      const args = [blocked ? "commit-blocked" : "commit-mismatch", "--dir-copy", ...held(dir), "source", ...held(dir), "target", part];
+      const result = await runCopy(args, (line, stdin) => {
+        if (line === "ready") stdin.write("c");
+        if (line === "copied") stdin.end("c");
+      }, join(tmpdir(), "ave-path-pin-test.exe"));
+      assert.equal(result.code, 3, JSON.stringify(result));
+      assert.equal(result.lines.at(-1), blocked ? "refused target changed" : "refused target left");
+      assert.equal(readFileSync(join(dir, part), "utf8"), blocked ? "" : "source");
+      if (blocked) assert.equal(readFileSync(join(dir, "target"), "utf8"), "source");
+      else assert.ok(!existsSync(join(dir, "target")));
+    });
+  }
+  let failed = 0;
+  for (const [label, test] of tests) {
+    const root = mkdtempSync(join(tmpdir(), "ave-held-recovery-"));
+    try {
+      await test(root);
+      console.log(`PASS ${label}`);
+    } catch (error) {
+      failed += 1;
+      console.error(`FAIL ${label}\n${error}`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+  console.log(`held directory recovery: ${tests.length - failed} passed, ${failed} failed`);
+  if (failed > 0) process.exit(1);
+}
+
+await recoveryTests();
+if (process.argv[2] === "--held-recovery-only") process.exit(0);
 
 function uint32(value) {
   const bytes = Buffer.alloc(4);
@@ -123,15 +370,6 @@ try {
   const to = join(above, "inner");
   mkdirSync(from);
   mkdirSync(to, { recursive: true });
-  const held = (path) => {
-    const info = lstatSync(path, { bigint: true });
-    return [path, info.dev.toString(), info.ino.toString()];
-  };
-  const answered = (args, input) => {
-    const result = spawnSync(helper, args, { input, encoding: "utf8", windowsHide: true, shell: false, env: {}, timeout: 10_000 });
-    if (result.error) throw result.error;
-    return { code: result.status, lines: result.stdout.split(/\r?\n/u).filter(Boolean), stderr: result.stderr };
-  };
 
   writeFileSync(join(from, "a"), "staged a");
   let result = answered(["--dir-rename", ...held(from), "a", ...held(to), "report.pdf"], "c");
@@ -161,7 +399,8 @@ try {
   assert.ok(existsSync(join(from, "b")));
 
   result = answered(["--dir-copy", ...held(from), "b", ...held(to), "copied.pdf", ".0123.part"], "cc");
-  assert.deepEqual(result.lines, ["ready", "cancelled"], "input that arrives while bytes are copied stops the copy");
+  assert.match(result.lines[1], /^writing \d+ [0-9a-f]{32}$/u);
+  assert.equal(result.lines[2], "cancelled", "input that arrives while bytes are copied stops the copy");
   assert.deepEqual(readdirSync(to).sort(), ["junction.pdf", "report.pdf"]);
   const copy = spawn(helper, ["--dir-copy", ...held(from), "b", ...held(to), "copied.pdf", ".0123.part"], { windowsHide: true, shell: false, env: {} });
   const copied = await new Promise((resolveCopy, rejectCopy) => {
@@ -184,7 +423,10 @@ try {
   });
   assert.equal(copied.code, 0);
   // One chunk of "staged b": the copy reports its progress once before it is complete.
-  assert.deepEqual(copied.output.split(/\r?\n/u).filter(Boolean), ["ready", "progress 8", "copied", "committed"]);
+  const [ready, writing, ...outcome] = copied.output.split(/\r?\n/u).filter(Boolean);
+  assert.equal(ready, "ready");
+  assert.match(writing, /^writing \d+ [0-9a-f]{32}$/u);
+  assert.deepEqual(outcome, ["progress 8", "copied", "committed"]);
   assert.equal(readFileSync(join(to, "copied.pdf"), "utf8"), "staged b");
   assert.ok(!existsSync(join(to, ".0123.part")));
 

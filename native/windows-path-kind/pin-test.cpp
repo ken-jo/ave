@@ -7,8 +7,51 @@
 #include <string>
 #include <vector>
 #include "pin.h"
+#define AVE_TEST_DIR_RECOVERY
+#include "dir-ops.h"
 #pragma comment(lib, "ntdll.lib")
 #pragma comment(lib, "advapi32.lib")
+
+namespace dir_ops {
+enum class RecoveryBoundary { kNone, kRestoreTarget, kRestoreError, kUnsupportedIsolation, kCommitMismatch, kCommitBlocked };
+RecoveryBoundary recovery_boundary = RecoveryBoundary::kNone;
+std::wstring boundary_path;
+
+bool sharing_blocked() {
+  const DWORD error = GetLastError();
+  return error == ERROR_SHARING_VIOLATION || error == ERROR_ACCESS_DENIED;
+}
+
+DWORD test_restore_write_result(DWORD result) {
+  const bool fail_write = recovery_boundary == RecoveryBoundary::kRestoreError;
+  if (recovery_boundary != RecoveryBoundary::kRestoreTarget && !fail_write) return result;
+  recovery_boundary = RecoveryBoundary::kNone;
+  const bool remove_blocked = !DeleteFileW(boundary_path.c_str()) && sharing_blocked();
+  const bool rename_blocked = !MoveFileExW(boundary_path.c_str(), (boundary_path + L".moved").c_str(), 0) && sharing_blocked();
+  if (remove_blocked && rename_blocked) std::fputs("boundary reached; replacement blocked\n", stderr);
+  return fail_write ? ERROR_WRITE_FAULT : result;
+}
+
+FileFailure test_isolation_result(HANDLE file, HANDLE directory, const std::wstring& aside) {
+  if (recovery_boundary != RecoveryBoundary::kUnsupportedIsolation) return rename_into(file, directory, aside, false);
+  // Try introducing a directory at the source name just as exclusive isolation becomes unavailable.
+  if (MoveFileExW(boundary_path.c_str(), (boundary_path + L".moved").c_str(), 0)) {
+    CreateDirectoryW(boundary_path.c_str(), nullptr);
+  } else if (sharing_blocked()) {
+    std::fputs("boundary reached; replacement blocked\n", stderr);
+  }
+  return {ERROR_NOT_SUPPORTED};
+}
+
+NameIdentity test_commit_result(NameIdentity result) {
+  if (recovery_boundary == RecoveryBoundary::kCommitMismatch) return NameIdentity::kUnverified;
+  if (recovery_boundary == RecoveryBoundary::kCommitBlocked) {
+    const PinnedHandle occupied(CreateFileW(boundary_path.c_str(), FILE_WRITE_DATA, 0, nullptr, CREATE_NEW, 0, nullptr));
+    if (occupied.value != INVALID_HANDLE_VALUE) return NameIdentity::kUnverified;
+  }
+  return result;
+}
+}  // namespace dir_ops
 
 namespace {
 int fail(const char* stage) {
@@ -163,6 +206,22 @@ int non_surrogate_child(const std::wstring& path) {
 }
 
 int wmain(int argc, wchar_t** argv) {
+  if (argc >= 8) {
+    const std::wstring test(argv[1]);
+    if (test == L"commit-mismatch" || test == L"commit-blocked") {
+      if (argc != 12) return 2;
+      dir_ops::recovery_boundary = test == L"commit-mismatch" ? dir_ops::RecoveryBoundary::kCommitMismatch : dir_ops::RecoveryBoundary::kCommitBlocked;
+      dir_ops::boundary_path = std::wstring(argv[7]) + L"\\" + argv[11];
+      return dir_ops::run(argc - 1, argv + 1);
+    }
+    if (test == L"restore-target") dir_ops::recovery_boundary = dir_ops::RecoveryBoundary::kRestoreTarget;
+    else if (test == L"restore-write-error") dir_ops::recovery_boundary = dir_ops::RecoveryBoundary::kRestoreError;
+    else if (test == L"no-exclusive-rename") dir_ops::recovery_boundary = dir_ops::RecoveryBoundary::kUnsupportedIsolation;
+    else return 2;
+    const int name = test == L"no-exclusive-rename" ? 6 : 7;
+    dir_ops::boundary_path = std::wstring(argv[3]) + L"\\" + argv[name];
+    return dir_ops::run(argc - 1, argv + 1);
+  }
   if (argc != 2) return 2;
   if (change_time(argv[1]) != 0) return 1;
   const std::wstring root = argv[1], parent = root + L"\\retag-parent", target = root + L"\\retag-target";
