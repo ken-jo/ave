@@ -1,7 +1,7 @@
 // windows-native
 // Host programs resolve to an absolute path from PATH only; a current directory is never searched.
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, renameSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
@@ -148,9 +148,12 @@ describe("Windows app execution aliases", () => {
       const { findHostProgram: findNative } = await import("../host-program-path.js");
       expect(findNative(program, { Path: aliases })).toBe(alias);
 
-      const short = execFileSync(win32SystemBinary("cmd"), ["/d", "/c", "for %i in (WindowsApps) do @echo %~fsi"], {
+      const shortProbe = spawnSync(win32SystemBinary("cmd"), ["/d", "/c", "for %i in (WindowsApps) do @echo %~fsi"], {
         cwd: parent, encoding: "utf8", windowsHide: true, windowsVerbatimArguments: true,
-      }).trim();
+      });
+      expect(shortProbe.error).toBeUndefined();
+      expect(shortProbe.status, shortProbe.stderr).toBe(0);
+      const short = shortProbe.stdout.trim();
       expect(realpathSync.native(short)).toBe(aliases);
       if (short.toLowerCase() === aliases.toLowerCase()) {
         console.info("The fixture volume returned no distinct 8.3 spelling for the alias directory.");
