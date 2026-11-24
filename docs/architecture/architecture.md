@@ -2362,9 +2362,13 @@ outside its granted roots or use the former host's plugin proxy.
 
 The host sends the resolved environment through an anonymous pipe on fd 4.
 The sandbox-side shim suppresses its setup diagnostics and restores stderr
-when it executes the target. Before logging target stderr, the host masks
-exact resolved values of at least eight characters, including values that
-span stream chunks or line breaks. Values shorter than eight characters are
+when it executes the target. If setup fails before exec, the shim writes one
+fixed byte to fd 5, which the exec line closes. The host reports a setup
+failure only when that byte arrives, so a target that exits 1 keeps its own
+exit status. Before logging target stderr, the host masks exact resolved
+values of at least eight characters, including values that span stream chunks
+or line breaks, the union of overlapping matches, and a clipped prefix of at
+least eight characters at stream end. Values shorter than eight characters are
 outside this exact-value check.
 
 ### Extension alerts and scheduled routines
