@@ -937,6 +937,29 @@ describe("native invocation permission evidence", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
+  it("ends a rationale card the Stop ends with the host's cancelled row and no PermissionDenied", async () => {
+    await audit.setupPermissionAuditChain("aa".repeat(32));
+    manager.setMode("auto");
+    const classify = vi.fn(() => ({ level: "high" as const, reason: "The outside change needs explicit grounds" }));
+    setReviewerForTest(manager, { classifier: { classify }, cache: resources.makeVerdictCache(join(root, "outside-stop-cache.jsonl")), recentlyDenied: makeRecentlyDeniedStore(join(root, "outside-stop-denied.jsonl")) });
+    const { runtime } = createRationaleHostRuntime(createTestRequestAnchor({ sessionId }));
+    const hooks = new ScriptHookManager();
+    const lifecycle = vi.spyOn(hooks, "runLifecycleEvent");
+    const turn = new AbortController();
+    const outcome = await executor(hooks).executeConversationBatch([
+      { id: "outside-stop", name: "write_file", input: { path: join(root, "outside-stop.txt"), content: "stopped before authority" } },
+    ], { executionCwd: project, sessionId, rationaleRuntime: runtime, abortSignal: turn.signal,
+      permissionContext: { trustOrigin: "llm-tool-arg", additionalDirectories: [] } });
+    expect(outcome.outcome).toBe("rationale-required");
+    turn.abort();
+    const rows = async () => (await readFile(audit.getPermissionAuditLogFile(), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>)
+      .filter((row) => row.toolUseId === "outside-stop" && row.decision !== "ask");
+    await vi.waitFor(async () => expect(await rows()).toHaveLength(1));
+    await new Promise<void>((done) => setImmediate(done));
+    expect(await rows()).toEqual([expect.objectContaining({ decision: "deny", terminalKind: "cancelled", denyReasons: [expect.objectContaining({ reason: "user aborted turn" })] })]);
+    expect(lifecycle.mock.calls.filter(([event]) => event === "PermissionDenied")).toEqual([]);
+  });
+
   it.each([
     { scope: "session", change: "none" }, { scope: "always", change: "none" },
     { scope: "session", change: "unrelated-folder" }, { scope: "session", change: "deny-rule" },
