@@ -153,7 +153,7 @@ export function verifyMxcSupervisorRuntime(executable, resources, arch) {
 // loaded by the extension path and are removed from the packaged native bin.
 export const SDK_INSTALLATION_AUXILIARIES = new Set([
   "libmxc_ffi.so", "libmxc_ffi.dylib", "lxc-exec", "mxc-exec-mac", "unix-test-proxy",
-  "mxc-diagnostic-console.exe", "plm.exe", "winhttp-proxy-shim.exe", "wxc-exec.exe",
+  "mxc-diagnostic-console.exe", "mxc-wslc-gateway.tar", "plm.exe", "winhttp-proxy-shim.exe", "wxc-exec.exe",
   "wxc-host-prep.exe", "wxc-test-proxy.exe", "wxc-windows-sandbox-daemon.exe",
   "wxc-windows-sandbox-guest.exe", "wxc-wslc-daemon.exe",
 ]);
