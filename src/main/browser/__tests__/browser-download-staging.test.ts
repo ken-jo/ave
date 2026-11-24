@@ -807,7 +807,9 @@ describe("a staged download", () => {
       const target = join(chosen, "report.pdf");
       const files = process.platform === "darwin"
         ? _helperFileOperationsForTest(macHelper(failure === "occupied" ? "-copy-occupied" : `-copy-${failure}-failure`))
-        : _descriptorFileOperationsForTest((from) => {
+        // The seam runs before every rename, the copy's own cleanup of its temporary file included; only the renames into the target fail.
+        : _descriptorFileOperationsForTest((from, to) => {
+          if (to !== "report.pdf") return;
           if (failure === "occupied") {
             if (from.endsWith(".part")) writeFileSync(target, "competing bytes");
           } else if (from.endsWith(".part") || failure === "restore") {
@@ -2315,8 +2317,9 @@ describe.runIf(process.platform === "linux")("a Linux copy whose temporary file 
     const { asked, askSavePath } = dialogs();
     const item = fakeItem();
     let download!: Observed;
-    const root = atStep(prepared, "copy", "ready", () => {
-      // The copy's file is moved aside to be checked and removed; that removal fails, and so does the hidden name's after it is put back.
+    // Stopped once the copy has written its temporary file: at `ready` the file is not created yet, so nothing would be left.
+    const root = atStep(prepared, "copy", "copied", () => {
+      // The copy's file is moved aside to be checked and removed; that removal fails, so the file stays under its hidden name.
       hooks.unlinkFault = /.removing$/u;
       download.cancel();
     });
