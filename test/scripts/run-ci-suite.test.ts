@@ -866,20 +866,23 @@ describe("the must-run set", () => {
   });
 
   it.each([
-    ['const root = mkdtempSync(join(tmpdir(), "x-")); readdirSync(root);', ["listing"]],
-    ['for (const dir of ["src", "test", "scripts"]) walk(dir); function walk(d) { return readdirSync(d); }', ["listing"]],
-    ['listSourceFiles("src"); const listSourceFiles = (d) => globSync("**/*.ts", { cwd: d });', ["listing"]],
-    ['spawnSync("git", ["ls-files", "src"]);', ["git"]],
-    ['execSync("git grep -l needle");', ["git"]],
-    ['readFileSync(path, "utf8");', ["read"]],
-    ['existsSync(join(root, name));', ["read"]],
-    [`readFileSync(\`src/\${name}.ts\`);`, ["read"]],
-    ['readFileSync(new URL("./data.json", import.meta.url));', ["read"]],
-    ['readFileSync("src/main.ts", "utf8"); existsSync(\'config/a.json\'); readRepoFile(`src/lib/a.ts`);', []],
+    ['import { readFileSync as read } from "node:fs"; read(path);', ["read"]],
+    ['import fs from "node:fs"; const { readFileSync: read } = fs; read(path);', ["read"]],
+    ['import * as fs from "node:fs"; fs["statSync"] (path);', ["read"]],
+    ['const fs = await import("node:fs/promises");', ["read"]],
+    ['import { createRequire as make } from "node:module"; const load = make(import.meta.url); load("fs-extra");', ["read"]],
+    ['import fs from "graceful-fs";', ["read"]],
+    ['import { existsSync } from "node:fs"; existsSync("package.json");', ["read"]],
+    ['import { execFileSync } from "node:child_process"; execFileSync(command, args);', ["git"]],
+    ['import glob from "fast-glob";', ["listing"]],
+    ['const open = Bun["file"]; open(path);', ["runtime"]],
+    ['const { spawn: run } = Bun; run(args);', ["runtime"]],
+    ['const bind = process.binding; bind(name);', ["runtime"]],
+    ['import type { Stats } from "node:fs"; const readFileSync = () => 1; readFileSync();', []],
     ['inspectFile(target);', ["read"]],
-    ['readPluginDataFixture(pluginRoot);', ["listing"]],
-  ])("classifies primitive use regardless of its root: %s", (text, expected) => {
-    expect(unboundedInputClasses(text as string)).toEqual(expected);
+    ['readPluginDataFixture(pluginRoot);', ["read"]],
+  ])("classifies runtime bindings regardless of their use: %s", (source, expected) => {
+    expect(unboundedInputClasses(source as string)).toEqual(expected);
   });
 
   it("follows helper, alias, package-import and scripts/ modules and fails closed on an unreadable one", () => {
@@ -887,12 +890,12 @@ describe("the must-run set", () => {
       "package.json": JSON.stringify({ imports: { "#support/*": "./test/support/*.ts" } }),
       "src/a/__tests__/a.test.ts": 'import { x } from "./support/x.js"; import "#support/y"; const z = require("../../../scripts/z.mjs");',
       "src/a/__tests__/support/x.ts": "export const x = 1;",
-      "test/support/y.ts": 'export const y = readFileSync(file);',
+      "test/support/y.ts": 'import { readFileSync } from "node:fs"; export const y = readFileSync(file);',
       "scripts/z.mjs": 'export const z = spawnSync("git", ["ls-files"]);',
       "src/b/__tests__/b.test.ts": 'import { gone } from "./support/gone.js"; import "@/__tests__/support/x.js";',
       "src/__tests__/support/x.ts": "export const x = 1;",
       "src/c/__tests__/c.test.ts": 'import { cleanup } from "../../__tests__/support/tmp-dir-teardown.js"; import { value } from "../value.js";',
-      "src/__tests__/support/tmp-dir-teardown.ts": "export const cleanup = (dir) => readdirSync(dir);",
+      "src/__tests__/support/tmp-dir-teardown.ts": 'import { readdirSync } from "node:fs"; export const cleanup = (dir) => readdirSync(dir);',
       "src/c/value.ts": "export const value = readFileSync(other);",
     };
     const read = (path: string) => files[path] ?? null;
@@ -940,9 +943,26 @@ describe("the must-run set", () => {
       ["a child process that can write the temp tree", 'import { execFileSync } from "node:child_process"; const dir = mkdtempSync(join(tmpdir(), "x-")); execFileSync("cp", ["-r", ".", dir]); readFileSync(join(dir, "a"));'],
       ["fs loaded outside an import", 'const dir = mkdtempSync(join(tmpdir(), "x-")); require("node:fs").cpSync(".", dir); readFileSync(join(dir, "a"));'],
       ["an aliased fs namespace", 'const f = fs; const dir = mkdtempSync(join(tmpdir(), "x-")); f.cpSync(".", dir); readFileSync(join(dir, "a"));'],
-      ["readFileSync not imported from fs", 'const dir = mkdtempSync(join(tmpdir(), "x-")); readFileSync(join(dir, "a")); function readFileSync(p: string) { return p; }'],
+      ["a bound method used as a value", 'const dir = mkdtempSync(join(tmpdir(), "x-")); const read = readFileSync; read(join(dir, "a"));'],
+      ["a literal repository read alongside a temp read", 'readFileSync(join(tmpdir(), "a")); fs.readFileSync("package.json");'],
+      ["a non-temp copy destination", 'cpSync(join(tmpdir(), "x"), "src/main");'],
+      ["a non-temp bracketed operation", 'fs["statSync"](process.cwd());'],
     ])("keeps an unproven read unbounded: %s", (_label, body) => {
-      expect(hits(body)).toEqual(unbounded);
+      expect(hits(body)).toEqual(expect.arrayContaining(unbounded));
+    });
+
+    it("requires every fs binding in the file to be temp-rooted, including aliases and element accesses", () => {
+      const temp = 'const dir = mkdtempSync(join(tmpdir(), "x-")); read(join(dir, "a")); fs["statSync"](dir);';
+      const importAlias = 'import { readFileSync as read } from "node:fs";';
+      expect(hits(importAlias + temp)).toEqual([]);
+      expect(hits(importAlias + temp + 'fs["statSync"](process.cwd());')).toEqual(unbounded);
+    });
+
+    it("keeps helper filesystem bindings even when the caller reads only temp paths", () => {
+      const helper = "src/t/__tests__/seed.ts";
+      expect(hits('import { seed } from "./seed"; seed(); readFileSync(join(tmpdir(), "a"));', {
+        [helper]: 'import fs from "node:fs"; export const seed = () => fs.cpSync(process.cwd(), destination);',
+      })).toEqual([helper + ":read"]);
     });
 
     it("bounds a read through an audited temp factory only while its digest matches, and never through an unaudited helper", () => {

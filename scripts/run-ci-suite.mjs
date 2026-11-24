@@ -104,28 +104,10 @@ export function testRunsRepoCodeOutOfProcess(testPath, readText) {
   return someHelperSource(testPath, readText, (_path, text) => runsRepoCodeOutOfProcess(text), (target) => target.includes("/__tests__/"));
 }
 
-// Primitives that can read repository content that no import or literal path
-// names. Recognising dangerous roots failed open, so any use counts, whatever
-// its argument or root, unless an audited exemption covers that file and class.
-const LITERAL_ARGUMENT = '(?:"[^"\\n]*"|\'[^\'\\n]*\'|`[^`$\\n]*`)\\s*[,)]';
-function unboundedInputPatterns(exemptions) {
-  const forwards = { listing: [], read: [] };
-  for (const entry of Object.values(exemptions)) {
-    for (const kind of Object.keys(forwards)) forwards[kind].push(...(entry.forwards?.[kind] ?? []));
-  }
-  const computedCall = (names) => names.length ? `|\\b(?:${names.join("|")})\\(\\s*(?!${LITERAL_ARGUMENT})` : "";
-  return {
-    listing: new RegExp(`\\breaddir(?:Sync)?\\b|\\bopendir(?:Sync)?\\b|\\bfs\\.Dir\\b|\\bnew\\s+Dir\\b|\\bglobSync\\b|\\bglob\\s*\\(|\\bnew\\s+Glob\\b|fast-glob|tinyglobby|\\bfs\\.glob\\b${computedCall(forwards.listing)}`, "u"),
-    git: /["'`]git(?:["'`]|\s+[a-z])/u,
-    read: new RegExp(`\\b(?:${["readFileSync", "readFile", "readRepoFile", "existsSync", ...forwards.read].join("|")})\\(\\s*(?!${LITERAL_ARGUMENT})`, "u"),
-  };
-}
-
-export function unboundedInputClasses(text, exemptions = UNBOUNDED_INPUT_EXEMPTIONS) {
-  return Object.entries(unboundedInputPatterns(exemptions)).filter(([, pattern]) => pattern.test(text)).map(([kind]) => kind);
-}
-
-const HELPER_SPECIFIER = /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+|\brequire\s*\(\s*|\bvi\.(?:mock|doMock|importActual)\s*(?:<[^>]*>)?\(\s*)["']((?:\.{1,2}\/|@\/|#)[^"']+)["']/gu;
+const FS_MODULES = new Set(["fs", "node:fs", "fs/promises", "node:fs/promises", "graceful-fs", "fs-extra"]);
+const SUBPROCESS_MODULES = new Set(["child_process", "node:child_process", "worker_threads", "node:worker_threads", "execa", "cross-spawn", "@npmcli/promise-spawn"]);
+const GLOB_MODULES = new Set(["glob", "fast-glob", "tinyglobby", "globby", "glob-fs", "glob-stream", "glob-promise", "node-glob", "fdir", "readdirp", "minimatch", "picomatch", "micromatch"]);
+const LOCAL_SPECIFIER = /^(?:\.{1,2}\/|@\/|#)/u;
 const INPUT_HELPER_EXTENSIONS = ["", ".ts", ".tsx", ".mts", ".cts", ".mjs", ".cjs", ".js", ".jsx"];
 
 function packageImportTarget(imports, specifier) {
@@ -148,7 +130,7 @@ function resolveInputHelper(path, specifier, imports, readText) {
     : specifier.startsWith("#") ? packageImportTarget(imports, specifier)
       : posix.normalize(posix.join(posix.dirname(path), specifier));
   if (target === null) return { unresolved: true };
-  const helper = (target.includes("/__tests__/") || target.startsWith("test/") || target.startsWith("scripts/"))
+  const helper = (target.startsWith("__tests__/") || target.includes("/__tests__/") || target.startsWith("test/") || target.startsWith("scripts/"))
     && !/\.(?:test|spec)\.[cm]?[jt]sx?$/u.test(target);
   if (!helper || /\.json$/u.test(target)) return null;
   const base = target.replace(/\.[cm]?js$/u, "");
@@ -160,40 +142,146 @@ function packageImports(readText) {
   try { return JSON.parse(readText("package.json") ?? "{}").imports; } catch { return undefined; }
 }
 
-function rawUnboundedInputHits(testPath, readText, exemptions) {
-  const patterns = unboundedInputPatterns(exemptions);
-  const imports = packageImports(readText);
-  const hits = [];
-  const seen = new Set();
-  const pending = [testPath];
-  while (pending.length > 0) {
-    const path = pending.pop();
-    if (seen.has(path)) continue;
-    seen.add(path);
-    const text = readText(path);
-    if (typeof text !== "string") {
-      hits.push(`${path}:unresolved`);
-      continue;
+const PATH_CALLS = new Set([
+  "access", "accessSync", "appendFile", "appendFileSync", "chmod", "chmodSync",
+  "exists", "existsSync", "lstat", "lstatSync", "mkdir", "mkdirSync", "mkdtemp", "mkdtempSync",
+  "open", "openSync", "readdir", "readdirSync", "readFile", "readFileSync", "readlink", "readlinkSync",
+  "realpath", "realpathSync", "rm", "rmSync", "rmdir", "rmdirSync", "stat", "statSync",
+  "unlink", "unlinkSync", "writeFile", "writeFileSync",
+]);
+const TWO_PATH_CALLS = new Set(["symlinkSync", "symlink", "linkSync", "link", "cpSync", "cp", "copyFileSync", "copyFile", "renameSync", "rename"]);
+
+const stringOf = (node) => node && (ast.isStringLiteral(node) || ast.isNoSubstitutionTemplateLiteral(node)) ? node.text : undefined;
+const accessOf = (node) => ast.isPropertyAccessExpression(node)
+  ? { receiver: unwrapExpression(node.expression), name: node.name.text }
+  : ast.isElementAccessExpression(node)
+    ? { receiver: unwrapExpression(node.expression), name: stringOf(unwrapExpression(node.argumentExpression)) }
+    : null;
+
+function inspectInputSource(source, exemptions) {
+  const classes = new Set();
+  const specifiers = new Set();
+  const calls = [];
+  const variables = [];
+  const loaders = new Set(["require"]);
+  const factories = new Set(["createRequire"]);
+  const forwards = new Map(Object.values(exemptions).flatMap((entry) => Object.entries(entry.forwards ?? {})
+    .flatMap(([kind, names]) => names.map((name) => [name, kind]))));
+  const fsLocals = new Set();
+  let staticFs = true;
+  let forwarded = false;
+  const addModule = (specifier, isStatic) => {
+    if (FS_MODULES.has(specifier)) {
+      classes.add("read");
+      if (!isStatic || moduleFamily(specifier) !== "fs") staticFs = false;
     }
-    for (const [kind, pattern] of Object.entries(patterns)) {
-      if (pattern.test(text) && !Object.hasOwn(exemptions[path] ?? {}, kind)) hits.push(`${path}:${kind}`);
+    if (SUBPROCESS_MODULES.has(specifier)) classes.add("git");
+    if (GLOB_MODULES.has(specifier) || specifier.startsWith("@glob/")) classes.add("listing");
+    if (specifier === "bun" || specifier === "process" || specifier === "node:process") {
+      // Module aliases can expose the same primitives as the globals.
+      classes.add("runtime");
     }
-    for (const [, specifier] of text.matchAll(HELPER_SPECIFIER)) {
-      const helper = resolveInputHelper(path, specifier, imports, readText);
-      if (helper?.unresolved) hits.push(`${path}:unresolved ${specifier}`);
-      else if (helper) pending.push(helper.path);
+  };
+  const isTypeOnly = (clause) => clause?.isTypeOnly || (clause && !clause.name
+    && clause.namedBindings && ast.isNamedImports(clause.namedBindings)
+    && clause.namedBindings.elements.length > 0 && clause.namedBindings.elements.every((entry) => entry.isTypeOnly));
+  const visit = (node) => {
+    if (ast.isImportDeclaration(node) || ast.isExportDeclaration(node) || ast.isImportEqualsDeclaration(node)) {
+      const specifier = stringOf(ast.isImportEqualsDeclaration(node) ? node.moduleReference.expression : node.moduleSpecifier);
+      if (specifier !== undefined && !node.isTypeOnly && !isTypeOnly(node.importClause)) {
+        specifiers.add(specifier);
+        addModule(specifier, ast.isImportDeclaration(node) && node.importClause !== undefined);
+        if (FS_MODULES.has(specifier) && node.importClause) {
+          const { name, namedBindings } = node.importClause;
+          if (name) fsLocals.add(name.text);
+          if (namedBindings && ast.isNamespaceImport(namedBindings)) fsLocals.add(namedBindings.name.text);
+          if (namedBindings && ast.isNamedImports(namedBindings)) {
+            for (const entry of namedBindings.elements) if (!entry.isTypeOnly) fsLocals.add(entry.name.text);
+          }
+        }
+        if (specifier === "module" || specifier === "node:module") {
+          const bindings = node.importClause?.namedBindings;
+          if (bindings && ast.isNamedImports(bindings)) {
+            for (const entry of bindings.elements) {
+              if ((entry.propertyName ?? entry.name).text === "createRequire") factories.add(entry.name.text);
+            }
+          }
+        }
+      }
+    }
+    if (ast.isCallExpression(node)) calls.push(node);
+    if (ast.isElementAccessExpression(node) && ["Bun", "process"].includes(stringOf(node.argumentExpression))) classes.add("runtime");
+    if (ast.isVariableDeclaration(node) && ast.isIdentifier(node.name) && node.initializer) variables.push(node);
+
+    if (ast.isIdentifier(node)) {
+      const access = accessOf(node.parent);
+      const name = access?.name ?? (access ? undefined : node.text);
+      if (node.text === "Bun" || node.text === "process") {
+        const members = node.text === "Bun" ? ["file", "spawn", "spawnSync", "$", "Glob"] : ["binding"];
+        if (!access || access.receiver !== node || access.name === undefined || members.includes(access.name)) classes.add("runtime");
+      }
+      const kind = forwards.get(node.text) ?? forwards.get(name);
+      if (kind) {
+        const callee = access?.receiver === node ? node.parent : node;
+        const call = callee.parent;
+        // The literal-path index already accounts for direct literal calls.
+        if (!(ast.isCallExpression(call) && call.expression === callee && stringOf(call.arguments[0]) !== undefined)
+          && !(ast.isImportSpecifier(node.parent) && !node.parent.propertyName)) {
+          classes.add(kind);
+          forwarded = true;
+        }
+      }
+    }
+    if (ast.isStringLiteral(node) || ast.isNoSubstitutionTemplateLiteral(node)) {
+      if (node.text === "git" || node.text.startsWith("git ")) classes.add("git");
+      const kind = ast.isElementAccessExpression(node.parent) ? forwards.get(node.text) : undefined;
+      if (kind) {
+        classes.add(kind);
+        forwarded = true;
+      }
+    }
+    node.forEachChild(visit);
+  };
+  visit(source);
+
+  const loaderExpression = (expression) => {
+    const callee = unwrapExpression(expression);
+    if (ast.isIdentifier(callee)) return loaders.has(callee.text);
+    if (accessOf(callee)?.name === "require") return true;
+    if (!ast.isCallExpression(callee)) return false;
+    const factory = unwrapExpression(callee.expression);
+    return ast.isIdentifier(factory) ? factories.has(factory.text) : accessOf(factory)?.name === "createRequire";
+  };
+  // Names are over-approximated here. The temp proof uses scope-resolved bindings.
+  for (const variable of variables) {
+    if (loaderExpression(variable.initializer)) loaders.add(variable.name.text);
+  }
+  for (const call of calls) {
+    const specifier = stringOf(call.arguments[0]);
+    const callee = unwrapExpression(call.expression);
+    const method = accessOf(callee)?.name;
+    const moduleCall = loaderExpression(callee) || callee.kind === ast.SyntaxKind.ImportKeyword
+      || ["mock", "doMock", "importActual", "importMock", "unstable_mockModule"].includes(method);
+    // A module-name argument through an opaque loader cannot support a temp proof.
+    if (specifier !== undefined) {
+      addModule(specifier, false);
+      if (moduleCall) specifiers.add(specifier);
+    } else if (loaderExpression(callee) || callee.kind === ast.SyntaxKind.ImportKeyword) {
+      classes.add("runtime");
     }
   }
-  return hits;
+  return { classes, specifiers, canProveFs: staticFs && !forwarded, fsLocals };
 }
 
-// A non-literal read is bounded only when this file proves its path comes from
-// a temporary root the test made: mkdtemp, os.tmpdir(), or an audited temp
-// helper whose digest matches, joined with literals or for-of variables over
-// literal arrays, with no `..` segment and no absolute segment. Every other
-// read, including any root this cannot prove, stays unbounded.
-const READ_CALL_NAMES = ["readFileSync", "readFile", "existsSync"];
-const COPY_CALL_NAMES = ["symlinkSync", "symlink", "linkSync", "link", "cpSync", "cp", "copyFileSync", "copyFile", "renameSync", "rename"];
+export function unboundedInputClasses(text, exemptions = UNBOUNDED_INPUT_EXEMPTIONS) {
+  return withParsedSourceTexts(new Map([["source.ts", text]]), (sources) => {
+    const source = sources.get("source.ts");
+    return source ? [...inspectInputSource(source, exemptions).classes] : ["unresolved"];
+  });
+}
+
+// A file can leave the always-run set when every runtime use of its fs imports
+// is a modelled operation on a path derived from a known temporary root.
 const TEMP_VALUE_LIMIT = 64;
 const moduleFamily = (specifier) => ({ fs: "fs", "node:fs": "fs", "fs/promises": "fs", "node:fs/promises": "fs",
   path: "path", "node:path": "path", os: "os", "node:os": "os" })[specifier] ?? null;
@@ -239,21 +327,17 @@ function identifiersOf(source) {
   return identifiers;
 }
 
-function proveTempReads(path, text, source, declarations, context) {
+function proveTempReads(path, declarations, fsLocals, context) {
   const references = new Map();
-  const callsByCalleeEnd = new Map();
-  const visit = (node) => {
-    if (ast.isIdentifier(node)) {
-      const declaration = declarations.get(node);
-      if (declaration) references.set(declaration, [...(references.get(declaration) ?? []), node]);
-    }
-    if (ast.isCallExpression(node)) {
-      const callee = unwrapExpression(node.expression);
-      callsByCalleeEnd.set((ast.isPropertyAccessExpression(callee) ? callee.name : callee).end, node);
-    }
-    node.forEachChild(visit);
-  };
-  visit(source);
+  for (const [node, declaration] of declarations) {
+    const parent = node.parent;
+    const nonBinding = (ast.isPropertyAccessExpression(parent) && parent.name === node)
+      || (ast.isImportSpecifier(parent) && parent.propertyName === node);
+    if (!declaration && fsLocals.has(node.text) && !nonBinding) return false;
+    if (!declaration) continue;
+    if (!references.has(declaration)) references.set(declaration, []);
+    references.get(declaration).push(node);
+  }
 
   // { family, name } for an fs, path or os function, or { helper, name } for an
   // imported function of a resolved helper module.
@@ -268,21 +352,19 @@ function proveTempReads(path, text, source, declarations, context) {
         ? resolveInputHelper(path, imported.specifier, context.imports, context.readText) : null;
       return helper?.path ? { helper: helper.path, name: imported.name } : null;
     }
-    if (!ast.isPropertyAccessExpression(callee)) return null;
-    let receiver = unwrapExpression(callee.expression);
-    let member = null;
-    if (ast.isPropertyAccessExpression(receiver)) {
-      member = receiver.name.text;
-      receiver = unwrapExpression(receiver.expression);
-    }
+    const access = accessOf(callee);
+    if (access?.name === undefined) return null;
+    const inner = accessOf(access.receiver);
+    const receiver = inner ? inner.receiver : access.receiver;
+    const member = inner?.name;
     if (!ast.isIdentifier(receiver)) return null;
     const imported = importOf(declarations.get(receiver));
     const family = imported ? moduleFamily(imported.specifier) : null;
     if (!family) return null;
     // fs.promises.readFile, path.posix.join, or { promises } / { posix } imports.
-    const namespace = member === null ? imported.name : imported.name === "*" ? member : null;
+    const namespace = !inner ? imported.name : imported.name === "*" ? member : undefined;
     if (namespace === "*" || (family === "fs" && namespace === "promises") || (family === "path" && namespace === "posix")) {
-      return { family, name: callee.name.text };
+      return { family, name: access.name };
     }
     return null;
   };
@@ -445,89 +527,95 @@ function proveTempReads(path, text, source, declarations, context) {
     }
   };
 
-  // Content copied or linked into the temp tree from elsewhere, or written by a
-  // child process, would make a temp read observe repository content. Every
-  // copy-named identifier must be a proven fs call, an fs namespace may only be
-  // a property receiver, and fs loaded any other way is not followed.
-  if (/child_process|\bexeca\b|\bBun\.(?:\$|spawn)/u.test(text)) return false;
-  if (/\b(?:require|import|importActual|doMock|mock)\s*(?:<[^>]*>)?\(\s*["'](?:node:)?fs(?:\/promises)?["']/u.test(text)) return false;
+  let provedUse = false;
   for (const [declaration, uses] of references) {
     const imported = importOf(declaration);
-    if (imported && moduleFamily(imported.specifier) === "fs") {
-      const namespace = imported.name === "*" || imported.name === "promises";
-      if (COPY_CALL_NAMES.includes(imported.name) && declaration.propertyName) return false;
-      for (const use of uses) {
-        if (use === declaration.name || use === declaration.propertyName) continue;
-        if (namespace && !(ast.isPropertyAccessExpression(use.parent) && use.parent.expression === use)) return false;
+    if (!imported || moduleFamily(imported.specifier) !== "fs") continue;
+    const namespace = imported.name === "*" || imported.name === "promises";
+    for (const use of uses) {
+      if (use === declaration.name || use === declaration.propertyName || use.parent === declaration) continue;
+      let callee = use;
+      if (namespace) {
+        const member = accessOf(use.parent);
+        if (member?.receiver !== use) return false;
+        callee = use.parent;
+        if (member.name === "promises" && imported.name === "*") {
+          if (accessOf(callee.parent)?.receiver !== callee) return false;
+          callee = callee.parent;
+        }
       }
+      const target = calleeOf(callee);
+      const call = callee.parent;
+      if (!target || !ast.isCallExpression(call) || call.expression !== callee) return false;
+      const count = TWO_PATH_CALLS.has(target.name) ? 2 : PATH_CALLS.has(target.name) ? 1 : 0;
+      if (count === 0 || call.arguments.length < count) return false;
+      for (const input of call.arguments.slice(0, count)) {
+        const argument = derive(input);
+        if (!argument?.temp || argument.values.some(escapesRoot)) return false;
+      }
+      provedUse = true;
     }
   }
-  for (const identifier of identifiersOf(source)) {
-    if (!COPY_CALL_NAMES.includes(identifier.text)) continue;
-    const parent = identifier.parent;
-    if (ast.isImportSpecifier(parent)) continue;
-    const callee = ast.isPropertyAccessExpression(parent) && parent.name === identifier ? parent : identifier;
-    const target = calleeOf(callee);
-    // Neither an fs import nor a member of one: aliasing and dynamic fs loads are rejected above.
-    if (!target) continue;
-    const call = callee.parent;
-    if (target?.family !== "fs" || !ast.isCallExpression(call) || call.expression !== callee || call.arguments.length === 0) return false;
-    const from = derive(call.arguments[0]);
-    if (!from?.temp || from.values.some(escapesRoot)) return false;
-  }
-  const read = new RegExp(`\\b(${READ_CALL_NAMES.join("|")}|${["readRepoFile", ...context.forwardedReads].join("|")})\\(\\s*(?!${LITERAL_ARGUMENT})`, "gu");
-  for (const match of text.matchAll(read)) {
-    const call = callsByCalleeEnd.get(match.index + match[1].length);
-    if (!call || !READ_CALL_NAMES.includes(match[1])) return false;
-    const callee = calleeOf(call.expression);
-    if (callee?.family !== "fs" || callee.name !== match[1] || call.arguments.length === 0) return false;
-    const argument = derive(call.arguments[0]);
-    if (!argument?.temp || argument.values.some(escapesRoot)) return false;
-  }
-  return true;
+  return provedUse;
 }
 
-/**
- * The files among `paths` whose every non-literal read is proven temp-bounded.
- * A file that cannot be read, parsed or resolved is not proven.
- */
-export function tempBoundedReadFiles(paths, readText, { exemptions = UNBOUNDED_INPUT_EXEMPTIONS, helpers = UNBOUNDED_INPUT_TEMP_HELPERS } = {}) {
-  const texts = new Map();
-  for (const path of new Set(paths)) {
-    const text = readText(path);
-    if (typeof text === "string") texts.set(path, text);
-  }
-  const proven = new Set();
-  if (texts.size === 0) return proven;
-  const context = {
-    readText,
-    helpers,
-    imports: packageImports(readText),
-    forwardedReads: Object.values(exemptions).flatMap((entry) => entry.forwards?.read ?? []),
-  };
-  withParsedSourceTexts(texts, (sources, resolveDeclarations) => {
-    for (const [path, source] of sources) {
-      if (proveTempReads(path, texts.get(path), source, resolveDeclarations(path, identifiersOf(source)), context)) proven.add(path);
+function inspectTestInputs(tests, readText, exemptions) {
+  const context = { readText, imports: packageImports(readText), helpers: UNBOUNDED_INPUT_TEMP_HELPERS };
+  const roots = new Set(tests);
+  const graph = new Map();
+  let pending = tests;
+  while (pending.length > 0) {
+    const texts = new Map();
+    for (const path of new Set(pending)) {
+      if (graph.has(path)) continue;
+      graph.set(path, { hits: [`${path}:unresolved`], helpers: [] });
+      const text = readText(path);
+      if (typeof text === "string") texts.set(path, text);
     }
-  });
-  return proven;
+    pending = [];
+    withParsedSourceTexts(texts, (sources, resolveDeclarations) => {
+      for (const [path, source] of sources) {
+        const { classes, specifiers, canProveFs, fsLocals } = inspectInputSource(source, exemptions);
+        const hits = [];
+        const helpers = [];
+        for (const specifier of specifiers) {
+          if (!LOCAL_SPECIFIER.test(specifier)) continue;
+          const helper = resolveInputHelper(path, specifier, context.imports, readText);
+          if (helper?.unresolved) hits.push(`${path}:unresolved ${specifier}`);
+          else if (helper) {
+            helpers.push(helper.path);
+            pending.push(helper.path);
+          }
+        }
+        if (roots.has(path) && classes.size === 1 && classes.has("read") && canProveFs
+          && proveTempReads(path, resolveDeclarations(path, identifiersOf(source)), fsLocals, context)) classes.delete("read");
+        for (const kind of classes) {
+          if (!Object.hasOwn(exemptions[path] ?? {}, kind)) hits.push(`${path}:${kind}`);
+        }
+        graph.set(path, { hits, helpers });
+      }
+    });
+  }
+  return new Map(tests.map((test) => {
+    const reached = new Set([test]);
+    const hits = [];
+    for (const path of reached) {
+      const input = graph.get(path);
+      hits.push(...input.hits);
+      for (const helper of input.helpers) reached.add(helper);
+    }
+    return [test, hits];
+  }));
 }
-
-const withoutTempBoundedReads = (hitsByTest, readText, exemptions) => {
-  const readFiles = [...new Set([...hitsByTest.values()].flat().filter((hit) => hit.endsWith(":read")).map((hit) => hit.slice(0, -":read".length)))];
-  const proven = tempBoundedReadFiles(readFiles, readText, { exemptions });
-  return new Map([...hitsByTest].map(([test, hits]) => [test, hits.filter((hit) => !(hit.endsWith(":read") && proven.has(hit.slice(0, -":read".length))))]));
-};
 
 /**
  * Primitive uses in a test and in the __tests__/, test/ and scripts/ modules it
  * imports, as `file:class` entries. A helper import that cannot be resolved or
  * read counts as `file:unresolved`, so an unreadable closure fails closed. A
- * read class whose every non-literal read is proven temp-bounded is dropped.
+ * test can drop its filesystem hit when every use is proven temp-bounded.
  */
 export function unboundedInputHits(testPath, readText, exemptions = UNBOUNDED_INPUT_EXEMPTIONS) {
-  const raw = new Map([[testPath, rawUnboundedInputHits(testPath, readText, exemptions)]]);
-  return withoutTempBoundedReads(raw, readText, exemptions).get(testPath);
+  return inspectTestInputs([testPath], readText, exemptions).get(testPath);
 }
 
 const unboundedInputCache = new WeakMap();
@@ -537,8 +625,7 @@ export function selectUnboundedInputTests(trackedTests, readText, exemptions = U
   unboundedInputCache.set(readText, byTests);
   const cached = exemptions === UNBOUNDED_INPUT_EXEMPTIONS ? byTests.get(trackedTests) : undefined;
   if (cached) return cached;
-  const raw = new Map(trackedTests.map((test) => [test, rawUnboundedInputHits(test, readText, exemptions)]));
-  const hits = withoutTempBoundedReads(new Map([...raw].filter(([, entries]) => entries.length > 0)), readText, exemptions);
+  const hits = inspectTestInputs(trackedTests, readText, exemptions);
   const selected = [...hits].filter(([, entries]) => entries.length > 0).map(([test]) => test).sort();
   if (exemptions === UNBOUNDED_INPUT_EXEMPTIONS) byTests.set(trackedTests, selected);
   return selected;

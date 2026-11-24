@@ -1,6 +1,7 @@
 export type UnboundedInputExemption = {
   readonly listing?: string;
   readonly git?: string;
+  readonly runtime?: string;
   readonly read?: string;
   readonly forwards?: { readonly listing?: readonly string[]; readonly read?: readonly string[] };
 };
