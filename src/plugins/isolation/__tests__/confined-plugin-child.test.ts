@@ -80,6 +80,7 @@ import { PLUGIN_INSTANCE_METHODS } from "../plugin-instance-wire.js";
 import { wrapBundledCommand } from "../../../sandbox/wrap-bundled-command.js";
 import { createSandboxProcessHome } from "../../../permissions/sandbox-process-home.js";
 import { buildSafeChildEnv } from "../../../tools/safe-env.js";
+import * as managedChildren from "../../../main/managed-child-processes.js";
 import {
   buildGitInstallReceipt,
   listFilesRecursive,
@@ -92,6 +93,11 @@ import { once } from "node:events";
 import { promisify } from "node:util";
 
 useVerifiedAveHomePrivacy();
+
+vi.mock("../../../main/managed-child-processes.js", async original => {
+  const actual = await original<typeof managedChildren>();
+  return { ...actual, spawnGatedManagedProcess: vi.fn(actual.spawnGatedManagedProcess) };
+});
 
 const execFileAsync = promisify(execFile);
 
@@ -2865,8 +2871,6 @@ export default async function createPlugin(context) {
   );
 });
 
-/** A `process` entry under the real wrap (docs/history/plugin-hostapi-protocol-migration.md §9.7 P3, decision 36). These prove the spawn path and the environment only; a real non-JS interpreter is the cross-language smoke's job. The launch is `/usr/bin/env <declared pairs> PLUGIN_ROOT=… PLUGIN_DATA=… <command> <args>`, run INSIDE the wrap;
- * the wrapper ASRT spawns; `/bin/bash -c`; sees only the safe host environment and the sandbox HOME. So a variable that would make the wrapper itself run code is set too late to do so, and anything it makes the plugin's own process run is confined. The context the lifecycle hands a process plugin's factory, over the validation host. */
 function processContext(fx: Fixture, plugin: InstalledPlugin): PluginRuntimeContext {
   return {
     pluginId: plugin.pluginId,
@@ -2883,6 +2887,8 @@ function processContext(fx: Fixture, plugin: InstalledPlugin): PluginRuntimeCont
 }
 
 describe("a process entry, spawned under the real wrap", () => {
+  const PROCESS_ENV_CANARY = "process-entry-private-canary";
+
   /** The executable the manifest names: a shell script that `exec`s this host's own binary, as Node, on a small protocol responder. It
    * stands in for a plugin's own launcher, so the spawn and the environment are the production ones and only the program at the end differs. */
   function installProcessPlugin(fx: Fixture): { plugin: InstalledPlugin; manifest: PluginManifest } {
@@ -2903,6 +2909,8 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       PLUGIN_ROOT: process.env.PLUGIN_ROOT,
       PLUGIN_DATA: process.env.PLUGIN_DATA,
       SMOKE_VENDOR_DIR: process.env.SMOKE_VENDOR_DIR,
+      PROCESS_CANARY: process.env.PROCESS_CANARY,
+      argv: process.argv.slice(2),
       entryPath: frame.params.entryPath,
     }));
     reply({ jsonrpc: "2.0", id: frame.id, result: {
@@ -2919,7 +2927,10 @@ process.stdin.on("end", () => process.exit(0));
     const launcher = join(plugin.pluginRoot, "bin", "plugin");
     writeFileSync(
       launcher,
-      `#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec ${JSON.stringify(process.execPath)} "$PLUGIN_ROOT/invoker.mjs"\n`,
+      `#!/bin/sh
+if (true <&3) 2>/dev/null || (true <&4) 2>/dev/null; then exit 90; fi
+ELECTRON_RUN_AS_NODE=1 exec ${JSON.stringify(process.execPath)} "$PLUGIN_ROOT/invoker.mjs" "$@"
+`,
       "utf-8",
     );
     chmodSync(launcher, 0o755);
@@ -2929,7 +2940,11 @@ process.stdin.on("end", () => process.exit(0));
         id: plugin.pluginId,
         name: plugin.pluginId,
         version: "1.0.0",
-        process: { command: "./bin/plugin", env: { SMOKE_VENDOR_DIR: "${PLUGIN_ROOT}/vendor" } },
+        process: {
+          command: "./bin/plugin",
+          args: ["--ordinary"],
+          env: { SMOKE_VENDOR_DIR: "${PLUGIN_ROOT}/vendor", PROCESS_CANARY: PROCESS_ENV_CANARY },
+        },
         requires: { minAppVersion: "0.13.0", hostProtocol: "5" },
         description: "a process entry whose environment is measured",
         tools: [],
@@ -2938,27 +2953,48 @@ process.stdin.on("end", () => process.exit(0));
   }
 
   it.runIf(process.platform === "darwin" || process.platform === "linux")(
-    "reaches construct and reads PLUGIN_ROOT, PLUGIN_DATA and a declared variable from its environment",
+    "delivers the process entry environment through fd 4 without including its values in launch arguments",
     async () => {
       if (!(await sandboxCasesRun())) return;
       const fx = fixture!;
       const { plugin, manifest } = installProcessPlugin(fx);
       await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+      const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
+      const wrap = vi.spyOn(SandboxManager, "wrapWithSandboxArgv");
+      const gatedSpawn = vi.mocked(managedChildren.spawnGatedManagedProcess);
+      gatedSpawn.mockClear();
       const launch = resolveProcessLaunch(manifest, plugin.pluginRoot, plugin.pluginDataDir);
       const factory = createOutOfProcessPluginFactory({ manifest, launch: { kind: "process", ...launch } });
-      const instance = await factory(processContext(fx, plugin));
+      let instance: RuntimePlugin | undefined;
       try {
-        const seen = JSON.parse(readFileSync(join(plugin.pluginDataDir, "launch-env.json"), "utf-8")) as Record<string, string>;
+        instance = await factory(processContext(fx, plugin));
+        expect(wrap).toHaveBeenCalledOnce();
+        expect(wrap.mock.lastCall?.[0]).not.toContain(PROCESS_ENV_CANARY);
+        expect(gatedSpawn).toHaveBeenCalledOnce();
+        const [program, args, options] = gatedSpawn.mock.lastCall ?? [];
+        expect(program).toBeDefined();
+        expect(JSON.stringify([program, args])).not.toContain(PROCESS_ENV_CANARY);
+        expect(options?.stdio).toEqual(["pipe", "pipe", "pipe", "ignore", "pipe"]);
+        const result = gatedSpawn.mock.results[0];
+        if (result?.type !== "return") throw new Error("Expected the process group gate to spawn");
+        const spawned = await result.value;
+        expect(spawned.spawnargs).toContain("launch-gate");
+        expect(JSON.stringify(spawned.spawnargs)).not.toContain(PROCESS_ENV_CANARY);
+        const seen: unknown = JSON.parse(readFileSync(join(plugin.pluginDataDir, "launch-env.json"), "utf-8"));
         expect(seen).toEqual({
           PLUGIN_ROOT: realpathSync(plugin.pluginRoot),
           PLUGIN_DATA: realpathSync(plugin.pluginDataDir),
           SMOKE_VENDOR_DIR: join(realpathSync(plugin.pluginRoot), "vendor"),
+          PROCESS_CANARY: PROCESS_ENV_CANARY,
+          argv: ["--ordinary"],
           // Construct's entryPath is the resolved command for a process launch.
           entryPath: join(realpathSync(plugin.pluginRoot), "bin", "plugin"),
         });
         expect(isPluginChildConfined(plugin.pluginId)).toBe(true);
       } finally {
-        await instance.stop?.();
+        wrap.mockRestore();
+        gatedSpawn.mockClear();
+        await instance?.stop?.();
       }
     },
     120_000,
@@ -3014,7 +3050,7 @@ process.stdin.on("end", () => process.exit(0));
       writeFileSync(startup, `echo ran > ${JSON.stringify(sentinel)}\n`, "utf-8");
       runOuterShellUnconfined({ BASH_ENV: startup }, sentinel);
       await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
-      await spawnBelowHardening(plugin, { BASH_ENV: startup });
+      await expect(spawnBelowHardening(plugin, { BASH_ENV: startup })).rejects.toThrow('Environment variable "BASH_ENV"');
       expect(existsSync(sentinel)).toBe(false);
     },
     120_000,
@@ -3034,7 +3070,7 @@ process.stdin.on("end", () => process.exit(0));
       buildPreloadMarkerLibrary(fx.root, library, sentinel);
       runOuterShellUnconfined({ LD_PRELOAD: library }, sentinel);
       await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
-      await spawnBelowHardening(plugin, { LD_PRELOAD: library });
+      await expect(spawnBelowHardening(plugin, { LD_PRELOAD: library })).rejects.toThrow('Environment variable "LD_PRELOAD"');
       expect(existsSync(sentinel)).toBe(false);
     },
     120_000,

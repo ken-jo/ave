@@ -4,7 +4,6 @@ import { mkdirSync, statSync } from "node:fs";
 import { sameFileIdentity, type FileIdentity } from "../../lib/file-identity.js";
 import type { Socket } from "node:net";
 import { Writable, type Readable } from "node:stream";
-import { ENV_NAME_RE } from "../../mcp/safe-names.js";
 import { ProcessEntryUnconfinedError, type ProcessLaunch } from "../process-entry.js";
 import { isAbsolute, join, resolve as resolvePath } from "node:path";
 import { createLogger } from "../../lib/logger.js";
@@ -372,56 +371,6 @@ type ConfinedPluginLaunch =
   | { readonly kind: "entry"; readonly childEntryPath: string }
   | ({ readonly kind: "process" } & ProcessLaunch);
 
-/** Where a `process` launch's environment is applied: `env(1)`, INSIDE the wrap. Never a `PATH` lookup; both supported platforms ship it here. */
-const PROCESS_ENV_LAUNCHER = "/usr/bin/env";
-
-/** The spawn line for one launch (decision 36). A `process` launch runs `/usr/bin/env <declared pairs> PLUGIN_ROOT=… PLUGIN_DATA=… <command> <args>`, so every variable; host-owned and declared; is set by a process that already runs inside the wrap. The outer executable ASRT
- * spawns is `/bin/bash -c <wrapped>`, which reads its OWN environment before the sandbox command runs (a `BASH_ENV` there is sourced unconfined), so the base environment carries no manifest byte at all: the safe host allow-list, plus the sandbox HOME the caller overlays. */
-function confinedSpawnLine(
-  pluginId: string,
-  launch: ConfinedPluginLaunch,
-): { command: string; args: string[]; baseEnv: NodeJS.ProcessEnv } {
-  if (launch.kind === "entry") {
-    return {
-      // Spawn the production executable in runtime-as-node mode to remove desktop APIs; test each module system because resolution differs.
-      command: process.execPath,
-      args: [launch.childEntryPath],
-      baseEnv: buildSafeChildEnv({ ELECTRON_RUN_AS_NODE: "1" }),
-    };
-  }
-  // `env` reads an operand containing `=` as an assignment, so a command path with one would be split rather than run. The manifest schema refuses
-  // it in `command`; a resolved path can still carry one through a user-chosen home or data directory, and that is refused here, never passed on.
-  if (launch.command.includes("=")) {
-    throw new Error(
-      `[out-of-process-plugin] ${pluginId}: the process entry's resolved path '${launch.command}' contains '=', `
-        + "which env(1) would read as an assignment; move the plugin to a directory without '=' in its path",
-    );
-  }
-  const pairs = Object.entries(launch.env).map(([name, value]) => {
-    if (!ENV_NAME_RE.test(name)) {
-      throw new Error(`[out-of-process-plugin] ${pluginId}: '${name}' is not an environment variable name`);
-    }
-    return `${name}=${value}`;
-  });
-  let launcherIsFile = false;
-  try {
-    launcherIsFile = statSync(PROCESS_ENV_LAUNCHER).isFile();
-  } catch {
-    launcherIsFile = false;
-  }
-  if (!launcherIsFile) {
-    throw new Error(
-      `[out-of-process-plugin] ${pluginId}: ${PROCESS_ENV_LAUNCHER} is missing or not a regular file on this system; `
-        + "a process entry is launched through it",
-    );
-  }
-  return {
-    command: PROCESS_ENV_LAUNCHER,
-    args: [...pairs, launch.command, ...launch.args],
-    baseEnv: buildSafeChildEnv(),
-  };
-}
-
 /** A spawned, confined child. A {@link ChildLink} plus what the factory's owner needs about the process: its pid and its exit. The protocol session
  * never touches a `ChildProcess`, so the protocol can be exercised over in-memory paired streams while the confinement is exercised against a real process. */
 export interface ConfinedPluginChild {
@@ -475,11 +424,10 @@ export async function spawnConfinedPluginChild(
   spec: ConfinedPluginChildSpec,
 ): Promise<ConfinedPluginChild> {
   assertExtensionStartAllowed();
-  const processLaunch = spec.launch.kind === "process";
+  const { launch } = spec;
+  const processLaunch = launch.kind === "process";
   if (processLaunch && process.platform === "win32") throw new ProcessEntryUnconfinedError();
   spec.assertStillValid?.();
-  // Decided before anything is created, so a refused line leaves nothing behind.
-  const spawnLine = confinedSpawnLine(spec.pluginId, spec.launch);
   const sandboxHome = createSandboxProcessHome();
   const socketDir = spec.socketDir;
   let socketDirRegistered = false;
@@ -551,15 +499,18 @@ export async function spawnConfinedPluginChild(
       spec.assertStillValid?.();
     }
     const grant = windowsGrant;
-    const { command, baseEnv } = spawnLine;
-    const extraEnv = { ...sandboxHome.env };
+    const command = processLaunch ? launch.command : process.execPath;
+    const args = processLaunch ? launch.args : [launch.childEntryPath];
+    const baseEnv = buildSafeChildEnv(processLaunch ? undefined : { ELECTRON_RUN_AS_NODE: "1" });
+    // Process entries require POSIX confinement, which delivers this environment through fd 4.
+    const extraEnv = { ...(processLaunch ? launch.env : undefined), ...sandboxHome.env };
     // Windows, wrapped: srt-win relays no stdin, delivers none of this spawn's environment, and PowerShell does not wait for `electron.exe`; so the child is launched through `cmd.exe`, told its environment in
     // an argument, and spoken to over an authenticated loopback connection instead of its pipes (`child-loopback-link.ts`).
-    const windowsLoopback = spec.launch.kind === "entry" && process.platform === "win32" && isPluginWorkerConfinementActive();
-    const referenceStdio = spec.launch.kind === "entry" && !windowsLoopback;
+    const windowsLoopback = !processLaunch && process.platform === "win32" && isPluginWorkerConfinementActive();
+    const referenceStdio = !processLaunch && !windowsLoopback;
     const launchLine = windowsLoopback
-      ? windowsLoopbackLaunchLine(spawnLine.args, baseEnv, extraEnv)
-      : { args: referenceStdio ? [...spawnLine.args, CHILD_PRIVATE_STDIO_TRANSPORT_ARG] : spawnLine.args };
+      ? windowsLoopbackLaunchLine(args, baseEnv, extraEnv)
+      : { args: referenceStdio ? [...args, CHILD_PRIVATE_STDIO_TRANSPORT_ARG] : args };
     const { child, confinement } = await spawnConfinedChild({
       command,
       ...launchLine,
