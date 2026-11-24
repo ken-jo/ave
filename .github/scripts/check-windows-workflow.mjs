@@ -55,7 +55,7 @@ const WRAPPER = ["node", ".github/scripts/run-in-job.mjs"];
 const UNCONTAINED_COMMANDS = new Map([
   ["bun install --frozen-lockfile", "installs dependencies; runs no test code"],
   ["node .github/scripts/check-windows-workflow.mjs", "this guard"],
-  ...["key", "restore", "seal", "verify-publication"].map(operation => ["node .github/scripts/windows-preparation-cache.mjs " + operation, "inventories or verifies preparation bytes"]),
+  ...["key", "restore", "seal", "verify-installed", "verify-publication"].map(operation => ["node .github/scripts/windows-preparation-cache.mjs " + operation, "inventories or verifies preparation bytes"]),
   ["node scripts/fetch-uv.mjs", "fetches a pinned tool"],
   ["node .github/scripts/python-archive-cache.mjs", "computes a cache key"],
   ...["", " -FailureFixture", " -QueryFailureFixture", " -Helper path-kind"].map(option => [
@@ -321,7 +321,7 @@ function checkPreparationCache(job) {
     }
   }
   for (const env of [job.env, ...steps.map(step => step.env)]) {
-    if (env && ("AVE_WINDOWS_PREP_VERIFIED" in env || "AVE_WINDOWS_PREP_STORE" in env)) {
+    if (env && ["AVE_WINDOWS_PREP_VERIFIED", "AVE_WINDOWS_PREP_STORE", "AVE_WINDOWS_PREP_RESTORED_DIGEST"].some(name => Object.hasOwn(env, name))) {
       throw new Error("Only the Windows preparation verifier may set the cache state");
     }
   }
@@ -339,6 +339,19 @@ function checkPreparationCache(job) {
     || !before(seal, cleanup) || !before(cleanup, publication) || !before(publication, save) || save !== steps.at(-1)
     || !exact(save, "save") || save.if !== saveOnlyOnSuccess + " && steps.windows-preparation-publication.outcome == 'success'") {
     throw new Error("Windows preparation must seal new outputs before saving on main after successful containment cleanup");
+  }
+}
+
+function checkFirstPreparationLaunch(steps) {
+  const firstLaunch = steps.find(step => step.run?.split(/\r?\n/u).some(line => CONTAINED_LINE_RE.test(line)));
+  if (firstLaunch?.name !== "Verify native background process ownership"
+    || firstLaunch["working-directory"] !== "ave" || firstLaunch.env?.AVE_WINDOWS_PREP_KEY !== PREPARATION_CACHE_KEY
+    || firstLaunch.run.trim() !== [
+      PREPARATION_CACHE_COMMAND + " verify-installed",
+      "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }",
+      "node .github/scripts/run-in-job.mjs node scripts/test-windows-job.mjs",
+    ].join("\n")) {
+    throw new Error("The first launcher step must rehash installed Windows helpers before executing the launcher");
   }
 }
 
@@ -393,6 +406,7 @@ export function checkWindowsWorkflow(workflow, inspect) {
     ...powerShellCommandProblems(steps.filter(step => !CONTAINED_JOBS.includes(step.jobId)), inspect),
   ];
   if (failures.length) throw new Error(failures.join("\n"));
+  checkFirstPreparationLaunch(jobs[PREPARATION_JOB].steps);
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {

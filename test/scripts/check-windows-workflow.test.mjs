@@ -246,7 +246,7 @@ it("accepts the workflow's contained commands and stated exemptions from parsed 
 const EXEMPTIONS = [
   "bun install --frozen-lockfile",
   "node .github/scripts/check-windows-workflow.mjs",
-  ...["key", "restore", "seal", "verify-publication"].map(operation => `node .github/scripts/windows-preparation-cache.mjs ${operation}`),
+  ...["key", "restore", "seal", "verify-installed", "verify-publication"].map(operation => `node .github/scripts/windows-preparation-cache.mjs ${operation}`),
   "node scripts/fetch-uv.mjs",
   "node .github/scripts/python-archive-cache.mjs",
   ...["", " -FailureFixture", " -QueryFailureFixture", " -Helper path-kind"]
@@ -400,6 +400,22 @@ it("rejects either Windows job bypassing the native platform gate", () => {
     const parsed = parse(workflow);
     parsed.jobs[job].if = "needs.build.outputs.docs_only == 'false'";
     assert.throws(() => checkWindowsWorkflow(stringify(parsed), parsedLines), /must follow native platform selection/);
+  }
+});
+
+it("rehashes the installed helpers before the first launcher command", () => {
+  const steps = parse(workflow).jobs["windows-native-preparation"].steps;
+  const first = steps.find(step => step.run?.includes("node .github/scripts/run-in-job.mjs "));
+  assert.equal(first.run.trim().split("\n")[0], "node .github/scripts/windows-preparation-cache.mjs verify-installed");
+  for (const mutate of [
+    run => run.split("\n").slice(1).join("\n"),
+    run => `node scripts/fetch-uv.mjs\n${run}`,
+    run => run.replace("if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n", ""),
+  ]) {
+    assert.throws(() => checkWindowsWorkflow(changedWorkflow((_steps, get) => {
+      const step = get("Verify native background process ownership");
+      step.run = mutate(step.run);
+    }), parsedLines), /first launcher step must rehash/);
   }
 });
 

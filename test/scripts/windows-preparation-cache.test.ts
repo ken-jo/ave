@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import {
-  restoreWindowsPreparation, sealWindowsPreparation, verifySealedWindowsPreparation, windowsPreparationInputs, windowsPreparationKey,
+  restoreWindowsPreparation, sealWindowsPreparation, verifyInstalledWindowsPreparation, verifySealedWindowsPreparation, windowsPreparationInputs, windowsPreparationKey,
   type WindowsPreparationManifest,
 } from "../../scripts/lib/windows-preparation-cache.mjs";
 import { createTmpDirTracker } from "../../src/__tests__/support/tmp-dir-teardown.js";
@@ -89,6 +89,29 @@ describe("Windows preparation output cache", () => {
     expect(verifyIdentity).toHaveBeenCalledExactlyOnceWith(directory);
     expect(install).toHaveBeenCalledOnce();
     expect(readFileSync(join(directory, required[1] ?? ""), "utf8")).toBe(required[1]);
+  });
+
+  it.each(required)("rejects a changed installed file at the first launcher step: %s", async file => {
+    const root = await sealed(), directory = makeDir(), job = makeDir();
+    const destinations = Object.fromEntries(required.map(name => [name, join(job, name)]));
+    mkdirSync(join(job, "native"));
+    let digest: string | undefined;
+    expect(await restoreWindowsPreparation(root, key, required, true, {
+      verifyIdentity: () => {},
+      stage: { directory, install(readVerified, manifestDigest) {
+        digest = manifestDigest;
+        for (const [name, destination] of Object.entries(destinations)) writeFileSync(destination, readVerified(name));
+      } },
+    })).toBe(true);
+    const launch = vi.fn();
+    const firstStep = () => verifyInstalledWindowsPreparation(directory, key, destinations, digest).then(launch);
+    await firstStep();
+    expect(launch).toHaveBeenCalledOnce();
+    launch.mockClear();
+    const destination = join(job, file);
+    writeFileSync(destination, "changed after verified install");
+    await expect(firstStep()).rejects.toThrow(`Installed Windows helper digest mismatch: ${file}`);
+    expect(launch).not.toHaveBeenCalled();
   });
 
   it.each(["changed", "partial", "extra", "wrong key", "not an exact hit"])("rebuilds on a %s restore before using any outputs", async (problem) => {

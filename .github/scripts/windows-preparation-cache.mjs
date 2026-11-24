@@ -8,7 +8,8 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
-  restoreWindowsPreparation, sealWindowsPreparation, verifySealedWindowsPreparation, windowsPreparationInputs, windowsPreparationKey,
+  restoreWindowsPreparation, sealWindowsPreparation, verifyInstalledWindowsPreparation,
+  verifySealedWindowsPreparation, windowsPreparationInputs, windowsPreparationKey,
 } from "../../scripts/lib/windows-preparation-cache.mts";
 
 const require = createRequire(import.meta.url);
@@ -81,10 +82,22 @@ async function main(operation, root, env) {
   if (key && !/^ave-windows-native-helpers-v2-[a-f0-9]{64}$/u.test(key)) throw new Error("Invalid Windows preparation key");
   const native = nativeFiles(process.arch);
   const pinTest = "ave-path-pin-test.exe";
-  const required = [...native, pinTest].map(file => `native/${file}`);
+  const destinations = Object.fromEntries([
+    ...native.map(file => [`native/${file}`, join(root, file)]),
+    [`native/${pinTest}`, join(tmpdir(), pinTest)],
+  ]);
+  const required = Object.keys(destinations);
+  if (operation === "verify-installed") {
+    if (env.AVE_WINDOWS_PREP_VERIFIED === "true") {
+      if (!key || !isAbsolute(env.AVE_WINDOWS_PREP_STORE ?? "")) throw new Error("Missing restored helper cache identity");
+      await verifyInstalledWindowsPreparation(env.AVE_WINDOWS_PREP_STORE, key, destinations, env.AVE_WINDOWS_PREP_RESTORED_DIGEST);
+    }
+    return;
+  }
   if (operation === "restore") {
     const exactHit = env.AVE_WINDOWS_PREP_EXACT_HIT === "true";
     const directory = key && exactHit ? mkdtempSync(join(realpathSync(temp), "windows-preparation-use-")) : undefined;
+    let installedDigest = "";
     const verified = await restoreWindowsPreparation(store, key, required, exactHit, {
       verifyInputs: () => installedSrtInputs(root),
       verifyIdentity(directory) {
@@ -96,22 +109,21 @@ async function main(operation, root, env) {
       },
       stage: directory && {
         directory,
-        install(readVerified) {
+        install(readVerified, manifestDigest) {
           // Check every buffer before replacing any helper. Installation
           // writes the same bytes without reopening a staged path.
-          const outputs = [
-            ...native.map(file => [join(root, file), readVerified(`native/${file}`)]),
-            [join(tmpdir(), pinTest), readVerified(`native/${pinTest}`)],
-          ];
+          const outputs = Object.entries(destinations).map(([file, destination]) => [destination, readVerified(file)]);
           for (const [destination, bytes] of outputs) writeOutput(destination, temporary => writeFileSync(temporary, bytes));
           const now = new Date();
           for (const file of native.slice(0, 4)) utimesSync(join(root, file), now, now);
+          installedDigest = manifestDigest;
         },
       },
     });
     const canSave = key && env.AVE_WINDOWS_PREP_EXACT_HIT !== "true"
       && env.GITHUB_REF === "refs/heads/main" && ["push", "schedule", "workflow_dispatch"].includes(env.GITHUB_EVENT_NAME);
     appendFileSync(environment, `AVE_WINDOWS_PREP_STORE=${verified ? directory : canSave ? store : ""}\nAVE_WINDOWS_PREP_VERIFIED=${verified}\n`);
+    appendFileSync(environment, `AVE_WINDOWS_PREP_RESTORED_DIGEST=${installedDigest}\n`);
     console.log(verified ? "Using verified Windows preparation outputs" : "Building Windows preparation outputs");
     return;
   }

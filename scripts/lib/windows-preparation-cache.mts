@@ -80,28 +80,48 @@ export async function sealWindowsPreparation(root: string, key: string, required
   return createHash("sha256").update(manifest).digest("hex");
 }
 
-function readOutputManifest(root: string, digest?: string): { key: string; files: Record<string, string> } {
+type OutputManifest = { key: string; files: Record<string, string> };
+
+function readOutputManifest(root: string, expectedDigest?: string): { manifest: OutputManifest; digest: string } {
   const path = join(root, OUTPUT_MANIFEST);
   const stat = lstatSync(path);
   if (!stat.isFile() || stat.nlink !== 1) throw new Error("Invalid preparation output manifest");
-  const manifest = readFileSync(path);
-  if (digest !== undefined && createHash("sha256").update(manifest).digest("hex") !== digest) {
+  const bytes = readFileSync(path);
+  const digest = createHash("sha256").update(bytes).digest("hex");
+  if (expectedDigest !== undefined && digest !== expectedDigest) {
     throw new Error("Windows preparation seal changed");
   }
-  return JSON.parse(manifest.toString("utf8"));
+  return { manifest: JSON.parse(bytes.toString("utf8")), digest };
 }
 
-async function verifyWindowsPreparation(root: string, key: string, required: readonly string[], expected: ReturnType<typeof readOutputManifest>) {
+async function verifyWindowsPreparation(root: string, key: string, required: readonly string[], expected: OutputManifest) {
   const files = await outputFiles(root, required);
   if (expected.key !== key
-    || canonicalJson(expected.files) !== canonicalJson(files) || canonicalJson(readOutputManifest(root)) !== canonicalJson(expected)) {
+    || canonicalJson(expected.files) !== canonicalJson(files) || canonicalJson(readOutputManifest(root).manifest) !== canonicalJson(expected)) {
     throw new Error("Windows preparation cache digest mismatch");
   }
 }
 
-export async function verifySealedWindowsPreparation(root: string, key: string, required: readonly string[], digest: string | undefined) {
+function readSealedOutputManifest(root: string, key: string, digest: string | undefined) {
   if (!digest || !/^[a-f0-9]{64}$/u.test(digest)) throw new Error("Missing preparation seal digest");
-  await verifyWindowsPreparation(root, key, required, readOutputManifest(root, digest));
+  const { manifest } = readOutputManifest(root, digest);
+  if (manifest.key !== key) throw new Error("Windows preparation cache key mismatch");
+  return manifest;
+}
+
+export async function verifySealedWindowsPreparation(root: string, key: string, required: readonly string[], digest: string | undefined) {
+  await verifyWindowsPreparation(root, key, required, readSealedOutputManifest(root, key, digest));
+}
+
+export async function verifyInstalledWindowsPreparation(root: string, key: string, destinations: Readonly<Record<string, string>>, digest: string | undefined) {
+  const { files } = readSealedOutputManifest(root, key, digest);
+  for (const [file, destination] of Object.entries(destinations)) {
+    assertExpectedFile(files, file);
+    const stat = lstatSync(destination);
+    if (!stat.isFile() || stat.nlink !== 1 || await hashFile(destination) !== files[file]) {
+      throw new Error(`Installed Windows helper digest mismatch: ${file}`);
+    }
+  }
 }
 
 type RestoreChecks = {
@@ -109,7 +129,7 @@ type RestoreChecks = {
   verifyInputs?: () => void | Promise<void>;
   stage?: {
     directory: string;
-    install: (readVerified: (file: string) => Buffer) => void;
+    install: (readVerified: (file: string) => Buffer, manifestDigest: string) => void;
   };
 };
 
@@ -129,7 +149,7 @@ export async function restoreWindowsPreparation(
     }
     try {
       if (!lstatSync(store).isDirectory()) throw new Error("Invalid preparation cache root");
-      const expected = readOutputManifest(store);
+      const { manifest: expected, digest } = readOutputManifest(store);
       if (stage) {
         // Preserve rejection of unsupported filesystem entries even when a
         // copy would turn them into ordinary files.
@@ -150,7 +170,7 @@ export async function restoreWindowsPreparation(
           throw new Error(`Windows preparation cache digest mismatch: ${file}`);
         }
         return bytes;
-      });
+      }, digest);
       return true;
     } catch (error) {
       console.log(`Windows preparation cache rejected: ${error instanceof Error ? error.message : String(error)}`);

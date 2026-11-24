@@ -755,7 +755,12 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         shell: powershell
-        run: node .github/scripts/run-in-job.mjs node scripts/test-windows-job.mjs
+        env:
+          AVE_WINDOWS_PREP_KEY: ${{ steps.windows-preparation-key.outputs.key }}
+        run: |
+          node .github/scripts/windows-preparation-cache.mjs verify-installed
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node .github/scripts/run-in-job.mjs node scripts/test-windows-job.mjs
       # Both checks build under the job root's temp tree, so they run in the
       # containment launcher built by the previous step.
       - name: Verify both Windows native payload packages
