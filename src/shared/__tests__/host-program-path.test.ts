@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
+import { windowsAppAliasFixture } from "../../__tests__/support/windows-app-alias-fixture.js";
 import { findHostProgram, HostProgramNotFoundError, resolveHostProgram } from "../host-program-path.js";
 
 const windows = process.platform === "win32";
@@ -81,45 +82,42 @@ describe("resolveHostProgram", () => {
 });
 
 describe("Windows app execution aliases", () => {
-  const local = win32.join("C:\\", "Users", "alice", "AppData", "Local");
-  const aliases = win32.join(local, "Microsoft", "WindowsApps");
+  const { local, aliases, short, outsideLocal, outside, program, executable, root, regularFiles, fs } = windowsAppAliasFixture();
   const tools = win32.join("C:\\", "Tools");
-  const regular = new Set([win32.join(tools, "tool.exe")]);
-  // An alias is a link whose target this account cannot stat; a regular file stats as a file.
-  const fs = {
-    statSync: (path: string) => {
-      if (!regular.has(path)) throw Object.assign(new Error("EACCES"), { code: "EACCES" });
-      return { isFile: () => true };
-    },
-    lstatSync: (path: string) => ({ isSymbolicLink: () => path.endsWith("python3.exe") }),
-    accessSync: () => undefined,
-  };
-  const find = (program: string, env: NodeJS.ProcessEnv) => findHostProgram(program, env, "win32", fs);
+  const tool = win32.join(tools, "tool.exe");
+  regularFiles.add(tool);
+  const find = (env: NodeJS.ProcessEnv, files = fs) => findHostProgram(program, env, "win32", files);
 
-  it("accepts an alias in the account's WindowsApps folder, however PATH spells it", () => {
-    expect(find("python3", { LOCALAPPDATA: local, Path: aliases })).toBe(win32.join(aliases, "python3.exe"));
+  it("resolves the same trusted account directory through long and short spellings", () => {
+    expect(find({ Path: aliases })).toBe(executable);
     const spelled = "c:/users/alice/appdata/local/microsoft/windowsapps/";
-    expect(find("python3", { localappdata: local, PATH: spelled })).toBe(win32.join(spelled, "python3.exe"));
+    expect(find({ PATH: spelled })).toBe(executable);
+    expect(find({ PATH: short })).toBe(executable);
   });
 
-  it("refuses the same link shape in any other PATH folder", () => {
-    expect(find("python3", { LOCALAPPDATA: local, Path: tools })).toBeNull();
-    expect(find("python3", { LOCALAPPDATA: local, Path: win32.join(aliases, "Other") })).toBeNull();
-    expect(find("python3", { LOCALAPPDATA: win32.join("AppData", "Local"), Path: aliases })).toBeNull();
-    expect(find("python3", { Path: aliases })).toBeNull();
+  it("does not accept a child-supplied alias directory", () => {
+    expect(find({ LOCALAPPDATA: outsideLocal, Path: outside })).toBeNull();
+    expect(find({ LOCALAPPDATA: outsideLocal, Path: aliases })).toBe(executable);
+    expect(find({ LOCALAPPDATA: local, Path: win32.join(aliases, "Other") })).toBeNull();
+  });
+
+  it("refuses a redirected or replaced alias parent even at the expected spelling", () => {
+    const env = { LOCALAPPDATA: local, PATH: aliases };
+    expect(find(env, { ...fs, pinWindowsDirectory: () => null })).toBeNull();
+    expect(find(env, { ...fs, pinWindowsDirectory: () => ({ ...root, ino: 3n }) })).toBeNull();
   });
 
   it.runIf(windows && canCreateSymlinks())("refuses a real link that cannot be stat'ed outside WindowsApps", async () => {
     const folder = realpathSync(mkdtempSync(join(tmpdir(), "ave-host-program-link-")));
     try {
-      symlinkSync(join(folder, "missing-target.exe"), join(folder, "python3.exe"), "file");
-      expect(findHostProgram("python3", { LOCALAPPDATA: local, Path: folder }, "win32")).toBeNull();
+      symlinkSync(join(folder, "missing-target.exe"), join(folder, `${program}.exe`), "file");
+      expect(findHostProgram(program, { LOCALAPPDATA: local, Path: folder }, "win32")).toBeNull();
     } finally {
       await cleanupTmpDir(folder);
     }
   });
 
   it("leaves a regular file unaffected", () => {
-    expect(find("tool", { LOCALAPPDATA: local, Path: `${aliases};${tools}` })).toBe(win32.join(tools, "tool.exe"));
+    expect(findHostProgram("tool", { Path: `${aliases};${tools}` }, "win32", fs)).toBe(tool);
   });
 });

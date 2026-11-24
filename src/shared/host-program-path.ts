@@ -1,4 +1,4 @@
-import { accessSync, constants, lstatSync, statSync } from "node:fs";
+import { accessSync, constants, lstatSync, realpathSync, statSync } from "node:fs";
 import { posix, win32 } from "node:path";
 
 export const HOST_PROGRAM_PATH_GUIDANCE = "Use an absolute path or a program name on PATH.";
@@ -29,13 +29,19 @@ export function assertHostProgramNotRelative(program: string, platform: NodeJS.P
   }
 }
 
+interface WindowsDirectoryIdentity {
+  readonly canonical: string;
+  readonly dev: bigint;
+  readonly ino: bigint;
+}
+
 type ProgramFs = {
   statSync(path: string): { isFile(): boolean };
   lstatSync(path: string): { isSymbolicLink(): boolean };
   accessSync(path: string, mode: number): void;
+  readonly windowsApps: WindowsDirectoryIdentity | null;
+  pinWindowsDirectory(path: string): WindowsDirectoryIdentity | null;
 };
-
-const hostFs: ProgramFs = { statSync, lstatSync, accessSync };
 
 function windowsVariable(env: NodeJS.ProcessEnv, name: string): string {
   const key = Object.keys(env).find((candidate) => candidate.toUpperCase() === name);
@@ -46,11 +52,32 @@ function searchPath(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string {
   return platform === "win32" ? windowsVariable(env, "PATH") : env.PATH ?? "";
 }
 
-// The one folder whose app execution aliases launch although their targets cannot be stat'ed.
-function windowsAppsFolder(env: NodeJS.ProcessEnv): string | null {
-  const local = windowsVariable(env, "LOCALAPPDATA");
-  return isFullyQualified(local, "win32") ? win32.join(local, "Microsoft", "WindowsApps").toLowerCase() : null;
+function pinWindowsDirectory(path: string): WindowsDirectoryIdentity | null {
+  try {
+    const entry = lstatSync(path, { bigint: true });
+    if (!entry.isDirectory() || entry.isSymbolicLink() || entry.ino === 0n) return null;
+    // A junction or symlink anywhere in the supplied path can redirect the alias parent.
+    for (let child = path, parent = win32.dirname(child); parent !== child; parent = win32.dirname(child)) {
+      const ancestor = lstatSync(parent);
+      if (!ancestor.isDirectory() || ancestor.isSymbolicLink()) return null;
+      child = parent;
+    }
+    const canonical = realpathSync.native(path);
+    const resolved = lstatSync(canonical, { bigint: true });
+    if (!resolved.isDirectory() || resolved.isSymbolicLink() || entry.dev !== resolved.dev || entry.ino !== resolved.ino) return null;
+    return { canonical, dev: entry.dev, ino: entry.ino };
+  } catch {
+    return null;
+  }
 }
+
+function captureHostWindowsApps(): WindowsDirectoryIdentity | null {
+  if (process.platform !== "win32") return null;
+  const local = windowsVariable(process.env, "LOCALAPPDATA");
+  return isFullyQualified(local, "win32") ? pinWindowsDirectory(win32.join(local, "Microsoft", "WindowsApps")) : null;
+}
+
+const hostFs: ProgramFs = { statSync, lstatSync, accessSync, pinWindowsDirectory, windowsApps: captureHostWindowsApps() };
 
 function pathEntries(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string[] {
   return searchPath(env, platform)
@@ -60,13 +87,18 @@ function pathEntries(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string[
     .filter((entry) => isFullyQualified(entry, platform));
 }
 
-function runnable(candidate: string, platform: NodeJS.Platform, aliases: string | null, fs: ProgramFs): boolean {
+function runnableProgramPath(candidate: string, platform: NodeJS.Platform, fs: ProgramFs): string | null {
   try {
-    if (!fs.statSync(candidate).isFile()) return false;
+    if (!fs.statSync(candidate).isFile()) return null;
     if (platform !== "win32") fs.accessSync(candidate, constants.X_OK);
-    return true;
+    return candidate;
   } catch {
-    return platform === "win32" && aliases !== null && win32.dirname(candidate).toLowerCase() === aliases && isLink(candidate, fs);
+    const trusted = fs.windowsApps;
+    if (platform !== "win32" || trusted === null || !isLink(candidate, fs)) return null;
+    const parent = fs.pinWindowsDirectory(win32.dirname(candidate));
+    // Use the startup account directory's canonical spelling, including when PATH uses an 8.3 name.
+    return parent?.dev === trusted.dev && parent.ino === trusted.ino && parent.canonical.toLowerCase() === trusted.canonical.toLowerCase()
+      ? win32.join(trusted.canonical, win32.basename(candidate)) : null;
   }
 }
 
@@ -93,11 +125,10 @@ export function findHostProgram(
   const names = platform === "win32"
     ? [...(win32.extname(program) ? [program] : []), `${program}.com`, `${program}.exe`]
     : [program];
-  const aliases = platform === "win32" ? windowsAppsFolder(env) : null;
   for (const entry of pathEntries(env, platform)) {
     for (const name of names) {
-      const candidate = paths.join(entry, name);
-      if (runnable(candidate, platform, aliases, fs)) return candidate;
+      const candidate = runnableProgramPath(paths.join(entry, name), platform, fs);
+      if (candidate !== null) return candidate;
     }
   }
   return null;

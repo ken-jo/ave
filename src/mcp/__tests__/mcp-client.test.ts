@@ -12,6 +12,8 @@ import {
 import { PassThrough } from "node:stream";
 import { getAveAppVersion } from "../../shared/app-version.js";
 import { EventEmitter } from "node:events";
+import { windowsAppAliasFixture } from "../../__tests__/support/windows-app-alias-fixture.js";
+import * as hostPrograms from "../../shared/host-program-path.js";
 
 /** Read the fetch stub at call time so per-test replacements affect the injected HTTP transport. */
 const stubbedGlobalNetworkFetch = ((input: RequestInfo | URL, init?: RequestInit) =>
@@ -706,6 +708,26 @@ describe("HttpTransport — SSE streaming", () => {
 });
 
 describe("StdioTransport — regression", () => {
+  it.each([false, true])("uses the host alias directory with child LOCALAPPDATA override %s", async (override) => {
+    const alias = windowsAppAliasFixture();
+    const env = override ? { PATH: alias.outside, LOCALAPPDATA: alias.outsideLocal } : { PATH: alias.aliases };
+    const resolve = vi.spyOn(hostPrograms, "resolveHostProgram").mockImplementationOnce((command, lookupEnv) => {
+      const found = hostPrograms.findHostProgram(command, lookupEnv, "win32", alias.fs);
+      if (found === null) throw new hostPrograms.HostProgramNotFoundError("Program was not found on PATH");
+      return found;
+    });
+    spawnMock.mockImplementationOnce(() => { throw new Error("stop after spawn"); });
+    try {
+      const client = new McpClient({ id: "alias", transport: "stdio", command: alias.program, env },
+        governanceWithPolicy(buildPolicy([stdioApproval("alias", alias.program)])), new ToolRegistry(), stubbedGlobalNetworkFetch);
+      await expect(client.connect()).rejects.toThrow(override ? "was not found on PATH" : "stop after spawn");
+      if (override) expect(spawnMock).not.toHaveBeenCalled();
+      else expect(spawnMock).toHaveBeenCalledWith(alias.executable, [], expect.objectContaining({ env: expect.not.objectContaining({ LOCALAPPDATA: expect.anything() }) }));
+    } finally {
+      resolve.mockRestore();
+    }
+  });
+
   it("spawns a configured bare name from its absolute PATH location", async () => {
     spawnMock.mockImplementationOnce(() => { throw new Error("stop after spawn"); });
     const client = new McpClient({ id: "fs", transport: "stdio", command: "ave-mcp-fs" },
