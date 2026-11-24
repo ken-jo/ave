@@ -7,7 +7,7 @@ import {
   type SandboxTempPrincipal,
 } from "../permissions/asrt-sandbox.js";
 import { createAveHomeBoundarySnapshot } from "../permissions/ave-home-boundary-snapshot.js";
-import { buildLauncherEnvironment, buildSandboxTargetCommand, stageSandboxTargetEnvironment } from "../permissions/launcher-environment.js";
+import { buildLauncherEnvironment, prepareSandboxTargetLaunch, type SandboxTargetLaunch } from "../permissions/launcher-environment.js";
 import type { ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, rmdirSync, statSync, unlinkSync } from "node:fs";
@@ -60,7 +60,9 @@ export interface BundledWrapInput {
 
 /** Apply the same sensitive-path floors and egress policy to bundled processes. The wrapped launch, and the egress token it carries. The
  * caller spawns the process itself, so it owns the token too: `egress.release()` once the process has exited, or when the spawn fails. */
-export async function wrapBundledCommand(input: BundledWrapInput): Promise<{ argv: string[]; env: NodeJS.ProcessEnv; egress: EgressInvocation }> {
+export async function wrapBundledCommand(input: BundledWrapInput): Promise<{
+  argv: string[]; env: NodeJS.ProcessEnv; egress: EgressInvocation; targetLaunch: SandboxTargetLaunch;
+}> {
   if (process.platform === "win32") {
     // The macOS and Linux wrap: allow paths in the command. Windows has no per-exec allow; its
     // bundled processes go through `spawnWindowsBundledProcess`, and reaching here is a caller's mistake.
@@ -70,13 +72,12 @@ export async function wrapBundledCommand(input: BundledWrapInput): Promise<{ arg
   // The principal's own temp directory, set as its TMPDIR inside the wrap (ASRT's own assignment would otherwise name the shared root) and granted alone; the read floor denies the
   // shared temp and HOME roots, so no other principal's temp files or HOME can be read either, and the process HOME re-allowed here is its own; as `confined-child.ts` does for its children.
   const temp = ensureSandboxTempPrincipalDir(input.tempPrincipal);
-  const stagedEnv = stageSandboxTargetEnvironment(input.sandboxHome.path, { ...input.targetEnv, ...input.sandboxHome.env });
-  const cmdline = buildSandboxTargetCommand(input.command, input.args, {}, temp.dir, stagedEnv);
+  const targetLaunch = prepareSandboxTargetLaunch(input.command, input.args, { ...input.targetEnv, ...input.sandboxHome.env }, temp.dir);
   const egress = openEgressInvocation(input.egressOwner);
   let result: { argv: string[]; env: NodeJS.ProcessEnv };
   try {
     const boundarySnapshot = createAveHomeBoundarySnapshot();
-    result = await wrapWorkerCommand(cmdline, {
+    result = await wrapWorkerCommand(targetLaunch.command, {
       commandId: egress.token,
       boundarySnapshot,
       filesystem: {
@@ -105,7 +106,7 @@ export async function wrapBundledCommand(input: BundledWrapInput): Promise<{ arg
     await cleanupAsrtSandboxAfterCommand();
     throw new Error("ASRT returned an empty argv for a bundled process");
   }
-  return { argv: result.argv, env: buildLauncherEnvironment(), egress };
+  return { argv: result.argv, env: buildLauncherEnvironment(), egress, targetLaunch };
 }
 
 /** A bundled process started under srt-win, and what it holds while it runs. */

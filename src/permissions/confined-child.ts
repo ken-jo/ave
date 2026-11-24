@@ -55,7 +55,7 @@ import {
   spawnGatedManagedProcess,
   trackManagedChildProcess,
 } from "../main/managed-child-processes.js";
-import { buildLauncherEnvironment, buildSandboxTargetCommand } from "./launcher-environment.js";
+import { buildLauncherEnvironment, prepareSandboxTargetLaunch, type SandboxTargetLaunch } from "./launcher-environment.js";
 import { createLogger } from "../lib/logger.js";
 import { mainDir } from "../main/main-paths.js";
 import {
@@ -437,7 +437,7 @@ export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<Confi
   const stdio = spec.stdio ?? ["ignore", "pipe", "pipe"];
   if (spec.windowsStdio === "relay") assertRelayableSpec(spec, stdio);
 
-  const { executable, args, env, confinement, relayRequest, egress } = await resolveSpawnLine(spec);
+  const { executable, args, env, confinement, relayRequest, egress, targetLaunch } = await resolveSpawnLine(spec);
   let child: ChildProcess;
   const assertStillValid = (): void => {
     spec.assertStillValid?.();
@@ -458,7 +458,7 @@ export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<Confi
     assertStillValid();
     if (confinement !== "unconfined") assertSrtWinSpawnIntegrity(executable);
     const options: SpawnOptions = {
-      stdio,
+      stdio: targetLaunch?.withStdio(stdio) ?? stdio,
       shell: false,
       windowsHide: true,
       // A wrapped child starts its own process session, so the sandbox profile's refusal to read other processes' arguments and environment (the carried ASRT patch) covers this process group too: Seatbelt only refuses it across sessions.
@@ -477,6 +477,7 @@ export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<Confi
       noteSpawn(child);
       trackManagedChildProcess(child, { label: spec.label, killProcessGroup: egress !== undefined && process.platform !== "win32" });
     }
+    targetLaunch?.sendEnvironment(child);
   } catch (error) {
     egress?.release();
     throw error;
@@ -584,6 +585,7 @@ async function resolveSpawnLine(
   confinement: SpawnConfinement;
   relayRequest?: RelayRequest;
   egress?: EgressInvocation;
+  targetLaunch?: SandboxTargetLaunch;
 }> {
   assertExtensionStartAllowed();
   // An offline owner's refusal is enforced by the wrap, so it never runs without one; it follows the offline-service gate, not the extension setting.
@@ -603,9 +605,11 @@ async function resolveSpawnLine(
   const relay = spec.windowsStdio === "relay" && confinement === "windows-srt" ? windowsRelayLaunch(spec) : undefined;
   const temp = spec.grantMode === "allow-list" ? ensureSandboxTempPrincipalDir(requireTempPrincipal(spec)) : undefined;
   const launcherEnv = buildLauncherEnvironment();
-  const { cmdline, binShell } = confinement === "windows-srt"
+  const targetLaunch = confinement === "windows-srt" ? undefined
+    : prepareSandboxTargetLaunch(spec.command, spec.args, { ...spec.baseEnv, ...spec.extraEnv }, temp?.dir);
+  const { cmdline, binShell } = targetLaunch === undefined
     ? buildWindowsConfinedCommandLine(relay?.launch ?? spec)
-    : { cmdline: buildSandboxTargetCommand(spec.command, spec.args, { ...spec.baseEnv, ...spec.extraEnv }, temp?.dir), binShell: undefined };
+    : { cmdline: targetLaunch.command, binShell: undefined };
   const egress = openEgressInvocation(spec.egressOwner);
   // The child's floor and its wrap share one Ave home boundary snapshot.
   const boundarySnapshot = createAveHomeBoundarySnapshot();
@@ -639,6 +643,7 @@ async function resolveSpawnLine(
     env: launcherEnv,
     confinement,
     egress,
+    ...(targetLaunch !== undefined ? { targetLaunch } : {}),
     ...(relay !== undefined ? { relayRequest: relay.request } : {}),
   };
 }

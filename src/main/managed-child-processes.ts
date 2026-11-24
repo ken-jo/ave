@@ -98,12 +98,12 @@ async function spawnGatedProcess(
 ): Promise<ChildProcess> {
   if (process.platform === "win32") throw new Error("Process group launch gates require POSIX");
   const stdio = Array.isArray(spawnOptions.stdio) ? spawnOptions.stdio : Array(3).fill(spawnOptions.stdio);
-  if (stdio.length > 3) throw new Error("Process group launch gate requires fd 3");
+  if (stdio[3] != null && stdio[3] !== "ignore") throw new Error("Process group launch gate requires fd 3");
   assertManagedChildProcessAdmissionOpen(label);
   const reaper = hooks?.reaper ?? hostDeathReaper();
   reaper.assertAvailable();
   const child = spawn("/bin/sh", ["-c", PROCESS_GROUP_LAUNCH_GATE, "launch-gate", command, ...args], {
-    ...spawnOptions, shell: false, detached: true, stdio: [stdio[0], stdio[1], stdio[2], "pipe"],
+    ...spawnOptions, shell: false, detached: true, stdio: [stdio[0], stdio[1], stdio[2], "pipe", ...stdio.slice(4)],
   });
   const release = child.stdio[3];
   const stopped = new AbortController();

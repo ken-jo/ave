@@ -209,8 +209,8 @@ process.stdin.on('end', () => process.stdout.write(JSON.stringify({action:'allow
     wrap.mockImplementationOnce(async (_command, raw) => {
       const home = (raw as { filesystem: { allowWrite: string[] } }).filesystem.allowWrite[1];
       if (home === undefined) throw new Error("Missing sandbox HOME grant");
-      const file = readdirSync(home).find(name => name.startsWith(".launch-environment-"));
-      if (file !== undefined) staged = readFileSync(join(home, file), "utf8").split("\0");
+      staged = readdirSync(home, { withFileTypes: true }).filter(entry => entry.isFile())
+        .map(entry => readFileSync(join(home, entry.name), "utf8"));
       return { argv: [fixtureNode, script], env: {} };
     });
     const result = await runOneHookScript({ ...runnable(), env: { HOOK_PROBE: "-a=b" } }, payload);
@@ -224,10 +224,9 @@ process.stdin.on('end', () => process.stdout.write(JSON.stringify({action:'allow
     expect(options.filesystem.allowWrite).not.toContain(generationRoot);
     // Its plugin's temp directory, set as TMPDIR inside the wrap, granted alone; the shared root holding every other principal's is read-denied.
     const tempDir = join(SANDBOX_TEMP_ROOT, `plugin-${Buffer.from("hook-plugin").toString("hex")}`);
-    expect(cmdline).toContain("/usr/bin/env -i --");
     expect(cmdline).not.toContain("HOOK_PROBE");
-    expect(staged).toContain("HOOK_PROBE=-a=b");
-    expect(cmdline).toContain(`'TMPDIR=${tempDir}' 'TMP=${tempDir}' 'TEMP=${tempDir}'`);
+    expect(staged.some(contents => contents.includes("HOOK_PROBE=-a=b")), "canary in a launcher file").toBe(false);
+    expect(cmdline).toContain(`'${tempDir}'`);
     expect(cmdline).toContain("'node'");
     expect(options.filesystem.allowWrite).toContain(tempDir);
     expect(options.filesystem.allowWrite).not.toContain(SANDBOX_TEMP_ROOT);

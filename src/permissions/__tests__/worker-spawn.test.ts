@@ -152,6 +152,7 @@ class StubWorkerChild extends EventEmitter {
   stdin = new PassThrough();
   stdout = new PassThrough();
   stderr = new PassThrough();
+  stdio = [this.stdin, this.stdout, this.stderr, null, new PassThrough()];
   exitCode: number | null = null;
   signalCode: NodeJS.Signals | null = null;
   pid = 4242;
@@ -434,13 +435,16 @@ describe("spawnWorker — launcher environment", () => {
     spawnMock.mockReturnValueOnce(child);
 
     try {
-      await spawnWorker(workerOptions({ env: { WORKER_PROBE: "-a=b" } }));
+      const canary = "-worker-canary=quoted ' value\nnext line";
+      await spawnWorker(workerOptions({ env: { WORKER_PROBE: canary } }));
       const [, args, launch] = spawnMock.mock.calls[0] ?? [];
-      const options = launch as { env: NodeJS.ProcessEnv } | undefined;
+      const options = launch as { env: NodeJS.ProcessEnv; stdio: unknown } | undefined;
       expect(options?.env).toEqual({ PATH: "/usr/bin:/bin:/usr/sbin:/sbin" });
+      expect(options?.stdio).toEqual(["pipe", "pipe", "pipe", "ignore", "pipe"]);
       const cmdline = wrapWorkerCommandMock.mock.calls[0]?.[0];
-      expect(cmdline).toContain("/usr/bin/env -i");
-      expect(cmdline).toContain("'WORKER_PROBE=-a=b'");
+      expect(cmdline).not.toContain("worker-canary");
+      expect(JSON.stringify(args)).not.toContain("worker-canary");
+      expect(child.stdio[4]?.read()?.toString().split("\0")).toContain(`WORKER_PROBE=${canary}`);
       const words = parseSandboxWrappedWords(args?.[1] ?? "").map(word => word.value);
       expect(words).toContain(platform === "linux" ? "/usr/bin/bwrap" : "/usr/bin/sandbox-exec");
       expect(words.at(-1)).toBe(cmdline);
@@ -531,9 +535,10 @@ describe("spawnWorker — gate ON (macOS)", () => {
     expect(options.filesystem.allowRead).toContain(stateDir);
     expect(options.filesystem.allowWrite).not.toContain("/tmp/ave-test-sandbox-tmp");
     expect(options.filesystem.denyRead).toContain("/tmp/ave-test-sandbox-tmp");
-    expect(cmdline).toContain(`'TMPDIR=${pluginTempDir}'`);
-    expect(cmdline).toContain(`'${WORKER_STATE_DIR_ENV}=${stateDir}'`);
-    expect(cmdline).toContain(`'HOME=${SANDBOX_HOME}'`);
+    expect(cmdline).toContain(`'${pluginTempDir}'`);
+    const assignments = child.stdio[4]?.read()?.toString().split("\0");
+    expect(assignments).toContain(`${WORKER_STATE_DIR_ENV}=${stateDir}`);
+    expect(assignments).toContain(`HOME=${SANDBOX_HOME}`);
     expect(options.filesystem.allowWrite).toContain(SANDBOX_HOME);
     expect(options.filesystem.allowRead).toContain(SANDBOX_HOME);
     expect(options.filesystem.allowWrite).toContain("/data/index");
@@ -562,7 +567,7 @@ describe("spawnWorker — gate ON (macOS)", () => {
     expect(scmd).toBe("/bin/bash");
     expect(sargs[0]).toBe("-c");
     expect(sopts.shell).toBe(false);
-    expect(sopts.stdio).toEqual(["pipe", "pipe", "pipe"]);
+    expect(sopts.stdio).toEqual(["pipe", "pipe", "pipe", "ignore", "pipe"]);
 
     expect(worker.control).toBe("output-only-v1");
     expect(isPluginWorkerWrapped("local-indexer", "embed")).toBe(true);

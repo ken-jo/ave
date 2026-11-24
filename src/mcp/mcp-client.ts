@@ -1859,7 +1859,7 @@ class StdioTransport implements McpTransport {
 
     let wrapped = false;
     try {
-      const { argv, env, egress } = await wrapBundledCommand({
+      const { argv, env, egress, targetLaunch } = await wrapBundledCommand({
         command: spawnCommand.command,
         args: spawnCommand.args,
         sandboxHome,
@@ -1887,7 +1887,7 @@ class StdioTransport implements McpTransport {
       assertManagedChildProcessAdmissionOpen(`mcp:${this.config.id}:asrt`);
       this.process = spawn(cmd, args, {
         // stdin pipe MUST stay writable for newline-delimited JSON-RPC.
-        stdio: ["pipe", "pipe", "pipe"],
+        stdio: targetLaunch.withStdio(["pipe", "pipe", "pipe"]),
         shell: false,
         windowsHide: true,
         // Its own process session, as for every wrapped child (confined-child.ts): the sandbox's cross-session process-info deny. close() then signals
@@ -1896,6 +1896,7 @@ class StdioTransport implements McpTransport {
         env,
         ...(this.config.cwd ? { cwd: this.config.cwd } : {}),
       });
+      targetLaunch.sendEnvironment(this.process);
 
       trackManagedChildProcess(this.process, { label: `mcp:${this.config.id}:asrt`, killProcessGroup: true });
       // It leads its own process group: the sandbox keeps the ended invocation's listener port while anything in that group lives.

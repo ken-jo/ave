@@ -88,6 +88,7 @@ import {
 import { verifyPluginIntegrity } from "../../runtime/index.js";
 import { installPythonSmoke, reportSmoke } from "./python-smoke-harness.js";
 import { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import { promisify } from "node:util";
 
 useVerifiedAveHomePrivacy();
@@ -3753,6 +3754,75 @@ describe("the sandbox temp directories", () => {
   );
 });
 
+it.runIf(process.platform === "darwin" || process.platform === "linux").each(["complete", "interrupted"])(
+  "keeps a bundled MCP environment canary private during a %s launch",
+  async delivery => {
+    if (!(await sandboxCasesRun())) return;
+    await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+    const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
+    const wrap = vi.spyOn(SandboxManager, "wrapWithSandboxArgv");
+    const home = createSandboxProcessHome();
+    const canary = "-mcp-canary='quoted'\nnext=line";
+    const assertHomeHasNoCanary = () => {
+      const files = readdirSync(fixture!.aveHome, { recursive: true, withFileTypes: true });
+      for (const file of files) {
+        if (file.isFile()) expect(readFileSync(join(file.parentPath, file.name)).includes(canary), file.name).toBe(false);
+      }
+    };
+    try {
+      const { argv, env, egress, targetLaunch } = await wrapBundledCommand({
+        command: "/bin/sh",
+        args: ["-c", 'if (true <&4) 2>/dev/null; then exit 90; fi; IFS= read -r request; printf "%s\\n%s\\n" "$MCP_CANARY" "$request"'],
+        sandboxHome: home,
+        targetEnv: { MCP_CANARY: canary },
+        allowWrite: [],
+        ownPluginReads: [],
+        tempPrincipal: { kind: "mcp", id: "env-probe" },
+        egressOwner: { kind: "worker", role: "mcp-server", pluginId: undefined, instanceId: "env-probe" },
+      });
+      try {
+        expect(wrap).toHaveBeenCalledOnce();
+        expect(wrap.mock.calls[0]![0]).not.toContain("mcp-canary");
+        expect(JSON.stringify(argv)).not.toContain("mcp-canary");
+        expect(env).toEqual({ PATH: "/usr/bin:/bin:/usr/sbin:/sbin" });
+        assertHomeHasNoCanary();
+        const child = spawn(argv[0]!, argv.slice(1), {
+          env, stdio: targetLaunch.withStdio(["pipe", "pipe", "pipe"]), detached: true,
+        });
+        const closed = once(child, "close");
+        let stdout = "";
+        let stderr = "";
+        child.stdout!.setEncoding("utf8").on("data", chunk => { stdout += chunk; });
+        child.stderr!.setEncoding("utf8").on("data", chunk => { stderr += chunk; });
+        child.stdin!.on("error", () => undefined);
+        try {
+          if (process.platform === "linux") {
+            expect(child.pid).toBeDefined();
+            expect(readFileSync(`/proc/${child.pid}/cmdline`, "utf8")).not.toContain("mcp-canary");
+            expect(readFileSync(`/proc/${child.pid}/environ`, "utf8")).not.toContain("MCP_CANARY=");
+          }
+          if (delivery === "complete") targetLaunch.sendEnvironment(child);
+          else (child.stdio[4] as import("node:stream").Writable).end(`MCP_CANARY=${canary}\0`);
+          child.stdin!.end("stdio remains available\n");
+          expect(await closed, stderr).toEqual([delivery === "complete" ? 0 : 1, null]);
+          expect(stdout).toBe(delivery === "complete" ? `${canary}\nstdio remains available\n` : "");
+          assertHomeHasNoCanary();
+        } finally {
+          if (child.exitCode === null && child.signalCode === null) child.kill();
+          await closed;
+        }
+      } finally {
+        egress.release();
+        await cleanupAsrtSandboxAfterCommand();
+      }
+    } finally {
+      wrap.mockRestore();
+      home.cleanup();
+    }
+  },
+  60_000,
+);
+
 it.runIf(process.platform === "darwin" || process.platform === "linux")(
   "refuses worker startup variables and delivers the confined target environment",
   async () => {
@@ -3968,7 +4038,7 @@ async function runBundledWrapToExit(
 ): Promise<void> {
   const sandboxHome = home ?? createSandboxProcessHome();
   try {
-    const { argv, env, egress } = await wrapBundledCommand({
+    const { argv, env, egress, targetLaunch } = await wrapBundledCommand({
       egressOwner: { kind: "worker", role: principal.kind === "mcp" ? "mcp-server" : "hook", pluginId: principal.kind === "plugin" ? principal.id : undefined, instanceId: principal.id },
       command: process.execPath,
       args: [probe],
@@ -3980,9 +4050,10 @@ async function runBundledWrapToExit(
     });
     try {
       const child = spawn(argv[0]!, argv.slice(1), {
-        stdio: ["ignore", "ignore", "ignore"],
+        stdio: targetLaunch.withStdio(["ignore", "ignore", "ignore"]),
         env,
       });
+      targetLaunch.sendEnvironment(child);
       await new Promise<void>((resolve, reject) => {
         child.once("exit", () => resolve());
         child.once("error", reject);

@@ -58,7 +58,7 @@ import {
   type MxcBundledHolder,
   type WindowsBundledSpawn,
 } from "../sandbox/wrap-bundled-command.js";
-import { assertConfiguredLauncherEnvironment } from "../permissions/launcher-environment.js";
+import { assertConfiguredLauncherEnvironment, type SandboxTargetLaunch } from "../permissions/launcher-environment.js";
 
 const log = createLogger("hook-runner");
 
@@ -323,6 +323,7 @@ export async function runOneHookScript(
   }
   let cleanupWrap: (() => void) | undefined;
   let wrappedEgress: EgressInvocation | undefined;
+  let targetLaunch: SandboxTargetLaunch | undefined;
   let windowsSpawn: WindowsBundledSpawn | undefined;
   let contained: MxcBundledHolder | undefined;
   // Bundled hooks require the worker-confinement gate; user hooks use the host-shell plan under which they were admitted, or its live plan.
@@ -421,6 +422,7 @@ export async function runOneHookScript(
       wrappedAsrt = true;
       [spawnCmd, ...spawnArgs] = wrapped.argv;
       spawnEnv = wrapped.env;
+      targetLaunch = wrapped.targetLaunch;
       let cleaned = false;
       cleanupWrap = () => {
         if (cleaned) return;
@@ -480,10 +482,11 @@ export async function runOneHookScript(
         cwd,
         // Forward only the stripped environment and host-owned hook variables.
         env: spawnEnv,
-        stdio: ["pipe", "pipe", "pipe"],
+        stdio: targetLaunch?.withStdio(["pipe", "pipe", "pipe"]) ?? ["pipe", "pipe", "pipe"],
         // A detached group lets timeout termination include descendants.
         detached: process.platform !== "win32",
       });
+      targetLaunch?.sendEnvironment(child);
     } catch (error) {
       wrappedEgress?.release();
       cleanupWrap?.();
