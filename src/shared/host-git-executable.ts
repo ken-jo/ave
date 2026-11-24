@@ -123,13 +123,13 @@ export function systemGitCandidates(
 
 interface DiscoveryCheck<T = unknown> {
   sync(): T;
-  async(): Promise<T>;
+  async(deadline?: number): Promise<T>;
 }
 
 type GitChecks<T> = Generator<DiscoveryCheck, T, unknown>;
 
 // Both drivers perform the same checks and feed their results back into the same selection policy.
-function* check<T>(sync: () => T, async: () => Promise<T>): GitChecks<T> {
+function* check<T>(sync: () => T, async: DiscoveryCheck<T>["async"]): GitChecks<T> {
   return (yield { sync, async }) as T;
 }
 
@@ -148,16 +148,23 @@ function runChecksSync<T>(checks: GitChecks<T>): T {
   return step.value;
 }
 
-async function runChecksAsync<T>(checks: GitChecks<T>): Promise<T> {
+function checkDiscoveryDeadline(deadline: number | undefined): void {
+  if (deadline !== undefined && performance.now() >= deadline) throw new DOMException("Git discovery timed out", "TimeoutError");
+}
+
+async function runChecksAsync<T>(checks: GitChecks<T>, deadline?: number): Promise<T> {
+  checkDiscoveryDeadline(deadline);
   let step = checks.next();
   while (!step.done) {
     let value: unknown;
     try {
-      value = await step.value.async();
+      value = await step.value.async(deadline);
     } catch (error) {
+      checkDiscoveryDeadline(deadline);
       step = checks.throw(error);
       continue;
     }
+    checkDiscoveryDeadline(deadline);
     step = checks.next(value);
   }
   return step.value;
@@ -226,7 +233,7 @@ export interface GitDiscovery {
 }
 
 function runProbe(path: string, args: string[], options: Parameters<typeof runGitProbeAsync>[2] = {}) {
-  return check(() => runGitProbeSync(path, args, options), () => runGitProbeAsync(path, args, options));
+  return check(() => runGitProbeSync(path, args, options), deadline => runGitProbeAsync(path, args, options, deadline));
 }
 
 function* findInstallerLayout(root: string, path: string): GitChecks<InstallerGitInstall | null> {
@@ -248,7 +255,7 @@ function* probeInstallerGit(install: InstallerGitInstall): GitChecks<GitCandidat
     const pathEntries = [cwd, join(install.root, install.prefix, "bin"), join(install.root, "usr", "bin")];
     if (pathEntries.some((entry) => entry.includes(";"))) return null;
     const systemDirectory = yield* check(queryWindowsSystemDirectorySync,
-      () => queryWindowsSystemDirectory(TOOL_TIMEOUT_POLICY.projectGitQueryMs));
+      deadline => queryWindowsSystemDirectory(Math.min(TOOL_TIMEOUT_POLICY.projectGitQueryMs, (deadline ?? Infinity) - performance.now())));
     const systemRoot = win32.dirname(systemDirectory);
     if (systemDirectory.includes(";")) return null;
     const lookupSwitch = process.env.NoDefaultCurrentDirectoryInExePath;
@@ -382,10 +389,13 @@ function discoverHostGitSync(installerRoot: string | null): GitDiscovery {
   return finishDiscovery(installerRoot, cached, result);
 }
 
-function discoverGit(installerRoot: string | null, failedPath?: string): Promise<GitDiscovery> {
+function discoverGit(installerRoot: string | null, failedPath?: string, deadline?: number): Promise<GitDiscovery> {
+  checkDiscoveryDeadline(deadline);
   const pending = pendingDiscoveries.get(installerRoot);
   if (pending) return pending;
   const cached = discoveredGit.get(installerRoot);
+  if (deadline !== undefined) return runChecksAsync(selectGit(installerRoot, cached, failedPath), deadline)
+    .then(result => finishDiscovery(installerRoot, cached, result));
   const discovery: Promise<GitDiscovery> = runChecksAsync(selectGit(installerRoot, cached, failedPath))
     .then((result) => pendingDiscoveries.get(installerRoot) === discovery
       ? finishDiscovery(installerRoot, cached, result)
@@ -410,9 +420,11 @@ function isLaunchFailure(error: unknown, path: string): boolean {
 export async function withHostGitRecovery<T>(
   installerRoot: string | null,
   use: (discovery: GitDiscovery) => Promise<T>,
+  deadline?: number,
 ): Promise<T> {
-  let discovery = await discoverGit(installerRoot);
+  let discovery = await discoverGit(installerRoot, undefined, deadline);
   for (let attempt = 0; ; attempt++) {
+    checkDiscoveryDeadline(deadline);
     try {
       return await use(discovery);
     } catch (error) {
@@ -424,7 +436,7 @@ export async function withHostGitRecovery<T>(
         pendingDiscoveries.delete(installerRoot);
       }
       if (attempt === 1) throw error;
-      discovery = await discoverGit(installerRoot, ownsSelection ? git.path : undefined);
+      discovery = await discoverGit(installerRoot, ownsSelection ? git.path : undefined, deadline);
     }
   }
 }

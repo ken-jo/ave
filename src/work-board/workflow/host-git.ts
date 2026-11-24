@@ -43,7 +43,7 @@ interface HostGitResult { code: number; stdout: string; stderr: string }
 /** `worktree`: the registration and the folder git works on, given to it outright; it then reads no `.git` file to find them.
  * `exact`: the answer holds names the caller compares, looks up on disk or hands back to git, so it must be text as it stands: one
  * that is not would be read as other names, and is refused as `not-text`. `paths`: the paths the call is about, each given to git as
- * that one path and never as a pattern; an argument list carries none. `deadline` is a `performance.now()` timestamp shared with input preparation. */
+ * that one path and never as a pattern; an argument list carries none. `deadline` is a `performance.now()` timestamp for preflight and launch. */
 interface HostGitCall { stdin?: string | Buffer; drivers?: readonly string[]; isolated?: boolean; exact?: boolean; worktree?: { gitDir: string; workTree: string }; paths?: readonly string[]; requiresFloor?: boolean; deadline?: number }
 /** Bytes as the text they are and nothing else: no byte replaced, no leading mark dropped. Throws for bytes that are no text. */
 const STRICT_TEXT = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
@@ -55,17 +55,22 @@ export class HostGitError extends Error {
  * discovery probed it with. */
 interface HostGitProgram { path: string; identity: string; bundled?: { searchPath: string; systemRoot: string } }
 /** Runs `use` with the git the host resolved, or null when it resolved none; a program that could not be started is resolved again. */
-export type HostGitResolver = <T>(use: (git: HostGitProgram | null) => Promise<T>) => Promise<T>;
+export type HostGitResolver = <T>(use: (git: HostGitProgram | null) => Promise<T>, deadline?: number) => Promise<T>;
 
 /** The host's own discovery: never a name looked up from the folder a call runs in. */
-const discoveredGit: HostGitResolver = (use) => {
+const discoveredGit: HostGitResolver = (use, deadline) => {
   const packaged = isConfigured() ? getIsPackaged() : isPackagedElectronProcess();
   return withHostGitRecovery(installerGitRoot(packaged), ({ git }) => use(git === null ? null : {
     path: git.path,
     identity: git.identity,
     ...git.installer === undefined ? {} : { bundled: { searchPath: git.options.env.PATH ?? "", systemRoot: git.installer.systemRoot } },
-  }));
+  }), deadline);
 };
+
+const gitTimedOut = (): HostGitError => new HostGitError("timeout", "git did not finish in time");
+function checkDeadline(deadline: number | undefined): void {
+  if (deadline !== undefined && performance.now() >= deadline) throw gitTimedOut();
+}
 
 export interface HostGit {
   /** Runs one hardened git process. A non-zero exit is returned, never thrown; only a process that could not run or finish throws: one
@@ -112,29 +117,49 @@ export function createHostGit(options: { env?: NodeJS.ProcessEnv; resolve?: Host
   const teardownMs = options.teardownMs ?? GIT_TEARDOWN_MS;
 
   /** What git wrote, as the bytes it wrote. */
-  function raw(cwd: string, args: readonly string[], call: HostGitCall = {}): Promise<{ code: number; stdout: Buffer; stderr: Buffer }> {
-    if (args.includes("--")) return Promise.reject(new Error("a path reaches git only as one of the call's paths"));
+  async function raw(cwd: string, args: readonly string[], call: HostGitCall = {}): Promise<{ code: number; stdout: Buffer; stderr: Buffer }> {
+    if (args.includes("--")) throw new Error("a path reaches git only as one of the call's paths");
+    const { deadline } = call;
+    checkDeadline(deadline);
     const configArgs = [...HARDENED_CONFIG.flatMap(entry => ["-c", entry]), ...(call.drivers ?? [])];
     const full = [
       ...call.worktree === undefined ? [] : [`--git-dir=${call.worktree.gitDir}`, `--work-tree=${call.worktree.workTree}`],
       ...args,
       ...call.paths === undefined ? [] : ["--", ...call.paths.map(path => `:(literal)${path}`)],
     ];
-    return resolve(async (git) => {
-      if (call.requiresFloor && (git === null || !isAbsolute(git.path) || !(await floorHoldsOn(git, base)))) {
-        throw new HostGitError("unavailable", "the selected git has not passed the hook floor probe");
+    let timer: NodeJS.Timeout | undefined;
+    let arm = (): void => {};
+    const runResolved = async (git: HostGitProgram | null) => {
+      checkDeadline(deadline);
+      if (call.requiresFloor) {
+        const holds = git !== null && isAbsolute(git.path) && await floorHoldsOn(git, base, deadline);
+        checkDeadline(deadline);
+        if (!holds) throw new HostGitError("unavailable", "the selected git has not passed the hook floor probe");
       }
-      return start(git, cwd, buildHostGitArgs(full, { configArgs }), call);
+      clearTimeout(timer);
+      try { return await start(git, cwd, buildHostGitArgs(full, { configArgs }), call); }
+      catch (error) { arm(); throw error; }
+    };
+    if (deadline === undefined) return resolve(runResolved);
+    // The managed child owns its timer from launch. A launch failure can return to preflight for recovery.
+    const expired = new Promise<never>((_resolve, reject) => {
+      arm = () => { timer = setTimeout(() => reject(gitTimedOut()), Math.max(0, Math.ceil(deadline - performance.now()))); };
+      arm();
     });
+    try { return await Promise.race([expired, resolve(runResolved, deadline)]); }
+    catch (error) {
+      if (error instanceof DOMException && error.name === "TimeoutError") throw gitTimedOut();
+      throw error;
+    } finally { clearTimeout(timer); }
   }
 
   function start(git: HostGitProgram | null, cwd: string, args: string[], call: HostGitCall): Promise<{ code: number; stdout: Buffer; stderr: Buffer }> {
+    checkDeadline(call.deadline);
     if (git === null || !isAbsolute(git.path)) return Promise.reject(new HostGitError("unavailable", "no git installation was found"));
     return new Promise((resolve, reject) => {
       if (executableIdentitySync(git.path) !== git.identity) return reject(new HostGitError("unavailable", "the selected git changed before launch"));
       const timeLeft = (): number => call.deadline === undefined ? timeoutMs : Math.min(timeoutMs, call.deadline - performance.now());
-      const timedOut = (): HostGitError => new HostGitError("timeout", "git did not finish in time");
-      if (timeLeft() <= 0) return reject(timedOut());
+      if (timeLeft() <= 0) return reject(gitTimedOut());
       const started = spawnHostGitIfWorkspaceFree(cwd, git.path, args, { cwd, env: programEnv(call.isolated === true ? isolated : env, git), windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
       if (started === "held") return reject(new HostGitError("held", "the workspace is held by a sandboxed command"));
       if (started === "no-folder") return reject(new HostGitError("unavailable", "the folder git would run in does not exist"));
@@ -166,7 +191,7 @@ export function createHostGit(options: { env?: NodeJS.ProcessEnv; resolve?: Host
         // The whole tree, within the bound that kill has of its own; then the wait for the pipes begins.
         void Promise.resolve().then(() => forceKillManagedChildProcess(child, `host git ${error.reason}`)).then(abandon, abandon);
       };
-      const timer = setTimeout(() => stop(timedOut()), Math.ceil(timeLeft()));
+      const timer = setTimeout(() => stop(gitTimedOut()), Math.ceil(timeLeft()));
       const collect = (into: Buffer[]) => (chunk: Buffer): void => {
         size += chunk.length;
         if (size > maxOutputBytes) stop(new HostGitError("output-limit", "git wrote more than the host reads"));
@@ -178,7 +203,7 @@ export function createHostGit(options: { env?: NodeJS.ProcessEnv; resolve?: Host
       child.on("exit", abandon);
       child.on("close", (code) => settle(() => {
         if (failure) reject(failure);
-        else if (call.deadline !== undefined && timeLeft() <= 0) reject(timedOut());
+        else if (call.deadline !== undefined && timeLeft() <= 0) reject(gitTimedOut());
         // Ended by something other than the host: what it wrote is not a whole answer.
         else if (code === null) reject(new HostGitError("terminated", "git ended without an exit code"));
         else resolve({ code, stdout: Buffer.concat(out), stderr: Buffer.concat(err) });
@@ -264,14 +289,15 @@ let unprovenLogged = false;
  * and none for a listed event may. Anything else, a failed call or a timeout among them, is no. Only an answer the probe finished with
  * is kept: a scratch folder that cannot be made or taken away decides nothing.
  */
-function floorHoldsOn(git: HostGitProgram, env: NodeJS.ProcessEnv): Promise<boolean> {
+function floorHoldsOn(git: HostGitProgram, env: NodeJS.ProcessEnv, deadline?: number): Promise<boolean> {
+  checkDeadline(deadline);
   const key = `${git.path}\0${git.identity}`;
   const known = floorProbes.get(key);
   if (known !== undefined) return known;
   let scratch: string;
   try { scratch = mkdtempSync(join(tmpdir(), "ave-git-floor-")); } catch { return Promise.resolve(false); }
   // A probe that did not finish, held or timed out among them, answers no and is asked again next time.
-  const verdict: Promise<boolean> = probeFloor(createHostGit({ env, resolve: use => use(git) }), scratch).catch(() => {
+  const verdict: Promise<boolean> = probeFloor(createHostGit({ env, resolve: use => use(git) }), scratch, deadline).catch(() => {
     if (floorProbes.get(key) === verdict) floorProbes.delete(key);
     return false;
   });
@@ -280,13 +306,14 @@ function floorHoldsOn(git: HostGitProgram, env: NodeJS.ProcessEnv): Promise<bool
   return verdict;
 }
 
-async function probeFloor(git: HostGit, scratch: string): Promise<boolean> {
-  const version = await git.run(scratch, ["--version"], { isolated: true });
-  if (version.code !== 0 || (await git.run(scratch, ["init", "-q"], { isolated: true })).code !== 0) return false;
+async function probeFloor(git: HostGit, scratch: string, deadline?: number): Promise<boolean> {
+  const options = { isolated: true, deadline };
+  const version = await git.run(scratch, ["--version"], options);
+  if (version.code !== 0 || (await git.run(scratch, ["init", "-q"], options)).code !== 0) return false;
   const marker = join(scratch, "ran");
   const quoted = `'${marker.split("\\").join("/").split("'").join("'\\''")}'`;
   const hooked = async (event: string, exit: number, unlisted: string[] = []): Promise<number> => (await git.run(scratch, ["hook", "run", ...unlisted, "--ignore-missing", event], {
-    isolated: true, drivers: ["-c", `hook.ave-floor-probe.event=${event}`, "-c", `hook.ave-floor-probe.command=echo ran >> ${quoted}; exit ${exit}`],
+    ...options, drivers: ["-c", `hook.ave-floor-probe.event=${event}`, "-c", `hook.ave-floor-probe.command=echo ran >> ${quoted}; exit ${exit}`],
   })).code;
   if (await hooked("ave-floor-probe", 0, ["--allow-unknown-hook-name"]) !== 0 || !existsSync(marker)) return false;
   rmSync(marker);

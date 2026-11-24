@@ -6,6 +6,7 @@ import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { PassThrough } from "node:stream";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { deferred } from "../../../__tests__/support/deferred.js";
 import { HOOK_EVENTS, holdSandboxGitWrites } from "../../../shared/host-git.js";
 import { discoverHostGitAsync, executableIdentitySync } from "../../../shared/host-git-executable.js";
 import { createHostGit, HostGitError } from "../host-git.js";
@@ -106,6 +107,45 @@ describe("host git", () => {
       expect(await result).toBe("timeout");
       expect(killedAtDeadline).toBe(1);
     } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["executable resolution", "an uncached hook floor"])("enforces the deadline during %s and prevents a later launch", async (phase) => {
+    const resolving = phase === "executable resolution";
+    const path = join(base, "floor-probe");
+    writeFileSync(path, "", { mode: 0o700 });
+    const identity = executableIdentitySync(path);
+    if (identity === null) throw new Error("expected fixture executable identity");
+    const released = deferred<void>();
+    const first = hangingChild();
+    spawned.fake = () => {
+      if (!resolving && spawned.calls === 1) return first.child;
+      const later = hangingChild().child;
+      queueMicrotask(() => later.emit("close", 1));
+      return later;
+    };
+    const host = createHostGit({ env, resolve: async use => {
+      if (resolving) await released.promise;
+      return use({ path, identity });
+    } });
+    vi.useFakeTimers({ toFake: ["performance", "setTimeout", "clearTimeout"] });
+    try {
+      let verdict: string | undefined;
+      const result = reasonOf(host.run(base, ["status"], { deadline: performance.now() + 20, requiresFloor: true }))
+        .then(reason => { verdict = reason; });
+      await vi.advanceTimersByTimeAsync(20);
+      const verdictAtDeadline = verdict;
+      const killsAtDeadline = first.killed();
+      released.resolve();
+      first.child.stdout?.write("git version 2.54.0\n");
+      first.child.emit("close", 0);
+      await vi.advanceTimersByTimeAsync(0);
+      await result;
+      const floorProbeCount = resolving ? 0 : 1;
+      expect([verdictAtDeadline, killsAtDeadline, spawned.calls]).toEqual(["timeout", floorProbeCount, floorProbeCount]);
+    } finally {
+      released.resolve();
       vi.useRealTimers();
     }
   });
