@@ -537,24 +537,26 @@ describe("a staged download", () => {
     expect(await restarted.files.listRecords(restarted)).toHaveLength(occupied ? 1 : 0);
   });
 
-  it.each(["before move", "after move", "after commit", "after retirement", "competing target", "replaced part"] as const)("restarts after a stopped replacement: %s", async (boundary) => {
+  it.each(["before move", "after move", "after commit", "after retirement", "competing target", "replaced part", "writer birth mismatch", "missing writer birth"] as const)("restarts after a stopped replacement: %s", async (boundary) => {
     const prepared = prepare();
     const chosen = join(home, "chosen");
     mkdirSync(chosen);
     const target = join(chosen, "report.pdf");
     writeFileSync(target, "old bytes");
     const windows = process.platform === "win32";
-    const fileId = (path: string) => {
+    const epoch = windows ? 11644473600000000000n : 0n;
+    const fileId = (path: string): { dev: bigint; ino: bigint; birthtimeNs?: bigint } => {
       const info = statSync(path, { bigint: true });
       const [facts] = windows ? JSON.parse(execFileSync(WINDOWS_PATH_KIND, ["--pin", path], { encoding: "utf8" })) : [];
-      return { dev: windows ? BigInt(facts.volumeSerial) : info.dev, ino: windows ? BigInt(facts.fileId) : info.ino };
+      return { dev: windows ? BigInt(facts.volumeSerial) : info.dev, ino: windows ? BigInt(facts.fileId) : info.ino, birthtimeNs: info.birthtimeNs + epoch };
     };
     const original = statSync(target, { bigint: true });
-    const identity = { ...fileId(target), birthtimeNs: original.birthtimeNs + (windows ? 11644473600000000000n : 0n) };
+    const identity = fileId(target);
     let hidden = "";
     let partPath = "";
     let writer: ReturnType<typeof fileId> | undefined;
-    const committed = boundary === "after commit" || boundary === "after retirement";
+    const unverifiedWriter = boundary === "writer birth mismatch" || boundary === "missing writer birth";
+    const committed = boundary === "after commit" || boundary === "after retirement" || unverifiedWriter;
     const root = withFiles(acrossVolumes(prepared), () => ({
       copy: async (_from, _name, _to, _target, part, _proceed, _stop, journal) => {
         if (!journal) throw new Error("missing write-ahead record");
@@ -562,6 +564,8 @@ describe("a staged download", () => {
         partPath = join(chosen, part);
         writeFileSync(partPath, "new bytes");
         writer = fileId(partPath);
+        if (boundary === "writer birth mismatch") writer = { ...writer, birthtimeNs: (writer.birthtimeNs ?? 0n) + 100n };
+        if (boundary === "missing writer birth") writer = { dev: writer.dev, ino: writer.ino };
         await journal.write(identity, writer);
         if (boundary === "replaced part") {
           moveAside(partPath, join(chosen, "held-by-test"));
@@ -599,7 +603,11 @@ describe("a staged download", () => {
       },
     }));
     await sweepBrowserDownloadStaging(restarted);
-    if (boundary === "competing target") {
+    if (unverifiedWriter) {
+      expect(readFileSync(target, "utf8")).toBe("new bytes");
+      expect(readFileSync(join(chosen, hidden), "utf8")).toBe("old bytes");
+      expect(await restarted.files.listRecords(restarted)).toEqual(records);
+    } else if (boundary === "competing target") {
       expect(readFileSync(target, "utf8")).toBe("competing bytes");
       expect(statSync(join(chosen, hidden), { bigint: true }).ino).toBe(original.ino);
       expect(await restarted.files.listRecords(restarted)).toEqual(records);
@@ -790,7 +798,7 @@ describe("a stalled copy's temporary file, removed through the native helper", (
           const [facts] = JSON.parse(execFileSync(WINDOWS_PATH_KIND, ["--pin", path], { encoding: "utf8", windowsHide: true })) as
             { volumeSerial: string; fileId: string }[];
           if (facts === undefined) throw new Error("fixture file identity not available");
-          partFile = { dev: BigInt(facts.volumeSerial), ino: BigInt(facts.fileId) };
+          partFile = { dev: BigInt(facts.volumeSerial), ino: BigInt(facts.fileId), birthtimeNs: info.birthtimeNs + 11644473600000000000n };
         }
         const error = new HeldFileHelperStalledError("/helper", "did not end within 1 ms of being stopped", true);
         Object.assign(error, { passed: "ready", partialCopy: "left", exited, partFile });
@@ -1845,7 +1853,7 @@ describe.runIf(process.platform === "darwin")("a stopped native copy's temporary
     // Send both bytes in one write: authorize creation at ready, with the stop byte pending at the first poll.
     const transcript = execFileSync(helper, ["--dir-copy", root.path, String(root.dev), String(root.ino), source, chosen,
       String(folder.dev), String(folder.ino), "report.pdf", `.${source}.part`, HIDDEN_FOR_RECOVERY], { input: "cx", encoding: "utf8" });
-    expect(transcript).toMatch(/^ready\nwriting \d+ \d+\ncancelled left \.[0-9a-f]{32}\.removing /u);
+    expect(transcript).toMatch(/^ready\nwriting \d+ \d+ \d+\ncancelled left \.[0-9a-f]{32}\.removing /u);
     const [hidden] = entriesOf(chosen);
     expect(statSync(join(chosen, hidden ?? "")).size).toBe(0);
   });

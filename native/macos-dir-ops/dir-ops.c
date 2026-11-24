@@ -270,7 +270,10 @@ static int names_entry(int directory, const char *name, int fd, int allow_links)
   return fstat(fd, &held) == 0 && (S_ISREG(held.st_mode) || (allow_links && S_ISLNK(held.st_mode))) &&
     fstatat(directory, name, &named, AT_SYMLINK_NOFOLLOW) == 0 &&
     (named.st_mode & S_IFMT) == (held.st_mode & S_IFMT) &&
-    named.st_dev == held.st_dev && named.st_ino == held.st_ino;
+    named.st_dev == held.st_dev && named.st_ino == held.st_ino &&
+    (held.st_birthtimespec.tv_sec != 0 || held.st_birthtimespec.tv_nsec != 0) &&
+    named.st_birthtimespec.tv_sec == held.st_birthtimespec.tv_sec &&
+    named.st_birthtimespec.tv_nsec == held.st_birthtimespec.tv_nsec;
 }
 
 static int names_file(int directory, const char *name, int fd) {
@@ -414,11 +417,11 @@ static enum remove_result retire_held(int directory, const char *name, int fd, s
   return REMOVE_LEFT;
 }
 
-static int matches_file(int fd, uint64_t dev, uint64_t ino, const uint64_t *birth) {
+static int matches_file(int fd, uint64_t dev, uint64_t ino, uint64_t birth) {
   struct stat info;
   return fstat(fd, &info) == 0 && S_ISREG(info.st_mode) &&
     (uint64_t)info.st_dev == dev && (uint64_t)info.st_ino == ino &&
-    (birth == NULL || nanos(info.st_birthtimespec) == *birth);
+    birth != 0 && nanos(info.st_birthtimespec) == birth;
 }
 
 static int hidden_name(const char *name) {
@@ -434,7 +437,7 @@ static int entry_absent(int directory, const char *name) {
 }
 
 static int recover_target(int directory, const char *hidden, const char *target, uint64_t dev, uint64_t ino,
-    uint64_t birth, const char *expected, const char *replacement, uint64_t writer) {
+    uint64_t birth, const char *expected, const char *replacement, uint64_t writer, uint64_t writer_birth) {
   const int retire_only = replacement != NULL && strcmp(replacement, "retire") == 0;
   const int flags = (expected == NULL ? O_EVTONLY : O_RDONLY) | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC;
   int published = -1;
@@ -444,17 +447,17 @@ static int recover_target(int directory, const char *hidden, const char *target,
     published = openat(directory, target, flags);
     vacant = published < 0 && errno == ENOENT;
     if (published < 0 && !vacant) return done("left");
-    committed = published >= 0 && replacement != NULL && matches_file(published, dev, writer, NULL) &&
+    committed = published >= 0 && replacement != NULL && matches_file(published, dev, writer, writer_birth) &&
       names_file(directory, target, published);
   }
   const int fd = openat(directory, hidden, flags);
   if (fd < 0) {
     if (errno != ENOENT) return done("left");
-    const int restored = published >= 0 && matches_file(published, dev, ino, &birth) &&
+    const int restored = published >= 0 && matches_file(published, dev, ino, birth) &&
       (expected == NULL || fingerprint_matches(published, expected)) && names_file(directory, target, published);
     return done(committed || restored ? "resolved" : "left");
   }
-  if (!matches_file(fd, dev, ino, &birth) || (expected != NULL && !fingerprint_matches(fd, expected)) ||
+  if (!matches_file(fd, dev, ino, birth) || (expected != NULL && !fingerprint_matches(fd, expected)) ||
       !names_file(directory, hidden, fd)) return done("left");
   if (committed) {
     return done(unlinkat(directory, hidden, 0) == 0 && entry_absent(directory, hidden) ? "resolved" : "left");
@@ -475,9 +478,16 @@ static int run_recovery(char **argv, enum recovery_mode mode, int with_fingerpri
   if (!plain_name(name) || (restore && (!plain_name(part) || strcmp(name, part) == 0)) ||
       !parse_u64(argv[file_arg], &dev) || !parse_u64(argv[file_arg + 1], &ino)) return EXIT_USAGE;
   if (mode == RECOVER_RESTORE_TARGET && !hidden_name(name)) return EXIT_USAGE;
-  uint64_t writer = 0;
-  if (replacement != NULL && strcmp(replacement, "retire") != 0 &&
-      (!parse_u64(replacement, &writer) || writer == ino)) return EXIT_USAGE;
+  uint64_t writer = 0, writer_birth = 0;
+  if (replacement != NULL && strcmp(replacement, "retire") != 0) {
+    const char *separator = strchr(replacement, ':');
+    char number[21];
+    if (separator == NULL || (size_t)(separator - replacement) >= sizeof number) return EXIT_USAGE;
+    memcpy(number, replacement, (size_t)(separator - replacement));
+    number[separator - replacement] = '\0';
+    if (!parse_u64(number, &writer) || writer == ino || !parse_u64(separator + 1, &writer_birth) || writer_birth == 0)
+      return EXIT_USAGE;
+  }
   if (with_fingerprint) {
     const char *token = argv[file_arg + 2];
     const char *colon = strchr(token, ':');
@@ -485,7 +495,7 @@ static int run_recovery(char **argv, enum recovery_mode mode, int with_fingerpri
     if (colon == NULL || (size_t)(colon - token) >= sizeof time) return EXIT_USAGE;
     memcpy(time, token, (size_t)(colon - token));
     time[colon - token] = '\0';
-    if (!parse_u64(time, &birth)) return EXIT_USAGE;
+    if (!parse_u64(time, &birth) || birth == 0) return EXIT_USAGE;
     if (strcmp(colon + 1, "-") != 0) expected = colon + 1;
   }
   if (mode == RECOVER_RESTORE_PART && expected == NULL) return EXIT_USAGE;
@@ -493,12 +503,12 @@ static int run_recovery(char **argv, enum recovery_mode mode, int with_fingerpri
   const int status = hold_directory(argv[0], argv[1], argv[2], "from", &directory);
   if (status != 0) return status;
   if (!proceed("ready")) return done("cancelled");
-  if (mode == RECOVER_RESTORE_TARGET) return recover_target(directory, name, part, dev, ino, birth, expected, replacement, writer);
+  if (mode == RECOVER_RESTORE_TARGET) return recover_target(directory, name, part, dev, ino, birth, expected, replacement, writer, writer_birth);
   const int fd = open_regular(directory, name);
   if (fd < 0) {
     return done(errno == ENOENT ? "absent" : "left");
   }
-  if (!matches_file(fd, dev, ino, with_fingerprint ? &birth : NULL) || (expected != NULL && !fingerprint_matches(fd, expected))) return done("left");
+  if (!matches_file(fd, dev, ino, birth) || (expected != NULL && !fingerprint_matches(fd, expected))) return done("left");
   struct left_part left = { .observed = -1 };
   if (restore) {
     const enum restore_result restored = copy_held_source(directory, fd, part, expected);
@@ -781,11 +791,13 @@ static int run_copy(char **argv) {
     close(copy);
     return abandon(to, part, NULL, code);
   }
-  if (identity.st_dev != directory_identity.st_dev || (old >= 0 && old_identity.st_ino == identity.st_ino)) {
+  if (nanos(identity.st_birthtimespec) == 0 || identity.st_dev != directory_identity.st_dev ||
+      (old >= 0 && old_identity.st_ino == identity.st_ino)) {
     close(copy);
     return abandon(to, part, NULL, ENOTSUP);
   }
-  printf("writing %" PRIu64 " %" PRIu64 "\n", (uint64_t)identity.st_dev, (uint64_t)identity.st_ino);
+  printf("writing %" PRIu64 " %" PRIu64 " %" PRIu64 "\n",
+    (uint64_t)identity.st_dev, (uint64_t)identity.st_ino, nanos(identity.st_birthtimespec));
   fflush(stdout);
   unsigned char *buffer = malloc(COPY_CHUNK);
   if (buffer == NULL) {
@@ -821,16 +833,16 @@ static int run_copy(char **argv) {
   }
   free(buffer);
   if (failure == 0 && fsync(copy) != 0) failure = errno;
+  struct stat final;
+  if (failure == 0 && fstat(copy, &final) != 0) failure = errno;
   if (close(copy) != 0 && failure == 0) failure = errno;
   if (failure != 0) return abandon(to, part, &written, failure);
+  if (nanos(final.st_birthtimespec) == 0 || final.st_dev != identity.st_dev ||
+      (old >= 0 && final.st_ino == old_identity.st_ino)) return abandon(to, part, &written, EIO);
   if (old >= 0) {
-    struct stat final;
-    if (fstat(written.fd, &final) != 0) return abandon(to, part, &written, errno);
-    if (final.st_dev != identity.st_dev || final.st_ino == old_identity.st_ino) return abandon(to, part, &written, EIO);
-    if (final.st_ino != identity.st_ino) {
-      printf("copy-id %" PRIu64 " %" PRIu64 "\n", (uint64_t)final.st_dev, (uint64_t)final.st_ino);
-      fflush(stdout);
-    }
+    printf("copy-id %" PRIu64 " %" PRIu64 " %" PRIu64 "\n",
+      (uint64_t)final.st_dev, (uint64_t)final.st_ino, nanos(final.st_birthtimespec));
+    fflush(stdout);
   }
   // The rename below is the commit point: the caller answers here whether the copy is still wanted.
   if (!proceed("copied")) return abandon(to, part, &written, 0);

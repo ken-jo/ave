@@ -227,8 +227,8 @@ async function recoveryTests() {
       if (line === "copied") stdin.end("c");
     });
     assert.equal(result.code, 0, result.stderr);
-    const [dev, ino] = snapshot(join(dir, "target"));
-    assert.deepEqual(result.lines, ["ready", `writing ${dev} ${ino}`, "progress 6", "copied", "committed"]);
+    const [dev, ino, stamp] = snapshot(join(dir, "target"));
+    assert.deepEqual(result.lines, ["ready", `writing ${dev} ${ino} ${stamp.split(":")[0]}`, "progress 6", "copied", "committed"]);
     assert.ok(!existsSync(join(dir, part)));
     assert.ok(!existsSync(join(dir, "moved")));
   });
@@ -242,7 +242,7 @@ async function recoveryTests() {
       }
     });
     assert.equal(result.code, 3, JSON.stringify(result));
-    assert.match(result.lines[1], /^writing \d+ [0-9a-f]{32}$/u);
+    assert.match(result.lines[1], /^writing \d+ [0-9a-f]{32} \d+$/u);
     assert.deepEqual(result.lines.slice(2), ["progress 6", "copied", "refused target removed"]);
     assert.equal(readFileSync(join(dir, "target"), "utf8"), "unrelated bytes");
     assert.ok(!existsSync(join(dir, part)));
@@ -307,7 +307,7 @@ async function recoveryTests() {
     try {
       const result = await runCopy(["--dir-copy", ...held(dir), "source", ...held(dir), "target", part, hidden], (line, stdin) => {
         if (line === "ready") stdin.write("c");
-        if (line.startsWith("writing ")) writer = line.split(" ").at(-1);
+        if (line.startsWith("copy-id ")) writer = line.split(" ").slice(2).join(":");
         if (line === "copied") {
           const body = Buffer.from(JSON.stringify({ old, writer })).toString("hex");
           expect(["--dir-write-record", ...held(root), record, body], ["ready", "written"]);
@@ -343,7 +343,7 @@ async function recoveryTests() {
       let writer;
       const result = await runCopy([`stop-${boundary}`, "--dir-copy", ...held(dir), "source", ...held(dir), "target", part, hidden], (line, stdin) => {
         if (line === "ready") stdin.write("c");
-        if (line.startsWith("writing ")) writer = line.split(" ").at(-1);
+        if (line.startsWith("copy-id ")) writer = line.split(" ").slice(2).join(":");
         if (line === "copied") {
           saved = Buffer.from(JSON.stringify({ hidden, old, writer })).toString("hex");
           expect(["--dir-write-record", ...held(root), record, saved], ["ready", "written"]);
@@ -570,7 +570,7 @@ try {
   assert.ok(existsSync(join(from, "b")));
 
   result = answered(["--dir-copy", ...held(from), "b", ...held(to), "copied.pdf", ".0123.part", ".0123456789abcdef0123456789abcdef.removing"], "cc");
-  assert.match(result.lines[1], /^writing \d+ [0-9a-f]{32}$/u);
+  assert.match(result.lines[1], /^writing \d+ [0-9a-f]{32} \d+$/u);
   assert.equal(result.lines[2], "cancelled", "input that arrives while bytes are copied stops the copy");
   assert.deepEqual(readdirSync(to).sort(), ["junction.pdf", "report.pdf"]);
   const copy = spawn(helper, ["--dir-copy", ...held(from), "b", ...held(to), "copied.pdf", ".0123.part", ".0123456789abcdef0123456789abcdef.removing"], { windowsHide: true, shell: false, env: {} });
@@ -596,7 +596,7 @@ try {
   // One chunk of "staged b": the copy reports its progress once before it is complete.
   const [ready, writing, ...outcome] = copied.output.split(/\r?\n/u).filter(Boolean);
   assert.equal(ready, "ready");
-  assert.match(writing, /^writing \d+ [0-9a-f]{32}$/u);
+  assert.match(writing, /^writing \d+ [0-9a-f]{32} \d+$/u);
   assert.deepEqual(outcome, ["progress 8", "copied", "committed"]);
   assert.equal(readFileSync(join(to, "copied.pdf"), "utf8"), "staged b");
   assert.ok(!existsSync(join(to, ".0123.part")));

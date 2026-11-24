@@ -27,7 +27,7 @@ ave-dir-ops --dir-read <dir> <dir-dev> <dir-ino> <name> <max>
 ave-dir-ops --dir-write-record <dir> <dir-dev> <dir-ino> <name> <hex>
 ave-dir-ops --dir-remove-id <dir> <dir-dev> <dir-ino> <name> <file-dev> <file-ino> [<birth-ns>:<fingerprint>]
 ave-dir-ops --dir-restore <dir> <dir-dev> <dir-ino> <hidden> <part> <file-dev> <file-ino> <birth-ns>:<fingerprint>
-ave-dir-ops --dir-restore-target <dir> <dir-dev> <dir-ino> <hidden> <target> <file-dev> <file-ino> <birth-ns>:<fingerprint-or-dash> [<writer-ino>|retire]
+ave-dir-ops --dir-restore-target <dir> <dir-dev> <dir-ino> <hidden> <target> <file-dev> <file-ino> <birth-ns>:<fingerprint-or-dash> [<writer-ino>:<writer-birth-ns>|retire]
 ```
 
 Names are single path components. `rename` moves the ordinary file `name` to
@@ -94,7 +94,7 @@ stdin.
   ordinary file, or `target` holds something other than an ordinary file.
   Exit `4`: `failed <errno name>`. Exit `2`: the arguments are wrong.
 - After creating the part exclusively and before reporting progress or
-  `copied`, the copy writes `writing <dev> <ino>` once. The unsigned
+  `copied`, the copy writes `writing <dev> <ino> <birth-ns>` once. The unsigned
   decimal identity comes from the writing descriptor. The host never
   samples the part name for ownership. A failed exclusive open has no
   `writing` line and may answer `failed EEXIST`.
@@ -122,9 +122,9 @@ stdin.
   `remove-id` and `restore` may also return the named `left` outcome
   when they isolate a file under a new hidden name.
 - Before `ready`, the helper holds any existing ordinary target and emits
-  `target-id <dev> <ino> <birth-ns>`. If the filesystem assigns the writing
-  descriptor a different inode during the copy, the helper announces
-  `copy-id <dev> <ino>` before `copied` for a replacement.
+  `target-id <dev> <ino> <birth-ns>`. For a replacement, the helper reads
+  the final stamp from the writing descriptor after syncing and announces
+  `copy-id <dev> <ino> <birth-ns>` before `copied`.
   After authorization at `copied` it verifies the part, moves any
   old target to the supplied hidden name exclusively and verifies it against its descriptor.
   The helper commits the part with an exclusive rename and verifies the

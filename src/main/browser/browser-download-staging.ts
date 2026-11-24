@@ -492,7 +492,8 @@ function readPartRecord(text: string, name: string): PartRecord | null {
 }
 
 // Retry through the file backend. The decoded record never gives the host authority to open an entry by path.
-async function removeRecordedPart(root: BrowserDownloadStagingRoot, { folder, part, at, target, writer }: PartRecord) {
+async function removeRecordedPart(root: BrowserDownloadStagingRoot, { folder, part, at, target, session, writer }: PartRecord) {
+  if (session !== undefined && !writer?.birthtimeNs) return { outcome: "left" as const, at };
   if (target === undefined) return root.files.recover(folder, at.name, part, at.identity);
   const observed = at.identity.kind === "helper" ? at.identity.observed : null;
   const file = at.identity.kind === "fileId" ? at.identity.file : observed?.file;

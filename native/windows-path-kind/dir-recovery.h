@@ -99,14 +99,18 @@ enum class NameIdentity { kAbsent, kMatches, kUnverified };
 NameIdentity test_commit_result(NameIdentity result);
 #endif
 
-inline NameIdentity check_name(HANDLE directory, const std::wstring& name, const FILE_ID_INFO& wanted) {
+inline bool read_birth(HANDLE file, ULONGLONG& birth);
+
+inline NameIdentity check_name(HANDLE directory, const std::wstring& name, const FILE_ID_INFO& wanted, ULONGLONG birth = 0) {
   HANDLE opened = INVALID_HANDLE_VALUE;
   const NTSTATUS status = open_relative(directory, name, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
     kOpenExisting, kOpenReparsePoint, opened);
   if (status < 0) return missing(status_error(status)) ? NameIdentity::kAbsent : NameIdentity::kUnverified;
   const PinnedHandle entry(opened);
   FILE_ID_INFO actual{};
-  return ordinary(entry.value) && read_id(entry.value, actual) && same_id(actual, wanted)
+  ULONGLONG actual_birth = 0;
+  return ordinary(entry.value) && read_id(entry.value, actual) && same_id(actual, wanted) &&
+      (birth == 0 || (read_birth(entry.value, actual_birth) && actual_birth == birth))
     ? NameIdentity::kMatches : NameIdentity::kUnverified;
 }
 
@@ -141,6 +145,12 @@ inline bool time_ns(LARGE_INTEGER ticks, ULONGLONG& ns) {
   return true;
 }
 
+inline bool read_birth(HANDLE file, ULONGLONG& birth) {
+  FILE_BASIC_INFO basic{};
+  return GetFileInformationByHandleEx(file, FileBasicInfo, &basic, sizeof(basic)) &&
+    time_ns(basic.CreationTime, birth) && birth != 0;
+}
+
 inline bool fingerprint(HANDLE file, const FILE_BASIC_INFO& before, std::string& result) {
   LARGE_INTEGER size{};
   ULONGLONG mtime = 0;
@@ -168,7 +178,7 @@ struct ExpectedFile {
 
 inline bool parse_fingerprint(const std::wstring& token, bool restore, ExpectedFile& expected) {
   const size_t first = token.find(L':');
-  if (first == std::wstring::npos || !parse_number(token.substr(0, first).c_str(), expected.birth)) return false;
+  if (first == std::wstring::npos || !parse_number(token.substr(0, first).c_str(), expected.birth) || expected.birth == 0) return false;
   expected.check_birth = true;
   const auto body = token.substr(first + 1);
   if (!restore && body == L"-") return true;
@@ -189,7 +199,7 @@ inline bool parse_fingerprint(const std::wstring& token, bool restore, ExpectedF
 inline bool matches(HANDLE file, const ExpectedFile& expected) {
   FILE_ID_INFO actual{};
   if (!ordinary(file) || !read_id(file, actual) || !same_id(actual, expected.id)) return false;
-  if (!expected.check_birth) return true;
+  if (!expected.check_birth) return false;
   FILE_BASIC_INFO basic{};
   ULONGLONG birth = 0;
   if (!GetFileInformationByHandleEx(file, FileBasicInfo, &basic, sizeof(basic))
@@ -261,7 +271,7 @@ inline int stopped_copy(HANDLE directory, const std::wstring& name, HANDLE file,
 enum class RecoveryMode { kRemove, kRestorePart, kRestoreTarget };
 
 inline int recover_target(HANDLE directory, const std::wstring& hidden, const std::wstring& target,
-    const ExpectedFile& old, const wchar_t* replacement, const FILE_ID_INFO& writer) {
+    const ExpectedFile& old, const wchar_t* replacement, const ExpectedFile& writer) {
   const bool retire_only = replacement != nullptr && std::wcscmp(replacement, L"retire") == 0;
   const ACCESS_MASK read_access = FILE_READ_ATTRIBUTES | (old.content.empty() ? 0 : FILE_READ_DATA);
   PinnedHandle published(INVALID_HANDLE_VALUE);
@@ -272,9 +282,8 @@ inline int recover_target(HANDLE directory, const std::wstring& hidden, const st
       kOpenExisting, kOpenReparsePoint, published.value);
     vacant = opening < 0 && missing(status_error(opening));
     if (opening < 0 && !vacant) return done("left");
-    FILE_ID_INFO actual{};
-    committed = !vacant && replacement != nullptr && ordinary(published.value) && read_id(published.value, actual)
-      && same_id(actual, writer) && check_name(directory, target, writer) == NameIdentity::kMatches;
+    committed = !vacant && replacement != nullptr && matches(published.value, writer)
+      && check_name(directory, target, writer.id, writer.birth) == NameIdentity::kMatches;
   }
   PinnedHandle source(INVALID_HANDLE_VALUE);
   const NTSTATUS opening = open_relative(directory, hidden, read_access | DELETE, FILE_SHARE_READ,
@@ -282,10 +291,10 @@ inline int recover_target(HANDLE directory, const std::wstring& hidden, const st
   if (opening < 0) {
     if (!missing(status_error(opening))) return done("left");
     const bool restored = published.value != INVALID_HANDLE_VALUE && matches(published.value, old)
-      && check_name(directory, target, old.id) == NameIdentity::kMatches;
+      && check_name(directory, target, old.id, old.birth) == NameIdentity::kMatches;
     return done(committed || restored ? "resolved" : "left");
   }
-  if (!matches(source.value, old) || check_name(directory, hidden, old.id) != NameIdentity::kMatches) return done("left");
+  if (!matches(source.value, old) || check_name(directory, hidden, old.id, old.birth) != NameIdentity::kMatches) return done("left");
   if (committed) {
     if (delete_on_close(source.value).error != ERROR_SUCCESS) return done("left");
     CloseHandle(source.value);
@@ -293,7 +302,7 @@ inline int recover_target(HANDLE directory, const std::wstring& hidden, const st
     return done(check_name(directory, hidden, old.id) == NameIdentity::kAbsent ? "resolved" : "left");
   }
   if (!vacant || rename_into(source.value, directory, target, false).error != ERROR_SUCCESS) return done("left");
-  if (check_name(directory, target, old.id) == NameIdentity::kMatches) return done("resolved");
+  if (check_name(directory, target, old.id, old.birth) == NameIdentity::kMatches) return done("resolved");
   (void)rename_into(source.value, directory, hidden, false);
   return done("left");
 }
@@ -309,9 +318,15 @@ inline int run_recovery(int argc, wchar_t** argv, RecoveryMode mode) {
   if (!parse_id(argv[id], argv[id + 1], expected.id)
       || (argc > id + 2 && !parse_fingerprint(argv[id + 2], mode == RecoveryMode::kRestorePart, expected))) return kExitUsage;
   const wchar_t* replacement = mode == RecoveryMode::kRestoreTarget && argc > id + 3 ? argv[id + 3] : nullptr;
-  FILE_ID_INFO writer{};
-  if (replacement != nullptr && std::wcscmp(replacement, L"retire") != 0
-      && (!parse_id(argv[id], replacement, writer) || same_id(writer, expected.id))) return kExitUsage;
+  ExpectedFile writer;
+  if (replacement != nullptr && std::wcscmp(replacement, L"retire") != 0) {
+    const std::wstring token(replacement);
+    const size_t separator = token.find(L':');
+    if (separator == std::wstring::npos || !parse_id(argv[id], token.substr(0, separator).c_str(), writer.id) ||
+        same_id(writer.id, expected.id) || !parse_number(token.c_str() + separator + 1, writer.birth) || writer.birth == 0)
+      return kExitUsage;
+    writer.check_birth = true;
+  }
   HeldDirectory directory;
   const int status = hold_directory(argv[0], argv[1], argv[2], "from", directory);
   if (status != 0) return status;

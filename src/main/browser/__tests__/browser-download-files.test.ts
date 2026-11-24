@@ -291,7 +291,7 @@ describe("a helper that does not keep to its protocol", () => {
           helper.say("left");
           helper.exit(0);
         } else {
-          helper.say(`writing 4294967297 ${fileId}`, "progress 8", "refused source");
+          helper.say(`writing 4294967297 ${fileId} 20`, "progress 8", "refused source");
           helper.exit(3);
         }
       });
@@ -300,14 +300,14 @@ describe("a helper that does not keep to its protocol", () => {
     await flush();
     expect(run.error).toBeInstanceOf(HeldFileHelperUnavailableError);
     expect(helpers()[0]?.killed).toBe(1);
-    expect(helpers()[1]?.args).toEqual(["--dir-remove-id", "/chosen", "1", "3", ".part", "4294967297", fileId]);
+    expect(helpers()[1]?.args).toEqual(["--dir-remove-id", "/chosen", "1", "3", ".part", "4294967297", fileId, "20:-"]);
   });
 
   it("kills a copy that refuses its source after making progress", async () => {
     script((helper) => {
       helper.say("ready");
       helper.once("input", () => {
-        helper.say("writing 1 2", "progress 8", "refused source");
+        helper.say("writing 1 2 20", "progress 8", "refused source");
         helper.exit(3);
       });
     });
@@ -735,7 +735,7 @@ it("keeps the Windows writer identity for recording when isolation leaves its pa
   script((helper) => {
     helper.say("ready");
     helper.once("input", () => {
-      helper.say(`writing 4294967297 ${fileId}`, "progress 8", "copied");
+      helper.say(`writing 4294967297 ${fileId} 20`, "progress 8", "copied");
       helper.afterInputEnds(() => { helper.say("cancelled left"); helper.exit(0); });
     });
   });
@@ -743,7 +743,7 @@ it("keeps the Windows writer identity for recording when isolation leaves its pa
   await flush();
   expect(stoppedCopyOf(run.error)).toEqual({
     partialCopy: "left",
-    partLeftAt: { name: ".part", identity: { kind: "fileId", file: { dev: 4294967297n, ino: BigInt(`0x${fileId}`) } } },
+    partLeftAt: { name: ".part", identity: { kind: "fileId", file: { dev: 4294967297n, ino: BigInt(`0x${fileId}`), birthtimeNs: 20n } } },
   });
 });
 
@@ -779,7 +779,7 @@ describe("a copy whose helper says it left its temporary file", () => {
   it.each(SUFFIXES)("reports a cancel answered `cancelled %s` as a failure", async (suffix, hidden) => {
     script((helper) => {
       helper.say("ready");
-      helper.once("input", () => helper.say("writing 1 18446744073709551615"));
+      helper.once("input", () => helper.say("writing 1 18446744073709551615 20"));
     });
     const stop = new AbortController();
     const run = follow(files.copy(from, "staged", to, "report.pdf", ".0123.part", () => true, stop.signal));
@@ -809,7 +809,7 @@ describe("a copy whose helper says it left its temporary file", () => {
       }
       helper.say("target-id 1 3 15", "ready");
       helper.once("input", () => {
-        helper.say("writing 1 2", "progress 8", "copied");
+        helper.say("writing 1 2 20", "progress 8", "copy-id 1 2 20", "copied");
         helper.once("input", () => {
           moveAuthorized = true;
           helper.say(`target-left left ${HIDDEN} 1 3 mismatch -`);
@@ -820,7 +820,7 @@ describe("a copy whose helper says it left its temporary file", () => {
     const journal = { hidden: HIDDEN, write, resolved };
     const run = follow(files.copy(from, "staged", to, "report.pdf", ".0123.part", () => true, UNSTOPPED, journal));
     await flush();
-    expect(write).toHaveBeenCalledExactlyOnceWith({ dev: 1n, ino: 3n, birthtimeNs: 15n }, { dev: 1n, ino: 2n });
+    expect(write).toHaveBeenCalledExactlyOnceWith({ dev: 1n, ino: 3n, birthtimeNs: 15n }, { dev: 1n, ino: 2n, birthtimeNs: 20n });
     expect(moveAuthorized).toBe(false);
     finishWrite();
     await flush();
@@ -839,7 +839,7 @@ describe("a copy whose helper says it left its temporary file", () => {
       }
       helper.say("target-id 1 3 15", "ready");
       helper.once("input", () => {
-        helper.say("writing 1 2", "copied");
+        helper.say("writing 1 2 20", "copy-id 1 2 20", "copied");
         helper.once("input", () => { moveAuthorized = true; });
         helper.afterInputEnds(() => { helper.say("cancelled"); helper.exit(0); });
       });
@@ -857,7 +857,7 @@ describe("a copy whose helper says it left its temporary file", () => {
     script((helper) => {
       helper.say("target-id 1 3 15", "ready");
       helper.once("input", () => {
-        helper.say("writing 1 2", "progress 8", "copied");
+        helper.say("writing 1 2 20", "progress 8", "copy-id 1 2 20", "copied");
         helper.once("input", () => {
           helper.say(`target-left left ${HIDDEN} 1 3 mismatch -`, "refused target removed");
           helper.exit(3);
@@ -883,7 +883,7 @@ describe("a copy whose helper says it left its temporary file", () => {
       }
       helper.say("target-id 1 3 15", "ready");
       helper.once("input", () => {
-        helper.say("writing 1 2", "copied");
+        helper.say("writing 1 2 20", "copy-id 1 2 20", "copied");
         helper.once("input", () => { helper.say("committed"); helper.exit(0); });
       });
     });
@@ -904,7 +904,7 @@ describe("a copy whose helper says it left its temporary file", () => {
       if (replacing) helper.say("target-id 2 3 15");
       helper.say("ready");
       helper.once("input", () => {
-        helper.say("writing 2 4", "copied");
+        helper.say("writing 2 4 20", "copied");
         helper.once("input", () => {
           if (replacing) helper.say("target-retired");
           helper.say("committed");
@@ -952,9 +952,9 @@ describe("a copy whose helper says it left its temporary file", () => {
           helper.say("failed EIO");
           helper.exit(4);
         };
-        helper.say("writing 1 2");
+        helper.say("writing 1 2 20");
         if (!early) {
-          helper.say("copied");
+          helper.say("copy-id 1 2 20", "copied");
           helper.once("input", report);
         } else {
           report();
@@ -971,9 +971,9 @@ describe("a copy whose helper says it left its temporary file", () => {
   });
 
   it.each([
-    ["another identity", "writing 1 2", "1 4"],
-    ["another volume", "writing 1 2", "2 2"],
-    ["the held old target", "writing 1 2", "1 3"],
+    ["another identity", "writing 1 2 20", "1 4"],
+    ["another volume", "writing 1 2 20", "2 2"],
+    ["the held old target", "writing 1 2 20", "1 3"],
     ["no writer", null, "1 2"],
   ] as const)("rejects a named copy-part leftover claiming %s", async (_label, writing, claimed) => {
     script((helper) => {
@@ -999,7 +999,7 @@ describe("a copy whose helper says it left its temporary file", () => {
   it.each(SUFFIXES)("keeps the errno of a failure answered `failed EIO %s`", async (suffix, hidden) => {
     script((helper) => {
       helper.say("ready");
-      helper.once("input", () => { helper.say("writing 1 18446744073709551615", "progress 8", `failed EIO ${suffix}`); helper.exit(4); });
+      helper.once("input", () => { helper.say("writing 1 18446744073709551615 20", "progress 8", `failed EIO ${suffix}`); helper.exit(4); });
     });
     const run = follow(files.copy(from, "staged", to, "report.pdf", ".0123.part", () => true, UNSTOPPED));
     await flush();
@@ -1012,7 +1012,7 @@ describe("a copy whose helper says it left its temporary file", () => {
     script((helper) => {
       helper.say("ready");
       helper.once("input", () => {
-        helper.say("writing 1 18446744073709551615", "progress 8", "copied");
+        helper.say("writing 1 18446744073709551615 20", "progress 8", "copied");
         helper.once("input", () => { helper.say(`refused target ${suffix}`); helper.exit(3); });
       });
     });
@@ -1173,7 +1173,7 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
         const part = join(arg(helper, 5), arg(helper, 9));
         fs.writeFileSync(part, "partial copy");
         const written = fs.statSync(part, { bigint: true });
-        if (!quietCopy) helper.say(`writing ${written.dev} ${written.ino}`);
+        if (!quietCopy) helper.say(`writing ${written.dev} ${written.ino} ${written.birthtimeNs}`);
         if (replaceBeforeProgress) {
           fs.renameSync(part, `${part}.saved`);
           fs.writeFileSync(part, "replacement before progress");

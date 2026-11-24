@@ -383,16 +383,14 @@ inline int run_copy(wchar_t** argv) {
   PinnedHandle old(previous);
   const bool replacing = old.value != INVALID_HANDLE_VALUE;
   FILE_ID_INFO old_id{};
+  ULONGLONG old_birth = 0;
   if (replacing && (!ordinary(old.value) || !read_id(old.value, old_id))) return refused("target");
   FILE_ID_INFO directory_id{};
   if (!read_id(to.handle(), directory_id)) return refused("to");
   if (replacing) {
-    FILE_BASIC_INFO basic{};
-    ULONGLONG birth = 0;
     if (old_id.VolumeSerialNumber != directory_id.VolumeSerialNumber ||
-        !GetFileInformationByHandleEx(old.value, FileBasicInfo, &basic, sizeof(basic)) ||
-        !time_ns(basic.CreationTime, birth)) return refused("target");
-    say(("target-id " + id_text(old_id, ' ') + " " + std::to_string(birth)).c_str());
+        !read_birth(old.value, old_birth)) return refused("target");
+    say(("target-id " + id_text(old_id, ' ') + " " + std::to_string(old_birth)).c_str());
   }
   if (!proceed("ready")) return done("cancelled");
   // The temporary file is created exclusively and stays open without write or delete sharing through commit or retirement.
@@ -411,10 +409,13 @@ inline int run_copy(wchar_t** argv) {
   }
   PinnedHandle part(created);
   FILE_ID_INFO written{};
-  if (!read_id(part.value, written)) return failed(FileFailure{GetLastError()}, " left");
+  ULONGLONG written_birth = 0;
+  if (!read_id(part.value, written) || !read_birth(part.value, written_birth))
+    return failed(FileFailure{ERROR_NOT_SUPPORTED}, " left");
   if (written.VolumeSerialNumber != directory_id.VolumeSerialNumber || (replacing && same_id(written, old_id)))
     return failed(FileFailure{ERROR_NOT_SUPPORTED}, " left");
-  say(("writing " + id_text(written, ' ')).c_str());
+  const auto writer_stamp = [&] { return id_text(written, ' ') + " " + std::to_string(written_birth); };
+  say(("writing " + writer_stamp()).c_str());
   const auto abandon = [&](FileFailure failure) {
     return stopped_copy(to.handle(), part_name, part.value, written, failure, false);
   };
@@ -439,9 +440,14 @@ inline int run_copy(wchar_t** argv) {
     std::fflush(stdout);
   }
   if (!FlushFileBuffers(part.value)) return abandon({GetLastError()});
+  FILE_ID_INFO final_id{};
+  ULONGLONG final_birth = 0;
+  if (!read_id(part.value, final_id) || !read_birth(part.value, final_birth) ||
+      !same_id(final_id, written) || final_birth != written_birth) return abandon({ERROR_NOT_SUPPORTED});
+  if (replacing) say(("copy-id " + writer_stamp()).c_str());
   // The rename below is the commit point: the caller answers here whether the copy is still wanted.
   if (!proceed("copied")) return abandon({});
-  const NameIdentity current = check_name(to.handle(), part_name, written);
+  const NameIdentity current = check_name(to.handle(), part_name, written, final_birth);
   if (current == NameIdentity::kAbsent) return refused("target removed");
   if (current != NameIdentity::kMatches) return refused("target left");
   const auto report_target_left = [&](bool retiring) {
@@ -498,7 +504,7 @@ inline int run_copy(wchar_t** argv) {
     }
     return abandon(renamed);
   }
-  NameIdentity published = check_name(to.handle(), target, written);
+  NameIdentity published = check_name(to.handle(), target, written, final_birth);
 #if defined(AVE_TEST_DIR_RECOVERY)
   published = test_commit_result(published);
 #endif

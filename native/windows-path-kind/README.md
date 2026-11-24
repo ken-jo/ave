@@ -77,7 +77,7 @@ authorizes the action. Other input or EOF stops it. The recovery modes are:
 | `--dir-write-record <name> <hex>` | `written` after exclusive creation with a protected current-user DACL, write and sync. Maximum 8192 bytes. |
 | `--dir-remove-id <name> <file-dev> <file-ino> [<birth-ns>:<fingerprint>]` | `removed`, `absent`, or `left` with an optional named leftover. A birth-only token uses `<birth-ns>:-`. |
 | `--dir-restore <hidden> <part> <file-dev> <file-ino> <birth-ns>:<fingerprint>` | `restored` after verification and source retirement, `absent` if the source is missing, or `left` with an optional named leftover. |
-| `--dir-restore-target <hidden> <target> <file-dev> <file-ino> <birth-ns>:<fingerprint-or-dash> [<writer-ino>\|retire]` | `resolved` after verified rollback or retirement, or `left` if unresolved. The optional writer is on `file-dev`. The `retire` operand retries a verified commit recorded by an older release. |
+| `--dir-restore-target <hidden> <target> <file-dev> <file-ino> <birth-ns>:<fingerprint-or-dash> [<writer-ino>:<writer-birth-ns>\|retire]` | `resolved` after verified rollback or retirement, or `left` if unresolved. The optional writer is on `file-dev`. The `retire` operand retries a verified commit recorded by an older release. |
 
 A fingerprint is `<size>:<mtime-ns>:<head>:<tail>`. The digests are lowercase
 SHA-256 of the first and last 64 KiB, each truncated to the file size. The
@@ -90,7 +90,7 @@ the original part name.
 
 `--dir-copy` takes the hidden name after the part name and checks source
 and target before `ready`. Its exclusive create
-can fail with plain `failed EEXIST`. On success it emits `writing <dev> <ino>`
+can fail with plain `failed EEXIST`. On success it emits `writing <dev> <ino> <birth-ns>`
 from the open part handle before progress or `copied`. It reports progress
 per 1 MiB chunk and flushes every 16 MiB. It keeps the handle open across
 `copied` and checks the part's identity before exclusive rename and the
@@ -99,7 +99,9 @@ rollback. Commit refusals are `refused target removed` when the part is gone,
 `refused target left` with the optional named leftover when it remains, or
 `refused target changed` if rollback fails. All use exit 3. Plain copy
 refusals precede `ready`. An existing ordinary target is held and identified
-before `ready` and announced as `target-id <dev> <ino> <birth-ns>`. After
+before `ready` and announced as `target-id <dev> <ino> <birth-ns>`. For a replacement,
+the helper reads the final stamp from the writing handle after syncing and
+emits `copy-id <dev> <ino> <birth-ns>` before `copied`. After
 the second authorization the helper moves it exclusively to the supplied hidden name, verifies it, commits exclusively, then verifies and
 retires the old target. If commit fails, it restores the old target exclusively.
 A failed restore or retirement sends `target-left left <hidden> <own-dev>

@@ -458,6 +458,7 @@ function descriptorFileOperations(renameCopy = renameExclusive): HeldFileOperati
 
   function recoverTarget(directory: number, hidden: string, target: string, file: FileIdentity, content?: Fingerprint,
     replacement?: FileIdentity | "retire"): "resolved" | "left" {
+    if (!file.birthtimeNs || (typeof replacement === "object" && !replacement.birthtimeNs)) return "left";
     try {
       const openEntry = (name: string): number | null => {
         if (content !== undefined) return boundOpen(directory, name);
@@ -576,10 +577,10 @@ function descriptorFileOperations(renameCopy = renameExclusive): HeldFileOperati
         await copy.sync();
         if (!proceed("copied") || stop.aborted) return "cancelled";
         const current = await copy.stat({ bigint: true });
-        if (current.dev !== to.dev || old?.ino === current.ino) throw new HeldDirectoryRefusedError("target");
+        if (current.dev !== to.dev || old?.ino === current.ino || current.birthtimeNs === 0n) throw new HeldDirectoryRefusedError("target");
         written = { dev: current.dev, ino: current.ino, birthtimeNs: current.birthtimeNs };
         if (old !== null) {
-          if (journal === undefined || !MOVED_ASIDE_NAME.test(journal.hidden)) throw new HeldDirectoryRefusedError("target");
+          if (old.birthtimeNs === 0n || journal === undefined || !MOVED_ASIDE_NAME.test(journal.hidden)) throw new HeldDirectoryRefusedError("target");
           await journal.write({ dev: old.dev, ino: old.ino, birthtimeNs: old.birthtimeNs }, written);
           if (stop.aborted) return "cancelled";
         }
@@ -727,7 +728,7 @@ const EXIT_FAILED = 4;
 const REFUSALS: ReadonlySet<string> = new Set<HeldRefusal>(["from", "to", "source", "target"]);
 const PROGRESS = /^progress (\d+)$/u;
 const TARGET_ID = /^target-id ([0-9]+) ([0-9a-f]+) ([0-9]+)$/u;
-const WRITING = /^(writing|copy-id) (0|[1-9][0-9]{0,19}) ([0-9a-f]{1,32})$/u;
+const WRITING = /^(writing|copy-id) (0|[1-9][0-9]{0,19}) ([0-9a-f]{1,32}) ([1-9][0-9]{0,19})$/u;
 const FAILURE_DIAGNOSTIC = /^Windows error \d+(?: \(NTSTATUS 0x[0-9A-F]{8}, (?:NtCreateFile|NtSetInformationFile)\))?\r?\n$/u;
 // A stopped copy may add ` left`, or ` left <hidden name> <dev> <ino> <verdict>` when a file stays at the moved-aside name.
 const PART_LEFT = /(?:^| )left(?: (\.[0-9a-f]{32}\.removing) (\d{1,20}) ([0-9a-f]{1,32}) (mismatch|remove-failed) ([^ ]+)( part-left)?)?$/u;
@@ -977,7 +978,8 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
         if (mode !== "--dir-copy" || passed === null) return false;
         if (left.at !== null) {
           const { name, identity } = left.at;
-          if (writing === null || !sameFile(identity, writing) || (oldTarget !== null && name === journal?.hidden) ||
+          if (writing === null || identity.dev !== writing.dev || identity.ino !== writing.ino ||
+              (oldTarget !== null && name === journal?.hidden) ||
               (identity.verdict === "remove-failed" && identity.observed !== null && !sameFile(identity.observed.file, writing))) return false;
         }
         const { answer } = left;
@@ -1030,14 +1032,16 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
         if (identity !== null) {
           const dev = parseUnsigned(identity[2]);
           const ino = parseInode(identity[3]);
+          const birthtimeNs = parseUnsigned(identity[4]);
           const refresh = identity[1] === "copy-id";
           const invalidPhase = refresh
-            ? parseInode === parseWindowsInode || writing === null || writingRefreshed || oldTarget === null
+            ? writing === null || writingRefreshed || oldTarget === null ||
+              (parseInode === parseWindowsInode && (writing.ino !== ino || writing.birthtimeNs !== birthtimeNs))
             : writing !== null || copiedBytes !== 0n;
           if (mode !== "--dir-copy" || phase !== "copying" || passed !== "ready" || invalidPhase ||
-              dev === null || !onDestination(dev) || ino === null ||
+              dev === null || !onDestination(dev) || ino === null || birthtimeNs === null ||
               (oldTarget !== null && (oldTarget.dev !== dev || oldTarget.ino === ino))) { violate(); return; }
-          writing = { dev, ino };
+          writing = { dev, ino, birthtimeNs };
           writingRefreshed = refresh;
           onWriting?.(writing);
           awaitLine("after opening the part");
@@ -1076,7 +1080,7 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
           return;
         }
         if (line === "ready" ? phase !== "holding" : mode !== "--dir-copy" || phase !== "copying" || passed !== "ready") { violate(); return; }
-        if (line === "copied" && oldTarget !== null && writing === null) { violate(); return; }
+        if (line === "copied" && oldTarget !== null && !writingRefreshed) { violate(); return; }
         phase = line === "copied" ? "copied" : mode === "--dir-copy" ? "copying" : "acting";
         let go = false;
         try {
@@ -1146,12 +1150,11 @@ function helperFileOperations(helper: string, windowsFileIds: boolean, bounds: H
     const observed = identity.kind === "helper" ? identity.observed : null;
     const restore = identity.kind === "helper" && identity.verdict === "mismatch";
     const file = identity.kind === "fileId" ? identity.file : observed?.file;
-    if (!file || (identity.kind === "helper" && !restore && (file.dev !== identity.dev || file.ino !== identity.ino))) return left;
+    if (!file?.birthtimeNs || (identity.kind === "helper" && !restore && (file.dev !== identity.dev || file.ino !== identity.ino))) return left;
     const idArgs = [String(file.dev), windowsFileIds ? file.ino.toString(16).padStart(32, "0") : String(file.ino)];
     const args = restore ? ["--dir-restore", ...directoryArguments(folder), name, original, ...idArgs]
       : ["--dir-remove-id", ...directoryArguments(folder), name, ...idArgs];
-    if (observed !== null && file.birthtimeNs === undefined) return left;
-    if (file.birthtimeNs !== undefined) args.push(`${file.birthtimeNs}:${observed === null ? "-" : fingerprintKey(observed.content)}`);
+    args.push(`${file.birthtimeNs}:${observed === null ? "-" : fingerprintKey(observed.content)}`);
     try {
       const outcome = await run(args, go, UNSTOPPED);
       if (outcome === "absent" || outcome === "removed" || outcome === "restored") return { outcome };
@@ -1224,9 +1227,9 @@ function helperFileOperations(helper: string, windowsFileIds: boolean, bounds: H
       ["removed", "absent", "cancelled"] as const),
     recover,
     recoverTarget: async (folder, hidden, target, file, content, replacement) => {
-      if (file.birthtimeNs === undefined || (typeof replacement === "object" && replacement.dev !== file.dev)) return "left";
+      if (!file.birthtimeNs || (typeof replacement === "object" && (!replacement.birthtimeNs || replacement.dev !== file.dev))) return "left";
       const inodeArgument = (ino: bigint): string => windowsFileIds ? ino.toString(16).padStart(32, "0") : String(ino);
-      const writer = typeof replacement === "object" ? inodeArgument(replacement.ino) : replacement;
+      const writer = typeof replacement === "object" ? `${inodeArgument(replacement.ino)}:${replacement.birthtimeNs}` : replacement;
       return oneOf(helper, await run(["--dir-restore-target", ...directoryArguments(folder), hidden, target,
         String(file.dev), inodeArgument(file.ino), `${file.birthtimeNs}:${content === undefined ? "-" : fingerprintKey(content)}`,
         ...(writer === undefined ? [] : [writer])], go, UNSTOPPED), ["resolved", "left"] as const);
