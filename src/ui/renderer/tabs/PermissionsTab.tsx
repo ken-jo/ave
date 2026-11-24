@@ -277,10 +277,11 @@ const HOME_PRIVACY_FIX_KEY = {
   "workspace-extra-principals": null,
 } as const satisfies Record<NonNullable<SandboxWindowsStatusInfo["homePrivacyError"]>["category"], string | null>;
 
-/** `sentence` followed by the category's own fix, when the cause text does not already carry one. */
+/** `sentence` followed by the category's own fix, when the cause text does not already carry one, and the shell ask: every boot
+ * privacy failure forces the shell floor (sandbox-capability.ts getHostShellExecutionPlan), approved for the session or not. */
 function withHomePrivacyFix(sentence: string, error: NonNullable<SandboxWindowsStatusInfo["homePrivacyError"]>): string {
   const fix = HOME_PRIVACY_FIX_KEY[error.category];
-  return fix === null ? sentence : `${sentence} ${t(fix)}`;
+  return `${fix === null ? sentence : `${sentence} ${t(fix)}`} ${t("permissionsTab.homePrivacyShellAsk")}`;
 }
 
 /**
@@ -1391,7 +1392,7 @@ export function PermissionsTab({
                           path: sandboxCapability.homePrivacyError.path,
                           reason: homePrivacyReasonText(sandboxCapability.homePrivacyError),
                         }), sandboxCapability.homePrivacyError)
-                      : t("permissionsTab.homePrivacyBootFailed")
+                      : `${t("permissionsTab.homePrivacyBootFailed")}. ${t("permissionsTab.homePrivacyShellAsk")}`
                     : sandboxBoot.causes.includes("windows-sandbox-integrity-failed")
                     ? t("permissionsTab.osSandboxWindowsHelperIntegrityError")
                     : sandboxBoot.causes.includes("windows-sandbox-missing")

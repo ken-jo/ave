@@ -1458,7 +1458,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     });
     expect(screen.getByTestId("os-sandbox-boot-degraded")).toBeTruthy();
     const detail = screen.getByTestId("os-sandbox-boot-degraded-detail");
-    expect(detail.textContent).toBe(t("permissionsTab.osSandboxBootDegradedHomePrivacy", { path: "D:/ave-home", reason }));
+    expect(detail.textContent).toBe(`${t("permissionsTab.osSandboxBootDegradedHomePrivacy", { path: "D:/ave-home", reason })} ${t("permissionsTab.homePrivacyShellAsk")}`);
     // The generic dependency hint is false for a folder-permission failure.
     expect(detail.textContent).not.toBe(t("permissionsTab.osSandboxDiagnosticHint"));
     expect(t("permissionsTab.osSandboxBootDegradedHomePrivacy")).not.toBe("permissionsTab.osSandboxBootDegradedHomePrivacy");
@@ -1481,6 +1481,18 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
 
     const privacy = screen.getByTestId("os-sandbox-windows-home-privacy-error");
     expect(privacy.textContent).toContain(t("permissionsTab.osSandboxWindowsHomePrivacyError", { path: "D:/ave-home", reason }));
+  });
+
+  it("says that shell commands ask even when the privacy failure carries no category", async () => {
+    const { ave } = installApiWithWindows();
+    ave.permission.sandboxCapability.mockResolvedValueOnce({
+      platform: "win32", enabled: true, available: true, kind: "partial", reason: "r", potentialReason: "r",
+      runtime: { available: false, kind: "none", reason: "r" }, confines: { filesystem: true, process: false, network: true },
+      boot: { action: "degrade", reason: "degrade-ave-home-privacy-failed", onSignal: "default-settings", causes: ["ave-home-privacy-failed"] },
+    } as never);
+    await act(async () => { render(<PermissionsTab />); });
+    await waitFor(() => expect(screen.getByTestId("os-sandbox-boot-degraded-detail").textContent)
+      .toBe(`${t("permissionsTab.homePrivacyBootFailed")}. ${t("permissionsTab.homePrivacyShellAsk")}`));
   });
 
   describe("AVE_HOME privacy fix guidance per category", () => {
@@ -1545,10 +1557,12 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
           .toContain(t("permissionsTab.osSandboxBootDegradedReason", { reason: "degrade-ave-home-boundary-unverified" }));
       }
       const reason = t(REASON[category], { principals: "S-1-5-11" });
-      // Both boundary reasons tell the user that shell commands now ask, once or for the session.
-      if (category.startsWith("boundary-")) expect(reason).toContain(locale === "en" ? "shell commands will ask for approval once or for the session" : "셸 명령은 한 번 또는 이 세션 동안의 승인을 요청함");
+      // Every category forces the shell floor, so every notice tells the user that shell commands ask, once or for the session.
+      const shellAsk = t("permissionsTab.homePrivacyShellAsk");
+      expect(shellAsk).toBe(locale === "en" ? "Shell commands will ask for approval once or for the session." : "셸 명령은 한 번 또는 이 세션 동안의 승인을 요청합니다.");
+      expect(reason).not.toContain(locale === "en" ? "shell commands" : "셸 명령");
       const fix = FIX[category];
-      const tail = fix === null ? "" : ` ${t(fix)}`;
+      const tail = `${fix === null ? "" : ` ${t(fix)}`} ${shellAsk}`;
       if (fix !== null) expect(t(fix)).not.toBe(fix);
       // The identity check is a SID read-back that disagreed inside one process: a restart comes first, the account second.
       if (category === "identity-failed") {
@@ -1953,7 +1967,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     // Approved: no "blocked", no offer to approve; the failure and its fix stay.
     const approved = screen.getByTestId("os-sandbox-windows-home-privacy-error").textContent ?? "";
     const reason = t("permissionsTab.homePrivacyReadBackFailed");
-    expect(approved).toContain(`${t("permissionsTab.osSandboxBootDegradedHomePrivacy", { path: "D:/private-state/secrets", reason })} ${t("permissionsTab.homePrivacyFixPermissions")}`);
+    expect(approved).toContain(`${t("permissionsTab.osSandboxBootDegradedHomePrivacy", { path: "D:/private-state/secrets", reason })} ${t("permissionsTab.homePrivacyFixPermissions")} ${t("permissionsTab.homePrivacyShellAsk")}`);
     expect(approved).not.toContain(t("permissionsTab.osSandboxWindowsHomePrivacyError", { path: "D:/private-state/secrets", reason }));
     expect(approved).not.toContain(t("permissionsTab.homePrivacyApproveHint"));
     cleanup();
