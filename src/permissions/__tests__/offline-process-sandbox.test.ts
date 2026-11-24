@@ -69,7 +69,9 @@ beforeEach(async () => {
     reason: "native test boundary", confines: { filesystem: true, process: true, network: true } });
   linuxWrapper = LINUX_WRAPPER;
   vi.mocked(wrapCommandWithSandboxLinux).mockImplementation(async ({ ripgrepConfig }) => {
-    fs.writeFileSync(ripgrepConfig!.args![3], "");
+    const receipt = ripgrepConfig?.args?.[3];
+    if (receipt === undefined) throw new Error("Expected a scan receipt path.");
+    fs.writeFileSync(receipt, "");
     return linuxWrapper;
   });
   vi.mocked(cleanupBwrapMountPoints).mockReset();
@@ -222,7 +224,7 @@ describe("offline process confinement", () => {
       if (HOST_PLATFORM !== "win32" && outcome === 127 && Array.isArray(args)) {
         return nativeSpawn(command, [...args.slice(0, 4), join(root, "missing-scan"), ...args.slice(5)], options);
       }
-      const partialResult = outcome === 2 ? join(output, ".bashrc") + "\n" : "";
+      const partialResult = outcome === 2 ? `${join(output, ".bashrc")}\n` : "";
       return scanChild(partialResult, outcome);
     });
     syncBuiltinESMExports();
@@ -231,7 +233,9 @@ describe("offline process confinement", () => {
     expect(assertCodexExecutableLocation).toHaveBeenCalledWith("/usr/bin/rg");
     expect(access).toHaveBeenCalledWith("/usr/bin/rg", expect.any(Number));
     expect(spawn).toHaveBeenCalledTimes(1);
-    expect(fs.existsSync(spawn.mock.calls[0][1]![3])).toBe(false);
+    const receipt = spawn.mock.calls[0][1]?.[3];
+    if (receipt === undefined) throw new Error("Expected a scan receipt path.");
+    expect(fs.existsSync(receipt)).toBe(false);
     expect(cleanupBwrapMountPoints).toHaveBeenCalledTimes(1);
   });
 
@@ -263,7 +267,7 @@ describe("offline process confinement", () => {
         return nativeSpawn(command, [...args.slice(0, 4), scanner, ...args.slice(5)], options);
       }
       fs.writeFileSync(args[3], "");
-      return scanChild(denied + "\n", 0);
+      return scanChild(`${denied}\n`, 0);
     });
     syncBuiltinESMExports();
 
@@ -272,7 +276,9 @@ describe("offline process confinement", () => {
       const words = parseSandboxWrappedWords(wrapped.argv[2]).map(word => word.value);
       expect(words).toContain(denied);
       expect(words.some((word, index) => word === "--ro-bind" && words[index + 1] === denied && words[index + 2] === denied)).toBe(true);
-      expect(fs.existsSync(spawn.mock.calls[0][1]![3])).toBe(false);
+      const receipt = spawn.mock.calls[0][1]?.[3];
+      if (receipt === undefined) throw new Error("Expected a scan receipt path.");
+      expect(fs.existsSync(receipt)).toBe(false);
     } finally {
       wrapped.release();
     }
