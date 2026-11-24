@@ -249,7 +249,7 @@ describe.each([
   { shape: "UNC", home: String.raw`\\server\share\alice` },
   { shape: "extended", home: String.raw`\\?\D:\fixtures\alice` },
   { shape: "drive", home: String.raw`D:\fixtures\alice` },
-])("home redaction scaling for $shape paths", ({ home }) => {
+])("home redaction scaling for $shape paths", ({ home, shape }) => {
   it("scans long separator runs and near-miss names with linear scaling", async () => {
     fixture.home = home;
     vi.resetModules();
@@ -271,7 +271,7 @@ describe.each([
     };
     // Reject slow small inputs before attempting the large scaling samples.
     for (const value of inputs(2 * 1024)) measure(value);
-    expectLinearScaling(kib => {
+    expectLinearScaling(`home redaction scaling ${shape}`, kib => {
       const values = inputs(kib * 1024);
       return values.reduce((total, value) => total + measure(value), 0);
     });
@@ -282,9 +282,10 @@ describe.each([
 // From 100 to 800 KiB linear work grows 8x and quadratic work 64x; the bound sits between them.
 const LINEAR_SCALING_BOUND = 24;
 
-function expectLinearScaling(sample: (kib: number) => number): void {
+function expectLinearScaling(label: string, sample: (kib: number) => number): void {
   const fastest = (kib: number) => Math.min(...Array.from({ length: 5 }, () => sample(kib)));
   const [small, large] = [fastest(100), fastest(800)];
+  console.info(label, { fastestMs: { kib100: small, kib800: large }, ratio: large / Math.max(small, 1), bound: LINEAR_SCALING_BOUND });
   // A timer-resolution floor keeps scheduling noise from magnifying sub-millisecond samples.
   expect(large, `100 KiB ${small} ms, 800 KiB ${large} ms`).toBeLessThan(Math.max(small, 1) * LINEAR_SCALING_BOUND);
 }
@@ -400,7 +401,7 @@ describe.each(["%", "\\u", "&#", "&#x", "&amp;", "%25", "peeling", "zeros", MIXE
       return elapsed;
     };
     measure(2 * 1024);
-    expectLinearScaling(kib => measure(kib * 1024));
+    expectLinearScaling(`decoder scaling ${shape}`, kib => measure(kib * 1024));
   });
 });
 
