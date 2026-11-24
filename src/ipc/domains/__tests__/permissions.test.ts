@@ -249,9 +249,10 @@ it("passes the resolved cancellation kind to the audit panel", async () => {
   const dir = deps.auditLogger.getAuditDir();
   onTestFinished(() => cleanupTmpDir(dir));
   deps.auditLogger.getAuditDir.mockReturnValue(dir);
-  writeFileSync(join(dir, "2026-05-09.permission-audit.jsonl"), JSON.stringify({
+  const row = {
     decision: "deny", auditId: "legacy", denyReasons: [{ reason: "host-shutdown", source: "tool-executor" }],
-  }) + "\n");
+  };
+  writeFileSync(join(dir, "2026-05-09.permission-audit.jsonl"), `${JSON.stringify(row)}\n`);
   expect(await invoke(PERMISSIONS.auditShow, { last: 10 })).toMatchObject({
     ok: true, entries: [{ auditId: "legacy", decision: "deny", terminalKind: "cancelled" }],
   });

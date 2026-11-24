@@ -379,7 +379,7 @@ describe("readRecentAuditEntries", () => {
       { ...common, auditId: "denied", terminalKind: "denied" },
       { ...common, auditId: "cancelled", terminalKind: "cancelled", denyReasons: [{ reason: "Denied by policy", source: "rule" }] },
     ]);
-    const raw = [legacy, denied, cancelled].map((entry) => JSON.stringify(entry)).join("\n") + "\n";
+    const raw = `${[legacy, denied, cancelled].map((entry) => JSON.stringify(entry)).join("\n")}\n`;
     writeFileSync(file, raw);
 
     expect(readRecentAuditEntries(workDir, 3)).toEqual([cancelled, denied, { ...legacy, terminalKind: "cancelled" }]);
@@ -388,9 +388,10 @@ describe("readRecentAuditEntries", () => {
   });
 
   it("includes the resolved kind in permission audit show", () => {
-    writeFileSync(join(workDir, "2026-05-09.permission-audit.jsonl"), JSON.stringify({
+    const row = {
       decision: "deny", auditId: "legacy", denyReasons: [{ reason: "host-shutdown", source: "tool-executor" }],
-    }) + "\n");
+    };
+    writeFileSync(join(workDir, "2026-05-09.permission-audit.jsonl"), `${JSON.stringify(row)}\n`);
     expect(dispatchPermissionAuditCommand({ verb: "show", last: 10 }, { auditDir: workDir, secret: null })).toMatchObject({
       ok: true, verb: "show", total: 1, entries: [{ auditId: "legacy", terminalKind: "cancelled" }],
     });

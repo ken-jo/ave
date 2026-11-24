@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuditLogger } from "../../audit/audit-logger.js";
+import { terminalDenyKindOf } from "../../audit/audit-schema.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
 import { ScriptHookManager } from "../../hooks/script-hook-manager.js";
@@ -990,6 +991,56 @@ describe("native invocation permission evidence", () => {
       expect.objectContaining({ reason: "user aborted turn" }), expect.objectContaining({ reason: "Hook execution cancelled" }),
     ] })]);
     expect(lifecycle.mock.calls.filter(([event]) => event === "PermissionDenied")).toEqual([]);
+  });
+
+  it.each([["stopped", "cancelled"], ["headless", "denied"]] as const)("reads the actual %s rationale writer's legacy row as %s", async (source, kind) => {
+    await audit.setupPermissionAuditChain("aa".repeat(32));
+    manager.setMode("auto");
+    setReviewerForTest(manager, {
+      classifier: { classify: () => ({ level: "high", reason: "The outside change needs explicit grounds" }) },
+      cache: resources.makeVerdictCache(join(root, "rationale-history-cache.jsonl")),
+      recentlyDenied: makeRecentlyDeniedStore(join(root, "rationale-history-denied.jsonl")),
+    });
+    const gate = new ApprovalGate({ isDestroyed: () => false, send: vi.fn() } as never);
+    const coordinator = new RationaleHostCoordinator({
+      requestAnchor: createTestRequestAnchor({ sessionId }), userRoleTexts: ["Perform the requested operation."],
+      rationaleProvenance: { startedFromUserKeyboard: true, taint: "none" },
+      ticketStore: new InProcessRationaleTicketStore({ onAudit: () => {} }),
+      rationaleScopeReviewer: new LlmRationaleScopeReviewer({ complete: vi.fn() }, "fixture-reviewer"),
+      approvalGate: gate, getRationalePolicyEpoch: () => manager.getPolicyEpoch(),
+      getRegistryGeneration: () => registry.getGeneration(), getSandboxGeneration: () => "fixture-sandbox",
+      anchorRoundCas: new InMemoryHostAnchorRoundCasStore(), hostInvocationStartCas: new InMemoryHostInvocationStartCasStore(),
+      onInvocationAudit: () => {}, onProjectionAudit: () => {},
+    });
+    const realExecutor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined, audit);
+    const outcome = await realExecutor.executeConversationBatch([
+      { id: "rationale-history", name: "write_file", input: { path: join(root, "outside.txt"), content: "await authority" } },
+    ], { executionCwd: project, sessionId, rationaleRuntime: coordinator,
+      permissionContext: { trustOrigin: "llm-tool-arg", additionalDirectories: [], headless: source === "headless" } });
+    if (outcome.outcome !== "rationale-required") throw new Error("Expected an outside-write rationale card");
+    const { ticketId, anchor, action } = outcome.control.control;
+    if (source === "stopped") {
+      expect(coordinator.abort(ticketId)).toMatchObject({ state: "cancelled" });
+    } else {
+      await coordinator.handleRationaleRoundResult({ ticketId, result: { kind: "calls", calls: [{
+        id: "rationale-choice", name: "permission_rationale",
+        input: { contractVersion: 1, anchorId: anchor.anchorId, ticketId, actionDigest: action.actionDigest, round: 1, choice: "ask_user" },
+      }] } });
+      await expect(coordinator.promptForApproval(ticketId)).resolves.toMatchObject({ outcome: "denied" });
+    }
+    await audit.close();
+    const rows = (await readFile(audit.getPermissionAuditLogFile(), "utf8")).trim().split("\n")
+      .map((line) => JSON.parse(line) as { toolUseId: string; decision: string; terminalKind: string; denyReasons: Array<{ reason: string; source: string }> })
+      .filter((row) => row.toolUseId === "rationale-history" && row.decision === "deny");
+    expect(rows).toEqual([expect.objectContaining({
+      terminalKind: kind,
+      denyReasons: [expect.objectContaining({ reason: source === "stopped"
+        ? "The permission request was stopped; the action was not executed."
+        : "Nobody can approve this request; do not retry." })],
+    })]);
+    const [row] = rows;
+    if (row === undefined) throw new Error("Expected a terminal audit row");
+    expect(terminalDenyKindOf({ denyReasons: row.denyReasons })).toBe(kind);
   });
 
   it.each([

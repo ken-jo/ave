@@ -156,13 +156,15 @@ const LEGACY_CANCELLATION_REASONS: ReadonlySet<string> = new Set([
   "host-shutdown",
   "Hook execution cancelled",
   "Plugin generation admission denied: plugin runtime is shutting down",
+  "The permission request was stopped; the action was not executed.",
 ]);
+const LEGACY_PLUGIN_ADMISSION_SHUTDOWN = /^Plugin generation admission denied: plugin '[^'\r\n]+' call 'generation admission' aborted: the plugin runtime is shutting down$/;
 
 /** The kind of a persisted deny row: its terminalKind when written, else derived from its first reason. */
 export function terminalDenyKindOf(entry: Pick<AuditDeny, "denyReasons" | "terminalKind">): AuditDenyKind {
   if (entry.terminalKind !== undefined) return entry.terminalKind;
   const first = entry.denyReasons[0]?.reason;
-  return first !== undefined && LEGACY_CANCELLATION_REASONS.has(first) ? "cancelled" : "denied";
+  return first !== undefined && (LEGACY_CANCELLATION_REASONS.has(first) || LEGACY_PLUGIN_ADMISSION_SHUTDOWN.test(first)) ? "cancelled" : "denied";
 }
 
 /** Mode slash commands require user-keyboard origin; retain the origin for forensic verification. */

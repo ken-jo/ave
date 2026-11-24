@@ -8,7 +8,7 @@ import { answeredApprovalDecision } from "../../__tests__/support/answering-appr
 import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
 import type { ApprovalGate, ApprovalRequest, ApprovalRequestInput } from "../../permissions/approval-gate.js";
-import type { PluginRuntimeGenerationAccess } from "../../plugins/plugin-host-generation.js";
+import type { HostPluginGenerationState, PluginRuntimeGenerationAccess } from "../../plugins/plugin-host-generation.js";
 import type { HostPluginAuthLifecycle } from "../executor-contract.js";
 
 const COMMAND = resolve(__dirname, "../../../test/fixtures/hooks/influence-command.cjs");
@@ -129,20 +129,32 @@ async function setup(source: Source) {
     getActive: () => undefined,
     isExactAdmitted: () => false,
     acquire: async () => lease,
-    acquireExact: async () => {
-      if (source === "plugin-generation-shutdown") throw Object.assign(new Error("plugin runtime is shutting down"), { code: "plugin-runtime-shutdown" });
-      if (source === "plugin-generation") throw new Error("generation gen-1 is retired");
-      return lease;
-    },
+    acquireExact: async () => lease,
     runWithLease: async <T>(_lease: unknown, operation: () => Promise<T>) => operation(),
   } as unknown as PluginRuntimeGenerationAccess;
+  let generationAccess = access;
+  if (generation) {
+    const { TestPluginRuntime } = await import("../../plugins/__tests__/test-helpers.js");
+    const { PluginGenerationCoordinator } = await import("../../plugins/plugin-generation-coordinator.js");
+    const runtime = new TestPluginRuntime({ hostRoot: root, manifestPaths: [] });
+    const coordinator = new PluginGenerationCoordinator<HostPluginGenerationState>();
+    const lifecycle = {
+      ...access,
+      acquireExact: coordinator.acquireExact.bind(coordinator),
+      replaceRuntime: vi.fn(),
+      closeAdmission: coordinator.closeAdmission.bind(coordinator),
+    };
+    runtime.setGenerationAccess(lifecycle);
+    generationAccess = lifecycle;
+    if (source === "plugin-generation-shutdown") runtime.beginShutdown();
+  }
   let cardShown!: (card: ApprovalRequest) => void;
   const cardOpen = new Promise<ApprovalRequest>((done) => { cardShown = done; });
   const realGate = new ApprovalGate({ isDestroyed: () => false,
     send: (channel: string, card: ApprovalRequest) => { if (channel === IPC_APPROVAL_REQUEST) cardShown(card); } } as never);
   const gate = liveCard ? realGate : { requestAndWait } as unknown as ApprovalGate;
   const executor = new ToolExecutor(registry, undefined, permissions, undefined, gate, hooks, audit,
-    undefined, undefined, undefined, () => access);
+    undefined, undefined, undefined, () => generationAccess);
   const authLifecycle = { binding: { pluginId: "probe-plugin", generationId: "gen-1", toolName: TOOL, appSessionId: "app", accountScopeHash: "hash" },
     beforeHandler: () => {}, completeSuccess: () => {}, completeFailure: () => {} } satisfies HostPluginAuthLifecycle;
   const ids = source === "user-abort" ? ["held-call", "denied-call"] : ["denied-call"];
@@ -228,7 +240,6 @@ describe("a permission denial fires one PermissionDenied; a cancellation and a g
     ["hook-mutation", "Hook input mutation could not safely restart permission classification"],
     ["host", /^the invocation failed: approval: the answer to .* does not settle this allow of denial_probe$/],
     ["integrity", /^the terminal row failed its integrity check: approval: the answer to .* does not settle this deny of denial_probe$/],
-    ["plugin-generation", "Plugin generation admission denied: generation gen-1 is retired"],
   ] as const)("deny source %s: one row, one event", async (source, reason) => {
     await run(source, (probe) => expectOneDenial(probe, reason));
   });
@@ -249,8 +260,17 @@ describe("a permission denial fires one PermissionDenied; a cancellation and a g
     await run(source, (probe) => expectNoDenial(probe, reason));
   });
 
-  it("plugin generation admission ended by runtime shutdown: one row, no event", async () => {
-    await run("plugin-generation-shutdown", (probe) => expectNoDenial(probe, "Plugin generation admission denied: plugin runtime is shutting down"));
+  it.each([
+    ["plugin-generation-shutdown", "cancelled", "plugin 'probe-plugin' call 'generation admission' aborted: the plugin runtime is shutting down"],
+    ["plugin-generation", "denied", "plugin 'probe-plugin' generation 'gen-1' is not active"],
+  ] as const)("reads the actual %s writer's legacy row as %s", async (source, kind, detail) => {
+    await run(source, async (probe) => {
+      const reason = `Plugin generation admission denied: ${detail}`;
+      if (kind === "cancelled") await expectNoDenial(probe, reason);
+      else await expectOneDenial(probe, reason);
+      const { denyReasons } = await settledRow(probe) as { denyReasons: Array<{ reason: string; source: string }> };
+      expect(terminalDenyKindOf({ denyReasons })).toBe(kind);
+    });
   });
 
   it("user abort: the queued call's refusal and the running call's allow fire no event", async () => {
