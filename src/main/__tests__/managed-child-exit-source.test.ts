@@ -663,6 +663,49 @@ describe("managed child receipts", () => {
     }
   });
 
+  it("refuses a recorded path that resolves to the working directory or a filesystem root", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "ave-managed-cwd-root-"));
+    const start = process.cwd();
+    const sentinel = join(directory, "sentinel");
+    try {
+      writeFileSync(sentinel, "x");
+      process.chdir(directory);
+      const resources = createManagedResources();
+      for (const path of [".", "a/.."]) {
+        expect(() => recordManagedPaths(resources, { path, recursive: true })).toThrow(TypeError);
+      }
+      await abandonManagedLaunch(resources);
+      expect(existsSync(sentinel)).toBe(true);
+      // Never released: a root accepted here would stay recorded instead of being removed.
+      for (const path of ["/", ...process.platform === "win32" ? ["C:\\"] : []]) {
+        expect(() => recordManagedPaths(createManagedResources(), { path, recursive: true })).toThrow(TypeError);
+      }
+    } finally {
+      process.chdir(start);
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a nested release started from the handle's own first step", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "ave-managed-nested-"));
+    try {
+      const kept = join(directory, "kept");
+      mkdirSync(kept);
+      writeFileSync(join(kept, "file"), "x");
+      const resources = createManagedResources();
+      let nested: Promise<void> | undefined;
+      recordManagedCleanup(resources, () => { nested = abandonManagedLaunch(resources); nested.catch(() => {}); });
+      recordManagedPaths(resources, { path: kept });
+      await expect(abandonManagedLaunch(resources)).rejects.toThrow();
+      await expect(nested).rejects.toThrow("Managed resources are being released.");
+      expect(() => recordManagedPaths(createManagedResources(), { path: kept })).toThrow("another live handle recorded");
+      rmSync(kept, { recursive: true });
+      await abandonManagedLaunch(resources);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("lets an ancestor record a path containing one its live descendant recorded", async () => {
     const directory = join(tmpdir(), `ave-managed-descendant-${process.pid}-${Date.now()}`);
     const ancestor = createManagedResources();

@@ -1,7 +1,7 @@
 import { spawn, spawnSync, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { Writable } from "node:stream";
 import { readFile, rm } from "node:fs/promises";
-import { resolve, sep } from "node:path";
+import { parse, resolve, sep } from "node:path";
 import { win32SystemBinary } from "../shared/windows-system-path.js";
 import { findHostProgram } from "../shared/host-program-path.js";
 import { createLogger } from "../lib/logger.js";
@@ -580,7 +580,11 @@ export function recordManagedPaths(resources: ManagedResources, ...paths: readon
   const entries = paths.map(({ path, recursive }) => {
     if (typeof path !== "string" || path === "") throw new TypeError("Managed path must be a non-empty string.");
     if (recursive !== undefined && typeof recursive !== "boolean") throw new TypeError("Managed path recursive must be a boolean.");
-    return Object.freeze({ path: resolve(path), recursive: recursive ?? false });
+    const full = resolve(path);
+    if (foldedPath(full) === foldedPath(resolve()) || parse(full).root === full) {
+      throw new TypeError("Managed path must not be the working directory or a filesystem root.");
+    }
+    return Object.freeze({ path: full, recursive: recursive ?? false });
   });
   const state = recordableState(resources);
   const folded = entries.map(entry => foldedPath(entry.path));
@@ -617,6 +621,8 @@ function acquireManagedExit<Receipt extends ExitReceipt>(resources: ManagedResou
 
 function runRecordedRelease(state: ResourceState): Promise<void> {
   if (state.releasing) return state.releasing;
+  // A release started from the handle's own synchronous first step, before `releasing` is assigned.
+  if (state.inRelease) return Promise.reject(new Error("Managed resources are being released."));
   state.inRelease = true;
   state.releasing = (async () => {
     // Steps are independent: every one runs, and only the failed ones stay recorded for the next release.
