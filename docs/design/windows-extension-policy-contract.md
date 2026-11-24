@@ -256,7 +256,9 @@ Hard requirements for holder adapters (rows 3–5):
   both be live: the second is refused while the first is owned. Serialize such
   holders, or give each a disjoint root.
 - HOME/temp go in `<AVE_HOME>\mxc-staging\<opaque-id>`, inside the holder's
-  captured write roots.
+  captured write roots. When a holder's grant sits above the Ave home, the Ave
+  home is denied and a staging HOME/temp beneath it is refused: the start fails
+  closed, and resolving that is an owner decision.
 - Executables come from installation or generation roots, never from a workspace
   or any holder-writable root.
 
