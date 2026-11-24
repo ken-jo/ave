@@ -471,6 +471,7 @@ describe("resolveHostGit", () => {
       Object.defineProperty(process, "execPath", { value: join("C:/Ave", "Ave.exe") });
       vi.stubEnv("SystemRoot", "X:\\UntrustedRoot");
       vi.stubEnv("windir", "Y:\\UntrustedWindows");
+      vi.stubEnv("NoDefaultCurrentDirectoryInExePath", "1");
       vi.mocked(existsSync).mockReturnValue(true);
       vi.mocked(statSync).mockImplementation((path) => path === bundled
         ? { isFile: () => true } as ReturnType<typeof statSync>
@@ -496,6 +497,7 @@ describe("resolveHostGit", () => {
             systemDirectory, systemRoot].join(";"),
           SystemRoot: systemRoot,
           WINDIR: systemRoot,
+          NoDefaultCurrentDirectoryInExePath: "1",
           GIT_CONFIG_NOSYSTEM: "1",
           GIT_CONFIG_GLOBAL: "NUL",
           GIT_ALLOW_PROTOCOL: "",
@@ -540,6 +542,7 @@ describe("resolveHostGit", () => {
       Object.defineProperty(process, "execPath", { value: join("C:/Ave", "Ave.exe") });
       vi.stubEnv("SystemRoot", "C:\\Windows");
       vi.stubEnv("PATH", "D:\\untrusted;\\\\example\\share");
+      vi.stubEnv("NoDefaultCurrentDirectoryInExePath", "1");
       vi.stubEnv("GIT_TRACE2_EVENT", trace);
       vi.stubEnv("GIT_TRACE", trace);
       vi.stubEnv("Git_Exec_Path", join(install, "other"));
@@ -561,6 +564,7 @@ describe("resolveHostGit", () => {
             win32.join("C:\\Windows", "System32"), "C:\\Windows"].join(";"),
           SystemRoot: "C:\\Windows",
           WINDIR: "C:\\Windows",
+          NoDefaultCurrentDirectoryInExePath: "1",
           GIT_CONFIG_NOSYSTEM: "1",
           GIT_CONFIG_GLOBAL: "NUL",
           GIT_ALLOW_PROTOCOL: "",

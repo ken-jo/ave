@@ -249,12 +249,14 @@ function* probeInstallerGit(install: InstallerGitInstall): GitChecks<DiscoveredG
       () => queryWindowsSystemDirectory(TOOL_TIMEOUT_POLICY.projectGitQueryMs));
     const systemRoot = win32.dirname(systemDirectory);
     if (systemDirectory.includes(";")) return null;
+    const lookupSwitch = process.env.NoDefaultCurrentDirectoryInExePath;
     const options = {
       cwd,
       env: {
         PATH: [...pathEntries, systemDirectory, systemRoot].join(";"),
         SystemRoot: systemRoot,
         WINDIR: systemRoot,
+        ...(lookupSwitch === undefined ? {} : { NoDefaultCurrentDirectoryInExePath: lookupSwitch }),
         GIT_CONFIG_NOSYSTEM: "1",
         GIT_CONFIG_GLOBAL: "NUL",
         GIT_ALLOW_PROTOCOL: "",
