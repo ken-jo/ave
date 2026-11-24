@@ -1610,14 +1610,13 @@ export type AvePermissionApi = {
 
 /**
  * Permission policy — minimal audit entry shape surfaced to the renderer's
- * `AuditPanel`. The full discriminated union (with `decision` field
- * + per-decision payload) is sent verbatim — this type is just a
- * structural tag the panel uses to gate the expand/filter UI.
+ * `AuditPanel`. Deny entries include their resolved terminal kind.
  */
 export interface PermissionAuditEntrySummary {
   ts: string;
   auditId: string;
   decision: string;
+  terminalKind?: import("../../audit/audit-schema.js").AuditDenyKind;
   trustOrigin: string;
   prevHash: string;
   /** Anything else from the discriminated union — opaque to the renderer. */

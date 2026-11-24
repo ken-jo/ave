@@ -200,6 +200,9 @@ export type PermissionAuditEntry =
   | AuditModeChange
   | AuditManifestViolation;
 
+/** The audit show projection resolves the terminal kind of historical deny rows. */
+export type PermissionAuditEntryView = Exclude<PermissionAuditEntry, AuditDeny> | (AuditDeny & { terminalKind: AuditDenyKind });
+
 export type PermissionAuditEntryInput = PermissionAuditEntry extends infer Entry
   ? Entry extends PermissionAuditEntry
     ? Omit<Entry, "prevHash" | "entryHash">

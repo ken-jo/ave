@@ -244,6 +244,19 @@ async function setup(options: Parameters<typeof makeDeps>[0] = {}) {
   return { deps, permissionManager, appWindows, workspaceRootLifecycle, askUserQuestionGate };
 }
 
+it("passes the resolved cancellation kind to the audit panel", async () => {
+  const { deps } = await setup();
+  const dir = deps.auditLogger.getAuditDir();
+  onTestFinished(() => cleanupTmpDir(dir));
+  deps.auditLogger.getAuditDir.mockReturnValue(dir);
+  writeFileSync(join(dir, "2026-05-09.permission-audit.jsonl"), JSON.stringify({
+    decision: "deny", auditId: "legacy", denyReasons: [{ reason: "host-shutdown", source: "tool-executor" }],
+  }) + "\n");
+  expect(await invoke(PERMISSIONS.auditShow, { last: 10 })).toMatchObject({
+    ok: true, entries: [{ auditId: "legacy", decision: "deny", terminalKind: "cancelled" }],
+  });
+});
+
 /**
  * A durable mode change also writes the reviewer settings store. The file's shared home is not owned by the test account on
  * a Windows runner, so boot refuses it and every such write reports the refused-home notice. Give those tests a home the

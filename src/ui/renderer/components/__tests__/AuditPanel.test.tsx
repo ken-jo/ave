@@ -154,6 +154,16 @@ describe("AuditPanel", () => {
     });
   });
 
+  it("labels a cancelled deny row as cancelled", async () => {
+    const fetcher = makeFetcher({
+      entries: [makeEntry({ decision: "deny", terminalKind: "cancelled" })],
+    });
+    await act(async () => {
+      render(<AuditPanel open onClose={() => {}} fetcher={fetcher} />);
+    });
+    expect(screen.getByRole("button", { name: /cancelled.*fs_read/ })).toBeTruthy();
+  });
+
   it("filters entries by tool name substring", async () => {
     const fetcher = makeFetcher({
       entries: [

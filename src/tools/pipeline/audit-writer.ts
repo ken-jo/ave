@@ -1,4 +1,4 @@
-import { appendDirectoryGrantRecord, appendToolInvocationAudit, recordToolInvocationAuditFailure, type DirectoryGrantRecord, type KindedTerminalRowWriter, type TerminalDenial, type TerminalLifecycleEvent } from "../invocation-ledger.js";
+import { appendDirectoryGrantRecord, appendToolInvocationAudit, recordToolInvocationAuditFailure, type DirectoryGrantRecord, type KindedTerminalRowWriter, type TerminalDenial, type TerminalDenyKind, type TerminalLifecycleEvent } from "../invocation-ledger.js";
 import type { ToolAuditTerminationReason } from "../../audit/audit-logger.js";
 // Tool terminal rows go through auditToolCall with a row writer only the ledger hands out and the kind its writer named;
 // the ledger fires one PermissionDenied per permission-denial row, except for a governed tool, and none for a cancellation.
@@ -25,6 +25,7 @@ import {
   permissionAuditEntryFromToolCall,
 } from "./audit-entries.js";
 import { errorMessage } from "../../shared/error-message.js";
+import { t } from "../../i18n/index.js";
 
 const log = createLogger("executor");
 
@@ -234,39 +235,37 @@ export class AuditWriter {
     const auditSafeOutput = governedTool
       ? (isError ? "governed operation failed" : "governed operation completed")
       : output;
-    try {
-      const inputText = JSON.stringify(auditSafeInput);
-      // The privacy toggle governs audit PII masking; credentials are always scrubbed.
-      const auditInput = maskSensitiveData(inputText, {
-        pii: isPiiRedactionEnabled(),
-      }).masked;
-      this.auditLogger.log({
-        timestamp: new Date().toISOString(),
-        sessionId: sessionId ?? "unknown",
-        type: "tool_call",
-        input: auditInput.slice(0, 500),
-        output: auditSafeOutput.slice(0, 1024),
-        toolCalls: [{
-          name: toolName,
-          isError,
-          source,
-          trust,
-          executionTimeMs: Date.now() - startTime,
-          ...(audit?.toolUseId !== undefined ? { toolUseId: audit.toolUseId } : {}),
-          ...(audit?.executionPlan !== undefined ? { executionPlan: audit.executionPlan } : {}),
-          permissionDecision: permission?.decision ?? "allow",
-          permissionReason: permission?.reason,
-          rateLimitRemaining,
-          ...(terminationReason ? { terminationReason } : {}),
-        }],
-      });
-    } catch (err) {
-      log.warn(
-        "general tool audit failed for %s: %s",
-        toolName,
-        errorMessage(err),
-      );
-    }
+    const onEnqueued = (denyKind: TerminalDenyKind | undefined): void => {
+      try {
+        const cancelled = denyKind === "cancelled";
+        // The privacy toggle governs audit PII masking; credentials are always scrubbed.
+        const auditInput = maskSensitiveData(JSON.stringify(auditSafeInput), {
+          pii: isPiiRedactionEnabled(),
+        }).masked;
+        this.auditLogger.log({
+          timestamp: new Date().toISOString(),
+          sessionId: sessionId ?? "unknown",
+          type: "tool_call",
+          input: auditInput.slice(0, 500),
+          output: cancelled ? t("be_executor.toolExecutionCancelled") : auditSafeOutput.slice(0, 1024),
+          toolCalls: [{
+            name: toolName,
+            isError,
+            source,
+            trust,
+            executionTimeMs: Date.now() - startTime,
+            ...(audit?.toolUseId !== undefined ? { toolUseId: audit.toolUseId } : {}),
+            ...(audit?.executionPlan !== undefined ? { executionPlan: audit.executionPlan } : {}),
+            permissionDecision: denyKind === undefined ? permission?.decision ?? "allow" : cancelled ? "cancelled" : "deny",
+            permissionReason: permission?.reason,
+            rateLimitRemaining,
+            ...(terminationReason ? { terminationReason } : {}),
+          }],
+        });
+      } catch (err) {
+        log.warn("general tool audit failed for %s: %s", toolName, errorMessage(err));
+      }
+    };
     // Every terminal row is written; what the host could not resolve is recorded as unknown.
     const tool = this.toolRegistry.findByName(toolName);
     const entry = permissionAuditEntryFromToolCall({
@@ -292,9 +291,9 @@ export class AuditWriter {
     // The writer enqueues the row before its first await; the ledger's denial lifecycle runs after it and cannot lose it.
     const logger = ready ? { logger: this.auditLogger } : {};
     const appended = entry.decision === "deny"
-      ? terminal.row({ entry, kind: terminal.kind, ...logger, ...(permission?.decision === "deny" ? { reason: permission.reason } : {}),
+      ? terminal.row({ entry, kind: terminal.kind, ...logger, onEnqueued, ...(permission?.decision === "deny" ? { reason: permission.reason } : {}),
         humanAnswered: permission?.provenance.kind === "answered" && answeredProvenanceRecord(permission.provenance).trustOrigin !== "unknown" })
-      : terminal.row({ entry, ...logger });
+      : terminal.row({ entry, ...logger, onEnqueued });
     try {
       await appended;
     } catch (err) {

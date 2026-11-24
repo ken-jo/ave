@@ -69,6 +69,7 @@ type TerminalRow = {
   logger?: Pick<AuditLogger, "appendPermissionAuditEntry">;
   reason?: string;
   humanAnswered?: boolean;
+  onEnqueued?(denyKind: TerminalDenyKind | undefined): void;
 } & ({ entry: DenyEntry; kind: TerminalDenyKind } | { entry: Exclude<PermissionAuditEntryInput, { decision: "deny" }>; kind?: never });
 /**
  * Writes the attempt's terminal row; only the ledger hands one out. The call claims the attempt and enqueues the row
@@ -92,6 +93,7 @@ export interface InvocationTerminal {
   readonly attempt: number;
   readonly owner: TerminalOwner;
   readonly state: TerminalState;
+  readonly denyKind: TerminalDenyKind | undefined;
   /** The host's writer, which ends the attempt when a forced quit, a held card's abort or an invocation failure finds it
    * unclaimed, and the attempt's denial lifecycle. */
   hostTerminal(write: HostTerminalWrite, lifecycle: TerminalDenialLifecycle): void;
@@ -117,6 +119,7 @@ class TerminalLedger implements InvocationTerminal {
   #key: string | undefined;
   #integrityFailure = false;
   #signal: AbortSignal;
+  #denyKind: TerminalDenyKind | undefined;
 
   constructor(readonly tool: string, readonly attempt: number, signal: AbortSignal, lifecycle?: TerminalDenialLifecycle) {
     this.#signal = signal;
@@ -125,6 +128,7 @@ class TerminalLedger implements InvocationTerminal {
 
   get owner(): TerminalOwner { return this.#owner; }
   get state(): TerminalState { return this.#state; }
+  get denyKind(): TerminalDenyKind | undefined { return this.#denyKind; }
   get key(): string | undefined { return this.#key; }
 
   bindAbortSignal(signal?: AbortSignal): AbortSignal {
@@ -185,12 +189,15 @@ class TerminalLedger implements InvocationTerminal {
       const entry: PermissionAuditEntryInput = terminal.entry.decision !== "deny" ? terminal.entry
         : cancellation === undefined ? { ...terminal.entry, terminalKind: terminal.kind }
         : { ...terminal.entry, terminalKind: "cancelled", denyReasons: [{ reason: cancellation, source: "tool-executor" }, ...terminal.entry.denyReasons] };
+      const denyKind = entry.decision === "deny" ? terminalDenyKindOf(entry) : undefined;
+      this.#denyKind = denyKind;
       const append = logger ? appendTerminalRow(logger, entry) : Promise.resolve();
       this.#track(append);
+      terminal.onEnqueued?.(denyKind);
       const lifecycle = this.#lifecycle;
       return (async () => {
         // The one rule: a permission denial fires PermissionDenied unless the attempt is governed; a cancellation never does.
-        if (entry.decision === "deny" && terminalDenyKindOf(entry) === "denied" && lifecycle !== undefined && !lifecycle.governed()) {
+        if (entry.decision === "deny" && denyKind === "denied" && lifecycle !== undefined && !lifecycle.governed()) {
           await lifecycle.fire(new LedgerDenial(reason ?? entry.denyReasons[0]?.reason ?? ""));
         }
         await append;
@@ -316,6 +323,7 @@ export function admitToolInvocation(tool: string, parent?: AbortSignal, resumeOf
     get attempt() { return ledger.attempt; },
     get owner() { return ledger.owner; },
     get state() { return ledger.state; },
+    get denyKind() { return ledger.denyKind; },
     hostTerminal: (write, lifecycle) => { ledger.hostTerminal(write, lifecycle); },
     bindAbortSignal: (abortSignal) => ledger.bindAbortSignal(abortSignal),
     select: (outcome) => { ledger.select(outcome); },

@@ -1,10 +1,11 @@
 // Slash mutations require user-keyboard origin; audit reads cross day-files and verification detects tampering or seal mismatches (docs/architecture/permission-policy-design.md).
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   dispatchPermissionSlash,
+  dispatchPermissionAuditCommand,
   parsePermissionAuditCommand,
   parsePermissionHooksCommand,
   parsePermissionModeCommand,
@@ -367,6 +368,32 @@ describe("dispatchPermissionSlash — subcommand routing", () => {
 describe("readRecentAuditEntries", () => {
   it("returns empty array when audit dir is missing", () => {
     expect(readRecentAuditEntries(join(workDir, "missing"), 10)).toEqual([]);
+  });
+
+  it("projects legacy and explicit terminal kinds while the signed JSONL remains verifiable", () => {
+    const file = join(workDir, "2026-05-09.permission-audit.jsonl");
+    const secret = "aa".repeat(32);
+    const common = { decision: "deny", denyReasons: [{ reason: "host-shutdown", source: "tool-executor" }] };
+    const [legacy, denied, cancelled] = buildChainedEntries(secret, [
+      { ...common, auditId: "legacy" },
+      { ...common, auditId: "denied", terminalKind: "denied" },
+      { ...common, auditId: "cancelled", terminalKind: "cancelled", denyReasons: [{ reason: "Denied by policy", source: "rule" }] },
+    ]);
+    const raw = [legacy, denied, cancelled].map((entry) => JSON.stringify(entry)).join("\n") + "\n";
+    writeFileSync(file, raw);
+
+    expect(readRecentAuditEntries(workDir, 3)).toEqual([cancelled, denied, { ...legacy, terminalKind: "cancelled" }]);
+    expect(readFileSync(file, "utf8")).toBe(raw);
+    expect(verifyAllAuditFiles(workDir, secret)).toMatchObject({ intact: true, totalEntries: 3 });
+  });
+
+  it("includes the resolved kind in permission audit show", () => {
+    writeFileSync(join(workDir, "2026-05-09.permission-audit.jsonl"), JSON.stringify({
+      decision: "deny", auditId: "legacy", denyReasons: [{ reason: "host-shutdown", source: "tool-executor" }],
+    }) + "\n");
+    expect(dispatchPermissionAuditCommand({ verb: "show", last: 10 }, { auditDir: workDir, secret: null })).toMatchObject({
+      ok: true, verb: "show", total: 1, entries: [{ auditId: "legacy", terminalKind: "cancelled" }],
+    });
   });
 
   it("returns entries newest-first across files", () => {

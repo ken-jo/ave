@@ -32,7 +32,7 @@ import {
   summarizeAuditDir,
   verifyAllAuditFiles,
 } from "./permission-audit-runner.js";
-import type { PermissionAuditEntry } from "../audit/audit-schema.js";
+import type { PermissionAuditEntryView } from "../audit/audit-schema.js";
 import type { SecretStore } from "../audit/hmac-chain.js";
 import { EXECUTION_MODES, type ExecutionMode } from "../shared/permission-mode.js";
 import type { PermissionManager } from "./permission-manager.js";
@@ -421,7 +421,7 @@ export type PermissionAuditResult =
   | {
       ok: true;
       verb: "show";
-      entries: PermissionAuditEntry[];
+      entries: PermissionAuditEntryView[];
       total: number;
       summary: { files: number; bytes: number };
     }

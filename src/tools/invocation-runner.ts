@@ -519,7 +519,7 @@ async function runToolInvocationAttempt(
       written.catch(() => {});
       const denied = args[8];
       const history = services.permissionManager?.getRecentlyDenied();
-      if (denied?.decision === "deny" && history && !denialRecorded) {
+      if (terminal.denyKind === "denied" && denied?.decision === "deny" && history && !denialRecorded) {
         denialRecorded = true;
         try { await recordRecentlyDenied(history, denied, args); } catch (error) {
           log.warn("recently denied history failed for %s: %s", toolUse.name, errorMessage(error));

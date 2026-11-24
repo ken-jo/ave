@@ -760,6 +760,11 @@ export class ToolExecutor {
     }
     if (isRationaleRequiredExecuteOneOutcome(result)) admission.suspend(toolUse.id);
     admission.settle();
+    if ("tool_use_id" in result && admission.terminal.denyKind === "cancelled") {
+      const cancelled = t("be_executor.toolExecutionCancelled");
+      const content = result.content && result.content !== cancelled ? `${cancelled}\n${result.content}` : cancelled;
+      return { ...result, content, is_error: true };
+    }
     return result;
   }
 

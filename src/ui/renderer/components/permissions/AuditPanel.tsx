@@ -9,7 +9,7 @@ import type { PermissionAuditEntrySummary } from "../../types.js";
 import { useTranslation } from "../../../../i18n/react.js";
 import { t } from "../../../../i18n/runtime.js";
 
-type DecisionFilter = "all" | "allow" | "ask" | "deny" | "deferred" | "mode_change" | "manifest_violation";
+type DecisionFilter = "all" | "allow" | "ask" | "deny" | "cancelled" | "deferred" | "mode_change" | "manifest_violation";
 
 interface VerifyResult {
   intact: boolean;
@@ -115,7 +115,7 @@ export function AuditPanel({
 
   const filtered = useMemo(() => {
     return entries.filter((e) => {
-      if (decisionFilter !== "all" && e.decision !== decisionFilter) return false;
+      if (decisionFilter !== "all" && displayedDecision(e) !== decisionFilter) return false;
       if (toolFilter.trim().length > 0) {
         const needle = toolFilter.trim().toLowerCase();
         const tool = typeof e.tool === "string" ? e.tool.toLowerCase() : "";
@@ -203,6 +203,7 @@ export function AuditPanel({
             <NativeSelectOption value="allow">allow</NativeSelectOption>
             <NativeSelectOption value="ask">ask</NativeSelectOption>
             <NativeSelectOption value="deny">deny</NativeSelectOption>
+            <NativeSelectOption value="cancelled">cancelled</NativeSelectOption>
             <NativeSelectOption value="deferred">deferred</NativeSelectOption>
             <NativeSelectOption value="mode_change">mode_change</NativeSelectOption>
             <NativeSelectOption value="manifest_violation">manifest_violation</NativeSelectOption>
@@ -253,6 +254,7 @@ export function AuditPanel({
         )}
         {filtered.map((entry) => {
           const isOpen = expanded.has(entry.auditId);
+          const decision = displayedDecision(entry);
           return (
             <li
               key={entry.auditId}
@@ -266,8 +268,8 @@ export function AuditPanel({
                 aria-expanded={isOpen}
               >
                 <span aria-hidden>{isOpen ? "▾" : "▸"}</span>
-                <Badge variant="outline" className={decisionBadgeClass(entry.decision)}>
-                  {entry.decision}
+                <Badge variant="outline" className={decisionBadgeClass(decision)}>
+                  {decision}
                 </Badge>
                 <code className="flex-1 truncate rounded bg-muted px-1 py-0.5 font-mono text-dense">
                   {decisionSummary(entry)}
@@ -292,6 +294,10 @@ export function AuditPanel({
   );
 }
 
+function displayedDecision(entry: PermissionAuditEntrySummary): string {
+  return entry.decision === "deny" && entry.terminalKind === "cancelled" ? "cancelled" : entry.decision;
+}
+
 function decisionBadgeClass(decision: string): string {
   switch (decision) {
     case "allow":
@@ -300,6 +306,7 @@ function decisionBadgeClass(decision: string): string {
       return "border-destructive text-destructive";
     case "ask":
       return "border-info text-info";
+    case "cancelled":
     case "deferred":
       return "border-warning text-warning";
     case "mode_change":

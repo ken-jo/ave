@@ -17,7 +17,8 @@ import {
 } from "../audit/hmac-chain.js";
 import {
   isPermissionAuditEntry,
-  type PermissionAuditEntry,
+  terminalDenyKindOf,
+  type PermissionAuditEntryView,
 } from "../audit/audit-schema.js";
 import { parseJsonlLines } from "../audit/jsonl-reader.js";
 
@@ -60,14 +61,14 @@ function readLastNonEmptyLines(filePath: string, limit: number): string[] {
 export function readRecentAuditEntries(
   auditDir: string,
   limit: number,
-): PermissionAuditEntry[] {
+): PermissionAuditEntryView[] {
   if (!existsSync(auditDir)) return [];
   const files = readdirSync(auditDir)
     .filter((f) => f.endsWith(".permission-audit.jsonl"))
     .sort()
     .reverse(); // newest first
 
-  const out: PermissionAuditEntry[] = [];
+  const out: PermissionAuditEntryView[] = [];
   for (const file of files) {
     const filePath = join(auditDir, file);
     const lines = readLastNonEmptyLines(filePath, limit - out.length);
@@ -76,7 +77,7 @@ export function readRecentAuditEntries(
       try {
         const parsed = JSON.parse(lines[i]) as unknown;
         if (isPermissionAuditEntry(parsed)) {
-          out.push(parsed);
+          out.push(parsed.decision === "deny" ? { ...parsed, terminalKind: terminalDenyKindOf(parsed) } : parsed);
           if (out.length >= limit) return out;
         }
       } catch {

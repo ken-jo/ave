@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { terminalDenyKindOf } from "../../audit/audit-schema.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { answeredApprovalDecision } from "../../__tests__/support/answering-approval-gate.js";
+import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
 import type { ApprovalGate, ApprovalRequest, ApprovalRequestInput } from "../../permissions/approval-gate.js";
 import type { PluginRuntimeGenerationAccess } from "../../plugins/plugin-host-generation.js";
@@ -36,6 +37,7 @@ async function setup(source: Source) {
   const { bindHookConfigPaths } = await import("../../hooks/hook-config-trust.js");
   const { AuditLogger } = await import("../../audit/audit-logger.js");
   const { ApprovalGate, IPC_APPROVAL_REQUEST } = await import("../../permissions/approval-gate.js");
+  const { t } = await import("../../i18n/index.js");
   const root = mkdtempSync(join(tmpdir(), "ave-denial-lock-"));
   roots.push(root);
   const audit = new AuditLogger(join(root, "audit"));
@@ -162,7 +164,8 @@ async function setup(source: Source) {
     .map((line) => JSON.parse(line) as Record<string, unknown>).filter((row) => row.decision !== "ask");
   const rows = (id = "denied-call") => allRows().filter((row) => row.toolUseId === id);
   const denials = () => lifecycle.mock.calls.filter(([event]) => event === "PermissionDenied");
-  return { ledger, audit, run, rows, denials, running, release, controller, inherited, cardOpen, gate: realGate, saveStarted, persisted, source };
+  const cancelledMessage = t("be_executor.toolExecutionCancelled");
+  return { ledger, audit, root, permissions, run, rows, denials, running, release, controller, inherited, cardOpen, gate: realGate, saveStarted, persisted, source, cancelledMessage };
 }
 
 type Probe = Awaited<ReturnType<typeof setup>>;
@@ -373,6 +376,42 @@ describe("a permission denial fires one PermissionDenied; a cancellation and a g
       await expectNoDenial(probe, "user aborted turn");
       expect(reasons(await settledRow(probe))[1]).toBe("user denied approval request");
     });
+  });
+
+  it("logs the committed cancellation in the general tool audit", async () => {
+    const probe = await setup("dir-hook-abort");
+    const auditLog = vi.spyOn(probe.audit, "log");
+    try {
+      await probe.run();
+      expect(auditLog.mock.calls.filter(([entry]) => entry.type === "tool_call")).toEqual([[expect.objectContaining({
+        output: probe.cancelledMessage,
+        toolCalls: [expect.objectContaining({ permissionDecision: "cancelled", permissionReason: "Hook execution cancelled" })],
+      })]]);
+    } finally {
+      await probe.audit.close();
+    }
+  });
+
+  it("returns a cancellation result when the ledger downgrades the writer's denial", async () => {
+    const probe = await setup("shell-prep-abort");
+    try {
+      const [result] = await probe.run();
+      expect(result).toMatchObject({ is_error: true, content: expect.stringContaining(probe.cancelledMessage) });
+    } finally {
+      await probe.audit.close();
+    }
+  });
+
+  it.each(["dir-hook-abort", "plugin-generation-shutdown"] as const)("excludes %s from recently denied history", async (source) => {
+    const probe = await setup(source);
+    const history = makeRecentlyDeniedStore(join(probe.root, "recently-denied.json"));
+    vi.spyOn(probe.permissions, "getRecentlyDenied").mockReturnValue(history);
+    try {
+      await probe.run();
+      expect(await history.list()).toEqual([]);
+    } finally {
+      await probe.audit.close();
+    }
   });
 
   it("the host's row for a quit after a person's deny keeps it a denial with one event", async () => {
