@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { createReadStream, lstatSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, createReadStream, lstatSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const OUTPUT_MANIFEST = "outputs.json";
@@ -55,20 +55,20 @@ export async function windowsPreparationInputs(
   return { identity, files };
 }
 
-async function outputFiles(root: string) {
+function* outputPaths(root: string, relative = ""): Generator<string> {
   if (!lstatSync(root).isDirectory()) throw new Error("Invalid preparation cache root");
-  const files: Record<string, string> = {};
-  async function visit(relative: string): Promise<void> {
-    for (const name of readdirSync(join(root, relative)).sort()) {
-      const file = relative ? `${relative}/${name}` : name;
-      const path = join(root, file);
-      const stat = lstatSync(path);
-      if (stat.isDirectory()) await visit(file);
-      else if (!stat.isFile() || stat.nlink !== 1) throw new Error(`Invalid preparation output: ${file}`);
-      else if (file !== OUTPUT_MANIFEST) files[file] = await hashFile(path);
-    }
+  for (const name of readdirSync(join(root, relative)).sort()) {
+    const file = relative ? `${relative}/${name}` : name;
+    const stat = lstatSync(join(root, file));
+    if (stat.isDirectory()) yield* outputPaths(root, file);
+    else if (!stat.isFile() || stat.nlink !== 1) throw new Error(`Invalid preparation output: ${file}`);
+    else if (file !== OUTPUT_MANIFEST) yield file;
   }
-  await visit("");
+}
+
+async function outputFiles(root: string) {
+  const files: Record<string, string> = {};
+  for (const file of outputPaths(root)) files[file] = await hashFile(join(root, file));
   return files;
 }
 
@@ -78,33 +78,75 @@ export async function sealWindowsPreparation(root: string, key: string, required
   writeFileSync(join(root, OUTPUT_MANIFEST), `${JSON.stringify({ key, files })}\n`, { flag: "wx" });
 }
 
-async function verifyWindowsPreparation(root: string, key: string, required: readonly string[]) {
+function readOutputManifest(root: string): { key: string; files: Record<string, string> } {
+  const path = join(root, OUTPUT_MANIFEST);
+  const stat = lstatSync(path);
+  if (!stat.isFile() || stat.nlink !== 1) throw new Error("Invalid preparation output manifest");
+  return JSON.parse(readFileSync(path, "utf8"));
+}
+
+async function verifyWindowsPreparation(root: string, key: string, required: readonly string[], expected: ReturnType<typeof readOutputManifest>) {
   const files = await outputFiles(root);
-  const { key: storedKey, files: stored } = JSON.parse(readFileSync(join(root, OUTPUT_MANIFEST), "utf8"));
-  if (storedKey !== key || required.some(file => !Object.hasOwn(files, file)) || canonicalJson(stored) !== canonicalJson(files)) {
+  if (expected.key !== key || required.some(file => !Object.hasOwn(files, file))
+    || canonicalJson(expected.files) !== canonicalJson(files) || canonicalJson(readOutputManifest(root)) !== canonicalJson(expected)) {
     throw new Error("Windows preparation cache digest mismatch");
   }
 }
+
+type RestoreChecks = {
+  verifyIdentity: (directory: string) => void | Promise<void>;
+  verifyInputs?: () => void | Promise<void>;
+  stage?: {
+    directory: string;
+    install: (readVerified: (file: string) => Buffer) => void;
+  };
+};
 
 export async function restoreWindowsPreparation(
   store: string,
   key: string | undefined,
   required: readonly string[],
   exactHit: boolean,
-  verifyIdentity: () => void | Promise<void>,
-  verifyInputs?: () => void | Promise<void>,
+  { verifyIdentity, verifyInputs, stage }: RestoreChecks,
 ): Promise<boolean> {
+  const directory = stage?.directory ?? store;
   if (key && exactHit) {
-    await verifyInputs?.();
+    try { await verifyInputs?.(); }
+    catch (error) {
+      if (stage) rmSync(directory, { recursive: true, force: true });
+      throw error;
+    }
     try {
-      await verifyWindowsPreparation(store, key, required);
-      await verifyIdentity();
+      if (!lstatSync(store).isDirectory()) throw new Error("Invalid preparation cache root");
+      const expected = readOutputManifest(store);
+      if (stage) {
+        // Preserve rejection of unsupported filesystem entries even when a
+        // copy would turn them into ordinary files.
+        Array.from(outputPaths(store));
+        for (const name of readdirSync(store)) {
+          cpSync(join(store, name), join(directory, name), {
+            recursive: true, verbatimSymlinks: true, errorOnExist: true, force: false,
+          });
+        }
+      }
+      await verifyWindowsPreparation(directory, key, required, expected);
+      await verifyIdentity(directory);
+      await verifyWindowsPreparation(directory, key, required, expected);
+      stage?.install(file => {
+        if (!Object.hasOwn(expected.files, file)) throw new Error(`Unexpected preparation output: ${file}`);
+        const bytes = readFileSync(join(directory, file));
+        if (createHash("sha256").update(bytes).digest("hex") !== expected.files[file]) {
+          throw new Error(`Windows preparation cache digest mismatch: ${file}`);
+        }
+        return bytes;
+      });
       return true;
     } catch (error) {
       console.log(`Windows preparation cache rejected: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
   // Discard partial or invalid output before the builder can write here.
+  if (stage) rmSync(directory, { recursive: true, force: true });
   rmSync(store, { recursive: true, force: true });
   return false;
 }

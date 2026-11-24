@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import {
-  appendFileSync, copyFileSync, mkdirSync, readFileSync,
+  appendFileSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync,
   realpathSync, renameSync, rmSync, utimesSync, writeFileSync,
 } from "node:fs";
 import { createRequire } from "node:module";
@@ -41,12 +41,18 @@ function compilerIdentity(root, env) {
   };
 }
 
-function copyOutput(source, destination) {
+function writeOutput(destination, write) {
   mkdirSync(dirname(destination), { recursive: true });
   const temporary = `${destination}.${process.pid}.tmp`;
-  copyFileSync(source, temporary);
-  try { renameSync(temporary, destination); }
+  try {
+    write(temporary);
+    renameSync(temporary, destination);
+  }
   finally { rmSync(temporary, { force: true }); }
+}
+
+function copyOutput(source, destination) {
+  writeOutput(destination, temporary => copyFileSync(source, temporary));
 }
 
 async function main(operation, root, env) {
@@ -74,23 +80,36 @@ async function main(operation, root, env) {
     ...ARCHES.flatMap(arch => [`payload/${arch}/${productName}.exe`, `payload/${arch}/resources/app.asar`]),
   ];
   if (operation === "restore") {
-    const verified = await restoreWindowsPreparation(store, key, required, env.AVE_WINDOWS_PREP_EXACT_HIT === "true", async () => {
-      const vendor = join(store, "native", VENDOR);
-      const receipts = JSON.parse(readFileSync(join(store, "native", `${RECEIPTS}.json`), "utf8"));
-      assertSrtWinReceiptModule(dirname(join(store, "native", RECEIPTS)));
-      assertSrtWinVendor(vendor, ARCHES, receipts);
-      assertUpstreamSrtWinVendor(vendor);
-      for (const arch of ARCHES) await verifyPackagingOutput(join(store, "payload", arch), arch, productName);
-    }, () => verifyInstalledPackagingInputs(root, ARCHES));
-    if (verified) {
-      for (const file of native) copyOutput(join(store, "native", file), join(root, file));
-      copyOutput(join(store, "native", pinTest), join(tmpdir(), pinTest));
-      const now = new Date();
-      for (const file of native.slice(0, 4)) utimesSync(join(root, file), now, now);
-    }
+    const exactHit = env.AVE_WINDOWS_PREP_EXACT_HIT === "true";
+    const directory = key && exactHit ? mkdtempSync(join(realpathSync(temp), "windows-preparation-use-")) : undefined;
+    const verified = await restoreWindowsPreparation(store, key, required, exactHit, {
+      verifyInputs: () => verifyInstalledPackagingInputs(root, ARCHES),
+      async verifyIdentity(directory) {
+        const vendor = join(directory, "native", VENDOR);
+        const receipts = JSON.parse(readFileSync(join(directory, "native", `${RECEIPTS}.json`), "utf8"));
+        assertSrtWinReceiptModule(dirname(join(directory, "native", RECEIPTS)));
+        assertSrtWinVendor(vendor, ARCHES, receipts);
+        assertUpstreamSrtWinVendor(vendor);
+        for (const arch of ARCHES) await verifyPackagingOutput(join(directory, "payload", arch), arch, productName);
+      },
+      stage: directory && {
+        directory,
+        install(readVerified) {
+          // Check every buffer before replacing any helper. Installation
+          // writes the same bytes without reopening a staged path.
+          const outputs = [
+            ...native.map(file => [join(root, file), readVerified(`native/${file}`)]),
+            [join(tmpdir(), pinTest), readVerified(`native/${pinTest}`)],
+          ];
+          for (const [destination, bytes] of outputs) writeOutput(destination, temporary => writeFileSync(temporary, bytes));
+          const now = new Date();
+          for (const file of native.slice(0, 4)) utimesSync(join(root, file), now, now);
+        },
+      },
+    });
     const canSave = key && env.AVE_WINDOWS_PREP_EXACT_HIT !== "true"
       && env.GITHUB_REF === "refs/heads/main" && ["push", "schedule", "workflow_dispatch"].includes(env.GITHUB_EVENT_NAME);
-    appendFileSync(environment, `AVE_WINDOWS_PREP_STORE=${verified || canSave ? store : ""}\nAVE_WINDOWS_PREP_VERIFIED=${verified}\n`);
+    appendFileSync(environment, `AVE_WINDOWS_PREP_STORE=${verified ? directory : canSave ? store : ""}\nAVE_WINDOWS_PREP_VERIFIED=${verified}\n`);
     console.log(verified ? "Using verified Windows preparation outputs" : "Building Windows preparation outputs");
     return;
   }
