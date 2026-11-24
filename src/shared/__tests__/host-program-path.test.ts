@@ -72,6 +72,17 @@ describe("resolveHostProgram", () => {
     expect(findHostProgram("plain", { PATH: bin })).toBeNull();
   });
 
+  it("lets the filesystem follow a symlink before applying its parent segment", () => {
+    const candidate = "/tools/linked/../bin/tool";
+    expect(findHostProgram("tool", { PATH: "/tools/linked/../bin" }, "linux", {
+      statSync: (path) => ({ isFile: () => path === candidate }),
+      accessSync: () => {},
+      lstatSync: () => { throw new Error("unexpected link check"); },
+      pinWindowsDirectory: () => null,
+      windowsApps: null,
+    })).toBe(candidate);
+  });
+
   it.runIf(windows)("reads Path in any spelling, tries .com and .exe, and never a script launcher", () => {
     expect(resolveHostProgram("tool", { Path: `"${bin}"` })).toBe(expected());
     expect(resolveHostProgram("tool.exe", { Path: bin })).toBe(expected());

@@ -122,14 +122,15 @@ export function findHostProgram(
   if (program === "" || program.includes("\0")) return null;
   if (isFullyQualified(program, platform)) return program;
   if (isRelativeHostProgram(program, platform)) return null;
-  const paths = platform === "win32" ? win32 : posix;
   // Windows launches only .com and .exe images without a shell; an explicit extension is tried as written first.
   const names = platform === "win32"
     ? [...(win32.extname(program) ? [program] : []), `${program}.com`, `${program}.exe`]
     : [program];
   for (const entry of hostProgramSearchDirectories(env, platform)) {
     for (const name of names) {
-      const candidate = runnableProgramPath(paths.join(entry, name), platform, fs);
+      // On POSIX the filesystem must follow any symlink before interpreting a later `..`.
+      const path = platform === "win32" ? win32.join(entry, name) : `${entry}${entry.endsWith("/") ? "" : "/"}${name}`;
+      const candidate = runnableProgramPath(path, platform, fs);
       if (candidate !== null) return candidate;
     }
   }
