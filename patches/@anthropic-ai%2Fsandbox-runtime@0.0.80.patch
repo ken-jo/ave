@@ -8594,3 +8594,67 @@ diff --git a/dist/utils/which.d.ts b/dist/utils/which.d.ts
   *
   * @param bin - The name of the executable to find
   * @returns The full path to the executable, or null if not found
+diff --git a/dist/utils/ripgrep.js b/dist/utils/ripgrep.js
+index 05d573d1b..b039e181d 100644
+--- a/dist/utils/ripgrep.js
++++ b/dist/utils/ripgrep.js
+@@ -10,11 +10,27 @@ import { text } from 'node:stream/consumers';
+  * @throws RipgrepError if ripgrep exits with non-zero status (except exit code 1 which means no matches)
+  */
+ export async function ripGrep(args, target, abortSignal, config = { command: 'rg' }) {
+-    const { command, args: commandArgs = [], argv0 } = config;
+-    const child = spawn(command, [...commandArgs, ...args, target], {
++    const { command, args: commandArgs = [], argv0, run } = config;
++    const scanArgs = [...commandArgs, ...args, target];
++    const timeout = 10000;
++    const { stdout, stderr, code } = run
++        ? await run(command, scanArgs, abortSignal, timeout)
++        : await runRipgrep(command, scanArgs, argv0, abortSignal, timeout);
++    if (code === 0) {
++        return stdout.trim().split('\n').filter(Boolean);
++    }
++    if (code === 1) {
++        // Exit code 1 means "no matches found" - this is normal
++        return [];
++    }
++    // Whole lines only: killed, it can leave half of one.
++    throw new RipgrepError(`ripgrep failed with exit code ${code}: ${stderr}`, stdout.split('\n').slice(0, -1).filter(Boolean), stderr);
++}
++async function runRipgrep(command, args, argv0, abortSignal, timeout) {
++    const child = spawn(command, args, {
+         argv0,
+         signal: abortSignal,
+-        timeout: 10000,
++        timeout,
+         windowsHide: true,
+     });
+     const [stdout, stderr, code] = await Promise.all([
+@@ -25,15 +41,7 @@ export async function ripGrep(args, target, abortSignal, config = { command: 'rg
+             child.on('error', reject);
+         }),
+     ]);
+-    if (code === 0) {
+-        return stdout.trim().split('\n').filter(Boolean);
+-    }
+-    if (code === 1) {
+-        // Exit code 1 means "no matches found" - this is normal
+-        return [];
+-    }
+-    // Whole lines only: killed, it can leave half of one.
+-    throw new RipgrepError(`ripgrep failed with exit code ${code}: ${stderr}`, stdout.split('\n').slice(0, -1).filter(Boolean), stderr);
++    return { stdout, stderr, code };
+ }
+ /** ripgrep ended otherwise than by finding something or nothing. */
+ export class RipgrepError extends Error {
+diff --git a/dist/utils/ripgrep.d.ts b/dist/utils/ripgrep.d.ts
+index a4ad1990d..23da580e6 100644
+--- a/dist/utils/ripgrep.d.ts
++++ b/dist/utils/ripgrep.d.ts
+@@ -3,6 +3,7 @@ export interface RipgrepConfig {
+     args?: string[];
+     /** Override argv[0] when spawning (for multicall binaries that dispatch on argv[0]) */
+     argv0?: string;
++    run?: (command: string, args: string[], signal: AbortSignal, timeoutMs: number) => Promise<{ stdout: string; stderr: string; code: number | null }>;
+ }
+ /**
+  * Execute ripgrep with the given arguments

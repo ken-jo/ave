@@ -3,7 +3,7 @@ import "../../../../../test/renderer/setup.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { McpTab } from "../McpTab.js";
-import { t } from "../../../../i18n/runtime.js";
+import { getLocale, setLocale, t } from "../../../../i18n/runtime.js";
 
 const config = { id: "local-notes", transport: "stdio" as const, command: "notes-server" };
 const fingerprint = "a".repeat(64);
@@ -58,6 +58,23 @@ describe("McpTab server trust", () => {
     fireEvent.click(await screen.findByRole("button", { name: t("mcpTab.reconnect") }));
     await waitFor(() => expect(mcp.startServer).toHaveBeenCalledExactlyOnceWith(config.id, undefined));
     expect(screen.queryByRole("group", { name: t("mcpTab.trustReviewTitle") })).toBeNull();
+  });
+
+  it.each([
+    ["en", "Use an absolute path or a program name on PATH."],
+    ["ko", "절대 경로나 PATH에 있는 프로그램 이름을 사용하세요."],
+  ])("shows actionable reconnect guidance for a relative command in %s", async (locale, guidance) => {
+    const previousLocale = getLocale();
+    setLocale(locale);
+    try {
+      const mcp = install(true);
+      mcp.startServer.mockRejectedValueOnce(new Error("Error invoking remote method 'ave:mcp:start-server': Error: mcp-command-relative-path: Relative command refused."));
+      render(<McpTab />);
+      fireEvent.click(await screen.findByRole("button", { name: t("mcpTab.reconnect") }));
+      expect(await screen.findByText(guidance)).toBeVisible();
+    } finally {
+      setLocale(previousLocale);
+    }
   });
 
   it("offers undo after remove and restores through main without reading secrets", async () => {

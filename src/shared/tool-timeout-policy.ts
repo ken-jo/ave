@@ -63,7 +63,6 @@ export const TOOL_TIMEOUT_POLICY = {
   documentEngineDownloadStallMs: 30_000,
   documentEngineStartupMs: 30_000,
   documentEngineConversionMs: 60_000,
-  documentEngineShutdownMs: 10_000,
   // A forwarding client exits after the resident prints its receipt; this bounds delivery of that already-written line.
   documentEngineReceiptMs: 2_000,
   // terminal_run wait expiry returns a running block without stopping the command; keep the wait below executor ceiling and expose whole seconds.
@@ -119,6 +118,8 @@ export const TOOL_TIMEOUT_POLICY = {
   shutdownCleanupMs: 60_000,
   // Bounded POSIX child-list lookup during process tree termination.
   processTreeKillMs: 1_000,
+  orphanProcessCleanupMs: 10_000,
+  processGroupExitPollMs: 25,
   // Allow loaded Windows hosts enough time to enumerate and terminate process trees.
   windowsProcessTreeKillMs: 10_000,
   // Outlast the pinned PTY dependency's five-second console lookup and allow exit cleanup.

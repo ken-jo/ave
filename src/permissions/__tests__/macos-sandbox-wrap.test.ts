@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { wrapCommandWithSandboxMacOS } from "@anthropic-ai/sandbox-runtime/dist/sandbox/macos-sandbox-utils.js";
+import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { hardenMacSandboxGitMetadata } from "../macos-sandbox-wrap.js";
 import { parseSandboxWrappedWords, quoteSandboxWrappedWord } from "../sandbox-wrapped-command.js";
 import { t } from "../../i18n/index.js";
@@ -12,6 +14,29 @@ function wrap(profile = "(version 1)\n(allow default)", command = "printf 'safe 
 }
 
 describe("typed repository marker rules", () => {
+  it("pins the executable that precedes the sandbox in the runtime's command", () => {
+    const platform = process.platform;
+    const shell = process.execPath.replaceAll("\\", "/");
+    setProcessPlatform("darwin");
+    try {
+      const command = "printf '%s' 'env is also user data'";
+      const runtimeCommand = wrapCommandWithSandboxMacOS({
+        command,
+        binShell: shell,
+        needsNetworkRestriction: false,
+        readConfig: undefined,
+        writeConfig: undefined,
+        setEnvVars: { LABEL: "two words" },
+      });
+      const wrapped = hardenMacSandboxGitMetadata({ argv: [shell, "-c", runtimeCommand], env: {} });
+      const words = parseSandboxWrappedWords(wrapped.argv[2] ?? "").map(word => word.value);
+      expect(words.slice(0, 5)).toEqual(["/usr/bin/env", "LABEL=two words", "SANDBOX_RUNTIME=1", "/usr/bin/sandbox-exec", "-p"]);
+      expect(words.slice(-3)).toEqual([shell, "-c", command]);
+    } finally {
+      setProcessPlatform(platform);
+    }
+  });
+
   it("keeps the command, environment and callback while adding exact entry rules", () => {
     const original = wrap();
     const originalWords = parseSandboxWrappedWords(original.argv[2]!);
@@ -19,7 +44,9 @@ describe("typed repository marker rules", () => {
     const hardenedWords = parseSandboxWrappedWords(hardened.argv[2]!);
     expect(hardened.env).toBe(original.env);
     expect(hardened.cleanup).toBe(original.cleanup);
-    expect(hardenedWords.slice(0, 4)).toEqual(originalWords.slice(0, 4));
+    expect(hardenedWords.slice(0, 4).map(word => word.value)).toEqual([
+      "/usr/bin/env", ...originalWords.slice(1, 4).map(word => word.value),
+    ]);
     expect(hardenedWords.slice(5).map(word => word.value)).toEqual(originalWords.slice(5).map(word => word.value));
     expect(hardenedWords[4]?.value).toContain('(deny file-write-create file-write-unlink (regex #"/\\.[gG][iI][tT]$"))');
     expect(hardenedWords[4]?.value).toContain("(vnode-type REGULAR-FILE)");

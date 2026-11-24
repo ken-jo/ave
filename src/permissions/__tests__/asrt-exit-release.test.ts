@@ -6,6 +6,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { EventEmitter } from "node:events";
 import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+import { registerLinuxWrapperProgramFixtures } from "../../__tests__/support/linux-wrapper-programs.js";
 // The real patched manager module (the mock above replaces only the package entry): its reset() releases a seam-provided ACL session.
 import { SandboxManager as RealSandboxManager, setWindowsAclReleaseForTesting } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-manager.js";
 import { recoverWindowsAcl } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
@@ -19,6 +20,7 @@ import {
 } from "../srt-win-integrity.js";
 
 useVerifiedAveHomePrivacy();
+registerLinuxWrapperProgramFixtures();
 
 // The release-pending lifecycle only: a mocked runtime records whether the private helper copy still exists when its reset runs.
 const manager = vi.hoisted(() => ({
