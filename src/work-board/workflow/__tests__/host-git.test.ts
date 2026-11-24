@@ -138,7 +138,7 @@ describe("host git", () => {
       const verdictAtDeadline = verdict;
       const killsAtDeadline = first.killed();
       released.resolve();
-      first.child.stdout?.write("git version 2.54.0\n");
+      first.child.stdout?.emit("data", Buffer.from("git version 2.54.0\n"));
       first.child.emit("close", 0);
       await vi.advanceTimersByTimeAsync(0);
       await result;
