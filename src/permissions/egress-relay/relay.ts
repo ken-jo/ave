@@ -36,7 +36,7 @@ export type EgressRelayAsk = (
   context: EgressRelayAskContext,
 ) => Promise<boolean | { allow: false; reason: string; unattributed?: true }>;
 
-type EgressRelayRoute =
+export type EgressRelayRoute =
   | { kind: "direct" }
   | { kind: "http" | "https"; host: string; port: number; auth?: { username: string; password: string }; resolvesNames?: boolean };
 

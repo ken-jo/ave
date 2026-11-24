@@ -2,7 +2,7 @@
 import net from "node:net";
 import { networkInterfaces } from "node:os";
 
-function stripBrackets(host: string): string {
+export function stripBrackets(host: string): string {
   return host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
 }
 
@@ -61,6 +61,12 @@ export function canonicalRelayHost(host: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+// `host[:port]` for a Host header or URL authority: IPv6 bracketed, the scheme's default port left out.
+export function formatAuthority(host: string, port: number, defaultPort: number): string {
+  const spelled = net.isIP(host) === 6 ? `[${host}]` : host;
+  return port === defaultPort ? spelled : `${spelled}:${port}`;
 }
 
 export interface RelayAllowEntry {

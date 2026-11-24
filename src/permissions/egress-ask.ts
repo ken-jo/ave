@@ -13,7 +13,7 @@ import {
 } from "./approval-persistence-guard.js";
 import { NO_APPROVER_MESSAGE } from "./decision-pipeline.js";
 import type { SandboxAskCallback } from "@anthropic-ai/sandbox-runtime";
-import { matchesDomainPatternWithPort } from "@anthropic-ai/sandbox-runtime/dist/sandbox/domain-pattern.js";
+import { matchesDomainPatternWithPort } from "./egress-relay/domain-pattern.js";
 import type { SandboxEgressDecisionAuditEntry, EgressDecisionBasis } from "../audit/sandbox-audit.js";
 import { maskSensitiveData, redactHomePathsInText } from "../audit/dlp-filter.js";
 import { errorMessage } from "../shared/error-message.js";
