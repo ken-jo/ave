@@ -1169,6 +1169,7 @@ export const en = {
 
   // be_scriptHookRunner
   "be_scriptHookRunner.containedSettleDeadline": "The hook's contained process did not settle within {ms} ms; it keeps its sandbox resources while its termination is unconfirmed ({code})",
+  "be_scriptHookRunner.terminationUnverified": "Hook process tree termination is unverified. Its resources are retained ({code}).",
   "be_scriptHookRunner.containedTerminationUnverified": "The hook's contained process termination is unverified; it keeps its sandbox resources: {detail} ({code})",
 
   // be_sessionGoal
@@ -3648,7 +3649,8 @@ export const en = {
   "mcpTab.apiKeyWriteOnlyLabel": "API Key (write-only)",
   "mcpTab.apiKeyPlaceholder": "API key",
   "mcpTab.commandRequiredLabel": "Command *",
-  "mcpTab.commandHint": "Enter just the executable or the full command line — arguments will be split automatically.",
+  "mcpTab.commandRelativePath": "Use an absolute path or a program name on PATH.",
+  "mcpTab.commandHint": "Enter just the executable or the full command line — arguments will be split automatically. Use an absolute path or a program name on PATH.",
   "mcpTab.argsLabel": "Args (additional arguments)",
   "mcpTab.envWriteOnlyLabel": "Env (KEY=value, write-only)",
   "mcpTab.urlRequiredLabel": "URL *",

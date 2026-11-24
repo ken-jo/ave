@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { delimiter, dirname, isAbsolute, join, win32 } from "node:path";
 import { buildSafeChildEnv } from "../tools/safe-env.js";
-import { win32SystemBinary } from "../shared/windows-system-path.js";
+import { findHostProgram } from "../shared/host-program-path.js";
 
 export class ShellMismatchError extends Error {
   readonly code = "SHELL_MISMATCH" as const;
@@ -62,7 +62,9 @@ export function getBashCapabilities(
 
 export function resolveShell(dialect: ShellDialect = "posix"): ResolvedShellCommand {
   if (process.platform !== "win32" && dialect === "posix") {
-    return { cmd: "sh", shellArgs: (script: string) => ["-c", script] };
+    const sh = findHostProgram("sh");
+    if (sh === null) throw new ShellMismatchError("This feature requires a POSIX shell (sh) on PATH.");
+    return { cmd: sh, shellArgs: (script: string) => ["-c", script] };
   }
 
   const cachedShell = cachedShells.get(dialect);
@@ -80,7 +82,7 @@ export function resolveShell(dialect: ShellDialect = "posix"): ResolvedShellComm
   let lastError: unknown;
   for (const candidate of candidates) {
     try {
-      if (process.platform === "win32") candidate.cmd = resolveWindowsShellCandidate(candidate.cmd, dialect);
+      if (process.platform === "win32") candidate.cmd = resolveWindowsShellCandidate(candidate.cmd);
       // Non-interactive shell tools must not load login profiles.
       if (dialect === "bash") candidate.shellArgs = (script: string) => ["-c", script];
       const probe = execFileSync(candidate.cmd, candidate.shellArgs(probeCommand), {
@@ -123,15 +125,11 @@ function windowsShellCandidates(): ResolvedShellCommand[] {
   ];
 }
 
-function resolveWindowsShellCandidate(cmd: string, dialect: ShellDialect): string {
+function resolveWindowsShellCandidate(cmd: string): string {
   if (/^[A-Za-z]:[\\/]/.test(cmd)) return cmd;
-  const matches = execFileSync(win32SystemBinary("where.exe"), [cmd], { windowsHide: true, stdio: "pipe", encoding: "utf-8", env: buildSafeChildEnv() });
-  if (dialect === "posix") return cmd;
-  // Pin the first PATH result before probing so later execution cannot resolve another binary.
-  const executable = matches.split(/\r?\n/)[0]?.trim();
-  if (!executable || !/^(?:[A-Za-z]:[\\/]|\\\\[^\\]+\\[^\\]+\\)/.test(executable) || !/\.exe$/i.test(executable)) {
-    throw new Error("Bash lookup did not return an absolute executable path");
-  }
+  // Pin the PATH result before probing so later execution cannot resolve another binary; the current directory is never searched.
+  const executable = findHostProgram(cmd);
+  if (executable === null) throw new Error(`${cmd} was not found on PATH`);
   return win32.normalize(executable);
 }
 
