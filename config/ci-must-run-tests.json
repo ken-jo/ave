@@ -63,6 +63,7 @@
       "src/ipc/domains/__tests__/preview-document.test.ts",
       "src/main/__tests__/codex-conversation-runtime.test.ts",
       "src/main/__tests__/process-group-reaper.test.ts",
+      "src/main/__tests__/windows-program-lookup.test.ts",
       "src/main/memory-map/__tests__/inference-child-native.test.ts",
       "src/mcp/__tests__/tasks-extension.test.ts",
       "src/plugins/__tests__/registry-atomicity.test.ts",
