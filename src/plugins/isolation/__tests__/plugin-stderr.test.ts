@@ -126,6 +126,28 @@ describe("plugin stderr capture", () => {
     }
   });
 
+  it("masks a clipped value prefix of eight characters or more when the stream ends", () => {
+    const stream = new PassThrough();
+    const info = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      capturePluginStderr(stream, "clipped-env", ["SECRET-VALUE-123456"]);
+      stream.write("before SECRET-VALUE-12");
+      stream.emit("end");
+      expect(info).toHaveBeenCalledExactlyOnceWith("[plugin-stderr] before [REDACTED]", { pluginId: "clipped-env" });
+    } finally { stream.destroy(); info.mockRestore(); }
+  });
+
+  it("keeps a clipped prefix shorter than eight characters when the stream ends", () => {
+    const stream = new PassThrough();
+    const info = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      capturePluginStderr(stream, "short-clip-env", ["SECRET-VALUE-123456"]);
+      stream.write("before SECRET");
+      stream.emit("end");
+      expect(info).toHaveBeenCalledExactlyOnceWith("[plugin-stderr] before SECRET", { pluginId: "short-clip-env" });
+    } finally { stream.destroy(); info.mockRestore(); }
+  });
+
   it("redacts a credential crossing the output byte cap before truncation", () => {
     const stream = new PassThrough();
     const info = vi.spyOn(console, "log").mockImplementation(() => {});

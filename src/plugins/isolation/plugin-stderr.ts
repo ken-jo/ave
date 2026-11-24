@@ -118,24 +118,29 @@ export function capturePluginStderr(stream: Readable, pluginId: string, resolved
     pendingCovered = 0;
     let plainStart = coverEnd;
     for (let offset = 0; offset < buffer.length; offset++) {
+      let matched = 0;
       const match = valuesByFirstByte.get(buffer.readUInt8(offset))?.find(value => {
         const length = Math.min(value.length, buffer.length - offset);
-        return (!final || length === value.length) && value.compare(buffer, offset, offset + length, 0, length) === 0;
+        if (value.compare(buffer, offset, offset + length, 0, length) !== 0) return false;
+        // At stream end a clipped prefix of eight characters or more is masked like the value.
+        if (final && length < value.length && !/^.{8}/su.test(buffer.toString("utf8", offset))) return false;
+        matched = length;
+        return true;
       });
       if (!match) continue;
-      if (match.length > buffer.length - offset) {
+      if (matched < match.length && !final) {
         // Look ahead only when a value could continue in the next chunk.
         if (offset > plainStart) captureChunk(buffer.subarray(plainStart, offset));
         pending = Buffer.from(buffer.subarray(offset));
         pendingCovered = Math.max(0, coverEnd - offset);
         return;
       }
-      const end = offset + match.length;
+      const end = offset + matched;
       if (offset < coverEnd) {
         if (end > coverEnd) append(Buffer.alloc(0), end - coverEnd);
       } else {
         captureChunk(buffer.subarray(plainStart, offset));
-        append(REDACTED_ENV_VALUE, match.length);
+        append(REDACTED_ENV_VALUE, matched);
       }
       coverEnd = Math.max(coverEnd, end);
       plainStart = coverEnd;
