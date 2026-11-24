@@ -48,12 +48,33 @@ The held modes put a browser download where the user chose, remove staged
 files, and manage recovery records. They use the
 [held directory protocol](../macos-dir-ops/README.md). The directory arguments
 use the legacy volume serial and 64-bit file index Node reports as `dev` and
-`ino`, in decimal. File ownership operands and replies use the full
-`FileIdInfo` volume serial in decimal and the full 128-bit file ID as exactly
-32 lowercase hex digits, most significant digit first. The host stores file
-IDs as decimal integers in recovery records. Birth and modification times
-are creation and last-write ticks multiplied by 100, in decimal nanoseconds
-since the system file-time epoch.
+`ino`, in decimal. Every file operand and reply is an evidence token
+`<dev>:<id>:<class>:<value>`: the full `FileIdInfo` volume serial in decimal,
+the full 128-bit file ID as exactly 32 lowercase hex digits (most significant
+first), and evidence for that ID. The host stores IDs as decimal integers and
+the evidence as `<class>:<value>` in recovery records. Modification times are
+last-write ticks multiplied by 100, in decimal nanoseconds since the system
+file-time epoch.
+
+### Evidence classes
+
+| Class | Value | Proves | Does not prove |
+| --- | --- | --- | --- |
+| `creation` (the only class this helper emits or accepts) | creation ticks ×100, nonzero | The entry is the file that had this ID and creation time when stamped. A file ID reused after deletion gets a new creation time, so ID reuse alone does not match. | A process with `FILE_WRITE_ATTRIBUTES` can set `CreationTime` (`SetFileTime`) on another file that later takes the same ID. Name tunnelling gives a file created under a recently deleted name that name's creation time, so a tunnelled file at a reused ID can match. Volumes without stable file IDs (FAT, exFAT) are refused before any action because their IDs derive from directory position. |
+| `birth` (host, POSIX hosts) | `st_birthtime` ns, nonzero | As `creation`, where the file system records birth time. | Set by anyone who can change the file's times on file systems that allow it; absent on file systems without birth time, where the identity stays unresolved. |
+| `fingerprint` (host) | `<size>:<mtime-ns>:<head>:<tail>` | The file has these bytes at both ends, this size and this modification time. | The middle of the file, or a rewrite that restores size, ends and mtime. |
+
+Tokens match exactly: same volume, same ID, same class and same value. A
+class the reader does not know, a wildcard, `none`, or an empty value is
+unresolved and matches nothing. This helper treats every class other than
+`creation` as unresolved, so such a token leaves the entry in place. A
+malformed token is a usage error (exit 2). A record written by an older
+release whose identities carry no token is kept for inspection and never
+trusted to move, restore or remove anything.
+
+The session volume is asserted only by the helper: the host checks that each
+announced token's volume equals the one in `destination-id`, but only the
+helper's handles bind that serial to the held directories.
 
 Each held directory is opened component by component from the volume root,
 every component through the handle of the one above it (`NtCreateFile` with a
@@ -77,27 +98,42 @@ authorizes the action. Other input or EOF stops it. The recovery modes are:
 | --- | --- |
 | `--dir-list-records` | `records` with zero or more space-separated `<32 lowercase hex>.cleanup.json` names |
 | `--dir-read <name> <max>` | `record <lowercase hex>` or `absent`, with a 1–8192 byte limit. Empty data is `record ` with its space. Over the limit is `failed EFBIG`. |
-| `--dir-sweep-record <name> <max>` | Holds the record through its `record <dev>:<id>:<birth-ns> <hex>` classification frame. A second authorization removes the entry only if the held record's full stamp and digest still match. Replies `removed`, `kept`, or `absent`. |
-| `--dir-write-record <name> <hex>` | `written <dev>:<id>:<birth-ns>` after exclusive creation with a protected current-user DACL, write, sync and verification. Maximum 8192 bytes. |
-| `--dir-remove-record <name> <dev> <id> <birth-ns> <length> <sha256>` | `removed` after observed absence or `kept` if verification or removal remains incomplete. An already absent entry replies `absent`. |
-| `--dir-remove-id <name> <file-dev> <file-ino> [<birth-ns>:<fingerprint>]` | `removed`, `absent`, or `left` with an optional named leftover. A birth-only token uses `<birth-ns>:-`. |
-| `--dir-restore <hidden> <part> <file-dev> <file-ino> <birth-ns>:<fingerprint>` | `restored` after verification and source retirement, `absent` if the source is missing, or `left` with an optional named leftover. |
-| `--dir-restore-target <hidden> <target> <file-dev> <file-ino> <birth-ns>:<fingerprint-or-dash> [<writer-ino>:<writer-birth-ns>\|retire]` | `resolved` after verified rollback or retirement, or `left` if unresolved. The optional writer is on `file-dev`. The `retire` operand retries a verified commit recorded by an older release. |
+| `--dir-sweep-record <name> <max>` | Holds the record through its `record <token> <hex>` classification frame. A second authorization removes the entry only if the held record's full stamp and digest still match. Replies `removed`, `kept`, or `absent`. |
+| `--dir-write-record <name> <hex>` | `written <token>` after exclusive creation with a protected current-user DACL, write, sync and verification. Maximum 8192 bytes. |
+| `--dir-remove-record <name> --expect <token> --length <n> --digest <sha256>` | `removed` after observed absence or `kept` if verification or removal remains incomplete. An already absent entry replies `absent`. |
+| `--dir-remove-id <name> --expect <token> [--content <fingerprint>]` | `removed`, `absent`, or `left` with an optional named leftover. |
+| `--dir-restore <hidden> <part> --expect <token> --content <fingerprint>` | `restored` after verification and source retirement, `absent` if the source is missing, or `left` with an optional named leftover. |
+| `--dir-restore-target <hidden> <target> --expect <token> [--content <fingerprint>] [--writer <token> \| --retire]` | `resolved` after verified rollback or retirement, or `left` if unresolved. The writer must share the old file's volume and differ in ID. `--retire` retries a verified commit recorded by an older release. |
+
+Options follow the positional operands in any order; a repeated, unknown or
+valueless option is a usage error. The staged-file modes are:
+
+| Mode and operands | Terminal replies |
+| --- | --- |
+| `--dir-rename <dir…> <name> <to…> <target> --expect <token>` | `committed`, `cross-volume`, `replace`, or `refused source` (exit 3) when the source is not the staged file. |
+| `--dir-remove <dir…> <name> --expect <token>` | `removed`, `absent`, or `refused source` (exit 3) when the entry is not the staged file. |
+| `--dir-stamp <dir…> <name>` | `stamp <token>` of the regular file at the name, `absent`, or `refused source` for another kind of entry. |
+| `--dir-sweep <dir…> [--keep-records]` | `swept <n>`. Each entry is removed only if it still has the stamp the listing reported for it. |
+
+The host stamps a completed download once and passes that token to every later
+rename and removal of the staged file. A cancelled or interrupted download is
+stamped just before its removal.
 
 A fingerprint is `<size>:<mtime-ns>:<head>:<tail>`. The digests are lowercase
 SHA-256 of the first and last 64 KiB, each truncated to the file size. The
 named leftover is
-`left <hidden> <own-dev> <own-ino> <mismatch|remove-failed> <snapshot> [part-left]`.
+`left <hidden> <own-token> <mismatch|remove-failed> <snapshot> [part-left]`.
 The hidden name is `.<32 lowercase hex>.removing`. The snapshot is
-`<dev>:<ino>:<birth-ns>:<fingerprint>` from the retained file handle, or `-`
-when unavailable. `part-left` reports incomplete or unverified copy-back at
-the original part name.
+`<token>/<fingerprint>` from the retained file handle, or `-` when
+unavailable. `part-left` reports incomplete or unverified copy-back at the
+original part name.
 
 `--dir-copy` takes the hidden name after the part name and checks source
-and target before `ready`. It emits `destination-id <dev> <ino> <birth-ns>`
-from the held destination directory and uses the full volume serial to bind
-all subsequent file identities. Its exclusive create
-can fail with plain `failed EEXIST`. On success it emits `writing <dev> <ino> <birth-ns>`
+and target before `ready`. A destination volume without
+`FILE_SUPPORTS_OPEN_BY_FILE_ID` is `refused to` before `ready`. It emits
+`destination-id <token>` from the held destination directory and uses the full
+volume serial to bind all subsequent file identities. Its exclusive create
+can fail with plain `failed EEXIST`. On success it emits `writing <token>`
 from the open part handle before progress or `copied`. It reports progress
 per 1 MiB chunk and flushes every 16 MiB. It keeps the handle open across
 `copied` and checks the part's identity before exclusive rename and the
@@ -106,13 +142,14 @@ rollback. Commit refusals are `refused target removed` when the part is gone,
 `refused target left` with the optional named leftover when it remains, or
 `refused target changed` if rollback fails. All use exit 3. Plain copy
 refusals precede `ready`. An existing ordinary target is held and identified
-before `ready` and announced as `target-id <dev> <ino> <birth-ns>`. For a replacement,
+before `ready` and announced as `target-id <token>`. For a replacement,
 the helper reads the final stamp from the writing handle after syncing and
-emits `copy-id <dev> <ino> <birth-ns>` before `copied`. After
+emits `copy-id <token>` before `copied`. The host refuses a `copy-id` that
+differs from `writing` and keeps the first identity for cleanup. After
 the second authorization the helper moves it exclusively to the supplied hidden name, verifies it, commits exclusively, then verifies and
 retires the old target. If commit fails, it restores the old target exclusively.
-A failed restore or retirement sends `target-left left <hidden> <own-dev>
-<own-ino> <verdict> <snapshot>` before the terminal reply, independent of
+A failed restore or retirement sends `target-left left <hidden> <own-token>
+<verdict> <snapshot>` before the terminal reply, independent of
 the copy part's outcome. It uses `mismatch` for a failed restore and
 `remove-failed` for unconfirmed retirement after a verified commit, including
 a delete-pending file held open by a reader. The identity is

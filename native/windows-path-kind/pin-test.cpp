@@ -19,6 +19,12 @@ std::wstring boundary_path;
 std::string stop_boundary;
 int file_id_query_to_fault = 0;
 bool zero_file_id = false;
+bool volume_without_file_ids = false;
+
+bool test_volume_flags(bool queried, DWORD& flags) {
+  if (volume_without_file_ids) flags &= ~static_cast<DWORD>(FILE_SUPPORTS_OPEN_BY_FILE_ID);
+  return queried;
+}
 
 bool test_file_id_result(bool queried, FILE_ID_INFO& id) {
   if (file_id_query_to_fault >= 0 && (file_id_query_to_fault == 0 || --file_id_query_to_fault != 0)) return queried;
@@ -240,6 +246,10 @@ int wmain(int argc, wchar_t** argv) {
       dir_ops::file_id_query_to_fault = test == L"file-id-zero-recovery" ? -1
         : test.find(L"second") == std::wstring::npos ? 1 : 2;
       dir_ops::zero_file_id = test.find(L"zero") != std::wstring::npos;
+      return dir_ops::run(argc - 1, argv + 1);
+    }
+    if (test == L"volume-without-file-ids") {
+      dir_ops::volume_without_file_ids = true;
       return dir_ops::run(argc - 1, argv + 1);
     }
     if (argc == 13 && test.substr(0, 5) == L"stop-") {

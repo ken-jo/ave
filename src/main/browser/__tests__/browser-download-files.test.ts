@@ -100,6 +100,9 @@ const follow = <T>(operation: Promise<T>) => {
 };
 // A stop nothing aborts.
 const UNSTOPPED = new AbortController().signal;
+// The staged file a move or removal is bound to, and the token the helper is given for it.
+const STAGED = { dev: 1n, ino: 9n, evidence: { class: "birth", value: "7" } } as const;
+const STAGED_TOKEN = "1:9:birth:7";
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
@@ -115,10 +118,10 @@ afterEach(() => {
 
 describe("a helper that never says it is ready", () => {
   it.each([
-    ["move", () => files.move(from, "staged", to, "report.pdf", () => true, UNSTOPPED)],
+    ["move", () => files.move(from, "staged", to, "report.pdf", () => true, UNSTOPPED, STAGED)],
     ["copy", () => files.copy(from, "staged", to, "report.pdf", ".part", () => true, UNSTOPPED)],
-    ["remove", () => files.remove(from, "staged", () => true, UNSTOPPED)],
-  ] as const)("is killed exactly at the stall bound, its exit is seen, and its %s fails having been let past nothing", async (_mode, start) => {
+    ["remove", () => files.remove(from, "staged", () => true, UNSTOPPED, STAGED)],
+  ] as const)("is killed exactly at the stall bound, its exit is seen, and its %s fails having been let past nothing", async (mode, start) => {
     script(() => {});
     const run = follow(start());
     await advance(BOUNDS.stallMs - 1);
@@ -135,6 +138,8 @@ describe("a helper that never says it is ready", () => {
     expect(String((run.error as Error).message)).toMatch(/said nothing for 1000 ms while holding its folders/);
     // It was never told to act, and no other helper was started: nothing can be saved later.
     expect(helper?.input).toBe("");
+    // A move or removal names the staged file it is bound to.
+    if (mode !== "copy") expect(helper?.args.slice(-2)).toEqual(["--expect", STAGED_TOKEN]);
     expect(helpers()).toHaveLength(1);
   });
 });
@@ -249,8 +254,8 @@ describe("a copy whose helper ignores the end of its input", () => {
 describe("a move or removal stopped by its signal", () => {
   it.each(["move", "remove"] as const)("a %s stopped before it is let go ends cancelled, and one that does not end is killed at the bound", async (mode) => {
     const start = (stop: AbortSignal) => mode === "move"
-      ? files.move(from, "staged", to, "report.pdf", () => true, stop)
-      : files.remove(from, "staged", () => true, stop);
+      ? files.move(from, "staged", to, "report.pdf", () => true, stop, STAGED)
+      : files.remove(from, "staged", () => true, stop, STAGED);
     script((helper) => {
       helper.say("ready");
       helper.afterInputEnds(() => { helper.say("cancelled"); helper.exit(0); });
@@ -284,10 +289,10 @@ describe("a helper that does not keep to its protocol", () => {
   it.each([null, "8589934593"])("rejects a copy with a matching low volume serial and held destination %s", async (destination) => {
     const windows = _helperFileOperationsForTest("/helper/ave-path-kind.exe", BOUNDS, true);
     script((helper) => {
-      if (destination !== null) helper.say(`destination-id ${destination} 00000000000000000000000000000003 15`);
+      if (destination !== null) helper.say(`destination-id ${destination}:00000000000000000000000000000003:creation:15`);
       helper.say("ready");
       helper.once("input", () => {
-        helper.say("writing 4294967297 fedcba9876543210123456789abcdef0 20", "copied");
+        helper.say("writing 4294967297:fedcba9876543210123456789abcdef0:creation:20", "copied");
         helper.once("input", () => { helper.say("committed"); helper.exit(0); });
       });
     });
@@ -301,14 +306,14 @@ describe("a helper that does not keep to its protocol", () => {
     const windows = _helperFileOperationsForTest("/helper/ave-path-kind.exe", BOUNDS, true);
     const fileId = "fedcba9876543210123456789abcdef0";
     script((helper) => {
-      if (helper.args[0] === "--dir-copy") helper.say("destination-id 4294967297 00000000000000000000000000000003 15");
+      if (helper.args[0] === "--dir-copy") helper.say("destination-id 4294967297:00000000000000000000000000000003:creation:15");
       helper.say("ready");
       helper.once("input", () => {
         if (helper.args[0] === "--dir-remove-id") {
           helper.say("left");
           helper.exit(0);
         } else {
-          helper.say(`writing 4294967297 ${fileId} 20`, "progress 8", "refused source");
+          helper.say(`writing 4294967297:${fileId}:creation:20`, "progress 8", "refused source");
           helper.exit(3);
         }
       });
@@ -317,14 +322,14 @@ describe("a helper that does not keep to its protocol", () => {
     await flush();
     expect(run.error).toBeInstanceOf(HeldFileHelperUnavailableError);
     expect(helpers()[0]?.killed).toBe(1);
-    expect(helpers()[1]?.args).toEqual(["--dir-remove-id", "/chosen", "1", "3", ".part", "4294967297", fileId, "20:-"]);
+    expect(helpers()[1]?.args).toEqual(["--dir-remove-id", "/chosen", "1", "3", ".part", "--expect", `4294967297:${fileId}:creation:20`]);
   });
 
   it("kills a copy that refuses its source after making progress", async () => {
     script((helper) => {
       helper.say("ready");
       helper.once("input", () => {
-        helper.say("writing 1 2 20", "progress 8", "refused source");
+        helper.say("writing 1:2:birth:20", "progress 8", "refused source");
         helper.exit(3);
       });
     });
@@ -335,9 +340,9 @@ describe("a helper that does not keep to its protocol", () => {
   });
 
   it.each([
-    ["move", () => files.move(from, "staged", to, "report.pdf", () => true, UNSTOPPED)],
+    ["move", () => files.move(from, "staged", to, "report.pdf", () => true, UNSTOPPED, STAGED)],
     ["copy", () => files.copy(from, "staged", to, "report.pdf", ".part", () => true, UNSTOPPED)],
-    ["remove", () => files.remove(from, "staged", () => true, UNSTOPPED)],
+    ["remove", () => files.remove(from, "staged", () => true, UNSTOPPED, STAGED)],
     ["sweep", () => files.sweep(from)],
   ] as const)("preserves exit 4 and its errno in a %s with a native diagnostic in either pipe order", async (_mode, start) => {
     script((helper) => helper.say("ready"));
@@ -370,7 +375,7 @@ describe("a helper that does not keep to its protocol", () => {
   it.each(["NtCreateFile", "NtSetInformationFile"])("preserves a captured %s failure status in either pipe order", async (operation) => {
     script((helper) => helper.say("ready"));
     for (const stderrFirst of [true, false]) {
-      const run = follow(files.move(from, "staged", to, "report.pdf", () => true, UNSTOPPED));
+      const run = follow(files.move(from, "staged", to, "report.pdf", () => true, UNSTOPPED, STAGED));
       await flush();
       const helper = helpers().at(-1);
       if (!stderrFirst) helper?.say("failed EUNKNOWN");
@@ -401,7 +406,7 @@ describe("a helper that does not keep to its protocol", () => {
             helper.exit(4);
           });
         });
-        const run = follow(files.move(from, "staged", to, "report.pdf", () => true, UNSTOPPED));
+        const run = follow(files.move(from, "staged", to, "report.pdf", () => true, UNSTOPPED, STAGED));
         await flush();
         expect(run.error).toBeInstanceOf(HeldFileHelperUnavailableError);
         expect(run.error).toMatchObject({ passed: "ready" });
@@ -412,7 +417,7 @@ describe("a helper that does not keep to its protocol", () => {
         helper.say("ready");
         helper.once("input", () => { helper.say("failed EBUSY"); helper.stderr.write("Windows error 32\n"); helper.exit(status); });
       });
-      const run = follow(files.move(from, "staged", to, "report.pdf", () => true, UNSTOPPED));
+      const run = follow(files.move(from, "staged", to, "report.pdf", () => true, UNSTOPPED, STAGED));
       await flush();
       expect(run.error).toBeInstanceOf(HeldFileHelperUnavailableError);
       expect(run.error).toMatchObject({ passed: "ready" });
@@ -421,7 +426,7 @@ describe("a helper that does not keep to its protocol", () => {
 
   it("does not let diagnostic fragments postpone a failure outcome's fixed exit deadline", async () => {
     script((helper) => { helper.say("ready"); helper.once("input", () => helper.say("failed EBUSY")); });
-    const run = follow(files.move(from, "staged", to, "report.pdf", () => true, UNSTOPPED));
+    const run = follow(files.move(from, "staged", to, "report.pdf", () => true, UNSTOPPED, STAGED));
     await flush();
     const [helper] = helpers();
     await advance(BOUNDS.stallMs / 2);
@@ -440,7 +445,7 @@ describe("a helper that does not keep to its protocol", () => {
   it("waits for pipe closure after exit 4 before classifying a late diagnostic or its invalid suffix", async () => {
     for (const suffix of ["", "extra"]) {
       script((helper) => { helper.say("ready"); helper.once("input", () => helper.say("failed EBUSY")); });
-      const run = follow(files.move(from, "staged", to, "report.pdf", () => true, UNSTOPPED));
+      const run = follow(files.move(from, "staged", to, "report.pdf", () => true, UNSTOPPED, STAGED));
       await flush();
       const helper = helpers().at(-1);
       if (helper === undefined) throw new Error("helper was not started");
@@ -475,7 +480,7 @@ describe("a helper that does not keep to its protocol", () => {
         helper.say("ready");
         helper.once("input", () => { helper.say(`failed ${code}`); if (!helper.exited) helper.stderr.write(`Windows error ${nativeCode}\n`); helper.exit(4); });
       });
-      const run = follow(retryOnFileLock(() => files.move(from, "staged", to, "report.pdf", () => true, UNSTOPPED)));
+      const run = follow(retryOnFileLock(() => files.move(from, "staged", to, "report.pdf", () => true, UNSTOPPED, STAGED)));
       await flush();
       let waited = 0;
       for (let attempt = 1; attempt < BACKGROUND_ATTEMPTS; attempt += 1) {
@@ -502,7 +507,7 @@ describe("a helper that does not keep to its protocol", () => {
           } else { helper.say("committed"); helper.exit(0); }
         });
       });
-      const recovered = follow(retryOnFileLock(() => files.move(from, "staged", to, "report.pdf", () => true, UNSTOPPED)));
+      const recovered = follow(retryOnFileLock(() => files.move(from, "staged", to, "report.pdf", () => true, UNSTOPPED, STAGED)));
       await flush();
       await advance(transientFsLockDelayMs(1));
       await advance(transientFsLockDelayMs(2));
@@ -522,7 +527,7 @@ describe("a helper that does not keep to its protocol", () => {
     ["extra failure fields", ["failed EIO extra"]],
   ] as const)("rejects %s even if a valid outcome follows", async (_case, lines) => {
     script((helper) => { helper.say(...lines); helper.exit(lines[0]?.startsWith("refused") ? 3 : lines[0]?.startsWith("failed") ? 4 : 0); });
-    const run = follow(files.move(from, "staged", to, "report.pdf", () => true, UNSTOPPED));
+    const run = follow(files.move(from, "staged", to, "report.pdf", () => true, UNSTOPPED, STAGED));
     await flush();
     await advance(BOUNDS.stallMs + BOUNDS.killMs);
     expect(run.settled).toBe(true);
@@ -535,7 +540,7 @@ describe("a helper that does not keep to its protocol", () => {
       helper.say("ready");
       helper.once("input", () => helper.say("committed"));
     });
-    const run = follow(files.move(from, "staged", to, "report.pdf", () => true, UNSTOPPED));
+    const run = follow(files.move(from, "staged", to, "report.pdf", () => true, UNSTOPPED, STAGED));
     await flush();
     await advance(BOUNDS.stallMs - 1);
     helpers()[0]?.stdout.write(extra);
@@ -561,7 +566,7 @@ describe("a helper that does not keep to its protocol", () => {
 
   it("rejects a stderr byte after an outcome", async () => {
     script((helper) => { helper.say("ready"); helper.once("input", () => helper.say("committed")); });
-    const run = follow(files.move(from, "staged", to, "report.pdf", () => true, UNSTOPPED));
+    const run = follow(files.move(from, "staged", to, "report.pdf", () => true, UNSTOPPED, STAGED));
     await flush();
     helpers()[0]?.stderr.write("x");
     await advance(BOUNDS.stallMs + BOUNDS.killMs);
@@ -575,7 +580,7 @@ describe("a helper that does not keep to its protocol", () => {
       helper.say("ready");
       helper.once("input", () => helper.say("committed"));
     });
-    const run = follow(files.move(from, "staged", to, "report.pdf", () => true, UNSTOPPED));
+    const run = follow(files.move(from, "staged", to, "report.pdf", () => true, UNSTOPPED, STAGED));
     await flush();
     await advance(BOUNDS.stallMs);
     const [helper] = helpers();
@@ -597,7 +602,7 @@ describe("a helper that does not keep to its protocol", () => {
     const directory = realpathSync(mkdtempSync(join(tmpdir(), "download-recovery-")));
     try {
       const info = statSync(directory, { bigint: true });
-      const root = { path: directory, dev: info.dev, ino: info.ino, files: { ...files, move: async () => "cross-volume" as const } };
+      const root = { path: directory, dev: info.dev, ino: info.ino, files: { ...files, move: async () => "cross-volume" as const, stamp: async () => STAGED } };
       script((helper) => {
         helper.say("ready");
         if (helper.args[0] === "--dir-remove") {
@@ -679,7 +684,7 @@ describe("a helper that does not keep to its protocol", () => {
     ["exit 3 with no refusal", (helper: FakeHelper) => { helper.say("ready"); helper.once("input", () => helper.exit(3)); }],
   ] as const)("is unavailable on %s, not a refusal or a filesystem failure", async (_case, behave) => {
     script(behave);
-    const run = follow(files.move(from, "staged", to, "report.pdf", () => true, UNSTOPPED));
+    const run = follow(files.move(from, "staged", to, "report.pdf", () => true, UNSTOPPED, STAGED));
     await flush();
     expect(run.settled).toBe(true);
     expect(run.error).toBeInstanceOf(HeldFileHelperUnavailableError);
@@ -688,11 +693,11 @@ describe("a helper that does not keep to its protocol", () => {
 
   it("keeps a refusal and a filesystem failure it reports as answers about the operation", async () => {
     script((helper) => { helper.say("refused to"); helper.exit(3); });
-    const refused = follow(files.move(from, "staged", to, "report.pdf", () => true, UNSTOPPED));
+    const refused = follow(files.move(from, "staged", to, "report.pdf", () => true, UNSTOPPED, STAGED));
     await flush();
     expect(refused.error).toBeInstanceOf(HeldDirectoryRefusedError);
     script((helper) => { helper.say("ready"); helper.once("input", () => { helper.say("failed EIO"); helper.exit(4); }); });
-    const failed = follow(files.move(from, "staged", to, "report.pdf", () => true, UNSTOPPED));
+    const failed = follow(files.move(from, "staged", to, "report.pdf", () => true, UNSTOPPED, STAGED));
     await flush();
     expect(failed.error).not.toBeInstanceOf(HeldFileHelperUnavailableError);
     expect(failed.error).toMatchObject({ code: "EIO" });
@@ -750,9 +755,9 @@ it("keeps the Windows writer identity for recording when isolation leaves its pa
   const windows = _helperFileOperationsForTest("/helper/ave-path-kind.exe", BOUNDS, true);
   const fileId = "fedcba9876543210123456789abcdef0";
   script((helper) => {
-    helper.say("destination-id 4294967297 00000000000000000000000000000003 15", "ready");
+    helper.say("destination-id 4294967297:00000000000000000000000000000003:creation:15", "ready");
     helper.once("input", () => {
-      helper.say(`writing 4294967297 ${fileId} 20`, "progress 8", "copied");
+      helper.say(`writing 4294967297:${fileId}:creation:20`, "progress 8", "copied");
       helper.afterInputEnds(() => { helper.say("cancelled left"); helper.exit(0); });
     });
   });
@@ -760,7 +765,7 @@ it("keeps the Windows writer identity for recording when isolation leaves its pa
   await flush();
   expect(stoppedCopyOf(run.error)).toEqual({
     partialCopy: "left",
-    partLeftAt: { name: ".part", identity: { kind: "fileId", file: { dev: 4294967297n, ino: BigInt(`0x${fileId}`), birthtimeNs: 20n } } },
+    partLeftAt: { name: ".part", identity: { kind: "fileId", file: { dev: 4294967297n, ino: BigInt(`0x${fileId}`), evidence: { class: "creation", value: "20" } } } },
   });
 });
 
@@ -768,13 +773,13 @@ it("keeps the Windows writer identity for recording when isolation leaves its pa
 // The copy reports the file as left and starts no removal of its own.
 describe("a copy whose helper says it left its temporary file", () => {
   const HIDDEN = ".0123456789abcdef0123456789abcdef.removing";
-  const SUFFIXES = [["left", null], [`left ${HIDDEN} 1 18446744073709551615 mismatch -`, "mismatch"],
-    [`left ${HIDDEN} 1 18446744073709551615 remove-failed -`, "remove-failed"]] as const;
+  const SUFFIXES = [["left", null], [`left ${HIDDEN} 1:18446744073709551615:birth:20 mismatch -`, "mismatch"],
+    [`left ${HIDDEN} 1:18446744073709551615:birth:20 remove-failed -`, "remove-failed"]] as const;
   const expectLeftByHelper = (error: unknown, verdict: "mismatch" | "remove-failed" | null): void => {
     expect(stoppedCopyOf(error)).toEqual({ partialCopy: "left", partLeftAt: verdict === null ? {
-      name: ".0123.part", identity: { kind: "fileId", file: { dev: 1n, ino: 18446744073709551615n, birthtimeNs: 20n } },
+      name: ".0123.part", identity: { kind: "fileId", file: { dev: 1n, ino: 18446744073709551615n, evidence: { class: "birth", value: "20" } } },
     } : {
-      name: HIDDEN, identity: { kind: "helper", dev: 1n, ino: 18446744073709551615n, verdict, observed: null },
+      name: HIDDEN, identity: { kind: "helper", dev: 1n, ino: 18446744073709551615n, evidence: { class: "birth", value: "20" }, verdict, observed: null },
     } });
     expect(helpers()).toHaveLength(1);
   };
@@ -798,7 +803,7 @@ describe("a copy whose helper says it left its temporary file", () => {
   it.each(SUFFIXES)("reports a cancel answered `cancelled %s` as a failure", async (suffix, hidden) => {
     script((helper) => {
       helper.say("ready");
-      helper.once("input", () => helper.say("writing 1 18446744073709551615 20"));
+      helper.once("input", () => helper.say("writing 1:18446744073709551615:birth:20"));
     });
     const stop = new AbortController();
     const run = follow(files.copy(from, "staged", to, "report.pdf", ".0123.part", () => true, stop.signal));
@@ -826,12 +831,12 @@ describe("a copy whose helper says it left its temporary file", () => {
         helper.once("input", () => { helper.say("removed"); helper.exit(0); });
         return;
       }
-      helper.say("target-id 1 3 15", "ready");
+      helper.say("target-id 1:3:birth:15", "ready");
       helper.once("input", () => {
-        helper.say("writing 1 2 20", "progress 8", "copy-id 1 2 20", "copied");
+        helper.say("writing 1:2:birth:20", "progress 8", "copy-id 1:2:birth:20", "copied");
         helper.once("input", () => {
           moveAuthorized = true;
-          helper.say(`target-left left ${HIDDEN} 1 3 mismatch -`);
+          helper.say(`target-left left ${HIDDEN} 1:3:birth:15 mismatch -`);
           helper.exit(7);
         });
       });
@@ -839,13 +844,39 @@ describe("a copy whose helper says it left its temporary file", () => {
     const journal = { hidden: HIDDEN, write, resolved };
     const run = follow(files.copy(from, "staged", to, "report.pdf", ".0123.part", () => true, UNSTOPPED, journal));
     await flush();
-    expect(write).toHaveBeenCalledExactlyOnceWith({ dev: 1n, ino: 3n, birthtimeNs: 15n }, { dev: 1n, ino: 2n, birthtimeNs: 20n });
+    expect(write).toHaveBeenCalledExactlyOnceWith({ dev: 1n, ino: 3n, evidence: { class: "birth", value: "15" } }, { dev: 1n, ino: 2n, evidence: { class: "birth", value: "20" } });
     expect(moveAuthorized).toBe(false);
     finishWrite();
     await flush();
     expect(moveAuthorized).toBe(true);
     expect(run.error).toBeInstanceOf(HeldFileHelperUnavailableError);
     expect(resolved).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["another file number", "copy-id 1:4:birth:20"],
+    ["another birth time", "copy-id 1:2:birth:21"],
+  ])("refuses a writer whose identity changes to %s, keeping the first one", async (_label, refreshed) => {
+    let moveAuthorized = false;
+    script((helper) => {
+      if (helper.args[0] !== "--dir-copy") {
+        helper.say("ready");
+        helper.once("input", () => { helper.say("absent"); helper.exit(0); });
+        return;
+      }
+      helper.say("target-id 1:3:birth:15", "ready");
+      helper.once("input", () => {
+        helper.say("writing 1:2:birth:20", "progress 8", refreshed, "copied");
+        helper.once("input", () => { moveAuthorized = true; });
+        helper.afterInputEnds(() => { helper.say("cancelled"); helper.exit(0); });
+      });
+    });
+    const journal = { hidden: HIDDEN, write: vi.fn(), resolved: vi.fn() };
+    const run = follow(files.copy(from, "staged", to, "report.pdf", ".0123.part", () => true, UNSTOPPED, journal));
+    await flush();
+    expect(run.error).toBeInstanceOf(HeldDirectoryRefusedError);
+    expect(journal.write).not.toHaveBeenCalled();
+    expect(moveAuthorized).toBe(false);
   });
 
   it("ends the copy without authorizing a move when the journal cannot be synced", async () => {
@@ -856,9 +887,9 @@ describe("a copy whose helper says it left its temporary file", () => {
         helper.once("input", () => { helper.say("absent"); helper.exit(0); });
         return;
       }
-      helper.say("target-id 1 3 15", "ready");
+      helper.say("target-id 1:3:birth:15", "ready");
       helper.once("input", () => {
-        helper.say("writing 1 2 20", "copy-id 1 2 20", "copied");
+        helper.say("writing 1:2:birth:20", "copy-id 1:2:birth:20", "copied");
         helper.once("input", () => { moveAuthorized = true; });
         helper.afterInputEnds(() => { helper.say("cancelled"); helper.exit(0); });
       });
@@ -874,11 +905,11 @@ describe("a copy whose helper says it left its temporary file", () => {
 
   it("reports a displaced target separately from the part on a failed commit", async () => {
     script((helper) => {
-      helper.say("target-id 1 3 15", "ready");
+      helper.say("target-id 1:3:birth:15", "ready");
       helper.once("input", () => {
-        helper.say("writing 1 2 20", "progress 8", "copy-id 1 2 20", "copied");
+        helper.say("writing 1:2:birth:20", "progress 8", "copy-id 1:2:birth:20", "copied");
         helper.once("input", () => {
-          helper.say(`target-left left ${HIDDEN} 1 3 mismatch -`, "refused target removed");
+          helper.say(`target-left left ${HIDDEN} 1:3:birth:15 mismatch -`, "refused target removed");
           helper.exit(3);
         });
       });
@@ -889,7 +920,7 @@ describe("a copy whose helper says it left its temporary file", () => {
     expect(run.error).toBeInstanceOf(HeldDirectoryRefusedError);
     expect(stoppedCopyOf(run.error)?.partialCopy).toBe("removed");
     expect(record).toHaveBeenCalledExactlyOnceWith({
-      name: HIDDEN, identity: { kind: "helper", dev: 1n, ino: 3n, verdict: "mismatch", observed: null },
+      name: HIDDEN, identity: { kind: "helper", dev: 1n, ino: 3n, evidence: { class: "birth", value: "15" }, verdict: "mismatch", observed: null },
     });
   });
 
@@ -900,9 +931,9 @@ describe("a copy whose helper says it left its temporary file", () => {
         helper.once("input", () => { helper.say("absent"); helper.exit(0); });
         return;
       }
-      helper.say("target-id 1 3 15", "ready");
+      helper.say("target-id 1:3:birth:15", "ready");
       helper.once("input", () => {
-        helper.say("writing 1 2 20", "copy-id 1 2 20", "copied");
+        helper.say("writing 1:2:birth:20", "copy-id 1:2:birth:20", "copied");
         helper.once("input", () => { helper.say("committed"); helper.exit(0); });
       });
     });
@@ -920,10 +951,10 @@ describe("a copy whose helper says it left its temporary file", () => {
         helper.once("input", () => { helper.say("absent"); helper.exit(0); });
         return;
       }
-      if (replacing) helper.say("target-id 2 3 15");
+      if (replacing) helper.say("target-id 2:3:birth:15");
       helper.say("ready");
       helper.once("input", () => {
-        helper.say("writing 2 4 20", "copied");
+        helper.say("writing 2:4:birth:20", "copied");
         helper.once("input", () => {
           if (replacing) helper.say("target-retired");
           helper.say("committed");
@@ -941,18 +972,22 @@ describe("a copy whose helper says it left its temporary file", () => {
   const invalidTargets: { label: string; id?: string; hidden?: string; early?: boolean; duplicate?: boolean;
     old?: string; verdict?: string; snapshot?: string }[] = [
     { label: "before commit authorization", early: true },
-    { label: "wrong old identity", id: "1 4" },
-    { label: "writing identity as target", id: "1 2" },
-    { label: "different leftover volume", id: "2 3" },
-    { label: "different announced volume", old: "2 3 15", id: "2 3" },
-    { label: "announced writer as old target", old: "1 2 15", id: "1 2" },
+    { label: "wrong old identity", id: "1:4:birth:15" },
+    { label: "writing identity as target", id: "1:2:birth:20" },
+    { label: "different leftover volume", id: "2:3:birth:15" },
+    { label: "different announced volume", old: "2:3:birth:15", id: "2:3:birth:15" },
+    { label: "announced writer as old target", old: "1:2:birth:15", id: "1:2:birth:15" },
     { label: "hidden name from another copy", hidden: ".11111111111111111111111111111111.removing" },
-    { label: "different birth time", snapshot: `1:3:16:1:2:${"0".repeat(64)}:${"0".repeat(64)}` },
+    { label: "different birth time", snapshot: `1:3:birth:16/1:2:${"0".repeat(64)}:${"0".repeat(64)}` },
+    { label: "different leftover birth time", id: "1:3:birth:16" },
+    { label: "another evidence class", id: "1:3:creation:15" },
+    { label: "an unknown evidence class", id: "1:3:other:15" },
+    { label: "a legacy token without evidence", id: "1 3" },
     { label: "duplicate leftover", duplicate: true },
     { label: "incompatible outcome", verdict: "remove-failed" },
   ];
   it.each(invalidTargets)("rejects a target leftover with $label", async ({
-    id = "1 3", hidden = HIDDEN, old = "1 3 15", verdict = "mismatch", snapshot = "-", early, duplicate,
+    id = "1:3:birth:15", hidden = HIDDEN, old = "1:3:birth:15", verdict = "mismatch", snapshot = "-", early, duplicate,
   }) => {
     const left = vi.fn();
     const journal = { hidden: HIDDEN, write: vi.fn().mockResolvedValue(undefined), resolved: vi.fn(), left };
@@ -971,9 +1006,9 @@ describe("a copy whose helper says it left its temporary file", () => {
           helper.say("failed EIO");
           helper.exit(4);
         };
-        helper.say("writing 1 2 20");
+        helper.say("writing 1:2:birth:20");
         if (!early) {
-          helper.say("copy-id 1 2 20", "copied");
+          helper.say("copy-id 1:2:birth:20", "copied");
           helper.once("input", report);
         } else {
           report();
@@ -986,14 +1021,15 @@ describe("a copy whose helper says it left its temporary file", () => {
     expect(helpers()[0]?.killed).toBe(1);
     expect(left).not.toHaveBeenCalled();
     expect(journal.resolved).not.toHaveBeenCalled();
-    if (old !== "1 3 15") expect(journal.write).not.toHaveBeenCalled();
+    if (old !== "1:3:birth:15") expect(journal.write).not.toHaveBeenCalled();
   });
 
   it.each([
-    ["another identity", "writing 1 2 20", "1 4"],
-    ["another volume", "writing 1 2 20", "2 2"],
-    ["the held old target", "writing 1 2 20", "1 3"],
-    ["no writer", null, "1 2"],
+    ["another identity", "writing 1:2:birth:20", "1:4:birth:20"],
+    ["another volume", "writing 1:2:birth:20", "2:2:birth:20"],
+    ["the held old target", "writing 1:2:birth:20", "1:3:birth:15"],
+    ["another birth time", "writing 1:2:birth:20", "1:2:birth:21"],
+    ["no writer", null, "1:2:birth:20"],
   ] as const)("rejects a named copy-part leftover claiming %s", async (_label, writing, claimed) => {
     script((helper) => {
       if (helper.args[0] === "--dir-remove-id") {
@@ -1001,7 +1037,7 @@ describe("a copy whose helper says it left its temporary file", () => {
         helper.once("input", () => { helper.say("absent"); helper.exit(0); });
         return;
       }
-      helper.say("target-id 1 3 15", "ready");
+      helper.say("target-id 1:3:birth:15", "ready");
       helper.once("input", () => {
         if (writing !== null) helper.say(writing);
         helper.say(`failed EIO left ${HIDDEN} ${claimed} mismatch -`);
@@ -1018,7 +1054,7 @@ describe("a copy whose helper says it left its temporary file", () => {
   it.each(SUFFIXES)("keeps the errno of a failure answered `failed EIO %s`", async (suffix, hidden) => {
     script((helper) => {
       helper.say("ready");
-      helper.once("input", () => { helper.say("writing 1 18446744073709551615 20", "progress 8", `failed EIO ${suffix}`); helper.exit(4); });
+      helper.once("input", () => { helper.say("writing 1:18446744073709551615:birth:20", "progress 8", `failed EIO ${suffix}`); helper.exit(4); });
     });
     const run = follow(files.copy(from, "staged", to, "report.pdf", ".0123.part", () => true, UNSTOPPED));
     await flush();
@@ -1031,7 +1067,7 @@ describe("a copy whose helper says it left its temporary file", () => {
     script((helper) => {
       helper.say("ready");
       helper.once("input", () => {
-        helper.say("writing 1 18446744073709551615 20", "progress 8", "copied");
+        helper.say("writing 1:18446744073709551615:birth:20", "progress 8", "copied");
         helper.once("input", () => { helper.say(`refused target ${suffix}`); helper.exit(3); });
       });
     });
@@ -1044,7 +1080,7 @@ describe("a copy whose helper says it left its temporary file", () => {
   });
 
   it.each([
-    ["a removal", () => files.remove(from, "staged", () => true, UNSTOPPED), "ready", "absent left"],
+    ["a removal", () => files.remove(from, "staged", () => true, UNSTOPPED, STAGED), "ready", "absent left"],
     ["a copy before `ready`", () => files.copy(from, "staged", to, "report.pdf", ".0123.part", () => true, UNSTOPPED), null, "failed EIO left"],
     ["a copy's refusal before `copied`", () => files.copy(from, "staged", to, "report.pdf", ".0123.part", () => true, UNSTOPPED), "ready", "refused target left"],
     ["a copy's cancel nobody asked for", () => files.copy(from, "staged", to, "report.pdf", ".0123.part", () => true, UNSTOPPED), "ready", "cancelled left"],
@@ -1097,7 +1133,7 @@ describe("the outcome a staged download's removal reports", () => {
     const directory = realpathSync(mkdtempSync(join(tmpdir(), "download-outcome-")));
     try {
       const info = statSync(directory, { bigint: true });
-      const root = { path: directory, dev: info.dev, ino: info.ino, files };
+      const root = { path: directory, dev: info.dev, ino: info.ino, files: { ...files, stamp: async () => STAGED } };
       script(behave);
       const item = Object.assign(new EventEmitter(), {
         getFilename: () => "report.pdf", getURL: () => "https://site.example/report", getURLChain: () => ["https://site.example/report"],
@@ -1142,7 +1178,7 @@ describe("the outcome a staged download's removal reports", () => {
         hasUserGesture: () => true, getReceivedBytes: () => 8, getTotalBytes: () => 8, getState: () => "progressing" as const,
         pause: vi.fn(), resume: vi.fn(), cancel: vi.fn(), setSavePath: vi.fn(),
       });
-      const staged = stageBrowserDownload(item, { root: { path: directory, dev: info.dev, ino: info.ino, files }, askSavePath: async () => null }, Promise.resolve());
+      const staged = stageBrowserDownload(item, { root: { path: directory, dev: info.dev, ino: info.ino, files: { ...files, stamp: async () => STAGED } }, askSavePath: async () => null }, Promise.resolve());
       const done = follow(new Promise<[string, string]>((resolve) => staged.download.once("done", (_event, state, outcome) => resolve([state, outcome]))));
       await staged.answered;
       await flush();
@@ -1166,6 +1202,11 @@ const { basename, join } = await import("node:path");
 const { tmpdir } = await import("node:os");
 const { stageBrowserDownload, sweepBrowserDownloadStaging } = await import("../browser-download-staging.js");
 const arg = (helper: FakeHelper, index: number): string => helper.args[index] ?? "";
+const option = (helper: FakeHelper, name: string): string | undefined => {
+  const at = helper.args.indexOf(name);
+  return at < 0 ? undefined : helper.args[at + 1];
+};
+const tokenOf = (entry: { dev: bigint; ino: bigint; birthtimeNs: bigint }): string => `${entry.dev}:${entry.ino}:birth:${entry.birthtimeNs}`;
 describe("a stalled copy's temporary file in the chosen folder", () => {
   interface Faults {
     readonly copyDiesWhenKilled: boolean;
@@ -1192,7 +1233,7 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
         const part = join(arg(helper, 5), arg(helper, 9));
         fs.writeFileSync(part, "partial copy");
         const written = fs.statSync(part, { bigint: true });
-        if (!quietCopy) helper.say(`writing ${written.dev} ${written.ino} ${written.birthtimeNs}`);
+        if (!quietCopy) helper.say(`writing ${tokenOf(written)}`);
         if (replaceBeforeProgress) {
           fs.renameSync(part, `${part}.saved`);
           fs.writeFileSync(part, "replacement before progress");
@@ -1208,8 +1249,8 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
             fs.renameSync(part, hidden);
           }
           const marked = fs.statSync(hidden, { bigint: true });
-          const snapshot = `${marked.dev}:${marked.ino}:${marked.birthtimeNs}:${fingerprint(hidden)}`;
-          helper.say(`failed EIO left ${namedLeftover} ${own.dev} ${own.ino} ${hiddenVerdict} ${snapshot}`);
+          const snapshot = `${tokenOf(marked)}/${fingerprint(hidden)}`;
+          helper.say(`failed EIO left ${namedLeftover} ${tokenOf(own)} ${hiddenVerdict} ${snapshot}`);
           helper.exit(4);
           return;
         }
@@ -1239,7 +1280,7 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
           case "--dir-sweep-record": {
             if (!entry?.isFile()) { end("absent"); break; }
             const bytes = fs.readFileSync(path);
-            helper.say(`record ${entry.dev}:${entry.ino}:${entry.birthtimeNs} ${bytes.toString("hex")}`);
+            helper.say(`record ${tokenOf(entry)} ${bytes.toString("hex")}`);
             helper.afterInputEnds(() => {
               if (helper.input !== "cc") { end("kept"); return; }
               fs.unlinkSync(path);
@@ -1250,32 +1291,33 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
           case "--dir-write-record": {
             fs.writeFileSync(path, Buffer.from(arg(helper, 5), "hex"), { flag: "wx" });
             const written = fs.statSync(path, { bigint: true });
-            end(`written ${written.dev}:${written.ino}:${written.birthtimeNs}`);
+            end(`written ${tokenOf(written)}`);
             break;
           }
           case "--dir-remove-record": {
             if (!entry?.isFile()) { end("absent"); break; }
             const body = fs.readFileSync(path);
             const digest = createHash("sha256").update(body).digest("hex");
-            if (entry.dev !== BigInt(arg(helper, 5)) || entry.ino !== BigInt(arg(helper, 6)) ||
-                entry.birthtimeNs !== BigInt(arg(helper, 7)) || body.length !== Number(arg(helper, 8)) ||
-                digest !== arg(helper, 9)) { end("kept"); break; }
+            if (option(helper, "--expect") !== tokenOf(entry) || body.length !== Number(option(helper, "--length")) ||
+                digest !== option(helper, "--digest")) { end("kept"); break; }
             fs.unlinkSync(path);
             end("removed");
             break;
           }
+          case "--dir-stamp":
+            end(entry?.isFile() ? `stamp ${tokenOf(entry)}` : "absent");
+            break;
           case "--dir-remove":
+            if (entry !== undefined && option(helper, "--expect") !== tokenOf(entry)) { helper.say("refused source"); helper.exit(3); break; }
             if (entry !== undefined) fs.unlinkSync(path);
             end(entry === undefined ? "absent" : "removed");
             break;
           case "--dir-remove-id":
           case "--dir-restore": {
             const restore = mode === "--dir-restore";
-            const id = restore ? 6 : 5;
             if (entry === undefined) { end("absent"); break; }
-            const expected = helper.args[id + 2];
-            if (!entry.isFile() || entry.dev !== BigInt(arg(helper, id)) || entry.ino !== BigInt(arg(helper, id + 1)) ||
-                (expected !== undefined && expected !== `${entry.birthtimeNs}:${fingerprint(path)}` && expected !== `${entry.birthtimeNs}:-`)) {
+            const content = option(helper, "--content");
+            if (!entry.isFile() || option(helper, "--expect") !== tokenOf(entry) || (content !== undefined && content !== fingerprint(path))) {
               end("left"); break;
             }
             if (restore) {
@@ -1288,7 +1330,7 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
             break;
           }
           default: {
-            const names = fs.readdirSync(directory).filter((entry) => name !== "keep-records" || !/^[a-f0-9]{32}\.cleanup\.json$/u.test(entry));
+            const names = fs.readdirSync(directory).filter((entry) => name !== "--keep-records" || !/^[a-f0-9]{32}\.cleanup\.json$/u.test(entry));
             for (const name of names) fs.unlinkSync(join(directory, name));
             end(`swept ${names.length}`);
           }
@@ -1310,7 +1352,7 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
     fs.mkdirSync(staging);
     fs.mkdirSync(chosen);
     const info = fs.statSync(staging, { bigint: true });
-    const root = { path: staging, dev: info.dev, ino: info.ino, files: { ...files, move: async () => "cross-volume" as const } };
+    const root = { path: staging, dev: info.dev, ino: info.ino, files: { ...files, move: async () => "cross-volume" as const, stamp: async () => STAGED } };
     script(actOnRealFolders({ copyDiesWhenKilled, quietCopy, copyFails, hiddenVerdict, replaceBeforeProgress }));
     const item = Object.assign(new EventEmitter(), {
       getFilename: () => "report.pdf", getURL: () => "https://site.example/report", getURLChain: () => ["https://site.example/report"],

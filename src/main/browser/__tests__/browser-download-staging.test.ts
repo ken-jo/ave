@@ -88,6 +88,7 @@ const { _descriptorFileOperationsForTest, _helperFileOperationsForTest, HeldFile
 type Root = import("../browser-download-staging.js").BrowserDownloadStagingRoot;
 type Observed = import("../browser-download-staging.js").ObservedDownload;
 type Files = import("../browser-download-files.js").HeldFileOperations;
+type FileIdentity = import("../browser-download-files.js").FileIdentity;
 // The step an operation reports while it holds its directories.
 type Step = Parameters<Parameters<Files["move"]>[4]>[0];
 const { isAdmissionDeniedPath, isSensitivePath } = await import("../../../permissions/sensitive-paths.js");
@@ -172,12 +173,12 @@ const atStep = (root: Root, operation: "move" | "copy" | "remove", step: Step, a
       }
       return proceed(reached);
     };
-    if (operation === "move") return { move: (from, name, to, target, proceed, stop) => files.move(from, name, to, target, wrap(proceed, {}), stop) };
+    if (operation === "move") return { move: (from, name, to, target, proceed, stop, staged) => files.move(from, name, to, target, wrap(proceed, {}), stop, staged) };
     if (operation === "copy") {
       return { copy: (from, name, to, target, part, proceed, stop, journal) =>
         files.copy(from, name, to, target, part, wrap(proceed, { part }), stop, journal) };
     }
-    return { remove: (directory, name, proceed, stop) => files.remove(directory, name, wrap(proceed, {}), stop) };
+    return { remove: (directory, name, proceed, stop, staged) => files.remove(directory, name, wrap(proceed, {}), stop, staged) };
   });
 
 // The host names a file only through a held directory: on Linux a /proc/self/fd entry of the held descriptor, and on macOS and Windows
@@ -501,13 +502,14 @@ describe("a staged download", () => {
     const ino = String(windows ? BigInt(facts.fileId) : original.ino);
     const epoch = windows ? 11644473600000000000n : 0n;
     const digest = createHash("sha256").update(content).digest("hex");
+    const evidence = `${windows ? "creation" : "birth"}:${original.birthtimeNs + epoch}`;
     await prepared.files.writeRecord(prepared, `${"a".repeat(32)}.cleanup.json`, Buffer.from(JSON.stringify({
       folder: { path: chosen, dev: String(folder.dev), ino: String(folder.ino) },
       part: `.${"b".repeat(32)}.part`,
       target: "report.pdf",
       at: hidden,
-      identity: { kind: "helper", dev, ino, verdict: "mismatch", observed: {
-        file: { dev, ino, birthtimeNs: String(original.birthtimeNs + epoch) },
+      identity: { kind: "helper", dev, ino, evidence, verdict: "mismatch", observed: {
+        file: { dev, ino, evidence },
         content: { size: String(original.size), mtimeNs: String(original.mtimeNs + epoch), head: digest, tail: digest },
       } },
     })));
@@ -545,10 +547,11 @@ describe("a staged download", () => {
     writeFileSync(target, "old bytes");
     const windows = process.platform === "win32";
     const epoch = windows ? 11644473600000000000n : 0n;
-    const fileId = (path: string): { dev: bigint; ino: bigint; birthtimeNs?: bigint } => {
+    const fileId = (path: string): FileIdentity => {
       const info = statSync(path, { bigint: true });
       const [facts] = windows ? JSON.parse(execFileSync(WINDOWS_PATH_KIND, ["--pin", path], { encoding: "utf8" })) : [];
-      return { dev: windows ? BigInt(facts.volumeSerial) : info.dev, ino: windows ? BigInt(facts.fileId) : info.ino, birthtimeNs: info.birthtimeNs + epoch };
+      return { dev: windows ? BigInt(facts.volumeSerial) : info.dev, ino: windows ? BigInt(facts.fileId) : info.ino,
+        evidence: { class: windows ? "creation" : "birth", value: String(info.birthtimeNs + epoch) } };
     };
     const original = statSync(target, { bigint: true });
     const identity = fileId(target);
@@ -564,8 +567,10 @@ describe("a staged download", () => {
         partPath = join(chosen, part);
         writeFileSync(partPath, "new bytes");
         writer = fileId(partPath);
-        if (boundary === "writer birth mismatch") writer = { ...writer, birthtimeNs: (writer.birthtimeNs ?? 0n) + 100n };
-        if (boundary === "missing writer birth") writer = { dev: writer.dev, ino: writer.ino };
+        if (boundary === "writer birth mismatch" && writer.evidence !== null) {
+          writer = { ...writer, evidence: { ...writer.evidence, value: String(BigInt(writer.evidence.value) + 100n) } };
+        }
+        if (boundary === "missing writer birth") writer = { ...writer, evidence: null };
         await journal.write(identity, writer);
         if (boundary === "replaced part") {
           moveAside(partPath, join(chosen, "held-by-test"));
@@ -594,7 +599,7 @@ describe("a staged download", () => {
     expect(records).toHaveLength(1);
     expect(JSON.parse(readFileSync(join(prepared.path, records[0] ?? ""), "utf8"))).toMatchObject({
       session: basename(partPath).slice(1, -5), at: hidden, target: "report.pdf",
-      identity: { dev: String(identity.dev), ino: String(identity.ino), birthtimeNs: String(identity.birthtimeNs) },
+      identity: { dev: String(identity.dev), ino: String(identity.ino), evidence: `${identity.evidence?.class}:${identity.evidence?.value}` },
       writer: { dev: String(writer?.dev), ino: String(writer?.ino) },
     });
 
@@ -824,12 +829,13 @@ describe("a stalled copy's temporary file, removed through the native helper", (
         const path = join(to.path, part);
         writeFileSync(path, "partial copy");
         const info = statSync(path, { bigint: true });
-        let partFile: { dev: bigint; ino: bigint; birthtimeNs?: bigint } = { dev: info.dev, ino: info.ino, birthtimeNs: info.birthtimeNs };
+        let partFile: FileIdentity = { dev: info.dev, ino: info.ino, evidence: { class: "birth", value: String(info.birthtimeNs) } };
         if (process.platform === "win32") {
           const [facts] = JSON.parse(execFileSync(WINDOWS_PATH_KIND, ["--pin", path], { encoding: "utf8", windowsHide: true })) as
             { volumeSerial: string; fileId: string }[];
           if (facts === undefined) throw new Error("fixture file identity not available");
-          partFile = { dev: BigInt(facts.volumeSerial), ino: BigInt(facts.fileId), birthtimeNs: info.birthtimeNs + 11644473600000000000n };
+          partFile = { dev: BigInt(facts.volumeSerial), ino: BigInt(facts.fileId),
+            evidence: { class: "creation", value: String(info.birthtimeNs + 11644473600000000000n) } };
         }
         const error = new HeldFileHelperStalledError("/helper", "did not end within 1 ms of being stopped", true);
         Object.assign(error, { passed: "ready", partialCopy: "left", exited, partFile });
@@ -1410,11 +1416,12 @@ describe("the native helper", () => {
     const other = join(home, "other");
     mkdirSync(other);
     const proceed = vi.fn(() => true);
-    await expect(root.files.remove({ ...root, ino: root.ino + 1n }, basename(staged), proceed, new AbortController().signal)).rejects.toMatchObject({ refusal: "from" });
+    const file = await stampOf(root, basename(staged));
+    await expect(root.files.remove({ ...root, ino: root.ino + 1n }, basename(staged), proceed, new AbortController().signal, file)).rejects.toMatchObject({ refusal: "from" });
     expect(proceed).not.toHaveBeenCalled();
     expect(readFileSync(staged, "utf8")).toBe("staged");
     const folder = { path: other, dev: statSync(other, { bigint: true }).dev, ino: statSync(other, { bigint: true }).ino };
-    await expect(root.files.move(root, basename(staged), { ...folder, dev: folder.dev + 1n }, "report.pdf", proceed, new AbortController().signal)).rejects.toMatchObject({ refusal: "to" });
+    await expect(root.files.move(root, basename(staged), { ...folder, dev: folder.dev + 1n }, "report.pdf", proceed, new AbortController().signal, file)).rejects.toMatchObject({ refusal: "to" });
     expect(proceed).not.toHaveBeenCalled();
     expect(readdirSync(other)).toEqual([]);
     removeEntry(staged);
@@ -1429,14 +1436,21 @@ describe("the native helper", () => {
     const info = statSync(other, { bigint: true });
     const folder = { path: other, dev: info.dev, ino: info.ino };
     const stop = new AbortController();
-    expect(await root.files.move(root, basename(staged), folder, "report.pdf", () => false, stop.signal)).toBe("cancelled");
+    const file = await stampOf(root, basename(staged));
+    expect(await root.files.move(root, basename(staged), folder, "report.pdf", () => false, stop.signal, file)).toBe("cancelled");
     expect(await root.files.copy(root, basename(staged), folder, "report.pdf", ".0123.part", () => false, stop.signal)).toBe("cancelled");
-    expect(await root.files.remove(root, basename(staged), () => false, stop.signal)).toBe("cancelled");
+    expect(await root.files.remove(root, basename(staged), () => false, stop.signal, file)).toBe("cancelled");
     expect(readFileSync(staged, "utf8")).toBe("staged");
     expect(readdirSync(other)).toEqual([]);
   });
 });
 
+// The identity a staged file has now, as a completed download is stamped.
+const stampOf = async (root: Root, name: string): Promise<FileIdentity> => {
+  const file = await root.files.stamp(root, name);
+  if (file === null) throw new Error(`${name} is absent`);
+  return file;
+};
 const PART_FOR_RECOVERY = ".0123456789abcdef0123456789abcdef.part";
 const HIDDEN_FOR_RECOVERY = ".0123456789abcdef0123456789abcdef.removing";
 const macHelper = (variant = ""): string => join(RESOURCES, "macos-dir-ops", process.arch, `ave-dir-ops${variant}`);
@@ -1465,10 +1479,35 @@ function hiddenSnapshot(path: string) {
   const { dev, ino, birthtimeNs, size, mtimeNs } = statSync(path, { bigint: true });
   const [, , , head, tail] = contentKey(path).split(":");
   return {
-    file: { dev: String(dev), ino: String(ino), birthtimeNs: String(birthtimeNs) },
+    file: { dev: String(dev), ino: String(ino), evidence: `birth:${birthtimeNs}` },
     content: { size: String(size), mtimeNs: String(mtimeNs), head, tail },
   };
 }
+
+it.each([
+  ["a bare file number", "legacy"],
+  ["a bare birth time", "legacy-birth"],
+  ["an unknown evidence class", "unknown"],
+  ["its evidence", "current"],
+] as const)("at startup, a record whose identity carries %s is trusted only with that evidence", async (_label, shape) => {
+  const root = prepare();
+  const chosen = join(home, "chosen");
+  mkdirSync(chosen);
+  const part = join(chosen, PART_FOR_RECOVERY);
+  writeFileSync(part, "partial copy");
+  const windows = process.platform === "win32";
+  const info = statSync(part, { bigint: true });
+  const [facts] = windows ? JSON.parse(execFileSync(WINDOWS_PATH_KIND, ["--pin", part], { encoding: "utf8" })) : [];
+  const dev = String(windows ? BigInt(facts.volumeSerial) : info.dev);
+  const ino = String(windows ? BigInt(facts.fileId) : info.ino);
+  const birth = String(info.birthtimeNs + (windows ? 11644473600000000000n : 0n));
+  const evidence = { legacy: {}, "legacy-birth": { birthtimeNs: birth }, unknown: { evidence: `other:${birth}` },
+    current: { evidence: `${windows ? "creation" : "birth"}:${birth}` } }[shape];
+  writeRecoveryRecord(root, RECOVERY_RECORD, chosen, PART_FOR_RECOVERY, { kind: "fileId", dev, ino, ...evidence });
+  await sweepBrowserDownloadStaging(root);
+  expect(existsSync(part)).toBe(shape !== "current");
+  expect(await root.files.listRecords(root)).toEqual(shape === "current" ? [] : [RECOVERY_RECORD]);
+});
 
 it.runIf(process.platform === "win32")("reads a wide writer ID and refuses a second record from a swapped staging directory", async () => {
   const root = prepare();
@@ -1477,7 +1516,7 @@ it.runIf(process.platform === "win32")("reads a wide writer ID and refuses a sec
   mkdirSync(trusted);
   mkdirSync(forged);
   const ino = 0xfedcba9876543210123456789abcdef0n;
-  const identity = { kind: "fileId", dev: "4294967297", ino: String(ino) };
+  const identity = { kind: "fileId", dev: "4294967297", ino: String(ino), evidence: "creation:20" };
   writeRecoveryRecord(root, RECOVERY_RECORD, trusted, PART_FOR_RECOVERY, identity);
   writeRecoveryRecord(root, SECOND_RECOVERY_RECORD, trusted, PART_FOR_RECOVERY, identity);
   writeRecoveryRecord({ ...root, path: forged }, SECOND_RECOVERY_RECORD, home, PART_FOR_RECOVERY, identity);
@@ -1497,7 +1536,7 @@ it.runIf(process.platform === "win32")("reads a wide writer ID and refuses a sec
   await expect(sweepBrowserDownloadStaging(swapped)).rejects.toThrow(/staging folder/u);
   expect(recover).toHaveBeenCalledExactlyOnceWith(
     expect.objectContaining({ path: trusted }), PART_FOR_RECOVERY, PART_FOR_RECOVERY,
-    { kind: "fileId", file: { dev: 4294967297n, ino } },
+    { kind: "fileId", file: { dev: 4294967297n, ino, evidence: { class: "creation", value: "20" } } },
   );
   expect(existsSync(join(root.path, SECOND_RECOVERY_RECORD))).toBe(true);
 });
@@ -1617,7 +1656,7 @@ describe.runIf(process.platform === "darwin")("native recovery through a held di
     mkdirSync(forged);
     linkSync(join(root.path, RECOVERY_RECORD), join(forged, RECOVERY_RECORD));
     writeRecoveryRecord({ ...root, path: forged }, SECOND_RECOVERY_RECORD, home, PART_FOR_RECOVERY,
-      { kind: "fileId", dev: String(file.dev), ino: String(file.ino), birthtimeNs: String(file.birthtimeNs) });
+      { kind: "fileId", dev: String(file.dev), ino: String(file.ino), evidence: `birth:${file.birthtimeNs}` });
     let replaced = false;
     const replace = (): void => {
       if (replaced) return;

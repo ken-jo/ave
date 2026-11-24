@@ -67,6 +67,25 @@ function runCopy(args, onLine, executable = helper) {
   });
 }
 
+function factsOf(path) {
+  const [facts] = JSON.parse(run("--pin", path).stdout);
+  const { birthtimeNs, mtimeNs, size } = lstatSync(path, { bigint: true });
+  const bytes = readFileSync(path);
+  const digest = (span) => createHash("sha256").update(span).digest("hex");
+  const epoch = 11644473600000000000n;
+  const dev = String(BigInt(facts.volumeSerial));
+  const id = facts.fileId.slice(2);
+  const birth = birthtimeNs + epoch;
+  return { dev, id, birth, size: String(size), mtime: String(mtimeNs + epoch), head: digest(bytes.subarray(0, 65536)),
+    tail: digest(bytes.subarray(-65536)), token: `${dev}:${id}:creation:${birth}` };
+}
+
+// The evidence token `<dev>:<id>:creation:<value>` of a file; `birthOffset` gives the same file ID with another creation time.
+function tokenOf(path, birthOffset = 0n) {
+  const { dev, id, birth } = factsOf(path);
+  return `${dev}:${id}:creation:${birth + birthOffset}`;
+}
+
 async function recoveryTests() {
   const record = `${"a".repeat(32)}.cleanup.json`;
   const hidden = `.${"b".repeat(32)}.removing`;
@@ -77,22 +96,16 @@ async function recoveryTests() {
     const result = answered(args);
     assert.equal(result.code, code, JSON.stringify(result));
     assert.deepEqual(result.lines.filter((line) => !line.startsWith("destination-id ")).map((line) =>
-      /^written \d+:[0-9a-f]{32}:\d+$/u.test(line) ? "written" : line), lines);
+      /^written \d+:[0-9a-f]{32}:creation:[1-9]\d*$/u.test(line) ? "written" : line), lines);
     if (code !== 4) assert.equal(result.stderr, "");
   };
   const snapshot = (path) => {
-    const [facts] = JSON.parse(run("--pin", path).stdout);
-    const { birthtimeNs, mtimeNs, size } = lstatSync(path, { bigint: true });
-    const bytes = readFileSync(path);
-    const digest = (span) => createHash("sha256").update(span).digest("hex");
-    const epoch = 11644473600000000000n;
-    return [String(BigInt(facts.volumeSerial)), facts.fileId.slice(2),
-      `${birthtimeNs + epoch}:${size}:${mtimeNs + epoch}:${digest(bytes.subarray(0, 65536))}:${digest(bytes.subarray(-65536))}`];
+    const { token, size, mtime, head, tail } = factsOf(path);
+    return ["--expect", token, "--content", `${size}:${mtime}:${head}:${tail}`];
   };
-  const removeRecord = (dir, name) => {
-    const [dev, id, fingerprint] = snapshot(join(dir, name));
-    const [birth, length, , digest] = fingerprint.split(":");
-    return ["--dir-remove-record", ...held(dir), name, dev, id, birth, length, digest];
+  const removeRecord = (dir, name, birthOffset = 0n) => {
+    const { size, head } = factsOf(join(dir, name));
+    return ["--dir-remove-record", ...held(dir), name, "--expect", tokenOf(join(dir, name), birthOffset), "--length", size, "--digest", head];
   };
   add("record removal keeps an edited or replaced name", (dir) => {
     const path = join(dir, record);
@@ -106,6 +119,34 @@ async function recoveryTests() {
     expect(remove, ["ready", "kept"]);
     assert.equal(readFileSync(path, "utf8"), "{}");
     expect(removeRecord(dir, record), ["ready", "removed"]);
+  });
+  add("evidence classes other than creation stay unresolved", (dir) => {
+    const source = join(dir, hidden);
+    writeFileSync(source, "hidden bytes");
+    const { dev, id, birth, size, mtime, head, tail } = factsOf(source);
+    for (const token of [`${dev}:${id}:none:-`, `${dev}:${id}:birth:${birth}`, `${dev}:${id}:fingerprint:${size}:${mtime}:${head}:${tail}`, `${dev}:${id}:other:1`]) {
+      expect(["--dir-remove-id", ...held(dir), hidden, "--expect", token], ["ready", "left"]);
+    }
+    for (const token of [`${dev}:${id}:*:${birth}`, `${dev}:${id}:creation:0`, `${dev}:${id}:creation:`,
+      `${dev}:${id}:${birth}`, `${dev}:${id}`]) {
+      assert.equal(answered(["--dir-remove-id", ...held(dir), hidden, "--expect", token]).code, 2, token);
+    }
+    for (const extra of [["--retire"], ["--expect", tokenOf(source)], ["--unknown", "1"]]) {
+      assert.equal(answered(["--dir-remove-id", ...held(dir), hidden, "--expect", tokenOf(source), ...extra]).code, 2, extra.join(" "));
+    }
+    assert.equal(answered(["--dir-restore-target", ...held(dir), hidden, "target", "--expect", tokenOf(source), "--retire",
+      "--writer", `${dev}:${"c".repeat(32)}:creation:1`]).code, 2);
+    assert.equal(readFileSync(source, "utf8"), "hidden bytes");
+  });
+  add("a volume without file-ID opens refuses the copy before it starts", (dir) => {
+    writeFileSync(join(dir, "source"), "source");
+    const result = spawnSync(join(tmpdir(), "ave-path-pin-test.exe"),
+      ["volume-without-file-ids", "--dir-copy", ...held(dir), "source", ...held(dir), "target", part, hidden],
+      { input: "c", windowsHide: true, shell: false, env: {}, timeout: 10_000, encoding: "utf8" });
+    assert.ifError(result.error);
+    assert.equal(result.status, 3, result.stdout);
+    assert.deepEqual(result.stdout.trimEnd().split(/\r?\n/u), ["refused to"]);
+    assert.deepEqual(readdirSync(dir), ["source"]);
   });
   add("record round trip and exclusive collision", (dir) => {
     const folder = held(dir);
@@ -145,9 +186,9 @@ async function recoveryTests() {
     writeFileSync(source, "modified");
     expect(["--dir-restore", ...held(dir), hidden, part, ...known], ["ready", "left"]);
     expect(["--dir-remove-id", ...held(dir), hidden, ...known], ["ready", "left"]);
-    const [dev, ino, current] = snapshot(source);
-    const staleContent = [...current.split(":").slice(0, 3), ...known[2].split(":").slice(3)].join(":");
-    expect(["--dir-restore", ...held(dir), hidden, part, dev, ino, staleContent], ["ready", "left"]);
+    const current = factsOf(source);
+    const staleContent = [current.size, current.mtime, ...known[3].split(":").slice(2)].join(":");
+    expect(["--dir-restore", ...held(dir), hidden, part, "--expect", current.token, "--content", staleContent], ["ready", "left"]);
     assert.equal(readFileSync(source, "utf8"), "modified");
     assert.ok(!existsSync(join(dir, part)));
   });
@@ -159,9 +200,9 @@ async function recoveryTests() {
     assert.ok(!existsSync(source));
     const restored = join(dir, part);
     assert.deepEqual(readFileSync(restored), bytes);
-    const [dev, ino, fingerprint] = snapshot(restored);
-    expect(["--dir-remove-id", ...held(dir), part, dev, ino, `${fingerprint.split(":")[0]}:-`], ["ready", "removed"]);
-    expect(["--dir-remove-id", ...held(dir), part, dev, ino], ["ready", "absent"]);
+    const token = tokenOf(restored);
+    expect(["--dir-remove-id", ...held(dir), part, "--expect", token], ["ready", "removed"]);
+    expect(["--dir-remove-id", ...held(dir), part, "--expect", token], ["ready", "absent"]);
   });
   add("occupied restore target and nonregular cleanup source stay in place", (dir) => {
     const source = join(dir, hidden);
@@ -263,11 +304,11 @@ async function recoveryTests() {
       if (line === "copied") stdin.end("c");
     });
     assert.equal(result.code, 0, result.stderr);
-    const [dev, ino, stamp] = snapshot(join(dir, "target"));
+    const { dev, token } = factsOf(join(dir, "target"));
     const [destination, ...copyLines] = result.lines;
-    assert.match(destination, /^destination-id \d+ [0-9a-f]{32} [1-9][0-9]*$/u);
-    assert.equal(destination.split(" ")[1], dev);
-    assert.deepEqual(copyLines, ["ready", `writing ${dev} ${ino} ${stamp.split(":")[0]}`, "progress 6", "copied", "committed"]);
+    assert.match(destination, /^destination-id \d+:[0-9a-f]{32}:creation:[1-9][0-9]*$/u);
+    assert.equal(destination.split(" ")[1].split(":")[0], dev);
+    assert.deepEqual(copyLines, ["ready", `writing ${token}`, "progress 6", "copied", "committed"]);
     assert.ok(!existsSync(join(dir, part)));
     assert.ok(!existsSync(join(dir, "moved")));
   });
@@ -281,7 +322,7 @@ async function recoveryTests() {
       }
     });
     assert.equal(result.code, 3, JSON.stringify(result));
-    assert.match(result.lines[2], /^writing \d+ [0-9a-f]{32} \d+$/u);
+    assert.match(result.lines[2], /^writing \d+:[0-9a-f]{32}:creation:[1-9]\d*$/u);
     assert.deepEqual(result.lines.slice(3), ["progress 6", "copied", "refused target removed"]);
     assert.equal(readFileSync(join(dir, "target"), "utf8"), "unrelated bytes");
     assert.ok(!existsSync(join(dir, part)));
@@ -302,7 +343,7 @@ async function recoveryTests() {
     const [aside] = readdirSync(dir).filter((name) => /^\.[0-9a-f]{32}\.removing$/u.test(name));
     assert.ok(aside);
     assert.deepEqual(snapshot(join(dir, aside)), old);
-    assert.ok(result.lines.some((line) => line.startsWith(`target-left left ${aside} ${old[0]} ${old[1]} mismatch `)));
+    assert.ok(result.lines.some((line) => line.startsWith(`target-left left ${aside} ${old[1]} mismatch `)));
   });
   for (const failure of ["none", "commit", "restore"]) {
     add(`copy replacement with ${failure} failure mode`, async (dir) => {
@@ -324,7 +365,7 @@ async function recoveryTests() {
         assert.equal(hiddenNames.length, 1);
         assert.ok(!existsSync(target));
         assert.equal(readFileSync(join(dir, hiddenNames[0]), "utf8"), "old bytes");
-        assert.ok(result.lines.some((line) => line.startsWith(`target-left left ${hiddenNames[0]} ${old[0]} ${old[1]} mismatch `)));
+        assert.ok(result.lines.some((line) => line.startsWith(`target-left left ${hiddenNames[0]} ${old[1]} mismatch `)));
       } else {
         assert.deepEqual(hiddenNames, []);
         assert.equal(readFileSync(target, "utf8"), failure === "none" ? "new bytes" : "old bytes");
@@ -346,7 +387,7 @@ async function recoveryTests() {
     try {
       const result = await runCopy(["--dir-copy", ...held(dir), "source", ...held(dir), "target", part, hidden], (line, stdin) => {
         if (line === "ready") stdin.write("c");
-        if (line.startsWith("copy-id ")) writer = line.split(" ").slice(2).join(":");
+        if (line.startsWith("copy-id ")) writer = line.slice("copy-id ".length);
         if (line === "copied") {
           const body = Buffer.from(JSON.stringify({ old, writer })).toString("hex");
           expect(["--dir-write-record", ...held(root), record, body], ["ready", "written"]);
@@ -354,17 +395,17 @@ async function recoveryTests() {
         }
       });
       assert.equal(result.code, 0);
-      assert.match(result.lines.at(-2), /^target-left left \.[0-9a-f]{32}\.removing \d+ [0-9a-f]{32} remove-failed (?:-|\S+)$/u);
+      assert.match(result.lines.at(-2), /^target-left left \.[0-9a-f]{32}\.removing \d+:[0-9a-f]{32}:creation:[1-9]\d* remove-failed (?:-|\S+)$/u);
       assert.equal(result.lines.at(-1), "committed");
       assert.ok(readdirSync(dir).includes(hidden));
-      expect(["--dir-restore-target", ...held(dir), hidden, "target", ...old, writer], ["ready", "left"]);
-      expect(["--dir-sweep", ...held(root), "keep-records"], ["ready", "swept 0"]);
+      expect(["--dir-restore-target", ...held(dir), hidden, "target", ...old, "--writer", writer], ["ready", "left"]);
+      expect(["--dir-sweep", ...held(root), "--keep-records"], ["ready", "swept 0"]);
       assert.ok(existsSync(join(root, record)));
     } finally {
       closeSync(reader);
     }
     assert.ok(!existsSync(hiddenPath));
-    expect(["--dir-restore-target", ...held(dir), hidden, "target", ...old, writer], ["ready", "resolved"]);
+    expect(["--dir-restore-target", ...held(dir), hidden, "target", ...old, "--writer", writer], ["ready", "resolved"]);
     assert.equal(readFileSync(target, "utf8"), "new bytes");
     expect(removeRecord(root, record), ["ready", "removed"]);
   });
@@ -396,12 +437,11 @@ async function recoveryTests() {
       writeFileSync(join(dir, "source"), "new bytes");
       writeFileSync(target, "old bytes");
       const old = snapshot(target);
-      const birth = old[2].split(":")[0];
       let saved;
       let writer;
       const result = await runCopy([`stop-${boundary}`, "--dir-copy", ...held(dir), "source", ...held(dir), "target", part, hidden], (line, stdin) => {
         if (line === "ready") stdin.write("c");
-        if (line.startsWith("copy-id ")) writer = line.split(" ").slice(2).join(":");
+        if (line.startsWith("copy-id ")) writer = line.slice("copy-id ".length);
         if (line === "copied") {
           saved = Buffer.from(JSON.stringify({ hidden, old, writer })).toString("hex");
           expect(["--dir-write-record", ...held(root), record, saved], ["ready", "written"]);
@@ -409,7 +449,7 @@ async function recoveryTests() {
         }
       }, join(tmpdir(), "ave-path-pin-test.exe"));
       assert.equal(result.code, 7, JSON.stringify(result));
-      assert.equal(result.lines[1], `target-id ${old[0]} ${old[1]} ${birth}`);
+      assert.equal(result.lines[1], `target-id ${old[1]}`);
       if (boundary === "leftover") assert.match(result.lines.at(-1), /^target-left left /u);
       else assert.equal(result.lines.at(-1), "copied");
       expect(["--dir-read", ...held(root), record, "8192"], ["ready", `record ${saved}`]);
@@ -419,7 +459,7 @@ async function recoveryTests() {
       } else {
         assert.deepEqual(snapshot(join(dir, hidden)), old);
       }
-      expect(["--dir-restore-target", ...held(dir), hidden, "target", old[0], old[1], `${birth}:-`, writer],
+      expect(["--dir-restore-target", ...held(dir), hidden, "target", "--expect", old[1], "--writer", writer],
         ["ready", "resolved"]);
       if (boundary === "after-commit") {
         assert.equal(readFileSync(target, "utf8"), "new bytes");
@@ -441,7 +481,7 @@ async function recoveryTests() {
         const recovery = site === "recovery";
         const zeroRecovery = recovery && fault === "zero";
         const known = snapshot(existing);
-        if (zeroRecovery) known[1] = "0".repeat(32);
+        if (zeroRecovery) known[1] = known[1].replace(/:[0-9a-f]{32}:/u, `:${"0".repeat(32)}:`);
         const args = recovery ? ["--dir-remove-id", ...held(dir), hidden, ...known]
           : ["--dir-copy", ...held(dir), "source", ...held(dir), "target", part, hidden];
         const position = zeroRecovery ? "recovery" : site === "writer" ? "second" : "first";
@@ -601,38 +641,38 @@ try {
   mkdirSync(to, { recursive: true });
 
   writeFileSync(join(from, "a"), "staged a");
-  let result = answered(["--dir-rename", ...held(from), "a", ...held(to), "report.pdf"], "c");
+  let result = answered(["--dir-rename", ...held(from), "a", ...held(to), "report.pdf", "--expect", tokenOf(join(from, "a"))], "c");
   assert.equal(result.code, 0, result.stderr);
   assert.deepEqual(result.lines, ["ready", "committed"]);
   assert.equal(readFileSync(join(to, "report.pdf"), "utf8"), "staged a");
 
   writeFileSync(join(from, "b"), "staged b");
-  result = answered(["--dir-rename", ...held(from), "b", ...held(to), "report.pdf"], "");
+  result = answered(["--dir-rename", ...held(from), "b", ...held(to), "report.pdf", "--expect", tokenOf(join(from, "b"))], "");
   assert.deepEqual(result.lines, ["ready", "cancelled"], "the end of input at a step stops it");
   assert.equal(readFileSync(join(to, "report.pdf"), "utf8"), "staged a");
-  result = answered(["--dir-rename", ...held(from), "b", ...held(to), "report.pdf"], "c");
+  result = answered(["--dir-rename", ...held(from), "b", ...held(to), "report.pdf", "--expect", tokenOf(join(from, "b"))], "c");
   assert.deepEqual(result.lines, ["ready", "replace"]);
   assert.equal(readFileSync(join(to, "report.pdf"), "utf8"), "staged a");
   assert.equal(readFileSync(join(from, "b"), "utf8"), "staged b");
 
   const [path, volume, index] = held(to);
-  result = answered(["--dir-rename", ...held(from), "b", path, volume, (BigInt(index) + 1n).toString(), "report.pdf"], "c");
+  result = answered(["--dir-rename", ...held(from), "b", path, volume, (BigInt(index) + 1n).toString(), "report.pdf", "--expect", tokenOf(join(from, "b"))], "c");
   assert.equal(result.code, 3);
   assert.deepEqual(result.lines, ["refused to"], "another directory at the checked path is refused before anything is asked");
   const [fromPath, fromVolume, fromIndex] = held(from);
-  result = answered(["--dir-remove", fromPath, fromVolume, (BigInt(fromIndex) + 1n).toString(), "b"], "c");
+  result = answered(["--dir-remove", fromPath, fromVolume, (BigInt(fromIndex) + 1n).toString(), "b", "--expect", tokenOf(join(from, "b"))], "c");
   assert.deepEqual(result.lines, ["refused from"]);
 
   // Junctions point at an empty folder inside the fixture, and are unlinked on their own before the fixture is removed.
   const elsewhere = join(dirOps, "elsewhere");
   mkdirSync(elsewhere);
   symlinkSync(elsewhere, join(to, "junction.pdf"), "junction");
-  result = answered(["--dir-rename", ...held(from), "b", ...held(to), "junction.pdf"], "c");
+  result = answered(["--dir-rename", ...held(from), "b", ...held(to), "junction.pdf", "--expect", tokenOf(join(from, "b"))], "c");
   assert.deepEqual(result.lines, ["ready", "refused target"]);
   assert.ok(existsSync(join(from, "b")));
 
   result = answered(["--dir-copy", ...held(from), "b", ...held(to), "copied.pdf", ".0123.part", ".0123456789abcdef0123456789abcdef.removing"], "cc");
-  assert.match(result.lines[2], /^writing \d+ [0-9a-f]{32} \d+$/u);
+  assert.match(result.lines[2], /^writing \d+:[0-9a-f]{32}:creation:[1-9]\d*$/u);
   assert.equal(result.lines[3], "cancelled", "input that arrives while bytes are copied stops the copy");
   assert.deepEqual(readdirSync(to).sort(), ["junction.pdf", "report.pdf"]);
   const copy = spawn(helper, ["--dir-copy", ...held(from), "b", ...held(to), "copied.pdf", ".0123.part", ".0123456789abcdef0123456789abcdef.removing"], { windowsHide: true, shell: false, env: {} });
@@ -658,15 +698,22 @@ try {
   // One chunk of "staged b": the copy reports its progress once before it is complete.
   const [, ready, writing, ...outcome] = copied.output.split(/\r?\n/u).filter(Boolean);
   assert.equal(ready, "ready");
-  assert.match(writing, /^writing \d+ [0-9a-f]{32} \d+$/u);
+  assert.match(writing, /^writing \d+:[0-9a-f]{32}:creation:[1-9]\d*$/u);
   assert.deepEqual(outcome, ["progress 8", "copied", "committed"]);
   assert.equal(readFileSync(join(to, "copied.pdf"), "utf8"), "staged b");
   assert.ok(!existsSync(join(to, ".0123.part")));
 
-  result = answered(["--dir-remove", ...held(from), "b"], "c");
+  const staged = tokenOf(join(from, "b"));
+  result = answered(["--dir-stamp", ...held(from), "b"], "c");
+  assert.deepEqual(result.lines, ["ready", `stamp ${staged}`]);
+  result = answered(["--dir-remove", ...held(from), "b", "--expect", staged], "c");
   assert.deepEqual(result.lines, ["ready", "removed"]);
-  result = answered(["--dir-remove", ...held(from), "b"], "c");
+  result = answered(["--dir-remove", ...held(from), "b", "--expect", staged], "c");
   assert.deepEqual(result.lines, ["ready", "absent"]);
+  result = answered(["--dir-stamp", ...held(from), "b"], "c");
+  assert.deepEqual(result.lines, ["ready", "absent"]);
+  result = answered(["--dir-remove", ...held(from), "b"], "c");
+  assert.equal(result.code, 2, "a removal without a stamp is a usage error");
 
   writeFileSync(join(from, "left"), "left by a crash");
   mkdirSync(join(from, "kept"));

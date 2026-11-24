@@ -12,6 +12,8 @@ import { retryOnFileLock } from "../../lib/transient-fs-lock-retry.js";
 import { openFeatureNamespace } from "../storage/feature-namespace.js";
 import {
   MOVED_ASIDE_NAME,
+  evidenceText,
+  parseEvidence,
   stoppedCopyOf,
   heldFileOperations,
   HeldDirectoryRefusedError,
@@ -237,11 +239,14 @@ function lstatEntry(path: string): BigIntStats | null {
 
 // Remove a staged file, only from inside the verified staging folder. When the folder can no longer be verified the file is left where it
 // is (the next start sweeps the verified folder) rather than removing whatever the old path now names. Only a removal the operation
-// confirmed is `removed`.
-async function removeStaged(root: BrowserDownloadStagingRoot, name: string): Promise<StagedCleanup> {
+// confirmed is `removed`. The removal is bound to `staged`, the file's identity once its download completed; a download that never
+// completed is stamped just before it is removed.
+async function removeStaged(root: BrowserDownloadStagingRoot, name: string, staged: FileIdentity | null): Promise<StagedCleanup> {
   try {
+    const file = staged ?? await root.files.stamp(root, name);
+    if (file === null) return "removed";
     // Cleanup runs to its end; a helper that stalls is killed within the stall bound, so `done` is never held up for longer.
-    const removed = await root.files.remove(root, name, proceedAlways, UNSTOPPED);
+    const removed = await root.files.remove(root, name, proceedAlways, UNSTOPPED, file);
     if (removed !== "cancelled") return "removed";
     log.warn("a staged browser download's removal was cancelled; the next start removes it");
     return "remove-failed";
@@ -268,11 +273,11 @@ type Published = { readonly committed: true; readonly cleanup: StagedCleanup } |
 // refused before it acts. A rename held up by another program's brief lock on Windows is tried again. A helper that stalls, or does not end
 // once cancelled, is killed within the stall bound and publication fails; what it may have left is logged, never assumed cleaned, and a
 // temporary file a helper not seen to end may still write is removed once it ends or at the next start, while it is still that file.
-async function publish(root: BrowserDownloadStagingRoot, name: string, destination: Destination, cancel: AbortSignal): Promise<Published> {
+async function publish(root: BrowserDownloadStagingRoot, name: string, staged: FileIdentity, destination: Destination, cancel: AbortSignal): Promise<Published> {
   const proceed = (): boolean => !cancel.aborted;
   const moved = await refusingAsStaging(() => retryOnFileLock(async () => {
     try {
-      return await root.files.move(root, name, destination.folder, destination.name, proceed, cancel);
+      return await root.files.move(root, name, destination.folder, destination.name, proceed, cancel, staged);
     } catch (error) {
       if (error instanceof HeldFileHelperUnavailableError && error.passed !== null) {
         log.warn({ path: destination.path }, "a browser download's rename ended without its outcome: the file may be at the chosen path");
@@ -318,7 +323,7 @@ async function publish(root: BrowserDownloadStagingRoot, name: string, destinati
     }
   }
   if (copied === "cancelled") return "cancelled";
-  return { committed: true, cleanup: await removeStaged(root, name) };
+  return { committed: true, cleanup: await removeStaged(root, name, staged) };
 }
 
 // A copy that failed after it may have written its temporary file: say whether it may have been saved, and what became of that file.
@@ -410,22 +415,29 @@ async function tryWritePartRecord(root: BrowserDownloadStagingRoot, record: Part
 async function writePartRecord(root: BrowserDownloadStagingRoot, record: PartRecord): Promise<RecordedFile> {
   const name = `${record.session ?? randomBytes(16).toString("hex")}.cleanup.json`;
   const { identity } = record.at;
-  const known = identity.kind === "fileId" ? { kind: identity.kind, ...identity.file }
+  const known = identity.kind === "fileId" ? { kind: identity.kind, ...fileJson(identity.file) }
     : identity.kind === "fingerprint" ? { kind: identity.kind, ...identity.content }
-    : identity;
+    : { ...identity, evidence: evidenceText(identity.evidence),
+        observed: identity.observed === null ? null : { file: fileJson(identity.observed.file), content: identity.observed.content } };
   const body = JSON.stringify({
     folder: { path: record.folder.path, dev: record.folder.dev, ino: record.folder.ino },
     part: record.part,
     target: record.target,
     session: record.session,
-    writer: record.writer,
+    writer: record.writer === undefined ? undefined : fileJson(record.writer),
     at: record.at.name,
     identity: known,
   }, (_key, value: unknown) => typeof value === "bigint" ? value.toString() : value);
   return { name, stamp: await root.files.writeRecord(root, name, Buffer.from(body)) };
 }
 
-// A record exactly as {@link writePartRecord} writes it, or null.
+// An identity as a record stores it: its evidence as `<class>:<value>`, or null when unresolved.
+function fileJson(file: FileIdentity): { dev: bigint; ino: bigint; evidence: string | null } {
+  return { dev: file.dev, ino: file.ino, evidence: evidenceText(file.evidence) };
+}
+
+// A record exactly as {@link writePartRecord} writes it, or null. A legacy record, whose identities carry no evidence (or a bare birth
+// time), is kept with unresolved identities: it is never trusted to move or remove anything.
 function readPartRecord(text: string, name: string): PartRecord | null {
   let value: unknown;
   try {
@@ -439,8 +451,17 @@ function readPartRecord(text: string, name: string): PartRecord | null {
   const fileInode = (candidate: unknown): candidate is string => decimal(candidate) ||
     (process.platform === "win32" && typeof candidate === "string" && WINDOWS_FILE_ID.test(candidate) && BigInt(candidate) <= MAX_WINDOWS_FILE_ID);
   const digest = (candidate: unknown): candidate is string => typeof candidate === "string" && DIGEST.test(candidate);
-  const fileId = ({ dev, ino, birthtimeNs }: Record<string, unknown>): FileIdentity | null =>
-    decimal(dev) && fileInode(ino) && decimal(birthtimeNs) ? { dev: BigInt(dev), ino: BigInt(ino), birthtimeNs: BigInt(birthtimeNs) } : null;
+  const fileId = (raw: unknown): FileIdentity | null => {
+    if (exactly(raw, ["dev", "ino", "evidence"])) {
+      if (!decimal(raw.dev) || !fileInode(raw.ino) || (raw.evidence !== null && typeof raw.evidence !== "string")) return null;
+      const evidence = raw.evidence === null ? null : parseEvidence(raw.evidence);
+      return evidence === undefined ? null : { dev: BigInt(raw.dev), ino: BigInt(raw.ino), evidence };
+    }
+    const legacy = exactly(raw, ["dev", "ino"]) || (exactly(raw, ["dev", "ino", "birthtimeNs"]) && decimal(raw.birthtimeNs));
+    return legacy && decimal(raw.dev) && fileInode(raw.ino) ? { dev: BigInt(raw.dev), ino: BigInt(raw.ino), evidence: null } : null;
+  };
+  const without = (raw: Record<string, unknown>, ...keys: string[]): Record<string, unknown> =>
+    Object.fromEntries(Object.entries(raw).filter(([key]) => !keys.includes(key)));
   const fingerprint = ({ size, mtimeNs, head, tail }: Record<string, unknown>) =>
     decimal(size) && decimal(mtimeNs) && digest(head) && digest(tail) ? { size: BigInt(size), mtimeNs: BigInt(mtimeNs), head, tail } : null;
   if ((!exactly(value, ["folder", "part", "at", "identity"]) &&
@@ -451,28 +472,29 @@ function readPartRecord(text: string, name: string): PartRecord | null {
   if (typeof folder.path !== "string" || !isAbsolute(folder.path) || !decimal(folder.dev) || !decimal(folder.ino)) return null;
   if (typeof part !== "string" || !PART_NAME.test(part) || typeof at !== "string" || (at !== part && !MOVED_ASIDE_NAME.test(at))) return null;
   let known: PartIdentity | HelperPartIdentity;
-  if ((exactly(identity, ["kind", "dev", "ino", "birthtimeNs"]) || exactly(identity, ["kind", "dev", "ino"])) && identity.kind === "fileId") {
-    const file = !("birthtimeNs" in identity) && decimal(identity.dev) && fileInode(identity.ino)
-      ? { dev: BigInt(identity.dev), ino: BigInt(identity.ino) } : fileId(identity);
+  const identityKind = typeof identity === "object" && identity !== null && !Array.isArray(identity) ? (identity as Record<string, unknown>).kind : undefined;
+  if (identityKind === "fileId") {
+    const file = fileId(without(identity as Record<string, unknown>, "kind"));
     if (file === null) return null;
     known = { kind: "fileId", file };
   } else if (exactly(identity, ["kind", "size", "mtimeNs", "head", "tail"]) && identity.kind === "fingerprint") {
     const content = fingerprint(identity);
     if (content === null) return null;
     known = { kind: "fingerprint", content };
-  } else if (exactly(identity, ["kind", "dev", "ino", "verdict", "observed"]) && identity.kind === "helper") {
-    const { dev, ino, verdict, observed } = identity;
-    if (!MOVED_ASIDE_NAME.test(at) || !decimal(dev) || !fileInode(ino) || (verdict !== "remove-failed" && verdict !== "mismatch")) return null;
+  } else if ((exactly(identity, ["kind", "dev", "ino", "evidence", "verdict", "observed"]) ||
+      exactly(identity, ["kind", "dev", "ino", "verdict", "observed"])) && identity.kind === "helper") {
+    const { verdict, observed } = identity;
+    const held = fileId(without(identity, "kind", "verdict", "observed"));
+    if (!MOVED_ASIDE_NAME.test(at) || held === null || (verdict !== "remove-failed" && verdict !== "mismatch")) return null;
     let snapshot: HelperPartIdentity["observed"] = null;
     if (observed !== null) {
-      if (!exactly(observed, ["file", "content"]) || !exactly(observed.file, ["dev", "ino", "birthtimeNs"]) ||
-          !exactly(observed.content, ["size", "mtimeNs", "head", "tail"])) return null;
+      if (!exactly(observed, ["file", "content"]) || !exactly(observed.content, ["size", "mtimeNs", "head", "tail"])) return null;
       const file = fileId(observed.file);
       const content = fingerprint(observed.content);
       if (file === null || content === null) return null;
       snapshot = { file, content };
     }
-    known = { kind: "helper", dev: BigInt(dev), ino: BigInt(ino), verdict, observed: snapshot };
+    known = { kind: "helper", ...held, verdict, observed: snapshot };
   } else {
     return null;
   }
@@ -482,16 +504,15 @@ function readPartRecord(text: string, name: string): PartRecord | null {
   if (session !== undefined) {
     if (target === undefined || typeof session !== "string" || !/^[0-9a-f]{32}$/u.test(session) ||
         name !== `${session}.cleanup.json` || part !== `.${session}.part` || at !== `.${session}.removing` ||
-        known.kind !== "fileId" || known.file.birthtimeNs === undefined) return null;
+        known.kind !== "fileId") return null;
   } else if (target !== undefined && (known.kind !== "helper" ||
       (known.observed !== null && (known.observed.file.dev !== known.dev || known.observed.file.ino !== known.ino)))) return null;
   let writer: FileIdentity | undefined;
   if ("writer" in value) {
     const raw = value.writer;
-    if (session === undefined || known.kind !== "fileId" ||
-        (!exactly(raw, ["dev", "ino"]) && !exactly(raw, ["dev", "ino", "birthtimeNs"])) ||
-        !decimal(raw.dev) || !fileInode(raw.ino) || ("birthtimeNs" in raw && !decimal(raw.birthtimeNs))) return null;
-    writer = { dev: BigInt(raw.dev), ino: BigInt(raw.ino), ...(decimal(raw.birthtimeNs) ? { birthtimeNs: BigInt(raw.birthtimeNs) } : {}) };
+    const file = fileId(raw);
+    if (session === undefined || known.kind !== "fileId" || file === null) return null;
+    writer = file;
     if (writer.dev !== known.file.dev || writer.ino === known.file.ino) return null;
   }
   return { folder: { path: folder.path, dev: BigInt(folder.dev), ino: BigInt(folder.ino) }, part, at: { name: at, identity: known }, target, session, writer };
@@ -499,7 +520,7 @@ function readPartRecord(text: string, name: string): PartRecord | null {
 
 // Retry through the file backend. The decoded record never gives the host authority to open an entry by path.
 async function removeRecordedPart(root: BrowserDownloadStagingRoot, { folder, part, at, target, session, writer }: PartRecord) {
-  if (session !== undefined && !writer?.birthtimeNs) return { outcome: "left" as const, at };
+  if (session !== undefined && !writer?.evidence) return { outcome: "left" as const, at };
   if (target === undefined) return root.files.recover(folder, at.name, part, at.identity);
   const observed = at.identity.kind === "helper" ? at.identity.observed : null;
   const file = at.identity.kind === "fileId" ? at.identity.file : observed?.file;
@@ -588,6 +609,8 @@ class StagedDownload extends EventEmitter implements ObservedDownload {
   private ended = false;
   private publishing = false;
   private readonly cancellation = new AbortController();
+  /** The staged file's identity once its download completed, or null when it could not be taken. */
+  completedFile: FileIdentity | null = null;
   constructor(private readonly item: StageableDownloadItem, private readonly root: BrowserDownloadStagingRoot, private readonly name: string) { super(); }
   getFilename(): string { return this.item.getFilename(); }
   getURL(): string { return this.item.getURL(); }
@@ -621,7 +644,7 @@ class StagedDownload extends EventEmitter implements ObservedDownload {
       this.emit("done", {}, state, saved.cleanup);
       return;
     }
-    void removeStaged(this.root, this.name).then((cleanup) => { this.emit("done", {}, state, partLeft ? "part-left" : cleanup); });
+    void removeStaged(this.root, this.name, this.completedFile).then((cleanup) => { this.emit("done", {}, state, partLeft ? "part-left" : cleanup); });
   }
 }
 
@@ -649,16 +672,31 @@ export function stageBrowserDownload(item: StageableDownloadItem, deps: BrowserD
     }
     download.emit("updated", event, state);
   });
-  // A download that ends without completing ends at once; its dialog, if not yet shown, is skipped.
-  void received.then((state) => { if (state !== "completed") download.finish(state); });
+  // A download that ends without completing ends at once; its dialog, if not yet shown, is skipped. A completed one is stamped at once, and
+  // every later move or removal of the staged file must still find that file.
+  const completed = received.then(async (state) => {
+    if (state !== "completed") {
+      download.finish(state);
+      return null;
+    }
+    try {
+      download.completedFile = await deps.root.files.stamp(deps.root, name);
+    } catch (error) {
+      log.warn({ error: (error as Error).message }, "a completed browser download's staged file could not be identified");
+    }
+    return download.completedFile;
+  });
   const save = async (destination: Destination): Promise<void> => {
     const state = await received;
     if (download.isEnded) return;
     if (state !== "completed") { download.finish(state); return; }
+    const staged = await completed;
+    if (download.isEnded) return;
+    if (staged === null) { download.finish("interrupted"); return; }
     if (!download.beginPublishing()) { download.finish("cancelled"); return; }
     let outcome: Published;
     try {
-      outcome = await publish(deps.root, name, destination, download.cancelSignal);
+      outcome = await publish(deps.root, name, staged, destination, download.cancelSignal);
     } catch (error) {
       log.warn({ error: (error as Error).message }, "a browser download could not be put where the user chose");
       download.finish("interrupted", undefined, stoppedCopyOf(error)?.partialCopy === "left");

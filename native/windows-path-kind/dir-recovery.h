@@ -101,7 +101,8 @@ NameIdentity test_commit_result(NameIdentity result);
 
 inline bool read_birth(HANDLE file, ULONGLONG& birth);
 
-inline NameIdentity check_name(HANDLE directory, const std::wstring& name, const FILE_ID_INFO& wanted, ULONGLONG birth = 0, bool allow_reparse = false) {
+inline NameIdentity check_name(HANDLE directory, const std::wstring& name, const FILE_ID_INFO& wanted, ULONGLONG birth, bool allow_reparse = false) {
+  if (birth == 0) return NameIdentity::kUnverified;
   HANDLE opened = INVALID_HANDLE_VALUE;
   const NTSTATUS status = open_relative(directory, name, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
     kOpenExisting, kOpenReparsePoint, opened);
@@ -110,7 +111,7 @@ inline NameIdentity check_name(HANDLE directory, const std::wstring& name, const
   FILE_ID_INFO actual{};
   ULONGLONG actual_birth = 0;
   return (allow_reparse || ordinary(entry.value)) && read_id(entry.value, actual) && same_id(actual, wanted) &&
-      (birth == 0 || (read_birth(entry.value, actual_birth) && actual_birth == birth))
+      read_birth(entry.value, actual_birth) && actual_birth == birth
     ? NameIdentity::kMatches : NameIdentity::kUnverified;
 }
 
@@ -149,9 +150,24 @@ inline bool time_ns(LARGE_INTEGER ticks, ULONGLONG& ns) {
   return true;
 }
 
+#if defined(AVE_TEST_DIR_RECOVERY)
+bool test_volume_flags(bool queried, DWORD& flags);
+#endif
+
+// The evidence class comes from the volume that holds the entry, never from the OS. A volume that opens files by persistent ID
+// (NTFS, ReFS) backs `creation`; any other volume (the FAT family among them) backs no class, so every stamp there is unresolved.
+inline bool creation_volume(HANDLE file) {
+  DWORD flags = 0;
+  bool queried = GetVolumeInformationByHandleW(file, nullptr, 0, nullptr, nullptr, &flags, nullptr, 0) != 0;
+#if defined(AVE_TEST_DIR_RECOVERY)
+  queried = test_volume_flags(queried, flags);
+#endif
+  return queried && (flags & FILE_SUPPORTS_OPEN_BY_FILE_ID) != 0;
+}
+
 inline bool read_birth(HANDLE file, ULONGLONG& birth) {
   FILE_BASIC_INFO basic{};
-  return GetFileInformationByHandleEx(file, FileBasicInfo, &basic, sizeof(basic)) &&
+  return creation_volume(file) && GetFileInformationByHandleEx(file, FileBasicInfo, &basic, sizeof(basic)) &&
     time_ns(basic.CreationTime, birth) && birth != 0;
 }
 
@@ -173,6 +189,8 @@ inline bool fingerprint(HANDLE file, const FILE_BASIC_INFO& before, std::string&
   return true;
 }
 
+// A full stamp: volume serial, 128-bit file ID and the evidence for it. `check_birth` is set only for the `creation` class, the one
+// class a Windows volume can back; every other class stays unresolved and matches nothing.
 struct ExpectedFile {
   FILE_ID_INFO id{};
   bool check_birth = false;
@@ -180,12 +198,31 @@ struct ExpectedFile {
   std::string content;
 };
 
-inline bool parse_fingerprint(const std::wstring& token, bool restore, ExpectedFile& expected) {
+// The evidence token every frame carries: `<dev>:<id>:<class>:<value>`.
+inline std::string token_text(const FILE_ID_INFO& id, ULONGLONG birth) {
+  return id_text(id, ':') + ":creation:" + std::to_string(birth);
+}
+
+inline bool parse_token(const std::wstring& token, ExpectedFile& expected) {
   const size_t first = token.find(L':');
-  if (first == std::wstring::npos || !parse_number(token.substr(0, first).c_str(), expected.birth) || expected.birth == 0) return false;
+  const size_t second = first == std::wstring::npos ? first : token.find(L':', first + 1);
+  const size_t third = second == std::wstring::npos ? second : token.find(L':', second + 1);
+  if (third == std::wstring::npos) return false;
+  const std::wstring evidence = token.substr(second + 1, third - second - 1);
+  const std::wstring value = token.substr(third + 1);
+  if (evidence.empty() || value.empty() || evidence.find_first_not_of(L"abcdefghijklmnopqrstuvwxyz") != std::wstring::npos ||
+      value.find_first_of(L" \t") != std::wstring::npos ||
+      !parse_id(token.substr(0, first).c_str(), token.substr(first + 1, second - first - 1).c_str(), expected.id)) return false;
+  expected.check_birth = false;
+  expected.birth = 0;
+  if (evidence != L"creation") return true;
+  if (!parse_number(value.c_str(), expected.birth) || expected.birth == 0) return false;
   expected.check_birth = true;
-  const auto body = token.substr(first + 1);
-  if (!restore && body == L"-") return true;
+  return true;
+}
+
+// The content an entry must also have: `<size>:<mtime-ns>:<head>:<tail>`.
+inline bool parse_content(const std::wstring& body, ExpectedFile& expected) {
   const size_t size_end = body.find(L':');
   if (size_end == std::wstring::npos) return false;
   const size_t time_end = body.find(L':', size_end + 1);
@@ -202,12 +239,11 @@ inline bool parse_fingerprint(const std::wstring& token, bool restore, ExpectedF
 
 inline bool matches(HANDLE file, const ExpectedFile& expected) {
   FILE_ID_INFO actual{};
-  if (!ordinary(file) || !read_id(file, actual) || !same_id(actual, expected.id)) return false;
-  if (!expected.check_birth) return false;
+  if (!expected.check_birth || !ordinary(file) || !read_id(file, actual) || !same_id(actual, expected.id)) return false;
   FILE_BASIC_INFO basic{};
   ULONGLONG birth = 0;
-  if (!GetFileInformationByHandleEx(file, FileBasicInfo, &basic, sizeof(basic))
-      || !time_ns(basic.CreationTime, birth) || birth != expected.birth) return false;
+  if (!read_birth(file, birth) || birth != expected.birth ||
+      !GetFileInformationByHandleEx(file, FileBasicInfo, &basic, sizeof(basic))) return false;
   std::string content;
   return expected.content.empty() || (fingerprint(file, basic, content) && content == expected.content);
 }
@@ -294,9 +330,9 @@ inline std::string snapshot(HANDLE file, const FILE_ID_INFO& id) {
   FILE_BASIC_INFO basic{};
   ULONGLONG birth = 0;
   std::string content;
-  if (!GetFileInformationByHandleEx(file, FileBasicInfo, &basic, sizeof(basic))
-      || !time_ns(basic.CreationTime, birth) || !fingerprint(file, basic, content)) return "-";
-  return id_text(id, ':') + ":" + std::to_string(birth) + ":" + content;
+  if (!read_birth(file, birth) || !GetFileInformationByHandleEx(file, FileBasicInfo, &basic, sizeof(basic))
+      || !fingerprint(file, basic, content)) return "-";
+  return token_text(id, birth) + "/" + content;
 }
 
 inline bool hidden_name(const std::wstring& name) {
@@ -338,8 +374,7 @@ inline int stopped_copy(HANDLE directory, const std::wstring& name, PinnedHandle
 enum class RecoveryMode { kRemove, kRestorePart, kRestoreTarget };
 
 inline int recover_target(HANDLE directory, const std::wstring& hidden, const std::wstring& target,
-    const ExpectedFile& old, const wchar_t* replacement, const ExpectedFile& writer) {
-  const bool retire_only = replacement != nullptr && std::wcscmp(replacement, L"retire") == 0;
+    const ExpectedFile& old, bool retire_only, const ExpectedFile* writer) {
   const ACCESS_MASK read_access = FILE_READ_ATTRIBUTES | (old.content.empty() ? 0 : FILE_READ_DATA);
   PinnedHandle published(INVALID_HANDLE_VALUE);
   bool vacant = false;
@@ -349,8 +384,8 @@ inline int recover_target(HANDLE directory, const std::wstring& hidden, const st
       kOpenExisting, kOpenReparsePoint, published.value);
     vacant = opening < 0 && missing(status_error(opening));
     if (opening < 0 && !vacant) return done("left");
-    committed = !vacant && replacement != nullptr && matches(published.value, writer)
-      && check_name(directory, target, writer.id, writer.birth) == NameIdentity::kMatches;
+    committed = !vacant && writer != nullptr && matches(published.value, *writer)
+      && check_name(directory, target, writer->id, writer->birth) == NameIdentity::kMatches;
   }
   PinnedHandle source(INVALID_HANDLE_VALUE);
   const NTSTATUS opening = open_relative(directory, hidden, read_access | DELETE, FILE_SHARE_READ,
@@ -375,26 +410,25 @@ inline int run_recovery(int argc, wchar_t** argv, RecoveryMode mode) {
   const wchar_t* part_name = restore ? argv[4] : L"";
   if (!plain_name(argv[3]) || (restore && (!plain_name(part_name) || _wcsicmp(argv[3], part_name) == 0))) return kExitUsage;
   if (mode == RecoveryMode::kRestoreTarget && !hidden_name(name)) return kExitUsage;
-  const int id = restore ? 5 : 4;
+  Options options;
+  if (!parse_options(argc, argv, restore ? 5 : 4, {L"--expect", L"--content", L"--writer"}, {L"--retire"}, options)) return kExitUsage;
+  const std::wstring* expect = options.get(L"--expect");
+  const std::wstring* content = options.get(L"--content");
+  const std::wstring* writer_token = options.get(L"--writer");
+  const bool retire_only = options.get(L"--retire") != nullptr;
+  if (expect == nullptr || (mode == RecoveryMode::kRestorePart && content == nullptr) ||
+      (mode != RecoveryMode::kRestoreTarget && (writer_token != nullptr || retire_only)) || (writer_token != nullptr && retire_only)) return kExitUsage;
   ExpectedFile expected;
-  if (!parse_id(argv[id], argv[id + 1], expected.id)
-      || (argc > id + 2 && !parse_fingerprint(argv[id + 2], mode == RecoveryMode::kRestorePart, expected))) return kExitUsage;
-  const wchar_t* replacement = mode == RecoveryMode::kRestoreTarget && argc > id + 3 ? argv[id + 3] : nullptr;
+  if (!parse_token(*expect, expected) || (content != nullptr && !parse_content(*content, expected))) return kExitUsage;
   ExpectedFile writer;
-  if (replacement != nullptr && std::wcscmp(replacement, L"retire") != 0) {
-    const std::wstring token(replacement);
-    const size_t separator = token.find(L':');
-    if (separator == std::wstring::npos || !parse_id(argv[id], token.substr(0, separator).c_str(), writer.id) ||
-        same_id(writer.id, expected.id) || !parse_number(token.c_str() + separator + 1, writer.birth) || writer.birth == 0)
-      return kExitUsage;
-    writer.check_birth = true;
-  }
+  if (writer_token != nullptr && (!parse_token(*writer_token, writer) || same_id(writer.id, expected.id) ||
+      writer.id.VolumeSerialNumber != expected.id.VolumeSerialNumber)) return kExitUsage;
   HeldDirectory directory;
   const int status = hold_directory(argv[0], argv[1], argv[2], "from", directory);
   if (status != 0) return status;
   if (!proceed("ready")) return done("cancelled");
   if (mode == RecoveryMode::kRestoreTarget)
-    return recover_target(directory.handle(), name, part_name, expected, replacement, writer);
+    return recover_target(directory.handle(), name, part_name, expected, retire_only, writer_token == nullptr ? nullptr : &writer);
   HANDLE opened = INVALID_HANDLE_VALUE;
   const NTSTATUS opening = open_relative(directory.handle(), name, FILE_READ_DATA | FILE_READ_ATTRIBUTES | DELETE,
     FILE_SHARE_READ, kOpenExisting, kOpenReparsePoint, opened);
@@ -415,7 +449,8 @@ inline int run_recovery(int argc, wchar_t** argv, RecoveryMode mode) {
   if (creating < 0) return done("left");
   const PinnedHandle target(created);
   FILE_ID_INFO target_id{};
-  if (!read_id(target.value, target_id) || !seek_to(source.value, 0)) return done("left");
+  ULONGLONG target_birth = 0;
+  if (!read_id(target.value, target_id) || !read_birth(target.value, target_birth) || !seek_to(source.value, 0)) return done("left");
   std::vector<BYTE> buffer(kCopyChunk);
   for (;;) {
     DWORD count = 0;
@@ -428,7 +463,7 @@ inline int run_recovery(int argc, wchar_t** argv, RecoveryMode mode) {
     if (written != ERROR_SUCCESS) return done("left");
   }
   // Keep both names on a failed copy or verification. Retire the source while the target still excludes writers and deleters.
-  if (!FlushFileBuffers(target.value) || check_name(directory.handle(), part_name, target_id) != NameIdentity::kMatches) return done("left");
+  if (!FlushFileBuffers(target.value) || check_name(directory.handle(), part_name, target_id, target_birth) != NameIdentity::kMatches) return done("left");
   const Retirement result = retire(directory.handle(), name, source, expected.id, expected.birth);
   if (!result.removed) return done(result.leftover.c_str());
   return done("restored");
@@ -509,7 +544,7 @@ inline DWORD create_private_record(HANDLE directory, const std::wstring& name, c
 
 enum class RecordMode { kRead, kWrite, kRemove, kSweep };
 
-inline int run_record(wchar_t** argv, RecordMode mode) {
+inline int run_record(int argc, wchar_t** argv, RecordMode mode) {
   const std::wstring name(argv[3]);
   if (!record_name(name)) return kExitUsage;
   ULONGLONG limit = 0;
@@ -522,9 +557,13 @@ inline int run_record(wchar_t** argv, RecordMode mode) {
     if (limit > kRecordLimit || !decode_hex(payload, bytes, static_cast<size_t>(limit))) return kExitUsage;
   } else if (mode == RecordMode::kRemove) {
     BYTE digest[32];
-    if (!parse_id(argv[4], argv[5], stamp.id) || !parse_number(argv[6], stamp.birth) || stamp.birth == 0 ||
-        !parse_number(argv[7], limit) || limit > kRecordLimit || !decode_hex(argv[8], digest, sizeof(digest))) return kExitUsage;
-    stamp.check_birth = true;
+    Options options;
+    if (!parse_options(argc, argv, 4, {L"--expect", L"--length", L"--digest"}, {}, options)) return kExitUsage;
+    const std::wstring* expect = options.get(L"--expect");
+    const std::wstring* length = options.get(L"--length");
+    const std::wstring* digest_text = options.get(L"--digest");
+    if (expect == nullptr || length == nullptr || digest_text == nullptr || !parse_token(*expect, stamp) || !stamp.check_birth ||
+        !parse_number(length->c_str(), limit) || limit > kRecordLimit || !decode_hex(*digest_text, digest, sizeof(digest))) return kExitUsage;
     removal_digest = hex_bytes(digest, sizeof(digest));
   } else if (!parse_number(argv[4], limit) || limit == 0 || limit > kRecordLimit) {
     return kExitUsage;
@@ -538,7 +577,7 @@ inline int run_record(wchar_t** argv, RecordMode mode) {
     const FileFailure written = mutate_entry(directory.handle(), name, record,
       {EntryMode::kRecordWrite, nullptr, INVALID_HANDLE_VALUE, nullptr, bytes, static_cast<DWORD>(limit), nullptr, false, &stamp});
     return written.error == ERROR_SUCCESS
-      ? done(("written " + id_text(stamp.id, ':') + ":" + std::to_string(stamp.birth)).c_str()) : failed(written);
+      ? done(("written " + token_text(stamp.id, stamp.birth)).c_str()) : failed(written);
   }
   HANDLE opened = INVALID_HANDLE_VALUE;
   const NTSTATUS opening = open_relative(directory.handle(), name,
@@ -565,7 +604,7 @@ inline int run_record(wchar_t** argv, RecordMode mode) {
   }
   if (used > limit) return failed(ERROR_FILE_TOO_LARGE);
   if (mode == RecordMode::kRead) return done(("record " + hex_bytes(bytes, used)).c_str());
-  const std::string frame = "record " + id_text(stamp.id, ':') + ":" + std::to_string(stamp.birth) + " " + hex_bytes(bytes, used);
+  const std::string frame = "record " + token_text(stamp.id, stamp.birth) + " " + hex_bytes(bytes, used);
   std::string expected;
   if (!hash_bytes(bytes, used, expected)) return done("absent");
   if (!proceed(frame.c_str())) return done("kept");

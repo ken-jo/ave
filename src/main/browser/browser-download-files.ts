@@ -1,4 +1,4 @@
-import { closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, openSync, readdirSync, readSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
+import { type BigIntStats, closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, openSync, readdirSync, readSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
 import { open, type FileHandle } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -92,11 +92,40 @@ export class HeldFileHelperStalledError extends HeldFileHelperUnavailableError {
   }
 }
 
-/** A file's identity: a file put at its name since (even one moved over it) has another. */
+/**
+ * A file's identity: its volume, its file number and the evidence that it is still that file, so a file put at its name since (even one
+ * moved over it) has another. The evidence class names what backs it: `creation` (a Windows creation time), `birth` (a birth time) or
+ * `fingerprint` (`<size>:<mtime-ns>:<head>:<tail>` of the same file number). Null evidence is unresolved (a legacy record without any,
+ * or a class this host does not know), and an unresolved identity matches nothing. native/windows-path-kind/README.md says what each
+ * class proves.
+ */
 export interface FileIdentity {
   readonly dev: bigint;
   readonly ino: bigint;
-  readonly birthtimeNs?: bigint;
+  readonly evidence: Evidence | null;
+}
+
+type EvidenceClass = "creation" | "birth" | "fingerprint";
+interface Evidence { readonly class: EvidenceClass; readonly value: string }
+
+const EVIDENCE_VALUE: Readonly<Record<EvidenceClass, RegExp>> = {
+  creation: /^[1-9][0-9]{0,19}$/u,
+  birth: /^[1-9][0-9]{0,19}$/u,
+  fingerprint: /^(?:0|[1-9][0-9]{0,19}):(?:0|[1-9][0-9]{0,19}):[0-9a-f]{64}:[0-9a-f]{64}$/u,
+};
+
+/** `<class>:<value>`, or null for unresolved evidence. */
+export function evidenceText(evidence: Evidence | null): string | null {
+  return evidence === null ? null : `${evidence.class}:${evidence.value}`;
+}
+
+/** Evidence from `<class>:<value>`: undefined when malformed, null when the class is not one this host knows. */
+export function parseEvidence(text: string): Evidence | null | undefined {
+  const match = /^([a-z]+):([^\s/]+)$/u.exec(text);
+  if (match === null) return undefined;
+  const [, kind = "", value = ""] = match;
+  if (!Object.hasOwn(EVIDENCE_VALUE, kind)) return null;
+  return EVIDENCE_VALUE[kind as EvidenceClass].test(value) ? { class: kind as EvidenceClass, value } : undefined;
 }
 
 /** A file's content: its size, its last change, and digests of its first and last 64 KiB. */
@@ -120,6 +149,7 @@ export interface HelperPartIdentity {
   readonly kind: "helper";
   readonly dev: bigint;
   readonly ino: bigint;
+  readonly evidence: Evidence | null;
   readonly verdict: "mismatch" | "remove-failed";
   readonly observed: PartSnapshot | null;
 }
@@ -169,18 +199,24 @@ function recordStamp(file: FileIdentity, bytes: Buffer): RecordStamp {
  */
 export interface HeldFileOperations {
   /**
-   * Rename `name` in `from` to `target` in `to`, replacing an ordinary file there; `cross-volume` when nothing moved because they are on
-   * different volumes. `stop` aborting before the rename is let go ends it `cancelled`.
+   * Rename `name` in `from` to `target` in `to` while `name` is still the `staged` file; `cross-volume` when nothing moved because they
+   * are on different volumes, `replace` when `target` is taken. `stop` aborting before the rename is let go ends it `cancelled`.
    */
-  move(from: HeldDirectory, name: string, to: HeldDirectory, target: string, proceed: Proceed, stop: AbortSignal): Promise<"committed" | "cancelled" | "cross-volume" | "replace">;
+  move(from: HeldDirectory, name: string, to: HeldDirectory, target: string, proceed: Proceed, stop: AbortSignal,
+    staged: FileIdentity): Promise<"committed" | "cancelled" | "cross-volume" | "replace">;
   /**
    * Copy `name` from `from` into the exclusive new file `part` in `to`, then rename it to `target`. The rename is the commit point: before it,
    * a stop (`proceed` answering false, or `stop` aborting while bytes are copied) removes `part` and reports `cancelled`.
    */
   copy(from: HeldDirectory, name: string, to: HeldDirectory, target: string, part: string, proceed: Proceed, stop: AbortSignal,
     journal?: DownloadTargetJournal): Promise<"committed" | "cancelled">;
-  /** Remove `name`, a file or a link, from `directory`; `stop` aborting before the removal is let go ends it `cancelled`. */
-  remove(directory: HeldDirectory, name: string, proceed: Proceed, stop: AbortSignal): Promise<"removed" | "absent" | "cancelled">;
+  /**
+   * Remove `name`, a file or a link, from `directory` while it is still the `staged` file; another file there is refused as `source`.
+   * `stop` aborting before the removal is let go ends it `cancelled`.
+   */
+  remove(directory: HeldDirectory, name: string, proceed: Proceed, stop: AbortSignal, staged: FileIdentity): Promise<"removed" | "absent" | "cancelled">;
+  /** The identity of the file `name` in `directory`, or null when nothing is there; anything but a file is refused as `source`. */
+  stamp(directory: HeldDirectory, name: string): Promise<FileIdentity | null>;
   /** Remove files and links directly in `directory`. The boot sweep preserves records for held recovery. */
   sweep(directory: HeldDirectory, keepRecords?: boolean): Promise<number>;
   listRecords(directory: HeldDirectory): Promise<string[]>;
@@ -265,9 +301,20 @@ const RENAME_NOREPLACE = 1;
 const LINUX_O_PATH = 0o10000000;
 let linuxRename: ((fromDirectory: number, from: string, toDirectory: number, to: string) => void) | undefined;
 
-function sameFile(found: FileIdentity, expected: FileIdentity): boolean {
-  return found.dev === expected.dev && found.ino === expected.ino &&
-    (expected.birthtimeNs === undefined || found.birthtimeNs === expected.birthtimeNs);
+type Observed = FileIdentity | BigIntStats;
+
+// A Linux file is backed by its birth time where the filesystem keeps one; without it the file is unresolved.
+function identityOf(file: Observed): FileIdentity {
+  if ("evidence" in file) return file;
+  return { dev: file.dev, ino: file.ino, evidence: file.birthtimeNs > 0n ? { class: "birth", value: String(file.birthtimeNs) } : null };
+}
+
+// Exact match only: the same volume and number, and evidence of the same class with the same value on both sides.
+function sameFile(found: Observed, expected: Observed): boolean {
+  const actual = identityOf(found);
+  const wanted = identityOf(expected);
+  return actual.dev === wanted.dev && actual.ino === wanted.ino && actual.evidence !== null && wanted.evidence !== null &&
+    actual.evidence.class === wanted.evidence.class && actual.evidence.value === wanted.evidence.value;
 }
 
 function fingerprintKey(content: Fingerprint): string {
@@ -314,7 +361,7 @@ type EntryMutation =
   | { readonly mode: "record-write"; readonly body: Buffer };
 
 function descriptorFileOperations(beforeRename?: (from: string, to: string) => void): HeldFileOperations {
-  function entryMatches(directory: number, name: string, expected: FileIdentity, symlink = false): boolean {
+  function entryMatches(directory: number, name: string, expected: Observed, symlink = false): boolean {
     try {
       const info = lstatSync(inHeld(directory, name), { bigint: true });
       return (symlink ? info.isSymbolicLink() : info.isFile()) && sameFile(info, expected);
@@ -362,7 +409,7 @@ function descriptorFileOperations(beforeRename?: (from: string, to: string) => v
     }
   }
 
-  function mutateEntry(directory: number, name: string, expected: FileIdentity | null, mutation: EntryMutation,
+  function mutateEntry(directory: number, name: string, expected: Observed | null, mutation: EntryMutation,
     reading?: number): OwnFileResult | { outcome: "renamed" } | { outcome: "written"; stamp: RecordStamp } {
     const renameExclusive = (fromDirectory: number, from: string, toDirectory: number, to: string): void => {
       if (linuxRename === undefined) {
@@ -377,7 +424,7 @@ function descriptorFileOperations(beforeRename?: (from: string, to: string) => v
     };
     if (mutation.mode === "record-write") {
       const record = openSync(inHeld(directory, name), constants.O_RDWR | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
-      let created: FileIdentity;
+      let created: BigIntStats;
       try {
         writeFileSync(record, mutation.body);
         fsyncSync(record);
@@ -393,14 +440,14 @@ function descriptorFileOperations(beforeRename?: (from: string, to: string) => v
       }
       fsyncSync(directory);
       if (!entryMatches(directory, name, created)) throw new Error("the download cleanup record changed after writing");
-      return { outcome: "written", stamp: recordStamp(created, mutation.body) };
+      return { outcome: "written", stamp: recordStamp(identityOf(created), mutation.body) };
     }
     const renaming = mutation.mode === "rename-away" || mutation.mode === "restore";
     const removing = !renaming;
     const symlink = "symlink" in mutation && mutation.symlink === true;
     const content = "content" in mutation ? mutation.content : undefined;
-    const at: LeftPart | null = expected === null ? null : { name, identity: { kind: "fileId", file: expected } };
-    if (!expected?.birthtimeNs) {
+    const at: LeftPart | null = expected === null ? null : { name, identity: { kind: "fileId", file: identityOf(expected) } };
+    if (expected === null || identityOf(expected).evidence === null) {
       if (reading !== undefined) closeSync(reading);
       return { outcome: "left", at };
     }
@@ -430,7 +477,7 @@ function descriptorFileOperations(beforeRename?: (from: string, to: string) => v
       verified = found !== undefined && (symlink ? found.isSymbolicLink() : found.isFile()) && sameFile(found, expected) &&
         (content === undefined || verifyFingerprint(fd, content));
       if (!verified) {
-        if (moved && found?.birthtimeNs && (found.isFile() || found.isSymbolicLink())) {
+        if (moved && found !== undefined && identityOf(found).evidence !== null && (found.isFile() || found.isSymbolicLink())) {
           const rollback = openSync(inHeld(destination, target), LINUX_O_PATH | constants.O_NOFOLLOW);
           try {
             const heldRollback = fstatSync(rollback, { bigint: true });
@@ -457,11 +504,11 @@ function descriptorFileOperations(beforeRename?: (from: string, to: string) => v
     if (!moved) return { outcome: "left", at };
     const observed = boundSnapshot(destination, target);
     return { outcome: "left", at: { name: target, identity: {
-      kind: "helper", dev: expected.dev, ino: expected.ino, verdict: verified ? "remove-failed" : "mismatch", observed,
+      kind: "helper", dev: expected.dev, ino: expected.ino, evidence: identityOf(expected).evidence, verdict: verified ? "remove-failed" : "mismatch", observed,
     } } };
   }
 
-  function retireBound(directory: number, name: string, expected: FileIdentity, content?: Fingerprint, symlink = false): OwnFileResult {
+  function retireBound(directory: number, name: string, expected: Observed, content?: Fingerprint, symlink = false): OwnFileResult {
     const result = mutateEntry(directory, name, expected, { mode: "remove", content, symlink });
     if (result.outcome === "renamed" || result.outcome === "written") throw new Error("the download removal returned an unexpected outcome");
     return result;
@@ -474,7 +521,7 @@ function descriptorFileOperations(beforeRename?: (from: string, to: string) => v
       try {
         const file = fstatSync(fd, { bigint: true });
         const content = fingerprintOf(fd);
-        return content !== null && entryMatches(directory, name, file) ? { file: { dev: file.dev, ino: file.ino, birthtimeNs: file.birthtimeNs }, content } : null;
+        return content !== null && entryMatches(directory, name, file) ? { file: identityOf(file), content } : null;
       } finally {
         closeSync(fd);
       }
@@ -490,8 +537,7 @@ function descriptorFileOperations(beforeRename?: (from: string, to: string) => v
     const expected = identity.kind === "fileId" ? identity.file : observed?.file;
     const content = observed?.content;
     const restore = identity.kind === "helper" && identity.verdict === "mismatch";
-    if (!expected?.birthtimeNs || (identity.kind === "helper" && (observed === null ||
-        (!restore && (identity.dev !== observed.file.dev || identity.ino !== observed.file.ino))))) return left;
+    if (!expected?.evidence || (identity.kind === "helper" && (observed === null || (!restore && !sameFile(observed.file, identity))))) return left;
     try {
       const fd = boundOpen(directory, name);
       if (fd === null) return { outcome: "absent" };
@@ -532,7 +578,7 @@ function descriptorFileOperations(beforeRename?: (from: string, to: string) => v
 
   function recoverTarget(directory: number, hidden: string, target: string, file: FileIdentity, content?: Fingerprint,
     replacement?: FileIdentity | "retire"): "resolved" | "left" {
-    if (!file.birthtimeNs || (typeof replacement === "object" && !replacement.birthtimeNs)) return "left";
+    if (file.evidence === null || (typeof replacement === "object" && replacement.evidence === null)) return "left";
     try {
       const openEntry = (name: string): number | null => {
         if (content !== undefined) return boundOpen(directory, name);
@@ -573,7 +619,7 @@ function descriptorFileOperations(beforeRename?: (from: string, to: string) => v
     return "left";
   }
 
-  function purgeStaged(fd: number, name: string): "absent" | "removed" {
+  function purgeStaged(fd: number, name: string, staged?: FileIdentity): "absent" | "removed" {
     let entry: number;
     try {
       entry = openSync(inHeld(fd, name), LINUX_O_PATH | constants.O_NOFOLLOW);
@@ -584,7 +630,8 @@ function descriptorFileOperations(beforeRename?: (from: string, to: string) => v
     try {
       const identity = fstatSync(entry, { bigint: true });
       if (!identity.isFile() && !identity.isSymbolicLink()) throw new Error("the staged download entry is not a file or link");
-      const removed = retireBound(fd, name, identity, undefined, identity.isSymbolicLink());
+      if (staged !== undefined && !sameFile(identity, staged)) throw new HeldDirectoryRefusedError("source");
+      const removed = retireBound(fd, name, staged ?? identity, undefined, identity.isSymbolicLink());
       if (removed.outcome === "left") throw new Error("the staged download entry could not be removed");
       return removed.outcome;
     } finally {
@@ -593,14 +640,14 @@ function descriptorFileOperations(beforeRename?: (from: string, to: string) => v
   }
 
   return {
-    move: (from, name, to, target, proceed, stop) => holding(from, to, (fromFd, toFd) => {
+    move: (from, name, to, target, proceed, stop, staged) => holding(from, to, (fromFd, toFd) => {
       if (stop.aborted || !proceed("ready")) return "cancelled";
       const source = lstatSync(inHeld(fromFd, name), { bigint: true, throwIfNoEntry: false });
-      if (!source?.isFile()) throw new HeldDirectoryRefusedError("source");
+      if (!source?.isFile() || !sameFile(source, staged)) throw new HeldDirectoryRefusedError("source");
       assertReplaceable(toFd, target);
       if (!entryAbsent(toFd, target)) return "replace";
       try {
-        if (mutateEntry(fromFd, name, source, { mode: "rename-away", directory: toFd, name: target }).outcome !== "renamed") {
+        if (mutateEntry(fromFd, name, staged, { mode: "rename-away", directory: toFd, name: target }).outcome !== "renamed") {
           throw new HeldDirectoryRefusedError("source");
         }
       } catch (error) {
@@ -639,7 +686,7 @@ function descriptorFileOperations(beforeRename?: (from: string, to: string) => v
         copy = await open(inHeld(toFd, part), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, sourceInfo.mode & 0o777);
         const info = await copy.stat({ bigint: true });
         if (info.dev !== to.dev || old?.ino === info.ino) throw new HeldDirectoryRefusedError("target");
-        written = { dev: info.dev, ino: info.ino, birthtimeNs: info.birthtimeNs };
+        written = identityOf(info);
         const buffer = Buffer.alloc(COPY_CHUNK);
         for (let position = 0; ;) {
           if (stop.aborted) return "cancelled";
@@ -652,19 +699,19 @@ function descriptorFileOperations(beforeRename?: (from: string, to: string) => v
         if (!proceed("copied") || stop.aborted) return "cancelled";
         const current = await copy.stat({ bigint: true });
         if (current.dev !== to.dev || old?.ino === current.ino || current.birthtimeNs === 0n) throw new HeldDirectoryRefusedError("target");
-        written = { dev: current.dev, ino: current.ino, birthtimeNs: current.birthtimeNs };
+        written = identityOf(current);
         if (old !== null) {
           if (old.birthtimeNs === 0n || journal === undefined || !MOVED_ASIDE_NAME.test(journal.hidden)) throw new HeldDirectoryRefusedError("target");
-          await journal.write({ dev: old.dev, ino: old.ino, birthtimeNs: old.birthtimeNs }, written);
+          await journal.write(identityOf(old), written);
           if (stop.aborted) return "cancelled";
         }
         if (!entryMatches(toFd, part, current)) throw new HeldDirectoryRefusedError("target");
         const aside = journal?.hidden;
-        const reportTarget = (name: string, expected: FileIdentity, verdict: HelperPartIdentity["verdict"]): void => {
+        const reportTarget = (name: string, expected: Observed, verdict: HelperPartIdentity["verdict"]): void => {
           if (journal?.left === undefined) return;
           const snapshot = boundSnapshot(toFd, name);
           journal.left({ name, identity: {
-            kind: "helper", dev: expected.dev, ino: expected.ino, verdict,
+            kind: "helper", dev: expected.dev, ino: expected.ino, evidence: identityOf(expected).evidence, verdict,
             observed: snapshot !== null && sameFile(snapshot.file, expected) ? snapshot : null,
           } });
         };
@@ -725,10 +772,16 @@ function descriptorFileOperations(beforeRename?: (from: string, to: string) => v
         }
       }
     }),
-    remove: (directory, name, proceed, stop) => holding(directory, null, (fd) => {
+    remove: (directory, name, proceed, stop, staged) => holding(directory, null, (fd) => {
       if (stop.aborted || !proceed("ready")) return "cancelled";
       if (RECORD_NAME.test(name)) throw new Error("cleanup records require a verified stamp");
-      return purgeStaged(fd, name);
+      return purgeStaged(fd, name, staged);
+    }),
+    stamp: async (directory, name) => holdingSync(directory, (fd) => {
+      const info = lstatSync(inHeld(fd, name), { bigint: true, throwIfNoEntry: false });
+      if (info === undefined) return null;
+      if (!info.isFile()) throw new HeldDirectoryRefusedError("source");
+      return identityOf(info);
     }),
     recover: async (directory, name, original, identity) => {
       try {
@@ -759,7 +812,7 @@ function descriptorFileOperations(beforeRename?: (from: string, to: string) => v
         const body = bytes.subarray(0, used);
         if (sweep !== undefined) {
           const content = fingerprintOf(record);
-          const stamp = recordStamp(info, body);
+          const stamp = recordStamp(identityOf(info), body);
           if (info.birthtimeNs === 0n || content === null || content.size !== BigInt(used) || content.head !== stamp.digest ||
               !entryMatches(fd, name, info)) return null;
           if (sweep.reject(body, stamp)) {
@@ -812,14 +865,16 @@ const EXIT_REFUSED = 3;
 const EXIT_FAILED = 4;
 const REFUSALS: ReadonlySet<string> = new Set<HeldRefusal>(["from", "to", "source", "target"]);
 const PROGRESS = /^progress (\d+)$/u;
-const TARGET_ID = /^target-id ([0-9]+) ([0-9a-f]+) ([0-9]+)$/u;
-const DESTINATION_ID = /^destination-id ([0-9]+) ([0-9a-f]+) ([0-9]+)$/u;
-const WRITING = /^(writing|copy-id) (0|[1-9][0-9]{0,19}) ([0-9a-f]{1,32}) ([1-9][0-9]{0,19})$/u;
+// Every identity a frame carries is one evidence token, `<dev>:<id>:<class>:<value>`.
+const TARGET_ID = /^target-id (\S+)$/u;
+const DESTINATION_ID = /^destination-id (\S+)$/u;
+const WRITING = /^(writing|copy-id) (\S+)$/u;
+const STAMP_LINE = /^stamp (\S+)$/u;
 const RECORD_SWEEP_FRAME = /^record (\S+) ((?:[0-9a-f]{2})*)$/u;
 const RECORD_WRITTEN_FRAME = /^written (\S+)$/u;
 const FAILURE_DIAGNOSTIC = /^Windows error \d+(?: \(NTSTATUS 0x[0-9A-F]{8}, (?:NtCreateFile|NtSetInformationFile)\))?\r?\n$/u;
-// A stopped copy may add ` left`, or ` left <hidden name> <dev> <ino> <verdict>` when a file stays at the moved-aside name.
-const PART_LEFT = /(?:^| )left(?: (?:remove-failed|(\.[0-9a-f]{32}\.removing) (\d{1,20}) ([0-9a-f]{1,32}) (mismatch|remove-failed) ([^ ]+)( part-left)?))?$/u;
+// A stopped copy may add ` left`, or ` left <hidden name> <token> <verdict> <snapshot>` when a file stays at the moved-aside name.
+const PART_LEFT = /(?:^| )left(?: (?:remove-failed|(\.[0-9a-f]{32}\.removing) ([^ ]+) (mismatch|remove-failed) ([^ ]+)( part-left)?))?$/u;
 const MAX_HELPER_FILE_ID = (1n << 64n) - 1n;
 interface HelperLeftPart {
   readonly name: string;
@@ -837,38 +892,51 @@ function parseWindowsInode(text: string | undefined): bigint | null {
   return text !== undefined && /^[0-9a-f]{32}$/u.test(text) ? BigInt(`0x${text}`) : null;
 }
 
-function parseRecordFile(text: string, parseInode: typeof parseUnsigned): FileIdentity | null {
-  const [devText, inoText, birthText, extra] = text.split(":");
+// An evidence token; a well-formed token of a class this host does not know parses with unresolved (null) evidence.
+function parseToken(text: string, parseInode: typeof parseUnsigned): FileIdentity | null {
+  const match = /^([^:]*):([^:]*):(.*)$/u.exec(text);
+  if (match === null) return null;
+  const [, devText, inoText, evidenceText = ""] = match;
   const dev = parseUnsigned(devText);
   const ino = parseInode(inoText);
-  const birthtimeNs = parseUnsigned(birthText);
-  return extra === undefined && dev !== null && ino !== null && birthtimeNs ? { dev, ino, birthtimeNs } : null;
+  const evidence = parseEvidence(evidenceText);
+  return dev === null || ino === null || evidence === undefined ? null : { dev, ino, evidence };
 }
 
+// A token the helper vouches for: it must carry evidence this host can compare.
+function parseRecordFile(text: string, parseInode: typeof parseUnsigned): FileIdentity | null {
+  const file = parseToken(text, parseInode);
+  return file?.evidence ? file : null;
+}
+
+function tokenText(file: FileIdentity, windowsFileIds: boolean): string | null {
+  const evidence = evidenceText(file.evidence);
+  return evidence === null ? null : `${file.dev}:${windowsFileIds ? file.ino.toString(16).padStart(32, "0") : file.ino}:${evidence}`;
+}
+
+// `<token>/<size>:<mtime-ns>:<head>:<tail>`.
 function parseSnapshot(text: string, parseInode: typeof parseUnsigned): PartSnapshot | null {
-  const [devText, inoText, birthText, sizeText, mtimeText, head, tail, extra] = text.split(":");
-  const dev = parseUnsigned(devText);
-  const ino = parseInode(inoText);
-  const birthtimeNs = parseUnsigned(birthText);
+  const [token = "", body = "", extra] = text.split("/");
+  const file = parseRecordFile(token, parseInode);
+  const [sizeText, mtimeText, head, tail, more] = body.split(":");
   const size = parseUnsigned(sizeText);
   const mtimeNs = parseUnsigned(mtimeText);
-  if (extra !== undefined || dev === null || ino === null || birthtimeNs === null || size === null || mtimeNs === null ||
+  if (extra !== undefined || more !== undefined || file === null || size === null || mtimeNs === null ||
       head === undefined || tail === undefined || !/^[0-9a-f]{64}$/u.test(head) || !/^[0-9a-f]{64}$/u.test(tail)) return null;
-  return { file: { dev, ino, birthtimeNs }, content: { size, mtimeNs, head, tail } };
+  return { file, content: { size, mtimeNs, head, tail } };
 }
 
 function parsePartLeft(line: string, parseInode: typeof parseUnsigned): { readonly answer: string; readonly at: HelperLeftPart | null; readonly partLeft: boolean } | null {
   const match = PART_LEFT.exec(line);
   if (match === null) return null;
   const answer = line.slice(0, match.index);
-  const [, name, devText, inoText, verdict, snapshot, partLeft] = match;
+  const [, name, token, verdict, snapshot, partLeft] = match;
   if (name === undefined) return { answer, at: null, partLeft: true };
-  const dev = parseUnsigned(devText);
-  const ino = parseInode(inoText);
-  if (dev === null || ino === null || (verdict !== "mismatch" && verdict !== "remove-failed") || snapshot === undefined) return null;
+  const file = parseRecordFile(token ?? "", parseInode);
+  if (file === null || (verdict !== "mismatch" && verdict !== "remove-failed") || snapshot === undefined) return null;
   const observed = snapshot === "-" ? null : parseSnapshot(snapshot, parseInode);
   if (snapshot !== "-" && observed === null) return null;
-  return { answer, at: { name, identity: { kind: "helper", dev, ino, verdict, observed } }, partLeft: partLeft !== undefined };
+  return { answer, at: { name, identity: { kind: "helper", ...file, verdict, observed } }, partLeft: partLeft !== undefined };
 }
 
 /** How long a helper may say nothing (`stallMs`), and how long its exit may take to be seen once it is killed (`killMs`). */
@@ -890,7 +958,7 @@ function directoryArguments(directory: HeldDirectory): string[] {
 function helperOutcome(helper: string, status: number | null, signal: NodeJS.Signals | null, last: string, stderr: string, parseInode: typeof parseUnsigned): string | Error {
   const left = parsePartLeft(last, parseInode);
   const answer = left?.answer ?? last;
-  if (status === EXIT_DONE && (left === null ? /^(?:committed|cancelled|cross-volume|replace|removed|absent|restored|resolved|kept|swept \d+)$/u.test(last) || RECORDS_LINE.test(last) || RECORD_LINE.test(last) || RECORD_WRITTEN_FRAME.test(last) : answer === "cancelled" || answer === "")) {
+  if (status === EXIT_DONE && (left === null ? /^(?:committed|cancelled|cross-volume|replace|removed|absent|restored|resolved|kept|swept \d+)$/u.test(last) || STAMP_LINE.test(last) || RECORDS_LINE.test(last) || RECORD_LINE.test(last) || RECORD_WRITTEN_FRAME.test(last) : answer === "cancelled" || answer === "")) {
     return last;
   }
   const leaving = (error: Error): Error => {
@@ -1074,7 +1142,7 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
         if (mode !== "--dir-copy" || passed === null) return false;
         if (left.at !== null) {
           const { name, identity } = left.at;
-          if (writing === null || identity.dev !== writing.dev || identity.ino !== writing.ino ||
+          if (writing === null || !sameFile(identity, writing) ||
               (oldTarget !== null && name === journal?.hidden) ||
               (identity.verdict === "remove-failed" && identity.observed !== null && !sameFile(identity.observed.file, writing))) return false;
         }
@@ -1102,6 +1170,7 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
         return written !== undefined && parseRecordFile(written, parseInode) !== null;
       }
       if (mode === "--dir-remove-record") return line === "removed" || line === "kept" || line === "absent";
+      if (mode === "--dir-stamp") return line === "absent" || parseRecordFile(STAMP_LINE.exec(line)?.[1] ?? "", parseInode) !== null;
       const swept = /^swept (\d+)$/u.exec(line);
       return mode === "--dir-sweep" && swept !== null && Number.isSafeInteger(Number(swept[1]));
     };
@@ -1134,22 +1203,16 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
         }
         const destination = DESTINATION_ID.exec(line);
         if (destination !== null) {
-          const dev = parseUnsigned(destination[1]);
-          const ino = parseInode(destination[2]);
-          const birthtimeNs = parseUnsigned(destination[3]);
-          if (!needsDestinationStamp || phase !== "holding" || destinationDev !== null ||
-              dev === null || !ino || !birthtimeNs) { violate(); return; }
-          destinationDev = dev;
+          const directory = parseRecordFile(destination[1] ?? "", parseInode);
+          if (!needsDestinationStamp || phase !== "holding" || destinationDev !== null || directory === null || !directory.ino) { violate(); return; }
+          destinationDev = directory.dev;
           continue;
         }
         const targetId = TARGET_ID.exec(line);
         if (targetId !== null) {
-          const dev = parseUnsigned(targetId[1]);
-          const ino = parseInode(targetId[2]);
-          const birthtimeNs = parseUnsigned(targetId[3]);
-          if (mode !== "--dir-copy" || phase !== "holding" || oldTarget !== null ||
-              dev === null || dev !== destinationDev || ino === null || !birthtimeNs) { violate(); return; }
-          oldTarget = { dev, ino, birthtimeNs };
+          const old = parseRecordFile(targetId[1] ?? "", parseInode);
+          if (mode !== "--dir-copy" || phase !== "holding" || oldTarget !== null || old === null || old.dev !== destinationDev) { violate(); return; }
+          oldTarget = old;
           continue;
         }
         if (line === "target-restored" || line === "target-retired") {
@@ -1160,19 +1223,20 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
         }
         const identity = WRITING.exec(line);
         if (identity !== null) {
-          const dev = parseUnsigned(identity[2]);
-          const ino = parseInode(identity[3]);
-          const birthtimeNs = parseUnsigned(identity[4]);
+          const file = parseRecordFile(identity[2] ?? "", parseInode);
           const refresh = identity[1] === "copy-id";
-          const invalidPhase = refresh
-            ? writing === null || writingRefreshed || oldTarget === null ||
-              (parseInode === parseWindowsInode && (writing.ino !== ino || writing.birthtimeNs !== birthtimeNs))
-            : writing !== null || copiedBytes !== 0n;
-          if (mode !== "--dir-copy" || phase !== "copying" || passed !== "ready" || invalidPhase ||
-              dev === null || dev !== destinationDev || ino === null || birthtimeNs === null ||
-              (oldTarget !== null && (oldTarget.dev !== dev || oldTarget.ino === ino))) { violate(); return; }
-          writing = { dev, ino, birthtimeNs };
+          const invalidPhase = refresh ? writing === null || writingRefreshed || oldTarget === null : writing !== null || copiedBytes !== 0n;
+          if (mode !== "--dir-copy" || phase !== "copying" || passed !== "ready" || invalidPhase || file === null ||
+              file.dev !== destinationDev || (oldTarget !== null && (oldTarget.dev !== file.dev || oldTarget.ino === file.ino))) { violate(); return; }
           writingRefreshed = refresh;
+          // The writer must still be the file the copy opened: another number or evidence is refused, and the first identity stays the
+          // one its cleanup is bound to.
+          if (refresh && writing !== null && !sameFile(file, writing)) {
+            thrown = new HeldDirectoryRefusedError("target");
+            beginStopping();
+            continue;
+          }
+          writing = file;
           onWriting?.(writing);
           awaitLine("after opening the part");
           continue;
@@ -1190,9 +1254,8 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
           if (mode !== "--dir-copy" || passed !== "copied" || writing === null || oldTarget === null || targetLeft !== null ||
               targetResolution !== null || !left?.at || left.partLeft || left.answer !== "target-left" ||
               left.at.name !== journal?.hidden) { violate(); return; }
-          const { dev, ino, observed } = left.at.identity;
-          if (dev !== oldTarget.dev || ino !== oldTarget.ino ||
-              (observed !== null && !sameFile(observed.file, oldTarget))) { violate(); return; }
+          const { observed } = left.at.identity;
+          if (!sameFile(left.at.identity, oldTarget) || (observed !== null && !sameFile(observed.file, oldTarget))) { violate(); return; }
           targetLeft = left.at;
           continue;
         }
@@ -1281,11 +1344,11 @@ function helperFileOperations(helper: string, windowsFileIds: boolean, bounds: H
     const observed = identity.kind === "helper" ? identity.observed : null;
     const restore = identity.kind === "helper" && identity.verdict === "mismatch";
     const file = identity.kind === "fileId" ? identity.file : observed?.file;
-    if (!file?.birthtimeNs || (identity.kind === "helper" && !restore && (file.dev !== identity.dev || file.ino !== identity.ino))) return left;
-    const idArgs = [String(file.dev), windowsFileIds ? file.ino.toString(16).padStart(32, "0") : String(file.ino)];
-    const args = restore ? ["--dir-restore", ...directoryArguments(folder), name, original, ...idArgs]
-      : ["--dir-remove-id", ...directoryArguments(folder), name, ...idArgs];
-    args.push(`${file.birthtimeNs}:${observed === null ? "-" : fingerprintKey(observed.content)}`);
+    const expect = file === undefined ? null : tokenText(file, windowsFileIds);
+    if (file === undefined || expect === null || (identity.kind === "helper" && !restore && !sameFile(file, identity))) return left;
+    const args = restore ? ["--dir-restore", ...directoryArguments(folder), name, original]
+      : ["--dir-remove-id", ...directoryArguments(folder), name];
+    args.push("--expect", expect, ...(observed === null ? [] : ["--content", fingerprintKey(observed.content)]));
     try {
       const outcome = await run(args, go, UNSTOPPED);
       if (outcome === "absent" || outcome === "removed" || outcome === "restored") return { outcome };
@@ -1308,9 +1371,12 @@ function helperFileOperations(helper: string, windowsFileIds: boolean, bounds: H
     return result;
   };
   return {
-    move: async (from, name, to, target, proceed, stop) => oneOf(helper,
-      await run(["--dir-rename", ...directoryArguments(from), name, ...directoryArguments(to), target], proceed, stop),
-      ["committed", "cancelled", "cross-volume", "replace"] as const),
+    move: async (from, name, to, target, proceed, stop, staged) => {
+      const expect = tokenText(staged, windowsFileIds);
+      if (expect === null) throw new HeldDirectoryRefusedError("source");
+      return oneOf(helper, await run(["--dir-rename", ...directoryArguments(from), name, ...directoryArguments(to), target, "--expect", expect],
+        proceed, stop), ["committed", "cancelled", "cross-volume", "replace"] as const);
+    },
     copy: async (from, name, to, target, part, proceed, stop, journal) => {
       // The temporary file's identity, taken once the helper says it is writing it, so a later cleanup removes only that file.
       let partFile: FileIdentity | null = null;
@@ -1353,17 +1419,27 @@ function helperFileOperations(helper: string, windowsFileIds: boolean, bounds: H
         throw error;
       }
     },
-    remove: async (directory, name, proceed, stop) => oneOf(helper,
-      await run(["--dir-remove", ...directoryArguments(directory), name], proceed, stop),
-      ["removed", "absent", "cancelled"] as const),
+    remove: async (directory, name, proceed, stop, staged) => {
+      const expect = tokenText(staged, windowsFileIds);
+      if (expect === null) throw new HeldDirectoryRefusedError("source");
+      return oneOf(helper, await run(["--dir-remove", ...directoryArguments(directory), name, "--expect", expect], proceed, stop),
+        ["removed", "absent", "cancelled"] as const);
+    },
+    stamp: async (directory, name) => {
+      const answer = await run(["--dir-stamp", ...directoryArguments(directory), name], go, UNSTOPPED);
+      if (answer === "absent") return null;
+      const file = parseRecordFile(STAMP_LINE.exec(answer)?.[1] ?? "", parseInode);
+      if (file === null) throw new HeldFileHelperUnavailableError(helper, `it answered ${JSON.stringify(answer)}, not a stamp`);
+      return file;
+    },
     recover,
     recoverTarget: async (folder, hidden, target, file, content, replacement) => {
-      if (!file.birthtimeNs || (typeof replacement === "object" && (!replacement.birthtimeNs || replacement.dev !== file.dev))) return "left";
-      const inodeArgument = (ino: bigint): string => windowsFileIds ? ino.toString(16).padStart(32, "0") : String(ino);
-      const writer = typeof replacement === "object" ? `${inodeArgument(replacement.ino)}:${replacement.birthtimeNs}` : replacement;
-      return oneOf(helper, await run(["--dir-restore-target", ...directoryArguments(folder), hidden, target,
-        String(file.dev), inodeArgument(file.ino), `${file.birthtimeNs}:${content === undefined ? "-" : fingerprintKey(content)}`,
-        ...(writer === undefined ? [] : [writer])], go, UNSTOPPED), ["resolved", "left"] as const);
+      const expect = tokenText(file, windowsFileIds);
+      const writer = typeof replacement === "object" ? tokenText(replacement, windowsFileIds) : undefined;
+      if (expect === null || writer === null || (typeof replacement === "object" && replacement.dev !== file.dev)) return "left";
+      return oneOf(helper, await run(["--dir-restore-target", ...directoryArguments(folder), hidden, target, "--expect", expect,
+        ...(content === undefined ? [] : ["--content", fingerprintKey(content)]),
+        ...(replacement === "retire" ? ["--retire"] : writer === undefined ? [] : ["--writer", writer])], go, UNSTOPPED), ["resolved", "left"] as const);
     },
     listRecords: async (directory) => {
       const answer = await run(["--dir-list-records", ...directoryArguments(directory)], go, UNSTOPPED);
@@ -1391,13 +1467,12 @@ function helperFileOperations(helper: string, windowsFileIds: boolean, bounds: H
       return recordStamp(file, body);
     },
     removeRecord: async (directory, name, stamp) => {
-      const { dev, ino, birthtimeNs } = stamp.file;
-      if (!birthtimeNs) return false;
-      const id = windowsFileIds ? ino.toString(16).padStart(32, "0") : String(ino);
-      return await run(["--dir-remove-record", ...directoryArguments(directory), name, String(dev), id, String(birthtimeNs),
-        String(stamp.length), stamp.digest], go, UNSTOPPED) === "removed";
+      const expect = tokenText(stamp.file, windowsFileIds);
+      if (expect === null) return false;
+      return await run(["--dir-remove-record", ...directoryArguments(directory), name, "--expect", expect,
+        "--length", String(stamp.length), "--digest", stamp.digest], go, UNSTOPPED) === "removed";
     },
     sweep: async (directory, keepRecords) => Number((await run(["--dir-sweep", ...directoryArguments(directory),
-      ...(keepRecords ? ["keep-records"] : [])], go, UNSTOPPED)).slice("swept ".length)),
+      ...(keepRecords ? ["--keep-records"] : [])], go, UNSTOPPED)).slice("swept ".length)),
   };
 }

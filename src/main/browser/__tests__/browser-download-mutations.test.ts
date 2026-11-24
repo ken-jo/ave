@@ -196,7 +196,8 @@ describe.runIf(process.platform === "linux")("an exclusive recovery rename races
       const displaced = join(root, "displaced");
       writeFileSync(join(root, hidden), "original");
       const folder = { path: root, ...statSync(root, { bigint: true }) };
-      const stamp = statSync(join(root, hidden), { bigint: true });
+      const info = statSync(join(root, hidden), { bigint: true });
+      const stamp = { dev: info.dev, ino: info.ino, evidence: { class: "birth" as const, value: String(info.birthtimeNs) } };
       const files = _descriptorFileOperationsForTest((from, to) => {
         if (from === hidden && to === target) {
           renameSync(join(root, hidden), saved);
