@@ -137,6 +137,12 @@ describe("native confined holder admission", () => {
     expect(state.plan.selectedBackend).toBe("mxc");
   });
 
+  it("admits an output-only worker over the container pipes", async () => {
+    const result = await spawnMxcConfinedChild({ ...spec(), workerTransport: "output-only-v1" });
+    expect(state.spawn).toHaveBeenCalledTimes(1);
+    await result.release();
+  });
+
   it("refuses a legacy child adapter beneath an admitted container backend", async () => {
     await expect(spawnConfinedChild({ ...spec(), grantMode: "deny-only" })).rejects.toBeInstanceOf(WorkerTransportUnsupportedError);
     expect(state.spawn).not.toHaveBeenCalled();

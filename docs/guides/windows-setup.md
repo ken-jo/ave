@@ -167,9 +167,9 @@ bun run check:plugin-host-protocol-schema
 bun run test -- src/permissions/__tests__/allowed-directories.test.ts src/permissions/__tests__/sensitive-paths-canonicalize.test.ts src/shared/__tests__/ave-home.test.ts src/lib/__tests__/atomic-file.test.ts src/lib/__tests__/with-file-lock.test.ts src/tools/__tests__/bash-dialect.test.ts src/tools/__tests__/shell-windows-partial-plan-b.test.ts src/permissions/__tests__/windows-sandbox-logic.test.ts src/permissions/__tests__/asrt-windows-support.test.ts src/main/__tests__/windows-job-launcher.test.ts
 ```
 
-When CI requires native platform checks, Windows runs every collected Vitest suite across five shards. The build job plans the split from `config/windows-test-times.json`: Windows samples first, then Mac durations scaled to Windows, then a 1 s default. Each suite lands in exactly one shard, so a new suite needs no list edit. Each shard re-derives the collected suites from its own checkout and refuses a plan that omits, repeats or adds one.
+When CI requires native platform checks, Windows runs every collected Vitest suite across six shards of two workers each. The build job plans the split from `config/windows-test-times.json`: Windows samples first, then Mac durations scaled to Windows, then a 1 s default. Each suite lands in exactly one shard, so a new suite needs no list edit. Each shard re-derives the collected suites from its own checkout and refuses a plan that omits, repeats or adds one.
 
-One preparation job supplies the helpers to all five shards. It reuses only native helper build outputs when the tracked inputs, toolchain, runner image, and installed pinned patch and upstream binaries match. The job verifies the cached digests and binary identities before use, and rebuilds if verification fails. Every run builds and verifies both payload packages and runs the native tests.
+One preparation job supplies the helpers to all six shards. It reuses only native helper build outputs when the tracked inputs, toolchain, runner image, and installed pinned patch and upstream binaries match. The job verifies the cached digests and binary identities before use, and rebuilds if verification fails. Every run builds and verifies both payload packages and runs the native tests.
 
 **Trust anchor.** The helper cache is authentic because of who can write it, not because of the digests:
 

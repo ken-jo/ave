@@ -4383,7 +4383,7 @@ export const en = {
   "permissionsTab.osSandboxWindowsMxcReasonUnsupportedArch": "this processor architecture is not supported",
   "permissionsTab.osSandboxWindowsMxcReasonBinaryMissing": "the container launcher is missing from this installation; reinstall Ave",
   "permissionsTab.osSandboxWindowsMxcReasonProbeFailed": "the container launcher could not check this PC",
-  "permissionsTab.osSandboxWindowsMxcReasonTierUnsupported": "this Windows version does not offer the container isolation Ave needs; update Windows 11",
+  "permissionsTab.osSandboxWindowsMxcReasonContainerUnavailable": "this PC cannot provide the container isolation Ave needs; updating Windows 11 may add it",
   "permissionsTab.osSandboxWindowsMxcReasonRequestRejected": "this Windows version cannot route a container's network through Ave's proxy; update Windows 11",
   "permissionsTab.osSandboxWindowsMxcReasonLauncherMismatch": "the container launcher in this installation is not the expected build; reinstall Ave",
   "permissionsTab.osSandboxWindowsMxcReasonPowershellStartFailed": "Windows PowerShell did not start inside a container on this PC",
