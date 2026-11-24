@@ -1,4 +1,3 @@
-// windows-permission
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SandboxManager, type SandboxAskCallback } from "@anthropic-ai/sandbox-runtime";
 import { setDestinationResolverForTesting } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-manager.js";

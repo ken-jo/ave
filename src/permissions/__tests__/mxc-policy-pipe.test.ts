@@ -1,4 +1,3 @@
-// windows-permission
 import childProcess from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { randomBytes } from "node:crypto";

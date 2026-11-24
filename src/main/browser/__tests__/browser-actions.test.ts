@@ -1,4 +1,3 @@
-// windows-permission
 import { deferred } from "../../../__tests__/support/deferred.js";
 import { setProcessPlatform } from "../../../__tests__/support/process-platform.js";
 import { afterEach, describe, expect, it, vi } from "vitest";

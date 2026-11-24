@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { posix } from "node:path";
 
 const testFileGlob = "**/*.{test,spec}.{ts,tsx}";
@@ -25,4 +26,10 @@ export const suiteInclude = [
 export function isCollectedVitestFile(path) {
   return suiteInclude.some(pattern => posix.matchesGlob(path, pattern))
     && !baseExclude.some(pattern => posix.matchesGlob(path, pattern));
+}
+
+/** Every tracked suite Vitest collects in the checkout at root, sorted. */
+export function collectedVitestFiles(root) {
+  const tracked = execFileSync("git", ["-C", root, "ls-files", "-z", "--", "src", "test"], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
+  return tracked.split("\0").filter(path => path && isCollectedVitestFile(path)).sort();
 }

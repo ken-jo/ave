@@ -1,4 +1,3 @@
-// windows-permission
 /** The workspace terminal's own-tty grant (terminal-tty-handoff.ts), EXECUTED: the real patched ASRT profile, the real node-pty, the real fifo handoff. Without the grant a sandboxed zsh
  * cannot turn off ECHO, so each typed line shows twice, and cannot set its foreground process group, so job control is off. With it, the shell owns its own terminal and still cannot set another. */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";

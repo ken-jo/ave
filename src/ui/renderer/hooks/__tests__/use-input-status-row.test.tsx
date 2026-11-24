@@ -1,4 +1,3 @@
-// windows-permission
 import "../../../../../test/renderer/setup.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook, waitFor } from "@testing-library/react";

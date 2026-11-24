@@ -1,4 +1,3 @@
-// windows-native: checks manifest containment through a real junction.
 /** Registry-derived lockfiles drive boot dependency setup before sandbox initialization; paths must stay trusted. */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";

@@ -1,4 +1,3 @@
-// windows-permission
 import "../../__tests__/support/trusted-powershell.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { win32 } from "node:path";

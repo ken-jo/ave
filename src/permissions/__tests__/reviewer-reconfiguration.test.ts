@@ -1,4 +1,3 @@
-// windows-permission
 import { useConfigurationOwner } from "../../__tests__/support/configuration-owner.js";
 useConfigurationOwner();
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";

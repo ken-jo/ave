@@ -1,4 +1,3 @@
-// windows-permission
 import { existsSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { resolveShell, ShellMismatchError, __resetShellResolverCache } from "../shell-resolver.js";

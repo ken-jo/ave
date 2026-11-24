@@ -1,4 +1,3 @@
-// windows-permission
 import { configureHostResources } from "../../main/host-resources.js";
 import { useConfigurationOwner } from "../../__tests__/support/configuration-owner.js";
 

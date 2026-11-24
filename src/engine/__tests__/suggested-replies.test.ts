@@ -1,4 +1,3 @@
-// windows-permission
 import { describe, it, expect } from "vitest";
 import {
   createStreamingFilter,

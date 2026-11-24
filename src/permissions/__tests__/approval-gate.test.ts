@@ -1,4 +1,3 @@
-// windows-permission
 import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
 import "../../__tests__/support/trusted-powershell.js";
 import { describe, it, expect, vi, beforeEach } from "vitest";

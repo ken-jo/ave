@@ -1,4 +1,3 @@
-// windows-permission
 import { ApprovalGate, type ApprovalRequest } from "../approval-gate.js";
 import { saveApprovalCardRule } from "../approval-rule-save.js";
 import { buildPermissionEvaluationContext } from "../evaluation-context.js";

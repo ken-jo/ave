@@ -1,4 +1,3 @@
-// windows-permission
 import net, { type AddressInfo, type Socket } from "node:net";
 import { join, resolve } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";

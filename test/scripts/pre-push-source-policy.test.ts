@@ -1,4 +1,3 @@
-// windows-permission
 // Scoped source checks follow import coverage; inputs the graph cannot resolve require full checks.
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";

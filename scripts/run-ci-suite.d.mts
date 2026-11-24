@@ -1,4 +1,3 @@
-import type { ReadWindowsVersion } from "./windows-test-inventory.mjs";
 import type { GitRawDiffEntry } from "./hooks/pre-push-ref-updates.mjs";
 
 export const MUST_RUN_TESTS_PATH: string;
@@ -20,8 +19,7 @@ export declare function selectCiTests(input: {
   baseRef?: string;
   changes: GitRawDiffEntry[];
   trackedTests: readonly string[];
-  mustRunTests: readonly string[] | ((changedPaths: string[]) => readonly string[]);
-  readVersion?: ReadWindowsVersion;
+  mustRunTests: readonly string[];
   readText: (path: string) => string | null;
   discoverRelated: (paths: string[]) => { source: string; tests: string[] }[] | null;
 }): CiSuitePlan;

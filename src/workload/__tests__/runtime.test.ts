@@ -1,4 +1,3 @@
-// windows-permission
 import {
   chmodSync,
   mkdirSync,

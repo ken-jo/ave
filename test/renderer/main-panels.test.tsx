@@ -1,4 +1,3 @@
-// windows-permission
 // Verify surface ownership: each panel is in one pane while multiple panes may each hold a surface.
 import "./setup.js";
 import { afterEach, describe, expect, it, vi } from "vitest";

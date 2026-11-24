@@ -1,4 +1,3 @@
-// windows-permission
 import { typeLineAtPrompt } from "../../main/terminal/pty-manager.js";
 import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
 import { runWithEffectGateContext } from "../../permissions/effect-enforcement.js";

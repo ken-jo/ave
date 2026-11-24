@@ -1,4 +1,3 @@
-// windows-permission
 /** Windows directory renames can fail while child files are open; retry lock errors but never treat them as ENOENT. */
 import AdmZip from "adm-zip";
 import { describe, expect, it } from "vitest";

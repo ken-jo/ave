@@ -1,4 +1,3 @@
-// windows-permission
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { spawn } from "node:child_process";
 

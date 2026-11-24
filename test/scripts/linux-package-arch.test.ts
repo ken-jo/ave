@@ -1,4 +1,3 @@
-// windows-permission
 import { canCreateSymlinks } from "../../src/__tests__/support/symlink-capability.js";
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";

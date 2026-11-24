@@ -1,4 +1,3 @@
-// windows-permission
 // Append and restore both enforce the tool-result size cap.
 import { describe, expect, it } from "vitest";
 import { ConversationHistory } from "../conversation-history.js";

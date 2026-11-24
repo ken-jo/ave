@@ -1,4 +1,3 @@
-// windows-permission
 /** Boot's one sweep of host tabs' kept output and the store it installs. The settings are the real service over a real settings file, the store is the
  * real one on a real directory; a fake PTY stands for the shell. */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";

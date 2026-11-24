@@ -1,4 +1,3 @@
-// windows-permission
 /** Unzip diagnostics and check raw bytes so no planted secret or PII survives any source path. */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";

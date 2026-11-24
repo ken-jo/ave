@@ -1,4 +1,3 @@
-// windows-permission
 import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import { tokenizeShell } from "../shell-tokenizer.js";

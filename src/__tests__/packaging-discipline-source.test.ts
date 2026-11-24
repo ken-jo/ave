@@ -1,4 +1,3 @@
-// windows-permission
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, statSync } from "node:fs";
@@ -6,7 +5,7 @@ import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
-import { windowsRegressionStepFiles } from "../../.github/scripts/check-windows-workflow.mjs";
+import { windowsRegressionSuites } from "../../.github/scripts/check-windows-workflow.mjs";
 import { githubExpression, readRepoFile } from "./test-helpers.js";
 import {
   TRUSTED_EVENTS,
@@ -2521,13 +2520,10 @@ it("builds the native path classifier before the Windows permission boundaries",
   expect(preparation?.some(step => step.run?.includes("-Helper path-kind"))).toBe(true);
   expect(preparation?.some(step => step.name === "Upload the checked Windows native helpers")).toBe(true);
   const classifier = steps.findIndex(step => step.name === "Verify and configure the shared test inputs");
-  const stepName = "Run Windows permission regressions";
-  const regressions = steps.findIndex(step => step.name === stepName);
+  const regressions = steps.findIndex(step => step.name === "Run Windows regressions");
   expect(classifier).toBeGreaterThan(-1);
   expect(regressions).toBeGreaterThan(classifier);
-  const run = steps[regressions]?.run;
-  if (run === undefined) throw new Error(`${stepName} has no run command`);
-  const selection = windowsRegressionStepFiles(run, readRepoFile, stepName);
+  const selection = windowsRegressionSuites(readRepoFile(".github/workflows/ci.yml"), resolve(import.meta.dirname, "../.."));
   for (const suite of [
     "src/tools/__tests__/powershell-exfiltration-gate.test.ts",
     "src/permissions/__tests__/powershell-unc-write-boundary.test.ts",

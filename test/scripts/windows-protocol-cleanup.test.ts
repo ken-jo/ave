@@ -1,4 +1,3 @@
-// windows-permission
 import { describe, expect, it, vi } from "vitest";
 // Import the cleanup module so syntax failures surface before packaged smoke linkage.
 import { assertNoWindowsProtocolClaim } from "../../scripts/lib/windows-protocol-cleanup.mjs";

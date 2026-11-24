@@ -1,4 +1,3 @@
-// windows-native: exercises the Windows ACL senders with a recording child.
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

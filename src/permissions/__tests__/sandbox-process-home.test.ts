@@ -1,4 +1,3 @@
-// windows-permission
 import {
   existsSync,
   lstatSync,

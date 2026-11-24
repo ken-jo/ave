@@ -1,4 +1,3 @@
-// windows-permission
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("node:child_process", () => ({

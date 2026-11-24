@@ -1,4 +1,3 @@
-// windows-permission
 import { TEST_OWNER } from "../../main/__tests__/routines-fixture.js";
 import { createBootHostFixture, createDesktopHostFixture } from "../../__tests__/support/host-runtime.js";
 import { deferred } from "../../__tests__/support/deferred.js";

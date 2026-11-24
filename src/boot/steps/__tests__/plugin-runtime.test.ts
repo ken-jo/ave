@@ -1,4 +1,3 @@
-// windows-permission
 import { createBootHostFixture, createDesktopHostFixture, stationaryLeaseState } from "../../../__tests__/support/host-runtime.js";
 /** Audit logger failures must not replace the original approval-origin error. */
 

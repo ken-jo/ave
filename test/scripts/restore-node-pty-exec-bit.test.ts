@@ -1,4 +1,3 @@
-// windows-permission
 // Verify the postinstall repair makes the native spawn helper executable.
 import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";

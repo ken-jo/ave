@@ -3,7 +3,8 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parse } from "yaml";
-import { WINDOWS_TEST_LISTS, WINDOWS_TEST_SHARDS, windowsTestCommands } from "../../scripts/run-windows-test-list.mjs";
+import { WINDOWS_TEST_SHARDS } from "../../scripts/run-windows-test-list.mjs";
+import { collectedVitestFiles } from "../../scripts/lib/vitest-collection.mjs";
 import { windowsPowerShellEnv, windowsPowerShellPath } from "../../scripts/lib/windows-powershell-env.mjs";
 
 const TEST_PATH = String.raw`[\w./\\-]+\.(?:test|spec)\.[cm]?[jt]sx?`;
@@ -13,11 +14,11 @@ const CONTAINED = String.raw`node[ \t]+\.github\/scripts\/run-in-job\.mjs[ \t]+`
 const TEST_COMMAND_RE = new RegExp(
   String.raw`^(?:${CONTAINED})?bun[ \t]+run[ \t]+(?:test[ \t]+--|test:vitest[ \t]+--(?:[ \t]+run)?)((?:[ \t]+${TEST_PATH})+)$`,
 );
-const REGRESSION_STEP = /^Run Windows (?:permission|appearance|session persistence|native import|application) regressions$/u;
+const REGRESSION_STEP = /^Run Windows (?:[\w ]+ )?regressions$/u;
+const REGRESSION_STEP_NAME = "Run Windows regressions";
 const REGRESSION_CONDITION = "steps.docs-impact.outputs.docs_only != 'true'";
-const LIST_INVOCATION = new RegExp(
-  String.raw`^(?:${CONTAINED})?bun[ \t]+run[ \t]+scripts\/run-windows-test-list\.mjs[ \t]+(config\/[\w-]+\.txt)$`, "u",
-);
+// The shard runner takes its plan and shard ID from the environment only.
+const SHARD_INVOCATION = "node .github/scripts/run-in-job.mjs bun run scripts/run-windows-test-list.mjs";
 // Test commands in the job that owns the isolated job root run inside the containment launcher.
 const CONTAINED_JOB = "windows-permission-tests";
 const PREPARATION_JOB = "windows-native-preparation";
@@ -102,22 +103,6 @@ export function containedSteps(workflow, job = CONTAINED_JOB) {
   return manifest;
 }
 
-export function windowsRegressionStepFiles(run, readInventory, name) {
-  const invocation = run.trim();
-  const inventoryName = LIST_INVOCATION.exec(invocation)?.[1];
-  const directPaths = TEST_COMMAND_RE.exec(invocation)?.[1];
-  let list;
-  if (inventoryName !== undefined) {
-    list = readInventory(inventoryName);
-    if (list === undefined) throw new Error(`Windows test inventory is missing: ${inventoryName}`);
-  } else if (directPaths !== undefined) {
-    list = directPaths.trim().split(/[ \t]+/u).join("\n");
-  } else {
-    throw new Error(`${name}: expected one validated test invocation`);
-  }
-  return windowsTestCommands(list).slice(1).flatMap(args => args.slice(4).map(file => file.slice(2)));
-}
-
 function windowsRegressionSteps(steps) {
   const regressions = steps.filter(({ jobId, stepName }) =>
     jobId === "windows-permission-tests" && REGRESSION_STEP.test(stepName ?? ""));
@@ -129,12 +114,16 @@ function windowsRegressionSteps(steps) {
   return regressions;
 }
 
-export function windowsRegressionFiles(workflow, inventories) {
-  const files = new Set();
-  for (const { name, run } of windowsRegressionSteps(windowsRunSteps(workflow))) {
-    for (const file of windowsRegressionStepFiles(run, path => inventories.get(path), name)) files.add(file);
+/**
+ * The suites the Windows regression step runs: every collected suite in the
+ * checkout at root, split by the build job's plan across the matrix shards.
+ */
+export function windowsRegressionSuites(workflow, root) {
+  const regressions = windowsRegressionSteps(windowsRunSteps(workflow));
+  if (regressions.length !== 1 || regressions[0].run.trim() !== SHARD_INVOCATION) {
+    throw new Error(`The Windows shard must run one ${REGRESSION_STEP_NAME} step: ${SHARD_INVOCATION}`);
   }
-  return [...files];
+  return collectedVitestFiles(root);
 }
 
 const WORKFLOW_EXECUTABLES = [
@@ -356,6 +345,70 @@ function checkFirstPreparationLaunch(steps) {
   }
 }
 
+// Restored or cached native binaries: the containment launcher (every
+// run-in-job line), its fixtures, the path classifier and the sandbox helper.
+const HELPER_EXECUTABLE_RE = /(?:^|[^\w-])(?:upstream-)?(?:srt-win|ave-job(?:-failure|-query-failure)?|ave-path-kind|ave-path-pin-test)\.exe(?![\w.-])/u;
+const SRT_WIN_EXECUTABLE_RE = /(?:^|[^\w-])srt-win\.exe(?![\w.-])/u;
+const EXIT_ON_FAILURE = "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }";
+const SRT_WIN_INTEGRITY = "node scripts/check-srt-win-integrity.cjs";
+// Where each job's helper bytes become the checked ones, and where the sandbox
+// helper in node_modules is replaced. The node_modules cache is saved after a
+// job has rebuilt or restored that helper, so its copy is never trusted.
+const HELPER_TRUST = {
+  [PREPARATION_JOB]: {
+    anchor: PREPARATION_CACHE_COMMAND + " verify-installed",
+    what: "rehashing the installed helpers",
+    srtWin: "node .github/scripts/run-in-job.mjs node scripts/build-srt-win.mjs --test-native",
+  },
+  [CONTAINED_JOB]: {
+    anchor: "node .github/scripts/restore-windows-ci-inputs.mjs",
+    what: "installing the checked helper artifacts",
+    srtWin: "node .github/scripts/restore-windows-ci-inputs.mjs",
+  },
+};
+
+function executesHelper(line) {
+  return CONTAINED_LINE_RE.test(line) || HELPER_EXECUTABLE_RE.test(line);
+}
+
+/**
+ * Every step that executes a restored or cached binary runs after the job's
+ * trust point, and the sandbox helper also runs only after this job replaced
+ * the node_modules copy and the same step checked its integrity.
+ */
+export function checkHelperExecutionOrder(jobId, steps) {
+  const trust = HELPER_TRUST[jobId];
+  if (!trust) throw new Error(`Unknown contained Windows job: ${jobId}`);
+  let anchored = false;
+  let replaced = false;
+  for (const step of steps) {
+    if (step.run === undefined) continue;
+    const lines = step.run.trimEnd().split(/\r?\n/u).map(line => line.trim());
+    let integrityChecked = false;
+    for (const [index, line] of lines.entries()) {
+      if (line === trust.anchor) {
+        if (anchored) throw new Error(`${jobId}: ${trust.what} must happen once`);
+        if (step["working-directory"] !== "ave" || step.if !== REGRESSION_CONDITION
+          || (index + 1 < lines.length && lines[index + 1] !== EXIT_ON_FAILURE)) {
+          throw new Error(`${jobId}: ${step.name}: ${trust.what} must stop the step when it fails`);
+        }
+        anchored = true;
+      }
+      if (line === SRT_WIN_INTEGRITY && lines[index + 1] === EXIT_ON_FAILURE) integrityChecked = true;
+      if (executesHelper(line)) {
+        if (!anchored) {
+          throw new Error(`${jobId}: ${step.name}: executes a restored or cached binary before ${trust.what}: ${line}`);
+        }
+        if (SRT_WIN_EXECUTABLE_RE.test(line) && !(replaced && integrityChecked)) {
+          throw new Error(`${jobId}: ${step.name}: runs the sandbox helper before this job replaced the cached node_modules copy and checked its integrity: ${line}`);
+        }
+      }
+      if (line === trust.srtWin) replaced = true;
+    }
+  }
+  if (!anchored) throw new Error(`${jobId}: no step for ${trust.what}`);
+}
+
 export function checkWindowsWorkflow(workflow, inspect) {
   const { jobs } = parse(workflow);
   const job = jobs[CONTAINED_JOB];
@@ -380,9 +433,9 @@ export function checkWindowsWorkflow(workflow, inspect) {
   checkPreparationCache(jobs[PREPARATION_JOB]);
   const steps = windowsRunSteps(workflow);
   const regressions = windowsRegressionSteps(steps);
-  const inventories = regressions.map(step => LIST_INVOCATION.exec(step.run.trim())?.[1]);
-  if (inventories.length !== WINDOWS_TEST_LISTS.length || !WINDOWS_TEST_LISTS.every(list => inventories.includes(list))) {
-    throw new Error("The Windows shard must run every regression inventory");
+  if (regressions.length !== 1 || regressions[0].jobId !== CONTAINED_JOB || regressions[0].stepName !== REGRESSION_STEP_NAME
+    || regressions[0].run.trim() !== SHARD_INVOCATION) {
+    throw new Error(`The Windows shard must run every collected suite through one ${REGRESSION_STEP_NAME} step: ${SHARD_INVOCATION}`);
   }
   for (const step of job.steps ?? []) {
     if (!REGRESSION_STEP.test(step.name ?? "")) continue;
@@ -408,6 +461,7 @@ export function checkWindowsWorkflow(workflow, inspect) {
   ];
   if (failures.length) throw new Error(failures.join("\n"));
   checkFirstPreparationLaunch(jobs[PREPARATION_JOB].steps);
+  for (const id of CONTAINED_JOBS) checkHelperExecutionOrder(id, jobs[id].steps);
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {

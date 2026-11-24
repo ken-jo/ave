@@ -1,4 +1,3 @@
-// windows-permission
 // Base temp grants must survive new conversations and cover both per-user temp roots and conventional /tmp. Test candidates through the real scope builder without assuming host paths exist.
 import { tmpdir } from "node:os";
 import { join } from "node:path";

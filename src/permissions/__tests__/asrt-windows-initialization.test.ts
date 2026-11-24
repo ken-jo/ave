@@ -1,4 +1,3 @@
-// windows-permission
 import childProcess from "node:child_process";
 import fs, { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";

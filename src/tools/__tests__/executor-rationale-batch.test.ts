@@ -1,4 +1,3 @@
-// windows-permission
 import { ScriptHookManager } from "../../hooks/script-hook-manager.js";
 import { hookContextForControl, hookInfluenceContext } from "../../hooks/hook-influence.js";
 import { createRationaleHostRuntime } from "../../__tests__/support/rationale-host-runtime.js";

@@ -1,4 +1,3 @@
-// windows-permission
 import { createCanvas } from "@napi-rs/canvas";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DocumentObservationEngine } from "../../shared/agent-observation.js";

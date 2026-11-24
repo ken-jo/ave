@@ -1,4 +1,3 @@
-// windows-permission
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { hashAndCountLines } from "../file-read-state.js";

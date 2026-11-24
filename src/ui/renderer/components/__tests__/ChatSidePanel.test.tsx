@@ -1,4 +1,3 @@
-// windows-permission
 import { nativeSurfaceFixture } from "../../../../__tests__/support/native-browser-surface.js";
 import { ThemeWrapper } from "./mcp-app-test-helpers.js";
 // @vitest-environment jsdom

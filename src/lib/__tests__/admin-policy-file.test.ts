@@ -1,4 +1,3 @@
-// windows-permission
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { beforeEach, describe, expect, it, vi } from "vitest";

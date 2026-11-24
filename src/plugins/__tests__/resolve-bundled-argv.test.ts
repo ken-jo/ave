@@ -1,4 +1,3 @@
-// windows-permission
 import { afterEach, describe, expect, it } from "vitest";
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

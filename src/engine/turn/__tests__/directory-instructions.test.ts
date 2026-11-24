@@ -1,4 +1,3 @@
-// windows-permission
 // Attach first-touch directory instructions once per session and revalidate changed launch chains.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from "node:fs";

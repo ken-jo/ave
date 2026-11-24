@@ -1,4 +1,3 @@
-// windows-permission
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resolve } from "node:path";
 import type {

@@ -1,4 +1,3 @@
-// windows-permission
 import { afterAll, afterEach, expect, it, vi } from "vitest";
 import { existsSync } from "node:fs";
 import { promises as fs } from "node:fs";

@@ -14273,16 +14273,6 @@
       "count": 1
     },
     {
-      "file": "test/scripts/windows-ci-test-list.test.ts",
-      "category": "lint/style/noNonNullAssertion",
-      "count": 1
-    },
-    {
-      "file": "test/scripts/windows-ci-test-list.test.ts",
-      "category": "lint/suspicious/noTemplateCurlyInString",
-      "count": 1
-    },
-    {
       "file": "test/scripts/windows-protocol-cleanup.test.ts",
       "category": "lint/style/noNonNullAssertion",
       "count": 1

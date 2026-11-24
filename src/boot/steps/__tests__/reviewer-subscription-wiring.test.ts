@@ -1,4 +1,3 @@
-// windows-permission
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";

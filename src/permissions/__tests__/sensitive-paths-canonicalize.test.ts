@@ -1,4 +1,3 @@
-// windows-permission
 // Both sides of every scope comparison must share canonical bytes across traversal, Unicode, case, slashes and symlinks; use realpath-derived temp paths.
 import { afterEach, describe, it, expect } from "vitest";
 import { mkdirSync } from "node:fs";

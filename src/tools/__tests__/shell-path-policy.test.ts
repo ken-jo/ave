@@ -1,4 +1,3 @@
-// windows-permission
 import { mkdirSync, mkdtempSync, realpathSync, symlinkSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join as nativeJoin, resolve } from "node:path";

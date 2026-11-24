@@ -1,4 +1,3 @@
-// windows-permission
 import { spawn, type ChildProcess } from "node:child_process";
 
 import { describe, expect, it } from "vitest";

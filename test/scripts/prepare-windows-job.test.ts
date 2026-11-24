@@ -1,4 +1,3 @@
-// windows-permission
 // Fixture builds cover missing or stale native launchers without invoking a toolchain.
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

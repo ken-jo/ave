@@ -1,4 +1,3 @@
-// windows-permission
 // New or changed config and referenced scripts stay quarantined until explicit acceptance; binary-only commands cannot load (docs/architecture/hook-runtime-expansion-design.md).
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {

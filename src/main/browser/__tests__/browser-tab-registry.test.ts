@@ -1,4 +1,3 @@
-// windows-permission
 import { deferred } from "../../../__tests__/support/deferred.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BrowserDocumentChangedError, BrowserTabRegistry, isUserActionInputType, type BrowserGuest } from "../browser-tab-registry.js";

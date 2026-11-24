@@ -1,4 +1,3 @@
-// windows-native: retargets a real junction across the file-open boundary.
 // read_file text must come from the file its judged path names. These tests change the filesystem around the open that
 // reads the text, so they hook both ways a file is opened for reading and keep the hooks out of the real-filesystem suite.
 import {

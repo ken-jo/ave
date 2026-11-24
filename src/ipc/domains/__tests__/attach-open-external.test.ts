@@ -1,4 +1,3 @@
-// windows-permission
 // attach.openExternal through the shared default-app sequence: stable failure codes and one pre-open frame re-check.
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { chmodSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";

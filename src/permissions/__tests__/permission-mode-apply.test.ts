@@ -1,4 +1,3 @@
-// windows-permission
 import { dispatchPermissionReviewerCommandWithRewire } from "../permission-slash.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";

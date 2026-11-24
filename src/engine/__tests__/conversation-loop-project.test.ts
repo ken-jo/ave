@@ -1,4 +1,3 @@
-// windows-permission
 import { describe, expect, it, vi } from "vitest";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";

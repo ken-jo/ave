@@ -1,4 +1,3 @@
-// windows-permission
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type TestContext } from "vitest";
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";

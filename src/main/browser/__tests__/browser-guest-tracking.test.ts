@@ -1,4 +1,3 @@
-// windows-permission
 import { EventEmitter } from "node:events";
 import type { WebContents } from "electron";
 import { beforeEach, describe, expect, it, vi } from "vitest";

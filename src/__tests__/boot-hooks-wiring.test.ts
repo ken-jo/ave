@@ -1,4 +1,3 @@
-// windows-permission
 /** Untrusted or changed hooks.json must stay quarantined; only trusted, unchanged commands may load. */
 import { afterEach, beforeAll, beforeEach, describe, it, expect } from "vitest";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";

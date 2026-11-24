@@ -1,4 +1,3 @@
-// windows-permission
 // Chromium resolver overrides bypass the Node DNS checks used by the SSRF guard and must stay disabled.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useChromiumRuntime } from "../../__tests__/support/chromium-runtime.js";

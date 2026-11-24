@@ -1,4 +1,3 @@
-// windows-permission
 import { allowOnceCardAnswer } from "../../../__tests__/support/approval-card-answer.js";
 import { deferred } from "../../../__tests__/support/deferred.js";
 import { randomBytes, randomUUID } from "node:crypto";

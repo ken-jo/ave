@@ -1,4 +1,3 @@
-// windows-permission
 import { randomUUID } from "node:crypto";
 import {
   chmodSync,

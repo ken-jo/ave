@@ -1,4 +1,3 @@
-// windows-permission
 // @vitest-environment jsdom
 /** The agent holds a page's keyboard focus only while it acts: the renderer remembers where focus was in the app and gives
  * it back when main says the action is done, unless the user has already moved focus somewhere else. */

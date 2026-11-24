@@ -1,4 +1,3 @@
-// windows-permission
 import { useConfigurationOwner } from "../../__tests__/support/configuration-owner.js";
 import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, vi } from "vitest";

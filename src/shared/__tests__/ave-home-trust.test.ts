@@ -1,4 +1,3 @@
-// windows-permission
 // Home content trust (slice 3): the manifest, the load gate, R4 write admission, R5 intents and the review actions.
 import { useConfigurationOwner } from "../../__tests__/support/configuration-owner.js";
 

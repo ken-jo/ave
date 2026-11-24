@@ -11,6 +11,7 @@ import { parseGitRawDiff } from "./hooks/pre-push-ref-updates.mjs";
 import { isCanonicalGitPath } from "./hooks/pre-push-markdown-policy.mjs";
 import {
   getRelatedCoverageFullReason,
+  isCollectedVitestFile,
   isTestHelperModule,
   isTestOnlyDiff,
   isTestSupportFile,
@@ -18,8 +19,6 @@ import {
   selectMessageCatalogChecks,
   selectTriggeredLockSuites,
 } from "./hooks/pre-push-source-policy.mjs";
-import { isCollectedVitestFile } from "./lib/vitest-collection.mjs";
-import { windowsInventoryDiff } from "./windows-test-inventory.mjs";
 
 export const MUST_RUN_TESTS_PATH = "config/ci-must-run-tests.json";
 
@@ -69,7 +68,8 @@ export function runsRepoCodeOutOfProcess(text) {
 const RELATIVE_IMPORT = /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+|\bvi\.(?:mock|doMock|importActual)\s*(?:<[^>]*>)?\(\s*)["'](\.{1,2}\/[^"']+)["']/gu;
 const HELPER_EXTENSIONS = ["", ".ts", ".tsx", ".mts", ".cts", ".mjs", ".cjs", ".js", ".jsx", ".json"];
 
-function someHelperSource(testPath, readText, matches, isHelperPath) {
+// Follow helper imports too: they can bundle or spawn code absent from the test body.
+export function testRunsRepoCodeOutOfProcess(testPath, readText) {
   const seen = new Set();
   const pending = [testPath];
   while (pending.length > 0) {
@@ -78,10 +78,10 @@ function someHelperSource(testPath, readText, matches, isHelperPath) {
     seen.add(path);
     const text = readText(path);
     if (typeof text !== "string") continue;
-    if (matches(path, text)) return true;
+    if (runsRepoCodeOutOfProcess(text)) return true;
     for (const [, specifier] of text.matchAll(RELATIVE_IMPORT)) {
       const target = posix.normalize(posix.join(posix.dirname(path), specifier));
-      if (!isHelperPath(target) || /\.(?:test|spec)\.[cm]?[jt]sx?$/u.test(target)) continue;
+      if (!target.includes("/__tests__/") || /\.(?:test|spec)\.[cm]?[jt]sx?$/u.test(target)) continue;
       const base = target.replace(/\.[cm]?js$/u, "");
       for (const extension of HELPER_EXTENSIONS) {
         const candidate = `${extension === "" ? target : base}${extension}`;
@@ -93,11 +93,6 @@ function someHelperSource(testPath, readText, matches, isHelperPath) {
     }
   }
   return false;
-}
-
-// Follow helper imports too: they can bundle or spawn code absent from the test body.
-export function testRunsRepoCodeOutOfProcess(testPath, readText) {
-  return someHelperSource(testPath, readText, (_path, text) => runsRepoCodeOutOfProcess(text), (target) => target.includes("/__tests__/"));
 }
 
 // Directory entries expand to collected tests; stale entries selecting nothing fail.
@@ -148,10 +143,8 @@ export function runsCoverage(eventName) {
 export const FULL_RUN_SHARDS = 4;
 
 export function ciShardCount(plan, coverage, nativeChecks = false) {
-  if (coverage || nativeChecks) return 1;
-  return plan.mode === "full" ? FULL_RUN_SHARDS : 1;
+  return plan.mode === "full" && !coverage && !nativeChecks ? FULL_RUN_SHARDS : 1;
 }
-
 
 // Reject malformed shard values so the aggregate cannot misreport coverage.
 export function parseCiShard(value) {
@@ -221,27 +214,7 @@ function testNamesChangedPath(test, changedPaths, readText) {
 
 // Related-test discovery returns null on failure, not an empty successful result.
 // Integration bases retain the best traced selection when coverage is uncertain.
-export function selectCiTests({ changes, trackedTests, mustRunTests: requiredTests, readText, readVersion, discoverRelated, selectCatalog, baseRef }) {
-  const inventory = windowsInventoryDiff(changes, readVersion);
-  // Header-only declarations have no code impact on their containing domain.
-  const mustRunTests = typeof requiredTests === "function"
-    ? requiredTests(inventory.ordinary.map(({ path }) => path)) : requiredTests;
-  const tracked = new Set(trackedTests);
-  const deleted = new Set(changes.filter(({ status }) => status === "D").map(({ path }) => path));
-  const inventoryTests = [...inventory.suites.keys()].filter(file => !deleted.has(file));
-  const invalidInventoryTest = inventoryTests.find(file => !tracked.has(file));
-  if (invalidInventoryTest) throw new Error(`Windows inventory names an uncollected test: ${invalidInventoryTest}`);
-  if (inventory.changed && inventory.ordinary.length === 0) {
-    if (mustRunTests.length === 0 || mustRunTests.some(file => !tracked.has(file))) {
-      throw new Error("Windows inventory-only diff requires a nonempty collected must-run set");
-    }
-    return {
-      mode: "affected",
-      reason: `Windows inventory-only diff; ${inventory.suites.size} membership change(s); ${mustRunTests.length} must-run file(s)`,
-      tests: [...new Set([...inventoryTests, ...mustRunTests])].sort(),
-    };
-  }
-  changes = inventory.ordinary;
+export function selectCiTests({ changes, trackedTests, mustRunTests, readText, discoverRelated, selectCatalog, baseRef }) {
   const integrationBase = typeof baseRef === "string" && baseRef.startsWith("integration/");
   const testOnly = isTestOnlyDiff(changes);
   const scoped = integrationBase || testOnly;
@@ -328,7 +301,7 @@ export function selectCiTests({ changes, trackedTests, mustRunTests: requiredTes
     return matches;
   });
 
-  let tests = [...new Set([...traced, ...lockSuites, ...inventoryTests, ...mustRunTests])].sort();
+  let tests = [...new Set([...traced, ...lockSuites, ...mustRunTests])].sort();
   const missing = tests.filter((test) => !trackedTests.includes(test));
   if (missing.length > 0) {
     if (testOnly) throw new Error(`test-only selection names an uncollected test: ${missing[0]}`);
@@ -432,16 +405,13 @@ export function planCiSuite(eventName, { headRef, baseRef, ref, before } = {}) {
     return full(changes.reason);
   }
   const trackedTests = trackedVitestFiles();
-  const mustRunDocument = JSON.parse(readFileSync(MUST_RUN_TESTS_PATH, "utf8"));
+  const mustRunTests = expandMustRunTests(JSON.parse(readFileSync(MUST_RUN_TESTS_PATH, "utf8")), trackedTests, changes.entries.map(({ path }) => path));
   const textCache = new Map();
   const plan = selectCiTests({
     changes: changes.entries,
     baseRef: mainPush ? "main" : baseRef,
     trackedTests,
-    mustRunTests: (changedPaths) => expandMustRunTests(mustRunDocument, trackedTests, changedPaths),
-    readVersion: (path, side) => {
-      try { return git(["show", `${side === "before" ? changes.base : "HEAD"}:${path}`]); } catch { return null; }
-    },
+    mustRunTests,
     readText: (path) => {
       if (textCache.has(path)) return textCache.get(path);
       let text = null;
@@ -495,7 +465,6 @@ export function ciSuiteArguments(plan, coverage, shard = null) {
   if (coverage) return [join("scripts", "run-test-coverage-gate.mjs")];
   if (plan.mode === "affected" && plan.tests.length === 0) throw new Error("affected CI selection must not be empty");
   const tests = plan.mode === "full" ? [] : plan.tests.map((test) => `./${test}`);
-  // Vitest shards the given files with the full run's hash balancing.
   const split = shard === null ? [] : [`--shard=${shard}`];
   return [join("scripts", "run-vitest-under-electron.mjs"), "run", "--silent=true", ...split, ...tests];
 }

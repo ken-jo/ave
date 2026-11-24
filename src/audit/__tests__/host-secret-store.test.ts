@@ -1,4 +1,3 @@
-// windows-permission
 import { randomBytes } from "node:crypto";
 import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

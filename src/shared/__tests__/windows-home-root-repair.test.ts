@@ -1,4 +1,3 @@
-// windows-permission
 // The narrow root repair (owner decision 2026-11-02): Ave repairs only the root shape its own pre-fix mkdir produced.
 // The native helper re-checks this predicate on the pinned handle; the SDDL parity test runs both on Windows.
 import { describe, expect, it } from "vitest";

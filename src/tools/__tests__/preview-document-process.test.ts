@@ -1,4 +1,3 @@
-// windows-permission
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { readFileSync, writeFileSync } from "node:fs";

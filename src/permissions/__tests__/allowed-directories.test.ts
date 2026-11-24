@@ -1,4 +1,3 @@
-// windows-permission
 // (docs/architecture/permission-policy-design.md)
 import { describe, it, expect, vi } from "vitest";
 import { execFileSync } from "node:child_process";

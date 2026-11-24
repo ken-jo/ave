@@ -1,4 +1,3 @@
-// windows-permission
 import { canCreateSymlinks } from "../../../__tests__/support/symlink-capability.js";
 /** Check namespace permissions, atomic writes, read defaults, child directories, and traversal rejection.
  * POSIX mode assertions do not apply on Windows. */

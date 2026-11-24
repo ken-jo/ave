@@ -1,4 +1,3 @@
-// windows-permission
 import net from "node:net";
 import { execFile } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";

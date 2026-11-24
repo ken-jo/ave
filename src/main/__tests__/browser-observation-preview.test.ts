@@ -1,4 +1,3 @@
-// windows-permission
 import { EventEmitter } from "node:events";
 import type { IpcMainInvokeEvent } from "electron";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";

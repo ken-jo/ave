@@ -1,4 +1,3 @@
-// windows-permission
 import { afterEach, expect, it, vi } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
 import fs, { chmodSync, lchownSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";

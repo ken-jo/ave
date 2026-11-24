@@ -1,4 +1,3 @@
-// windows-permission
 import "../../__tests__/support/trusted-powershell.js";
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";

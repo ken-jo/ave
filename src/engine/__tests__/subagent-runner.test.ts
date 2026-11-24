@@ -1,4 +1,3 @@
-// windows-permission
 import { trace } from "@opentelemetry/api";
 import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
 // Round budgets stop incomplete work; frozen tool scope and depth guards constrain child authority.

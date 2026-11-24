@@ -460,14 +460,16 @@ describe("Windows job root writer precondition", () => {
     });
   }
 
-  it("accepts the receipt of every workflow manifest step", async t => {
-    const job = fixture(t);
-    const { containedStepManifest } = await import("../../.github/scripts/run-in-job.mjs");
-    const manifest = await containedStepManifest("windows-permission-tests");
-    assert.ok(manifest.length > 1);
-    await cleanupJobRoot(root, { ...job.options, readReceipts: () => provenReceipts(job.options.identity, manifest), run: queryResult() });
-    assert.deepEqual(readdirSync(job.parent), ["shared"]);
-  });
+  for (const [jobId, minimum] of [["windows-native-preparation", 2], ["windows-permission-tests", 1]]) {
+    it(`accepts the receipt of every ${jobId} manifest step`, async t => {
+      const job = fixture(t);
+      const { containedStepManifest } = await import("../../.github/scripts/run-in-job.mjs");
+      const manifest = await containedStepManifest(jobId);
+      assert.ok(manifest.length >= minimum);
+      await cleanupJobRoot(root, { ...job.options, readReceipts: () => provenReceipts(job.options.identity, manifest), run: queryResult() });
+      assert.deepEqual(readdirSync(job.parent), ["shared"]);
+    });
+  }
 
   it("cleans up without installed packages", () => {
     // Cleanup also runs after a failed dependency install. module.register exists on every supported Node release.

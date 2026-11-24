@@ -1,4 +1,3 @@
-// windows-permission
 // Browser tools may use only allow-listed CDP methods; uploads require picker approval and privileged page data stays inaccessible.
 import { readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";

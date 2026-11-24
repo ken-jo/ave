@@ -1,4 +1,3 @@
-// windows-permission
 import { expect, it, vi } from "vitest";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";

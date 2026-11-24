@@ -1,4 +1,3 @@
-// windows-permission
 import { refuseNamespaceFileCreation } from "../../__tests__/support/feature-namespace.js";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { createHash } from "node:crypto";

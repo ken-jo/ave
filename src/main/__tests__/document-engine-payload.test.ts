@@ -1,4 +1,3 @@
-// windows-permission
 import { createHash } from "node:crypto";
 import { appendFile, chmod, link, mkdir, mkdtemp, open, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";

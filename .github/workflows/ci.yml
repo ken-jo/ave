@@ -913,7 +913,7 @@ jobs:
           key: ${{ steps.windows-preparation-key.outputs.key }}
 
   windows-permission-tests:
-    name: Windows permission path tests (${{ matrix.shard }})
+    name: Windows tests (${{ matrix.shard }})
     concurrency:
       # Each matrix copy needs its own group, including on the same run.
       group: ci-platform-${{ github.workflow }}-windows-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}-${{ matrix.shard }}
@@ -924,7 +924,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4, 5]
     env:
       BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
       AVE_UV_DOWNLOAD_CACHE_DIR: ${{ github.workspace }}/.cache/uv-archives
@@ -981,27 +981,16 @@ jobs:
         with:
           path: ${{ runner.temp }}/python-archives
           key: ${{ steps.python-archive.outputs.key }}
-      - name: Run Windows permission regressions
+      # Every collected Vitest suite runs on Windows. The build job's plan
+      # assigns each one to exactly one shard; the runner re-derives the
+      # collected set from this checkout and refuses a plan that differs.
+      - name: Run Windows regressions
         env:
           AVE_WINDOWS_TEST_PLAN: ${{ runner.temp }}/windows-ci/windows-plan.json
           UV_PYTHON_CACHE_DIR: ${{ runner.temp }}/python-archives
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
-        run: node .github/scripts/run-in-job.mjs bun run scripts/run-windows-test-list.mjs config/windows-permission-tests.txt
-      - name: Run Windows native import regressions
-        env:
-          AVE_WINDOWS_TEST_PLAN: ${{ runner.temp }}/windows-ci/windows-plan.json
-          UV_PYTHON_CACHE_DIR: ${{ runner.temp }}/python-archives
-        if: steps.docs-impact.outputs.docs_only != 'true'
-        working-directory: ave
-        run: node .github/scripts/run-in-job.mjs bun run scripts/run-windows-test-list.mjs config/windows-native-tests.txt
-      - name: Run Windows application regressions
-        env:
-          AVE_WINDOWS_TEST_PLAN: ${{ runner.temp }}/windows-ci/windows-plan.json
-          UV_PYTHON_CACHE_DIR: ${{ runner.temp }}/python-archives
-        if: steps.docs-impact.outputs.docs_only != 'true'
-        working-directory: ave
-        run: node .github/scripts/run-in-job.mjs bun run scripts/run-windows-test-list.mjs config/windows-application-tests.txt
+        run: node .github/scripts/run-in-job.mjs bun run scripts/run-windows-test-list.mjs
       - *windows-cleanup
 
   macos-permission-tests:

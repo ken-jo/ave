@@ -1,4 +1,3 @@
-// windows-permission
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { PermissionManager } from "../permission-manager.js";
 

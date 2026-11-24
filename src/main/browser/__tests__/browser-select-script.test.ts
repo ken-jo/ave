@@ -1,4 +1,3 @@
-// windows-permission
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
 import { SELECT_NATIVE_OPTION } from "../browser-select-script.js";

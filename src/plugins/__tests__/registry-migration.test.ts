@@ -1,4 +1,3 @@
-// windows-permission
 /** Registry reads normalize legacy fields without writing; only explicit migration persists changes. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync } from "node:fs";

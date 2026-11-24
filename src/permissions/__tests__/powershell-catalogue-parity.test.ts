@@ -1,4 +1,3 @@
-// windows-permission
 import "../../__tests__/support/trusted-powershell.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

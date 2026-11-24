@@ -1,4 +1,3 @@
-// windows-permission
 import { afterEach, describe, expect, it } from "vitest";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { planWindowsSandbox, mxcShellCapability, windowsProxyOnlyCapability } from "../../boot/steps/windows-sandbox-plan.js";

@@ -1,4 +1,3 @@
-// windows-permission
 import { _resetAveHomePrivacyForTest, aveHome, setAveHomeConfigurationRefusedAtBoot } from "../../shared/ave-home.js";
 import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";

@@ -1,4 +1,3 @@
-// windows-permission
 /** Risk inspection and shell validation share quote-aware leaf grammar and fail-closed parse errors. */
 import { describe, it, expect } from "vitest";
 import { execFileSync } from "node:child_process";

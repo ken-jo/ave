@@ -1,36 +1,93 @@
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { platformChecksRequired, type CiSuitePlan } from "../../scripts/run-ci-suite.mjs";
 import { modifiedEntry } from "../../src/__tests__/support/git-diff-entry.js";
-import { planWindowsTests } from "../../scripts/plan-windows-tests.js";
-import { plannedWindowsFiles, WINDOWS_TEST_LISTS, windowsTestFiles } from "../../scripts/run-windows-test-list.mjs";
-import {
-  assertWindowsRemovalRecords, windowsCoverageDepartures, WINDOWS_TEST_REMOVALS, type ReadWindowsVersion,
-} from "../../scripts/windows-test-inventory.mjs";
+import { planWindowsTests, WINDOWS_TEST_TIMES, windowsTestDurations } from "../../scripts/plan-windows-tests.js";
+import { collectedVitestFiles } from "../../scripts/lib/vitest-collection.mjs";
+import { assertWindowsPlan, WINDOWS_TEST_SHARDS, windowsShardFiles } from "../../scripts/run-windows-test-list.mjs";
 
-const [permission, native, application] = WINDOWS_TEST_LISTS;
-const inventories = {
-  [permission]: windowsTestFiles(readFileSync(permission, "utf8")),
-  [native]: windowsTestFiles(readFileSync(native, "utf8")),
-  [application]: windowsTestFiles(readFileSync(application, "utf8")),
-};
+const root = resolve(import.meta.dirname, "../..");
+const collected = collectedVitestFiles(root);
+const times = JSON.parse(readFileSync(resolve(root, WINDOWS_TEST_TIMES), "utf8"));
+const committedPlan = () => planWindowsTests(collected, windowsTestDurations(times));
+
 describe("Windows shard planning", () => {
-  it("balances by measured duration before file count", () => {
-    const [heaviest] = inventories[permission];
-    if (heaviest === undefined) throw new Error("Missing Windows permission suite");
-    const result = planWindowsTests(inventories, { [heaviest]: 10_000_000 });
+  it("assigns every collected suite to exactly one of the fixed shards", () => {
+    const plan = committedPlan();
+    expect(plan.shards.map(shard => shard.id)).toEqual([...WINDOWS_TEST_SHARDS]);
+    expect(plan.suites).toBe(collected.length);
+    expect(plan.shards.flatMap(shard => shard.files).sort()).toEqual(collected);
+    for (const shard of plan.shards) expect(shard.files.length).toBeGreaterThan(0);
+  });
+
+  it("is deterministic for the same checkout and timings", () => {
+    expect(JSON.stringify(committedPlan())).toBe(JSON.stringify(planWindowsTests([...collected].reverse(), windowsTestDurations(times))));
+  });
+
+  it("balances by duration before file count", () => {
+    const [heaviest] = collected;
+    if (heaviest === undefined) throw new Error("No collected suites");
+    const result = planWindowsTests(collected, file => file === heaviest ? 10_000_000 : 1000);
     expect(result.shards[0]?.files).toEqual([heaviest]);
     expect(result.shards[0]?.weightMs).toBe(10_001_000);
   });
 
-  it("rejects a missing inventory member and a duplicate shard assignment", () => {
-    const plan = planWindowsTests(inventories);
-    const text = inventories[permission].join("\n");
-    const incomplete = { ...plan, lists: { ...inventories, [permission]: inventories[permission].slice(1) } };
-    expect(() => plannedWindowsFiles(permission, text, incomplete, 1)).toThrow("Invalid Windows plan");
-    plan.shards[0]?.files.push(plan.shards[1]?.files[0] ?? "");
-    expect(() => plannedWindowsFiles(permission, text, plan, 1)).toThrow("Windows shards must cover every selected test exactly once");
+  it("stays within ten percent between the heaviest and lightest shard on the committed timings", () => {
+    const weights = committedPlan().shards.map(shard => shard.weightMs);
+    expect(Math.max(...weights) / Math.min(...weights)).toBeLessThan(1.1);
+  });
+
+  it("places a new suite without a timing entry in exactly one shard", () => {
+    const added = "src/core/__tests__/brand-new-suite.test.ts";
+    expect(collected).not.toContain(added);
+    const plan = planWindowsTests([...collected, added], windowsTestDurations(times));
+    expect(plan.shards.filter(shard => shard.files.includes(added))).toHaveLength(1);
+    expect(windowsTestDurations(times)(added)).toBe(1000);
+  });
+
+  it("uses Windows samples first, then Mac estimates, and ignores stale timing entries", () => {
+    const duration = windowsTestDurations({
+      unit: "ms",
+      files: { "src/a/__tests__/both.test.ts": 7, "src/a/__tests__/gone.test.ts": 9 },
+      macEstimate: { scale: 1.19, files: { "src/a/__tests__/both.test.ts": 99, "src/a/__tests__/mac.test.ts": 5 } },
+    });
+    expect([duration("src/a/__tests__/both.test.ts"), duration("src/a/__tests__/mac.test.ts"), duration("src/a/__tests__/none.test.ts")])
+      .toEqual([7, 5, 1000]);
+    const plan = planWindowsTests(["src/a/__tests__/both.test.ts", ...collected.slice(0, 9)], duration);
+    expect(plan.shards.flatMap(shard => shard.files)).not.toContain("src/a/__tests__/gone.test.ts");
+  });
+
+  it("refuses a timing file without its Mac estimates", () => {
+    expect(() => windowsTestDurations({ unit: "ms", files: {} } as never)).toThrow(WINDOWS_TEST_TIMES);
+  });
+});
+
+describe("Windows plan check against the checkout", () => {
+  const clone = () => structuredClone(committedPlan());
+  it.each([
+    ["a duplicate assignment", (plan: ReturnType<typeof clone>) => { plan.shards[1]?.files.push(plan.shards[0]?.files[0] ?? ""); }, "assigns a suite twice"],
+    ["an omitted suite", (plan: ReturnType<typeof clone>) => { plan.shards[0]?.files.shift(); }, "omits 1 collected suite"],
+    ["an uncollected suite", (plan: ReturnType<typeof clone>) => { plan.shards[0]?.files.push("src/x/__tests__/missing.test.ts"); }, "names an uncollected suite"],
+    ["an empty shard", (plan: ReturnType<typeof clone>) => {
+      const [first, second] = plan.shards;
+      second?.files.push(...(first?.files ?? []));
+      if (first) first.files = [];
+    }, "non-empty shards"],
+    ["a dropped shard", (plan: ReturnType<typeof clone>) => { plan.shards.pop(); }, "non-empty shards"],
+    ["reordered shard IDs", (plan: ReturnType<typeof clone>) => { plan.shards.reverse(); }, "non-empty shards"],
+  ])("rejects %s", (_name, mutate, message) => {
+    const plan = clone();
+    mutate(plan);
+    expect(() => assertWindowsPlan(plan, collected)).toThrow(message);
+    expect(() => windowsShardFiles(plan, 1, root)).toThrow(message);
+  });
+
+  it("returns one shard's files and refuses an unknown shard ID", () => {
+    const plan = committedPlan();
+    expect(windowsShardFiles(plan, 3, root)).toEqual(plan.shards[2]?.files);
+    expect(() => windowsShardFiles(plan, 6, root)).toThrow("Invalid Windows test shard: 6");
   });
 });
 
@@ -41,8 +98,8 @@ it.each([
   { event: "push", base: "main", mode: "affected", file: "src/core/route-input.ts", runs: true },
   { event: "schedule", base: "main", mode: "full", file: "", runs: true },
   { event: "workflow_dispatch", base: "main", mode: "full", file: "", runs: true },
-] as const)("runs every committed suite exactly once when native checks run ($event, $base, $file)", ({ event, base, mode, file, runs }) => {
-  const workflow = parse(readFileSync(".github/workflows/ci.yml", "utf8"));
+] as const)("runs every collected suite exactly once when native checks run ($event, $base, $file)", ({ event, base, mode, file, runs }) => {
+  const workflow = parse(readFileSync(resolve(root, ".github/workflows/ci.yml"), "utf8"));
   const job = workflow.jobs["windows-permission-tests"];
   expect(workflow.jobs["windows-native-preparation"].if).toBe("needs.build.outputs.platform_checks == 'true'");
   expect(job.if).toBe("needs.build.outputs.platform_checks == 'true' && needs.windows-native-preparation.result == 'success'");
@@ -52,99 +109,8 @@ it.each([
   if (!selected) return;
 
   const shards: number[] = job.strategy.matrix.shard;
-  const lanes: string[] = job.steps.flatMap((step: { run?: string }) =>
-    step.run?.match(/run-windows-test-list\.mjs (config\/[\w-]+\.txt)$/u)?.[1] ?? []);
-  expect(lanes).toEqual([...WINDOWS_TEST_LISTS]);
-  const required = [...new Set(Object.values(inventories).flat())].sort();
-  const full = planWindowsTests(inventories);
-  const scheduled = shards.flatMap(shard => lanes.flatMap(lane =>
-    plannedWindowsFiles(lane, readFileSync(lane, "utf8"), full, shard)));
-  expect(scheduled.sort()).toEqual(required);
-});
-
-describe("last Windows lane removal", () => {
-  const file = "src/permissions/__tests__/sensitive-paths-canonicalize.test.ts";
-  const source = readFileSync(file, "utf8");
-  const updated = { ...inventories, [permission]: inventories[permission].filter(path => path !== file) };
-  function versions(record?: string, priorRecord?: string): ReadWindowsVersion {
-    return (path, side) => {
-      if (path === WINDOWS_TEST_REMOVALS) return (side === "before" ? priorRecord : record) ?? "{}";
-      if (path === file) return side === "before" ? source : source.replace("// windows-permission\n", "");
-      const list = WINDOWS_TEST_LISTS.find(list => list === path);
-      return list ? `${(side === "before" ? inventories : updated)[list].join("\n")}\n` : null;
-    };
-  }
-
-  it("rejects a matched declaration and row removal without a new record", () => {
-    expect(source).toMatch(/^\/\/ windows-permission\n/u);
-    const readVersion = versions();
-    const departures = windowsCoverageDepartures(readVersion);
-    expect([...departures]).toEqual([[file, permission]]);
-    expect(() => assertWindowsRemovalRecords(departures, readVersion)).toThrow(file);
-    const reused = JSON.stringify({ [file]: { reason: "Previously removed coverage" } });
-    expect(() => assertWindowsRemovalRecords(departures, versions(reused, reused))).toThrow(file);
-  });
-
-  const recordFor = (record: Record<string, unknown>) => JSON.stringify({ [file]: record });
-  const reason = "An equivalent canonicalization suite covers the boundary";
-  const surviving = inventories[native][0] ?? "";
-  it.each([
-    ["an empty reason", { reason: "" }],
-    ["a whitespace reason", { reason: " \t 　" }],
-    ["a zero-width reason", { reason: "​" }],
-    ["a format-character reason", { reason: "‍⁠﻿" }],
-    ["a Hangul filler reason", { reason: "ㅤ" }],
-    ["a blank Braille reason", { reason: "⠀" }],
-    ["a wildcard replacement", { reason, replacement: "*" }],
-    ["a nonexistent replacement", { reason, replacement: "src/permissions/__tests__/missing-canonicalize.test.ts" }],
-    ["a replacement outside every lane", { reason, replacement: "src/core/__tests__/route-input.test.ts" }],
-    ["a padded replacement", { reason, replacement: ` ${surviving}` }],
-    ["a dotted replacement", { reason, replacement: `./${surviving}` }],
-    ["the departing suite as its own replacement", { reason, replacement: file }],
-  ])("rejects a record with %s", (_name, record) => {
-    expect(Object.values(inventories).flat()).not.toContain("src/core/__tests__/route-input.test.ts");
-    const readVersion = versions(recordFor(record));
-    expect(() => assertWindowsRemovalRecords(windowsCoverageDepartures(readVersion), readVersion)).toThrow(file);
-  });
-
-  it("accepts a revised record when a restored suite leaves again", () => {
-    // A base record for a departing suite means the suite had returned to a base lane.
-    const prior = recordFor({ reason: "Previously removed coverage" });
-    const readVersion = versions(recordFor({ reason: "The restored suite moved to the canonicalization audit" }), prior);
-    expect(() => assertWindowsRemovalRecords(windowsCoverageDepartures(readVersion), readVersion)).not.toThrow();
-  });
-
-  it.each([
-    ["unchanged", "Previously removed coverage"],
-    ["padded", "  Previously removed coverage "],
-    ["zero-width-marked", "Previously​ removed coverage⁠"],
-  ])("rejects an %s historical reason for a suite that leaves again", (_name, revised) => {
-    const readVersion = versions(recordFor({ reason: revised }), recordFor({ reason: "Previously removed coverage" }));
-    expect(() => assertWindowsRemovalRecords(windowsCoverageDepartures(readVersion), readVersion)).toThrow(file);
-  });
-
-  it("accepts a replacement that a surviving Windows lane collects at head", () => {
-    expect(surviving).not.toBe("");
-    const readVersion = versions(recordFor({ reason, replacement: surviving }));
-    expect(() => assertWindowsRemovalRecords(windowsCoverageDepartures(readVersion), readVersion)).not.toThrow();
-  });
-
-  it("accepts every committed record against the lanes at head", () => {
-    const records = JSON.parse(readFileSync(WINDOWS_TEST_REMOVALS, "utf8")) as Record<string, unknown>;
-    const departures = new Map(Object.keys(records).map(path => [path, permission] as const));
-    const head: ReadWindowsVersion = (path, side) => {
-      if (path === WINDOWS_TEST_REMOVALS) return side === "after" ? JSON.stringify(records) : "{}";
-      return WINDOWS_TEST_LISTS.includes(path as typeof permission) ? readFileSync(path, "utf8") : null;
-    };
-    expect(departures.size).toBeGreaterThan(0);
-    expect(() => assertWindowsRemovalRecords(departures, head)).not.toThrow();
-  });
-
-  it("does not count a lane transfer between the three lists as a departure", () => {
-    const original = versions();
-    expect(windowsCoverageDepartures((path, side) => {
-      const value = original(path, side);
-      return path === application && side === "after" ? `${value ?? ""}${file}\n` : value;
-    }).size).toBe(0);
-  });
+  expect(shards).toEqual([...WINDOWS_TEST_SHARDS]);
+  const full = committedPlan();
+  const scheduled = shards.flatMap(shard => windowsShardFiles(full, shard, root));
+  expect(scheduled.sort()).toEqual(collected);
 });

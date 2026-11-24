@@ -1,4 +1,3 @@
-// windows-permission
 import { NO_APPROVER_MESSAGE } from "../../../permissions/decision-pipeline.js";
 import { HookRunner } from "../../../hooks/hook-runner.js";
 import { captureRationalePolicySnapshot } from "../../../tools/pipeline/rationale-policy-epoch.js";

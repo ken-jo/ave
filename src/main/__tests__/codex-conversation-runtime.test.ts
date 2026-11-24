@@ -1,4 +1,3 @@
-// windows-permission
 import { refuseNamespaceFileCreation } from "../../__tests__/support/feature-namespace.js";
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));

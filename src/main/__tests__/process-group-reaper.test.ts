@@ -1,4 +1,3 @@
-// windows-permission
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter, once } from "node:events";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";

@@ -1,4 +1,3 @@
-// windows-permission
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";

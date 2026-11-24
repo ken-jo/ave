@@ -1,4 +1,3 @@
-// windows-permission
 // Use real upgrade markers so eligibility follows the seeder's grammar.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, existsSync, lstatSync, statSync, symlinkSync } from "node:fs";

@@ -1,4 +1,3 @@
-// windows-permission
 import { configureHostResources } from "../../main/host-resources.js";
 import * as pathKind from "../../main/windows-path-kind-launcher.js";
 import * as childProcess from "node:child_process";

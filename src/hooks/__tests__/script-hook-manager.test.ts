@@ -1,4 +1,3 @@
-// windows-permission
 // (docs/architecture/permission-policy-design.md)
 import { describe, expect, it } from "vitest";
 import { ScriptHookManager, dlpRedactInput } from "../script-hook-manager.js";

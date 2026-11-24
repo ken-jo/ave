@@ -1,4 +1,3 @@
-// windows-permission
 import { describe, expect, it } from "vitest";
 import type { PermissionCheckResult } from "../../../permissions/permission-manager.js";
 import {

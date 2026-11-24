@@ -1,4 +1,3 @@
-// windows-permission
 /** User settings, managed policy, and a catalog pin must stop refresh before network access. */
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

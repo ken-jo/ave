@@ -1,4 +1,3 @@
-// windows-permission
 import { describe, expect, it } from "vitest";
 
 import { assertSandboxWindowsExtensionPlan, maxEgressGrantScope } from "../../../shared/sandbox-capability-info.js";

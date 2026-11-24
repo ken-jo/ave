@@ -1,4 +1,3 @@
-// windows-permission
 // Webview storage refusals must be audited by the sink; IPC only replies to the caller.
 // Use real reparse points because sanitized keys cannot express lexical escapes.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";

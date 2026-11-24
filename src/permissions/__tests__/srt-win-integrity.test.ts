@@ -1,4 +1,3 @@
-// windows-permission
 import { tsxChildEnv } from "../../__tests__/support/tsx-child-env.js";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";

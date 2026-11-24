@@ -1,4 +1,3 @@
-// windows-permission
 import { execFileSync } from "node:child_process";
 import { expect, it } from "vitest";
 import { isWindowsHomeRootRepairable, isWindowsHomeRootSafe, WINDOWS_HOME_BOUNDARY_SOURCE } from "../windows-home-boundary.js";

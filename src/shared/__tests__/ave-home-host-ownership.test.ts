@@ -1,4 +1,3 @@
-// windows-permission
 import { configureHostResources } from "../../main/host-resources.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";

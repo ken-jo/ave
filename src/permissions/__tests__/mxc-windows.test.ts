@@ -1,4 +1,3 @@
-// windows-permission
 import { describe, expect, it } from "vitest";
 import { WINDOWS_COMMAND_LINE_LIMIT, WINDOWS_COMMAND_LINE_MARGIN, windowsCommandLineLength } from "../../shared/windows-command-line.js";
 

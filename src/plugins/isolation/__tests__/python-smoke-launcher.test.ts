@@ -1,4 +1,3 @@
-// windows-permission
 /** Run the POSIX launcher through the selected interpreter and isolated vendor tree. */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";

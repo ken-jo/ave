@@ -1,4 +1,3 @@
-// windows-permission
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
 import { describe, expect, it, vi } from "vitest";

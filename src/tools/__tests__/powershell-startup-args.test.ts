@@ -1,4 +1,3 @@
-// windows-permission
 import { afterEach, expect, it, vi } from "vitest";
 import { preparePowerShellLaunch } from "../powershell-launch.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";

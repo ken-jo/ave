@@ -1,4 +1,3 @@
-// windows-permission
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const filesystem = vi.hoisted(() => ({ stat: vi.fn(), entries: vi.fn(), realpath: vi.fn(), access: vi.fn() }));

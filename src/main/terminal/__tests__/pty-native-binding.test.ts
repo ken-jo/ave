@@ -1,4 +1,3 @@
-// windows-permission
 // Exercise the real ABI-stable native loader under the desktop test runtime; packaged checks use the same resolved binding directory.
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";

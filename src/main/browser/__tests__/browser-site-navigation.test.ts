@@ -1,4 +1,3 @@
-// windows-permission
 import { describe, expect, it, vi } from "vitest";
 import { gateBrowserSiteNavigation } from "../browser-site-navigation.js";
 import type { CdpSession } from "../browser-action-guard.js";

@@ -1,4 +1,3 @@
-// windows-permission
 import { describe, expect, it } from "vitest";
 import { gitReadOnlyEnvironment, isSupportedGitVersion, readOnlyGitArguments } from "../rules/git-readonly-argv.js";
 

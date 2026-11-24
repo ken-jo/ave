@@ -1,4 +1,3 @@
-// windows-permission
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { mkdtemp, readdir, readFile, rm, writeFile, mkdir } from "node:fs/promises";

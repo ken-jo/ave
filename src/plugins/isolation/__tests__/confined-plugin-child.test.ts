@@ -1,4 +1,3 @@
-// windows-permission
 import { writePermissionSettingsFixture } from "../../../__tests__/support/permission-settings-fixture.js";
 import { setFixtureOwner } from "../../../__tests__/support/fixture-owner.js";
 import { canCreateSymlinks } from "../../../__tests__/support/symlink-capability.js";
