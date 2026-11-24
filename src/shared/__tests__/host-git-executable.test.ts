@@ -3,6 +3,7 @@ import { accessSync, existsSync, mkdtempSync, renameSync, statSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { delimiter, join, parse, win32 } from "node:path";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+import { firstPathGit } from "../../../.github/scripts/require-validated-git.mjs";
 import { gitProbeChild } from "../../__tests__/support/git-probe-child.js";
 import { deferred } from "../../__tests__/support/deferred.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -87,10 +88,10 @@ describe("resolveHostGit", () => {
 
   it("caches the selected executable, skipping a directory named like the binary", async () => {
     const other = join(root, "other-bin");
-    vi.stubEnv("PATH", [other, host].join(delimiter));
-    vi.mocked(statSync)
-      .mockReturnValueOnce({ isFile: () => false } as ReturnType<typeof statSync>)
-      .mockReturnValue({ isFile: () => true } as ReturnType<typeof statSync>);
+    const searchPath = [other, host].join(delimiter);
+    vi.stubEnv("PATH", searchPath);
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.mocked(statSync).mockImplementation((path) => ({ isFile: () => path === join(host, binary) }) as ReturnType<typeof statSync>);
     const { resolveHostGit } = await import("../host-git-executable.js");
 
     expect(resolveHostGit({ packaged: false })?.path).toBe(join(host, binary));
@@ -98,6 +99,7 @@ describe("resolveHostGit", () => {
     expect(resolveHostGit({ packaged: false })?.path).toBe(join(host, binary));
     expect(vi.mocked(accessSync).mock.calls.map(([path]) => path)).toEqual([join(other, binary), join(host, binary), join(host, binary), join(host, binary)]);
     expect(execFileSync).toHaveBeenCalledExactlyOnceWith(join(host, binary), ["--no-lazy-fetch", "--version"], expect.anything());
+    expect(firstPathGit(searchPath)).toBe(join(host, binary));
   });
 
   it("ignores relative and empty PATH entries and discovers an executable after a miss", async () => {

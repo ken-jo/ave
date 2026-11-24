@@ -1,11 +1,10 @@
 #!/usr/bin/env node
 // The stage-workspace regressions prove the host git floor on the runner's git, so it must be at least the release whose hook events
 // HOOK_EVENTS lists (HOOK_EVENTS_VALIDATED): an older one fails here, with its own message, rather than inside a test. A newer one
-// passes and its exact version is logged; the host warns of it at run time too. The git read is the one discovery tries first: the
-// first absolute search-path entry that holds it. Discovery takes that one whenever it is at least the product minimum, which is below
-// this floor, so a pass here is a pass on the git the regressions start.
+// passes and its exact version is logged. On an ordinary runner the first Git file on the absolute PATH is executable and is the
+// one unpackaged discovery tries first. The gate checks that runner installation without using discovery's fallback locations.
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { posix, win32 } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -26,14 +25,18 @@ export function gitVersionError(reported, floor) {
   return null;
 }
 
-/** The first git on an absolute search-path entry, as discovery orders them; null when none holds one. */
+/** The first Git file on an absolute runner PATH entry, or null when none holds one. */
 export function firstPathGit(searchPath = process.env.PATH ?? "", platform = process.platform) {
   const windows = platform === "win32";
   for (const raw of searchPath.split(windows ? ";" : ":")) {
     const entry = raw.trim().replace(/^"(.*)"$/u, "$1");
     if (!(windows ? /^[A-Za-z]:[\\/]/u.test(entry) : posix.isAbsolute(entry))) continue;
     const candidate = windows ? win32.join(entry, "git.exe") : posix.join(entry, "git");
-    if (existsSync(candidate)) return candidate;
+    try {
+      if (statSync(candidate).isFile()) return candidate;
+    } catch {
+      continue;
+    }
   }
   return null;
 }
