@@ -406,6 +406,49 @@ const onWindows = it.skipIf(process.platform !== "win32");
 /** Git hides the link file, and a hidden file is not written over: it is put there anew. */
 const relink = (stage: string, link: string): void => { rmSync(join(stage, ".git")); writeFileSync(join(stage, ".git"), link); };
 const slashed = (path: string, volume: string): string => path.slice(volume.length).replaceAll("\\", "/");
+
+it.each(["missing", "readable", "replaced"] as const)("partial release verifies a %s repository config before removing its stage", async (scenario) => {
+  const fx = gitFixture();
+  const config = join(fx.repo, ".git", "config");
+  const saved = join(fx.repo, ".git", "config-saved");
+  const real = createHostGit({ env: fx.env });
+  let replaceOnRead = false;
+  const replace = (): void => { renameSync(config, saved); writeFileSync(config, readFileSync(saved)); };
+  const git: HostGit = { ...real, run: (cwd, args, call) => {
+    if (replaceOnRead && args.includes("extensions.refStorage")) {
+      replaceOnRead = false;
+      replace();
+    }
+    return real.run(cwd, args, call);
+  } };
+  try {
+    const handle = fx.start({ git });
+    const open = await handle.provider.open(handle.run, fx.repo);
+    if (!open.ok) throw new Error(open.code);
+    const stage = await stageRoot(handle, "s1");
+    const record = JSON.parse(readFileSync(join(open.workspace.runRoot, RUN_FILE), "utf8")) as Recorded;
+    const admin = record.registrations.s1?.admin;
+    if (admin === undefined) throw new Error("expected a stage registration");
+    expect(readFileSync(config, "utf8")).not.toMatch(/refStorage/iu);
+    if (scenario === "missing") renameSync(config, saved);
+    replaceOnRead = scenario === "replaced";
+    if (scenario === "readable") {
+      await handle.provider.release(handle.run, ["s1"]);
+      expect([existsSync(stage), existsSync(admin)]).toEqual([false, false]);
+    } else {
+      await expect(handle.provider.release(handle.run, ["s1"])).rejects.toThrow("repo.refStorage");
+      expect([existsSync(stage), existsSync(admin)]).toEqual([true, true]);
+      expect(existsSync(saved)).toBe(true);
+    }
+  } finally {
+    if (existsSync(saved)) {
+      rmSync(config, { force: true });
+      renameSync(saved, config);
+    }
+    await fx.done();
+  }
+});
+
 /** A host git that notes where each call was made. */
 function countedGit(fx: GitFixture): { git: HostGit; calls: string[] } {
   const real = createHostGit({ env: fx.env });
@@ -416,7 +459,11 @@ function countedGit(fx: GitFixture): { git: HostGit; calls: string[] } {
 onWindows("a project on a share keeps the registration a stage folder names by the share's path", async () => {
   const fx = gitFixture();
   try {
-    const handle = fx.start();
+    const real = createHostGit({ env: fx.env });
+    const configAnswer = vi.fn(() => ({ code: 1, stdout: "", stderr: "" }));
+    const handle = fx.start({ git: { ...real, run: (cwd, args, call) =>
+      between.share !== undefined && args.includes("extensions.refStorage") ? Promise.resolve(configAnswer()) : real.run(cwd, args, call),
+    } });
     const open = await handle.provider.open(handle.run, fx.repo);
     if (!open.ok) throw new Error("expected a workspace");
     const stage = await stageRoot(handle, "s1");
@@ -435,6 +482,7 @@ onWindows("a project on a share keeps the registration a stage folder names by t
     expect(existsSync(stage)).toBe(false);
     expect(existsSync(admin)).toBe(false);
     expect(between.foreign).toEqual([]);
+    expect(configAnswer).toHaveBeenCalledTimes(2);
   } finally {
     try { await fx.done(); } finally { between.share = undefined; }
   }
@@ -650,7 +698,7 @@ async function collectWithLink(fx: GitFixture, linkTo: (admin: string) => string
   joinDir = resolve(open.workspace.runRoot, JOIN_DIR);
   await expect(handle.provider.integrate(handle.run, "j1", ["s1"])).rejects.toThrow("the integration worktree is not the run's own");
   expect(replaced).toBe(true);
-  return { asked: [...between.asked], repository: [record.project.root, record.repo.gitDir] };
+  return { asked: [...between.asked], repository: [record.project.root, record.repo.gitDir, record.repo.gitDir] };
 }
 
 onWindows("an integration folder whose link names another share or a device is not collected into, and nothing is asked of the link", async () => {

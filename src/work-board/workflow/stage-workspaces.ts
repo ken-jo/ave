@@ -345,12 +345,15 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     return within(root, aveHome()) || within(worktreesRoot(), root);
   }
 
-  /** The repository keeps its refs in its own directory: its format names no store but plain `files` or `reftable`. Git reads the
-   * format from the repository's own configuration file alone, so that file alone is asked. Undefined when git gave no answer: exit 1
-   * with nothing written is no format named, a list of formats is one, and anything else is none. Asked at open and before every step
-   * that changes the repository. */
-  async function refStoreOf(root: string, gitDir: string): Promise<"own" | "elsewhere" | undefined> {
-    const read = await git.run(root, ["config", "--file", join(gitDir, "config"), "--get-all", "extensions.refStorage"], { isolated: true, exact: true, requiresFloor: true });
+  /** Ask git about the bytes read from the verified common-directory config. An absent key only counts after that read. */
+  async function refStoreOf(root: string, repo: NonNullable<WorkspaceRecord["repo"]>): Promise<"own" | "elsewhere" | undefined> {
+    const common = holdDir(repo.gitDir, repo.id);
+    const id = common.entryId("config");
+    if (id === undefined) return undefined;
+    const config = common.readFile("config", id);
+    if (config === undefined) return undefined;
+    const read = await git.run(root, ["config", "--file", "-", "--get-all", "extensions.refStorage"], { stdin: config, isolated: true, exact: true, requiresFloor: true });
+    if (common.entryId("config") !== id) return undefined;
     if (read.stderr !== "") return undefined;
     if (read.code === 1 && read.stdout === "") return "own";
     if (read.code !== 0 || !read.stdout.endsWith("\n")) return undefined;
@@ -391,7 +394,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     const gitDir = vetRecordPath("gitDir", repo.gitDir, { ...live, gitDir: now.gitDir });
     if (gitDir === undefined) return { field: "repo.gitDir", side: "unverified" };
     if (now.id !== repo.id) return { field: "repo.id", side: "repo" };
-    const store = await refStoreOf(live.root, now.gitDir).catch(() => undefined);
+    const store = await refStoreOf(live.root, now).catch(() => undefined);
     at.run.check();
     if (store === undefined) return { field: "repo.refStorage", side: "unverified" };
     if (store === "elsewhere") return { field: "repo.refStorage", side: "repo" };
@@ -434,7 +437,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
         if (drivers.requiredFilters.length > 0 && await usesFilter(project.root, drivers.requiredFilters)) return refused("git-unavailable");
         const repo = await commonDirOf(project.root);
         // Refs a format keeps in a folder of its own choosing, a worktree's among them, are out of reach of the run's cleanup.
-        if (await refStoreOf(project.root, repo.gitDir) !== "own") return refused("git-unavailable");
+        if (await refStoreOf(project.root, repo) !== "own") return refused("git-unavailable");
         // A repository directory that is no plain path gets no git workspace: no later call would take the record's path for it.
         if (vetRecordPath("gitDir", repo.gitDir, { root: project.root, gitDir: repo.gitDir }) === undefined) return refused("git-unavailable");
         gitRun = { baseCommit: found.baseCommit, branch: runBranch(run.runId), drivers, repo };

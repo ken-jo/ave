@@ -44,7 +44,7 @@ interface HostGitResult { code: number; stdout: string; stderr: string }
  * `exact`: the answer holds names the caller compares, looks up on disk or hands back to git, so it must be text as it stands: one
  * that is not would be read as other names, and is refused as `not-text`. `paths`: the paths the call is about, each given to git as
  * that one path and never as a pattern; an argument list carries none. */
-interface HostGitCall { stdin?: string; drivers?: readonly string[]; isolated?: boolean; exact?: boolean; worktree?: { gitDir: string; workTree: string }; paths?: readonly string[]; requiresFloor?: boolean }
+interface HostGitCall { stdin?: string | Buffer; drivers?: readonly string[]; isolated?: boolean; exact?: boolean; worktree?: { gitDir: string; workTree: string }; paths?: readonly string[]; requiresFloor?: boolean }
 /** Bytes as the text they are and nothing else: no byte replaced, no leading mark dropped. Throws for bytes that are no text. */
 const STRICT_TEXT = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 export class HostGitError extends Error {
