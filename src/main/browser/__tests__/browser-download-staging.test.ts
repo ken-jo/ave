@@ -1,6 +1,6 @@
 import { execFileSync, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statfsSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -1128,7 +1128,7 @@ const ENDINGS = ["cancelled", "failed", "refused"] as const;
 const theTarget: Record<Ending, string[]> = { cancelled: [], failed: ["report.pdf"], refused: ["report.pdf"] };
 // A folder's entries, without the `._` entries a volume without extended attributes (exFAT) keeps them in.
 const entriesOf = (folder: string): string[] => readdirSync(folder).filter((name) => !name.startsWith("._")).sort();
-async function stoppedNativeCopy(ending: Ending, swap: boolean | "absent" | "directory" | "symlink", base: string) {
+async function stoppedNativeCopy(ending: Ending, swap: boolean | "absent" | "directory" | "symlink" | ((path: string) => void), base: string) {
   const chosen = join(base, "chosen");
   mkdirSync(chosen);
   const target = join(chosen, "report.pdf");
@@ -1147,6 +1147,7 @@ async function stoppedNativeCopy(ending: Ending, swap: boolean | "absent" | "dir
       moveAside(swapped, join(base, "the copy's own file"));
       if (swap === "directory") mkdirSync(swapped);
       else if (swap === "symlink") symlinkSync(target, swapped);
+      else if (typeof swap === "function") swap(swapped);
       else writeFileSync(swapped, "the user's file");
     }
     if (ending === "refused") mkdirSync(target);
@@ -1233,6 +1234,23 @@ describe.runIf(process.platform === "darwin")("a stopped native copy's temporary
     const { outcome, chosen, swapped } = await stoppedNativeCopy("cancelled", "directory", onVolume(skip));
     expect(entriesOf(chosen)).toEqual([basename(swapped)]);
     expect(statSync(swapped).isDirectory()).toBe(true);
+    expect(outcome).toEqual({ state: "interrupted", cleanup: "part-left" });
+  });
+
+  it("removes a truncated restoration when the volume fills during copy-back", async ({ skip }) => {
+    const base = onVolume(skip);
+    const replacement = Buffer.alloc(1024 * 1024, 0x61);
+    const { outcome, chosen } = await stoppedNativeCopy("cancelled", (path) => {
+      writeFileSync(path, replacement);
+      const { bavail, bsize } = statfsSync(base);
+      writeFileSync(join(base, "padding"), Buffer.alloc(bavail * bsize - 128 * 1024));
+      const remaining = statfsSync(base);
+      expect(remaining.bavail * remaining.bsize).toBeGreaterThan(0);
+      expect(remaining.bavail * remaining.bsize).toBeLessThan(replacement.length);
+    }, base).finally(() => { rmSync(join(base, "padding"), { force: true }); });
+    const [hidden] = entriesOf(chosen);
+    expect(entriesOf(chosen)).toEqual([expect.stringMatching(/^\.[0-9a-f]{32}\.removing$/u)]);
+    expect(readFileSync(join(chosen, hidden ?? "")).equals(replacement)).toBe(true);
     expect(outcome).toEqual({ state: "interrupted", cleanup: "part-left" });
   });
 });

@@ -276,7 +276,16 @@ static int copy_back(int to, const char *hidden, const char *part) {
   }
   if (target >= 0) {
     if (copied && fsync(target) != 0) copied = 0;
+    struct stat created;
+    const int identified = fstat(target, &created) == 0;
     if (close(target) != 0) copied = 0;
+    if (!copied && identified) {
+      struct stat there;
+      if (fstatat(to, part, &there, AT_SYMLINK_NOFOLLOW) == 0 && S_ISREG(there.st_mode) &&
+          there.st_dev == created.st_dev && there.st_ino == created.st_ino) {
+        unlinkat(to, part, 0);
+      }
+    }
   }
   close(source);
   return copied && unlinkat(to, hidden, 0) == 0;
