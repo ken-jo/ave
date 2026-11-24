@@ -645,6 +645,34 @@ static int run_rename(char **argv) {
   return done("committed");
 }
 
+static int replace_copy_name(int directory, const char *from, const char *to, int restoring) {
+#if defined(AVE_DIR_OPS_TEST_COPY_COMMIT_FAILURE) || defined(AVE_DIR_OPS_TEST_COPY_RESTORE_FAILURE)
+#if !defined(AVE_DIR_OPS_TEST_COPY_RESTORE_FAILURE)
+  if (!restoring)
+#endif
+  {
+    errno = EIO;
+    return -1;
+  }
+#endif
+  (void)restoring;
+  return renameatx_np(directory, from, directory, to, RENAME_EXCL);
+}
+
+static void finish_copy_target(int directory, const char *target, const char *aside, int old,
+    const struct stat *identity, int committed) {
+  if (*aside == '\0') return;
+  if (names_file(directory, aside, old)) {
+    if (committed ? unlinkat(directory, aside, 0) == 0
+        : replace_copy_name(directory, aside, target, 1) == 0 && names_file(directory, target, old)) return;
+  }
+  struct left_part left = {
+    .own = *identity, .observed = old, .verdict = committed ? "remove-failed" : "mismatch",
+  };
+  memcpy(left.name, aside, HIDDEN_NAME_SIZE);
+  report_left("target-left", directory, &left, 0);
+}
+
 static int run_copy(char **argv) {
   const char *name = argv[3];
   const char *target = argv[7];
@@ -660,8 +688,13 @@ static int run_copy(char **argv) {
   struct stat info;
   if (fstat(source, &info) != 0) return failed(errno);
   if (!S_ISREG(info.st_mode)) return refused("source");
-  status = check_replaceable(to, target);
-  if (status != 0) return status;
+  int old = open_regular(to, target);
+  if (old < 0 && (errno == EACCES || errno == EPERM)) {
+    old = openat(to, target, O_EVTONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+  }
+  struct stat old_identity;
+  if (old < 0 && errno != ENOENT) return errno == ELOOP ? refused("target") : failed(errno);
+  if (old >= 0 && (fstat(old, &old_identity) != 0 || !S_ISREG(old_identity.st_mode))) return refused("target");
   if (!proceed("ready")) return done("cancelled");
   // The temporary file is created exclusively, never through a link, in the held folder, and opened for reading too, so a cleanup can
   // compare what it wrote.
@@ -722,26 +755,38 @@ static int run_copy(char **argv) {
   if (failure != 0) return abandon(to, part, &written, failure);
   // The rename below is the commit point: the caller answers here whether the copy is still wanted.
   if (!proceed("copied")) return abandon(to, part, &written, 0);
-  const int found = replaceable(to, target);
-  if (found != 0) return stopped_copy(to, part, &written, "refused target", EXIT_REFUSED);
   if (!names_file(to, part, written.fd)) {
     struct stat entry;
     if (fstatat(to, part, &entry, AT_SYMLINK_NOFOLLOW) != 0 && errno == ENOENT) return refused("target removed");
     return refused("target left");
   }
+  char aside[HIDDEN_NAME_SIZE] = "";
+  if (old >= 0) {
+    fresh_hidden_name(aside);
+    if (!names_file(to, target, old) || renameatx_np(to, target, to, aside, RENAME_EXCL) != 0) {
+      return stopped_copy(to, part, &written, "refused target", EXIT_REFUSED);
+    }
+    if (!names_file(to, aside, old)) {
+      finish_copy_target(to, target, aside, old, &old_identity, 0);
+      return stopped_copy(to, part, &written, "refused target", EXIT_REFUSED);
+    }
+  }
 #if defined(AVE_DIR_OPS_TEST_SWAP_COMMIT)
   swap_file(to, part);
 #endif
-  if (renameatx_np(to, part, to, target, RENAME_EXCL) != 0) {
+  if ((old >= 0 ? replace_copy_name(to, part, target, 0) : renameatx_np(to, part, to, target, RENAME_EXCL)) != 0) {
     const int code = errno;
+    finish_copy_target(to, target, aside, old, &old_identity, 0);
     if (code == EEXIST || code == ENOTSUP || code == EINVAL) return stopped_copy(to, part, &written, "refused target", EXIT_REFUSED);
     return abandon(to, part, &written, code);
   }
   if (!names_file(to, target, written.fd)) {
     // Preserve the entry even if the part name is occupied again.
     const int moved_back = renameatx_np(to, target, to, part, RENAME_EXCL);
+    finish_copy_target(to, target, aside, old, &old_identity, 0);
     return refused(moved_back == 0 ? "target left" : "target changed");
   }
+  finish_copy_target(to, target, aside, old, &old_identity, 1);
   return done("committed");
 }
 

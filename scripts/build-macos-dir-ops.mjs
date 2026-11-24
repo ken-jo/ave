@@ -27,6 +27,8 @@ export const MACOS_DIR_OPS_TEST_BUILDS = Object.freeze([
   Object.freeze({ executable: "ave-dir-ops-swap-before-plain-rename", defines: ["AVE_DIR_OPS_TEST_SWAP_BEFORE_PLAIN_RENAME"] }),
   Object.freeze({ executable: "ave-dir-ops-swap-commit", defines: ["AVE_DIR_OPS_TEST_SWAP_COMMIT"] }),
   Object.freeze({ executable: "ave-dir-ops-fail-restored", defines: ["AVE_DIR_OPS_TEST_FAIL_RESTORED"] }),
+  Object.freeze({ executable: "ave-dir-ops-copy-commit-failure", defines: ["AVE_DIR_OPS_TEST_COPY_COMMIT_FAILURE"] }),
+  Object.freeze({ executable: "ave-dir-ops-copy-restore-failure", defines: ["AVE_DIR_OPS_TEST_COPY_RESTORE_FAILURE"] }),
 ]);
 
 export function macosDirOpsOutput(root, arch, executable = MACOS_DIR_OPS_EXECUTABLE) {

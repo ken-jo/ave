@@ -83,7 +83,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 
 const { prepareBrowserDownloadStaging, stageBrowserDownload, sweepBrowserDownloadStaging, BrowserDownloadStagingError, UNANSWERED_DOWNLOAD_BYTES } =
   await import("../browser-download-staging.js");
-const { _helperFileOperationsForTest, HeldFileHelperStalledError } = await import("../browser-download-files.js");
+const { _descriptorFileOperationsForTest, _helperFileOperationsForTest, HeldFileHelperStalledError } = await import("../browser-download-files.js");
 type Root = import("../browser-download-staging.js").BrowserDownloadStagingRoot;
 type Observed = import("../browser-download-staging.js").ObservedDownload;
 type Files = import("../browser-download-files.js").HeldFileOperations;
@@ -173,7 +173,8 @@ const atStep = (root: Root, operation: "move" | "copy" | "remove", step: Step, a
     };
     if (operation === "move") return { move: (from, name, to, target, proceed, stop) => files.move(from, name, to, target, wrap(proceed, {}), stop) };
     if (operation === "copy") {
-      return { copy: (from, name, to, target, part, proceed, stop) => files.copy(from, name, to, target, part, wrap(proceed, { part }), stop) };
+      return { copy: (from, name, to, target, part, proceed, stop, onTargetLeft) =>
+        files.copy(from, name, to, target, part, wrap(proceed, { part }), stop, onTargetLeft) };
     }
     return { remove: (directory, name, proceed, stop) => files.remove(directory, name, wrap(proceed, {}), stop) };
   });
@@ -446,7 +447,7 @@ describe("a staged download", () => {
     expect(readdirSync(root.path)).toEqual([]);
   });
 
-  it("copies across volumes through a private temporary file, then removes the staged copy", async () => {
+  it.each([false, true])("publishes across volumes with an existing target: %s", async (existing) => {
     const root = acrossVolumes(prepare());
     const { asked, askSavePath } = dialogs();
     const item = fakeItem();
@@ -455,6 +456,7 @@ describe("a staged download", () => {
     await settled();
     const chosen = join(home, "chosen");
     mkdirSync(chosen);
+    if (existing) writeFileSync(join(chosen, "report.pdf"), "old bytes");
     asked[0]?.answer(join(chosen, "report.pdf"));
     await settled();
     item.complete("across");
@@ -464,6 +466,83 @@ describe("a staged download", () => {
     expect(readdirSync(root.path)).toEqual([]);
     expectOnlyHeldPathOperations();
   });
+
+  it("records the previous target separately from the completed copy part", async () => {
+    const prepared = prepare();
+    const chosen = join(home, "chosen");
+    mkdirSync(chosen);
+    const target = join(chosen, "report.pdf");
+    const hidden = ".fedcba9876543210fedcba9876543210.removing";
+    const recover = vi.fn(async () => ({ outcome: "left" as const, at: null }));
+    const root = withFiles(acrossVolumes(prepared), () => ({
+      copy: async (_from, _name, _to, _target, _part, _proceed, _stop, onTargetLeft) => {
+        writeFileSync(join(chosen, hidden), "old bytes");
+        onTargetLeft?.({ name: hidden, identity: { kind: "helper", dev: 1n, ino: 2n, verdict: "mismatch", observed: null } });
+        throw new Error("injected commit failure");
+      },
+      recover,
+    }));
+    const item = fakeItem();
+    const dialogsForCopy = dialogs();
+    const { download } = stageBrowserDownload(item, { root, askSavePath: dialogsForCopy.askSavePath }, Promise.resolve());
+    const done = doneOutcome(download);
+    await settled();
+    dialogsForCopy.asked[0]?.answer(target);
+    await settled();
+    item.complete("new bytes");
+    expect(await done).toEqual({ state: "interrupted", cleanup: "removed" });
+    const [record] = readdirSync(root.path);
+    expect(record).toMatch(/\.cleanup\.json$/u);
+    expect(JSON.parse(readFileSync(join(root.path, record!), "utf8"))).toMatchObject({ at: hidden, target: "report.pdf" });
+    await sweepBrowserDownloadStaging(root);
+    expect(recover).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ path: chosen }), hidden, "report.pdf",
+      { kind: "helper", dev: 1n, ino: 2n, verdict: "mismatch", observed: null });
+    expect(readFileSync(join(chosen, hidden), "utf8")).toBe("old bytes");
+    expect(readdirSync(root.path)).toHaveLength(1);
+  });
+
+  it.runIf(process.platform === "darwin" || process.platform === "linux").each(["commit", "restore"] as const)(
+    "preserves old bytes and handles the record when exclusive %s fails",
+    async (failure) => {
+      const prepared = prepare();
+      const files = process.platform === "darwin"
+        ? _helperFileOperationsForTest(macHelper(`-copy-${failure}-failure`))
+        : _descriptorFileOperationsForTest((from) => {
+          if (from.endsWith(".part") || failure === "restore") throw Object.assign(new Error("injected rename failure"), { code: "EIO" });
+        });
+      const root = acrossVolumes({ ...prepared, files });
+      const chosen = join(home, "chosen");
+      mkdirSync(chosen);
+      const target = join(chosen, "report.pdf");
+      writeFileSync(target, "old bytes");
+      const item = fakeItem();
+      const { asked, askSavePath } = dialogs();
+      const { download } = stageBrowserDownload(item, { root, askSavePath }, Promise.resolve());
+      const done = doneOutcome(download);
+      await settled();
+      asked[0]?.answer(target);
+      await settled();
+      item.complete("new bytes");
+      expect(await done).toEqual({ state: "interrupted", cleanup: "removed" });
+      if (failure === "commit") {
+        expect(readdirSync(chosen)).toEqual(["report.pdf"]);
+        expect(readFileSync(target, "utf8")).toBe("old bytes");
+        expect(readdirSync(root.path)).toEqual([]);
+        return;
+      }
+      const [hidden] = readdirSync(chosen);
+      expect(readdirSync(chosen)).toHaveLength(1);
+      expect(hidden).toMatch(/^\.[0-9a-f]{32}\.removing$/u);
+      expect(readFileSync(join(chosen, hidden!), "utf8")).toBe("old bytes");
+      const [record] = readdirSync(root.path);
+      expect(record).toMatch(/\.cleanup\.json$/u);
+      expect(JSON.parse(readFileSync(join(root.path, record!), "utf8"))).toMatchObject({ at: hidden, target: "report.pdf" });
+      await sweepBrowserDownloadStaging(prepared);
+      expect(readFileSync(target, "utf8")).toBe("old bytes");
+      expect(readdirSync(chosen)).toEqual(["report.pdf"]);
+      expect(readdirSync(root.path)).toEqual([]);
+    },
+  );
 
   it.each(["create", "commit"] as const)("answers a cancel during a cross-volume copy (at %s) only once the copy has stopped, leaving nothing at the chosen path", async (when) => {
     const prepared = acrossVolumes(prepare());

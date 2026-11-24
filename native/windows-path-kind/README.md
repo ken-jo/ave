@@ -96,7 +96,17 @@ target's identity after rename. A post-rename mismatch triggers exclusive
 rollback. Commit refusals are `refused target removed` when the part is gone,
 `refused target left` with the optional named leftover when it remains, or
 `refused target changed` if rollback fails. All use exit 3. Plain copy
-refusals precede `ready`. A stopped copy can suffix `cancelled` or
+refusals precede `ready`. An existing ordinary target is held and identified
+before `ready`. After the second authorization the helper moves it exclusively
+to a fresh hidden name, verifies it, commits exclusively, then verifies and
+retires the old target. If commit fails, it restores the old target exclusively.
+A failed restore or retirement sends `target-left left <hidden> <own-dev>
+<own-ino> <verdict> <snapshot>` before the terminal reply, independent of
+the copy part's outcome. It uses `mismatch` for a failed restore and
+`remove-failed` for retirement after a verified commit. The identity is
+from the old target's handle. The host records the leftover for recovery.
+
+A stopped copy can suffix `cancelled` or
 `failed <errno>` with the same leftover form. Success, cancellation and
 recovery outcomes use exit 0, filesystem failures use exit 4, and usage
 errors use exit 2. A failed native call may print its translated Windows

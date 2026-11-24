@@ -199,6 +199,12 @@ inline std::string snapshot(HANDLE file, const FILE_ID_INFO& id) {
   return id_text(id, ':') + ":" + std::to_string(birth) + ":" + content;
 }
 
+inline std::string fresh_hidden_name() {
+  BYTE random[16];
+  if (BCryptGenRandom(nullptr, random, sizeof(random), BCRYPT_USE_SYSTEM_PREFERRED_RNG) < 0) return {};
+  return "." + hex_bytes(random, sizeof(random)) + ".removing";
+}
+
 struct Retirement {
   NameIdentity original;
   bool removed = false;
@@ -208,9 +214,8 @@ struct Retirement {
 inline Retirement retire(HANDLE directory, const std::wstring& name, HANDLE file, const FILE_ID_INFO& id) {
   Retirement result{check_name(directory, name, id)};
   if (result.original != NameIdentity::kMatches) return result;
-  BYTE random[16];
-  if (BCryptGenRandom(nullptr, random, sizeof(random), BCRYPT_USE_SYSTEM_PREFERRED_RNG) < 0) return result;
-  const std::string hidden = "." + hex_bytes(random, sizeof(random)) + ".removing";
+  const std::string hidden = fresh_hidden_name();
+  if (hidden.empty()) return result;
   const std::wstring aside(hidden.begin(), hidden.end());
   // No plain rename fallback. The file is held without delete sharing across isolation, verification and disposition.
 #if defined(AVE_TEST_DIR_RECOVERY)

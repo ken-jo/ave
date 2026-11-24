@@ -232,6 +232,34 @@ async function recoveryTests() {
     assert.equal(readFileSync(join(dir, "target"), "utf8"), "unrelated bytes");
     assert.ok(!existsSync(join(dir, part)));
   });
+  for (const failure of ["none", "commit", "restore"]) {
+    add(`copy replacement with ${failure} failure mode`, async (dir) => {
+      const source = join(dir, "source");
+      const target = join(dir, "target");
+      writeFileSync(source, "new bytes");
+      writeFileSync(target, "old bytes");
+      const old = snapshot(target);
+      const args = ["--dir-copy", ...held(dir), "source", ...held(dir), "target", part];
+      const result = await runCopy(failure === "none" ? args : [`replace-${failure}-failure`, ...args], (line, stdin) => {
+        if (line === "ready") stdin.write("c");
+        if (line === "copied") stdin.end("c");
+      }, failure === "none" ? helper : join(tmpdir(), "ave-path-pin-test.exe"));
+      assert.equal(result.code, failure === "none" ? 0 : 4, JSON.stringify(result));
+      assert.equal(readFileSync(source, "utf8"), "new bytes");
+      assert.ok(!existsSync(join(dir, part)));
+      const hiddenNames = readdirSync(dir).filter((name) => /^\.[0-9a-f]{32}\.removing$/u.test(name));
+      if (failure === "restore") {
+        assert.equal(hiddenNames.length, 1);
+        assert.ok(!existsSync(target));
+        assert.equal(readFileSync(join(dir, hiddenNames[0]), "utf8"), "old bytes");
+        assert.ok(result.lines.some((line) => line.startsWith(`target-left left ${hiddenNames[0]} ${old[0]} ${old[1]} mismatch `)));
+      } else {
+        assert.deepEqual(hiddenNames, []);
+        assert.equal(readFileSync(target, "utf8"), failure === "none" ? "new bytes" : "old bytes");
+        if (failure === "commit") assert.deepEqual(snapshot(target), old);
+      }
+    });
+  }
   for (const blocked of [false, true]) {
     add(`commit identity mismatch with ${blocked ? "occupied" : "vacant"} rollback name`, async (dir) => {
       writeFileSync(join(dir, "source"), "source");

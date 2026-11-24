@@ -116,10 +116,19 @@ stdin.
   reports an incomplete or unverified copy-back at the part name.
   `remove-id` and `restore` may also return the named `left` outcome
   when they isolate a file under a new hidden name.
-- To commit a copy, the helper verifies the part against the writing
-  descriptor, renames it to the target exclusively, and verifies the
-  target against that descriptor. A mismatched entry goes back by
-  exclusive rename if possible and the target is refused.
+- Before `ready`, the helper holds and identifies any existing ordinary
+  target. After authorization at `copied` it verifies the part, moves any
+  old target aside exclusively and verifies it against its descriptor.
+  The helper commits the part with an exclusive rename and verifies the
+  new target against the writing descriptor before retiring the old target.
+  A mismatched commit is rolled back exclusively if possible. If commit
+  fails, the helper restores the old target exclusively.
+- A failed restore or retirement of the old target sends
+  `target-left left <hidden> <own-dev> <own-ino> <verdict> <snapshot>`
+  before the terminal copy reply. The old identity comes from its held
+  descriptor. The verdict is `mismatch` for a failed restore and
+  `remove-failed` for retirement after a verified commit. The host records
+  this separately from the part's outcome.
 
   POSIX has no unlink-if-identity. The remaining windows are (a) between the final descriptor verify and the unlink of a random hidden name, and (b) after a verified restore or commit. Both are accepted: at (b), the restored or committed file was verified in place and visible, so a later change is the user's own act.
 

@@ -339,6 +339,10 @@ inline int run_rename(wchar_t** argv) {
   return done("committed");
 }
 
+#if defined(AVE_TEST_DIR_RECOVERY)
+bool test_fail_replacement_rename(bool restoring);
+#endif
+
 inline int run_copy(wchar_t** argv) {
   if (!plain_name(argv[3]) || !plain_name(argv[7]) || !plain_name(argv[8])) return kExitUsage;
   const std::wstring name(argv[3]);
@@ -361,8 +365,20 @@ inline int run_copy(wchar_t** argv) {
   FILE_ATTRIBUTE_TAG_INFO tag{};
   if (!GetFileInformationByHandleEx(source.value, FileAttributeTagInfo, &tag, sizeof(tag))) return failed(GetLastError());
   if ((tag.FileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) return refused("source");
-  status = check_replaceable(to.handle(), target);
-  if (status != 0) return status;
+  HANDLE previous = INVALID_HANDLE_VALUE;
+  NTSTATUS opening_target = open_relative(to.handle(), target, FILE_READ_DATA | FILE_READ_ATTRIBUTES | DELETE,
+    FILE_SHARE_READ, kOpenExisting, kOpenReparsePoint, previous);
+  if (opening_target < 0 && status_error(opening_target) == ERROR_ACCESS_DENIED) {
+    opening_target = open_relative(to.handle(), target, FILE_READ_ATTRIBUTES | DELETE, FILE_SHARE_READ,
+      kOpenExisting, kOpenReparsePoint, previous);
+  }
+  if (opening_target < 0 && !missing(status_error(opening_target))) {
+    return failed(native_failure(opening_target, "NtCreateFile"));
+  }
+  const PinnedHandle old(previous);
+  const bool replacing = old.value != INVALID_HANDLE_VALUE;
+  FILE_ID_INFO old_id{};
+  if (replacing && (!ordinary(old.value) || !read_id(old.value, old_id))) return refused("target");
   FILE_ID_INFO directory_id{};
   if (!read_id(to.handle(), directory_id)) return refused("to");
   if (!proceed("ready")) return done("cancelled");
@@ -404,11 +420,48 @@ inline int run_copy(wchar_t** argv) {
   const NameIdentity current = check_name(to.handle(), part_name, written);
   if (current == NameIdentity::kAbsent) return refused("target removed");
   if (current != NameIdentity::kMatches) return refused("target left");
-  const FileFailure renamed = rename_into(part.value, to.handle(), target, false);
+  std::string hidden;
+  std::wstring aside;
+  const auto report_target_left = [&](bool retiring) {
+    const bool verified = check_name(to.handle(), aside, old_id) == NameIdentity::kMatches;
+    say(("target-left left " + hidden + " " + id_text(old_id, ' ')
+      + (retiring ? " remove-failed " : " mismatch ") + (verified ? snapshot(old.value, old_id) : "-")).c_str());
+  };
+  const auto restore_target = [&]() {
+    if (!replacing) return;
+#if defined(AVE_TEST_DIR_RECOVERY)
+    if (test_fail_replacement_rename(true)) {
+      report_target_left(false);
+      return;
+    }
+#endif
+    if (check_name(to.handle(), aside, old_id) != NameIdentity::kMatches ||
+        rename_into(old.value, to.handle(), target, false).error != ERROR_SUCCESS ||
+        check_name(to.handle(), target, old_id) != NameIdentity::kMatches) report_target_left(false);
+  };
+  if (replacing) {
+    hidden = fresh_hidden_name();
+    aside.assign(hidden.begin(), hidden.end());
+    if (hidden.empty() || check_name(to.handle(), target, old_id) != NameIdentity::kMatches ||
+        rename_into(old.value, to.handle(), aside, false).error != ERROR_SUCCESS) {
+      return stopped_copy(to.handle(), part_name, part.value, written, {}, true);
+    }
+    if (check_name(to.handle(), aside, old_id) != NameIdentity::kMatches) {
+      restore_target();
+      return stopped_copy(to.handle(), part_name, part.value, written, {}, true);
+    }
+  }
+  FileFailure renamed;
+#if defined(AVE_TEST_DIR_RECOVERY)
+  if (replacing && test_fail_replacement_rename(false)) renamed = {ERROR_WRITE_FAULT};
+  else
+#endif
+  renamed = rename_into(part.value, to.handle(), target, false);
   if (renamed.error != ERROR_SUCCESS) {
+    restore_target();
     Entry target_entry = Entry::kAbsent;
     classify(to.handle(), target, target_entry);
-    if (target_entry != Entry::kAbsent || renamed.error == ERROR_ALREADY_EXISTS || renamed.error == ERROR_FILE_EXISTS
+    if ((!replacing && target_entry != Entry::kAbsent) || renamed.error == ERROR_ALREADY_EXISTS || renamed.error == ERROR_FILE_EXISTS
         || renamed.error == ERROR_NOT_SUPPORTED || renamed.error == ERROR_INVALID_FUNCTION || renamed.error == ERROR_INVALID_PARAMETER) {
       return stopped_copy(to.handle(), part_name, part.value, written, {}, true);
     }
@@ -420,8 +473,11 @@ inline int run_copy(wchar_t** argv) {
 #endif
   if (published != NameIdentity::kMatches) {
     const FileFailure rolled_back = rename_into(part.value, to.handle(), part_name, false);
+    restore_target();
     return refused(rolled_back.error == ERROR_SUCCESS ? "target left" : "target changed");
   }
+  if (replacing && (check_name(to.handle(), aside, old_id) != NameIdentity::kMatches ||
+      delete_on_close(old.value).error != ERROR_SUCCESS)) report_target_left(true);
   return done("committed");
 }
 

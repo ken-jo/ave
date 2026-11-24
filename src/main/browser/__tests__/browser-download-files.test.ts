@@ -763,6 +763,27 @@ describe("a copy whose helper says it left its temporary file", () => {
     expectLeftByHelper(run.error, hidden);
   });
 
+  it("reports a displaced target separately from the part on a failed commit", async () => {
+    script((helper) => {
+      helper.say("ready");
+      helper.once("input", () => {
+        helper.say("writing 1 2", "progress 8", "copied");
+        helper.once("input", () => {
+          helper.say(`target-left left ${HIDDEN} 1 3 mismatch -`, "refused target removed");
+          helper.exit(3);
+        });
+      });
+    });
+    const record = vi.fn();
+    const run = follow(files.copy(from, "staged", to, "report.pdf", ".0123.part", () => true, UNSTOPPED, record));
+    await flush();
+    expect(run.error).toBeInstanceOf(HeldDirectoryRefusedError);
+    expect(stoppedCopyOf(run.error)?.partialCopy).toBe("removed");
+    expect(record).toHaveBeenCalledExactlyOnceWith({
+      name: HIDDEN, identity: { kind: "helper", dev: 1n, ino: 3n, verdict: "mismatch", observed: null },
+    });
+  });
+
   it.each(SUFFIXES)("keeps the errno of a failure answered `failed EIO %s`", async (suffix, hidden) => {
     script((helper) => {
       helper.say("ready");

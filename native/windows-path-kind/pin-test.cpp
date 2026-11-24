@@ -13,7 +13,7 @@
 #pragma comment(lib, "advapi32.lib")
 
 namespace dir_ops {
-enum class RecoveryBoundary { kNone, kRestoreTarget, kRestoreError, kUnsupportedIsolation, kCommitMismatch, kCommitBlocked };
+enum class RecoveryBoundary { kNone, kRestoreTarget, kRestoreError, kUnsupportedIsolation, kCommitMismatch, kCommitBlocked, kReplaceCommitFailure, kReplaceRestoreFailure };
 RecoveryBoundary recovery_boundary = RecoveryBoundary::kNone;
 std::wstring boundary_path;
 
@@ -41,6 +41,11 @@ FileFailure test_isolation_result(HANDLE file, HANDLE directory, const std::wstr
     std::fputs("boundary reached; replacement blocked\n", stderr);
   }
   return {ERROR_NOT_SUPPORTED};
+}
+
+bool test_fail_replacement_rename(bool restoring) {
+  return recovery_boundary == RecoveryBoundary::kReplaceRestoreFailure ||
+    (!restoring && recovery_boundary == RecoveryBoundary::kReplaceCommitFailure);
 }
 
 NameIdentity test_commit_result(NameIdentity result) {
@@ -208,6 +213,12 @@ int non_surrogate_child(const std::wstring& path) {
 int wmain(int argc, wchar_t** argv) {
   if (argc >= 8) {
     const std::wstring test(argv[1]);
+    if (test == L"replace-commit-failure" || test == L"replace-restore-failure") {
+      if (argc != 12) return 2;
+      dir_ops::recovery_boundary = test == L"replace-commit-failure"
+        ? dir_ops::RecoveryBoundary::kReplaceCommitFailure : dir_ops::RecoveryBoundary::kReplaceRestoreFailure;
+      return dir_ops::run(argc - 1, argv + 1);
+    }
     if (test == L"commit-mismatch" || test == L"commit-blocked") {
       if (argc != 12) return 2;
       dir_ops::recovery_boundary = test == L"commit-mismatch" ? dir_ops::RecoveryBoundary::kCommitMismatch : dir_ops::RecoveryBoundary::kCommitBlocked;
