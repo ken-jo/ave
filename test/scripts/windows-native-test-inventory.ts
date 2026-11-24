@@ -160,6 +160,11 @@ function runtimeImports(tokens: readonly string[]): { imports: string[]; actualI
     if (!tokens.slice(factory, end).some((text, index) =>
       ["importActual", "importOriginal", "import"].includes(text) || isPossibleRequireLoad(tokens, factory + index))) mocks.add(name);
   }
+  for (const specifier of boundRequireSpecifiers(tokens)) {
+    if (specifier === undefined) continue;
+    imports.add(specifier);
+    actualImports.add(specifier);
+  }
   return { imports: [...imports], actualImports: [...actualImports], mocks: [...mocks].filter(name => !unmocks.has(name)) };
 }
 
@@ -562,7 +567,52 @@ const SOURCE_BUILDS = new Set(["build", "buildSync", "context"]);
 
 // A module loaded by a computed specifier is neither an import edge nor a
 // literal runtime input, so its target is unknown.
+// The index of the token that closes the bracket opened at `opening`, or -1.
+function closingIndex(tokens: readonly string[], opening: number): number {
+  let depth = 0;
+  for (let index = opening; index < tokens.length; index++) {
+    if (["(", "[", "{"].includes(tokens[index] ?? "")) depth++;
+    if ([")", "]", "}"].includes(tokens[index] ?? "") && --depth === 0) return index;
+  }
+  return -1;
+}
+
+// Additional require call sites, including literal calls whose targets belong
+// in the runtime graph. Resolution-only members do not load a module.
+function* boundRequireSpecifiers(tokens: readonly string[]): Generator<string | undefined> {
+  if (!tokens.includes("require") && !tokens.some(token => ["module", "node:module"].includes(literal(token) ?? ""))) return;
+  const factories = bindingsFor(tokens, new Set(), ["node:module", "module"]);
+
+  const results = new Set<number>();
+  for (let i = 0; i < tokens.length; i++) {
+    const factory = memberCall(tokens, factories, i);
+    if (factory?.member !== "createRequire" || tokens[i - 1] === ".") continue;
+    const close = closingIndex(tokens, factory.opening);
+    if (close >= 0) results.add(close + 1);
+  }
+  const bindings = new Set<string>();
+  for (let i = 0; i < tokens.length; i++) {
+    if (!["const", "let", "var"].includes(tokens[i] ?? "") || tokens[i + 2] !== "=") continue;
+    const start = i + 3;
+    const factory = memberCall(tokens, factories, start);
+    const result = factory?.member === "createRequire" ? closingIndex(tokens, factory.opening) + 1 : -1;
+    const end = tokens[start] === "require" ? start + 1
+      : tokens[start] === "module" && tokens[start + 1] === "." && tokens[start + 2] === "require" ? start + 3 : -1;
+    if ([";", ","].includes(tokens[result] ?? "") || [";", ","].includes(tokens[end] ?? "")) bindings.add(tokens[i + 1] ?? "");
+  }
+  for (let i = 0; i < tokens.length; i++) {
+    const direct = tokens[i] === "module" && tokens[i + 1] === "." && tokens[i + 2] === "require";
+    const bound = bindings.has(tokens[i] ?? "") && ![".", "?."].includes(tokens[i - 1] ?? "");
+    const next = direct ? i + 3 : bound ? i + 1 : results.has(i) ? i : -1;
+    const opening = tokens[next] === "?." ? next + 1 : next;
+    if (tokens[opening] !== "(") continue;
+    const [specifier = []] = callArguments(tokens, opening);
+    yield specifier.length === 1 ? literal(specifier[0]) : undefined;
+  }
+}
+
 function loadsComputedModule(tokens: readonly string[]): boolean {
+  for (const specifier of boundRequireSpecifiers(tokens)) if (specifier === undefined) return true;
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
     if (token === "import" && tokens[i + 1] === "." && tokens[i + 2] === "meta" && tokens[i + 3] === "." && tokens[i + 4] === "glob") return true;

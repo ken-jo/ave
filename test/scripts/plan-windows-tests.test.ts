@@ -138,6 +138,10 @@ describe("Windows regression planning", () => {
     'const n = "change"; require(["..", "test-change.js"].join(n));',
     'const modules = import.meta.glob("../*.ts");',
     'const n = "../test-change.js"; await vi.importActual(n);',
+    'import { createRequire } from "node:module"; createRequire(import.meta.url)(process.env.TARGET);',
+    'import { createRequire } from "node:module"; const load = createRequire(import.meta.url); load(process.env.TARGET);',
+    'const load = require; load(process.env.TARGET);',
+    'module.require(process.env.TARGET);',
   ])("keeps the suite that loads a module by a computed specifier: %s", source => {
     const runtimeSources = () => new Map([[permissionSuite, source], [changed, "export const value = 1;"]]);
     const result = planWindowsTests({ event: "pull_request", changes: [modified(changed)], inventories, readSources: runtimeSources });
@@ -157,8 +161,13 @@ describe("Windows regression planning", () => {
     expect(run('import { value } from "#unmapped/test-package-import";', changed)).toEqual([...core(), permissionSuite].sort());
   });
 
-  it("does not count a literal dynamic import as a computed module load", () => {
-    const runtimeSources = () => new Map([[permissionSuite, 'await import("../other.js");'], [changed, "export const value = 1;"]]);
+  it.each([
+    'await import("../other.js");',
+    'import { createRequire } from "node:module"; createRequire(import.meta.url)("../other.js");',
+    'import { createRequire } from "node:module"; const load = createRequire(import.meta.url); load("../other.js"); load.resolve(process.env.X);',
+    'module.require("../other.js");',
+  ])("does not count a literal load as a computed module load: %s", source => {
+    const runtimeSources = () => new Map([[permissionSuite, source], [changed, "export const value = 1;"]]);
     const result = planWindowsTests({ event: "pull_request", changes: [modified(changed)], inventories, readSources: runtimeSources });
     expect(selected(result)).toEqual(core());
   });
