@@ -124,7 +124,7 @@ describe("managed process exit source contracts", () => {
     expect(appearsInOrder(launch, "assertManagedChildProcessAdmissionOpen(label)", "const child = spawn(",
       "onSpawn?.(child)", "trackChild(child", "return child")).toBe(true);
     const posix = section(managed, "export async function waitForManagedProcessGroupExit", "export function forceKillManagedChildProcess");
-    expect(appearsInOrder(posix, "await closed", "while (processExists(-pid))", "return result.ok")).toBe(true);
+    expect(appearsInOrder(posix, "await raceWithAbort(closed, signal)", "while (processExists(-pid))", "return result.ok")).toBe(true);
   });
 
   it("requires managed launch for direct hooks and group confirmation on the POSIX path", () => {
@@ -158,6 +158,6 @@ describe("managed process exit source contracts", () => {
     expect(appearsInOrder(startup, "await this.stopRuntime(runtime)", "if (!runtime.unconfirmedExit) await rm(directory")).toBe(true);
     expect(appearsInOrder(release, "await session.tail", "if (session.runtime?.unconfirmedExit) throw", "await rm(session.runtime.directory")).toBe(true);
     expect(appearsInOrder(engine, "await wrapOfflineProcess", "spawnManaged(wrap.argv",
-      "runtime.unconfirmedExit = error", "const pid = running.child.pid", "if (gone) break", "running.release()")).toBe(true);
+      "runtime.unconfirmedExit = error", "if (!await running.exit.confirmExit(reason))", "running.release()")).toBe(true);
   });
 });

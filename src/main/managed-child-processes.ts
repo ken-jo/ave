@@ -6,7 +6,7 @@ import { findHostProgram } from "../shared/host-program-path.js";
 import { createLogger } from "../lib/logger.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { errorMessage } from "../shared/error-message.js";
-import { sleep } from "../shared/abortable-deadline.js";
+import { raceWithAbort, sleep } from "../shared/abortable-deadline.js";
 import { runWithCeiling } from "../tools/executor-ceiling.js";
 import { createProcessGroupReaper, type ProcessGroupReaper } from "./process-group-reaper.js";
 
@@ -506,10 +506,23 @@ export async function waitForManagedProcessGroupExit(child: ChildProcess, closed
   if (pid === undefined) return true;
   if (stopReason !== undefined) void forceKillManagedChildProcess(child, stopReason);
   const result = await runWithCeiling(async signal => {
-    await closed;
+    await raceWithAbort(closed, signal);
     while (processExists(-pid)) await sleep(TOOL_TIMEOUT_POLICY.processGroupExitPollMs, signal);
   }, PROCESS_TREE_KILL_TIMEOUT_MS, undefined, "managed process group termination");
   return result.ok;
+}
+
+export function observeManagedProcessGroup(child: ChildProcess) {
+  const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null; error?: Error }>(resolve => {
+    child.once("close", (code, signal) => resolve({ code, signal }));
+    child.once("error", error => {
+      if (child.pid === undefined) resolve({ code: null, signal: null, error });
+    });
+  });
+  return {
+    wait: (signal: AbortSignal) => raceWithAbort(closed, signal),
+    confirmExit: (stopReason: string) => waitForManagedProcessGroupExit(child, closed, stopReason),
+  };
 }
 
 // Await Windows tree termination before releasing owned resources; cancellation has the same bounded tree-kill semantics as shutdown.
@@ -648,6 +661,17 @@ function processExists(pid: number): boolean {
     const code = (err as NodeJS.ErrnoException).code;
     return code !== "ESRCH";
   }
+}
+
+export async function stopOrphanedManagedProcesses(pids: readonly number[]): Promise<boolean> {
+  for (const pid of pids) {
+    try { process.kill(pid, "SIGKILL"); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+  }
+  const result = await runWithCeiling(async signal => {
+    while (pids.some(processExists)) await sleep(TOOL_TIMEOUT_POLICY.processGroupExitPollMs, signal);
+  }, TOOL_TIMEOUT_POLICY.orphanProcessCleanupMs, undefined, "orphaned process termination");
+  return result.ok;
 }
 
 const TASKKILL_PROCESS_NOT_FOUND = 128;

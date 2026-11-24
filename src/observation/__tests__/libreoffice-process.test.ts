@@ -13,7 +13,7 @@ import type { VerifiedDocumentEngineInstallation } from "../../main/document-eng
 import { PREVIEW_DOCUMENT_LIMITS } from "../../shared/preview-document.js";
 import { TableDocumentError } from "../../tools/table-document-error.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
-import { deferred } from "../../__tests__/support/deferred.js";
+import { afterQueuedCallbacks, deferred } from "../../__tests__/support/deferred.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 
 const HOST_PLATFORM = process.platform;
@@ -29,11 +29,22 @@ vi.mock("../../permissions/offline-process-sandbox.js", async (original) => ({
     argv: [input.command, ...input.args], env: input.env, release: vi.fn(),
   })),
 }));
-vi.mock("../../main/managed-child-processes.js", async original => ({
-  ...await original<typeof import("../../main/managed-child-processes.js")>(),
-  spawnManaged: vi.fn(),
-  forceKillManagedChildProcess: vi.fn(),
-}));
+vi.mock("../../main/managed-child-processes.js", async original => {
+  const actual = await original<typeof import("../../main/managed-child-processes.js")>();
+  return {
+    ...actual,
+    spawnManaged: vi.fn(),
+    forceKillManagedChildProcess: vi.fn(),
+    observeManagedProcessGroup: (child: ChildProcess) => {
+      const group = actual.observeManagedProcessGroup(child);
+      if (child.pid !== undefined) return group;
+      return { ...group, confirmExit: (reason: string) => {
+        (child as unknown as ProcessFixture).end(null, "SIGKILL");
+        return group.confirmExit(reason);
+      } };
+    },
+  };
+});
 vi.mock("../../main/process-group-reaper.js", () => ({
   createProcessGroupReaper: () => ({ retain: () => engineRegistration.beforeRetain?.(), release: () => {}, shutdown: () => {} }),
 }));
@@ -82,6 +93,7 @@ let directory: string;
 let installation: VerifiedDocumentEngineInstallation;
 let pool: LibreOfficeSessionPool;
 let children: ProcessFixture[];
+let createProcessFixture: (command: string, args: readonly string[]) => ProcessFixture;
 let conversion: (client: ProcessFixture, resident: ProcessFixture) => Promise<void>;
 let readiness: (client: ProcessFixture, resident: ProcessFixture) => Promise<void>;
 
@@ -135,7 +147,7 @@ beforeEach(async () => {
   children = [];
   conversion = publish;
   readiness = publish;
-  vi.mocked(spawnManaged).mockImplementation((command, args, _options, _track, acquire) => {
+  createProcessFixture = (command, args) => {
     const emitter = new EventEmitter() as ProcessFixture;
     emitter.stdout = new PassThrough();
     emitter.stderr = new PassThrough();
@@ -172,7 +184,10 @@ beforeEach(async () => {
       emitter.stdout.write("H2Orestart registered");
       emitter.end();
     });
-    const child = emitter as unknown as ChildProcess;
+    return emitter;
+  };
+  vi.mocked(spawnManaged).mockImplementation((command, args, _options, _track, acquire) => {
+    const child = createProcessFixture(command, args) as unknown as ChildProcess;
     acquire?.(child);
     return child;
   });
@@ -182,28 +197,31 @@ beforeEach(async () => {
 
 afterEach(async () => { await pool.dispose(); if (HOST_PLATFORM === "win32") _setWindowsAclTransportForTest(undefined); await rm(directory, { recursive: true, force: true }); });
 
-function mockManagedEngineGroup() {
+function mockManagedEngineGroup(startResident = false) {
   setProcessPlatform("linux");
-  const launched = deferred<void>();
-  const child = Object.assign(new EventEmitter(), {
-    pid: 14002, spawnfile: "/fixture-engine", exitCode: null, signalCode: null,
-  });
+  const groupPid = 14002;
+  const launched = deferred<EventEmitter>();
+  let child: EventEmitter | undefined;
   let groupAlive = true;
   const nativeKill = process.kill;
   const kill = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
-    if (Math.abs(pid) !== child.pid) return nativeKill(pid, signal);
+    if (Math.abs(pid) !== groupPid) return nativeKill(pid, signal);
     if (!groupAlive) throw Object.assign(new Error("Group exited"), { code: "ESRCH" });
     if (signal === 0) return true;
     throw Object.assign(new Error("Group still running"), { code: "EPERM" });
   });
   vi.mocked(spawnManaged).mockImplementationOnce((...args) => {
-    const spawnFixture = vi.spyOn(childProcess, "spawn").mockReturnValueOnce(child as unknown as ChildProcess);
+    const acquired = Object.assign(startResident ? createProcessFixture(args[0], args[1]) : new EventEmitter(), {
+      pid: groupPid, spawnfile: "/fixture-engine", exitCode: null, signalCode: null,
+    });
+    child = acquired;
+    const spawnFixture = vi.spyOn(childProcess, "spawn").mockReturnValueOnce(acquired as unknown as ChildProcess);
     syncBuiltinESMExports();
     try { return managed.spawnManaged(...args); }
     finally {
       spawnFixture.mockRestore();
       syncBuiltinESMExports();
-      launched.resolve();
+      launched.resolve(acquired);
     }
   });
   const wrap = vi.fn();
@@ -211,9 +229,10 @@ function mockManagedEngineGroup() {
     argv: [input.command, ...input.args], env: input.env, release: wrap,
   }));
   const markGroupGone = (): void => { groupAlive = false; };
-  return { child, launched, kill, wrap, markGroupGone, restore: async () => {
+  return { pid: groupPid, launched, kill, wrap, markGroupGone, restore: async () => {
     markGroupGone();
-    child.emit("close", null, "SIGKILL");
+    child?.emit("close", null, "SIGKILL");
+    if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.processGroupPollMs);
     await pool.dispose().catch(() => {});
     pool = new LibreOfficeSessionPool();
     engineRegistration.beforeRetain = undefined;
@@ -502,17 +521,39 @@ describe("private conversion process ownership", () => {
       : pool.convert(installation, "one", Buffer.from("retained input"), "docx", controller.signal);
     const settlement = request.catch((error: unknown) => error);
     try {
-      await group.launched.promise;
-      group.child.emit("close", null, "SIGKILL");
+      const child = await group.launched.promise;
+      child.emit("close", null, "SIGKILL");
       await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.processTreeKillMs);
       const verdict = await settlement;
       expect(verdict).toMatchObject({ code: "engine-confinement-unavailable", message: "Document engine termination was not confirmed." });
-      expect(group.kill).toHaveBeenCalledWith(-group.child.pid, 0);
+      expect(group.kill).toHaveBeenCalledWith(-group.pid, 0);
       expect(group.wrap).not.toHaveBeenCalled();
       const launch = vi.mocked(wrapOfflineProcess).mock.calls.at(-1)![0];
       expect((await stat(dirname(launch.inputDirectory))).isDirectory()).toBe(true);
       if (entry === "existing runtime") expect(await readFile(launch.args.at(-1)!, "utf8")).toBe("retained input");
       await expect(pool.releaseSession("one")).rejects.toBe(verdict);
+    } finally { await group.restore(); }
+  });
+
+  it.each(["missing close", "leader close with a surviving group"] as const)("reports unconfirmed shutdown after %s", async exit => {
+    const group = mockManagedEngineGroup(true);
+    try {
+      await pool.prepare(installation, "one", "docx", new AbortController().signal);
+      const child = await group.launched.promise;
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+      if (exit !== "missing close") child.emit("close", 0, null);
+      let verdict: unknown;
+      const release = pool.releaseSession("one").catch((error: unknown) => { verdict = error; });
+      if (exit === "missing close") group.markGroupGone();
+      await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.processTreeKillMs - 1);
+      expect(verdict).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+      await afterQueuedCallbacks();
+      expect(verdict).toMatchObject({ code: "engine-confinement-unavailable", message: "Document engine termination was not confirmed." });
+      expect(group.kill).toHaveBeenCalledWith(-group.pid, "SIGKILL");
+      expect(group.wrap).not.toHaveBeenCalled();
+      expect((await stat(residents()[0].holder!)).isFile()).toBe(true);
+      await release;
     } finally { await group.restore(); }
   });
 
