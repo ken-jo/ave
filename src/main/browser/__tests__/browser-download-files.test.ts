@@ -133,7 +133,7 @@ vi.mock("../../managed-child-processes.js", () => ({
   }),
 }));
 
-const { _forgetLinkSupportForTest, _helperFileOperationsForTest, HeldDirectoryRefusedError, HeldFileHelperStalledError, HeldFileHelperUnavailableError, stoppedCopyOf } =
+const { _forgetLinkSupportForTest, _helperFileOperationsForTest, HeldDirectoryRefusedError, HeldFileHelperStalledError, HeldFileHelperUnavailableError, removeOwnFile, stoppedCopyOf } =
   await import("../browser-download-files.js");
 
 const { BACKGROUND_BUDGET_MS } = await import("../../../lib/transient-fs-lock-retry.js");
@@ -1435,14 +1435,13 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
     const name = ".0123456789abcdef0123456789abcdef.part";
     const probes = () => boundary.links.filter(([, link]) => /\.probe$/u.test(link)).map(([, link]) => link);
     // Write a temporary file in a fresh folder and remove it through the probe and the check by id.
-    const removeOne = async (folderName: string) => {
-      const { removeOwnFile } = await import("../browser-download-files.js");
+    const removeOne = async (folderName: string, removePart = removeOwnFile) => {
       const chosen = join(base, folderName);
       fs.mkdirSync(chosen);
       fs.writeFileSync(join(chosen, name), "partial copy");
       const info = fs.statSync(chosen, { bigint: true });
       const file = fs.statSync(join(chosen, name), { bigint: true });
-      const result = await removeOwnFile({ path: chosen, dev: info.dev, ino: info.ino }, name, name,
+      const result = await removePart({ path: chosen, dev: info.dev, ino: info.ino }, name, name,
         { kind: "fileId", file: { dev: file.dev, ino: file.ino, birthtimeNs: file.birthtimeNs } },
         async (directory, at) => { fs.unlinkSync(join(directory.path, at)); return "removed"; });
       return { chosen, result };
@@ -1489,6 +1488,39 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
       expect(removing.value?.result).toEqual({ outcome: "removed" });
       expect(fs.readdirSync(removing.value?.chosen ?? "")).toEqual([]);
       expect(boundary.warn).not.toHaveBeenCalledWith(expect.anything(), expect.stringContaining("probe's name"));
+    });
+
+    it("probes again if the linked name and the original name no longer identify the same file", async () => {
+      boundary.afterLstat = (path) => {
+        if (!path.endsWith(".probe")) return;
+        boundary.afterLstat = null;
+        const original = join(base, "first", name);
+        fs.renameSync(original, join(base, "first", "elsewhere"));
+        fs.writeFileSync(original, "the user's file");
+      };
+      const first = await removeOne("first");
+      expect(first.result).toEqual({ outcome: "left", at: null });
+      expect(fs.readFileSync(join(first.chosen, name), "utf8")).toBe("the user's file");
+      expect((await removeOne("second")).result).toEqual({ outcome: "removed" });
+      expect(probes()).toHaveLength(2);
+    });
+
+    it.each(["darwin", "linux"] as const)("probes another file on the same volume after link is denied with EPERM on %s", async (platform) => {
+      const nativePlatform = process.platform;
+      vi.resetModules();
+      let filesOnPlatform: typeof import("../browser-download-files.js");
+      Object.defineProperty(process, "platform", { value: platform });
+      try {
+        filesOnPlatform = await import("../browser-download-files.js");
+      } finally {
+        Object.defineProperty(process, "platform", { value: nativePlatform });
+      }
+      let faults = 1;
+      boundary.linkFault = () => (faults-- > 0 ? "EPERM" : null);
+      expect((await removeOne("first", filesOnPlatform.removeOwnFile)).result).toEqual({ outcome: "removed" });
+      expect((await removeOne("second", filesOnPlatform.removeOwnFile)).result).toEqual({ outcome: "removed" });
+      expect((await removeOne("third", filesOnPlatform.removeOwnFile)).result).toEqual({ outcome: "removed" });
+      expect(probes()).toHaveLength(2);
     });
   });
 

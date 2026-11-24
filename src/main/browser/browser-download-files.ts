@@ -187,12 +187,11 @@ function contentAt(folder: HeldDirectory, name: string): Exclude<Found, "same"> 
 
 // Whether a volume keeps a file's id across a rename and can link a file back, probed in this process by linking the file at `name` to a
 // fresh hidden name and checking it there. Only a definitive answer is kept for the volume: a link made and seen as the same file, or a
-// link refused with a code that says the file system has no hard links. ENOTSUP and EOPNOTSUPP say so everywhere; EPERM says so on
-// macOS and Linux, but on Windows it is a lock or access denial; EISDIR is how Windows reports a file system that cannot link a file.
-// Any other failure (a lock, an access denial, no space) answers no hard links for this cleanup only, where the content check still
-// holds, and the next cleanup probes again.
+// link refused with a code that says the file system has no hard links. ENOTSUP and EOPNOTSUPP say so everywhere; EISDIR is how
+// Windows reports a file system that cannot link a file. A failed identity check or other error such as EPERM may be specific to the
+// file, so only this cleanup checks by content and the next one probes again.
 const linkSupport = new Map<bigint, boolean>();
-const NO_LINKS: ReadonlySet<string> = new Set(process.platform === "win32" ? ["ENOTSUP", "EOPNOTSUPP", "EISDIR"] : ["ENOTSUP", "EOPNOTSUPP", "EPERM"]);
+const NO_LINKS: ReadonlySet<string> = new Set(process.platform === "win32" ? ["ENOTSUP", "EOPNOTSUPP", "EISDIR"] : ["ENOTSUP", "EOPNOTSUPP"]);
 async function linksIn(folder: HeldDirectory, name: string): Promise<boolean> {
   const known = linkSupport.get(folder.dev);
   if (known !== undefined) return known;
@@ -206,7 +205,7 @@ async function linksIn(folder: HeldDirectory, name: string): Promise<boolean> {
     else log.warn({ path, code: codeOf(error) }, "a folder's hard-link support could not be probed; this cleanup checks the file by its content");
     return false;
   }
-  let supported: boolean | null = null;
+  let supported = false;
   try {
     const linked = lstatSync(probe, { bigint: true });
     supported = linked.nlink >= 2n && sameFile(linked, lstatSync(path, { bigint: true }));
@@ -219,8 +218,7 @@ async function linksIn(folder: HeldDirectory, name: string): Promise<boolean> {
   } catch (error) {
     log.warn({ path, probe, code: codeOf(error) }, "a hard-link probe's name for a temporary download file is left, and could not be removed");
   }
-  if (supported === null) return false;
-  linkSupport.set(folder.dev, supported);
+  if (supported) linkSupport.set(folder.dev, true);
   return supported;
 }
 
