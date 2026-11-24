@@ -235,36 +235,33 @@ export class AuditWriter {
     const auditSafeOutput = governedTool
       ? (isError ? "governed operation failed" : "governed operation completed")
       : output;
-    const writeToolAudit = (denyKind: TerminalDenyKind | undefined): void => {
-      try {
-        const cancelled = denyKind === "cancelled";
-        // The privacy toggle governs audit PII masking; credentials are always scrubbed.
-        const auditInput = maskSensitiveData(JSON.stringify(auditSafeInput), {
-          pii: isPiiRedactionEnabled(),
-        }).masked;
-        this.auditLogger.log({
-          timestamp: new Date().toISOString(),
-          sessionId: sessionId ?? "unknown",
-          type: "tool_call",
-          input: auditInput.slice(0, 500),
-          output: cancelled ? t("be_executor.toolExecutionCancelled") : auditSafeOutput.slice(0, 1024),
-          toolCalls: [{
-            name: toolName,
-            isError,
-            source,
-            trust,
-            executionTimeMs: Date.now() - startTime,
-            ...(audit?.toolUseId !== undefined ? { toolUseId: audit.toolUseId } : {}),
-            ...(audit?.executionPlan !== undefined ? { executionPlan: audit.executionPlan } : {}),
-            permissionDecision: denyKind === undefined ? permission?.decision ?? "allow" : cancelled ? "cancelled" : "deny",
-            permissionReason: permission?.reason,
-            rateLimitRemaining,
-            ...(terminationReason ? { terminationReason } : {}),
-          }],
-        });
-      } catch (err) {
-        log.warn("general tool audit failed for %s: %s", toolName, errorMessage(err));
-      }
+    const writeToolAudit = (denyKind: TerminalDenyKind | undefined, chainUnavailable: boolean) => {
+      const cancelled = denyKind === "cancelled";
+      // The privacy toggle governs audit PII masking; credentials are always scrubbed.
+      const auditInput = maskSensitiveData(JSON.stringify(auditSafeInput), {
+        pii: isPiiRedactionEnabled(),
+      }).masked;
+      return this.auditLogger.log({
+        timestamp: new Date().toISOString(),
+        sessionId: sessionId ?? "unknown",
+        type: "tool_call",
+        input: auditInput.slice(0, 500),
+        output: cancelled ? t("be_executor.toolExecutionCancelled") : auditSafeOutput.slice(0, 1024),
+        toolCalls: [{
+          name: toolName,
+          isError,
+          source,
+          trust,
+          executionTimeMs: Date.now() - startTime,
+          ...(audit?.toolUseId !== undefined ? { toolUseId: audit.toolUseId } : {}),
+          ...(audit?.executionPlan !== undefined ? { executionPlan: audit.executionPlan } : {}),
+          permissionDecision: denyKind === undefined ? permission?.decision ?? "allow" : cancelled ? "cancelled" : "deny",
+          permissionReason: permission?.reason,
+          ...(chainUnavailable ? { permissionAuditChainUnavailable: true } : {}),
+          rateLimitRemaining,
+          ...(terminationReason ? { terminationReason } : {}),
+        }],
+      });
     };
     // Every terminal row is written; what the host could not resolve is recorded as unknown.
     const tool = this.toolRegistry.findByName(toolName);
@@ -282,25 +279,32 @@ export class AuditWriter {
       ...(hookChain ? { hookChain } : {}),
       audit,
     });
-    const ready = this.auditLogger.isPermissionAuditChainReady();
-    if (!ready && this.requirePermissionAuditChain) {
-      const error = new Error("permission audit chain is not initialized");
-      recordToolInvocationAuditFailure(error);
-      throw error;
-    }
-    // The writer enqueues the row before its first await; the ledger's denial lifecycle runs after it and cannot lose it.
-    const logger = ready ? { logger: this.auditLogger } : {};
-    if (entry.decision !== "deny") writeToolAudit(undefined);
+    let generalWrite: Promise<void> | undefined;
+    const prepareAudit = (denyKind: TerminalDenyKind | undefined, writeGeneral: boolean) => {
+      const ready = this.auditLogger.isPermissionAuditChainReady();
+      const chainUnavailable = !ready && this.requirePermissionAuditChain;
+      if (writeGeneral) {
+        generalWrite = Promise.resolve(writeToolAudit(denyKind, chainUnavailable));
+        void generalWrite.catch(recordToolInvocationAuditFailure);
+      }
+      if (chainUnavailable) {
+        const error = new Error("permission audit chain is not initialized");
+        recordToolInvocationAuditFailure(error);
+        throw error;
+      }
+      return { logger: ready ? this.auditLogger : undefined, generalWrite };
+    };
     const appended = entry.decision === "deny"
-      ? terminal.row({ entry, kind: terminal.kind, ...logger, onEnqueued: writeToolAudit, ...(permission?.decision === "deny" ? { reason: permission.reason } : {}),
+      ? terminal.row({ entry, kind: terminal.kind, prepareAudit, ...(permission?.decision === "deny" ? { reason: permission.reason } : {}),
         humanAnswered: permission?.provenance.kind === "answered" && answeredProvenanceRecord(permission.provenance).trustOrigin !== "unknown" })
-      : terminal.row({ entry, ...logger });
+      : terminal.row({ entry, prepareAudit });
     try {
       await appended;
     } catch (err) {
       if (this.requirePermissionAuditChain) {
         throw err;
       }
+      await generalWrite;
       log.warn(
         "permission audit append failed for %s: %s",
         toolName,

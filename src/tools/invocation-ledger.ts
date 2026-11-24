@@ -67,11 +67,15 @@ export type TerminalDenialLifecycle = {
  * neither set up nor required; `reason` is the finalized denial reason, defaulting to the row's first. `humanAnswered` marks
  * a deny a person settled, which an abort committed after it cannot turn into a cancellation.
  */
-type TerminalRow = {
+type TerminalAudit = {
   logger?: Pick<AuditLogger, "appendPermissionAuditEntry">;
+  generalWrite?: Promise<void>;
+};
+type TerminalRow = {
+  logger?: TerminalAudit["logger"];
   reason?: string;
   humanAnswered?: boolean;
-  onEnqueued?(denyKind: TerminalDenyKind | undefined): void;
+  prepareAudit?(denyKind: TerminalDenyKind | undefined, writeGeneral: boolean): TerminalAudit;
 } & ({ entry: DenyEntry; kind: TerminalDenyKind } | { entry: Exclude<PermissionAuditEntryInput, { decision: "deny" }>; kind?: never });
 /**
  * Writes the attempt's terminal row; only the ledger hands one out. The call claims the attempt and enqueues the row
@@ -123,6 +127,7 @@ class TerminalLedger implements InvocationTerminal {
   #releaseAbort: (() => void) | undefined;
   #key: string | undefined;
   #integrityFailure = false;
+  #generalAuditAttempted = false;
   #signal: AbortSignal;
   #denyKind: TerminalDenyKind | undefined;
 
@@ -194,25 +199,32 @@ class TerminalLedger implements InvocationTerminal {
         throw error;
       }
       if (this.#refusal(by)) return Promise.resolve();
-      this.#take();
-      const { logger, reason } = terminal;
+      const { reason } = terminal;
       const cancellation = terminal.kind === "denied" ? this.#abortCancellation(terminal.humanAnswered === true) : undefined;
       // A deny row persists its kind, so a reader of the row and its PermissionDenied can never disagree.
       const entry: PermissionAuditEntryInput = terminal.entry.decision !== "deny" ? terminal.entry
         : cancellation === undefined ? { ...terminal.entry, terminalKind: terminal.kind }
         : { ...terminal.entry, terminalKind: "cancelled", denyReasons: [{ reason: cancellation, source: "tool-executor" }, ...terminal.entry.denyReasons] };
       const denyKind = entry.decision === "deny" ? terminalDenyKindOf(entry) : undefined;
+      let logger = terminal.logger;
+      let generalWrite: Promise<void> | undefined;
+      if (terminal.prepareAudit) {
+        const writeGeneral = !this.#generalAuditAttempted;
+        this.#generalAuditAttempted = true;
+        ({ logger, generalWrite } = terminal.prepareAudit(denyKind, writeGeneral));
+      }
+      this.#take();
       this.#denyKind = denyKind;
       const append = logger ? appendTerminalRow(logger, entry) : Promise.resolve();
-      this.#track(append);
-      terminal.onEnqueued?.(denyKind);
+      const audited = generalWrite ? append.then(() => generalWrite) : append;
+      this.#track(audited);
       const lifecycle = this.#lifecycle;
       const stoppedRationaleDenial = this.#signal.aborted && !abortSupersedesApprovalDecision(this.#signal, this.#settledRationaleDecision);
       return (async () => {
         if (entry.decision === "deny" && denyKind === "denied" && lifecycle !== undefined && !lifecycle.governed() && !stoppedRationaleDenial) {
           await lifecycle.fire(new LedgerDenial(reason ?? entry.denyReasons[0]?.reason ?? ""));
         }
-        await append;
+        await audited;
       })();
     };
     let written: Promise<T>;

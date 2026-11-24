@@ -1,8 +1,10 @@
-import { mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { terminalDenyKindOf } from "../../audit/audit-schema.js";
+import type { AuditEntry } from "../../audit/audit-logger.js";
+import { MemorySecretStore } from "../../audit/hmac-chain.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { answeredApprovalDecision } from "../../__tests__/support/answering-approval-gate.js";
 import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
@@ -25,7 +27,7 @@ type Source =
   | "human-then-abort" | "human-then-quit" | "headless-then-abort";
 
 /** Each probe loads a fresh module graph, so a sealed or drained ledger never leaks into another case. */
-async function setup(source: Source) {
+async function setup(source: Source, { disarmChain = false } = {}) {
   vi.resetModules();
   const ledger = await import("../invocation-ledger.js");
   const { ToolExecutor } = await import("../executor.js");
@@ -41,7 +43,18 @@ async function setup(source: Source) {
   const root = mkdtempSync(join(tmpdir(), "ave-denial-lock-"));
   roots.push(root);
   const audit = new AuditLogger(join(root, "audit"));
-  await audit.setupPermissionAuditChain("ef".repeat(32));
+  const seals = new MemorySecretStore();
+  await audit.setupPermissionAuditChain("ef".repeat(32), seals);
+  const failSeal = async () => {
+    expect(audit.isPermissionAuditChainReady()).toBe(true);
+    const failure = new Error("daily seal write failed");
+    vi.spyOn(seals, "write").mockImplementationOnce(() => { throw failure; });
+    await expect(audit.appendPermissionAuditEntry({
+      auditId: "seal-failure", ts: new Date().toISOString(), tool: TOOL, source: "builtin",
+      category: "write", decision: "allow", trustOrigin: "user-keyboard",
+    })).rejects.toThrow(failure.message);
+    expect(audit.isPermissionAuditChainReady()).toBe(false);
+  };
   let release!: () => void;
   const held = new Promise<void>((done) => { release = done; });
   let started!: () => void;
@@ -120,10 +133,13 @@ async function setup(source: Source) {
   }
   const lifecycle = vi.spyOn(hooks, "runLifecycleEvent");
   // human: the desk denies this call; host: an allow settled for another call; integrity: a deny settled for another call.
-  const requestAndWait = vi.fn(async (request: ApprovalRequestInput) => answeredApprovalDecision(
-    { requestId: request.id, choice: source === "host" ? "allow-once" : humanThen ? "deny-always" : "deny-once" },
-    headlessThen ? "headless-exec" : "desk", request.toolName,
-    source === "human" || humanThen || headlessThen ? request.invocationToolUseId : "another-call"));
+  const requestAndWait = vi.fn(async (request: ApprovalRequestInput) => {
+    if (disarmChain) await failSeal();
+    return answeredApprovalDecision(
+      { requestId: request.id, choice: source === "host" ? "allow-once" : humanThen ? "deny-always" : "deny-once" },
+      headlessThen ? "headless-exec" : "desk", request.toolName,
+      source === "human" || humanThen || headlessThen ? request.invocationToolUseId : "another-call");
+  });
   const lease = { generation: { generationId: "gen-1", state: { runtime: {} } }, release: () => {} };
   const access = {
     getActive: () => undefined,
@@ -155,6 +171,7 @@ async function setup(source: Source) {
   const gate = liveCard ? realGate : { requestAndWait } as unknown as ApprovalGate;
   const executor = new ToolExecutor(registry, undefined, permissions, undefined, gate, hooks, audit,
     undefined, undefined, undefined, () => generationAccess);
+  if (disarmChain && source === "rule") await failSeal();
   const authLifecycle = { binding: { pluginId: "probe-plugin", generationId: "gen-1", toolName: TOOL, appSessionId: "app", accountScopeHash: "hash" },
     beforeHandler: () => {}, completeSuccess: () => {}, completeFailure: () => {} } satisfies HostPluginAuthLifecycle;
   const ids = source === "user-abort" ? ["held-call", "denied-call"] : ["denied-call"];
@@ -231,6 +248,69 @@ function governedCase(probe: Probe): boolean {
 function reasons(row: Record<string, unknown>): string[] {
   return (row.denyReasons as Array<{ reason: string }>).map((entry) => entry.reason);
 }
+
+describe("terminal tool telemetry", () => {
+  it.each(["rule", "integrity"] as const)("records one %s refusal when the permission chain loses its seal", async (source) => {
+    const probe = await setup(source, { disarmChain: true });
+    try {
+      probe.ledger.beginToolInvocationAuditShutdown();
+      const error = source === "rule" ? "permission audit chain is not initialized" : /does not settle this deny/;
+      await expect(probe.run()).rejects.toThrow(error);
+      await expect(probe.ledger.closeToolInvocationAudit(() => probe.audit.close())).rejects.toMatchObject({
+        message: "shutdown invocation audit failed",
+        cause: expect.objectContaining({ message: expect.stringMatching(error) }),
+      });
+      expect(probe.rows()).toEqual([]);
+      expect(probe.denials()).toEqual([]);
+      const file = probe.audit.getPermissionAuditLogFile().replace(".permission-audit.jsonl", ".jsonl");
+      const calls = existsSync(file) ? readFileSync(file, "utf8").split("\n").filter(Boolean)
+        .map((line) => JSON.parse(line) as AuditEntry).filter((entry) => entry.type === "tool_call") : [];
+      expect(calls).toEqual([expect.objectContaining({
+        output: expect.stringMatching(source === "rule" ? /denial_probe/ : /the terminal row failed its integrity check/),
+        toolCalls: [expect.objectContaining({ toolUseId: "denied-call", isError: true, permissionDecision: "deny", permissionAuditChainUnavailable: true })],
+      })]);
+    } finally {
+      await probe.audit.close();
+    }
+  });
+
+  it.each(["rule", "integrity"] as const)("enqueues one general record before the healthy %s permission row", async (source) => {
+    const probe = await setup(source);
+    try {
+      const order: string[] = [];
+      const log = probe.audit.log.bind(probe.audit);
+      const appendPermission = probe.audit.appendPermissionAuditEntry.bind(probe.audit);
+      vi.spyOn(probe.audit, "log").mockImplementation((entry) => {
+        if (entry.type === "tool_call") order.push("general");
+        return log(entry);
+      });
+      vi.spyOn(probe.audit, "appendPermissionAuditEntry").mockImplementation((entry) => {
+        if (entry.decision === "deny") order.push("permission");
+        return appendPermission(entry);
+      });
+      if (source === "rule") await expect(probe.run()).resolves.toMatchObject([{ is_error: true }]);
+      else await expect(probe.run()).rejects.toThrow(/does not settle this deny/);
+      await expectOneDenial(probe, source === "rule" ? TOOL : /the terminal row failed its integrity check/);
+      expect(order).toEqual(["general", "permission"]);
+    } finally {
+      await probe.audit.close();
+    }
+  });
+
+  it("reports a failed general write through the audit failure path", async () => {
+    const probe = await setup("rule");
+    try {
+      const file = probe.audit.getPermissionAuditLogFile().replace(".permission-audit.jsonl", ".jsonl");
+      mkdirSync(file);
+      probe.ledger.beginToolInvocationAuditShutdown();
+      await expect(probe.run()).rejects.toThrow();
+      await expect(probe.ledger.closeToolInvocationAudit(() => probe.audit.close())).rejects.toThrow("shutdown invocation audit failed");
+      expect(probe.audit.getWriterStats().droppedWrites).toBe(1);
+    } finally {
+      await probe.audit.close();
+    }
+  });
+});
 
 describe("a permission denial fires one PermissionDenied; a cancellation and a governed deny fire none", () => {
   it.each([

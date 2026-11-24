@@ -310,6 +310,7 @@ export interface AuditEntry {
 
     permissionDecision?: string;
     permissionReason?: string;
+    permissionAuditChainUnavailable?: true;
     rateLimitRemaining?: number;
     /** Distinguish policy timeout, caller cancellation, and other failures for incident analysis. */
     terminationReason?: ToolAuditTerminationReason;
@@ -614,13 +615,18 @@ export class AuditLogger {
     }
   }
 
-  log(entry: AuditEntry): void {
+  /** Callers that require the telemetry row can observe the queued write's outcome. */
+  log(entry: AuditEntry): Promise<void> | void {
+    let write: Promise<void> | void;
     try {
       const line = JSON.stringify(entry) + "\n";
-      this.enqueuePlainWrite(this.telemetryPath(), line);
-    } catch {
-      // Audit failures must not block app behavior.
+      write = this.enqueuePlainWrite(this.telemetryPath(), line, false, true);
+    } catch (error) {
+      write = Promise.reject(error);
     }
+    // Best-effort callers can ignore the result.
+    void write?.catch(() => {});
+    return write;
   }
 
   /** Await a durable telemetry row before committing the state it records. */
@@ -686,11 +692,11 @@ export class AuditLogger {
     };
   }
 
-  private enqueuePlainWrite(filePath: string, line: string, durable = false): Promise<void> | void {
+  private enqueuePlainWrite(filePath: string, line: string, durable = false, reportFailure = durable): Promise<void> | void {
     const bytes = Buffer.byteLength(line, "utf-8");
     if (!this.acceptingPlainWrites) {
       this.droppedPlainWrites += 1;
-      if (durable) return Promise.reject(new Error("Audit writer is unavailable"));
+      if (reportFailure) return Promise.reject(new Error("Audit writer is unavailable"));
       return;
     }
     let writer = this.plainWriters.get(filePath);
@@ -703,7 +709,7 @@ export class AuditLogger {
       bytes > this.maxPendingBytes - writer.pendingBytes
     ) {
       this.droppedPlainWrites += 1;
-      if (durable) return Promise.reject(new Error("Audit writer queue is full"));
+      if (reportFailure) return Promise.reject(new Error("Audit writer queue is full"));
       return;
     }
 
@@ -718,7 +724,7 @@ export class AuditLogger {
         writer.pendingWrites -= 1;
         writer.pendingBytes -= bytes;
       });
-    if (durable) return write;
+    if (reportFailure) return write;
   }
 
   private async appendPlainLine(filePath: string, line: string, durable = false): Promise<void> {

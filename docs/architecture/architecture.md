@@ -3638,6 +3638,11 @@ If the host's own writer fails before enqueue, the ledger records an audit
 failure. An append failure after enqueue marks the attempt failed without a
 replacement row.
 
+The terminal writer queues general tool-call telemetry before enforcing chain
+readiness. A record made while the required chain is unavailable carries
+`permissionAuditChainUnavailable`. The invocation and its host replacement
+share one general write attempt, and a failed general write is an audit failure.
+
 The ledger persists the kind on every terminal deny row as `terminalKind`.
 `terminalDenyKindOf` (`src/audit/audit-schema.ts`) reads it and falls back to
 the first reason for older rows that omit the field. An invalid explicit kind
