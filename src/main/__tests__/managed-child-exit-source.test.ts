@@ -17,7 +17,7 @@
 // runContainedHook) is exempt from the direct-call check; its termination evidence is the holder's. The out-of-scope importers
 // listed in RAW_IMPORTERS are not covered by this owner.
 import { ChildProcess } from "node:child_process";
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, posix, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -550,6 +550,56 @@ describe("managed child receipts", () => {
     const next = createManagedResources();
     recordManagedPaths(next, { path: join(directory, "a") }, { path: join(directory, "b") }, { path: join(directory, "d", "e") });
     await abandonManagedLaunch(next);
+  });
+
+  it("reads each record argument field once, so a flipping accessor cannot reach another live handle's directory", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "ave-managed-snapshot-"));
+    try {
+      const held = join(directory, "held");
+      const benign = join(directory, "benign");
+      for (const dir of [held, benign]) {
+        mkdirSync(dir);
+        writeFileSync(join(dir, "file"), "x");
+      }
+      const owner = createManagedResources();
+      recordManagedPaths(owner, { path: held, recursive: true });
+      const reads = { path: 0, recursive: 0 };
+      const flipping = {
+        get path() { return ++reads.path === 1 ? benign : held; },
+        get recursive() { reads.recursive++; return true; },
+      };
+      const attacker = createManagedResources();
+      recordManagedPaths(attacker, flipping);
+      await abandonManagedLaunch(attacker);
+      expect(existsSync(benign)).toBe(false);
+      expect(existsSync(join(held, "file"))).toBe(true);
+      expect(reads).toEqual({ path: 1, recursive: 1 });
+      await abandonManagedLaunch(owner);
+      expect(existsSync(held)).toBe(false);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("removes a relative recorded path against the working directory at the record call", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "ave-managed-cwd-"));
+    const start = process.cwd();
+    const recorded = join(directory, "record");
+    const released = join(directory, "release");
+    try {
+      for (const dir of [recorded, released]) mkdirSync(join(dir, "target"), { recursive: true });
+      const resources = createManagedResources();
+      process.chdir(recorded);
+      recordManagedPaths(resources, { path: "target", recursive: true });
+      process.chdir(released);
+      await abandonManagedLaunch(resources);
+      process.chdir(start);
+      expect(existsSync(join(recorded, "target"))).toBe(false);
+      expect(existsSync(join(released, "target"))).toBe(true);
+    } finally {
+      process.chdir(start);
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("issues the never-spawned release only before any child was acquired beneath the handle", async () => {

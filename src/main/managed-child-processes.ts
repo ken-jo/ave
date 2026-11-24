@@ -556,8 +556,7 @@ export function recordManagedCleanup(resources: ManagedResources, ...steps: read
 // Folded paths recorded by handles not yet released. An ancestor's release does not release a descendant, so entries drop only on their own release.
 const livePaths = new Map<ResourceState, string[]>();
 
-function foldedPath(path: string): string {
-  const full = resolve(path);
+function foldedPath(full: string): string {
   return process.platform === "win32" || process.platform === "darwin" ? full.toLowerCase() : full;
 }
 
@@ -568,8 +567,10 @@ function overlaps(left: string, right: string): boolean {
 
 /** Refuses, at the record call, a path equal to, inside or containing one that another live handle recorded. */
 export function recordManagedPaths(resources: ManagedResources, ...paths: readonly PathToRemove[]): void {
+  // Each argument field is read once, resolved against the record-time cwd; fold, check and store use only this snapshot.
+  const entries = paths.map(({ path, recursive }) => Object.freeze({ path: resolve(String(path)), recursive: Boolean(recursive) }));
   const state = openState(resources);
-  const folded = paths.map(path => foldedPath(path.path));
+  const folded = entries.map(entry => foldedPath(entry.path));
   const own = new Set(lineage(state));
   for (const [other, recorded] of livePaths) {
     // Only the owner sets lineage, when it mints a child from its parent handle; a record argument cannot claim one.
@@ -578,7 +579,7 @@ export function recordManagedPaths(resources: ManagedResources, ...paths: readon
     if (shared !== undefined) throw new Error(`Managed path ${shared} overlaps a path another live handle recorded.`);
   }
   if (folded.length === 0) return;
-  state.paths.push(...paths.map(({ path, recursive }) => ({ path, recursive })));
+  state.paths.push(...entries);
   livePaths.set(state, [...livePaths.get(state) ?? [], ...folded]);
 }
 
