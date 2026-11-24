@@ -1,10 +1,11 @@
-import { closeSync, constants, existsSync, fstatSync, linkSync, lstatSync, openSync, readdirSync, readSync, unlinkSync, type BigIntStats } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, openSync, readdirSync, readSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
-import { copyFile, open, type FileHandle } from "node:fs/promises";
+import { open, type FileHandle } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { join } from "node:path";
 import { replaceStagedFile } from "../../lib/atomic-file.js";
 import { createLogger } from "../../lib/logger.js";
-import { renameFile, retryOnFileLock } from "../../lib/transient-fs-lock-retry.js";
+import { getSystemErrorName } from "node:util";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { forceKillManagedChildProcess, spawnManaged } from "../managed-child-processes.js";
 import { windowsPathKindHelperIn } from "../windows-path-kind-launcher.js";
@@ -128,362 +129,16 @@ export interface HelperPartIdentity {
 export interface LeftPart { readonly name: string; readonly identity: PartIdentity | HelperPartIdentity }
 
 /** What a cleanup did. A file it left can still be tried again at `at`, or `at` is null when cleanup has no retry location. */
-export type OwnFileResult = { readonly outcome: "removed" | "absent" } | { readonly outcome: "left"; readonly at: LeftPart | null };
+type OwnFileResult = { readonly outcome: "removed" | "absent" } | { readonly outcome: "left"; readonly at: LeftPart | null };
 
 /** The hidden name a temporary file is moved to before it is checked and removed. */
 export const MOVED_ASIDE_NAME = /^\.[0-9a-f]{32}\.removing$/u;
 const FINGERPRINT_SPAN = 64 * 1024;
-const NOFOLLOW = constants.O_NOFOLLOW ?? 0;
-
-// What is at a name, against what is expected there. `unheld`: the folder is no longer the held one (moved, replaced or unmounted);
-// `unreadable`: what is there could not be read.
-type Found = "same" | "absent" | "other" | "unheld" | "unreadable";
-
-function compareFile(folder: HeldDirectory, name: string, expected: FileIdentity): Found {
-  let info: BigIntStats | null;
-  try {
-    info = entryIn(folder, name);
-  } catch (error) {
-    return error instanceof HeldDirectoryRefusedError ? "unheld" : "unreadable";
-  }
-  if (info === null) return "absent";
-  return info.isFile() && sameFile(info, expected) ? "same" : "other";
-}
-
-function sameFile(info: FileIdentity, expected: FileIdentity): boolean {
-  return info.dev === expected.dev && info.ino === expected.ino &&
-    (expected.birthtimeNs === undefined || info.birthtimeNs === expected.birthtimeNs);
-}
-
-function sameContent(found: Fingerprint, expected: Fingerprint): boolean {
-  return found.size === expected.size && found.mtimeNs === expected.mtimeNs && found.head === expected.head && found.tail === expected.tail;
-}
-
-// The ordinary file at `name` in `folder`, read through one open descriptor: its identity and its content.
-function contentAt(folder: HeldDirectory, name: string): Exclude<Found, "same"> | PartSnapshot {
-  try {
-    heldFolder(folder);
-  } catch {
-    return "unheld";
-  }
-  let fd: number;
-  try {
-    fd = openSync(join(folder.path, name), constants.O_RDONLY | NOFOLLOW | (constants.O_NONBLOCK ?? 0));
-  } catch (error) {
-    return codeOf(error) === "ENOENT" ? "absent" : "unreadable";
-  }
-  try {
-    const info = fstatSync(fd, { bigint: true });
-    if (!info.isFile()) return "other";
-    const digest = (position: number, length: number): string => {
-      const buffer = Buffer.alloc(length);
-      for (let done = 0; done < length;) {
-        const read = readSync(fd, buffer, done, length - done, position + done);
-        if (read === 0) throw new Error("the temporary download file ended while it was being checked");
-        done += read;
-      }
-      return createHash("sha256").update(buffer).digest("hex");
-    };
-    const size = Number(info.size);
-    const span = Math.min(size, FINGERPRINT_SPAN);
-    return {
-      file: { dev: info.dev, ino: info.ino, birthtimeNs: info.birthtimeNs },
-      content: { size: info.size, mtimeNs: info.mtimeNs, head: digest(0, span), tail: digest(size - span, span) },
-    };
-  } catch {
-    return "unreadable";
-  } finally {
-    closeSync(fd);
-  }
-}
-
-// Whether a volume keeps a file's id across a rename and can link a file back, probed in this process by linking the file at `name` to a
-// fresh hidden name and checking it there. Only a definitive answer is kept for the volume: a link made and seen as the same file, or a
-// link refused with a code that says the file system has no hard links. ENOTSUP and EOPNOTSUPP say so everywhere; EISDIR is how
-// Windows reports a file system that cannot link a file. A failed identity check or other error such as EPERM may be specific to the
-// file, so only this cleanup checks by content and the next one probes again.
-const linkSupport = new Map<bigint, boolean>();
-const NO_LINKS: ReadonlySet<string> = new Set(process.platform === "win32" ? ["ENOTSUP", "EOPNOTSUPP", "EISDIR"] : ["ENOTSUP", "EOPNOTSUPP"]);
-interface LinkProbeResult { readonly supported: boolean; readonly probeLeft: boolean }
-
-async function linksIn(folder: HeldDirectory, name: string): Promise<LinkProbeResult> {
-  const known = linkSupport.get(folder.dev);
-  if (known !== undefined) return { supported: known, probeLeft: false };
-  const path = join(folder.path, name);
-  const probe = join(folder.path, `.${randomBytes(16).toString("hex")}.probe`);
-  try {
-    linkSync(path, probe);
-  } catch (error) {
-    const definitive = NO_LINKS.has(codeOf(error) ?? "");
-    if (definitive) linkSupport.set(folder.dev, false);
-    else log.warn({ path, code: codeOf(error) }, "a folder's hard-link support could not be probed; this cleanup checks the file by its content");
-    return { supported: false, probeLeft: false };
-  }
-  let supported = false;
-  try {
-    const linked = lstatSync(probe, { bigint: true });
-    supported = linked.nlink >= 2n && sameFile(linked, lstatSync(path, { bigint: true }));
-  } catch {
-    // Not seen through: answered for this cleanup only.
-  }
-  let probeLeft = false;
-  try {
-    // A brief lock by another program is waited out: the probe's name is ours alone.
-    await retryOnFileLock(async () => { removeIfPresent(probe); });
-  } catch (error) {
-    probeLeft = true;
-    log.warn({ path, probe, code: codeOf(error) }, "a hard-link probe's name for a temporary download file is left, and could not be removed");
-  }
-  if (supported) linkSupport.set(folder.dev, true);
-  return { supported, probeLeft };
-}
-
-/** Forget every volume's probed hard-link support. */
-export function _forgetLinkSupportForTest(): void {
-  linkSupport.clear();
-}
-
-/**
- * Remove a temporary file, now at `at` in `folder` and first written as `original`, only while it is the file `identity` names, never a
- * file put at either name. It is moved to a fresh hidden name in the same folder, checked there, and only then removed under that name by
- * `remove`, so a file put at its name meanwhile is not touched. A file that turns out not to be that file, or that `remove` does not
- * remove, goes back to `original` if that is still free, or stays at the hidden name; the result says where a file that may be the
- * temporary file is left, so it can be tried again. Every step that cannot be done is logged with its own reason. Never throws.
- */
-export async function removeOwnFile(
-  folder: HeldDirectory, original: string, at: string, identity: PartIdentity,
-  remove: (folder: HeldDirectory, name: string) => Promise<"removed" | "absent" | "cancelled">,
-): Promise<OwnFileResult> {
-  const path = join(folder.path, at);
-  if (identity.kind === "fingerprint") {
-    try {
-      heldFolder(folder);
-    } catch {
-      return notMoved("unheld", path, { name: at, identity });
-    }
-    return removeByContent(folder, original, at, identity.content, remove);
-  }
-  const found = compareFile(folder, at, identity.file);
-  if (found !== "same") return notMoved(found, path, { name: at, identity });
-  const { supported, probeLeft } = await linksIn(folder, at);
-  const result = supported
-    ? await removeByFileId(folder, original, at, identity, remove)
-    : await removeByVerifiedContent(folder, original, at, identity, remove);
-  return probeLeft && result.outcome !== "left" ? { outcome: "left", at: null } : result;
-}
-
-// Without a verified hard link, a rename may change the file id. Bind the content to the known file before moving it.
-async function removeByVerifiedContent(
-  folder: HeldDirectory, original: string, at: string, identity: Extract<PartIdentity, { kind: "fileId" }>,
-  remove: (folder: HeldDirectory, name: string) => Promise<"removed" | "absent" | "cancelled">,
-): Promise<OwnFileResult> {
-  const path = join(folder.path, at);
-  const now = contentAt(folder, at);
-  if (typeof now === "string") return notMoved(now, path, { name: at, identity });
-  if (!sameFile(now.file, identity.file)) return notMoved("other", path, { name: at, identity });
-  return removeByContent(folder, original, at, now.content, remove);
-}
-
-// A file not moved aside, because of what was found at its name.
-function notMoved(found: Exclude<Found, "same">, path: string, keep: LeftPart): OwnFileResult {
-  if (found === "absent") return { outcome: "absent" };
-  if (found === "other") {
-    log.warn({ path }, "a temporary download file is left: what is at its name is not the file that was written");
-    return { outcome: "left", at: null };
-  }
-  if (found === "unheld") log.warn({ path }, "a temporary download file is left: its folder is no longer the chosen one (moved, replaced or unmounted)");
-  else log.warn({ path }, "a temporary download file is left: what is at its name could not be read");
-  return { outcome: "left", at: keep };
-}
-
-async function moveAside(folder: HeldDirectory, at: string, keep: LeftPart): Promise<string | OwnFileResult> {
-  const hidden = `.${randomBytes(16).toString("hex")}.removing`;
-  const path = join(folder.path, at);
-  try {
-    // A brief lock by another program is waited out: the file is checked again after the move, so the wait ages no judgment.
-    await renameFile(path, join(folder.path, hidden));
-  } catch (error) {
-    log.warn({ path, code: codeOf(error) }, "a temporary download file is left: it could not be moved aside to be checked");
-    return { outcome: "left", at: keep };
-  }
-  return hidden;
-}
-
-async function removeMoved(folder: HeldDirectory, hidden: string, remove: (folder: HeldDirectory, name: string) => Promise<"removed" | "absent" | "cancelled">): Promise<"removed" | "absent" | string> {
-  try {
-    const removed = await remove(folder, hidden);
-    return removed === "cancelled" ? "its removal was cancelled" : removed;
-  } catch (error) {
-    return `it could not be removed: ${(error as Error).message}`;
-  }
-}
-
-// A folder whose renames keep file ids: the file is checked by id at the hidden name, and put back by a hard link, which never replaces.
-async function removeByFileId(
-  folder: HeldDirectory, original: string, at: string, identity: Extract<PartIdentity, { kind: "fileId" }>,
-  remove: (folder: HeldDirectory, name: string) => Promise<"removed" | "absent" | "cancelled">,
-): Promise<OwnFileResult> {
-  const hidden = await moveAside(folder, at, { name: at, identity });
-  if (typeof hidden !== "string") return hidden;
-  const hiddenPath = join(folder.path, hidden);
-  const path = join(folder.path, original);
-  const moved = compareFile(folder, hidden, identity.file);
-  if (moved === "absent") return { outcome: "absent" };
-  if (moved === "same") {
-    const removed = await removeMoved(folder, hidden, remove);
-    if (removed === "removed" || removed === "absent") return { outcome: removed };
-    return { outcome: "left", at: { name: linkBack(hiddenPath, path, removed) ? original : hidden, identity } };
-  }
-  const why = moved === "other" ? "it is not the file that was written" : moved === "unheld" ? "its folder is no longer the chosen one" : "it could not be read";
-  const back = linkBack(hiddenPath, path, why);
-  if (moved === "other") return { outcome: "left", at: back ? null : { name: hidden, identity } };
-  return { outcome: "left", at: { name: back ? original : hidden, identity } };
-}
-
-// Link a file moved aside back to its own name unless something is at that name now; true once it is there. Logs where it is left.
-function linkBack(hiddenPath: string, path: string, why: string): boolean {
-  try {
-    linkSync(hiddenPath, path);
-  } catch (error) {
-    log.warn({ path, movedTo: hiddenPath, why, code: codeOf(error) }, "a temporary download file is left under another name, and could not be put back");
-    return false;
-  }
-  try {
-    unlinkSync(hiddenPath);
-  } catch (error) {
-    log.warn({ path, alsoAt: hiddenPath, why, code: codeOf(error) }, "a temporary download file is left, put back, but also still under another name");
-    return true;
-  }
-  log.warn({ path, why }, "a temporary download file is left, put back at its name");
-  return true;
-}
-
-// A folder without hard links: the file is checked by content at the hidden name, read through a new descriptor, and put back as a new
-// file at its name, which never replaces one put there meanwhile.
-async function removeByContent(
-  folder: HeldDirectory, original: string, at: string, content: Fingerprint,
-  remove: (folder: HeldDirectory, name: string) => Promise<"removed" | "absent" | "cancelled">,
-): Promise<OwnFileResult> {
-  const identity: PartIdentity = { kind: "fingerprint", content };
-  let hidden = at;
-  if (!MOVED_ASIDE_NAME.test(at)) {
-    const moved = await moveAside(folder, at, { name: at, identity });
-    if (typeof moved !== "string") return moved;
-    hidden = moved;
-  }
-  const there = contentAt(folder, hidden);
-  if (there === "absent") return { outcome: "absent" };
-  const keep: LeftPart = { name: hidden, identity };
-  if (typeof there !== "string" && sameContent(there.content, content)) {
-    const removed = await removeMoved(folder, hidden, remove);
-    if (removed === "removed" || removed === "absent") return { outcome: removed };
-    return { outcome: "left", at: (await copyBack(folder, hidden, original, removed))?.at ?? keep };
-  }
-  const why = typeof there !== "string" || there === "other" ? "it is not the file that was written"
-    : there === "unheld" ? "its folder is no longer the chosen one" : "it could not be read";
-  const back = (await copyBack(folder, hidden, original, why))?.at ?? null;
-  if (typeof there !== "string" || there === "other") return { outcome: "left", at: back === null ? keep : null };
-  return { outcome: "left", at: back ?? keep };
-}
-
-// Copy a file moved aside back to its own name as a new file, which fails on anything at that name rather than replacing it, and remove it
-// under the hidden name only once the copy is seen to hold the same bytes. Returns where it then is and how it is known there (a copy has
-// its own last change), or null when it stays under the hidden name. Logs where it is left.
-async function copyBack(
-  folder: HeldDirectory, hidden: string, original: string, why: string,
-  checked?: { readonly expected: PartSnapshot; readonly remove: Parameters<typeof removeMoved>[2] },
-): Promise<{ readonly at: LeftPart; readonly restored: boolean } | null> {
-  const hiddenPath = join(folder.path, hidden);
-  const path = join(folder.path, original);
-  try {
-    await copyFile(hiddenPath, path, constants.COPYFILE_EXCL);
-  } catch (error) {
-    const message = codeOf(error) === "EEXIST" ? "a temporary download file is left under another name: something is at its own name"
-      : "a temporary download file is left under another name, and could not be put back";
-    log.warn({ path, movedTo: hiddenPath, why, code: codeOf(error) }, message);
-    return null;
-  }
-  const copied = contentAt(folder, original);
-  const source = contentAt(folder, hidden);
-  if (typeof copied === "string" || typeof source === "string" || !sameBytes(copied.content, source.content) ||
-      (checked !== undefined && !matchesSnapshot(source, checked.expected))) {
-    log.warn({ path, alsoAt: hiddenPath, why }, "a temporary download file is left under another name: its copy at its own name could not be checked");
-    return null;
-  }
-  const back: LeftPart = { name: original, identity: { kind: "fingerprint", content: copied.content } };
-  try {
-    if (checked === undefined) {
-      await retryOnFileLock(async () => { unlinkSync(hiddenPath); });
-    } else {
-      const removed = await removeMoved(folder, hidden, checked.remove);
-      if (removed !== "removed" && removed !== "absent") throw new Error(removed);
-    }
-  } catch (error) {
-    log.warn({ path, alsoAt: hiddenPath, why, code: codeOf(error), error: (error as Error).message },
-      "a temporary download file is left, put back, but also still under another name");
-    return { at: back, restored: false };
-  }
-  log.warn({ path, why }, "a temporary download file is left, put back at its name");
-  return { at: back, restored: true };
-}
-
-function sameBytes(a: Fingerprint, b: Fingerprint): boolean {
-  return a.size === b.size && a.head === b.head && a.tail === b.tail;
-}
-
-function matchesSnapshot(found: ReturnType<typeof contentAt>, expected: PartSnapshot): boolean {
-  return typeof found !== "string" && sameFile(found.file, expected.file) && sameContent(found.content, expected.content);
-}
-
-/** Retry a named leftover after checking the folder and the entry the helper left there. */
-export async function retryHelperPart(
-  folder: HeldDirectory, original: string, hidden: string, identity: HelperPartIdentity, remove: HeldFileOperations["remove"],
-): Promise<OwnFileResult | { readonly outcome: "restored" }> {
-  const found = contentAt(folder, hidden);
-  if (found === "absent") return { outcome: "absent" };
-  const keep: OwnFileResult = { outcome: "left", at: { name: hidden, identity } };
-  const path = join(folder.path, original);
-  const movedTo = join(folder.path, hidden);
-  const { observed, verdict } = identity;
-  if (observed === null || !matchesSnapshot(found, observed) ||
-      (verdict === "remove-failed" && (observed.file.dev !== identity.dev || observed.file.ino !== identity.ino))) {
-    log.warn({ path, movedTo, verdict }, "a helper's hidden download file is left: its identity could not be verified");
-    return keep;
-  }
-  const removeChecked = (directory: HeldDirectory, name: string) => remove(directory, name,
-    () => matchesSnapshot(contentAt(directory, name), observed), UNSTOPPED);
-  if (verdict === "mismatch") {
-    const back = await copyBack(folder, hidden, original, "the helper found a different file", { expected: observed, remove: removeChecked });
-    return back?.restored ? { outcome: "restored" } : keep;
-  }
-  const removed = await removeMoved(folder, hidden, removeChecked);
-  if (removed === "removed" || removed === "absent") return { outcome: removed };
-  log.warn({ path, movedTo, verdict, why: removed }, "a helper's hidden download file could not be removed");
-  return keep;
-}
-
-// Throws a refusal unless `folder` is still the held one; one that cannot be checked (unmounted, say) is not.
-function heldFolder(folder: HeldDirectory): void {
-  let held: BigIntStats;
-  try {
-    held = lstatSync(folder.path, { bigint: true });
-  } catch {
-    throw new HeldDirectoryRefusedError("to");
-  }
-  if (!held.isDirectory() || held.isSymbolicLink() || held.dev !== folder.dev || held.ino !== folder.ino) throw new HeldDirectoryRefusedError("to");
-}
-
-// The entry `name` in `folder`, or null when there is none; throws a refusal when `folder` is no longer the held one, and the error when
-// the entry cannot be read.
-function entryIn(folder: HeldDirectory, name: string): BigIntStats | null {
-  heldFolder(folder);
-  try {
-    return lstatSync(join(folder.path, name), { bigint: true });
-  } catch (error) {
-    if (codeOf(error) === "ENOENT") return null;
-    throw error;
-  }
-}
+const RECORD_NAME = /^[0-9a-f]{32}\.cleanup\.json$/u;
+const RECORDS_LINE = /^records(?: [0-9a-f]{32}\.cleanup\.json)*$/u;
+const RECORD_LINE = /^record (?:[0-9a-f]{2})*$/u;
+const MAX_RECORD_BYTES = 8192;
+const MAX_HELPER_LINE_BYTES = 1024 * 1024;
 
 /**
  * File operations that act inside held directories. Each one opens its directories, checks each is the plain directory with the given
@@ -506,6 +161,10 @@ export interface HeldFileOperations {
   remove(directory: HeldDirectory, name: string, proceed: Proceed, stop: AbortSignal): Promise<"removed" | "absent" | "cancelled">;
   /** Remove every file and link directly in `directory`, and nothing else; await it before anything is staged. */
   sweep(directory: HeldDirectory): Promise<number>;
+  listRecords(directory: HeldDirectory): Promise<string[]>;
+  readRecord(directory: HeldDirectory, name: string, max: number): Promise<Buffer | null>;
+  writeRecord(directory: HeldDirectory, name: string, body: Buffer): Promise<void>;
+  recover(directory: HeldDirectory, name: string, original: string, identity: PartIdentity | HelperPartIdentity): Promise<OwnFileResult | { outcome: "restored" }>;
 }
 
 const HELPER_BUILD: Partial<Record<NodeJS.Platform, string>> = {
@@ -575,22 +234,47 @@ function holdingSync<T>(directory: HeldDirectory, use: (fd: number) => T): T {
 }
 
 const inHeld = (fd: number, name: string): string => `/proc/self/fd/${fd}/${name}`;
-// `directory`, held as `fd`, named through that descriptor: the trailing separator resolves its /proc/self/fd entry to the directory.
-const heldThrough = (fd: number, directory: HeldDirectory): HeldDirectory => ({ path: `/proc/self/fd/${fd}/`, dev: directory.dev, ino: directory.ino });
+const requireNative = createRequire(import.meta.url);
+const RENAME_NOREPLACE = 1;
+// Linux's O_PATH holds the directory entry itself, including a symlink with O_NOFOLLOW.
+const LINUX_O_PATH = 0o10000000;
+let linuxRename: ((fd: number, from: string, to: string) => void) | undefined;
+
+function renameExclusive(fd: number, from: string, to: string): void {
+  if (linuxRename === undefined) {
+    const ffi = requireNative("koffi") as typeof import("koffi");
+    const rename = ffi.load(null).func("int renameat2(int, const char *, int, const char *, unsigned int)");
+    linuxRename = (directory, source, target) => {
+      if (rename(directory, source, directory, target, RENAME_NOREPLACE) === 0) return;
+      const errno = ffi.errno();
+      throw Object.assign(new Error("the exclusive download rename failed"), { code: getSystemErrorName(-errno) });
+    };
+  }
+  linuxRename(fd, from, to);
+}
+
+function sameFile(found: FileIdentity, expected: FileIdentity): boolean {
+  return found.dev === expected.dev && found.ino === expected.ino &&
+    (expected.birthtimeNs === undefined || found.birthtimeNs === expected.birthtimeNs);
+}
+
+function fingerprintKey(content: Fingerprint): string {
+  return `${content.size}:${content.mtimeNs}:${content.head}:${content.tail}`;
+}
 
 // The chosen name may hold nothing yet, or an ordinary file the user agreed to replace; never a link or anything else.
-function assertReplaceable(path: string): void {
+function assertReplaceable(fd: number, name: string): void {
   try {
-    if (!lstatSync(path).isFile()) throw new HeldDirectoryRefusedError("target");
+    if (!lstatSync(inHeld(fd, name)).isFile()) throw new HeldDirectoryRefusedError("target");
   } catch (error) {
     if (codeOf(error) === "ENOENT") return;
     throw error;
   }
 }
 
-function assertOrdinarySource(path: string): void {
+function assertOrdinarySource(fd: number, name: string): void {
   try {
-    if (!lstatSync(path).isFile()) throw new HeldDirectoryRefusedError("source");
+    if (!lstatSync(inHeld(fd, name)).isFile()) throw new HeldDirectoryRefusedError("source");
   } catch (error) {
     if (codeOf(error) === "ENOENT") throw new HeldDirectoryRefusedError("source");
     throw error;
@@ -606,27 +290,7 @@ async function writeFully(target: FileHandle, buffer: Buffer, length: number): P
   }
 }
 
-/**
- * A stopped copy's temporary file `part` in `folder`, which the copy created as the file `written` (null when it was never seen), removed
- * only while it is still that file, as {@link removeOwnFile} does; one never seen is left. What became of it is reported on `failure`, the
- * error the copy ends with, or, for a copy ending `cancelled` (`failure` null) whose file is left, on an error thrown instead.
- */
-export async function cleanStoppedPart(folder: HeldDirectory, part: string, written: FileIdentity | null, failure: { readonly error: unknown } | null): Promise<void> {
-  let result: OwnFileResult;
-  if (written === null) {
-    log.warn({ path: join(folder.path, part) }, "a stopped download copy's temporary file is left: it was never seen while the copy wrote it");
-    result = { outcome: "left", at: null };
-  } else {
-    result = await removeOwnFile(folder, part, part, { kind: "fileId", file: written }, async (directory, name) => {
-      try {
-        unlinkSync(join(directory.path, name));
-      } catch (error) {
-        if (codeOf(error) === "ENOENT") return "absent";
-        throw error;
-      }
-      return "removed";
-    });
-  }
+function finishStoppedCopy(result: OwnFileResult, failure: { readonly error: unknown } | null): void {
   if (failure !== null) {
     markStoppedCopy(failure.error, result);
     return;
@@ -637,20 +301,164 @@ export async function cleanStoppedPart(folder: HeldDirectory, part: string, writ
   throw left;
 }
 
-function removeIfPresent(path: string): void {
-  try {
-    unlinkSync(path);
-  } catch (error) {
-    if (codeOf(error) !== "ENOENT") throw error;
-  }
-}
-
 function descriptorFileOperations(): HeldFileOperations {
+  function entryMatches(directory: number, name: string, expected: FileIdentity, symlink = false): boolean {
+    try {
+      const info = lstatSync(inHeld(directory, name), { bigint: true });
+      return (symlink ? info.isSymbolicLink() : info.isFile()) && sameFile(info, expected);
+    } catch {
+      return false;
+    }
+  }
+
+  function fingerprintOf(fd: number): Fingerprint | null {
+    const info = fstatSync(fd, { bigint: true });
+    if (!info.isFile() || info.size > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+    const size = Number(info.size);
+    const span = Math.min(size, FINGERPRINT_SPAN);
+    const digest = (position: number): string => {
+      const buffer = Buffer.alloc(span);
+      for (let offset = 0; offset < span;) {
+        const count = readSync(fd, buffer, offset, span - offset, position + offset);
+        if (count === 0) throw new Error("the download file ended during verification");
+        offset += count;
+      }
+      return createHash("sha256").update(buffer).digest("hex");
+    };
+    const head = digest(0);
+    const tail = digest(size - span);
+    const after = fstatSync(fd, { bigint: true });
+    if (after.size !== info.size || after.mtimeNs !== info.mtimeNs || after.ctimeNs !== info.ctimeNs) return null;
+    return { size: info.size, mtimeNs: info.mtimeNs, head, tail };
+  }
+
+  function verifyFingerprint(fd: number, expected: Fingerprint): boolean {
+    const actual = fingerprintOf(fd);
+    return actual !== null && fingerprintKey(actual) === fingerprintKey(expected);
+  }
+
+  function boundOpen(fd: number, name: string): number | null {
+    try {
+      return openSync(inHeld(fd, name), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    } catch (error) {
+      if (codeOf(error) === "ENOENT") return null;
+      throw error;
+    }
+  }
+
+  function retireBound(directory: number, name: string, fd: number, expected: FileIdentity, content?: Fingerprint, symlink = false): OwnFileResult {
+    const hidden = `.${randomBytes(16).toString("hex")}.removing`;
+    const at: LeftPart = { name, identity: { kind: "fileId", file: expected } };
+    try {
+      renameExclusive(directory, name, hidden);
+    } catch (error) {
+      return codeOf(error) === "ENOENT" ? { outcome: "absent" } : { outcome: "left", at };
+    }
+    let verified = false;
+    try {
+      verified = (content === undefined || verifyFingerprint(fd, content)) && entryMatches(directory, hidden, expected, symlink);
+      if (verified) {
+        unlinkSync(inHeld(directory, hidden));
+        return { outcome: "removed" };
+      }
+      renameExclusive(directory, hidden, name);
+      return { outcome: "left", at };
+    } catch (error) {
+      if (verified && codeOf(error) === "ENOENT") return { outcome: "absent" };
+      const observed = boundSnapshot(directory, hidden);
+      return { outcome: "left", at: { name: hidden, identity: {
+        kind: "helper", dev: expected.dev, ino: expected.ino, verdict: verified ? "remove-failed" : "mismatch", observed,
+      } } };
+    }
+  }
+
+  function boundSnapshot(directory: number, name: string): PartSnapshot | null {
+    try {
+      const fd = boundOpen(directory, name);
+      if (fd === null) return null;
+      try {
+        const file = fstatSync(fd, { bigint: true });
+        const content = fingerprintOf(fd);
+        return content !== null && entryMatches(directory, name, file) ? { file: { dev: file.dev, ino: file.ino, birthtimeNs: file.birthtimeNs }, content } : null;
+      } finally {
+        closeSync(fd);
+      }
+    } catch {
+      return null;
+    }
+  }
+
+  function recoverBound(directory: number, name: string, original: string, identity: PartIdentity | HelperPartIdentity): OwnFileResult | { outcome: "restored" } {
+    const left: OwnFileResult = { outcome: "left", at: { name, identity } };
+    if (identity.kind === "fingerprint") return left;
+    const observed = identity.kind === "helper" ? identity.observed : null;
+    const expected = identity.kind === "fileId" ? identity.file : observed?.file;
+    const content = observed?.content;
+    const restore = identity.kind === "helper" && identity.verdict === "mismatch";
+    if (identity.kind === "helper" && (observed === null ||
+        (!restore && (identity.dev !== observed.file.dev || identity.ino !== observed.file.ino)))) return left;
+    try {
+      const fd = boundOpen(directory, name);
+      if (fd === null) return { outcome: "absent" };
+      try {
+        const info = fstatSync(fd, { bigint: true });
+        if (!info.isFile() || (expected !== undefined && !sameFile(info, expected)) ||
+            (content !== undefined && !verifyFingerprint(fd, content))) return left;
+        if (restore) {
+          const target = openSync(inHeld(directory, original), constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, Number(info.mode) & 0o777);
+          try {
+            const buffer = Buffer.alloc(COPY_CHUNK);
+            for (;;) {
+              const count = readSync(fd, buffer, 0, buffer.length, null);
+              if (count === 0) break;
+              for (let offset = 0; offset < count;) {
+                const written = writeSync(target, buffer, offset, count - offset);
+                if (written === 0) return left;
+                offset += written;
+              }
+            }
+            fsyncSync(target);
+            if (!entryMatches(directory, original, fstatSync(target, { bigint: true }))) return left;
+          } finally {
+            closeSync(target);
+          }
+        }
+        const result = retireBound(directory, name, fd, info, content);
+        if (restore && result.outcome !== "left") return { outcome: "restored" };
+        if (result.outcome === "left" && result.at?.name === name) return left;
+        return result;
+      } finally {
+        closeSync(fd);
+      }
+    } catch {
+      return left;
+    }
+  }
+
+  function purgeStaged(fd: number, name: string): "absent" | "removed" {
+    let entry: number;
+    try {
+      entry = openSync(inHeld(fd, name), LINUX_O_PATH | constants.O_NOFOLLOW);
+    } catch (error) {
+      if (codeOf(error) === "ENOENT") return "absent";
+      throw error;
+    }
+    try {
+      const identity = fstatSync(entry, { bigint: true });
+      if (!identity.isFile() && !identity.isSymbolicLink()) throw new Error("the staged download entry is not a file or link");
+      const removed = retireBound(fd, name, entry, identity, undefined, identity.isSymbolicLink());
+      if (removed.outcome === "left") throw new Error("the staged download entry could not be removed");
+      return removed.outcome;
+    } finally {
+      closeSync(entry);
+    }
+  }
+
   return {
     move: (from, name, to, target, proceed, stop) => holding(from, to, (fromFd, toFd) => {
       if (stop.aborted || !proceed("ready")) return "cancelled";
-      assertOrdinarySource(inHeld(fromFd, name));
-      assertReplaceable(inHeld(toFd, target));
+      assertOrdinarySource(fromFd, name);
+      assertReplaceable(toFd, target);
       try {
         replaceStagedFile(inHeld(fromFd, name), inHeld(toFd, target));
       } catch (error) {
@@ -667,7 +475,8 @@ function descriptorFileOperations(): HeldFileOperations {
         if (codeOf(error) === "ENOENT" || codeOf(error) === "ELOOP") throw new HeldDirectoryRefusedError("source");
         throw error;
       }
-      let created = false;
+      let copy: FileHandle | null = null;
+      let committed = false;
       // The temporary file as the copy created it, taken through its own handle.
       let written: FileIdentity | null = null;
       let failure: { readonly error: unknown } | null = null;
@@ -675,55 +484,92 @@ function descriptorFileOperations(): HeldFileOperations {
         const sourceInfo = await source.stat();
         if (!sourceInfo.isFile()) throw new HeldDirectoryRefusedError("source");
         if (!proceed("ready")) return "cancelled";
-        assertReplaceable(inHeld(toFd, target));
+        assertReplaceable(toFd, target);
         // The temporary file is created exclusively, never through a link, in the held folder.
-        const copy = await open(inHeld(toFd, part), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, sourceInfo.mode & 0o777);
-        created = true;
-        try {
-          const info = await copy.stat({ bigint: true });
-          written = { dev: info.dev, ino: info.ino, birthtimeNs: info.birthtimeNs };
-          const buffer = Buffer.alloc(COPY_CHUNK);
-          for (let position = 0; ;) {
-            if (stop.aborted) return "cancelled";
-            const { bytesRead } = await source.read(buffer, 0, buffer.length, position);
-            if (bytesRead === 0) break;
-            await writeFully(copy, buffer, bytesRead);
-            position += bytesRead;
-          }
-          await copy.sync();
-        } finally {
-          await copy.close();
+        copy = await open(inHeld(toFd, part), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, sourceInfo.mode & 0o777);
+        const info = await copy.stat({ bigint: true });
+        written = { dev: info.dev, ino: info.ino, birthtimeNs: info.birthtimeNs };
+        const buffer = Buffer.alloc(COPY_CHUNK);
+        for (let position = 0; ;) {
+          if (stop.aborted) return "cancelled";
+          const { bytesRead } = await source.read(buffer, 0, buffer.length, position);
+          if (bytesRead === 0) break;
+          await writeFully(copy, buffer, bytesRead);
+          position += bytesRead;
         }
+        await copy.sync();
         if (!proceed("copied")) return "cancelled";
-        assertReplaceable(inHeld(toFd, target));
+        assertReplaceable(toFd, target);
         replaceStagedFile(inHeld(toFd, part), inHeld(toFd, target));
-        created = false;
+        committed = true;
         return "committed";
       } catch (error) {
         failure = { error };
         throw error;
       } finally {
-        await source.close();
-        // A copy that did not reach its commit leaves nothing behind: its own file is removed, only from the held folder.
-        if (created) await cleanStoppedPart(heldThrough(toFd, to), part, written, failure);
+        try {
+          if (copy !== null && !committed) {
+            const result: OwnFileResult = written === null ? { outcome: "left", at: null }
+              : retireBound(toFd, part, copy.fd, written);
+            finishStoppedCopy(result, failure);
+          }
+        } finally {
+          try {
+            await copy?.close();
+          } finally {
+            await source.close();
+          }
+        }
       }
     }),
     remove: (directory, name, proceed, stop) => holding(directory, null, (fd) => {
       if (stop.aborted || !proceed("ready")) return "cancelled";
+      return purgeStaged(fd, name);
+    }),
+    recover: async (directory, name, original, identity) => {
       try {
-        unlinkSync(inHeld(fd, name));
+        return await holding(directory, null, (fd) => recoverBound(fd, name, original, identity));
       } catch (error) {
-        if (codeOf(error) === "ENOENT") return "absent";
-        throw error;
+        log.warn({ path: join(directory.path, original), leftAs: name, error: (error as Error).message }, "the stopped download folder could not be held");
+        return { outcome: "left", at: { name, identity } };
       }
-      return "removed";
+    },
+    listRecords: async (directory) => holdingSync(directory, (fd) => readdirSync(inHeld(fd, ".")).filter((name) => RECORD_NAME.test(name))),
+    readRecord: async (directory, name, max) => holdingSync(directory, (fd) => {
+      const record = boundOpen(fd, name);
+      if (record === null) return null;
+      try {
+        const info = fstatSync(record, { bigint: true });
+        if (!info.isFile()) return null;
+        if (max < 1 || max > MAX_RECORD_BYTES || info.size > BigInt(max)) throw new Error("the download cleanup record exceeds its limit");
+        const bytes = Buffer.alloc(max + 1);
+        let used = 0;
+        while (used < bytes.length) {
+          const count = readSync(record, bytes, used, bytes.length - used, null);
+          if (count === 0) break;
+          used += count;
+        }
+        if (used > max) throw new Error("the download cleanup record exceeds its limit");
+        return bytes.subarray(0, used);
+      } finally {
+        closeSync(record);
+      }
+    }),
+    writeRecord: async (directory, name, body) => holdingSync(directory, (fd) => {
+      if (body.length > MAX_RECORD_BYTES) throw new Error("the download cleanup record exceeds its limit");
+      const record = openSync(inHeld(fd, name), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+      try {
+        writeFileSync(record, body);
+        fsyncSync(record);
+      } finally {
+        closeSync(record);
+      }
     }),
     sweep: async (directory) => holdingSync(directory, (fd) => {
       let removed = 0;
       for (const entry of readdirSync(inHeld(fd, "."), { withFileTypes: true })) {
         if (!entry.isFile() && !entry.isSymbolicLink()) continue;
-        unlinkSync(inHeld(fd, entry.name));
-        removed += 1;
+        if (purgeStaged(fd, entry.name) === "removed") removed += 1;
       }
       return removed;
     }),
@@ -742,25 +588,44 @@ const PROGRESS = /^progress (\d+)$/u;
 const WRITING = /^writing (0|[1-9][0-9]{0,19}) (0|[1-9][0-9]{0,19})$/u;
 const FAILURE_DIAGNOSTIC = /^Windows error \d+(?: \(NTSTATUS 0x[0-9A-F]{8}, (?:NtCreateFile|NtSetInformationFile)\))?\r?\n$/u;
 // A stopped copy may add ` left`, or ` left <hidden name> <dev> <ino> <verdict>` when a file stays at the moved-aside name.
-const PART_LEFT = / left(?: (\.[0-9a-f]{32}\.removing) (0|[1-9][0-9]{0,19}) (0|[1-9][0-9]{0,19}) (mismatch|remove-failed))?$/u;
+const PART_LEFT = /(?:^| )left(?: (\.[0-9a-f]{32}\.removing) (\d{1,20}) (\d{1,20}) (mismatch|remove-failed) ([^ ]+)( part-left)?)?$/u;
 const MAX_HELPER_FILE_ID = (1n << 64n) - 1n;
 interface HelperLeftPart {
   readonly name: string;
   readonly identity: HelperPartIdentity;
 }
-const helperLeftParts = new WeakMap<Error, HelperLeftPart | null>();
+const helperLeftParts = new WeakMap<Error, NonNullable<ReturnType<typeof parsePartLeft>>>();
 
-function parsePartLeft(line: string): { readonly answer: string; readonly at: HelperLeftPart | null } | null {
+function parseUnsigned(text: string | undefined): bigint | null {
+  if (text === undefined || !/^(0|[1-9][0-9]{0,19})$/u.test(text)) return null;
+  const value = BigInt(text);
+  return value <= MAX_HELPER_FILE_ID ? value : null;
+}
+
+function parseSnapshot(text: string): PartSnapshot | null {
+  const [devText, inoText, birthText, sizeText, mtimeText, head, tail, extra] = text.split(":");
+  const dev = parseUnsigned(devText);
+  const ino = parseUnsigned(inoText);
+  const birthtimeNs = parseUnsigned(birthText);
+  const size = parseUnsigned(sizeText);
+  const mtimeNs = parseUnsigned(mtimeText);
+  if (extra !== undefined || dev === null || ino === null || birthtimeNs === null || size === null || mtimeNs === null ||
+      head === undefined || tail === undefined || !/^[0-9a-f]{64}$/u.test(head) || !/^[0-9a-f]{64}$/u.test(tail)) return null;
+  return { file: { dev, ino, birthtimeNs }, content: { size, mtimeNs, head, tail } };
+}
+
+function parsePartLeft(line: string): { readonly answer: string; readonly at: HelperLeftPart | null; readonly partLeft: boolean } | null {
   const match = PART_LEFT.exec(line);
   if (match === null) return null;
   const answer = line.slice(0, match.index);
-  const [, name, devText, inoText, verdict] = match;
-  if (name === undefined) return { answer, at: null };
-  if (devText === undefined || inoText === undefined || (verdict !== "mismatch" && verdict !== "remove-failed")) return null;
-  const dev = BigInt(devText);
-  const ino = BigInt(inoText);
-  if (dev > MAX_HELPER_FILE_ID || ino > MAX_HELPER_FILE_ID) return null;
-  return { answer, at: { name, identity: { kind: "helper", dev, ino, verdict, observed: null } } };
+  const [, name, devText, inoText, verdict, snapshot, partLeft] = match;
+  if (name === undefined) return { answer, at: null, partLeft: true };
+  const dev = parseUnsigned(devText);
+  const ino = parseUnsigned(inoText);
+  if (dev === null || ino === null || (verdict !== "mismatch" && verdict !== "remove-failed") || snapshot === undefined) return null;
+  const observed = snapshot === "-" ? null : parseSnapshot(snapshot);
+  if (snapshot !== "-" && observed === null) return null;
+  return { answer, at: { name, identity: { kind: "helper", dev, ino, verdict, observed } }, partLeft: partLeft !== undefined };
 }
 
 /** How long a helper may say nothing (`stallMs`), and how long its exit may take to be seen once it is killed (`killMs`). */
@@ -782,17 +647,20 @@ function directoryArguments(directory: HeldDirectory): string[] {
 function helperOutcome(helper: string, status: number | null, signal: NodeJS.Signals | null, last: string, stderr: string): string | Error {
   const left = parsePartLeft(last);
   const answer = left?.answer ?? last;
-  if (status === EXIT_DONE && (left === null ? /^(?:committed|cancelled|cross-volume|removed|absent|swept \d+)$/u.test(last) : answer === "cancelled")) {
+  if (status === EXIT_DONE && (left === null ? /^(?:committed|cancelled|cross-volume|removed|absent|restored|written|swept \d+)$/u.test(last) || RECORDS_LINE.test(last) || RECORD_LINE.test(last) : answer === "cancelled" || answer === "")) {
     return last;
   }
   const leaving = (error: Error): Error => {
-    if (left !== null) helperLeftParts.set(error, left.at);
+    if (left !== null) helperLeftParts.set(error, left);
     return error;
   };
-  const refused = /^refused (\w+)$/u.exec(answer);
+  const refused = /^refused (\w+)(?: (?:removed|changed))?$/u.exec(answer);
   const refusal = refused?.[1];
   if (status === EXIT_REFUSED && refusal !== undefined && REFUSALS.has(refusal)) {
-    return leaving(new HeldDirectoryRefusedError(refusal as HeldRefusal));
+    const error = new HeldDirectoryRefusedError(refusal as HeldRefusal);
+    if (answer === "refused target removed") markStoppedCopy(error, { outcome: "removed" });
+    if (answer === "refused target changed") markStoppedCopy(error, { outcome: "left", at: null });
+    return leaving(error);
   }
   const failed = /^failed (E[A-Z0-9_]+)$/u.exec(answer);
   if (status === EXIT_FAILED && failed !== null) {
@@ -938,6 +806,7 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
     const isOutcome = (line: string): boolean => {
       const left = parsePartLeft(line);
       if (left !== null) {
+        if (mode === "--dir-remove-id" || mode === "--dir-restore") return passed === "ready" && left.answer === "";
         // Only a copy let past `ready`, which may have created its temporary file, says what became of it.
         if (mode !== "--dir-copy" || passed === null) return false;
         const { answer } = left;
@@ -946,12 +815,17 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
         return /^failed E[A-Z0-9_]+$/u.test(answer);
       }
       if (/^refused (from|to|source|target)$/u.test(line)) return mode !== "--dir-copy" || phase === "holding";
+      if (line === "refused target removed" || line === "refused target changed") return mode === "--dir-copy" && passed === "copied";
       if (/^failed E[A-Z0-9_]+$/u.test(line)) return true;
       if (line === "cancelled") return phase !== "holding" && stopping;
       if (mode === "--dir-copy") return line === "committed" && passed === "copied";
       if (passed !== "ready") return false;
       if (mode === "--dir-rename") return line === "committed" || line === "cross-volume";
-      if (mode === "--dir-remove") return line === "removed" || line === "absent";
+      if (mode === "--dir-remove" || mode === "--dir-remove-id") return line === "removed" || line === "absent";
+      if (mode === "--dir-restore") return line === "restored" || line === "absent";
+      if (mode === "--dir-list-records") return RECORDS_LINE.test(line);
+      if (mode === "--dir-read") return line === "absent" || (line.length <= 7 + 2 * Number(args[5]) && RECORD_LINE.test(line));
+      if (mode === "--dir-write-record") return line === "written";
       const swept = /^swept (\d+)$/u.exec(line);
       return mode === "--dir-sweep" && swept !== null && Number.isSafeInteger(Number(swept[1]));
     };
@@ -960,6 +834,7 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
       if (outcome !== null) { violate(); return; }
       if (killed !== null) return;
       pending += chunk.toString("utf8");
+      if (pending.length > MAX_HELPER_LINE_BYTES) { violate(); return; }
       for (let newline = pending.indexOf("\n"); newline >= 0; newline = pending.indexOf("\n")) {
         const line = pending.slice(0, newline).replace(/\r$/u, "");
         pending = pending.slice(newline + 1);
@@ -1041,15 +916,38 @@ export function _helperFileOperationsForTest(helper: string, bounds?: HelperBoun
 function helperFileOperations(helper: string, bounds: HelperBounds = POLICY_BOUNDS): HeldFileOperations {
   const run = (args: readonly string[], proceed: Proceed, stop: AbortSignal, onWriting?: (file: FileIdentity) => void): Promise<string> =>
     runHelper(helper, args, proceed, stop, bounds, onWriting);
-  const removeNamed = async (folder: HeldDirectory, name: string): Promise<"removed" | "absent"> =>
-    oneOf(helper, await run(["--dir-remove", ...directoryArguments(folder), name], () => true, UNSTOPPED), ["removed", "absent"] as const);
-  // A copy that ended after it may have written its temporary file, with the helper seen to end: the file is removed through the chosen
-  // folder, held anew, only while it is the file the copy wrote. One never seen while it was written is never removed by name: when
-  // something is at its name it is left, and so is whatever a folder that can no longer be checked holds, when `unknownIsLeft`.
-  const removePartialCopy = async (to: HeldDirectory, part: string, partFile: FileIdentity | null): Promise<OwnFileResult> => {
-    if (partFile !== null) return removeOwnFile(to, part, part, { kind: "fileId", file: partFile }, removeNamed);
-    log.warn({ path: join(to.path, part) }, "a stopped download copy's temporary file is left: it was never seen while the copy wrote it");
-    return { outcome: "left", at: null };
+  const go = (): boolean => true;
+  const recover: HeldFileOperations["recover"] = async (folder, name, original, identity) => {
+    const left: OwnFileResult = { outcome: "left", at: { name, identity } };
+    const observed = identity.kind === "helper" ? identity.observed : null;
+    const restore = identity.kind === "helper" && identity.verdict === "mismatch";
+    const file = identity.kind === "fileId" ? identity.file : observed?.file;
+    if (!file || (identity.kind === "helper" && !restore && (file.dev !== identity.dev || file.ino !== identity.ino))) return left;
+    const idArgs = [String(file.dev), String(file.ino)];
+    const args = restore ? ["--dir-restore", ...directoryArguments(folder), name, original, ...idArgs]
+      : ["--dir-remove-id", ...directoryArguments(folder), name, ...idArgs];
+    if (observed !== null && file.birthtimeNs === undefined) return left;
+    if (file.birthtimeNs !== undefined) args.push(`${file.birthtimeNs}:${observed === null ? "-" : fingerprintKey(observed.content)}`);
+    try {
+      const outcome = await run(args, go, UNSTOPPED);
+      if (outcome === "absent" || outcome === "removed" || outcome === "restored") return { outcome };
+      const at = parsePartLeft(outcome)?.at;
+      // Keep the original snapshot if the same source stayed in place.
+      return at && at.name !== name ? { outcome: "left", at } : left;
+    } catch (error) {
+      if (error instanceof HeldFileHelperStalledError && error.stillRunning) throw error;
+      log.warn({ path: join(folder.path, original), leftAs: name, error: (error as Error).message }, "the stopped download could not be recovered");
+      return left;
+    }
+  };
+  const removePartialCopy = async (folder: HeldDirectory, part: string, file: FileIdentity | null): Promise<OwnFileResult> => {
+    if (file === null) {
+      log.warn({ path: join(folder.path, part) }, "a stopped download copy's temporary file is left: it was never seen while the copy wrote it");
+      return { outcome: "left", at: null };
+    }
+    const result = await recover(folder, part, part, { kind: "fileId", file });
+    if (result.outcome === "restored") throw new Error("a download removal unexpectedly restored a file");
+    return result;
   };
   return {
     move: async (from, name, to, target, proceed, stop) => oneOf(helper,
@@ -1058,31 +956,33 @@ function helperFileOperations(helper: string, bounds: HelperBounds = POLICY_BOUN
     copy: async (from, name, to, target, part, proceed, stop) => {
       // The temporary file's identity, taken once the helper says it is writing it, so a later cleanup removes only that file.
       let partFile: FileIdentity | null = null;
+      let authorized = false;
       try {
-        const answer = await run(["--dir-copy", ...directoryArguments(from), name, ...directoryArguments(to), target, part], proceed, stop,
-          (file) => { partFile = file; });
+        const answer = await run(["--dir-copy", ...directoryArguments(from), name, ...directoryArguments(to), target, part], (step) => {
+          const allowed = proceed(step);
+          if (step === "ready") authorized = allowed;
+          return allowed;
+        }, stop, (file) => { partFile = file; });
         const left = parsePartLeft(answer);
         if (left !== null) {
           // Cancelled with its temporary file left: reported as a failure, as a cancelled Linux copy whose file is left is.
           const error = new Error("a stopped download copy's temporary file is left in the chosen folder");
-          helperLeftParts.set(error, left.at);
+          helperLeftParts.set(error, left);
           throw error;
         }
         return oneOf(helper, answer, ["committed", "cancelled"] as const);
       } catch (error) {
         if (error instanceof Error && helperLeftParts.has(error)) {
-          // Bind the entry at the helper's hidden name for retry. Its identity may differ from the writing descriptor's identity.
-          const left = helperLeftParts.get(error) ?? null;
-          const observed = left === null ? null : contentAt(to, left.name);
-          const at = left === null ? null : { ...left, identity: { ...left.identity, observed: typeof observed === "string" ? null : observed } };
-          log.warn({ path: join(to.path, part), leftAs: at?.name }, "a stopped download copy's temporary file is left: the helper did not find it to be its own, or could not remove it");
+          const left = helperLeftParts.get(error);
+          const at = left?.at ?? null;
+          log.warn({ path: join(to.path, part), leftAs: at?.name, partLeft: left?.partLeft }, "a stopped download copy's temporary file is left");
           markStoppedCopy(error, { outcome: "left", at });
         } else if (error instanceof HeldFileHelperUnavailableError && error.passed !== null) {
           error.partFile = partFile;
           // A helper that may still be running is not raced: its file is left for a cleanup once it ends.
           if (error instanceof HeldFileHelperStalledError && error.stillRunning) error.partialCopy = "left";
           else markStoppedCopy(error, await removePartialCopy(to, part, partFile));
-        } else if (partFile !== null && !(error instanceof HeldDirectoryRefusedError)) {
+        } else if (authorized && codeOf(error) !== "EEXIST" && !(error instanceof HeldDirectoryRefusedError)) {
           markStoppedCopy(error, await removePartialCopy(to, part, partFile));
         }
         throw error;
@@ -1091,6 +991,19 @@ function helperFileOperations(helper: string, bounds: HelperBounds = POLICY_BOUN
     remove: async (directory, name, proceed, stop) => oneOf(helper,
       await run(["--dir-remove", ...directoryArguments(directory), name], proceed, stop),
       ["removed", "absent", "cancelled"] as const),
+    recover,
+    listRecords: async (directory) => {
+      const answer = await run(["--dir-list-records", ...directoryArguments(directory)], go, UNSTOPPED);
+      return answer === "records" ? [] : answer.slice(8).split(" ");
+    },
+    readRecord: async (directory, name, max) => {
+      const answer = await run(["--dir-read", ...directoryArguments(directory), name, String(max)], go, UNSTOPPED);
+      return answer === "absent" ? null : Buffer.from(answer.slice(7), "hex");
+    },
+    writeRecord: async (directory, name, body) => {
+      if (body.length > MAX_RECORD_BYTES) throw new Error("the download cleanup record exceeds its limit");
+      oneOf(helper, await run(["--dir-write-record", ...directoryArguments(directory), name, body.toString("hex")], go, UNSTOPPED), ["written"]);
+    },
     sweep: async (directory) => Number((await run(["--dir-sweep", ...directoryArguments(directory)], () => true, UNSTOPPED)).slice("swept ".length)),
   };
 }

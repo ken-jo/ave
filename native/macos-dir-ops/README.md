@@ -22,14 +22,52 @@ ave-dir-ops --dir-rename <from> <dev> <ino> <name> <to> <dev> <ino> <target>
 ave-dir-ops --dir-copy   <from> <dev> <ino> <name> <to> <dev> <ino> <target> <part>
 ave-dir-ops --dir-remove <dir> <dev> <ino> <name>
 ave-dir-ops --dir-sweep  <dir> <dev> <ino>
+ave-dir-ops --dir-list-records <dir> <dir-dev> <dir-ino>
+ave-dir-ops --dir-read <dir> <dir-dev> <dir-ino> <name> <max>
+ave-dir-ops --dir-write-record <dir> <dir-dev> <dir-ino> <name> <hex>
+ave-dir-ops --dir-remove-id <dir> <dir-dev> <dir-ino> <name> <file-dev> <file-ino> [<birth-ns>:<fingerprint>]
+ave-dir-ops --dir-restore <dir> <dir-dev> <dir-ino> <hidden> <part> <file-dev> <file-ino> <birth-ns>:<fingerprint>
 ```
 
 Names are single path components. `rename` moves the ordinary file `name` to
 `target`, replacing an ordinary file there; across volumes it moves nothing
 and answers `cross-volume`. `copy` creates `part` exclusively, never through a
 link, copies `name` into it, syncs it and renames it to `target`; that rename
-is the commit point. `remove` unlinks a file or link. `sweep` removes every
+is the commit point. Cross-volume publication requires a vacant target and
+support for exclusive rename. `remove` unlinks a file or link. `sweep` removes every
 file and link directly in the directory and nothing else.
+
+The recovery modes use the same `ready` handshake. Values identifying files
+are separate from the required identity of the directory. All names are
+single components.
+
+- `list-records` returns `records` followed by space-separated names of the
+  form `<32 lowercase hex digits>.cleanup.json`.
+- `read` opens a record once without following links, checks that it is
+  regular, and returns `record <lowercase hex>` or `absent`. The decimal
+  byte limit is between 1 and 8192. A larger record is refused with
+  `failed EFBIG`. An empty record is represented by `record ` with a space.
+- `write-record` creates a private record exclusively, writes at most 8192
+  bytes of lowercase hex payload and syncs it before answering `written`.
+- `remove-id` opens the named file without following links, verifies its
+  device and inode and the optional fingerprint, and then moves it
+  exclusively to a fresh hidden name. It verifies the resulting entry
+  against the opened file before unlinking. It answers `removed`, `absent`,
+  or `left`. If it moves an entry that it cannot put back or remove, it
+  answers with the named leftover format below.
+  A legacy identity with birth time alone uses the token `<birth-ns>:-`.
+- `restore` opens the hidden source without following links and verifies the
+  file identity and fingerprint on that descriptor. It copies from that
+  descriptor to an exclusive new part, syncs it, and verifies the part name
+  against its still-open descriptor. It retires the source using the same
+  rule as `remove-id`. It answers `restored` only after both steps,
+  `absent` when the source is missing, or `left` when the part is occupied,
+  verification fails or cleanup cannot finish.
+
+A fingerprint is one ASCII token `<size>:<mtime-ns>:<head>:<tail>`.
+Size and modification time are decimal. The two digests are lowercase
+64-digit SHA-256 hashes of the first and last 64 KiB, truncated to the size
+of the file when shorter. Empty files hash two empty spans.
 
 ## Protocol
 
@@ -50,43 +88,41 @@ stdin.
   unreadable, a link, or another directory at its path), the source is not an
   ordinary file, or `target` holds something other than an ordinary file.
   Exit `4`: `failed <errno name>`. Exit `2`: the arguments are wrong.
-- A copy that stops after creating `part` (cancelled, failed, or refused
-  `target` at the commit) removes it only as the file it wrote, never by its
-  name alone. It keeps a descriptor of its own on the file it writes,
-  renames `part` exclusively (`RENAME_EXCL`) to a fresh hidden name in the
-  same folder, `.<32 hex digits>.removing`, checks there that the entry has
-  the device and inode that descriptor has, and only then removes it under
-  that name. A file found there that is not the one written goes back to
-  `part` exclusively, or stays under the hidden name when `part` is taken
-  again. A volume without an exclusive rename (exFAT, FAT: `ENOTSUP` or
-  `EINVAL`) is checked that the hidden name is free and renamed to it
-  plainly. There the file is removed only when its device and inode and its
-  content both match: the same size, and the same first and last 64 KiB read
-  through a new `O_NOFOLLOW` descriptor and through the copy's own. A file
-  that does not match is put back by copying it to a new file created
-  exclusively at `part`, synced before the hidden name is removed, or stays
-  under the hidden name when `part` is taken or the copy fails. The identity
-  is read through the descriptor at the cleanup, not when the file is
-  created: exFAT gives a new file its lasting inode only once it is
-  written. An absent part leaves the outcome unchanged. A directory or
-  symlink at the part name is left in place. When the part is left at its
-  original name, the outcome ends with ` left`: `cancelled left` (exit `0`),
-  `failed <errno name> left` (exit `4`), or `refused target left` (exit `3`).
-  A file left at the hidden name adds ` <hidden name> <dev> <ino> <verdict>`
-  after `left`. Device and inode are unsigned decimal values from the
-  descriptor the copy wrote through. The verdict is `mismatch` when the
-  helper could not establish that the entry was its own, or `remove-failed`
-  when it verified its file and unlinking failed. On failed copy-back the
-  helper removes its incomplete restoration when it can still identify it.
-  The host records named leftovers for the next start, along with an
-  identity and content snapshot of the hidden entry. The startup sweep
-  removes a `remove-failed` entry if it still matches the snapshot and the
-  helper's device and inode. It restores a verified `mismatch` entry using
-  an exclusive copy to the original part name. If that name is occupied or
-  verification or cleanup fails, the sweep leaves the hidden entry and logs
-  both paths. A bare `left` has no verified entry to retry. Only
-  `--dir-copy` answers this way; `native/windows-path-kind` removes `part`
-  through the handle it wrote it with and never does.
+- After creating the part exclusively and before reporting progress or
+  `copied`, the copy writes `writing <dev> <ino>` once. The unsigned
+  decimal identity comes from the writing descriptor. The host never
+  samples the part name for ownership. A failed exclusive open has no
+  `writing` line and may answer `failed EEXIST`.
+- Source and target refusals before work starts precede `ready`. After
+  `copied` on an authorized commit, a target refusal uses `refused target
+  left` with the stopped-copy suffix rules, `refused target removed` when
+  cleanup removed the part or found it absent, or `refused target changed`
+  if rollback could not move the mismatched target back exclusively.
+- A stopped copy moves the part aside, verifies against the writing
+  descriptor, and unlinks only at a fresh exclusively obtained name of
+  the form `.<32 hex digits>.removing`. A volume without exclusive rename
+  may isolate the entry under a fresh name using plain rename. It keeps
+  that entry for recovery. A copy-back writes an exclusive new part and
+  verifies the part name against the target descriptor before trying to
+  retire the isolated source. An incomplete copy-back is left in place.
+- A cancelled, failed or refused copy can add ` left` when a file remains.
+  A named leftover adds
+  ` <hidden> <own-dev> <own-ino> <verdict> <snapshot>` after `left`.
+  The own identity comes from the writing descriptor. A verdict is
+  `mismatch` when ownership was unverified, or `remove-failed` when the
+  verified file could not be removed. The snapshot is
+  `<dev>:<ino>:<birth-ns>:<fingerprint>` from the hidden descriptor, or
+  `-` if it could not be obtained. The suffix ` part-left` additionally
+  reports an incomplete or unverified copy-back at the part name.
+  `remove-id` and `restore` may also return the named `left` outcome
+  when they isolate a file under a new hidden name.
+- To commit a copy, the helper verifies the part against the writing
+  descriptor, renames it to the target exclusively, and verifies the
+  target against that descriptor. A mismatched entry goes back by
+  exclusive rename if possible and the target is refused.
+
+  POSIX has no unlink-if-identity. The remaining windows are (a) between the final descriptor verify and the unlink of a random hidden name, and (b) after a verified restore or commit. Both are accepted: at (b), the restored or committed file was verified in place and visible, so a later change is the user's own act.
+
 - A `failed <errno name>` answer may have one stderr diagnostic,
   `Windows error <decimal code>` followed by LF or CRLF. The two pipes can
   deliver in either order, including fragmented writes. The diagnostic is
@@ -116,43 +152,14 @@ errors permit startup to continue only after the download-refusal handler is
 registered. An incomplete policy install fails through the normal startup
 error handler.
 
-A copy killed or answering invalidly after `ready` may leave `part` in the
-chosen folder. The next start sweeps only the
-staging folder, so the host removes `part` itself, at once, but only as the
-file the helper wrote: it keeps the identity `part` had while the helper
-wrote it (taken at its first `progress` line or at `copied`), renames `part`
-to a fresh hidden name in the same folder, checks that identity there, and
-only then removes it under that name with a new `--dir-remove` run, which
-holds the chosen folder anew and checks it is the bound one. A file put at
-`part`'s name meanwhile is not touched. A file found not to be the one
-written, or one that removal fails on, is put back at `part`'s name if that
-is still free (a hard link, which never replaces), or left under the hidden
-name, and logged. A folder without hard links (FAT, exFAT), where a rename
-gives the file another id, is found by a link probe; only a definitive answer
-(a link seen through, or a refusal that says the file system has no hard
-links) is kept for the volume, and any other failure answers for that
-cleanup alone. There `part` is known by its content instead (size, last
-change, and digests of its first and last 64 KiB, read through an open
-descriptor), checked again at the hidden name, and put back as a new file
-created exclusively at its name, which fails rather than replacing a file put
-there; the hidden name is removed only once the copy holds the same bytes. A
-file left where it can still be found, under either name, is recorded for the
-next start with the name it has and how it is known, and recorded again when
-the next start leaves it. A `part` never seen
-while it was written has no identity and is left, as is one whose rename
-still fails once a brief lock was waited out. A copy the helper reports failed
-has its `part` cleaned the same way. So does the Linux copy, which the host
-runs itself, when it is cancelled or fails: it takes `part`'s identity
-through the handle it creates it with. The download is reported as
-failed, and the log records whether `part` was removed. It also remains,
-logged as possibly left, when the app quits during a copy: shutdown kills the
-helper with every other owned process and starts no new one, so nothing
-removes `part`. When the killed helper was not seen to exit, a
-removal could race it, so none starts then: the host records the folder, the
-name and the identity in the staging folder, and does the above once the
-helper is seen to end, or at the next start before the sweep. A run killed after `copied`, or a rename killed after
-`ready`, may have reached the chosen path; the log says so instead of claiming
-the file was not saved.
+After a helper exits without a trustworthy outcome, the host can retry the
+part only with the identity from `writing`. If exit is unconfirmed, it
+records that identity, waits for exit before retrying, and can also retry at
+startup. Without `writing`, the host leaves the part alone. For a named
+leftover, it records the snapshot supplied by the helper. Startup retries
+removal or restoration through the held-folder operations. A changed
+snapshot or occupied part leaves the hidden entry and logs both names.
+
 
 `scripts/build-macos-dir-ops.mjs` builds it with the installed command-line
 tools, for the app's minimum macOS, with warnings as errors; `bun run build`,
@@ -163,8 +170,8 @@ architecture, which `build.mac.extraResources` ships as
 variants that inject one fault each: writes that take part of what they are
 given or nothing, a helper that never says `ready`, and one that copies slowly,
 ignores every request to stop and never answers after `copied`. The test
-builds also include a variant that reports a reused file identity
-on volumes without exclusive rename. Only
+builds also include variants that report a reused file identity or substitute
+an entry during restore, plain rename or publication. Only
 `src/main/browser/__tests__/browser-download-staging.test.ts` runs them. A
 missing or broken helper refuses every download with the staging notice; there
 is no fallback to path operations.

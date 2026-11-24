@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { randomBytes } from "node:crypto";
 import {
-  closeSync, constants, existsSync, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, writeFileSync,
+  closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, realpathSync,
   type BigIntStats,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join } from "node:path";
@@ -12,8 +12,6 @@ import { retryOnFileLock } from "../../lib/transient-fs-lock-retry.js";
 import { openFeatureNamespace } from "../storage/feature-namespace.js";
 import {
   MOVED_ASIDE_NAME,
-  removeOwnFile,
-  retryHelperPart,
   stoppedCopyOf,
   heldFileOperations,
   HeldDirectoryRefusedError,
@@ -201,22 +199,31 @@ const UNSTOPPED = new AbortController().signal;
  * that is no longer the verified one, or a helper that does not run, is a staging refusal; downloads are then refused.
  */
 export async function sweepBrowserDownloadStaging(root: BrowserDownloadStagingRoot): Promise<number> {
-  const stillLeft = await removeRecordedParts(root);
-  let swept: number;
-  try {
-    swept = await root.files.sweep(root);
-  } catch (error) {
-    // A failed sweep may already have removed some records.
-    for (const { path, record, was } of stillLeft) {
-      if (!sameLeftPart(record.at, was) || !existsSync(path)) tryWritePartRecord(root, record);
+  return refusingAsStaging(async () => {
+    let stillLeft: Awaited<ReturnType<typeof removeRecordedParts>> = [];
+    let swept: number;
+    try {
+      stillLeft = await removeRecordedParts(root);
+      swept = await root.files.sweep(root);
+    } catch (error) {
+      // A failed sweep may already have removed records. Check by the held directory before trying to replace them.
+      if (!(error instanceof HeldFileHelperStalledError && error.stillRunning)) {
+        for (const { name, record, was } of stillLeft) {
+          let missing = false;
+          try {
+            missing = await root.files.readRecord(root, name, MAX_PART_RECORD_BYTES) === null;
+          } catch (readError) {
+            log.warn({ name, error: (readError as Error).message }, "a browser download cleanup record could not be checked after a failed sweep");
+          }
+          if (!sameLeftPart(record.at, was) || missing) await tryWritePartRecord(root, record);
+        }
+      }
+      if (error instanceof HeldFileHelperUnavailableError) throw new BrowserDownloadStagingError(error.message, { cause: error });
+      throw error;
     }
-    if (error instanceof HeldDirectoryRefusedError) throw new BrowserDownloadStagingError(STAGING_REFUSALS[error.refusal], { cause: error });
-    if (error instanceof HeldFileHelperUnavailableError) throw new BrowserDownloadStagingError(error.message, { cause: error });
-    throw error;
-  }
-  // The sweep removed the old records: each file still left is recorded anew, so the next start tries again.
-  for (const { record } of stillLeft) tryWritePartRecord(root, record);
-  return swept;
+    for (const { record } of stillLeft) await tryWritePartRecord(root, record);
+    return swept;
+  });
 }
 
 // Where the user chose to save, bound when the dialog answers: the canonical folder and its identity, and the final name in it.
@@ -295,7 +302,7 @@ async function publish(root: BrowserDownloadStagingRoot, name: string, destinati
   try {
     copied = await refusingAsStaging(() => root.files.copy(root, name, destination.folder, destination.name, part, proceed, cancel));
   } catch (error) {
-    reportStoppedCopy(root, error, destination, part);
+    await reportStoppedCopy(root, error, destination, part);
     throw error;
   }
   if (copied === "cancelled") return "cancelled";
@@ -303,7 +310,7 @@ async function publish(root: BrowserDownloadStagingRoot, name: string, destinati
 }
 
 // A copy that failed after it may have written its temporary file: say whether it may have been saved, and what became of that file.
-function reportStoppedCopy(root: BrowserDownloadStagingRoot, error: unknown, destination: Destination, part: string): void {
+async function reportStoppedCopy(root: BrowserDownloadStagingRoot, error: unknown, destination: Destination, part: string): Promise<void> {
   const temporary = join(destination.folder.path, part);
   if (error instanceof HeldFileHelperUnavailableError && error.passed === "copied") {
     log.warn({ path: destination.path }, "a browser download's copy ended after its commit was allowed: the file may be at the chosen path");
@@ -316,10 +323,10 @@ function reportStoppedCopy(root: BrowserDownloadStagingRoot, error: unknown, des
   }
   log.warn({ path: temporary, leftAs: stopped.partLeftAt?.name }, "a browser download's copy was stopped and its temporary file may remain in the chosen folder");
   if (error instanceof HeldFileHelperStalledError && error.stillRunning) {
-    deferPartCleanup(root, destination.folder, part, error.partFile, error.exited);
+    await deferPartCleanup(root, destination.folder, part, error.partFile, error.exited);
   } else if (stopped.partLeftAt !== null) {
     // Left where it can still be found: the next start tries again.
-    tryWritePartRecord(root, { folder: destination.folder, part, at: stopped.partLeftAt });
+    await tryWritePartRecord(root, { folder: destination.folder, part, at: stopped.partLeftAt });
   }
 }
 
@@ -335,14 +342,14 @@ const MAX_PART_RECORD_BYTES = 8192;
 // A copy whose helper was given up while it may still write: once the helper is seen to end, its temporary file is removed if it is still
 // the one the copy wrote. Until then it is recorded in the staging folder, so the next start's sweep does the same if this run cannot. A
 // temporary file never seen while the copy wrote it has no identity to check and is left.
-function deferPartCleanup(root: BrowserDownloadStagingRoot, folder: HeldDirectory, part: string, file: FileIdentity | null, exited: Promise<void> | null): void {
+async function deferPartCleanup(root: BrowserDownloadStagingRoot, folder: HeldDirectory, part: string, file: FileIdentity | null, exited: Promise<void> | null): Promise<void> {
   const path = join(folder.path, part);
   if (file === null || exited === null) {
     log.warn({ path }, "a stopped browser download copy's temporary file is left: it was never seen while the copy wrote it");
     return;
   }
   const record: PartRecord = { folder, part, at: { name: part, identity: { kind: "fileId", file } } };
-  const recorded = tryWritePartRecord(root, record);
+  const recorded = await tryWritePartRecord(root, record);
   void exited.then(async () => {
     const result = await removeRecordedPart(root, record);
     log.info({ path, partialCopy: result.outcome, leftAs: result.outcome === "left" ? result.at?.name : undefined },
@@ -350,7 +357,7 @@ function deferPartCleanup(root: BrowserDownloadStagingRoot, folder: HeldDirector
     // A file left where it is no longer known as recorded is recorded anew; one that is not the copy's keeps its record.
     if (result.outcome === "left") {
       if (result.at === null || sameLeftPart(result.at, record.at)) return;
-      if (tryWritePartRecord(root, { ...record, at: result.at }) === null) return;
+      if (await tryWritePartRecord(root, { ...record, at: result.at }) === null) return;
     }
     if (recorded === null) return;
     try {
@@ -358,6 +365,8 @@ function deferPartCleanup(root: BrowserDownloadStagingRoot, folder: HeldDirector
     } catch (error) {
       log.warn({ error: (error as Error).message }, "a browser download cleanup record could not be removed; the next start removes it");
     }
+  }).catch((error: unknown) => {
+    log.warn({ path, error: (error as Error).message }, "a stopped browser download could not be checked after its helper ended");
   });
 }
 
@@ -365,9 +374,9 @@ function sameLeftPart(a: LeftPart, b: LeftPart): boolean {
   return a.name === b.name && a.identity.kind === b.identity.kind;
 }
 
-function tryWritePartRecord(root: BrowserDownloadStagingRoot, record: PartRecord): string | null {
+async function tryWritePartRecord(root: BrowserDownloadStagingRoot, record: PartRecord): Promise<string | null> {
   try {
-    return writePartRecord(root, record);
+    return await writePartRecord(root, record);
   } catch (error) {
     log.warn({ path: join(record.folder.path, record.at.name), error: (error as Error).message },
       "a stopped browser download copy's temporary file could not be recorded for the next start");
@@ -376,7 +385,7 @@ function tryWritePartRecord(root: BrowserDownloadStagingRoot, record: PartRecord
 }
 
 // Write the record as a new private file in the verified staging folder, never through a link.
-function writePartRecord(root: BrowserDownloadStagingRoot, record: PartRecord): string {
+async function writePartRecord(root: BrowserDownloadStagingRoot, record: PartRecord): Promise<string> {
   const name = `${randomBytes(16).toString("hex")}.cleanup.json`;
   const { identity } = record.at;
   const known = identity.kind === "fileId" ? { kind: identity.kind, ...identity.file }
@@ -388,16 +397,7 @@ function writePartRecord(root: BrowserDownloadStagingRoot, record: PartRecord): 
     at: record.at.name,
     identity: known,
   }, (_key, value: unknown) => typeof value === "bigint" ? value.toString() : value);
-  withVerifiedRoot(root, (fd) => {
-    const path = fd !== undefined && process.platform === "linux" ? `/proc/self/fd/${fd}/${name}` : join(root.path, name);
-    const out = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NOFOLLOW, 0o600);
-    try {
-      writeFileSync(out, body);
-      fsyncSync(out);
-    } finally {
-      closeSync(out);
-    }
-  });
+  await root.files.writeRecord(root, name, Buffer.from(body));
   return name;
 }
 
@@ -450,53 +450,36 @@ function readPartRecord(text: string): PartRecord | null {
   return { folder: { path: folder.path, dev: BigInt(folder.dev), ino: BigInt(folder.ino) }, part, at: { name: at, identity: known } };
 }
 
-// Retry a recorded removal or restoration through the chosen folder held anew.
+// Retry through the file backend. The decoded record never gives the host authority to open an entry by path.
 function removeRecordedPart(root: BrowserDownloadStagingRoot, { folder, part, at }: PartRecord) {
-  if (at.identity.kind === "helper") return retryHelperPart(folder, part, at.name, at.identity,
-    (directory, name, proceed, stop) => root.files.remove(directory, name, proceed, stop));
-  return removeOwnFile(folder, part, at.name, at.identity, (directory, name) => root.files.remove(directory, name, proceedAlways, UNSTOPPED));
+  return root.files.recover(folder, at.name, part, at.identity);
 }
 
-// A record read through one descriptor that is checked to be the ordinary file listed, so a record swapped for a link is not followed.
-function readRecordFile(path: string): PartRecord | null {
-  const listed = lstatSync(path, { bigint: true });
-  if (!listed.isFile()) return null;
-  const fd = openSync(path, constants.O_RDONLY | NOFOLLOW);
-  try {
-    const opened = fstatSync(fd, { bigint: true });
-    if (!opened.isFile() || opened.dev !== listed.dev || opened.ino !== listed.ino || opened.size > BigInt(MAX_PART_RECORD_BYTES)) return null;
-    return readPartRecord(readFileSync(fd, "utf8"));
-  } finally {
-    closeSync(fd);
-  }
-}
-
-// At start, before the sweep removes the records with every other file in the staging folder, act on each once. Returns the records of
-// files left where they can still be found, by the name they have now and how they are known there, with what their record said. Never throws: a record that cannot
-// be read or acted on is logged and what it names is left, without refusing downloads.
-async function removeRecordedParts(root: BrowserDownloadStagingRoot): Promise<{ readonly path: string; readonly record: PartRecord; readonly was: LeftPart }[]> {
-  const stillLeft: { readonly path: string; readonly record: PartRecord; readonly was: LeftPart }[] = [];
-  let names: string[];
-  try {
-    names = withVerifiedRoot(root, () => readdirSync(root.path)).filter((name) => PART_RECORD.test(name));
-  } catch (error) {
-    log.warn({ error: (error as Error).message }, "browser download cleanup records could not be read");
-    return stillLeft;
-  }
+async function removeRecordedParts(root: BrowserDownloadStagingRoot): Promise<{ readonly name: string; readonly record: PartRecord; readonly was: LeftPart }[]> {
+  const stillLeft: { readonly name: string; readonly record: PartRecord; readonly was: LeftPart }[] = [];
+  const names = await root.files.listRecords(root);
   for (const name of names) {
-    const path = join(root.path, name);
+    if (!PART_RECORD.test(name)) continue;
+    const recordPath = join(root.path, name);
     try {
-      const record = readRecordFile(path);
+      const bytes = await root.files.readRecord(root, name, MAX_PART_RECORD_BYTES);
+      const record = bytes === null ? null : readPartRecord(bytes.toString("utf8"));
       if (record === null) {
-        log.warn({ path }, "a browser download cleanup record is not one this app wrote; nothing it names is removed");
+        log.warn({ path: recordPath }, "a browser download cleanup record is not one this app wrote; nothing it names is removed");
         continue;
       }
       const result = await removeRecordedPart(root, record);
-      log.info({ path: join(record.folder.path, record.part), partialCopy: result.outcome, leftAs: result.outcome === "left" ? result.at?.name : undefined },
-        "a previous run's stopped browser download copy's temporary file was checked");
-      if (result.outcome === "left" && result.at !== null) stillLeft.push({ path, record: { ...record, at: result.at }, was: record.at });
+      const path = join(record.folder.path, record.part);
+      if (result.outcome === "left") {
+        const at = result.at ?? record.at;
+        log.warn({ path, leftAs: join(record.folder.path, at.name) }, "a previous run's stopped download entry was left in place");
+        stillLeft.push({ name, record: { ...record, at }, was: record.at });
+      } else {
+        log.info({ path, partialCopy: result.outcome }, "a previous run's stopped browser download copy's temporary file was checked");
+      }
     } catch (error) {
-      log.warn({ path, error: (error as Error).message }, "a browser download cleanup record could not be acted on; nothing it names is removed");
+      if (error instanceof HeldFileHelperStalledError && error.stillRunning) throw error;
+      log.warn({ path: recordPath, error: (error as Error).message }, "a browser download cleanup record could not be acted on");
     }
   }
   return stillLeft;
