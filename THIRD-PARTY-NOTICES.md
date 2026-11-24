@@ -35,6 +35,7 @@ license text referenced above, and changed from the original:
 - `src/permissions/egress-relay/address-set.ts`
 - `src/permissions/egress-relay/domain-pattern.ts`
 - `src/permissions/sandbox-path-spelling.ts`
+- `src/permissions/egress-relay/destination.ts` (`formatAuthority`)
 
 ---
 

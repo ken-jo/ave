@@ -1,4 +1,4 @@
-// Portions derived from @anthropic-ai/sandbox-runtime (Apache-2.0); see THIRD-PARTY-NOTICES.
+// Portions derived from @anthropic-ai/sandbox-runtime (Apache-2.0) and modified; see THIRD-PARTY-NOTICES.
 // Destination patterns: `host`, `*.suffix`, `*`, each with an optional `:port`.
 import { isIP } from "node:net";
 import { canonicalRelayHost, stripBrackets } from "./destination.js";
