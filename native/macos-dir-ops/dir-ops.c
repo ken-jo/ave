@@ -434,7 +434,7 @@ static int run_recovery(char **argv, enum recovery_mode mode, int with_fingerpri
   const char *part = restore ? argv[4] : NULL;
   const int file_arg = restore ? 5 : 4;
   const char *expected = NULL;
-  uint64_t dev, ino, birth;
+  uint64_t dev, ino, birth = 0;
   if (!plain_name(name) || (restore && (!plain_name(part) || strcmp(name, part) == 0)) ||
       !parse_u64(argv[file_arg], &dev) || !parse_u64(argv[file_arg + 1], &ino)) return EXIT_USAGE;
   if (mode == RECOVER_RESTORE_TARGET && !hidden_name(name)) return EXIT_USAGE;
@@ -722,9 +722,12 @@ static int run_copy(char **argv) {
     old = openat(to, target, O_EVTONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
   }
   struct stat old_identity;
+  struct stat directory_identity;
+  if (fstat(to, &directory_identity) != 0) return refused("to");
   if (old < 0 && errno != ENOENT) return errno == ELOOP ? refused("target") : failed(errno);
   if (old >= 0) {
-    if (fstat(old, &old_identity) != 0 || !S_ISREG(old_identity.st_mode)) return refused("target");
+    if (fstat(old, &old_identity) != 0 || !S_ISREG(old_identity.st_mode) ||
+        old_identity.st_dev != directory_identity.st_dev) return refused("target");
     printf("target-id %" PRIu64 " %" PRIu64 " %" PRIu64 "\n", (uint64_t)old_identity.st_dev,
       (uint64_t)old_identity.st_ino, nanos(old_identity.st_birthtimespec));
     fflush(stdout);
@@ -748,6 +751,10 @@ static int run_copy(char **argv) {
     const int code = errno;
     close(copy);
     return abandon(to, part, NULL, code);
+  }
+  if (identity.st_dev != directory_identity.st_dev || (old >= 0 && old_identity.st_ino == identity.st_ino)) {
+    close(copy);
+    return abandon(to, part, NULL, ENOTSUP);
   }
   printf("writing %" PRIu64 " %" PRIu64 "\n", (uint64_t)identity.st_dev, (uint64_t)identity.st_ino);
   fflush(stdout);

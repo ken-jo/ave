@@ -481,19 +481,21 @@ describe("a staged download", () => {
     linkSync(hiddenPath, alias);
     const auxiliary = "original auxiliary data";
     const attribute = "user.ave";
-    const libc = process.platform === "linux" ? (createRequire(import.meta.url)("koffi") as typeof import("koffi")).load("libc.so.6") : null;
-    if (process.platform === "win32") writeFileSync(`${hiddenPath}:original`, auxiliary);
-    else if (libc === null) execFileSync("xattr", ["-w", attribute, auxiliary, hiddenPath]);
+    const windows = process.platform === "win32";
+    const darwin = process.platform === "darwin";
+    const libc = windows ? null : (createRequire(import.meta.url)("koffi") as typeof import("koffi"))
+      .load(darwin ? "/usr/lib/libSystem.B.dylib" : "libc.so.6");
+    if (libc === null) writeFileSync(`${hiddenPath}:original`, auxiliary);
     else {
-      const setAttribute = libc.func("int setxattr(const char *, const char *, const void *, size_t, int)");
+      const setAttribute = libc.func(darwin ? "int setxattr(const char *, const char *, const void *, size_t, uint32_t, int)"
+        : "int setxattr(const char *, const char *, const void *, size_t, int)");
       const data = Buffer.from(auxiliary);
-      expect(setAttribute(hiddenPath, attribute, data, data.length, 0)).toBe(0);
+      expect(setAttribute(hiddenPath, attribute, data, data.length, ...(darwin ? [0, 0] : [0]))).toBe(0);
     }
     const stamp = new Date("2003-01-01T00:00:00Z");
     utimesSync(hiddenPath, stamp, stamp);
     const original = statSync(hiddenPath, { bigint: true });
     const folder = statSync(chosen, { bigint: true });
-    const windows = process.platform === "win32";
     const [facts] = windows ? JSON.parse(execFileSync(WINDOWS_PATH_KIND, ["--pin", hiddenPath], { encoding: "utf8" })) : [];
     const dev = String(windows ? BigInt(facts.volumeSerial) : original.dev);
     const ino = String(windows ? BigInt(facts.fileId) : original.ino);
@@ -518,16 +520,15 @@ describe("a staged download", () => {
     expect(readFileSync(recovered)).toEqual(content);
     expect(statSync(recovered, { bigint: true })).toMatchObject({ ino: original.ino, mtimeNs: original.mtimeNs, nlink: 2n });
     expect(statSync(alias, { bigint: true }).ino).toBe(original.ino);
-    if (windows) {
+    if (libc === null) {
       const [actual] = JSON.parse(execFileSync(WINDOWS_PATH_KIND, ["--pin", recovered], { encoding: "utf8" }));
       expect(actual.fileId).toBe(facts.fileId);
       expect(readFileSync(`${recovered}:original`, "utf8")).toBe(auxiliary);
-    } else if (libc === null) {
-      expect(execFileSync("xattr", ["-p", attribute, recovered], { encoding: "utf8" }).trim()).toBe(auxiliary);
     } else {
-      const getAttribute = libc.func("int getxattr(const char *, const char *, void *, size_t)");
+      const getAttribute = libc.func(darwin ? "intptr_t getxattr(const char *, const char *, void *, size_t, uint32_t, int)"
+        : "intptr_t getxattr(const char *, const char *, void *, size_t)");
       const data = Buffer.alloc(Buffer.byteLength(auxiliary));
-      expect(getAttribute(recovered, attribute, data, data.length)).toBe(data.length);
+      expect(getAttribute(recovered, attribute, data, data.length, ...(darwin ? [0, 0] : []))).toBe(data.length);
       expect(data.toString()).toBe(auxiliary);
       libc.unload();
     }

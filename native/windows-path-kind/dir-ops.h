@@ -412,6 +412,8 @@ inline int run_copy(wchar_t** argv) {
   PinnedHandle part(created);
   FILE_ID_INFO written{};
   if (!read_id(part.value, written)) return failed(FileFailure{GetLastError()}, " left");
+  if (written.VolumeSerialNumber != directory_id.VolumeSerialNumber || (replacing && same_id(written, old_id)))
+    return failed(FileFailure{ERROR_NOT_SUPPORTED}, " left");
   say(("writing " + id_text(written, ' ')).c_str());
   const auto abandon = [&](FileFailure failure) {
     return stopped_copy(to.handle(), part_name, part.value, written, failure, false);

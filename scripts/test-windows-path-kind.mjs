@@ -303,7 +303,7 @@ async function recoveryTests() {
       const old = snapshot(target);
       const birth = old[2].split(":")[0];
       const saved = Buffer.from(JSON.stringify({ hidden, old, session: "download-session" })).toString("hex");
-      const result = await runCopy(["stop-" + boundary, "--dir-copy", ...held(dir), "source", ...held(dir), "target", part, hidden], (line, stdin) => {
+      const result = await runCopy([`stop-${boundary}`, "--dir-copy", ...held(dir), "source", ...held(dir), "target", part, hidden], (line, stdin) => {
         if (line === "ready") stdin.write("c");
         if (line === "copied") {
           expect(["--dir-write-record", ...held(root), record, saved], ["ready", "written"]);

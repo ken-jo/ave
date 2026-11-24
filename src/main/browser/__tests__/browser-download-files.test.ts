@@ -763,7 +763,10 @@ describe("a copy whose helper says it left its temporary file", () => {
   });
 
   it.each(SUFFIXES)("reports a cancel answered `cancelled %s` as a failure", async (suffix, hidden) => {
-    script((helper) => helper.say("ready"));
+    script((helper) => {
+      helper.say("ready");
+      helper.once("input", () => helper.say("writing 1 18446744073709551615"));
+    });
     const stop = new AbortController();
     const run = follow(files.copy(from, "staged", to, "report.pdf", ".0123.part", () => true, stop.signal));
     await flush();
@@ -857,10 +860,87 @@ describe("a copy whose helper says it left its temporary file", () => {
     });
   });
 
+  const invalidTargets: { label: string; id?: string; hidden?: string; early?: boolean; duplicate?: boolean;
+    old?: string; verdict?: string; snapshot?: string }[] = [
+    { label: "before commit authorization", early: true },
+    { label: "wrong old identity", id: "1 4" },
+    { label: "writing identity as target", id: "1 2" },
+    { label: "different leftover volume", id: "2 3" },
+    { label: "different announced volume", old: "2 3 15", id: "2 3" },
+    { label: "announced writer as old target", old: "1 2 15", id: "1 2" },
+    { label: "hidden name from another copy", hidden: ".11111111111111111111111111111111.removing" },
+    { label: "different birth time", snapshot: `1:3:16:1:2:${"0".repeat(64)}:${"0".repeat(64)}` },
+    { label: "duplicate leftover", duplicate: true },
+    { label: "incompatible outcome", verdict: "remove-failed" },
+  ];
+  it.each(invalidTargets)("rejects a target leftover with $label", async ({
+    id = "1 3", hidden = HIDDEN, old = "1 3 15", verdict = "mismatch", snapshot = "-", early, duplicate,
+  }) => {
+    const left = vi.fn();
+    const journal = { hidden: HIDDEN, write: vi.fn().mockResolvedValue(undefined), resolved: vi.fn(), left };
+    script((helper) => {
+      if (helper.args[0] === "--dir-remove-id") {
+        helper.say("ready");
+        helper.once("input", () => { helper.say("absent"); helper.exit(0); });
+        return;
+      }
+      helper.say(`target-id ${old}`, "ready");
+      helper.once("input", () => {
+        const report = () => {
+          const line = `target-left left ${hidden} ${id} ${verdict} ${snapshot}`;
+          helper.say(line);
+          if (duplicate) helper.say(line);
+          helper.say("failed EIO");
+          helper.exit(4);
+        };
+        helper.say("writing 1 2");
+        if (!early) {
+          helper.say("copied");
+          helper.once("input", report);
+        } else {
+          report();
+        }
+      });
+    });
+    const run = follow(files.copy(from, "staged", to, "report.pdf", ".0123.part", () => true, UNSTOPPED, journal));
+    await flush();
+    expect(run.error).toBeInstanceOf(HeldFileHelperUnavailableError);
+    expect(helpers()[0]?.killed).toBe(1);
+    expect(left).not.toHaveBeenCalled();
+    expect(journal.resolved).not.toHaveBeenCalled();
+    if (old !== "1 3 15") expect(journal.write).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["another identity", "writing 1 2", "1 4"],
+    ["another volume", "writing 1 2", "2 2"],
+    ["the held old target", "writing 1 2", "1 3"],
+    ["no writer", null, "1 2"],
+  ] as const)("rejects a named copy-part leftover claiming %s", async (_label, writing, claimed) => {
+    script((helper) => {
+      if (helper.args[0] === "--dir-remove-id") {
+        helper.say("ready");
+        helper.once("input", () => { helper.say("absent"); helper.exit(0); });
+        return;
+      }
+      helper.say("target-id 1 3 15", "ready");
+      helper.once("input", () => {
+        if (writing !== null) helper.say(writing);
+        helper.say(`failed EIO left ${HIDDEN} ${claimed} mismatch -`);
+        helper.exit(4);
+      });
+    });
+    const run = follow(files.copy(from, "staged", to, "report.pdf", ".0123.part", () => true, UNSTOPPED));
+    await flush();
+    expect(run.error).toBeInstanceOf(HeldFileHelperUnavailableError);
+    expect(helpers()[0]?.killed).toBe(1);
+    expect(stoppedCopyOf(run.error)?.partLeftAt).toBeNull();
+  });
+
   it.each(SUFFIXES)("keeps the errno of a failure answered `failed EIO %s`", async (suffix, hidden) => {
     script((helper) => {
       helper.say("ready");
-      helper.once("input", () => { helper.say("progress 8", `failed EIO ${suffix}`); helper.exit(4); });
+      helper.once("input", () => { helper.say("writing 1 18446744073709551615", "progress 8", `failed EIO ${suffix}`); helper.exit(4); });
     });
     const run = follow(files.copy(from, "staged", to, "report.pdf", ".0123.part", () => true, UNSTOPPED));
     await flush();
@@ -873,7 +953,7 @@ describe("a copy whose helper says it left its temporary file", () => {
     script((helper) => {
       helper.say("ready");
       helper.once("input", () => {
-        helper.say("progress 8", "copied");
+        helper.say("writing 1 18446744073709551615", "progress 8", "copied");
         helper.once("input", () => { helper.say(`refused target ${suffix}`); helper.exit(3); });
       });
     });
@@ -1303,7 +1383,7 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
     const stale = join(staging, "stale-download");
     fs.writeFileSync(stale, "staged bytes");
     const failed = new Error("the sweep failed after deleting a staged file");
-    const failing = {
+    const failing: typeof root = {
       ...root,
       files: {
         ...root.files,

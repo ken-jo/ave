@@ -140,19 +140,19 @@ const RECORD_LINE = /^record (?:[0-9a-f]{2})*$/u;
 const MAX_RECORD_BYTES = 8192;
 const MAX_HELPER_LINE_BYTES = 1024 * 1024;
 
-/**
- * File operations that act inside held directories. Each one opens its directories, checks each is the plain directory with the given
- * identity, and names every file relative to that open directory, so a directory moved or replaced by a link after the check changes
- * nothing it does. Linux reaches files through the open descriptor's /proc/self/fd entry; macOS and Windows have no such path, so a
- * native helper holds the directories and performs the whole operation (native/macos-dir-ops, native/windows-path-kind dir-ops.h).
- */
-export interface DownloadTargetJournal {
+interface DownloadTargetJournal {
   readonly hidden: string;
   write(file: FileIdentity): Promise<void>;
   resolved(): void;
   left?(at: LeftPart): void;
 }
 
+/**
+ * File operations that act inside held directories. Each one opens its directories, checks each is the plain directory with the given
+ * identity, and names every file relative to that open directory, so a directory moved or replaced by a link after the check changes
+ * nothing it does. Linux reaches files through the open descriptor's /proc/self/fd entry; macOS and Windows have no such path, so a
+ * native helper holds the directories and performs the whole operation (native/macos-dir-ops, native/windows-path-kind dir-ops.h).
+ */
 export interface HeldFileOperations {
   /**
    * Rename `name` in `from` to `target` in `to`, replacing an ordinary file there; `cross-volume` when nothing moved because they are on
@@ -167,7 +167,7 @@ export interface HeldFileOperations {
     journal?: DownloadTargetJournal): Promise<"committed" | "cancelled">;
   /** Remove `name`, a file or a link, from `directory`; `stop` aborting before the removal is let go ends it `cancelled`. */
   remove(directory: HeldDirectory, name: string, proceed: Proceed, stop: AbortSignal): Promise<"removed" | "absent" | "cancelled">;
-  /** Remove every file and link directly in `directory`, and nothing else; await it before anything is staged. */
+  /** Remove files and links directly in `directory`. The boot sweep preserves records for held recovery. */
   sweep(directory: HeldDirectory, keepRecords?: boolean): Promise<number>;
   listRecords(directory: HeldDirectory): Promise<string[]>;
   readRecord(directory: HeldDirectory, name: string, max: number): Promise<Buffer | null>;
@@ -545,11 +545,12 @@ function descriptorFileOperations(renameCopy = renameExclusive): HeldFileOperati
           if (codeOf(error) !== "ENOENT") throw error;
         }
         const old = oldFd === null ? null : fstatSync(oldFd, { bigint: true });
-        if (old !== null && !old.isFile()) throw new HeldDirectoryRefusedError("target");
+        if (old !== null && (!old.isFile() || old.dev !== to.dev)) throw new HeldDirectoryRefusedError("target");
         if (!proceed("ready")) return "cancelled";
         // The temporary file is created exclusively, never through a link, in the held folder.
         copy = await open(inHeld(toFd, part), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, sourceInfo.mode & 0o777);
         const info = await copy.stat({ bigint: true });
+        if (info.dev !== to.dev || old?.ino === info.ino) throw new HeldDirectoryRefusedError("target");
         written = { dev: info.dev, ino: info.ino, birthtimeNs: info.birthtimeNs };
         const buffer = Buffer.alloc(COPY_CHUNK);
         for (let position = 0; ;) {
@@ -570,8 +571,9 @@ function descriptorFileOperations(renameCopy = renameExclusive): HeldFileOperati
         if (!entryMatches(toFd, part, current)) throw new HeldDirectoryRefusedError("target");
         const aside = journal?.hidden;
         const reportTarget = (name: string, expected: FileIdentity, verdict: HelperPartIdentity["verdict"]): void => {
+          if (journal?.left === undefined) return;
           const snapshot = boundSnapshot(toFd, name);
-          journal?.left?.({ name, identity: {
+          journal.left({ name, identity: {
             kind: "helper", dev: expected.dev, ino: expected.ino, verdict,
             observed: snapshot !== null && sameFile(snapshot.file, expected) ? snapshot : null,
           } });
@@ -823,7 +825,7 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
     let targetResolution: "restored" | "retired" | null = null;
     let phase: "holding" | "copying" | "acting" | "copied" = "holding";
     let copiedBytes = 0n;
-    let writing = false;
+    let writing: FileIdentity | null = null;
     let protocolFailure: string | null = null;
     const mode = args[0];
     let errors = "";
@@ -952,6 +954,11 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
         if (mode === "--dir-remove-id" || mode === "--dir-restore") return passed === "ready" && left.answer === "";
         // Only a copy let past `ready`, which may have created its temporary file, says what became of it.
         if (mode !== "--dir-copy" || passed === null) return false;
+        if (left.at !== null) {
+          const { name, identity } = left.at;
+          if (writing === null || !sameFile(identity, writing) || (oldTarget !== null && name === journal?.hidden) ||
+              (identity.verdict === "remove-failed" && identity.observed !== null && !sameFile(identity.observed.file, writing))) return false;
+        }
         const { answer } = left;
         if (answer === "cancelled") return stopping;
         if (answer === "refused target") return passed === "copied";
@@ -1002,10 +1009,10 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
         if (identity?.[1] !== undefined && identity[2] !== undefined) {
           const dev = parseUnsigned(identity[1]);
           const ino = parseInode(identity[2]);
-          if (mode !== "--dir-copy" || phase !== "copying" || passed !== "ready" || writing || copiedBytes !== 0n ||
-              dev === null || ino === null) { violate(); return; }
-          writing = true;
-          onWriting?.({ dev, ino });
+          if (mode !== "--dir-copy" || phase !== "copying" || passed !== "ready" || writing !== null || copiedBytes !== 0n ||
+              dev === null || ino === null || (oldTarget !== null && (oldTarget.dev !== dev || oldTarget.ino === ino))) { violate(); return; }
+          writing = { dev, ino };
+          onWriting?.(writing);
           awaitLine("after opening the part");
           continue;
         }
@@ -1019,10 +1026,12 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
         }
         if (line.startsWith("target-left ")) {
           const left = parsePartLeft(line, parseInode);
-          if (mode !== "--dir-copy" || passed !== "copied" || !writing || targetLeft !== null || targetResolution !== null ||
-              !left?.at || left.partLeft || left.answer !== "target-left") { violate(); return; }
+          if (mode !== "--dir-copy" || passed !== "copied" || writing === null || oldTarget === null || targetLeft !== null ||
+              targetResolution !== null || !left?.at || left.partLeft || left.answer !== "target-left" ||
+              left.at.name !== journal?.hidden) { violate(); return; }
           const { dev, ino, observed } = left.at.identity;
-          if (observed !== null && (observed.file.dev !== dev || observed.file.ino !== ino)) { violate(); return; }
+          if (dev !== oldTarget.dev || ino !== oldTarget.ino ||
+              (observed !== null && !sameFile(observed.file, oldTarget))) { violate(); return; }
           targetLeft = left.at;
           continue;
         }
@@ -1039,6 +1048,7 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
           return;
         }
         if (line === "ready" ? phase !== "holding" : mode !== "--dir-copy" || phase !== "copying" || passed !== "ready") { violate(); return; }
+        if (line === "copied" && oldTarget !== null && writing === null) { violate(); return; }
         phase = line === "copied" ? "copied" : mode === "--dir-copy" ? "copying" : "acting";
         let go = false;
         try {

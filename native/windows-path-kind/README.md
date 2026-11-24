@@ -129,10 +129,17 @@ uses the separate target recovery operation for its record. An occupied or
 unverifiable destination leaves the original and its record in place.
 Copy-back applies only to copy-part recovery.
 
+The boot sweep passes `keep-records` to `--dir-sweep` so it leaves cleanup records in place.
+
 I5. The host chooses the hidden name and syncs a record containing it,
 the held original's identity, and the copy session before authorizing the
 move. Startup reads target records before part recovery and preserves each
 record until rollback or retirement verifies.
+
+I6. The copy session binds the old target identity captured before ready
+and the writing identity from the part handle. A target leftover must
+match the authorized original and hidden name on the writing volume.
+A named copy-part leftover must carry the writing identity.
 
 Accepted residual.
 
