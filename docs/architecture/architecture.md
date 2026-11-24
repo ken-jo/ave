@@ -1173,9 +1173,14 @@ Important rules:
   the destination cannot be verified against the new writing handle.
   When exclusive isolation is unavailable, cleanup keeps and records the
   entry. Cross-volume publication verifies the part and the final entry
-  around an exclusive rename. See the [helper protocol](../../native/macos-dir-ops/README.md).
+  around an exclusive rename. It identifies the previous target before
+  copying, moves it aside exclusively before commit, and verifies it before
+  retirement. A failed commit restores the previous target exclusively or
+  records a leftover. See the [helper protocol](../../native/macos-dir-ops/README.md).
 
-  POSIX has no unlink-if-identity. The remaining windows are (a) between the final descriptor verify and the unlink of a random hidden name, and (b) after a verified restore or commit. Both are accepted: at (b), the restored or committed file was verified in place and visible, so a later change is the user's own act.
+  Accepted residual.
+
+  (a) the gap between the final fd verify and the unlink of a random hidden name; (b) anything after a verified restore or commit (the user's own act). Nothing else.
 
   A closed dialog, a failed download or a failed
   move removes the staged file and is reported cancelled or failed.

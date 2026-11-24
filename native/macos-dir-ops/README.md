@@ -130,7 +130,9 @@ stdin.
   `remove-failed` for retirement after a verified commit. The host records
   this separately from the part's outcome.
 
-  POSIX has no unlink-if-identity. The remaining windows are (a) between the final descriptor verify and the unlink of a random hidden name, and (b) after a verified restore or commit. Both are accepted: at (b), the restored or committed file was verified in place and visible, so a later change is the user's own act.
+  Accepted residual.
+
+  (a) the gap between the final fd verify and the unlink of a random hidden name; (b) anything after a verified restore or commit (the user's own act). Nothing else.
 
 - A `failed <errno name>` answer may have one stderr diagnostic,
   `Windows error <decimal code>` followed by LF or CRLF. The two pipes can

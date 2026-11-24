@@ -325,6 +325,7 @@ it("runs path classification with the arm64 runtime and native job launcher", ()
   const arm64 = jobs[ARM64_JOB];
   assert.ok(arm64, "missing Windows arm64 path-kind job");
   assert.equal(arm64["runs-on"], "windows-11-arm");
+  assert.equal(arm64["timeout-minutes"], 30);
   assert.equal(arm64.needs, "build");
   assert.equal(arm64.if, "needs.build.outputs.windows_arm64_path_kind == 'true'");
 
@@ -377,6 +378,23 @@ it("requires the arm64 result for selected runs, including docs-only main pushes
     }
   }
 });
+
+const x64PathKind = (jobs) => jobs["windows-permission-tests"].steps.find(step => step.name === "Verify Windows folder classification");
+
+it("caps the x64 path-kind step at 30 minutes", () => {
+  assert.equal(x64PathKind(parse(workflow).jobs)["timeout-minutes"], 30);
+});
+
+for (const arch of ["arm64", "x64"]) {
+  for (const timeout of [undefined, 31]) {
+    it(`rejects a ${arch} path-kind timeout of ${timeout}`, () => {
+      const parsed = parse(workflow);
+      const item = arch === "arm64" ? parsed.jobs[ARM64_JOB] : x64PathKind(parsed.jobs);
+      item["timeout-minutes"] = timeout;
+      assert.throws(() => checkWindowsWorkflow(stringify(parsed), parsedLines), /expected a 30-minute timeout/u);
+    });
+  }
+}
 
 for (const [name, change, expected] of [
   ["a different runner", jobs => { jobs[ARM64_JOB]["runs-on"] = "windows-2025"; }, /hosted arm64 runner/u],

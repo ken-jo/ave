@@ -385,8 +385,17 @@ inline int run_copy(wchar_t** argv) {
   // The temporary file is created exclusively and stays open without write or delete sharing through commit or retirement.
   HANDLE created = INVALID_HANDLE_VALUE;
   const NTSTATUS creating = open_relative(to.handle(), part_name, FILE_READ_DATA | FILE_WRITE_DATA | FILE_READ_ATTRIBUTES | DELETE,
-    FILE_SHARE_READ, kCreateNew, kNonDirectoryFile | kSequentialOnly, created);
-  if (creating < 0) return failed(native_failure(creating, "NtCreateFile"));
+    FILE_SHARE_READ, kCreateNew, kNonDirectoryFile | kOpenReparsePoint | kSequentialOnly, created);
+  if (creating < 0) {
+    const FileFailure failure = native_failure(creating, "NtCreateFile");
+    if (failure.error == ERROR_ACCESS_DENIED) {
+      Entry occupied = Entry::kAbsent;
+      if (classify(to.handle(), part_name, occupied).error == ERROR_SUCCESS && occupied != Entry::kAbsent) {
+        return failed(ERROR_FILE_EXISTS);
+      }
+    }
+    return failed(failure);
+  }
   PinnedHandle part(created);
   FILE_ID_INFO written{};
   if (!read_id(part.value, written)) return failed(FileFailure{GetLastError()}, " left");

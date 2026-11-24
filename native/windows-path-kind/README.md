@@ -120,9 +120,9 @@ file identity or exclusive isolation is unavailable, the helper leaves
 existing entries in place. The host retains an existing recovery record or
 records the writing identity when available.
 
-(a) the gap between the final fd verify and the unlink of a random hidden name;
-(b) anything after a verified restore or commit (the user's own act).
-Nothing else.
+Accepted residual.
+
+(a) the gap between the final fd verify and the unlink of a random hidden name; (b) anything after a verified restore or commit (the user's own act). Nothing else.
 
 ## OS system directory
 

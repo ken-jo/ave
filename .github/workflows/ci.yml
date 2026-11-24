@@ -750,6 +750,7 @@ jobs:
       # without opening the drive (design multi-source-git-marketplace.md §18.4.1).
       - name: Verify Windows folder classification
         if: steps.docs-impact.outputs.docs_only != 'true'
+        timeout-minutes: 30
         working-directory: ave
         # Windows PowerShell ships with every Windows install; the default
         # shell depends on whether PowerShell 7 is present.
@@ -912,6 +913,7 @@ jobs:
     needs: build
     if: needs.build.outputs.windows_arm64_path_kind == 'true'
     runs-on: windows-11-arm
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

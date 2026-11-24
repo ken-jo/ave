@@ -21,6 +21,7 @@ const LIST_INVOCATION = new RegExp(
 // Test commands in the job that owns the isolated job root run inside the containment launcher.
 const CONTAINED_JOB = "windows-permission-tests";
 const ARM64_JOB = "windows-arm64-path-kind";
+const PATH_KIND_TIMEOUT_MINUTES = 30;
 const CONTAINED_JOBS = new Map([
   [CONTAINED_JOB, REGRESSION_CONDITION],
   [ARM64_JOB, undefined],
@@ -307,6 +308,9 @@ function checkArm64PathKindJob(jobs) {
       "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}") {
     throw new Error(`${ARM64_JOB}: expected the hosted arm64 runner and the path-kind selection`);
   }
+  if (arm64["timeout-minutes"] !== PATH_KIND_TIMEOUT_MINUTES) {
+    throw new Error(`${ARM64_JOB}: expected a 30-minute timeout`);
+  }
   const [checkout, node, bun, isolate, install, launcher, test, cleanup] = arm64.steps ?? [];
   if (arm64.steps?.length !== 8
     || !checkout?.uses?.startsWith("actions/checkout@") || checkout.with?.path !== "ave"
@@ -338,7 +342,12 @@ function checkArm64PathKindJob(jobs) {
 }
 
 export function checkWindowsWorkflow(workflow, inspect) {
-  checkArm64PathKindJob(parse(workflow).jobs);
+  const { jobs } = parse(workflow);
+  checkArm64PathKindJob(jobs);
+  const x64 = jobs[CONTAINED_JOB]?.steps?.filter(step => step.name === "Verify Windows folder classification");
+  if (x64?.length !== 1 || x64[0]["timeout-minutes"] !== PATH_KIND_TIMEOUT_MINUTES) {
+    throw new Error(`${CONTAINED_JOB}: path-kind step expected a 30-minute timeout`);
+  }
   const steps = windowsRunSteps(workflow);
   if (!windowsRegressionSteps(steps).some(step => step.stepName === "Run Windows permission regressions"
     && POWERSHELL_SHELL_RE.test(step.shell))) {

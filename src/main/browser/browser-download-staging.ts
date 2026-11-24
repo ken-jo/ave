@@ -175,7 +175,7 @@ function withVerifiedRoot<T>(root: HeldDirectory, use: (fd: number | undefined) 
 const ROOT_REPLACED = "the download staging folder was replaced";
 const STAGING_REFUSALS: Readonly<Record<HeldRefusal, string>> = {
   from: ROOT_REPLACED,
-  to: "the chosen folder was replaced",
+  to: "the chosen folder could not be verified, or its volume does not provide file IDs",
   source: "the staged file was replaced",
   target: "the chosen file could not be safely replaced",
 };

@@ -1072,8 +1072,11 @@ function helperFileOperations(helper: string, windowsFileIds: boolean, bounds: H
           // A helper that may still be running is not raced: its file is left for a cleanup once it ends.
           if (error instanceof HeldFileHelperStalledError && error.stillRunning) error.partialCopy = "left";
           else markStoppedCopy(error, await removePartialCopy(to, part, partFile));
-        } else if (authorized && codeOf(error) !== "EEXIST" && !(error instanceof HeldDirectoryRefusedError)) {
-          markStoppedCopy(error, await removePartialCopy(to, part, partFile));
+        } else if (authorized && !(error instanceof HeldDirectoryRefusedError)) {
+          const code = codeOf(error);
+          if (code !== "EEXIST" && (code !== "EPERM" || partFile !== null)) {
+            markStoppedCopy(error, await removePartialCopy(to, part, partFile));
+          }
         }
         throw error;
       }

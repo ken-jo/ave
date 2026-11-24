@@ -746,6 +746,22 @@ describe("a copy whose helper says it left its temporary file", () => {
     expect(helpers()).toHaveLength(1);
   };
 
+  it.each(["EEXIST", "EPERM"])("keeps a plain %s before writing free of part cleanup", async (code) => {
+    script((helper) => {
+      helper.say("ready");
+      helper.once("input", () => {
+        helper.say(`failed ${code}`);
+        helper.exit(4);
+      });
+    });
+    const run = follow(files.copy(from, "staged", to, "report.pdf", ".0123.part", () => true, UNSTOPPED));
+    await flush();
+    expect(run.error).toMatchObject({ code });
+    expect(stoppedCopyOf(run.error)).toBeNull();
+    expect(boundary.warn).not.toHaveBeenCalled();
+    expect(helpers()).toHaveLength(1);
+  });
+
   it.each(SUFFIXES)("reports a cancel answered `cancelled %s` as a failure", async (suffix, hidden) => {
     script((helper) => helper.say("ready"));
     const stop = new AbortController();

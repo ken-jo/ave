@@ -201,6 +201,21 @@ async function recoveryTests() {
     expect(["--dir-copy", ...held(dir), "source", ...held(dir), "target", part], ["ready", "failed EEXIST"], 4);
     assert.equal(readFileSync(join(dir, part), "utf8"), "preexisting");
   });
+  for (const kind of ["directory", "junction"]) {
+    add(`copy reports an occupied part ${kind} as EEXIST`, (dir) => {
+      writeFileSync(join(dir, "source"), "download bytes");
+      const occupied = join(dir, part);
+      const original = kind === "directory" ? occupied : join(dir, "existing-dir");
+      mkdirSync(original);
+      writeFileSync(join(original, "sentinel"), "existing bytes");
+      if (kind === "junction") symlinkSync(original, occupied, "junction");
+      expect(["--dir-copy", ...held(dir), "source", ...held(dir), "target", part], ["ready", "failed EEXIST"], 4);
+      assert.equal(readFileSync(join(occupied, "sentinel"), "utf8"), "existing bytes");
+      assert.equal(readFileSync(join(original, "sentinel"), "utf8"), "existing bytes");
+      assert.equal(readFileSync(join(dir, "source"), "utf8"), "download bytes");
+      assert.ok(!existsSync(join(dir, "target")));
+    });
+  }
   add("copy identifies its locked writer before progress and verifies the committed name", async (dir) => {
     writeFileSync(join(dir, "source"), "source");
     const result = await runCopy(["--dir-copy", ...held(dir), "source", ...held(dir), "target", part], (line, stdin) => {
