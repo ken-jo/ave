@@ -336,12 +336,14 @@ describe("host git", () => {
       expect.soft(config.map(entry => Buffer.from(entry).toString("hex")), String(text)).toContain(Buffer.concat([Buffer.from("filter."), Buffer.from(text), Buffer.from(".clean=")]).toString("hex"));
       expect.soft(config).toContain("merge.Up.driver=exit 1");
     }
-    // As git itself writes them, from a file whose section and variable are in mixed case and one whose name is no text.
+    // As git itself writes them, from a file whose section and variable are in mixed case and one whose name is no text, for a host
+    // in a UTF-8 locale: there git's own pattern `.*` matches no name that is no text.
     spawned.fake = undefined;
+    const utf8 = { ...env, LC_ALL: "C.UTF-8" };
     const repo = repositoryWith('[Filter "Mixed"]\n\tClean = cat\n\tReQuired\n[MERGE "Up"]\n\tDriver = true\n');
-    expect.soft(await createHostGit({ env }).drivers(repo)).toEqual({ config: expect.arrayContaining(["filter.Mixed.clean=", "merge.Up.driver=exit 1"]), requiredFilters: ["Mixed"] });
+    expect.soft(await createHostGit({ env: utf8 }).drivers(repo)).toEqual({ config: expect.arrayContaining(["filter.Mixed.clean=", "merge.Up.driver=exit 1"]), requiredFilters: ["Mixed"] });
     appendFileSync(join(repo, ".git", "config"), Buffer.concat([Buffer.from('[filter "x'), Buffer.from([0xff]), Buffer.from('y"]\n\tclean = cat\n')]));
-    expect(await reasonOf(createHostGit({ env }).drivers(repo))).toBe("driver-name");
+    expect(await reasonOf(createHostGit({ env: utf8 }).drivers(repo))).toBe("driver-name");
   });
 
   it("an answer asked for as text is given only when it is text, as it stands; asked for otherwise, a byte that is none is replaced", async () => {

@@ -1,7 +1,7 @@
 import { accessSync, existsSync, statSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { dirname, join } from "node:path";
+import { dirname, join, win32 } from "node:path";
 import { tmpdir } from "node:os";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -43,6 +43,7 @@ afterEach(() => {
   vi.unstubAllEnvs();
   vi.doUnmock("../../../main/windows-path-kind-launcher.js");
   vi.doUnmock("../../../boot/dev-flags.js");
+  vi.doUnmock("node:path");
 });
 
 describe("the git a stage workspace starts is the one the host's discovery resolved", () => {
@@ -147,10 +148,15 @@ describe("the git a stage workspace starts is the one the host's discovery resol
 
   it("a packaged Windows app starts the git its discovery selects from the bundle, absolute, in the call's folder, on the search path it probed it with and the user's own configuration", async () => {
     setProcessPlatform("win32");
-    Object.defineProperty(process, "execPath", { value: join("C:/Ave", "Ave.exe") });
-    const root = join("C:/Ave", "git");
-    const bundled = join(root, "cmd", "git.exe");
-    const searchPath = [dirname(bundled), join(root, "ucrt64", "bin"), join(root, "usr", "bin"), "C:\\Windows\\System32", "C:\\Windows"].join(";");
+    // The host's paths are Windows paths on every host the test runs on, as they are for the app it stands for.
+    vi.doMock("node:path", async (original) => {
+      const actual = await original<typeof import("node:path")>();
+      return { ...actual, ...actual.win32, default: actual.win32, posix: actual.posix, win32: actual.win32 };
+    });
+    Object.defineProperty(process, "execPath", { value: win32.join("C:/Ave", "Ave.exe") });
+    const root = win32.join("C:/Ave", "git");
+    const bundled = win32.join(root, "cmd", "git.exe");
+    const searchPath = [win32.dirname(bundled), win32.join(root, "ucrt64", "bin"), win32.join(root, "usr", "bin"), "C:\\Windows\\System32", "C:\\Windows"].join(";");
     vi.doMock("../../../boot/dev-flags.js", async (original) => ({ ...await original<typeof import("../../../boot/dev-flags.js")>(), isConfigured: () => true, getIsPackaged: () => true }));
     // The helper that names the system folder is a native program; everything else is the host's own discovery.
     vi.doMock("../../../main/windows-path-kind-launcher.js", async (original) => ({
@@ -158,7 +164,7 @@ describe("the git a stage workspace starts is the one the host's discovery resol
       queryWindowsSystemDirectory: async () => "C:\\Windows\\System32",
       queryWindowsSystemDirectorySync: () => "C:\\Windows\\System32",
     }));
-    vi.mocked(existsSync).mockImplementation((path) => path === join(root, "ucrt64", "libexec", "git-core"));
+    vi.mocked(existsSync).mockImplementation((path) => path === win32.join(root, "ucrt64", "libexec", "git-core"));
     vi.mocked(statSync).mockImplementation(((path: string) => ({ isFile: () => path === bundled, isDirectory: () => path === "D:\\project", dev: 1n, ino: 1n, size: 1n, mtimeNs: 1n })) as unknown as typeof statSync);
     vi.mocked(spawn).mockImplementation((() => ended(0, "git version 2.56.0\n")) as unknown as typeof spawn);
     const { createHostGit } = await import("../host-git.js");
@@ -166,7 +172,7 @@ describe("the git a stage workspace starts is the one the host's discovery resol
     await createHostGit({ env: { Path: "C:\\Users\\alice\\bin", SystemRoot: "C:\\Elsewhere", GIT_CONFIG_GLOBAL: userConfig } }).run("D:\\project", ["--version"]);
     // The discovery's probe of the bundle, then the call.
     expect(started()).toEqual([bundled, bundled]);
-    expect(vi.mocked(spawn).mock.calls[0]?.[2]).toMatchObject({ cwd: dirname(bundled), env: { PATH: searchPath, GIT_CONFIG_GLOBAL: "NUL" } });
+    expect(vi.mocked(spawn).mock.calls[0]?.[2]).toMatchObject({ cwd: win32.dirname(bundled), env: { PATH: searchPath, GIT_CONFIG_GLOBAL: "NUL" } });
     const options = vi.mocked(spawn).mock.calls[1]?.[2] as { cwd?: string; env?: NodeJS.ProcessEnv };
     expect(options.cwd).toBe("D:\\project");
     expect(options.env).toMatchObject({ PATH: searchPath, SystemRoot: "C:\\Windows", WINDIR: "C:\\Windows", GIT_CONFIG_GLOBAL: userConfig });

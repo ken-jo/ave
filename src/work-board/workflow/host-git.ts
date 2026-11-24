@@ -43,8 +43,10 @@ interface HostGitResult { code: number; stdout: string; stderr: string }
 /** `worktree`: the registration and the folder git works on, given to it outright; it then reads no `.git` file to find them.
  * `exact`: the answer holds names the caller compares, looks up on disk or hands back to git, so it must be text as it stands: one
  * that is not would be read as other names, and is refused as `not-text`. `paths`: the paths the call is about, each given to git as
- * that one path and never as a pattern; an argument list carries none. `deadline` is a `performance.now()` timestamp for preflight and launch. */
-interface HostGitCall { stdin?: string; drivers?: readonly string[]; isolated?: boolean; exact?: boolean; worktree?: { gitDir: string; workTree: string }; paths?: readonly string[]; requiresFloor?: boolean; deadline?: number }
+ * that one path and never as a pattern; an argument list carries none. `deadline` is a `performance.now()` timestamp for preflight and launch.
+ * `bytes`: git runs in the C locale, so a pattern it is given matches a name byte for byte; in the host's own locale, one whose
+ * characters the name's bytes are not would match no part of it. */
+interface HostGitCall { stdin?: string; drivers?: readonly string[]; isolated?: boolean; exact?: boolean; bytes?: boolean; worktree?: { gitDir: string; workTree: string }; paths?: readonly string[]; requiresFloor?: boolean; deadline?: number }
 /** Bytes as the text they are and nothing else: no byte replaced, no leading mark dropped. Throws for bytes that are no text. */
 const STRICT_TEXT = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 export class HostGitError extends Error {
@@ -97,6 +99,11 @@ function isolatedEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return { ...gitEnv(base, name => INHERITED_ENV.has(name) && !name.startsWith("GIT_")), GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null" };
 }
 
+/** The environment in the C locale: `LC_ALL` decides over every other locale variable. */
+function byteLocaleEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return { ...Object.fromEntries(Object.entries(env).filter(([key]) => key.toUpperCase() !== "LC_ALL")), LC_ALL: "C" };
+}
+
 /** A bundled installation runs on the search path and system folder it was probed with, the rest of the environment as for any git. */
 function programEnv(env: NodeJS.ProcessEnv, git: HostGitProgram): NodeJS.ProcessEnv {
   if (git.bundled === undefined) return env;
@@ -115,6 +122,11 @@ export function createHostGit(options: { env?: NodeJS.ProcessEnv; resolve?: Host
   const timeoutMs = options.timeoutMs ?? TOOL_TIMEOUT_POLICY.stageWorkspaceGitMs;
   const maxOutputBytes = options.maxOutputBytes ?? GIT_MAX_OUTPUT_BYTES;
   const teardownMs = options.teardownMs ?? GIT_TEARDOWN_MS;
+
+  const launchEnv = (call: HostGitCall): NodeJS.ProcessEnv => {
+    const chosen = call.isolated === true ? isolated : env;
+    return call.bytes === true ? byteLocaleEnv(chosen) : chosen;
+  };
 
   /** What git wrote, as the bytes it wrote. */
   async function raw(cwd: string, args: readonly string[], call: HostGitCall = {}): Promise<{ code: number; stdout: Buffer; stderr: Buffer }> {
@@ -160,7 +172,7 @@ export function createHostGit(options: { env?: NodeJS.ProcessEnv; resolve?: Host
       if (executableIdentitySync(git.path) !== git.identity) return reject(new HostGitError("unavailable", "the selected git changed before launch"));
       const timeLeft = (): number => call.deadline === undefined ? timeoutMs : Math.min(timeoutMs, call.deadline - performance.now());
       if (timeLeft() <= 0) return reject(gitTimedOut());
-      const started = spawnHostGitIfWorkspaceFree(cwd, git.path, args, { cwd, env: programEnv(call.isolated === true ? isolated : env, git), windowsHide: true, stdio: ["pipe", "pipe", "pipe"] }, call.deadline);
+      const started = spawnHostGitIfWorkspaceFree(cwd, git.path, args, { cwd, env: programEnv(launchEnv(call), git), windowsHide: true, stdio: ["pipe", "pipe", "pipe"] }, call.deadline);
       if (started === "held") return reject(new HostGitError("held", "the workspace is held by a sandboxed command"));
       if (started === "no-folder") return reject(new HostGitError("unavailable", "the folder git would run in does not exist"));
       const child = started as ChildProcessWithoutNullStreams;
@@ -224,9 +236,11 @@ export function createHostGit(options: { env?: NodeJS.ProcessEnv; resolve?: Host
     // An answer is taken only in the form the command writes it: each entry ended by NUL, its key first and, after a line break, its
     // value, or the key alone where the configuration gives it none. Nothing configured is exit 1 with nothing written at all. Any
     // other failure is a configuration git itself does not take, and any other form is no answer. It is read byte for byte, each
-    // byte one character here: a name is a file's bytes, and read as text first, one that is no text would come out as another.
+    // byte one character here: a name is a file's bytes, and read as text first, one that is no text would come out as another. Git
+    // matches the pattern in the C locale for the same reason: in a UTF-8 one, `.*` matches no name that is no text, and such a
+    // driver would be left out of the answer and stay active.
     const listed = async (...args: string[]): Promise<[key: string, value: string | undefined][]> => {
-      const read = await raw(cwd, ["config", "--null", ...args], { ...options, worktree });
+      const read = await raw(cwd, ["config", "--null", ...args], { ...options, worktree, bytes: true });
       if (read.code === 1 && read.stdout.length === 0 && read.stderr.length === 0) return [];
       const bytes = read.stdout.toString("latin1");
       if (read.code !== 0 || !bytes.endsWith("\0")) throw unread();

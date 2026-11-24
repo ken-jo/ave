@@ -210,6 +210,13 @@ describe("folder stage workspaces", () => {
     // On Windows a lone surrogate, elsewhere a byte that is no UTF-8: either, listed as text, reads back as another name.
     const odd = Buffer.from(process.platform === "win32" ? [0x61, 0xed, 0xa0, 0x80] : [0x61, 0xff]);
     const at = (...names: Buffer[]): Buffer => Buffer.concat([Buffer.from(root), ...names.flatMap(name => [Buffer.from(sep), name])]);
+    if (process.platform === "darwin") {
+      // APFS takes no name that is no UTF-8: no stage there can hold one, and it is taken apart as any other.
+      expect(() => mkdirSync(at(odd))).toThrow(expect.objectContaining({ code: "EILSEQ" }));
+      await handle.provider.release(handle.run, "all");
+      expect(existsSync(root)).toBe(false);
+      return;
+    }
     mkdirSync(at(odd));
     writeFileSync(at(odd, odd), "inside\n");
     writeFileSync(at(Buffer.concat([odd, Buffer.from(".txt")])), "beside\n");
@@ -289,8 +296,8 @@ describe("folder stage workspaces", () => {
     const elsewhere = join(base, "elsewhere");
     mkdirSync(elsewhere);
     execFileSync("git", ["init", "-q"], { cwd: elsewhere, env });
-    // The matcher folds case as the platform's file names do, and by nothing it inherits.
-    const folds = process.platform === "win32" || process.platform === "darwin";
+    // The matcher folds case as the folder's file names do, and by nothing it inherits: a volume of either kind can stand on macOS.
+    const folds = existsSync(join(project, ".GITIGNORE"));
     const expected = [".gitignore", ...(folds ? [] : ["PRIVATE.TXT"]), "docs/guide.md", "notes.txt", "src/a.ts", "src/deep/b.ts", "user-ignored.txt"];
     const clean = env;
     for (const inherited of ["true", "false"]) {
@@ -477,8 +484,9 @@ describe("folder stage workspaces", () => {
     };
     for (const [path, text] of Object.entries(files)) { write(project, path, text); write(twin, path, text); }
     execFileSync("git", ["init", "-q", "--template="], { cwd: twin, env });
-    // What git found out about the place by writing into its own repository there, the host reads off the folder without writing.
-    const folds = execFileSync("git", ["config", "--get", "core.ignorecase"], { cwd: twin, env, encoding: "utf8" }).trim() === "true";
+    // What git found out about the place by writing into its own repository there, the host reads off the folder without writing. Git
+    // writes the setting only where names fold; where they do not, as on most Linux file systems, it leaves it at its default, false.
+    const folds = execFileSync("git", ["config", "--type=bool", "--default=false", "--get", "core.ignorecase"], { cwd: twin, env, encoding: "utf8" }).trim() === "true";
     expect(projectFoldsCase(project)).toBe(folds);
     const status = execFileSync("git", ["-c", "core.excludesFile=", "status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: twin, env, encoding: "utf8" });
     const unignored = status.split("\0").filter(Boolean).map(entry => entry.slice(3)).sort();
