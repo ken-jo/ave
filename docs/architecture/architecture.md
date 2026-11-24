@@ -3640,7 +3640,9 @@ replacement row.
 
 The ledger persists the kind on every terminal deny row as `terminalKind`.
 `terminalDenyKindOf` (`src/audit/audit-schema.ts`) reads it and falls back to
-the first reason for older rows.
+the first reason for older rows that omit the field. An invalid explicit kind
+is an audit integrity error and its row contributes no entries to the audit
+view or verification counts. Chain and seal checks still use the raw lines.
 
 The ledger fires one `PermissionDenied` lifecycle event for each `denied` row
 it commits unless the effective abort stopped a rationale card after the gate

@@ -16,9 +16,11 @@ import {
   type SecretStore,
 } from "../audit/hmac-chain.js";
 import {
+  hasInvalidAuditTerminalKind,
   isPermissionAuditEntry,
   terminalDenyKindOf,
   type PermissionAuditEntryView,
+  type PermissionAuditIntegrity,
 } from "../audit/audit-schema.js";
 import { parseJsonlLines } from "../audit/jsonl-reader.js";
 
@@ -61,31 +63,34 @@ function readLastNonEmptyLines(filePath: string, limit: number): string[] {
 export function readRecentAuditEntries(
   auditDir: string,
   limit: number,
-): PermissionAuditEntryView[] {
-  if (!existsSync(auditDir)) return [];
+): PermissionAuditIntegrity & { entries: PermissionAuditEntryView[] } {
+  const entries: PermissionAuditEntryView[] = [];
+  if (!existsSync(auditDir)) return { entries };
   const files = readdirSync(auditDir)
     .filter((f) => f.endsWith(".permission-audit.jsonl"))
     .sort()
     .reverse(); // newest first
 
-  const out: PermissionAuditEntryView[] = [];
+  let invalidTerminalKinds = 0;
   for (const file of files) {
     const filePath = join(auditDir, file);
-    const lines = readLastNonEmptyLines(filePath, limit - out.length);
+    const lines = readLastNonEmptyLines(filePath, limit - entries.length);
     // Walk in reverse so the newest entry of the file lands first.
     for (let i = lines.length - 1; i >= 0; i--) {
       try {
         const parsed = JSON.parse(lines[i]) as unknown;
-        if (isPermissionAuditEntry(parsed)) {
-          out.push(parsed.decision === "deny" ? { ...parsed, terminalKind: terminalDenyKindOf(parsed) } : parsed);
-          if (out.length >= limit) return out;
+        if (hasInvalidAuditTerminalKind(parsed)) {
+          invalidTerminalKinds++;
+        } else if (isPermissionAuditEntry(parsed)) {
+          entries.push(parsed.decision === "deny" ? { ...parsed, terminalKind: terminalDenyKindOf(parsed) } : parsed);
         }
       } catch {
         // Skip unparseable lines — the chain verifier will surface them.
       }
     }
+    if (entries.length >= limit) break;
   }
-  return out;
+  return { entries, ...(invalidTerminalKinds > 0 ? { invalidTerminalKinds } : {}) };
 }
 
 // Per-file chain verification result. Verification iterates through every `.permission-audit.jsonl` file in the audit directory; each file gets its own genesis-anchored chain because rotations create fresh files.
@@ -99,7 +104,7 @@ export interface DayVerifyResult {
   sealMatch: boolean | null;
 }
 
-export interface VerifyAllAuditResult {
+export interface VerifyAllAuditResult extends PermissionAuditIntegrity {
   totalFiles: number;
   totalEntries: number;
   intact: boolean;
@@ -123,12 +128,21 @@ export function verifyAllAuditFiles(
 
   const perDay: DayVerifyResult[] = [];
   let totalEntries = 0;
+  let invalidTerminalKinds = 0;
   let firstBrokenFile: string | undefined;
 
   for (const file of files) {
     const filePath = join(auditDir, file);
     const lines = parseJsonlLines(readFileSync(filePath, "utf-8"));
     const result = verifyChain(secret, lines);
+    let invalidKindsForDay = 0;
+    for (const line of lines) {
+      try {
+        if (hasInvalidAuditTerminalKind(JSON.parse(line))) invalidKindsForDay++;
+      } catch {
+        // The chain verifier reports malformed JSON separately.
+      }
+    }
     let sealMatch: boolean | null = null;
     const dateMatch = file.match(/^(\d{4}-\d{2}-\d{2})\.permission-audit\.jsonl$/);
     if (sealStore && dateMatch && lines.length > 0) {
@@ -138,20 +152,24 @@ export function verifyAllAuditFiles(
         sealMatch = stored === computed;
       }
     }
-    perDay.push({ file, totalLines: lines.length, result, sealMatch });
-    totalEntries += lines.length;
+    const totalLines = lines.length - invalidKindsForDay;
+    perDay.push({ file, totalLines, result, sealMatch });
+    totalEntries += totalLines;
+    invalidTerminalKinds += invalidKindsForDay;
     if (!result.ok && firstBrokenFile === undefined) {
       firstBrokenFile = file;
     }
   }
 
   const intact =
+    invalidTerminalKinds === 0 &&
     perDay.every((d) => d.result.ok) &&
     perDay.every((d) => d.sealMatch !== false);
 
   return {
     totalFiles: files.length,
     totalEntries,
+    ...(invalidTerminalKinds > 0 ? { invalidTerminalKinds } : {}),
     intact,
     perDay,
     firstBrokenFile,

@@ -1,4 +1,5 @@
 import type { MemoryMapApi } from '../../shared/memory-map.js';
+import type { PermissionAuditIntegrity } from "../../audit/audit-schema.js";
 import type { ScheduleAttachment, ScheduleAttachmentInput, WorkflowTemplateIpcResult, WorkflowTemplate, WorkflowTemplateRecord, WorkflowTemplateDraftInput, WorkflowTemplateConfirmInput, TemplateVersion } from "../../shared/workflow-template-types.js";
 import type { NotificationToastPayload, NotificationClickPayload } from "../../shared/notification-types.js";
 export type { NotificationToastPayload, NotificationClickPayload } from "../../shared/notification-types.js";
@@ -1579,17 +1580,17 @@ export type AvePermissionApi = {
   ) => Promise<import("../../shared/permission-judge-settings.js").PermissionJudgeWriteResult>;
   /** Permission policy — `/permission audit show` — recent permission audit entries. */
   auditShow: (last: number) => Promise<
-    | {
+    | (PermissionAuditIntegrity & {
         ok: true;
         entries: PermissionAuditEntrySummary[];
         total: number;
         summary: { files: number; bytes: number };
-      }
+      })
     | { ok: false; error: string }
   >;
   /** Permission policy — `/permission audit verify` — HMAC chain integrity check. */
   auditVerify: () => Promise<
-    | {
+    | (PermissionAuditIntegrity & {
         ok: true;
         intact: boolean;
         totalFiles: number;
@@ -1603,7 +1604,7 @@ export type AvePermissionApi = {
           reason?: string;
           sealMatch: boolean | null;
         }>;
-      }
+      })
     | { ok: false; error: string }
   >;
 };

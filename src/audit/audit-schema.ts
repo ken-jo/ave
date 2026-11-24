@@ -212,6 +212,10 @@ export type PermissionAuditEntry =
 /** The audit show projection resolves the terminal kind of historical deny rows. */
 export type PermissionAuditEntryView = Exclude<PermissionAuditEntry, AuditDeny> | (AuditDeny & { terminalKind: AuditDenyKind });
 
+export interface PermissionAuditIntegrity {
+  invalidTerminalKinds?: number;
+}
+
 export type PermissionAuditEntryInput = PermissionAuditEntry extends infer Entry
   ? Entry extends PermissionAuditEntry
     ? Omit<Entry, "prevHash" | "entryHash">
@@ -222,5 +226,10 @@ export function isPermissionAuditEntry(value: unknown): value is PermissionAudit
   if (typeof value !== "object" || value === null) return false;
   const obj = value as Record<string, unknown>;
   return typeof obj.decision === "string" && typeof obj.auditId === "string"
-    && (obj.decision !== "deny" || !Object.hasOwn(obj, "terminalKind") || isAuditDenyKind(obj.terminalKind));
+    && !hasInvalidAuditTerminalKind(obj);
+}
+
+export function hasInvalidAuditTerminalKind(value: unknown): boolean {
+  return typeof value === "object" && value !== null && Object.hasOwn(value, "terminalKind")
+    && !isAuditDenyKind((value as Record<string, unknown>).terminalKind);
 }

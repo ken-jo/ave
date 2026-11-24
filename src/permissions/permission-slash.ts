@@ -32,7 +32,7 @@ import {
   summarizeAuditDir,
   verifyAllAuditFiles,
 } from "./permission-audit-runner.js";
-import type { PermissionAuditEntryView } from "../audit/audit-schema.js";
+import type { PermissionAuditEntryView, PermissionAuditIntegrity } from "../audit/audit-schema.js";
 import type { SecretStore } from "../audit/hmac-chain.js";
 import { EXECUTION_MODES, type ExecutionMode } from "../shared/permission-mode.js";
 import type { PermissionManager } from "./permission-manager.js";
@@ -418,21 +418,21 @@ export function parsePermissionAuditCommand(
 }
 
 export type PermissionAuditResult =
-  | {
+  | (PermissionAuditIntegrity & {
       ok: true;
       verb: "show";
       entries: PermissionAuditEntryView[];
       total: number;
       summary: { files: number; bytes: number };
-    }
-  | {
+    })
+  | (PermissionAuditIntegrity & {
       ok: true;
       verb: "verify";
       intact: boolean;
       totalFiles: number;
       totalEntries: number;
       firstBrokenFile?: string;
-    }
+    })
   | { ok: false; error: string };
 
 export function dispatchPermissionAuditCommand(
@@ -440,13 +440,14 @@ export function dispatchPermissionAuditCommand(
   opts: { auditDir: string; secret: string | null; sealStore?: SecretStore },
 ): PermissionAuditResult {
   if (cmd.verb === "show") {
-    const entries = readRecentAuditEntries(opts.auditDir, cmd.last);
+    const { entries, ...integrity } = readRecentAuditEntries(opts.auditDir, cmd.last);
     return {
       ok: true,
       verb: "show",
       entries,
       total: entries.length,
       summary: summarizeAuditDir(opts.auditDir),
+      ...integrity,
     };
   }
   if (!opts.secret) {
@@ -459,6 +460,7 @@ export function dispatchPermissionAuditCommand(
     intact: result.intact,
     totalFiles: result.totalFiles,
     totalEntries: result.totalEntries,
+    ...(result.invalidTerminalKinds === undefined ? {} : { invalidTerminalKinds: result.invalidTerminalKinds }),
     ...(result.firstBrokenFile ? { firstBrokenFile: result.firstBrokenFile } : {}),
   };
 }

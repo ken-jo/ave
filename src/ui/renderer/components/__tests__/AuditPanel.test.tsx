@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.ts";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, onTestFinished } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { AuditPanel } from "../permissions/AuditPanel.js";
 import type { PermissionAuditEntrySummary } from "../../types.js";
+import { getLocale, setLocale } from "../../../../i18n/runtime.js";
 
 function makeEntry(overrides: Partial<PermissionAuditEntrySummary> = {}): PermissionAuditEntrySummary {
   return {
@@ -100,6 +101,27 @@ describe("AuditPanel", () => {
       const banner = screen.getByTestId("audit-integrity-banner");
       expect(banner.getAttribute("data-severity")).toBe("ok");
     });
+  });
+
+  it("shows a broken integrity badge for an invalid terminal kind on a valid chain", async () => {
+    const locale = getLocale();
+    setLocale("en");
+    onTestFinished(() => { setLocale(locale); });
+    const { show } = makeFetcher({ entries: [] });
+    const verify = async () => ({
+      ok: true as const,
+      intact: false,
+      totalFiles: 1,
+      totalEntries: 0,
+      invalidTerminalKinds: 1,
+      perDay: [{ file: "2026-05-09.permission-audit.jsonl", totalLines: 0, chainOk: true, sealMatch: true }],
+    });
+    await act(async () => {
+      render(<AuditPanel open onClose={() => {}} fetcher={{ show, verify }} />);
+    });
+    const banner = screen.getByTestId("audit-integrity-banner");
+    expect(banner.getAttribute("data-severity")).toBe("broken");
+    expect(banner.textContent).toContain("Integrity error: invalid terminal kind in audit entries (1)");
   });
 
   it("shows red banner + first broken file on chain break", async () => {

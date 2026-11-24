@@ -1047,7 +1047,8 @@ describe("native invocation permission evidence", () => {
         const stop = source === "deny-then-turn-stop" ? turn : coordinatorStop;
         const pending = coordinator.promptForApproval(ticketId, { abortSignal: stop.signal });
         await vi.waitFor(() => expect(cards).toHaveLength(1));
-        const card = cards[0]!;
+        const [card] = cards;
+        if (card === undefined) throw new Error("Expected the rationale approval card");
         if (kind === "denied") {
           expect(gate.resolveFromDesktopRenderer(card.id, {
             requestId: card.id, choice: "deny-once", nonce: card.nonce, hmac: card.hmac,

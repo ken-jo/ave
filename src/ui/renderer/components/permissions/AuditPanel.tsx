@@ -5,26 +5,13 @@ import { Badge } from "../../../../components/ui/badge.js";
 import { Button } from "../../../../components/ui/button.js";
 import { Label } from "../../../../components/ui/label.js";
 import { NativeSelect, NativeSelectOption } from "../../../../components/ui/native-select.js";
-import type { PermissionAuditEntrySummary } from "../../types.js";
+import type { AvePermissionApi, PermissionAuditEntrySummary } from "../../types.js";
 import { useTranslation } from "../../../../i18n/react.js";
 import { t } from "../../../../i18n/runtime.js";
 
 type DecisionFilter = "all" | "allow" | "ask" | "deny" | "cancelled" | "deferred" | "mode_change" | "manifest_violation";
 
-interface VerifyResult {
-  intact: boolean;
-  totalFiles: number;
-  totalEntries: number;
-  firstBrokenFile?: string;
-  perDay: Array<{
-    file: string;
-    totalLines: number;
-    chainOk: boolean;
-    firstBrokenLineIndex?: number;
-    reason?: string;
-    sealMatch: boolean | null;
-  }>;
-}
+type VerifyResult = Extract<Awaited<ReturnType<AvePermissionApi["auditVerify"]>>, { ok: true }>;
 
 interface AuditPanelProps {
   /** When false, render nothing. Slash command toggles this. */
@@ -32,16 +19,7 @@ interface AuditPanelProps {
   /** Closer — propagates "X" button click. */
   onClose: () => void;
   /** Override fetcher for tests. Defaults to window.ave.permission.* */
-  fetcher?: {
-    show: (last: number) => Promise<
-      | { ok: true; entries: PermissionAuditEntrySummary[]; total: number; summary: { files: number; bytes: number } }
-      | { ok: false; error: string }
-    >;
-    verify: () => Promise<
-      | { ok: true; intact: boolean; totalFiles: number; totalEntries: number; firstBrokenFile?: string; perDay: VerifyResult["perDay"] }
-      | { ok: false; error: string }
-    >;
-  };
+  fetcher?: { show: AvePermissionApi["auditShow"]; verify: AvePermissionApi["auditVerify"] };
   /** Initial fetch size (default 50, max 1000). */
   initialLast?: number;
 }
@@ -56,6 +34,7 @@ export function AuditPanel({
   const [total, setTotal] = useState(0);
   const [summary, setSummary] = useState<{ files: number; bytes: number }>({ files: 0, bytes: 0 });
   const [verify, setVerify] = useState<VerifyResult | null>(null);
+  const [recentInvalidTerminalKinds, setRecentInvalidTerminalKinds] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [last, setLast] = useState(initialLast);
@@ -82,6 +61,7 @@ export function AuditPanel({
         setEntries(r.entries);
         setTotal(r.total);
         setSummary(r.summary);
+        setRecentInvalidTerminalKinds(r.invalidTerminalKinds ?? 0);
       } else {
         setError(r.error);
       }
@@ -96,8 +76,7 @@ export function AuditPanel({
     try {
       const r = await api.verify();
       if (r.ok) {
-        const { ok: _ok, ...rest } = r;
-        setVerify(rest);
+        setVerify(r);
       } else {
         setError(r.error);
       }
@@ -137,7 +116,7 @@ export function AuditPanel({
 
   if (!open) return null;
 
-  const integrityStatus = computeIntegrityStatus(verify);
+  const integrityStatus = computeIntegrityStatus(verify, recentInvalidTerminalKinds);
 
   return (
     <section
@@ -335,7 +314,15 @@ interface IntegrityStatus {
   label: string;
 }
 
-function computeIntegrityStatus(verify: VerifyResult | null): IntegrityStatus {
+function computeIntegrityStatus(verify: VerifyResult | null, recentInvalidTerminalKinds: number): IntegrityStatus {
+  const invalidTerminalKinds = Math.max(recentInvalidTerminalKinds, verify?.invalidTerminalKinds ?? 0);
+  if (invalidTerminalKinds > 0) {
+    return {
+      severity: "broken",
+      icon: "⚠",
+      label: t("auditPanel.integrityInvalidTerminalKinds", { count: invalidTerminalKinds }),
+    };
+  }
   if (verify === null) {
     return { severity: "warn", icon: "⏳", label: t("auditPanel.integrityChecking") };
   }

@@ -21,6 +21,7 @@ import {
   buildChainedEntries,
   MemorySecretStore,
   sealDayFromFile,
+  verifyChain,
 } from "../../audit/hmac-chain.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { terminalDenyKindOf } from "../../audit/audit-schema.js";
@@ -367,8 +368,8 @@ describe("dispatchPermissionSlash — subcommand routing", () => {
 });
 
 describe("readRecentAuditEntries", () => {
-  it("returns empty array when audit dir is missing", () => {
-    expect(readRecentAuditEntries(join(workDir, "missing"), 10)).toEqual([]);
+  it("returns no entries when the audit directory is missing", () => {
+    expect(readRecentAuditEntries(join(workDir, "missing"), 10)).toEqual({ entries: [] });
   });
 
   it("projects legacy and explicit terminal kinds while the signed JSONL remains verifiable", () => {
@@ -383,7 +384,7 @@ describe("readRecentAuditEntries", () => {
     const raw = `${[legacy, denied, cancelled].map((entry) => JSON.stringify(entry)).join("\n")}\n`;
     writeFileSync(file, raw);
 
-    expect(readRecentAuditEntries(workDir, 3)).toEqual([cancelled, denied, { ...legacy, terminalKind: "cancelled" }]);
+    expect(readRecentAuditEntries(workDir, 3).entries).toEqual([cancelled, denied, { ...legacy, terminalKind: "cancelled" }]);
     expect(readFileSync(file, "utf8")).toBe(raw);
     expect(verifyAllAuditFiles(workDir, secret)).toMatchObject({ intact: true, totalEntries: 3 });
   });
@@ -398,19 +399,37 @@ describe("readRecentAuditEntries", () => {
     });
   });
 
-  it("skips invalid explicit terminal kinds in unverified JSONL", () => {
+  it("reports invalid explicit terminal kinds and excludes those rows from audit show and verify", () => {
+    const secret = "aa".repeat(32);
+    const sealStore = new MemorySecretStore();
+    const file = join(workDir, "2026-05-09.permission-audit.jsonl");
     const deny = { decision: "deny", denyReasons: [{ reason: "host-shutdown", source: "tool-executor" }] };
-    const rows = [
+    const rows = buildChainedEntries(secret, [
       { ...deny, auditId: "legacy" },
       { ...deny, auditId: "null", terminalKind: null },
       { ...deny, auditId: "refused", terminalKind: "refused" },
+      { ...deny, auditId: "unknown", terminalKind: "future-kind" },
+      { ...deny, auditId: "number", terminalKind: 17 },
       { ...deny, auditId: "denied", terminalKind: "denied" },
-    ];
-    writeFileSync(join(workDir, "2026-05-09.permission-audit.jsonl"), `${rows.map((entry) => JSON.stringify(entry)).join("\n")}\n`);
-    expect(readRecentAuditEntries(workDir, 10)).toEqual([
-      { ...rows[3], terminalKind: "denied" },
-      { ...rows[0], terminalKind: "cancelled" },
     ]);
+    const lines = rows.map((entry) => JSON.stringify(entry));
+    const raw = `${lines.join("\n")}\n`;
+    writeFileSync(file, raw);
+    sealDayFromFile(secret, sealStore, file, "2026-05-09");
+    expect(verifyChain(secret, lines)).toEqual({ ok: true });
+
+    expect(dispatchPermissionAuditCommand({ verb: "show", last: 10 }, { auditDir: workDir, secret: null })).toMatchObject({
+      ok: true, total: 2, invalidTerminalKinds: 4,
+      entries: [{ ...rows[5], terminalKind: "denied" }, { ...rows[0], terminalKind: "cancelled" }],
+    });
+    expect(verifyAllAuditFiles(workDir, secret, sealStore)).toMatchObject({
+      intact: false, totalEntries: 2, invalidTerminalKinds: 4,
+      perDay: [{ totalLines: 2, result: { ok: true }, sealMatch: true }],
+    });
+    expect(dispatchPermissionAuditCommand({ verb: "verify", last: 50 }, { auditDir: workDir, secret, sealStore })).toMatchObject({
+      ok: true, intact: false, totalEntries: 2, invalidTerminalKinds: 4,
+    });
+    expect(readFileSync(file, "utf8")).toBe(raw);
   });
 
   it("returns entries newest-first across files", () => {
@@ -433,8 +452,8 @@ describe("readRecentAuditEntries", () => {
       day2.map((e) => JSON.stringify(e)).join("\n") + "\n",
     );
 
-    const result = readRecentAuditEntries(auditDir, 10);
-    expect(result.map((e) => (e as { auditId: string }).auditId)).toEqual([
+    const { entries } = readRecentAuditEntries(auditDir, 10);
+    expect(entries.map((entry) => entry.auditId)).toEqual([
       "d2-a", "d1-b", "d1-a",
     ]);
   });
@@ -452,9 +471,8 @@ describe("readRecentAuditEntries", () => {
       join(auditDir, "2026-05-09.permission-audit.jsonl"),
       day.map((e) => JSON.stringify(e)).join("\n") + "\n",
     );
-    const result = readRecentAuditEntries(auditDir, 2);
-    expect(result.length).toBe(2);
-    expect(result.map((e) => (e as { auditId: string }).auditId)).toEqual(["3", "2"]);
+    const { entries } = readRecentAuditEntries(auditDir, 2);
+    expect(entries.map((entry) => entry.auditId)).toEqual(["3", "2"]);
   });
 
   it("ignores legacy non-permission audit lines (no `decision` field)", () => {
@@ -467,13 +485,12 @@ describe("readRecentAuditEntries", () => {
         JSON.stringify({ decision: "allow", auditId: "x1", ts: "t", trustOrigin: "user-keyboard", tool: "a", source: "builtin", category: "read", directory: "/tmp", directoryAllowed: true, layer: 1, prevHash: "h" }),
       ].join("\n") + "\n",
     );
-    const result = readRecentAuditEntries(auditDir, 10);
-    expect(result.length).toBe(1);
-    expect((result[0] as { decision: string }).decision).toBe("allow");
+    const { entries } = readRecentAuditEntries(auditDir, 10);
+    expect(entries).toEqual([expect.objectContaining({ decision: "allow" })]);
   });
 });
 
-it.each([null, "refused", undefined])("rejects the explicit invalid kind %s instead of inferring it", (terminalKind) => {
+it.each([null, "refused", "future-kind", 17, undefined])("rejects the explicit invalid kind %s instead of inferring it", (terminalKind) => {
   const entry = { denyReasons: [{ reason: "host-shutdown", source: "tool-executor" }], terminalKind };
   expect(() => terminalDenyKindOf(entry as never)).toThrow("Invalid terminal deny kind");
 });

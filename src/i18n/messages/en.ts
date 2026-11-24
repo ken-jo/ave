@@ -525,6 +525,7 @@ export const en = {
   "auditPanel.integrityChainBroken": "Audit chain broken: {file}{lineHint}",
   "auditPanel.integritySealMismatch": "Daily seal mismatch: {file}",
   "auditPanel.integrityBrokenGeneric": "Audit integrity violation detected",
+  "auditPanel.integrityInvalidTerminalKinds": "Integrity error: invalid terminal kind in audit entries ({count})",
   "auditPanel.integritySealMissing": "Chain OK · Some days missing seal ({totalFiles} days / {totalEntries} entries)",
   "auditPanel.integrityOk": "Audit chain intact — {totalFiles} days / {totalEntries} entries verified",
 

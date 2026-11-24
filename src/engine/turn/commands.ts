@@ -379,16 +379,21 @@ export async function handlePermissionCommand(
         sealStore: auditLogger.getPermissionAuditSealStore() ?? undefined,
       });
       if (!result.ok) return t("be_conversationLoop.permissionAuditError", { error: result.error });
+      const integrityWarning = result.invalidTerminalKinds === undefined
+        ? []
+        : [t("auditPanel.integrityInvalidTerminalKinds", { count: result.invalidTerminalKinds })];
       if (result.verb === "verify") {
         return [
           `Audit verify: ${result.intact ? "intact" : "broken"}`,
           `files=${result.totalFiles}`,
           `entries=${result.totalEntries}`,
           ...(result.firstBrokenFile ? [`firstBrokenFile=${result.firstBrokenFile}`] : []),
+          ...integrityWarning,
         ].join("\n");
       }
       return [
         t("be_conversationLoop.permissionAuditRecent", { count: result.entries.length }),
+        ...integrityWarning,
         ...result.entries.map((entry) => JSON.stringify(entry)),
       ].join("\n");
     }
