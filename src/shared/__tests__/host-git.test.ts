@@ -192,7 +192,12 @@ describe("host git starts only where the hold is asked", () => {
   function problems(sources: ReadonlyMap<string, string>): string[] {
     const found: string[] = [];
     for (const [file, text] of sources) {
-      if (/\bisHostGitWorkspaceAvailable\b/u.test(text) && !ASKS_THE_HOLD.has(file)) found.push(`${file}: asks the hold apart from the start`);
+      // The instruction service also checks the hold before it can use a memoized verdict.
+      const outsideCache = file === "memory/project-agents-md.ts"
+        ? text.replace("isHostGitWorkspaceAvailable, ", "")
+          .replace(/(async function gitIgnores[^\n]+\n\s*)if \(!isHostGitWorkspaceAvailable\(repoRoot\)\) return false;/u, "$1")
+        : text;
+      if (/\bisHostGitWorkspaceAvailable\b/u.test(outsideCache) && !ASKS_THE_HOLD.has(file)) found.push(`${file}: asks the hold apart from the start`);
     }
     for (const [file, text] of sources) {
       if (!HOST_GIT_RESOLUTION.test(text) || file === "shared/host-git-executable.ts") continue;

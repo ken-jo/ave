@@ -715,4 +715,20 @@ describe("discoverDirectoryInstructions", () => {
     expect(gitCalls.checkIgnore.length - before).toBe(1);
     expect([...verdicts.values()]).toEqual([true]);
   });
+
+  it("uses a cached ignore verdict again only after the workspace hold is released", async () => {
+    initIgnoredBuild(project, "build/\n", "plain");
+    const opts = { gitIgnoreVerdicts: new Map<string, boolean>() };
+    const target = join("build", "x.js");
+    expect(await discoverDirectoryInstructions(project, target, new Set(), opts)).toEqual([]);
+    expect([...opts.gitIgnoreVerdicts.values()]).toEqual([true]);
+    const before = gitCalls.checkIgnore.length;
+    const release = holdSandboxGitWrites([join(project, "build")]);
+    try {
+      const layers = await discoverDirectoryInstructions(project, target, new Set(), opts);
+      expect(layers.map((layer) => layer.content)).toEqual(["generated rule"]);
+    } finally { release(); }
+    expect(await discoverDirectoryInstructions(project, target, new Set(), opts)).toEqual([]);
+    expect(gitCalls.checkIgnore).toHaveLength(before);
+  });
 });

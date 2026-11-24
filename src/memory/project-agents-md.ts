@@ -6,7 +6,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { getIsPackaged, isConfigured, isPackagedElectronProcess } from "../boot/dev-flags.js";
 import { isSensitivePath } from "../permissions/sensitive-paths.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
-import { buildHostGitArgs, spawnHostGitIfWorkspaceFree } from "../shared/host-git.js";
+import { buildHostGitArgs, isHostGitWorkspaceAvailable, spawnHostGitIfWorkspaceFree } from "../shared/host-git.js";
 import { withHostGitLaunch } from "../shared/host-git-executable.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 
@@ -228,6 +228,7 @@ export type GitIgnoreVerdicts = Map<string, boolean>;
 
 // Keep only definitive ignore verdicts for the session.
 async function gitIgnores(repoRoot: string, path: string, verdicts: GitIgnoreVerdicts | undefined): Promise<boolean> {
+  if (!isHostGitWorkspaceAvailable(repoRoot)) return false;
   const key = `${repoRoot}\0${path}`;
   const known = verdicts?.get(key);
   if (known !== undefined) return known;
