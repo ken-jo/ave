@@ -15,7 +15,9 @@ import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js"
 import { inspectShellCommand } from "../rules/literal-shell-inspection.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { holdSandboxGitWrites } from "../../shared/host-git.js";
+import { inspectGitRepositoryAsync } from "../rules/git-repository-inspection-client.js";
 
+vi.mock("../rules/git-repository-inspection-client.js", () => import("../../__tests__/support/in-process-repository-inspection.js").then((support) => support.inProcessRepositoryInspectionModule()));
 vi.mock("node:fs", { spy: true });
 vi.mock("node:child_process", { spy: true });
 vi.mock("../../shared/verified-executable.js", () => ({ resolveVerifiedExecutable: vi.fn(), resolveVerifiedExecutableAsync: vi.fn() }));
@@ -327,10 +329,7 @@ describe("asynchronous Git lookup", () => {
 
   it.each(["EACCES", "ELOOP", "ENOTDIR"])("refuses an index path whose absence cannot be proven (%s) before probing", async (code) => {
     vi.mocked(resolveVerifiedExecutableAsync).mockResolvedValue({ executable: `/verified-index-${code}/git` });
-    const stabilized = vi.mocked(fsPromises.lstat).getMockImplementation();
-    if (stabilized === undefined) throw new Error("Fixture ancestor stabilization is not installed");
-    vi.mocked(fsPromises.lstat).mockImplementation(((path: string, options?: unknown) => String(path).endsWith(".ave-readonly-index")
-      ? Promise.reject(Object.assign(new Error(code), { code })) : stabilized(path, options as never)) as typeof fsPromises.lstat);
+    vi.mocked(fsPromises.lstat).mockRejectedValueOnce(Object.assign(new Error(code), { code }));
     expect(await prepareVerifiedShellCommand({ command: "git log", dialect: "bash", cwd })).toBeUndefined();
     expect(fsPromises.lstat).toHaveBeenCalledWith(join(dirname(`/verified-index-${code}/git`), ".ave-readonly-index"));
     expect(childProcess.execFile).not.toHaveBeenCalled();
@@ -340,7 +339,7 @@ describe("asynchronous Git lookup", () => {
     vi.mocked(resolveVerifiedExecutableAsync).mockResolvedValue(null);
     expect(await prepareVerifiedShellCommand({ command: "git log", dialect, cwd })).toBeUndefined();
     expect(resolveHostGit).toHaveBeenCalledWith("verified");
-    expect(fsPromises.lstat).not.toHaveBeenCalledWith(expect.stringContaining(".ave-readonly-index"));
+    expect(fsPromises.lstat).not.toHaveBeenCalled();
     expect(childProcess.execFile).not.toHaveBeenCalled();
   });
 
@@ -370,18 +369,26 @@ describe("asynchronous Git lookup", () => {
       return candidates[0] === undefined ? null : { executable: candidates[0].executable };
     });
     expect(await prepareVerifiedShellCommand({ command: "git log", dialect, cwd }, undefined, controller.signal)).toBeUndefined();
-    expect(fsPromises.lstat).not.toHaveBeenCalledWith(expect.stringContaining(".ave-readonly-index"));
+    expect(fsPromises.lstat).not.toHaveBeenCalled();
     vi.mocked(resolveVerifiedExecutableAsync).mockImplementation(async (candidates) => candidates[0] === undefined ? null : { executable: candidates[0].executable });
     expect(await prepareVerifiedShellCommand({ command: "git log", dialect, cwd }, undefined, new AbortController().signal)).toBeDefined();
   });
 
-  it("refuses output when the post-run repository inspection rejects", async () => {
+  it.each([["rejects", () => vi.mocked(inspectGitRepositoryAsync).mockRejectedValueOnce(new Error("worker failed"))],
+    ["refuses", () => vi.mocked(inspectGitRepositoryAsync).mockResolvedValueOnce(null)]] as const)(
+    "refuses output when the post-run repository inspection %s", async (_name, arrange) => {
     const identity = { command: "git log", dialect: "bash" as const, cwd };
     const handle = await prepareVerifiedShellCommand(identity);
     expect(handle).toBeDefined();
-    vi.mocked(fsPromises.lstat).mockRejectedValueOnce(Object.assign(new Error("I/O"), { code: "EIO" }));
+    arrange();
     expect(await verifiedShellResultRefusal(handle, identity)).toBe("Read-only Git output discarded: repository metadata changed during execution.");
     expect(await verifiedShellResultRefusal(handle, identity)).toBeUndefined();
+  });
+
+  it("refuses before resolving the installation when the pre-run inspection refuses", async () => {
+    vi.mocked(inspectGitRepositoryAsync).mockResolvedValueOnce(null);
+    expect(await prepareVerifiedShellCommand({ command: "git log", dialect: "bash", cwd })).toBeUndefined();
+    expect(resolveVerifiedExecutableAsync).not.toHaveBeenCalled();
   });
 
   // Locks direct calls only: workspace availability (host-git.ts) stays a synchronous in-process check.

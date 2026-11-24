@@ -1,5 +1,5 @@
 /** One filesystem or process check with a blocking and a non-blocking form that must observe the same fact. */
-export interface SyncAsyncCheck<T = unknown> {
+interface SyncAsyncCheck<T = unknown> {
   sync(): T;
   async(): Promise<T>;
 }

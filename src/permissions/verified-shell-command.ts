@@ -11,7 +11,7 @@ import { parsePowerShellCommand, type ParsedPowerShellCommand } from "./rules/po
 import type { ParsedShellCommand } from "./rules/shell-prefix-policy.js";
 import { bindVerifiedArgvProof } from "./rules/verified-argv-authority.js";
 import { gitReadOnlyEnvironment, isSupportedGitVersion, readOnlyGitArguments } from "./rules/git-readonly-argv.js";
-import { inspectGitRepositoryAsync } from "./rules/git-repository-inputs.js";
+import { inspectGitRepositoryAsync } from "./rules/git-repository-inspection-client.js";
 import { proveVerifiedLauncherArgv } from "./rules/verified-launcher-argv.js";
 import { MAX_LITERAL_COMMAND_LENGTH } from "./rules/shell-prefix-values.js";
 import { encodedPowerShellExecutionReason } from "./rules/powershell-encoded-command.js";

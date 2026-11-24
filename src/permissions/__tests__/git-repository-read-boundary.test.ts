@@ -12,8 +12,8 @@ import { buildShellRuleApproval } from "../rules/shell-rule-approval.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
+vi.mock("../rules/git-repository-inspection-client.js", () => import("../../__tests__/support/in-process-repository-inspection.js").then((support) => support.inProcessRepositoryInspectionModule()));
 vi.mock("node:fs", { spy: true });
-vi.mock("node:fs/promises", { spy: true });
 vi.mock("node:child_process", { spy: true });
 vi.mock("../../shared/verified-executable.js", () => ({ resolveVerifiedExecutable: vi.fn(), resolveVerifiedExecutableAsync: vi.fn() }));
 vi.mock("../../shared/powershell-startup-policy.js", () => ({ isPowerShellStartupPinned: () => true, POWERSHELL_STARTUP_UNPROVEN_REASON: "startup is unproven" }));

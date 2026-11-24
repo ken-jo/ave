@@ -19,7 +19,8 @@ import { runWithAgentObservationInvocation, runWithAgentObservationTurn } from "
 import { ObservationDaemon } from "../../observation/daemon.js";
 import { TerminalObservationAdapter } from "../../observation/terminal-adapter.js";
 import type { TerminalObservationEvent } from "../../shared/agent-observation.js";
-import { inspectGitRepository, inspectGitRepositoryAsync } from "../../permissions/rules/git-repository-inputs.js";
+import { inspectGitRepository } from "../../permissions/rules/git-repository-inputs.js";
+import { inspectGitRepositoryAsync } from "../../permissions/rules/git-repository-inspection-client.js";
 import { readOnlyGitArguments, gitReadOnlyEnvironment } from "../../permissions/rules/git-readonly-argv.js";
 import * as installation from "../../shared/verified-executable.js";
 import {
@@ -28,8 +29,8 @@ import {
   preparedShellCwdProbe, preparedShellExecutableReadPaths, type PreparedShellInvocation,
 } from "../prepared-shell-invocation.js";
 
+vi.mock("../../permissions/rules/git-repository-inspection-client.js", () => import("../../__tests__/support/in-process-repository-inspection.js").then((support) => support.inProcessRepositoryInspectionModule()));
 vi.mock("node:fs", { spy: true });
-vi.mock("node:fs/promises", { spy: true });
 vi.mock("node:child_process", { spy: true });
 vi.mock("../../permissions/rules/git-repository-inputs.js", { spy: true });
 vi.mock("../../shared/powershell-executable.js", () => ({ resolveTrustedPowerShellExecutable: () => ({ executable: "/protected-fixture/pwsh", kind: "pwsh" }) }));
@@ -532,10 +533,9 @@ it.each(["bash", "powershell"] as const)("releases no checked %s output when can
     throw Object.assign(new Error("spawn ENOTDIR"), { code: "ENOTDIR" });
   });
   const controller = new AbortController();
-  const { inspectGitRepositoryAsync: inspect } = await vi.importActual<typeof import("../../permissions/rules/git-repository-inputs.js")>("../../permissions/rules/git-repository-inputs.js");
   vi.mocked(inspectGitRepositoryAsync).mockImplementationOnce(async (path) => {
     controller.abort();
-    return inspect(path);
+    return inspectGitRepository(path);
   });
   const progress = { write: vi.fn(), end: vi.fn() };
   const tool = dialect === "bash" ? new BashTool() : new PowerShellTool();

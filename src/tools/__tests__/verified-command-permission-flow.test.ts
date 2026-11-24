@@ -26,8 +26,8 @@ import { ToolRegistry } from "../registry.js";
 import { BashTool } from "../shell-tools.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
 
+vi.mock("../../permissions/rules/git-repository-inspection-client.js", () => import("../../__tests__/support/in-process-repository-inspection.js").then((support) => support.inProcessRepositoryInspectionModule()));
 vi.mock("node:fs", { spy: true });
-vi.mock("node:fs/promises", { spy: true });
 vi.mock("node:child_process", { spy: true });
 vi.mock("../../permissions/verified-shell-command.js", { spy: true });
 vi.mock("../../shared/verified-executable.js", () => ({ resolveVerifiedExecutable: vi.fn(), resolveVerifiedExecutableAsync: vi.fn() }));

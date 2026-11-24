@@ -60,6 +60,8 @@ const buildOptions = {
     ...mxcVerificationEntries(repoRoot),
     "plugin-child-main": resolve(repoRoot, "src", "plugins", "isolation", "plugin-child-main.ts"),
     "memory-map-worker": resolve(repoRoot, "src", "main", "memory-map", "worker-main.ts"),
+    // Verified shell commands inspect repository evidence in this resident worker thread.
+    "git-repository-inspection-worker": resolve(repoRoot, "src", "permissions", "rules", "git-repository-inspection-worker-main.ts"),
     "memory-map-child": resolve(repoRoot, "src", "main", "memory-map", "inference-child-main.ts"),
     "preview-document-child-main": resolve(repoRoot, "src", "tools", "preview-document-child-main.ts"),
   },
