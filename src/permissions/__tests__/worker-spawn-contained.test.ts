@@ -1,7 +1,9 @@
 // The container route for plugin workers: one holder per run, never the account grant path. A changed grant is a new
 // run; in-flight calls of the ended one are refused, never replayed.
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
+import { resolvePluginPaths } from "../../plugins/plugin-paths.js";
 import { MxcProcessCleanupError } from "../mxc-extension-errors.js";
 
 interface FakeHolder {
@@ -68,12 +70,13 @@ vi.mock("../windows-acl-grant-holder.js", () => ({
   terminateChildBestEffort: () => {},
 }));
 vi.mock("../confined-child.js", () => ({ spawnConfinedChild: () => accountRoute.spawnConfinedChild() }));
-vi.mock("../asrt-sandbox.js", () => ({
+vi.mock("../asrt-sandbox.js", async (importOriginal) => ({
   // Under a selected container plan the legacy guard refuses and the legacy gate reads off; the route may consult neither.
   assertExtensionStartAllowed: () => { if (selected) throw new Error("legacy guard consulted"); },
   isPluginWorkerConfinementActive: () => !selected,
   cleanupAsrtSandboxAfterCommand: async () => {},
   grantWindowsWorkerFilesystemAccess: () => accountRoute.grantWindowsWorkerFilesystemAccess(),
+  pluginGrantPathsBeyondOwnRoots: (await importOriginal<typeof import("../asrt-sandbox.js")>()).pluginGrantPathsBeyondOwnRoots,
 }));
 const marks = { mark: vi.fn(), unmark: vi.fn() };
 vi.mock("../sandbox-capability.js", () => ({
@@ -129,6 +132,25 @@ describe("contained plugin worker", () => {
     for (const reached of Object.values(accountRoute)) expect(reached).not.toHaveBeenCalled();
   });
 
+  it("refuses a declared grant inside another plugin's storage or at a plugin root, and admits the plugin's own", async () => {
+    const { pluginsRoot, cacheRoot } = resolvePluginPaths();
+    const start = (read: string[], write: string[]) => spawnWorker({ ...spec("D:\\work\\a"), allowReadPaths: read, allowWritePaths: write, control: "output-only-v1" });
+    for (const [read, write] of [
+      [[join(pluginsRoot, "other-plugin", "data")], []],
+      [[join(cacheRoot, "other-plugin")], []],
+      [[], [join(pluginsRoot, "other-plugin")]],
+      [[pluginsRoot], []],
+      [[dirname(pluginsRoot)], []],
+    ] as const) {
+      await expect(start([...read], [...write])).rejects.toThrow("refusing a container grant beyond the plugin's own roots");
+    }
+    expect(spawnMxcBundledHolder).not.toHaveBeenCalled();
+
+    // The refusals reserved nothing: the same identity starts with its own install and cache.
+    await start([join(pluginsRoot, "example-plugin", "dist"), join(cacheRoot, "example-plugin")], [join(pluginsRoot, "example-plugin", "data")]);
+    expect(holders).toHaveLength(1);
+  });
+
   it("ends the run on stop: in-flight calls are refused, the exit is reported, and changed grants start a new holder", async () => {
     const worker = await spawnWorker({ ...spec("D:\\work\\a"), control: "stdio-control-v1" });
     const exits: unknown[] = [];
@@ -142,6 +164,11 @@ describe("contained plugin worker", () => {
     // Still stopping: the identity is not free, so the new grants cannot start beside the old run.
     await expect(spawnWorker({ ...spec("D:\\work\\b"), control: "stdio-control-v1" })).rejects.toBeInstanceOf(WorkerAlreadyRunningError);
     expect(holders).toHaveLength(1);
+    // Drained output is not an exit: nothing is reported while termination is unverified.
+    holder(0).stdout.end();
+    holder(0).stderr.end();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(exits).toEqual([]);
 
     holder(0).finishRelease();
     await vi.waitFor(() => expect(exits).toEqual([{ code: 0, signal: null, reason: "stopped" }]));

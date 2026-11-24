@@ -7,8 +7,10 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { requireMxcCapability } from "../../__tests__/support/mxc-capability.js";
 import { configureHostResources } from "../../main/host-resources.js";
+import { admitMxcExtensionFilesystem } from "../asrt-sandbox.js";
 import { buildMxcConfinedChildRequest } from "../mxc-confined-child-request.js";
 import { mxcSupervisorEnvironment } from "../mxc-extension-process.js";
+import { rankMxcFilesystem } from "../mxc-windows.js";
 
 const RUNNER = `
 const chunks = [];
@@ -82,13 +84,20 @@ describe.runIf(process.platform === "win32")("native extension container filesys
       expect(hostFacts()).toEqual({ granted: true, outside: ["direct.txt", "grandchild.txt", "through.txt"], protected: ["keep.txt", "new.txt"], staging: true });
       reset();
 
+      // The grants come from the production chain: holder admission, ranking, then the validated request.
+      const admitted = admitMxcExtensionFilesystem(
+        { allowRead: [protectedDirectory, shellDirectory], allowWrite: [granted, staging], denyRead: [denied], denyWrite: [], denyPluginsRoot: true, pinWriteRoots: true },
+        { readRoots: [], writeRoots: [granted, staging], hostStorageRoots: [] },
+      );
+      const grants = rankMxcFilesystem(admitted.policy, existsSync);
+      expect(grants.denied).toContain(denied);
       const request = buildMxcConfinedChildRequest({
         command: shell,
         args,
         cwd: granted,
         home,
         temp,
-        grants: { readwrite: [granted, staging], readonly: [protectedDirectory, shellDirectory], denied: [denied] },
+        grants,
         baseEnv: { SystemRoot: systemRoot, PATH: join(systemRoot, "System32") },
         proxyUrl: "http://127.0.0.1:9",
       });
@@ -119,8 +128,8 @@ describe.runIf(process.platform === "win32")("native extension container filesys
       // A request the backend cannot honour (an egress relay that is not loopback) is refused, not run unconfined.
       reset();
       const refused = run(environment, { ...request, network: { ...request.network, runtimeConfig: { networkProxy: "http://192.0.2.1:8080" } } });
-      expect(refused.threw !== undefined || refused.exitCode !== 0, JSON.stringify(refused)).toBe(true);
-      expect(refused.stdout ?? "").not.toContain("GRANTED_WRITE");
+      // Refused for that reason before anything ran: no exit code, no output.
+      expect(refused).toEqual({ threw: expect.stringContaining("networkProxy must use localhost") });
       expect(hostFacts()).toEqual({ granted: false, outside: [], protected: ["keep.txt"], staging: false });
     } finally {
       rmSync(root, { recursive: true, force: true });
