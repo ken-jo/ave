@@ -1,5 +1,6 @@
 import { type BigIntStats, chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { type FileHandle, open } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { replaceStagedFile } from "../../lib/atomic-file.js";
 
@@ -15,6 +16,16 @@ import { replaceStagedFile } from "../../lib/atomic-file.js";
 
 /** `<dev>:<ino>` of what a path names, a link never followed. */
 export type NodeId = string;
+/**
+ * A folder as a record names it: its `NodeId`, and for a folder that holds an anchor, `+<name>:<ino>:<stamp>` of that file. A file
+ * system can hand a removed folder's id to the next one made, at once; what then holds that id is not the folder unless the anchor in
+ * it is the same file, made when the record was. A copy of the anchor is a new file with a later stamp, and a new folder has none.
+ */
+export type FolderId = string;
+const ANCHORED = /^(\d+:[1-9]\d*)\+([._a-z]+):([1-9]\d*:[1-9]\d*)$/u;
+/** A folder id; with `anchor`, one held by that anchor. */
+export const isFolderId = (value: unknown, anchor?: string): value is FolderId => typeof value === "string"
+  && (anchor === undefined ? /^\d+:[1-9]\d*$/u.test(value) || ANCHORED.test(value) : ANCHORED.exec(value)?.[2] === anchor);
 type OwnedFsReason = "moved" | "not-plain" | "exists" | "changed" | "no-id";
 export class OwnedFsError extends Error {
   constructor(readonly reason: OwnedFsReason, message: string) { super(message); this.name = "OwnedFsError"; }
@@ -26,6 +37,27 @@ const idOf = (stat: BigIntStats): NodeId => {
   if (stat.ino === 0n) throw new OwnedFsError("no-id", "the file system reports no file id");
   return `${stat.dev}:${stat.ino}`;
 };
+/** When a file was made, as no copy of it carries: its birth time where the file system keeps one, else its change time, which only a
+ * write, a rename, a new name or a mode change moves. The host does none of these to an anchor. */
+const stampOf = (stat: BigIntStats): bigint => stat.birthtimeNs > 0n ? stat.birthtimeNs : stat.ctimeNs;
+/** `<name>:<ino>:<stamp>` of the anchor in the folder at `path`: a regular file with one name, never a link. */
+function anchorOf(path: string, name: string): string {
+  const stat = stats(join(path, entryName(name)));
+  if (stat === undefined || !stat.isFile() || stat.nlink !== 1n) throw new OwnedFsError("changed", "the folder holds no anchor of its own");
+  idOf(stat);
+  if (stampOf(stat) === 0n) throw new OwnedFsError("no-id", "the file system reports no time a file was made");
+  return `${name}:${stat.ino}:${stampOf(stat)}`;
+}
+/** Whether the directory at `path`, as `stat` read it, is the folder `id` names. */
+function isRecorded(path: string, stat: BigIntStats, id: FolderId): boolean {
+  const anchored = ANCHORED.exec(id);
+  if (idOf(stat) !== (anchored?.[1] ?? id)) return false;
+  if (anchored === null) return true;
+  try { return anchorOf(path, anchored[2] as string) === `${anchored[2]}:${anchored[3]}`; } catch (error) {
+    if (error instanceof OwnedFsError) return false;
+    throw error;
+  }
+}
 /** A junction or any other link is no real directory. */
 const realDir = (stat: BigIntStats | undefined): stat is BigIntStats => stat?.isDirectory() === true && !stat.isSymbolicLink();
 const codeOf = (error: unknown): string | undefined => (error as NodeJS.ErrnoException).code;
@@ -119,8 +151,15 @@ export interface OwnedDir {
   ensure(name: string): OwnedDir;
   ensurePath(segments: readonly string[]): OwnedDir;
   walk(segments: readonly string[]): OwnedDir | undefined;
-  /** The folder at `name` only while it has `id`; undefined when nothing is there, `changed` for anything else. */
-  child(name: string, id: NodeId): OwnedDir | undefined;
+  /** The folder at `name` only while it is the folder `id` names; undefined when nothing is there, `changed` for anything else. */
+  child(name: string, id: FolderId): OwnedDir | undefined;
+  /** This folder's id with its anchor file `name`, read with every level still the one held; `changed` when it has none of its own. */
+  mark(name: string): FolderId;
+  /**
+   * `mark`, of an anchor that `make` creates first and is otherwise there already, given once the file system's clock has passed the
+   * anchor's stamp: a copy made at any later time then carries another, wherever its id is reused.
+   */
+  anchor(name: string, make?: "make"): Promise<FolderId>;
   /** Which entry `name` is now, a link as the link itself; undefined when nothing is there. Read with every level still the one held,
    * before and after (`moved` otherwise): a folder that took a held one's place says nothing of what the held one holds. */
   entryId(name: string, kind?: "single-link-file"): NodeId | undefined;
@@ -131,8 +170,8 @@ export interface OwnedDir {
   writeFileAtomic(name: string, data: string): void;
   /** A regular file with one name, verified by identity; undefined when nothing is there. */
   readFile(name: string): Buffer | undefined;
-  /** Removes one entry and everything below it without following a link. With `expect`, only while the entry has that id. */
-  remove(name: string, expect?: NodeId): Promise<void>;
+  /** Removes one entry and everything below it without following a link. With `expect`, only while the entry is what that id names. */
+  remove(name: string, expect?: FolderId): Promise<void>;
   removeSelfIfEmpty(): boolean;
 }
 
@@ -209,13 +248,44 @@ class Dir implements OwnedDir {
     return segments.reduce<OwnedDir | undefined>((dir, segment) => dir?.existing(segment), this);
   }
 
-  child(name: string, id: NodeId): Dir | undefined {
+  child(name: string, id: FolderId): Dir | undefined {
     const path = join(this.path, entryName(name));
     this.check();
     const stat = stats(path);
     if (stat === undefined) return undefined;
-    if (!realDir(stat) || idOf(stat) !== id) throw new OwnedFsError("changed", "the entry is not the folder that was recorded");
-    return new Dir(this, path, id);
+    if (!realDir(stat) || !isRecorded(path, stat, id)) throw new OwnedFsError("changed", "the entry is not the folder that was recorded");
+    return new Dir(this, path, idOf(stat));
+  }
+
+  mark(name: string): FolderId {
+    this.check();
+    const mark = anchorOf(this.path, name);
+    this.check();
+    return `${this.id}+${mark}`;
+  }
+
+  async anchor(name: string, make?: "make"): Promise<FolderId> {
+    if (make === "make") closeSync(this.createFile(name).fd);
+    const mark = this.mark(name);
+    const stamp = BigInt(mark.slice(mark.lastIndexOf(":") + 1));
+    // Probes go beside the folder, never into it. Each has a name of its own: a name made again soon after it went can be given the
+    // earlier file's birth time.
+    const at = this.parent ?? this;
+    for (let attempt = 0; ; attempt += 1) {
+      const probe = `${name}.${randomBytes(6).toString("hex")}`;
+      const { fd } = at.createFile(probe);
+      let later: boolean;
+      try { later = stampOf(fstatSync(fd, { bigint: true })) > stamp; } finally {
+        closeSync(fd);
+        at.own();
+        unlinkSync(join(at.path, probe));
+      }
+      if (later) break;
+      if (attempt >= 500) throw new OwnedFsError("no-id", "the file system's clock did not move past the anchor");
+      await delay(10);
+    }
+    if (this.mark(name) !== mark) throw new OwnedFsError("changed", "the anchor changed while it was made");
+    return mark;
   }
 
   entryId(name: string, kind?: "single-link-file"): NodeId | undefined {
@@ -283,7 +353,7 @@ class Dir implements OwnedDir {
     this.check();
     const stat = stats(path);
     if (stat === undefined) return;
-    if (expect !== undefined && idOf(stat) !== expect) throw new OwnedFsError("changed", "the entry is not the one that was recorded");
+    if (expect !== undefined && !isRecorded(path, stat, expect)) throw new OwnedFsError("changed", "the entry is not the one that was recorded");
     await this.removeEntry(Buffer.from(path), stat, { own: () => this.own(), check: () => this.check() });
   }
 

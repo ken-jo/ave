@@ -209,7 +209,7 @@ it("a registration's worktree path is taken only as the named folder of the run 
 it("a folder run's record names a stage's files and the output folder's only by plain relative paths", () => {
   const file = { sha256: "0".repeat(64), size: 1 };
   const record = (where: "manifest" | "out", path: unknown): unknown => ({
-    v: 2, runId: "run", itemId: 1, kind: "folder", self: "1:1", outDir: "1:2", refs: [], registrations: {}, joins: {},
+    v: 2, runId: "run", itemId: 1, kind: "folder", self: "1:1+_run.id:5:7", outDir: "1:2", refs: [], registrations: {}, joins: {},
     stages: { s1: { ready: true, attempt: 1, dir: "1:3", sealed: true, manifest: where === "manifest" ? [typeof path === "string" ? { path, ...file } : path] : [] } },
     out: where === "out" ? { [path as string]: { ...file, stageId: "s1" } } : {},
   });

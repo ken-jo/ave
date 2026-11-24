@@ -10,7 +10,7 @@ import { createHostGit, type HostGit, HostGitError } from "../host-git.js";
 import { holdDir, nodeIdOf } from "../owned-fs.js";
 import type { RunRef } from "../stage-workspace.js";
 import { createStageWorkspaceProvider, type StageWorkspaceOptions } from "../stage-workspaces.js";
-import { OUT_DIR, RUN_FILE, runRootOf } from "../workspace-layout.js";
+import { OUT_DIR, RUN_FILE, RUN_MARK, runRootOf } from "../workspace-layout.js";
 import { copySeedFiles, isInside, listSeedFiles } from "../workspace-seed.js";
 import { removeLink, removeTree, setPath, stageOf, writeUnder as write } from "./stage-fixtures.js";
 
@@ -119,7 +119,7 @@ describe("folder stage workspaces", () => {
     for (const name of ["_join", "_out", "_run.json", "..", "a/b", "S1"]) {
       expect(await without.provider.prepare(without.run, stageOf(name), 1), name).toEqual({ ok: false, code: "workspace-unavailable" });
     }
-    expect(readdirSync(without.runRoot).sort()).toEqual(["_out", "_run.json"]);
+    expect(readdirSync(without.runRoot).sort()).toEqual(["_out", "_run.id", "_run.json"]);
   });
 
   it("opens nothing while the privacy of the home is not established", async () => {
@@ -267,7 +267,7 @@ describe("folder stage workspaces", () => {
     // Named one by one, an ignored input is not copied either.
     expect(tree(await stageRoot(handle, "s2", { inputFiles: [fromProject("build/out.js", "debug.log", "notes.txt", "docs/draft.md", "src/a.ts")] }))).toEqual(["src/a.ts"]);
     // The matcher's repository is gone once the folder is seeded, and none was made in the project.
-    expect(readdirSync(handle.runRoot).sort()).toEqual(["_out", "_run.json", "s1", "s2"]);
+    expect(readdirSync(handle.runRoot).sort()).toEqual(["_out", "_run.id", "_run.json", "s1", "s2"]);
     expect(existsSync(join(project, ".git"))).toBe(false);
   });
 
@@ -329,8 +329,8 @@ describe("folder stage workspaces", () => {
     expect(watched.made.map(folder => relative(first.runRoot, folder)).filter(path => /^_ignore-[^\\/]+$/u.test(path))).toHaveLength(2);
     expect(watched.made.map(folder => relative(second.runRoot, folder)).filter(path => /^_ignore-[^\\/]+$/u.test(path))).toHaveLength(1);
     expect(watched.made.filter(folder => existsSync(folder))).toEqual([]);
-    expect(readdirSync(first.runRoot).sort()).toEqual(["_out", "_run.json", "s1", "s2"]);
-    expect(readdirSync(second.runRoot).sort()).toEqual(["_out", "_run.json", "s1"]);
+    expect(readdirSync(first.runRoot).sort()).toEqual(["_out", "_run.id", "_run.json", "s1", "s2"]);
+    expect(readdirSync(second.runRoot).sort()).toEqual(["_out", "_run.id", "_run.json", "s1"]);
   });
 
   it("git failing after the matcher's repository was made refuses the stage as unreadable and leaves no repository behind", async () => {
@@ -354,7 +354,7 @@ describe("folder stage workspaces", () => {
       expect(await handle.provider.prepare(handle.run, stageOf("s1", { inputFiles: [fromProject("**")] }), 1), name).toEqual({ ok: false, code: "seed-unreadable" });
       expect(watched.made.map(folder => relative(handle.runRoot, folder)), name).toEqual([expect.stringMatching(/^_ignore-[^\\/]+$/u)]);
       expect(there.every(Boolean), name).toBe(true);
-      expect(readdirSync(handle.runRoot).sort(), name).toEqual(["_out", "_run.json"]);
+      expect(readdirSync(handle.runRoot).sort(), name).toEqual(["_out", "_run.id", "_run.json"]);
     }
   });
 
@@ -424,7 +424,7 @@ describe("folder stage workspaces", () => {
     await expect(handle.provider.integrate(other, "j1", ["s1"])).rejects.toThrow("the run has no workspace");
     await handle.provider.release(other, "all");
     expect(read(stage, "plan.md")).toBe("the plan\n");
-    expect(readdirSync(handle.runRoot).sort()).toEqual(["_out", "_run.json", "s1"]);
+    expect(readdirSync(handle.runRoot).sort()).toEqual(["_out", "_run.id", "_run.json", "s1"]);
     // The same run id under the other item is a run of its own, in a folder of its own.
     const opened = await handle.provider.open(other, project);
     if (!opened.ok) throw new Error(opened.code);
@@ -557,7 +557,7 @@ describe("folder stage workspaces", () => {
     const handle = await start(project, { nameReader });
     expect(await handle.provider.prepare(handle.run, stageOf("s1", { inputFiles: [fromProject("**")] }), 1)).toEqual({ ok: false, code: "seed-unreadable" });
     expect(tree(project)).toEqual(before);
-    expect(readdirSync(handle.runRoot).sort()).toEqual([OUT_DIR, RUN_FILE]);
+    expect(readdirSync(handle.runRoot).sort()).toEqual([OUT_DIR, RUN_MARK, RUN_FILE]);
   });
 
   describe("a project root whose names have no letter to ask with", () => {
@@ -589,7 +589,7 @@ describe("folder stage workspaces", () => {
       const handle = await start(project, { nameReader });
       expect(await handle.provider.prepare(handle.run, stageOf("s1", { inputFiles: [fromProject("**")] }), 1)).toEqual({ ok: false, code: "seed-unreadable" });
       expect(tree(project)).toEqual(before);
-      expect(readdirSync(handle.runRoot).sort()).toEqual([OUT_DIR, RUN_FILE]);
+      expect(readdirSync(handle.runRoot).sort()).toEqual([OUT_DIR, RUN_MARK, RUN_FILE]);
     });
   });
 
@@ -887,7 +887,7 @@ describe("folder stage workspaces", () => {
     symlinkSync(outside, join(handle.runRoot, "_ignore-linked"), "junction");
 
     await createStageWorkspaceProvider({ plainCeiling: base, git: createHostGit({ env }), removable: async () => () => true }).sweep([handle.run.runId]);
-    expect(readdirSync(handle.runRoot).sort()).toEqual(["_out", "_run.json", "s1"]);
+    expect(readdirSync(handle.runRoot).sort()).toEqual(["_out", "_run.id", "_run.json", "s1"]);
     expect(tree(stage)).toEqual(["notes.txt"]);
     expect(read(handle.out, "result.md")).toBe("collected\n");
     expect(read(outside, "keep.md")).toBe("not the run's\n");
@@ -919,7 +919,7 @@ describe("folder stage workspaces", () => {
     await expect(restarted.discard(new Map())).rejects.toThrow("the stores cannot be read");
     reads = 0;
     await restarted.sweep([]);
-    expect(readdirSync(handle.runRoot).sort()).toEqual(["_out", "_run.json"]);
+    expect(readdirSync(handle.runRoot).sort()).toEqual(["_out", "_run.id", "_run.json"]);
     expect(read(handle.out, "result.md")).toBe("collected\n");
   });
 
@@ -957,7 +957,7 @@ describe("folder stage workspaces", () => {
       const restarted = createStageWorkspaceProvider({ plainCeiling: base, git: createHostGit({ env }), removable: async () => () => true });
       await restarted.discard(new Map());
       await restarted.sweep([]);
-      expect(readdirSync(handle.runRoot).sort(), name).toEqual(["_out", "_run.json", "s1"]);
+      expect(readdirSync(handle.runRoot).sort(), name).toEqual(["_out", "_run.id", "_run.json", "s1"]);
       expect(read(handle.out, "result.md"), name).toBe("collected\n");
       expect(await restarted.prepare(handle.run, stageOf("s2"), 1), name).toEqual({ ok: false, code: "workspace-unavailable" });
     }
@@ -976,9 +976,30 @@ describe("folder stage workspaces", () => {
     const restarted = createStageWorkspaceProvider({ plainCeiling: base, git: createHostGit({ env }), removable: async () => () => true });
     await restarted.discard(new Map());
     await restarted.sweep([]);
-    expect(readdirSync(handle.runRoot).sort()).toEqual(["_out", "_run.json"]);
+    expect(readdirSync(handle.runRoot).sort()).toEqual(["_out", "_run.id", "_run.json"]);
     expect(read(handle.out, "result.md")).toBe("collected\n");
     expect(await restarted.prepare(handle.run, stageOf("s1"), 1)).toEqual({ ok: false, code: "workspace-unavailable" });
+    rmSync(handle.runRoot, { recursive: true });
+  });
+
+  it("a run folder that is still the same directory but holds copies of its entries is no record", async () => {
+    const handle = await start(project);
+    write(handle.out, "result.md", "collected\n");
+    // As where a removed folder's id is handed to the next one made: the directory keeps its id, and what is in it is a copy.
+    const id = diskId(handle.runRoot);
+    const away = join(base, "entries-away");
+    mkdirSync(away);
+    for (const name of readdirSync(handle.runRoot)) {
+      cpSync(join(handle.runRoot, name), join(away, name), { recursive: true });
+      rmSync(join(handle.runRoot, name), { recursive: true });
+      cpSync(join(away, name), join(handle.runRoot, name), { recursive: true });
+    }
+    expect(diskId(handle.runRoot)).toBe(id);
+    const restarted = createStageWorkspaceProvider({ plainCeiling: base, git: createHostGit({ env }), removable: async () => () => true });
+    expect(await restarted.prepare(handle.run, stageOf("s1"), 1)).toEqual({ ok: false, code: "workspace-unavailable" });
+    await restarted.sweep([]);
+    expect(read(handle.out, "result.md")).toBe("collected\n");
+    expect(readdirSync(handle.runRoot).sort()).toEqual(readdirSync(away).sort());
     rmSync(handle.runRoot, { recursive: true });
   });
 
@@ -1044,7 +1065,7 @@ describe("folder stage workspaces", () => {
     linkSync(victim, join(handle.runRoot, `${RUN_FILE}.tmp`));
     expect(tree(await stageRoot(handle, "s1", { inputFiles: [fromProject("notes.txt")] }))).toEqual(["notes.txt"]);
     expect(readFileSync(victim, "utf8")).toBe("outside\n");
-    expect(readdirSync(handle.runRoot).sort()).toEqual(["_out", "_run.json", "s1"]);
+    expect(readdirSync(handle.runRoot).sort()).toEqual(["_out", "_run.id", "_run.json", "s1"]);
   });
 
   it("a run or project folder replaced by a link after it was listed is not cleaned through", async () => {
@@ -1077,7 +1098,7 @@ describe("folder stage workspaces", () => {
       await restarted.sweep([]);
       if (swapped === undefined) throw new Error("no folder was swapped");
       const kept = level === "run" ? restored : join(restored, relative(dirname(swapped.runRoot), swapped.runRoot));
-      expect(readdirSync(kept).sort(), level).toEqual(["_out", "_run.json", "s1"]);
+      expect(readdirSync(kept).sort(), level).toEqual(["_out", "_run.id", "_run.json", "s1"]);
       expect(read(join(kept, "_out"), "result.md"), level).toBe("collected\n");
       // The run that was not swapped went as usual.
       expect(handles.filter(handle => handle !== swapped).map(handle => existsSync(handle.runRoot)), level).toEqual([false]);

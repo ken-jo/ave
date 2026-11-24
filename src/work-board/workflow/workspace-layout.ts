@@ -7,6 +7,8 @@ export const WORKTREES_DIR = "worktrees";
 export const JOIN_DIR = "_join";
 export const OUT_DIR = "_out";
 export const RUN_FILE = "_run.json";
+/** The run folder's anchor: an empty file made with the folder and never changed, by which the record knows the folder is still the one it was written in. */
+export const RUN_MARK = "_run.id";
 /** `_ignore-<random>`: an empty repository git's ignore matcher needs for a plain folder; one per seeding, there only while it runs. */
 export const IGNORE_PREFIX = "_ignore-";
 /** A matcher folder by its name, `_ignore` included: the one name an earlier build used, which a home carried over may still hold. */

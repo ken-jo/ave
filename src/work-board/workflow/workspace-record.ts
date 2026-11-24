@@ -1,8 +1,8 @@
 import { realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { isStageId } from "../template-graph.js";
-import { type NodeId, realDirId } from "./owned-fs.js";
-import { JOIN_DIR, runBranch, runRootOf, stageDirName } from "./workspace-layout.js";
+import { type FolderId, isFolderId, type NodeId, realDirId } from "./owned-fs.js";
+import { JOIN_DIR, RUN_MARK, runBranch, runRootOf, stageDirName } from "./workspace-layout.js";
 
 export interface OutputFile { path: string; sha256: string; size: number }
 
@@ -18,8 +18,8 @@ export interface StageEntry {
   /** False while the folder is being made; such a folder is made again. */
   ready: boolean;
   attempt: number;
-  /** Which directory the stage folder is, written right after the host made it. */
-  dir?: NodeId;
+  /** Which directory the stage folder is, written right after the host made it; for a ready git stage, held by its worktree link file too. */
+  dir?: FolderId;
   /** Git: the commit the worktree started from, and the worktree link file as the host wrote it. */
   base?: string;
   link?: string;
@@ -41,7 +41,8 @@ export interface WorkspaceRecord {
   runId: string;
   itemId: number;
   kind: "git" | "folder";
-  self: NodeId;
+  /** The run folder, held by its anchor. */
+  self: FolderId;
   /** The canonical project root. */
   project?: { root: string; id: NodeId };
   /** Git: the repository's common directory. */
@@ -54,8 +55,9 @@ export interface WorkspaceRecord {
   refs: { name: string; oid: string }[];
   /** By `_join` or stage id. */
   registrations: Record<string, Registration>;
-  joinDir?: NodeId;
-  outDir?: NodeId;
+  /** Once the integration worktree is made, held by its worktree link file too. */
+  joinDir?: FolderId;
+  outDir?: FolderId;
   stages: Record<string, StageEntry>;
   /** Git: the seal commit a host merge is in the middle of. */
   merging?: string;
@@ -85,10 +87,10 @@ const located = (value: unknown, path: string): boolean => isObject(value) && ab
 /** The shape alone: every field a later call relies on, and no field the record's kind does not carry. */
 export function isWorkspaceRecord(value: unknown): value is WorkspaceRecord {
   if (!isObject(value) || value.v !== 2 || typeof value.runId !== "string" || value.runId === "" || !Number.isInteger(value.itemId)) return false;
-  if ((value.kind !== "git" && value.kind !== "folder") || !isNodeId(value.self)) return false;
+  if ((value.kind !== "git" && value.kind !== "folder") || !isFolderId(value.self, RUN_MARK)) return false;
   if (!optional(value.project, project => located(project, "root")) || !optional(value.repo, repo => located(repo, "gitDir"))) return false;
   if (![value.branch, value.baseCommit].every(field => optional(field, text)) || !optional(value.merging, commit) || !optional(value.ignoreRules, flag => typeof flag === "boolean")) return false;
-  if (!optional(value.joinDir, isNodeId) || !optional(value.outDir, isNodeId)) return false;
+  if (!optional(value.joinDir, isFolderId) || !optional(value.outDir, isFolderId)) return false;
   if (!Array.isArray(value.refs) || !isObject(value.registrations) || !isObject(value.stages) || !isObject(value.joins) || !isObject(value.out)) return false;
   const given = (...fields: unknown[]): boolean => fields.some(field => field !== undefined);
   if (value.kind === "git") {
@@ -98,7 +100,7 @@ export function isWorkspaceRecord(value: unknown): value is WorkspaceRecord {
   if (!value.refs.every(ref => isObject(ref) && text(ref.name) && text(ref.oid))) return false;
   if (!Object.entries(value.registrations).every(([key, entry]) => (key === JOIN_DIR || isStageId(key)) && located(entry, "admin") && isObject(entry) && absolute(entry.gitdir))) return false;
   return Object.entries(value.stages).every(([id, entry]) => isStageId(id) && isObject(entry) && typeof entry.ready === "boolean" && Number.isInteger(entry.attempt)
-    && optional(entry.dir, isNodeId) && (entry.ready !== true || entry.dir !== undefined) && optional(entry.base, commit) && optional(entry.sealCommit, commit)
+    && optional(entry.dir, isFolderId) && (entry.ready !== true || entry.dir !== undefined) && (value.kind !== "git" || entry.ready !== true || isFolderId(entry.dir, ".git")) && optional(entry.base, commit) && optional(entry.sealCommit, commit)
     && optional(entry.manifest, manifest => Array.isArray(manifest) && manifest.every(item => isObject(item) && isRecordFilePath(item.path))));
 }
 
@@ -170,11 +172,11 @@ export function vetRecordPath(kind: RecordPathKind | "worktree", text: string, a
 
 /**
  * Whether a record of the right shape is the one `open` wrote into this very folder: the folder is the directory the record names as
- * itself, at the one path its run, item and project give, and what it says of the repository is what `open` writes for that run. A
+ * itself, by its anchor too, at the one path its run, item and project give, and what it says of the repository is what `open` writes for that run. A
  * record copied or restored anywhere, or edited to name something else, is no record: it directs nothing.
  */
-export function recordFits(home: string, run: { path: string; id: NodeId }, file: WorkspaceRecord): boolean {
-  if (file.self !== run.id) return false;
+export function recordFits(home: string, run: { path: string; id: NodeId; self: FolderId }, file: WorkspaceRecord): boolean {
+  if (file.self !== run.self) return false;
   const root = file.project?.root;
   if (!samePath(run.path, runRootOf(home, root === undefined ? undefined : process.platform === "win32" ? root.toLowerCase() : root, file.itemId, file.runId))) return false;
   if (file.kind === "git") {

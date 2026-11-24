@@ -9,10 +9,10 @@ import type { TemplateStage } from "../../shared/workflow-template-types.js";
 import { isStageId } from "../template-graph.js";
 import { type NameReader, plainFolderIgnore, projectFoldsCase } from "./folder-ignore.js";
 import { createHostGit, type HostGit, HostGitError } from "./host-git.js";
-import { holdDir, type NodeId, type OwnedDir, OwnedFsError, realDirId, realWithin, type SourceRoot } from "./owned-fs.js";
+import { type FolderId, holdDir, type NodeId, type OwnedDir, OwnedFsError, realDirId, realWithin, type SourceRoot } from "./owned-fs.js";
 import type { JoinConflict } from "./shipped-shapes.js";
 import type { RemovedRunProject, RunRef, StageWorkspaceProvider, WORKSPACE_REFUSALS } from "./stage-workspace.js";
-import { IGNORE_PREFIX, isIgnoreFolder, JOIN_DIR, OUT_DIR, RUN_FILE, runBranch, runRootOf, runSlug, stageDirName, WORKTREES_DIR } from "./workspace-layout.js";
+import { IGNORE_PREFIX, isIgnoreFolder, JOIN_DIR, OUT_DIR, RUN_FILE, RUN_MARK, runBranch, runRootOf, runSlug, stageDirName, WORKTREES_DIR } from "./workspace-layout.js";
 import { isRecordFilePath, isWorkspaceRecord, type LiveRepo, type OutputFile, ownerOf, recordFits, type Registration, runFolderOf, type StageEntry, samePath, vetRecordPath, type WorkspaceRecord } from "./workspace-record.js";
 import { copySeedFiles, hashSeedFile, listSeedFiles, MAX_SEED_BYTES, MAX_SEED_FILES, type SeedRules } from "./workspace-seed.js";
 
@@ -100,7 +100,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       const text = run.readFile(RUN_FILE);
       if (text === undefined) return null;
       const file: unknown = JSON.parse(EXACT_TEXT.decode(text));
-      return isWorkspaceRecord(file) && recordFits(aveHome(), { path: runRoot, id: run.id }, file) ? file : null;
+      return isWorkspaceRecord(file) && recordFits(aveHome(), { path: runRoot, id: run.id, self: run.mark(RUN_MARK) }, file) ? file : null;
     } catch {
       return null;
     }
@@ -206,8 +206,14 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     const own = runFolderOf(at.run, key, registration.gitdir);
     if (own === undefined) throw new OwnedFsError("changed", "the registration points outside the run's folder");
     // Asked of the held run folder: one that took its place would show the folder gone while it is still there.
-    const folder = at.run.entryId(basename(own));
-    if (folder !== undefined && folder !== (key === JOIN_DIR ? at.file.joinDir : at.file.stages[key]?.dir)) throw new OwnedFsError("changed", "the registration points at a folder the run did not make");
+    const recorded = key === JOIN_DIR ? at.file.joinDir : at.file.stages[key]?.dir;
+    if (at.run.entryId(basename(own)) !== undefined) {
+      let made = false;
+      try { made = recorded !== undefined && at.run.child(basename(own), recorded) !== undefined; } catch (error) {
+        if (!(error instanceof OwnedFsError) || error.reason !== "changed") throw error;
+      }
+      if (!made) throw new OwnedFsError("changed", "the registration points at a folder the run did not make");
+    }
     if (worktrees.entryId(name) === undefined) return undefined;
     const text = exactText(worktrees.child(name, registration.id)?.readFile("gitdir"));
     if (text === undefined || !samePath(resolve(admin, gitdirOf(text)), registration.gitdir)) throw new OwnedFsError("changed", "the registration no longer points at the run's folder");
@@ -482,8 +488,13 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     } catch {
       return refused("home-boundary-unverified");
     }
+    let self: FolderId;
+    try { self = await chain.run.anchor(RUN_MARK, "make"); } catch {
+      await chain.project.remove(basename(runRoot), chain.run.id).catch(() => undefined);
+      return refused("workspace-unavailable");
+    }
     const file: WorkspaceRecord = {
-      v: 2, runId: run.runId, itemId: run.itemId, kind: gitRun !== undefined ? "git" : "folder", self: chain.run.id,
+      v: 2, runId: run.runId, itemId: run.itemId, kind: gitRun !== undefined ? "git" : "folder", self,
       ...(project !== undefined ? { project } : {}),
       ...(gitRun !== undefined ? { repo: gitRun.repo, branch: gitRun.branch, baseCommit: gitRun.baseCommit } : ignoreRules ? { ignoreRules: true } : {}),
       refs: [], registrations: {}, stages: {}, joins: {}, out: {},
@@ -519,6 +530,8 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       await checkOut(at, JOIN_DIR, joined, gitRun.drivers.requiredFilters);
       joined.check();
       if (answered(["symbolic-ref"], await gitIn(at, JOIN_DIR, joined)(["symbolic-ref", "-q", "HEAD"])).trim() !== ref) throw new Error("the integration worktree is not on the run's branch");
+      file.joinDir = await joined.anchor(".git");
+      writeRunFile(at, file);
       roots.set(basename(runRoot), runRoot);
       return { ok: true, workspace: { kind: "git", runRoot, branch, baseCommit } };
     } catch {
@@ -576,7 +589,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
       const link = exactText(held.readFile(".git"));
       if (link === undefined) throw new Error("the stage folder has no worktree link");
       const entry = file.stages[stage.id];
-      if (entry) Object.assign(entry, { ready: true, base: head, link });
+      if (entry) Object.assign(entry, { ready: true, base: head, link, dir: await held.anchor(".git") });
       writeRunFile(at, file);
       return null;
     } catch {
@@ -1016,6 +1029,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     }
     await at.run.remove(`${RUN_FILE}.tmp`);
     await at.run.remove(RUN_FILE);
+    await at.run.remove(RUN_MARK);
     // Only empty folders go from here on: the run folder, then the project folder while the levels above it are still the same.
     try {
       if (at.run.removeSelfIfEmpty()) at.project.removeSelfIfEmpty();
