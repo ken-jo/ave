@@ -29,6 +29,7 @@ import {
   type WorkerStdioControl,
 } from "./worker-stdio-control.js";
 import { buildSafeChildEnv } from "../tools/safe-env.js";
+import { assertHostProgramNotRelative, resolveHostProgram } from "../shared/host-program-path.js";
 import { spawnConfinedChild } from "./confined-child.js";
 import {
   assertManagedChildProcessAdmissionOpen,
@@ -237,6 +238,7 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
     throw new Error(`[worker-spawn] worker ${safePlugin}/${safeWorker} may not set ${WORKER_STATE_DIR_ENV}; the host names the state directory`);
   }
   const label = `worker:${safePlugin}:${safeWorker}`;
+  assertHostProgramNotRelative(spec.command);
   const args = [...(spec.args ?? [])];
 
   // Secret-stripped base env (Least Privilege), shared with other child process spawners so Windows runtime variables stay complete without forwarding provider/API-key secrets.
@@ -248,7 +250,8 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
   // Gate OFF → plain unwrapped spawn
   if (!isPluginWorkerConfinementActive()) {
     assertManagedChildProcessAdmissionOpen(`worker:${safePlugin}:${safeWorker}`);
-    const child = spawn(spec.command, args, {
+    // A bare name resolves on PATH only, never in the inherited host cwd.
+    const child = spawn(resolveHostProgram(spec.command, baseEnv), args, {
       stdio: WORKER_STDIO,
       shell: false,
       windowsHide: true,
@@ -393,8 +396,10 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
     }
   }
 
+  let command: string;
   let sandboxHome: ReturnType<typeof createSandboxProcessHome>;
   try {
+    command = resolveHostProgram(spec.command, baseEnv);
     sandboxHome = createSandboxProcessHome();
   } catch (err) {
     releaseWorkerReservation();
@@ -417,7 +422,7 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
   try {
     // Assemble the command DEFENSIVELY: shell-quote the binary + every arg so a path with spaces/metacharacters cannot mis-split. ASRT runs this branch under a POSIX shell (mac/linux). The per-command wrap carries ONLY the filesystem jail (the `--bind`).
     ({ child } = await spawnConfinedChild({
-      command: spec.command,
+      command,
       args,
       label: `worker:${safePlugin}:${safeWorker}:asrt`,
       egressOwner: { kind: "worker", role: "worker", pluginId: spec.pluginId, instanceId: spec.workerId },

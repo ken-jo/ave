@@ -1,6 +1,7 @@
 // Per-command deny arrays replace the shared boot floor, even when empty; this primitive always restates it so children cannot regain secret reads. Callers provide allow paths only.
 import { spawn, type ChildProcess, type SpawnOptions, type StdioOptions } from "node:child_process";
 import { assertSrtWinSpawnIntegrity } from "./srt-win-integrity.js";
+import { resolveHostProgram } from "../shared/host-program-path.js";
 import { win32SystemBinary } from "../shared/windows-system-path.js";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -131,6 +132,7 @@ export interface ConfinedChildSpec {
   readonly refreshStillValid?: () => Promise<void>;
   // Called the instant the wrap succeeds, BEFORE the spawn. The wrap increments ASRT per-command state (the Linux active-sandbox count and proxy refcount). From that moment a later failure must decrement it, and only the caller knows how its own cleanup is arranged — so this is where the caller records that the wrap happened.
   readonly onWrapped?: () => void;
+  readonly onSpawn?: (child: ChildProcess) => void;
   // The child's standard streams. Defaults to `["ignore", "pipe", "pipe"]`, so a caller with no use for stdin does not hand an idle descriptor into a confined process. Both callers pipe stdin today, for different reasons: the JS plugin child is a JSON-RPC server whose pipes the host owns, and the plugin worker's stdin is the host's liveness pipe (see `worker-spawn.ts`) — it carries no bytes and closes only when the host process is gone.
   readonly stdio?: StdioOptions;
   // Windows direct children require exact cmd flags with delayed expansion off; checked tokens are not escaped. Refuse sandboxed spawns without this or a relay: the default inner shell loses stdin/env/exit status and may not wait for GUI children. Other platforms/unwrapped paths ignore this mode.
@@ -448,6 +450,7 @@ export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<Confi
     }
   };
   const noteSpawn = (running: ChildProcess): void => {
+    spec.onSpawn?.(running);
     if (egress === undefined) return;
     if (process.platform !== "win32" && running.pid !== undefined) egress.noteProcessGroup(running.pid);
     running.once("exit", () => egress.release());
@@ -458,13 +461,16 @@ export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<Confi
     if (spec.refreshStillValid) await spec.refreshStillValid();
     assertStillValid();
     if (confinement !== "unconfined") assertSrtWinSpawnIntegrity(executable);
+    const env = composeConfinedEnv(spec.baseEnv, wrappedEnv, spec.extraEnv ?? {});
+    // An unconfined child is a plain host spawn, so a bare name resolves on PATH only, never in a current directory.
+    const program = confinement === "unconfined" ? resolveHostProgram(executable, env) : executable;
     const options: SpawnOptions = {
       stdio,
       shell: false,
       windowsHide: true,
       // A wrapped child starts its own process session, so the sandbox profile's refusal to read other processes' arguments and environment (the carried ASRT patch) covers this process group too: Seatbelt only refuses it across sessions.
       ...(egress !== undefined && process.platform !== "win32" ? { detached: true } : {}),
-      env: composeConfinedEnv(spec.baseEnv, wrappedEnv, spec.extraEnv ?? {}),
+      env,
       // On the relay the program's directory also travels in its request; srt-win itself still starts in it.
       ...(spec.cwd !== undefined ? { cwd: spec.cwd } : {}),
     };
@@ -472,9 +478,9 @@ export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<Confi
       if (confinement !== "linux-bubblewrap" && confinement !== "macos-sandbox") {
         throw new Error(`[confined-child] ${spec.label}: process group launch requires POSIX confinement`);
       }
-      child = await spawnGatedManagedProcess(executable, args, options, { label: spec.label, onSpawn: noteSpawn, assertStillValid });
+      child = await spawnGatedManagedProcess(program, args, options, { label: spec.label, onSpawn: noteSpawn, assertStillValid });
     } else {
-      child = spawn(executable, args, options);
+      child = spawn(program, args, options);
       noteSpawn(child);
       trackManagedChildProcess(child, { label: spec.label, killProcessGroup: egress !== undefined && process.platform !== "win32" });
     }

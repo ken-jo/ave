@@ -4,13 +4,14 @@ import { execFile } from "node:child_process";
 import { isIP } from "node:net";
 import { selectAnswers, type AddressPolicy } from "../../core/network-guard.js";
 import { MarketplaceError } from "../errors.js";
+import { resolveHostProgram } from "../../shared/host-program-path.js";
 import type { NormalizedSourceUrl } from "../net/source-url.js";
 
 export type SshConfigReader = (args: readonly string[], env: Readonly<Record<string, string>>) => Promise<string>;
 
 export const readSshConfig: SshConfigReader = (args, env) =>
   new Promise<string>((resolve, reject) => {
-    execFile("ssh", [...args], { env: { ...env }, windowsHide: true, timeout: 10_000, maxBuffer: 1024 * 1024 }, (error, stdout) => {
+    execFile(resolveHostProgram("ssh", env), [...args], { env: { ...env }, windowsHide: true, timeout: 10_000, maxBuffer: 1024 * 1024 }, (error, stdout) => {
       if (error) reject(error);
       else resolve(String(stdout));
     });
