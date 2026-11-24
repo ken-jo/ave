@@ -2,7 +2,8 @@ vi.mock("../../shared/windows-path-facts.js", async original => (await import(".
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
 
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { ChildProcess } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { egressInvocationOwner } from "../../permissions/egress-invocations.js";
 import { join } from "node:path";
@@ -17,16 +18,35 @@ let admissionOpen = true;
 const wrap = vi.fn<(cmdline: string, options?: unknown) => Promise<{ argv: string[]; env: NodeJS.ProcessEnv }>>();
 vi.mock("../../main/managed-child-processes.js", async (original) => {
   const real = await original<typeof import("../../main/managed-child-processes.js")>();
-  // Simulating the hook platform cannot create a native process group.
-  const trackManagedChildProcess: typeof real.trackManagedChildProcess = (child, options) =>
-    real.trackManagedChildProcess(child, HOST_PLATFORM === "win32" ? { ...options, killProcessGroup: false } : options);
   return {
     ...real,
+    createManagedResources: vi.fn(real.createManagedResources),
+    abandonManagedLaunch: vi.fn(real.abandonManagedLaunch),
     assertManagedChildProcessAdmissionOpen: (label: string) => {
       if (!admissionOpen) throw new Error("hook admission closed");
       return real.assertManagedChildProcessAdmissionOpen(label);
     },
-    trackManagedChildProcess,
+    spawnManaged: (...args: Parameters<typeof real.spawnManaged>) => {
+      if (HOST_PLATFORM !== "win32" || process.platform === "win32") return real.spawnManaged(...args);
+      const [command, argv, options, track, onSpawn] = args;
+      return real.spawnManaged(command, argv, { ...options, detached: false }, { ...track, killProcessGroup: false }, onSpawn);
+    },
+    observeManagedProcessGroup: (...args: Parameters<typeof real.observeManagedProcessGroup>) => {
+      if (HOST_PLATFORM !== "win32") return real.observeManagedProcessGroup(...args);
+      // A Windows host has no POSIX groups: the simulated group is its leader, gone once it has exited.
+      const [child] = args;
+      const group = real.observeManagedProcessGroup(...args);
+      return { ...group, confirmExit: async (reason?: string) => {
+        const kill = process.kill.bind(process);
+        const leader = vi.spyOn(process, "kill").mockImplementation(((pid: number, signal?: string | number) => {
+          if (child.pid === undefined || pid !== -child.pid) return kill(pid, signal);
+          if (signal !== 0) { child.kill(); return true; }
+          if (child.exitCode !== null || child.signalCode !== null) throw Object.assign(new Error("ESRCH"), { code: "ESRCH" });
+          return true;
+        }) as typeof process.kill);
+        try { return await group.confirmExit(reason); } finally { leader.mockRestore(); }
+      } };
+    },
   };
 });
 vi.mock("../../permissions/asrt-sandbox.js", async (original) => {
@@ -65,11 +85,15 @@ vi.mock("../../sandbox/wrap-bundled-command.js", async (original) => {
     child.stdout.pipe(stdout);
     Object.defineProperty(child, "stdin", { value: null });
     Object.defineProperty(child, "stdout", { value: null });
-    return { child, stdin, stdout, releaseHold: releaseHoldMock };
+    const { createManagedRelayResources, observeManagedWindowsRelayExit } = await import("../../main/managed-child-processes.js");
+    return { child, stdin, stdout, exit: observeManagedWindowsRelayExit(child, createManagedRelayResources()), releaseHold: releaseHoldMock };
   } };
 });
 
+import { resolveHostProgram } from "../../shared/host-program-path.js";
 import { runOneHookScript } from "../script-hook-runner.js";
+import { abandonManagedLaunch, createManagedResources, observeManagedProcessGroup, releaseManagedResources } from "../../main/managed-child-processes.js";
+import { wrapManagedBundledCommand } from "../../sandbox/wrap-bundled-command.js";
 import { appOwnedSandboxPrivateRoots, cleanupAsrtSandboxAfterCommand, type SandboxTempPrincipal } from "../../permissions/asrt-sandbox.js";
 import {
   __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, setActiveSandboxCapability, setShellSandboxRequestedAtBoot,
@@ -94,7 +118,7 @@ function activateShellSandbox(): void {
     confines: { filesystem: true, process: true, network: true } });
 }
 
-afterEach(() => { __resetSandboxRequestedAtBootForTest(); __resetActiveSandboxCapabilityForTest(); sandboxActive = false; admissionOpen = true; wrap.mockReset(); vi.restoreAllMocks(); windowsSpawns.length = 0; releaseHoldMock.mockReset(); failWindowsSpawn = undefined; failWrappedEnv = undefined; });
+afterEach(() => { vi.mocked(cleanupAsrtSandboxAfterCommand).mockReset(); __resetSandboxRequestedAtBootForTest(); __resetActiveSandboxCapabilityForTest(); sandboxActive = false; admissionOpen = true; wrap.mockReset(); vi.restoreAllMocks(); windowsSpawns.length = 0; releaseHoldMock.mockReset(); failWindowsSpawn = undefined; failWrappedEnv = undefined; });
 afterAll(async () => { await cleanupTmpDir(root); });
 
 describe("bundled hook runner", () => {
@@ -161,11 +185,26 @@ describe("bundled hook runner", () => {
   it("does not wrap a user hook when ASRT runs only for plugin workers", async () => {
     writeFileSync(script, "process.stdout.write(JSON.stringify({action:'allow',reason:'unwrapped user hook'}))");
     sandboxActive = true;
-    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
     const { confinement: _confinement, ...userHook } = runnable();
-    const result = await runOneHookScript(userHook, payload, { cwd: dataDir });
+    // The platform is simulated, so the plain spawn gets an absolute program instead of a host PATH lookup.
+    const node = resolveHostProgram("node");
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const result = await runOneHookScript({ ...userHook, command: [node, script] }, payload, { cwd: dataDir });
     expect(result.decision, result.reason).toBe("allow");
     expect(wrap).not.toHaveBeenCalled();
+  });
+
+  it("creates and abandons no managed handle on the direct Windows hook path", async () => {
+    writeFileSync(script, "process.stdout.write(JSON.stringify({action:'allow',reason:'direct windows hook'}))");
+    const node = resolveHostProgram("node");
+    vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    vi.mocked(createManagedResources).mockClear();
+    vi.mocked(abandonManagedLaunch).mockClear();
+    const { confinement: _confinement, ...userHook } = runnable();
+    const result = await runOneHookScript({ ...userHook, command: [node, script] }, payload, { cwd: dataDir });
+    expect(result.decision, result.reason).toBe("allow");
+    expect(createManagedResources).not.toHaveBeenCalled();
+    expect(abandonManagedLaunch).not.toHaveBeenCalled();
   });
 
   it("spawns the script with the sealed cwd, scoped env, and stdin envelope", async () => {
@@ -196,6 +235,48 @@ process.stdin.on('end', () => process.stdout.write(JSON.stringify({action:'allow
     const token = (wrap.mock.calls[0]![1] as { commandId: string }).commandId;
     expect(egressInvocationOwner(token)).toBeUndefined();
     expect(cleanupAsrtSandboxAfterCommand).toHaveBeenCalledOnce();
+  });
+
+  it.each([["pre", "deny"], ["UserPromptSubmit", "allow"], ["SessionStart", "allow"]] as const)(
+    "keeps the %s hook's own verdict and removes its HOME when ASRT cleanup rejects after a confirmed exit", async (hookType, action) => {
+      writeFileSync(script, `process.stdout.write(JSON.stringify({action:'${action}',reason:'home='+process.env.HOME}))`);
+      vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+      activateShellSandbox();
+      wrap.mockResolvedValueOnce({ argv: ["node", script], env: {} });
+      vi.mocked(cleanupAsrtSandboxAfterCommand).mockRejectedValueOnce(new Error("mount cleanup failed"));
+      const { confinement: _confinement, ...userHook } = runnable();
+      const result = await runOneHookScript({ ...userHook, hookType }, { ...payload, hookType, event: hookType, inputText: "prompt" } as ScriptHookStdin, { cwd: dataDir });
+      expect(result.decision, result.reason).toBe(action);
+      expect(result.hookType).toBe(hookType);
+      const home = result.reason.replace(/^home=/u, "");
+      expect(home).toContain("sandbox");
+      expect(existsSync(home)).toBe(false);
+    });
+
+  it("runs the rest of a wrapped handle's release past a rejected ASRT cleanup and retries only that step", async () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    activateShellSandbox();
+    wrap.mockResolvedValueOnce({ argv: ["node", script], env: {} });
+    const cleanup = vi.mocked(cleanupAsrtSandboxAfterCommand);
+    cleanup.mockClear();
+    cleanup.mockRejectedValueOnce(new Error("mount cleanup failed"));
+    const resources = createManagedResources();
+    const wrapped = await wrapManagedBundledCommand({ command: "node", args: [script], resources, allowWrite: [dataDir], ownPluginReads: [],
+      tempPrincipal: { kind: "hook", id: "release-retry" }, egressOwner: { kind: "worker", role: "hook", pluginId: undefined, instanceId: "release-retry" } });
+    const [, options] = wrap.mock.calls[0] ?? [];
+    const token = (options as { commandId: string }).commandId;
+    const child = new ChildProcess();
+    Object.defineProperty(child, "pid", { value: undefined });
+    const exit = observeManagedProcessGroup(child, resources);
+    child.emit("close", 0, null);
+    const receipt = await exit.confirmExit();
+    if (!receipt) throw new Error("Expected a confirmed exit.");
+    await expect(releaseManagedResources(resources, receipt)).rejects.toThrow("mount cleanup failed");
+    expect(egressInvocationOwner(token)).toBeUndefined();
+    expect(wrapped.homeEnv.HOME).toContain("sandbox");
+    expect(existsSync(String(wrapped.homeEnv.HOME))).toBe(false);
+    await releaseManagedResources(resources, receipt);
+    expect(cleanup).toHaveBeenCalledTimes(2);
   });
 
   it("checks process admission before allocating a sandbox wrap", async () => {

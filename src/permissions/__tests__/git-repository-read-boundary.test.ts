@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import * as childProcess from "node:child_process";
-import { resolveVerifiedExecutable } from "../../shared/verified-executable.js";
+import { resolveVerifiedExecutableAsync } from "../../shared/verified-executable.js";
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 import { PermissionManager } from "../permission-manager.js";
 import { prepareVerifiedShellCommand, verifiedShellEnvironment, verifiedShellExecution } from "../verified-shell-command.js";
@@ -12,9 +12,10 @@ import { buildShellRuleApproval } from "../rules/shell-rule-approval.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
+vi.mock("../rules/git-repository-inspection-client.js", () => import("../../__tests__/support/in-process-repository-inspection.js").then((support) => support.inProcessRepositoryInspectionModule()));
 vi.mock("node:fs", { spy: true });
 vi.mock("node:child_process", { spy: true });
-vi.mock("../../shared/verified-executable.js", () => ({ resolveVerifiedExecutable: vi.fn() }));
+vi.mock("../../shared/verified-executable.js", () => ({ resolveVerifiedExecutable: vi.fn(), resolveVerifiedExecutableAsync: vi.fn() }));
 vi.mock("../../shared/powershell-startup-policy.js", () => ({ isPowerShellStartupPinned: () => true, POWERSHELL_STARTUP_UNPROVEN_REASON: "startup is unproven" }));
 
 const nativeChildProcess = await vi.importActual<typeof import("node:child_process")>("node:child_process");
@@ -48,8 +49,13 @@ beforeEach(() => {
   });
   vi.stubEnv("AVE_HOME", join(root, "state"));
   // Installation trust is mocked; native engine controls are a separate assertion.
-  vi.mocked(resolveVerifiedExecutable).mockReturnValue({ executable: "/verified/system/git" });
-  vi.mocked(childProcess.execFileSync).mockReturnValue("git version 2.54.0\n");
+  vi.mocked(resolveVerifiedExecutableAsync).mockResolvedValue({ executable: "/verified/system/git" });
+  // The protected engine's version probe answers like a supported installation.
+  vi.mocked(childProcess.execFile).mockImplementation(((...args: unknown[]) => {
+    const callback = args.at(-1) as (error: Error | null, stdout: string, stderr: string) => void;
+    setImmediate(() => callback(null, "git version 2.54.0\n", ""));
+    return {} as childProcess.ChildProcess;
+  }) as unknown as typeof childProcess.execFile);
 });
 
 afterEach(async () => {
@@ -85,7 +91,7 @@ function configure(cwd: string, key: string, value: string): void {
   git(cwd, ["config", "--local", key, value]);
 }
 
-function assertUnprovenRepository(cwd: string, commands: readonly string[], marker?: string): void {
+async function assertUnprovenRepository(cwd: string, commands: readonly string[], marker?: string): Promise<void> {
   for (const platform of ["linux", "darwin", "win32"] as const) {
     setProcessPlatform(platform);
     for (const dialect of ["bash", "powershell"] as const) {
@@ -99,9 +105,9 @@ function assertUnprovenRepository(cwd: string, commands: readonly string[], mark
           withCurrentShellRuleVersion({ pattern: `${kind}(${command})`, action: "allow" }),
         ]);
         for (const entry of CHILD_ENTRY_POINTS) vi.mocked(childProcess[entry]).mockClear();
-        vi.mocked(resolveVerifiedExecutable).mockClear();
+        vi.mocked(resolveVerifiedExecutableAsync).mockClear();
         const identity = { command, dialect, cwd };
-        const handle = prepareVerifiedShellCommand(identity);
+        const handle = await prepareVerifiedShellCommand(identity);
         expect.soft(handle).toBeUndefined();
         expect.soft(verifiedShellExecution(handle, identity)).toBeUndefined();
         const card = buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true }, undefined, handle);
@@ -115,7 +121,7 @@ function assertUnprovenRepository(cwd: string, commands: readonly string[], mark
           expect.soft(check(false)).toMatchObject({ decision: "allow", reasonCode: "rule-allow" });
           expect.soft(check(true)).toMatchObject({ decision: "allow", reasonCode: "rule-allow" });
         }
-        expect.soft(resolveVerifiedExecutable).not.toHaveBeenCalled();
+        expect.soft(resolveVerifiedExecutableAsync).not.toHaveBeenCalled();
         for (const entry of CHILD_ENTRY_POINTS) expect.soft(childProcess[entry]).not.toHaveBeenCalled();
         if (marker !== undefined) expect.soft(existsSync(marker)).toBe(false);
       }
@@ -125,7 +131,7 @@ function assertUnprovenRepository(cwd: string, commands: readonly string[], mark
 }
 
 describe("implicit repository file reads", () => {
-  it.each([false, true])("consumes an outside malformed include when conditional=%s", (conditional) => {
+  it.each([false, true])("consumes an outside malformed include when conditional=%s", async (conditional) => {
     const cwd = repository("workspace");
     const outside = join(root, "outside-config");
     writeFileSync(outside, "[malformed\n");
@@ -136,10 +142,10 @@ describe("implicit repository file reads", () => {
     expect(control.status).not.toBe(0);
     expect(control.stderr).toContain(outside);
     expect(control.stderr).toMatch(/bad config|invalid config/i);
-    assertUnprovenRepository(cwd, ["git log", "git rev-parse --verify HEAD", "git branch --list"]);
+    await assertUnprovenRepository(cwd, ["git log", "git rev-parse --verify HEAD", "git branch --list"]);
   });
 
-  it("uses an outside mailmap for synthetic private contact output", () => {
+  it("uses an outside mailmap for synthetic private contact output", async () => {
     const cwd = repository("workspace");
     const outside = join(root, "outside-mailmap");
     writeFileSync(outside, "Private Synthetic Contact <private@example.invalid> Boundary Author <author@example.invalid>\n");
@@ -150,10 +156,10 @@ describe("implicit repository file reads", () => {
       expect(output).toContain("Private Synthetic Contact <private@example.invalid>");
       expect(output).not.toContain("Boundary Author <author@example.invalid>");
     }
-    assertUnprovenRepository(cwd, ["git log -n 1", "git show --no-patch HEAD"]);
+    await assertUnprovenRepository(cwd, ["git log -n 1", "git show --no-patch HEAD"]);
   });
 
-  it("takes both cached and revision diff ordering from an outside order file", () => {
+  it("takes both cached and revision diff ordering from an outside order file", async () => {
     const cwd = repository("workspace");
     for (const name of ["alpha.txt", "zeta.txt"]) writeFileSync(join(cwd, name), "base\n");
     git(cwd, ["add", "."]);
@@ -167,20 +173,20 @@ describe("implicit repository file reads", () => {
     expect(git(cwd, ["diff", "--cached", "--name-only"]).trim().split(/\r?\n/)).toEqual(["zeta.txt", "alpha.txt"]);
     git(cwd, ["-c", "commit.gpgSign=false", "commit", "-m", "changed paths"]);
     expect(git(cwd, ["diff", "HEAD~1", "HEAD", "--name-only"]).trim().split(/\r?\n/)).toEqual(["zeta.txt", "alpha.txt"]);
-    assertUnprovenRepository(cwd, ["git diff --cached --name-only", "git diff 'HEAD~1' HEAD --name-only"]);
+    await assertUnprovenRepository(cwd, ["git diff --cached --name-only", "git diff 'HEAD~1' HEAD --name-only"]);
   });
 
-  it("follows a gitfile to another repository identity", () => {
+  it("follows a gitfile to another repository identity", async () => {
     const outside = repository("outside-repository", "outside repository identity");
     const cwd = join(root, "workspace");
     mkdirSync(cwd);
     writeFileSync(join(cwd, ".git"), `gitdir: ${join(outside, ".git").replaceAll("\\", "/")}\n`);
     expect(realpathSync(git(cwd, ["rev-parse", "--absolute-git-dir"]).trim())).toBe(join(outside, ".git"));
     expect(git(cwd, ["log", "-n", "1"])).toContain("outside repository identity");
-    assertUnprovenRepository(cwd, ["git log", "git rev-parse --absolute-git-dir"]);
+    await assertUnprovenRepository(cwd, ["git log", "git rev-parse --absolute-git-dir"]);
   });
 
-  it("follows a linked worktree commondir outside the working directory", () => {
+  it("follows a linked worktree commondir outside the working directory", async () => {
     const outside = repository("outside-repository", "shared metadata identity");
     const cwd = join(root, "linked-worktree");
     git(outside, ["worktree", "add", "--detach", cwd, "HEAD"]);
@@ -190,10 +196,10 @@ describe("implicit repository file reads", () => {
     const common = readFileSync(join(metadata, "commondir"), "utf8").trim();
     expect(realpathSync(resolve(metadata, common))).toBe(join(outside, ".git"));
     expect(git(cwd, ["log", "-n", "1"])).toContain("shared metadata identity");
-    assertUnprovenRepository(cwd, ["git log", "git rev-parse --git-dir"]);
+    await assertUnprovenRepository(cwd, ["git log", "git rev-parse --git-dir"]);
   });
 
-  it("loads a commit exclusively from an outside object alternate", () => {
+  it("loads a commit exclusively from an outside object alternate", async () => {
     const outside = repository("outside-repository", "alternate object identity");
     const object = git(outside, ["rev-parse", "HEAD"]).trim();
     const cwd = join(root, "workspace");
@@ -205,11 +211,11 @@ describe("implicit repository file reads", () => {
     writeFileSync(alternate, join(outside, ".git", "objects").replaceAll("\\", "/") + "\n");
     git(cwd, ["update-ref", "refs/heads/main", object]);
     expect(git(cwd, ["show", "--no-patch", "HEAD"])).toContain("alternate object identity");
-    assertUnprovenRepository(cwd, ["git log", "git show --no-patch HEAD", "git rev-parse --verify HEAD"]);
+    await assertUnprovenRepository(cwd, ["git log", "git show --no-patch HEAD", "git rev-parse --verify HEAD"]);
   });
 });
 
-it("admits checked reads on registered hosts without starting an available libexec helper", () => {
+it("admits checked reads on registered hosts without starting an available libexec helper", async () => {
   const cwd = repository("workspace");
   const libexec = join(root, "outside-libexec");
   mkdirSync(libexec);
@@ -230,13 +236,13 @@ it("admits checked reads on registered hosts without starting an available libex
     for (const dialect of ["bash", "powershell"] as const) {
       for (const command of READ_COMMANDS) {
         for (const entry of CHILD_ENTRY_POINTS) vi.mocked(childProcess[entry]).mockClear();
-        vi.mocked(resolveVerifiedExecutable).mockClear();
+        vi.mocked(resolveVerifiedExecutableAsync).mockClear();
         const identity = { command, dialect, cwd };
-        const handle = prepareVerifiedShellCommand(identity);
+        const handle = await prepareVerifiedShellCommand(identity);
         expect(handle, command).toBeUndefined();
         expect(verifiedShellExecution(handle, identity)).toBeUndefined();
         expect(buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true }, undefined, handle).exactRule).toBeNull();
-        expect(resolveVerifiedExecutable).not.toHaveBeenCalled();
+        expect(resolveVerifiedExecutableAsync).not.toHaveBeenCalled();
         for (const entry of CHILD_ENTRY_POINTS) expect(childProcess[entry]).not.toHaveBeenCalled();
         expect(existsSync(marker)).toBe(false);
       }
@@ -244,11 +250,11 @@ it("admits checked reads on registered hosts without starting an available libex
     return;
   }
   const nativePath = nativeChildProcess.execFileSync("/bin/sh", ["-c", "command -v git"], { encoding: "utf8", env: environment }).trim();
-  vi.mocked(resolveVerifiedExecutable).mockReturnValue({ executable: nativePath });
+  vi.mocked(resolveVerifiedExecutableAsync).mockResolvedValue({ executable: nativePath });
   for (const dialect of ["bash", "powershell"] as const) {
     for (const command of READ_COMMANDS) {
       const identity = { command, dialect, cwd };
-      const handle = prepareVerifiedShellCommand(identity);
+      const handle = await prepareVerifiedShellCommand(identity);
       expect(handle, command).toBeDefined();
       const execution = verifiedShellExecution(handle, identity);
       expect(execution?.executable).toBe(nativePath);

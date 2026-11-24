@@ -23,6 +23,7 @@ import { ObservationDaemon } from "../../observation/daemon.js";
 import { TerminalObservationAdapter } from "../../observation/terminal-adapter.js";
 import type { TerminalObservationEvent } from "../../shared/agent-observation.js";
 import { inspectGitRepository } from "../../permissions/rules/git-repository-inputs.js";
+import { inspectGitRepositoryAsync } from "../../permissions/rules/git-repository-inspection-client.js";
 import { readOnlyGitArguments, gitReadOnlyEnvironment } from "../../permissions/rules/git-readonly-argv.js";
 import * as installation from "../../shared/verified-executable.js";
 import {
@@ -31,11 +32,12 @@ import {
   preparedShellCwdProbe, preparedShellExecutableReadPaths, type PreparedShellInvocation,
 } from "../prepared-shell-invocation.js";
 
+vi.mock("../../permissions/rules/git-repository-inspection-client.js", () => import("../../__tests__/support/in-process-repository-inspection.js").then((support) => support.inProcessRepositoryInspectionModule()));
 vi.mock("node:fs", { spy: true });
 vi.mock("node:child_process", { spy: true });
 vi.mock("../../permissions/rules/git-repository-inputs.js", { spy: true });
 vi.mock("../../shared/powershell-executable.js", () => ({ resolveTrustedPowerShellExecutable: () => ({ executable: "/protected-fixture/pwsh", kind: "pwsh" }) }));
-vi.mock("../../shared/verified-executable.js", () => ({ resolveVerifiedExecutable: vi.fn() }));
+vi.mock("../../shared/verified-executable.js", () => ({ resolveVerifiedExecutable: vi.fn(), resolveVerifiedExecutableAsync: vi.fn() }));
 vi.mock("../../shared/powershell-startup-policy.js", async original => ({
   ...await original<typeof import("../../shared/powershell-startup-policy.js")>(), isPowerShellStartupPinned: () => true,
 }));
@@ -57,7 +59,7 @@ afterEach(() => {
 });
 
 // Supported-host transport simulation: no native command or installation proof runs in these fixtures.
-function fixture(sandboxed = false, command = "bash --noprofile --norc -p -c 'printf ready'") {
+async function fixture(sandboxed = false, command = "bash --noprofile --norc -p -c 'printf ready'") {
   setProcessPlatform("linux");
   const cwd = realpathSync.native(mkdtempSync(join(tmpdir(), "verified-shell-execution-")));
   roots.push(cwd);
@@ -74,10 +76,13 @@ function fixture(sandboxed = false, command = "bash --noprofile --norc -p -c 'pr
   writeFileSync(executable, "controlled image", { mode: 0o755 });
   writeFileSync(join(shadowDirectory, "bash"), "shadow image", { mode: 0o755 });
   writeFileSync(join(shadowDirectory, "git"), "shadow image", { mode: 0o755 });
-  vi.spyOn(childProcess, "execFileSync").mockImplementation((image, args) => {
-    if (image === executable && args?.includes("--version")) return "git version 2.54.0\n";
-    throw new Error("Unexpected native probe in controlled transport fixture");
-  });
+  vi.spyOn(childProcess, "execFileSync").mockImplementation(() => { throw new Error("Unexpected blocking native probe in controlled transport fixture"); });
+  vi.spyOn(childProcess, "execFile").mockImplementation(((image: string, args: readonly string[] | undefined, ...rest: unknown[]) => {
+    if (image !== executable || !args?.includes("--version")) throw new Error("Unexpected native probe in controlled transport fixture");
+    const callback = rest.at(-1) as (error: Error | null, stdout: string, stderr: string) => void;
+    setImmediate(() => callback(null, "git version 2.54.0\n", ""));
+    return {} as childProcess.ChildProcess;
+  }) as unknown as typeof childProcess.execFile);
   vi.spyOn(childProcess, "spawn").mockImplementation(() => { throw new Error("Native spawn is outside this controlled transport fixture"); });
   vi.spyOn(shellResolver, "resolveShell").mockReturnValue({ cmd: "controlled-shell", shellArgs: (command) => ["-c", command] });
   vi.spyOn(shellResolver, "shellEnvForChild").mockImplementation((_, environment) => ({ ...environment,
@@ -92,8 +97,8 @@ function fixture(sandboxed = false, command = "bash --noprofile --norc -p -c 'pr
     return { path, env: { HOME: path }, cleanup: () => rmSync(path, { recursive: true, force: true }) };
   });
   vi.stubEnv("PATH", `${shadowDirectory}${delimiter}${process.env.PATH ?? ""}`);
-  vi.mocked(installation.resolveVerifiedExecutable).mockReturnValue({ executable });
-  const verifiedShellCommand = prepareVerifiedShellCommand({ command, dialect: "bash", cwd });
+  vi.mocked(installation.resolveVerifiedExecutableAsync).mockResolvedValue({ executable });
+  const verifiedShellCommand = await prepareVerifiedShellCommand({ command, dialect: "bash", cwd });
   expect(verifiedShellCommand).toBeDefined();
   setShellSandboxRequestedAtBoot(sandboxed);
   __resetActiveSandboxCapabilityForTest();
@@ -106,8 +111,8 @@ function fixture(sandboxed = false, command = "bash --noprofile --norc -p -c 'pr
   return { cwd, executable, shadowDirectory, identity, handle };
 }
 
-it("retains raw authority identity while binding absolute image argv despite a shadow search path", () => {
-  const { executable, shadowDirectory, identity, handle } = fixture();
+it("retains raw authority identity while binding absolute image argv despite a shadow search path", async () => {
+  const { executable, shadowDirectory, identity, handle } = await fixture();
   const prepared = preparedShellCommand(handle);
   expect(identity.command).toBe("bash --noprofile --norc -p -c 'printf ready'");
   expect(matchesPreparedShellInvocation(handle, identity)).toBe(true);
@@ -124,8 +129,8 @@ it("retains raw authority identity while binding absolute image argv despite a s
   expect(preparedShellExecutableReadPaths(handle)).not.toContain(shadowDirectory);
 });
 
-it("uses the compiled command when rebuilding foreground argv with a host prelude", () => {
-  const { executable, handle } = fixture();
+it("uses the compiled command when rebuilding foreground argv with a host prelude", async () => {
+  const { executable, handle } = await fixture();
   const { argv } = preparedShellCwdProbe(handle, "printf 'prelude|'; ");
   expect(argv.at(-1)).toContain(`'${executable}'`);
   expect(argv[0]).toBe("-c");
@@ -133,8 +138,8 @@ it("uses the compiled command when rebuilding foreground argv with a host prelud
   expect(argv.at(-1)).not.toContain("; bash --noprofile");
 });
 
-it("binds checked repository roots and reapplies transport controls after a sandbox overlay", () => {
-  const { cwd, executable, shadowDirectory, identity, handle } = fixture(true, "git log 'HEAD'");
+it("binds checked repository roots and reapplies transport controls after a sandbox overlay", async () => {
+  const { cwd, executable, shadowDirectory, identity, handle } = await fixture(true, "git log 'HEAD'");
   const prepared = preparedShellCommand(handle);
   expect(identity.command).toBe("git log 'HEAD'");
   expect(matchesPreparedShellInvocation(handle, identity)).toBe(true);
@@ -164,18 +169,18 @@ it("binds checked repository roots and reapplies transport controls after a sand
   expect(preparedSandboxBootstrap(handle)).toContain(executable);
 });
 
-it("refuses a supplied proof for a changed command, directory, dialect or unissued handle", () => {
-  const { identity } = fixture();
+it("refuses a supplied proof for a changed command, directory, dialect or unissued handle", async () => {
+  const { identity } = await fixture();
   expect(() => prepareShellInvocation({ ...identity, command: "bash --noprofile --norc -p -c 'printf changed'" })).toThrow(/does not match/);
   expect(() => prepareShellInvocation({ ...identity, resolvedCwd: join(identity.resolvedCwd, "other") })).toThrow(/does not match/);
-  const wrongDialect = prepareVerifiedShellCommand({ command: identity.command, dialect: "powershell", cwd: identity.resolvedCwd });
+  const wrongDialect = await prepareVerifiedShellCommand({ command: identity.command, dialect: "powershell", cwd: identity.resolvedCwd });
   expect(wrongDialect).toBeDefined();
   expect(() => prepareShellInvocation({ ...identity, verifiedShellCommand: wrongDialect })).toThrow(/does not match/);
   expect(() => prepareShellInvocation({ ...identity, verifiedShellCommand: Object.freeze({}) as VerifiedShellCommand })).toThrow(/does not match/);
 });
 
-it("reapplies owned configuration after wrapper overlay and preserves the compiled sandbox bootstrap", () => {
-  const { executable, handle } = fixture(true);
+it("reapplies owned configuration after wrapper overlay and preserves the compiled sandbox bootstrap", async () => {
+  const { executable, handle } = await fixture(true);
   const environment = preparedSandboxEnvironment(handle, { ...process.env,
     HTTPS_PROXY: "http://localhost:60080", LD_PRELOAD: "/untrusted-loader", DYLD_INSERT_LIBRARIES: "/untrusted-loader",
   });
@@ -188,8 +193,8 @@ it("reapplies owned configuration after wrapper overlay and preserves the compil
   expect(bootstrap).not.toContain("untrusted-loader");
 });
 
-it("preserves the original shell command when no native proof was supplied", () => {
-  const { identity } = fixture();
+it("preserves the original shell command when no native proof was supplied", async () => {
+  const { identity } = await fixture();
   const command = "printf original-command";
   const handle = prepareShellInvocation({ ...identity, command, verifiedShellCommand: undefined });
   handles.push(handle);
@@ -198,9 +203,9 @@ it("preserves the original shell command when no native proof was supplied", () 
   expect(prepared.argv).toEqual(["-c", "printf original-command"]);
 });
 
-it("renders the sealed native image for the second shell dialect without changing its raw key", () => {
-  const { executable, identity } = fixture();
-  const verified = prepareVerifiedShellCommand({ command: identity.command, dialect: "powershell", cwd: identity.resolvedCwd });
+it("renders the sealed native image for the second shell dialect without changing its raw key", async () => {
+  const { executable, identity } = await fixture();
+  const verified = await prepareVerifiedShellCommand({ command: identity.command, dialect: "powershell", cwd: identity.resolvedCwd });
   const execution = verifiedShellExecution(verified, { command: identity.command, dialect: "powershell", cwd: identity.resolvedCwd });
   expect(execution?.command).toContain(`& '${executable}'`);
   expect(verifiedShellExecution(verified, { command: "bash --noprofile --norc -p -c 'printf changed'", dialect: "powershell", cwd: identity.resolvedCwd })).toBeUndefined();
@@ -238,8 +243,8 @@ function sandboxTransport() {
 }
 
 it.each(["bash --noprofile --norc -p -c 'printf ready'", "git log 'HEAD'"])("keeps raw %s at the second shell parser gate and binds its final workload", async (command) => {
-  const { cwd, executable, identity } = fixture(false, command);
-  const verifiedShellCommand = prepareVerifiedShellCommand({ command: identity.command, dialect: "powershell", cwd: identity.resolvedCwd });
+  const { cwd, executable, identity } = await fixture(false, command);
+  const verifiedShellCommand = await prepareVerifiedShellCommand({ command: identity.command, dialect: "powershell", cwd: identity.resolvedCwd });
   expect(verifiedShellCommand).toBeDefined();
   const argv = command.startsWith("git ") ? ["git", "log", "HEAD"] : ["bash", "--noprofile", "--norc", "-p", "-c", "printf ready"];
   const parsed = parsedCommandResponse(identity.command, argv);
@@ -272,7 +277,7 @@ it.each(["bash --noprofile --norc -p -c 'printf ready'", "git log 'HEAD'"])("kee
 });
 
 it("rejects a mismatched supplied proof before starting the second shell parser", async () => {
-  const { identity } = fixture();
+  const { identity } = await fixture();
   const spawned = vi.spyOn(childProcess, "spawn");
   spawned.mockClear();
   setShellSandboxRequestedAtBoot(false);
@@ -284,16 +289,16 @@ it("rejects a mismatched supplied proof before starting the second shell parser"
   expect(spawned).not.toHaveBeenCalled();
 });
 
-it("refuses native records on an unsupported host before consulting an approving installation resolver", () => {
+it("refuses native records on an unsupported host before consulting an approving installation resolver", async () => {
   setProcessPlatform("win32");
-  vi.mocked(installation.resolveVerifiedExecutable).mockReturnValue({ executable: "C:\\protected\\image.exe" });
-  const versionProbe = vi.spyOn(childProcess, "execFileSync");
+  vi.mocked(installation.resolveVerifiedExecutableAsync).mockResolvedValue({ executable: "C:\\protected\\image.exe" });
+  const versionProbe = vi.spyOn(childProcess, "execFile");
   for (const command of ["git log", "bash --noprofile --norc -p -c 'printf ready'"]) {
     for (const dialect of ["bash", "powershell"] as const) {
-      expect(prepareVerifiedShellCommand({ command, dialect, cwd: tmpdir() })).toBeUndefined();
+      expect(await prepareVerifiedShellCommand({ command, dialect, cwd: tmpdir() })).toBeUndefined();
     }
   }
-  expect(installation.resolveVerifiedExecutable).not.toHaveBeenCalled();
+  expect(installation.resolveVerifiedExecutableAsync).not.toHaveBeenCalled();
   expect(versionProbe).not.toHaveBeenCalled();
 });
 
@@ -326,14 +331,14 @@ it.each((["bash", "powershell"] as const).flatMap((dialect) => [false, true].fla
   [false, true].flatMap((sandboxed) => [40, 64].map((width) => ({ dialect, background, sandboxed, width }))))))(
   "discards native $width-hex symlinked-ref output from $dialect with background=$background sandboxed=$sandboxed before delivery", async ({ dialect, background, sandboxed, width }) => {
   const command = "git rev-parse --verify HEAD";
-  const { cwd, identity: preparedIdentity } = fixture(sandboxed, command);
+  const { cwd, identity: preparedIdentity } = await fixture(sandboxed, command);
   const ref = join(cwd, ".git", "refs", "heads", "main");
   writeFileSync(ref, "1".repeat(40) + "\n");
   const token = "7a".repeat(width / 2);
   const outside = join(cwd, "outside-ref-shaped-secret");
   writeFileSync(outside, token + "\n");
   const identity = { command, dialect, cwd };
-  const verifiedShellCommand = prepareVerifiedShellCommand(identity);
+  const verifiedShellCommand = await prepareVerifiedShellCommand(identity);
   expect(verifiedShellCommand).toBeDefined();
   const repository = inspectGitRepository(cwd)!;
   const args = readOnlyGitArguments(["git", "rev-parse", "--verify", "HEAD"])!;
@@ -384,8 +389,8 @@ it.each((["bash", "powershell"] as const).flatMap((dialect) => ["abort", "error"
   [false, true].map((sandboxed) => ({ dialect, event, sandboxed })))))(
   "holds $dialect output through $event until child close with sandboxed=$sandboxed", async ({ dialect, event, sandboxed }) => {
   const command = "git log HEAD";
-  const { cwd, identity } = fixture(sandboxed, command);
-  const verifiedShellCommand = prepareVerifiedShellCommand({ command, dialect, cwd });
+  const { cwd, identity } = await fixture(sandboxed, command);
+  const verifiedShellCommand = await prepareVerifiedShellCommand({ command, dialect, cwd });
   expect(verifiedShellCommand).toBeDefined();
   const controller = new AbortController();
   const { child, stdout, stderr } = controlledChild();
@@ -427,8 +432,8 @@ it.each((["bash", "powershell"] as const).flatMap((dialect) => [false, true].fla
   [false, true].map((changed) => ({ dialect, sandboxed, changed })))))(
   "reinspects $dialect after synchronous spawn failure with sandboxed=$sandboxed and changed=$changed", async ({ dialect, sandboxed, changed }) => {
   const command = "git log HEAD";
-  const { cwd, identity } = fixture(sandboxed, command);
-  const verifiedShellCommand = prepareVerifiedShellCommand({ command, dialect, cwd });
+  const { cwd, identity } = await fixture(sandboxed, command);
+  const verifiedShellCommand = await prepareVerifiedShellCommand({ command, dialect, cwd });
   expect(verifiedShellCommand).toBeDefined();
   sandboxTransport();
   let inspectionsAtSpawn: number | undefined;
@@ -436,7 +441,7 @@ it.each((["bash", "powershell"] as const).flatMap((dialect) => [false, true].fla
     if (dialect === "powershell" && (invocation as string[]).at(-1)?.includes("Parser")) {
       return completedChild(JSON.stringify(parsedCommandResponse(command, ["git", "log", "HEAD"])));
     }
-    inspectionsAtSpawn = vi.mocked(inspectGitRepository).mock.calls.length;
+    inspectionsAtSpawn = vi.mocked(inspectGitRepositoryAsync).mock.calls.length;
     if (changed) {
       const moved = cwd + "-moved";
       renameSync(cwd, moved);
@@ -453,8 +458,8 @@ it.each((["bash", "powershell"] as const).flatMap((dialect) => [false, true].fla
     hostShellExecutionPlan: identity.plan, verifiedShellCommand,
   });
   expect(inspectionsAtSpawn).toBeDefined();
-  expect(vi.mocked(inspectGitRepository).mock.calls.length).toBe(inspectionsAtSpawn! + 1);
-  expect(inspectGitRepository).toHaveBeenLastCalledWith(cwd);
+  expect(vi.mocked(inspectGitRepositoryAsync).mock.calls.length).toBe(inspectionsAtSpawn! + 1);
+  expect(inspectGitRepositoryAsync).toHaveBeenLastCalledWith(cwd);
   if (changed) {
     expect(result).toEqual({ output: "Read-only Git output discarded: repository metadata changed during execution.", isError: true, metadata: {} });
   } else {
@@ -468,8 +473,8 @@ it.each((["bash", "powershell"] as const).flatMap((dialect) => [false, true].fla
   [false, true].map((changed) => ({ dialect, sandboxed, changed })))))(
   "quarantines agent observation of checked $dialect output with sandboxed=$sandboxed and changed=$changed", async ({ dialect, sandboxed, changed }) => {
   const command = "git log HEAD";
-  const { cwd, identity } = fixture(sandboxed, command);
-  const verifiedShellCommand = prepareVerifiedShellCommand({ command, dialect, cwd });
+  const { cwd, identity } = await fixture(sandboxed, command);
+  const verifiedShellCommand = await prepareVerifiedShellCommand({ command, dialect, cwd });
   expect(verifiedShellCommand).toBeDefined();
   sandboxTransport();
   const daemon = new ObservationDaemon();
@@ -524,7 +529,7 @@ it.each((["bash", "powershell"] as const).flatMap((dialect) => [false, true].fla
 
 it("preserves trusted filesystem block evidence through native result copies without replay", async () => {
   const command = "git log HEAD";
-  const { cwd, identity } = fixture(true, command);
+  const { cwd, identity } = await fixture(true, command);
   vi.spyOn(sandbox, "wrapToolCommand").mockResolvedValue({ argv: ["controlled-wrapper"], env: {} });
   vi.spyOn(sandbox, "cleanupAsrtSandboxAfterCommand").mockResolvedValue(undefined);
   vi.spyOn(sandbox, "annotateWithSandboxViolations").mockImplementation(async (_id, text) => text);
@@ -533,7 +538,7 @@ it("preserves trusted filesystem block evidence through native result copies wit
   const spawned = vi.spyOn(childProcess, "spawn").mockImplementation(() => completedChild("partially completed", undefined, "blocked", 1));
   const result = await new BashTool().execute({ command, timeoutSeconds: 5, run_in_background: true }, {
     cwd, extraAllowedDirectories: [], metadata: {}, hostShellExecutionPlan: identity.plan,
-    verifiedShellCommand: prepareVerifiedShellCommand({ command, dialect: "bash", cwd }),
+    verifiedShellCommand: await prepareVerifiedShellCommand({ command, dialect: "bash", cwd }),
   });
   expect(result.isError, result.output).toBe(true);
   expect(result.metadata?.backgroundUnavailable).toBe(true);
@@ -541,4 +546,31 @@ it("preserves trusted filesystem block evidence through native result copies wit
   expect(sandboxBlockForResult({ ...result })).toBeUndefined();
   expect(spawned).toHaveBeenCalledTimes(1);
   expect(observed).toHaveBeenCalledTimes(1);
+});
+
+it.each(["bash", "powershell"] as const)("releases no checked %s output when cancelled during the post-run repository inspection", async (dialect) => {
+  const command = "git log HEAD";
+  const { cwd, identity } = await fixture(false, command);
+  const verifiedShellCommand = await prepareVerifiedShellCommand({ command, dialect, cwd });
+  expect(verifiedShellCommand).toBeDefined();
+  sandboxTransport();
+  vi.spyOn(childProcess, "spawn").mockImplementation((_image, invocation) => {
+    if (dialect === "powershell" && (invocation as string[]).at(-1)?.includes("Parser")) {
+      return completedChild(JSON.stringify(parsedCommandResponse(command, ["git", "log", "HEAD"])));
+    }
+    throw Object.assign(new Error("spawn ENOTDIR"), { code: "ENOTDIR" });
+  });
+  const controller = new AbortController();
+  vi.mocked(inspectGitRepositoryAsync).mockImplementationOnce(async (path) => {
+    controller.abort();
+    return inspectGitRepository(path);
+  });
+  const progress = { write: vi.fn(), end: vi.fn() };
+  const tool = dialect === "bash" ? new BashTool() : new PowerShellTool();
+  await expect(tool.execute({ command, timeoutSeconds: 5 }, {
+    cwd, extraAllowedDirectories: [], metadata: { toolOutputProgress: progress },
+    hostShellExecutionPlan: identity.plan, verifiedShellCommand, abortSignal: controller.signal,
+  })).rejects.toMatchObject({ name: "AbortError" });
+  expect(inspectGitRepositoryAsync).toHaveBeenLastCalledWith(cwd);
+  expect(progress.write).not.toHaveBeenCalled();
 });

@@ -409,7 +409,7 @@ describe("the bound table is the session's whole authority", () => {
         jsonrpc: "2.0",
         id,
         method: "ai.agent-connector.ave/host/spawnWorker",
-        params: { spec: { workerId: id, command: "/usr/bin/true", control: "output-only-v1", allowWritePaths } },
+        params: { spec: { workerId: id, command: "true", control: "output-only-v1", allowWritePaths } },
       });
     const replyTo = (id: string): Frame | undefined => child.sent.find((frame) => frame.id === id);
 

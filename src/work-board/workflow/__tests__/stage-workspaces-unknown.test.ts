@@ -1,4 +1,3 @@
-// windows-native: the Windows job runs this file from config/windows-native-tests.txt.
 import { expect, it, vi } from "vitest";
 import { CALLS, controlCalls, replayEach } from "./stage-unknown-replay.js";
 

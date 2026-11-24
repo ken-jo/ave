@@ -2,9 +2,10 @@ import { stabilizeFixtureAncestorStats } from "../../__tests__/support/fixture-a
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, renameSync, symlinkSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import * as childProcess from "node:child_process";
-import { resolveVerifiedExecutable } from "../../shared/verified-executable.js";
+import * as fsPromises from "node:fs/promises";
+import { resolveVerifiedExecutableAsync } from "../../shared/verified-executable.js";
 import { resolveHostGit } from "../../shared/host-git-executable.js";
 import { PermissionManager } from "../permission-manager.js";
 import { prepareVerifiedShellCommand, verifiedShellEnvironment, verifiedShellExecution, verifiedShellRequiresResultCheck, verifiedShellResultRefusal, type VerifiedShellCommand } from "../verified-shell-command.js";
@@ -14,12 +15,24 @@ import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js"
 import { inspectShellCommand } from "../rules/literal-shell-inspection.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { holdSandboxGitWrites } from "../../shared/host-git.js";
+import { inspectGitRepositoryAsync } from "../rules/git-repository-inspection-client.js";
 
+vi.mock("../rules/git-repository-inspection-client.js", () => import("../../__tests__/support/in-process-repository-inspection.js").then((support) => support.inProcessRepositoryInspectionModule()));
 vi.mock("node:fs", { spy: true });
 vi.mock("node:child_process", { spy: true });
-vi.mock("../../shared/verified-executable.js", () => ({ resolveVerifiedExecutable: vi.fn() }));
+vi.mock("../../shared/verified-executable.js", () => ({ resolveVerifiedExecutable: vi.fn(), resolveVerifiedExecutableAsync: vi.fn() }));
+vi.mock("node:fs/promises", { spy: true });
 vi.mock("../../shared/host-git-executable.js", { spy: true });
 vi.mock("../../shared/powershell-startup-policy.js", () => ({ isPowerShellStartupPinned: () => true, POWERSHELL_STARTUP_UNPROVEN_REASON: "startup is unproven" }));
+type ExecFileCallback = (error: Error | null, stdout: string, stderr: string) => void;
+/** Answers the asynchronous version probe; an Error models a failed launch, exit, timeout or output limit. */
+function mockGitVersion(output: string | Error): void {
+  vi.mocked(childProcess.execFile).mockReset().mockImplementation(((...args: unknown[]) => {
+    const callback = args.at(-1) as ExecFileCallback;
+    setImmediate(() => typeof output === "string" ? callback(null, output, "") : callback(output, "", ""));
+    return {} as childProcess.ChildProcess;
+  }) as unknown as typeof childProcess.execFile);
+}
 const originalPlatform = process.platform;
 let cwd: string;
 let manager: PermissionManager;
@@ -30,8 +43,9 @@ beforeEach(() => {
   vi.stubEnv("AVE_HOME", join(cwd, "state"));
   manager = new PermissionManager(join(cwd, "permissions.json"));
   manager.setMode("default");
-  vi.mocked(resolveVerifiedExecutable).mockReset().mockImplementation((candidates) => candidates[0] === undefined ? null : { executable: candidates[0].executable });
-  vi.mocked(childProcess.execFileSync).mockReset().mockReturnValue("git version 2.54.0\n");
+  vi.mocked(resolveVerifiedExecutableAsync).mockReset().mockImplementation(async (candidates) => candidates[0] === undefined ? null : { executable: candidates[0].executable });
+  mockGitVersion("git version 2.54.0\n");
+  vi.mocked(fsPromises.lstat).mockClear();
   vi.mocked(childProcess.spawn).mockClear();
   mkdirSync(join(cwd, ".git", "objects"), { recursive: true });
   mkdirSync(join(cwd, ".git", "refs", "heads"), { recursive: true });
@@ -53,24 +67,24 @@ function permission(command: string, dialect: "bash" | "powershell", handle: Ver
 }
 
 describe("bound native command authority", () => {
-  it("uses the shared resolver with the protected Git installation policy", () => {
+  it("uses the shared resolver with the protected Git installation policy", async () => {
     vi.stubEnv("PATH", join(cwd, "bin"));
     const identity = { command: "git log", dialect: "bash" as const, cwd };
-    expect(prepareVerifiedShellCommand(identity)).toBeDefined();
+    expect(await prepareVerifiedShellCommand(identity)).toBeDefined();
     expect(resolveHostGit).toHaveBeenCalledWith("verified");
-    expect(resolveVerifiedExecutable).toHaveBeenCalledWith([
+    expect(resolveVerifiedExecutableAsync).toHaveBeenCalledWith([
       { executable: "/usr/bin/git", installationRoots: ["/usr/bin/git"] },
       { executable: "/opt/git/bin/git", installationRoots: ["/opt/git"] },
     ]);
   });
 
-  it.each(["bash", "powershell"] as const)("rechecks unchanged checked repository results on %s", dialect => {
+  it.each(["bash", "powershell"] as const)("rechecks unchanged checked repository results on %s", async dialect => {
     const identity = { command: "git rev-parse --verify HEAD", dialect, cwd };
-    const handle = prepareVerifiedShellCommand(identity);
+    const handle = await prepareVerifiedShellCommand(identity);
     expect(handle).toBeDefined();
     expect(verifiedShellRequiresResultCheck(handle, identity)).toBe(true);
-    expect(verifiedShellResultRefusal(handle, identity)).toBeUndefined();
-    expect(verifiedShellResultRefusal(handle, identity)).toBeUndefined();
+    expect(await verifiedShellResultRefusal(handle, identity)).toBeUndefined();
+    expect(await verifiedShellResultRefusal(handle, identity)).toBeUndefined();
   });
 
   it.each([
@@ -83,42 +97,42 @@ describe("bound native command authority", () => {
     ["config rewrite", () => writeFileSync(join(cwd, ".git", "config"), "[core]\nrepositoryformatversion = 0\nbare = false\nfilemode = false\n")],
     ["outside include", () => writeFileSync(join(cwd, ".git", "config"), "[include]\npath = /outside\n")],
     ["metadata rename", () => renameSync(join(cwd, ".git"), join(cwd, "renamed-metadata"))],
-  ] as const)("refuses checked output after %s", (_name, mutate) => {
+  ] as const)("refuses checked output after %s", async (_name, mutate) => {
     const identity = { command: "git rev-parse --verify HEAD", dialect: "bash" as const, cwd };
-    const handle = prepareVerifiedShellCommand(identity);
+    const handle = await prepareVerifiedShellCommand(identity);
     expect(handle).toBeDefined();
-    expect(verifiedShellResultRefusal(handle, identity)).toBeUndefined();
+    expect(await verifiedShellResultRefusal(handle, identity)).toBeUndefined();
     mutate();
-    expect(verifiedShellResultRefusal(handle, identity)).toBe("Read-only Git output discarded: repository metadata changed during execution.");
+    expect(await verifiedShellResultRefusal(handle, identity)).toBe("Read-only Git output discarded: repository metadata changed during execution.");
   });
 
-  it("fails closed for forged or mismatched output-validation handles", () => {
+  it("fails closed for forged or mismatched output-validation handles", async () => {
     const identity = { command: "git log", dialect: "bash" as const, cwd };
-    const handle = prepareVerifiedShellCommand(identity);
+    const handle = await prepareVerifiedShellCommand(identity);
     expect(handle).toBeDefined();
     for (const supplied of [{} as VerifiedShellCommand, handle]) {
       const mismatched = { ...identity, command: "git show --no-patch" };
       expect(verifiedShellRequiresResultCheck(supplied, mismatched)).toBe(true);
-      expect(verifiedShellResultRefusal(supplied, mismatched)).toBe("Read-only Git output discarded: repository metadata changed during execution.");
+      expect(await verifiedShellResultRefusal(supplied, mismatched)).toBe("Read-only Git output discarded: repository metadata changed during execution.");
     }
     expect(verifiedShellRequiresResultCheck(undefined, identity)).toBe(false);
-    expect(verifiedShellResultRefusal(undefined, identity)).toBeUndefined();
+    expect(await verifiedShellResultRefusal(undefined, identity)).toBeUndefined();
   });
 
-  it("retains exact-approved literal evaluation without repository output checks", () => {
+  it("retains exact-approved literal evaluation without repository output checks", async () => {
     const identity = { command: LITERAL_COMMAND, dialect: "bash" as const, cwd };
-    const handle = prepareVerifiedShellCommand(identity);
+    const handle = await prepareVerifiedShellCommand(identity);
     expect(handle).toBeDefined();
     rmSync(join(cwd, ".git"), { recursive: true });
     expect(verifiedShellRequiresResultCheck(handle, identity)).toBe(false);
-    expect(verifiedShellResultRefusal(handle, identity)).toBeUndefined();
+    expect(await verifiedShellResultRefusal(handle, identity)).toBeUndefined();
   });
 
   it.each((["bash", "powershell"] as const).flatMap((dialect) => READ_CASES.map((command) => ({ dialect, command }))))
-    ("admits checked repository reads for $dialect $command", ({ dialect, command }) => {
-      const handle = prepareVerifiedShellCommand({ command, dialect, cwd });
+    ("admits checked repository reads for $dialect $command", async ({ dialect, command }) => {
+      const handle = await prepareVerifiedShellCommand({ command, dialect, cwd });
       expect(handle).toBeDefined();
-      expect(resolveVerifiedExecutable).toHaveBeenCalled();
+      expect(resolveVerifiedExecutableAsync).toHaveBeenCalled();
       expect(childProcess.spawn).not.toHaveBeenCalled();
       const approval = buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true }, undefined, handle);
       const wrapper = dialect === "bash" ? "Bash" : "PowerShell";
@@ -141,9 +155,9 @@ describe("bound native command authority", () => {
       });
     });
 
-  it.each(["bash", "powershell"] as const)("applies a bounded saved prefix to a host repository read on %s", (dialect) => {
+  it.each(["bash", "powershell"] as const)("applies a bounded saved prefix to a host repository read on %s", async (dialect) => {
     const command = "git log --oneline -n 3";
-    const handle = prepareVerifiedShellCommand({ command, dialect, cwd });
+    const handle = await prepareVerifiedShellCommand({ command, dialect, cwd });
     expect(handle).toBeDefined();
     const approval = buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true }, undefined, handle);
     const wrapper = dialect === "bash" ? "Bash" : "PowerShell";
@@ -157,8 +171,8 @@ describe("bound native command authority", () => {
       expect(result).not.toHaveProperty("forceModal");
     }
   });
-  it.each(["bash", "powershell"] as const)("keeps proved literal evaluation exact-only on %s", (dialect) => {
-    const handle = prepareVerifiedShellCommand({ command: LITERAL_COMMAND, dialect, cwd });
+  it.each(["bash", "powershell"] as const)("keeps proved literal evaluation exact-only on %s", async (dialect) => {
+    const handle = await prepareVerifiedShellCommand({ command: LITERAL_COMMAND, dialect, cwd });
     expect(handle).toBeDefined();
     const approval = buildShellRuleApproval(dialect, LITERAL_COMMAND, cwd, { allow: true, deny: true }, undefined, handle);
     const wrapper = dialect === "bash" ? "Bash" : "PowerShell";
@@ -173,68 +187,68 @@ describe("bound native command authority", () => {
     expect(verifiedShellExecution(handle, { command: LITERAL_COMMAND, dialect, cwd })?.command).toContain("'/usr/bin/bash'");
   });
 
-  it.each(["git status", "git diff", "git show", "git -c core.fsmonitor=evil status", "git -C .. log", "env git log", "git log; git log", "git log | cat", "git log > out", "GIT_CONFIG_COUNT=1 git log", "python3 -I -S ordinary.py", "fish -N -c 'printf ready'", "node -e 'ready'", "pwsh -NoProfile -File ordinary.ps1", 'bash --noprofile --norc -p -c "$runtime"'])("retains default refusal for %s", (command) => {
-    for (const dialect of ["bash", "powershell"] as const) expect(prepareVerifiedShellCommand({ command, dialect, cwd })).toBeUndefined();
+  it.each(["git status", "git diff", "git show", "git -c core.fsmonitor=evil status", "git -C .. log", "env git log", "git log; git log", "git log | cat", "git log > out", "GIT_CONFIG_COUNT=1 git log", "python3 -I -S ordinary.py", "fish -N -c 'printf ready'", "node -e 'ready'", "pwsh -NoProfile -File ordinary.ps1", 'bash --noprofile --norc -p -c "$runtime"'])("retains default refusal for %s", async (command) => {
+    for (const dialect of ["bash", "powershell"] as const) expect(await prepareVerifiedShellCommand({ command, dialect, cwd })).toBeUndefined();
   });
 
-  it("refuses missing installations without a native probe", () => {
-    vi.mocked(resolveVerifiedExecutable).mockReturnValue(null);
-    expect(prepareVerifiedShellCommand({ command: LITERAL_COMMAND, dialect: "bash", cwd })).toBeUndefined();
-    expect(childProcess.execFileSync).not.toHaveBeenCalled();
+  it("refuses missing installations without a native probe", async () => {
+    vi.mocked(resolveVerifiedExecutableAsync).mockResolvedValue(null);
+    expect(await prepareVerifiedShellCommand({ command: LITERAL_COMMAND, dialect: "bash", cwd })).toBeUndefined();
+    expect(childProcess.execFile).not.toHaveBeenCalled();
   });
-  it("refuses unchecked configuration before consulting the image", () => {
+  it("refuses unchecked configuration before consulting the image", async () => {
     writeFileSync(join(cwd, ".git", "config"), "[include]\npath=/outside/config\n");
-    expect(prepareVerifiedShellCommand({ command: "git log", dialect: "bash", cwd })).toBeUndefined();
-    expect(resolveVerifiedExecutable).not.toHaveBeenCalled();
-    expect(childProcess.execFileSync).not.toHaveBeenCalled();
+    expect(await prepareVerifiedShellCommand({ command: "git log", dialect: "bash", cwd })).toBeUndefined();
+    expect(resolveVerifiedExecutableAsync).not.toHaveBeenCalled();
+    expect(childProcess.execFile).not.toHaveBeenCalled();
   });
-  it("suspends an issued repository plan while sandbox writes are outstanding", () => {
+  it("suspends an issued repository plan while sandbox writes are outstanding", async () => {
     const identity = { command: "git log", dialect: "bash" as const, cwd };
-    const handle = prepareVerifiedShellCommand(identity);
+    const handle = await prepareVerifiedShellCommand(identity);
     expect(handle).toBeDefined();
     const release = holdSandboxGitWrites([cwd]);
     try {
-      expect(prepareVerifiedShellCommand(identity)).toBeUndefined();
+      expect(await prepareVerifiedShellCommand(identity)).toBeUndefined();
       expect(verifiedShellExecution(handle, identity)).toBeUndefined();
       expect(() => verifiedShellEnvironment(handle, identity, {})).toThrow("Verified shell command is no longer available");
     } finally { release(); }
     expect(verifiedShellExecution(handle, identity)).toBeDefined();
   });
-  it("refuses a pre-existing reserved installation index path", () => {
+  it("refuses a pre-existing reserved installation index path", async () => {
     const executable = join(cwd, "verified-install", "git");
     mkdirSync(join(cwd, "verified-install"));
     writeFileSync(executable, "verified fixture");
     writeFileSync(join(cwd, "verified-install", ".ave-readonly-index"), "index must never be read");
-    vi.mocked(resolveVerifiedExecutable).mockReturnValue({ executable });
-    expect(prepareVerifiedShellCommand({ command: "git log", dialect: "bash", cwd })).toBeUndefined();
-    expect(childProcess.execFileSync).not.toHaveBeenCalled();
+    vi.mocked(resolveVerifiedExecutableAsync).mockResolvedValue({ executable });
+    expect(await prepareVerifiedShellCommand({ command: "git log", dialect: "bash", cwd })).toBeUndefined();
+    expect(childProcess.execFile).not.toHaveBeenCalled();
   });
 
-  it("requires a supported protected Git version", () => {
-    vi.mocked(resolveVerifiedExecutable).mockReturnValue({ executable: "/verified-older-git" });
-    vi.mocked(childProcess.execFileSync).mockReturnValue("git version 2.53.0\n");
-    expect(prepareVerifiedShellCommand({ command: "git log", dialect: "bash", cwd })).toBeUndefined();
+  it("requires a supported protected Git version", async () => {
+    vi.mocked(resolveVerifiedExecutableAsync).mockResolvedValue({ executable: "/verified-older-git" });
+    mockGitVersion("git version 2.53.0\n");
+    expect(await prepareVerifiedShellCommand({ command: "git log", dialect: "bash", cwd })).toBeUndefined();
   });
   it.each([
     ["below the floor", `git version ${GIT_VERSION_FLOOR.major}.${GIT_VERSION_FLOOR.minor - 1}.9\n`, false],
     ["below the floor in Git for Windows spelling", `git version ${GIT_VERSION_FLOOR.major}.${GIT_VERSION_FLOOR.minor - 1}.9.windows.1\n`, false],
     ["at the floor in Git for Windows spelling", `git version ${GIT_VERSION_FLOOR.major}.${GIT_VERSION_FLOOR.minor}.0.windows.1\n`, false],
     ["at the floor", `git version ${GIT_VERSION_FLOOR.major}.${GIT_VERSION_FLOOR.minor}.0\n`, true],
-  ] as const)("admits through the version probe only an engine %s that the floor accepts", (name, version, admitted) => {
+  ] as const)("admits through the version probe only an engine %s that the floor accepts", async (name, version, admitted) => {
     const command = "git log";
     for (const dialect of ["bash", "powershell"] as const) {
       // Each installation path has its own cached probe result.
-      vi.mocked(resolveVerifiedExecutable).mockReturnValue({ executable: `/verified-git-${dialect}-${name.replaceAll(" ", "-")}` });
-      vi.mocked(childProcess.execFileSync).mockClear().mockReturnValue(version);
-      const handle = prepareVerifiedShellCommand({ command, dialect, cwd });
-      expect(childProcess.execFileSync).toHaveBeenCalledWith(expect.stringContaining("/verified-git-"), ["--version"], expect.anything());
+      vi.mocked(resolveVerifiedExecutableAsync).mockResolvedValue({ executable: `/verified-git-${dialect}-${name.replaceAll(" ", "-")}` });
+      mockGitVersion(version);
+      const handle = await prepareVerifiedShellCommand({ command, dialect, cwd });
+      expect(childProcess.execFile).toHaveBeenCalledWith(expect.stringContaining("/verified-git-"), ["--version"], expect.anything(), expect.any(Function));
       expect(handle === undefined).toBe(!admitted);
       expect(buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true }, undefined, handle).exactRule === null).toBe(!admitted);
     }
   });
-  it.each(["git diff --cached --name-only", "git diff --staged --raw"])("never upgrades an index-reading command through a saved rule: %s", (command) => {
+  it.each(["git diff --cached --name-only", "git diff --staged --raw"])("never upgrades an index-reading command through a saved rule: %s", async (command) => {
     for (const dialect of ["bash", "powershell"] as const) {
-      const handle = prepareVerifiedShellCommand({ command, dialect, cwd });
+      const handle = await prepareVerifiedShellCommand({ command, dialect, cwd });
       expect(handle).toBeUndefined();
       expect(buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true }, undefined, handle).exactRule).toBeNull();
       const wrapper = dialect === "bash" ? "Bash" : "PowerShell";
@@ -245,31 +259,149 @@ describe("bound native command authority", () => {
       expect(permission(command, dialect, handle, false, true)).toMatchObject({ decision: "deny", reasonCode: "no-approver" });
     }
   });
-  it("bounds input before parsing or installation discovery", () => {
-    expect(prepareVerifiedShellCommand({ command: "bash " + "x".repeat(2000), dialect: "bash", cwd })).toBeUndefined();
-    expect(resolveVerifiedExecutable).not.toHaveBeenCalled();
+  it("bounds input before parsing or installation discovery", async () => {
+    expect(await prepareVerifiedShellCommand({ command: "bash " + "x".repeat(2000), dialect: "bash", cwd })).toBeUndefined();
+    expect(resolveVerifiedExecutableAsync).not.toHaveBeenCalled();
   });
-  it("rejects forged and mismatched sidecars", () => {
+  it("rejects forged and mismatched sidecars", async () => {
     const identity = { command: LITERAL_COMMAND, dialect: "bash" as const, cwd };
-    const handle = prepareVerifiedShellCommand(identity);
+    const handle = await prepareVerifiedShellCommand(identity);
     expect(handle).toBeDefined();
     expect(verifiedShellExecution({} as VerifiedShellCommand, identity)).toBeUndefined();
     expect(verifiedShellExecution(handle, { ...identity, command: "git log" })).toBeUndefined();
     expect(verifiedShellExecution(handle, { ...identity, cwd: join(cwd, "other") })).toBeUndefined();
     expect(verifiedShellExecution(handle, { ...identity, dialect: "powershell" })).toBeUndefined();
   });
-  it("removes loader overrides from the complete child environment after wrapping", () => {
+  it("removes loader overrides from the complete child environment after wrapping", async () => {
     const identity = { command: LITERAL_COMMAND, dialect: "bash" as const, cwd };
-    const handle = prepareVerifiedShellCommand(identity);
+    const handle = await prepareVerifiedShellCommand(identity);
     expect(handle).toBeDefined();
     expect(verifiedShellEnvironment(handle, identity, { HOME: cwd, LD_PRELOAD: "evil", DYLD_INSERT_LIBRARIES: "evil", ld_library_path: "evil" })).toEqual({ HOME: cwd });
     expect(() => verifiedShellEnvironment({} as VerifiedShellCommand, identity, {})).toThrow("Verified shell command is no longer available for this invocation");
   });
-  it("refuses pathspecs and retains their visible floors", () => {
+  it("refuses pathspecs and retains their visible floors", async () => {
     const identity = { command: "git log '.ssh/config'", dialect: "bash" as const, cwd };
-    const handle = prepareVerifiedShellCommand(identity);
+    const handle = await prepareVerifiedShellCommand(identity);
     expect(handle).toBeUndefined();
     expect(inspectShellCommand(identity.command, cwd).outcome).toBe("visible-floor");
     expect(buildShellRuleApproval(identity.dialect, identity.command, cwd, { allow: true, deny: true }, undefined, handle).exactRule).toBeNull();
+  });
+});
+
+describe("asynchronous Git lookup", () => {
+  const timeout = Object.assign(new Error("Command failed: git --version"), { killed: true, signal: "SIGTERM" });
+  const oversize = Object.assign(new RangeError("stdout maxBuffer length exceeded"), { code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" });
+  const launch = Object.assign(new Error("spawn EACCES"), { code: "EACCES" });
+  const exit = Object.assign(new Error("Command failed: git --version"), { code: 128 });
+
+  it.each([
+    ["non-zero exit", exit], ["timeout", timeout], ["output limit", oversize], ["launch failure", launch],
+    ["unparseable output", "not a version\n"], ["older engine", "git version 2.53.0\n"],
+  ] as const)("refuses on %s and caches the refusal for that executable", async (name, outcome) => {
+    for (const dialect of ["bash", "powershell"] as const) {
+      vi.mocked(resolveVerifiedExecutableAsync).mockResolvedValue({ executable: `/verified-git-probe-${dialect}-${name.replaceAll(" ", "-")}` });
+      mockGitVersion(outcome);
+      expect(await prepareVerifiedShellCommand({ command: "git log", dialect, cwd })).toBeUndefined();
+      expect(childProcess.execFile).toHaveBeenCalledTimes(1);
+      expect(await prepareVerifiedShellCommand({ command: "git log", dialect, cwd })).toBeUndefined();
+      expect(childProcess.execFile).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("probes with the synchronous probe's working directory, environment and limits", async () => {
+    vi.mocked(resolveVerifiedExecutableAsync).mockResolvedValue({ executable: "/verified-options/git" });
+    expect(await prepareVerifiedShellCommand({ command: "git log", dialect: "bash", cwd })).toBeDefined();
+    const { TOOL_TIMEOUT_POLICY } = await import("../../shared/tool-timeout-policy.js");
+    expect(childProcess.execFile).toHaveBeenCalledWith("/verified-options/git", ["--version"], expect.objectContaining({
+      encoding: "utf8", cwd: dirname("/verified-options/git"), timeout: TOOL_TIMEOUT_POLICY.windowsAclRequestMs, maxBuffer: 4096,
+      env: expect.objectContaining({ LANG: "C", LC_ALL: "C", GIT_INDEX_FILE: join(dirname("/verified-options/git"), ".ave-readonly-index") }),
+    }), expect.any(Function));
+  });
+
+  it("shares one in-flight version probe between concurrent preparations", async () => {
+    vi.mocked(resolveVerifiedExecutableAsync).mockResolvedValue({ executable: "/verified-concurrent/git" });
+    const identity = { command: "git log", dialect: "bash" as const, cwd };
+    const [first, second] = await Promise.all([prepareVerifiedShellCommand(identity), prepareVerifiedShellCommand(identity)]);
+    expect(first).toBeDefined();
+    expect(second).toBeDefined();
+    expect(childProcess.execFile).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["EACCES", "ELOOP", "ENOTDIR"])("refuses an index path whose absence cannot be proven (%s) before probing", async (code) => {
+    vi.mocked(resolveVerifiedExecutableAsync).mockResolvedValue({ executable: `/verified-index-${code}/git` });
+    vi.mocked(fsPromises.lstat).mockRejectedValueOnce(Object.assign(new Error(code), { code }));
+    expect(await prepareVerifiedShellCommand({ command: "git log", dialect: "bash", cwd })).toBeUndefined();
+    expect(fsPromises.lstat).toHaveBeenCalledWith(join(dirname(`/verified-index-${code}/git`), ".ave-readonly-index"));
+    expect(childProcess.execFile).not.toHaveBeenCalled();
+  });
+
+  it.each(["bash", "powershell"] as const)("refuses a missing Git installation before the index or version checks on %s", async (dialect) => {
+    vi.mocked(resolveVerifiedExecutableAsync).mockResolvedValue(null);
+    expect(await prepareVerifiedShellCommand({ command: "git log", dialect, cwd })).toBeUndefined();
+    expect(resolveHostGit).toHaveBeenCalledWith("verified");
+    expect(fsPromises.lstat).not.toHaveBeenCalled();
+    expect(childProcess.execFile).not.toHaveBeenCalled();
+  });
+
+  it("refuses verified Git on a platform without a protected installation policy, without I/O", async () => {
+    setProcessPlatform("win32");
+    expect(await prepareVerifiedShellCommand({ command: "git log", dialect: "bash", cwd })).toBeUndefined();
+    expect(resolveVerifiedExecutableAsync).not.toHaveBeenCalled();
+    expect(childProcess.execFile).not.toHaveBeenCalled();
+  });
+
+  it("proves PowerShell argv only from the recorded literal argv and binds the same plan", async () => {
+    const identity = { command: "git log --oneline -n 3", dialect: "powershell" as const, cwd };
+    const handle = await prepareVerifiedShellCommand(identity);
+    expect(handle).toBeDefined();
+    expect(resolveVerifiedExecutableAsync).toHaveBeenCalledTimes(1);
+    // The bash dialect proves the same argv in one pass; both bind one plan.
+    const bash = { ...identity, dialect: "bash" as const };
+    const bashCommand = verifiedShellExecution(await prepareVerifiedShellCommand(bash), bash)?.command;
+    expect(bashCommand).toContain(`'--git-dir=${join(cwd, ".git")}'`);
+    expect(verifiedShellExecution(handle, identity)?.command).toBe(`& ${bashCommand}`);
+  });
+
+  it.each(["bash", "powershell"] as const)("issues no plan when cancelled during the asynchronous lookup on %s", async (dialect) => {
+    const controller = new AbortController();
+    vi.mocked(resolveVerifiedExecutableAsync).mockImplementation(async (candidates) => {
+      controller.abort();
+      return candidates[0] === undefined ? null : { executable: candidates[0].executable };
+    });
+    expect(await prepareVerifiedShellCommand({ command: "git log", dialect, cwd }, undefined, controller.signal)).toBeUndefined();
+    expect(fsPromises.lstat).not.toHaveBeenCalled();
+    vi.mocked(resolveVerifiedExecutableAsync).mockImplementation(async (candidates) => candidates[0] === undefined ? null : { executable: candidates[0].executable });
+    expect(await prepareVerifiedShellCommand({ command: "git log", dialect, cwd }, undefined, new AbortController().signal)).toBeDefined();
+  });
+
+  it.each([["rejects", () => vi.mocked(inspectGitRepositoryAsync).mockRejectedValueOnce(new Error("worker failed"))],
+    ["refuses", () => vi.mocked(inspectGitRepositoryAsync).mockResolvedValueOnce(null)]] as const)(
+    "refuses output when the post-run repository inspection %s", async (_name, arrange) => {
+    const identity = { command: "git log", dialect: "bash" as const, cwd };
+    const handle = await prepareVerifiedShellCommand(identity);
+    expect(handle).toBeDefined();
+    arrange();
+    expect(await verifiedShellResultRefusal(handle, identity)).toBe("Read-only Git output discarded: repository metadata changed during execution.");
+    expect(await verifiedShellResultRefusal(handle, identity)).toBeUndefined();
+  });
+
+  it("refuses before resolving the installation when the pre-run inspection refuses", async () => {
+    vi.mocked(inspectGitRepositoryAsync).mockResolvedValueOnce(null);
+    expect(await prepareVerifiedShellCommand({ command: "git log", dialect: "bash", cwd })).toBeUndefined();
+    expect(resolveVerifiedExecutableAsync).not.toHaveBeenCalled();
+  });
+
+  // Locks direct calls only: workspace availability (host-git.ts) stays a synchronous in-process check.
+  it("calls no synchronous child-process, filesystem, installation-proof or repository-inspection API directly", async () => {
+    const fs = await vi.importActual<typeof import("node:fs")>("node:fs");
+    for (const module of ["../verified-shell-command.ts", "../rules/verified-launcher-argv.ts"]) {
+      const source = fs.readFileSync(new URL(module, import.meta.url), "utf8");
+      expect(source, module).not.toMatch(/\b[\w$]+Sync\b/);
+      expect(source, module).not.toMatch(/from "node:fs"/);
+      expect(source, module).not.toMatch(/\bresolveVerifiedExecutable\b/);
+      expect(source, module).not.toMatch(/\binspectGitRepository\b/);
+      const childProcessImport = /import \{([^}]*)\} from "node:child_process"/.exec(source)?.[1] ?? "";
+      expect(childProcessImport.split(",").map((name) => name.trim()).filter(Boolean).every((name) => name === "execFile")).toBe(true);
+    }
   });
 });

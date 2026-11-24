@@ -40,6 +40,7 @@ import { prepareSandboxBareRepositoryCleanup } from "./sandbox-bare-repository-c
 import { createLogger } from "../lib/logger.js";
 import { createSerialQueue } from "../lib/with-file-lock.js";
 import { errorMessage } from "../shared/error-message.js";
+import { findHostProgram, hostProgramSearchDirectories } from "../shared/host-program-path.js";
 import { t } from "../i18n/index.js";
 import { hostDirectoryFloorPierces } from "../plugins/sandbox-authority.js";
 import { resolvePluginPaths } from "../plugins/plugin-paths.js";
@@ -242,6 +243,12 @@ export interface WrapOptions {
   readonly denyUnixSockets?: boolean;
 }
 
+const DEFAULT_POSIX_WRAPPER_SHELL = "/bin/bash";
+
+function wrapperShell(binShell: WrapOptions["binShell"]): WrapOptions["binShell"] {
+  return binShell ?? (process.platform === "win32" ? undefined : DEFAULT_POSIX_WRAPPER_SHELL);
+}
+
 // What every wrap must carry: the invocation's egress token (`egress-invocations.ts`), passed to ASRT as `commandId`. ASRT records the proxy denies of the wrapped process under it and puts it in the proxy username, so a deny can be attributed to the tool call, terminal tab or worker that opened the connection. Without it ASRT keys on the command text, which two invocations can share and which the violation store compares on its first 100 characters only, so it is required, not defaulted.
 export interface AttributedWrapOptions extends WrapOptions {
   readonly commandId: string;
@@ -350,6 +357,7 @@ interface WindowsWrapDenies {
 type WindowsDocumentsQuery = (signal?: AbortSignal) => Promise<string>;
 
 interface AsrtSandboxSession {
+  readonly linuxWrapperPrograms?: LinuxWrapperPrograms;
   readonly queryWindowsDocumentsPath?: WindowsDocumentsQuery;
   sharedWindowsDocumentsPath?: () => string;
   readonly windowsLiveGrants: Map<string, WindowsLiveGrantCounts>;
@@ -2013,6 +2021,40 @@ function buildSensitiveWriteFloor(userDataDir: string | undefined, resolveDocume
   return { entries: out, bounded: profiles?.bounded ?? true };
 }
 
+interface LinuxWrapperPrograms {
+  readonly bwrapPath: string;
+  readonly socatPath: string;
+  readonly ripgrep: { readonly command: string };
+}
+
+function discoverLinuxWrapperPrograms(): { programs: LinuxWrapperPrograms } | { errors: string[] } {
+  const bwrapPath = findHostProgram("bwrap");
+  const socatPath = findHostProgram("socat");
+  const rg = findHostProgram("rg");
+  if (bwrapPath && socatPath && rg) return { programs: { bwrapPath, socatPath, ripgrep: { command: rg } } };
+
+  const searched = hostProgramSearchDirectories().join(":") || "(no fully qualified entries)";
+  const errors: string[] = [];
+  if (rg === null) errors.push(`ripgrep (rg) not found on PATH. Searched ${searched}`);
+  if (bwrapPath === null) errors.push(`bubblewrap (bwrap) not installed on PATH. Searched ${searched}`);
+  if (socatPath === null) errors.push(`socat not installed on PATH. Searched ${searched}`);
+  return { errors };
+}
+
+function requireLinuxWrapperPrograms(): LinuxWrapperPrograms {
+  const result = discoverLinuxWrapperPrograms();
+  if ("errors" in result) throw new Error(result.errors.join("\n"));
+  return result.programs;
+}
+
+function configuredLinuxWrapperPrograms(): LinuxWrapperPrograms | undefined {
+  if (process.platform !== "linux") return undefined;
+  if (sandboxSession?.linuxWrapperPrograms !== undefined) return sandboxSession.linuxWrapperPrograms;
+  // Tests can compose a configuration outside a session. Initialization requires every program before installing it.
+  const result = discoverLinuxWrapperPrograms();
+  return "programs" in result ? result.programs : undefined;
+}
+
 // Build a fully-resolved SandboxRuntimeConfig from TRUSTED settings. Deny-by-default: when no `allowedDomains` are supplied the network section has an empty allow-list, which ASRT treats as "no egress". Weakening flags default to `false`/absent and are only set when explicitly present in the trusted `weakening` object. @internal Exported for unit tests only (the Windows-logic tests assert the win32 `windows.proxyPortRange` emission with `process.platform` forced). Not part of the module's runtime API — boot uses initializeAsrtSandbox.
 export function buildSandboxConfig(
   trustedSettings: TrustedSandboxSettings,
@@ -2132,6 +2174,7 @@ export function buildSandboxConfig(
     filesystem: finishFilesystemPolicy(filesystem, trustedSettings, trustedSettings.denyWrite ?? [], hasConfiguredDenies(trustedSettings)) as FilesystemConfig,
     ...(windows !== undefined ? { windows } : {}),
     ...(applySeccompPath !== undefined ? { seccomp: { applyPath: applySeccompPath } } : {}),
+    ...configuredLinuxWrapperPrograms(),
     ...(process.platform === "darwin" || process.platform === "linux"
       ? { javaAgentJarPath: getVendoredJavaProxyAgentJarPath() }
       : {}),
@@ -2297,10 +2340,10 @@ async function verifyAsrtRuntime(
   try {
     await openEgressListener(SandboxManager, "sandbox runtime probe", invocation.token);
     listenerOpened = true;
-    // The probe covers the same attributed listener path as regular shells. No binShell/customConfig override: this is the exact initialized wrapper configuration used by regular tool execution, with the fixed `true` probe.
+    // The probe uses the regular wrapper's default shell and initialized configuration with the fixed `true` command.
     const probe = await SandboxManager.wrapWithSandboxArgv(
       ASRT_LINUX_RUNTIME_PROBE_COMMAND,
-      undefined,
+      DEFAULT_POSIX_WRAPPER_SHELL,
       undefined,
       abortController.signal,
       process.cwd(),
@@ -2486,6 +2529,7 @@ async function initializeSandboxRuntime(
   }
   const SandboxManager = await loadSandboxManager();
   startupSignal?.throwIfAborted();
+  const linuxWrapperPrograms = process.platform === "linux" ? requireLinuxWrapperPrograms() : undefined;
   const backgroundInitialization = process.platform === "win32"
     && trustedSettings.windows?.backgroundInitialization === true
     && trustedSettings.windows.externalConfinement !== true;
@@ -2494,7 +2538,7 @@ async function initializeSandboxRuntime(
     : trustedSettings;
   // Remember the base settings so worker-UDS register/unregister can rebuild the SHARED config additively (see the WORKER UDS header). On a fresh init there are no registered worker sockets yet, so the effective config equals the base; withWorkerUnixSockets is a no-op until a worker registers.
   _baseTrustedSettings = initialSettings;
-  sandboxSession = { queryWindowsDocumentsPath, sharedWindowsDocumentsPath: trustedSettings.resolveWindowsDocumentsPath,
+  sandboxSession = { linuxWrapperPrograms, queryWindowsDocumentsPath, sharedWindowsDocumentsPath: trustedSettings.resolveWindowsDocumentsPath,
     windowsLiveGrants: new Map(), windowsLiveGrantCount: 0, windowsLiveGrantRevision: 0, windowsWrapDenyRead: new Set(), windowsWrapDenyWrite: new Map(), windowsPendingWrapDenies: new Set(), windowsDenyRevision: 0 };
   const session = sandboxSession;
   let fullConfig: SandboxRuntimeConfig;
@@ -2571,6 +2615,18 @@ export async function checkAsrtDependencies(): Promise<{
     return mod.checkWindowsDependenciesAsync({ srtWin });
   }
   const SandboxManager = await loadSandboxManager();
+  if (process.platform === "linux" && SandboxManager.isSupportedPlatform()) {
+    const result = discoverLinuxWrapperPrograms();
+    if ("errors" in result) return { errors: result.errors, warnings: [] };
+    const [{ checkLinuxDependencies }, { getApplySeccompBinaryPathAsync }] = await Promise.all([
+      import("@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js"),
+      import("@anthropic-ai/sandbox-runtime/dist/sandbox/generate-seccomp-filter.js"),
+    ]);
+    const { bwrapPath, socatPath } = result.programs;
+    const applyPath = getVendoredApplySeccompPath();
+    await getApplySeccompBinaryPathAsync(applyPath);
+    return checkLinuxDependencies({ bwrapPath, socatPath, seccompConfig: { applyPath } });
+  }
   return SandboxManager.checkDependenciesAsync();
 }
 
@@ -2610,7 +2666,7 @@ export async function wrapToolCommand(
     assertWindowsSession(session);
     const pendingWrap = SandboxManager.wrapWithSandboxArgv(
       command,
-      options.binShell,
+      wrapperShell(options.binShell),
       customConfig,
       options.abortSignal,
       undefined,
@@ -2717,21 +2773,17 @@ export function ensureSandboxTempPrincipalDir(principal: SandboxTempPrincipal): 
   return { dir, root };
 }
 
-// The launcher that sets a principal's temp directory: `/usr/bin/env TMPDIR=<dir> TMP=<dir> TEMP=<dir> <command> <args>`, run INSIDE the wrap. ASRT writes its own `TMPDIR=` (from `CLAUDE_CODE_TMPDIR`) ahead of the sandboxed command on both platforms — `env` arguments on macOS, a bwrap `--setenv` on Linux — so a value in the spawn environment never reaches the child; one assigned by a process already inside the sandbox does. `env` reads an operand containing `=` as an assignment, so a command with one would be split rather than run; it is refused.
+// The sandbox wrapper supplies its own TMPDIR. Set the principal's temp variables inside the sandbox.
 export function sandboxTempEnvLaunch(
   dir: string,
   command: string,
   args: readonly string[],
 ): { readonly command: string; readonly args: string[] } {
-  if (command.includes("=")) {
-    throw new Error(
-      `sandbox temp: the command '${command}' contains '=', which env(1) would read as an assignment; `
-        + "move it to a path without '='",
-    );
-  }
+  // env(1) reads an executable containing '=' as an assignment. Pass that pathname as a positional argument.
+  const launch = command.includes("=") ? ["/bin/bash", "-c", 'exec -- "$@"', "sandbox-temp", command, ...args] : [command, ...args];
   return {
     command: SANDBOX_TEMP_ENV_LAUNCHER,
-    args: [`TMPDIR=${dir}`, `TMP=${dir}`, `TEMP=${dir}`, command, ...args],
+    args: [`TMPDIR=${dir}`, `TMP=${dir}`, `TEMP=${dir}`, ...launch],
   };
 }
 
@@ -2806,7 +2858,7 @@ async function wrapLongLivedCommand(
     assertWindowsSession(session);
     const pendingWrap = SandboxManager.wrapWithSandboxArgv(
       command,
-      options.binShell,
+      wrapperShell(options.binShell),
       customConfig,
       options.abortSignal,
       undefined,

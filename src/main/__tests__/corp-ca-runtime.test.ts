@@ -9,6 +9,8 @@ vi.mock("node:child_process", () => ({
   execFile: vi.fn(),
 }));
 
+// The file system is faked, so the trust store tool is resolved by name rather than looked up on this host.
+vi.mock("../../shared/host-program-path.js", () => ({ resolveHostProgram: (name: string) => `/usr/bin/${name}` }));
 vi.mock("node:fs", () => ({
   closeSync: vi.fn(),
   fstatSync: vi.fn(),

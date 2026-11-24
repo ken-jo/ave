@@ -1,12 +1,16 @@
-// windows-native: the Windows job runs this file from config/windows-native-tests.txt.
-import { readFileSync } from "node:fs";
+// The process-wide Windows setting that stops a bare program name from being looked up in the current directory.
+import { spawnSync } from "node:child_process";
+import { copyFileSync, mkdtempSync, readFileSync, realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { MAIN_ENTRY_POINTS } from "../../../scripts/lib/main-entry-points.mjs";
 // @ts-expect-error standalone build utilities have no declaration output
 import { mxcVerificationEntries } from "../../../scripts/lib/mxc-verification-build.mjs";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { win32SystemBinary } from "../../shared/windows-system-path.js";
 
 const SWITCH = "NoDefaultCurrentDirectoryInExePath";
 const platform = process.platform;
@@ -35,6 +39,11 @@ it("elsewhere the environment is left as it is", async () => {
   setProcessPlatform("linux");
   await import("../bare-program-lookup.js");
   expect(process.env[SWITCH]).toBeUndefined();
+});
+
+it("the headless host imports the lookup first", () => {
+  const source = readFileSync(join(root, "src", "headless-host.ts"), "utf8");
+  expect(/^import\s+(?:[^"']*from\s+)?["']([^"']+)["']/mu.exec(source)?.[1]).toBe("./main/bare-program-lookup.js");
 });
 
 describe("every esbuild entry imports the lookup before any other module", () => {
@@ -70,5 +79,30 @@ describe("every esbuild entry imports the lookup before any other module", () =>
   it("an entry that imports anything before it is found", () => {
     const planted = (file: string): string => file === "src/headless.ts" ? `import { homedir } from "node:os";\n${source(file)}` : source(file);
     expect(problems(planted)).toEqual(["src/headless.ts"]);
+  });
+});
+
+describe.runIf(process.platform === "win32")("a program planted in the current directory", () => {
+  const PROBE = "ave-planted-probe";
+  let planted: string;
+  const cwd = process.cwd();
+  beforeAll(() => {
+    planted = realpathSync(mkdtempSync(join(tmpdir(), "ave-program-lookup-")));
+    copyFileSync(win32SystemBinary("hostname.exe"), join(planted, `${PROBE}.exe`));
+    process.chdir(planted);
+  });
+  afterAll(async () => {
+    process.chdir(cwd);
+    await cleanupTmpDir(planted);
+  });
+  const launch = () => spawnSync(PROBE, [], { windowsHide: true, env: { SystemRoot: process.env.SystemRoot, PATH: win32SystemBinary("") } });
+
+  it("runs without the variable (control)", () => {
+    expect(launch().status).toBe(0);
+  });
+
+  it("never runs with the variable in this process, even when the child environment omits it", () => {
+    process.env[SWITCH] = "1";
+    expect((launch().error as NodeJS.ErrnoException | undefined)?.code).toBe("ENOENT");
   });
 });

@@ -12,6 +12,8 @@ export const MAIN_ENTRY_POINTS = Object.freeze({
   // A confined plugin child process runs this file directly, so it is its own entry and no module inside main.js.
   "plugin-child-main": "src/plugins/isolation/plugin-child-main.ts",
   "memory-map-worker": "src/main/memory-map/worker-main.ts",
+  // Verified shell commands inspect repository evidence in this resident worker thread.
+  "git-repository-inspection-worker": "src/permissions/rules/git-repository-inspection-worker-main.ts",
   "memory-map-child": "src/main/memory-map/inference-child-main.ts",
   "preview-document-child-main": "src/tools/preview-document-child-main.ts",
 });
