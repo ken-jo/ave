@@ -396,8 +396,10 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
     }
   }
 
+  let command: string;
   let sandboxHome: ReturnType<typeof createSandboxProcessHome>;
   try {
+    command = resolveHostProgram(spec.command, baseEnv);
     sandboxHome = createSandboxProcessHome();
   } catch (err) {
     releaseWorkerReservation();
@@ -420,7 +422,7 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
   try {
     // Assemble the command DEFENSIVELY: shell-quote the binary + every arg so a path with spaces/metacharacters cannot mis-split. ASRT runs this branch under a POSIX shell (mac/linux). The per-command wrap carries ONLY the filesystem jail (the `--bind`).
     ({ child } = await spawnConfinedChild({
-      command: spec.command,
+      command,
       args,
       label: `worker:${safePlugin}:${safeWorker}:asrt`,
       egressOwner: { kind: "worker", role: "worker", pluginId: spec.pluginId, instanceId: spec.workerId },

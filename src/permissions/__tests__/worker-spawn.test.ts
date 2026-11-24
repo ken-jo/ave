@@ -436,6 +436,37 @@ describe("spawnWorker — gate OFF (default)", () => {
 // Gate ON (macOS) — wrapped spawn + state directory + reviewer; no socket on any platform
 
 describe("spawnWorker — gate ON (macOS)", () => {
+  it.each([false, true])("resolves the same POSIX worker from PATH with confinement %s", async (confined) => {
+    setProcessPlatform("darwin");
+    gateActive = confined;
+    const command = "ave-worker-on-path";
+    const programs = installProgramsOnPath([command], "darwin");
+    const child = new StubWorkerChild();
+    spawnMock.mockReturnValueOnce(child);
+    wrapWorkerCommandMock.mockResolvedValueOnce({ argv: ["/bin/bash", "-c", "wrapped"], env: {} });
+    try {
+      const worker = await spawnWorker(workerOptions({ command, env: { PATH: `:.:relative:${programs.dir}` } }));
+      if (confined) expect(wrapWorkerCommandMock.mock.calls[0]?.[0]).toContain(`'${programs.program(command)}'`);
+      else expect(spawnMock.mock.calls[0]?.[0]).toBe(programs.program(command));
+      worker.stop();
+      child.emit("exit", 0, null);
+    } finally {
+      await programs.restore();
+    }
+  });
+
+  it.each([false, true])("refuses a POSIX worker found only through relative PATH entries with confinement %s", async (confined) => {
+    setProcessPlatform("darwin");
+    gateActive = confined;
+    const command = "ave-planted-worker";
+    await withPlantedProgram([command], async () => {
+      await expect(spawnWorker(workerOptions({ command, env: { PATH: ":.:relative" } })))
+        .rejects.toThrow(/was not found on PATH/u);
+    });
+    expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
   it.each([false, true])("refuses a Windows current-drive-relative command with confinement %s", async (confined) => {
     setProcessPlatform("win32");
     gateActive = confined;

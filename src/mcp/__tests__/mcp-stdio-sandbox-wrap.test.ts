@@ -1,6 +1,6 @@
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original(), "linux"));
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
-// The platform is simulated, so the plain route's PATH lookup is pinned by name rather than run against this host.
+// The platform is simulated, so PATH lookup is stubbed independently of this host's filesystem.
 vi.mock("../../shared/host-program-path.js", async (original) => ({
   ...await original<typeof import("../../shared/host-program-path.js")>(),
   findHostProgram: (name: string) => `/resolved/${name}`,
@@ -14,6 +14,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { basename, join } from "node:path";
 import { homedir } from "node:os";
 import { egressInvocationOwner } from "../../permissions/egress-invocations.js";
+import * as hostPrograms from "../../shared/host-program-path.js";
 
 const spawnMock = vi.fn<
   (cmd: string, args?: readonly string[], opts?: unknown) => unknown
@@ -280,6 +281,25 @@ describe("StdioTransport — boot sandbox gate undecided (fail closed)", () => {
 });
 
 describe("StdioTransport ASRT wrap — gate ON", () => {
+  it.each([false, true])("refuses an unresolved POSIX executable with confinement %s", async (confined) => {
+    gateActive = confined;
+    const path = ":.:relative";
+    const command = "missing-mcp";
+    const lookup = vi.spyOn(hostPrograms, "resolveHostProgram").mockImplementationOnce(() => {
+      throw new hostPrograms.HostProgramNotFoundError(`Program '${command}' was not found on PATH`);
+    });
+    try {
+      const gov = governanceWithPolicy(buildPolicy([stdioApproval("missing", command)]));
+      const client = new McpClient({ id: "missing", transport: "stdio", command, env: { PATH: path } }, gov, new ToolRegistry(), unusedNetworkFetch);
+      await expect(client.connect()).rejects.toThrow(/was not found on PATH/u);
+      expect(lookup).toHaveBeenCalledWith(command, expect.objectContaining({ PATH: path }));
+      expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
+      expect(spawnMock).not.toHaveBeenCalled();
+    } finally {
+      lookup.mockRestore();
+    }
+  });
+
   it.each([false, true])("refuses a Windows current-drive-relative command with confinement %s", async (confined) => {
     setProcessPlatform("win32");
     gateActive = confined;
@@ -344,7 +364,7 @@ describe("StdioTransport ASRT wrap — gate ON", () => {
     // names the shared root), then the command + args, every token shell-quoted (defensive against spaces/injection).
     const tempDir = join(SANDBOX_TEMP_ROOT, sandboxTempPrincipalDirName({ kind: "mcp", id: "fs" }));
     expect(cmdline).toBe(
-      `'/usr/bin/env' 'TMPDIR=${tempDir}' 'TMP=${tempDir}' 'TEMP=${tempDir}' 'ave-mcp-fs' '--root' '/tmp'`,
+      `'/usr/bin/env' 'TMPDIR=${tempDir}' 'TMP=${tempDir}' 'TEMP=${tempDir}' '/resolved/ave-mcp-fs' '--root' '/tmp'`,
     );
     // Write-jail = the server's temp directory + the fresh process HOME + per-server sandbox root. The shared temp root is not granted.
     expect(options.filesystem.allowWrite).toEqual([tempDir, SANDBOX_HOME, sandboxRoot, pluginDataDir]);

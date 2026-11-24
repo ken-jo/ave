@@ -1855,6 +1855,7 @@ class StdioTransport implements McpTransport {
       return;
     }
 
+    const command = resolveHostProgram(spawnCommand.command, baseEnv);
     const sandboxHome = createSandboxProcessHome();
 
     // FAIL-CLOSED filesystem jail (deny-by-default A.a): the host populates `sandboxRoot` at connect time. If it is somehow still absent (e.g. a direct StdioTransport construction in a
@@ -1866,7 +1867,7 @@ class StdioTransport implements McpTransport {
     let wrapped = false;
     try {
       const { argv, env, egress } = await wrapBundledCommand({
-        command: spawnCommand.command,
+        command,
         args: spawnCommand.args,
         sandboxHome,
         allowWrite,
