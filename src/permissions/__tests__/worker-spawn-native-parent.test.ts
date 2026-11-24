@@ -124,7 +124,8 @@ describe.skipIf(process.platform !== "win32")("contained worker under a real plu
     const worker = await startWorker();
     const exited = new Promise<unknown>((resolve) => { worker.onExit(resolve); });
     expect(state.natives).toHaveLength(3);
-    const workerNative = state.natives[2]!;
+    const workerNative = state.natives[2];
+    if (workerNative === undefined) throw new Error("the worker reached no native process");
     expect(workerNative.dispose).not.toHaveBeenCalled();
     replacement.link.terminate("stop");
     await replacement.waitForExit();
@@ -135,9 +136,10 @@ describe.skipIf(process.platform !== "win32")("contained worker under a real plu
   it("treats a parent row 2 has released as gone, though its adapter never reported termination", async () => {
     await startPluginChild();
     const parent = liveMxcPluginChildHolder(PLUGIN);
+    if (parent === undefined) throw new Error("the plugin child published no parent");
     // Release reported by row 2 alone: no exit reaches the adapter, so its withdrawal never runs.
     state.holdCompletion = true;
-    await parent!.release();
+    await parent.release();
     await expect(startWorker()).rejects.toThrow("refusing a container worker whose plugin has no live container process");
     expect(liveMxcPluginChildHolder(PLUGIN)).toBeUndefined();
     expect(state.natives).toHaveLength(1);
