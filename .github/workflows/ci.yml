@@ -934,7 +934,12 @@ jobs:
       AVE_VITEST_MAX_WORKERS: "3"
       AVE_WINDOWS_TEST_SHARD: ${{ matrix.shard }}
     steps:
-      - *windows-checkout
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: ave
+          fetch-depth: 2
+          fetch-tags: true
+          persist-credentials: false
       - *windows-node
       - *windows-docs-impact
       - *windows-bun
