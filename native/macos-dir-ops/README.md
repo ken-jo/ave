@@ -155,9 +155,7 @@ stdin.
   if rollback could not move the mismatched target back exclusively.
 - A stopped copy moves the part aside, verifies against the writing
   descriptor, and unlinks only at a fresh exclusively obtained name of
-  the form `.<32 hex digits>.removing`. A volume without exclusive rename
-  may isolate the entry under a fresh name using plain rename. It keeps
-  that entry for recovery. A copy-back writes an exclusive new part and
+  the form `.<32 hex digits>.removing`. A copy-back writes an exclusive new part and
   verifies the part name against the target descriptor before trying to
   retire the isolated source. An incomplete copy-back is left in place.
 - A cancelled, failed or refused copy can add ` left` when a file remains.

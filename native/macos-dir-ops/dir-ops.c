@@ -321,8 +321,8 @@ static void fresh_hidden_name(char name[HIDDEN_NAME_SIZE]) {
   memcpy(name + 1 + 2 * sizeof random, ".removing", sizeof ".removing");
 }
 
-// The file a copy writes, known by a descriptor of its own on it, kept until the helper ends. Its identity is taken through that
-// descriptor when the file is cleaned up, not when it is created: exFAT gives a new file its lasting file id only once it is written.
+// The file a copy writes, known by a descriptor of its own on it, kept until the helper ends. Its identity is read through that
+// descriptor right after creation and announced as `writing`; volumes without lasting file ids (exFAT, FAT) are refused before this.
 struct written_file {
   int fd;
 };
@@ -1108,8 +1108,14 @@ static int run_copy(char **argv) {
   }
   // The commit rename verified the target against the writing descriptor. What the published file is now, read from that descriptor;
   // the caller records it before it treats the commit as settled, so nothing but the old target's retirement follows.
+  // Without that identity the commit cannot be recorded: report the failure instead of substituting the pre-commit stamp. The
+  // old target is still retired as after any commit; the host treats a commit without `published` as a contract violation.
   struct stat published;
-  if (fstat(written.fd, &published) != 0) published = final;
+  if (fstat(written.fd, &published) != 0) {
+    const int code = errno;
+    finish_copy_target(to, target, aside, old, &old_identity, 1);
+    return failed(code);
+  }
   say_token("published", &published);
   finish_copy_target(to, target, aside, old, &old_identity, 1);
   return done("committed");
