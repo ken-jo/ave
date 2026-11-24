@@ -129,8 +129,8 @@ export interface OwnedDir {
   createFile(name: string, options?: { replace?: boolean }): { fd: number; id: NodeId };
   /** Written beside the name and renamed over it, so a link planted at either name is replaced, not written through. */
   writeFileAtomic(name: string, data: string): void;
-  /** Reads a regular file by its verified identity. With `expectedId`, the file must still have that identity. */
-  readFile(name: string, expectedId?: NodeId): Buffer | undefined;
+  /** A regular file with one name, verified by identity; undefined when nothing is there. */
+  readFile(name: string): Buffer | undefined;
   /** Reads a complete regular file of the expected identity within the byte limit. */
   /** Removes one entry and everything below it without following a link. With `expect`, only while the entry has that id. */
   remove(name: string, expect?: NodeId): Promise<void>;
@@ -263,14 +263,13 @@ class Dir implements OwnedDir {
     replaceStagedFile(`${path}.tmp`, path);
   }
 
-  readFile(name: string, expectedId?: NodeId): Buffer | undefined {
+  readFile(name: string): Buffer | undefined {
     const path = join(this.path, entryName(name));
     this.check();
     const stat = stats(path);
     if (stat === undefined) return undefined;
     if (!stat.isFile() || stat.nlink !== 1n) throw new OwnedFsError("not-plain", "the entry is not a regular file with one name");
     const id = idOf(stat);
-    if (expectedId !== undefined && id !== expectedId) throw new OwnedFsError("changed", "the file changed before it was opened");
     const fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     try {
       if (idOf(fstatSync(fd, { bigint: true })) !== id) throw new OwnedFsError("changed", "the file changed while it was opened");
