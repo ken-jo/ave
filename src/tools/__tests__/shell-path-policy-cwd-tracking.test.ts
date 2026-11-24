@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { shellQuote } from "../../lib/shell-resolver.js";
+import type { ShellExecutionFacts } from "../../shared/shell-execution.js";
 import { findShellPathPolicyViolation } from "../shell-path-policy.js";
 
 // A climb that stays inside ROOT from CWD escapes once cd enters the allowed STAGING directory.
@@ -19,6 +20,7 @@ const EXTRAS = [STAGING];
 beforeAll(() => {
   mkdirSync(join(CWD, "sub"), { recursive: true });
   for (let index = 0; index < 6; index += 1) mkdirSync(join(CWD, `d${index}`));
+  for (const name of ["a", "b", "sub", "prior", ...Array.from({ length: 8 }, (_, index) => `d${index}`)]) mkdirSync(join(ROOT, name));
   mkdirSync(join(STAGING, "x"), { recursive: true });
 });
 
@@ -111,11 +113,16 @@ describe("shell path policy — working directory tracking", () => {
     });
   });
 
-  // The destination can disappear before execution; a failed cd leaves the shell in the starting directory.
+  // On an unsandboxed host route the destination can disappear before execution; a failed cd leaves the shell where it was.
   describe("a cd whose destination exists during analysis", () => {
+    const hostFacts = (environment: Record<string, string> = {}): ShellExecutionFacts => ({ dialect: "bash", environment, hostCdFaults: true });
+    const host = (command: string, blockReads = false) => findShellPathPolicyViolation(command, CWD, ROOT, EXTRAS, blockReads, hostFacts());
+    const atRoot = (command: string, environment: Record<string, string> = {}) => findShellPathPolicyViolation(command, ROOT, ROOT, EXTRAS, true, hostFacts(environment));
+    const repeat = (count: number, step: (index: number) => string) => Array.from({ length: count }, (_, index) => step(index)).join("; ");
+
     it.each(["cd sub; touch ../../../../escape.txt", "cd sub || touch ../../../../escape.txt"])(
       "checks the statement after %s from the starting directory", (command) => {
-        expect(check(command)).toMatchObject({ kind: "sandbox-boundary", candidate: "../../../../escape.txt", path: join(FIXTURE, "escape.txt") });
+        expect(host(command)).toMatchObject({ kind: "sandbox-boundary", candidate: "../../../../escape.txt", path: join(FIXTURE, "escape.txt") });
       });
 
     it.each([
@@ -127,27 +134,96 @@ describe("shell path policy — working directory tracking", () => {
       "cd sub; ls; cd -",
       "cd sub && ls; cd -",
     ])("leaves %s as it is when the failed path stays inside", (command) => {
-      expect(check(command)).toBeNull();
-      expect(check(command, true)).toBeNull();
+      expect(host(command)).toBeNull();
+      expect(host(command, true)).toBeNull();
     });
 
     it.each(["cd src; ls; cd ..", "cd src; touch x; cd ..; touch y"])("leaves %s from the root as it is", (command) => {
-      expect(findShellPathPolicyViolation(command, ROOT, ROOT, EXTRAS, true)).toBeNull();
+      expect(atRoot(command)).toBeNull();
     });
 
     it("keeps checking a path that a modeled fault path also reaches", () => {
       const root = shellQuote(ROOT.replaceAll("\\", "/"));
-      expect(findShellPathPolicyViolation(`cd src; cd ${root} && cd src; cd ../..`, ROOT, ROOT, EXTRAS, true)).toMatchObject({ kind: "sandbox-boundary" });
+      expect(atRoot(`cd src; cd ${root} && cd src; cd ../..`)).toMatchObject({ kind: "sandbox-boundary" });
+    });
+
+    it("models no cd fault on a sandboxed route", () => {
+      expect(findShellPathPolicyViolation("cd sub; touch ../y", ROOT, ROOT, EXTRAS, true)).toBeNull();
+      expect(atRoot("cd sub; touch ../y")).toMatchObject({ kind: "sandbox-boundary" });
+    });
+
+    it.each([
+      "cd a || exit 1; cd ..; cd b; ls; cd ..",
+      "cd a || ls; cd ..; cd b; ls; cd ..",
+      "cd a || mkdir m; cd ..; cd b; ls; cd ..",
+      "cd a || echo no > note; cd ..; cd b; ls; cd ..",
+      `cd a || exit 1; cd ..; ${repeat(6, (index) => `cd d${index}; cd ..`)}; touch w`,
+    ])("keeps the effects of a fault path on that path: %s", (command) => {
+      expect(atRoot(command)).toBeNull();
+    });
+
+    it.each([
+      `cd a || exit 1; ${repeat(8, (index) => `if cd d${index}; then v${index}=1; cd ..; fi`)}`,
+      `cd a || exit 1; cd ..; ${repeat(20, () => "cd sub && cd ..")}`,
+    ])("keeps a fault path with effects bounded: %s", (command) => {
+      const start = performance.now();
+      expect(atRoot(command)).toBeNull();
+      expect(performance.now() - start).toBeLessThan(5_000);
+    });
+
+    it.each(["pushd .", "popd", "eval \"$Q\"", ". ./missing.sh", "cd \"$(pwd)\""])(
+      "stops a fault path at %s as it stops a normal path", (step) => {
+        const normal = atRoot(`${step}; touch ../x`);
+        expect(normal).not.toBeNull();
+        expect(atRoot(`cd sub || ${step}; touch ../x`)?.kind).toBe(normal?.kind);
+        expect(atRoot(`cd sub || { ${step}; touch ../x; }`)?.kind).toBe(normal?.kind);
+      });
+
+    it.each([
+      "cd sub || exit 1; touch ../x",
+      "cd sub || { echo no >&2; exit 1; }; touch ../x",
+      "f() { cd sub || return 1; touch ../x; }; f",
+      "set -e; cd sub; touch ../x",
+    ])("ends the fault path where %s stops the shell", (command) => {
+      expect(atRoot(command)).toBeNull();
+    });
+
+    it.each([
+      "set -e; if cd sub; then :; fi; touch ../x",
+      "set -e; cd sub || :; touch ../x",
+      "set -e; set +e; cd sub; touch ../x",
+      "set -e; (set +e; cd sub; touch ../x)",
+    ])("keeps the fault path where errexit does not stop it: %s", (command) => {
+      expect(atRoot(command)).toMatchObject({ kind: "sandbox-boundary" });
+    });
+
+    it("keeps a fault path whose OLDPWD differs", () => {
+      const outside = join(FIXTURE, "outside");
+      expect(atRoot("cd a && cd ..; touch \"$OLDPWD/x\"", { OLDPWD: outside })).toMatchObject({ kind: "sandbox-boundary" });
+    });
+
+    it("follows a directory that a fault path creates", () => {
+      expect(atRoot("cd a || { mkdir n && cd n && touch ../../x; }")).toMatchObject({ kind: "sandbox-boundary" });
+    });
+
+    it("models a failing fallback cd", () => {
+      expect(atRoot("cd a || cd b; touch ../x")).toMatchObject({ kind: "sandbox-boundary" });
+      expect(atRoot("cd a || cd b || cd sub; ls")).toBeNull();
+    });
+
+    it("prefers the fault-free state when a loop revisits the same state", () => {
+      const script = "s=0; while :; do if test \"$s\" = 0; then if cd a; then s=2; else s=1; fi; elif test \"$s\" = 2; then cd ../prior && cd ..; s=1; else cd ../..; break; fi; done";
+      expect(atRoot(script, { OLDPWD: join(ROOT, "prior") })).toMatchObject({ kind: "sandbox-boundary" });
     });
 
     it("keeps repeated navigation bounded", () => {
       const scripts = [
-        Array.from({ length: 20 }, () => "cd sub && cd ..").join("; "),
-        Array.from({ length: 20 }, () => "cd sub; cd ..").join("; "),
-        `${Array.from({ length: 6 }, (_, index) => `cd d${index}; cd ..`).join("; ")}; touch w`,
+        repeat(20, () => "cd sub && cd .."),
+        repeat(20, () => "cd sub; cd .."),
+        `${repeat(6, (index) => `cd d${index}; cd ..`)}; touch w`,
       ];
       const start = performance.now();
-      for (const script of scripts) expect(check(script, true)).toBeNull();
+      for (const script of scripts) expect(host(script, true)).toBeNull();
       expect(performance.now() - start).toBeLessThan(5_000);
     });
   });

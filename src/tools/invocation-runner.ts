@@ -20,6 +20,7 @@ import { areProjectWriteTargetsInside } from "./project-write-scope.js";
 import { prepareVerifiedShellCommand, type VerifiedShellCommand } from "../permissions/verified-shell-command.js";
 import { isPowerShellStartupPinned } from "../shared/powershell-startup-policy.js";
 import { prepareShellInvocation, preparedShellFacts, bindPreparedShellExecutableReadPaths, disposePreparedShellInvocation, type PreparedShellInvocation } from "./prepared-shell-invocation.js";
+import { withHostCdFaults } from "../shared/shell-execution.js";
 import { resolveHostShellWorkingDirectory } from "../permissions/host-shell-execution-permit.js";
 import { randomUUID } from "node:crypto";
 import { isStagedTurnSource } from "../shared/staged-origins.js";
@@ -2020,7 +2021,7 @@ async function runToolInvocationAttempt(
             : finalInput;
           shellPathViolation = shellPathPolicyViolation(
             pathPolicyInput, executionCwd, invocationRuntimeAllowedDirectories, blockReadsOutsideWorkingDirectories,
-            preparedShellInvocation ? preparedShellFacts(preparedShellInvocation) : undefined,
+            withHostCdFaults(preparedShellInvocation ? preparedShellFacts(preparedShellInvocation) : undefined, hostShellExecutionPlan?.substrate === "none"),
           );
         }
         if (!shellPathViolation) break;

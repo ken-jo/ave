@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { analyzeShell } from "../shell-analysis.js";
-import { inspectShellExecution, ShellExecutionError } from "../shell-execution.js";
+import { inspectShellExecution, ShellExecutionError, withHostCdFaults } from "../shell-execution.js";
 import { inspectEmbeddedShellPrograms } from "../../tools/shell-path-policy.js";
 
 const fixtures: string[] = [];
@@ -291,22 +291,44 @@ describe("host cd failure states", () => {
   it("visits each repeated cd a bounded number of times", () => {
     const {cwd,environment}=fixture();
     const visits: (string|null)[]=[];
-    inspectShellExecution(Array.from({length:20},()=>"cd safe && cd ..").join("; "),cwd,{dialect:"bash",environment},{path(_path,_raw,at){visits.push(at);},command(){}});
-    expect(visits.length).toBe(40);
+    inspectShellExecution(Array.from({length:20},()=>"cd safe && cd ..").join("; "),cwd,{dialect:"bash",environment,hostCdFaults:true},{path(_path,_raw,at){visits.push(at);},command(){}});
+    expect(visits.length).toBe(42);
   });
 
   it("models one cd fault per path through nested directories", () => {
     const {cwd,environment}=fixture();
     mkdirSync(join(cwd,"n/n/n/n/n/n/n/n"),{recursive:true});
     let visits=0;
-    inspectShellExecution(Array.from({length:8},()=>"cd n").join("; "),cwd,{dialect:"bash",environment},{path(){visits++;},command(){}});
+    inspectShellExecution(Array.from({length:8},()=>"cd n").join("; "),cwd,{dialect:"bash",environment,hostCdFaults:true},{path(){visits++;},command(){}});
     expect(visits).toBe(15);
   });
 
   it("continues after a cd that may fail in the starting directory", () => {
     const {cwd,environment}=fixture();
     const touched: (string|null)[]=[];
+    inspectShellExecution("cd safe; touch x",cwd,{dialect:"bash",environment,hostCdFaults:true},{path(){},command(event){if(event.argv[0]==="touch")touched.push(event.cwd);}});
+    expect(touched.sort()).toEqual([cwd,join(cwd,"safe")].sort());
+  });
+
+  it("models no cd fault without the unsandboxed host fact", () => {
+    const {cwd,environment}=fixture();
+    const touched: (string|null)[]=[];
     inspectShellExecution("cd safe; touch x",cwd,{dialect:"bash",environment},{path(){},command(event){if(event.argv[0]==="touch")touched.push(event.cwd);}});
+    expect(touched).toEqual([join(cwd,"safe")]);
+  });
+
+  it("sets the host fact only for an unsandboxed host route", () => {
+    const facts={dialect:"bash" as const,environment:{HOME:"/home/alice"}};
+    expect(withHostCdFaults(facts,false)).toBe(facts);
+    expect(withHostCdFaults(undefined,false)).toBeUndefined();
+    expect(withHostCdFaults(facts,true)).toEqual({...facts,hostCdFaults:true});
+    expect(withHostCdFaults(undefined,true)).toEqual({dialect:"bash",environment:{},hostCdFaults:true});
+  });
+
+  it("continues a fault path in the parent when it ends inside a subshell", () => {
+    const {cwd,environment}=fixture();
+    const touched: (string|null)[]=[];
+    inspectShellExecution("cd safe; (exit 1); touch x",cwd,{dialect:"bash",environment,hostCdFaults:true},{path(){},command(event){if(event.argv[0]==="touch")touched.push(event.cwd);}});
     expect(touched.sort()).toEqual([cwd,join(cwd,"safe")].sort());
   });
 });
