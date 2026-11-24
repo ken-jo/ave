@@ -143,6 +143,8 @@ describe("shell path policy — working directory tracking", () => {
     const nested = (count: number) => repeat(count, (index) => `cd d${index} && test -f m && cd ..`);
     const made = (count: number) => repeat(count, (index) => `cd d${index} && make && cd ..`);
     const tests = (count: number) => repeat(count, (index) => `if test -f q${index}; then v${index}=1; fi`);
+    const listed = (count: number) => repeat(count, (index) => `cd "$R/d${index % 8}" && ls; cd "$R"`);
+    const listedLoop = (count: number) => `for d in ${Array.from({ length: count }, (_, index) => `d${index % 8}`).join(" ")}; do cd "$R/$d" && ls; cd "$R"; done`;
 
     it.each([
       ["E1", "cd sub; touch ../y"],
@@ -172,6 +174,7 @@ describe("shell path policy — working directory tracking", () => {
       ["A1", "cd a || mkdir n; cd n/..; touch ../x"],
       ["A2", "cd sub; cd s2 || mkdir n; cd n/../..; touch ../x"],
       ["T1", "test -f q && cd sub; cd sub; touch ../x"],
+      ["A4", "cd sub; cd s2 || mkdir -p n/m; cd n/m/../../..; touch ../w"],
     ])("asks where a failed cd lets %s escape: %s", (_row, command) => {
       expect(verdict(command)).toBe("sandbox-boundary");
     });
@@ -199,6 +202,13 @@ describe("shell path policy — working directory tracking", () => {
       ["UN8", unrolled(8)],
       ["UN12", unrolled(12)],
       ["FOR12", forLoop(12)],
+      ["FOR10", forLoop(10)],
+      ["UN10", unrolled(10)],
+      ["P6a", `cd a || mkdir -p a; ${nested(6)}`],
+      ["X9", `cd a || ls; ${repeat(6, (index) => `cd d${index}`)}`],
+      ["SUBR16", repeat(16, () => "cd sub && ls && cd ..")],
+      ["SUBR32", repeat(32, () => "cd sub && ls && cd ..")],
+      ["FORR24", listedLoop(24)],
     ])("ends an exhausted cd budget in an ordinary ask, not a deny: %s", (_row, command) => {
       expect(verdict(command)).toBe("dynamic-path");
     });
@@ -218,6 +228,10 @@ describe("shell path policy — working directory tracking", () => {
       ["X5", "cd a || cd b || cd sub; ls"],
       ["X11", `cd "$R/c" || true; ${absolute(16)}`],
       ["X13", absolute(24)],
+      ["X12", `cd "$R/c" || true; ${absolute(24)}`],
+      ["FORR12", listedLoop(12)],
+      ["UNR16", listed(16)],
+      ["UNR32", listed(32)],
       ["O16", "cd build || mkdir build; cd build; make"],
       ["B1", "cd \"$R/c\" || true; mkdir zz; cd \"$R/d0\"; touch x"],
       ["B2", "cd \"$R/c\" || true; (mkdir zz); cd \"$R/d0\"; touch x"],
@@ -320,6 +334,9 @@ describe("shell path policy — working directory tracking", () => {
     it("takes success only past the cap on forks without a possible filesystem change", () => {
       expect(verdict(`${repeat(15, () => "cd sub; cd ..")}; cd sub; touch ../y`)).toBe("sandbox-boundary");
       expect(verdict(`${repeat(16, () => "cd sub; cd ..")}; cd sub; touch ../y`)).toBeNull();
+      const words = (count: number) => Array.from({ length: count }, (_, index) => index).join(" ");
+      expect(verdict(`for i in ${words(15)}; do cd sub; cd ..; done; cd sub; touch ../y`)).toBe("sandbox-boundary");
+      expect(verdict(`for i in ${words(16)}; do cd sub; cd ..; done; cd sub; touch ../y`)).toBeNull();
     });
   });
 });
