@@ -562,7 +562,7 @@ export interface MxcBundledHolderInput {
   readonly allowWrite: readonly string[];
   /** Host-captured read roots of the owning incarnation (a plugin generation, a bundled payload). */
   readonly ownedReadRoots: readonly string[];
-  /** The reads, among `allowRead`, held inside the protected read floor. Named by the host, never by the holder. */
+  /** The reads, among `allowRead`, held inside the protected read floor. Named by the host from the reviewed declaration, never by the plugin. */
   readonly floorPierces?: readonly string[];
   readonly egressOwner: WorkerEgressOwner;
   /** Workspace roots beyond the authorized ones this holder writes (a user hook's cwd). */
