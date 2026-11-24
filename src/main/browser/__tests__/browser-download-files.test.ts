@@ -306,6 +306,7 @@ describe("a helper that does not keep to its protocol", () => {
     ["the writer as published", "4294967297:fedcba9876543210123456789abcdef0:creation:31", "committed"],
     ["no published identity", null, null],
     ["another file published", "4294967297:fedcba9876543210123456789abcdef1:creation:20", null],
+    ["the writer published, then a refusal", "4294967297:fedcba9876543210123456789abcdef0:creation:31", "refused target changed"],
   ] as const)("takes a Windows commit only after it names %s", async (_case, published, answer) => {
     const windows = _helperFileOperationsForTest("/helper/ave-path-kind.exe", BOUNDS, true);
     script((helper) => {
@@ -314,15 +315,20 @@ describe("a helper that does not keep to its protocol", () => {
         helper.say("writing 4294967297:fedcba9876543210123456789abcdef0:creation:20", "copied");
         helper.once("input", () => {
           if (published !== null) helper.say(`published ${published}`);
-          helper.say("committed");
-          helper.exit(0);
+          if (answer === "refused target changed") {
+            helper.say(answer);
+            helper.exit(3);
+          } else {
+            helper.say("committed");
+            helper.exit(0);
+          }
         });
       });
     });
     const run = follow(windows.copy(from, "staged", to, "report.pdf", ".part", () => true, UNSTOPPED));
     await flush();
-    if (answer === null) expect(run.error).toBeInstanceOf(HeldFileHelperUnavailableError);
-    else expect(run.value).toBe(answer);
+    if (answer === "committed") expect(run.value).toBe(answer);
+    else expect(run.error).toBeInstanceOf(HeldFileHelperUnavailableError);
   });
 
   it("names the refusal of a chosen folder whose volume cannot replace a file safely", async () => {

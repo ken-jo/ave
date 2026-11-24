@@ -1240,8 +1240,8 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
           continue;
         }
         if (line === "target-restored" || line === "target-retired") {
-          if (mode !== "--dir-copy" || passed !== "copied" || oldTarget === null ||
-              targetResolution !== null || targetLeft !== null) { violate(); return; }
+          if (mode !== "--dir-copy" || passed !== "copied" || oldTarget === null || targetResolution !== null || targetLeft !== null ||
+              (line === "target-restored" && published !== null)) { violate(); return; }
           targetResolution = line === "target-restored" ? "restored" : "retired";
           continue;
         }
@@ -1293,7 +1293,7 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
           const left = parsePartLeft(line, parseInode);
           if (mode !== "--dir-copy" || passed !== "copied" || writing === null || oldTarget === null || targetLeft !== null ||
               targetResolution !== null || !left?.at || left.partLeft || left.answer !== "target-left" ||
-              left.at.name !== journal?.hidden) { violate(); return; }
+              left.at.name !== journal?.hidden || (published !== null && left.at.identity.verdict !== "remove-failed")) { violate(); return; }
           const { observed } = left.at.identity;
           if (!sameFile(left.at.identity, oldTarget) || (observed !== null && !sameFile(observed.file, oldTarget))) { violate(); return; }
           targetLeft = left.at;
@@ -1303,6 +1303,7 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
           if (!isOutcome(line) ||
               (line === "committed" && oldTarget !== null && targetResolution === null && targetLeft === null) ||
               (line === "committed" && publishes && published === null) ||
+              (published !== null && line !== "committed") ||
               (targetResolution === "retired" && line !== "committed") ||
               (targetResolution === "restored" && !/^(?:refused target|failed E)/u.test(line)) ||
               (targetLeft?.identity.verdict === "remove-failed" && line !== "committed") ||
