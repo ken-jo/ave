@@ -306,8 +306,13 @@ describe("host cd failure states", () => {
   it("visits each repeated cd a bounded number of times", () => {
     const {cwd,environment}=fixture();
     const visits: (string|null)[]=[];
-    inspectShellExecution(Array.from({length:20},()=>"cd safe && cd ..").join("; "),cwd,{dialect:"bash",environment,hostCdFaults:true},{path(_path,_raw,at){visits.push(at);},command(){}});
-    expect(visits.length).toBe(42);
+    inspectShellExecution(Array.from({length:15},()=>"cd safe && cd ..").join("; "),cwd,{dialect:"bash",environment,hostCdFaults:true},{path(_path,_raw,at){visits.push(at);},command(){}});
+    expect(visits.length).toBe(44);
+  });
+
+  it("asks once repeated cds pass the fork cap", () => {
+    const {cwd,environment}=fixture();
+    expect(()=>inspectShellExecution(Array.from({length:17},()=>"cd safe && cd ..").join("; "),cwd,{dialect:"bash",environment,hostCdFaults:true},{path(){},command(){}})).toThrow("unresolved working-directory destination");
   });
 
   it("models one cd fault per path through nested directories", () => {
@@ -315,7 +320,7 @@ describe("host cd failure states", () => {
     mkdirSync(join(cwd,"n/n/n/n/n/n/n/n"),{recursive:true});
     let visits=0;
     inspectShellExecution(Array.from({length:8},()=>"cd n").join("; "),cwd,{dialect:"bash",environment,hostCdFaults:true},{path(){visits++;},command(){}});
-    expect(visits).toBe(21);
+    expect(visits).toBe(36);
   });
 
   it("continues after a cd that may fail in the starting directory", () => {

@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { shellQuote } from "../../lib/shell-resolver.js";
 import type { ShellExecutionFacts } from "../../shared/shell-execution.js";
+import { hostShellAnalysisFacts } from "../prepared-shell-invocation.js";
 import { findShellPathPolicyViolation } from "../shell-path-policy.js";
 
 // A climb that stays inside ROOT from CWD escapes once cd enters the allowed STAGING directory.
@@ -175,6 +176,14 @@ describe("shell path policy — working directory tracking", () => {
       ["A2", "cd sub; cd s2 || mkdir n; cd n/../..; touch ../x"],
       ["T1", "test -f q && cd sub; cd sub; touch ../x"],
       ["A4", "cd sub; cd s2 || mkdir -p n/m; cd n/m/../../..; touch ../w"],
+      ["SR1", "cd sub; cd \"$R/sub\"; touch ../x"],
+      ["SR4", "cd sub/s2; cd \"$R/sub/s2\"; touch ../../x"],
+      ["SR5", "cd \"$R/sub\" || true; cd \"$R/sub\"; touch ../x"],
+      ["EX1", "cd sub || exit foo; touch ../x"],
+      ["EX2", "cd sub || exit 1 < nofile; touch ../x"],
+      ["EX3", "cd sub || exit 1 2; touch ../x"],
+      ["EX4", "cd sub || exit \"$NOPE\"x; touch ../x"],
+      ["EX5", "set -e; cd sub || exit foo; touch ../x"],
     ])("asks where a failed cd lets %s escape: %s", (_row, command) => {
       expect(verdict(command)).toBe("sandbox-boundary");
     });
@@ -209,6 +218,10 @@ describe("shell path policy — working directory tracking", () => {
       ["SUBR16", repeat(16, () => "cd sub && ls && cd ..")],
       ["SUBR32", repeat(32, () => "cd sub && ls && cd ..")],
       ["FORR24", listedLoop(24)],
+      ["IF16 (cap)", `cd a || exit 1; ${repeat(16, (index) => `if cd d${index % 8}; then v${index}=1; cd ..; fi`)}`],
+      ["NAV20 (cap)", `cd a || exit 1; cd ..; ${repeat(20, () => "cd sub && cd ..")}`],
+      ["IFC24 (cap)", `cd a || exit 1; ${repeat(24, (index) => `if cd d${index % 8}; then v${index}=1; cd ..; fi`)}`],
+      ["IFT16 (cap)", `cd a || true; ${repeat(16, (index) => `if cd d${index % 8}; then v${index}=1; cd ..; fi`)}`],
     ])("ends an exhausted cd budget in an ordinary ask, not a deny: %s", (_row, command) => {
       expect(verdict(command)).toBe("dynamic-path");
     });
@@ -249,7 +262,6 @@ describe("shell path policy — working directory tracking", () => {
       ["L5", "for d in a b c; do cd $d || exit 1; make; cd ..; done"],
       ["U2", "cd \"$R/a\" || true; g() { cd \"$1\" && make; cd ..; }; g d0; g d1; g d2; g d3"],
       ["A3", "cd sub; cd s2 || mkdir n; cd n/../..; touch y"],
-      ["IF16", `cd a || exit 1; ${repeat(16, (index) => `if cd d${index % 8}; then v${index}=1; cd ..; fi`)}`],
     ])("leaves %s as it is when no failed cd escapes: %s", (_row, command) => {
       expect(verdict(command)).toBeNull();
     });
@@ -259,7 +271,6 @@ describe("shell path policy — working directory tracking", () => {
       "cd a || ls; cd ..; cd b; ls; cd ..",
       "cd a || mkdir m; cd ..; cd b; ls; cd ..",
       `cd a || exit 1; ${repeat(8, (index) => `if cd d${index}; then v${index}=1; cd ..; fi`)}`,
-      `cd a || exit 1; cd ..; ${repeat(20, () => "cd sub && cd ..")}`,
       "cd sub || exit 1; touch ../x",
       "cd sub || { echo no >&2; exit 1; }; touch ../x",
       "set -e; cd sub; touch ../x",
@@ -321,22 +332,38 @@ describe("shell path policy — working directory tracking", () => {
       expect(verdict("cd sub; touch ../y")).toBe("sandbox-boundary");
     });
 
-    it("gives the ordinary ask for a state limit, not a step limit, only while a modeled cd failure is live", () => {
+    it("gives the ordinary ask for a state limit only when the states differ in nothing but the working directory", () => {
       expect(verdict(tests(7))).toBe("analysis-limit");
-      expect(verdict(`cd a || true; ${tests(7)}`)).toBe("dynamic-path");
+      expect(verdict(`cd sub; ${tests(7)}`)).toBe("analysis-limit");
+      expect(verdict(`cd sub; ${tests(7)}; cat /etc/passwd`)).toBe("analysis-limit");
+      expect(verdict(`cd a || true; ${tests(7)}`)).toBe("analysis-limit");
       expect(verdict(`cd a || exit 1; ${tests(7)}`)).toBe("analysis-limit");
+      expect(verdict(`cd a || true; ${repeat(7, (index) => `if test -f q${index}; then cd e${index}; fi`)}`)).toBe("dynamic-path");
       const values = Array.from({ length: 64 }, (_, index) => index).join(" ");
       const steps = `for i in ${values}; do for j in ${values}; do for k in ${values}; do :; done; done; done`;
       expect(verdict(steps)).toBe("analysis-limit");
       expect(verdict(`cd a || true; ${steps}`)).toBe("analysis-limit");
     });
 
-    it("takes success only past the cap on forks without a possible filesystem change", () => {
+    it("asks past the cap on forks without a possible filesystem change", () => {
       expect(verdict(`${repeat(15, () => "cd sub; cd ..")}; cd sub; touch ../y`)).toBe("sandbox-boundary");
-      expect(verdict(`${repeat(16, () => "cd sub; cd ..")}; cd sub; touch ../y`)).toBeNull();
+      expect(verdict(`${repeat(16, () => "cd sub; cd ..")}; cd sub; touch ../y`)).toBe("dynamic-path");
       const words = (count: number) => Array.from({ length: count }, (_, index) => index).join(" ");
       expect(verdict(`for i in ${words(15)}; do cd sub; cd ..; done; cd sub; touch ../y`)).toBe("sandbox-boundary");
-      expect(verdict(`for i in ${words(16)}; do cd sub; cd ..; done; cd sub; touch ../y`)).toBeNull();
+      expect(verdict(`for i in ${words(16)}; do cd sub; cd ..; done; cd sub; touch ../y`)).toBe("dynamic-path");
+    });
+
+    it("takes success only for a cd to an ancestor or the current directory, even after a possible change", () => {
+      expect(verdict(`make; ${repeat(8, (index) => `cd "$R/d${index}" && ls; cd "$R"`)}`)).toBeNull();
+      expect(verdict(`cd "$R/c" || true; ${absolute(8)}`)).toBeNull();
+    });
+
+
+    it("models cd faults only for the unsandboxed host substrate", () => {
+      const facts = (substrate: "none" | "asrt" | "mxc") => hostShellAnalysisFacts(undefined, { substrate });
+      expect(findShellPathPolicyViolation("cd sub; touch ../y", ROOT, ROOT, EXTRAS, true, facts("none"))?.kind).toBe("sandbox-boundary");
+      expect(findShellPathPolicyViolation("cd sub; touch ../y", ROOT, ROOT, EXTRAS, true, facts("asrt"))).toBeNull();
+      expect(findShellPathPolicyViolation("cd sub; touch ../y", ROOT, ROOT, EXTRAS, true, facts("mxc"))).toBeNull();
     });
   });
 });

@@ -94,8 +94,8 @@ interface ShellState {
   fromPipe: boolean;
   activeFunctions: readonly string[];
   inputRedirect?: ShellRedirect;
-  /** Follows a host cd modeled as failing although its destination was observed. */
-  cdFault?: true;
+  /** Follows a host cd modeled as failing although its destination was observed; holds the destinations that failed. */
+  cdFault?: readonly string[];
   errexit?: true;
 }
 type ExitStatus = "success" | "failure" | "unknown";
@@ -104,7 +104,7 @@ interface StateResult { state: ShellState; status: ExitStatus; control?: BreakCo
 interface ExecutionContext { boundary: number; loopDepth: number; condition?: true; fallback?: true }
 interface WordEvaluation { lastSubstitutionStatus?: ExitStatus; mayFail?: boolean }
 interface CommandRedirectObservation { state?: ShellState; inspected: boolean }
-// Past this many forks without a possible filesystem change, a host cd takes success only (the declared single-fault residual).
+// Past this many forks without a possible filesystem change, a host cd asks like an exhausted flagged budget.
 const UNFLAGGED_CD_FORK_LIMIT = SHELL_ANALYSIS_LIMITS.states / 4;
 const EXECUTION_ALTERING_VARIABLES = new Set(["IFS", "BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "CDPATH", "PWD"]);
 export function assertStableShellEnvironmentVariable(
@@ -117,7 +117,7 @@ export function assertStableShellEnvironmentVariable(
   }
 }
 function stateKey(state: ShellState): string {
-  return JSON.stringify([state.cwd, state.dialect, state.unicodeEscapes, state.prefixAssignmentRhs, state.inputRedirect?.source, [...state.variables].sort(), [...state.arrays].sort(), [...state.exported].sort(), [...state.readonlyVariables].sort(), [...state.unsetVariables].sort(), [...state.functions].map(([name, body]) => [name, body.source]), state.errexit, state.cdFault]);
+  return JSON.stringify([state.cwd, state.dialect, state.unicodeEscapes, state.prefixAssignmentRhs, state.inputRedirect?.source, [...state.variables].sort(), [...state.arrays].sort(), [...state.exported].sort(), [...state.readonlyVariables].sort(), [...state.unsetVariables].sort(), [...state.functions].map(([name, body]) => [name, body.source]), state.errexit, state.cdFault !== undefined]);
 }
 function decline(reason: string, word?: ShellWord): never {
   throw new ShellExecutionError(reason, word?.source.raw);
@@ -135,14 +135,24 @@ function uniqueResults(results: readonly StateResult[]): StateResult[] {
   for (const result of results) {
     const state = result.state;
     const key = JSON.stringify([result.status, result.control, stateKey(state)]);
-    unique.set(key, result);
+    const earlier = unique.get(key)?.state.cdFault;
+    unique.set(key, earlier && state.cdFault ? { ...result, state: { ...state, cdFault: faultUnion(earlier, state.cdFault) } } : result);
     if (unique.size > SHELL_ANALYSIS_LIMITS.states) declineStateLimit("execution-state limit exceeded", results);
   }
   return [...unique.values()];
 }
-// A state limit reached while a modeled cd failure is in hand is the ordinary unresolved-cwd ask, not an analysis-limit deny.
+// A state limit reached by modeled cd failures alone, states differing only in working directory, is the ordinary unresolved-cwd ask.
 function declineStateLimit(reason: string, results: readonly { state: ShellState }[]): never {
-  decline(results.some((result) => result.state.cdFault) ? "unresolved working-directory destination" : reason);
+  const placeless = (state: ShellState): string => {
+    const variables = new Map(state.variables);
+    variables.delete("PWD"); variables.delete("OLDPWD");
+    return stateKey({ ...state, cwd: null, cdFault: undefined, variables });
+  };
+  const cwdOnly = results.some((result) => result.state.cdFault) && new Set(results.map((result) => placeless(result.state))).size === 1;
+  decline(cwdOnly ? "unresolved working-directory destination" : reason);
+}
+function faultUnion(left: readonly string[], right: readonly string[]): readonly string[] {
+  return [...new Set([...left, ...right])].sort();
 }
 /** A sequence ignores the previous status, so a fault path equal to another path adds nothing. */
 function withoutShadowedFaults(results: readonly StateResult[]): readonly StateResult[] {
@@ -494,7 +504,8 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
         return result;
       });
     }
-    if (state.cdFault && shellBuiltin && verb === "exit") return [];
+    // exit with a bad operand or a failed redirect returns instead of exiting.
+    if (state.cdFault && shellBuiltin && verb === "exit" && !node.redirects.length && (argv.length === 1 || argv.length === 2 && /^[0-9]{1,9}$/u.test(argv[1] ?? ""))) return [];
     if (state.dialect === "posix" && shellBuiltin && [":", "export", "readonly", "set", "unset", "exit"].includes(verb)) {
       // Special builtins retain prefix assignments, but outer argv expansion uses incoming state.
       for (const assignment of node.assignments) setScalar(state, assignment.name, assigned.variables.get(assignment.name));
@@ -643,13 +654,18 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
       // Unsandboxed host: another process can also remove an observed destination before execution.
       // Failing to enter an ancestor leaves the shell in its current directory, whose identity is assumed throughout; errexit ends a failed cd outside a condition.
       const success: StateResult = { state: changed, status: "success" };
+      // On a fault path a directory that failed to open stays missing until something may have changed.
+      if (state.cdFault?.some((missing) => within(missing, destination)) && !filesystemMayChange) {
+        const failed: StateResult[] = state.errexit && !context.condition ? [] : [{ state, status: "failure" }];
+        return state.cdFault.length === 1 ? failed : [success, ...failed];
+      }
       if (observedDirectory && state.cwd !== null && within(destination, state.cwd) || state.errexit && !context.condition) return [success];
       // A fault path models one failure: it forks again only after a possible change or for a fallback cd.
       if (state.cdFault && observedDirectory && !filesystemMayChange && !context.fallback) return [success];
       if (filesystemMayChange) {
         if (++flaggedCdForks > SHELL_ANALYSIS_LIMITS.states) decline("unresolved working-directory destination", targetWord);
-      } else if (observedDirectory && ++unflaggedCdForks > UNFLAGGED_CD_FORK_LIMIT) return [success];
-      const failure = observedDirectory && !state.cdFault ? { ...cloneState(state), cdFault: true as const } : state;
+      } else if (observedDirectory && ++unflaggedCdForks > UNFLAGGED_CD_FORK_LIMIT) decline("unresolved working-directory destination", targetWord);
+      const failure = observedDirectory ? { ...cloneState(state), cdFault: faultUnion(state.cdFault ?? [], [destination]) } : state;
       return [success, { state: failure, status: "failure" }];
     }
     return [{ state, status: shellBuiltin && ["true", ":"].includes(verb) ? "success" : shellBuiltin && verb === "false" ? "failure" : "unknown" }];
@@ -757,7 +773,7 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
         const loopContext = { ...context, loopDepth: context.loopDepth + 1 };
         while (pending.length) {
           const current = pending.shift()!;
-          const key = stateKey(current);
+          const key = stateKey(current) + JSON.stringify(current.cdFault ?? null);
           if (seen.has(key)) continue;
           seen.add(key);
           if (seen.size > SHELL_ANALYSIS_LIMITS.states) declineStateLimit("loop authority state does not converge within the execution-state limit", [{ state: current }, ...pending.map((pendingState) => ({ state: pendingState }))]);
