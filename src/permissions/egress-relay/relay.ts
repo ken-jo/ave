@@ -415,11 +415,8 @@ async function decideDestination(lane: Lane, host: string, port: number, plainHt
   const canonical = canonicalRelayHost(host);
   if (canonical === undefined) throw deny(lane, host, port, "malformed host");
   if (isRelayListener(canonical, port)) throw deny(lane, host, port, "sandbox proxy listener");
-  // Refused in any spelling, before any ask or dial, unless the allow list names the address itself.
-  if (net.isIP(canonical) !== 0 && isReservedAddress(canonical)
-    && !current.allow.some((entry) => !entry.wildcard && relayAllowEntryMatches(entry, canonical, port))) {
-    throw deny(lane, host, port, "destination is a reserved address");
-  }
+  // Refused in any spelling, before any ask or dial.
+  if (net.isIP(canonical) !== 0 && isReservedAddress(canonical)) throw deny(lane, host, port, "destination is a reserved address");
   const identity = { attributionKey: lane.key, identity: "listener" } as const;
   let byName = previous?.byName;
   if (byName === undefined) {

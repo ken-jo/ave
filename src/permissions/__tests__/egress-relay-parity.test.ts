@@ -69,7 +69,7 @@ const DIFFERENCES = [
   { row: "P14", today: RECORDED.noAskCallback.today, new: RECORDED.noAskCallback.new, why: "the ask callback is a precondition of the service" },
   { row: "P15", today: RECORDED.openBeforeStart.today, new: RECORDED.openBeforeStart.new, why: "same refusal, the relay's own wording" },
   { row: "P16", today: "4096 relays, not exercised here", new: "4096 relays, exercised with a lower injected limit", why: "same limit" },
-  { row: "P21", today: "a reserved address literal is asked about, then dialled", new: RECORDED.reservedLiteral.new, why: "no spelling of a link-local, metadata, multicast or unspecified address is a destination; loopback and private-use literals are asked as today" },
+  { row: "P21", today: "a reserved address literal is asked about, then dialled", new: RECORDED.reservedLiteral.new, why: "no spelling of a link-local, metadata, multicast or unspecified address is a destination; loopback and private-use literals are asked as today; the allow list does not exempt a literal" },
   { row: "P24", today: "this relay frees its ports when it closes, and they are asked about like any loopback port", new: "the ports stay bound and refused for 30 minutes, up to 24 hours while the process group lives", why: "the hold-back today's wrapped-command listener has; parked for the owner" },
   { row: "407 challenge", today: "its own realm name", new: 'realm "egress relay"', why: "nothing reads the realm" },
   { row: "listener", today: "a port outside the shared proxy range", new: "any ephemeral loopback port", why: "the container makes the connection, so no range has to match a host rule" },
@@ -414,6 +414,12 @@ describe.each([today, next])("egress relay parity: $name relay", (adapter) => {
         const status = await refused(relay, `${spelling}:80`);
         outcomes[spelling] = ask.mock.calls.length > 0 ? "asked" : status;
       }
+      // The plain-HTTP path makes the same decision.
+      ask.mockClear();
+      const plain = send(relay.port, `GET http://169.254.169.254/latest HTTP/1.1\r\nHost: 169.254.169.254\r\nProxy-Authorization: ${relay.proxyAuthorization}\r\n\r\n`);
+      await expect.poll(plain.output).toContain("\r\n\r\n");
+      const refusedPlain = plain.statusLine() === "HTTP/1.1 403 Forbidden" && plain.output().includes("destination is a reserved address");
+      expect(ask.mock.calls.length > 0 ? "asked" : refusedPlain && RECORDED.reservedLiteral.new).toBe(recorded("reservedLiteral"));
       // A zone id is not a destination on either relay.
       ask.mockClear();
       const zoned = await refused(relay, "[fe80::1%25eth0]:80");
@@ -484,7 +490,7 @@ describe.each([today, next])("egress relay parity: $name relay", (adapter) => {
 
     it("P24: an ended relay's ports stay refused as destinations while they are held back", async () => {
       const ask = vi.fn<Ask>(async () => ({ allow: false, reason: "asked" }));
-      await start({ ask, endedPortHold: { ms: 400, maxMs: 2000 } });
+      await start({ ask, endedPortHold: { ms: 1500, maxMs: 6000 } });
       const ended = await open();
       const front = net.createServer();
       await new Promise<void>((done) => front.listen(0, "127.0.0.1", done));
@@ -520,24 +526,24 @@ describe.each([today, next])("egress relay parity: $name relay", (adapter) => {
       let alive = true;
       const groupAlive = vi.fn(() => alive);
       const ask = vi.fn<Ask>(async () => ({ allow: false, reason: "asked" }));
-      startEgressRelayService({ ask, endedPortHold: { ms: 100, maxMs: 350, groupAlive } });
+      startEgressRelayService({ ask, endedPortHold: { ms: 500, maxMs: 1750, groupAlive } });
       cleanups.push(stopEgressRelayService);
       const first = await openEgressRelay(newToken());
       const relay = await open();
       const heldBack = async (port: number): Promise<boolean> => (await refused(relay, `127.0.0.1:${port}`)) === recorded("endedPortHop");
 
       await first.close({ processGroup: 4242 });
-      await expect.poll(() => groupAlive.mock.calls.length, { timeout: 2000 }).toBeGreaterThanOrEqual(1);
+      await expect.poll(() => groupAlive.mock.calls.length, { timeout: 5000 }).toBeGreaterThanOrEqual(1);
       expect(groupAlive).toHaveBeenCalledWith(4242);
       expect(await heldBack(first.port)).toBe(true);
       // The maximum ends it although the group still looks alive.
-      await expect.poll(() => heldBack(first.port), { timeout: 3000, interval: 50 }).toBe(false);
+      await expect.poll(() => heldBack(first.port), { timeout: 5000, interval: 50 }).toBe(false);
 
       const second = await openEgressRelay(newToken());
       alive = false;
       await second.close({ processGroup: 4243 });
       expect(await heldBack(second.port)).toBe(true);
-      await expect.poll(() => heldBack(second.port), { timeout: 3000, interval: 50 }).toBe(false);
+      await expect.poll(() => heldBack(second.port), { timeout: 5000, interval: 50 }).toBe(false);
       expect(groupAlive).toHaveBeenCalledWith(4243);
     });
 
