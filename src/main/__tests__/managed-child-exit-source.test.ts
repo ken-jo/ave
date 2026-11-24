@@ -5,8 +5,9 @@
 // - Behaviour: forged, foreign, stale (generation), wrong-kind and early receipts are refused; a throwing step stays retryable.
 //   The reviewer mutations that stayed green each have a named behaviour test in the suite that owns the path.
 // - Source rules kept from earlier rulings: main's Windows release paths, no local child-lifetime timer or completion wait.
-// Residual: a covered caller can still record its own paths on a fresh handle and abandon it unlaunched; only the behaviour
-// tests catch that form. Raw primitives inside a registering wrap module (an alias, a direct call) are caught only by the
+// - Owner call sites in covered callers are pinned per file, so a new fresh handle, path record or abandon fails the lock.
+// Residual: a covered caller can still record its own paths on an existing handle and abandon it unlaunched; only the behaviour
+// tests catch that form. A failed request's release is enforced by the caller (stopRuntime and unconfirmedExit). Raw primitives inside a registering wrap module (an alias, a direct call) are caught only by the
 // behaviour tests of that module. The out-of-scope importers listed in RAW_IMPORTERS are not covered by this owner.
 import { ChildProcess } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
@@ -34,6 +35,22 @@ const RAW_NAMES = new Set(Object.values(RAW_DEFINITIONS).flat());
 
 const OWNER_MODULES = ["src/sandbox/wrap-bundled-command.ts", "src/permissions/offline-process-sandbox.ts"];
 const COVERED_CALLERS = ["src/hooks/script-hook-runner.ts", "src/observation/libreoffice-process.ts"];
+
+/** Reviewed owner call sites per covered caller: root handles, nested handles, path records and never-spawned releases. */
+const OWNER_CALL_SITES: Readonly<Record<string, Readonly<Record<string, number>>>> = {
+  "src/hooks/script-hook-runner.ts": { root: 1, nested: 0, paths: 0, abandon: 3 },
+  "src/observation/libreoffice-process.ts": { root: 2, nested: 4, paths: 5, abandon: 4 },
+};
+
+function ownerCallSites(source: string): Record<string, number> {
+  const count = (pattern: RegExp): number => (source.match(pattern) ?? []).length;
+  return {
+    root: count(/\bcreateManagedResources\(\s*\)/gu),
+    nested: count(/\bcreateManagedResources\(\s*[^)\s]/gu),
+    paths: count(/\brecordManagedPaths\(/gu),
+    abandon: count(/\babandonManagedLaunch\(/gu),
+  };
+}
 
 /** Every non-test importer of a raw teardown primitive; `module:*` marks a namespace or unbound dynamic import. */
 const RAW_IMPORTERS: Readonly<Record<string, readonly string[]>> = {
@@ -361,6 +378,20 @@ describe("managed child ownership by import graph", () => {
     expect(reached.get(path)).toBeUndefined();
     expect(fsRemovalImports(path, readRepoFile(path))).toEqual([]);
     expect(directTeardownCalls(readRepoFile(path))).toEqual([]);
+  });
+
+  it.each(COVERED_CALLERS)("pins the owner call sites of %s", path => {
+    expect(ownerCallSites(readRepoFile(path))).toEqual(OWNER_CALL_SITES[path]);
+  });
+
+  it("rejects an extra fresh handle that records and abandons engine output before the first drain", () => {
+    const path = "src/observation/libreoffice-process.ts";
+    const source = readRepoFile(path);
+    const drain = "      const [firstDrain] = await Promise.allSettled";
+    const early = source.replace(drain, "      if (session.runtime) { const early = createManagedResources(); "
+      + "recordManagedPaths(early, { path: session.runtime.output, recursive: true }); await abandonManagedLaunch(early); }\n" + drain);
+    expect(early).not.toBe(source);
+    expect(ownerCallSites(early)).not.toEqual(OWNER_CALL_SITES[path]);
   });
 
   it("limits cleanup recording and the relay receipt to the owner's registering wrap modules", () => {
