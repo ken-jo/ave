@@ -17,7 +17,8 @@ const inventories = {
 };
 describe("Windows shard planning", () => {
   it("balances by measured duration before file count", () => {
-    const heaviest = inventories[permission][0]!;
+    const [heaviest] = inventories[permission];
+    if (heaviest === undefined) throw new Error("Missing Windows permission suite");
     const result = planWindowsTests(inventories, { [heaviest]: 10_000_000 });
     expect(result.shards[0]?.files).toEqual([heaviest]);
     expect(result.shards[0]?.weightMs).toBe(10_001_000);

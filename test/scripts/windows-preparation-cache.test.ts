@@ -1,14 +1,18 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import {
   restoreWindowsPreparation, sealWindowsPreparation, windowsPreparationInputs, windowsPreparationKey,
-} from "../../.github/scripts/windows-preparation-cache.mjs";
-import { useTempDirs } from "../../src/__tests__/test-helpers.js";
+  type WindowsPreparationManifest,
+} from "../../scripts/lib/windows-preparation-cache.mjs";
+import { createTmpDirTracker } from "../../src/__tests__/support/tmp-dir-teardown.js";
 
-const makeDir = useTempDirs("win-preparation-");
-const identity = { image: "windows", imageVersion: "1", compiler: { msvc: "14.44", sdk: "10.0.26100" } };
+const tracker = createTmpDirTracker();
+const makeDir = () => tracker.track(mkdtempSync(join(tmpdir(), "win-preparation-")));
+afterAll(() => tracker.cleanup());
+const identity = { image: "windows", imageVersion: "1", compiler: { msvc: "14.44", sdk: "10.0.26100" } } satisfies WindowsPreparationManifest["identity"];
 
 describe("Windows preparation inputs", () => {
   it("changes the key when a tracked source, lockfile, runner image, compiler or SDK changes", async () => {
@@ -39,11 +43,12 @@ describe("Windows preparation inputs", () => {
 
 describe("Windows preparation output cache", () => {
   const key = windowsPreparationKey({ identity, files: { "bun.lock": "digest" } });
-  const required = ["native/helper.exe", "payload/x64/app.exe"];
+  const helper = "native/helper.exe";
+  const required = [helper, "payload/x64/app.exe"];
   async function sealed() {
     const root = makeDir();
     for (const file of required) {
-      mkdirSync(join(root, file, ".."), { recursive: true });
+      mkdirSync(dirname(join(root, file)), { recursive: true });
       writeFileSync(join(root, file), file);
     }
     await sealWindowsPreparation(root, key, required);
@@ -55,12 +60,12 @@ describe("Windows preparation output cache", () => {
     const verifyIdentity = vi.fn();
     expect(await restoreWindowsPreparation(root, key, required, true, verifyIdentity)).toBe(true);
     expect(verifyIdentity).toHaveBeenCalledOnce();
-    expect(existsSync(join(root, required[0]!))).toBe(true);
+    expect(existsSync(join(root, helper))).toBe(true);
   });
 
   it.each(["changed", "partial", "extra", "wrong key", "not an exact hit"])("rebuilds on a %s restore before using any outputs", async (problem) => {
     const root = await sealed();
-    const path = join(root, required[0]!);
+    const path = join(root, helper);
     if (problem === "changed") writeFileSync(path, "changed bytes");
     if (problem === "partial") rmSync(path);
     if (problem === "extra") writeFileSync(join(root, "extra"), "extra bytes");

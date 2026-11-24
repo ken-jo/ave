@@ -1,7 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import {
-  appendFileSync, copyFileSync, createReadStream, lstatSync, mkdirSync, readFileSync, readdirSync,
+  appendFileSync, copyFileSync, mkdirSync, readFileSync,
   realpathSync, renameSync, rmSync, utimesSync, writeFileSync,
 } from "node:fs";
 import { createRequire } from "node:module";
@@ -9,12 +8,14 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { verifyPackagingOutput } from "../../scripts/check-mxc-packaging.mjs";
+import {
+  restoreWindowsPreparation, sealWindowsPreparation, windowsPreparationInputs, windowsPreparationKey,
+} from "../../scripts/lib/windows-preparation-cache.mts";
 
 const require = createRequire(import.meta.url);
 const { TARGETS, assertSrtWinReceiptModule, assertSrtWinVendor, assertUpstreamSrtWinVendor } = require("../../scripts/lib/srt-win-integrity.cjs");
 const VENDOR = "node_modules/@anthropic-ai/sandbox-runtime/vendor";
 const RECEIPTS = "src/permissions/generated/srt-win-build-receipts";
-const OUTPUT_MANIFEST = "outputs.json";
 const ARCHES = Object.keys(TARGETS);
 
 function nativeFiles(arch) {
@@ -26,86 +27,6 @@ function nativeFiles(arch) {
     `${RECEIPTS}.js`,
     `${RECEIPTS}.json`,
   ];
-}
-
-function canonicalJson(value) {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
-}
-
-export function windowsPreparationKey(manifest) {
-  return `ave-windows-preparation-v1-${createHash("sha256").update(canonicalJson(manifest)).digest("hex")}`;
-}
-
-async function hashFile(path) {
-  const hash = createHash("sha256");
-  for await (const chunk of createReadStream(path)) hash.update(chunk);
-  return hash.digest("hex");
-}
-
-// Inventory the tracked build, workflow and packaging input trees. The payload
-// check writes a generated application entry, and imports its tracked pins
-// under src/permissions. Installed dependencies come from the frozen lockfile.
-const INPUT_TREES = /^(?:\.github|build|config|native|patches|resources|scripts|src\/permissions)\//u;
-
-export async function windowsPreparationInputs(root, identity) {
-  const paths = execFileSync("git", ["-C", root, "ls-files", "-z"], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 })
-    .split("\0").filter(path => path && (!path.includes("/") || INPUT_TREES.test(path))).sort();
-  if (!paths.includes("bun.lock")) throw new Error("Missing preparation input: bun.lock");
-  const files = {};
-  for (const file of paths) {
-    const path = join(root, file);
-    if (!lstatSync(path).isFile()) throw new Error(`Invalid preparation input: ${file}`);
-    files[file] = await hashFile(path);
-  }
-  return { identity, files };
-}
-
-async function outputFiles(root) {
-  if (!lstatSync(root).isDirectory()) throw new Error("Invalid preparation cache root");
-  const files = {};
-  async function visit(relative) {
-    for (const name of readdirSync(join(root, relative)).sort()) {
-      const file = relative ? `${relative}/${name}` : name;
-      const path = join(root, file);
-      const stat = lstatSync(path);
-      if (stat.isDirectory()) await visit(file);
-      else if (!stat.isFile() || stat.nlink !== 1) throw new Error(`Invalid preparation output: ${file}`);
-      else if (file !== OUTPUT_MANIFEST) files[file] = await hashFile(path);
-    }
-  }
-  await visit("");
-  return files;
-}
-
-export async function sealWindowsPreparation(root, key, required) {
-  const files = await outputFiles(root);
-  if (required.some(file => !Object.hasOwn(files, file))) throw new Error("Missing preparation output");
-  writeFileSync(join(root, OUTPUT_MANIFEST), JSON.stringify({ key, files }) + "\n", { flag: "wx" });
-}
-
-async function verifyWindowsPreparation(root, key, required) {
-  const files = await outputFiles(root);
-  const { key: storedKey, files: stored } = JSON.parse(readFileSync(join(root, OUTPUT_MANIFEST), "utf8"));
-  if (storedKey !== key || required.some(file => !Object.hasOwn(files, file)) || canonicalJson(stored) !== canonicalJson(files)) {
-    throw new Error("Windows preparation cache digest mismatch");
-  }
-}
-
-export async function restoreWindowsPreparation(store, key, required, exactHit, verifyIdentity) {
-  if (key && exactHit) {
-    try {
-      await verifyWindowsPreparation(store, key, required);
-      await verifyIdentity();
-      return true;
-    } catch (error) {
-      console.log(`Windows preparation cache rejected: ${error.message}`);
-    }
-  }
-  // Discard partial or invalid output before the builder can write here.
-  rmSync(store, { recursive: true, force: true });
-  return false;
 }
 
 function compilerIdentity(root, env) {

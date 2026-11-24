@@ -167,7 +167,9 @@ bun run check:plugin-host-protocol-schema
 bun run test -- src/permissions/__tests__/allowed-directories.test.ts src/permissions/__tests__/sensitive-paths-canonicalize.test.ts src/shared/__tests__/ave-home.test.ts src/lib/__tests__/atomic-file.test.ts src/lib/__tests__/with-file-lock.test.ts src/tools/__tests__/bash-dialect.test.ts src/tools/__tests__/shell-windows-partial-plan-b.test.ts src/permissions/__tests__/windows-sandbox-logic.test.ts src/permissions/__tests__/asrt-windows-support.test.ts src/main/__tests__/windows-job-launcher.test.ts
 ```
 
-The CI job is the full list. It also builds the native helpers (`scripts/build-windows-job.ps1`, then `node scripts/test-windows-job.mjs` and `node scripts/test-windows-path-kind.mjs`).
+When CI requires native platform checks, three Windows shards run the union of the committed permission, native and application inventories. Each suite runs once even if it appears in multiple inventories. The inventory drift locks also run on affected Linux plans. Removing the last Windows lane for a suite requires a new or revised record in `config/windows-test-removals.json`.
+
+One preparation job supplies the helpers to all three shards. It can reuse compiled helpers and both payload packages when the tracked inputs, toolchain and runner image match. The job verifies the cached digests and existing binary identity checks before use, and rebuilds if verification fails. Native tests and package checks run on both paths. Only default-branch runs save preparation outputs.
 
 Use `bun run test`, not `bun test`. The suite runs under Vitest through `scripts/run-vitest-under-electron.mjs`.
 
