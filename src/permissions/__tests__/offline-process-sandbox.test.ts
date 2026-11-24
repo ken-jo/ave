@@ -1,4 +1,4 @@
-import childProcess from "node:child_process";
+import childProcess, { execFileSync } from "node:child_process";
 import { access, mkdtemp, mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
@@ -36,6 +36,7 @@ vi.mock("@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js", () 
 import { wrapOfflineProcess } from "../offline-process-sandbox.js";
 import { isOfflineProcessConfinementActive, buildPerCommandSandboxCustomConfig } from "../asrt-sandbox.js";
 import { detectSandboxCapability } from "../sandbox-capability.js";
+import { parseSandboxWrappedWords } from "../sandbox-wrapped-command.js";
 import { assertCodexExecutableLocation } from "../../main/codex-executable-location.js";
 import { wrapCommandWithSandboxMacOS } from "@anthropic-ai/sandbox-runtime/dist/sandbox/macos-sandbox-utils.js";
 import { wrapCommandWithSandboxLinux, cleanupBwrapMountPoints } from "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js";
@@ -85,6 +86,24 @@ describe("offline process confinement", () => {
     expect(buildPerCommandSandboxCustomConfig).toHaveBeenCalledWith(expect.objectContaining({ pinWriteRoots: true }));
     expect(wrapped.env.HOME).toBe(output);
     expect(wrapped.env.SAL_USE_VCLPLUGIN).toBe("svp");
+  });
+
+  it("passes the engine its original argv when the executable pathname contains an equals sign", async () => {
+    const command = join(runtime, "engine=version");
+    const args = ["--headless", "a b", "", 'file="$name";'];
+    await writeFile(command, "#!/bin/sh\nprintf '%s\\000' \"$@\"\n", { mode: 0o755 });
+    setProcessPlatform("darwin");
+    await wrapOfflineProcess({ ...request(), command, args });
+    const launcher = vi.mocked(wrapCommandWithSandboxMacOS).mock.calls[0][0].command;
+    setProcessPlatform(HOST_PLATFORM);
+
+    const words = parseSandboxWrappedWords(launcher).map(word => word.value);
+    expect(words).toEqual(["/usr/bin/env", `TMPDIR=${output}`, `TMP=${output}`, `TEMP=${output}`,
+      "/bin/sh", "-c", 'exec "$@"', "offline-process", command, ...args]);
+    if (HOST_PLATFORM !== "win32") {
+      const received = execFileSync("/bin/sh", ["-c", launcher], { encoding: "utf8" });
+      expect(received).toBe(`${args.join("\0")}\0`);
+    }
   });
 
   it("uses an isolated network namespace with no bridge and releases native mount ownership once", async () => {

@@ -105,8 +105,11 @@ export async function wrapOfflineProcess(input: OfflineProcessInput): Promise<Of
   };
   const env = buildSafeChildEnv(Object.fromEntries(Object.entries(input.env)
     .filter((entry): entry is [string, string] => entry[1] !== undefined)));
-  const command = ["/usr/bin/env", `TMPDIR=${output}`, `TMP=${output}`, `TEMP=${output}`,
-    input.command, ...input.args].map(shellQuote).join(" ");
+  // Keep executable pathnames containing '=' past the env assignment operands.
+  const launch = input.command.includes("=")
+    ? ["/bin/sh", "-c", 'exec "$@"', "offline-process", input.command, ...input.args]
+    : [input.command, ...input.args];
+  const command = ["/usr/bin/env", `TMPDIR=${output}`, `TMP=${output}`, `TEMP=${output}`, ...launch].map(shellQuote).join(" ");
   input.signal.throwIfAborted();
   noteConfinedProcessesMayRun();
   if (process.platform === "darwin") {
