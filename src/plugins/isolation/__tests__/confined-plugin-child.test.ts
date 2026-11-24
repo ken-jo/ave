@@ -3737,13 +3737,15 @@ it.runIf(process.platform === "darwin" || process.platform === "linux").each(["c
   "keeps a bundled MCP environment canary private during a %s launch",
   async delivery => {
     if (!(await sandboxCasesRun())) return;
+    const aveHome = fixture?.aveHome;
+    if (!aveHome) throw new Error("Expected an Ave home fixture");
     await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
     const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
     const wrap = vi.spyOn(SandboxManager, "wrapWithSandboxArgv");
     const home = createSandboxProcessHome();
     const canary = "-mcp-canary='quoted'\nnext=line";
     const assertHomeHasNoCanary = () => {
-      const files = readdirSync(fixture!.aveHome, { recursive: true, withFileTypes: true });
+      const files = readdirSync(aveHome, { recursive: true, withFileTypes: true });
       for (const file of files) {
         if (file.isFile()) expect(readFileSync(join(file.parentPath, file.name)).includes(canary), file.name).toBe(false);
       }
@@ -3761,20 +3763,24 @@ it.runIf(process.platform === "darwin" || process.platform === "linux").each(["c
       });
       try {
         expect(wrap).toHaveBeenCalledOnce();
-        expect(wrap.mock.calls[0]![0]).not.toContain("mcp-canary");
+        expect(wrap.mock.lastCall?.[0]).not.toContain("mcp-canary");
         expect(JSON.stringify(argv)).not.toContain("mcp-canary");
         expect(env).toEqual({ PATH: "/usr/bin:/bin:/usr/sbin:/sbin" });
         assertHomeHasNoCanary();
-        const child = spawn(argv[0]!, argv.slice(1), {
+        const [program, ...args] = argv;
+        if (!program) throw new Error("Expected a bundled command launcher");
+        const child = spawn(program, args, {
           env, stdio: targetLaunch.withStdio(["pipe", "pipe", "pipe"]), detached: true,
         });
         const closed = once(child, "close");
         let stdout = "";
         let stderr = "";
-        child.stdout!.setEncoding("utf8").on("data", chunk => { stdout += chunk; });
-        child.stderr!.setEncoding("utf8").on("data", chunk => { stderr += chunk; });
-        child.stdin!.on("error", () => undefined);
         try {
+          const { stdin, stdout: childOutput, stderr: childErrors } = child;
+          if (!stdin || !childOutput || !childErrors) throw new Error("Expected piped stdio for the bundled target");
+          childOutput.setEncoding("utf8").on("data", chunk => { stdout += chunk; });
+          childErrors.setEncoding("utf8").on("data", chunk => { stderr += chunk; });
+          stdin.on("error", () => undefined);
           if (process.platform === "linux") {
             expect(child.pid).toBeDefined();
             expect(readFileSync(`/proc/${child.pid}/cmdline`, "utf8")).not.toContain("mcp-canary");
@@ -3782,7 +3788,7 @@ it.runIf(process.platform === "darwin" || process.platform === "linux").each(["c
           }
           if (delivery === "complete") targetLaunch.sendEnvironment(child);
           else (child.stdio[4] as import("node:stream").Writable).end(`MCP_CANARY=${canary}\0`);
-          child.stdin!.end("stdio remains available\n");
+          stdin.end("stdio remains available\n");
           expect(await closed, stderr).toEqual([delivery === "complete" ? 0 : 1, null]);
           expect(stdout).toBe(delivery === "complete" ? `${canary}\nstdio remains available\n` : "");
           assertHomeHasNoCanary();
@@ -3802,7 +3808,7 @@ it.runIf(process.platform === "darwin" || process.platform === "linux").each(["c
   60_000,
 );
 
-// /dev/null stdin keeps the control shell from treating the socket used for Node stdio as an rsh connection.
+// /dev/null stdin prevents the control shell from treating socket-backed stdio as an rsh connection.
 function runOuterShellUnconfined(env: Record<string, string>, sentinel: string): void {
   execFileSync("/bin/bash", ["-c", "true"], {
     env: { ...env, PATH: "/usr/bin:/bin" },
@@ -3825,7 +3831,8 @@ it.runIf(process.platform === "darwin" || process.platform === "linux").each([
   "refuses delegated worker %s without running host startup code and delivers the target environment",
   async name => {
     if (!(await sandboxCasesRun())) return;
-    const root = fixture!.root;
+    const root = fixture?.root;
+    if (!root) throw new Error("Expected a worker fixture root");
     const sentinel = join(root, "outer-startup-marker");
     const value = join(root, name === "BASH_ENV" ? "startup.sh" : "preload.so");
     if (name === "BASH_ENV") {
@@ -3863,7 +3870,8 @@ it.runIf(process.platform === "darwin" || process.platform === "linux").each([
       let output = "";
       worker.onStdout(chunk => { output += chunk; });
       await expect(new Promise(resolve => worker.onExit(resolve))).resolves.toMatchObject({ code: 0 });
-      expect(wrap.mock.calls[0]![0]).not.toContain(canary);
+      expect(wrap).toHaveBeenCalledOnce();
+      expect(wrap.mock.lastCall?.[0]).not.toContain(canary);
       expect(output.trimEnd().split("\n")).toEqual([
         canary, process.env.PATH ?? "/usr/bin:/bin:/usr/sbin:/sbin", "1", "unset", "unset", "unset", "unset",
       ]);

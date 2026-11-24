@@ -526,7 +526,9 @@ describe("initializeAsrtSandbox — Linux configured-wrapper runtime probe", () 
     });
     await initializeAsrtSandbox({ allowedDomains: [] });
     expect(h.initialize.mock.lastCall?.[0]).toMatchObject({ bwrapPath: "/usr/local/bin/bwrap", socatPath: "/usr/local/bin/socat" });
-    const [, probeArgs, probeOptions] = h.spawn.mock.lastCall!;
+    const probe = h.spawn.mock.lastCall;
+    if (!probe) throw new Error("Expected the sandbox boot probe to spawn");
+    const [, probeArgs, probeOptions] = probe;
     expect(probeOptions.env).toEqual({ PATH: "/usr/bin:/bin:/usr/sbin:/sbin" });
     vi.stubEnv("PATH", "/another-install/bin:/usr/bin:/bin");
     const worker = await wrapWorkerCommand("true", { commandId: TEST_COMMAND_ID });

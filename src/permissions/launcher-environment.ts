@@ -80,7 +80,7 @@ const TARGET_ENV_SHIM = [
   '  if [[ -z "$assignment" ]]; then',
   `    exec ${TARGET_ENV_FD}<&-`,
   "    unset OLDPWD",
-  '    apply_target_env "${target_env[@]}" "${runtime_env[@]}" || exit 1',
+  `    apply_target_env "\${target_env[@]}" "\${runtime_env[@]}" || exit 1`,
   '    exec -- "$@"',
   "  fi",
   '  target_env+=("$assignment")',
