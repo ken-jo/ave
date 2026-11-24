@@ -9,7 +9,6 @@ import {
   type SandboxWindowsSubstrateInfo,
 } from "../../shared/sandbox-capability-info.js";
 
-import { t } from "../../i18n/index.js";
 import SRT_WIN_PINS from "../../permissions/srt-win-pins.json" with { type: "json" };
 import {
   planWindowsExtensionHolder,
@@ -153,5 +152,7 @@ export function windowsExtensionBootWarning(substrate: SandboxWindowsSubstrateIn
     : substrate.shells === "mxc"
       ? "; agent shells run in Microsoft Execution Containers"
       : "; agent shells run in Microsoft Execution Containers once the container start check passes";
-  return `boot: extension confinement is ON — ${t("be_windowsSandboxPlan.extensionContainmentUnavailable")}${shells}.`;
+  return "boot: extension confinement is ON but the Windows sandbox (srt-win) is NOT ready — " +
+    "plugin workers, plugin children, plugin hooks and MCP stdio servers run with NO OS isolation " +
+    `until the one-time administrator install completes${shells}.`;
 }

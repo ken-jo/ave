@@ -1370,7 +1370,6 @@ export const en = {
   "be_wrapBundledCommand.workspaceBusyStaging": "Another contained process is writing inside this project folder, so this one did not start; it is not queued. This project folder contains Ave's data folder, where every running contained MCP server or extension hook keeps its private folder, so this is refused while any of them runs; open a narrower project folder ({code})",
   "be_wrapBundledCommand.bashIncompatible": "Git Bash cannot start inside a Windows extension container on this host; use PowerShell or a Windows program ({code})",
   "be_wrapBundledCommand.holderQuarantined": "{label}: the previous contained process could not be confirmed stopped, so it was not restarted. Restart Ave to clear it ({code})",
-  "be_windowsSandboxPlan.extensionContainmentUnavailable": "MXC containment is unavailable on this host, so plugin workers, plugin children, plugin hooks and MCP stdio servers run with NO OS isolation",
   "be_wrapBundledCommand.environmentRefused": "An extension container cannot receive these environment variables: {keys}. Remove them from this server or hook ({code})",
 
   // bootstrapStatusPill

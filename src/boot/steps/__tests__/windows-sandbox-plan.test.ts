@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { t } from "../../../i18n/index.js";
 
 import { assertSandboxWindowsExtensionPlan, maxEgressGrantScope } from "../../../shared/sandbox-capability-info.js";
 import { __resetWindowsSandboxSubstrateForTest, setWindowsSandboxSubstrate } from "../../../permissions/sandbox-capability.js";
@@ -196,14 +195,13 @@ describe("boot warning for requested extension confinement", () => {
     const warning = windowsExtensionBootWarning(substrate);
     expect(warning).toContain("REFUSED");
     expect(warning).toContain("readiness-deadline");
-    expect(warning).not.toContain(t("be_windowsSandboxPlan.extensionContainmentUnavailable"));
+    expect(warning).not.toContain("NO OS isolation");
   });
 
   it("says NO OS isolation only for a settled no-backend plan", () => {
     const warning = windowsExtensionBootWarning(windowsSubstrateFor(input, "none"));
-    expect(warning).toContain(t("be_windowsSandboxPlan.extensionContainmentUnavailable"));
+    expect(warning).toContain("NO OS isolation");
     expect(warning).not.toContain("REFUSED");
-    expect(warning).not.toMatch(/srt-win|administrator/);
   });
 
   it("mentions container shells only when this substrate has them or is still checking them", () => {
