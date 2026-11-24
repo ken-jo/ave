@@ -396,6 +396,7 @@ export function getHostShellExecutionPlan(executionMode: HostShellExecutionReque
     shellSubstrate: mxc === undefined ? "asrt" : "mxc",
     executionMode,
     unavailableSandboxRequiresAsk: isAveHomeBoundaryUnverifiedAtBoot(),
+    unavailableCauses: _bootOutcome?.causes,
   });
   recordIssuedHostShellExecutionPlan(plan, generation);
   windowsShellPlanRevisions.set(plan, windowsShellLocalNetworkRevision);

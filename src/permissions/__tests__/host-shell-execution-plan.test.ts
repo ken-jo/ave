@@ -6,6 +6,7 @@ import {
   getHostShellExecutionPlanCacheIdentity,
   isIssuedHostShellExecutionPlanAuditProjection,
   requiresExplicitHostShellApproval,
+  requiresUnsandboxedShellAsk,
 } from "../host-shell-execution-plan.js";
 
 const FULL_ASRT = {
@@ -106,8 +107,32 @@ describe("host shell execution plan", () => {
     expect(Object.isFrozen(plan.capability)).toBe(true);
   });
 
+  it("leaves the Windows approved-host plan as it was: explicit approval, outside the forced ask", () => {
+    const plan = buildHostShellExecutionPlan({ platform: "win32", requestedSandbox: true, activeCapability: WINDOWS_PARTIAL_ASRT,
+      unavailableCauses: ["missing-bwrap"] });
+    expect(plan).toEqual({
+      version: HOST_SHELL_EXECUTION_PLAN_VERSION,
+      platform: "win32",
+      requestedSandbox: true,
+      executionRequest: "default",
+      mode: "plain",
+      sandboxed: false,
+      substrate: "none",
+      egressProtocolCoverage: { dns: "unknown", rawIp: "unknown" },
+      capability: {
+        kind: "none", confidence: "verified", platform: "win32",
+        reason: "Windows ASRT partial shell confinement is unavailable: the host will not issue path-based ACL grants for one-shot shells.",
+        confines: { filesystem: false, process: false, network: false },
+      },
+      fallbackReason: "windows-partial-shell-acl-unsafe",
+      requiresExplicitUserApproval: true,
+      identity: "host-shell-execution-plan/v4:win32:windows-partial-shell-acl-unsafe",
+    });
+    expect(requiresUnsandboxedShellAsk(plan)).toBe(false);
+  });
+
   it.each(["darwin", "linux", "win32"] as const)(
-    "keeps requested-on but unavailable %s distinct from explicit sandbox-off",
+    "puts requested-on but unavailable %s under the forced ask, distinct from explicit sandbox-off",
     (platform) => {
       const requested = buildHostShellExecutionPlan({
         platform,
@@ -123,15 +148,21 @@ describe("host shell execution plan", () => {
       expect(requested).toMatchObject({
         requestedSandbox: true,
         mode: "plain",
+        sandboxed: false,
         fallbackReason: "requested-sandbox-unavailable",
-        // An unavailable sandbox follows the same exact-rule policy as sandbox-off (owner 2026-10-25, unsandboxed shell exact-rule requirement), so it needs no one-shot permit. The fallback reason and the separate identity keep it distinct from sandbox-off.
-        requiresExplicitUserApproval: false,
+        requiresExplicitUserApproval: true,
+        identity: `host-shell-execution-plan/v4:${platform}:requested-sandbox-unavailable:ask`,
         capability: {
           kind: "none",
           confines: { filesystem: false, process: false, network: false },
         },
       });
-      expect(requiresExplicitHostShellApproval(requested)).toBe(false);
+      // No boundary failure is needed: the unavailable route itself is the floor.
+      expect(requiresUnsandboxedShellAsk(requested)).toBe(true);
+      expect(requiresExplicitHostShellApproval(requested)).toBe(true);
+      expect(requested).not.toHaveProperty("installHints");
+      expect(requested).toEqual(buildHostShellExecutionPlan({ platform, requestedSandbox: true, activeCapability: { ...NONE, platform },
+        unavailableSandboxRequiresAsk: true }));
       expect(requested.identity).not.toBe(off.identity);
       expect(off).toMatchObject({
         requestedSandbox: false,
@@ -139,9 +170,33 @@ describe("host shell execution plan", () => {
         fallbackReason: "disabled-by-setting",
         requiresExplicitUserApproval: false,
       });
+      expect(requiresUnsandboxedShellAsk(off)).toBe(false);
       expect(requiresExplicitHostShellApproval(off)).toBe(false);
     },
   );
+
+  it("names what to install only on the unavailable plan, and only for causes an install fixes", () => {
+    const unavailable = (unavailableCauses: Parameters<typeof buildHostShellExecutionPlan>[0]["unavailableCauses"]) =>
+      buildHostShellExecutionPlan({ platform: "linux", requestedSandbox: true, activeCapability: { ...NONE, platform: "linux" }, unavailableCauses });
+    const hinted = unavailable(["missing-bwrap", "dependency-check-failed", "missing-socat", "missing-bwrap", "missing-ripgrep"]);
+    expect(hinted.installHints).toEqual(["bubblewrap", "socat", "ripgrep"]);
+    expect(Object.isFrozen(hinted.installHints)).toBe(true);
+    expect(getHostShellExecutionPlanAuditProjection(hinted).installHints).toEqual(["bubblewrap", "socat", "ripgrep"]);
+    expect(requiresUnsandboxedShellAsk(hinted)).toBe(true);
+    for (const causes of [undefined, [], ["linux-runtime-probe-failed"], ["init-failed"], ["windows-setup-incomplete"]] as const) {
+      expect(unavailable(causes)).not.toHaveProperty("installHints");
+      expect(getHostShellExecutionPlanAuditProjection(unavailable(causes))).not.toHaveProperty("installHints");
+    }
+    // The hint is display only: it partitions the cache but never the route identity the floor reads.
+    expect(hinted.identity).toBe(unavailable([]).identity);
+    expect(getHostShellExecutionPlanCacheIdentity(getHostShellExecutionPlanAuditProjection(hinted)))
+      .not.toBe(getHostShellExecutionPlanCacheIdentity(getHostShellExecutionPlanAuditProjection(unavailable([]))));
+    for (const other of [
+      buildHostShellExecutionPlan({ platform: "linux", requestedSandbox: false, activeCapability: { ...NONE, platform: "linux" }, unavailableCauses: ["missing-bwrap"] }),
+      buildHostShellExecutionPlan({ platform: "linux", requestedSandbox: true, executionMode: "host", activeCapability: { ...NONE, platform: "linux" }, unavailableCauses: ["missing-bwrap"] }),
+      buildHostShellExecutionPlan({ platform: "linux", requestedSandbox: true, activeCapability: { ...FULL_ASRT, platform: "linux" }, unavailableCauses: ["missing-bwrap"] }),
+    ]) expect(other).not.toHaveProperty("installHints");
+  });
   it.each(["darwin", "linux", "win32"] as const)(
     "keeps full %s ASRT on the wrapped route",
     (platform) => {

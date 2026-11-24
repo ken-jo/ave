@@ -353,7 +353,8 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     expect(getSandboxBootOutcome()).toMatchObject({ action: "degrade" });
     expect(getWindowsSandboxSubstrate()).toMatchObject({ shells: "none", extensions: "none" });
     const plan = getHostShellExecutionPlan();
-    expect(plan).toMatchObject({ mode: "plain", sandboxed: false, fallbackReason: "requested-sandbox-unavailable" });
+    expect(plan).toMatchObject({ mode: "plain", sandboxed: false, fallbackReason: "requested-sandbox-unavailable", requiresExplicitUserApproval: true });
+    expect(requiresUnsandboxedShellAsk(plan)).toBe(true);
     expect(plan.capability.confines).toEqual({ filesystem: false, process: false, network: false });
     expect(decidePermission({
       tool: { name: "powershell", source: "builtin", kind: "shell" }, mode: "strict", headless: false,
@@ -433,6 +434,23 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     expect(plan).toMatchObject({ requestedSandbox: false, fallbackReason: "disabled-by-setting", requiresExplicitUserApproval: false });
     expect(plan.identity.endsWith(":ask")).toBe(false);
     expect(requiresUnsandboxedShellAsk(plan)).toBe(false);
+  });
+
+  it("puts shells on the forced ask when the proxy-only start itself fails", async () => {
+    h.checkDeps.mockResolvedValue(SRT_WIN_MISSING);
+    h.detectMxc.mockResolvedValue(MXC_OK);
+    h.initialize.mockRejectedValue(Object.assign(new Error("proxy failed to bind"), { code: "EADDRINUSE" }));
+
+    await initSandboxGate(harness.context(true, false, true));
+
+    expect(h.initialize).toHaveBeenCalledOnce();
+    expect(h.initialize.mock.calls[0]?.[0]).toHaveProperty("windows.externalConfinement", true);
+    expect(getSandboxBootOutcome()).toMatchObject({ action: "degrade", reason: "degrade-windows-init-failed", causes: ["init-failed"] });
+    expect(detectShellSandboxCapability().kind).toBe("none");
+    const plan = getHostShellExecutionPlan();
+    expect(plan).toMatchObject({ platform: "win32", mode: "plain", sandboxed: false, fallbackReason: "requested-sandbox-unavailable", requiresExplicitUserApproval: true });
+    expect(requiresUnsandboxedShellAsk(plan)).toBe(true);
+    expect(plan).not.toHaveProperty("installHints");
   });
 
   it("keeps the generic Windows degrade for any other initialization failure", async () => {

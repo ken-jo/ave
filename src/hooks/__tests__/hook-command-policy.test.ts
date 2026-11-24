@@ -250,20 +250,23 @@ describe("hook command permission admission", () => {
     expect(JSON.parse(result.rawStdout).reason).toBe("received");
   });
 
-  it("follows the sandbox-off policy, without a one-shot receipt, when the requested sandbox is unavailable", async () => {
-    // A requested-but-unavailable sandbox is a plain shell under the exact-rule policy, as for the bash tool (owner 2026-10-25, unsandboxed shell exact-rule requirement); it records its fallback reason instead.
+  it("takes the forced ask when the requested sandbox is unavailable: a saved allow and allow mode do not run the hook unasked", async () => {
     setShellSandboxRequestedAtBoot(true);
     expect(getHostShellExecutionPlan()).toMatchObject({
-      mode: "plain", fallbackReason: "requested-sandbox-unavailable", requiresExplicitUserApproval: false,
+      mode: "plain", fallbackReason: "requested-sandbox-unavailable", requiresExplicitUserApproval: true,
     });
-    const p = policy("allow-once");
+    const p = policy("deny-once");
+    p.permissionManager.setMode("allow");
     p.permissionManager.setRules([{ pattern: "Bash(node *)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
     const result = await runOneHookScript(hook, payload, { authorizeCommand: p.authorizeCommand });
-    expect(result.decision, result.reason).toBe("allow");
-    expect(JSON.parse(result.rawStdout).reason).toBe("received");
-    // The hook's own approval is asked once, with no host-execution permit to bind.
+    expect(result.decision).toBe("deny");
+    expect(result.rawStdout).toBe("");
     expect(p.requestAndWait).toHaveBeenCalledOnce();
-    expect(p.requestAndWait).not.toHaveBeenCalledWith(expect.objectContaining({ hostShellExecutionPermitBinding: expect.anything() }));
+    expect(p.requestAndWait).toHaveBeenCalledWith(expect.objectContaining({
+      forceExplicit: true, allowedChoices: ["allow-once", "deny-once"], durableApprovalRecordAllowed: false, floorSessionAllowed: true,
+      executionPlan: expect.objectContaining({ fallbackReason: "requested-sandbox-unavailable", requiresExplicitUserApproval: true }),
+      hostShellExecutionPermitBinding: expect.anything(),
+    }));
   });
 
   describe.each(["boundary-link", "boundary-unlisted"] as const)("worker-only boot with an unverifiable boundary (%s)", (category) => {

@@ -489,17 +489,17 @@ describe("plain-shell invocation authorization", () => {
     return { classifier, cache };
   }
 
-  it.each(["low", "high"] as const)("reviews an unavailable-sandbox host call before the %s outcome", async (level) => {
+  it.each(["low", "high"] as const)("asks for an unavailable-sandbox call without consulting a reviewer that would say %s", async (level) => {
     setActiveSandboxCapability({ kind: "none", confidence: "verified", platform: process.platform, reason: "fixture sandbox unavailable" });
     const { classifier, cache } = lowReviewer();
     classifier.classify.mockImplementation(async () => ({ level, reason: level === "high" ? "ambiguous host effect" : "bounded host effect" }));
     try {
       const { run, requests } = executorWithDock({ executionMode: "sandbox" });
       expect((await run())[0]).toMatchObject({ content: "ready" });
-      expect(classifier.classify).toHaveBeenCalledOnce();
-      expect(requests).toHaveLength(level === "high" ? 1 : 0);
-      expect(requests.every((request) => request.executionPlan?.mode === "plain")).toBe(true);
-      expect(requests.every((request) => request.allowedChoices === undefined)).toBe(true);
+      expect(classifier.classify).not.toHaveBeenCalled();
+      expect(requests).toHaveLength(1);
+      expect(requests[0]).toMatchObject({ allowedChoices: ["allow-once", "deny-once"],
+        executionPlan: { mode: "plain", fallbackReason: "requested-sandbox-unavailable", requiresExplicitUserApproval: true } });
     } finally { await cache.flush(); }
   });
 

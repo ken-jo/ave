@@ -59,8 +59,10 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
 });
 
 import { initSandboxGate } from "../steps/sandbox-init.js";
+import { requiresUnsandboxedShellAsk } from "../../permissions/host-shell-execution-plan.js";
 import {
   __resetActiveSandboxCapabilityForTest,
+  __resetSandboxBootOutcomeForTest,
   __resetSandboxRequestedAtBootForTest,
   detectSandboxCapability,
   getHostShellExecutionPlan,
@@ -94,6 +96,7 @@ afterEach(() => {
   vi.unstubAllEnvs();
   __resetActiveSandboxCapabilityForTest();
   __resetSandboxRequestedAtBootForTest();
+  __resetSandboxBootOutcomeForTest();
   setProcessPlatform(ORIGINAL_PLATFORM);
   vi.clearAllMocks();
 });
@@ -114,13 +117,30 @@ describe("initSandboxGate — Linux ASRT runtime probe failures", () => {
     });
     expect(detectSandboxCapability()).toMatchObject({ kind: "none", platform: "linux" });
     expect(isShellSandboxRequestedAtBoot()).toBe(true);
-    expect(getHostShellExecutionPlan()).toMatchObject({
+    const plan = getHostShellExecutionPlan();
+    expect(plan).toMatchObject({
       requestedSandbox: true,
       mode: "plain",
       fallbackReason: "requested-sandbox-unavailable",
-      requiresExplicitUserApproval: false,
+      requiresExplicitUserApproval: true,
       capability: { kind: "none" },
     });
+    // The wrapper is installed but cannot run: forced ask, nothing to install.
+    expect(requiresUnsandboxedShellAsk(plan)).toBe(true);
+    expect(plan).not.toHaveProperty("installHints");
+  });
+
+  it("puts a host with missing sandbox packages on the forced ask and names what to install", async () => {
+    h.checkDeps.mockResolvedValue({ errors: ["bubblewrap (bwrap) not installed", "socat not installed"], warnings: [] });
+
+    await expect(initSandboxGate(harness.context(true))).resolves.toBeUndefined();
+
+    expect(h.initialize).not.toHaveBeenCalled();
+    expect(detectSandboxCapability()).toMatchObject({ kind: "none", platform: "linux" });
+    const plan = getHostShellExecutionPlan();
+    expect(plan).toMatchObject({ platform: "linux", mode: "plain", fallbackReason: "requested-sandbox-unavailable",
+      requiresExplicitUserApproval: true, installHints: ["bubblewrap", "socat"] });
+    expect(requiresUnsandboxedShellAsk(plan)).toBe(true);
   });
 
   it("audits and rethrows the typed probe failure for explicit Linux opt-in", async () => {
@@ -177,6 +197,9 @@ describe("initSandboxGate — Linux ASRT runtime probe failures", () => {
     if (explicit) await expect(boot).rejects.toBe(probeError);
     else await expect(boot).resolves.toBeUndefined();
     expect(detectSandboxCapability()).toMatchObject({ kind: "none" });
+    const plan = getHostShellExecutionPlan();
+    expect(plan).toMatchObject({ platform: "darwin", mode: "plain", fallbackReason: "requested-sandbox-unavailable", requiresExplicitUserApproval: true });
+    expect(requiresUnsandboxedShellAsk(plan)).toBe(true);
     expect(harness.logSandboxGate).toHaveBeenCalledWith(expect.objectContaining({
       platform: "darwin", outcome: explicit ? "abort" : "degrade",
       reason: explicit ? "abort-macos-runtime-probe-failed" : "degrade-macos-runtime-probe-failed",

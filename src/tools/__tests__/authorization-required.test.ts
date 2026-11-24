@@ -543,8 +543,8 @@ describe("ToolExecutor authorization-required control", () => {
     expect((await recentlyDenied.list())).toHaveLength(1);
   });
 
-  it("returns ordinary authorization, carrying the fallback reason, for a requested-sandbox plain fallback", async () => {
-    // An unavailable sandbox uses ordinary tool approval; the plan must still disclose uncontained execution.
+  it("returns host authorization, carrying the fallback reason, for a requested-sandbox plain fallback", async () => {
+    // An unavailable sandbox is a forced ask; the plan must disclose uncontained execution.
     setShellSandboxRequestedAtBoot(true);
     setActiveSandboxCapability({
       kind: "none",
@@ -581,12 +581,12 @@ describe("ToolExecutor authorization-required control", () => {
     expect(requestAndWait).not.toHaveBeenCalled();
     expect(result.content).not.toContain("secret-command");
     expect(authorizationRequiredStateOf(result.authorizationRequired)).toMatchObject({
-      kind: "tool",
+      kind: "host-execution",
       toolName: "bash",
-      reason: "approval-surface-unavailable",
+      reason: "host-execution-authorization-required",
       executionPlan: {
         fallbackReason: "requested-sandbox-unavailable",
-        requiresExplicitUserApproval: false,
+        requiresExplicitUserApproval: true,
       },
     });
   });
