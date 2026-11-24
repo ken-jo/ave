@@ -3,7 +3,7 @@ import type { PermissionCheckResult, PermissionManager } from "../permissions/pe
 import { isHostApprovalRejectedDecision, type ApprovalDecision, type ApprovalGate } from "../permissions/approval-gate.js";
 import { refreshRemoteControllerBoundToSession, isRemoteControllerBoundToSession, remoteControllerOriginOf } from "../shared/chat-origin.js";
 import { getHostShellExecutionPlan } from "../permissions/sandbox-capability.js";
-import { getHostShellExecutionPlanAuditProjection, requiresUnsandboxedShellAsk, type HostShellExecutionPlan } from "../permissions/host-shell-execution-plan.js";
+import { getHostShellExecutionPlanAuditProjection, HOME_PRIVACY_HELPER_UNAVAILABLE_SHELL_DENIAL, isHomePrivacyHelperUnavailablePlan, requiresUnsandboxedShellAsk, type HostShellExecutionPlan } from "../permissions/host-shell-execution-plan.js";
 import { buildHostShellExecutionPermitBinding, mintHostShellExecutionPermit, consumeHostShellExecutionPermit, recordHostShellPolicyAuthorization } from "../permissions/host-shell-execution-permit.js";
 import { captureShellWorkingDirectoryIdentity, matchesShellWorkingDirectoryIdentity } from "../permissions/shell-working-directory-identity.js";
 import { buildPermissionEvaluationContext } from "../permissions/evaluation-context.js";
@@ -49,7 +49,8 @@ export function createHookCommandAuthorizer(deps: {
       approvalSurface: turnPolicy?.approvalSurface,
       remoteControllerAuthority: turnPolicy?.remoteControllerAuthority,
       floor: turnPolicy?.floor,
-      ...(plan.mode === "blocked" ? { admissionDenial: { code: "shell-execution-unavailable", reason: "Host shell execution is blocked" } } : {}),
+      ...(plan.mode === "blocked" ? { admissionDenial: isHomePrivacyHelperUnavailablePlan(plan) ? HOME_PRIVACY_HELPER_UNAVAILABLE_SHELL_DENIAL
+        : { code: "shell-execution-unavailable", reason: "Host shell execution is blocked" } } : {}),
       hostShellExecutionPlan: plan,
       shellExecution: { runsSandboxed: plan.sandboxed },
     } as const;

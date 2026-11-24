@@ -393,28 +393,89 @@ describe("host shells under an unverifiable Ave home boundary", () => {
       ));
   }
 
-  const privacyFailures: readonly { label: string; category: AveHomePrivacyFailureCategory; helperError?: Error }[] = [
-    { label: "path-kind helper timeout", category: "helper-unavailable", helperError: windowsPathKindHelperUnavailable("Windows path facts helper did not answer within 15000 ms", "ETIMEDOUT") },
+  type PrivacyFailure = { label: string; category: AveHomePrivacyFailureCategory; helperError?: Error };
+  const privacyFailures: readonly PrivacyFailure[] = [
     { label: "path-kind helper error", category: "read-back-failed", helperError: new Error("Invalid Windows path facts response") },
     ...([
-      "system-root-missing", "directory-failed", "identity-failed", "icacls-failed", "read-back-failed", "helper-unavailable",
+      "system-root-missing", "directory-failed", "identity-failed", "icacls-failed", "read-back-failed",
       "extra-principals", "workspace-extra-principals", "not-protected", "invalid-owner-grant", "owner-claim-failed", "reparse-point",
     ] as const).map(category => ({ label: category, category })),
   ];
 
-  describe.each(privacyFailures)("$label boot privacy failure", ({ category, helperError }) => {
+  function publishPrivacyFailure({ category, helperError }: PrivacyFailure): void {
+    const privacy = helperError === undefined
+      ? { enforcement: "none" as const, home: HOME, reason: category, category }
+      : ensureAveHomePrivate(join(testRoot, "ave-home"), {
+          platform: "win32",
+          readDacls: () => { throw helperError; },
+        });
+    expect(privacy).toMatchObject({ enforcement: "none", category });
+    setAveHomePrivacyAtBoot(privacy);
+  }
+
+  const routes = [
+    { route: "default", plan: { fallbackReason: "requested-sandbox-unavailable", executionRequest: "default" } },
+    { route: "host", plan: { fallbackReason: "none", executionRequest: "host" } },
+    { route: "worker-only", plan: { fallbackReason: "disabled-by-setting", executionRequest: "default" } },
+  ] as const;
+  const routeCases = routes.flatMap(route => DIALECTS.map(dialect => ({ ...route, dialect })));
+
+  // Owner decision 2026-11-24: a helper that gave no answer checked nothing, so host shells are denied until a restart, whatever approves them.
+  const RESTART = "Restart Ave; if it persists, reinstall Ave.";
+  const helperUnavailable: readonly PrivacyFailure[] = [
+    { label: "path-kind helper timeout", category: "helper-unavailable", helperError: windowsPathKindHelperUnavailable("Windows path facts helper did not answer within 15000 ms", "ETIMEDOUT") },
+    { label: "bare category", category: "helper-unavailable" },
+  ];
+
+  describe.each(helperUnavailable)("helper-unavailable ($label) boot privacy failure", (failure) => {
+    beforeEach(() => publishPrivacyFailure(failure));
+
+    const approvers = [
+      { label: "a saved prefix and tool allow", mode: "default" as const, rules: (d: (typeof DIALECTS)[number]) => [d.prefixRule, d.toolName] },
+      { label: "auto review", mode: "auto" as const, rules: () => [] },
+      { label: "allow mode and a saved prefix", mode: "allow" as const, rules: (d: (typeof DIALECTS)[number]) => [d.prefixRule, d.toolName] },
+    ];
+    const denyCases = routeCases.flatMap(route => approvers.map(approver => ({ ...route, approver })));
+
+    it.each(denyCases)("$route route: $dialect.toolName with $approver.label is denied with the restart notice and no card", async ({ route, dialect, approver }) => {
+      if (route === "worker-only") setShellSandboxRequestedAtBoot(false);
+      const execute = vi.fn();
+      const registry = probe(dialect.create, execute);
+      const pm = manager(approver.mode, approver.rules(dialect));
+      const run = sessionRun(dialect, route, `helper-${route}`);
+
+      const once = cardGate("allow-once");
+      const refused = await run(pm, once.gate, registry);
+      expect(once.cards()).toHaveLength(0);
+      expect(refused[0]?.is_error).toBe(true);
+      expect(refused[0]?.content).toContain(RESTART);
+      expect(pm.dispatchReviewer).not.toHaveBeenCalled();
+
+      // No session waiver: there is no card to save one from.
+      const session = sessionGate(pm);
+      await run(pm, session.gate, registry);
+      expect(session.cards()).toHaveLength(0);
+      expect(session.saves).toEqual([]);
+
+      const headless = await run(pm, cardGate("allow-once").gate, registry, true);
+      expect(headless[0]?.content).toContain(RESTART);
+      expect(headless[0]?.content).not.toContain(NO_APPROVER_MESSAGE);
+      expect(execute).not.toHaveBeenCalled();
+    });
+
+    it.each(routeCases)("$route route: a direct $dialect.toolName call is refused with the restart notice", async ({ route, dialect }) => {
+      if (route === "worker-only") setShellSandboxRequestedAtBoot(false);
+      const result = await dialect.create().execute({ command: dialect.command, ...(route === "host" ? HOST : {}) },
+        { cwd: testRoot, extraAllowedDirectories: [], metadata: { toolUseId: `helper-direct-${route}` } });
+      expect(result.isError).toBe(true);
+      expect(result.output).toContain(RESTART);
+    });
+  });
+
+  describe.each(privacyFailures)("$label boot privacy failure", (failure) => {
     const bash = DIALECTS[0];
 
-    beforeEach(() => {
-      const privacy = helperError === undefined
-        ? { enforcement: "none" as const, home: HOME, reason: category, category }
-        : ensureAveHomePrivate(join(testRoot, "ave-home"), {
-            platform: "win32",
-            readDacls: () => { throw helperError; },
-          });
-      expect(privacy).toMatchObject({ enforcement: "none", category });
-      setAveHomePrivacyAtBoot(privacy);
-    });
+    beforeEach(() => publishPrivacyFailure(failure));
 
     it("forces a card despite a saved Bash allow and lets this session pass the floor", async () => {
       const execute = vi.fn();
@@ -454,13 +515,6 @@ describe("host shells under an unverifiable Ave home boundary", () => {
       expect(execute).not.toHaveBeenCalled();
       expect(result[0]?.content).toContain(NO_APPROVER_MESSAGE);
     });
-
-    const routes = [
-      { route: "default", plan: { fallbackReason: "requested-sandbox-unavailable", executionRequest: "default" } },
-      { route: "host", plan: { fallbackReason: "none", executionRequest: "host" } },
-      { route: "worker-only", plan: { fallbackReason: "disabled-by-setting", executionRequest: "default" } },
-    ] as const;
-    const routeCases = routes.flatMap(route => DIALECTS.map(dialect => ({ ...route, dialect })));
 
     it.each(routeCases)("$route route: $dialect.toolName in allow mode with a saved prefix asks, and headless is denied", async ({ route, plan, dialect }) => {
       if (route === "worker-only") setShellSandboxRequestedAtBoot(false);

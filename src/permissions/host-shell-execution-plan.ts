@@ -23,7 +23,9 @@ export type HostShellFallbackReason =
   | "platform-unsupported"
   | "windows-partial-shell-acl-unsafe"
   | "requested-sandbox-unavailable"
-  | "active-sandbox-not-shell-contained";
+  | "active-sandbox-not-shell-contained"
+  // Boot got no answer from the home privacy helper: every unconfined shell is denied until a restart.
+  | "home-privacy-helper-unavailable";
 
 export interface HostShellExecutionPlan {
   readonly version: typeof HOST_SHELL_EXECUTION_PLAN_VERSION;
@@ -194,7 +196,28 @@ export function buildHostShellExecutionPlan(input: {
   // Boot could not establish Ave home privacy (any category, an unverifiable read boundary included): every plain host shell
   // (unavailable sandbox, shell scope off, Windows partial shell or explicit host) then needs a human ask for every command.
   unavailableSandboxRequiresAsk?: boolean;
+  // Boot got no answer from the home privacy helper: every route above that would run unconfined is blocked instead, so no approval runs it.
+  unconfinedShellDenied?: boolean;
 }): HostShellExecutionPlan {
+  if (input.unconfinedShellDenied === true) {
+    const route = buildHostShellExecutionPlan({ ...input, unconfinedShellDenied: false });
+    if (route.sandboxed) return route;
+    const fallbackReason: HostShellFallbackReason = "home-privacy-helper-unavailable";
+    return Object.freeze({
+      version: HOST_SHELL_EXECUTION_PLAN_VERSION,
+      platform: route.platform,
+      requestedSandbox: route.requestedSandbox,
+      executionRequest: route.executionRequest,
+      mode: "blocked" as const,
+      sandboxed: false,
+      substrate: "none" as const,
+      egressProtocolCoverage: egressProtocolCoverageFor("none"),
+      capability: noneCapability(route.platform, HOME_PRIVACY_HELPER_UNAVAILABLE_SHELL_DENIAL.reason),
+      fallbackReason,
+      requiresExplicitUserApproval: false,
+      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + route.platform + ":" + (route.executionRequest === "host" ? "explicit-host" : "default") + ":" + fallbackReason,
+    });
+  }
   const shellSubstrate = input.shellSubstrate ?? "asrt";
   if (shellSubstrate === "mxc" && input.platform !== "win32") {
     throw new Error("The MXC shell substrate exists only on Windows");
@@ -335,6 +358,16 @@ export function buildHostShellExecutionPlan(input: {
 }
 
 const ASK_EVERY_COMMAND_SUFFIX = ":ask";
+
+// The deny for a "home-privacy-helper-unavailable" plan: shells, hooks and their tool results all carry this restart notice.
+export const HOME_PRIVACY_HELPER_UNAVAILABLE_SHELL_DENIAL = Object.freeze({
+  code: "home-privacy-helper-unavailable",
+  reason: "Shell commands and hooks are off: Ave could not check its home folder privacy at startup. Restart Ave; if it persists, reinstall Ave.",
+});
+
+export function isHomePrivacyHelperUnavailablePlan(plan: Pick<HostShellExecutionPlan, "mode" | "fallbackReason"> | undefined): boolean {
+  return plan?.mode === "blocked" && plan.fallbackReason === "home-privacy-helper-unavailable";
+}
 
 // An unconfined plan (unavailable sandbox, shell scope off, or explicit host) that boot marked for a human ask on every command (a boot home privacy
 // failure of any category). The permission floor reads this, so saved allows, auto review and mode allows cannot run it unasked.

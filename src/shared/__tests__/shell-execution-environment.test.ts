@@ -18,6 +18,12 @@ function plan(sandbox: boolean) {
 }
 
 describe("shell execution environment", () => {
+  it("tells the model that a helper-unavailable boot denies shells until a restart", () => {
+    const denied = buildHostShellExecutionPlan({ platform: "win32", requestedSandbox: false,
+      activeCapability: { reason: "Fixture", kind: "none", confidence: "verified", platform: "win32" }, unconfinedShellDenied: true });
+    expect(shellExecutionEnvironmentLines(denied)).toEqual([t("shellExecution.homePrivacyHelperUnavailable")]);
+  });
+
   it("separates the host location from the temporary home and authentication boundary", () => {
     const lines = shellExecutionEnvironmentLines(plan(true));
     expect(lines).toContain(t("shellExecution.location", { platform: "darwin" }));

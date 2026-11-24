@@ -6,6 +6,7 @@ import {
   getHostShellExecutionPlanCacheIdentity,
   isIssuedHostShellExecutionPlanAuditProjection,
   requiresExplicitHostShellApproval,
+  isHomePrivacyHelperUnavailablePlan,
   requiresUnsandboxedShellAsk,
 } from "../host-shell-execution-plan.js";
 
@@ -365,5 +366,27 @@ describe("host shell execution plan — Windows under a boot home-privacy failur
     const outcome = plan.sandboxed ? "confined" : plan.mode === "blocked" ? "refused"
       : requiresUnsandboxedShellAsk(plan) && requiresExplicitHostShellApproval(plan) ? "ask" : "unconfined-without-ask";
     expect(outcome).toBe(branch.expected);
+  });
+
+  // Helper-unavailable (owner 2026-11-24): every unconfined branch is refused with the restart notice; confined routes are unchanged.
+  it.each(branches)("helper-unavailable, $label: refused unless confined", (branch) => {
+    const plan = buildHostShellExecutionPlan({
+      platform: "platform" in branch ? branch.platform : "win32",
+      requestedSandbox: branch.requestedSandbox,
+      activeCapability: branch.activeCapability,
+      ...("shellSubstrate" in branch ? { shellSubstrate: branch.shellSubstrate } : {}),
+      ...("executionMode" in branch ? { executionMode: branch.executionMode } : {}),
+      unavailableSandboxRequiresAsk: true,
+      unconfinedShellDenied: true,
+    });
+    if (branch.expected === "confined") {
+      expect(plan).toMatchObject({ mode: "asrt", sandboxed: true });
+      return;
+    }
+    expect(plan).toMatchObject({ mode: "blocked", sandboxed: false, fallbackReason: "home-privacy-helper-unavailable", requiresExplicitUserApproval: false,
+      executionRequest: "executionMode" in branch ? branch.executionMode : "default" });
+    expect(isHomePrivacyHelperUnavailablePlan(plan)).toBe(true);
+    expect(requiresExplicitHostShellApproval(plan)).toBe(false);
+    expect(plan.capability.reason).toContain("Restart Ave; if it persists, reinstall Ave.");
   });
 });

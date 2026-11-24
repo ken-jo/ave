@@ -1557,9 +1557,12 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
           .toContain(t("permissionsTab.osSandboxBootDegradedReason", { reason: "degrade-ave-home-boundary-unverified" }));
       }
       const reason = t(REASON[category], { principals: "S-1-5-11" });
-      // Every category forces the shell floor, so every notice tells the user that shell commands ask, once or for the session.
-      const shellAsk = t("permissionsTab.homePrivacyShellAsk");
-      expect(shellAsk).toBe(locale === "en" ? "Shell commands will ask for approval once or for the session." : "셸 명령은 한 번 또는 이 세션 동안의 승인을 요청합니다.");
+      // Every other category forces the shell floor, so its notice says shell commands ask, once or for the session;
+      // helper-unavailable denies shells and hooks until a restart.
+      const shellAsk = t(category === "helper-unavailable" ? "permissionsTab.homePrivacyShellDenied" : "permissionsTab.homePrivacyShellAsk");
+      expect(shellAsk).toBe(category === "helper-unavailable"
+        ? (locale === "en" ? "Shell commands and hooks are off until Ave restarts." : "Ave를 다시 시작할 때까지 셸 명령과 훅은 꺼져 있습니다.")
+        : (locale === "en" ? "Shell commands will ask for approval once or for the session." : "셸 명령은 한 번 또는 이 세션 동안의 승인을 요청합니다."));
       expect(reason).not.toContain(locale === "en" ? "shell commands" : "셸 명령");
       const fix = FIX[category];
       const tail = `${fix === null ? "" : ` ${t(fix)}`} ${shellAsk}`;

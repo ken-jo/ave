@@ -776,10 +776,6 @@ export function isAveHomePrivacyApprovable(category: AveHomePrivacyFailureCatego
   return category !== "helper-unavailable";
 }
 
-export function isAveHomePrivacyUnverifiedAtBoot(): boolean {
-  return getAveHomePrivacyFailure() !== undefined;
-}
-
 /** Guard initialization and each confined extension effect boundary. */
 export function assertAveHomePrivacyForConfinement(): void {
   if (process.platform !== "win32") return;

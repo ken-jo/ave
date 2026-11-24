@@ -6,7 +6,7 @@ type ShellEnvironmentPlan = Pick<HostShellExecutionPlanAuditProjection,
 
 /** Public descriptions of the selected child, never the host's environment values. */
 export function shellExecutionEnvironmentLines(plan: ShellEnvironmentPlan): readonly string[] {
-  if (plan.mode === "blocked") return [t("shellExecution.blocked")];
+  if (plan.mode === "blocked") return [t(plan.fallbackReason === "home-privacy-helper-unavailable" ? "shellExecution.homePrivacyHelperUnavailable" : "shellExecution.blocked")];
   return [
     // When requested confinement is unavailable, report the unsandboxed route wherever the plan is shown.
     ...(plan.fallbackReason === "requested-sandbox-unavailable"

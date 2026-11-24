@@ -4223,6 +4223,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "permissionsTab.homePrivacyFixPermissions": "폴더 권한을 수정한 뒤 Ave를 다시 시작하세요.",
   "permissionsTab.homePrivacyFixHelperUnavailable": "Ave를 다시 시작하세요. 문제가 계속되면 Ave를 다시 설치하세요.",
   "permissionsTab.homePrivacyShellAsk": "셸 명령은 한 번 또는 이 세션 동안의 승인을 요청합니다.",
+  "permissionsTab.homePrivacyShellDenied": "Ave를 다시 시작할 때까지 셸 명령과 훅은 꺼져 있습니다.",
   "permissionsTab.homeFolderRefusedSessionOnly": "이번 세션에만 적용됩니다. 내 계정만 Ave 폴더를 바꿀 수 있는지 확인하지 못해 설정을 저장하지 않았습니다. 폴더 권한을 수정한 뒤 Ave를 다시 시작하세요.",
   "permissionsTab.homePrivacyFixReparsePoint": "Ave는 링크를 거쳐 권한을 바꾸지 않습니다. AVE_HOME이 실제 디렉터리를 가리키게 한 뒤 Ave를 다시 시작하세요.",
   "permissionsTab.homePrivacyFixBoundaryLink": "링크나 정션을 실제 디렉터리로 바꾸세요. Ave 홈 자체, 그 상위 폴더, 바로 아래 항목 모두 해당합니다. 그런 다음 Ave를 다시 시작하세요.",
@@ -5176,6 +5177,7 @@ export const ko: Record<MessageCatalogKey, string> = {
 
   // shellExecution
   "shellExecution.blocked": "현재 실행 계획에서는 셸을 실행할 수 없습니다.",
+  "shellExecution.homePrivacyHelperUnavailable": "시작할 때 Ave가 홈 폴더 보호를 확인하지 못해 셸 명령과 훅이 꺼져 있습니다. Ave를 다시 시작하세요. 문제가 계속되면 Ave를 다시 설치하세요.",
   "shellExecution.sandboxUnavailable": "OS 샌드박스가 켜져 있지만 사용할 수 없어, 셸 명령이 샌드박스 없이 일반 권한 규칙에 따라 실행됩니다.",
   "shellExecution.boundaryUnverifiedAsk": "Ave 홈 경계를 확인할 수 없어, 셸 명령은 승인한 뒤에만 OS 샌드박스 없이 실행됩니다. 한 번만 승인하거나, 경계를 확인할 수 없는 동안 이 세션의 이후 셸 명령과 훅에 대한 샌드박스 승인을 면제할 수 있습니다. 다른 권한 검사는 계속 적용되며 다시 승인을 요청할 수 있습니다.",
   "shellExecution.sandboxUnavailableAsk": "OS 샌드박스가 켜져 있지만 사용할 수 없어, 셸 명령은 승인한 뒤에만 샌드박스 없이 실행됩니다. 한 번만 승인하거나, 샌드박스를 사용할 수 없는 동안 이 세션의 이후 셸 명령과 훅에 대한 샌드박스 승인을 면제할 수 있습니다. 다른 권한 검사는 계속 적용되며 다시 승인을 요청할 수 있습니다.",

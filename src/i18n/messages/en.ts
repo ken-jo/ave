@@ -4221,6 +4221,7 @@ export const en = {
   "permissionsTab.homePrivacyFixPermissions": "Fix the folder permissions, then restart Ave.",
   "permissionsTab.homePrivacyFixHelperUnavailable": "Restart Ave; if it persists, reinstall Ave.",
   "permissionsTab.homePrivacyShellAsk": "Shell commands will ask for approval once or for the session.",
+  "permissionsTab.homePrivacyShellDenied": "Shell commands and hooks are off until Ave restarts.",
   "permissionsTab.homeFolderRefusedSessionOnly": "The change applies to this session only. Ave could not verify that only your account can change its folder, so it did not save the setting. Fix the folder permissions, then restart Ave.",
   "permissionsTab.homePrivacyFixReparsePoint": "Ave does not change permissions through a link. Point AVE_HOME at a real directory, then restart Ave.",
   "permissionsTab.homePrivacyFixBoundaryLink": "Replace the link or junction with a real directory, whether it is the Ave home, a folder above it, or an entry directly inside it, then restart Ave.",
@@ -5174,6 +5175,7 @@ export const en = {
 
   // shellExecution
   "shellExecution.blocked": "Shell execution is unavailable under the current execution plan.",
+  "shellExecution.homePrivacyHelperUnavailable": "Shell commands and hooks are off: Ave could not check its home folder privacy at startup. Restart Ave; if it persists, reinstall Ave.",
   "shellExecution.sandboxUnavailable": "The OS sandbox is turned on but unavailable, so shell commands run without it under the normal permission rules.",
   "shellExecution.boundaryUnverifiedAsk": "The Ave home boundary could not be verified, so a shell command runs without the OS sandbox only after you approve it. Approve it once, or waive this sandbox approval for later shell commands and hooks in this session while the boundary stays unverified. Other permission checks still apply and may ask again.",
   "shellExecution.sandboxUnavailableAsk": "The OS sandbox is turned on but unavailable, so a shell command runs without it only after you approve it. Approve it once, or waive this sandbox approval for later shell commands and hooks in this session while the sandbox is unavailable. Other permission checks still apply and may ask again.",
