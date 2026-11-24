@@ -1,5 +1,5 @@
 import { type BigIntStats, chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
-import { type FileHandle, lstat, open } from "node:fs/promises";
+import { type FileHandle, open } from "node:fs/promises";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { replaceStagedFile } from "../../lib/atomic-file.js";
 
@@ -123,7 +123,7 @@ export interface OwnedDir {
   child(name: string, id: NodeId): OwnedDir | undefined;
   /** Which entry `name` is now, a link as the link itself; undefined when nothing is there. Read with every level still the one held,
    * before and after (`moved` otherwise): a folder that took a held one's place says nothing of what the held one holds. */
-  entryId(name: string): NodeId | undefined;
+  entryId(name: string, kind?: "single-link-file"): NodeId | undefined;
   list(): string[];
   /** A new regular file. With `replace`, a file or link of that name is unlinked first: the name, never what it points at. */
   createFile(name: string, options?: { replace?: boolean }): { fd: number; id: NodeId };
@@ -132,7 +132,6 @@ export interface OwnedDir {
   /** Reads a regular file by its verified identity. With `expectedId`, the file must still have that identity. */
   readFile(name: string, expectedId?: NodeId): Buffer | undefined;
   /** Reads a complete regular file of the expected identity within the byte limit. */
-  readFileBounded(name: string, expectedId: NodeId, maxBytes: number, signal: AbortSignal): Promise<Buffer | undefined>;
   /** Removes one entry and everything below it without following a link. With `expect`, only while the entry has that id. */
   remove(name: string, expect?: NodeId): Promise<void>;
   removeSelfIfEmpty(): boolean;
@@ -220,12 +219,13 @@ class Dir implements OwnedDir {
     return new Dir(this, path, id);
   }
 
-  entryId(name: string): NodeId | undefined {
+  entryId(name: string, kind?: "single-link-file"): NodeId | undefined {
     const path = join(this.path, entryName(name));
     this.check();
-    const id = nodeIdOf(path);
+    const stat = stats(path);
     this.check();
-    return id;
+    if (stat === undefined || (kind === "single-link-file" && (!stat.isFile() || stat.nlink !== 1n))) return undefined;
+    return idOf(stat);
   }
 
   list(): string[] {
@@ -277,35 +277,6 @@ class Dir implements OwnedDir {
       return readFileSync(fd);
     } finally {
       closeSync(fd);
-    }
-  }
-
-  async readFileBounded(name: string, expectedId: NodeId, maxBytes: number, signal: AbortSignal): Promise<Buffer | undefined> {
-    signal.throwIfAborted();
-    const path = join(this.path, entryName(name));
-    this.check();
-    const seen = await lstat(path, { bigint: true });
-    if (!seen.isFile() || seen.nlink !== 1n || idOf(seen) !== expectedId) return undefined;
-    signal.throwIfAborted();
-    const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
-    try {
-      signal.throwIfAborted();
-      const opened = await handle.stat({ bigint: true });
-      if (!opened.isFile() || opened.nlink !== 1n || idOf(opened) !== expectedId || opened.size > BigInt(maxBytes)) return undefined;
-      signal.throwIfAborted();
-      const bytes = Buffer.alloc(Number(opened.size));
-      for (let offset = 0; offset < bytes.length;) {
-        const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, offset);
-        signal.throwIfAborted();
-        if (bytesRead === 0) return undefined;
-        offset += bytesRead;
-      }
-      const after = await handle.stat({ bigint: true });
-      signal.throwIfAborted();
-      if (after.nlink !== 1n || after.size !== opened.size || after.mtimeNs !== opened.mtimeNs || after.ctimeNs !== opened.ctimeNs) return undefined;
-      return bytes;
-    } finally {
-      await handle.close();
     }
   }
 

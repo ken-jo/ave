@@ -1,11 +1,9 @@
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import type { FileHandle } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, parse, resolve } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { deferred } from "../../../__tests__/support/deferred.js";
 import { aveHome } from "../../../shared/ave-home.js";
-import { createHostGit, type HostGit } from "../host-git.js";
+import { createHostGit, type HostGit, HostGitError } from "../host-git.js";
 import type { OwnedDir } from "../owned-fs.js";
 import { createStageWorkspaceProvider } from "../stage-workspaces.js";
 import { JOIN_DIR, OUT_DIR, RUN_FILE, runRootOf, runSlug } from "../workspace-layout.js";
@@ -35,9 +33,6 @@ const between = vi.hoisted(() => ({
   unread: undefined as string | undefined,
   /** A file that cannot be opened. */
   unopened: undefined as string | undefined,
-  configHandle: undefined as ((path: string, handle: FileHandle) => void) | undefined,
-  configIdentified: undefined as ((path: string) => void) | undefined,
-  configOpening: undefined as ((path: string) => void) | undefined,
 }));
 
 vi.mock("../../../shared/ave-home.js", async (original) => {
@@ -62,17 +57,6 @@ vi.mock("node:fs", async (original) => {
   return { ...real, lstatSync, openSync, realpathSync: Object.assign((path: string) => real.realpathSync(path), { native }) };
 });
 
-vi.mock("node:fs/promises", async (original) => {
-  const real = await original<typeof import("node:fs/promises")>();
-  const open: typeof real.open = async (file, flags, mode) => {
-    between.configOpening?.(String(file));
-    const handle = await real.open(file, flags, mode);
-    between.configHandle?.(String(file), handle);
-    return handle;
-  };
-  return { ...real, open };
-});
-
 vi.mock("../owned-fs.js", async (original) => {
   const real = await original<typeof import("../owned-fs.js")>();
   const held = (dir: OwnedDir, depth: number): OwnedDir => new Proxy(dir, {
@@ -83,11 +67,6 @@ vi.mock("../owned-fs.js", async (original) => {
       if (key === "make" && depth === 2) return (name: string) => { between.act?.(target.path); return target.make(name); };
       if (key === "list" && between.unlisted === basename(target.path)) return () => { throw Object.assign(new Error("fixture: the folder cannot be listed"), { code: "EACCES" }); };
       if (key === "child") return (name: string, id: string) => { const found = target.child(name, id); between.child?.(found?.path); return found; };
-      if (key === "entryId") return (name: string) => {
-        const id = target.entryId(name);
-        if (name === "config" && id !== undefined) between.configIdentified?.(join(target.path, name));
-        return id;
-      };
       if (key === "list") return () => { const names = target.list(); between.listed?.(target.path); return names; };
       const value = Reflect.get(target, key) as unknown;
       return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
@@ -429,25 +408,31 @@ const relink = (stage: string, link: string): void => { rmSync(join(stage, ".git
 const slashed = (path: string, volume: string): string => path.slice(volume.length).replaceAll("\\", "/");
 
 it.each([
-  "missing", "readable", "replaced", "over-cap", "timeout", "incomplete", "replaced-after-id", "replaced-during-open",
+  "missing", "readable", "reftable", "replaced", "over-cap", "timeout", "unreadable", "failed", "truncated", "malformed", "external",
 ] as const)("partial release verifies a %s repository config before removing its stage", async (scenario) => {
   const fx = gitFixture();
   const config = join(fx.repo, ".git", "config");
   const saved = join(fx.repo, ".git", "config-saved");
   const real = createHostGit({ env: fx.env });
-  let replaceOnRead = false;
-  let queries = 0;
-  const read = vi.fn();
-  const pending = deferred<{ bytesRead: number; buffer: Buffer }>();
-  const closed = deferred<void>();
-  const replace = (): void => { renameSync(config, saved); writeFileSync(config, readFileSync(saved)); };
-  const git: HostGit = { ...real, run: (cwd, args, call) => {
-    if (args.includes("extensions.refStorage")) queries += 1;
-    if (replaceOnRead && args.includes("extensions.refStorage")) {
-      replaceOnRead = false;
-      replace();
+  const limited = createHostGit({ env: fx.env, maxOutputBytes: 16 });
+  let releasing = false;
+  const query = vi.fn(async (...[cwd, args, call]: Parameters<HostGit["run"]>) => {
+    if (scenario === "replaced") {
+      renameSync(config, saved);
+      writeFileSync(config, readFileSync(saved));
     }
+    if (scenario === "over-cap") return limited.run(cwd, args, call);
+    if (scenario === "timeout") throw new HostGitError("timeout", "fixture timeout");
+    if (scenario === "unreadable") return { code: 128, stdout: "", stderr: "fixture error" };
+    if (scenario === "failed") return { code: 1, stdout: "", stderr: "" };
+    if (scenario === "truncated") return { code: 0, stdout: "core.bare\nfalse", stderr: "" };
+    if (scenario === "malformed") return { code: 0, stdout: "invalid\0", stderr: "" };
+    if (scenario === "reftable") return { code: 0, stdout: "Extensions.RefStorage\nreftable\0", stderr: "" };
+    if (scenario === "external") return { code: 0, stdout: "Extensions.RefStorage\nreftable:///elsewhere\0", stderr: "" };
     return real.run(cwd, args, call);
+  });
+  const git: HostGit = { ...real, run: (cwd, args, call) => {
+    return releasing && args[0] === "config" && args.includes("--file") ? query(cwd, args, call) : real.run(cwd, args, call);
   } };
   try {
     const handle = fx.start({ git });
@@ -459,78 +444,30 @@ it.each([
     if (admin === undefined) throw new Error("expected a stage registration");
     expect(readFileSync(config, "utf8")).not.toMatch(/refStorage/iu);
     if (scenario === "missing") renameSync(config, saved);
-    if (scenario === "over-cap") {
-      renameSync(config, saved);
-      writeFileSync(config, readFileSync(saved, "utf8") + "# fixture\n".repeat(110_000));
-    }
-    if (scenario === "replaced-after-id") between.configIdentified = (file) => {
-      if (file !== config) return;
-      between.configIdentified = undefined;
-      replace();
-    };
-    if (scenario === "replaced-during-open") between.configOpening = (file) => {
-      if (file !== config) return;
-      between.configOpening = undefined;
-      replace();
-    };
-    if (scenario === "timeout" || scenario === "incomplete") {
-      if (scenario === "timeout") vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-      between.configHandle = (file, handle) => {
-        if (file !== config) return;
-        const close = handle.close.bind(handle);
-        vi.spyOn(handle, "close").mockImplementation(async () => {
-          await close();
-          closed.resolve();
-        });
-        vi.spyOn(handle, "read").mockImplementation(() => {
-          read();
-          if (scenario === "incomplete") return Promise.resolve({ bytesRead: 0, buffer: Buffer.alloc(0) });
-          queueMicrotask(() => vi.advanceTimersByTime(120_000));
-          return pending.promise;
-        });
-      };
-    }
-    replaceOnRead = scenario === "replaced";
-    queries = 0;
-    if (scenario === "readable") {
+    releasing = true;
+    const localStore = scenario === "readable" || scenario === "reftable";
+    if (localStore) {
       await handle.provider.release(handle.run, ["s1"]);
       expect([existsSync(stage), existsSync(admin)]).toEqual([false, false]);
     } else {
       await expect(handle.provider.release(handle.run, ["s1"])).rejects.toThrow("repo.refStorage");
       expect([existsSync(stage), existsSync(admin)]).toEqual([true, true]);
-      expect(queries).toBe(scenario === "replaced" ? 1 : 0);
-      if (scenario === "timeout" || scenario === "incomplete") {
-        expect(read).toHaveBeenCalledOnce();
-        pending.resolve({ bytesRead: 0, buffer: Buffer.alloc(0) });
-        await closed.promise;
-        expect(queries).toBe(0);
-      } else {
-        expect(existsSync(saved)).toBe(true);
+    }
+    if (scenario === "missing") expect(query).not.toHaveBeenCalled();
+    else {
+      expect(query).toHaveBeenCalledTimes(localStore ? 2 : 1);
+      for (const [, args, call] of query.mock.calls) {
+        expect(args).toEqual(["config", "--file", config, "--list", "-z"]);
+        expect(call).toEqual({ isolated: true, exact: true, requiresFloor: true, deadline: expect.any(Number) });
       }
     }
   } finally {
-    between.configHandle = undefined;
-    between.configIdentified = undefined;
-    between.configOpening = undefined;
-    vi.useRealTimers();
-    pending.resolve({ bytesRead: 0, buffer: Buffer.alloc(0) });
     if (existsSync(saved)) {
       rmSync(config, { force: true });
       renameSync(saved, config);
     }
     await fx.done();
   }
-});
-
-it("reads repository configuration without synchronous bulk file I/O", () => {
-  const workspace = readFileSync(new URL("../stage-workspaces.ts", import.meta.url), "utf8");
-  const proof = workspace.slice(workspace.indexOf("async function refStoreOf("), workspace.indexOf("async function commonDirOf("));
-  expect(proof).toContain(".readFileBounded(");
-  expect(proof).not.toMatch(/\breadFile(?:Sync)?\(/u);
-  const owned = readFileSync(new URL("../owned-fs.ts", import.meta.url), "utf8");
-  const reader = owned.slice(owned.indexOf("async readFileBounded("), owned.indexOf("async remove("));
-  expect(reader).toContain("await handle.read(");
-  expect(reader).not.toMatch(/\breadFileSync\b/u);
 });
 
 /** A host git that notes where each call was made. */
@@ -544,9 +481,9 @@ onWindows("a project on a share keeps the registration a stage folder names by t
   const fx = gitFixture();
   try {
     const real = createHostGit({ env: fx.env });
-    const configAnswer = vi.fn(() => ({ code: 1, stdout: "", stderr: "" }));
+    const configAnswer = vi.fn(() => ({ code: 0, stdout: "", stderr: "" }));
     const handle = fx.start({ git: { ...real, run: (cwd, args, call) =>
-      between.share !== undefined && args.includes("extensions.refStorage") ? Promise.resolve(configAnswer()) : real.run(cwd, args, call),
+      between.share !== undefined && args[0] === "config" && args.includes("--list") ? Promise.resolve(configAnswer()) : real.run(cwd, args, call),
     } });
     const open = await handle.provider.open(handle.run, fx.repo);
     if (!open.ok) throw new Error("expected a workspace");

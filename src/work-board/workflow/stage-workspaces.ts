@@ -6,7 +6,6 @@ import { aveHome, getAveHomePrivacyFailure, isAveHomeBoundaryUnverifiedAtBoot } 
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { canonicalWorkflowJson, resultHashOf } from "../../shared/workflow-template-output.js";
 import type { TemplateStage } from "../../shared/workflow-template-types.js";
-import { runWithCeiling } from "../../tools/executor-ceiling.js";
 import { isStageId } from "../template-graph.js";
 import { type NameReader, plainFolderIgnore, projectFoldsCase } from "./folder-ignore.js";
 import { createHostGit, type HostGit, HostGitError } from "./host-git.js";
@@ -57,7 +56,6 @@ const warnedOnce = new Set<string>();
 const ABSOLUTE_LINKS = ["-c", "worktree.useRelativePaths=false"];
 /** Before every commit or ref in an argument vector: git reads what follows as one, never as an option. */
 const END_OF_OPTIONS = "--end-of-options";
-const MAX_REPOSITORY_CONFIG_BYTES = 1024 * 1024;
 const NUL = "\0";
 const nul = (text: string): string[] => text.split(NUL).filter(entry => entry !== "");
 const chunked = <T>(items: readonly T[], size = 200): T[][] => Array.from({ length: Math.ceil(items.length / size) }, (_, index) => items.slice(index * size, (index + 1) * size));
@@ -348,25 +346,29 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     return within(root, aveHome()) || within(worktreesRoot(), root);
   }
 
-  /** Ask git about the bytes read from the verified common-directory config. An absent key only counts after that read. */
-  async function refStoreOf(root: string, repo: NonNullable<WorkspaceRecord["repo"]>): Promise<"own" | "elsewhere" | undefined> {
+  /** A successful listing of the common-directory config proves which ref store it names. */
+  async function refStoreOf(root: string, repo: NonNullable<WorkspaceRecord["repo"]>): Promise<"files" | "reftable" | "elsewhere" | undefined> {
     const deadline = performance.now() + TOOL_TIMEOUT_POLICY.stageWorkspaceGitMs;
     const common = holdDir(repo.gitDir, repo.id);
-    const id = common.entryId("config");
+    const id = common.entryId("config", "single-link-file");
     if (id === undefined) return undefined;
-    const remainingMs = deadline - performance.now();
-    if (remainingMs <= 0) return undefined;
-    const config = await runWithCeiling(
-      signal => common.readFileBounded("config", id, MAX_REPOSITORY_CONFIG_BYTES, signal),
-      remainingMs, undefined, "repository config read",
-    );
-    if (!config.ok || config.value === undefined || performance.now() >= deadline) return undefined;
-    const read = await git.run(root, ["config", "--file", "-", "--get-all", "extensions.refStorage"], { stdin: config.value, isolated: true, exact: true, requiresFloor: true, deadline });
-    if (common.entryId("config") !== id || performance.now() >= deadline) return undefined;
-    if (read.stderr !== "") return undefined;
-    if (read.code === 1 && read.stdout === "") return "own";
-    if (read.code !== 0 || !read.stdout.endsWith("\n")) return undefined;
-    return read.stdout.slice(0, -1).split("\n").every(value => value === "files" || value === "reftable") ? "own" : "elsewhere";
+    const read = await git.run(root, ["config", "--file", join(common.path, "config"), "--list", "-z"], { isolated: true, exact: true, requiresFloor: true, deadline });
+    if (common.entryId("config", "single-link-file") !== id || performance.now() >= deadline) return undefined;
+    if (read.code !== 0 || read.stderr !== "") return undefined;
+    if (read.stdout === "") return "files";
+    if (!read.stdout.endsWith("\0")) return undefined;
+    let store: "files" | "reftable" | "elsewhere" = "files";
+    for (const entry of read.stdout.slice(0, -1).split("\0")) {
+      const newline = entry.indexOf("\n");
+      const key = newline < 0 ? entry : entry.slice(0, newline);
+      if (!/^[a-z0-9-]+\.(?:.*\.)?[a-z][a-z0-9-]*$/iu.test(key)) return undefined;
+      if (key.toLowerCase() !== "extensions.refstorage") continue;
+      if (newline < 0) return undefined;
+      const value = entry.slice(newline + 1);
+      if (value !== "files" && value !== "reftable") store = "elsewhere";
+      else if (store !== "elsewhere") store = value;
+    }
+    return store;
   }
 
   /** The repository's common directory as it really is on disk, and which directory it is. */
@@ -446,7 +448,8 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
         if (drivers.requiredFilters.length > 0 && await usesFilter(project.root, drivers.requiredFilters)) return refused("git-unavailable");
         const repo = await commonDirOf(project.root);
         // Refs a format keeps in a folder of its own choosing, a worktree's among them, are out of reach of the run's cleanup.
-        if (await refStoreOf(project.root, repo) !== "own") return refused("git-unavailable");
+        const store = await refStoreOf(project.root, repo);
+        if (store !== "files" && store !== "reftable") return refused("git-unavailable");
         // A repository directory that is no plain path gets no git workspace: no later call would take the record's path for it.
         if (vetRecordPath("gitDir", repo.gitDir, { root: project.root, gitDir: repo.gitDir }) === undefined) return refused("git-unavailable");
         gitRun = { baseCommit: found.baseCommit, branch: runBranch(run.runId), drivers, repo };
