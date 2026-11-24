@@ -127,6 +127,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
     vi.spyOn(os, "homedir").mockReturnValue(profile);
     vi.spyOn(os, "userInfo").mockReturnValue({ ...os.userInfo(), homedir: profile });
     vi.spyOn(srtWinIntegrity, "prepareSrtWinExecutable").mockImplementation(source => source);
+    // This spy reaches windows-stamp-targets.ts only; asrt-sandbox.ts expands through the spied os.homedir above.
     const expand = sandboxUtils.expandWindowsEnvRefs;
     const runtimeHome = expand("%USERPROFILE%");
     vi.spyOn(sandboxUtils, "expandWindowsEnvRefs").mockImplementation(path => expand(path).replace(runtimeHome, profile));
