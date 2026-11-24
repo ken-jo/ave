@@ -26,7 +26,7 @@ const READ_ONLY_FILE_MODE = process.platform === "win32" ? 0o444 : 0o400;
 vi.mock("../../permissions/offline-process-sandbox.js", async (original) => ({
   ...await original<typeof import("../../permissions/offline-process-sandbox.js")>(),
   wrapOfflineProcess: vi.fn<typeof import("../../permissions/offline-process-sandbox.js").wrapOfflineProcess>(async input => ({
-    argv: [input.command, ...input.args], env: input.env, release: vi.fn(),
+    argv: [input.command, ...input.args], env: input.env, cleanup: registerManagedChildCleanup(input.lifetime, vi.fn()),
   })),
 }));
 vi.mock("../../main/managed-child-processes.js", async original => {
@@ -35,8 +35,8 @@ vi.mock("../../main/managed-child-processes.js", async original => {
     ...actual,
     spawnManaged: vi.fn(),
     forceKillManagedChildProcess: vi.fn(),
-    observeManagedProcessGroup: (child: ChildProcess) => {
-      const group = actual.observeManagedProcessGroup(child);
+    observeManagedProcessGroup: (child: ChildProcess, scope?: Parameters<typeof actual.observeManagedProcessGroup>[1]) => {
+      const group = actual.observeManagedProcessGroup(child, scope);
       if (child.pid !== undefined) return group;
       return { ...group, confirmExit: (reason: string) => {
         (child as unknown as ProcessFixture).end(null, "SIGKILL");
@@ -67,7 +67,7 @@ vi.mock("node:fs/promises", async importOriginal => {
 });
 
 import { LibreOfficeSessionPool, sweepStaleDocumentEngineRuntimes } from "../libreoffice-process.js";
-import { __resetManagedChildProcessesForTest, spawnManaged, forceKillManagedChildProcess } from "../../main/managed-child-processes.js";
+import { __resetManagedChildProcessesForTest, spawnManaged, forceKillManagedChildProcess, registerManagedChildCleanup } from "../../main/managed-child-processes.js";
 import { OfflineScanExitUnconfirmedError, wrapOfflineProcess } from "../../permissions/offline-process-sandbox.js";
 import { fakeFixtureAclTransport, installFixtureAclTransport } from "../../__tests__/support/native-executable.js";
 import { _setWindowsAclTransportForTest } from "../../main/windows-acl-host.js";
@@ -226,7 +226,7 @@ function mockManagedEngineGroup(startResident = false) {
   });
   const wrap = vi.fn();
   vi.mocked(wrapOfflineProcess).mockImplementationOnce(async input => ({
-    argv: [input.command, ...input.args], env: input.env, release: wrap,
+    argv: [input.command, ...input.args], env: input.env, cleanup: registerManagedChildCleanup(input.lifetime, wrap),
   }));
   const markGroupGone = (): void => { groupAlive = false; };
   return { pid: groupPid, launched, kill, wrap, markGroupGone, restore: async () => {
@@ -570,11 +570,12 @@ describe("private conversion process ownership", () => {
     const signal = new AbortController().signal;
     const staged = deferred<ConversionJob>();
     const failForwarding = async (client: ProcessFixture): Promise<void> => {
-      staged.resolve(client.job!);
+      if (!client.job) throw new Error("Expected a forwarding job.");
+      staged.resolve(client.job);
       client.end(1);
     };
     const failingWrap = async (input: Parameters<typeof wrapOfflineProcess>[0]) => ({
-      argv: [input.command, ...input.args], env: input.env, release: () => { throw cleanupFailure; },
+      argv: [input.command, ...input.args], env: input.env, cleanup: registerManagedChildCleanup(input.lifetime, () => { throw cleanupFailure; }),
     });
     try {
       if (entry === "conversion") {

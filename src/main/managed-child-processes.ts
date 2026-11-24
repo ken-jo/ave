@@ -1,6 +1,6 @@
 import { spawn, spawnSync, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { Writable } from "node:stream";
-import { readFile } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import { win32SystemBinary } from "../shared/windows-system-path.js";
 import { findHostProgram } from "../shared/host-program-path.js";
 import { createLogger } from "../lib/logger.js";
@@ -472,9 +472,107 @@ export async function forceKillAndDrainManagedChildProcesses(
   return { killedCount, unresolvedCount: unresolved.length };
 }
 
-export function observeManagedWindowsJobExit(child: ChildProcess, receiptPath: string) {
+const CONFIRMED_EXIT = Symbol("confirmed managed exit");
+export type ConfirmedExit = { readonly [CONFIRMED_EXIT]: true };
+const exitProofs = new WeakMap<ConfirmedExit, { scope?: ManagedExitScope; isCurrent: () => boolean }>();
+
+function issueConfirmedExit(scope?: ManagedExitScope, isCurrent = (): boolean => true): ConfirmedExit {
+  const proof: ConfirmedExit = Object.freeze({ [CONFIRMED_EXIT]: true });
+  exitProofs.set(proof, { scope, isCurrent });
+  return proof;
+}
+
+export interface ManagedExitScope {
+  confirmedExit(): ConfirmedExit | undefined;
+}
+
+interface ExitScopeState {
+  active: number;
+  generation: number;
+  parent?: ManagedExitScope;
+}
+
+const exitScopes = new WeakMap<ManagedExitScope, ExitScopeState>();
+
+export function createManagedExitScope(parent?: ManagedExitScope): ManagedExitScope {
+  const state: ExitScopeState = { active: 0, generation: 0, parent };
+  const scope: ManagedExitScope = {
+    confirmedExit(): ConfirmedExit | undefined {
+      if (state.active !== 0) return undefined;
+      const generation = state.generation;
+      return issueConfirmedExit(scope, () => state.active === 0 && state.generation === generation);
+    },
+  };
+  exitScopes.set(scope, state);
+  return scope;
+}
+
+function retainManagedExit(scope: ManagedExitScope | undefined): () => ConfirmedExit {
+  const states: ExitScopeState[] = [];
+  for (let current = scope; current !== undefined;) {
+    const state = exitScopes.get(current);
+    if (!state) throw new Error("Managed exit scope was not issued by the owner.");
+    state.active++;
+    state.generation++;
+    states.push(state);
+    current = state.parent;
+  }
+  let confirmed: ConfirmedExit | undefined;
+  return () => {
+    if (confirmed) return confirmed;
+    for (const state of states) state.active--;
+    confirmed = issueConfirmedExit(scope);
+    return confirmed;
+  };
+}
+
+const MANAGED_CLEANUP = Symbol("managed child cleanup");
+export type ManagedChildCleanup = { readonly [MANAGED_CLEANUP]: true };
+const managedCleanups = new WeakMap<ManagedChildCleanup, { scope: ManagedExitScope; steps: readonly ((() => unknown) | undefined)[] }>();
+
+export function registerManagedChildCleanup(scope: ManagedExitScope, ...steps: readonly ((() => unknown) | undefined)[]): ManagedChildCleanup {
+  const cleanup: ManagedChildCleanup = Object.freeze({ [MANAGED_CLEANUP]: true });
+  managedCleanups.set(cleanup, { scope, steps });
+  return cleanup;
+}
+
+function assertConfirmedExit(proof: ConfirmedExit, scope?: ManagedExitScope): void {
+  const evidence = exitProofs.get(proof);
+  if (!evidence?.isCurrent() || (scope !== undefined && evidence.scope !== scope)) {
+    throw new Error("Managed exit was not confirmed.");
+  }
+}
+
+export function releaseManagedChildResources(proof: ConfirmedExit, cleanup?: ManagedChildCleanup): void {
+  const registered = cleanup && managedCleanups.get(cleanup);
+  assertConfirmedExit(proof, registered?.scope);
+  if (!registered || !cleanup) return;
+  managedCleanups.delete(cleanup);
+  for (const step of registered.steps) void step?.();
+}
+
+const MANAGED_PATHS = Symbol("managed child paths");
+export type ManagedChildPaths = { readonly [MANAGED_PATHS]: true };
+type PathToRemove = { readonly path: string; readonly recursive?: boolean };
+const managedPaths = new WeakMap<ManagedChildPaths, { scope: ManagedExitScope; paths: readonly PathToRemove[] }>();
+
+export function registerManagedChildPaths(scope: ManagedExitScope, ...paths: readonly PathToRemove[]): ManagedChildPaths {
+  const handle: ManagedChildPaths = Object.freeze({ [MANAGED_PATHS]: true });
+  managedPaths.set(handle, { scope, paths: paths.map(path => ({ ...path })) });
+  return handle;
+}
+
+export async function removeManagedChildPaths(proof: ConfirmedExit, handle: ManagedChildPaths): Promise<void> {
+  const registered = managedPaths.get(handle);
+  if (!registered) throw new Error("Managed child paths were not registered.");
+  assertConfirmedExit(proof, registered.scope);
+  for (const { path, recursive = false } of registered.paths) await rm(path, { force: true, recursive });
+}
+
+export function observeManagedWindowsJobExit(child: ChildProcess, receiptPath: string, scope: ManagedExitScope) {
+  const recordExit = retainManagedExit(scope);
   // The native owner bounds the job-empty query and publishes the receipt before it exits.
-  const completion = new Promise<boolean>(resolve => {
+  const completion = new Promise<ConfirmedExit | undefined>(resolve => {
     const removeListeners = (): void => {
       child.off("exit", onExit);
       child.off("close", onExit);
@@ -482,11 +580,11 @@ export function observeManagedWindowsJobExit(child: ChildProcess, receiptPath: s
     };
     const onExit = (): void => {
       removeListeners();
-      void readFile(receiptPath, "utf8").then(receipt => resolve(receipt === "0"), () => resolve(false));
+      void readFile(receiptPath, "utf8").then(receipt => resolve(receipt === "0" ? recordExit() : undefined), () => resolve(undefined));
     };
     const onError = (): void => {
       removeListeners();
-      resolve(false);
+      resolve(child.pid === undefined ? recordExit() : undefined);
     };
     child.once("exit", onExit);
     child.once("close", onExit);
@@ -501,18 +599,18 @@ export function observeManagedWindowsJobExit(child: ChildProcess, receiptPath: s
   };
 }
 
-export async function waitForManagedProcessGroupExit(child: ChildProcess, closed: Promise<unknown>, stopReason?: string): Promise<boolean> {
+async function waitForManagedProcessGroupExit(child: ChildProcess, closed: Promise<unknown>, stopReason?: string): Promise<boolean> {
   const pid = child.pid;
-  if (pid === undefined) return true;
-  if (stopReason !== undefined) void forceKillManagedChildProcess(child, stopReason);
+  if (pid !== undefined && stopReason !== undefined) void forceKillManagedChildProcess(child, stopReason);
   const result = await runWithCeiling(async signal => {
     await raceWithAbort(closed, signal);
-    while (processExists(-pid)) await sleep(TOOL_TIMEOUT_POLICY.processGroupExitPollMs, signal);
+    while (pid !== undefined && processExists(-pid)) await sleep(TOOL_TIMEOUT_POLICY.processGroupExitPollMs, signal);
   }, PROCESS_TREE_KILL_TIMEOUT_MS, undefined, "managed process group termination");
   return result.ok;
 }
 
-export function observeManagedProcessGroup(child: ChildProcess) {
+export function observeManagedProcessGroup(child: ChildProcess, scope?: ManagedExitScope) {
+  const recordExit = retainManagedExit(scope);
   const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null; error?: Error }>(resolve => {
     child.once("close", (code, signal) => resolve({ code, signal }));
     child.once("error", error => {
@@ -521,8 +619,29 @@ export function observeManagedProcessGroup(child: ChildProcess) {
   });
   return {
     wait: (signal?: AbortSignal) => raceWithAbort(closed, signal),
-    confirmExit: (stopReason?: string) => waitForManagedProcessGroupExit(child, closed, stopReason),
+    confirmExit: async (stopReason?: string) => await waitForManagedProcessGroupExit(child, closed, stopReason) ? recordExit() : undefined,
   };
+}
+
+// Relay settlement is the current Windows evidence. Native job-empty receipts are separate.
+export function observeManagedWindowsRelayExit(child: ChildProcess, scope?: ManagedExitScope): Promise<ConfirmedExit> {
+  const recordExit = retainManagedExit(scope);
+  return new Promise(resolve => {
+    const onExit = (): void => {
+      child.off("exit", onExit);
+      child.off("close", onExit);
+      child.off("error", onError);
+      resolve(recordExit());
+    };
+    const onError = (): void => { if (child.pid === undefined) onExit(); };
+    if (child.exitCode != null || child.signalCode != null) {
+      onExit();
+    } else {
+      child.once("exit", onExit);
+      child.once("close", onExit);
+      child.on("error", onError);
+    }
+  });
 }
 
 // Await Windows tree termination before releasing owned resources; cancellation has the same bounded tree-kill semantics as shutdown.
@@ -663,7 +782,8 @@ function processExists(pid: number): boolean {
   }
 }
 
-export async function stopOrphanedManagedProcesses(pids: readonly number[]): Promise<boolean> {
+export async function stopOrphanedManagedProcesses(pids: readonly number[], scope?: ManagedExitScope): Promise<ConfirmedExit | undefined> {
+  const recordExit = retainManagedExit(scope);
   for (const pid of pids) {
     try { process.kill(pid, "SIGKILL"); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
@@ -671,10 +791,10 @@ export async function stopOrphanedManagedProcesses(pids: readonly number[]): Pro
   const deadline = Date.now() + TOOL_TIMEOUT_POLICY.orphanProcessCleanupMs;
   while (pids.some(processExists)) {
     const remaining = deadline - Date.now();
-    if (remaining <= 0) return false;
+    if (remaining <= 0) return undefined;
     await sleep(Math.min(TOOL_TIMEOUT_POLICY.processGroupExitPollMs, remaining));
   }
-  return true;
+  return recordExit();
 }
 
 const TASKKILL_PROCESS_NOT_FOUND = 128;

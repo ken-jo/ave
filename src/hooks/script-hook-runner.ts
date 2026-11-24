@@ -16,9 +16,15 @@ import {
 import { createLogger } from "../lib/logger.js";
 import {
   assertManagedChildProcessAdmissionOpen,
+  createManagedExitScope,
   forceKillManagedChildProcess,
-  spawnManaged,
   observeManagedProcessGroup,
+  registerManagedChildCleanup,
+  releaseManagedChildResources,
+  spawnManaged,
+  type ConfirmedExit,
+  type ManagedChildCleanup,
+  type ManagedExitScope,
 } from "../main/managed-child-processes.js";
 import {
   DEFAULT_HOOK_TIMEOUT_MS,
@@ -323,7 +329,9 @@ export async function runOneHookScript(
       return deny(`sandbox unavailable: ${(error as Error).message}`);
     }
   }
-  let cleanupWrap: (() => void) | undefined;
+  const hookLifetime = createManagedExitScope();
+  let cleanup: ManagedChildCleanup | undefined;
+  let windowsExit: Promise<ConfirmedExit> | undefined;
   let wrappedEgress: EgressInvocation | undefined;
   let windowsSpawn: WindowsBundledSpawn | undefined;
   let sandboxArgv = false;
@@ -372,10 +380,6 @@ export async function runOneHookScript(
       if (abortSignal?.aborted) return deny("Hook execution cancelled");
       return deny(`sandbox unavailable${errorCode(error)}: ${(error as Error).message}`);
     }
-    const holder = contained;
-    cleanupWrap = () => {
-      void holder.release().catch((error: unknown) => log.warn("hook holder termination unverified: %s (%s)", runnable.id, (error as Error).message));
-    };
   } else if (sandboxEnabled && process.platform === "win32" && (confinement || admittedPlan?.mode === "asrt")) {
     // Windows hooks use a stdio relay with read access to their generation and write access to their data.
     try {
@@ -397,18 +401,11 @@ export async function runOneHookScript(
     } catch (error) {
       return deny(`sandbox unavailable: ${(error as Error).message}`);
     }
-    const { releaseHold } = windowsSpawn;
-    let cleaned = false;
-    cleanupWrap = () => {
-      if (!cleaned) {
-        cleaned = true;
-        void cleanupAsrtSandboxAfterCommand();
-      }
-      releaseHold();
-    };
+    windowsExit = windowsSpawn.exit;
+    cleanup = registerManagedChildCleanup(windowsSpawn.lifetime, cleanupAsrtSandboxAfterCommand, windowsSpawn.releaseHold);
   } else if (sandboxEnabled && process.platform !== "win32") {
     const sandboxHome = createSandboxProcessHome();
-    let wrappedAsrt = false;
+    cleanup = registerManagedChildCleanup(hookLifetime, sandboxHome.cleanup);
     try {
       const wrapped = await wrapBundledCommand({ command: spawnCmd, args: spawnArgs,
         sandboxHome,
@@ -418,24 +415,29 @@ export async function runOneHookScript(
           : { kind: "hook", id: sha256Hex(runnable.id) },
         egressOwner: hookEgressOwner });
       wrappedEgress = wrapped.egress;
-      wrappedAsrt = true;
+      cleanup = registerManagedChildCleanup(
+        hookLifetime, wrappedEgress?.release, cleanupAsrtSandboxAfterCommand, sandboxHome.cleanup,
+      );
       [spawnCmd, ...spawnArgs] = wrapped.argv;
       sandboxArgv = true;
       spawnEnv = bundledWrappedEnv(childEnvBase, wrapped.env, sandboxHome.env);
-      let cleaned = false;
-      cleanupWrap = () => {
-        if (cleaned) return;
-        cleaned = true;
-        void cleanupAsrtSandboxAfterCommand();
-        sandboxHome.cleanup();
-      };
     } catch (error) {
-      wrappedEgress?.release();
-      if (wrappedAsrt) void cleanupAsrtSandboxAfterCommand();
-      sandboxHome.cleanup();
+      const proof = hookLifetime.confirmedExit();
+      if (proof) releaseManagedChildResources(proof, cleanup);
       return deny(`sandbox unavailable: ${(error as Error).message}`);
     }
   }
+
+  const settlePreparedResources = (): void => {
+    if (contained) {
+      stopPreparedHolder(contained, runnable.id);
+    } else if (windowsExit) {
+      void windowsExit.then(proof => releaseManagedChildResources(proof, cleanup));
+    } else {
+      const proof = hookLifetime.confirmedExit();
+      if (proof) releaseManagedChildResources(proof, cleanup);
+    }
+  };
 
   // The fresh authority probe is the last await before spawn. Everything after it, through spawn, runs in one synchronous turn.
   let refreshError: unknown;
@@ -446,15 +448,12 @@ export async function runOneHookScript(
   }
   if (abortSignal?.aborted) {
     if (windowsSpawn) await forceKillManagedChildProcess(windowsSpawn.child, "hook caller aborted");
-    // `cleanupWrap` releases a contained holder: disposal is its kill, and an unverified one keeps its lease.
-    wrappedEgress?.release();
-    cleanupWrap?.();
+    settlePreparedResources();
     return deny("Hook execution cancelled");
   }
   if (admittedPlan && !isHookShellPlanCurrent(admittedPlan)) {
     if (windowsSpawn) forceKillManagedChildProcess(windowsSpawn.child, "hook shell policy changed");
-    wrappedEgress?.release();
-    cleanupWrap?.();
+    settlePreparedResources();
     return deny("hook shell execution policy changed before spawn");
   }
   try {
@@ -462,8 +461,7 @@ export async function runOneHookScript(
     assertHookStillAdmitted();
   } catch (error) {
     if (windowsSpawn) forceKillManagedChildProcess(windowsSpawn.child, "hook command permission changed");
-    wrappedEgress?.release();
-    cleanupWrap?.();
+    settlePreparedResources();
     return deny(`hook command denied before spawn: ${(error as Error).message}`);
   }
 
@@ -481,7 +479,7 @@ export async function runOneHookScript(
   if (process.platform !== "win32") {
     return runPosixHook({ start: startHook, stdinJson, timeoutMs, abortSignal, hookId: runnable.id, deny,
       noteProcessGroup: (pid) => wrappedEgress?.noteProcessGroup(pid),
-      release: () => { wrappedEgress?.release(); cleanupWrap?.(); },
+      lifetime: hookLifetime, cleanup,
       outcome: (observed) => hookOutcome(forensics, deny, { ...observed, timeoutMs, hookId: runnable.id,
         hookType: runnable.hookType, durationMs: Date.now() - start }) });
   }
@@ -507,8 +505,7 @@ export async function runOneHookScript(
       child = windowsSpawn?.child ?? startHook();
     } catch (error) {
       abortSignal?.removeEventListener("abort", onAbort);
-      wrappedEgress?.release();
-      cleanupWrap?.();
+      settlePreparedResources();
       resolve(deny(`hook spawn error: ${(error as Error).message}`));
       return;
     }
@@ -557,7 +554,7 @@ export async function runOneHookScript(
     const finish = (code: number | null, signal?: NodeJS.Signals | null): void => {
       if (settled) return;
       settled = true;
-      cleanupWrap?.();
+      settlePreparedResources();
       if (timer) clearTimeout(timer);
       if (timeoutFallback) clearTimeout(timeoutFallback);
       abortSignal?.removeEventListener("abort", onAbort);
@@ -580,7 +577,7 @@ export async function runOneHookScript(
     child.on("error", (err: Error) => {
       if (settled) return;
       settled = true;
-      cleanupWrap?.();
+      settlePreparedResources();
       if (timer) clearTimeout(timer);
       if (timeoutFallback) clearTimeout(timeoutFallback);
       abortSignal?.removeEventListener("abort", onAbort);
@@ -607,7 +604,7 @@ export async function runOneHookScript(
       clearTimeout(timer);
       abortSignal?.removeEventListener("abort", onAbort);
       forceKillManagedChildProcess(child, "hook stdin write failed");
-      cleanupWrap?.();
+      settlePreparedResources();
       resolve({
         ...forensics,
         decision: "deny",
@@ -618,6 +615,10 @@ export async function runOneHookScript(
       });
     }
   });
+}
+
+function stopPreparedHolder(holder: MxcBundledHolder, hookId: string): void {
+  void holder.release().catch((error: unknown) => log.warn("hook holder termination unverified: %s (%s)", hookId, (error as Error).message));
 }
 
 type HookResultForensics = Pick<ScriptHookInvocationResult, "hookPath" | "hookType" | "source" | "commandIdentity" | "pluginOwner">;
@@ -697,7 +698,8 @@ async function runPosixHook(input: {
   readonly hookId: string;
   readonly deny: HookDeny;
   readonly noteProcessGroup: (pid: number) => void;
-  readonly release: () => void;
+  readonly lifetime: ManagedExitScope;
+  readonly cleanup?: ManagedChildCleanup;
   readonly outcome: (observed: ObservedHookRun) => ScriptHookInvocationResult;
 }): Promise<ScriptHookInvocationResult> {
   let owned: { child: ChildProcess; exit: ReturnType<typeof observeManagedProcessGroup> } | undefined;
@@ -722,7 +724,7 @@ async function runPosixHook(input: {
     try {
       input.abortSignal?.throwIfAborted();
       input.start(child => {
-        owned = { child, exit: observeManagedProcessGroup(child) };
+        owned = { child, exit: observeManagedProcessGroup(child, input.lifetime) };
         child.on("error", (error: Error) => {
           fault ??= `hook process error: ${error.message}`;
           requestStop("hook process error");
@@ -740,7 +742,8 @@ async function runPosixHook(input: {
     }
     if (input.abortSignal?.aborted) onAbort();
     if (owned === undefined) {
-      input.release();
+      const proof = input.lifetime.confirmedExit();
+      if (proof) releaseManagedChildResources(proof, input.cleanup);
       return input.deny(cancelled ? "Hook execution cancelled" : fault ?? "Hook launch failed.");
     }
     const { child, exit } = owned;
@@ -759,11 +762,12 @@ async function runPosixHook(input: {
     });
     clearTimeout(timer);
     waitingForGroup = true;
-    if (!await exit.confirmExit(stopReason)) {
+    const proof = await exit.confirmExit(stopReason);
+    if (!proof) {
       return input.deny(t("be_scriptHookRunner.terminationUnverified", { code: "hook-termination-unverified" }));
     }
     const { code, signal } = await exit.wait();
-    input.release();
+    releaseManagedChildResources(proof, input.cleanup);
     if (fault) return input.deny(fault);
     return input.outcome({ code, signal, cancelled, timedOut, stdout: stdout?.text() ?? "", stderr: stderr?.text() ?? "",
       stdoutCapped: stdout?.capped() ?? false });

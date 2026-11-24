@@ -11,6 +11,10 @@ import {
 import { createAveHomeBoundarySnapshot } from "../permissions/ave-home-boundary-snapshot.js";
 import { buildSandboxedChildEnv } from "../tools/safe-env.js";
 import type { ChildProcess } from "node:child_process";
+import {
+  createManagedExitScope, observeManagedWindowsRelayExit, registerManagedChildCleanup,
+  releaseManagedChildResources, type ConfirmedExit, type ManagedExitScope,
+} from "../main/managed-child-processes.js";
 import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, rmdirSync, statSync, unlinkSync } from "node:fs";
 import { join, win32 as winPath } from "node:path";
@@ -130,6 +134,8 @@ export interface WindowsBundledSpawn {
   /** The program's input and output, through the stdio relay (`confined-child.ts`). */
   readonly stdin: Writable;
   readonly stdout: Readable;
+  readonly exit: Promise<ConfirmedExit>;
+  readonly lifetime: ManagedExitScope;
   /** Revoke the filesystem grant and remove the throwaway HOME. Idempotent; the HOME removal stays retryable, as `createSandboxProcessHome`
    * documents. Call it on the child's exit and again on its close. ASRT's per-command cleanup is the caller's, as it is for {@link wrapBundledCommand}. */
   readonly releaseHold: () => void;
@@ -157,13 +163,23 @@ export async function spawnWindowsBundledProcess(input: {
     throw new Error(`[wrap-bundled-command] ${input.label}: spawnWindowsBundledProcess is the Windows path`);
   }
   const sandboxHome = createSandboxProcessHome();
+  const lifetime = createManagedExitScope();
   let grant: HeldWindowsGrant | undefined;
-  const releaseHold = (): void => {
-    grant?.release();
-    sandboxHome.cleanup();
-  };
   let wrapped = false;
   let child: ChildProcess | undefined;
+  let exit: Promise<ConfirmedExit> | undefined;
+  const settleHold = (cleanupWrap: boolean): void => {
+    const cleanup = registerManagedChildCleanup(
+      lifetime, cleanupWrap ? cleanupAsrtSandboxAfterCommand : undefined, grant?.release, sandboxHome.cleanup,
+    );
+    const proof = lifetime.confirmedExit();
+    if (proof) releaseManagedChildResources(proof, cleanup);
+    else if (exit) void exit.then(confirmed => releaseManagedChildResources(confirmed, cleanup));
+  };
+  const acquire = (running: ChildProcess): void => {
+    child = running;
+    exit = observeManagedWindowsRelayExit(running, lifetime);
+  };
   try {
     grant = await holdWindowsFilesystemGrant({
       label: `${input.label}:asrt-win-acl`,
@@ -192,25 +208,25 @@ export async function spawnWindowsBundledProcess(input: {
       onWrapped: () => {
         wrapped = true;
       },
+      onSpawn: acquire,
     });
-    child = spawned.child;
     if (spawned.confinement !== "windows-srt") {
       throw new Error(`[wrap-bundled-command] ${input.label}: the sandbox was expected but the process came back ${spawned.confinement}`);
     }
-    const running = child;
+    const running = spawned.child;
+    if (!exit) throw new Error("Windows relay exit is unowned.");
     held.onLost((reason) => {
       log.warn(`[${input.label}] filesystem grant lost, ending the process: ${reason.message}`);
       terminateChildBestEffort(running);
     });
     // A start that produced no process emits `error` and may emit nothing else.
     running.once("error", () => {
-      if (running.pid === undefined) releaseHold();
+      if (running.pid === undefined) settleHold(false);
     });
-    return { child: running, stdin: spawned.stdin!, stdout: spawned.stdout!, releaseHold };
+    return { child: running, stdin: spawned.stdin!, stdout: spawned.stdout!, exit, lifetime, releaseHold: () => settleHold(false) };
   } catch (error) {
     if (child !== undefined) terminateChildBestEffort(child);
-    if (wrapped) void cleanupAsrtSandboxAfterCommand();
-    releaseHold();
+    settleHold(wrapped);
     throw error instanceof Error ? error : new Error(String(error));
   }
 }

@@ -29,12 +29,11 @@ vi.mock("../../main/managed-child-processes.js", async (original) => {
       return real.spawnManaged(command, argv, { ...options, detached: false }, { ...track, killProcessGroup: false }, onSpawn);
     },
     observeManagedProcessGroup: (...args: Parameters<typeof real.observeManagedProcessGroup>) => {
-      const exit = real.observeManagedProcessGroup(...args);
-      if (HOST_PLATFORM !== "win32") return exit;
-      return { ...exit, confirmExit: async () => {
-        await exit.wait();
-        return true;
-      } };
+      if (HOST_PLATFORM !== "win32") return real.observeManagedProcessGroup(...args);
+      const [child, scope] = args;
+      const exit = real.observeManagedProcessGroup(child);
+      const proof = real.observeManagedWindowsRelayExit(child, scope);
+      return { ...exit, confirmExit: () => proof };
     },
   };
 });
@@ -74,7 +73,9 @@ vi.mock("../../sandbox/wrap-bundled-command.js", async (original) => {
     child.stdout.pipe(stdout);
     Object.defineProperty(child, "stdin", { value: null });
     Object.defineProperty(child, "stdout", { value: null });
-    return { child, stdin, stdout, releaseHold: releaseHoldMock };
+    const { createManagedExitScope, observeManagedWindowsRelayExit } = await import("../../main/managed-child-processes.js");
+    const lifetime = createManagedExitScope();
+    return { child, stdin, stdout, lifetime, exit: observeManagedWindowsRelayExit(child, lifetime), releaseHold: releaseHoldMock };
   } };
 });
 

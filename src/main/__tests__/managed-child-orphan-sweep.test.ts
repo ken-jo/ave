@@ -22,7 +22,7 @@ describe("orphaned managed processes", () => {
     expect(vi.getTimerCount()).toBe(1);
     expect(settled).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
-    expect(settled).toHaveBeenCalledWith(false);
+    expect(settled).toHaveBeenCalledWith(undefined);
     expect(kill).toHaveBeenCalledWith(12345, "SIGKILL");
     expect(vi.getTimerCount()).toBe(0);
     await sweep;
@@ -34,7 +34,7 @@ describe("orphaned managed processes", () => {
       throw Object.assign(new Error("Process exited"), { code: "ESRCH" });
     });
     const timer = vi.spyOn(globalThis, "setTimeout");
-    await expect(stopOrphanedManagedProcesses([12345])).resolves.toBe(true);
+    await expect(stopOrphanedManagedProcesses([12345])).resolves.not.toBeUndefined();
     expect(timer).not.toHaveBeenCalled();
   });
 });

@@ -132,6 +132,7 @@ export interface ConfinedChildSpec {
   readonly refreshStillValid?: () => Promise<void>;
   // Called the instant the wrap succeeds, BEFORE the spawn. The wrap increments ASRT per-command state (the Linux active-sandbox count and proxy refcount). From that moment a later failure must decrement it, and only the caller knows how its own cleanup is arranged — so this is where the caller records that the wrap happened.
   readonly onWrapped?: () => void;
+  readonly onSpawn?: (child: ChildProcess) => void;
   // The child's standard streams. Defaults to `["ignore", "pipe", "pipe"]`, so a caller with no use for stdin does not hand an idle descriptor into a confined process. Both callers pipe stdin today, for different reasons: the JS plugin child is a JSON-RPC server whose pipes the host owns, and the plugin worker's stdin is the host's liveness pipe (see `worker-spawn.ts`) — it carries no bytes and closes only when the host process is gone.
   readonly stdio?: StdioOptions;
   // Windows direct children require exact cmd flags with delayed expansion off; checked tokens are not escaped. Refuse sandboxed spawns without this or a relay: the default inner shell loses stdin/env/exit status and may not wait for GUI children. Other platforms/unwrapped paths ignore this mode.
@@ -449,6 +450,7 @@ export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<Confi
     }
   };
   const noteSpawn = (running: ChildProcess): void => {
+    spec.onSpawn?.(running);
     if (egress === undefined) return;
     if (process.platform !== "win32" && running.pid !== undefined) egress.noteProcessGroup(running.pid);
     running.once("exit", () => egress.release());
