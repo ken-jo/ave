@@ -1035,6 +1035,7 @@ jobs:
         run: >
           bun run test --
           src/plugins/isolation/__tests__/confined-plugin-child.test.ts
+          src/plugins/isolation/__tests__/plugin-stderr.test.ts
           src/plugins/isolation/__tests__/process-plugin-host-death.test.ts
           src/main/__tests__/process-group-reaper.test.ts
           src/plugins/isolation/__tests__/adversarial-escapes.test.ts
@@ -1236,6 +1237,7 @@ jobs:
           src/permissions/__tests__/linux-sandbox-wrap.test.ts
           src/permissions/__tests__/asrt-sandbox.test.ts
           src/plugins/isolation/__tests__/confined-plugin-child.test.ts
+          src/plugins/isolation/__tests__/plugin-stderr.test.ts
           src/plugins/isolation/__tests__/process-plugin-host-death.test.ts
           src/main/__tests__/process-group-reaper.test.ts
           src/plugins/isolation/__tests__/adversarial-escapes.test.ts
