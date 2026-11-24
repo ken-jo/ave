@@ -157,7 +157,7 @@ describe("managed process exit source contracts", () => {
     const release = section(engine, "async releaseSession", "async dispose");
     expect(appearsInOrder(startup, "await this.stopRuntime(runtime)", "if (!runtime.unconfirmedExit) await rm(directory")).toBe(true);
     expect(appearsInOrder(release, "await session.tail", "if (session.runtime?.unconfirmedExit) throw", "await rm(session.runtime.directory")).toBe(true);
-    expect(appearsInOrder(engine, "await wrapOfflineProcess", "const child = spawnManaged(",
+    expect(appearsInOrder(engine, "await wrapOfflineProcess", "spawnManaged(wrap.argv",
       "runtime.unconfirmedExit = error", "const pid = running.child.pid", "if (gone) break", "running.release()")).toBe(true);
   });
 });

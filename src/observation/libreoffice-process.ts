@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import type { VerifiedDocumentEngineInstallation } from "../main/document-engine-installation.js";
 import { createPrivateTempDirectory, assertCodexLocations } from "../main/codex-executable-location.js";
-import { forceKillManagedChildProcess, spawnManaged } from "../main/managed-child-processes.js";
+import { forceKillManagedChildProcess, spawnManaged, waitForManagedProcessGroupExit } from "../main/managed-child-processes.js";
 import { OfflineScanExitUnconfirmedError, wrapOfflineProcess, type OfflineProcessWrap } from "../permissions/offline-process-sandbox.js";
 import { buildSandboxedChildEnv } from "../tools/safe-env.js";
 import { PREVIEW_DOCUMENT_LIMITS } from "../shared/preview-document.js";
@@ -200,7 +200,7 @@ interface SessionRuntime {
   resident?: RunningProcess;
   children: Set<RunningProcess>;
   importerReady: boolean;
-  unconfirmedExit?: OfflineScanExitUnconfirmedError;
+  unconfirmedExit?: TableDocumentError;
   javaHome?: string;
 }
 
@@ -217,6 +217,10 @@ interface EngineSession {
 }
 
 function failure(message: string): TableDocumentError { return new TableDocumentError("engine-failed", message); }
+
+function terminationUnconfirmed(): TableDocumentError {
+  return new TableDocumentError("engine-confinement-unavailable", "Document engine termination was not confirmed.");
+}
 
 /** A failed importer process is reported as an unavailable importer runtime, retaining the process diagnostic. */
 function importerUnavailable(signal: AbortSignal, message: string): (error: unknown) => never {
@@ -524,45 +528,59 @@ export class LibreOfficeSessionPool {
     aborted(signal);
     await session.installation.verifyBeforeSpawn(signal);
     let wrapped: OfflineProcessWrap | undefined;
+    let running: RunningProcess | undefined;
     try {
       wrapped = await wrapOfflineProcess({ command, args, inputDirectory: runtime.input, outputDirectory: runtime.output,
         ipcDirectory: runtime.ipc, runtimeDirectories: runtime.runtimeDirectories, env: runtime.env, signal });
       aborted(signal);
       session.installation.assertCurrent();
       const wrap = wrapped;
-      const child = spawnManaged(wrap.argv[0], wrap.argv.slice(1), {
+      spawnManaged(wrap.argv[0], wrap.argv.slice(1), {
         env: wrap.env, cwd: runtime.output, stdio: ["ignore", "pipe", "pipe"], detached: true, shell: false,
-      }, { label: "document-engine", killProcessGroup: true });
-      let resolveCompletion!: (result: { code: number | null; signal: NodeJS.Signals | null; error?: Error }) => void;
-      const process: RunningProcess = { child, ended: false, output: "", diagnosticBytes: 0, release: wrap.release,
-        completion: new Promise(resolve => { resolveCompletion = resolve; }) };
-      runtime.children.add(process);
-      const collect = (chunk: Buffer): void => {
-        process.diagnosticBytes += chunk.length;
-        if (process.diagnosticBytes > ENGINE_PROCESS_LIMITS.diagnosticBytes) {
-          process.failure = failure("Document engine diagnostic output exceeds its limit.");
-          void forceKillManagedChildProcess(child, "document engine diagnostic limit");
-          return;
-        }
-        process.output += chunk.toString("utf8");
-      };
-      child.stdout?.on("data", collect);
-      child.stderr?.on("data", collect);
-      child.once("error", error => { process.failure = failure("Document engine process failed to start.");
-        if (child.pid === undefined) { process.ended = true; wrap.release(); runtime.children.delete(process); resolveCompletion({ code: null, signal: null, error }); } });
-      child.once("close", (code, childSignal) => {
-        process.ended = true;
-        resolveCompletion({ code, signal: childSignal });
-        if (runtime.resident === process && !session.controller.signal.aborted) {
-          session.failure ??= process.failure ?? failure(`Document engine resident process exited unexpectedly (code=${String(code)}, signal=${String(childSignal)}).`);
-          session.controller.abort(session.failure);
-        }
+      }, { label: "document-engine", killProcessGroup: true }, child => {
+        let resolveCompletion!: (result: { code: number | null; signal: NodeJS.Signals | null; error?: Error }) => void;
+        const process: RunningProcess = { child, ended: false, output: "", diagnosticBytes: 0, release: wrap.release,
+          completion: new Promise(resolve => { resolveCompletion = resolve; }) };
+        running = process;
+        runtime.children.add(process);
+        const collect = (chunk: Buffer): void => {
+          process.diagnosticBytes += chunk.length;
+          if (process.diagnosticBytes > ENGINE_PROCESS_LIMITS.diagnosticBytes) {
+            process.failure = failure("Document engine diagnostic output exceeds its limit.");
+            void forceKillManagedChildProcess(child, "document engine diagnostic limit");
+            return;
+          }
+          process.output += chunk.toString("utf8");
+        };
+        child.stdout?.on("data", collect);
+        child.stderr?.on("data", collect);
+        child.once("error", error => { process.failure = failure("Document engine process failed to start.");
+          if (child.pid === undefined) { process.ended = true; wrap.release(); runtime.children.delete(process); resolveCompletion({ code: null, signal: null, error }); } });
+        child.once("close", (code, childSignal) => {
+          process.ended = true;
+          resolveCompletion({ code, signal: childSignal });
+          if (runtime.resident === process && !session.controller.signal.aborted) {
+            session.failure ??= process.failure ?? failure(`Document engine resident process exited unexpectedly (code=${String(code)}, signal=${String(childSignal)}).`);
+            session.controller.abort(session.failure);
+          }
+        });
       });
-      return process;
+      return running!;
     } catch (error) {
-      if (error instanceof OfflineScanExitUnconfirmedError) runtime.unconfirmedExit = error;
+      if (running) {
+        const acquired = running;
+        acquired.drain ??= (async () => {
+          if (!await waitForManagedProcessGroupExit(acquired.child, acquired.completion, "document engine launch failed")) {
+            runtime.unconfirmedExit ??= terminationUnconfirmed();
+            return;
+          }
+          acquired.release();
+          runtime.children.delete(acquired);
+        })();
+        await acquired.drain;
+      } else if (error instanceof OfflineScanExitUnconfirmedError) runtime.unconfirmedExit = error;
       else wrapped?.release();
-      throw error;
+      throw runtime.unconfirmedExit ?? error;
     }
   }
 
