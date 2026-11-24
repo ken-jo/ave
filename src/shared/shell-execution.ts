@@ -503,7 +503,7 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
         return result;
       });
     }
-    if (state.cdFault && shellBuiltin && (verb === "exit" || verb === "return")) return [];
+    if (state.cdFault && shellBuiltin && verb === "exit") return [];
     if (state.dialect === "posix" && shellBuiltin && [":", "export", "readonly", "set", "unset", "exit"].includes(verb)) {
       // Special builtins retain prefix assignments, but outer argv expansion uses incoming state.
       for (const assignment of node.assignments) setScalar(state, assignment.name, assigned.variables.get(assignment.name));
@@ -645,6 +645,11 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
       if (!observedDirectory && !mayChange) return [{ state, status: "failure" }];
       const changed = cloneState(state);
       changed.variables.set("OLDPWD", state.cwd ?? undefined); changed.cwd = destination; changed.variables.set("PWD", destination);
+      if (!filesystemMayChange && state.cdFaultChanged) {
+        // A fault path that changed the filesystem cannot bound its later cds; only an ancestor stays known.
+        if (observedDirectory && state.cwd !== null && within(destination, state.cwd)) return [{ state: changed, status: "success" }];
+        decline("unresolved working-directory destination", effective.words[1]);
+      }
       if (mayChange) return [{ state: changed, status: "success" }, { state, status: "failure" }];
       // A fault path adds a second fault only for a fallback cd; errexit ends a failed cd outside a condition.
       const level = state.cdFault === undefined ? 1 : state.cdFault === 1 && context.fallback ? 2 : undefined;

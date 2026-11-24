@@ -21,6 +21,8 @@ beforeAll(() => {
   mkdirSync(join(CWD, "sub"), { recursive: true });
   for (let index = 0; index < 6; index += 1) mkdirSync(join(CWD, `d${index}`));
   for (const name of ["a", "b", "sub", "prior", ...Array.from({ length: 8 }, (_, index) => `d${index}`)]) mkdirSync(join(ROOT, name));
+  for (let index = 0; index < 8; index += 1) mkdirSync(join(ROOT, "a", `d${index}`));
+  mkdirSync(join(ROOT, "sub", "s2"));
   mkdirSync(join(STAGING, "x"), { recursive: true });
 });
 
@@ -182,7 +184,6 @@ describe("shell path policy — working directory tracking", () => {
     it.each([
       "cd sub || exit 1; touch ../x",
       "cd sub || { echo no >&2; exit 1; }; touch ../x",
-      "f() { cd sub || return 1; touch ../x; }; f",
       "set -e; cd sub; touch ../x",
     ])("ends the fault path where %s stops the shell", (command) => {
       expect(atRoot(command)).toBeNull();
@@ -193,6 +194,9 @@ describe("shell path policy — working directory tracking", () => {
       "set -e; cd sub || :; touch ../x",
       "set -e; set +e; cd sub; touch ../x",
       "set -e; (set +e; cd sub; touch ../x)",
+      "set -e; ! cd sub; touch ../x",
+      "set -e; f() { cd sub; touch ../x; }; f || true",
+      "set -e; (cd sub; touch ../x) || true",
     ])("keeps the fault path where errexit does not stop it: %s", (command) => {
       expect(atRoot(command)).toMatchObject({ kind: "sandbox-boundary" });
     });
@@ -202,8 +206,26 @@ describe("shell path policy — working directory tracking", () => {
       expect(atRoot("cd a && cd ..; touch \"$OLDPWD/x\"", { OLDPWD: outside })).toMatchObject({ kind: "sandbox-boundary" });
     });
 
-    it("follows a directory that a fault path creates", () => {
-      expect(atRoot("cd a || { mkdir n && cd n && touch ../../x; }")).toMatchObject({ kind: "sandbox-boundary" });
+    it.each(["f() { cd sub || return 1; }; f; touch ../x", "cd sub || return 1; touch ../x"])("does not end the fault path at return: %s", (command) => {
+      expect(atRoot(command)).toMatchObject({ kind: "dynamic-path" });
+    });
+
+    it("stops at a cd after a fault path changed the filesystem", () => {
+      expect(atRoot("cd a || { mkdir n && cd n && touch ../../x; }")).toMatchObject({ kind: "dynamic-path" });
+      expect(atRoot("cd a || mkdir m; cd sub; ls")).toMatchObject({ kind: "dynamic-path" });
+      expect(atRoot("cd sub; cd s2 || mkdir m; cd ..; ls")).toBeNull();
+    });
+
+    it.each([
+      `cd a || mkdir -p a; ${repeat(8, (index) => `cd d${index} && test -f m && cd ..`)}`,
+      `cd b || mkdir -p b; ${repeat(8, (index) => `cd d${index} && test -f m && cd ..`)}`,
+      `cd b || true; ${repeat(8, (index) => `cd d${index} && make && cd ..`)}`,
+      `cd a || ls; ${repeat(6, (index) => `cd d${index}`)}`,
+    ])("ends a changed fault path in an ordinary ask: %s", (command) => {
+      const start = performance.now();
+      const violation = atRoot(command);
+      expect(performance.now() - start).toBeLessThan(5_000);
+      expect([undefined, "dynamic-path"]).toContain(violation?.kind);
     });
 
     it("models a failing fallback cd", () => {
