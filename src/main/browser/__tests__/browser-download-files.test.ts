@@ -860,6 +860,26 @@ describe("a copy whose helper says it left its temporary file", () => {
     });
   });
 
+  it("rejects a bare committed reply when the held old target is unresolved", async () => {
+    script((helper) => {
+      if (helper.args[0] === "--dir-remove-id") {
+        helper.say("ready");
+        helper.once("input", () => { helper.say("absent"); helper.exit(0); });
+        return;
+      }
+      helper.say("target-id 1 3 15", "ready");
+      helper.once("input", () => {
+        helper.say("writing 1 2", "copied");
+        helper.once("input", () => { helper.say("committed"); helper.exit(0); });
+      });
+    });
+    const journal = { hidden: HIDDEN, write: vi.fn().mockResolvedValue(undefined), resolved: vi.fn() };
+    const run = follow(files.copy(from, "staged", to, "report.pdf", ".0123.part", () => true, UNSTOPPED, journal));
+    await flush();
+    expect(run.error).toBeInstanceOf(HeldFileHelperUnavailableError);
+    expect(journal.resolved).not.toHaveBeenCalled();
+  });
+
   const invalidTargets: { label: string; id?: string; hidden?: string; early?: boolean; duplicate?: boolean;
     old?: string; verdict?: string; snapshot?: string }[] = [
     { label: "before commit authorization", early: true },

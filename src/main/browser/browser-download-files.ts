@@ -630,7 +630,8 @@ function descriptorFileOperations(renameCopy = renameExclusive): HeldFileOperati
           try {
             if (!entryMatches(toFd, aside, old)) throw new HeldDirectoryRefusedError("target");
             unlinkSync(inHeld(toFd, aside));
-            journal?.resolved();
+            if (entryAbsent(toFd, aside)) journal?.resolved();
+            else reportTarget(aside, old, "remove-failed");
           } catch {
             reportTarget(aside, old, "remove-failed");
           }
@@ -1059,6 +1060,7 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
         }
         if (line !== "ready" && line !== "copied") {
           if (!isOutcome(line) ||
+              (line === "committed" && oldTarget !== null && targetResolution === null && targetLeft === null) ||
               (targetResolution === "retired" && line !== "committed") ||
               (targetResolution === "restored" && !/^(?:refused target|failed E)/u.test(line)) ||
               (targetLeft?.identity.verdict === "remove-failed" && line !== "committed") ||

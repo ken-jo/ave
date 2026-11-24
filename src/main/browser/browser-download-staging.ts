@@ -287,6 +287,7 @@ async function publish(root: BrowserDownloadStagingRoot, name: string, destinati
   let copied: "committed" | "cancelled";
   let record: string | null = null;
   let resolved = false;
+  let targetVerdict: HelperPartIdentity["verdict"] | undefined;
   try {
     copied = await refusingAsStaging(() => root.files.copy(root, name, destination.folder, destination.name, part, proceed, cancel, {
       hidden,
@@ -297,6 +298,9 @@ async function publish(root: BrowserDownloadStagingRoot, name: string, destinati
         });
       },
       resolved: () => { resolved = true; },
+      left: ({ identity }) => {
+        if (identity.kind === "helper") targetVerdict = identity.verdict;
+      },
     }));
   } catch (error) {
     await reportStoppedCopy(root, error, destination, part);
@@ -304,7 +308,7 @@ async function publish(root: BrowserDownloadStagingRoot, name: string, destinati
   } finally {
     if (record !== null) {
       if (resolved) await finishRecord(root, record);
-      else log.warn({ path: destination.path, leftAs: hidden }, "a browser download's previous target needs recovery");
+      else log.warn({ path: destination.path, leftAs: hidden, verdict: targetVerdict }, "a browser download's previous target needs recovery");
     }
   }
   if (copied === "cancelled") return "cancelled";

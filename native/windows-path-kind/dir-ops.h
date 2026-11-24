@@ -447,7 +447,8 @@ inline int run_copy(wchar_t** argv) {
   const auto report_target_left = [&](bool retiring) {
     const bool verified = check_name(to.handle(), aside, old_id) == NameIdentity::kMatches;
     say(("target-left left " + hidden + " " + id_text(old_id, ' ')
-      + (retiring ? " remove-failed " : " mismatch ") + (verified ? snapshot(old.value, old_id) : "-")).c_str());
+      + (retiring ? " remove-failed " : " mismatch ")
+      + (verified && old.value != INVALID_HANDLE_VALUE ? snapshot(old.value, old_id) : "-")).c_str());
 #if defined(AVE_TEST_DIR_RECOVERY)
     test_stop_replacement("leftover");
 #endif
@@ -516,6 +517,7 @@ inline int run_copy(wchar_t** argv) {
       CloseHandle(old.value);
       old.value = INVALID_HANDLE_VALUE;
       if (check_name(to.handle(), aside, old_id) == NameIdentity::kAbsent) say("target-retired");
+      else report_target_left(true);
     }
   }
   return done("committed");

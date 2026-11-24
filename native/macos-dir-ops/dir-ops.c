@@ -715,7 +715,7 @@ static void finish_copy_target(int directory, const char *target, const char *as
     const struct stat *identity, int committed) {
   if (*aside == '\0') return;
   if (names_file(directory, aside, old)) {
-    if (committed ? unlinkat(directory, aside, 0) == 0
+    if (committed ? unlinkat(directory, aside, 0) == 0 && entry_absent(directory, aside)
         : replace_copy_name(directory, aside, target, 1) == 0 && names_file(directory, target, old)) {
       puts(committed ? "target-retired" : "target-restored");
       fflush(stdout);
