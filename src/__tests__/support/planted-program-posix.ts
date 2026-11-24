@@ -1,6 +1,6 @@
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, parse } from "node:path";
 
 const HOST_PLATFORM = process.platform;
 
@@ -67,11 +67,11 @@ export interface ProgramsOnPath {
 export function installProgramsOnPath(names: readonly string[], platform = process.platform): ProgramsOnPath {
   const windows = platform === "win32";
   const fixture = realpathSync(mkdtempSync(join(tmpdir(), "ave-programs-on-path-")));
-  // A simulated POSIX lookup on Windows uses a root-relative path, which resolves on the cwd drive.
+  // A simulated POSIX lookup on Windows uses a root-relative path, which resolves on the cwd drive: the fixture's drive root.
   const simulated = !windows && HOST_PLATFORM === "win32";
   const dir = simulated ? fixture.replace(/^[A-Za-z]:/u, "").replaceAll("\\", "/") : fixture;
   const previousCwd = process.cwd();
-  if (simulated) process.chdir(fixture);
+  if (simulated) process.chdir(parse(fixture).root);
   const imageName = (name: string) => windows && !/\.(?:com|exe)$/iu.test(name) ? `${name}.exe` : name;
   for (const name of names) {
     const path = join(fixture, imageName(name));
