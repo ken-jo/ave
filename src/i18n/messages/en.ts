@@ -1171,6 +1171,7 @@ export const en = {
   // be_scriptHookRunner
   "be_scriptHookRunner.containedSettleDeadline": "The hook's contained process did not settle within {ms} ms; it keeps its sandbox resources while its termination is unconfirmed ({code})",
   "be_scriptHookRunner.terminationUnverified": "Hook process tree termination is unverified. Its resources are retained ({code}).",
+  "be_scriptHookRunner.sandboxEnvironmentSetupFailed": "The sandbox could not set up the hook's environment.",
   "be_scriptHookRunner.containedTerminationUnverified": "The hook's contained process termination is unverified; it keeps its sandbox resources: {detail} ({code})",
 
   // be_sessionGoal

@@ -774,7 +774,7 @@ async function runPosixHook(input: {
     const { code, signal } = await exit.wait();
     await releaseManagedResources(input.resources, proof).catch(logReleaseFailure(input.hookId));
     if (fault) return input.deny(fault);
-    if (await sandboxTargetSetupFailed(child)) return input.deny("sandbox target environment setup failed");
+    if (await sandboxTargetSetupFailed(child)) return input.deny(t("be_scriptHookRunner.sandboxEnvironmentSetupFailed"));
     return input.outcome({ code, signal, cancelled, timedOut, stdout: stdout?.text() ?? "", stderr: stderr?.text() ?? "",
       stdoutCapped: stdout?.capped() ?? false });
   } finally {

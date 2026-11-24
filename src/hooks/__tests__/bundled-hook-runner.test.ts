@@ -91,6 +91,7 @@ import { runOneHookScript } from "../script-hook-runner.js";
 import { abandonManagedLaunch, createManagedResources, observeManagedProcessGroup, releaseManagedResources } from "../../main/managed-child-processes.js";
 import { wrapManagedBundledCommand } from "../../sandbox/wrap-bundled-command.js";
 import { appOwnedSandboxPrivateRoots, cleanupAsrtSandboxAfterCommand, type SandboxTempPrincipal } from "../../permissions/asrt-sandbox.js";
+import { t } from "../../i18n/index.js";
 import {
   __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, setActiveSandboxCapability, setShellSandboxRequestedAtBoot,
 } from "../../permissions/sandbox-capability.js";
@@ -263,7 +264,7 @@ process.stdin.on('end', () => process.stdout.write(JSON.stringify({action:'allow
     const { confinement: _confinement, ...userHook } = runnable();
     const result = await runOneHookScript(userHook, payload, { cwd: dataDir });
     expect(result.decision).toBe("deny");
-    expect(result.reason === "sandbox target environment setup failed", result.reason).toBe(failed);
+    expect(result.reason === t("be_scriptHookRunner.sandboxEnvironmentSetupFailed"), result.reason).toBe(failed);
   });
 
   it("runs the rest of a wrapped handle's release past a rejected ASRT cleanup and retries only that step", async () => {
