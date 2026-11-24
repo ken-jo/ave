@@ -28,6 +28,7 @@ ave-dir-ops --dir-write-record <dir> <dir-dev> <dir-ino> <name> <hex>
 ave-dir-ops --dir-remove-id <dir> <dir-dev> <dir-ino> <name> <file-dev> <file-ino> [<birth-ns>:<fingerprint>]
 ave-dir-ops --dir-restore <dir> <dir-dev> <dir-ino> <hidden> <part> <file-dev> <file-ino> <birth-ns>:<fingerprint>
 ave-dir-ops --dir-restore-target <dir> <dir-dev> <dir-ino> <hidden> <target> <file-dev> <file-ino> <birth-ns>:<fingerprint-or-dash> [<writer-ino>:<writer-birth-ns>|retire]
+ave-dir-ops --dir-sweep-record <dir> <dir-dev> <dir-ino> <name> <max>
 ```
 
 Names are single path components. `rename` moves the ordinary file `name` to

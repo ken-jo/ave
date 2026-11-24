@@ -147,6 +147,11 @@ interface DownloadTargetJournal {
   left?(at: LeftPart): void;
 }
 
+interface RecordSweep {
+  reject(bytes: Buffer): boolean;
+  removed(): void;
+}
+
 /**
  * File operations that act inside held directories. Each one opens its directories, checks each is the plain directory with the given
  * identity, and names every file relative to that open directory, so a directory moved or replaced by a link after the check changes
@@ -170,7 +175,7 @@ export interface HeldFileOperations {
   /** Remove files and links directly in `directory`. The boot sweep preserves records for held recovery. */
   sweep(directory: HeldDirectory, keepRecords?: boolean): Promise<number>;
   listRecords(directory: HeldDirectory): Promise<string[]>;
-  readRecord(directory: HeldDirectory, name: string, max: number): Promise<Buffer | null>;
+  readRecord(directory: HeldDirectory, name: string, max: number, sweep?: RecordSweep): Promise<Buffer | null>;
   writeRecord(directory: HeldDirectory, name: string, body: Buffer): Promise<void>;
   recover(directory: HeldDirectory, name: string, original: string, identity: PartIdentity | HelperPartIdentity): Promise<OwnFileResult | { outcome: "restored" }>;
   recoverTarget(directory: HeldDirectory, hidden: string, target: string, file: FileIdentity, content?: Fingerprint,
@@ -676,7 +681,7 @@ function descriptorFileOperations(renameCopy = renameExclusive): HeldFileOperati
     recoverTarget: async (directory, hidden, target, file, content, replacement) =>
       holdingSync(directory, (fd) => recoverTarget(fd, hidden, target, file, content, replacement)),
     listRecords: async (directory) => holdingSync(directory, (fd) => readdirSync(inHeld(fd, ".")).filter((name) => RECORD_NAME.test(name))),
-    readRecord: async (directory, name, max) => holdingSync(directory, (fd) => {
+    readRecord: async (directory, name, max, sweep) => holdingSync(directory, (fd) => {
       const record = boundOpen(fd, name);
       if (record === null) return null;
       try {
@@ -686,12 +691,21 @@ function descriptorFileOperations(renameCopy = renameExclusive): HeldFileOperati
         const bytes = Buffer.alloc(max + 1);
         let used = 0;
         while (used < bytes.length) {
-          const count = readSync(record, bytes, used, bytes.length - used, null);
+          const count = readSync(record, bytes, used, bytes.length - used, used);
           if (count === 0) break;
           used += count;
         }
         if (used > max) throw new Error("the download cleanup record exceeds its limit");
-        return bytes.subarray(0, used);
+        const body = bytes.subarray(0, used);
+        if (sweep !== undefined) {
+          const content = fingerprintOf(record);
+          const digest = createHash("sha256").update(body).digest("hex");
+          if (info.birthtimeNs === 0n || content === null || content.size !== BigInt(used) || content.head !== digest ||
+              !entryMatches(fd, name, info)) return null;
+          if (sweep.reject(body) && entryMatches(fd, name, info) &&
+              retireBound(fd, name, record, info, content).outcome === "removed") sweep.removed();
+        }
+        return body;
       } finally {
         closeSync(record);
       }
@@ -795,7 +809,7 @@ function directoryArguments(directory: HeldDirectory): string[] {
 function helperOutcome(helper: string, status: number | null, signal: NodeJS.Signals | null, last: string, stderr: string, parseInode: typeof parseUnsigned): string | Error {
   const left = parsePartLeft(last, parseInode);
   const answer = left?.answer ?? last;
-  if (status === EXIT_DONE && (left === null ? /^(?:committed|cancelled|cross-volume|removed|absent|restored|resolved|written|swept \d+)$/u.test(last) || RECORDS_LINE.test(last) || RECORD_LINE.test(last) : answer === "cancelled" || answer === "")) {
+  if (status === EXIT_DONE && (left === null ? /^(?:committed|cancelled|cross-volume|removed|absent|restored|resolved|written|kept|swept \d+)$/u.test(last) || RECORDS_LINE.test(last) || RECORD_LINE.test(last) : answer === "cancelled" || answer === "")) {
     return last;
   }
   const leaving = (error: Error): Error => {
@@ -832,7 +846,7 @@ function statusOf(last: string): number {
  * delivery order is independent of stdout. Killing and confirming exit share one independent `killMs` ceiling, including
  * when the platform's kill request does not finish. A valid outcome before a confirmed kill is retained only if the protocol stayed valid.
  */
-function runHelper(helper: string, args: readonly string[], proceed: Proceed, stop: AbortSignal, bounds: HelperBounds, parseInode: typeof parseUnsigned, onWriting?: (file: FileIdentity) => void, journal?: DownloadTargetJournal): Promise<string> {
+function runHelper(helper: string, args: readonly string[], proceed: Proceed, stop: AbortSignal, bounds: HelperBounds, parseInode: typeof parseUnsigned, onWriting?: (file: FileIdentity) => void, journal?: DownloadTargetJournal, onRecord?: (bytes: Buffer) => boolean): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawnManaged(helper, args, { stdio: ["pipe", "pipe", "pipe"], shell: false, env: {} }, { label: "browser-download-files" });
     const { stdin, stdout, stderr } = child;
@@ -846,6 +860,7 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
     let copiedBytes = 0n;
     let writing: FileIdentity | null = null;
     let writingRefreshed = false;
+    let recordDecision: boolean | null = null;
     let protocolFailure: string | null = null;
     const mode = args[0];
     const needsDestinationStamp = mode === "--dir-copy" && parseInode === parseWindowsInode;
@@ -999,6 +1014,8 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
       if (mode === "--dir-restore-target") return line === "resolved" || line === "left";
       if (mode === "--dir-list-records") return RECORDS_LINE.test(line);
       if (mode === "--dir-read") return line === "absent" || (line.length <= 7 + 2 * Number(args[5]) && RECORD_LINE.test(line));
+      if (mode === "--dir-sweep-record") return recordDecision === null ? line === "absent"
+        : line === "kept" || (recordDecision && line === "removed");
       if (mode === "--dir-write-record") return line === "written";
       const swept = /^swept (\d+)$/u.exec(line);
       return mode === "--dir-sweep" && swept !== null && Number.isSafeInteger(Number(swept[1]));
@@ -1012,6 +1029,21 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
       for (let newline = pending.indexOf("\n"); newline >= 0; newline = pending.indexOf("\n")) {
         const line = pending.slice(0, newline).replace(/\r$/u, "");
         pending = pending.slice(newline + 1);
+        if (mode === "--dir-sweep-record" && RECORD_LINE.test(line)) {
+          if (passed !== "ready" || recordDecision !== null || line.length > 7 + 2 * Number(args[5]) ||
+              onRecord === undefined || !inputOpen || pending !== "") { violate(); return; }
+          try {
+            recordDecision = onRecord(Buffer.from(line.slice(7), "hex"));
+          } catch (error) {
+            thrown = error;
+            beginStopping();
+            return;
+          }
+          if (recordDecision) stdin.write("c");
+          endInput();
+          awaitLine("after reading the record");
+          continue;
+        }
         const destination = DESTINATION_ID.exec(line);
         if (destination !== null) {
           const dev = parseUnsigned(destination[1]);
@@ -1249,7 +1281,17 @@ function helperFileOperations(helper: string, windowsFileIds: boolean, bounds: H
       const answer = await run(["--dir-list-records", ...directoryArguments(directory)], go, UNSTOPPED);
       return answer === "records" ? [] : answer.slice(8).split(" ");
     },
-    readRecord: async (directory, name, max) => {
+    readRecord: async (directory, name, max, sweep) => {
+      if (sweep !== undefined) {
+        let bytes: Buffer | null = null;
+        const answer = await runHelper(helper, ["--dir-sweep-record", ...directoryArguments(directory), name, String(max)],
+          go, UNSTOPPED, bounds, parseInode, undefined, undefined, (body) => {
+            bytes = body;
+            return sweep.reject(body);
+          });
+        if (answer === "removed") sweep.removed();
+        return bytes;
+      }
       const answer = await run(["--dir-read", ...directoryArguments(directory), name, String(max)], go, UNSTOPPED);
       return answer === "absent" ? null : Buffer.from(answer.slice(7), "hex");
     },

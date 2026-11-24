@@ -614,8 +614,9 @@ inline int run(int argc, wchar_t** argv) {
   if (mode == L"--dir-sweep" && (argc == 5 || (argc == 6 && std::wstring(argv[5]) == L"keep-records")))
     return run_sweep(argv + 2, argc == 6);
   if (argc == 5 && mode == L"--dir-list-records") return run_list_records(argv + 2);
-  if (argc == 7 && mode == L"--dir-read") return run_record(argv + 2, false);
-  if (argc == 7 && mode == L"--dir-write-record") return run_record(argv + 2, true);
+  if (argc == 7 && mode == L"--dir-read") return run_record(argv + 2, RecordMode::kRead);
+  if (argc == 7 && mode == L"--dir-write-record") return run_record(argv + 2, RecordMode::kWrite);
+  if (argc == 7 && mode == L"--dir-sweep-record") return run_record(argv + 2, RecordMode::kSweep);
   if ((argc == 8 || argc == 9) && mode == L"--dir-remove-id") return run_recovery(argc - 2, argv + 2, RecoveryMode::kRemove);
   if (argc == 10 && mode == L"--dir-restore") return run_recovery(argc - 2, argv + 2, RecoveryMode::kRestorePart);
   if ((argc == 10 || argc == 11) && mode == L"--dir-restore-target")

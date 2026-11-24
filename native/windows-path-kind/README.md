@@ -74,6 +74,7 @@ authorizes the action. Other input or EOF stops it. The recovery modes are:
 | --- | --- |
 | `--dir-list-records` | `records` with zero or more space-separated `<32 lowercase hex>.cleanup.json` names |
 | `--dir-read <name> <max>` | `record <lowercase hex>` or `absent`, with a 1–8192 byte limit. Empty data is `record ` with its space. Over the limit is `failed EFBIG`. |
+| `--dir-sweep-record <name> <max>` | Holds the record through its `record <lowercase hex>` classification frame. A second authorization removes the entry only if its full stamp and digest still match. Replies `removed`, `kept`, or `absent`. |
 | `--dir-write-record <name> <hex>` | `written` after exclusive creation with a protected current-user DACL, write and sync. Maximum 8192 bytes. |
 | `--dir-remove-id <name> <file-dev> <file-ino> [<birth-ns>:<fingerprint>]` | `removed`, `absent`, or `left` with an optional named leftover. A birth-only token uses `<birth-ns>:-`. |
 | `--dir-restore <hidden> <part> <file-dev> <file-ino> <birth-ns>:<fingerprint>` | `restored` after verification and source retirement, `absent` if the source is missing, or `left` with an optional named leftover. |

@@ -120,6 +120,17 @@ inline bool seek_to(HANDLE file, LONGLONG offset) {
   return SetFilePointerEx(file, position, nullptr, FILE_BEGIN) != 0;
 }
 
+inline bool hash_bytes(BYTE* data, DWORD length, std::string& digest) {
+  BCRYPT_ALG_HANDLE algorithm = nullptr;
+  if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) < 0) return false;
+  BYTE bytes[32];
+  const NTSTATUS status = BCryptHash(algorithm, nullptr, 0, data, length, bytes, sizeof(bytes));
+  BCryptCloseAlgorithmProvider(algorithm, 0);
+  if (status < 0) return false;
+  digest = hex_bytes(bytes, sizeof(bytes));
+  return true;
+}
+
 inline bool hash_span(HANDLE file, LONGLONG offset, DWORD length, std::string& digest) {
   if (!seek_to(file, offset)) return false;
   std::vector<BYTE> data(length == 0 ? 1 : length);
@@ -129,14 +140,7 @@ inline bool hash_span(HANDLE file, LONGLONG offset, DWORD length, std::string& d
     if (!ReadFile(file, data.data() + used, length - used, &count, nullptr) || count == 0) return false;
     used += count;
   }
-  BCRYPT_ALG_HANDLE algorithm = nullptr;
-  if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) < 0) return false;
-  BYTE bytes[32];
-  const NTSTATUS status = BCryptHash(algorithm, nullptr, 0, data.data(), length, bytes, sizeof(bytes));
-  BCryptCloseAlgorithmProvider(algorithm, 0);
-  if (status < 0) return false;
-  digest = hex_bytes(bytes, sizeof(bytes));
-  return true;
+  return hash_bytes(data.data(), length, digest);
 }
 
 inline bool time_ns(LARGE_INTEGER ticks, ULONGLONG& ns) {
@@ -416,12 +420,14 @@ inline DWORD create_private_record(HANDLE directory, const std::wstring& name, c
   return FlushFileBuffers(entry.value) ? ERROR_SUCCESS : GetLastError();
 }
 
-inline int run_record(wchar_t** argv, bool writing) {
+enum class RecordMode { kRead, kWrite, kSweep };
+
+inline int run_record(wchar_t** argv, RecordMode mode) {
   const std::wstring name(argv[3]);
   if (!record_name(name)) return kExitUsage;
   ULONGLONG limit = 0;
   BYTE bytes[kRecordLimit + 1];
-  if (writing) {
+  if (mode == RecordMode::kWrite) {
     const std::wstring payload(argv[4]);
     limit = payload.size() / 2;
     if (limit > kRecordLimit || !decode_hex(payload, bytes, static_cast<size_t>(limit))) return kExitUsage;
@@ -432,18 +438,24 @@ inline int run_record(wchar_t** argv, bool writing) {
   const int status = hold_directory(argv[0], argv[1], argv[2], "from", directory);
   if (status != 0) return status;
   if (!proceed("ready")) return done("cancelled");
-  if (writing) {
+  if (mode == RecordMode::kWrite) {
     FileFailure failure;
     const DWORD error = create_private_record(directory.handle(), name, bytes, static_cast<DWORD>(limit), failure);
     if (error == ERROR_SUCCESS) return done("written");
     return failure.error == ERROR_SUCCESS ? failed(error) : failed(failure);
   }
   HANDLE opened = INVALID_HANDLE_VALUE;
-  const NTSTATUS opening = open_relative(directory.handle(), name, FILE_READ_DATA | FILE_READ_ATTRIBUTES,
+  const NTSTATUS opening = open_relative(directory.handle(), name,
+    FILE_READ_DATA | FILE_READ_ATTRIBUTES | (mode == RecordMode::kSweep ? DELETE : 0),
     FILE_SHARE_READ, kOpenExisting, kOpenReparsePoint, opened);
   if (opening < 0) return missing(status_error(opening)) ? done("absent") : failed(native_failure(opening, "NtCreateFile"));
-  const PinnedHandle entry(opened);
+  PinnedHandle entry(opened);
   if (!ordinary(entry.value)) return done("absent");
+  ExpectedFile stamp;
+  if (mode == RecordMode::kSweep) {
+    if (!read_id(entry.value, stamp.id) || !read_birth(entry.value, stamp.birth)) return done("absent");
+    stamp.check_birth = true;
+  }
   DWORD used = 0;
   while (used <= limit) {
     DWORD count = 0;
@@ -451,7 +463,17 @@ inline int run_record(wchar_t** argv, bool writing) {
     if (count == 0) break;
     used += count;
   }
-  return used > limit ? failed(ERROR_FILE_TOO_LARGE) : done(("record " + hex_bytes(bytes, used)).c_str());
+  if (used > limit) return failed(ERROR_FILE_TOO_LARGE);
+  const std::string frame = "record " + hex_bytes(bytes, used);
+  if (mode == RecordMode::kRead) return done(frame.c_str());
+  std::string expected, actual;
+  if (!hash_bytes(bytes, used, expected)) return done("absent");
+  if (!proceed(frame.c_str())) return done("kept");
+  LARGE_INTEGER size{};
+  if (!matches(entry.value, stamp) || !GetFileSizeEx(entry.value, &size) || size.QuadPart != used ||
+      !hash_span(entry.value, 0, used, actual) || actual != expected ||
+      check_name(directory.handle(), name, stamp.id, stamp.birth) != NameIdentity::kMatches) return done("kept");
+  return done(dispose_and_observe(directory.handle(), name, entry).error == ERROR_SUCCESS ? "removed" : "kept");
 }
 
 }  // namespace dir_ops

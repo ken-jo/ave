@@ -536,11 +536,13 @@ async function removeRecordedParts(root: BrowserDownloadStagingRoot): Promise<nu
     if (!PART_RECORD.test(name)) continue;
     const recordPath = join(root.path, name);
     try {
-      const bytes = await root.files.readRecord(root, name, MAX_PART_RECORD_BYTES);
+      const bytes = await root.files.readRecord(root, name, MAX_PART_RECORD_BYTES, {
+        reject: (body) => readPartRecord(body.toString("utf8"), name) === null,
+        removed: () => { removed += 1; },
+      });
       const record = bytes === null ? null : readPartRecord(bytes.toString("utf8"), name);
       if (record === null) {
         log.warn({ path: recordPath }, "a browser download cleanup record could not be verified");
-        if (await finishRecord(root, name)) removed += 1;
         continue;
       }
       records.push({ name, record });

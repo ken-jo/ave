@@ -1234,6 +1234,17 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
           case "--dir-read":
             end(entry?.isFile() ? `record ${fs.readFileSync(path).toString("hex")}` : "absent");
             break;
+          case "--dir-sweep-record": {
+            if (!entry?.isFile()) { end("absent"); break; }
+            const bytes = fs.readFileSync(path);
+            helper.say(`record ${bytes.toString("hex")}`);
+            helper.afterInputEnds(() => {
+              if (helper.input !== "cc") { end("kept"); return; }
+              fs.unlinkSync(path);
+              end("removed");
+            });
+            break;
+          }
           case "--dir-write-record":
             fs.writeFileSync(path, Buffer.from(arg(helper, 5), "hex"), { flag: "wx" });
             end("written");

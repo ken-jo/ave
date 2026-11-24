@@ -556,12 +556,14 @@ static int run_records(char **argv) {
   }
 }
 
-static int run_record(char **argv, int writing) {
+enum record_mode { RECORD_READ, RECORD_WRITE, RECORD_SWEEP };
+
+static int run_record(char **argv, enum record_mode mode) {
   const char *name = argv[3];
   if (!record_name(name)) return EXIT_USAGE;
   uint64_t max = 0;
   static unsigned char bytes[MAX_RECORD_BYTES + 1];
-  if (writing) {
+  if (mode == RECORD_WRITE) {
     const size_t size = strlen(argv[4]);
     if (size > 2 * MAX_RECORD_BYTES || size % 2 != 0) return EXIT_USAGE;
     max = size / 2;
@@ -577,7 +579,7 @@ static int run_record(char **argv, int writing) {
   const int status = hold_directory(argv[0], argv[1], argv[2], "from", &directory);
   if (status != 0) return status;
   if (!proceed("ready")) return done("cancelled");
-  if (writing) {
+  if (mode == RECORD_WRITE) {
     const int fd = openat(directory, name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
     if (fd < 0) return failed(errno);
     const int result = write_all(fd, bytes, (size_t)max);
@@ -603,7 +605,19 @@ static int run_record(char **argv, int writing) {
   static char encoded[2 * MAX_RECORD_BYTES + sizeof "record "];
   memcpy(encoded, "record ", sizeof "record " - 1);
   hex_encode(bytes, used, encoded + sizeof "record " - 1);
-  return done(encoded);
+  if (mode == RECORD_READ) return done(encoded);
+  if (!names_file(directory, name, fd) || info.st_size != (off_t)used) return done("absent");
+  unsigned char digest[CC_SHA256_DIGEST_LENGTH];
+  char hex[2 * sizeof digest + 1];
+  CC_SHA256(bytes, (CC_LONG)used, digest);
+  hex_encode(digest, sizeof digest, hex);
+  char expected[FINGERPRINT_SIZE];
+  snprintf(expected, sizeof expected, "%" PRIu64 ":%" PRIu64 ":%s:%s",
+    (uint64_t)used, nanos(info.st_mtimespec), hex, hex);
+  if (!fingerprint_matches(fd, expected)) return done("absent");
+  if (!proceed(encoded) || !names_file(directory, name, fd) || !fingerprint_matches(fd, expected)) return done("kept");
+  struct left_part left = { .observed = -1 };
+  return done(retire_held(directory, name, fd, &left, expected, 0) == REMOVE_DONE ? "removed" : "kept");
 }
 
 // Isolate the part before checking ownership. A volume without exclusive rename never authorizes unlink.
@@ -960,8 +974,9 @@ int main(int argc, char **argv) {
   if ((argc == 5 || (argc == 6 && strcmp(argv[5], "keep-records") == 0)) && strcmp(argv[1], "--dir-sweep") == 0)
     return run_sweep(argv + 2, argc == 6);
   if (argc == 5 && strcmp(argv[1], "--dir-list-records") == 0) return run_records(argv + 2);
-  if (argc == 7 && strcmp(argv[1], "--dir-read") == 0) return run_record(argv + 2, 0);
-  if (argc == 7 && strcmp(argv[1], "--dir-write-record") == 0) return run_record(argv + 2, 1);
+  if (argc == 7 && strcmp(argv[1], "--dir-read") == 0) return run_record(argv + 2, RECORD_READ);
+  if (argc == 7 && strcmp(argv[1], "--dir-write-record") == 0) return run_record(argv + 2, RECORD_WRITE);
+  if (argc == 7 && strcmp(argv[1], "--dir-sweep-record") == 0) return run_record(argv + 2, RECORD_SWEEP);
   if ((argc == 8 || argc == 9) && strcmp(argv[1], "--dir-remove-id") == 0) return run_recovery(argv + 2, RECOVER_REMOVE, argc == 9, NULL);
   if (argc == 10 && strcmp(argv[1], "--dir-restore") == 0) return run_recovery(argv + 2, RECOVER_RESTORE_PART, 1, NULL);
   if ((argc == 10 || argc == 11) && strcmp(argv[1], "--dir-restore-target") == 0)

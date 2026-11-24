@@ -102,6 +102,23 @@ async function recoveryTests() {
     writeFileSync(join(dir, record), "");
     expect(["--dir-read", ...folder, record, "1"], ["ready", "record "]);
   });
+  add("holds the rejected record through classification and disposition", async (dir) => {
+    const path = join(dir, record);
+    const moved = join(dir, "moved-record");
+    writeFileSync(path, "rejected");
+    const result = await runCopy(["--dir-sweep-record", ...held(dir), record, "8192"], (line, stdin) => {
+      if (line === "ready") stdin.write("c");
+      if (line.startsWith("record ")) {
+        assert.equal(line, `record ${Buffer.from("rejected").toString("hex")}`);
+        assert.throws(() => renameSync(path, moved), /EBUSY|EPERM|EACCES/u);
+        stdin.end("c");
+      }
+    });
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.lines.at(-1), "removed");
+    assert.ok(!existsSync(path));
+    assert.ok(!existsSync(moved));
+  });
   add("stale fingerprint never restores or removes its source", (dir) => {
     const source = join(dir, hidden);
     writeFileSync(source, "original");

@@ -642,6 +642,25 @@ describe("a staged download", () => {
     expect(await root.files.listRecords(root)).toEqual([]);
   });
 
+  it("preserves the record that replaces rejected bytes at the same name", async () => {
+    const root = prepare();
+    const name = `${"a".repeat(32)}.cleanup.json`;
+    const path = join(root.path, name);
+    const replacement = Buffer.from('{"replacement":true}');
+    await root.files.writeRecord(root, name, Buffer.from('{"invalid":true}'));
+    const staged = withFiles(root, (files) => ({
+      readRecord: async (...args) => {
+        const bytes = await files.readRecord(...args);
+        if (existsSync(path)) moveAside(path, join(home, "rejected-record"));
+        writeFileSync(path, replacement, { flag: "wx" });
+        return bytes;
+      },
+    }));
+    await sweepBrowserDownloadStaging(staged);
+    expect(readFileSync(path)).toEqual(replacement);
+    expect(await root.files.listRecords(root)).toEqual([name]);
+  });
+
   it.runIf(process.platform === "darwin" || process.platform === "linux").each(["commit", "restore", "occupied"] as const)(
     "preserves old bytes and handles the record after replacement failure: %s",
     async (failure) => {
@@ -1464,8 +1483,8 @@ it.runIf(process.platform === "win32")("reads a wide writer ID and refuses a sec
   const swapped = withFiles(root, (files) => ({
     recover,
     listRecords: async (folder) => [...await files.listRecords(folder)].sort(),
-    readRecord: async (folder, name, max) => {
-      const bytes = await files.readRecord(folder, name, max);
+    readRecord: async (folder, name, max, sweep) => {
+      const bytes = await files.readRecord(folder, name, max, sweep);
       if (name === RECOVERY_RECORD) {
         moveAside(root.path, join(home, "old-staging"));
         moveAside(forged, root.path);
