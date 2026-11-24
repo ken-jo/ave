@@ -351,7 +351,7 @@ interface WindowsWrapDenies {
 type WindowsDocumentsQuery = (signal?: AbortSignal) => Promise<string>;
 
 interface AsrtSandboxSession {
-  linuxPrograms?: Required<Pick<SandboxRuntimeConfig, "bwrapPath" | "socatPath">>;
+  linuxPrograms?: LinuxWrapperPrograms;
   readonly queryWindowsDocumentsPath?: WindowsDocumentsQuery;
   sharedWindowsDocumentsPath?: () => string;
   readonly windowsLiveGrants: Map<string, WindowsLiveGrantCounts>;
@@ -2147,6 +2147,27 @@ export function buildSandboxConfig(
   };
 }
 
+type LinuxWrapperPrograms = Required<Pick<SandboxRuntimeConfig, "bwrapPath" | "socatPath" | "ripgrep">>;
+
+function discoverLinuxWrapperPrograms(): { programs: LinuxWrapperPrograms } | { errors: string[] } {
+  const errors: string[] = [];
+  function discover(name: string, missingMessage: string): string | undefined {
+    try {
+      return resolveHostProgram(name);
+    } catch {
+      errors.push(missingMessage);
+      return undefined;
+    }
+  }
+
+  const rg = discover("rg", "ripgrep (rg) not found on PATH");
+  const bwrapPath = discover("bwrap", "bubblewrap (bwrap) not installed on PATH");
+  const socatPath = discover("socat", "socat not installed on PATH");
+  return rg && bwrapPath && socatPath
+    ? { programs: { bwrapPath, socatPath, ripgrep: { command: rg } } }
+    : { errors };
+}
+
 // A fixed, no-I/O workload used only to prove that Linux can actually start the configured ASRT/bwrap wrapper. ASRT 0.0.80's dependency check verifies binaries, but cannot detect hosts that prohibit the wrapper's user namespace / seccomp setup until a wrapped process starts. This command has no arguments, performs no writes, and makes no network request. It is passed through the SAME initialized ASRT config that tools use (no custom config), so a successful probe proves the real wrapper path rather than merely the presence of `bwrap` on PATH.
 const ASRT_LINUX_RUNTIME_PROBE_COMMAND = "true";
 const ASRT_LINUX_RUNTIME_PROBE_TIMEOUT_MS = 5_000;
@@ -2505,11 +2526,13 @@ async function initializeSandboxRuntime(
   try {
     if (process.platform === "linux") {
       // Capture one host PATH result for the boot probe and every subsequent wrapper.
-      try {
-        session.linuxPrograms = { bwrapPath: resolveHostProgram("bwrap"), socatPath: resolveHostProgram("socat") };
-      } catch (cause) {
-        throw new AsrtLinuxRuntimeProbeError("required Linux sandbox program is unavailable", { cause });
+      const result = discoverLinuxWrapperPrograms();
+      if ("errors" in result) {
+        throw new AsrtLinuxRuntimeProbeError("required Linux sandbox program is unavailable", {
+          cause: new Error(result.errors.join("\n")),
+        });
       }
+      session.linuxPrograms = result.programs;
     }
     useAppOwnedSandboxTempRoot();
     _baseReadDenyEvidence = await gatherWindowsReadDenyEvidence(trustedSettings);
@@ -2578,6 +2601,18 @@ export async function checkAsrtDependencies(): Promise<{
     return mod.checkWindowsDependenciesAsync({ srtWin });
   }
   const SandboxManager = await loadSandboxManager();
+  if (process.platform === "linux" && SandboxManager.isSupportedPlatform()) {
+    const result = discoverLinuxWrapperPrograms();
+    if ("errors" in result) return { errors: result.errors, warnings: [] };
+    const [{ checkLinuxDependencies }, { getApplySeccompBinaryPathAsync }] = await Promise.all([
+      import("@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js"),
+      import("@anthropic-ai/sandbox-runtime/dist/sandbox/generate-seccomp-filter.js"),
+    ]);
+    const { bwrapPath, socatPath } = result.programs;
+    const applyPath = getVendoredApplySeccompPath();
+    await getApplySeccompBinaryPathAsync(applyPath);
+    return checkLinuxDependencies({ bwrapPath, socatPath, seccompConfig: { applyPath } });
+  }
   return SandboxManager.checkDependenciesAsync();
 }
 

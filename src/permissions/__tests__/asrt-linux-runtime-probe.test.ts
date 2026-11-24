@@ -32,11 +32,11 @@ useVerifiedAveHomePrivacy();
 vi.mock("node:path", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDrivePath(await original()));
 vi.mock("node:fs", async original => {
   const fs = (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDriveFs(await original());
-  const isLocalHelper = (path: unknown) => path === "/usr/local/bin/bwrap" || path === "/usr/local/bin/socat";
+  const isLocalHelper = (path: unknown) => path === "/usr/local/bin/bwrap" || path === "/usr/local/bin/socat" || path === "/usr/local/bin/rg";
   return {
     ...fs,
     statSync: (path: unknown, ...args: unknown[]) => isLocalHelper(path)
-      ? { isFile: () => true } : Reflect.apply(fs.statSync, fs, [path, ...args]),
+      ? { isFile: () => path !== h.missingHelper } : Reflect.apply(fs.statSync, fs, [path, ...args]),
     accessSync: (path: unknown, ...args: unknown[]) => {
       if (!isLocalHelper(path)) Reflect.apply(fs.accessSync, fs, [path, ...args]);
     },
@@ -46,6 +46,9 @@ vi.mock("node:module", async original => (await import("../../__tests__/support/
 vi.mock("../windows-stamp-targets.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedStampTargets(await original()));
 
 const h = vi.hoisted(() => ({
+  missingHelper: undefined as string | undefined,
+  checkDependenciesAsync: vi.fn(),
+  checkLinuxDependencies: vi.fn(),
   initialize: vi.fn(),
   openInvocationListener: vi.fn(),
   closeInvocationListener: vi.fn(),
@@ -57,6 +60,8 @@ const h = vi.hoisted(() => ({
 
 vi.mock("@anthropic-ai/sandbox-runtime", () => ({
   SandboxManager: {
+    isSupportedPlatform: () => true,
+    checkDependenciesAsync: h.checkDependenciesAsync,
     setParentProxyRouter: () => undefined,
     initialize: h.initialize,
     openInvocationListener: h.openInvocationListener,
@@ -65,6 +70,15 @@ vi.mock("@anthropic-ai/sandbox-runtime", () => ({
     cleanupAfterCommand: h.cleanupAfterCommand,
     reset: h.reset,
   },
+}));
+
+vi.mock("@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js", async original => ({
+  ...await original<typeof import("@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js")>(),
+  checkLinuxDependencies: h.checkLinuxDependencies,
+}));
+vi.mock("@anthropic-ai/sandbox-runtime/dist/sandbox/generate-seccomp-filter.js", async original => ({
+  ...await original<typeof import("@anthropic-ai/sandbox-runtime/dist/sandbox/generate-seccomp-filter.js")>(),
+  getApplySeccompBinaryPathAsync: async () => undefined,
 }));
 
 vi.mock("node:child_process", async original => ({
@@ -86,6 +100,7 @@ import {
   appOwnedSandboxPrivateRoots,
   aveHomeReadBoundaryCovering,
   buildPerCommandSandboxCustomConfig,
+  checkAsrtDependencies,
   getBuiltinShellReadPolicy,
   getBuiltinShellSessionReadPolicy,
   getDefaultSensitiveReadDenyPaths,
@@ -145,6 +160,9 @@ beforeEach(() => {
   setLocale("en");
   setProcessPlatform("linux");
   vi.stubEnv("PATH", `/usr/local/bin:${process.env.PATH ?? ""}`);
+  h.missingHelper = undefined;
+  h.checkDependenciesAsync.mockResolvedValue({ errors: [], warnings: [] });
+  h.checkLinuxDependencies.mockReturnValue({ errors: [], warnings: ["fixture warning"] });
   h.initialize.mockResolvedValue(undefined);
   h.openInvocationListener.mockResolvedValue({ port: 12345 });
   h.wrapWithSandboxArgv.mockResolvedValue({
@@ -508,12 +526,28 @@ describe("Linux wrap filesystem discovery snapshot", () => {
 });
 
 describe("initializeAsrtSandbox — Linux configured-wrapper runtime probe", () => {
+  it("reports an absent helper before starting the runtime", async () => {
+    vi.stubEnv("PATH", "/usr/local/bin");
+    h.missingHelper = "/usr/local/bin/socat";
+    await expect(checkAsrtDependencies()).resolves.toEqual({
+      errors: ["socat not installed on PATH"], warnings: [],
+    });
+    expect(h.checkDependenciesAsync).not.toHaveBeenCalled();
+    expect(h.checkLinuxDependencies).not.toHaveBeenCalled();
+    expect(h.initialize).not.toHaveBeenCalled();
+  });
+
   it("uses the same pinned local helpers at boot and in a worker wrap with a restricted launcher PATH", async () => {
     const root = mkdtempSync(join(tmpdir(), "asrt-local-helpers-"));
     temporaryRoots.push(root);
     const socketPath = join(root, "bridge.sock");
     writeFileSync(socketPath, "");
-    vi.stubEnv("PATH", "relative:/usr/local/bin:/usr/bin:/bin");
+    vi.stubEnv("PATH", "relative:/usr/local/bin");
+    await expect(checkAsrtDependencies()).resolves.toEqual({ errors: [], warnings: ["fixture warning"] });
+    expect(h.checkDependenciesAsync).not.toHaveBeenCalled();
+    expect(h.checkLinuxDependencies).toHaveBeenCalledWith(expect.objectContaining({
+      bwrapPath: "/usr/local/bin/bwrap", socatPath: "/usr/local/bin/socat",
+    }));
     h.wrapWithSandboxArgv.mockImplementation(async (command: string) => {
       const config = h.initialize.mock.lastCall?.[0] as SandboxRuntimeConfig;
       const wrapped = await wrapCommandWithSandboxLinux({
@@ -525,7 +559,9 @@ describe("initializeAsrtSandbox — Linux configured-wrapper runtime probe", () 
       return { argv: ["/bin/bash", "-c", wrapped], env: { PATH: process.env.PATH } };
     });
     await initializeAsrtSandbox({ allowedDomains: [] });
-    expect(h.initialize.mock.lastCall?.[0]).toMatchObject({ bwrapPath: "/usr/local/bin/bwrap", socatPath: "/usr/local/bin/socat" });
+    expect(h.initialize.mock.lastCall?.[0]).toMatchObject({
+      bwrapPath: "/usr/local/bin/bwrap", socatPath: "/usr/local/bin/socat", ripgrep: { command: "/usr/local/bin/rg" },
+    });
     const probe = h.spawn.mock.lastCall;
     if (!probe) throw new Error("Expected the sandbox boot probe to spawn");
     const [, probeArgs, probeOptions] = probe;
