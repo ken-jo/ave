@@ -280,6 +280,17 @@ describe("StdioTransport — boot sandbox gate undecided (fail closed)", () => {
 });
 
 describe("StdioTransport ASRT wrap — gate ON", () => {
+  it.each([false, true])("refuses a Windows current-drive-relative command with confinement %s", async (confined) => {
+    setProcessPlatform("win32");
+    gateActive = confined;
+    const command = "\\Tools\\server.exe";
+    const gov = governanceWithPolicy(buildPolicy([stdioApproval("relative", command)]));
+    const client = new McpClient({ id: "relative", transport: "stdio", command }, gov, new ToolRegistry(), unusedNetworkFetch);
+    await expect(client.connect()).rejects.toThrow(/mcp-command-relative-path: Use an absolute path or a program name on PATH/u);
+    expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
   it("refuses a relative command with guidance before wrapping the server", async () => {
     gateActive = true;
     const command = "./server";

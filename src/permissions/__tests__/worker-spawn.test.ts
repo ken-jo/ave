@@ -179,9 +179,13 @@ function setEnvForTest(values: Record<string, string | undefined>): () => void {
 
 const REAL_PLATFORM = process.platform;
 
+function workerCommand(): string {
+  return process.platform === "win32" ? "C:/opt/worker.exe" : "/opt/worker";
+}
+
 type OutputOnlySpec = SpawnWorkerSpec & { readonly control: "output-only-v1" };
 function workerOptions(overrides: Partial<Omit<SpawnWorkerSpec, "control">> = {}): OutputOnlySpec {
-  return { pluginId: "local-indexer", workerId: "embed", command: "/opt/worker", control: "output-only-v1", ...overrides };
+  return { pluginId: "local-indexer", workerId: "embed", command: workerCommand(), control: "output-only-v1", ...overrides };
 }
 
 // The control socket lives under the Ave home, and a Unix socket path is limited to 103 bytes on macOS. The per-file test home sits under `$HOME/.ave/test-tmp/<run>/<file>`, so with a HOME of a little over 20 bytes the longest plugin/worker pair here passes the limit and every gate-ON case fails with the length error instead of testing what it names. These cases run in a short Ave home of their own; `/tmp` rather than `os.tmpdir`, which on macOS is itself about 50 bytes. The guard allows it: it is outside the account's `~/.ave`.
@@ -352,17 +356,17 @@ describe("spawnWorker — gate OFF (default)", () => {
     await expect(spawnWorker({
       pluginId: "local-indexer",
       workerId: "embed:primary",
-      command: "/opt/worker", control: "output-only-v1" as const,
+      command: workerCommand(), control: "output-only-v1" as const,
     })).rejects.toThrow(/invalid workerId/);
     await expect(spawnWorker({
       pluginId: "local-indexer",
       workerId: "embed?primary",
-      command: "/opt/worker", control: "output-only-v1" as const,
+      command: workerCommand(), control: "output-only-v1" as const,
     })).rejects.toThrow(/invalid workerId/);
     await expect(spawnWorker({
       pluginId: "local-indexer",
       workerId: "Embed",
-      command: "/opt/worker", control: "output-only-v1" as const,
+      command: workerCommand(), control: "output-only-v1" as const,
     })).rejects.toThrow(/invalid workerId/);
     expect(spawnMock).not.toHaveBeenCalled();
   });
@@ -405,7 +409,7 @@ describe("spawnWorker — gate OFF (default)", () => {
     // Plain spawn with the EXACT command + args, shell:false. stdin is piped: it is the host's liveness pipe, the one EOF a worker of a crashed or killed host ever gets.
     expect(spawnMock).toHaveBeenCalledTimes(1);
     const [cmd, args, opts] = spawnMock.mock.calls[0] as [string, string[], { shell: boolean; stdio: unknown[] }];
-    expect(cmd).toBe("/opt/worker");
+    expect(cmd).toBe(workerCommand());
     expect(args).toEqual(["--serve"]);
     expect(opts.shell).toBe(false);
     expect(opts.stdio).toEqual(["pipe", "pipe", "pipe"]);
@@ -432,6 +436,16 @@ describe("spawnWorker — gate OFF (default)", () => {
 // Gate ON (macOS) — wrapped spawn + state directory + reviewer; no socket on any platform
 
 describe("spawnWorker — gate ON (macOS)", () => {
+  it.each([false, true])("refuses a Windows current-drive-relative command with confinement %s", async (confined) => {
+    setProcessPlatform("win32");
+    gateActive = confined;
+    await expect(spawnWorker(workerOptions({ command: "\\Tools\\worker.exe", stateDirectory: true })))
+      .rejects.toThrow(/use an absolute path or a program name on PATH/iu);
+    expect(mkdirMock).not.toHaveBeenCalled();
+    expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
   it("refuses a relative command with guidance before allocating or wrapping a worker", async () => {
     setProcessPlatform("darwin");
     gateActive = true;
@@ -667,7 +681,7 @@ describe("spawnWorker — gate ON (linux)", () => {
     wrapWorkerCommandMock.mockResolvedValueOnce({ argv: ["/bin/bash", "-c", "wrapped"], env: { ...process.env } });
     const child = new StubWorkerChild();
     spawnMock.mockReturnValueOnce(child);
-    const worker = await spawnWorker({ pluginId: "sandbox-candidate", workerId: "index", command: "/opt/worker", control: "output-only-v1" });
+    const worker = await spawnWorker({ pluginId: "sandbox-candidate", workerId: "index", command: workerCommand(), control: "output-only-v1" });
     let completed = false;
     const waiting = waitForPluginWorkersStopped("sandbox-candidate").then(() => { completed = true; });
     worker.stop();
@@ -827,7 +841,7 @@ describe("spawnWorker — idempotent any-exit cleanup", () => {
   it("drains trailing output after process exit before publishing completion", async () => {
     const child = new StubWorkerChild();
     spawnMock.mockReturnValueOnce(child);
-    const worker = await spawnWorker({ pluginId: "local-indexer", workerId: "drain", command: "/opt/worker", control: "output-only-v1" as const });
+    const worker = await spawnWorker({ pluginId: "local-indexer", workerId: "drain", command: workerCommand(), control: "output-only-v1" as const });
     const events: unknown[] = [];
     worker.onStdout((chunk) => events.push(["stdout", chunk]));
     worker.onStderr((chunk) => events.push(["stderr", chunk]));
@@ -853,7 +867,7 @@ describe("spawnWorker — idempotent any-exit cleanup", () => {
   it("logs a live output listener that throws, keeps the worker and still delivers to the other listeners", async () => {
     const child = new StubWorkerChild();
     spawnMock.mockReturnValueOnce(child);
-    const worker = await spawnWorker({ pluginId: "local-indexer", workerId: "throwing", command: "/opt/worker", control: "output-only-v1" as const });
+    const worker = await spawnWorker({ pluginId: "local-indexer", workerId: "throwing", command: workerCommand(), control: "output-only-v1" as const });
     const seen: string[] = [];
     worker.onStdout(() => {
       throw new Error("listener bug");
@@ -870,7 +884,7 @@ describe("spawnWorker — idempotent any-exit cleanup", () => {
   it("stops and clears both output queues when a replay listener throws", async () => {
     const child = new StubWorkerChild();
     spawnMock.mockReturnValueOnce(child);
-    const worker = await spawnWorker({ pluginId: "local-indexer", workerId: "replay", command: "/opt/worker", control: "output-only-v1" as const });
+    const worker = await spawnWorker({ pluginId: "local-indexer", workerId: "replay", command: workerCommand(), control: "output-only-v1" as const });
     child.stdout.write("first");
     child.stdout.write("second");
     child.stderr.write("warning");
@@ -887,7 +901,7 @@ describe("spawnWorker — idempotent any-exit cleanup", () => {
   it.each([null, undefined, 0, ""])("retains a falsy replay failure (%s)", async (failure) => {
     const child = new StubWorkerChild();
     spawnMock.mockReturnValueOnce(child);
-    const worker = await spawnWorker({ pluginId: "local-indexer", workerId: "falsy-replay", command: "/opt/worker", control: "output-only-v1" as const });
+    const worker = await spawnWorker({ pluginId: "local-indexer", workerId: "falsy-replay", command: workerCommand(), control: "output-only-v1" as const });
     child.stdout.write("captured");
     const caught = (run: () => void) => {
       try {
@@ -1014,7 +1028,7 @@ describe("spawnWorker — idempotent any-exit cleanup", () => {
       },
     });
     const reply = await dispatcher.handle(hostApiRequest("spawnWorker", [{
-      workerId: "embed", command: "/opt/worker", control: "output-only-v1",
+      workerId: "embed", command: workerCommand(), control: "output-only-v1",
     }]));
     expect(() => settleHostApiReply(reply)).toThrow(expect.objectContaining({
       code: "host-internal", message: "Host request failed.",

@@ -4,6 +4,7 @@ vi.mock("node:fs", async original => (await import("../../../__tests__/support/s
 
 /** Exercise service marshalling through real child and host components, including bytes that cannot survive UTF-8. */
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { setProcessPlatform } from "../../../__tests__/support/process-platform.js";
 import { PassThrough, Writable } from "node:stream";
 import { registerWorkerOutputFlow, type WorkerOutputFlow } from "../../../permissions/worker-flow.js";
 import { frameMessage } from "../../../mcp/stdio-framing.js";
@@ -1034,7 +1035,7 @@ describe("spawnWorker crosses as an id, never as a live handle", () => {
     const handle = outputOnly(await harness.child.hostApi.spawnWorker!({
       workerId: "short-lived",
       control: "output-only-v1",
-      command: "/bin/true",
+      command: "true",
     }));
     const stdout: string[] = [];
     const stderr: string[] = [];
@@ -1070,7 +1071,7 @@ describe("spawnWorker crosses as an id, never as a live handle", () => {
     await expect(harness.child.hostApi.spawnWorker!({
       workerId: "noisy-startup",
       control: "output-only-v1",
-      command: "/bin/true",
+      command: "true",
     })).rejects.toMatchObject({ code: "payload-too-large" });
     expect(worker.stopped()).toBe(1);
     expect(harness.host.openSubscriptionCount).toBe(0);
@@ -1083,7 +1084,7 @@ describe("spawnWorker crosses as an id, never as a live handle", () => {
     const handle = outputOnly(await harness.child.hostApi.spawnWorker!({
       workerId: "unlistened-after-reply",
       control: "output-only-v1",
-      command: "/bin/true",
+      command: "true",
     }));
     const exits: Array<{ code: number | null; signal: NodeJS.Signals | null }> = [];
     handle.onExit((info) => exits.push(info));
@@ -1119,7 +1120,7 @@ describe("spawnWorker crosses as an id, never as a live handle", () => {
       spawnWorker: async () => { throw new WorkerAlreadyRunningError(PLUGIN_ID, "busy"); },
     });
     const pending = harness.child.hostApi.spawnWorker!({
-      workerId: "busy", control: "output-only-v1", command: "/bin/true",
+      workerId: "busy", control: "output-only-v1", command: "true",
     });
     await expect(pending).rejects.toBeInstanceOf(PluginHostApiError);
     await expect(pending).rejects.toMatchObject({
@@ -1143,6 +1144,26 @@ describe("spawnWorker crosses as an id, never as a live handle", () => {
     expect(spawnWorker).not.toHaveBeenCalled();
   });
 
+  it("rejects a Windows current-drive-relative worker command before dispatch", async () => {
+    const spawnWorker = vi.fn(async () => makeFakeWorker());
+    const harness = await createServiceHarness({ spawnWorker });
+    const { hostApi } = harness.child;
+    if (!hostApi.spawnWorker) throw new Error("Worker API is unavailable in the fixture");
+    const platform = process.platform;
+    setProcessPlatform("win32");
+    try {
+      await expect(hostApi.spawnWorker({
+        workerId: "indexer", control: "output-only-v1", command: "\\Tools\\worker.exe",
+      })).rejects.toMatchObject({
+        code: "argument-marshalling-rejected",
+        message: expect.stringContaining("Use an absolute path or a program name on PATH"),
+      });
+      expect(spawnWorker).not.toHaveBeenCalled();
+    } finally {
+      setProcessPlatform(platform);
+    }
+  });
+
   it("releases the host handle when worker listener setup fails", async () => {
     const worker = makeFakeWorker();
     const brokenWorker: SpawnedPluginWorker = {
@@ -1160,7 +1181,7 @@ describe("spawnWorker crosses as an id, never as a live handle", () => {
     await expect(harness.child.hostApi.spawnWorker!({
       workerId: "listener-setup-failure",
       control: "output-only-v1",
-      command: "/bin/true",
+      command: "true",
     })).rejects.toMatchObject({ code: "host-internal" });
     expect(worker.stopped()).toBe(1);
     expect(harness.host.openSubscriptionCount).toBe(0);
@@ -1176,7 +1197,7 @@ describe("spawnWorker crosses as an id, never as a live handle", () => {
       onStderr: () => { throw new Error("listener setup failed"); },
     } : worker });
     for (let attempt = 0; attempt < 10; attempt += 1) {
-      await expect(harness.child.hostApi.spawnWorker!({ workerId: "rejected", control: "output-only-v1", command: "/bin/true" })).rejects.toMatchObject({ code: "host-internal" });
+      await expect(harness.child.hostApi.spawnWorker!({ workerId: "rejected", control: "output-only-v1", command: "true" })).rejects.toMatchObject({ code: "host-internal" });
       const request = harness.requests.at(-1)!;
       expect(harness.child.deliver({ jsonrpc: "2.0", method: "notifications/ai.agent-connector.ave/subscription", params: {
         subscriptionId: `worker_${request.id}`, payload: { kind: "stdout", chunk: "late" },
@@ -1185,7 +1206,7 @@ describe("spawnWorker crosses as an id, never as a live handle", () => {
       expect(harness.host.openSubscriptionCount).toBe(0);
     }
     rejected = false;
-    const handle = outputOnly(await harness.child.hostApi.spawnWorker!({ workerId: "valid", control: "output-only-v1", command: "/bin/true" }));
+    const handle = outputOnly(await harness.child.hostApi.spawnWorker!({ workerId: "valid", control: "output-only-v1", command: "true" }));
     const stdout: string[] = [];
     handle.onStdout((chunk) => stdout.push(chunk));
     worker.emitStdout("valid output");
@@ -1200,7 +1221,7 @@ describe("spawnWorker crosses as an id, never as a live handle", () => {
       onStdout: (listener) => { listener("first"); listener("second"); },
       onStderr: (listener) => listener("warning"),
     }) });
-    const handle = outputOnly(await harness.child.hostApi.spawnWorker!({ workerId: "throwing-listener", control: "output-only-v1", command: "/bin/true" }));
+    const handle = outputOnly(await harness.child.hostApi.spawnWorker!({ workerId: "throwing-listener", control: "output-only-v1", command: "true" }));
     const failure = new Error("listener failed");
     const listener = vi.fn(() => { throw failure; });
     expect(() => handle.onStdout(listener)).toThrow(failure);
@@ -1222,7 +1243,7 @@ describe("spawnWorker crosses as an id, never as a live handle", () => {
     const handle = outputOnly(await harness.child.hostApi.spawnWorker!({
       workerId: "stopped-before-listening",
       control: "output-only-v1",
-      command: "/bin/true",
+      command: "true",
     }));
 
     handle.stop();
@@ -1241,7 +1262,7 @@ describe("spawnWorker crosses as an id, never as a live handle", () => {
     const handle = outputOnly(await harness.child.hostApi.spawnWorker!({
       workerId: "indexer",
       control: "output-only-v1",
-      command: "/usr/bin/python3",
+      command: "python3",
     }));
     expect(handle.control).toBe("output-only-v1");
     expect(handle.pid).toBe(4242);
@@ -1266,13 +1287,13 @@ describe("spawnWorker crosses as an id, never as a live handle", () => {
     await harness.child.hostApi.spawnWorker!({
       workerId: "indexer",
       control: "output-only-v1",
-      command: "/usr/bin/python3",
+      command: "python3",
       args: ["-u", "worker.py"],
       stateDirectory: true,
     });
     expect(spawnWorker).toHaveBeenCalledWith({
       workerId: "indexer",
-      command: "/usr/bin/python3",
+      command: "python3",
       args: ["-u", "worker.py"],
       control: "output-only-v1",
       stateDirectory: true,
@@ -1295,7 +1316,7 @@ describe("spawnWorker crosses as an id, never as a live handle", () => {
     const handle = outputOnly(await harness.child.hostApi.spawnWorker!({
       workerId: "indexer",
       control: "output-only-v1",
-      command: "/bin/true",
+      command: "true",
     }));
     const exits: { code: number | null; signal: NodeJS.Signals | null }[] = [];
     handle.onExit((info) => exits.push(info));
@@ -1317,7 +1338,7 @@ describe("spawnWorker crosses as an id, never as a live handle", () => {
     const handle = outputOnly(await harness.child.hostApi.spawnWorker!({
       workerId: "indexer",
       control: "output-only-v1",
-      command: "/bin/true",
+      command: "true",
     }));
     handle.stop();
     await settle();
@@ -1329,7 +1350,7 @@ describe("spawnWorker crosses as an id, never as a live handle", () => {
   it("stops the process when the child dies still holding the handle", async () => {
     const worker = makeFakeWorker();
     const harness = await createServiceHarness({ spawnWorker: async () => worker });
-    await harness.child.hostApi.spawnWorker!({ workerId: "indexer", control: "output-only-v1", command: "/bin/true" });
+    await harness.child.hostApi.spawnWorker!({ workerId: "indexer", control: "output-only-v1", command: "true" });
     expect(harness.killChild()).toBe(1);
     expect(worker.stopped()).toBe(1);
   });
@@ -1339,7 +1360,7 @@ describe("spawnWorker crosses as an id, never as a live handle", () => {
     let completeSpawn!: (value: SpawnedPluginWorker) => void;
     const spawn = new Promise<SpawnedPluginWorker>((resolve) => { completeSpawn = resolve; });
     const harness = await createServiceHarness({ spawnWorker: async () => spawn });
-    const pending = harness.child.hostApi.spawnWorker!({ workerId: "indexer", control: "output-only-v1", command: "/bin/true" });
+    const pending = harness.child.hostApi.spawnWorker!({ workerId: "indexer", control: "output-only-v1", command: "true" });
     const reservationCount = () => (harness.host as unknown as { pendingSubscriptionCount: number })
       .pendingSubscriptionCount;
     expect(reservationCount()).toBe(1);
@@ -1359,7 +1380,7 @@ describe("spawnWorker crosses as an id, never as a live handle", () => {
     const handle = outputOnly(await harness.child.hostApi.spawnWorker!({
       workerId: "indexer",
       control: "output-only-v1",
-      command: "/bin/true",
+      command: "true",
     }));
     const stdout: string[] = [];
     handle.onStdout((chunk) => stdout.push(chunk));
@@ -1377,7 +1398,7 @@ describe("spawnWorker crosses as an id, never as a live handle", () => {
       },
     });
     await expect(
-      harness.child.hostApi.spawnWorker!({ workerId: "indexer", control: "output-only-v1", command: "/bin/true" }),
+      harness.child.hostApi.spawnWorker!({ workerId: "indexer", control: "output-only-v1", command: "true" }),
     ).rejects.toMatchObject({ code: "effect-boundary-denied" });
     expect(HOSTAPI_PATH_CONTRACTS.spawnWorker.errors).toContain("effect-boundary-denied");
   });
@@ -1513,7 +1534,7 @@ describe("a worker's relayed output is paced by the child's wire", () => {
         return true;
       },
     });
-    await harness.child.hostApi.spawnWorker!({ workerId: "indexer", control: "output-only-v1", command: "/bin/true" });
+    await harness.child.hostApi.spawnWorker!({ workerId: "indexer", control: "output-only-v1", command: "true" });
     worker.emitStdout("a");
     expect(flow.calls).toEqual([]);
     congested = true;
@@ -1530,7 +1551,7 @@ describe("a worker's relayed output is paced by the child's wire", () => {
     registerWorkerOutputFlow(worker, flow);
     const { wire, release } = stalledWire();
     const harness = await createServiceHarness({ spawnWorker: async () => worker }, MANIFEST, undefined, pacingOf(wire));
-    await harness.child.hostApi.spawnWorker!({ workerId: "indexer", control: "output-only-v1", command: "/bin/true" });
+    await harness.child.hostApi.spawnWorker!({ workerId: "indexer", control: "output-only-v1", command: "true" });
     // A large tool result or two egress responses share the plugin's channel with the worker.
     for (let index = 0; index < 3; index += 1) wire.write("x".repeat(14 * MIB));
     expect(wire.writableLength).toBeGreaterThan(WORKER_RELAY_BACKLOG_BYTES_MAX);
@@ -1547,7 +1568,7 @@ describe("a worker's relayed output is paced by the child's wire", () => {
     registerWorkerOutputFlow(worker, flow);
     const { wire, release, stall } = stalledWire();
     const harness = await createServiceHarness({ spawnWorker: async () => worker }, MANIFEST, undefined, pacingOf(wire));
-    await harness.child.hostApi.spawnWorker!({ workerId: "indexer", control: "output-only-v1", command: "/bin/true" });
+    await harness.child.hostApi.spawnWorker!({ workerId: "indexer", control: "output-only-v1", command: "true" });
     const chunk = "x".repeat(12 * MIB);
     worker.emitStdout(chunk);
     worker.emitStdout(chunk);
@@ -1572,7 +1593,7 @@ describe("a worker's relayed output is paced by the child's wire", () => {
       },
       queue: (notification) => frameMessage(notification).length,
     });
-    await harness.child.hostApi.spawnWorker!({ workerId: "indexer", control: "output-only-v1", command: "/bin/true" });
+    await harness.child.hostApi.spawnWorker!({ workerId: "indexer", control: "output-only-v1", command: "true" });
     const chunk = "x".repeat(12 * MIB);
     worker.emitStdout(chunk);
     worker.emitStdout(chunk);
@@ -1588,7 +1609,7 @@ describe("a worker's relayed output is paced by the child's wire", () => {
     registerWorkerOutputFlow(worker, flow);
     const { wire } = stalledWire();
     const harness = await createServiceHarness({ spawnWorker: async () => worker }, MANIFEST, undefined, pacingOf(wire));
-    await harness.child.hostApi.spawnWorker!({ workerId: "indexer", control: "output-only-v1", command: "/bin/true" });
+    await harness.child.hostApi.spawnWorker!({ workerId: "indexer", control: "output-only-v1", command: "true" });
     // Four mebi-characters of a three-byte character: 12 MiB on the wire, 4 Mi in UTF-16 units.
     const chunk = "\uD55C".repeat(4 * MIB);
     expect(Buffer.byteLength(chunk, "utf8")).toBe(12 * MIB);
@@ -1607,7 +1628,7 @@ describe("a worker's relayed output is paced by the child's wire", () => {
       whenDrained: () => true,
       queue: () => WORKER_RELAY_BACKLOG_BYTES_MAX + 1,
     });
-    await harness.child.hostApi.spawnWorker!({ workerId: "indexer", control: "output-only-v1", command: "/bin/true" });
+    await harness.child.hostApi.spawnWorker!({ workerId: "indexer", control: "output-only-v1", command: "true" });
     worker.emitStderr("x");
     expect(flow.calls).toEqual(["pause", "end:output-overflow"]);
   });
@@ -1647,7 +1668,7 @@ describe("a worker's relayed output is paced by the child's wire", () => {
       end: (reason) => void ends.push(reason),
     });
     const harness = await createServiceHarness({ spawnWorker: async () => worker }, MANIFEST, undefined, pacingOf(wire));
-    await harness.child.hostApi.spawnWorker!({ workerId: "indexer", control: "output-only-v1", command: "/bin/true" });
+    await harness.child.hostApi.spawnWorker!({ workerId: "indexer", control: "output-only-v1", command: "true" });
     pump();
     for (let turn = 0; turn < 2_000 && (produced < 64 || wire.writableLength > 0); turn += 1) await settle();
     expect(produced).toBe(64);
@@ -1666,7 +1687,7 @@ describe("a stdio-control worker relays control traffic, never a socket", () => 
     const handle = stdioControl(await harness.child.hostApi.spawnWorker!({
       workerId: "indexer",
       control: "stdio-control-v1",
-      command: "/usr/bin/python3",
+      command: "python3",
     }));
     const heard: Array<{ method: string; params: unknown }> = [];
     handle.onNotification((method, params) => heard.push({ method, params }));
@@ -1697,7 +1718,7 @@ describe("a stdio-control worker relays control traffic, never a socket", () => 
     const handle = stdioControl(await harness.child.hostApi.spawnWorker!({
       workerId: "indexer",
       control: "stdio-control-v1",
-      command: "/usr/bin/python3",
+      command: "python3",
     }));
     const answered = handle.request("reindex", { path: "/data/a.pdf" });
     await settle();
@@ -1720,7 +1741,7 @@ describe("a stdio-control worker relays control traffic, never a socket", () => 
     const handle = stdioControl(await harness.child.hostApi.spawnWorker!({
       workerId: "indexer",
       control: "stdio-control-v1",
-      command: "/usr/bin/python3",
+      command: "python3",
     }));
     const controller = new AbortController();
     const answered = handle.request("reconcile", undefined, { signal: controller.signal });
@@ -1743,7 +1764,7 @@ describe("a stdio-control worker relays control traffic, never a socket", () => 
     const handle = stdioControl(await harness.child.hostApi.spawnWorker!({
       workerId: "indexer",
       control: "stdio-control-v1",
-      command: "/usr/bin/python3",
+      command: "python3",
     }));
     let release!: () => void;
     handle.onRequest(() => new Promise((resolve) => { release = () => resolve("late"); }));
@@ -1770,7 +1791,7 @@ describe("a stdio-control worker relays control traffic, never a socket", () => 
     stdioControl(await harness.child.hostApi.spawnWorker!({
       workerId: "indexer",
       control: "stdio-control-v1",
-      command: "/usr/bin/python3",
+      command: "python3",
     }));
     const handleId = handleIdOf(harness, "spawnWorker");
     // Only the dispatcher of the plugin that spawned a worker holds its handle: another id reaches no worker.
@@ -1788,7 +1809,7 @@ describe("a stdio-control worker relays control traffic, never a socket", () => 
     const handle = stdioControl(await harness.child.hostApi.spawnWorker!({
       workerId: "indexer",
       control: "stdio-control-v1",
-      command: "/usr/bin/python3",
+      command: "python3",
     }));
     const handleId = handleIdOf(harness, "spawnWorker");
     sendFromChild(harness, handleId, { kind: "request", id: 41, method: "search.bm25" });
@@ -1811,7 +1832,7 @@ describe("a stdio-control worker relays control traffic, never a socket", () => 
     const handle = stdioControl(await harness.child.hostApi.spawnWorker!({
       workerId: "indexer",
       control: "stdio-control-v1",
-      command: "/usr/bin/python3",
+      command: "python3",
     }));
     const handleId = handleIdOf(harness, "spawnWorker");
     const pending = handle.request("reindex", {});
@@ -1827,12 +1848,12 @@ describe("a stdio-control worker relays control traffic, never a socket", () => 
     const harness = await createServiceHarness({ spawnWorker });
     await expect(harness.child.hostApi.spawnWorker!({
       workerId: "indexer",
-      command: "/usr/bin/python3",
+      command: "python3",
     } as unknown as PluginWorkerSpec)).rejects.toMatchObject({ code: "argument-marshalling-rejected" });
     for (const legacy of [{ udsArgName: "--uds" }, { socketPath: "/run/x.sock" }]) {
       await expect(harness.child.hostApi.spawnWorker!({
         workerId: "indexer",
-        command: "/usr/bin/python3",
+        command: "python3",
         control: "stdio-control-v1",
         ...legacy,
       } as unknown as PluginWorkerSpec)).rejects.toMatchObject({ code: "argument-marshalling-rejected" });
@@ -1864,14 +1885,14 @@ describe("a delegated worker cannot reach further than the plugin process itself
     await harness.child.hostApi.spawnWorker!({
       workerId: "indexer",
       control: "output-only-v1",
-      command: "/usr/bin/python3",
+      command: "python3",
       allowReadPaths: [`${PLUGIN_ROOT}/runtime`, PLUGIN_DATA_DIR],
       allowWritePaths: [`${PLUGIN_DATA_DIR}/index`],
     });
     expect(spawnWorker).toHaveBeenCalledWith({
       workerId: "indexer",
       control: "output-only-v1",
-      command: "/usr/bin/python3",
+      command: "python3",
       allowReadPaths: [`${PLUGIN_ROOT}/runtime`, PLUGIN_DATA_DIR],
       allowWritePaths: [`${PLUGIN_DATA_DIR}/index`],
     });
@@ -1887,7 +1908,7 @@ describe("a delegated worker cannot reach further than the plugin process itself
       await harness.child.hostApi.spawnWorker!({
         workerId: "ffmpeg",
         control: "output-only-v1",
-        command: "/usr/bin/ffmpeg",
+        command: "ffmpeg",
         allowReadPaths: [`${PLUGIN_ROOT}/runtime`, `${PLUGIN_DATA_DIR}/link/in.m4a`, WIDENED_READ_ROOT],
         allowWritePaths: [`${PLUGIN_DATA_DIR}/link/segments`, `${PLUGIN_DATA_DIR}/index`],
       });
@@ -1897,7 +1918,7 @@ describe("a delegated worker cannot reach further than the plugin process itself
     expect(spawnWorker).toHaveBeenCalledWith({
       workerId: "ffmpeg",
       control: "output-only-v1",
-      command: "/usr/bin/ffmpeg",
+      command: "ffmpeg",
       allowReadPaths: [PLUGIN_ROOT, WIDENED_READ_ROOT],
       allowWritePaths: [PLUGIN_DATA_DIR],
     });
@@ -1913,7 +1934,7 @@ describe("a delegated worker cannot reach further than the plugin process itself
       await harness.child.hostApi.spawnWorker!({
         workerId: "ffmpeg",
         control: "output-only-v1",
-        command: "/usr/bin/ffmpeg",
+        command: "ffmpeg",
         allowWritePaths: [`${PLUGIN_ROOT}/DATA/work`],
       });
     } finally {
@@ -1922,7 +1943,7 @@ describe("a delegated worker cannot reach further than the plugin process itself
     expect(spawnWorker).toHaveBeenCalledWith({
       workerId: "ffmpeg",
       control: "output-only-v1",
-      command: "/usr/bin/ffmpeg",
+      command: "ffmpeg",
       allowWritePaths: [PLUGIN_DATA_DIR],
     });
   });
@@ -1935,7 +1956,7 @@ describe("a delegated worker cannot reach further than the plugin process itself
       harness.child.hostApi.spawnWorker!({
         workerId: "escape",
         control: "output-only-v1",
-        command: "/bin/sh",
+        command: "sh",
         allowWritePaths: ["/"],
       }),
     ).rejects.toMatchObject({ code: "effect-boundary-denied" });
@@ -1949,7 +1970,7 @@ describe("a delegated worker cannot reach further than the plugin process itself
       harness.child.hostApi.spawnWorker!({
         workerId: "peek",
         control: "output-only-v1",
-        command: "/usr/bin/python3",
+        command: "python3",
         allowReadPaths: ["/etc"],
       }),
     ).rejects.toMatchObject({ code: "effect-boundary-denied" });
@@ -1963,13 +1984,13 @@ describe("a delegated worker cannot reach further than the plugin process itself
     await harness.child.hostApi.spawnWorker!({
       workerId: "indexer",
       control: "output-only-v1",
-      command: `${WIDENED_READ_ROOT}/venv/bin/python`,
+      command: "python",
       allowReadPaths: [`${WIDENED_READ_ROOT}/venv/bin/python`],
     });
     expect(spawnWorker).toHaveBeenCalledWith({
       workerId: "indexer",
       control: "output-only-v1",
-      command: `${WIDENED_READ_ROOT}/venv/bin/python`,
+      command: "python",
       // Windows grants name the envelope root containing the requested path.
       allowReadPaths: [process.platform === "win32" ? WIDENED_READ_ROOT : `${WIDENED_READ_ROOT}/venv/bin/python`],
     });
@@ -1983,7 +2004,7 @@ describe("a delegated worker cannot reach further than the plugin process itself
       harness.child.hostApi.spawnWorker!({
         workerId: "rewrite-runtime",
         control: "output-only-v1",
-        command: "/bin/sh",
+        command: "sh",
         allowWritePaths: [`${WIDENED_READ_ROOT}/venv`],
       }),
     ).rejects.toMatchObject({ code: "effect-boundary-denied" });
@@ -1998,7 +2019,7 @@ describe("a delegated worker cannot reach further than the plugin process itself
       harness.child.hostApi.spawnWorker!({
         workerId: "rewrite-bundle",
         control: "output-only-v1",
-        command: "/bin/sh",
+        command: "sh",
         allowWritePaths: [`${PLUGIN_ROOT}/dist`],
       }),
     ).rejects.toMatchObject({ code: "effect-boundary-denied" });
@@ -2012,7 +2033,7 @@ describe("a delegated worker cannot reach further than the plugin process itself
       harness.child.hostApi.spawnWorker!({
         workerId: "near-miss",
         control: "output-only-v1",
-        command: "/usr/bin/python3",
+        command: "python3",
         allowReadPaths: [`${WIDENED_READ_ROOT}-elsewhere`],
       }),
     ).rejects.toMatchObject({ code: "effect-boundary-denied" });
@@ -2027,7 +2048,7 @@ describe("a delegated worker cannot reach further than the plugin process itself
       harness.child.hostApi.spawnWorker!({
         workerId: "traverse",
         control: "output-only-v1",
-        command: "/bin/sh",
+        command: "sh",
         allowWritePaths: [`${PLUGIN_DATA_DIR}/../../../etc`],
       }),
     ).rejects.toMatchObject({ code: "effect-boundary-denied" });
@@ -2041,7 +2062,7 @@ describe("a delegated worker cannot reach further than the plugin process itself
       harness.child.hostApi.spawnWorker!({
         workerId: "prefix",
         control: "output-only-v1",
-        command: "/bin/sh",
+        command: "sh",
         allowWritePaths: [`${PLUGIN_DATA_DIR}-elsewhere`],
       }),
     ).rejects.toMatchObject({ code: "effect-boundary-denied" });
@@ -2055,7 +2076,7 @@ describe("a delegated worker cannot reach further than the plugin process itself
       harness.child.hostApi.spawnWorker!({
         workerId: "relative",
         control: "output-only-v1",
-        command: "/bin/sh",
+        command: "sh",
         allowWritePaths: ["data"],
       }),
     ).rejects.toMatchObject({ code: "argument-marshalling-rejected" });
@@ -2070,7 +2091,7 @@ describe("a delegated worker cannot reach further than the plugin process itself
       harness.child.hostApi.spawnWorker!({
         workerId: "future",
         control: "output-only-v1",
-        command: "/bin/sh",
+        command: "sh",
         allowNetworkTo: ["*"],
       } as never),
     ).rejects.toMatchObject({ code: "argument-marshalling-rejected" });
@@ -2091,7 +2112,7 @@ describe("a host-side revocation reaches the child", () => {
   it("tells the child when the host releases a registration it still holds", async () => {
     const worker = makeFakeWorker();
     const harness = await createServiceHarness({ spawnWorker: async () => worker });
-    await harness.child.hostApi.spawnWorker!({ workerId: "indexer", control: "output-only-v1", command: "/bin/true" });
+    await harness.child.hostApi.spawnWorker!({ workerId: "indexer", control: "output-only-v1", command: "true" });
     const handleId = handleIdOf(harness, "spawnWorker");
     expect(closures(harness)).toEqual([]);
 
@@ -2108,7 +2129,7 @@ describe("a host-side revocation reaches the child", () => {
     const handle = outputOnly(await harness.child.hostApi.spawnWorker!({
       workerId: "indexer",
       control: "output-only-v1",
-      command: "/bin/true",
+      command: "true",
     }));
     handle.stop();
     await settle();
@@ -2118,7 +2139,7 @@ describe("a host-side revocation reaches the child", () => {
   it("does not write to a child that is already gone", async () => {
     const worker = makeFakeWorker();
     const harness = await createServiceHarness({ spawnWorker: async () => worker });
-    await harness.child.hostApi.spawnWorker!({ workerId: "indexer", control: "output-only-v1", command: "/bin/true" });
+    await harness.child.hostApi.spawnWorker!({ workerId: "indexer", control: "output-only-v1", command: "true" });
     expect(harness.killChild()).toBe(1);
     await settle();
     expect(closures(harness)).toEqual([]);
@@ -2138,7 +2159,7 @@ describe("a host-side revocation reaches the child", () => {
     // Cancellation names a request, never a worker-handle ID.
     const worker = makeFakeWorker();
     const harness = await createServiceHarness({ spawnWorker: async () => worker });
-    await harness.child.hostApi.spawnWorker!({ workerId: "indexer", control: "output-only-v1", command: "/bin/true" });
+    await harness.child.hostApi.spawnWorker!({ workerId: "indexer", control: "output-only-v1", command: "true" });
     const handleId = handleIdOf(harness, "spawnWorker");
     harness.host.handleNotification({
       jsonrpc: "2.0",

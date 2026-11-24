@@ -77,7 +77,15 @@ describe("resolveHostProgram", () => {
     expect(resolveHostProgram("tool.exe", { Path: bin })).toBe(expected());
     expect(findHostProgram("only", { Path: bin })).toBeNull();
     expect(() => resolveHostProgram("C:tool", { Path: bin })).toThrow(/Use an absolute path or a program name on PATH/u);
-    expect(resolveHostProgram("\\Tools\\tool.exe", { Path: bin })).toBe("\\Tools\\tool.exe");
+  });
+
+  it.each(["\\Tools\\tool.exe", "/Tools/tool.exe"])("refuses the current-drive-relative command %s", (command) => {
+    expect(findHostProgram(command, {}, "win32")).toBeNull();
+    expect(() => resolveHostProgram(command, {}, "win32")).toThrow(/Use an absolute path or a program name on PATH/u);
+  });
+
+  it.each(["C:\\Tools\\tool.exe", "C:/Tools/tool.exe", "\\\\server\\share\\tool.exe", "//server/share/tool.exe"])("keeps the fully qualified Windows command %s", (command) => {
+    expect(resolveHostProgram(command, {}, "win32")).toBe(command);
   });
 });
 

@@ -14,13 +14,12 @@ export class HostProgramNotFoundError extends Error {
 
 function isFullyQualified(entry: string, platform: NodeJS.Platform): boolean {
   return platform === "win32"
-    ? /^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+)/u.test(entry)
+    ? /^(?:[A-Za-z]:[\\/]|[\\/]{2}[^\\/]+[\\/][^\\/]+)/u.test(entry)
     : posix.isAbsolute(entry);
 }
 
 export function isRelativeHostProgram(program: string, platform: NodeJS.Platform = process.platform): boolean {
-  const paths = platform === "win32" ? win32 : posix;
-  return !paths.isAbsolute(program) && (/[\\/]/u.test(program) || (platform === "win32" && program.includes(":")));
+  return !isFullyQualified(program, platform) && (/[\\/]/u.test(program) || (platform === "win32" && program.includes(":")));
 }
 
 export function assertHostProgramNotRelative(program: string, platform: NodeJS.Platform = process.platform): void {
@@ -118,9 +117,9 @@ export function findHostProgram(
   fs: ProgramFs = hostFs,
 ): string | null {
   if (program === "" || program.includes("\0")) return null;
-  const paths = platform === "win32" ? win32 : posix;
-  if (paths.isAbsolute(program)) return program;
+  if (isFullyQualified(program, platform)) return program;
   if (isRelativeHostProgram(program, platform)) return null;
+  const paths = platform === "win32" ? win32 : posix;
   // Windows launches only .com and .exe images without a shell; an explicit extension is tried as written first.
   const names = platform === "win32"
     ? [...(win32.extname(program) ? [program] : []), `${program}.com`, `${program}.exe`]
