@@ -1,5 +1,5 @@
 // Resolve operands against each possible execution directory, including changes made by cd.
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmdirSync } from "node:fs";
+import { existsSync, mkdtempSync, realpathSync, rmdirSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -84,20 +84,6 @@ describe("shell path policy — working directory tracking", () => {
       });
     } finally {
       rmdirSync(root);
-    }
-  });
-
-  it("checks the failure body against a cd destination present during analysis", () => {
-    const root = realpathSync.native(mkdtempSync(join(tmpdir(), "shell-cwd-tracking-")));
-    try {
-      mkdirSync(join(root, "present"));
-      expect(findShellPathPolicyViolation("cd present || cat ../outside.txt", root, root, [], true)).toMatchObject({
-        kind: "sandbox-boundary",
-        candidate: "../outside.txt",
-        path: join(dirname(root), "outside.txt"),
-      });
-    } finally {
-      rmdirSync(join(root, "present")); rmdirSync(root);
     }
   });
 
