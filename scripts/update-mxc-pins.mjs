@@ -64,7 +64,6 @@ export async function generateMxcPins({ projectRoot = PROJECT_ROOT, pins, allowD
   if (original.sdk.packages.semver) discoverCode(modules, original.sdk.packages.semver, paths);
   discoverCode(modules, "koffi", paths);
   discoverCode(modules, "node-pty", paths);
-  const sdkVersion = sdkRoot ? JSON.parse(sourceBytes(modules, `${sdkRoot}/package.json`).toString("utf8")).version : undefined;
   result.sdk.files = {};
   result.sdk.packageMetadata = {};
   const observe = (root, relative) => {
@@ -105,12 +104,10 @@ export async function generateMxcPins({ projectRoot = PROJECT_ROOT, pins, allowD
         discoverNativeFiles(modules, sdkRoot + `/bin/${arch}`, entries, new Set([".dll"]));
       }
       result.sdk.architectures[arch] = Object.fromEntries([...entries].sort().map((relative) => [relative, observe(relative.startsWith(addonPrefix) ? addonModules : modules, relative)]));
-      // The staged launcher keeps its own archive anchor; the installed copy is never shipped,
-      // so it is compared only while both come from the same release.
       // A source install normally includes launchers; a reduced install retains the
       // reviewed anchor and cannot replace it with a newly observed value.
       const launcher = `@microsoft/mxc-sdk/bin/${arch}/wxc-exec.exe`;
-      if (sdkVersion === original.version && existsSync(path.join(modules, launcher)) && sha256(sourceBytes(modules, launcher)) !== original.wxcExecSha256[arch]) {
+      if (existsSync(path.join(modules, launcher)) && sha256(sourceBytes(modules, launcher)) !== original.wxcExecSha256[arch]) {
         throw new Error(`Launcher trust anchor mismatch: ${arch}; review the archive and launcher pins explicitly`);
       }
     }

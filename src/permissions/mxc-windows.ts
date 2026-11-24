@@ -13,7 +13,7 @@ import { compileGlobMatcher, globToRegExp } from "../lib/glob-matcher.js";
 import type { SandboxMxcUnavailableReason } from "../shared/sandbox-capability-info.js";
 import MXC_PINS from "./mxc-launcher-pins.json" with { type: "json" };
 
-// The stable MXC configuration schema version every request is written in. The launcher is `@microsoft/mxc-sdk` 1.0.1's, pinned by scripts/fetch-mxc.mjs.
+// The stable MXC configuration schema version every request is written in. The launcher is `@microsoft/mxc-sdk` 1.1.0's, pinned by scripts/fetch-mxc.mjs.
 const MXC_CONFIG_SCHEMA_VERSION = "1.0.0";
 
 // Why MXC cannot carry agent shells on this host. Stable codes, shown in Settings.
@@ -496,7 +496,7 @@ export function rankMxcFilesystem(
   };
 }
 
-// The MXC 1.0.1 one-shot request Ave launches. Only the fields Ave sets.
+// The MXC 1.1.0 one-shot request Ave launches. Only the fields Ave sets.
 export interface MxcContainerRequest {
   readonly version: typeof MXC_CONFIG_SCHEMA_VERSION;
   readonly containment: "processcontainer";

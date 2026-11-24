@@ -3263,7 +3263,7 @@ By owner decision (2026-10-19, proxy-egress PR 9) a Bash or PowerShell tool
 command on Windows runs in its own Microsoft Execution Containers (MXC)
 BaseContainer when local-network access is enabled and the host offers one.
 The shell path uses the MIT-licensed
-`wxc-exec.exe` launcher from `@microsoft/mxc-sdk` 1.0.1 at
+`wxc-exec.exe` launcher from `@microsoft/mxc-sdk` 1.1.0 at
 `<resources>/mxc/<arch>/wxc-exec.exe` (x64, arm64), staged at build time by
 `scripts/fetch-mxc.mjs` against `src/permissions/mxc-launcher-pins.json` (the
 npm tarball's sha512, each launcher's sha256). The extension process primitive

@@ -1,11 +1,11 @@
 {
   "package": "@microsoft/mxc-sdk",
-  "version": "1.0.1",
-  "tarballSha512Base64": "2cP925G5+lQyKzjBVha8uNtVd7XESgDBtgi1yCYYSo9M3xiFyZWtCO4SWPGTk509rdI6nqjyGcZxvEP3t6l8Hg==",
+  "version": "1.1.0",
+  "tarballSha512Base64": "tSOPZ14ddCiXHc4hVNQp5Yi22HSQEfXh58Z4O/tLzERi+23rfRmMrJoxVK5jZYhlll68u4eF/UlQSaXWyUMj4w==",
   "licenseSha256": "d9a1b1e30d633d5732ea18e3cba9538d293ebc53e1a9e4e96ab739e0c5c4f1cb",
   "wxcExecSha256": {
-    "x64": "090f5d1f7bb93104ab08dcd4e8034ef954aeefcdaf6658dde5f7dff4cfc12f3a",
-    "arm64": "91aa4171e8809f33f19622c381116188eab7d8c8cffad231230a31b58146ee77"
+    "x64": "6d466c6b0109bab4bcace6738e11f886d801ea977346db49707488fcbd3afc8a",
+    "arm64": "afbffebc7ba0ef06c6cd24eff0a3792db3e25faca388e4aaca092745ea328fd6"
   },
   "sdk": {
     "versions": {

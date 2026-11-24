@@ -190,7 +190,8 @@ describe("SDK packaging source assertions", () => {
 
   it("keeps runtime-relative SDK and addon paths unpacked and SDK imports external", () => {
     const pkg = JSON.parse(readFileSync("package.json", "utf8"));
-    expect(pkg.dependencies["@microsoft/mxc-sdk"]).toBe(PINS.sdk.versions["@microsoft/mxc-sdk"]);
+    expect(pkg.dependencies["@microsoft/mxc-sdk"]).toBe(PINS.version);
+    expect(PINS.sdk.versions["@microsoft/mxc-sdk"]).toBe(PINS.version);
     for (const rule of ["node_modules/@microsoft/mxc-sdk/**", "node_modules/koffi/**", "node_modules/@koromix/koffi-win32-*/**", "node_modules/node-pty/**"]) expect(pkg.build.asarUnpack).toContain(rule);
     expect(pkg.build.asarUnpack).not.toContain("node_modules/semver/**");
     expect(readFileSync("scripts/lib/main-bundle-externals.mjs", "utf8")).toContain('"@microsoft/mxc-sdk"');
