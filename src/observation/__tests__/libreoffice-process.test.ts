@@ -17,9 +17,12 @@ const javaFixture = vi.hoisted(() => ({ home: undefined as string | undefined, b
 // win32 chmod maps only the read-only attribute, so a 0o400 create reads back as 0o444 (r--r--r--).
 const READ_ONLY_FILE_MODE = process.platform === "win32" ? 0o444 : 0o400;
 
-vi.mock("../../permissions/offline-process-sandbox.js", () => ({ wrapOfflineProcess: vi.fn(async input => ({
-  argv: [input.command, ...input.args], env: input.env, release: vi.fn(),
-})) }));
+vi.mock("../../permissions/offline-process-sandbox.js", async (original) => ({
+  ...await original<typeof import("../../permissions/offline-process-sandbox.js")>(),
+  wrapOfflineProcess: vi.fn<typeof import("../../permissions/offline-process-sandbox.js").wrapOfflineProcess>(async input => ({
+    argv: [input.command, ...input.args], env: input.env, release: vi.fn(),
+  })),
+}));
 vi.mock("../../main/managed-child-processes.js", () => ({ spawnManaged: vi.fn(), forceKillManagedChildProcess: vi.fn() }));
 vi.mock("node:fs/promises", async importOriginal => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
@@ -37,7 +40,7 @@ vi.mock("node:fs/promises", async importOriginal => {
 
 import { LibreOfficeSessionPool, sweepStaleDocumentEngineRuntimes } from "../libreoffice-process.js";
 import { spawnManaged, forceKillManagedChildProcess } from "../../main/managed-child-processes.js";
-import { wrapOfflineProcess } from "../../permissions/offline-process-sandbox.js";
+import { OfflineScanExitUnconfirmedError, wrapOfflineProcess } from "../../permissions/offline-process-sandbox.js";
 import { fakeFixtureAclTransport, installFixtureAclTransport } from "../../__tests__/support/native-executable.js";
 import { _setWindowsAclTransportForTest } from "../../main/windows-acl-host.js";
 
@@ -397,6 +400,32 @@ describe("private conversion process ownership", () => {
     await expect(pool.prepare(installation, "one", "docx", new AbortController().signal)).rejects.toBe(refusal);
     expect(wrapOfflineProcess).toHaveBeenCalledTimes(1);
     expect(spawnManaged).not.toHaveBeenCalled();
+  });
+
+  it("keeps an existing runtime when an aborted preflight has unconfirmed termination", async () => {
+    const controller = new AbortController();
+    await pool.prepare(installation, "one", "docx", controller.signal);
+    const childCount = children.length;
+    const refusal = new OfflineScanExitUnconfirmedError();
+    let scratch: string | undefined;
+    vi.mocked(wrapOfflineProcess).mockImplementationOnce(async input => {
+      scratch = await mkdtemp(join(dirname(input.inputDirectory), ".offline-scan-"));
+      controller.abort(new Error("Stopped during the scan"));
+      throw refusal;
+    });
+    try {
+      await expect(pool.convert(installation, "one", Buffer.from("bytes"), "docx", controller.signal)).rejects.toBe(refusal);
+      expect(children).toHaveLength(childCount);
+      expect(scratch).toBeDefined();
+      if (!scratch) throw new Error("Expected retained scan scratch.");
+      expect((await stat(scratch)).isDirectory()).toBe(true);
+      await expect(pool.releaseSession("one")).rejects.toBe(refusal);
+      expect((await stat(scratch)).isDirectory()).toBe(true);
+    } finally {
+      await pool.dispose().catch(() => {});
+      if (scratch) await rm(dirname(scratch), { recursive: true, force: true });
+      pool = new LibreOfficeSessionPool();
+    }
   });
 
   it("refuses empty and over-budget requests without starting a process", async () => {

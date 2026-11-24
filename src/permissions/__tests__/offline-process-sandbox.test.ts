@@ -7,6 +7,8 @@ import { syncBuiltinESMExports } from "node:module";
 import path, { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { VerifiedDocumentEngineInstallation } from "../../main/document-engine-installation.js";
+import { LibreOfficeSessionPool } from "../../observation/libreoffice-process.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { deferred } from "../../__tests__/support/deferred.js";
@@ -25,7 +27,14 @@ vi.mock("../asrt-sandbox.js", () => ({
 vi.mock("../sandbox-capability.js", () => ({ detectSandboxCapability: vi.fn(() => ({
   kind: "asrt", confidence: "verified", confines: { filesystem: true, process: true, network: true },
 })) }));
-vi.mock("../../main/codex-executable-location.js", () => ({ assertCodexExecutableLocation: vi.fn(async () => {}) }));
+vi.mock("../../main/codex-executable-location.js", () => ({
+  assertCodexExecutableLocation: vi.fn(async () => {}),
+  createPrivateTempDirectory: () => mkdtemp(join(root, "session-")),
+}));
+vi.mock("../../main/windows-job-launcher.js", async (original) => ({
+  ...await original<typeof import("../../main/windows-job-launcher.js")>(),
+  resolveWindowsJobLauncher: () => join(HOST_CWD, "resources", "windows-job", process.arch, "ave-job.exe"),
+}));
 vi.mock("../macos-sandbox-wrap.js", () => ({ hardenMacSandboxGitMetadata: (value: { argv: string[]; env: NodeJS.ProcessEnv }) => value }));
 vi.mock("../linux-sandbox-wrap.js", () => ({ hardenLinuxSandboxWrap: (value: { argv: string[]; env: NodeJS.ProcessEnv }) => value }));
 vi.mock("@anthropic-ai/sandbox-runtime", () => ({ SandboxManager: { getConfig: () => ({
@@ -286,6 +295,47 @@ describe("offline process confinement", () => {
       controller.abort(reason);
       if (await Promise.race([launched.promise.then(() => true), settlement.then(() => false)])) await nativeClose.promise;
       vi.useRealTimers();
+    }
+  });
+
+  it("keeps the session runtime after a scanner exits without a job receipt", async () => {
+    setProcessPlatform("linux");
+    vi.mocked(wrapCommandWithSandboxLinux).mockImplementation(async ({ ripgrepConfig, abortSignal }) => {
+      if (!ripgrepConfig?.run || !abortSignal) throw new Error("Expected the managed scanner.");
+      setProcessPlatform("win32");
+      try {
+        await ripgrepConfig.run(ripgrepConfig.command, [], abortSignal, TOOL_TIMEOUT_POLICY.processTreeKillMs);
+        return LINUX_WRAPPER;
+      } finally {
+        setProcessPlatform("linux");
+      }
+    });
+    const spawn = vi.spyOn(childProcess, "spawn").mockImplementation(() => scanChild("", 1));
+    syncBuiltinESMExports();
+    const installation: VerifiedDocumentEngineInstallation = {
+      root: runtime, executable: join(runtime, "engine"), unopkg: join(runtime, "installer"), version: "fixture",
+      extensionPath: join(runtime, "extension"), extensionSha256: "0".repeat(64),
+      assertCurrent: vi.fn(), verifyBeforeSpawn: vi.fn(async () => {}),
+    };
+    const pool = new LibreOfficeSessionPool();
+    const signal = new AbortController().signal;
+    try {
+      await expect(pool.prepare(installation, "scan-session", "docx", signal)).rejects.toMatchObject({
+        code: "engine-confinement-unavailable", message: "Offline scanner termination was not confirmed.",
+      });
+      expect(spawn).toHaveBeenCalledExactlyOnceWith(expect.any(String),
+        ["--receipt", expect.any(String), "/usr/bin/rg"], expect.any(Object));
+      const receipt = spawn.mock.calls[0]?.[1]?.[1];
+      if (typeof receipt !== "string") throw new Error("Expected a scanner receipt path.");
+      expect(await fs.promises.readFile(receipt, "utf8")).toBe("");
+      await expect(pool.prepare(installation, "scan-session", "docx", signal)).rejects.toMatchObject({
+        code: "engine-confinement-unavailable",
+      });
+      await expect(pool.releaseSession("scan-session")).rejects.toMatchObject({ code: "engine-confinement-unavailable" });
+      expect(await fs.promises.readFile(receipt, "utf8")).toBe("");
+      expect(spawn).toHaveBeenCalledTimes(1);
+    } finally {
+      await pool.dispose().catch(() => {});
     }
   });
 

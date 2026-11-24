@@ -41,7 +41,7 @@ export interface OfflineProcessWrap {
   release(): void;
 }
 
-class OfflineScanExitUnconfirmedError extends TableDocumentError {
+export class OfflineScanExitUnconfirmedError extends TableDocumentError {
   constructor() {
     super("engine-confinement-unavailable", "Offline scanner termination was not confirmed.");
   }

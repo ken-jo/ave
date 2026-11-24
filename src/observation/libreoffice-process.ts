@@ -9,7 +9,7 @@ import { pathToFileURL } from "node:url";
 import type { VerifiedDocumentEngineInstallation } from "../main/document-engine-installation.js";
 import { createPrivateTempDirectory, assertCodexLocations } from "../main/codex-executable-location.js";
 import { forceKillManagedChildProcess, spawnManaged } from "../main/managed-child-processes.js";
-import { wrapOfflineProcess, type OfflineProcessWrap } from "../permissions/offline-process-sandbox.js";
+import { OfflineScanExitUnconfirmedError, wrapOfflineProcess, type OfflineProcessWrap } from "../permissions/offline-process-sandbox.js";
 import { buildSandboxedChildEnv } from "../tools/safe-env.js";
 import { PREVIEW_DOCUMENT_LIMITS } from "../shared/preview-document.js";
 import { readPreviewDocumentInput } from "../tools/preview-document-input.js";
@@ -170,6 +170,7 @@ export async function sweepStaleDocumentEngineRuntimes(root = runtimeTempRoot())
     const pid = await readRuntimeOwner(directory);
     if (pid === undefined || pid === process.pid || processAlive(pid)) continue;
     await endOrphanedProcesses(directory, uid);
+    if ((await readdir(directory)).some(entry => entry.startsWith(".offline-scan-"))) continue;
     await rm(directory, { recursive: true, force: true });
     removed.push(directory);
   }
@@ -199,6 +200,7 @@ interface SessionRuntime {
   resident?: RunningProcess;
   children: Set<RunningProcess>;
   importerReady: boolean;
+  unconfirmedExit?: OfflineScanExitUnconfirmedError;
   javaHome?: string;
 }
 
@@ -329,8 +331,9 @@ export class LibreOfficeSessionPool {
         owner.runtime ??= await this.createRuntime(owner, controller.signal);
         return await operation(owner, owner.runtime, accepted, controller.signal);
       } catch (error) {
-        const cause = error instanceof Error ? error : failure("Document engine conversion failed.");
-        const recoverable = !owner.failure && (signal.aborted
+        const unconfirmedExit = owner.runtime?.unconfirmedExit;
+        const cause = unconfirmedExit ?? (error instanceof Error ? error : failure("Document engine conversion failed."));
+        const recoverable = !unconfirmedExit && !owner.failure && (signal.aborted
           || (cause instanceof TableDocumentError && cause.code === "engine-runtime-unavailable"));
         if (!recoverable && !owner.controller.signal.aborted) {
           owner.failure ??= cause;
@@ -365,6 +368,7 @@ export class LibreOfficeSessionPool {
       await this.stopRuntime(session.runtime);
       await session.tail;
       await this.stopRuntime(session.runtime);
+      if (session.runtime?.unconfirmedExit) throw session.runtime.unconfirmedExit;
       if (session.runtime) await rm(session.runtime.directory, { recursive: true, force: true });
       if (this.sessions.get(sessionId) === session) this.sessions.delete(sessionId);
     })();
@@ -403,7 +407,7 @@ export class LibreOfficeSessionPool {
       return runtime;
     } catch (error) {
       await this.stopRuntime(runtime);
-      await rm(directory, { recursive: true, force: true });
+      if (!runtime.unconfirmedExit) await rm(directory, { recursive: true, force: true });
       throw error;
     }
   }
@@ -472,8 +476,10 @@ export class LibreOfficeSessionPool {
       const pdf = await this.dispatch(session, runtime, source, output, { extension: "pdf", filter: "writer_pdf_Export" }, undefined, signal);
       if (!pdf.subarray(0, 5).equals(Buffer.from("%PDF-"))) throw failure("Document engine readiness probe did not produce a PDF document.");
     } finally {
-      await rm(source, { force: true });
-      await rm(output, { recursive: true, force: true });
+      if (!runtime.unconfirmedExit) {
+        await rm(source, { force: true });
+        await rm(output, { recursive: true, force: true });
+      }
     }
   }
 
@@ -553,7 +559,11 @@ export class LibreOfficeSessionPool {
         }
       });
       return process;
-    } catch (error) { wrapped?.release(); throw error; }
+    } catch (error) {
+      if (error instanceof OfflineScanExitUnconfirmedError) runtime.unconfirmedExit = error;
+      else wrapped?.release();
+      throw error;
+    }
   }
 
   private async run(session: EngineSession, runtime: SessionRuntime, command: string,
@@ -624,8 +634,10 @@ export class LibreOfficeSessionPool {
     } finally {
       monitoring = false;
       await monitor;
-      await rm(source, { force: true });
-      await rm(output, { recursive: true, force: true });
+      if (!runtime.unconfirmedExit) {
+        await rm(source, { force: true });
+        await rm(output, { recursive: true, force: true });
+      }
     }
   }
 
