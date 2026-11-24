@@ -699,7 +699,10 @@ class StagedDownload extends EventEmitter implements ObservedDownload {
     void Promise.resolve(this.stamping).then(async () => {
       const cleanup = this.stampFailed ? "left" : await removeStaged(this.root, this.name, this.stagedFile);
       if (partLeft) this.emit("done", {}, state, "part-left");
-      else if (cleanup === "left") this.emit("done", {}, state, cleanup, this.stampFailed ? "stamp-failed" : "unstamped");
+      else if (cleanup === "left") {
+        if (!this.stampFailed) log.warn("a staged browser download was left in place: it was never identified; the next start removes it");
+        this.emit("done", {}, state, cleanup, this.stampFailed ? "stamp-failed" : "unstamped");
+      }
       else this.emit("done", {}, state, cleanup);
     });
   }

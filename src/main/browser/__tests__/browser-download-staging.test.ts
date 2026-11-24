@@ -19,7 +19,16 @@ const hooks = vi.hoisted(() => ({
   unlinkFault: null as RegExp | null,
   afterLstat: null as ((path: string) => void) | null,
   beforeCopy: null as (() => void) | null,
+  // Every warning the host logs, by message.
+  warnings: [] as string[],
 }));
+vi.mock("../../../lib/logger.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../lib/logger.js")>();
+  return { ...actual, createLogger: (name: string) => {
+    const logger = actual.createLogger(name);
+    return { ...logger, warn: (...args: unknown[]) => { hooks.warnings.push(String(args.at(-1))); (logger.warn as (...rest: unknown[]) => void)(...args); } };
+  } };
+});
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
   const fault = (path: unknown) => {
@@ -113,6 +122,7 @@ beforeEach(() => {
   hooks.unlinkFault = null;
   hooks.afterLstat = null;
   hooks.beforeCopy = null;
+  hooks.warnings = [];
 });
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -857,6 +867,7 @@ describe("what `done` reports when the staged file cannot be removed", () => {
     ["its helper is killed but not seen to end", () => new HeldFileHelperStalledError("/helper", "said nothing for 1 ms", true), "helper-still-running"],
   ] as const;
 
+  const UNSTAMPED_LEFT = "a staged browser download was left in place: it was never identified; the next start removes it";
   // The cleanup `done` reports, with the reason a staged file was left.
   const doneWithReason = (download: Observed) => new Promise<{ state: string; cleanup: string; reason?: string }>((resolve) => {
     download.once("done", (_event, state, cleanup, reason) => resolve({ state, cleanup, ...(reason === undefined ? {} : { reason }) }));
@@ -892,6 +903,7 @@ describe("what `done` reports when the staged file cannot be removed", () => {
     expect(readFileSync(item.path, "utf8")).toBe("written unseen");
     expect(readdirSync(prepared.path)).toEqual([basename(item.path)]);
     expect(stamps.length).toBeLessThanOrEqual(1);
+    expect(hooks.warnings).toContain(UNSTAMPED_LEFT);
   });
 
   it("stamps a staged file that is not there yet at most once in a while, and again once the download completes", async () => {
