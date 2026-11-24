@@ -520,8 +520,8 @@ export function observeManagedProcessGroup(child: ChildProcess) {
     });
   });
   return {
-    wait: (signal: AbortSignal) => raceWithAbort(closed, signal),
-    confirmExit: (stopReason: string) => waitForManagedProcessGroupExit(child, closed, stopReason),
+    wait: (signal?: AbortSignal) => raceWithAbort(closed, signal),
+    confirmExit: (stopReason?: string) => waitForManagedProcessGroupExit(child, closed, stopReason),
   };
 }
 

@@ -28,8 +28,8 @@ const confirmScanner = "if (!confirmed) throw new OfflineScanExitUnconfirmedErro
 const returnScan = "if (scan.ok) return scan.value";
 
 function scannerWaitsForVerdict(source: string): boolean {
-  return appearsInOrder(source, "const child = start(acquired =>", "acquired.once(\"close\"", "observeManagedWindowsJobExit(acquired",
-    "await waitForManagedProcessGroupExit", confirmScanner, returnScan);
+  return appearsInOrder(source, "const child = start(acquired =>", "observeManagedProcessGroup(acquired)", "observeManagedWindowsJobExit(acquired",
+    "await exit.confirmExit", confirmScanner, returnScan);
 }
 
 function relayWatchesExitAndStopsOnFailure(source: string): boolean {
@@ -303,8 +303,8 @@ describe("managed process exit source contracts", () => {
     const observer = section(managed, "export function observeManagedProcessGroup", "export function forceKillManagedChildProcess");
     expect(statements(observer)).toContain(statements(`
       return {
-        wait: (signal: AbortSignal) => raceWithAbort(closed, signal),
-        confirmExit: (stopReason: string) => waitForManagedProcessGroupExit(child, closed, stopReason),
+        wait: (signal?: AbortSignal) => raceWithAbort(closed, signal),
+        confirmExit: (stopReason?: string) => waitForManagedProcessGroupExit(child, closed, stopReason),
       };
     `));
   });
@@ -313,15 +313,21 @@ describe("managed process exit source contracts", () => {
     expect(hook).not.toMatch(/\bspawn\(/u);
     const group = section(hook, "async function runPosixHook", "async function runContainedHook");
     expect(statements(group)).toContain(statements(`
-      if (!await waitForManagedProcessGroupExit(child, closed, stopReason)) {
+      if (!await exit.confirmExit(stopReason)) {
         return input.deny(t("be_scriptHookRunner.terminationUnverified", { code: "hook-termination-unverified" }));
       }
-      const { code, signal } = await closed;
+      const { code, signal } = await exit.wait();
       input.release();
     `));
     expect(group.match(/\binput\.release\(/gu)).toHaveLength(2);
     expect(group).not.toMatch(localTerminationPolicy);
     expect(scanner).not.toMatch(localTerminationPolicy);
+  });
+
+  it("keeps POSIX child close waits in the managed owner", () => {
+    const posixHook = section(hook, "async function runPosixHook", "async function runContainedHook");
+    const localCloseWait = /\.\s*(?:once|on|addListener)\(\s*["']close["']|\bawait\s+closed\b/u;
+    expect([posixHook, scanner].filter(source => localCloseWait.test(source))).toEqual([]);
   });
 
   it("releases the Windows hook wrap and hold through the same cleanup callback", () => {

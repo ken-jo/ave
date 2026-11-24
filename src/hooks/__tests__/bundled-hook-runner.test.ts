@@ -28,10 +28,13 @@ vi.mock("../../main/managed-child-processes.js", async (original) => {
       const [command, argv, options, track, onSpawn] = args;
       return real.spawnManaged(command, argv, { ...options, detached: false }, { ...track, killProcessGroup: false }, onSpawn);
     },
-    waitForManagedProcessGroupExit: async (child: Parameters<typeof real.waitForManagedProcessGroupExit>[0], closed: Promise<unknown>, reason?: string) => {
-      if (HOST_PLATFORM !== "win32") return real.waitForManagedProcessGroupExit(child, closed, reason);
-      await closed;
-      return true;
+    observeManagedProcessGroup: (...args: Parameters<typeof real.observeManagedProcessGroup>) => {
+      const exit = real.observeManagedProcessGroup(...args);
+      if (HOST_PLATFORM !== "win32") return exit;
+      return { ...exit, confirmExit: async () => {
+        await exit.wait();
+        return true;
+      } };
     },
   };
 });

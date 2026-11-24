@@ -6,7 +6,7 @@ import { shellQuote } from "../lib/shell-resolver.js";
 import { noteConfinedProcessesMayRun } from "../lib/confined-process-phase.js";
 import { buildSafeChildEnv } from "../tools/safe-env.js";
 import { runWithCeiling } from "../tools/executor-ceiling.js";
-import { observeManagedWindowsJobExit, spawnManaged, waitForManagedProcessGroupExit } from "../main/managed-child-processes.js";
+import { observeManagedProcessGroup, observeManagedWindowsJobExit, spawnManaged } from "../main/managed-child-processes.js";
 import { resolveWindowsJobLauncher } from "../main/windows-job-launcher.js";
 import { TableDocumentError } from "../tools/table-document-error.js";
 import { assertCodexExecutableLocation } from "../main/codex-executable-location.js";
@@ -56,7 +56,7 @@ async function runOfflineScan(command: string, args: string[], signal: AbortSign
     }, { label: "offline-scanner" }, onSpawn);
   let running: {
     child: ChildProcess;
-    closed: Promise<number | null>;
+    exit: ReturnType<typeof observeManagedProcessGroup>;
     job?: ReturnType<typeof observeManagedWindowsJobExit>;
   } | undefined;
 
@@ -64,24 +64,24 @@ async function runOfflineScan(command: string, args: string[], signal: AbortSign
   const scan = await runWithCeiling(async (stop) => {
     stop.throwIfAborted();
     const child = start(acquired => {
-      const closed = new Promise<number | null>(resolve => acquired.once("close", resolve));
+      const exit = observeManagedProcessGroup(acquired);
       const job = jobReceipt === undefined ? undefined : observeManagedWindowsJobExit(acquired, jobReceipt);
-      running = { child: acquired, closed, job };
+      running = { child: acquired, exit, job };
     });
-    const closed = running?.closed;
-    if (!closed) throw new Error("Offline scanner exit is unowned.");
+    const exit = running?.exit;
+    if (!exit) throw new Error("Offline scanner exit is unowned.");
     child.stdin?.on("error", () => {});
     const failed = new Promise<never>((_resolve, reject) => child.once("error", reject));
     if (!child.stdout || !child.stderr) throw new Error("Offline scanner output is unavailable.");
-    const output = Promise.all([text(child.stdout), text(child.stderr), closed]);
-    const [stdout, stderr, code] = await Promise.race([output, failed]);
+    const output = Promise.all([text(child.stdout), text(child.stderr), exit.wait(stop)]);
+    const [stdout, stderr, { code }] = await Promise.race([output, failed]);
     return { stdout, stderr, code };
   }, timeoutMs, signal, "offline scan");
 
   if (running && (scan.ok || running.child.pid !== undefined)) {
-    const { child, closed, job } = running;
+    const { exit, job } = running;
     const confirmed = job === undefined
-      ? await waitForManagedProcessGroupExit(child, closed, scan.ok ? undefined : "offline scan interrupted")
+      ? await exit.confirmExit(scan.ok ? undefined : "offline scan interrupted")
       : await (scan.ok ? job.completion : job.stop());
     if (!confirmed) throw new OfflineScanExitUnconfirmedError();
   }

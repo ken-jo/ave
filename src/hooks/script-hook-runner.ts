@@ -18,7 +18,7 @@ import {
   assertManagedChildProcessAdmissionOpen,
   forceKillManagedChildProcess,
   spawnManaged,
-  waitForManagedProcessGroupExit,
+  observeManagedProcessGroup,
 } from "../main/managed-child-processes.js";
 import {
   DEFAULT_HOOK_TIMEOUT_MS,
@@ -700,20 +700,18 @@ async function runPosixHook(input: {
   readonly release: () => void;
   readonly outcome: (observed: ObservedHookRun) => ScriptHookInvocationResult;
 }): Promise<ScriptHookInvocationResult> {
-  type Close = { code: number | null; signal?: NodeJS.Signals | null };
-  let owned: { child: ChildProcess; closed: Promise<Close> } | undefined;
+  let owned: { child: ChildProcess; exit: ReturnType<typeof observeManagedProcessGroup> } | undefined;
   let stopReason: string | undefined;
   let fault: string | undefined;
   let cancelled = false;
   let timedOut = false;
   let waitingForGroup = false;
-  let notifyStop = (): void => {};
-  const stopping = new Promise<void>(resolve => { notifyStop = resolve; });
+  const stopping = new AbortController();
   const requestStop = (reason: string): void => {
     if (stopReason !== undefined) return;
     stopReason = reason;
     if (waitingForGroup && owned) void forceKillManagedChildProcess(owned.child, reason);
-    notifyStop();
+    stopping.abort();
   };
   const onAbort = (): void => { cancelled = true; requestStop("hook caller aborted"); };
   input.abortSignal?.addEventListener("abort", onAbort, { once: true });
@@ -724,15 +722,11 @@ async function runPosixHook(input: {
     try {
       input.abortSignal?.throwIfAborted();
       input.start(child => {
-        const closed = new Promise<Close>(resolve => {
-          child.once("close", (code, signal) => resolve({ code, signal }));
-          child.on("error", (error: Error) => {
-            fault ??= `hook process error: ${error.message}`;
-            if (child.pid === undefined) resolve({ code: null });
-            requestStop("hook process error");
-          });
+        owned = { child, exit: observeManagedProcessGroup(child) };
+        child.on("error", (error: Error) => {
+          fault ??= `hook process error: ${error.message}`;
+          requestStop("hook process error");
         });
-        owned = { child, closed };
         if (child.pid !== undefined) input.noteProcessGroup(child.pid);
         if (child.stdout) stdout = captureBounded(child.stdout);
         if (child.stderr) stderr = captureBounded(child.stderr);
@@ -749,7 +743,7 @@ async function runPosixHook(input: {
       input.release();
       return input.deny(cancelled ? "Hook execution cancelled" : fault ?? "Hook launch failed.");
     }
-    const { child, closed } = owned;
+    const { child, exit } = owned;
     if (stopReason === undefined) {
       timer = setTimeout(() => { timedOut = true; requestStop("hook timeout"); }, input.timeoutMs);
       try {
@@ -760,13 +754,15 @@ async function runPosixHook(input: {
         requestStop("hook stdin write failed");
       }
     }
-    await Promise.race([closed, stopping]);
+    await exit.wait(stopping.signal).catch((error: unknown) => {
+      if (!stopping.signal.aborted) throw error;
+    });
     clearTimeout(timer);
     waitingForGroup = true;
-    if (!await waitForManagedProcessGroupExit(child, closed, stopReason)) {
+    if (!await exit.confirmExit(stopReason)) {
       return input.deny(t("be_scriptHookRunner.terminationUnverified", { code: "hook-termination-unverified" }));
     }
-    const { code, signal } = await closed;
+    const { code, signal } = await exit.wait();
     input.release();
     if (fault) return input.deny(fault);
     return input.outcome({ code, signal, cancelled, timedOut, stdout: stdout?.text() ?? "", stderr: stderr?.text() ?? "",
