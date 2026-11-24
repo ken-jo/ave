@@ -791,7 +791,7 @@ try {
   writeFileSync(join(from, "a"), "staged a");
   let result = answered(["--dir-rename", ...held(from), "a", ...held(to), "report.pdf", "--expect", tokenOf(join(from, "a"))], "c");
   assert.equal(result.code, 0, result.stderr);
-  assert.deepEqual(result.lines, ["ready", "committed"]);
+  assert.deepEqual(result.lines, ["ready", `published ${tokenOf(join(to, "report.pdf"))}`, "committed"]);
   assert.equal(readFileSync(join(to, "report.pdf"), "utf8"), "staged a");
 
   writeFileSync(join(from, "b"), "staged b");
@@ -847,7 +847,7 @@ try {
   const [, ready, writing, ...outcome] = copied.output.split(/\r?\n/u).filter(Boolean);
   assert.equal(ready, "ready");
   assert.match(writing, /^writing \d+:[0-9a-f]{32}:creation:[1-9]\d*$/u);
-  assert.deepEqual(outcome, ["progress 8", "copied", "committed"]);
+  assert.deepEqual(outcome, ["progress 8", "copied", `published ${tokenOf(join(to, "copied.pdf"))}`, "committed"]);
   assert.equal(readFileSync(join(to, "copied.pdf"), "utf8"), "staged b");
   assert.ok(!existsSync(join(to, ".0123.part")));
 
