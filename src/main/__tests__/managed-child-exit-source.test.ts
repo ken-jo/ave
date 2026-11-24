@@ -635,6 +635,47 @@ describe("managed child receipts", () => {
     await abandonManagedLaunch(next);
   });
 
+  it("lets an ancestor record a path containing one its live descendant recorded", async () => {
+    const directory = join(tmpdir(), `ave-managed-descendant-${process.pid}-${Date.now()}`);
+    const ancestor = createManagedResources();
+    const descendant = createManagedResources(ancestor);
+    recordManagedPaths(descendant, { path: join(directory, "x", "y"), recursive: true });
+    recordManagedPaths(ancestor, { path: join(directory, "x"), recursive: true });
+    await abandonManagedLaunch(descendant);
+    await abandonManagedLaunch(ancestor);
+  });
+
+  it("keeps a path refused after its handle's release failed, until the retry succeeds", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "ave-managed-failed-release-"));
+    try {
+      const kept = join(directory, "kept");
+      mkdirSync(kept);
+      writeFileSync(join(kept, "file"), "x");
+      const resources = createManagedResources();
+      // A directory recorded without recursive makes the owner's removal fail.
+      recordManagedPaths(resources, { path: kept });
+      await expect(abandonManagedLaunch(resources)).rejects.toThrow();
+      expect(() => recordManagedPaths(createManagedResources(), { path: kept })).toThrow("another live handle recorded");
+      rmSync(kept, { recursive: true });
+      await abandonManagedLaunch(resources);
+      const next = createManagedResources();
+      recordManagedPaths(next, { path: kept });
+      await abandonManagedLaunch(next);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts a sibling path that only shares a name prefix with another live handle's path", async () => {
+    const directory = join(tmpdir(), `ave-managed-prefix-${process.pid}-${Date.now()}`);
+    const first = createManagedResources();
+    recordManagedPaths(first, { path: join(directory, "a"), recursive: true });
+    const second = createManagedResources();
+    recordManagedPaths(second, { path: join(directory, "ab"), recursive: true });
+    await abandonManagedLaunch(first);
+    await abandonManagedLaunch(second);
+  });
+
   it("issues the never-spawned release only before any child was acquired beneath the handle", async () => {
     const idle = createManagedResources();
     const steps: string[] = [];
