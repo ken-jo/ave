@@ -543,6 +543,8 @@ Known limits, all on the closed side: a path that names the same place by anothe
 
 **The window that is left.** A check and the operation it guards are still two system calls on a path, and for a write git does (a worktree it fills, a ref it updates, a merge) the checks stand before and after the git call, not inside it. One swap is closed outright: git in a stage folder or in `_join` is run with `--git-dir=<the checked registration>` and `--work-tree=<the folder>`, so it never reads the folder's `.git` file, and a link replaced after the check directs nothing. Another process of the same user that swaps a level between them is not defended against: by the owner's decision of 2026-11-21 on cleanup, a swap during the operation is out of scope, since whoever can win it already acts as the same user. The same holds for a deliberate rewrite of the record together with a rename of the run folder to the matching slug (a rename keeps `self`). No native helper holds the directories open.
 
+The ref-storage proof checks the common directory and its `config` file by identity around Git's bounded listing. A user edit in place that preserves the file's identity between the first check and Git's read is an accepted residual.
+
 Only the host reads or writes the record: the name starts with `_`, so it is no stage folder, no binding covers it, and it stays behind the protected-path floor and the sandbox read boundary for every session. It is removed by `release(run, "all")` once the run's folders are gone, except for a folder run whose `_out` remains: there it stays beside `_out`, as its index, and goes when `_out` goes.
 
 Accepted residuals of this design, each failing closed or leaking, never deleting what is not the run's:
