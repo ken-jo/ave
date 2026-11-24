@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, parse, resolve } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -408,11 +408,12 @@ const relink = (stage: string, link: string): void => { rmSync(join(stage, ".git
 const slashed = (path: string, volume: string): string => path.slice(volume.length).replaceAll("\\", "/");
 
 it.each([
-  "missing", "readable", "reftable", "replaced", "over-cap", "timeout", "unreadable", "failed", "truncated", "malformed", "external",
+  "missing", "readable", "unicode-subsection", "malformed-key", "reftable", "replaced", "over-cap", "timeout", "unreadable", "failed", "truncated", "malformed", "external",
 ] as const)("partial release verifies a %s repository config before removing its stage", async (scenario) => {
   const fx = gitFixture();
   const config = join(fx.repo, ".git", "config");
   const saved = join(fx.repo, ".git", "config-saved");
+  const originalConfig = readFileSync(config, "utf8");
   const real = createHostGit({ env: fx.env });
   const limited = createHostGit({ env: fx.env, maxOutputBytes: 16 });
   let releasing = false;
@@ -442,10 +443,18 @@ it.each([
     const record = JSON.parse(readFileSync(join(open.workspace.runRoot, RUN_FILE), "utf8")) as Recorded;
     const admin = record.registrations.s1?.admin;
     if (admin === undefined) throw new Error("expected a stage registration");
-    expect(readFileSync(config, "utf8")).not.toMatch(/refStorage/iu);
+    expect(originalConfig).not.toMatch(/refStorage/iu);
     if (scenario === "missing") renameSync(config, saved);
+    if (scenario === "unicode-subsection") {
+      appendFileSync(config, '[remote "one\u2028two"]\n\turl = example\n');
+      expect(fx.userGit(fx.repo, "config", "--file", config, "--list", "-z")).toContain("remote.one\u2028two.url\nexample\0");
+    }
+    if (scenario === "malformed-key") {
+      appendFileSync(config, '[remote "\u212A\0suffix"]\n\turl = example\n');
+      expect(fx.userGit(fx.repo, "config", "--file", config, "--list", "-z")).toContain("remote.\u212A\nexample\0");
+    }
     releasing = true;
-    const localStore = scenario === "readable" || scenario === "reftable";
+    const localStore = scenario === "readable" || scenario === "unicode-subsection" || scenario === "reftable";
     if (localStore) {
       await handle.provider.release(handle.run, ["s1"]);
       expect([existsSync(stage), existsSync(admin)]).toEqual([false, false]);
@@ -462,6 +471,7 @@ it.each([
       }
     }
   } finally {
+    if (scenario === "unicode-subsection" || scenario === "malformed-key") writeFileSync(config, originalConfig);
     if (existsSync(saved)) {
       rmSync(config, { force: true });
       renameSync(saved, config);

@@ -361,7 +361,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     for (const entry of read.stdout.slice(0, -1).split("\0")) {
       const newline = entry.indexOf("\n");
       const key = newline < 0 ? entry : entry.slice(0, newline);
-      if (!/^[a-z0-9-]+\.(?:.*\.)?[a-z][a-z0-9-]*$/iu.test(key)) return undefined;
+      if (!/^[A-Za-z0-9-]+\.(?:[^\0\n]*\.)?[A-Za-z][A-Za-z0-9-]*$/u.test(key)) return undefined;
       if (key.toLowerCase() !== "extensions.refstorage") continue;
       if (newline < 0) return undefined;
       const value = entry.slice(newline + 1);
