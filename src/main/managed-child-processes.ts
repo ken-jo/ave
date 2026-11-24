@@ -1,9 +1,13 @@
 import { spawn, spawnSync, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { Writable } from "node:stream";
+import { readFile, rm } from "node:fs/promises";
+import { parse, resolve, sep } from "node:path";
 import { win32SystemBinary } from "../shared/windows-system-path.js";
+import { findHostProgram } from "../shared/host-program-path.js";
 import { createLogger } from "../lib/logger.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { errorMessage } from "../shared/error-message.js";
+import { raceWithAbort, sleep } from "../shared/abortable-deadline.js";
 import { runWithCeiling } from "../tools/executor-ceiling.js";
 import { createProcessGroupReaper, type ProcessGroupReaper } from "./process-group-reaper.js";
 
@@ -153,6 +157,7 @@ export function spawnManaged(
   args: ReadonlyArray<string>,
   spawnOptions: SpawnOptions,
   trackOptions: TrackManagedChildProcessOptions = {},
+  onSpawn?: (child: ChildProcess) => void,
 ): ChildProcess {
   const label = trackOptions.label ?? "child-process";
   assertManagedChildProcessAdmissionOpen(label);
@@ -160,12 +165,13 @@ export function spawnManaged(
   // ESLint-style guardrail: callers MUST go through this helper. Direct `spawn()` imports outside of `managed-child-processes.ts` should be flagged by a
   // future lint rule (`no-restricted-imports` allowlisting this module only).
   const child = spawn(command, args, { windowsHide: true, ...spawnOptions });
+  onSpawn?.(child);
   const inferredGroupKill =
     spawnOptions.detached === true && process.platform !== "win32";
-  trackManagedChildProcess(child, {
+  trackChild(child, {
     ...trackOptions,
     killProcessGroup: trackOptions.killProcessGroup ?? inferredGroupKill,
-  });
+  }, undefined, onSpawn !== undefined);
   return child;
 }
 
@@ -180,6 +186,7 @@ function trackChild(
   child: ChildProcess,
   options: TrackManagedChildProcessOptions,
   launchReaper?: ProcessGroupReaper,
+  retainOnRegistrationFailure = false,
 ): () => void {
   if (typeof child.once !== "function" || typeof child.off !== "function") {
     return () => {};
@@ -227,14 +234,14 @@ function trackChild(
   // group and kills it when the host's end of its pipe closes. Disposal releases it: at once when the leader exits with no group left, and
   // otherwise on the disposal poll (processGroupPollMs, 1 s) that first sees the group gone. The one case the reaper could signal the wrong
   // group: the leader exited while descendants remained, the last of them exits, and within that poll interval the pgid is reused and the host
-  // dies. A registration that fails is undone whole: the child is killed, since no owner would end it, and no half-tracked entry is left behind.
+  // dies. A caller that acquired an exit waiter keeps its managed group entry if registration fails.
   if (reaperHeldGroup !== undefined) {
     try {
       const reaper = launchReaper ?? hostDeathReaper();
       reaper.retain(reaperHeldGroup);
       releaseGroup = () => reaper.release(reaperHeldGroup);
     } catch (error) {
-      dispose();
+      if (!retainOnRegistrationFailure) dispose();
       try {
         forceKillProcessTreeSync(child, entry.killProcessGroup, entry.processGroupId);
       } catch (killError) {
@@ -466,6 +473,284 @@ export async function forceKillAndDrainManagedChildProcesses(
   return { killedCount, unresolvedCount: unresolved.length };
 }
 
+/** The owner refused a release: no receipt covers the handle, or something beneath it still lacks a verdict. */
+export class ManagedExitUnconfirmedError extends Error {
+  constructor() {
+    super("Managed exit was not confirmed.");
+    this.name = "ManagedExitUnconfirmedError";
+  }
+}
+
+const RECEIPT = Symbol("managed exit receipt");
+/** Owner-issued only after confirmed whole-tree exit: POSIX group gone, Windows job empty, or every swept PID gone. */
+export type ConfirmedExit = { readonly [RECEIPT]: "confirmed" };
+/** Owner-issued when a Windows relay settles: main's best-effort evidence, weaker than a confirmed exit. */
+export type RelayBestEffortExit = { readonly [RECEIPT]: "relay-best-effort" };
+type ExitReceipt = ConfirmedExit | RelayBestEffortExit;
+type ExitEvidence = ExitReceipt[typeof RECEIPT];
+
+const RESOURCES = Symbol("managed child resources");
+/** Opaque handle to what children acquired under it hold. Only the owner releases it. */
+export type ManagedResources = { readonly [RESOURCES]: true };
+
+type PathToRemove = { readonly path: string; readonly recursive?: boolean };
+
+interface ResourceState {
+  readonly parent?: ResourceState;
+  /** The only receipt kind that acquires under, or releases, this handle. */
+  readonly evidence: ExitEvidence;
+  /** Children in this subtree without an exit verdict. */
+  pending: number;
+  /** Advanced by every acquisition in this subtree; a receipt covers only the generation it saw. */
+  generation: number;
+  readonly steps: (() => unknown)[];
+  readonly paths: PathToRemove[];
+  released: boolean;
+  /** Set before the first release step runs, so a record from inside a step is refused too. */
+  inRelease: boolean;
+  releasing?: Promise<void>;
+}
+
+const resourceStates = new WeakMap<ManagedResources, ResourceState>();
+const exitReceipts = new WeakMap<ExitReceipt, ReadonlyMap<ResourceState, number>>();
+
+function issuedState(resources: ManagedResources): ResourceState {
+  const state = resourceStates.get(resources);
+  if (!state) throw new Error("Managed resources were not issued by the owner.");
+  return state;
+}
+
+function openState(resources: ManagedResources): ResourceState {
+  const state = issuedState(resources);
+  if (state.released) throw new Error("Managed resources were already released.");
+  return state;
+}
+
+// A record during the release would be dropped with the handle instead of removed.
+function recordableState(resources: ManagedResources): ResourceState {
+  const state = openState(resources);
+  if (state.inRelease) throw new Error("Managed resources are being released.");
+  return state;
+}
+
+function lineage(state: ResourceState): ResourceState[] {
+  const chain: ResourceState[] = [];
+  for (let current: ResourceState | undefined = state; current; current = current.parent) chain.push(current);
+  return chain;
+}
+
+function issueResources(evidence: ExitEvidence, parent?: ManagedResources): ManagedResources {
+  const parentState = parent && openState(parent);
+  if (parentState && parentState.evidence !== evidence) throw new Error("Managed resources cannot nest under a different exit evidence.");
+  const resources: ManagedResources = Object.freeze({ [RESOURCES]: true });
+  resourceStates.set(resources, { parent: parentState, evidence, pending: 0, generation: 0, steps: [], paths: [], released: false, inRelease: false });
+  return resources;
+}
+
+/** A handle released only by a confirmed whole-tree exit beneath it. */
+export function createManagedResources(parent?: ManagedResources): ManagedResources {
+  return issueResources("confirmed", parent);
+}
+
+/** A handle for a Windows relay launch, released by the relay settling: main's best-effort baseline, never a confirmed exit. */
+export function createManagedRelayResources(): ManagedResources {
+  return issueResources("relay-best-effort");
+}
+
+/** Registering wrap modules hand their raw teardown to the owner; callers keep only the handle. */
+export function recordManagedCleanup(resources: ManagedResources, ...steps: readonly ((() => unknown) | undefined)[]): void {
+  recordableState(resources).steps.push(...steps.filter((step): step is () => unknown => step !== undefined));
+}
+
+// Folded paths recorded by handles not yet released. An ancestor's release does not release a descendant, so entries drop only on their own release.
+const livePaths = new Map<ResourceState, string[]>();
+
+function foldedPath(full: string): string {
+  return process.platform === "win32" || process.platform === "darwin" ? full.toLowerCase() : full;
+}
+
+function overlaps(left: string, right: string): boolean {
+  const within = (path: string, root: string): boolean => path === root || path.startsWith(root.endsWith(sep) ? root : root + sep);
+  return within(left, right) || within(right, left);
+}
+
+/** Refuses, at the record call, a path equal to, inside or containing one that another live handle recorded. */
+export function recordManagedPaths(resources: ManagedResources, ...paths: readonly PathToRemove[]): void {
+  // Each argument field is read once, resolved against the record-time cwd; fold, check and store use only this snapshot.
+  const entries = paths.map(({ path, recursive }) => {
+    if (typeof path !== "string" || path === "") throw new TypeError("Managed path must be a non-empty string.");
+    if (recursive !== undefined && typeof recursive !== "boolean") throw new TypeError("Managed path recursive must be a boolean.");
+    const full = resolve(path);
+    if (foldedPath(full) === foldedPath(resolve()) || parse(full).root === full) {
+      throw new TypeError("Managed path must not be the working directory or a filesystem root.");
+    }
+    return Object.freeze({ path: full, recursive: recursive ?? false });
+  });
+  const state = recordableState(resources);
+  const folded = entries.map(entry => foldedPath(entry.path));
+  const own = new Set(lineage(state));
+  for (const [other, recorded] of livePaths) {
+    // Only the owner sets lineage, when it mints a child from its parent handle; a record argument cannot claim one.
+    if (other === state || own.has(other) || lineage(other).includes(state)) continue;
+    const shared = folded.find(path => recorded.some(entry => overlaps(path, entry)));
+    if (shared !== undefined) throw new Error(`Managed path ${shared} overlaps a path another live handle recorded.`);
+  }
+  if (folded.length === 0) return;
+  state.paths.push(...entries);
+  livePaths.set(state, [...livePaths.get(state) ?? [], ...folded]);
+}
+
+// Acquisition counts on the handle and every ancestor; the verdict's receipt is bound to the generations it saw.
+function acquireManagedExit<Receipt extends ExitReceipt>(resources: ManagedResources | undefined, kind: Receipt[typeof RECEIPT]): () => Receipt {
+  const state = resources && openState(resources);
+  const chain = state ? lineage(state) : [];
+  if (state && state.evidence !== kind) throw new Error("Managed resources do not accept this exit evidence.");
+  for (const node of chain) {
+    node.pending++;
+    node.generation++;
+  }
+  let receipt: Receipt | undefined;
+  return () => {
+    if (receipt) return receipt;
+    for (const node of chain) node.pending--;
+    receipt = Object.freeze({ [RECEIPT]: kind }) as Receipt;
+    exitReceipts.set(receipt, new Map(chain.map(node => [node, node.generation])));
+    return receipt;
+  };
+}
+
+function runRecordedRelease(state: ResourceState): Promise<void> {
+  if (state.releasing) return state.releasing;
+  // A release started from the handle's own synchronous first step, before `releasing` is assigned.
+  if (state.inRelease) return Promise.reject(new Error("Managed resources are being released."));
+  state.inRelease = true;
+  state.releasing = (async () => {
+    // Steps are independent: every one runs, and only the failed ones stay recorded for the next release.
+    const failures: unknown[] = [];
+    for (const step of state.steps.splice(0)) {
+      try {
+        // A synchronous step runs in the same turn, as before.
+        const result = step();
+        if (result instanceof Promise) await result;
+      } catch (error) {
+        failures.push(error);
+        state.steps.push(step);
+      }
+    }
+    for (const entry of state.paths.splice(0)) {
+      try {
+        await rm(entry.path, { force: true, recursive: entry.recursive ?? false });
+      } catch (error) {
+        failures.push(error);
+        state.paths.push(entry);
+      }
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Managed resource release failed.");
+    state.released = true;
+    livePaths.delete(state);
+  })().finally(() => {
+    state.inRelease = false;
+    state.releasing = undefined;
+  });
+  return state.releasing;
+}
+
+/** Release with the receipt of a child acquired under this handle or an ancestor, once that node has no child without a verdict. */
+export async function releaseManagedResources(resources: ManagedResources, receipt: ExitReceipt): Promise<void> {
+  const state = issuedState(resources);
+  if (state.released) return;
+  const generations = exitReceipts.get(receipt);
+  const covering = generations && lineage(state).find(node => generations.has(node));
+  if (!covering || covering.evidence !== receipt[RECEIPT] || covering.generation !== generations.get(covering) || covering.pending !== 0) {
+    throw new ManagedExitUnconfirmedError();
+  }
+  await runRecordedRelease(state);
+}
+
+/** The owner's never-spawned receipt, for a preparation failure: no child was ever acquired under this handle or beneath it. */
+export async function abandonManagedLaunch(resources: ManagedResources): Promise<void> {
+  const state = issuedState(resources);
+  if (state.released) return;
+  if (state.generation !== 0) throw new ManagedExitUnconfirmedError();
+  await runRecordedRelease(state);
+}
+
+export function observeManagedWindowsJobExit(child: ChildProcess, receiptPath: string, resources: ManagedResources) {
+  const recordExit = acquireManagedExit<ConfirmedExit>(resources, "confirmed");
+  // The native owner bounds the job-empty query and publishes the receipt before it exits.
+  const completion = new Promise<ConfirmedExit | undefined>(resolve => {
+    const removeListeners = (): void => {
+      child.off("exit", onExit);
+      child.off("close", onExit);
+      child.off("error", onError);
+    };
+    const onExit = (): void => {
+      removeListeners();
+      void readFile(receiptPath, "utf8").then(receipt => resolve(receipt === "0" ? recordExit() : undefined), () => resolve(undefined));
+    };
+    const onError = (): void => {
+      removeListeners();
+      resolve(child.pid === undefined ? recordExit() : undefined);
+    };
+    child.once("exit", onExit);
+    child.once("close", onExit);
+    child.once("error", onError);
+  });
+  return {
+    completion,
+    stop: () => {
+      child.stdin?.destroy();
+      return completion;
+    },
+  };
+}
+
+async function waitForManagedProcessGroupExit(child: ChildProcess, closed: Promise<unknown>, stopReason?: string): Promise<boolean> {
+  const pid = child.pid;
+  if (pid !== undefined && stopReason !== undefined) void forceKillManagedChildProcess(child, stopReason);
+  const result = await runWithCeiling(async signal => {
+    await raceWithAbort(closed, signal);
+    while (pid !== undefined && processExists(-pid)) await sleep(TOOL_TIMEOUT_POLICY.processGroupExitPollMs, signal);
+  }, PROCESS_TREE_KILL_TIMEOUT_MS, undefined, "managed process group termination");
+  return result.ok;
+}
+
+export function observeManagedProcessGroup(child: ChildProcess, resources?: ManagedResources) {
+  const recordExit = acquireManagedExit<ConfirmedExit>(resources, "confirmed");
+  const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null; error?: Error }>(resolve => {
+    child.once("close", (code, signal) => resolve({ code, signal }));
+    child.once("error", error => {
+      if (child.pid === undefined) resolve({ code: null, signal: null, error });
+    });
+  });
+  return {
+    wait: (signal?: AbortSignal) => raceWithAbort(closed, signal),
+    confirmExit: async (stopReason?: string) => await waitForManagedProcessGroupExit(child, closed, stopReason) ? recordExit() : undefined,
+  };
+}
+
+// Relay settlement is main's Windows evidence, so it gets the weaker receipt kind. Native job-empty receipts are separate.
+export function observeManagedWindowsRelayExit(child: ChildProcess, resources: ManagedResources): Promise<RelayBestEffortExit> {
+  const recordExit = acquireManagedExit<RelayBestEffortExit>(resources, "relay-best-effort");
+  return new Promise(resolve => {
+    const onExit = (): void => {
+      child.off("exit", onExit);
+      child.off("close", onExit);
+      child.off("error", onError);
+      resolve(recordExit());
+    };
+    const onError = (): void => { if (child.pid === undefined) onExit(); };
+    if (child.exitCode != null || child.signalCode != null) {
+      onExit();
+    } else {
+      child.once("exit", onExit);
+      child.once("close", onExit);
+      child.on("error", onError);
+    }
+  });
+}
+
 // Await Windows tree termination before releasing owned resources; cancellation has the same bounded tree-kill semantics as shutdown.
 export function forceKillManagedChildProcess(child: ChildProcess, reason: string): void | Promise<void> {
   const pending = pendingTreeKills.get(child);
@@ -602,6 +887,21 @@ function processExists(pid: number): boolean {
     const code = (err as NodeJS.ErrnoException).code;
     return code !== "ESRCH";
   }
+}
+
+export async function stopOrphanedManagedProcesses(pids: readonly number[], resources: ManagedResources): Promise<ConfirmedExit | undefined> {
+  const recordExit = acquireManagedExit<ConfirmedExit>(resources, "confirmed");
+  for (const pid of pids) {
+    try { process.kill(pid, "SIGKILL"); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+  }
+  const deadline = Date.now() + TOOL_TIMEOUT_POLICY.orphanProcessCleanupMs;
+  while (pids.some(processExists)) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return undefined;
+    await sleep(Math.min(TOOL_TIMEOUT_POLICY.processGroupExitPollMs, remaining));
+  }
+  return recordExit();
 }
 
 const TASKKILL_PROCESS_NOT_FOUND = 128;
@@ -754,7 +1054,9 @@ function collectDescendantPids(rootPid: number): number[] {
 }
 
 function listDirectChildPids(pid: number): number[] {
-  const result = spawnSync("pgrep", ["-P", String(pid)], {
+  const pgrep = findHostProgram("pgrep");
+  if (pgrep === null) return [];
+  const result = spawnSync(pgrep, ["-P", String(pid)], {
     encoding: "utf-8",
     stdio: ["ignore", "pipe", "ignore"],
     timeout: PROCESS_TREE_KILL_TIMEOUT_MS,

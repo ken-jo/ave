@@ -1,5 +1,11 @@
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original(), "linux"));
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
+// The platform is simulated, so PATH lookup is stubbed independently of this host's filesystem.
+vi.mock("../../shared/host-program-path.js", async (original) => ({
+  ...await original<typeof import("../../shared/host-program-path.js")>(),
+  findHostProgram: (name: string) => `/resolved/${name}`,
+  resolveHostProgram: (name: string) => `/resolved/${name}`,
+}));
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
 
 /** Check external stdio-worker confinement wiring, sensitive-path denial, sanitized spawn environment, and capability attribution.
@@ -7,7 +13,9 @@ vi.mock("node:fs", async original => (await import("../../__tests__/support/simu
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { basename, join } from "node:path";
 import { homedir } from "node:os";
+import { PassThrough } from "node:stream";
 import { egressInvocationOwner } from "../../permissions/egress-invocations.js";
+import * as hostPrograms from "../../shared/host-program-path.js";
 
 const spawnMock = vi.fn<
   (cmd: string, args?: readonly string[], opts?: unknown) => unknown
@@ -214,7 +222,7 @@ describe("StdioTransport ASRT wrap — gate OFF (default)", () => {
     // The plain spawn ran with the UNMODIFIED resolved command + args.
     expect(spawnMock).toHaveBeenCalledTimes(1);
     const [cmd, args] = spawnMock.mock.calls[0];
-    expect(cmd).toBe("ave-mcp-fs");
+    expect(cmd).toBe("/resolved/ave-mcp-fs");
     expect(args).toEqual(["--root", "/tmp"]);
     expect((spawnMock.mock.calls[0]![2] as { cwd: string; env: Record<string, string> }).cwd).toBe("/tmp/package-generation");
     expect((spawnMock.mock.calls[0]![2] as { env: Record<string, string> }).env.PLUGIN_DATA).toBe("/tmp/plugin-data");
@@ -274,6 +282,48 @@ describe("StdioTransport — boot sandbox gate undecided (fail closed)", () => {
 });
 
 describe("StdioTransport ASRT wrap — gate ON", () => {
+  it.each([false, true])("refuses an unresolved POSIX executable with confinement %s", async (confined) => {
+    gateActive = confined;
+    const path = ":.:relative";
+    const command = "missing-mcp";
+    const lookup = vi.spyOn(hostPrograms, "resolveHostProgram").mockImplementationOnce(() => {
+      throw new hostPrograms.HostProgramNotFoundError(`Program '${command}' was not found on PATH`);
+    });
+    try {
+      vi.stubEnv("PATH", path);
+      const gov = governanceWithPolicy(buildPolicy([stdioApproval("missing", command)]));
+      const client = new McpClient({ id: "missing", transport: "stdio", command }, gov, new ToolRegistry(), unusedNetworkFetch);
+      await expect(client.connect()).rejects.toThrow(/was not found on PATH/u);
+      expect(lookup).toHaveBeenCalledWith(command, expect.objectContaining({ PATH: path }));
+      expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
+      expect(spawnMock).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+      lookup.mockRestore();
+    }
+  });
+
+  it.each([false, true])("refuses a Windows current-drive-relative command with confinement %s", async (confined) => {
+    setProcessPlatform("win32");
+    gateActive = confined;
+    const command = "\\Tools\\server.exe";
+    const gov = governanceWithPolicy(buildPolicy([stdioApproval("relative", command)]));
+    const client = new McpClient({ id: "relative", transport: "stdio", command }, gov, new ToolRegistry(), unusedNetworkFetch);
+    await expect(client.connect()).rejects.toThrow(/mcp-command-relative-path: Use an absolute path or a program name on PATH/u);
+    expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses a relative command with guidance before wrapping the server", async () => {
+    gateActive = true;
+    const command = "./server";
+    const gov = governanceWithPolicy(buildPolicy([stdioApproval("relative", command)]));
+    const client = new McpClient({ id: "relative", transport: "stdio", command }, gov, new ToolRegistry(), unusedNetworkFetch);
+    await expect(client.connect()).rejects.toThrow(/mcp-command-relative-path: Use an absolute path or a program name on PATH/u);
+    expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
   it("routes the spawn through wrapWorkerCommand with the FS jail + sensitive read deny-list", async () => {
     gateActive = true;
     const sandboxRoot = join(aveHome(), "mcp", "fs", "sandbox");
@@ -316,9 +366,9 @@ describe("StdioTransport ASRT wrap — gate ON", () => {
     // The server's own temp directory, keyed by its server id, set as TMPDIR inside the wrap (ASRT's own assignment
     // names the shared root), then the command + args, every token shell-quoted (defensive against spaces/injection).
     const tempDir = join(SANDBOX_TEMP_ROOT, sandboxTempPrincipalDirName({ kind: "mcp", id: "fs" }));
-    expect(cmdline).toBe(
-      `'/usr/bin/env' 'TMPDIR=${tempDir}' 'TMP=${tempDir}' 'TEMP=${tempDir}' 'ave-mcp-fs' '--root' '/tmp'`,
-    );
+    expect(cmdline.startsWith("exec '/bin/bash' '-c' ")).toBe(true);
+    expect(cmdline).toContain(`'sandbox-target' '${tempDir}' '/resolved/ave-mcp-fs' '--root' '/tmp'`);
+    expect(cmdline).not.toContain("PLUGIN_ROOT");
     // Write-jail = the server's temp directory + the fresh process HOME + per-server sandbox root. The shared temp root is not granted.
     expect(options.filesystem.allowWrite).toEqual([tempDir, SANDBOX_HOME, sandboxRoot, pluginDataDir]);
     expect(options.filesystem.allowRead).toContain(tempDir);
@@ -361,7 +411,8 @@ describe("StdioTransport ASRT wrap — gate ON", () => {
     expect(spawnOpts.shell).toBe(false);
     expect(spawnOpts.stdio[0]).toBe("pipe"); // stdin must stay writable for framing
     expect(spawnOpts.cwd).toBe("/tmp/package-generation");
-    expect(spawnOpts.env.PLUGIN_DATA).toBe(pluginDataDir);
+    expect(spawnOpts.env.PLUGIN_DATA).toBeUndefined();
+    expect(spawnOpts.stdio[4]).toBe("pipe");
 
     // The server is now marked wrapped → reviewer can report genuine asrt.
     expect(isMcpServerWrapped("fs")).toBe(true);
@@ -437,11 +488,13 @@ describe("StdioTransport ASRT wrap — gate ON", () => {
     await client.disconnect();
   });
 
-  it("overlays ONLY the ASRT proxy keys, preserves apiKey + strips host secrets", async () => {
+  it("sends the apiKey and HOME only through the target pipe and strips host secrets", async () => {
     gateActive = true;
     const sandboxRoot = join(aveHome(), "mcp", "secure", "sandbox");
     const fake = new FakeChildProcess();
     fake.responses = handshakeResponses("secure");
+    const targetEnv = new PassThrough();
+    Object.assign(fake, { stdio: [null, null, null, null, targetEnv] });
     // Simulate an ASRT env carrying proxy keys plus a host secret that must NOT propagate (it is not allow-listed).
     wrapWorkerCommandMock.mockResolvedValueOnce({
       argv: ["C:/Git/bin/bash.exe", "-c", "wrapped"],
@@ -481,15 +534,14 @@ describe("StdioTransport ASRT wrap — gate ON", () => {
       string[],
       { env: Record<string, string> },
     ];
-    const env = spawnOpts.env;
-    // ASRT proxy/CA overlay propagated (the win32 "spread").
-    expect(env.HTTP_PROXY).toBe("http://127.0.0.1:60080");
-    expect(env.NODE_EXTRA_CA_CERTS).toBe("C:/tmp/ca.pem");
-    // Approved per-server apiKey preserved.
-    expect(env.MCP_API_KEY).toBe("secret-key");
+    // The launcher keeps only its program lookup; the wrapped command carries the proxy settings.
+    expect(spawnOpts.env).toEqual({ PATH: "/usr/bin:/bin:/usr/sbin:/sbin" });
+    const assignments: string[] = targetEnv.read()?.toString().split("\0") ?? [];
+    // The approved per-server apiKey and the process HOME reach the server only through the target pipe.
+    expect(assignments).toContain("MCP_API_KEY=secret-key");
+    expect(assignments).toContain(`HOME=${SANDBOX_HOME}`);
     // A non-allow-listed host secret ASRT carried is NOT propagated.
-    expect(env.SOME_HOST_SECRET).toBeUndefined();
-    expect(env.HOME).toBe(SANDBOX_HOME);
+    expect(assignments.some(entry => entry.includes("leaked-value"))).toBe(false);
 
     await client.disconnect();
   });

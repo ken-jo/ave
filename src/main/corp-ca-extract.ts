@@ -3,6 +3,7 @@
 import { execFile } from "node:child_process";
 import { windowsPowerShellEnv } from "../shared/windows-powershell-env.js";
 import { win32SystemBinary } from "../shared/windows-system-path.js";
+import { resolveHostProgram } from "../shared/host-program-path.js";
 import { X509Certificate } from "node:crypto";
 import { open, readdir } from "node:fs/promises";
 import { join } from "node:path";
@@ -86,7 +87,7 @@ async function runTrustStoreTool(
   env?: NodeJS.ProcessEnv,
 ): Promise<string> {
   try {
-    const output = await execFileAsync(file, [...args], {
+    const output = await execFileAsync(resolveHostProgram(file, env ?? process.env), [...args], {
       encoding: "utf8",
       timeout: 20_000,
       maxBuffer: MAX_SOURCE_BYTES,

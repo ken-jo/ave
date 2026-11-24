@@ -75,6 +75,8 @@ import {
 import type { EgressInvocation } from "../permissions/egress-invocations.js";
 import { assertConfiguredLauncherEnvironment } from "../permissions/launcher-environment.js";
 import { buildSafeChildEnv } from "../tools/safe-env.js";
+import { HOST_PROGRAM_PATH_GUIDANCE, isRelativeHostProgram, resolveHostProgram } from "../shared/host-program-path.js";
+import { MCP_COMMAND_RELATIVE_PATH } from "../shared/mcp-error-code.js";
 import type { Readable, Writable } from "node:stream";
 import { terminateChildProcess } from "../tools/terminate-child-process.js";
 import { createSandboxProcessHome } from "../permissions/sandbox-process-home.js";
@@ -1773,6 +1775,9 @@ class StdioTransport implements McpTransport {
       );
     }
     const spawnCommand = resolveStdioSpawnCommand(this.config.command, this.config.args ?? []);
+    if (isRelativeHostProgram(spawnCommand.command)) {
+      throw new Error(`${MCP_COMMAND_RELATIVE_PATH}: ${HOST_PROGRAM_PATH_GUIDANCE}`);
+    }
 
     // Minimal base environment for the server, plus only its own configured variables and key.
     // The host-owned part: NODE_ENV, the approved configured variables and the API key. A container receives exactly
@@ -1824,7 +1829,8 @@ class StdioTransport implements McpTransport {
     }
 
     assertManagedChildProcessAdmissionOpen(`mcp:${this.config.id}`);
-    this.process = spawn(spawnCommand.command, spawnCommand.args, {
+    // A user-configured bare name resolves on PATH only, never in the server or host cwd.
+    this.process = spawn(resolveHostProgram(spawnCommand.command, baseEnv), spawnCommand.args, {
       stdio: ["pipe", "pipe", "pipe"],
       // Windows: 콘솔 창 생성 방지 (창이 뜨면 stdout 파이프 동작이 달라짐)
       windowsHide: true,
@@ -1849,6 +1855,7 @@ class StdioTransport implements McpTransport {
       return;
     }
 
+    const command = resolveHostProgram(spawnCommand.command, baseEnv);
     const sandboxHome = createSandboxProcessHome();
 
     // FAIL-CLOSED filesystem jail (deny-by-default A.a): the host populates `sandboxRoot` at connect time. If it is somehow still absent (e.g. a direct StdioTransport construction in a
@@ -1860,7 +1867,7 @@ class StdioTransport implements McpTransport {
     let wrapped = false;
     try {
       const { argv, env, egress, targetLaunch } = await wrapBundledCommand({
-        command: spawnCommand.command,
+        command,
         args: spawnCommand.args,
         sandboxHome,
         targetEnv: baseEnv,

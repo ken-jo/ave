@@ -1171,6 +1171,7 @@ export const ko: Record<MessageCatalogKey, string> = {
 
   // be_scriptHookRunner
   "be_scriptHookRunner.containedSettleDeadline": "훅의 격리 프로세스가 {ms} ms 안에 끝나지 않았습니다. 종료가 확인되지 않는 동안 샌드박스 자원을 유지합니다({code})",
+  "be_scriptHookRunner.terminationUnverified": "훅의 전체 프로세스 종료를 확인하지 못했습니다. 관련 자원을 유지합니다 ({code}).",
   "be_scriptHookRunner.containedTerminationUnverified": "훅의 격리 프로세스 종료를 확인하지 못했습니다. 샌드박스 자원을 유지합니다: {detail}({code})",
 
   // be_sessionGoal
@@ -3650,7 +3651,8 @@ export const ko: Record<MessageCatalogKey, string> = {
   "mcpTab.apiKeyWriteOnlyLabel": "API 키 (저장 전용)",
   "mcpTab.apiKeyPlaceholder": "API 키",
   "mcpTab.commandRequiredLabel": "명령 *",
-  "mcpTab.commandHint": "실행 파일만 입력하거나 전체 명령줄을 입력해도 자동 분리됩니다.",
+  "mcpTab.commandRelativePath": "절대 경로나 PATH에 있는 프로그램 이름을 사용하세요.",
+  "mcpTab.commandHint": "실행 파일만 입력하거나 전체 명령줄을 입력해도 자동 분리됩니다. 절대 경로나 PATH에 있는 프로그램 이름을 사용하세요.",
   "mcpTab.argsLabel": "Args (추가 인자)",
   "mcpTab.envWriteOnlyLabel": "환경 변수 (KEY=value, 저장 전용)",
   "mcpTab.urlRequiredLabel": "URL *",

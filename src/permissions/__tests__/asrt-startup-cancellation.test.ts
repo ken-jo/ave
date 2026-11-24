@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { useVerifiedAveHomePrivacy as installVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
 import { deferred } from "../../__tests__/support/deferred.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+import { registerLinuxWrapperProgramFixtures } from "../../__tests__/support/linux-wrapper-programs.js";
 import { initializeAsrtSandbox, isAsrtSandboxActive, releaseAsrtSandboxForExit } from "../asrt-sandbox.js";
 
 const manager = vi.hoisted(() => ({
@@ -10,8 +11,8 @@ const manager = vi.hoisted(() => ({
   setParentProxyRouter: vi.fn(),
 }));
 vi.mock("@anthropic-ai/sandbox-runtime", () => ({ SandboxManager: manager }));
-vi.mock("../../shared/host-program-path.js", () => ({ resolveHostProgram: (name: string) => `/configured/${name}` }));
 installVerifiedAveHomePrivacy();
+registerLinuxWrapperProgramFixtures();
 const ORIGINAL_PLATFORM = process.platform;
 
 afterEach(async () => {

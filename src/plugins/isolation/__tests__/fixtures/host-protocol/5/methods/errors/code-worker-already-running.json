@@ -11,7 +11,7 @@
         "args": [
           "--version"
         ],
-        "command": "/usr/bin/true",
+        "command": "true",
         "control": "stdio-control-v1",
         "workerId": "golden"
       }

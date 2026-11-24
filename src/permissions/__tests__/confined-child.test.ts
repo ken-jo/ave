@@ -13,6 +13,7 @@ import { PassThrough } from "node:stream";
 import { egressInvocationOwner, liveEgressInvocationCount, onEgressInvocationReleased } from "../egress-invocations.js";
 import { TEST_WORKER_EGRESS_OWNER } from "../../__tests__/support/egress-fixture.js";
 import * as helperIntegrity from "../srt-win-integrity.js";
+import { installProgramsOnPath, withPlantedProgram } from "../../__tests__/support/planted-program.js";
 
 const wrapWorkerCommandMock = vi.fn<
   (command: string, options?: unknown) => Promise<{ argv: string[]; env: NodeJS.ProcessEnv }>
@@ -617,7 +618,7 @@ describe("spawnConfinedChild reports the wrap it applied", () => {
     for (const platform of ["darwin", "linux", "win32"] as const) {
       setProcessPlatform(platform);
       const spawned = await spawnConfinedChild({ egressOwner: EGRESS_OWNER,
-        command: "/usr/bin/python3",
+        command: platform === "win32" ? "C:/runtime/python3.exe" : "/usr/bin/python3",
         args: [],
         label: "worker:x:main",
         grantMode: platform === "win32" ? "deny-only" : "allow-list",
@@ -929,5 +930,28 @@ describe("spawnConfinedChild's Windows stdio relay", () => {
     const [cmdline] = wrapWorkerCommandMock.mock.calls[0]! as [string];
     expect(cmdline).toContain("'/usr/bin/python3' 'w.py'");
     expect(spawned.stdin).toBe(child.stdin);
+  });
+});
+
+describe("spawnConfinedChild unconfined program lookup", () => {
+  const spec = (command: string) => ({ egressOwner: EGRESS_OWNER, command, args: [], label: "worker:x:main", grantMode: "deny-only" as const, baseEnv: { PATH: process.env.PATH } });
+
+  it("spawns a bare name found on PATH by its absolute path", async () => {
+    sandboxActiveMock.mockReturnValue(false);
+    const programs = installProgramsOnPath(["ave-child-on-path"]);
+    try {
+      await spawnConfinedChild(spec("ave-child-on-path"));
+      expect(spawnMock.mock.calls[0]?.[0]).toBe(programs.program("ave-child-on-path"));
+    } finally {
+      await programs.restore();
+    }
+  });
+
+  it("never spawns a bare name planted in the cwd or reached through an empty or relative PATH entry", async () => {
+    sandboxActiveMock.mockReturnValue(false);
+    await withPlantedProgram(["ave-planted-child"], async () => {
+      await expect(spawnConfinedChild(spec("ave-planted-child"))).rejects.toThrow(/'ave-planted-child' was not found on PATH/u);
+    });
+    expect(spawnMock).not.toHaveBeenCalled();
   });
 });

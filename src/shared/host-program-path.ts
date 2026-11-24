@@ -1,9 +1,9 @@
 import { accessSync, constants, lstatSync, realpathSync, statSync } from "node:fs";
 import { posix, win32 } from "node:path";
 
-const HOST_PROGRAM_PATH_GUIDANCE = "Use an absolute path or a program name on PATH.";
+export const HOST_PROGRAM_PATH_GUIDANCE = "Use an absolute path or a program name on PATH.";
 
-class HostProgramNotFoundError extends Error {
+export class HostProgramNotFoundError extends Error {
   readonly code = "HOST_PROGRAM_NOT_FOUND" as const;
 
   constructor(message: string) {
@@ -18,11 +18,11 @@ function isFullyQualified(entry: string, platform: NodeJS.Platform): boolean {
     : posix.isAbsolute(entry);
 }
 
-function isRelativeHostProgram(program: string, platform: NodeJS.Platform = process.platform): boolean {
+export function isRelativeHostProgram(program: string, platform: NodeJS.Platform = process.platform): boolean {
   return !isFullyQualified(program, platform) && (/[\\/]/u.test(program) || (platform === "win32" && program.includes(":")));
 }
 
-function assertHostProgramNotRelative(program: string, platform: NodeJS.Platform = process.platform): void {
+export function assertHostProgramNotRelative(program: string, platform: NodeJS.Platform = process.platform): void {
   if (isRelativeHostProgram(program, platform)) {
     throw new HostProgramNotFoundError(`Program '${program}' is a relative path. ${HOST_PROGRAM_PATH_GUIDANCE}`);
   }
@@ -78,7 +78,7 @@ function captureHostWindowsApps(): WindowsDirectoryIdentity | null {
 
 const hostFs: ProgramFs = { statSync, lstatSync, accessSync, pinWindowsDirectory, windowsApps: captureHostWindowsApps() };
 
-function hostProgramSearchDirectories(
+export function hostProgramSearchDirectories(
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
 ): string[] {
@@ -113,7 +113,7 @@ function isLink(candidate: string, fs: ProgramFs): boolean {
 }
 
 /** An absolute program stays as given; a bare name is looked up on PATH only, never in a current directory. */
-function findHostProgram(
+export function findHostProgram(
   program: string,
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,

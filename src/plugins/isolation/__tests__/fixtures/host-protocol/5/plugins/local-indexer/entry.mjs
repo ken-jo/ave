@@ -11,7 +11,7 @@ export const createPlugin = async (context) => {
         held.lease = await api.resolveApiKey({ purpose: "embedding", vendor: "openai" });
         held.worker = await api.spawnWorker({
           workerId: "indexer",
-          command: "/usr/bin/python3",
+          command: "python3",
           args: ["-u", "worker.py"],
           control: "stdio-control-v1",
           stateDirectory: true,

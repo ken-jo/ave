@@ -6,28 +6,12 @@ import { defineConfig } from "vitest/config";
 import { electronNodeNormalizerArgument } from "../scripts/run-vitest-under-electron.mjs";
 import { documentGuardImportArgument } from "../scripts/lib/document-consumer-node-options.mjs";
 import { assertAllowedDocumentRead } from "../scripts/lib/document-consumer-guard.mjs";
+import { baseExclude, rendererTestGlobs, suiteInclude } from "../scripts/lib/vitest-collection.mjs";
 import BoundarySequencer from "./vitest-sequencer.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const rootPath = (p: string) => path.resolve(ROOT, p);
 
-const testFileGlob = "**/*.{test,spec}.{ts,tsx}";
-const baseExclude = [
-  "node_modules/**",
-  "dist/**",
-  "plugins/**",
-  ".claude/**",
-  // UI specs require their own runner; collecting them here causes import errors.
-  "test/e2e/**",
-  // The screenshot harness has its own runner configuration.
-  "test/screenshots/**",
-];
-const rendererTestGlobs = [
-  `test/renderer/${testFileGlob}`,
-  `src/ui/__tests__/${testFileGlob}`,
-  `src/ui/renderer/__tests__/${testFileGlob}`,
-  `src/ui/renderer/**/__tests__/${testFileGlob}`,
-];
 const permissionTimingTests = [
   "src/permissions/__tests__/permission-decision-cost.test.ts",
   "src/permissions/__tests__/permission-adversarial-performance.test.ts",
@@ -131,10 +115,7 @@ export default defineConfig({
           environment: "node",
           // Pin the locale for tests asserting Korean strings; default-locale tests set their own.
           setupFiles: [rootPath("src/i18n/testing/vitest-ambient-intl.ts"), rootPath("src/__tests__/vitest-ave-home.ts"), rootPath("src/__tests__/vitest-model-catalog.ts")],
-          include: [
-            `src/**/__tests__/${testFileGlob}`,
-            `test/${testFileGlob}`,
-          ],
+          include: suiteInclude,
           exclude: [
             ...baseExclude,
             ...rendererTestGlobs,

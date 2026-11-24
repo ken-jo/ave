@@ -12,6 +12,7 @@ import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+import { registerLinuxWrapperProgramFixtures } from "../../__tests__/support/linux-wrapper-programs.js";
 import * as globMatcher from "../../lib/glob-matcher.js";
 import { globMatch } from "../../lib/glob-matcher.js";
 import { expandLeadingTilde } from "../../shared/home-tilde.js";
@@ -25,8 +26,10 @@ import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-priv
 import * as policyHome from "../../shared/policy-home.js";
 import { configureHostResources, getHostResources } from "../../main/host-resources.js";
 import { wrapCommandWithSandboxLinux } from "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js";
+import { parseSandboxWrappedWords } from "../sandbox-wrapped-command.js";
 
 useVerifiedAveHomePrivacy();
+registerLinuxWrapperProgramFixtures();
 
 // Simulated win32 on a POSIX host: drive-path math, an empty simulated drive, ASRT resolved on it, and spelling-only stamp pins.
 vi.mock("node:path", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDrivePath(await original()));
@@ -530,7 +533,7 @@ describe("initializeAsrtSandbox — Linux configured-wrapper runtime probe", () 
     vi.stubEnv("PATH", "/usr/local/bin");
     h.missingHelper = "/usr/local/bin/socat";
     await expect(checkAsrtDependencies()).resolves.toEqual({
-      errors: ["socat not installed on PATH"], warnings: [],
+      errors: ["socat not installed on PATH. Searched /usr/local/bin"], warnings: [],
     });
     expect(h.checkDependenciesAsync).not.toHaveBeenCalled();
     expect(h.checkLinuxDependencies).not.toHaveBeenCalled();
@@ -574,13 +577,39 @@ describe("initializeAsrtSandbox — Linux configured-wrapper runtime probe", () 
     }
   });
 
+  it.each(["linux", "darwin"] as const)("renders the fixed default and explicit shell at both wrapper layers on %s", async (platform) => {
+    const { SandboxManager } = await vi.importActual<typeof import("@anthropic-ai/sandbox-runtime")>("@anthropic-ai/sandbox-runtime");
+    setProcessPlatform(platform);
+    vi.stubGlobal("Bun", { which: (shell: string) => shell === "bash" ? "/alternate/bin/bash" : shell });
+    h.wrapWithSandboxArgv.mockImplementation((command, shell) => SandboxManager.wrapWithSandboxArgv(command, shell));
+    const invocation = openEgressInvocation({ kind: "terminal", tabId: "sandbox-shell-path" });
+    try {
+      const assertShell = (argv: readonly string[], shell: string) => {
+        expect(argv.slice(0, 2)).toEqual([shell, "-c"]);
+        const words = parseSandboxWrappedWords(argv[2] ?? "").map(word => word.value);
+        const inner = platform === "linux" ? words.indexOf("--") + 1 : words.length - 3;
+        expect(words.slice(inner, inner + 2)).toEqual([shell, "-c"]);
+      };
+      await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+      const [probeShell, probeArgs] = h.spawn.mock.calls[0] ?? [];
+      assertShell([probeShell, ...(probeArgs ?? [])], "/bin/bash");
+      assertShell((await wrapToolCommand("true", { commandId: TEST_COMMAND_ID })).argv, "/bin/bash");
+      assertShell((await wrapWorkerCommand("true", { commandId: invocation.token })).argv, "/bin/bash");
+      assertShell((await wrapWorkerCommand("true", { commandId: invocation.token, binShell: "/bin/zsh" })).argv, "/bin/zsh");
+    } finally {
+      invocation.release();
+      vi.unstubAllGlobals();
+      await SandboxManager.reset();
+    }
+  });
+
   it("runs the fixed no-I/O command through ASRT's exact configured argv before activation", async () => {
     await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
 
     expect(h.wrapWithSandboxArgv).toHaveBeenCalledTimes(1);
     const wrapCall = h.wrapWithSandboxArgv.mock.calls[0];
     expect(wrapCall?.[0]).toBe("true");
-    expect(wrapCall?.[1]).toBeUndefined();
+    expect(wrapCall?.[1]).toBe("/bin/bash");
     expect(wrapCall?.[2]).toBeUndefined();
     expect(wrapCall?.[3]).toBeInstanceOf(AbortSignal);
     expect(wrapCall?.[4]).toBe(process.cwd());

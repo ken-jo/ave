@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const installations = vi.hoisted(() => ({ resolve: vi.fn() }));
-vi.mock("../../shared/verified-executable.js", () => ({ resolveVerifiedExecutable: installations.resolve }));
+vi.mock("../../shared/verified-executable.js", async () => ({
+  resolveVerifiedExecutableAsync: async (...args: unknown[]) => installations.resolve(...args),
+}));
 
 import { proveVerifiedLauncherArgv } from "../rules/verified-launcher-argv.js";
 
@@ -23,11 +25,11 @@ describe("verified launcher arguments", () => {
   it.each([
     ["darwin", "/bin/bash"],
     ["linux", "/usr/bin/bash"],
-  ] as const)("binds the complete startup form to the proved image on %s", (platform, executable) => {
+  ] as const)("binds the complete startup form to the proved image on %s", async (platform, executable) => {
     Object.defineProperty(process, "platform", { ...ORIGINAL_PLATFORM, value: platform });
     installations.resolve.mockReturnValue({ executable });
 
-    expect(proveVerifiedLauncherArgv(GUARDED_ARGUMENTS)).toEqual({
+    expect(await proveVerifiedLauncherArgv(GUARDED_ARGUMENTS)).toEqual({
       executable,
       args: ["--noprofile", "--norc", "-p", "-c", "printf ready"],
       environment: {},
@@ -38,15 +40,15 @@ describe("verified launcher arguments", () => {
     ], platform);
   });
 
-  it("refuses the complete startup form without installation proof", () => {
+  it("refuses the complete startup form without installation proof", async () => {
     installations.resolve.mockReturnValue(null);
-    expect(proveVerifiedLauncherArgv(GUARDED_ARGUMENTS)).toBeNull();
+    expect(await proveVerifiedLauncherArgv(GUARDED_ARGUMENTS)).toBeNull();
     expect(installations.resolve).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps candidate authority independent of an inherited search path", () => {
+  it("keeps candidate authority independent of an inherited search path", async () => {
     vi.stubEnv("PATH", "/agent-controlled/bin");
-    expect(proveVerifiedLauncherArgv(GUARDED_ARGUMENTS)?.executable).toBe("/bin/bash");
+    expect((await proveVerifiedLauncherArgv(GUARDED_ARGUMENTS))?.executable).toBe("/bin/bash");
     expect(installations.resolve).toHaveBeenCalledExactlyOnceWith([
       { executable: "/bin/bash", installationRoots: ["/bin/bash"] },
     ], "darwin");
@@ -87,27 +89,27 @@ describe("verified launcher arguments", () => {
     ["powershell", "-NoProfile", "-NonInteractive", "-Command", "Write-Output ready"],
     ["zsh", "-f", "-c", "printf ready"],
     ["sh", "--noprofile", "--norc", "-p", "-c", "printf ready"],
-  ])("refuses an unregistered argument form: %j", (...argv) => {
-    expect(proveVerifiedLauncherArgv(argv)).toBeNull();
+  ])("refuses an unregistered argument form: %j", async (...argv) => {
+    expect(await proveVerifiedLauncherArgv(argv)).toBeNull();
     expect(installations.resolve).not.toHaveBeenCalled();
   });
 
-  it.each(["win32", "freebsd", "openbsd", "aix"] as const)("refuses a platform without a complete registered installation: %s", (platform) => {
+  it.each(["win32", "freebsd", "openbsd", "aix"] as const)("refuses a platform without a complete registered installation: %s", async (platform) => {
     Object.defineProperty(process, "platform", { ...ORIGINAL_PLATFORM, value: platform });
-    expect(proveVerifiedLauncherArgv(GUARDED_ARGUMENTS)).toBeNull();
+    expect(await proveVerifiedLauncherArgv(GUARDED_ARGUMENTS)).toBeNull();
     expect(installations.resolve).not.toHaveBeenCalled();
   });
 
-  it("preserves the opaque literal payload for downstream evaluation", () => {
+  it("preserves the opaque literal payload for downstream evaluation", async () => {
     const payload = "printf '%s' '$HOME';\nprintf '%s' '$(command)'";
-    const plan = proveVerifiedLauncherArgv(["bash", "--noprofile", "--norc", "-p", "-c", payload]);
+    const plan = await proveVerifiedLauncherArgv(["bash", "--noprofile", "--norc", "-p", "-c", payload]);
     expect(plan?.args).toEqual(["--noprofile", "--norc", "-p", "-c", payload]);
     expect(plan?.proof).toEqual({ kind: "literal-evaluation", payloadIndexes: [5], changesState: false });
   });
 
-  it("captures immutable arguments independently of the input array", () => {
+  it("captures immutable arguments independently of the input array", async () => {
     const argv: string[] = [...GUARDED_ARGUMENTS];
-    const plan = proveVerifiedLauncherArgv(argv);
+    const plan = await proveVerifiedLauncherArgv(argv);
     argv[5] = "printf changed";
     expect(plan?.args).toEqual(["--noprofile", "--norc", "-p", "-c", "printf ready"]);
     expect(Object.isFrozen(plan)).toBe(true);

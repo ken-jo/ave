@@ -2954,6 +2954,10 @@ reaches the `cmd.exe` line, a batch file (`.cmd`/`.bat`, or a bare name such as
 relay nor `cmd.exe` is refused, because srt-win's PowerShell launch loses stdin,
 environment and exit code alike.
 
+The plain direct Windows hook (`startHook`) has no job owner. The Windows
+relay and grant path must wait for `job-empty` evidence from the `srt-win`
+receipt before releasing the grant, HOME, or wrap.
+
 A plugin root holds two state directories. `data/` is the plugin's own: its
 confined child writes there. `storage/` beside it is host-only: the HostApi
 `storage` surface and the webview bridge's `ui-storage/` operate there on the
