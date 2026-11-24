@@ -255,10 +255,11 @@ describe("spawnWorker — selected container backend", () => {
     const start = () => spawnWorker({ pluginId: "sample", workerId: "control", command: "C:/runtime/worker.exe", control: "output-only-v1" as const });
     await expect(start()).rejects.toThrow("refusing a container worker whose plugin has no live container process");
     const withdraw = registerMxcPluginChildHolder("sample", { confinement: "windows-mxc" } as MxcConfinedChildSpawn, () => true);
-    await expect(start()).rejects.toThrow("No extension holder readiness probe is registered");
-    // The refusal frees the identity; a retry is refused for the same reason, never as a running worker.
-    await expect(start()).rejects.toThrow("No extension holder readiness probe is registered");
-    withdraw();
+    try {
+      await expect(start()).rejects.toThrow("No extension holder readiness probe is registered");
+      // The refusal frees the identity; a retry is refused for the same reason, never as a running worker.
+      await expect(start()).rejects.toThrow("No extension holder readiness probe is registered");
+    } finally { withdraw(); }
     expect(spawnMock).not.toHaveBeenCalled();
   });
 });
