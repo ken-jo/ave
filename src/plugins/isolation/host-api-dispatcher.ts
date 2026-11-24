@@ -1475,9 +1475,13 @@ export class HostApiDispatcher {
     }
     if (invocation.live && readsEffectFrame(path)) {
       // The child picks the token, so a gated effect runs only when every live call would authorize it alike.
+      // A frameless live call (a trusted app-only call) imposes no gate, so naming a gated call is never weaker than it;
+      // naming the frameless call while a gated one is live still refuses, or the child could escape that call's gate.
       const named = invocation.run(currentEffectGateContext);
       for (const other of this.options.invocations?.live() ?? []) {
-        if (!sameEffectAuthority(named, other(currentEffectGateContext))) {
+        const otherFrame = other(currentEffectGateContext);
+        if (named !== undefined && otherFrame === undefined) continue;
+        if (!sameEffectAuthority(named, otherFrame)) {
           throw new HostApiBoundaryError(
             "argument-marshalling-rejected",
             `[host-api-dispatcher] '${path}' names one of several active tool calls with different permission contexts`,
