@@ -1,5 +1,5 @@
 import { accessSync, constants, statSync } from "node:fs";
-import { isAbsolute, posix, resolve as pathResolve } from "node:path";
+import { isAbsolute, posix, relative as pathRelative, resolve as pathResolve, sep } from "node:path";
 import { analyzeShell, literalWord, staticShellWord, validatePreparedShellAnalysis, type PreparedShellAnalysis, type ShellAnalysis, type ShellCommand, type ShellRedirect, type ShellStatement, type ShellWord, type ShellWordPart } from "./shell-analysis.js";
 import { effectiveShellCommand, stripCommandPath, type EffectiveShellCommand } from "./shell-effective-command.js";
 import { SHELL_ANALYSIS_LIMITS } from "./shell-parser.js";
@@ -88,6 +88,8 @@ interface ShellState {
   fromPipe: boolean;
   activeFunctions: readonly string[];
   inputRedirect?: ShellRedirect;
+  /** Follows a host cd modeled as failing although its destination was observed. */
+  cdFault?: true;
 }
 type ExitStatus = "success" | "failure" | "unknown";
 interface BreakControl { kind: "break"; levels: number; boundary: number }
@@ -124,10 +126,28 @@ function uniqueResults(results: readonly StateResult[]): StateResult[] {
   for (const result of results) {
     const state = result.state;
     const key = JSON.stringify([result.status, result.control, stateKey(state)]);
-    unique.set(key, result);
+    // An identical state reached without a modeled cd fault keeps the full checks.
+    if (!state.cdFault || !unique.has(key)) unique.set(key, result);
     if (unique.size > SHELL_ANALYSIS_LIMITS.states) decline("execution-state limit exceeded");
   }
   return [...unique.values()];
+}
+function faultShadowKey(state: ShellState): string {
+  const variables = new Map(state.variables);
+  variables.delete("OLDPWD");
+  return stateKey({ ...state, variables });
+}
+/** A sequence ignores the previous status, so a fault path that differs from another path only in OLDPWD adds nothing. */
+function withoutShadowedFaults(results: readonly StateResult[]): readonly StateResult[] {
+  if (!results.some((result) => result.state.cdFault)) return results;
+  const seen = new Set(results.filter((result) => !result.control && !result.state.cdFault).map((result) => faultShadowKey(result.state)));
+  return results.filter((result) => {
+    if (result.control || !result.state.cdFault) return true;
+    const key = faultShadowKey(result.state);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 /** Same original text and prepared child facts are inspected at both gates. */
@@ -151,6 +171,10 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
   initial.variables.set("PWD", initialCwd ?? undefined);
   // Filesystem effects cross process scopes; after possible mutation, pre-execution stat cannot prove a later chdir outcome. Keep this flag analysis-local.
   let filesystemMayChange = false;
+  const within = (parent: string, path: string): boolean => {
+    const rest = pathRelative(parent, path);
+    return rest === "" || !isAbsolute(rest) && rest !== ".." && !rest.startsWith(`..${sep}`);
+  };
   let steps = 0;
   let nextExecutionBoundary = 0;
   const failedCommandRedirects = new WeakMap<ShellExecutionError, CommandRedirectObservation>();
@@ -585,6 +609,8 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
           decline("cannot resolve working-directory destination", targetWord);
         }
       }
+      // A modeled fault path ends where it leaves the starting directory.
+      if (state.cdFault && !within(cwd, destination)) return [];
       // Logical cd collapses .., but original components must still be searchable; physical cd follows links.
       checkPath(destination, label, state, "write", "directory");
       let observedDirectory = false;
@@ -597,9 +623,13 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
       if (!observedDirectory && !filesystemMayChange) return [{ state, status: "failure" }];
       const changed = cloneState(state);
       changed.variables.set("OLDPWD", state.cwd ?? undefined); changed.cwd = destination; changed.variables.set("PWD", destination);
-      return filesystemMayChange
-        ? [{ state: changed, status: "success" }, { state, status: "failure" }]
-        : [{ state: changed, status: "success" }];
+      if (filesystemMayChange) return [{ state: changed, status: "success" }, { state, status: "failure" }];
+      // Failing to enter an ancestor leaves the shell in its current directory, whose identity is assumed throughout.
+      if (state.cdFault || state.cwd !== null && within(destination, state.cwd)) return [{ state: changed, status: "success" }];
+      // Another process can remove the destination before execution; one fault per path keeps growth linear.
+      const fault = cloneState(state);
+      fault.cdFault = true;
+      return [{ state: changed, status: "success" }, { state: fault, status: "failure" }];
     }
     return [{ state, status: shellBuiltin && ["true", ":"].includes(verb) ? "success" : shellBuiltin && verb === "false" ? "failure" : "unknown" }];
   };
@@ -633,7 +663,7 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
       }
       case "sequence": {
         let results: StateResult[] = [{ state, status: "success" }];
-        for (const statement of node.statements) results = uniqueResults(results.flatMap((result) =>
+        for (const statement of node.statements) results = uniqueResults(withoutShadowedFaults(results).flatMap((result) =>
           result.control ? [result] : walk(statement, result.state, depth + 1, context)));
         return results;
       }
@@ -698,14 +728,15 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
       case "while": {
         const results: StateResult[] = [];
         const pending: ShellState[] = [state];
-        const seen = new Set<string>();
+        const seen = new Map<string, boolean>();
         const terminal = node.until ? "success" : "failure";
         const loopContext = { ...context, loopDepth: context.loopDepth + 1 };
         while (pending.length) {
           const current = pending.shift()!;
           const key = stateKey(current);
-          if (seen.has(key)) continue;
-          seen.add(key);
+          const faulted = current.cdFault === true;
+          if (seen.has(key) && (faulted || !seen.get(key))) continue;
+          seen.set(key, faulted);
           if (seen.size > SHELL_ANALYSIS_LIMITS.states) decline("loop authority state does not converge within the execution-state limit");
           for (const condition of walk(node.condition, current, depth + 1, loopContext)) {
             if (condition.control) {
@@ -726,6 +757,8 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
       }
     }
     } catch (error) {
+      // A modeled fault path ends where it cannot be analyzed; global limits still bind the checked paths.
+      if (error instanceof ShellExecutionError && state.cdFault) return [];
       if (!(error instanceof ShellExecutionError) || inspector.unresolvedState?.(error) !== true) throw error;
       if (node.kind === "unsupported" && node.redirected) {
         inspectRedirects(node.redirected.redirects, state, depth);

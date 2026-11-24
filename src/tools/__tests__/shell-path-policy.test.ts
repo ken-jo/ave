@@ -1568,7 +1568,7 @@ describe("shell-path-policy", () => {
 
       it("matches builtins by exact name only, so a variant does not move the tracked cwd", withPolicyRoot((root) => {
         mkdirSync(join(root, "sub"));
-        expect(validateShellCommandPathPolicy("cd sub; echo hi > ../x", root, root, [])).toBeNull();
+        expect(validateShellCommandPathPolicy("cd sub && echo hi > ../x", root, root, [])).toBeNull();
         // bash finds no `CD` builtin; the later write is relative to the root.
         for (const command of ["CD sub; echo hi > ../x", "COMMAND cd sub; echo hi > ../x"]) {
           expect(validateShellCommandPathPolicy(command, root, root, []), command).toContain("Sandbox:");

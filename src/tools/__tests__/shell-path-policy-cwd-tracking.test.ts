@@ -18,6 +18,7 @@ const EXTRAS = [STAGING];
 
 beforeAll(() => {
   mkdirSync(join(CWD, "sub"), { recursive: true });
+  for (let index = 0; index < 6; index += 1) mkdirSync(join(CWD, `d${index}`));
   mkdirSync(join(STAGING, "x"), { recursive: true });
 });
 
@@ -107,6 +108,47 @@ describe("shell path policy — working directory tracking", () => {
 
     it("does not mistake -L/-P for the destination", () => {
       expect(check(`cd -P ${STAGING_ARG} && cat notes.txt`)).toBeNull();
+    });
+  });
+
+  // The destination can disappear before execution; a failed cd leaves the shell in the starting directory.
+  describe("a cd whose destination exists during analysis", () => {
+    it.each(["cd sub; touch ../../../../escape.txt", "cd sub || touch ../../../../escape.txt"])(
+      "checks the statement after %s from the starting directory", (command) => {
+        expect(check(command)).toMatchObject({ kind: "sandbox-boundary", candidate: "../../../../escape.txt", path: join(FIXTURE, "escape.txt") });
+      });
+
+    it.each([
+      "cd sub; ls; cd ..",
+      "cd sub; touch x; cd ..; touch y",
+      "cd sub; cd ..; touch y",
+      "cd sub; touch ../y",
+      "cd sub && touch ../../../../y",
+      "cd sub; ls; cd -",
+      "cd sub && ls; cd -",
+    ])("leaves %s as it is when the failed path stays inside", (command) => {
+      expect(check(command)).toBeNull();
+      expect(check(command, true)).toBeNull();
+    });
+
+    it.each(["cd src; ls; cd ..", "cd src; touch x; cd ..; touch y"])("leaves %s from the root as it is", (command) => {
+      expect(findShellPathPolicyViolation(command, ROOT, ROOT, EXTRAS, true)).toBeNull();
+    });
+
+    it("keeps checking a path that a modeled fault path also reaches", () => {
+      const root = shellQuote(ROOT.replaceAll("\\", "/"));
+      expect(findShellPathPolicyViolation(`cd src; cd ${root} && cd src; cd ../..`, ROOT, ROOT, EXTRAS, true)).toMatchObject({ kind: "sandbox-boundary" });
+    });
+
+    it("keeps repeated navigation bounded", () => {
+      const scripts = [
+        Array.from({ length: 20 }, () => "cd sub && cd ..").join("; "),
+        Array.from({ length: 20 }, () => "cd sub; cd ..").join("; "),
+        `${Array.from({ length: 6 }, (_, index) => `cd d${index}; cd ..`).join("; ")}; touch w`,
+      ];
+      const start = performance.now();
+      for (const script of scripts) expect(check(script, true)).toBeNull();
+      expect(performance.now() - start).toBeLessThan(5_000);
     });
   });
 });

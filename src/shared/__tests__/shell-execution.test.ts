@@ -286,3 +286,27 @@ describe.skipIf(process.platform==="win32")("typed shell execution and native ar
     for(const command of ["if", "for x in y; do", "printf '","cat <<EOF\ndata"]){expect(analyzeShell(command).ok).toBe(false);}
   });
 });
+
+describe("host cd failure states", () => {
+  it("visits each repeated cd a bounded number of times", () => {
+    const {cwd,environment}=fixture();
+    const visits: (string|null)[]=[];
+    inspectShellExecution(Array.from({length:20},()=>"cd safe && cd ..").join("; "),cwd,{dialect:"bash",environment},{path(_path,_raw,at){visits.push(at);},command(){}});
+    expect(visits.length).toBe(40);
+  });
+
+  it("models one cd fault per path through nested directories", () => {
+    const {cwd,environment}=fixture();
+    mkdirSync(join(cwd,"n/n/n/n/n/n/n/n"),{recursive:true});
+    let visits=0;
+    inspectShellExecution(Array.from({length:8},()=>"cd n").join("; "),cwd,{dialect:"bash",environment},{path(){visits++;},command(){}});
+    expect(visits).toBe(15);
+  });
+
+  it("continues after a cd that may fail in the starting directory", () => {
+    const {cwd,environment}=fixture();
+    const touched: (string|null)[]=[];
+    inspectShellExecution("cd safe; touch x",cwd,{dialect:"bash",environment},{path(){},command(event){if(event.argv[0]==="touch")touched.push(event.cwd);}});
+    expect(touched.sort()).toEqual([cwd,join(cwd,"safe")].sort());
+  });
+});
