@@ -240,13 +240,15 @@ afterEach(() => {
 describe("spawnWorker — selected container backend", () => {
   afterEach(() => __resetWindowsSandboxSubstrateForTest());
 
-  it("refuses an unmigrated worker with the D1 worker transport code before any process exists", async () => {
+  it("takes a worker to the container holder, which refuses while native readiness is not established", async () => {
     setProcessPlatform("win32");
     const { substrate } = planWindowsSandbox({ shellRequested: false, workerRequested: true,
       mxc: { state: "available" }, extensionMxc: { state: "available" }, windowsBuild: null, srtWinReady: false });
     setWindowsSandboxSubstrate(substrate);
-    await expect(spawnWorker({ pluginId: "sample", workerId: "control", command: "C:/runtime/worker.exe", control: "output-only-v1" as const }))
-      .rejects.toMatchObject({ code: "worker-transport-unsupported" });
+    const start = () => spawnWorker({ pluginId: "sample", workerId: "control", command: "C:/runtime/worker.exe", control: "output-only-v1" as const });
+    await expect(start()).rejects.toThrow("No extension holder readiness probe is registered");
+    // The refusal frees the identity; a retry is refused for the same reason, never as a running worker.
+    await expect(start()).rejects.toThrow("No extension holder readiness probe is registered");
     expect(spawnMock).not.toHaveBeenCalled();
   });
 });

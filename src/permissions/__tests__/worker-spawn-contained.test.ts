@@ -69,8 +69,9 @@ vi.mock("../windows-acl-grant-holder.js", () => ({
 }));
 vi.mock("../confined-child.js", () => ({ spawnConfinedChild: () => accountRoute.spawnConfinedChild() }));
 vi.mock("../asrt-sandbox.js", () => ({
-  assertExtensionStartAllowed: () => {},
-  isPluginWorkerConfinementActive: () => true,
+  // Under a selected container plan the legacy guard refuses and the legacy gate reads off; the route may consult neither.
+  assertExtensionStartAllowed: () => { if (selected) throw new Error("legacy guard consulted"); },
+  isPluginWorkerConfinementActive: () => !selected,
   cleanupAsrtSandboxAfterCommand: async () => {},
   grantWindowsWorkerFilesystemAccess: () => accountRoute.grantWindowsWorkerFilesystemAccess(),
 }));

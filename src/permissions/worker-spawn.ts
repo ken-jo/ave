@@ -224,7 +224,10 @@ export function spawnWorker(spec: SpawnWorkerSpec & { readonly control: "output-
 export function spawnWorker(spec: SpawnWorkerSpec & { readonly control: "stdio-control-v1" }): Promise<StdioControlWorker>;
 export function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>;
 export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker> {
-  assertExtensionStartAllowed({ holder: "worker" });
+  // A selected container backend carries the worker itself; its holder asserts the native entry. The legacy guard
+  // refuses that plan, and the legacy gate reads off under it, so neither is consulted on this route.
+  const contained = process.platform === "win32" && isMxcExtensionBackendSelected();
+  if (!contained) assertExtensionStartAllowed({ holder: "worker" });
   const safePlugin = safeSegment(spec.pluginId, "pluginId");
   const safeWorker = safeSegment(spec.workerId, "workerId");
   if (typeof spec.control !== "string" || !WORKER_CONTROLS.has(spec.control)) {
@@ -249,6 +252,11 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
   if (stateDir !== undefined) baseEnv[WORKER_STATE_DIR_ENV] = stateDir;
   const stateGrant = stateDir !== undefined ? [stateDir] : [];
 
+  if (contained) {
+    return await spawnContainedWorker(spec, { plugin: safePlugin, worker: safeWorker }, control, label, args, stateDir,
+      reserveWrappedWorker(safePlugin, safeWorker));
+  }
+
   // Gate OFF → plain unwrapped spawn
   if (!isPluginWorkerConfinementActive()) {
     assertManagedChildProcessAdmissionOpen(`worker:${safePlugin}:${safeWorker}`);
@@ -264,10 +272,6 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
 
   // A wrapped worker owns a stable per-(plugin,worker) identity. Keep that key reserved while it is running OR stopping; otherwise a replacement can lose its marker when the old exit arrives.
   const releaseWorkerReservation = reserveWrappedWorker(safePlugin, safeWorker);
-
-  if (process.platform === "win32" && isMxcExtensionBackendSelected()) {
-    return await spawnContainedWorker(spec, { plugin: safePlugin, worker: safeWorker }, control, label, args, stateDir, releaseWorkerReservation);
-  }
 
   if (process.platform === "win32") {
     let holder: ChildProcess;
