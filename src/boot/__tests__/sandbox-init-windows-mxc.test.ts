@@ -436,7 +436,7 @@ describe("initSandboxGate — Windows MXC substrate", () => {
   it.each([
     ["timeout", windowsPathKindHelperUnavailable("Windows path facts helper did not answer within 15000 ms", "ETIMEDOUT")],
     ["launch failure", windowsPathKindHelperUnavailable("Windows path facts helper could not start (ENOENT)", "ENOENT")],
-  ] as const)("publishes a path-facts helper %s during the boundary pin as helper-unavailable: no waiver, the shell floor holds", async (_label, cause) => {
+  ] as const)("publishes a path-facts helper %s during the boundary pin as helper-unavailable: no waiver, shells are denied", async (_label, cause) => {
     h.checkDeps.mockResolvedValue({ errors: [], warnings: [] });
     h.detectMxc.mockResolvedValue(MXC_OK);
     h.initialize.mockRejectedValue(Object.assign(new Error("sandbox: refusing confinement, the Ave home read boundary cannot be projected", { cause }),
@@ -458,8 +458,10 @@ describe("initSandboxGate — Windows MXC substrate", () => {
       { intent: { inputOrigin: "user-keyboard", userActivation: true } })).toMatchObject({ ok: false, error: "not-applicable" });
     expect(areExtensionsWithoutIsolationApproved()).toBe(false);
     expect(auditLogger.log).not.toHaveBeenCalled();
-    expect(requiresUnsandboxedShellAsk(getHostShellExecutionPlan())).toBe(true);
-    expect(requiresUnsandboxedShellAsk(getHostShellExecutionPlan("host"))).toBe(true);
+    for (const plan of [getHostShellExecutionPlan(), getHostShellExecutionPlan("host")]) {
+      expect(plan).toMatchObject({ mode: "blocked", fallbackReason: "home-privacy-helper-unavailable", requiresExplicitUserApproval: false });
+      expect(requiresUnsandboxedShellAsk(plan)).toBe(false);
+    }
   });
 
   it("keeps the ordinary sandbox-off plan when a worker-only boot fails for another reason", async () => {
