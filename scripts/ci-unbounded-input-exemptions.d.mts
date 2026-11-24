@@ -1,4 +1,5 @@
 export type UnboundedInputExemption = {
+  readonly digest: string;
   readonly listing?: string;
   readonly git?: string;
   readonly runtime?: string;

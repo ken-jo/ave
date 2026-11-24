@@ -122,20 +122,28 @@ function packageImportTarget(imports, specifier) {
   return null;
 }
 
-// The helper a test-closure specifier names, or null when it names no
-// __tests__/, test/ or scripts/ module. Unresolvable specifiers return
-// { unresolved: true } so the closure fails closed.
-function resolveInputHelper(path, specifier, imports, readText) {
-  const target = specifier.startsWith("@/") ? posix.join("src", specifier.slice(2))
-    : specifier.startsWith("#") ? packageImportTarget(imports, specifier)
-      : posix.normalize(posix.join(posix.dirname(path), specifier));
-  if (target === null) return { unresolved: true };
-  const helper = (target.startsWith("__tests__/") || target.includes("/__tests__/") || target.startsWith("test/") || target.startsWith("scripts/"))
-    && !/\.(?:test|spec)\.[cm]?[jt]sx?$/u.test(target);
-  if (!helper || /\.json$/u.test(target)) return null;
+function inputTarget(path, specifier, imports) {
+  const name = specifier.split("?", 1)[0];
+  return name.startsWith("@/") ? posix.join("src", name.slice(2))
+    : name.startsWith("#") ? packageImportTarget(imports, name)
+      : posix.normalize(posix.join(posix.dirname(path), name));
+}
+
+function resolveInputPath(target, readText) {
   const base = target.replace(/\.[cm]?js$/u, "");
-  const candidates = INPUT_HELPER_EXTENSIONS.flatMap((extension) => [`${base}${extension}`, `${target}${extension}`, `${base}/index${extension}`]);
-  return { path: candidates.find((candidate) => typeof readText(candidate) === "string") ?? target };
+  const candidates = INPUT_HELPER_EXTENSIONS.flatMap((extension) => [
+    `${base}${extension}`, `${target}${extension}`, `${base}/index${extension}`,
+  ]);
+  return [...new Set(candidates)].find((candidate) => typeof readText(candidate) === "string") ?? target;
+}
+
+// Unresolved helper imports stay in the graph so affected selection fails closed.
+function resolveInputHelper(path, specifier, imports, readText) {
+  const target = inputTarget(path, specifier, imports);
+  if (target === null) return { unresolved: true };
+  const helper = /(?:^|\/)__tests__\/|^(?:test|scripts)\//u.test(target)
+    && !/\.(?:test|spec)\.[cm]?[jt]sx?$/u.test(target);
+  return helper && !/\.json$/u.test(target) ? { path: resolveInputPath(target, readText) } : null;
 }
 
 function packageImports(readText) {
@@ -170,6 +178,7 @@ function inspectInputSource(source, exemptions) {
   const fsLocals = new Set();
   let staticFs = true;
   let forwarded = false;
+  const opaqueImports = new Set();
   const addModule = (specifier, isStatic) => {
     if (FS_MODULES.has(specifier)) {
       classes.add("read");
@@ -190,6 +199,8 @@ function inspectInputSource(source, exemptions) {
       const specifier = stringOf(ast.isImportEqualsDeclaration(node) ? node.moduleReference.expression : node.moduleSpecifier);
       if (specifier !== undefined && !node.isTypeOnly && !isTypeOnly(node.importClause)) {
         specifiers.add(specifier);
+        const bindings = node.importClause?.namedBindings;
+        if (!bindings || ast.isNamespaceImport(bindings)) opaqueImports.add(specifier);
         addModule(specifier, ast.isImportDeclaration(node) && node.importClause !== undefined);
         if (FS_MODULES.has(specifier) && node.importClause) {
           const { name, namedBindings } = node.importClause;
@@ -265,12 +276,15 @@ function inspectInputSource(source, exemptions) {
     // A module-name argument through an opaque loader cannot support a temp proof.
     if (specifier !== undefined) {
       addModule(specifier, false);
-      if (moduleCall) specifiers.add(specifier);
+      if (moduleCall) {
+        specifiers.add(specifier);
+        opaqueImports.add(specifier);
+      }
     } else if (loaderExpression(callee) || callee.kind === ast.SyntaxKind.ImportKeyword) {
       classes.add("runtime");
     }
   }
-  return { classes, specifiers, canProveFs: staticFs && !forwarded, fsLocals };
+  return { classes, specifiers, canProveFs: staticFs && !forwarded, fsLocals, opaqueImports };
 }
 
 export function unboundedInputClasses(text, exemptions = UNBOUNDED_INPUT_EXEMPTIONS) {
@@ -559,6 +573,49 @@ function proveTempReads(path, declarations, fsLocals, context) {
   return provedUse;
 }
 
+// Pin repository-owned imports, including production modules and imported assets.
+export function unboundedInputExemptionDigests(paths, readText) {
+  const imports = packageImports(readText);
+  const graph = new Map();
+  let pending = [...paths];
+  while (pending.length > 0) {
+    const texts = new Map();
+    for (const path of new Set(pending)) {
+      if (graph.has(path)) continue;
+      const text = readText(path);
+      graph.set(path, null);
+      if (typeof text !== "string") continue;
+      if (MODULE_EXTENSION.test(path)) texts.set(path, text);
+      else graph.set(path, { text, imports: [] });
+    }
+    pending = [];
+    withParsedSourceTexts(texts, (sources) => {
+      for (const [path, source] of sources) {
+        const dependencies = [];
+        const { specifiers } = inspectInputSource(source, {});
+        for (const specifier of specifiers) {
+          if (!LOCAL_SPECIFIER.test(specifier)) continue;
+          const target = inputTarget(path, specifier, imports);
+          dependencies.push(target === null ? null : resolveInputPath(target, readText));
+        }
+        graph.set(path, { text: texts.get(path), imports: dependencies });
+        pending.push(...dependencies.filter((dependency) => dependency !== null));
+      }
+    });
+  }
+  return new Map([...paths].map((path) => {
+    const reached = new Set([path]);
+    for (const file of reached) {
+      const source = graph.get(file);
+      if (!source) return [path, null];
+      for (const dependency of source.imports) reached.add(dependency);
+    }
+    const hash = createHash("sha256");
+    for (const file of [...reached].sort()) hash.update(`${file}\0${graph.get(file).text}\0`);
+    return [path, hash.digest("hex")];
+  }));
+}
+
 function inspectTestInputs(tests, readText, exemptions) {
   const context = { readText, imports: packageImports(readText), helpers: UNBOUNDED_INPUT_TEMP_HELPERS };
   const roots = new Set(tests);
@@ -575,7 +632,7 @@ function inspectTestInputs(tests, readText, exemptions) {
     pending = [];
     withParsedSourceTexts(texts, (sources, resolveDeclarations) => {
       for (const [path, source] of sources) {
-        const { classes, specifiers, canProveFs, fsLocals } = inspectInputSource(source, exemptions);
+        const { classes, specifiers, canProveFs, fsLocals, opaqueImports } = inspectInputSource(source, exemptions);
         const hits = [];
         const helpers = [];
         for (const specifier of specifiers) {
@@ -583,18 +640,26 @@ function inspectTestInputs(tests, readText, exemptions) {
           const helper = resolveInputHelper(path, specifier, context.imports, readText);
           if (helper?.unresolved) hits.push(`${path}:unresolved ${specifier}`);
           else if (helper) {
+            if (opaqueImports.has(specifier) && exemptions[helper.path]?.forwards) hits.push(`${path}:forwarded ${helper.path}`);
             helpers.push(helper.path);
             pending.push(helper.path);
           }
         }
         if (roots.has(path) && classes.size === 1 && classes.has("read") && canProveFs
           && proveTempReads(path, resolveDeclarations(path, identifiersOf(source)), fsLocals, context)) classes.delete("read");
-        for (const kind of classes) {
-          if (!Object.hasOwn(exemptions[path] ?? {}, kind)) hits.push(`${path}:${kind}`);
-        }
-        graph.set(path, { hits, helpers });
+        graph.set(path, { hits, helpers, classes });
       }
     });
+  }
+  const pins = [...graph.keys()].filter((path) => Object.hasOwn(exemptions, path));
+  const digests = unboundedInputExemptionDigests(pins, readText);
+  for (const [path, { hits, classes }] of graph) {
+    const entry = exemptions[path];
+    const digest = digests.get(path);
+    const audited = typeof digest === "string" && digest === entry?.digest;
+    for (const kind of classes ?? []) {
+      if (!audited || !Object.hasOwn(entry, kind)) hits.push(path + ":" + kind);
+    }
   }
   return new Map(tests.map((test) => {
     const reached = new Set([test]);
@@ -624,10 +689,15 @@ export function selectUnboundedInputTests(trackedTests, readText, exemptions = U
   const byTests = unboundedInputCache.get(readText) ?? new WeakMap();
   unboundedInputCache.set(readText, byTests);
   const cached = exemptions === UNBOUNDED_INPUT_EXEMPTIONS ? byTests.get(trackedTests) : undefined;
-  if (cached) return cached;
-  const hits = inspectTestInputs(trackedTests, readText, exemptions);
+  if (cached && [...cached.sources].every(([path, text]) => readText(path) === text)) return cached.selected;
+  const sources = new Map();
+  const readSnapshot = (path) => {
+    if (!sources.has(path)) sources.set(path, readText(path));
+    return sources.get(path);
+  };
+  const hits = inspectTestInputs(trackedTests, readSnapshot, exemptions);
   const selected = [...hits].filter(([, entries]) => entries.length > 0).map(([test]) => test).sort();
-  if (exemptions === UNBOUNDED_INPUT_EXEMPTIONS) byTests.set(trackedTests, selected);
+  if (exemptions === UNBOUNDED_INPUT_EXEMPTIONS) byTests.set(trackedTests, { selected, sources });
   return selected;
 }
 

@@ -28,6 +28,7 @@ import {
   selectUnboundedInputTests,
   tempHelperDigest,
   unboundedInputClasses,
+  unboundedInputExemptionDigests,
   unboundedInputHits,
   testRunsRepoCodeOutOfProcess,
 } from "../../scripts/run-ci-suite.mjs";
@@ -856,7 +857,7 @@ describe("the must-run set", () => {
   it.each(Object.entries(UNBOUNDED_INPUT_EXEMPTIONS))("keeps the exemption for %s current", (file, entry) => {
     const text = readText(file);
     expect(text, file).not.toBeNull();
-    const kinds = Object.keys(entry).filter((key) => key !== "forwards");
+    const kinds = Object.keys(entry).filter((key) => key !== "forwards" && key !== "digest");
     expect(kinds.length).toBeGreaterThan(0);
     for (const kind of kinds) {
       expect(String(entry[kind as "read"]).trim(), `${file}:${kind}`).not.toBe("");
@@ -902,7 +903,38 @@ describe("the must-run set", () => {
     expect(unboundedInputHits("src/a/__tests__/a.test.ts", read).sort()).toEqual(["scripts/z.mjs:git", "test/support/y.ts:read"]);
     expect(unboundedInputHits("src/b/__tests__/b.test.ts", read)).toEqual(["src/b/__tests__/support/gone.js:unresolved"]);
     // An exempted helper class is silent; production modules belong to the import graph.
-    expect(unboundedInputHits("src/c/__tests__/c.test.ts", read)).toEqual([]);
+    const helper = "src/__tests__/support/tmp-dir-teardown.ts";
+    const digest = unboundedInputExemptionDigests([helper], read).get(helper);
+    if (!digest) throw new Error("Exemption closure could not be resolved");
+    expect(unboundedInputHits("src/c/__tests__/c.test.ts", read, { [helper]: { read: "fixture", digest } })).toEqual([]);
+  });
+
+  it("pins each exemption to its audited file and imported repository sources", () => {
+    const paths = Object.keys(UNBOUNDED_INPUT_EXEMPTIONS);
+    const actual = unboundedInputExemptionDigests(paths, readText);
+    const drifted = paths.filter((path) => actual.get(path) !== UNBOUNDED_INPUT_EXEMPTIONS[path]?.digest);
+    expect(drifted.map((path) => [path, actual.get(path)])).toEqual([]);
+  });
+
+  it("invalidates an exemption when a transitive import changes or disappears", () => {
+    const suite = "test/source.test.ts";
+    const helper = "test/reader.ts";
+    const indirect = "src/dependency.ts";
+    const files: Record<string, string> = {
+      [suite]: 'import { read } from "./reader"; read();',
+      [helper]: 'import { readFileSync } from "node:fs"; import { location } from "../src/location"; export const read = () => readFileSync(location);',
+      "src/location.ts": 'export { location } from "./dependency";',
+      [indirect]: 'export const location = "file";',
+    };
+    const read = (path: string) => files[path] ?? null;
+    const digest = unboundedInputExemptionDigests([helper], read).get(helper);
+    if (!digest) throw new Error("Exemption closure could not be resolved");
+    const exemptions = { [helper]: { read: "fixture", digest } };
+    expect(unboundedInputHits(suite, read, exemptions)).toEqual([]);
+    files[indirect] += '\nexport const changed = true;';
+    expect(unboundedInputHits(suite, read, exemptions)).toEqual([helper + ":read"]);
+    delete files[indirect];
+    expect(unboundedInputHits(suite, read, exemptions)).toEqual([helper + ":read"]);
   });
 
   describe("temp-bounded reads", () => {
@@ -973,7 +1005,7 @@ describe("the must-run set", () => {
       const viaAudited = 'import { useTempDirs, useTempPaths } from "../../__tests__/test-helpers.js";\nconst makeDir = useTempDirs("x-"); const makePath = useTempPaths("y-", "state.json");\nreadFileSync(join(makeDir(), "a.json")); existsSync(makePath());';
       // The helper's own imports come from the real tree.
       expect(hits(viaAudited, repo, readText)).toEqual([]);
-      expect(hits(viaAudited, { ...repo, "src/__tests__/support/tmp-dir-teardown.ts": `${teardown}\n// changed` }, readText)).toEqual(unbounded);
+      expect(hits(viaAudited, { ...repo, "src/__tests__/support/tmp-dir-teardown.ts": `${teardown}\n// changed` }, readText)).toEqual(expect.arrayContaining(unbounded));
       expect(hits('import { useTempPaths } from "../../__tests__/test-helpers.js";\nconst makePath = useTempPaths("y-", "../../package.json"); readFileSync(makePath());', repo, readText)).toEqual(unbounded);
       const viaUnaudited = 'import { makeScratch } from "./support/scratch.js";\nconst dir = makeScratch(); readFileSync(join(dir, "a.json"));';
       expect(hits(viaUnaudited, { "src/t/__tests__/support/scratch.ts": 'export const makeScratch = () => "/tmp/x";' })).toEqual(unbounded);

@@ -30,6 +30,7 @@ export declare function runsRepoCodeOutOfProcess(text: string): boolean;
 export declare function testRunsRepoCodeOutOfProcess(testPath: string, readText: (path: string) => string | null): boolean;
 export declare function unboundedInputClasses(text: string, exemptions?: UnboundedInputExemptions): string[];
 export declare function unboundedInputHits(testPath: string, readText: (path: string) => string | null, exemptions?: UnboundedInputExemptions): string[];
+export declare function unboundedInputExemptionDigests(paths: readonly string[], readText: (path: string) => string | null): Map<string, string | null>;
 export declare function tempHelperDigest(path: string, entry: UnboundedInputTempHelper, readText: (path: string) => string | null): string | null;
 export declare function selectUnboundedInputTests(trackedTests: readonly string[], readText: (path: string) => string | null, exemptions?: UnboundedInputExemptions): string[];
 export declare const AFFECTED_SHARD_THRESHOLD: number;
