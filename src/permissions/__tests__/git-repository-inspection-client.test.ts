@@ -53,7 +53,7 @@ function standInWorker(behaviour: string): string {
  * identity. Compare the worker with in-process inspections taken on both sides of it, and
  * retry only when that window was itself disturbed.
  */
-async function inspectInStableWindow(path: string) {
+async function inspectInStableWindow(path: string, requireEvidence = false) {
   let last: { actual: unknown; expected: unknown } | undefined;
   for (let attempt = 0; attempt < 25; attempt += 1) {
     if (attempt > 0) await new Promise((settle) => setTimeout(settle, 20));
@@ -62,7 +62,9 @@ async function inspectInStableWindow(path: string) {
     const after = inspectGitRepository(path);
     last = { actual, expected: before };
     // A deterministic mismatch fails every attempt; only a disturbed window is retried.
-    if (JSON.stringify(before) === JSON.stringify(after) && JSON.stringify(actual) === JSON.stringify(before)) return last;
+    // A refusal of an admitted repository means the window was disturbed, never parity.
+    const disturbed = requireEvidence && (before === null || actual === null);
+    if (!disturbed && JSON.stringify(before) === JSON.stringify(after) && JSON.stringify(actual) === JSON.stringify(before)) return last;
   }
   if (last === undefined) throw new Error("No comparison ran");
   return last;
@@ -97,9 +99,16 @@ describe("repository inspection worker", () => {
     ["nested repository data", () => { mkdirSync(join(cwd, ".git", "modules", "nested"), { recursive: true }); writeFileSync(join(cwd, ".git", "modules", "nested", "config"), ORDINARY_CONFIG); }],
   ];
 
-  it.each(PARITY_CASES)("returns the in-process inspection result: %s", async (_name, arrange) => {
+  const EVIDENCE_CASES = new Set(["ordinary metadata", "loose refs and packed refs"]);
+
+  it.each(PARITY_CASES)("returns the in-process inspection result: %s", async (name, arrange) => {
     arrange();
-    const { actual, expected } = await inspectInStableWindow(cwd);
+    const { actual, expected } = await inspectInStableWindow(cwd, EVIDENCE_CASES.has(name));
+    // Admitted repositories must yield evidence on both sides, so two refusals cannot pass as parity.
+    if (EVIDENCE_CASES.has(name)) {
+      expect(expected).not.toBeNull();
+      expect(actual).not.toBeNull();
+    }
     expect(actual).toEqual(expected);
   });
 
@@ -167,9 +176,19 @@ describe("repository inspection worker", () => {
     expect(actual).toEqual(expected);
   });
 
-  it("refuses when the worker entry is missing", async () => {
+  it("refuses a missing worker entry and does not start another worker for it", async () => {
+    const { Worker } = await import("node:worker_threads");
     paths.mainDir = join(root, "no-build");
     expect(await client.inspectGitRepositoryAsync(cwd)).toBeNull();
+    expect(client.lastGitRepositoryInspectionRefusal()).toBe("worker-entry-missing");
+    const started = vi.spyOn(Worker.prototype, "postMessage");
+    for (let attempt = 0; attempt < 3; attempt += 1) expect(await client.inspectGitRepositoryAsync(cwd)).toBeNull();
+    expect(client.lastGitRepositoryInspectionRefusal()).toBe("worker-entry-missing");
+    expect(started).not.toHaveBeenCalled();
+    started.mockRestore();
+    paths.mainDir = builtWorkerDir;
+    const { actual, expected } = await inspectInStableWindow(cwd);
+    expect(actual).toEqual(expected);
   });
 
   it("bounds the queue and refuses requests beyond it without queuing them", async () => {

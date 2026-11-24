@@ -10,7 +10,7 @@ export const GIT_REPOSITORY_INSPECTION_WORKER_FILE = "git-repository-inspection-
 export const MAX_PENDING_GIT_REPOSITORY_INSPECTIONS = 16;
 
 /** Why an inspection produced no evidence. Every reason is a refusal. */
-export type GitRepositoryInspectionRefusal = "queue-full" | "worker-unavailable" | "worker-failed" | "malformed-reply" | "timeout";
+export type GitRepositoryInspectionRefusal = "queue-full" | "worker-unavailable" | "worker-entry-missing" | "worker-failed" | "malformed-reply" | "timeout";
 
 interface PendingInspection {
   readonly worker: Worker;
@@ -22,6 +22,8 @@ let resident: Worker | undefined;
 let nextRequestId = 0;
 const pending = new Map<number, PendingInspection>();
 let lastRefusal: GitRepositoryInspectionRefusal | undefined;
+/** A worker entry that failed to load because it does not exist; it is not started again. */
+let missingEntry: string | undefined;
 
 /** Keeps the process alive only while this worker owes a reply. */
 function release(id: number, request: PendingInspection): void {
@@ -54,9 +56,19 @@ function isInspectionResult(value: unknown): value is GitRepositoryInputs | null
     && Object.keys(result).length === 4;
 }
 
+function workerEntry(): string {
+  return join(mainDir, GIT_REPOSITORY_INSPECTION_WORKER_FILE);
+}
+
+function isMissingEntry(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return code === "ERR_MODULE_NOT_FOUND" || code === "MODULE_NOT_FOUND";
+}
+
 function residentWorker(): Worker {
   if (resident !== undefined) return resident;
-  const worker = new Worker(join(mainDir, GIT_REPOSITORY_INSPECTION_WORKER_FILE));
+  const entry = workerEntry();
+  const worker = new Worker(entry);
   // An idle inspector never keeps the process alive.
   worker.unref();
   worker.on("message", (message: unknown) => {
@@ -70,7 +82,12 @@ function residentWorker(): Worker {
     release(id, request);
     request.settle(reply.result);
   });
-  worker.on("error", () => retire(worker, "worker-failed"));
+  worker.on("error", (error) => {
+    if (isMissingEntry(error)) {
+      missingEntry = entry;
+      retire(worker, "worker-entry-missing");
+    } else retire(worker, "worker-failed");
+  });
   worker.on("exit", () => retire(worker, "worker-failed"));
   resident = worker;
   return worker;
@@ -83,6 +100,10 @@ function residentWorker(): Worker {
 export function inspectGitRepositoryAsync(cwd: string): Promise<GitRepositoryInputs | null> {
   if (pending.size >= MAX_PENDING_GIT_REPOSITORY_INSPECTIONS) {
     lastRefusal = "queue-full";
+    return Promise.resolve(null);
+  }
+  if (missingEntry !== undefined && missingEntry === workerEntry()) {
+    lastRefusal = "worker-entry-missing";
     return Promise.resolve(null);
   }
   let worker: Worker;
