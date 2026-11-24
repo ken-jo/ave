@@ -94,7 +94,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 const { prepareBrowserDownloadStaging, stageBrowserDownload, sweepBrowserDownloadStaging, stagingRefusal, BrowserDownloadStagingError, UNANSWERED_DOWNLOAD_BYTES } =
   await import("../browser-download-staging.js");
 const { setLocale } = await import("../../../i18n/index.js");
-const { _descriptorFileOperationsForTest, _helperFileOperationsForTest, HeldFileHelperStalledError } = await import("../browser-download-files.js");
+const { _descriptorFileOperationsForTest, _helperFileOperationsForTest, HeldDirectoryRefusedError, HeldFileHelperStalledError } = await import("../browser-download-files.js");
 type Root = import("../browser-download-staging.js").BrowserDownloadStagingRoot;
 type Observed = import("../browser-download-staging.js").ObservedDownload;
 type Files = import("../browser-download-files.js").HeldFileOperations;
@@ -1178,6 +1178,26 @@ describe("a chosen folder whose volume cannot replace a file safely", () => {
     expect(stagingRefusal("volume")).toBe(unsupported);
     expect(stagingRefusal("volume-unknown")).toBe(unknown);
     expect(stagingRefusal("to")).not.toMatch(/file IDs/u);
+  });
+
+  it.each([
+    ["volume", "unsupported-volume"],
+    ["volume-unknown", "volume-unknown"],
+    ["target", null],
+  ] as const)("ends the download interrupted with a notice the downloads list shows, for a %s refusal", async (refusal, notice) => {
+    const root = withFiles(acrossVolumes(prepare()), () => ({ copy: async () => { throw new HeldDirectoryRefusedError(refusal); } }));
+    const { asked, askSavePath } = dialogs();
+    const item = fakeItem();
+    const staged = stageBrowserDownload(item, { root, askSavePath }, Promise.resolve());
+    const done = doneOutcome(staged.download);
+    await settled();
+    mkdirSync(join(home, "chosen"));
+    asked[0]?.answer(join(home, "chosen", "report.pdf"));
+    await settled();
+    expect(staged.download.getNotice()).toBeNull();
+    item.complete("whole");
+    expect((await done).state).toBe("interrupted");
+    expect(staged.download.getNotice()).toBe(notice);
   });
 });
 

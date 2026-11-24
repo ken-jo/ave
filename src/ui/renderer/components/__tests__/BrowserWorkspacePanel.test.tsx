@@ -277,3 +277,20 @@ it("history shows the earliest and the latest time the saved state can hold", as
   expect([...screen.getByTestId("browser-history-user").querySelectorAll("time")].map((time) => time.getAttribute("datetime")))
     .toEqual(["+275760-09-13T00:00:00.000Z", "1970-01-01T00:00:00.000Z"]);
 });
+it("names why a download was not saved when its chosen folder's volume cannot replace a file safely or could not be checked", async () => {
+  intersection();
+  const { props, stateChanged } = setup();
+  render(<BrowserWorkspacePanel {...props} />);
+  await act(async () => { await Promise.resolve(); });
+  fireEvent.click(screen.getByText("browserWorkspace.library"));
+  fireEvent.click(screen.getByTestId("browser-library-downloads"));
+  act(() => stateChanged({ ...STATE, revision: 2, downloads: [
+    { id: "download-1", name: "a.pdf", receivedBytes: 1, totalBytes: 1, state: "interrupted", at: 1, notice: "unsupported-volume" },
+    { id: "download-2", name: "b.pdf", receivedBytes: 1, totalBytes: 1, state: "interrupted", at: 2, notice: "volume-unknown" },
+    { id: "download-3", name: "c.pdf", receivedBytes: 1, totalBytes: 1, state: "interrupted", at: 3 },
+  ] }));
+  expect(screen.getAllByTestId("browser-download-notice").map((notice) => [notice.getAttribute("data-notice"), notice.textContent])).toEqual([
+    ["unsupported-volume", "browserDownload.unsupportedVolume"],
+    ["volume-unknown", "browserDownload.volumeUnknown"],
+  ]);
+});

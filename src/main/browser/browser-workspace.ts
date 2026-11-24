@@ -9,7 +9,7 @@ import { BrowserPagePrompts } from "./browser-page-prompts.js";
 
 /** The runtime's request to show a page dialog: (details, respond). */
 const RUN_DIALOG = "-run-dialog";
-import { BROWSER_DIALOG_DOCUMENT_LIMIT, BROWSER_PAGE_DIALOG_TYPES, browserDialogText, BROWSER_EXTERNAL_SCHEMES, BROWSER_EXTERNAL_TARGET_LIMIT, BROWSER_REALM_LIMIT, browserPlainText, BROWSER_WORKSPACE_LIMITS, browserWorkspaceUrl, parseBrowserWorkspaceRequest, type BrowserClearDataRequest, type BrowserClearSiteDataRequest, BROWSER_PAGE_SHORTCUT_ACTIONS, type BrowserDownloadBlockReason, type BrowserFindResult, type BrowserPageShortcut, type BrowserPageShortcutAction, type BrowserPageShortcuts, type BrowserHistoryTarget, type BrowserDownloadTarget, type BrowserLoadError, type BrowserOpenTab, type BrowserLoadRequest, type BrowserPageStatus, type BrowserPromptAnswerRequest, type BrowserBookmarkRequest, type BrowserCaptureRequest, type BrowserDownload, type BrowserPreview, type BrowserFindRequest, type BrowserSitePermissionRequest, type BrowserWorkspaceState, type BrowserWorkspaceTarget, type BrowserWorkspaceTab, type BrowserZoomRequest } from "../../shared/browser-workspace.js";
+import { BROWSER_DIALOG_DOCUMENT_LIMIT, BROWSER_PAGE_DIALOG_TYPES, browserDialogText, BROWSER_EXTERNAL_SCHEMES, BROWSER_EXTERNAL_TARGET_LIMIT, BROWSER_REALM_LIMIT, browserPlainText, BROWSER_WORKSPACE_LIMITS, browserWorkspaceUrl, parseBrowserWorkspaceRequest, type BrowserClearDataRequest, type BrowserClearSiteDataRequest, BROWSER_PAGE_SHORTCUT_ACTIONS, type BrowserDownloadBlockReason, type BrowserDownloadNotice, type BrowserFindResult, type BrowserPageShortcut, type BrowserPageShortcutAction, type BrowserPageShortcuts, type BrowserHistoryTarget, type BrowserDownloadTarget, type BrowserLoadError, type BrowserOpenTab, type BrowserLoadRequest, type BrowserPageStatus, type BrowserPromptAnswerRequest, type BrowserBookmarkRequest, type BrowserCaptureRequest, type BrowserDownload, type BrowserPreview, type BrowserFindRequest, type BrowserSitePermissionRequest, type BrowserWorkspaceState, type BrowserWorkspaceTarget, type BrowserWorkspaceTab, type BrowserZoomRequest } from "../../shared/browser-workspace.js";
 import { BrowserWorkspacePreview } from "./browser-workspace-preview.js";
 import { BrowserWorkspaceCapture } from "./browser-workspace-capture.js";
 import { BrowserWorkspaceStore } from "./browser-workspace-store.js";
@@ -516,8 +516,8 @@ export class BrowserWorkspaceService {
     const key = `${windowId}:${id}`;
     this.activeDownloads.set(key, item);
     const at = (this.deps.now ?? Date.now)();
-    const update = (state: BrowserDownload["state"]) => {
-      const entry: BrowserDownload = { id, name: item.getFilename().slice(0, 300), receivedBytes: Math.max(0, item.getReceivedBytes()), totalBytes: Math.max(0, item.getTotalBytes()), state, at };
+    const update = (state: BrowserDownload["state"], notice: BrowserDownloadNotice | null = null) => {
+      const entry: BrowserDownload = { id, name: item.getFilename().slice(0, 300), receivedBytes: Math.max(0, item.getReceivedBytes()), totalBytes: Math.max(0, item.getTotalBytes()), state, at, ...(notice === null ? {} : { notice }) };
       this.downloads.set(windowId, [entry, ...(this.downloads.get(windowId) ?? []).filter((candidate) => candidate.id !== id)].slice(0, BROWSER_WORKSPACE_LIMITS.downloads));
       this.notify();
     };
@@ -529,7 +529,7 @@ export class BrowserWorkspaceService {
       // Where the file was saved stays in main; the renderer names a download only by its id.
       const path = state === "completed" ? item.getSavePath() : "";
       if (path) this.downloadPaths.set(key, path);
-      update(state);
+      update(state, state === "interrupted" ? item.getNotice() : null);
     };
     const disposers = this.downloadDisposers.get(windowId) ?? new Set<() => void>();
     disposers.add(dispose);

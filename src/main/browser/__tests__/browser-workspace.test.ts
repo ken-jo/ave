@@ -69,6 +69,14 @@ describe("browser workspace service", () => {
     expect(item.setSavePath).not.toHaveBeenCalled(); expect(item.getSavePath).toHaveBeenCalledOnce();
     expect(JSON.stringify(state.downloads)).not.toMatch(/savePath|hostPath|file:\/\//);
   });
+  it.each(["unsupported-volume", "volume-unknown"] as const)("lists an interrupted download with the notice its save gave (%s)", async (notice) => {
+    const { service } = await setup();
+    const item = Object.assign(new EventEmitter(), { getFilename: () => "report.txt", getReceivedBytes: () => 10, getTotalBytes: () => 10, getSavePath: () => "", getNotice: () => notice });
+    service.observeDownload(1, item as unknown as ObservedDownload);
+    expect((await service.getState(1)).downloads[0]).not.toHaveProperty("notice");
+    item.emit("done", {}, "interrupted");
+    expect((await service.getState(1)).downloads[0]).toMatchObject({ state: "interrupted", notice });
+  });
   it("denies an unrelated site decision and observes guest lifecycle without replacing existing listeners", async () => {
     const { service, guest, events, setUrl } = await setup();
     const existing = vi.fn(); events.on("did-navigate", existing);

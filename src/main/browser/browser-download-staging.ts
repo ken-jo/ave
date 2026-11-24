@@ -6,6 +6,7 @@ import {
 } from "node:fs";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import type { DownloadItem } from "electron";
+import type { BrowserDownloadNotice } from "../../shared/browser-workspace.js";
 import { aveHome } from "../../shared/ave-home.js";
 import { createLogger } from "../../lib/logger.js";
 import { t } from "../../i18n/index.js";
@@ -76,6 +77,8 @@ export interface ObservedDownload {
   getTotalBytes(): number;
   /** Where the file was saved; empty until it has been. */
   getSavePath(): string;
+  /** Why an interrupted download was not saved, when the user can act on it; null otherwise. */
+  getNotice(): BrowserDownloadNotice | null;
   cancel(): void;
   on(event: "updated", listener: (event: unknown, state: "progressing" | "interrupted") => void): unknown;
   once(event: "done", listener: DoneListener): unknown;
@@ -206,6 +209,13 @@ async function refusingAsStaging<T>(operation: () => Promise<T>): Promise<T> {
     if (error instanceof HeldDirectoryRefusedError) throw new BrowserDownloadStagingError(stagingRefusal(error.refusal), { cause: error });
     throw error;
   }
+}
+
+// The downloads list names a refused volume, so the user knows to choose another folder.
+function volumeNotice(error: unknown): BrowserDownloadNotice | null {
+  const refusal = error instanceof BrowserDownloadStagingError && error.cause instanceof HeldDirectoryRefusedError ? error.cause.refusal : null;
+  if (refusal === "volume") return "unsupported-volume";
+  return refusal === "volume-unknown" ? "volume-unknown" : null;
 }
 
 const proceedAlways = (): boolean => true;
@@ -644,6 +654,7 @@ const ABSENT_STAMP_PAUSE_MS = 1_000;
 
 class StagedDownload extends EventEmitter implements ObservedDownload {
   private savedPath = "";
+  notice: BrowserDownloadNotice | null = null;
   private ended = false;
   private publishing = false;
   private readonly cancellation = new AbortController();
@@ -661,6 +672,7 @@ class StagedDownload extends EventEmitter implements ObservedDownload {
   getReceivedBytes(): number { return this.item.getReceivedBytes(); }
   getTotalBytes(): number { return this.item.getTotalBytes(); }
   getSavePath(): string { return this.savedPath; }
+  getNotice(): BrowserDownloadNotice | null { return this.notice; }
   get isEnded(): boolean { return this.ended; }
   /** Aborts once the user cancels; publication stops at its next step before the commit point. */
   get cancelSignal(): AbortSignal { return this.cancellation.signal; }
@@ -765,6 +777,7 @@ export function stageBrowserDownload(item: StageableDownloadItem, deps: BrowserD
       outcome = await publish(deps.root, name, staged, destination, download.cancelSignal);
     } catch (error) {
       log.warn({ error: (error as Error).message }, "a browser download could not be put where the user chose");
+      download.notice = volumeNotice(error);
       download.finish("interrupted", undefined, stoppedCopyOf(error)?.partialCopy === "left");
       return;
     }
