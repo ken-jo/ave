@@ -326,6 +326,7 @@ function checkPreparationCache(job) {
     }
   }
   const saveOnlyOnSuccess = "success() && " + PREPARATION_CACHE_MAIN_SAVE;
+  // Publication depends on the declared preparation steps through the final digest check.
   const verifiedAfterCleanup = saveOnlyOnSuccess
     + " && steps.windows-preparation-seal.outcome == 'success' && steps.windows-job-cleanup.outcome == 'success'";
   if (seal?.id !== "windows-preparation-seal" || seal.run !== PREPARATION_CACHE_COMMAND + " seal" || seal.if !== PREPARATION_CACHE_MAIN_SAVE
@@ -338,7 +339,7 @@ function checkPreparationCache(job) {
     || publication.env?.AVE_WINDOWS_PREP_SEAL_DIGEST !== "${{ steps.windows-preparation-seal.outputs.digest }}"
     || !before(seal, cleanup) || !before(cleanup, publication) || !before(publication, save) || save !== steps.at(-1)
     || !exact(save, "save") || save.if !== saveOnlyOnSuccess + " && steps.windows-preparation-publication.outcome == 'success'") {
-    throw new Error("Windows preparation must seal new outputs before saving on main after successful containment cleanup");
+    throw new Error("Saving Windows helpers on main requires successful preparation steps through containment cleanup and the final digest check");
   }
 }
 

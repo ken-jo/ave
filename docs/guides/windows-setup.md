@@ -173,6 +173,8 @@ One preparation job supplies the helpers to all three shards. It reuses only nat
 
 The helper cache defends against bytes carried across runs. The preparation job trusts its own workflow steps because code running in any of those steps already controls the job. On a hit, the verifier installs the checked bytes. The first step that runs the launcher starts by rehashing the launcher and helpers at their installed paths against the same sealed manifest. A mismatch stops that step before launch.
 
+Publication requires the producer's preparation steps to succeed through containment cleanup and the final digest check. A cancellation after the verified upload leaves that entry eligible for reuse.
+
 Use `bun run test`, not `bun test`. The suite runs under Vitest through `scripts/run-vitest-under-electron.mjs`.
 
 Checklist after a first run:

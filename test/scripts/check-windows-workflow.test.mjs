@@ -419,7 +419,9 @@ it("rehashes the installed helpers before the first launcher command", () => {
   }
 });
 
-it("cannot publish when containment cleanup fails after sealing", () => {
+const PUBLICATION_GATE = /requires successful preparation steps through containment cleanup and the final digest check/;
+
+it("publishes only after the preparation steps through cleanup and digest verification succeed", () => {
   const steps = parse(workflow).jobs["windows-native-preparation"].steps;
   const seal = steps.findIndex(step => step.name === "Seal Windows preparation outputs");
   const cleanup = steps.findIndex(step => step.name === "Remove isolated system-volume job directory");
@@ -436,7 +438,7 @@ it("cannot publish when containment cleanup fails after sealing", () => {
       .replace("success() && ", "always() && ")
       .replace(" && steps.windows-job-cleanup.outcome == 'success'", "");
   });
-  assert.throws(() => checkWindowsWorkflow(publishedDespiteFailure, parsedLines), /must seal new outputs before saving on main/);
+  assert.throws(() => checkWindowsWorkflow(publishedDespiteFailure, parsedLines), PUBLICATION_GATE);
 });
 
 for (const [name, change, expected] of [
@@ -459,17 +461,20 @@ for (const [name, change, expected] of [
   }, /only the Windows preparation verifier/i],
   ["saving prep outputs from an untrusted ref", (_steps, get) => {
     get("Save Windows preparation outputs").if = CONDITION;
-  }, /must seal new outputs before saving on main/],
+  }, PUBLICATION_GATE],
   ["running more preparation after publishing", steps => {
     steps.push({ name: "Later check", run: "node late-check.mjs" });
-  }, /after successful containment cleanup/],
+  }, PUBLICATION_GATE],
   ["publishing before cleanup completes", (steps, get) => {
     const save = steps.pop();
     steps.splice(steps.indexOf(get("Remove isolated system-volume job directory")), 0, save);
-  }, /after successful containment cleanup/],
+  }, PUBLICATION_GATE],
   ["publishing without a seal tied to the preparation checks", (_steps, get) => {
     delete get("Verify sealed Windows preparation outputs").env.AVE_WINDOWS_PREP_SEAL_DIGEST;
-  }, /after successful containment cleanup/],
+  }, PUBLICATION_GATE],
+  ["binding cache publication to a terminal job result", (_steps, get) => {
+    get("Save Windows preparation outputs").if += " && needs.windows-native-preparation.result == 'success'";
+  }, PUBLICATION_GATE],
 ]) {
   it(`rejects ${name}`, () => {
     assert.throws(() => checkWindowsWorkflow(changedWorkflow(change), parsedLines), expected);
