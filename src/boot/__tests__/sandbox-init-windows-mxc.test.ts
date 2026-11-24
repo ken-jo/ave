@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { t } from "../../i18n/index.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import {
   createSandboxBootHarness,
@@ -373,7 +374,7 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     expect(getSandboxBootOutcome()).toMatchObject({ action: "activate", reason: "activate-windows-mxc-proxy-only", onSignal: "explicit-env" });
     await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({ shells: "mxc", extensions: "none" }));
     expect(detectPluginWorkerSandboxCapability().kind).toBe("none");
-    expect(h.logger.warn).toHaveBeenCalledWith(expect.stringContaining("plugin workers, plugin children, plugin hooks and MCP stdio servers run with NO OS isolation"));
+    expect(h.logger.warn).toHaveBeenCalledWith(expect.stringContaining(t("be_windowsSandboxPlan.extensionContainmentUnavailable")));
   });
 
   it.each([["link", "boundary-link"], ["unlisted", "boundary-unlisted"]] as const)(
