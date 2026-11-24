@@ -232,12 +232,31 @@ describe("shell path policy — working directory tracking", () => {
       `cd b || mkdir -p b; ${repeat(8, (index) => `cd d${index} && test -f m && cd ..`)}`,
       `cd b || true; ${repeat(8, (index) => `cd d${index} && make && cd ..`)}`,
       `cd a || ls; ${repeat(6, (index) => `cd d${index}`)}`,
-      ...["ls", "true", "echo skip"].map((fallback) => `cd "$R/c" || ${fallback}; ${repeat(8, (index) => `cd "$R/d${index}" && make; cd "$R"`)}`),
+      `cd "$R/c" || ls; ${repeat(8, (index) => `cd "$R/d${index}" && make; cd "$R"`)}`,
     ])("ends a changed fault path in an ordinary ask: %s", (command) => {
       const start = performance.now();
       const violation = atRoot(command, { R: ROOT.replaceAll("\\", "/") });
       expect(performance.now() - start).toBeLessThan(5_000);
       expect(violation).toMatchObject({ kind: "dynamic-path" });
+    });
+
+    const absoluteSteps = repeat(6, (index) => `cd "$R/d${index}" && make; cd "$R"`);
+    it.each([
+      [absoluteSteps, null],
+      ["for d in a b c; do cd $d && make && cd ..; done", null],
+      [`for d in ${Array.from({ length: 8 }, (_, index) => `d${index}`).join(" ")}; do cd "$R/$d" && make; done`, "dynamic-path"],
+      [`cd "$R/c" || true; ${absoluteSteps}`, null],
+      [`cd "$R/c" || echo skip; ${absoluteSteps}`, null],
+      [`cd "$R/c" || mkdir -p "$R/c"; ${absoluteSteps}`, "dynamic-path"],
+    ])("stops only a changed fault path when another path changed the filesystem: %s", (command, kind) => {
+      const start = performance.now();
+      const violation = atRoot(command, { R: ROOT.replaceAll("\\", "/") });
+      expect(performance.now() - start).toBeLessThan(5_000);
+      expect(violation?.kind ?? null).toBe(kind);
+    });
+
+    it("keeps a missing directory missing on a fault path that changed nothing", () => {
+      expect(atRoot("cd c && make; cd missing && touch ../../x")).toBeNull();
     });
 
     it("models a failing fallback cd", () => {

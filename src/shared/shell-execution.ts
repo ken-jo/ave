@@ -656,9 +656,11 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
       const changed = cloneState(state);
       changed.variables.set("OLDPWD", state.cwd ?? undefined); changed.cwd = destination; changed.variables.set("PWD", destination);
       if (state.cdFault !== undefined && mayChange) {
-        // A fault path never forks once the filesystem may have changed; only an ancestor stays known.
+        // A fault path never forks; only an ancestor stays known once the path itself changed the filesystem.
         if (observedDirectory && state.cwd !== null && within(destination, state.cwd)) return [{ state: changed, status: "success" }];
-        decline("unresolved working-directory destination", effective.words[1]);
+        if (state.cdFaultChanged) decline("unresolved working-directory destination", effective.words[1]);
+        // Changes on other paths never reach this one, so its cd fails only for a missing directory.
+        return [observedDirectory ? { state: changed, status: "success" } : { state, status: "failure" }];
       }
       if (mayChange) return [{ state: changed, status: "success" }, { state, status: "failure" }];
       // A fault path adds a second fault only for a fallback cd; errexit ends a failed cd outside a condition.
