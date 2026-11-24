@@ -76,7 +76,7 @@ describe("buildMacosDirOps", () => {
       macosDirOpsOutput(root, "arm64", "ave-dir-ops-ignores-eof"),
       macosDirOpsOutput(root, "arm64", "ave-dir-ops-reused-file-id"),
       macosDirOpsOutput(root, "arm64", "ave-dir-ops-swap-restored"),
-      macosDirOpsOutput(root, "arm64", "ave-dir-ops-swap-before-plain-rename"),
+      macosDirOpsOutput(root, "arm64", "ave-dir-ops-swap-rollback"),
       macosDirOpsOutput(root, "arm64", "ave-dir-ops-swap-commit"),
       macosDirOpsOutput(root, "arm64", "ave-dir-ops-fail-restored"),
       macosDirOpsOutput(root, "arm64", "ave-dir-ops-copy-commit-failure"),
@@ -90,7 +90,8 @@ describe("buildMacosDirOps", () => {
     expect(calls[4]).toContain("-DAVE_DIR_OPS_TEST_IGNORES_EOF");
     expect(calls[5]).toContain("-DAVE_DIR_OPS_TEST_REUSED_FILE_ID");
     expect(calls[6]).toContain("-DAVE_DIR_OPS_TEST_SWAP_RESTORED");
-    expect(calls[7]).toContain("-DAVE_DIR_OPS_TEST_SWAP_BEFORE_PLAIN_RENAME");
+    expect(calls[7]).toContain("-DAVE_DIR_OPS_TEST_SWAP_COMMIT");
+    expect(calls[7]).toContain("-DAVE_DIR_OPS_TEST_SWAP_ROLLBACK");
     expect(calls[8]).toContain("-DAVE_DIR_OPS_TEST_SWAP_COMMIT");
     expect(calls[9]).toContain("-DAVE_DIR_OPS_TEST_FAIL_RESTORED");
     expect(calls[10]).toContain("-DAVE_DIR_OPS_TEST_COPY_COMMIT_FAILURE");

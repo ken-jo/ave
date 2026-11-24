@@ -65,7 +65,10 @@ block that. Every file is opened, created exclusively and removed relative to
 those handles. Renames submit native `FileRenameInformation` with
 `RootDirectory` and a single component. Exclusive operations set
 `ReplaceIfExists=FALSE` and hold the source without delete sharing.
-Disposition uses the file's own handle.
+Disposition uses the file's own handle. A delete-pending entry remains
+unresolved until a probe after handle closure observes its absence.
+A direct rename to an existing regular target answers `replace`. The host
+then uses the journaled copy and publication protocol.
 
 Each mode sends `ready` after checking its directories. One `c` byte
 authorizes the action. Other input or EOF stops it. The recovery modes are:
@@ -74,8 +77,9 @@ authorizes the action. Other input or EOF stops it. The recovery modes are:
 | --- | --- |
 | `--dir-list-records` | `records` with zero or more space-separated `<32 lowercase hex>.cleanup.json` names |
 | `--dir-read <name> <max>` | `record <lowercase hex>` or `absent`, with a 1–8192 byte limit. Empty data is `record ` with its space. Over the limit is `failed EFBIG`. |
-| `--dir-sweep-record <name> <max>` | Holds the record through its `record <lowercase hex>` classification frame. A second authorization removes the entry only if its full stamp and digest still match. Replies `removed`, `kept`, or `absent`. |
-| `--dir-write-record <name> <hex>` | `written` after exclusive creation with a protected current-user DACL, write and sync. Maximum 8192 bytes. |
+| `--dir-sweep-record <name> <max>` | Holds the record through its `record <dev>:<id>:<birth-ns> <hex>` classification frame. A second authorization removes the entry only if the held record's full stamp and digest still match. Replies `removed`, `kept`, or `absent`. |
+| `--dir-write-record <name> <hex>` | `written <dev>:<id>:<birth-ns>` after exclusive creation with a protected current-user DACL, write, sync and verification. Maximum 8192 bytes. |
+| `--dir-remove-record <name> <dev> <id> <birth-ns> <length> <sha256>` | `removed` after observed absence or `kept` if verification or removal remains incomplete. An already absent entry replies `absent`. |
 | `--dir-remove-id <name> <file-dev> <file-ino> [<birth-ns>:<fingerprint>]` | `removed`, `absent`, or `left` with an optional named leftover. A birth-only token uses `<birth-ns>:-`. |
 | `--dir-restore <hidden> <part> <file-dev> <file-ino> <birth-ns>:<fingerprint>` | `restored` after verification and source retirement, `absent` if the source is missing, or `left` with an optional named leftover. |
 | `--dir-restore-target <hidden> <target> <file-dev> <file-ino> <birth-ns>:<fingerprint-or-dash> [<writer-ino>:<writer-birth-ns>\|retire]` | `resolved` after verified rollback or retirement, or `left` if unresolved. The optional writer is on `file-dev`. The `retire` operand retries a verified commit recorded by an older release. |
@@ -152,7 +156,7 @@ hidden entry and a target matching the original confirm rollback. A vacant
 target permits exclusive restoration of the verified hidden original.
 Other observations keep the record and are logged. The recorded part is
 removed by identity before the record is removed. The general boot sweep
-uses `keep-records` after this recovery pass.
+preserves record names after this recovery pass.
 
 I6. The copy session binds the old target identity captured before ready
 and the writing identity from the part handle. A target leftover must

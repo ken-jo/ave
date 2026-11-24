@@ -15,8 +15,7 @@ const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 
 const SOURCE_DIRECTORY = path.join("native", "macos-dir-ops");
 const SOURCE = path.join(SOURCE_DIRECTORY, "dir-ops.c");
 export const MACOS_DIR_OPS_EXECUTABLE = "ave-dir-ops";
-// Test variants: `defines` select the fault each one injects (short or stalled writes, a helper that never says it is ready, and one
-// that copies slowly and ignores requests to stop, plus a reused file identity on the plain-rename path).
+// Each test variant enables the faults named by its build flags.
 export const MACOS_DIR_OPS_TEST_BUILDS = Object.freeze([
   Object.freeze({ executable: "ave-dir-ops-short-writes", defines: ["AVE_DIR_OPS_TEST_WRITE_LIMIT=4093"] }),
   Object.freeze({ executable: "ave-dir-ops-stalled-writes", defines: ["AVE_DIR_OPS_TEST_STALLED_WRITES"] }),
@@ -24,7 +23,7 @@ export const MACOS_DIR_OPS_TEST_BUILDS = Object.freeze([
   Object.freeze({ executable: "ave-dir-ops-ignores-eof", defines: ["AVE_DIR_OPS_TEST_IGNORES_EOF"] }),
   Object.freeze({ executable: "ave-dir-ops-reused-file-id", defines: ["AVE_DIR_OPS_TEST_REUSED_FILE_ID"] }),
   Object.freeze({ executable: "ave-dir-ops-swap-restored", defines: ["AVE_DIR_OPS_TEST_SWAP_RESTORED"] }),
-  Object.freeze({ executable: "ave-dir-ops-swap-before-plain-rename", defines: ["AVE_DIR_OPS_TEST_SWAP_BEFORE_PLAIN_RENAME"] }),
+  Object.freeze({ executable: "ave-dir-ops-swap-rollback", defines: ["AVE_DIR_OPS_TEST_SWAP_COMMIT", "AVE_DIR_OPS_TEST_SWAP_ROLLBACK"] }),
   Object.freeze({ executable: "ave-dir-ops-swap-commit", defines: ["AVE_DIR_OPS_TEST_SWAP_COMMIT"] }),
   Object.freeze({ executable: "ave-dir-ops-fail-restored", defines: ["AVE_DIR_OPS_TEST_FAIL_RESTORED"] }),
   Object.freeze({ executable: "ave-dir-ops-copy-commit-failure", defines: ["AVE_DIR_OPS_TEST_COPY_COMMIT_FAILURE"] }),

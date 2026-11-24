@@ -250,58 +250,6 @@ inline FileFailure classify(HANDLE directory, const std::wstring& name, Entry& e
   return {};
 }
 
-// The chosen name may hold nothing yet, or an ordinary file the user agreed to replace; never a link or anything else.
-// Returns 0 or the exit code to end with.
-inline int check_replaceable(HANDLE directory, const std::wstring& name) {
-  Entry entry = Entry::kAbsent;
-  const FileFailure failure = classify(directory, name, entry);
-  if (failure.error != ERROR_SUCCESS) return failed(failure);
-  return entry == Entry::kOther ? refused("target") : 0;
-}
-
-inline FileFailure set_file_information(HANDLE file, void* information, ULONG length, FILE_INFORMATION_CLASS kind) {
-  using SetInformation = NTSTATUS(NTAPI*)(HANDLE, IO_STATUS_BLOCK*, void*, ULONG, FILE_INFORMATION_CLASS);
-  const auto set_information = ntdll_function<SetInformation>("NtSetInformationFile");
-  if (set_information == nullptr) {
-    return {ERROR_INVALID_FUNCTION};
-  }
-  IO_STATUS_BLOCK io{};
-  const NTSTATUS status = set_information(file, &io, information, length, kind);
-  return status < 0 ? native_failure(status, "NtSetInformationFile") : FileFailure{};
-}
-
-// Rename the open file `file` to `name` in the held directory `directory`, replacing an ordinary file there.
-inline FileFailure rename_into(HANDLE file, HANDLE directory, const std::wstring& name, bool replace = true) {
-  const DWORD name_bytes = static_cast<DWORD>(name.size() * sizeof(wchar_t));
-  std::vector<BYTE> bytes(sizeof(FILE_RENAME_INFO) + name_bytes);
-  auto info = reinterpret_cast<FILE_RENAME_INFO*>(bytes.data());
-  info->ReplaceIfExists = replace ? TRUE : FALSE;
-  info->RootDirectory = directory;
-  info->FileNameLength = name_bytes;
-  std::memcpy(info->FileName, name.data(), name_bytes);
-  // Preserve the relative name and its directory handle at the native boundary; the path wrapper normalizes the name.
-  // FileRenameInformation is native class 10, distinct from the path wrapper's FileRenameInfo class 3.
-  return set_file_information(file, info, static_cast<ULONG>(bytes.size()), static_cast<FILE_INFORMATION_CLASS>(10));
-}
-
-// Delete the file this handle is open on, once the handle closes.
-inline FileFailure delete_on_close(HANDLE file) {
-  FILE_DISPOSITION_INFO disposition{TRUE};
-  return SetFileInformationByHandle(file, FileDispositionInfo, &disposition, sizeof(disposition))
-    ? FileFailure{} : FileFailure{GetLastError()};
-}
-
-inline FileFailure dispose_and_observe(HANDLE directory, const std::wstring& name, PinnedHandle& entry) {
-  const FileFailure removal = delete_on_close(entry.value);
-  if (removal.error != ERROR_SUCCESS) return removal;
-  CloseHandle(entry.value);
-  entry.value = INVALID_HANDLE_VALUE;
-  Entry observed = Entry::kOther;
-  const FileFailure probe = classify(directory, name, observed);
-  if (probe.error != ERROR_SUCCESS) return probe;
-  return observed == Entry::kAbsent ? FileFailure{} : FileFailure{ERROR_ACCESS_DENIED};
-}
-
 // Write all of `length` bytes, however many each write takes; a write that makes no progress fails the copy.
 inline DWORD write_all(HANDLE target, const BYTE* bytes, DWORD length) {
   while (length > 0) {
@@ -337,14 +285,20 @@ inline int run_rename(wchar_t** argv) {
     const DWORD error = status_error(opening);
     return error == ERROR_FILE_NOT_FOUND ? refused("source") : failed(native_failure(opening, "NtCreateFile"));
   }
-  const PinnedHandle source(opened);
+  PinnedHandle source(opened);
   FILE_ATTRIBUTE_TAG_INFO tag{};
   if (!GetFileInformationByHandleEx(source.value, FileAttributeTagInfo, &tag, sizeof(tag))) return failed(GetLastError());
   if ((tag.FileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) return refused("source");
-  status = check_replaceable(to.handle(), target);
-  if (status != 0) return status;
-  const FileFailure renamed = rename_into(source.value, to.handle(), target);
+  Entry target_entry = Entry::kAbsent;
+  const FileFailure checked = classify(to.handle(), target, target_entry);
+  if (checked.error != ERROR_SUCCESS) return failed(checked);
+  if (target_entry == Entry::kOther) return refused("target");
+  if (target_entry == Entry::kOrdinary) return done("replace");
+  ExpectedFile expected;
+  if (!read_stamp(source.value, expected)) return refused("source");
+  const FileFailure renamed = mutate_entry(from.handle(), name, source, {EntryMode::kRenameAway, &expected, to.handle(), &target});
   if (renamed.error != ERROR_SUCCESS) {
+    if (renamed.error == ERROR_ALREADY_EXISTS || renamed.error == ERROR_FILE_EXISTS) return refused("target");
     return renamed.error == ERROR_NOT_SAME_DEVICE ? done("cross-volume") : failed(renamed);
   }
   return done("committed");
@@ -405,6 +359,7 @@ inline int run_copy(wchar_t** argv) {
         !read_birth(old.value, old_birth)) return refused("target");
     say(("target-id " + id_text(old_id, ' ') + " " + std::to_string(old_birth)).c_str());
   }
+  const ExpectedFile old_stamp{old_id, true, old_birth, {}};
   if (!proceed("ready")) return done("cancelled");
   // The temporary file is created exclusively and stays open without write or delete sharing through commit or retirement.
   HANDLE created = INVALID_HANDLE_VALUE;
@@ -458,6 +413,7 @@ inline int run_copy(wchar_t** argv) {
   if (!read_id(part.value, final_id) || !read_birth(part.value, final_birth) ||
       !same_id(final_id, written) || final_birth != written_birth) return abandon({ERROR_NOT_SUPPORTED});
   if (replacing) say(("copy-id " + writer_stamp()).c_str());
+  const ExpectedFile writer_stamp_final{final_id, true, final_birth, {}};
   // The rename below is the commit point: the caller answers here whether the copy is still wanted.
   if (!proceed("copied")) return abandon({});
   const NameIdentity current = check_name(to.handle(), part_name, written, final_birth);
@@ -480,17 +436,15 @@ inline int run_copy(wchar_t** argv) {
       return;
     }
 #endif
-    if (check_name(to.handle(), aside, old_id) != NameIdentity::kMatches ||
-        rename_into(old.value, to.handle(), target, false).error != ERROR_SUCCESS ||
-        check_name(to.handle(), target, old_id) != NameIdentity::kMatches) report_target_left(false);
+    if (mutate_entry(to.handle(), aside, old, {EntryMode::kRestore, &old_stamp, to.handle(), &target}).error != ERROR_SUCCESS)
+      report_target_left(false);
     else say("target-restored");
   };
   if (replacing) {
 #if defined(AVE_TEST_DIR_RECOVERY)
     test_stop_replacement("before-move");
 #endif
-    if (check_name(to.handle(), target, old_id) != NameIdentity::kMatches ||
-        rename_into(old.value, to.handle(), aside, false).error != ERROR_SUCCESS) {
+    if (mutate_entry(to.handle(), target, old, {EntryMode::kRenameAway, &old_stamp, to.handle(), &aside}).error != ERROR_SUCCESS) {
       return stopped_copy(to.handle(), part_name, part, written, final_birth, {}, true);
     }
     if (check_name(to.handle(), aside, old_id) != NameIdentity::kMatches) {
@@ -506,7 +460,7 @@ inline int run_copy(wchar_t** argv) {
   if (replacing && test_fail_replacement_rename(false)) renamed = {ERROR_WRITE_FAULT};
   else
 #endif
-  renamed = rename_into(part.value, to.handle(), target, false);
+  renamed = mutate_entry(to.handle(), part_name, part, {EntryMode::kRenameAway, &writer_stamp_final, to.handle(), &target});
   if (renamed.error != ERROR_SUCCESS) {
     restore_target();
     Entry target_entry = Entry::kAbsent;
@@ -522,7 +476,8 @@ inline int run_copy(wchar_t** argv) {
   published = test_commit_result(published);
 #endif
   if (published != NameIdentity::kMatches) {
-    const FileFailure rolled_back = rename_into(part.value, to.handle(), part_name, false);
+    const FileFailure rolled_back = mutate_entry(to.handle(), target, part,
+      {EntryMode::kRestore, &writer_stamp_final, to.handle(), &part_name});
     restore_target();
     return refused(rolled_back.error == ERROR_SUCCESS ? "target left" : "target changed");
   }
@@ -530,8 +485,7 @@ inline int run_copy(wchar_t** argv) {
 #if defined(AVE_TEST_DIR_RECOVERY)
     test_stop_replacement("after-commit");
 #endif
-    if (check_name(to.handle(), aside, old_id, old_birth) != NameIdentity::kMatches ||
-        dispose_and_observe(to.handle(), aside, old).error != ERROR_SUCCESS) report_target_left(true);
+    if (mutate_entry(to.handle(), aside, old, {EntryMode::kRetireHidden, &old_stamp}).error != ERROR_SUCCESS) report_target_left(true);
     else say("target-retired");
   }
   return done("committed");
@@ -541,7 +495,7 @@ inline int run_copy(wchar_t** argv) {
 inline int remove_entry(HANDLE directory, const std::wstring& name, bool& removed) {
   removed = false;
   HANDLE opened = INVALID_HANDLE_VALUE;
-  const NTSTATUS status = open_relative(directory, name, DELETE | FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+  const NTSTATUS status = open_relative(directory, name, DELETE | FILE_READ_ATTRIBUTES, FILE_SHARE_READ,
     kOpenExisting, kOpenReparsePoint, opened);
   if (status < 0) {
     const DWORD error = status_error(status);
@@ -551,14 +505,17 @@ inline int remove_entry(HANDLE directory, const std::wstring& name, bool& remove
   FILE_ATTRIBUTE_TAG_INFO tag{};
   if (!GetFileInformationByHandleEx(entry.value, FileAttributeTagInfo, &tag, sizeof(tag))) return failed(GetLastError());
   if ((tag.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 && (tag.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0) return failed(kIsADirectory);
-  const FileFailure removal = dispose_and_observe(directory, name, entry);
+  ExpectedFile stamp;
+  if (!read_stamp(entry.value, stamp)) return failed(ERROR_NOT_SUPPORTED);
+  const FileFailure removal = mutate_entry(directory, name, entry,
+    {EntryMode::kRemove, &stamp, INVALID_HANDLE_VALUE, nullptr, nullptr, 0, nullptr, true});
   if (removal.error != ERROR_SUCCESS) return failed(removal);
   removed = true;
   return 0;
 }
 
 inline int run_remove(wchar_t** argv) {
-  if (!plain_name(argv[3])) return kExitUsage;
+  if (!plain_name(argv[3]) || record_name(argv[3])) return kExitUsage;
   HeldDirectory directory;
   const int status = hold_directory(argv[0], argv[1], argv[2], "from", directory);
   if (status != 0) return status;
@@ -570,7 +527,7 @@ inline int run_remove(wchar_t** argv) {
 }
 
 // Remove the files and links directly in the held folder; directories and anything else stay, and nothing is removed recursively.
-inline int run_sweep(wchar_t** argv, bool keep_records) {
+inline int run_sweep(wchar_t** argv) {
   HeldDirectory directory;
   const int status = hold_directory(argv[0], argv[1], argv[2], "from", directory);
   if (status != 0) return status;
@@ -589,7 +546,7 @@ inline int run_sweep(wchar_t** argv, bool keep_records) {
       const std::wstring entry_name(entry->FileName, entry->FileNameLength / sizeof(wchar_t));
       const bool directory_only = (entry->FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 && (entry->FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0;
       if (entry_name != L"." && entry_name != L".." && !directory_only &&
-          (!keep_records || !record_name(entry_name))) staged.push_back(entry_name);
+          !record_name(entry_name)) staged.push_back(entry_name);
       if (entry->NextEntryOffset == 0) break;
       offset += entry->NextEntryOffset;
     }
@@ -612,11 +569,12 @@ inline int run(int argc, wchar_t** argv) {
   if (argc == 12 && mode == L"--dir-copy") return run_copy(argv + 2);
   if (argc == 6 && mode == L"--dir-remove") return run_remove(argv + 2);
   if (mode == L"--dir-sweep" && (argc == 5 || (argc == 6 && std::wstring(argv[5]) == L"keep-records")))
-    return run_sweep(argv + 2, argc == 6);
+    return run_sweep(argv + 2);
   if (argc == 5 && mode == L"--dir-list-records") return run_list_records(argv + 2);
   if (argc == 7 && mode == L"--dir-read") return run_record(argv + 2, RecordMode::kRead);
   if (argc == 7 && mode == L"--dir-write-record") return run_record(argv + 2, RecordMode::kWrite);
   if (argc == 7 && mode == L"--dir-sweep-record") return run_record(argv + 2, RecordMode::kSweep);
+  if (argc == 11 && mode == L"--dir-remove-record") return run_record(argv + 2, RecordMode::kRemove);
   if ((argc == 8 || argc == 9) && mode == L"--dir-remove-id") return run_recovery(argc - 2, argv + 2, RecoveryMode::kRemove);
   if (argc == 10 && mode == L"--dir-restore") return run_recovery(argc - 2, argv + 2, RecoveryMode::kRestorePart);
   if ((argc == 10 || argc == 11) && mode == L"--dir-restore-target")

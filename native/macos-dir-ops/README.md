@@ -25,6 +25,7 @@ ave-dir-ops --dir-sweep  <dir> <dev> <ino> [keep-records]
 ave-dir-ops --dir-list-records <dir> <dir-dev> <dir-ino>
 ave-dir-ops --dir-read <dir> <dir-dev> <dir-ino> <name> <max>
 ave-dir-ops --dir-write-record <dir> <dir-dev> <dir-ino> <name> <hex>
+ave-dir-ops --dir-remove-record <dir> <dir-dev> <dir-ino> <name> <file-dev> <file-ino> <birth-ns> <length> <sha256>
 ave-dir-ops --dir-remove-id <dir> <dir-dev> <dir-ino> <name> <file-dev> <file-ino> [<birth-ns>:<fingerprint>]
 ave-dir-ops --dir-restore <dir> <dir-dev> <dir-ino> <hidden> <part> <file-dev> <file-ino> <birth-ns>:<fingerprint>
 ave-dir-ops --dir-restore-target <dir> <dir-dev> <dir-ino> <hidden> <target> <file-dev> <file-ino> <birth-ns>:<fingerprint-or-dash> [<writer-ino>:<writer-birth-ns>|retire]
@@ -32,12 +33,14 @@ ave-dir-ops --dir-sweep-record <dir> <dir-dev> <dir-ino> <name> <max>
 ```
 
 Names are single path components. `rename` moves the ordinary file `name` to
-`target`, replacing an ordinary file there; across volumes it moves nothing
-and answers `cross-volume`. `copy` creates `part` exclusively, never through a
+a vacant `target` exclusively. It answers `replace` for an existing ordinary
+file and `cross-volume` across volumes. Both outcomes use the journaled copy
+protocol. `copy` creates `part` exclusively, never through a
 link, copies `name` into it, syncs it and renames it to `target`; that rename
 is the commit point. Cross-volume publication requires a vacant target and
-support for exclusive rename. `remove` unlinks a file or link. `sweep` removes files and links directly in the directory. The boot sweep
-uses `keep-records` to leave cleanup records for held recovery.
+support for exclusive rename. `remove` handles files and links, and `sweep`
+cleans those entries directly in the held directory. Both preserve recovery
+record names.
 
 The recovery modes use the same `ready` handshake. Values identifying files
 are separate from the required identity of the directory. All names are
@@ -50,7 +53,14 @@ single components.
   byte limit is between 1 and 8192. A larger record is refused with
   `failed EFBIG`. An empty record is represented by `record ` with a space.
 - `write-record` creates a private record exclusively, writes at most 8192
-  bytes of lowercase hex payload and syncs it before answering `written`.
+  bytes of payload, syncs and verifies it before answering
+  `written <dev>:<ino>:<birth-ns>`.
+- `sweep-record` emits `record <dev>:<ino>:<birth-ns> <hex>` from its held
+  descriptor. A second authorization retires the entry only while the full
+  stamp and digest match the classified content.
+- `remove-record` checks the expected full stamp, length and SHA-256.
+  It replies `removed` after observed absence, `absent` if already absent,
+  or `kept` if verification or retirement remains incomplete.
 - `remove-id` opens the named file without following links, verifies its
   device and inode and the optional fingerprint, and then moves it
   exclusively to a fresh hidden name. It verifies the resulting entry

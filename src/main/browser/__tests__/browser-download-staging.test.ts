@@ -537,7 +537,7 @@ describe("a staged download", () => {
     expect(await restarted.files.listRecords(restarted)).toHaveLength(occupied ? 1 : 0);
   });
 
-  it.each(["before move", "after move", "after commit", "after retirement", "competing target", "replaced part", "writer birth mismatch", "missing writer birth", "part reader"] as const)("restarts after a stopped replacement: %s", async (boundary) => {
+  it.each(["before move", "after move", "after commit", "after retirement", "competing target", "replaced part", "writer birth mismatch", "missing writer birth", "part reader", "restored target with pending part"] as const)("restarts after a stopped replacement: %s", async (boundary) => {
     const prepared = prepare();
     const chosen = join(home, "chosen");
     mkdirSync(chosen);
@@ -570,6 +570,8 @@ describe("a staged download", () => {
         if (boundary === "replaced part") {
           moveAside(partPath, join(chosen, "held-by-test"));
           writeFileSync(partPath, "an unrelated file");
+        } else if (boundary === "restored target with pending part") {
+          journal.resolved();
         } else if (boundary !== "before move") {
           moveAside(target, join(chosen, hidden));
         }
@@ -597,12 +599,12 @@ describe("a staged download", () => {
     });
 
     const restarted = withFiles(prepare(), (files) => ({
-      remove: async (folder, name, proceed, stop) => {
+      removeRecord: async (folder, name, stamp) => {
         if (name === records[0]) expect(existsSync(partPath)).toBe(false);
-        return files.remove(folder, name, proceed, stop);
+        return files.removeRecord(folder, name, stamp);
       },
     }));
-    if (boundary === "part reader" && windows) {
+    if ((boundary === "part reader" || boundary === "restored target with pending part") && windows) {
       const reader = openSync(partPath, "r");
       try {
         await sweepBrowserDownloadStaging(restarted);
@@ -833,9 +835,9 @@ describe("a stalled copy's temporary file, removed through the native helper", (
         Object.assign(error, { passed: "ready", partialCopy: "left", exited, partFile });
         throw error;
       },
-      remove: async (directory, name, proceed, stop) => {
+      removeRecord: async (directory, name, stamp) => {
         try {
-          return await files.remove(directory, name, proceed, stop);
+          return await files.removeRecord(directory, name, stamp);
         } finally {
           removed.push(name);
           onRemoved();
@@ -1637,19 +1639,25 @@ describe.runIf(process.platform === "darwin")("native recovery through a held di
     expect(existsSync(join(root.path, SECOND_RECOVERY_RECORD))).toBe(true);
   });
 
-  it("rolls back an entry swapped between commit verification and exclusive rename", async () => {
+  it.each(["commit", "rollback"])("preserves entries swapped at the %s rename boundary", async (boundary) => {
     const root = prepare();
     const name = "0123456789abcdef0123456789abcdef";
     writeFileSync(join(root.path, name), "download");
     const path = join(home, "commit");
     mkdirSync(path);
     const { dev, ino } = statSync(path, { bigint: true });
-    const files = _helperFileOperationsForTest(macHelper("-swap-commit"));
+    const files = _helperFileOperationsForTest(macHelper(`-swap-${boundary}`));
     await expect(files.copy(root, name, { path, dev, ino }, "report.pdf", PART_FOR_RECOVERY, () => true, new AbortController().signal))
       .rejects.toMatchObject({ refusal: "target" });
-    expect(readFileSync(join(path, PART_FOR_RECOVERY), "utf8")).toBe("replacement");
     expect(readFileSync(join(path, "probe-written"), "utf8")).toBe("download");
-    expect(existsSync(join(path, "report.pdf"))).toBe(false);
+    if (boundary === "rollback") {
+      expect(readFileSync(join(path, "probe-displaced"), "utf8")).toBe("replacement");
+      expect(readFileSync(join(path, "report.pdf"), "utf8")).toBe("another replacement");
+      expect(existsSync(join(path, PART_FOR_RECOVERY))).toBe(false);
+    } else {
+      expect(readFileSync(join(path, PART_FOR_RECOVERY), "utf8")).toBe("replacement");
+      expect(existsSync(join(path, "report.pdf"))).toBe(false);
+    }
   });
 });
 
@@ -1731,8 +1739,8 @@ describe.runIf(process.platform === "darwin")("a stopped native copy's temporary
   });
 });
 
-// The same on a volume without an exclusive rename, where the helper moves the file aside under a name it checked is free and knows its own
-// file by id and content: an exFAT disk image, created and attached for these tests.
+// A volume without exclusive rename leaves an unretired part in place. The
+// fixtures create and attach a disk image for these cases.
 describe.runIf(process.platform === "darwin")("a stopped native copy's temporary file on an exFAT volume", () => {
   let image = "";
   let mounted: string | null = null;
@@ -1772,7 +1780,7 @@ describe.runIf(process.platform === "darwin")("a stopped native copy's temporary
   });
   it.for(ENDINGS)("records its own temporary file instead of unlinking it when the copy is %s", async (ending, { skip }) => {
     const { outcome, chosen, root } = await stoppedNativeCopy(ending, false, onVolume(skip));
-    expect(entriesOf(chosen)).toEqual([expect.stringMatching(/^\.[0-9a-f]{32}\.removing$/u), ...theTarget[ending]]);
+    expect(entriesOf(chosen)).toEqual([expect.stringMatching(/^\.[0-9a-f]{32}\.part$/u), ...theTarget[ending]]);
     expect(await root.files.listRecords(root)).toHaveLength(1);
     expect(outcome).toEqual({ state: "interrupted", cleanup: "part-left" });
   });
@@ -1783,7 +1791,7 @@ describe.runIf(process.platform === "darwin")("a stopped native copy's temporary
     expect(outcome).toEqual({ state: "interrupted", cleanup: "part-left" });
   });
 
-  it("keeps both names when the volume fills during copy-back", async ({ skip }) => {
+  it("keeps a replacement intact when the volume has no room for copy-back", async ({ skip }) => {
     const base = onVolume(skip);
     const replacement = Buffer.alloc(1024 * 1024, 0x61);
     const { outcome, chosen, swapped, root } = await stoppedNativeCopy("cancelled", (path) => {
@@ -1794,58 +1802,47 @@ describe.runIf(process.platform === "darwin")("a stopped native copy's temporary
       expect(remaining.bavail * remaining.bsize).toBeGreaterThan(0);
       expect(remaining.bavail * remaining.bsize).toBeLessThan(replacement.length);
     }, base).finally(() => { rmSync(join(base, "padding"), { force: true }); });
-    const hidden = entriesOf(chosen).find((name) => name.endsWith(".removing"));
-    expect(entriesOf(chosen)).toEqual(expect.arrayContaining([basename(swapped), expect.stringMatching(/^\.[0-9a-f]{32}\.removing$/u)]));
-    const incomplete = readFileSync(swapped);
-    expect(incomplete.length).toBeLessThan(replacement.length);
-    expect(readFileSync(join(chosen, hidden ?? "")).equals(replacement)).toBe(true);
+    expect(entriesOf(chosen)).toEqual([basename(swapped)]);
+    expect(readFileSync(swapped).equals(replacement)).toBe(true);
     expect(outcome).toEqual({ state: "interrupted", cleanup: "part-left" });
     const records = readdirSync(root.path);
     expect(records).toEqual([expect.stringMatching(/\.cleanup\.json$/u)]);
     const written = statSync(join(base, "the copy's own file"), { bigint: true });
     expect(JSON.parse(readFileSync(join(root.path, records[0] ?? ""), "utf8"))).toMatchObject({
-      part: basename(swapped), at: hidden,
-      identity: { kind: "helper", verdict: "mismatch", dev: String(written.dev), ino: String(written.ino) },
+      part: basename(swapped), at: basename(swapped),
+      identity: { kind: "fileId", dev: String(written.dev), ino: String(written.ino) },
     });
     expect(await sweepBrowserDownloadStaging(root)).toBe(0);
-    expect(readFileSync(swapped).equals(incomplete)).toBe(true);
+    expect(readFileSync(swapped).equals(replacement)).toBe(true);
     removeEntry(swapped);
     expect(await sweepBrowserDownloadStaging(root)).toBe(1);
-    expect(readFileSync(swapped).equals(replacement)).toBe(true);
-    expect(readFileSync(join(chosen, hidden ?? "")).equals(replacement)).toBe(true);
+    expect(existsSync(swapped)).toBe(false);
   });
 
-  it("preserves and records a directory introduced immediately before the plain rename", async ({ skip }) => {
+  it("keeps and records the part when exclusive isolation is unavailable", async ({ skip }) => {
     const base = onVolume(skip);
-    const files = _helperFileOperationsForTest(macHelper("-swap-before-plain-rename"));
-    const { outcome, chosen, root } = await stoppedNativeCopy("cancelled", false, base, files);
-    const hidden = entriesOf(chosen).find((name) => name.endsWith(".removing"));
-    expect(hidden).toBeDefined();
-    expect(statSync(join(chosen, hidden ?? "")).isDirectory()).toBe(true);
-    expect(readFileSync(join(chosen, "probe-written"), "utf8")).toBe("page data");
+    const { outcome, chosen, root } = await stoppedNativeCopy("cancelled", false, base);
+    const [part] = entriesOf(chosen);
+    expect(part).toMatch(/^\.[0-9a-f]{32}\.part$/u);
+    expect(readFileSync(join(chosen, part ?? ""), "utf8")).toBe("page data");
     expect(await root.files.listRecords(root)).toHaveLength(1);
     expect(outcome).toEqual({ state: "interrupted", cleanup: "part-left" });
   });
 
-  it("preserves the hidden source when the replacement copy-back is itself replaced", async ({ skip }) => {
+  it("leaves a substituted part in place without starting copy-back", async ({ skip }) => {
     const base = onVolume(skip);
     const files = _helperFileOperationsForTest(macHelper("-swap-restored"));
     const { chosen, swapped } = await stoppedNativeCopy("cancelled", true, base, files);
-    const hidden = entriesOf(chosen).find((name) => name.endsWith(".removing"));
-    expect(hidden).toBeDefined();
-    expect(readFileSync(join(chosen, hidden ?? ""), "utf8")).toBe("the user's file");
-    expect(readFileSync(swapped, "utf8")).toBe("replacement");
+    expect(entriesOf(chosen)).toEqual([basename(swapped)]);
+    expect(readFileSync(swapped, "utf8")).toBe("the user's file");
   });
 
-  it("preserves the replacement and the hidden source when copy-back fails after a partial write", async ({ skip }) => {
+  it("leaves a substituted part intact when copy-back fault injection is armed", async ({ skip }) => {
     const base = onVolume(skip);
     const files = _helperFileOperationsForTest(macHelper("-fail-restored"));
     const { chosen, swapped } = await stoppedNativeCopy("cancelled", true, base, files);
-    const hidden = entriesOf(chosen).find((name) => name.endsWith(".removing"));
-    expect(hidden).toBeDefined();
-    expect(readFileSync(join(chosen, hidden ?? ""), "utf8")).toBe("the user's file");
-    expect(readFileSync(swapped, "utf8")).toBe("replacement");
-    expect(readFileSync(join(chosen, "probe-written"), "utf8")).toBe("t");
+    expect(entriesOf(chosen)).toEqual([basename(swapped)]);
+    expect(readFileSync(swapped, "utf8")).toBe("the user's file");
   });
 
   it("keeps different content when both entries report the same device and inode", async ({ skip }) => {
@@ -1882,9 +1879,8 @@ describe.runIf(process.platform === "darwin")("a stopped native copy's temporary
     // Send both bytes in one write: authorize creation at ready, with the stop byte pending at the first poll.
     const transcript = execFileSync(helper, ["--dir-copy", root.path, String(root.dev), String(root.ino), source, chosen,
       String(folder.dev), String(folder.ino), "report.pdf", `.${source}.part`, HIDDEN_FOR_RECOVERY], { input: "cx", encoding: "utf8" });
-    expect(transcript).toMatch(/^ready\nwriting \d+ \d+ \d+\ncancelled left \.[0-9a-f]{32}\.removing /u);
-    const [hidden] = entriesOf(chosen);
-    expect(statSync(join(chosen, hidden ?? "")).size).toBe(0);
+    expect(transcript).toMatch(/^ready\nwriting \d+ \d+ \d+\ncancelled left\n$/u);
+    expect(statSync(join(chosen, `.${source}.part`)).size).toBe(0);
   });
 });
 

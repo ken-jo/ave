@@ -24,6 +24,7 @@ import {
   type HeldDirectory,
   type HeldFileOperations,
   type HeldRefusal,
+  type RecordStamp,
 } from "./browser-download-files.js";
 
 const log = createLogger("browser-download-staging");
@@ -285,8 +286,9 @@ async function publish(root: BrowserDownloadStagingRoot, name: string, destinati
   const part = `.${session}.part`;
   const hidden = `.${session}.removing`;
   let copied: "committed" | "cancelled";
-  let record: string | null = null;
+  let record: RecordedFile | null = null;
   let resolved = false;
+  let partResolved = false;
   let targetVerdict: HelperPartIdentity["verdict"] | undefined;
   try {
     copied = await refusingAsStaging(() => root.files.copy(root, name, destination.folder, destination.name, part, proceed, cancel, {
@@ -302,13 +304,17 @@ async function publish(root: BrowserDownloadStagingRoot, name: string, destinati
         if (identity.kind === "helper") targetVerdict = identity.verdict;
       },
     }));
+    partResolved = true;
   } catch (error) {
+    const stopped = stoppedCopyOf(error);
+    partResolved = stopped?.partialCopy === "removed" || stopped?.partialCopy === "absent";
     await reportStoppedCopy(root, error, destination, part);
     throw error;
   } finally {
     if (record !== null) {
-      if (resolved) await finishRecord(root, record);
-      else log.warn({ path: destination.path, leftAs: hidden, verdict: targetVerdict }, "a browser download's previous target needs recovery");
+      if (resolved && partResolved) await finishRecord(root, record);
+      else log.warn({ path: destination.path, leftAs: hidden, targetResolved: resolved, partResolved, verdict: targetVerdict },
+        "a browser download's replacement needs recovery");
     }
   }
   if (copied === "cancelled") return "cancelled";
@@ -375,11 +381,7 @@ async function deferPartCleanup(root: BrowserDownloadStagingRoot, folder: HeldDi
       if (await tryWritePartRecord(root, { ...record, at: result.at }) === null) return;
     }
     if (recorded === null) return;
-    try {
-      await root.files.remove(root, recorded, proceedAlways, UNSTOPPED);
-    } catch (error) {
-      log.warn({ error: (error as Error).message }, "a browser download cleanup record could not be removed; the next start removes it");
-    }
+    await finishRecord(root, recorded);
   }).catch((error: unknown) => {
     log.warn({ path, error: (error as Error).message }, "a stopped browser download could not be checked after its helper ended");
   });
@@ -389,7 +391,12 @@ function sameLeftPart(a: LeftPart, b: LeftPart): boolean {
   return a.name === b.name && a.identity.kind === b.identity.kind;
 }
 
-async function tryWritePartRecord(root: BrowserDownloadStagingRoot, record: PartRecord): Promise<string | null> {
+interface RecordedFile {
+  readonly name: string;
+  readonly stamp: RecordStamp;
+}
+
+async function tryWritePartRecord(root: BrowserDownloadStagingRoot, record: PartRecord): Promise<RecordedFile | null> {
   try {
     return await writePartRecord(root, record);
   } catch (error) {
@@ -400,7 +407,7 @@ async function tryWritePartRecord(root: BrowserDownloadStagingRoot, record: Part
 }
 
 // Write the record as a new private file in the verified staging folder, never through a link.
-async function writePartRecord(root: BrowserDownloadStagingRoot, record: PartRecord): Promise<string> {
+async function writePartRecord(root: BrowserDownloadStagingRoot, record: PartRecord): Promise<RecordedFile> {
   const name = `${record.session ?? randomBytes(16).toString("hex")}.cleanup.json`;
   const { identity } = record.at;
   const known = identity.kind === "fileId" ? { kind: identity.kind, ...identity.file }
@@ -415,8 +422,7 @@ async function writePartRecord(root: BrowserDownloadStagingRoot, record: PartRec
     at: record.at.name,
     identity: known,
   }, (_key, value: unknown) => typeof value === "bigint" ? value.toString() : value);
-  await root.files.writeRecord(root, name, Buffer.from(body));
-  return name;
+  return { name, stamp: await root.files.writeRecord(root, name, Buffer.from(body)) };
 }
 
 // A record exactly as {@link writePartRecord} writes it, or null.
@@ -520,9 +526,9 @@ async function removeRecordedPart(root: BrowserDownloadStagingRoot, { folder, pa
   return { outcome: "left" as const, at };
 }
 
-async function finishRecord(root: BrowserDownloadStagingRoot, name: string): Promise<boolean> {
+async function finishRecord(root: BrowserDownloadStagingRoot, { name, stamp }: RecordedFile): Promise<boolean> {
   try {
-    return await root.files.remove(root, name, proceedAlways, UNSTOPPED) === "removed";
+    return await root.files.removeRecord(root, name, stamp);
   } catch (error) {
     log.warn({ path: join(root.path, name), error: (error as Error).message }, "a browser download cleanup record could not be removed");
     return false;
@@ -530,29 +536,33 @@ async function finishRecord(root: BrowserDownloadStagingRoot, name: string): Pro
 }
 
 async function removeRecordedParts(root: BrowserDownloadStagingRoot): Promise<number> {
-  const records: { name: string; record: PartRecord }[] = [];
+  const records: (RecordedFile & { record: PartRecord })[] = [];
   let removed = 0;
   for (const name of await root.files.listRecords(root)) {
     if (!PART_RECORD.test(name)) continue;
     const recordPath = join(root.path, name);
     try {
+      let stamp: RecordStamp | undefined;
       const bytes = await root.files.readRecord(root, name, MAX_PART_RECORD_BYTES, {
-        reject: (body) => readPartRecord(body.toString("utf8"), name) === null,
+        reject: (body, observed) => {
+          stamp = observed;
+          return readPartRecord(body.toString("utf8"), name) === null;
+        },
         removed: () => { removed += 1; },
       });
       const record = bytes === null ? null : readPartRecord(bytes.toString("utf8"), name);
-      if (record === null) {
+      if (record === null || stamp === undefined) {
         log.warn({ path: recordPath }, "a browser download cleanup record could not be verified");
         continue;
       }
-      records.push({ name, record });
+      records.push({ name, record, stamp });
     } catch (error) {
       if (error instanceof HeldFileHelperStalledError && error.stillRunning) throw error;
       log.warn({ path: recordPath, error: (error as Error).message }, "a browser download cleanup record could not be read");
     }
   }
   records.sort((a, b) => Number(b.record.target !== undefined) - Number(a.record.target !== undefined));
-  for (const { name, record } of records) {
+  for (const { name, record, stamp } of records) {
     try {
       const result = await removeRecordedPart(root, record);
       const path = join(record.folder.path, record.target ?? record.part);
@@ -564,7 +574,7 @@ async function removeRecordedParts(root: BrowserDownloadStagingRoot): Promise<nu
       } else {
         log.info({ path, partialCopy: result.outcome }, "a previous run's browser download leftover was checked");
       }
-      if (await finishRecord(root, name)) removed += 1;
+      if (await finishRecord(root, { name, stamp })) removed += 1;
     } catch (error) {
       if (error instanceof HeldFileHelperStalledError && error.stillRunning) throw error;
       log.warn({ path: join(root.path, name), error: (error as Error).message }, "a browser download cleanup record could not be acted on");

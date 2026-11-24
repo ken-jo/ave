@@ -738,7 +738,7 @@ it("redacts a record frame when the helper exits abnormally", async () => {
     helper.say("ready");
     helper.once("input", () => { helper.say(`record ${payload}`); helper.exit(7); });
   });
-  const run = follow(files.readRecord(from, "0".repeat(32) + ".cleanup.json", 8192));
+  const run = follow(files.readRecord(from, `${"0".repeat(32)}.cleanup.json`, 8192));
   await flush();
   expect(run.error).toBeInstanceOf(HeldFileHelperUnavailableError);
   const error = run.error as Error;
@@ -771,7 +771,9 @@ describe("a copy whose helper says it left its temporary file", () => {
   const SUFFIXES = [["left", null], [`left ${HIDDEN} 1 18446744073709551615 mismatch -`, "mismatch"],
     [`left ${HIDDEN} 1 18446744073709551615 remove-failed -`, "remove-failed"]] as const;
   const expectLeftByHelper = (error: unknown, verdict: "mismatch" | "remove-failed" | null): void => {
-    expect(stoppedCopyOf(error)).toEqual({ partialCopy: "left", partLeftAt: verdict === null ? null : {
+    expect(stoppedCopyOf(error)).toEqual({ partialCopy: "left", partLeftAt: verdict === null ? {
+      name: ".0123.part", identity: { kind: "fileId", file: { dev: 1n, ino: 18446744073709551615n, birthtimeNs: 20n } },
+    } : {
       name: HIDDEN, identity: { kind: "helper", dev: 1n, ino: 18446744073709551615n, verdict, observed: null },
     } });
     expect(helpers()).toHaveLength(1);
@@ -1237,7 +1239,7 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
           case "--dir-sweep-record": {
             if (!entry?.isFile()) { end("absent"); break; }
             const bytes = fs.readFileSync(path);
-            helper.say(`record ${bytes.toString("hex")}`);
+            helper.say(`record ${entry.dev}:${entry.ino}:${entry.birthtimeNs} ${bytes.toString("hex")}`);
             helper.afterInputEnds(() => {
               if (helper.input !== "cc") { end("kept"); return; }
               fs.unlinkSync(path);
@@ -1245,10 +1247,23 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
             });
             break;
           }
-          case "--dir-write-record":
+          case "--dir-write-record": {
             fs.writeFileSync(path, Buffer.from(arg(helper, 5), "hex"), { flag: "wx" });
-            end("written");
+            const written = fs.statSync(path, { bigint: true });
+            end(`written ${written.dev}:${written.ino}:${written.birthtimeNs}`);
             break;
+          }
+          case "--dir-remove-record": {
+            if (!entry?.isFile()) { end("absent"); break; }
+            const body = fs.readFileSync(path);
+            const digest = createHash("sha256").update(body).digest("hex");
+            if (entry.dev !== BigInt(arg(helper, 5)) || entry.ino !== BigInt(arg(helper, 6)) ||
+                entry.birthtimeNs !== BigInt(arg(helper, 7)) || body.length !== Number(arg(helper, 8)) ||
+                digest !== arg(helper, 9)) { end("kept"); break; }
+            fs.unlinkSync(path);
+            end("removed");
+            break;
+          }
           case "--dir-remove":
             if (entry !== undefined) fs.unlinkSync(path);
             end(entry === undefined ? "absent" : "removed");

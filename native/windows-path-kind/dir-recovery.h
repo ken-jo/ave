@@ -101,7 +101,7 @@ NameIdentity test_commit_result(NameIdentity result);
 
 inline bool read_birth(HANDLE file, ULONGLONG& birth);
 
-inline NameIdentity check_name(HANDLE directory, const std::wstring& name, const FILE_ID_INFO& wanted, ULONGLONG birth = 0) {
+inline NameIdentity check_name(HANDLE directory, const std::wstring& name, const FILE_ID_INFO& wanted, ULONGLONG birth = 0, bool allow_reparse = false) {
   HANDLE opened = INVALID_HANDLE_VALUE;
   const NTSTATUS status = open_relative(directory, name, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
     kOpenExisting, kOpenReparsePoint, opened);
@@ -109,7 +109,7 @@ inline NameIdentity check_name(HANDLE directory, const std::wstring& name, const
   const PinnedHandle entry(opened);
   FILE_ID_INFO actual{};
   ULONGLONG actual_birth = 0;
-  return ordinary(entry.value) && read_id(entry.value, actual) && same_id(actual, wanted) &&
+  return (allow_reparse || ordinary(entry.value)) && read_id(entry.value, actual) && same_id(actual, wanted) &&
       (birth == 0 || (read_birth(entry.value, actual_birth) && actual_birth == birth))
     ? NameIdentity::kMatches : NameIdentity::kUnverified;
 }
@@ -120,11 +120,11 @@ inline bool seek_to(HANDLE file, LONGLONG offset) {
   return SetFilePointerEx(file, position, nullptr, FILE_BEGIN) != 0;
 }
 
-inline bool hash_bytes(BYTE* data, DWORD length, std::string& digest) {
+inline bool hash_bytes(const BYTE* data, DWORD length, std::string& digest) {
   BCRYPT_ALG_HANDLE algorithm = nullptr;
   if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) < 0) return false;
   BYTE bytes[32];
-  const NTSTATUS status = BCryptHash(algorithm, nullptr, 0, data, length, bytes, sizeof(bytes));
+  const NTSTATUS status = BCryptHash(algorithm, nullptr, 0, const_cast<BYTE*>(data), length, bytes, sizeof(bytes));
   BCryptCloseAlgorithmProvider(algorithm, 0);
   if (status < 0) return false;
   digest = hex_bytes(bytes, sizeof(bytes));
@@ -212,6 +212,84 @@ inline bool matches(HANDLE file, const ExpectedFile& expected) {
   return expected.content.empty() || (fingerprint(file, basic, content) && content == expected.content);
 }
 
+enum class EntryMode { kRemove, kRetireHidden, kRenameAway, kRestore, kRecordWrite, kRecordRemove, kRecordSweep };
+
+struct EntryChange {
+  EntryMode mode;
+  const ExpectedFile* stamp = nullptr;
+  HANDLE destination = INVALID_HANDLE_VALUE;
+  const std::wstring* target = nullptr;
+  const BYTE* body = nullptr;
+  DWORD length = 0;
+  const std::string* digest = nullptr;
+  bool allow_reparse = false;
+  ExpectedFile* written = nullptr;
+};
+
+inline DWORD create_private_record(HANDLE directory, const std::wstring& name, const BYTE* bytes, DWORD length,
+    ExpectedFile& stamp, FileFailure& failure);
+
+inline bool read_stamp(HANDLE file, ExpectedFile& stamp) {
+  stamp.check_birth = read_id(file, stamp.id) && read_birth(file, stamp.birth);
+  return stamp.check_birth;
+}
+
+inline FileFailure mutate_entry(HANDLE directory, const std::wstring& name, PinnedHandle& entry, const EntryChange& change) {
+  if (change.mode == EntryMode::kRecordWrite) {
+    FileFailure failure;
+    const DWORD error = create_private_record(directory, name, change.body, change.length, *change.written, failure);
+    return failure.error == ERROR_SUCCESS ? FileFailure{error} : failure;
+  }
+  if (change.stamp == nullptr || !change.stamp->check_birth || change.stamp->birth == 0)
+    return {ERROR_NOT_SUPPORTED};
+  const auto& expected = *change.stamp;
+  ExpectedFile observed;
+  if (!read_stamp(entry.value, observed) || !same_id(observed.id, expected.id) || observed.birth != expected.birth ||
+      (!change.allow_reparse && !matches(entry.value, expected)) ||
+      check_name(directory, name, expected.id, expected.birth, change.allow_reparse) != NameIdentity::kMatches)
+    return {ERROR_ACCESS_DENIED};
+  if (change.digest != nullptr) {
+    LARGE_INTEGER size{};
+    std::string digest;
+    if (!GetFileSizeEx(entry.value, &size) || size.QuadPart != change.length ||
+        !hash_span(entry.value, 0, change.length, digest) || digest != *change.digest) return {ERROR_ACCESS_DENIED};
+  }
+
+  if (change.mode == EntryMode::kRenameAway || change.mode == EntryMode::kRestore) {
+    PinnedHandle operation(INVALID_HANDLE_VALUE);
+    if (!DuplicateHandle(GetCurrentProcess(), entry.value, GetCurrentProcess(), &operation.value,
+        0, FALSE, DUPLICATE_SAME_ACCESS)) return {GetLastError()};
+    const DWORD name_bytes = static_cast<DWORD>(change.target->size() * sizeof(wchar_t));
+    std::vector<BYTE> bytes(sizeof(FILE_RENAME_INFO) + name_bytes);
+    const auto info = reinterpret_cast<FILE_RENAME_INFO*>(bytes.data());
+    info->ReplaceIfExists = FALSE;
+    info->RootDirectory = change.destination;
+    info->FileNameLength = name_bytes;
+    std::memcpy(info->FileName, change.target->data(), name_bytes);
+    // The native information class preserves the held root and relative name.
+    using SetInformation = NTSTATUS(NTAPI*)(HANDLE, IO_STATUS_BLOCK*, void*, ULONG, FILE_INFORMATION_CLASS);
+    const auto set_information = ntdll_function<SetInformation>("NtSetInformationFile");
+    if (set_information == nullptr) return {ERROR_INVALID_FUNCTION};
+    IO_STATUS_BLOCK io{};
+    const NTSTATUS status = set_information(operation.value, &io, info, static_cast<ULONG>(bytes.size()),
+      static_cast<FILE_INFORMATION_CLASS>(10));
+    if (status < 0) return native_failure(status, "NtSetInformationFile");
+    if (!CloseHandle(operation.value)) return {GetLastError()};
+    operation.value = INVALID_HANDLE_VALUE;
+    return check_name(change.destination, *change.target, expected.id, expected.birth) == NameIdentity::kMatches
+      ? FileFailure{} : FileFailure{ERROR_ACCESS_DENIED};
+  }
+
+  FILE_DISPOSITION_INFO disposition{TRUE};
+  if (!SetFileInformationByHandle(entry.value, FileDispositionInfo, &disposition, sizeof(disposition))) return {GetLastError()};
+  if (!CloseHandle(entry.value)) return {GetLastError()};
+  entry.value = INVALID_HANDLE_VALUE;
+  Entry result = Entry::kOther;
+  const FileFailure probe = classify(directory, name, result);
+  if (probe.error != ERROR_SUCCESS) return probe;
+  return result == Entry::kAbsent ? FileFailure{} : FileFailure{ERROR_ACCESS_DENIED};
+}
+
 inline std::string snapshot(HANDLE file, const FILE_ID_INFO& id) {
   FILE_BASIC_INFO basic{};
   ULONGLONG birth = 0;
@@ -241,7 +319,8 @@ inline Retirement retire(HANDLE directory, const std::wstring& name, PinnedHandl
 #if defined(AVE_TEST_DIR_RECOVERY)
   if (test_remove_result().error != ERROR_SUCCESS) return result;
 #endif
-  result.removed = dispose_and_observe(directory, name, file).error == ERROR_SUCCESS;
+  const ExpectedFile expected{id, true, birth, {}};
+  result.removed = mutate_entry(directory, name, file, {EntryMode::kRemove, &expected}).error == ERROR_SUCCESS;
   if (!result.removed) result.leftover = "left remove-failed";
   return result;
 }
@@ -284,12 +363,10 @@ inline int recover_target(HANDLE directory, const std::wstring& hidden, const st
   }
   if (!matches(source.value, old) || check_name(directory, hidden, old.id, old.birth) != NameIdentity::kMatches) return done("left");
   if (committed) {
-    return done(dispose_and_observe(directory, hidden, source).error == ERROR_SUCCESS ? "resolved" : "left");
+    return done(mutate_entry(directory, hidden, source, {EntryMode::kRetireHidden, &old}).error == ERROR_SUCCESS ? "resolved" : "left");
   }
-  if (!vacant || rename_into(source.value, directory, target, false).error != ERROR_SUCCESS) return done("left");
-  if (check_name(directory, target, old.id, old.birth) == NameIdentity::kMatches) return done("resolved");
-  (void)rename_into(source.value, directory, hidden, false);
-  return done("left");
+  return done(vacant && mutate_entry(directory, hidden, source, {EntryMode::kRestore, &old, directory, &target}).error == ERROR_SUCCESS
+    ? "resolved" : "left");
 }
 
 inline int run_recovery(int argc, wchar_t** argv, RecoveryMode mode) {
@@ -392,7 +469,8 @@ inline int run_list_records(wchar_t** argv) {
   }
 }
 
-inline DWORD create_private_record(HANDLE directory, const std::wstring& name, const BYTE* bytes, DWORD length, FileFailure& failure) {
+inline DWORD create_private_record(HANDLE directory, const std::wstring& name, const BYTE* bytes, DWORD length,
+    ExpectedFile& stamp, FileFailure& failure) {
   HANDLE raw_token = nullptr;
   if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw_token)) return GetLastError();
   const PinnedHandle token(raw_token);
@@ -408,29 +486,46 @@ inline DWORD create_private_record(HANDLE directory, const std::wstring& name, c
   PSECURITY_DESCRIPTOR security = nullptr;
   if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1, &security, nullptr)) return GetLastError();
   HANDLE opened = INVALID_HANDLE_VALUE;
-  const NTSTATUS creating = open_relative(directory, name, FILE_WRITE_DATA, 0, kCreateNew, kNonDirectoryFile, opened, security);
+  const NTSTATUS creating = open_relative(directory, name, FILE_READ_DATA | FILE_WRITE_DATA | FILE_READ_ATTRIBUTES,
+    0, kCreateNew, kNonDirectoryFile, opened, security);
   LocalFree(security);
   if (creating < 0) {
     failure = native_failure(creating, "NtCreateFile");
     return failure.error;
   }
-  const PinnedHandle entry(opened);
+  PinnedHandle entry(opened);
   const DWORD written = write_all(entry.value, bytes, length);
   if (written != ERROR_SUCCESS) return written;
-  return FlushFileBuffers(entry.value) ? ERROR_SUCCESS : GetLastError();
+  if (!FlushFileBuffers(entry.value)) return GetLastError();
+  std::string expected, actual;
+  LARGE_INTEGER size{};
+  if (!read_stamp(entry.value, stamp) || !GetFileSizeEx(entry.value, &size) || size.QuadPart != length ||
+      !hash_bytes(bytes, length, expected) ||
+      !hash_span(entry.value, 0, length, actual) || actual != expected) return ERROR_WRITE_FAULT;
+  if (!CloseHandle(entry.value)) return GetLastError();
+  entry.value = INVALID_HANDLE_VALUE;
+  return check_name(directory, name, stamp.id, stamp.birth) == NameIdentity::kMatches ? ERROR_SUCCESS : ERROR_WRITE_FAULT;
 }
 
-enum class RecordMode { kRead, kWrite, kSweep };
+enum class RecordMode { kRead, kWrite, kRemove, kSweep };
 
 inline int run_record(wchar_t** argv, RecordMode mode) {
   const std::wstring name(argv[3]);
   if (!record_name(name)) return kExitUsage;
   ULONGLONG limit = 0;
   BYTE bytes[kRecordLimit + 1];
+  ExpectedFile stamp;
+  std::string removal_digest;
   if (mode == RecordMode::kWrite) {
     const std::wstring payload(argv[4]);
     limit = payload.size() / 2;
     if (limit > kRecordLimit || !decode_hex(payload, bytes, static_cast<size_t>(limit))) return kExitUsage;
+  } else if (mode == RecordMode::kRemove) {
+    BYTE digest[32];
+    if (!parse_id(argv[4], argv[5], stamp.id) || !parse_number(argv[6], stamp.birth) || stamp.birth == 0 ||
+        !parse_number(argv[7], limit) || limit > kRecordLimit || !decode_hex(argv[8], digest, sizeof(digest))) return kExitUsage;
+    stamp.check_birth = true;
+    removal_digest = hex_bytes(digest, sizeof(digest));
   } else if (!parse_number(argv[4], limit) || limit == 0 || limit > kRecordLimit) {
     return kExitUsage;
   }
@@ -439,19 +534,24 @@ inline int run_record(wchar_t** argv, RecordMode mode) {
   if (status != 0) return status;
   if (!proceed("ready")) return done("cancelled");
   if (mode == RecordMode::kWrite) {
-    FileFailure failure;
-    const DWORD error = create_private_record(directory.handle(), name, bytes, static_cast<DWORD>(limit), failure);
-    if (error == ERROR_SUCCESS) return done("written");
-    return failure.error == ERROR_SUCCESS ? failed(error) : failed(failure);
+    PinnedHandle record(INVALID_HANDLE_VALUE);
+    const FileFailure written = mutate_entry(directory.handle(), name, record,
+      {EntryMode::kRecordWrite, nullptr, INVALID_HANDLE_VALUE, nullptr, bytes, static_cast<DWORD>(limit), nullptr, false, &stamp});
+    return written.error == ERROR_SUCCESS
+      ? done(("written " + id_text(stamp.id, ':') + ":" + std::to_string(stamp.birth)).c_str()) : failed(written);
   }
   HANDLE opened = INVALID_HANDLE_VALUE;
   const NTSTATUS opening = open_relative(directory.handle(), name,
-    FILE_READ_DATA | FILE_READ_ATTRIBUTES | (mode == RecordMode::kSweep ? DELETE : 0),
+    FILE_READ_DATA | FILE_READ_ATTRIBUTES | (mode != RecordMode::kRead ? DELETE : 0),
     FILE_SHARE_READ, kOpenExisting, kOpenReparsePoint, opened);
   if (opening < 0) return missing(status_error(opening)) ? done("absent") : failed(native_failure(opening, "NtCreateFile"));
   PinnedHandle entry(opened);
   if (!ordinary(entry.value)) return done("absent");
-  ExpectedFile stamp;
+  if (mode == RecordMode::kRemove) {
+    const FileFailure removed = mutate_entry(directory.handle(), name, entry,
+      {EntryMode::kRecordRemove, &stamp, INVALID_HANDLE_VALUE, nullptr, nullptr, static_cast<DWORD>(limit), &removal_digest});
+    return done(removed.error == ERROR_SUCCESS ? "removed" : "kept");
+  }
   if (mode == RecordMode::kSweep) {
     if (!read_id(entry.value, stamp.id) || !read_birth(entry.value, stamp.birth)) return done("absent");
     stamp.check_birth = true;
@@ -464,16 +564,14 @@ inline int run_record(wchar_t** argv, RecordMode mode) {
     used += count;
   }
   if (used > limit) return failed(ERROR_FILE_TOO_LARGE);
-  const std::string frame = "record " + hex_bytes(bytes, used);
-  if (mode == RecordMode::kRead) return done(frame.c_str());
-  std::string expected, actual;
+  if (mode == RecordMode::kRead) return done(("record " + hex_bytes(bytes, used)).c_str());
+  const std::string frame = "record " + id_text(stamp.id, ':') + ":" + std::to_string(stamp.birth) + " " + hex_bytes(bytes, used);
+  std::string expected;
   if (!hash_bytes(bytes, used, expected)) return done("absent");
   if (!proceed(frame.c_str())) return done("kept");
-  LARGE_INTEGER size{};
-  if (!matches(entry.value, stamp) || !GetFileSizeEx(entry.value, &size) || size.QuadPart != used ||
-      !hash_span(entry.value, 0, used, actual) || actual != expected ||
-      check_name(directory.handle(), name, stamp.id, stamp.birth) != NameIdentity::kMatches) return done("kept");
-  return done(dispose_and_observe(directory.handle(), name, entry).error == ERROR_SUCCESS ? "removed" : "kept");
+  const FileFailure removed = mutate_entry(directory.handle(), name, entry,
+    {EntryMode::kRecordSweep, &stamp, INVALID_HANDLE_VALUE, nullptr, nullptr, used, &expected});
+  return done(removed.error == ERROR_SUCCESS ? "removed" : "kept");
 }
 
 }  // namespace dir_ops

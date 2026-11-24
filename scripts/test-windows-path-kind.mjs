@@ -76,7 +76,8 @@ async function recoveryTests() {
   const expect = (args, lines, code = 0) => {
     const result = answered(args);
     assert.equal(result.code, code, JSON.stringify(result));
-    assert.deepEqual(result.lines.filter((line) => !line.startsWith("destination-id ")), lines);
+    assert.deepEqual(result.lines.filter((line) => !line.startsWith("destination-id ")).map((line) =>
+      /^written \d+:[0-9a-f]{32}:\d+$/u.test(line) ? "written" : line), lines);
     if (code !== 4) assert.equal(result.stderr, "");
   };
   const snapshot = (path) => {
@@ -88,6 +89,24 @@ async function recoveryTests() {
     return [String(BigInt(facts.volumeSerial)), facts.fileId.slice(2),
       `${birthtimeNs + epoch}:${size}:${mtimeNs + epoch}:${digest(bytes.subarray(0, 65536))}:${digest(bytes.subarray(-65536))}`];
   };
+  const removeRecord = (dir, name) => {
+    const [dev, id, fingerprint] = snapshot(join(dir, name));
+    const [birth, length, , digest] = fingerprint.split(":");
+    return ["--dir-remove-record", ...held(dir), name, dev, id, birth, length, digest];
+  };
+  add("record removal keeps an edited or replaced name", (dir) => {
+    const path = join(dir, record);
+    expect(["--dir-write-record", ...held(dir), record, "7b7d"], ["ready", "written"]);
+    const remove = removeRecord(dir, record);
+    writeFileSync(path, "[]");
+    expect(remove, ["ready", "kept"]);
+    assert.equal(readFileSync(path, "utf8"), "[]");
+    renameSync(path, join(dir, "previous"));
+    writeFileSync(path, "{}");
+    expect(remove, ["ready", "kept"]);
+    assert.equal(readFileSync(path, "utf8"), "{}");
+    expect(removeRecord(dir, record), ["ready", "removed"]);
+  });
   add("record round trip and exclusive collision", (dir) => {
     const folder = held(dir);
     expect(["--dir-list-records", ...folder], ["ready", "records"]);
@@ -109,7 +128,7 @@ async function recoveryTests() {
     const result = await runCopy(["--dir-sweep-record", ...held(dir), record, "8192"], (line, stdin) => {
       if (line === "ready") stdin.write("c");
       if (line.startsWith("record ")) {
-        assert.equal(line, `record ${Buffer.from("rejected").toString("hex")}`);
+        assert.equal(line.split(" ").at(-1), Buffer.from("rejected").toString("hex"));
         assert.throws(() => renameSync(path, moved), /EBUSY|EPERM|EACCES/u);
         stdin.end("c");
       }
@@ -347,7 +366,7 @@ async function recoveryTests() {
     assert.ok(!existsSync(hiddenPath));
     expect(["--dir-restore-target", ...held(dir), hidden, "target", ...old, writer], ["ready", "resolved"]);
     assert.equal(readFileSync(target, "utf8"), "new bytes");
-    expect(["--dir-remove", ...held(root), record], ["ready", "removed"]);
+    expect(removeRecord(root, record), ["ready", "removed"]);
   });
 
   add("keeps the journal while the recorded writer part is delete-pending", (dir) => {
@@ -366,7 +385,7 @@ async function recoveryTests() {
       closeSync(reader);
     }
     expect(["--dir-remove-id", ...held(dir), part, ...known], ["ready", "absent"]);
-    expect(["--dir-remove", ...held(dir), record], ["ready", "removed"]);
+    expect(removeRecord(dir, record), ["ready", "removed"]);
   });
 
   for (const boundary of ["before-move", "after-move", "after-commit", "leftover"]) {
@@ -591,6 +610,10 @@ try {
   result = answered(["--dir-rename", ...held(from), "b", ...held(to), "report.pdf"], "");
   assert.deepEqual(result.lines, ["ready", "cancelled"], "the end of input at a step stops it");
   assert.equal(readFileSync(join(to, "report.pdf"), "utf8"), "staged a");
+  result = answered(["--dir-rename", ...held(from), "b", ...held(to), "report.pdf"], "c");
+  assert.deepEqual(result.lines, ["ready", "replace"]);
+  assert.equal(readFileSync(join(to, "report.pdf"), "utf8"), "staged a");
+  assert.equal(readFileSync(join(from, "b"), "utf8"), "staged b");
 
   const [path, volume, index] = held(to);
   result = answered(["--dir-rename", ...held(from), "b", path, volume, (BigInt(index) + 1n).toString(), "report.pdf"], "c");
