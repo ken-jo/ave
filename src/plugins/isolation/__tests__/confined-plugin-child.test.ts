@@ -3039,6 +3039,25 @@ ELECTRON_RUN_AS_NODE=1 exec ${JSON.stringify(process.execPath)} "$PLUGIN_ROOT/in
   }
 
   it.runIf(process.platform === "darwin" || process.platform === "linux")(
+    "refuses an incompatible process entry environment before registering the sandbox command",
+    async () => {
+      if (!(await sandboxCasesRun())) return;
+      const fx = fixture;
+      if (!fx) throw new Error("Expected the confinement fixture");
+      const plugin = installInertPlugin(fx);
+      await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+      const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
+      const wrap = vi.spyOn(SandboxManager, "wrapWithSandboxArgv");
+      try {
+        await expect(spawnBelowHardening(plugin, { UID: "fixture" })).rejects.toThrow('Environment variable "UID"');
+        expect(wrap).not.toHaveBeenCalled();
+      } finally {
+        wrap.mockRestore();
+      }
+    },
+  );
+
+  it.runIf(process.platform === "darwin" || process.platform === "linux")(
     "runs nothing before confinement from a BASH_ENV pair",
     async () => {
       if (!(await sandboxCasesRun())) return;

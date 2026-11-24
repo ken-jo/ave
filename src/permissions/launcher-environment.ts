@@ -17,6 +17,11 @@ const STARTUP_ENV_GROUPS = [
   /^(LD_.*|DYLD_.*|_RLD.*|LIBPATH|SHLIB_PATH|GLIBC_TUNABLES)$/u, // Configure dynamic object loading.
   /^(GCONV_PATH|LOCPATH|NLSPATH)$/u, // Redirect loader, locale or message-catalog lookups.
 ] as const;
+const SHELL_PARAMETER_NAMES = new Set([
+  "UID", "EUID", "PPID", "BASH", "BASHOPTS", "SHELLOPTS", "BASHPID",
+  "DIRSTACK", "FUNCNAME", "GROUPS", "PIPESTATUS", "LINENO", "RANDOM", "SRANDOM", "SECONDS", "SHLVL",
+  "_", "HISTCMD", "OPTIND", "EPOCHSECONDS", "EPOCHREALTIME",
+]);
 
 class LauncherEnvironmentError extends Error {
   readonly code = "launcher-environment-refused";
@@ -94,6 +99,9 @@ function targetAssignments(env: NodeJS.ProcessEnv): string[] {
   for (const [name, value] of Object.entries(env)) {
     if (value === undefined) continue;
     assertTargetOperand(name, value, name);
+    if (SHELL_PARAMETER_NAMES.has(name) || name.startsWith("BASH_")) {
+      throw new LauncherEnvironmentError(name, "cannot be delivered by the sandbox shell");
+    }
     assignments.push(`${name}=${value}`);
   }
   return assignments;
