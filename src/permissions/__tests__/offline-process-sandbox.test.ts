@@ -7,6 +7,9 @@ import { syncBuiltinESMExports } from "node:module";
 import path, { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
+import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
+import { deferred } from "../../__tests__/support/deferred.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 
 vi.mock("node:fs/promises", async (importOriginal) => ({
@@ -68,11 +71,17 @@ beforeEach(async () => {
   vi.mocked(detectSandboxCapability).mockReturnValue({ kind: "asrt", confidence: "verified", platform: HOST_PLATFORM,
     reason: "native test boundary", confines: { filesystem: true, process: true, network: true } });
   linuxWrapper = LINUX_WRAPPER;
-  vi.mocked(wrapCommandWithSandboxLinux).mockImplementation(async ({ ripgrepConfig }) => {
-    const receipt = ripgrepConfig?.args?.[3];
-    if (receipt === undefined) throw new Error("Expected a scan receipt path.");
-    fs.writeFileSync(receipt, "");
-    return linuxWrapper;
+  vi.mocked(wrapCommandWithSandboxLinux).mockImplementation(async ({ ripgrepConfig, abortSignal }) => {
+    if (!ripgrepConfig?.run || !abortSignal) throw new Error("Expected a managed scanner.");
+    const spawn = vi.spyOn(childProcess, "spawn").mockImplementationOnce(() => scanChild("", 1));
+    syncBuiltinESMExports();
+    try {
+      await ripgrepConfig.run(ripgrepConfig.command, ["--files", root], abortSignal, TOOL_TIMEOUT_POLICY.processTreeKillMs);
+      return linuxWrapper;
+    } finally {
+      spawn.mockRestore();
+      syncBuiltinESMExports();
+    }
   });
   vi.mocked(cleanupBwrapMountPoints).mockReset();
   root = await realpath(await mkdtemp(join(tmpdir(), "offline-process-policy-")));
@@ -89,6 +98,7 @@ afterEach(async () => {
 });
 
 async function useNativeLinuxBuilder() {
+  if (HOST_PLATFORM === "win32") configureHostResources({ resourcePath: join(HOST_CWD, "resources"), isPackaged: false });
   const actual = await vi.importActual<typeof import("@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js")>(
     "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js",
   );
@@ -173,8 +183,7 @@ describe("offline process confinement", () => {
       bwrapPath: "/usr/bin/bwrap", enableWeakerNestedSandbox: false,
     }));
     const native = vi.mocked(wrapCommandWithSandboxLinux).mock.calls[0][0];
-    expect(native.ripgrepConfig?.command).toBe("/bin/sh");
-    expect(native.ripgrepConfig?.args?.[4]).toBe("/usr/bin/rg");
+    expect(native.ripgrepConfig?.command).toBe("/usr/bin/rg");
     expect(native.httpSocketPath).toBeUndefined();
     expect(native.socksSocketPath).toBeUndefined();
     wrapped.release(); wrapped.release();
@@ -202,8 +211,7 @@ describe("offline process confinement", () => {
     syncBuiltinESMExports();
     try {
       await expect(wrapOfflineProcess({ ...request(), signal: controller.signal })).rejects.toBe(stop);
-      expect(spawn).toHaveBeenCalledExactlyOnceWith("/bin/sh", expect.arrayContaining(["--files", root]), expect.any(Object));
-      expect(spawn.mock.calls[0][1]?.[4]).toBe("/usr/bin/rg");
+      expect(spawn).toHaveBeenCalledExactlyOnceWith("/usr/bin/rg", expect.arrayContaining(["--files", root]), expect.any(Object));
     } finally {
       spawn.mockRestore();
       syncBuiltinESMExports();
@@ -213,16 +221,83 @@ describe("offline process confinement", () => {
     }
   });
 
+  it.each([false, true])("requires real scanner exit confirmation before cancellation settles (missing close: %s)", async (withholdClose) => {
+    await useNativeLinuxBuilder();
+    const scanner = join(root, "scan-fixture.cjs");
+    await writeFile(scanner, 'console.log(process.pid); setInterval(() => {}, 1000);');
+    const nativeSpawn = childProcess.spawn;
+    const launched = deferred<ChildProcess>();
+    const nativeClose = deferred<void>();
+    const controller = new AbortController();
+    const reason = new Error("Stop the running scanner");
+    let closed = false;
+    vi.spyOn(childProcess, "spawn").mockImplementation((command, args, options) => {
+      const job = Array.isArray(args) && args[0] === "--receipt";
+      if (!job && command !== "/usr/bin/rg") return nativeSpawn(command, args, options);
+      if (!Array.isArray(args)) throw new Error("Expected scan arguments.");
+      const env = { ...process.env, ELECTRON_RUN_AS_NODE: "1" };
+      const child = job
+        ? nativeSpawn(command, [...args.slice(0, 2), process.execPath, scanner], { ...options, env })
+        : nativeSpawn(process.execPath, [scanner], { ...options, env });
+      if (withholdClose) {
+        const emit = child.emit;
+        vi.spyOn(child, "emit").mockImplementation((event, ...values) => {
+          if (event !== "close") return Reflect.apply(emit, child, [event, ...values]);
+          nativeClose.resolve();
+          return true;
+        });
+      }
+      child.once("close", () => { closed = true; nativeClose.resolve(); });
+      launched.resolve(child);
+      return child;
+    });
+    syncBuiltinESMExports();
+    if (withholdClose) vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+
+    const wrap = wrapOfflineProcess({ ...request(), signal: controller.signal });
+    const settlement = wrap.catch(error => error);
+    try {
+      const child = await Promise.race([launched.promise, settlement.then(error => { throw error; })]);
+      const pid = await new Promise<number>((resolve, reject) => {
+        child.stdout?.once("data", (chunk: Buffer) => resolve(Number(chunk.toString().trim())));
+        child.once("error", reject);
+        void nativeClose.promise.then(() => reject(new Error("Scanner exited before announcing its pid.")));
+      });
+      expect(pid).toBeGreaterThan(1);
+      expect(process.kill(pid, 0)).toBe(true);
+      const scratch = (await fs.promises.readdir(root)).find(name => name.startsWith(".offline-scan-"));
+      expect(scratch).toBeDefined();
+      controller.abort(reason);
+
+      if (withholdClose) {
+        await vi.advanceTimersByTimeAsync(HOST_PLATFORM === "win32"
+          ? TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs : TOOL_TIMEOUT_POLICY.processTreeKillMs);
+        expect(await settlement).toMatchObject({
+          code: "engine-confinement-unavailable", message: "Offline scanner termination was not confirmed.",
+        });
+        expect(await fs.promises.readdir(root)).toContain(scratch);
+      } else {
+        expect(await settlement).toBe(reason);
+        expect(closed).toBe(true);
+        expect(() => process.kill(pid, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }));
+        expect(await fs.promises.readdir(root)).not.toContain(scratch);
+      }
+    } finally {
+      controller.abort(reason);
+      if (await Promise.race([launched.promise.then(() => true), settlement.then(() => false)])) await nativeClose.promise;
+      vi.useRealTimers();
+    }
+  });
+
   it.each([
     ["spawn error", Object.assign(new Error("spawn ENOENT"), { code: "ENOENT" })],
     ["launcher exit", 127],
     ["partial scan", 2],
   ] as const)("refuses setup when the preflighted scan has a %s", async (_description, outcome) => {
     await useNativeLinuxBuilder();
-    const nativeSpawn = childProcess.spawn;
-    const spawn = vi.spyOn(childProcess, "spawn").mockImplementation((command, args, options) => {
-      if (HOST_PLATFORM !== "win32" && outcome === 127 && Array.isArray(args)) {
-        return nativeSpawn(command, [...args.slice(0, 4), join(root, "missing-scan"), ...args.slice(5)], options);
+    const spawn = vi.spyOn(childProcess, "spawn").mockImplementation((_command, args) => {
+      if (HOST_PLATFORM === "win32" && Array.isArray(args) && typeof outcome === "number") {
+        fs.writeFileSync(args[1], "0");
       }
       const partialResult = outcome === 2 ? `${join(output, ".bashrc")}\n` : "";
       return scanChild(partialResult, outcome);
@@ -233,9 +308,7 @@ describe("offline process confinement", () => {
     expect(assertCodexExecutableLocation).toHaveBeenCalledWith("/usr/bin/rg");
     expect(access).toHaveBeenCalledWith("/usr/bin/rg", expect.any(Number));
     expect(spawn).toHaveBeenCalledTimes(1);
-    const receipt = spawn.mock.calls[0][1]?.[3];
-    if (receipt === undefined) throw new Error("Expected a scan receipt path.");
-    expect(fs.existsSync(receipt)).toBe(false);
+    expect(await fs.promises.readdir(root)).not.toEqual(expect.arrayContaining([expect.stringMatching(/^\.offline-scan-/u)]));
     expect(cleanupBwrapMountPoints).toHaveBeenCalledTimes(1);
   });
 
@@ -261,12 +334,12 @@ describe("offline process confinement", () => {
     await writeFile(scanner, "#!/bin/sh\nprintf '%s\\n' output/nested/.bashrc\n", { mode: 0o755 });
     await useNativeLinuxBuilder();
     const nativeSpawn = childProcess.spawn;
-    const spawn = vi.spyOn(childProcess, "spawn").mockImplementation((command, args, options) => {
+    vi.spyOn(childProcess, "spawn").mockImplementation((command, args, options) => {
       if (!Array.isArray(args)) throw new Error("Expected scan arguments.");
       if (HOST_PLATFORM !== "win32") {
-        return nativeSpawn(command, [...args.slice(0, 4), scanner, ...args.slice(5)], options);
+        return nativeSpawn(command === "/usr/bin/rg" ? scanner : command, args, options);
       }
-      fs.writeFileSync(args[3], "");
+      fs.writeFileSync(args[1], "0");
       return scanChild(`${denied}\n`, 0);
     });
     syncBuiltinESMExports();
@@ -276,9 +349,7 @@ describe("offline process confinement", () => {
       const words = parseSandboxWrappedWords(wrapped.argv[2]).map(word => word.value);
       expect(words).toContain(denied);
       expect(words.some((word, index) => word === "--ro-bind" && words[index + 1] === denied && words[index + 2] === denied)).toBe(true);
-      const receipt = spawn.mock.calls[0][1]?.[3];
-      if (receipt === undefined) throw new Error("Expected a scan receipt path.");
-      expect(fs.existsSync(receipt)).toBe(false);
+      expect(await fs.promises.readdir(root)).not.toEqual(expect.arrayContaining([expect.stringMatching(/^\.offline-scan-/u)]));
     } finally {
       wrapped.release();
     }

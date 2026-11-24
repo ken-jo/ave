@@ -1,8 +1,14 @@
-import { access, constants, lstat, mkdtemp, realpath, rm } from "node:fs/promises";
+import { access, constants, lstat, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import type { ChildProcess } from "node:child_process";
+import { text } from "node:stream/consumers";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { shellQuote } from "../lib/shell-resolver.js";
 import { noteConfinedProcessesMayRun } from "../lib/confined-process-phase.js";
 import { buildSafeChildEnv } from "../tools/safe-env.js";
+import { runWithCeiling } from "../tools/executor-ceiling.js";
+import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
+import { forceKillManagedChildProcess, spawnManaged } from "../main/managed-child-processes.js";
+import { resolveWindowsJobLauncher } from "../main/windows-job-launcher.js";
 import { TableDocumentError } from "../tools/table-document-error.js";
 import { assertCodexExecutableLocation } from "../main/codex-executable-location.js";
 import {
@@ -35,21 +41,56 @@ export interface OfflineProcessWrap {
   release(): void;
 }
 
-// Record success only after the scan exits. Stop and reap it if the launcher is cancelled.
-const OFFLINE_SCAN_SCRIPT = `
-receipt=$1
-shift
-"$@" &
-scanPid=$!
-trap 'kill -KILL "$scanPid" 2>/dev/null; wait "$scanPid"; exit 2' HUP INT TERM
-wait "$scanPid"
-status=$?
-trap - HUP INT TERM
-case "$status" in
-  0|1) : > "$receipt" || exit 2 ;;
-esac
-exit "$status"
-`;
+class OfflineScanExitUnconfirmedError extends TableDocumentError {
+  constructor() {
+    super("engine-confinement-unavailable", "Offline scanner termination was not confirmed.");
+  }
+}
+
+async function runOfflineScan(command: string, args: string[], signal: AbortSignal, timeoutMs: number, scanDirectory: string) {
+  const jobReceipt = process.platform === "win32" ? join(scanDirectory, "job-empty") : undefined;
+  if (jobReceipt !== undefined) await writeFile(jobReceipt, "", { flag: "wx" });
+  const start = () => jobReceipt === undefined
+    ? spawnManaged(command, args, { detached: true, stdio: ["ignore", "pipe", "pipe"] }, { label: "offline-scanner" })
+    : spawnManaged(resolveWindowsJobLauncher(), ["--receipt", jobReceipt, command, ...args], {
+      stdio: ["pipe", "pipe", "pipe"],
+    }, { label: "offline-scanner" });
+  let running: { child: ChildProcess; closed: Promise<number | null> } | undefined;
+
+  // The ceiling links cancellation before calling start, and the interruption path owns the child until its exit is confirmed.
+  const scan = await runWithCeiling(async (stop) => {
+    stop.throwIfAborted();
+    const child = start();
+    const closed = new Promise<number | null>(resolve => child.once("close", resolve));
+    running = { child, closed };
+    child.stdin?.on("error", () => {});
+    const failed = new Promise<never>((_resolve, reject) => child.once("error", reject));
+    if (!child.stdout || !child.stderr) throw new Error("Offline scanner output is unavailable.");
+    const output = Promise.all([text(child.stdout), text(child.stderr), closed]);
+    const [stdout, stderr, code] = await Promise.race([output, failed]);
+    return { stdout, stderr, code };
+  }, timeoutMs, signal, "offline scan");
+
+  const jobEmptied = async (): Promise<boolean> => jobReceipt === undefined
+    || await readFile(jobReceipt, "utf8").catch(() => "") === "0";
+  if (scan.ok) {
+    if (!await jobEmptied()) throw new OfflineScanExitUnconfirmedError();
+    return scan.value;
+  }
+  if (running && running.child.pid !== undefined) {
+    const { child, closed } = running;
+    const killDeadline = jobReceipt === undefined ? TOOL_TIMEOUT_POLICY.processTreeKillMs : TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs;
+    const stopped = await runWithCeiling(async () => {
+      if (jobReceipt === undefined) await forceKillManagedChildProcess(child, "offline scan interrupted");
+      else child.stdin?.destroy();
+      await closed;
+      return await jobEmptied();
+    }, killDeadline, undefined, "offline scanner termination");
+    if (!stopped.ok || !stopped.value) throw new OfflineScanExitUnconfirmedError();
+  }
+  signal.throwIfAborted();
+  throw scan.error;
+}
 
 function within(parent: string, child: string): boolean {
   return child === parent || child.startsWith(`${parent}${sep}`);
@@ -151,11 +192,11 @@ export async function wrapOfflineProcess(input: OfflineProcessInput): Promise<Of
     throw new TableDocumentError("engine-confinement-unavailable", `Offline scan helper ${ripgrep} or its launcher is unavailable.`);
   }
   const { wrapCommandWithSandboxLinux, cleanupBwrapMountPoints } = await import("@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js");
-  // The builder can return after a failed scan. Require proof from its own invocation, outside the writable output.
   const scanDirectory = await mkdtemp(join(dirname(source), ".offline-scan-")).catch(() => {
     throw new TableDocumentError("engine-confinement-unavailable", "Offline scan setup failed.");
   });
-  const receipt = join(scanDirectory, "complete");
+  let scanCompleted = false;
+  let unconfirmedExit: OfflineScanExitUnconfirmedError | undefined;
   let ownsMounts = false;
   const release = (): void => {
     if (!ownsMounts) return;
@@ -169,17 +210,28 @@ export async function wrapOfflineProcess(input: OfflineProcessInput): Promise<Of
         command, needsNetworkRestriction: true, readConfig, writeConfig,
         allowAllUnixSockets: true, allowNestedUserNamespaces: false, enableWeakerNestedSandbox: false,
         binShell: shell, bwrapPath: bwrap,
-        ripgrepConfig: { command: shell, args: ["-c", OFFLINE_SCAN_SCRIPT, "offline-scan", receipt, ripgrep] },
+        ripgrepConfig: {
+          command: ripgrep,
+          run: async (executable, args, signal, timeoutMs) => {
+            try {
+              const result = await runOfflineScan(executable, args, signal, timeoutMs, scanDirectory);
+              scanCompleted = result.code === 0 || result.code === 1;
+              return result;
+            } catch (error) {
+              if (error instanceof OfflineScanExitUnconfirmedError) unconfirmedExit = error;
+              throw error;
+            }
+          },
+        },
         abortSignal: input.signal, unsetEnvVars: ["JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS"],
       });
       ownsMounts = true;
       input.signal.throwIfAborted();
-      const completed = await lstat(receipt).catch(() => undefined);
-      if (!completed?.isFile()) {
+      if (!scanCompleted) {
         throw new TableDocumentError("engine-confinement-unavailable", "Offline scan did not complete.");
       }
     } finally {
-      await rm(scanDirectory, { recursive: true, force: true });
+      if (!unconfirmedExit) await rm(scanDirectory, { recursive: true, force: true });
     }
     // Local IPC needs AF_UNIX; nested namespaces must therefore be refused by the native wrapper itself.
     if (!wrapped.includes("--disable-userns")) {
@@ -189,5 +241,5 @@ export async function wrapOfflineProcess(input: OfflineProcessInput): Promise<Of
     return { ...hardenLinuxSandboxWrap({ argv: ["/bin/sh", "-c", wrapped], env }, {
       allowRead: [...reads.patterns, ...reads.literals, ...runtimes], denyWrite: [...writeDenies.patterns, ...writeDenies.literals],
     }), release };
-  } catch (error) { release(); throw error; }
+  } catch (error) { release(); throw unconfirmedExit ?? error; }
 }

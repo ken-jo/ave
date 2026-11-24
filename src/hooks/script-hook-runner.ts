@@ -474,6 +474,21 @@ export async function runOneHookScript(
 
   return new Promise<ScriptHookInvocationResult>((resolve) => {
     let child: ChildProcess;
+    let settled = false;
+    let timedOut = false;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let timeoutFallback: ReturnType<typeof setTimeout> | undefined;
+
+    const onAbort = (): void => {
+      if (settled) return;
+      cancelled = true;
+      clearTimeout(timer);
+      clearTimeout(timeoutFallback);
+      if (child !== undefined) void forceKillManagedChildProcess(child, "hook caller aborted");
+    };
+    abortSignal?.addEventListener("abort", onAbort, { once: true });
+
     try {
       // A bare host program resolves on PATH only; a path keeps its documented meaning relative to the sealed configuration directory.
       child = windowsSpawn?.child ?? spawn(sandboxArgv || /[\\/]/u.test(spawnCmd) ? spawnCmd : resolveHostProgram(spawnCmd, spawnEnv), spawnArgs, {
@@ -486,6 +501,7 @@ export async function runOneHookScript(
         detached: process.platform !== "win32",
       });
     } catch (error) {
+      abortSignal?.removeEventListener("abort", onAbort);
       wrappedEgress?.release();
       cleanupWrap?.();
       resolve(deny(`hook spawn error: ${(error as Error).message}`));
@@ -550,12 +566,6 @@ export async function runOneHookScript(
       log.warn("hook stdin error: %s (%s)", runnable.id, err.message);
     });
 
-    let settled = false;
-    let timedOut = false;
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let timeoutFallback: ReturnType<typeof setTimeout> | undefined;
-
     const finish = (code: number | null, signal?: NodeJS.Signals | null): void => {
       if (settled) return;
       settled = true;
@@ -596,15 +606,7 @@ export async function runOneHookScript(
       });
     });
 
-    const onAbort = (): void => {
-      if (settled) return;
-      cancelled = true;
-      clearTimeout(timer);
-      clearTimeout(timeoutFallback);
-      void forceKillManagedChildProcess(child, "hook caller aborted");
-    };
-    abortSignal?.addEventListener("abort", onAbort, { once: true });
-    if (abortSignal?.aborted) {
+    if (cancelled || abortSignal?.aborted) {
       onAbort();
       return;
     }

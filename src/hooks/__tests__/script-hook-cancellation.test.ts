@@ -1,3 +1,6 @@
+import childProcess from "node:child_process";
+import { getEventListeners } from "node:events";
+import { syncBuiltinESMExports } from "node:module";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -30,6 +33,15 @@ describe("script hook caller cancellation", () => {
     const secondPath = join(root, "second.pid");
     const first = new AbortController();
     const second = new AbortController();
+    const spawn = childProcess.spawn;
+    let firstArmedAtSpawn = false;
+    const observed = vi.spyOn(childProcess, "spawn").mockImplementation((command, args, options) => {
+      if (Array.isArray(args) && args.includes(firstPath)) {
+        firstArmedAtSpawn = getEventListeners(first.signal, "abort").length > 0;
+      }
+      return spawn(command, args, options);
+    });
+    syncBuiltinESMExports();
     const firstRun = runOneHookScript(waitingHook(firstPath), payload, { cwd: root, abortSignal: first.signal });
     const secondRun = runOneHookScript(waitingHook(secondPath), payload, { cwd: root, abortSignal: second.signal });
     try {
@@ -41,6 +53,7 @@ describe("script hook caller cancellation", () => {
         expect(firstPid).toBeGreaterThan(0);
         expect(secondPid).toBeGreaterThan(0);
       });
+      expect(firstArmedAtSpawn).toBe(true);
       first.abort(new Error("owner stopped first hook"));
       expect(await firstRun).toMatchObject({ decision: "deny", reason: "Hook execution cancelled", timedOut: false });
       expect(() => process.kill(firstPid, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }));
@@ -48,7 +61,8 @@ describe("script hook caller cancellation", () => {
     } finally {
       first.abort();
       second.abort();
-      await Promise.all([firstRun, secondRun]);
+      try { await Promise.all([firstRun, secondRun]); }
+      finally { observed.mockRestore(); syncBuiltinESMExports(); }
     }
   });
 
