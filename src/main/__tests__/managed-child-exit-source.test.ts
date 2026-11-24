@@ -14,7 +14,7 @@ import { dirname, join, posix, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as ts from "typescript/unstable/ast";
 import { parseSourceTexts } from "../../../scripts/lib/ts7-ast.mjs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { readRepoFile } from "../../__tests__/test-helpers.js";
 import {
   abandonManagedLaunch, createManagedRelayResources, createManagedResources, observeManagedProcessGroup,
@@ -406,6 +406,8 @@ describe("managed child receipts", () => {
     await expect(releaseManagedResources(resources, first)).rejects.toThrow("Managed exit was not confirmed.");
     const second = await laterExit.confirmExit();
     if (!second) throw new Error("Expected a confirmed exit.");
+    await expect(releaseManagedResources(resources, first)).rejects.toThrow("Managed exit was not confirmed.");
+    expect(steps).toEqual([]);
     await releaseManagedResources(resources, second);
     expect(steps).toEqual(["released"]);
   });
@@ -414,8 +416,8 @@ describe("managed child receipts", () => {
     const parent = createManagedResources();
     const nested = createManagedResources(parent);
     const sibling = createManagedResources(parent);
-    const done = await confirmedUnder(sibling);
     observeManagedProcessGroup(exitedChild(), nested);
+    const done = await confirmedUnder(sibling);
     await expect(releaseManagedResources(parent, done)).rejects.toThrow("Managed exit was not confirmed.");
     await expect(abandonManagedLaunch(parent)).rejects.toThrow("Managed exit was not confirmed.");
   });
@@ -429,6 +431,33 @@ describe("managed child receipts", () => {
     const parent = createManagedResources();
     await confirmedUnder(createManagedResources(parent));
     await expect(abandonManagedLaunch(parent)).rejects.toThrow("Managed exit was not confirmed.");
+  });
+
+  it("withholds a group receipt until the leader closed and its group is gone", async () => {
+    const child = new ChildProcess();
+    Object.defineProperty(child, "pid", { value: 4242 });
+    let groupAlive = true;
+    const kill = vi.spyOn(process, "kill").mockImplementation(((pid: number, signal?: string | number) => {
+      if (pid === -4242 && signal === 0 && !groupAlive) throw Object.assign(new Error("ESRCH"), { code: "ESRCH" });
+      return true;
+    }) as typeof process.kill);
+    try {
+      const resources = createManagedResources();
+      const verdict = observeManagedProcessGroup(child, resources).confirmExit();
+      let settled = false;
+      void verdict.then(() => { settled = true; });
+      await new Promise(resolve => setImmediate(resolve));
+      expect(settled).toBe(false);
+      child.emit("close", 0, null);
+      await new Promise(resolve => setImmediate(resolve));
+      expect(settled).toBe(false);
+      groupAlive = false;
+      const receipt = await verdict;
+      expect(receipt).toBeDefined();
+      if (receipt) await releaseManagedResources(resources, receipt);
+    } finally {
+      kill.mockRestore();
+    }
   });
 
   it("keeps a relay receipt to relay handles", async () => {
