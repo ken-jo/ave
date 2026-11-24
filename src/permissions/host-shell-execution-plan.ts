@@ -244,7 +244,7 @@ export function buildHostShellExecutionPlan(input: {
     });
   }
 
-  // A requested sandbox that is unavailable (missing bwrap/socat, start failure) yields an honest plain child on every platform. It takes the same policy path as explicit sandbox-off, floor and deny rules included, so it needs no one-shot permit: a saved exact or prefix allow rule runs it unasked and everything else asks (decision tree, host shell row; this replaces the 2026-10-25 exact-only rule). Exception: while boot cannot verify the Ave home read boundary, the plan requires explicit approval and the permission floor asks for every command, with no saved-rule or mode pass. The fallback reason stays on the plan so the approval card, the tool result and audit can say the sandbox was unavailable.
+  // A requested sandbox that is unavailable (missing bwrap/socat, start failure) yields an honest plain child on every platform. It takes the same policy path as explicit sandbox-off, floor and deny rules included, so it needs no one-shot permit: a saved exact or prefix allow rule runs it unasked and everything else asks (decision tree, host shell row; this replaces the 2026-10-25 exact-only rule). Exception: while boot cannot establish Ave home privacy (any category, an unverifiable read boundary included), the plan requires explicit approval and the permission floor asks for every command, with no saved-rule or mode pass. The fallback reason stays on the plan so the approval card, the tool result and audit can say the sandbox was unavailable.
   if (requestedSandbox && input.activeCapability.kind === "none") {
     const fallbackReason: HostShellFallbackReason = "requested-sandbox-unavailable";
     const capability = noneCapability(
