@@ -491,9 +491,9 @@ describe("a staged download", () => {
     await settled();
     item.complete("new bytes");
     expect(await done).toEqual({ state: "interrupted", cleanup: "removed" });
-    const [record] = readdirSync(root.path);
+    const [record = ""] = readdirSync(root.path);
     expect(record).toMatch(/\.cleanup\.json$/u);
-    expect(JSON.parse(readFileSync(join(root.path, record!), "utf8"))).toMatchObject({ at: hidden, target: "report.pdf" });
+    expect(JSON.parse(readFileSync(join(root.path, record), "utf8"))).toMatchObject({ at: hidden, target: "report.pdf" });
     await sweepBrowserDownloadStaging(root);
     expect(recover).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ path: chosen }), hidden, "report.pdf",
       { kind: "helper", dev: 1n, ino: 2n, verdict: "mismatch", observed: null });
@@ -530,13 +530,13 @@ describe("a staged download", () => {
         expect(readdirSync(root.path)).toEqual([]);
         return;
       }
-      const [hidden] = readdirSync(chosen);
+      const [hidden = ""] = readdirSync(chosen);
       expect(readdirSync(chosen)).toHaveLength(1);
       expect(hidden).toMatch(/^\.[0-9a-f]{32}\.removing$/u);
-      expect(readFileSync(join(chosen, hidden!), "utf8")).toBe("old bytes");
-      const [record] = readdirSync(root.path);
+      expect(readFileSync(join(chosen, hidden), "utf8")).toBe("old bytes");
+      const [record = ""] = readdirSync(root.path);
       expect(record).toMatch(/\.cleanup\.json$/u);
-      expect(JSON.parse(readFileSync(join(root.path, record!), "utf8"))).toMatchObject({ at: hidden, target: "report.pdf" });
+      expect(JSON.parse(readFileSync(join(root.path, record), "utf8"))).toMatchObject({ at: hidden, target: "report.pdf" });
       await sweepBrowserDownloadStaging(prepared);
       expect(readFileSync(target, "utf8")).toBe("old bytes");
       expect(readdirSync(chosen)).toEqual(["report.pdf"]);
