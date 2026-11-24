@@ -263,7 +263,8 @@ process.stdin.on('end', () => process.stdout.write(JSON.stringify({action:'allow
     const resources = createManagedResources();
     const wrapped = await wrapManagedBundledCommand({ command: "node", args: [script], resources, allowWrite: [dataDir], ownPluginReads: [],
       tempPrincipal: { kind: "hook", id: "release-retry" }, egressOwner: { kind: "worker", role: "hook", pluginId: undefined, instanceId: "release-retry" } });
-    const token = (wrap.mock.calls[0]![1] as { commandId: string }).commandId;
+    const [, options] = wrap.mock.calls[0] ?? [];
+    const token = (options as { commandId: string }).commandId;
     const child = new ChildProcess();
     Object.defineProperty(child, "pid", { value: undefined });
     const exit = observeManagedProcessGroup(child, resources);
@@ -273,7 +274,7 @@ process.stdin.on('end', () => process.stdout.write(JSON.stringify({action:'allow
     await expect(releaseManagedResources(resources, receipt)).rejects.toThrow("mount cleanup failed");
     expect(egressInvocationOwner(token)).toBeUndefined();
     expect(wrapped.homeEnv.HOME).toContain("sandbox");
-    expect(existsSync(wrapped.homeEnv.HOME!)).toBe(false);
+    expect(existsSync(String(wrapped.homeEnv.HOME))).toBe(false);
     await releaseManagedResources(resources, receipt);
     expect(cleanup).toHaveBeenCalledTimes(2);
   });
