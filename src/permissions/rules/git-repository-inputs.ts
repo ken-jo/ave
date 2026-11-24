@@ -185,6 +185,7 @@ export function inspectGitRepository(cwd: string): GitRepositoryInputs | null {
     if (!inspect(gitDirectory, "", 0)) return null;
     // Catch paths changed while another part of the bounded walk was inspected.
     // This is a consistency check, not a lock on later path opens.
+    // A same-object rename and restore within one filesystem timestamp tick is indistinguishable.
     for (const [path, identity] of provenance) {
       if (metadataIdentity(lstatSync(path, { bigint: true })) !== identity) return null;
     }

@@ -447,7 +447,7 @@ describe("hook command permission admission", () => {
   it.each(["approval", "authority refresh"])("keeps an approved hook on its captured shell route when the stamp succeeds during %s", async stage => {
     const input: WindowsSandboxPlanInputs = {
       shellRequested: true, shellLocalNetworkAccess: true, workerRequested: true, srtWinReady: true, windowsBuild: null,
-      mxc: { state: "unavailable", reason: "tier-unsupported" },
+      mxc: { state: "unavailable", reason: "container-unavailable" },
     };
     plans.windowsPartial = true;
     setShellSandboxRequestedAtBoot(true);

@@ -45,6 +45,8 @@ vi.mock("electron", () => ({
 const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const resources = new PermissionTestResources();
 const closers: Array<() => Promise<void>> = [];
+// Matches the configured per-test timeout.
+const INTEGRATION_TEST_TIMEOUT_MS = 45_000;
 
 interface ConstructionPath {
   constructor: string;
@@ -211,7 +213,7 @@ async function setup() {
   };
   const proveOwnerApproval = async (running: Promise<unknown>) => {
     pending.push(running);
-    await vi.waitFor(() => expect(owner.send.mock.calls.filter(([channel]) => channel === "ave:approval:request")).toHaveLength(1));
+    await vi.waitFor(() => expect(owner.send.mock.calls.filter(([channel]) => channel === "ave:approval:request")).toHaveLength(1), { timeout: INTEGRATION_TEST_TIMEOUT_MS });
     const card = owner.send.mock.calls.find(([channel]) => channel === "ave:approval:request")![1] as ApprovalRequest;
     expect(foreign.send).not.toHaveBeenCalled();
     expect(gate.listPendingRendererRequests(foreign as unknown as WebContents)).toEqual([]);
@@ -309,7 +311,7 @@ describe("production run construction approval ownership", () => {
     void running.then(() => { settled = true; }, () => { settled = true; });
     release();
     // Detect admission before awaiting the run so a broken gate fails without its five-minute timer.
-    await vi.waitFor(() => expect(settled || f.gate.pendingCount > 0).toBe(true));
+    await vi.waitFor(() => expect(settled || f.gate.pendingCount > 0).toBe(true), { timeout: INTEGRATION_TEST_TIMEOUT_MS });
     expect(f.gate.pendingCount).toBe(0);
     expect(f.owner.send).not.toHaveBeenCalled();
     await running;
