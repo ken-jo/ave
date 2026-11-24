@@ -1165,7 +1165,7 @@ export async function authorizeToolInvocation(
         // fail-closed permission answer, but recording it as the outcome would
         // put the owner refusing this specific call into the transcript.
         // Report the stop, exactly as the pre-ask check above does. A deny the person already answered is
-        // still theirs when the quit seal lands before this resumes, and is recorded below as theirs.
+        // still theirs when a stop lands before this resumes, and is recorded below as theirs.
         if (abortSupersedesApprovalDecision(abortSignal, decision)) {
           return withHostShellExecutionPlan(
             await returnUserAbort(abortDeps(finalInput)),
@@ -1217,7 +1217,7 @@ export async function authorizeToolInvocation(
           request: { ...approvalRequest, abortSignal }, sessionId,
           review: async permission => await dispatchReviewerForInteractiveAutoImpl(services.permissionManager, toolUse.name, source, invocationCategory, tool.pathFields ?? [], finalInput, invocationAllowedScope.directories, sensitivePathPattern ? [sensitivePathPattern] : [], invocationPermissionContext, evaluationContext, sandboxAttestation, callbacks, meta, approvalPurpose, hostShellExecutionPlan, abortSignal, auditInput, sessionId, permission) ?? permission,
         }) : { permission: permissionResult, decision, provenance: undefined };
-        // A stop or quit while the surface step was pending ends this attempt as a stop, whatever the first card said.
+        // Recheck the effective answer after the surface step in case a stop landed while it was pending.
         if (abortSupersedesApprovalDecision(abortSignal, surfaceResolution.decision)) {
           return withHostShellExecutionPlan(await returnUserAbort(abortDeps(finalInput)));
         }

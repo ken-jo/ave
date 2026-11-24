@@ -6,7 +6,7 @@ import { terminalDenyKindOf } from "../../audit/audit-schema.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { answeredApprovalDecision } from "../../__tests__/support/answering-approval-gate.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
-import type { ApprovalGate, ApprovalRequestInput } from "../../permissions/approval-gate.js";
+import type { ApprovalGate, ApprovalRequest, ApprovalRequestInput } from "../../permissions/approval-gate.js";
 import type { PluginRuntimeGenerationAccess } from "../../plugins/plugin-host-generation.js";
 import type { HostPluginAuthLifecycle } from "../executor-contract.js";
 
@@ -19,7 +19,7 @@ afterEach(async () => { for (const root of roots.splice(0)) await cleanupTmpDir(
 type Source =
   | "rule" | "unknown-tool" | "human" | "hook-mutation" | "host" | "integrity" | "plugin-generation"
   | "user-abort" | "host-shutdown" | "deadline" | "mid-execution" | "plugin-generation-shutdown"
-  | "card-quit" | "card-abort" | "governed-operation" | "governed-auth"
+  | "card-quit" | "card-abort" | "card-deny-then-abort" | "governed-operation" | "governed-auth"
   | "dir-hook-abort" | "dir-hook-inherited-abort" | "shell-prep-abort"
   | "human-then-abort" | "human-then-quit" | "headless-then-abort";
 
@@ -50,6 +50,7 @@ async function setup(source: Source) {
   const dirHook = source === "dir-hook-abort" || source === "dir-hook-inherited-abort";
   const humanThen = source === "human-then-abort" || source === "human-then-quit";
   const headlessThen = source === "headless-then-abort";
+  const liveCard = source === "card-quit" || source === "card-abort" || source === "card-deny-then-abort";
   const outside = mkdtempSync(join(tmpdir(), "ave-denial-outside-"));
   roots.push(outside);
   const registry = new ToolRegistry();
@@ -72,7 +73,7 @@ async function setup(source: Source) {
     } }));
   const permissions = new PermissionManager(join(root, "permissions.json"));
   if (source === "rule" || source === "governed-operation" || source === "governed-auth") permissions.setRules([{ pattern: TOOL, action: "deny" }]);
-  if (source === "human" || source === "host" || source === "integrity" || source === "card-quit" || source === "card-abort" || humanThen || headlessThen) {
+  if (source === "human" || source === "host" || source === "integrity" || liveCard || humanThen || headlessThen) {
     permissions.setRules([{ pattern: TOOL, action: "ask" }]);
   }
   if (holds || generation || source === "host-shutdown") permissions.setRules([{ pattern: TOOL, action: "allow" }]);
@@ -133,12 +134,11 @@ async function setup(source: Source) {
     },
     runWithLease: async <T>(_lease: unknown, operation: () => Promise<T>) => operation(),
   } as unknown as PluginRuntimeGenerationAccess;
-  // card-quit, card-abort: the real gate holds an open card until the quit or the abort ends it.
-  let cardShown!: () => void;
-  const cardOpen = new Promise<void>((done) => { cardShown = done; });
+  let cardShown!: (card: ApprovalRequest) => void;
+  const cardOpen = new Promise<ApprovalRequest>((done) => { cardShown = done; });
   const realGate = new ApprovalGate({ isDestroyed: () => false,
-    send: (channel: string) => { if (channel === IPC_APPROVAL_REQUEST) cardShown(); } } as never);
-  const gate = source === "card-quit" || source === "card-abort" ? realGate : { requestAndWait } as unknown as ApprovalGate;
+    send: (channel: string, card: ApprovalRequest) => { if (channel === IPC_APPROVAL_REQUEST) cardShown(card); } } as never);
+  const gate = liveCard ? realGate : { requestAndWait } as unknown as ApprovalGate;
   const executor = new ToolExecutor(registry, undefined, permissions, undefined, gate, hooks, audit,
     undefined, undefined, undefined, () => access);
   const authLifecycle = { binding: { pluginId: "probe-plugin", generationId: "gen-1", toolName: TOOL, appSessionId: "app", accountScopeHash: "hash" },
@@ -312,6 +312,21 @@ describe("a permission denial fires one PermissionDenied; a cancellation and a g
       }
       await result;
       await expectNoDenial(probe, reason);
+    } finally {
+      await probe.audit.close();
+    }
+  });
+
+  it("keeps a bound human Deny when Stop fires before the runner resumes", async () => {
+    const probe = await setup("card-deny-then-abort");
+    try {
+      const result = probe.run();
+      const card = await probe.cardOpen;
+      const decision = probe.gate.resolve(card.id, { requestId: card.id, choice: "deny-once", nonce: card.nonce, hmac: card.hmac });
+      probe.controller.abort();
+      expect(decision).toMatchObject({ choice: "deny-once" });
+      await result;
+      await expectOneDenial(probe, "user denied approval request");
     } finally {
       await probe.audit.close();
     }

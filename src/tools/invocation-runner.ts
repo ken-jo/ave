@@ -1779,7 +1779,7 @@ async function runToolInvocationAttempt(
         // As on the tool-ask path: the gate's deny-once on an abort is the
         // right permission answer but the wrong transcript entry. The user
         // stopped the turn; they did not refuse this directory. A deny the person already answered stays
-        // theirs when the quit seal lands before this resumes.
+        // theirs when a stop lands before this resumes.
         if (abortSupersedesApprovalDecision(abortSignal, decision)) {
           return {
             allowed: false,

@@ -11,7 +11,6 @@ import {
 } from "../../permissions/approval-gate.js";
 import type { PermissionCheckResult } from "../../permissions/permission-manager.js";
 import { RULE_PROVENANCE } from "../../permissions/decision-provenance.js";
-import { isHostExitAbort } from "../../shared/host-exit-abort.js";
 import { maskSensitiveData } from "../../shared/dlp.js";
 
 /** The host's refusal of a call the quit seal stopped; no person decided it. */
@@ -57,13 +56,13 @@ export function isSettledRefusal(decision: ApprovalDecision): boolean {
   return !decision.choice.startsWith("allow") || isHostApprovalRejectedDecision(decision);
 }
 
-/** An abort ends the call unless it is the quit seal landing after a person already answered deny: that deny stays theirs. */
+/** An abort can end an approval wait and still preserve a person's settled denial. */
 export function abortSupersedesApprovalDecision(
   abortSignal: AbortSignal | undefined,
   decision: ApprovalDecision | undefined,
 ): boolean {
   if (abortSignal?.aborted !== true) return false;
-  return decision === undefined || !isHostExitAbort(abortSignal.reason) || !isAnsweredApprovalDenial(decision);
+  return decision === undefined || !isAnsweredApprovalDenial(decision);
 }
 
 /** Preserve host-owned failures in both tool and directory approval results. */
