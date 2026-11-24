@@ -1,7 +1,6 @@
 src/__tests__/boot-llm-fetch-source.test.ts
 src/__tests__/headless-entry.test.ts
 src/__tests__/headless-host-serve.test.ts
-src/__tests__/host-program-source-guard.test.ts
 src/__tests__/ipc-bridge-runtime-handlers.test.ts
 src/__tests__/ipc-feedback.test.ts
 src/__tests__/session-tasks-and-skill-store.test.ts
@@ -403,7 +402,6 @@ src/main/__tests__/subscription-runtime-read-cache.test.ts
 src/main/__tests__/subscription-runtime-registry.test.ts
 src/main/__tests__/subscription-runtime-service-getter.test.ts
 src/main/__tests__/suggestions-session.test.ts
-src/main/__tests__/tailnet-cli.test.ts
 src/main/__tests__/tailnet-observer-config-service.test.ts
 src/main/__tests__/tailnet-owner-policy.test.ts
 src/main/__tests__/tailnet-paired-share-authorizer.test.ts
@@ -421,7 +419,6 @@ src/main/__tests__/telegram-paired-platform-runtime.test.ts
 src/main/__tests__/telegram-platform-runtime.test.ts
 src/main/__tests__/telegram-remote-approval.test.ts
 src/main/__tests__/telemetry-endpoint-validation.test.ts
-src/main/__tests__/windows-program-lookup.test.ts
 src/main/__tests__/work-board-delete-markers.test.ts
 src/main/__tests__/work-board-lifecycle-atomic.test.ts
 src/main/__tests__/work-board-proposals.test.ts
@@ -860,7 +857,6 @@ src/sdk/__tests__/sdk.test.ts
 src/shared/__tests__/ave-home-refused-configuration.test.ts
 src/shared/__tests__/chat-history-meta.test.ts
 src/shared/__tests__/dotted-field-value.test.ts
-src/shared/__tests__/host-program-path.test.ts
 src/shared/__tests__/local-date.test.ts
 src/shared/__tests__/mcp-tool-approval.test.ts
 src/shared/__tests__/model-discovery-policy-parity.test.ts
