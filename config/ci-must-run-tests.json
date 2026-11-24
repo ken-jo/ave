@@ -1,5 +1,5 @@
 {
-  "$comment": "Affected runs always retain smoke, child-process/bundle and tracked-tree invariants; scripts/run-ci-suite.mjs adds every test that uses an unbounded input primitive. Other domain groups run only when a changed path matches their triggers. Related tests, literal readers and lock suites are added independently. Full runs ignore this selection and execute every collected test. Unknown changes and failed discovery retain the full fallback.",
+  "$comment": "Affected runs always retain smoke, child-process/bundle and tracked-tree invariants. Other domain groups run only when a changed path matches their triggers. Related tests, literal readers and lock suites are added independently. Full runs ignore this selection and execute every collected test. Unknown changes and failed discovery retain the full fallback.",
   "groups": {
     "permissions": [
       "src/permissions/"

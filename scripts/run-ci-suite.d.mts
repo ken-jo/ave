@@ -1,6 +1,5 @@
-import type { UnboundedInputExemptions, UnboundedInputTempHelper } from "./ci-unbounded-input-exemptions.mjs";
-import type { GitRawDiffEntry } from "./hooks/pre-push-ref-updates.mjs";
 import type { ReadWindowsVersion } from "./windows-test-inventory.mjs";
+import type { GitRawDiffEntry } from "./hooks/pre-push-ref-updates.mjs";
 
 export const MUST_RUN_TESTS_PATH: string;
 export const AFFECTED_TEST_LIMIT: number;
@@ -22,18 +21,12 @@ export declare function selectCiTests(input: {
   changes: GitRawDiffEntry[];
   trackedTests: readonly string[];
   mustRunTests: readonly string[] | ((changedPaths: string[]) => readonly string[]);
-  readText: (path: string) => string | null;
   readVersion?: ReadWindowsVersion;
+  readText: (path: string) => string | null;
   discoverRelated: (paths: string[]) => { source: string; tests: string[] }[] | null;
 }): CiSuitePlan;
 export declare function runsRepoCodeOutOfProcess(text: string): boolean;
 export declare function testRunsRepoCodeOutOfProcess(testPath: string, readText: (path: string) => string | null): boolean;
-export declare function unboundedInputClasses(text: string, exemptions?: UnboundedInputExemptions): string[];
-export declare function unboundedInputHits(testPath: string, readText: (path: string) => string | null, exemptions?: UnboundedInputExemptions): string[];
-export declare function unboundedInputExemptionDigests(paths: readonly string[], readText: (path: string) => string | null): Map<string, string | null>;
-export declare function tempHelperDigest(path: string, entry: UnboundedInputTempHelper, readText: (path: string) => string | null): string | null;
-export declare function selectUnboundedInputTests(trackedTests: readonly string[], readText: (path: string) => string | null, exemptions?: UnboundedInputExemptions): string[];
-export declare const AFFECTED_SHARD_THRESHOLD: number;
 export declare function runsCoverage(eventName: string | undefined): boolean;
 export const FULL_RUN_SHARDS: number;
 export declare function ciShardCount(plan: CiSuitePlan, coverage: boolean, nativeChecks?: boolean): number;

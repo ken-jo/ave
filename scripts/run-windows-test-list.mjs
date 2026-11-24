@@ -17,22 +17,8 @@ export function windowsTestCommands(text, bun = "bun.exe") {
 export function plannedWindowsFiles(inventory, text, plan, shard) {
   const full = new Set(windowsTestFiles(text));
   const selected = plan.lists?.[inventory];
-  const supplemental = plan.supplemental?.[inventory];
-  if (supplemental !== undefined) {
-    // A membership diff can name a collected suite outside the current list,
-    // such as a removed entry that still needs its regression run.
-    if (!WINDOWS_TEST_LISTS.includes(inventory)
-      || !Array.isArray(supplemental) || !supplemental.every(file => typeof file === "string")
-      || JSON.stringify(windowsTestFiles(supplemental.join("\n"))) !== JSON.stringify(supplemental)
-      || (plan.mode === "full" && (!Array.isArray(plan.departing) || supplemental.some(file => !plan.departing.includes(file))))
-      || supplemental.some(file => full.has(file) || !selected?.includes(file))) {
-      throw new Error(`Invalid Windows supplemental tests for ${inventory}`);
-    }
-    for (const file of supplemental) full.add(file);
-  }
-  if (!Array.isArray(selected) || (plan.mode !== "full" && plan.mode !== "affected")
-    || new Set(selected).size !== selected.length || selected.some(file => !full.has(file))
-    || (plan.mode === "full" && selected.length !== full.size)) {
+  if (!Array.isArray(selected) || selected.length !== full.size
+    || new Set(selected).size !== selected.length || selected.some(file => !full.has(file))) {
     throw new Error(`Invalid Windows plan for ${inventory}`);
   }
   if (shard === undefined) return selected;

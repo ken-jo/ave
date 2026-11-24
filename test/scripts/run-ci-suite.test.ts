@@ -4,7 +4,6 @@ import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { BaseSequencer } from "vitest/node";
 
 import {
   AFFECTED_TEST_LIMIT,
@@ -14,7 +13,6 @@ import {
   MUST_RUN_TESTS_PATH,
   namedRepositoryPaths,
   namesChangedPath,
-  AFFECTED_SHARD_THRESHOLD,
   ciShardCount,
   ciSuiteArguments,
   FULL_RUN_SHARDS,
@@ -25,17 +23,11 @@ import {
   runsCoverage,
   runsRepoCodeOutOfProcess,
   selectCiTests,
-  selectUnboundedInputTests,
-  tempHelperDigest,
-  unboundedInputClasses,
-  unboundedInputExemptionDigests,
-  unboundedInputHits,
   testRunsRepoCodeOutOfProcess,
 } from "../../scripts/run-ci-suite.mjs";
 import { parseGitRawDiff } from "../../scripts/hooks/pre-push-ref-updates.mjs";
 import { isCollectedVitestFile } from "../../scripts/hooks/pre-push-source-policy.mjs";
-import { WINDOWS_INVENTORY_LOCK, WINDOWS_TEST_LISTS } from "../../scripts/windows-test-inventory.mjs";
-import { UNBOUNDED_INPUT_EXEMPTIONS, UNBOUNDED_INPUT_TEMP_HELPERS } from "../../scripts/ci-unbounded-input-exemptions.mjs";
+import { WINDOWS_TEST_LISTS } from "../../scripts/windows-test-inventory.mjs";
 import { modifiedEntry as modified } from "../../src/__tests__/support/git-diff-entry.js";
 
 vi.mock("node:child_process", async (importOriginal) => {
@@ -84,8 +76,6 @@ const GRAPH_SOURCES = [
   "src/main/ave-protocol-registration.ts",
   "src/core/model-catalog/refresh.ts",
   "src/__tests__/support/git-diff-entry.ts",
-  "src/main/app-menu.ts",
-  "src/plugins/capabilities.ts",
 ];
 let graphCoverage = new Map<string, string[]>();
 
@@ -108,8 +98,6 @@ beforeAll(async () => {
   const coverage = JSON.parse(stdout) as { source: string; tests: string[] }[];
   graphCoverage = new Map(coverage.map(({ source, tests }) => [source, tests]));
   expect([...graphCoverage.keys()].sort()).toEqual([...GRAPH_SOURCES].sort());
-  // Like the related graph, the real source snapshot is shared across planner cases.
-  selectUnboundedInputTests(trackedTests, readText);
 }, 300_000);
 
 /** Discovery over this tree, as CI runs it, answered from the one discovery above. */
@@ -129,7 +117,7 @@ describe("Windows inventory metadata in CI plans", () => {
   const added = "src/shared/__tests__/escape-html.test.ts";
   const removed = "src/core/__tests__/route-input.test.ts";
   const unaffected = "src/shared/__tests__/tool-result-trim.test.ts";
-  const expected = (...files: string[]) => [...new Set([...files, WINDOWS_INVENTORY_LOCK, ...mustRunTests, ...selectUnboundedInputTests(trackedTests, readText)])].sort();
+  const expected = (...files: string[]) => [...new Set([...files, ...mustRunTests])].sort();
 
   it.each(WINDOWS_TEST_LISTS.slice(0, 2))("runs the membership delta and must-run set for %s", list => {
     const discovery = vi.fn(() => null);
@@ -342,18 +330,9 @@ describe("CI test selection fallbacks", () => {
     expect(ciSuiteArguments(affected, false)).toEqual([join("scripts", "run-vitest-under-electron.mjs"), "run", "--silent=true", "./src/a.test.ts"]);
   });
 
-  it("shards a full run and a large affected plan without coverage, and passes the shard to Vitest", () => {
+  it("shards only a full run without coverage, and passes the shard to Vitest", () => {
     const fullPlan = { mode: "full" as const, reason: "push runs the full suite", tests: [] };
     const affected = { mode: "affected" as const, reason: "traced", tests: ["src/a.test.ts"] };
-    const plan = (count: number) => ({
-      mode: "affected" as const,
-      reason: "traced",
-      tests: Array.from({ length: count }, (_, index) => `src/s${index}.test.ts`),
-    });
-    expect(ciShardCount(plan(AFFECTED_SHARD_THRESHOLD), false)).toBe(1);
-    expect(ciShardCount(plan(AFFECTED_SHARD_THRESHOLD + 1), false)).toBe(FULL_RUN_SHARDS);
-    expect(ciShardCount(plan(800), false)).toBe(FULL_RUN_SHARDS);
-    expect(ciShardCount(plan(800), false, true)).toBe(1);
     expect(FULL_RUN_SHARDS).toBeGreaterThan(1);
     expect(ciShardCount(fullPlan, false)).toBe(FULL_RUN_SHARDS);
     expect(ciShardCount(fullPlan, true)).toBe(1);
@@ -371,32 +350,6 @@ describe("CI test selection fallbacks", () => {
       join("scripts", "run-vitest-under-electron.mjs"), "run", "--silent=true", "--shard=1/2", "./src/a.test.ts",
     ]);
     expect(() => ciSuiteArguments(fullPlan, true, "1/4")).toThrow("a coverage run cannot be sharded");
-  });
-
-  it("assigns every suite of an 800-suite affected plan to exactly one shard, as Vitest splits the full run", async () => {
-    const plan = {
-      mode: "affected" as const,
-      reason: "traced",
-      tests: Array.from({ length: 800 }, (_, index) => `src/area${index % 13}/s${index}.test.ts`),
-    };
-    const count = ciShardCount(plan, false);
-    expect(count).toBe(FULL_RUN_SHARDS);
-    const root = "/repo";
-    const assigned: string[] = [];
-    for (let index = 1; index <= count; index += 1) {
-      const args = ciSuiteArguments(plan, false, parseCiShard(`${index}/${count}`));
-      expect(args.filter((arg) => arg.startsWith("--shard="))).toEqual([`--shard=${index}/${count}`]);
-      const files = args.filter((arg) => arg.startsWith("./")).map((arg) => arg.slice(2));
-      expect(files).toEqual(plan.tests);
-      // Vitest's own sequencer is the full run's balancing: hash order, contiguous slices.
-      const sequencer = new BaseSequencer({ config: { root, shard: { index, count } } } as never);
-      const specs = files.map((file) => ({ moduleId: `${root}/${file}` }));
-      const slice = await sequencer.shard(specs as never);
-      expect(slice.length).toBeGreaterThan(0);
-      assigned.push(...slice.map((spec) => (spec as { moduleId: string }).moduleId.slice(root.length + 1)));
-    }
-    expect(assigned).toHaveLength(plan.tests.length);
-    expect([...assigned].sort()).toEqual([...plan.tests].sort());
   });
 
   it("reads a shard and a written plan strictly", () => {
@@ -422,9 +375,7 @@ describe("CI test selection fallbacks", () => {
       expect(plan.mode).toBe("affected");
       expect(plan.reason).toContain("category merge: affected checks");
       expect(plan.tests).toContain(test);
-      // A permissions-domain suite outside the unbounded-input set stays out of a core change.
       const permissionSuite = "src/permissions/__tests__/approval-gate.test.ts";
-      expect(selectUnboundedInputTests(trackedTests, readText)).not.toContain(permissionSuite);
       expect(plan.tests).not.toContain(permissionSuite);
     });
   });
@@ -470,7 +421,7 @@ describe("event rules over the pull request merge and the whole push", () => {
       const plan = planCiSuite("pull_request", { headRef: "test/windows", baseRef: "main" });
       const mustRun = expandMustRunTests(mustRunDocument, trackedTests, [list]);
       expect(plan.mode).toBe("affected");
-      expect(plan.tests).toEqual([...new Set([changedTest, removed, WINDOWS_INVENTORY_LOCK, ...mustRun, ...selectUnboundedInputTests(trackedTests, readText)])].sort());
+      expect(plan.tests).toEqual([...new Set([changedTest, removed, ...mustRun])].sort());
       expect(vi.mocked(spawnSync).mock.calls.slice(3).map(call => call[1])).toEqual([["show", `first:${list}`], ["show", `HEAD:${list}`]]);
     });
   });
@@ -486,7 +437,7 @@ describe("event rules over the pull request merge and the whole push", () => {
     ], () => {
       const plan = planCiSuite("pull_request", { headRef: "test/windows", baseRef: "main" });
       expect(plan.mode).toBe("affected");
-      expect(plan.tests).toEqual([...new Set([file, WINDOWS_INVENTORY_LOCK, ...core, ...selectUnboundedInputTests(trackedTests, readText)])].sort());
+      expect(plan.tests).toEqual([...new Set([file, ...core])].sort());
     });
   });
 
@@ -739,7 +690,7 @@ describe("CI selection for integration bases", () => {
       tests: [...new Set([changed, reader, ...relatedTests, ...locks, mustRun])].sort(),
       reason: `${fullReason}; integration base: traced selection, strict fallback at the main boundary; ` +
         `2 changed module(s) reach ${relatedCount} test file(s); 1 changed test file(s); ` +
-        `1 test file(s) name a changed path; ${locks.length} lock suite file(s); 1 must-run file(s); 0 unbounded-input file(s)`,
+        `1 test file(s) name a changed path; ${locks.length} lock suite file(s); 1 must-run file(s)`,
     });
   });
 
@@ -843,242 +794,6 @@ describe("the must-run set", () => {
     const plan = select([{ ...modified(added), status: "A", oldMode: "000000" }]);
     expect(plan.reason).toContain("test-only diff");
     expect(plan.tests).toEqual(expect.arrayContaining(treeScanners));
-  });
-
-  // Any test that uses a listing, git or non-literal read primitive, in its own text or a helper or script it imports,
-  // runs on every affected plan unless an audited exemption covers that file and primitive class.
-  const missedWalkers = [
-    "src/__tests__/main-single-instance-gate.test.ts", "test/renderer/assistant-card-contrast.test.tsx",
-    "src/ui/renderer/utils/__tests__/markdown-plugins.test.ts", "src/permissions/__tests__/mxc-native-spawn-callers.test.ts",
-    "src/ui/renderer/hooks/__tests__/use-send-message-resource.test.tsx", "src/plugins/__tests__/validate-boundary.test.ts",
-  ];
-
-  it("selects every primitive user, including the walkers that root recognition missed", () => {
-    const unbounded = selectUnboundedInputTests(trackedTests, readText);
-    expect(unbounded).toEqual(expect.arrayContaining(missedWalkers));
-    const untriggered = expandMustRunTests(mustRunDocument, trackedTests, []);
-    for (const test of missedWalkers) expect(untriggered, test).not.toContain(test);
-  });
-
-  it("reuses an identical input snapshot and reselects after a helper changes", () => {
-    const suite = "test/snapshot.test.ts";
-    const helper = "test/snapshot-helper.ts";
-    const files: Record<string, string> = {
-      [suite]: 'import "./snapshot-helper";',
-      [helper]: 'export const value = 1;',
-    };
-    const read = (path: string) => files[path] ?? null;
-    const before = selectUnboundedInputTests([suite], read);
-    expect(before).toEqual([]);
-    expect(selectUnboundedInputTests([suite], (path) => read(path))).toBe(before);
-    files[helper] = 'export { readFileSync } from "node:fs";';
-    expect(selectUnboundedInputTests([suite], read)).toEqual([suite]);
-  });
-
-  it.each(Object.entries(UNBOUNDED_INPUT_EXEMPTIONS))("keeps the exemption for %s current", (file, entry) => {
-    const text = readText(file);
-    expect(text, file).not.toBeNull();
-    const kinds = Object.keys(entry).filter((key) => key !== "forwards" && key !== "digest");
-    expect(kinds.length).toBeGreaterThan(0);
-    for (const kind of kinds) {
-      expect(String(entry[kind as "read"]).trim(), `${file}:${kind}`).not.toBe("");
-      expect(unboundedInputClasses(text ?? ""), `${file} no longer uses the exempted ${kind} primitive`).toContain(kind);
-    }
-    for (const name of Object.values(entry.forwards ?? {}).flat()) expect(text).toMatch(new RegExp(`export (?:async )?function ${name}\\b`, "u"));
-  });
-
-  it.each([
-    ['import { readFileSync as read } from "node:fs"; read(path);', ["read"]],
-    ['import fs from "node:fs"; const { readFileSync: read } = fs; read(path);', ["read"]],
-    ['import * as fs from "node:fs"; fs["statSync"] (path);', ["read"]],
-    ['const fs = await import("node:fs/promises");', ["read"]],
-    ['import { createRequire as make } from "node:module"; const load = make(import.meta.url); load("fs-extra");', ["read"]],
-    ['import fs from "graceful-fs";', ["read"]],
-    ['import { existsSync } from "node:fs"; existsSync("package.json");', ["read"]],
-    ['import { execFileSync } from "node:child_process"; execFileSync(command, args);', ["git"]],
-    ['import glob from "fast-glob";', ["listing"]],
-    ['const open = Bun["file"]; open(path);', ["runtime"]],
-    ['const { spawn: run } = Bun; run(args);', ["runtime"]],
-    ['const bind = process.binding; bind(name);', ["runtime"]],
-    ['const capabilities = { process: true };', []],
-    ['import type { Stats } from "node:fs"; const readFileSync = () => 1; readFileSync();', []],
-    ['inspectFile(target);', ["read"]],
-    ['readPluginDataFixture(pluginRoot);', ["read"]],
-  ])("classifies runtime bindings regardless of their use: %s", (source, expected) => {
-    expect(unboundedInputClasses(source as string)).toEqual(expected);
-  });
-
-  it("follows helper, alias, package-import and scripts/ modules and fails closed on an unreadable one", () => {
-    const files: Record<string, string> = {
-      "package.json": JSON.stringify({ imports: { "#support/*": "./test/support/*.ts" } }),
-      "src/a/__tests__/a.test.ts": 'import { x } from "./support/x.js"; import "#support/y"; const z = require("../../../scripts/z.mjs");',
-      "src/a/__tests__/support/x.ts": "export const x = 1;",
-      "test/support/y.ts": 'import { readFileSync } from "node:fs"; export const y = readFileSync(file);',
-      "scripts/z.mjs": 'export const z = spawnSync("git", ["ls-files"]);',
-      "src/b/__tests__/b.test.ts": 'import { gone } from "./support/gone.js"; import "@/__tests__/support/x.js";',
-      "src/__tests__/support/x.ts": "export const x = 1;",
-      "src/c/__tests__/c.test.ts": 'import { cleanup } from "../../__tests__/support/tmp-dir-teardown.js"; import { value } from "../value.js";',
-      "src/__tests__/support/tmp-dir-teardown.ts": 'import { readdirSync } from "node:fs"; export const cleanup = (dir) => readdirSync(dir);',
-      "src/c/value.ts": "export const value = readFileSync(other);",
-    };
-    const read = (path: string) => files[path] ?? null;
-    expect(unboundedInputHits("src/a/__tests__/a.test.ts", read).sort()).toEqual(["scripts/z.mjs:git", "test/support/y.ts:read"]);
-    expect(unboundedInputHits("src/b/__tests__/b.test.ts", read)).toEqual(["src/b/__tests__/support/gone.js:unresolved"]);
-    // An exempted helper class is silent; production modules belong to the import graph.
-    const helper = "src/__tests__/support/tmp-dir-teardown.ts";
-    const digest = unboundedInputExemptionDigests([helper], read).get(helper);
-    if (!digest) throw new Error("Exemption closure could not be resolved");
-    expect(unboundedInputHits("src/c/__tests__/c.test.ts", read, { [helper]: { read: "fixture", digest } })).toEqual([]);
-  });
-
-  it("pins each exemption to its audited file and imported repository sources", () => {
-    const paths = Object.keys(UNBOUNDED_INPUT_EXEMPTIONS);
-    const actual = unboundedInputExemptionDigests(paths, readText);
-    const drifted = paths.filter((path) => actual.get(path) !== UNBOUNDED_INPUT_EXEMPTIONS[path]?.digest);
-    expect(drifted.map((path) => [path, actual.get(path)])).toEqual([]);
-  });
-
-  it("invalidates an exemption when a transitive import changes or disappears", () => {
-    const suite = "test/source.test.ts";
-    const helper = "test/reader.ts";
-    const indirect = "src/dependency.ts";
-    const files: Record<string, string> = {
-      [suite]: 'import { read } from "./reader"; read();',
-      [helper]: 'import { readFileSync } from "node:fs"; import { location } from "../src/location"; export const read = () => readFileSync(location);',
-      "src/location.ts": 'export { location } from "./dependency";',
-      [indirect]: 'export const location = "file";',
-    };
-    const read = (path: string) => files[path] ?? null;
-    const digest = unboundedInputExemptionDigests([helper], read).get(helper);
-    if (!digest) throw new Error("Exemption closure could not be resolved");
-    const exemptions = { [helper]: { read: "fixture", digest } };
-    expect(unboundedInputHits(suite, read, exemptions)).toEqual([]);
-    files[indirect] += '\nexport const changed = true;';
-    expect(unboundedInputHits(suite, read, exemptions)).toEqual([`${helper}:read`]);
-    delete files[indirect];
-    expect(unboundedInputHits(suite, read, exemptions)).toEqual([`${helper}:read`]);
-  });
-
-  describe("temp-bounded reads", () => {
-    const header = [
-      'import { cpSync, existsSync, mkdtempSync, readFileSync, realpathSync, symlinkSync } from "node:fs";',
-      'import { mkdtemp, readFile } from "node:fs/promises";',
-      'import * as fs from "node:fs";',
-      'import { tmpdir } from "node:os";',
-      'import { join, resolve } from "node:path";',
-    ].join("\n");
-    const hits = (body: string, extra: Record<string, string> = {}, fallback: (path: string) => string | null = () => null) => {
-      const files: Record<string, string> = { "src/t/__tests__/t.test.ts": `${header}\n${body}\n`, ...extra };
-      return unboundedInputHits("src/t/__tests__/t.test.ts", (path) => files[path] ?? fallback(path));
-    };
-    const unbounded = ["src/t/__tests__/t.test.ts:read"];
-
-    it.each([
-      ["mkdtempSync joined with literals", 'const dir = mkdtempSync(join(tmpdir(), "x-")); readFileSync(join(dir, "a", "b.json"), "utf8");'],
-      ["a for-of variable over a literal array", 'const dir = mkdtempSync(join(tmpdir(), "x-")); for (const name of ["a.json", "b.json"]) existsSync(join(dir, name));'],
-      ["awaited mkdtemp through realpathSync and a template", `const root = realpathSync(await mkdtemp(join(tmpdir(), "x-"))); await readFile(\`\${root}/state/a.json\`);`],
-      ["a let assigned only temp paths", 'let dir: string; beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "x-")); }); it("r", () => fs.readFileSync(resolve(dir, "a")));'],
-      ["a copy inside the temp tree", 'const dir = mkdtempSync(join(tmpdir(), "x-")); cpSync(join(dir, "a"), join(dir, "b")); readFileSync(join(dir, "b"));'],
-    ])("proves a temp-derived read bounded: %s", (_label, body) => {
-      expect(hits(body)).toEqual([]);
-    });
-
-    it.each([
-      ["temp mixed with process.cwd()", 'const dir = mkdtempSync(join(tmpdir(), "x-")); readFileSync(join(process.cwd(), dir));'],
-      ["a cwd root", 'readFileSync(join(process.cwd(), "a.json"));'],
-      ["a .. segment", 'const dir = mkdtempSync(join(tmpdir(), "x-")); readFileSync(join(dir, "..", "..", "package.json"));'],
-      ["an absolute resolve segment", 'const dir = mkdtempSync(join(tmpdir(), "x-")); readFileSync(resolve(dir, "/etc/hosts"));'],
-      ["a let reassigned to a non-temp path", 'let dir = mkdtempSync(join(tmpdir(), "x-")); dir = process.cwd(); readFileSync(join(dir, "a"));'],
-      ["a for-of variable over a computed array", 'const dir = mkdtempSync(join(tmpdir(), "x-")); for (const name of names()) readFileSync(join(dir, name));'],
-      ["a function parameter", "const read = (dir: string) => readFileSync(join(dir, \"a\"));"],
-      ["a property of a harness", 'readFileSync(harness.boardPath, "utf8");'],
-      ["a link from the repository into the temp tree", 'const dir = mkdtempSync(join(tmpdir(), "x-")); symlinkSync(process.cwd(), join(dir, "repo")); readFileSync(join(dir, "repo", "package.json"));'],
-      ["a copy from the repository into the temp tree", 'const dir = mkdtempSync(join(tmpdir(), "x-")); cpSync(process.cwd(), dir, { recursive: true }); readFileSync(join(dir, "package.json"));'],
-      ["a child process that can write the temp tree", 'import { execFileSync } from "node:child_process"; const dir = mkdtempSync(join(tmpdir(), "x-")); execFileSync("cp", ["-r", ".", dir]); readFileSync(join(dir, "a"));'],
-      ["fs loaded outside an import", 'const dir = mkdtempSync(join(tmpdir(), "x-")); require("node:fs").cpSync(".", dir); readFileSync(join(dir, "a"));'],
-      ["an aliased fs namespace", 'const f = fs; const dir = mkdtempSync(join(tmpdir(), "x-")); f.cpSync(".", dir); readFileSync(join(dir, "a"));'],
-      ["a bound method used as a value", 'const dir = mkdtempSync(join(tmpdir(), "x-")); const read = readFileSync; read(join(dir, "a"));'],
-      ["a literal repository read alongside a temp read", 'readFileSync(join(tmpdir(), "a")); fs.readFileSync("package.json");'],
-      ["a non-temp copy destination", 'cpSync(join(tmpdir(), "x"), "src/main");'],
-      ["a non-temp bracketed operation", 'fs["statSync"](process.cwd());'],
-    ])("keeps an unproven read unbounded: %s", (_label, body) => {
-      expect(hits(body)).toEqual(expect.arrayContaining(unbounded));
-    });
-
-    it.each([
-      'vi.mock("node:os", () => ({ tmpdir: () => process.cwd() }));',
-      'vi.doMock(import("node:path"), () => ({ join: () => process.cwd() }));',
-      'vi["mock"]("fs", () => ({}));',
-      'process.env.TMPDIR = process.cwd();',
-      'process["env"]["TEMP"] ||= process.cwd();',
-      'vi.stubEnv("TMP", process.cwd());',
-      'const stub = vi.stubEnv; stub("TMPDIR", process.cwd());',
-      'const env = process.env; env.TEMP = process.cwd();',
-      'import * as os from "node:os"; vi.spyOn(os, "tmpdir").mockReturnValue(process.cwd());',
-    ])("refuses a temp proof when the test can override the temp root: %s", (setup) => {
-      expect(hits(`${setup}readFileSync(join(tmpdir(), "a"));`)).toEqual(expect.arrayContaining(unbounded));
-    });
-
-    it("requires every fs binding in the file to be temp-rooted, including aliases and element accesses", () => {
-      const temp = 'const dir = mkdtempSync(join(tmpdir(), "x-")); read(join(dir, "a")); fs["statSync"](dir);';
-      const importAlias = 'import { readFileSync as read } from "node:fs";';
-      expect(hits(importAlias + temp)).toEqual([]);
-      expect(hits(`${importAlias + temp}fs["statSync"](process.cwd());`)).toEqual(unbounded);
-    });
-
-    it("keeps helper filesystem bindings even when the caller reads only temp paths", () => {
-      const helper = "src/t/__tests__/seed.ts";
-      expect(hits('import { seed } from "./seed"; seed(); readFileSync(join(tmpdir(), "a"));', {
-        [helper]: 'import fs from "node:fs"; export const seed = () => fs.cpSync(process.cwd(), destination);',
-      })).toEqual([`${helper}:read`]);
-    });
-
-    it("bounds a read through an audited temp factory only while its digest matches, and never through an unaudited helper", () => {
-      const auditedPath = "src/__tests__/test-helpers.ts";
-      const audited = readText(auditedPath) ?? "";
-      const teardown = readText("src/__tests__/support/tmp-dir-teardown.ts") ?? "";
-      const repo = { "src/__tests__/test-helpers.ts": audited, "src/__tests__/support/tmp-dir-teardown.ts": teardown };
-      const viaAudited = 'import { useTempDirs, useTempPaths } from "../../__tests__/test-helpers.js";\nconst makeDir = useTempDirs("x-"); const makePath = useTempPaths("y-", "state.json");\nreadFileSync(join(makeDir(), "a.json")); existsSync(makePath());';
-      // The helper's own imports come from the real tree.
-      expect(hits(viaAudited, repo, readText)).toEqual([]);
-      expect(hits(viaAudited, { ...repo, "src/__tests__/support/tmp-dir-teardown.ts": `${teardown}\n// changed` }, readText)).toEqual(expect.arrayContaining(unbounded));
-      expect(hits('import { useTempPaths } from "../../__tests__/test-helpers.js";\nconst makePath = useTempPaths("y-", "../../package.json"); readFileSync(makePath());', repo, readText)).toEqual(unbounded);
-      const viaUnaudited = 'import { makeScratch } from "./support/scratch.js";\nconst dir = makeScratch(); readFileSync(join(dir, "a.json"));';
-      expect(hits(viaUnaudited, { "src/t/__tests__/support/scratch.ts": 'export const makeScratch = () => "/tmp/x";' })).toEqual(unbounded);
-    });
-
-    it.each(Object.entries(UNBOUNDED_INPUT_TEMP_HELPERS))("pins the audited temp factories of %s", (file, entry) => {
-      expect(tempHelperDigest(file, entry, readText), `${file} or a covered file changed; re-audit its factories and update the digest`).toBe(entry.digest);
-      expect(entry.reason.trim()).not.toBe("");
-      for (const name of Object.keys(entry.factories)) expect(readText(file)).toMatch(new RegExp(`export function ${name}\\b`, "u"));
-    });
-  });
-
-  it.each([
-    ["src/main/app-menu.ts", "src/__tests__/main-single-instance-gate.test.ts"],
-    ["src/plugins/capabilities.ts", "src/permissions/__tests__/mxc-native-spawn-callers.test.ts"],
-  ])("plans the missed walkers for a source-only change to %s", (file, walker) => {
-    const plan = selectCiTests({
-      changes: [modified(file)], trackedTests, readText,
-      mustRunTests: (paths: string[]) => expandMustRunTests(mustRunDocument, trackedTests, paths),
-      discoverRelated,
-    });
-    expect(plan.mode).toBe("affected");
-    expect(plan.tests).toEqual(expect.arrayContaining([walker, ...missedWalkers]));
-  });
-
-  it("selects the browser-confirmation guard for a source-only diff that adds confirm( under src/main", () => {
-    const file = "src/main/ave-protocol-registration.ts";
-    const guard = "src/ui/renderer/hooks/__tests__/use-send-message-resource.test.tsx";
-    const edited = `${readText(file) ?? ""}\nexport const askToOpen = (): boolean => confirm("Open this link?");\n`;
-    expect(graphCoverage.get(file)).not.toContain(guard);
-    const plan = selectCiTests({
-      changes: [modified(file)], trackedTests, discoverRelated,
-      mustRunTests: (paths: string[]) => expandMustRunTests(mustRunDocument, trackedTests, paths),
-      readText: (path: string) => path === file ? edited : readText(path),
-    });
-    expect(plan.mode).toBe("affected");
-    expect(plan.tests).toContain(guard);
   });
 
   it("holds every test that runs repository code in a tsx child or an esbuild bundle", () => {

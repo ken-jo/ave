@@ -192,8 +192,7 @@ jobs:
       # Plan once: the shards below run this plan instead of planning again,
       # so every shard splits the same file list. A full run without
       # coverage uses one pool beside selected native checks, otherwise
-      # FULL_RUN_SHARDS shards, as does an affected plan above
-      # AFFECTED_SHARD_THRESHOLD files. Smaller affected and coverage runs use one pool.
+      # FULL_RUN_SHARDS shards. Affected and coverage runs use one pool.
       - name: Plan the suite
         id: plan
         if: steps.docs-impact.outputs.docs_only != 'true'
@@ -211,9 +210,6 @@ jobs:
       - name: Plan Windows regressions
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
-        env:
-          AVE_WINDOWS_PR_BASE: ${{ github.event.pull_request.base.sha }}
-          AVE_WINDOWS_PR_HEAD: ${{ github.event.pull_request.head.sha }}
         run: bun run scripts/plan-windows-tests.ts "$RUNNER_TEMP/windows-ci/windows-plan.json"
       - name: Upload the Windows regression plan
         if: steps.docs-impact.outputs.docs_only != 'true'

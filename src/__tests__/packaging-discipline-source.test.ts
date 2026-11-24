@@ -1773,8 +1773,7 @@ describe("installer smoke and packaging discipline", () => {
     expect(body).toContain("WINDOWS_RESULT: ${{ needs.windows-permission-tests.result }}");
     expect(matched(commands, VERIFIES_THE_CODE)).toEqual([]);
     expect(shards).toMatch(/^ {4}needs: build$/mu);
-    // An affected plan above AFFECTED_SHARD_THRESHOLD shards too; one failed or
-    // cancelled shard makes needs.vitest.result fail the aggregate.
+    // One failed or cancelled shard makes needs.vitest.result fail the aggregate.
     expect(shards).toContain("      fail-fast: false\n");
     expect(shards).toContain("        shard: ${{ fromJSON(needs.build.outputs.shards || '[1]') }}");
     expect(shards).toContain("          AVE_CI_SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}");
