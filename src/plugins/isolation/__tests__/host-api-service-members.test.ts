@@ -1132,7 +1132,9 @@ describe("spawnWorker crosses as an id, never as a live handle", () => {
   it("returns actionable validation for a relative worker command to the plugin", async () => {
     const spawnWorker = vi.fn(async () => makeFakeWorker());
     const harness = await createServiceHarness({ spawnWorker });
-    await expect(harness.child.hostApi.spawnWorker!({
+    const { hostApi } = harness.child;
+    if (!hostApi.spawnWorker) throw new Error("Worker API is unavailable in the fixture");
+    await expect(hostApi.spawnWorker({
       workerId: "indexer", control: "output-only-v1", command: "./worker",
     })).rejects.toMatchObject({
       code: "argument-marshalling-rejected",
