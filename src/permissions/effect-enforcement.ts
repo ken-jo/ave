@@ -1,13 +1,13 @@
-import { refreshRemoteControllerBoundToSession, isRemoteControllerBoundToSession, remoteControllerOriginOf } from "../shared/chat-origin.js";
+import { refreshRemoteControllerBoundToSession, isRemoteControllerBoundToSession, remoteControllerOriginOf, type RemoteControllerAuthority } from "../shared/chat-origin.js";
 // Actual host effects enter the common permission pipeline before recording and execution.
 // Authorize before recording and execution; network audit also records denied attempts. Invalid input snapshots never reach implementation.
 import { createHash, randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { ApprovalGate, ApprovalChoice } from "./approval-gate.js";
-import type { PermissionCheckContext, PermissionManager } from "./permission-manager.js";
+import type { PermissionCheckContext, PermissionCheckResult, PermissionManager } from "./permission-manager.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
-import { canonicalizePathForMatch } from "./sensitive-paths.js";
-import { NO_APPROVER_MESSAGE } from "./decision-pipeline.js";
+import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
+import { decidePermission, NO_APPROVER_MESSAGE, type PermissionDecisionRequest } from "./decision-pipeline.js";
 import { issueHostNetworkSubject } from "./host-network-subject.js";
 import type { ApprovalSurface } from "../shared/authorization-required.js";
 import {
@@ -59,11 +59,15 @@ export interface EffectGateContext {
   readonly executionCwd?: string;
   readonly permissionContext?: Pick<PermissionCheckContext, "admissionDenial" | "floor" | "exfiltration" | "manualRerun" | "ownerUnattended" | "remoteControllerAuthority" | "permissionStoreError">;
   readonly abortSignal?: AbortSignal;
+  /** Plugin work outside any tool call: never asks; only the background scope approved for this manifest runs. */
+  readonly standalone?: true;
 }
 
 const gateContextStorage = new AsyncLocalStorage<EffectGateContext>();
 const authorizationRequiredLatch = new WeakMap<EffectGateContext, () => void>();
 const noApproverLatch = new WeakMap<EffectGateContext, () => void>();
+/** Frames whose invocation returned; work left running there keeps no once-grant. */
+const poppedFrames = new WeakSet<EffectGateContext>();
 
 // Run `fn` with an effect-gate context bound for the async chain of one tool invocation. A fresh `allow-once` grant set is minted per call so once-grants never leak across invocations. AsyncLocalStorage propagates through the loopback transport (the same path the effect ledger relies on), so the per-plugin hostApi closures see this context when they reach a gated effect.
 export function runWithEffectGateContext<T>(
@@ -78,7 +82,18 @@ export function runWithEffectGateContext<T>(
     authorizationRequiredLatch.set(frame, onAuthorizationRequired);
   }
   if (onNoApprover) noApproverLatch.set(frame, onNoApprover);
-  return gateContextStorage.run(frame, fn);
+  const pop = () => {
+    poppedFrames.add(frame);
+    frame.onceGrants.clear();
+  };
+  let result: Promise<T>;
+  try {
+    result = gateContextStorage.run(frame, fn);
+  } catch (error) {
+    pop();
+    throw error;
+  }
+  return Promise.resolve(result).finally(pop);
 }
 
 /** Capture the host denial signal for a socket callback that outlives this async frame. */
@@ -90,6 +105,31 @@ export function captureEffectNoApprover(): (() => void) | undefined {
 // Read the ambient effect-gate context, or `undefined` outside a gated invocation.
 export function currentEffectGateContext(): EffectGateContext | undefined {
   return gateContextStorage.getStore();
+}
+
+/** Whether two frames authorize an effect alike; display text, display fields and once-grants are not compared. */
+export function sameEffectAuthority(a: EffectGateContext | undefined, b: EffectGateContext | undefined): boolean {
+  if (a === b) return true;
+  if (a === undefined || b === undefined) return false;
+  const pa = a.permissionContext ?? {};
+  const pb = b.permissionContext ?? {};
+  return a.headless === b.headless && a.approvalSurface === b.approvalSurface && a.sessionId === b.sessionId
+    && a.unattributedApproval === b.unattributedApproval && a.executionCwd === b.executionCwd
+    && pa.admissionDenial?.code === pb.admissionDenial?.code && pa.floor?.code === pb.floor?.code
+    && (pa.exfiltration === undefined) === (pb.exfiltration === undefined)
+    && pa.manualRerun === pb.manualRerun && pa.ownerUnattended === pb.ownerUnattended
+    && sameRemoteController(pa.remoteControllerAuthority, pb.remoteControllerAuthority) && pa.permissionStoreError === pb.permissionStoreError;
+}
+
+// Remote controllers are rebuilt per call, so they compare by binding value; the host-private guards must be the same instance.
+function sameRemoteController(a: RemoteControllerAuthority | undefined, b: RemoteControllerAuthority | undefined): boolean {
+  if (a === b) return true;
+  if (a === undefined || b === undefined || a.kind !== b.kind || a.actorId !== b.actorId) return false;
+  if (a.kind === "tailnet-controller" && b.kind === "tailnet-controller") {
+    return a.pairedShareGuard === b.pairedShareGuard && canonicalStringify(a.pairedShare ?? null) === canonicalStringify(b.pairedShare ?? null);
+  }
+  return a.kind === "platform-bridge" && b.kind === "platform-bridge"
+    && a.bridgeGuard === b.bridgeGuard && canonicalStringify(a.bridgeBinding) === canonicalStringify(b.bridgeBinding);
 }
 
 // Process-local grants bind the complete payload and physical paths; session and invocation scopes never cross their boundaries.
@@ -203,6 +243,16 @@ function effectPaths(methodPath: string, effect: Effect, args: readonly unknown[
   return paths;
 }
 
+function insideOwnStorage(paths: readonly EffectPath[], resolveStoragePath?: (relativePath: string) => string): boolean {
+  if (!resolveStoragePath || paths.length === 0) return false;
+  const root = caseFoldForMatch(canonicalizePathForMatch(resolveStoragePath(".")));
+  const prefix = root.endsWith("/") ? root : `${root}/`;
+  return paths.every(({ canonical }) => {
+    const path = caseFoldForMatch(canonical);
+    return path === root || path.startsWith(prefix);
+  });
+}
+
 function assertEffectPaths(paths: readonly EffectPath[]): void {
   if (paths.some((path) => canonicalizePathForMatch(path.lexical) !== path.canonical)) {
     throw new Error("Effect target changed during approval");
@@ -245,6 +295,32 @@ export interface EffectEnforcementDeps {
   readonly resolveStoragePath?: (relativePath: string) => string;
   // Revalidate the exact HostApi incarnation after an async approval wait and immediately before the approved effect executes.
   readonly assertActive: () => void;
+  /** Whether a standalone effect on this path and target is inside the background scope approved for the running plugin. */
+  readonly standaloneScope?: StandaloneScope;
+}
+
+export type StandaloneScope = (methodPath: string, target: string | undefined) => boolean | Promise<boolean>;
+
+// The enable-time card is the explicit allow for these category asks; floors, guardrails, secret reads, ask rules and unknown reasons still need a person.
+const CARD_ANSWERED_ASKS: ReadonlySet<string> = new Set(["file-write", "shell-approval", "network-approval"]);
+
+function cardAnswersAsk(permission: Pick<PermissionCheckResult, "decision" | "reasonCode" | "reason" | "forceModal" | "pipelineRequest">, ownStorageWrite: boolean): boolean {
+  if (permission.decision !== "ask") return false;
+  const request = permission.pipelineRequest;
+  if (permission.forceModal === true) {
+    // Plugin storage sits in the app home, so every own-storage write meets that floor; the rest of the policy still decides.
+    if (!ownStorageWrite || permission.reasonCode !== "protected-path" || permission.reason !== "application-home" || !request) return false;
+    const { floor: _floor, floorSessionEligible: _eligible, ...unfloored } = request;
+    return ordinaryUnderReview(unfloored);
+  }
+  if (permission.reasonCode === "review-required") return request !== undefined && ordinaryUnderReview(request);
+  return permission.reasonCode !== undefined && CARD_ANSWERED_ASKS.has(permission.reasonCode);
+}
+
+// Automatic review stands in for every ask, so decide without it to see whether a person would face only a category ask.
+function ordinaryUnderReview(request: PermissionDecisionRequest): boolean {
+  const decided = decidePermission({ ...request, mode: request.mode === "auto" ? "default" : request.mode });
+  return decided.outcome === "allow" || decided.outcome === "sandbox-auto" || decided.outcome === "ask" && CARD_ANSWERED_ASKS.has(decided.reasonCode);
 }
 
 // Standalone lifecycle work is outside tool policy. Tool effects are evaluated independently of their enclosing tool's approval.
@@ -260,6 +336,7 @@ export async function gateMutatingEffect(params: {
   resolveStoragePath?: (relativePath: string) => string;
   approvalGate: ApprovalGate;
   permissionManager?: PermissionManager;
+  standaloneScope?: StandaloneScope;
 }): Promise<void> {
   if (params.effect !== "write" && params.methodPath !== "hostFetch" && !pathReadEffectPaths.has(params.methodPath)) return;
   const ctx = currentEffectGateContext();
@@ -302,6 +379,19 @@ export async function gateMutatingEffect(params: {
     ...(network ? { ruleSubject: issueHostNetworkSubject({ url: actualUrl as string }) } : workerCommand ? { ruleSubject: { kind: "shell" as const, dialect: "bash" as const, command: workerCommand, cwd: process.cwd() }, shellExecution: { runsSandboxed: false } } : {}),
     ...(remembered === "deny-always" ? { admissionDenial: { code: "effect-denied", reason: "The user denied this exact effect." } } : {}),
   });
+  if (ctx.standalone) {
+    // Storage reads and own-storage writes need no card but keep admission, floors and rules; remembered grants never widen the approved scope.
+    const storageRead = params.effect === "read" && pathReadEffectPaths.has(params.methodPath);
+    const ownStorageWrite = params.effect === "write" && params.methodPath.startsWith("storage.");
+    const denial = permission.decision === "deny" ? permission.reason
+      : permission.decision !== "allow" && (storageRead || !cardAnswersAsk(permission, ownStorageWrite)) ? "needs an approval that work outside a tool call cannot ask for"
+        : ownStorageWrite ? insideOwnStorage(paths, params.resolveStoragePath) ? undefined : "outside the plugin's own storage"
+          : !storageRead && await params.standaloneScope?.(params.methodPath, params.target) !== true
+            ? "outside the background effects approved when the plugin was enabled" : undefined;
+    if (denial !== undefined) throw new EffectBoundaryDeniedError(params.pluginId, params.methodPath, params.target, "denied", denial);
+    assertEffectPaths(paths);
+    return;
+  }
   if (ctx.onceGrants.has(key) || remembered && remembered !== "deny-always") {
     permission = manager.resolveRememberedPermission(permission, "The user approved this exact effect.");
   }
@@ -384,7 +474,7 @@ export async function gateMutatingEffect(params: {
   }
   switch (decision.choice) {
     case "allow-once":
-      if (reusableGrant) ctx.onceGrants.add(key);
+      if (reusableGrant && !poppedFrames.has(ctx)) ctx.onceGrants.add(key);
       return;
     case "allow-session":
       if (reusableGrant) descriptorGrants.set(key, { choice: "allow-session", sessionId: ctx.sessionId });
@@ -456,6 +546,7 @@ export function enforceMutatingEffects<T extends object>(
             permissionManager: deps.permissionManager,
             input: snapshot.args,
             resolveStoragePath: deps.resolveStoragePath,
+            standaloneScope: deps.standaloneScope,
           });
           deps.assertActive();
           const effectContext = currentEffectGateContext();

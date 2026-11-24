@@ -52,8 +52,8 @@ export function isSafeMainBundleManifestPath(path) {
  * writes them with each ceiling's headroom to the job summary.
  *
  * Total is derived from the entry and initial budgets plus a fixed lazy allowance.
- * The 4_300_000-byte allowance preserves the existing 14_000_000-byte tripwire;
- * it is additive budget headroom, not a separate cap on measured lazy bytes.
+ * The 4_550_000-byte allowance sets a 14_250_000-byte tripwire; it is additive budget
+ * headroom, not a separate cap on measured lazy bytes.
  * Initial already includes entry: this formula reserves an extra entry budget for
  * deferred and child-process outputs. Measurements still count every output once.
  * See docs/development/main-process-bundle.md for the accounting contract.
@@ -61,7 +61,8 @@ export function isSafeMainBundleManifestPath(path) {
 export const MAIN_BUNDLE_BUDGETS = createMainBundleBudgets({
   entryBytes: 1_700_000,
   initialBytes: 8_000_000,
-  lazyAllowanceBytes: 4_300_000,
+  // +250_000: memory embedding map: ml-matrix/umap-js/tokenizers, lazy chunk + child.
+  lazyAllowanceBytes: 4_550_000,
 });
 
 export function createMainBundleBudgets({ entryBytes, initialBytes, lazyAllowanceBytes }) {

@@ -14,8 +14,9 @@ import type { PluginPaths } from "../plugin-paths.js";
 import { installReceiptPath, verifyInstallReceipt } from "../plugin-install-receipt.js";
 import * as receiptStore from "../plugin-install-receipt.js";
 import * as updateRecovery from "../marketplace-update-recovery.js";
+import { backgroundEffectSubject, PluginBackgroundEffectApprovals } from "../plugin-background-effects.js";
 import { readPluginRegistry, updatePluginRegistry } from "../registry.js";
-import { MissingDependenciesError, MissingPluginDependenciesError } from "../types.js";
+import { MissingDependenciesError, MissingPluginDependenciesError, type PluginManifest } from "../types.js";
 import { MarketplaceError } from "../../marketplace/errors.js";
 import { IncompatibleHostProtocolError } from "../isolation/host-api-wire.js";
 import { AGENT_PLUGINS_SCHEMA_URL } from "../public-contract.js";
@@ -557,6 +558,46 @@ describe("PluginMarketplaceService.installGitPlugin", () => {
     const local = await entry();
     expect(local).toMatchObject({ installSource: "local-dev" });
     expect(local?.origin).toBeUndefined();
+  });
+
+  // A local stamp left on a git entry would be kept by the next local install, so an approval for the first one would match it.
+  it("clears a local install stamp when a git install replaces it, so the next local install and its approval are new", async () => {
+    const source = join(testDir, "src-alpha");
+    await mkdir(join(source, "dist"), { recursive: true });
+    await writeFile(
+      join(source, "plugin.json"),
+      JSON.stringify(agentPluginsDocument({ id: "alpha", name: "Alpha", version: "2.0.0", description: "local", entry: "dist/index.js", tools: [] })),
+    );
+    await writeFile(join(source, "dist", "index.js"), ENTRY_JS);
+    const manifest = {
+      id: "alpha", name: "Alpha", version: "2.0.0", entry: "dist/index.js", description: "local", tools: [],
+      capabilities: ["background:call-llm"],
+    } as unknown as PluginManifest;
+    await service.installLocal(source, preparedActivationOptionsForTest);
+    const first = await entry();
+    expect(first?.installedAt).toEqual(expect.any(String));
+    const approvals = new PluginBackgroundEffectApprovals(join(testDir, "background-effects.json"));
+    approvals.approve(backgroundEffectSubject(manifest, first, true));
+    expect(new PluginBackgroundEffectApprovals(join(testDir, "background-effects.json"))
+      .isApproved(backgroundEffectSubject(manifest, first, true))).toBe(true);
+
+    await service.installGitPlugin(plan(), {
+      stage: async (p) => staged(p),
+      activatePreparedArtifact: activateAndCommitPreparedPluginForTest,
+      switchSource: true,
+    });
+    const git = await entry();
+    expect(git).toMatchObject({ installSource: "user", origin: { sourceId: "acme" } });
+    expect(git?.installedAt).toBeUndefined();
+
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    await service.installLocal(source, preparedActivationOptionsForTest);
+    const second = await entry();
+    expect(second).toMatchObject({ installSource: "local-dev", manifestSha256: first?.manifestSha256 });
+    expect(second?.installedAt).toEqual(expect.any(String));
+    expect(second?.installedAt).not.toBe(first?.installedAt);
+    expect(new PluginBackgroundEffectApprovals(join(testDir, "background-effects.json"))
+      .isApproved(backgroundEffectSubject(manifest, second, true))).toBe(false);
   });
 
   it.each([

@@ -133,14 +133,14 @@ describe("readPermissionsFile", () => {
 });
 
 
-it("refuses a failed fresh approval refresh before entering the policy lock", async () => {
+it("refuses a failed fresh approval refresh after preparing the rules under the policy lock", async () => {
   atomicWriteMock.mockClear();
   readFileMock.mockClear();
   readFileMock.mockResolvedValue("");
   const mutator = vi.fn();
   await expect(updatePermissionsFile("/tmp/permissions.json", mutator, { refresh: async () => false, isCurrent: () => true })).rejects.toThrow("Approval authority is unavailable");
-  expect(mutator).not.toHaveBeenCalled();
-  expect(readFileMock).not.toHaveBeenCalled();
+  expect(mutator).toHaveBeenCalledOnce();
+  expect(readFileMock).toHaveBeenCalledOnce();
   expect(atomicWriteMock).not.toHaveBeenCalled();
 });
 

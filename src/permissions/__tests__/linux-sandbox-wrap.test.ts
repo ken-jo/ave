@@ -1,10 +1,11 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { execFileSync, spawnSync } from "node:child_process";
+import childProcess, { execFileSync, spawnSync } from "node:child_process";
 import fs, { chmodSync, lchownSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { capabilityArgs, wrapCommandWithSandboxLinux, cleanupBwrapMountPoints } from "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js";
+import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { buildSandboxConfig, getBuiltinShellReadPolicy } from "../asrt-sandbox.js";
 import { hardenLinuxSandboxWrap } from "../linux-sandbox-wrap.js";
@@ -24,6 +25,39 @@ afterEach(async () => {
   if (priorAveHome === undefined) delete process.env.AVE_HOME;
   else process.env.AVE_HOME = priorAveHome;
   for (const root of temporaryRoots.splice(0)) await cleanupTmpDir(root);
+});
+
+it("refuses an offline wrap when the seccomp helper disappears after preflight", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ave-seccomp-disappears-"));
+  temporaryRoots.push(root);
+  const helper = join(root, "apply-seccomp");
+  writeFileSync(helper, "");
+  expect(lstatSync(helper).isFile()).toBe(true);
+  fs.unlinkSync(helper);
+  const exists = fs.existsSync;
+  vi.spyOn(fs, "existsSync").mockImplementation(candidate =>
+    /[\\/]apply-seccomp$/.test(String(candidate)) ? false : exists(candidate));
+  const exec = childProcess.execSync;
+  vi.spyOn(childProcess, "execSync").mockImplementation(((command, options) =>
+    command === "npm root -g" ? "" : exec(command, options)) as typeof exec);
+  syncBuiltinESMExports();
+
+  const platform = process.platform;
+  setProcessPlatform("linux");
+  try {
+    await expect(wrapCommandWithSandboxLinux({
+      command: "true",
+      needsNetworkRestriction: true,
+      allowAllUnixSockets: false,
+      denyUnixSockets: true,
+      enableWeakerNestedSandbox: true,
+      binShell: process.execPath.replaceAll("\\", "/"),
+      seccompConfig: { applyPath: helper },
+    })).rejects.toThrow("Unix socket filtering helper is unavailable");
+  } finally {
+    setProcessPlatform(platform);
+    cleanupBwrapMountPoints();
+  }
 });
 
 it.skipIf(process.platform === "win32").each(["ELOOP", "ENAMETOOLONG"])(

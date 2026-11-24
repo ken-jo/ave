@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /** Move slots without recreating guests; placement must clip, hide and avoid occluders while retaining page state. */
 import "../../../../../test/renderer/setup.js";
-import { act, render as renderRaw, screen } from "@testing-library/react";
+import { act, cleanup, render as renderRaw, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AveApi, AvePreviewApi } from "../../types.js";
 import type { AgentObservationEvent } from "../../../../shared/agent-observation.js";
@@ -34,12 +34,18 @@ async function render(element: Parameters<typeof renderRaw>[0]) {
 }
 
 const source = Symbol("test-store");
-beforeEach(() => setNativeBrowserTabIds([]));
+beforeEach(() => {
+  // Drive layout explicitly so it cannot report parking between guest event assertions.
+  vi.useFakeTimers({ toFake: ["requestAnimationFrame", "cancelAnimationFrame", "setInterval", "clearInterval"] });
+  setNativeBrowserTabIds([]);
+});
 
 afterEach(async () => {
   act(() => __setBrowserPageStatusForTest(null));
   withdrawLiveWebTabs(source);
   await act(async () => { await Promise.resolve(); });
+  cleanup();
+  vi.useRealTimers();
 });
 
 function stubBox(element: Element, box: { left: number; top: number; width: number; height: number }) {
@@ -467,7 +473,7 @@ describe("WebSurfaceLayer", () => {
     stubBox(card, { left: 400, top: 300, width: 200, height: 100 });
     const release = registerWebSurfaceOccluder(card);
     act(() => { placeWebSurfaces(); });
-    expect(placed.style.clipPath).toBe('path(evenodd, "M0 0H600V370H0ZM300 220H500V320H300Z")');
+    expect(placed.style.clipPath).toBe('path(evenodd, "M 0 0 H 600 V 370 H 0 Z M 300 220 H 500 V 320 H 300 Z")');
     release();
 
     beginSurfaceDrag();
@@ -492,7 +498,7 @@ describe("WebSurfaceLayer", () => {
     stubBox(screen.getByTestId("web-surface-slot"), { left: 774, top: 128, width: 448, height: 615 });
     stubBox(screen.getByTestId("bar"), { left: 774, top: 49, width: 8, height: 694 });
     act(() => { placeWebSurfaces(); });
-    expect(frame("browser:1").style.clipPath).toBe('path(evenodd, "M0 0H448V615H0ZM0 0H8V615H0Z")');
+    expect(frame("browser:1").style.clipPath).toBe('path(evenodd, "M 0 0 H 448 V 615 H 0 Z M 0 0 H 8 V 615 H 0 Z")');
   });
 
   it("drops a guest main refused before it attached and mounts a fresh one for the next address", async () => {

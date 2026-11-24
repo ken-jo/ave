@@ -97,6 +97,10 @@ export function createGuardedModelProviderFetch(
   );
 }
 
+export function createPublicModelProviderFetch(baseUrl: string, fetchImpl: typeof fetch): typeof fetch {
+  return createOriginLockedProviderFetch(baseUrl, { allowPrivateNetworks: false, allowLoopback: false, allowCarrierGradeNat: false }, false, fetchImpl);
+}
+
 function createOriginLockedProviderFetch(
   baseUrl: string,
   networkAccess: ModelProviderNetworkAccess,

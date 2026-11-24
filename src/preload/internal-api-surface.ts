@@ -1,3 +1,4 @@
+import { memoryMapApiSurface } from './memory-map-api-surface.js';
 import type { ScheduleAttachmentInput, ScheduleAttachment, WorkflowTemplateIpcResult, WorkflowTemplate, WorkflowTemplateRecord, WorkflowTemplateDraftInput, WorkflowTemplateConfirmInput, TemplateVersion } from "../shared/workflow-template-types.js";
 import type { MemoryDetailResult, MemorySummariesResult } from "../shared/memory-detail.js";
 import type { HookTrustListResult, HookTrustReviewRequest, HookTrustReviewResult } from "../shared/hook-trust-review.js";
@@ -413,8 +414,10 @@ export function buildInternalApiSurface() {
 
   // Plugin-owned OAuth removed host-owned provider auth IPC bridges.
 
-  memoryGetDetail: async (id: string, opts?: MemoryProjectOptions): Promise<MemoryDetailResult> =>
-    opts === undefined ? ipcRenderer.invoke(CHANNELS.memory.detailGet, id) : ipcRenderer.invoke(CHANNELS.memory.detailGet, id, opts),
+  memoryMap: memoryMapApiSurface,
+  memoryGetDetail: async (id: string, opts?: MemoryProjectOptions, contentRevision?: string): Promise<MemoryDetailResult> =>
+    contentRevision !== undefined ? ipcRenderer.invoke(CHANNELS.memory.detailGet, id, opts, contentRevision)
+      : opts === undefined ? ipcRenderer.invoke(CHANNELS.memory.detailGet, id) : ipcRenderer.invoke(CHANNELS.memory.detailGet, id, opts),
   memoryGetSummaries: async (opts?: MemoryProjectOptions): Promise<MemorySummariesResult> =>
     invokeWithOptionalMemoryOptions(CHANNELS.memory.summariesGet, opts),
 
@@ -485,6 +488,14 @@ export function buildInternalApiSurface() {
     generationId?: string;
     approvalDigest?: string | null;
   }) => ipcRenderer.invoke(CHANNELS.plugins.contributionTrustSet, input),
+  getPluginBackgroundEffects: async (pluginId: string) =>
+    ipcRenderer.invoke(CHANNELS.plugins.backgroundEffectsGet, pluginId),
+  approvePluginBackgroundEffects: async (input: { pluginId: string; reviewSha256: string }) =>
+    ipcRenderer.invoke(CHANNELS.plugins.backgroundEffectsApprove, input),
+  getPluginBackgroundEffectsUpgrade: async () =>
+    ipcRenderer.invoke(CHANNELS.plugins.backgroundEffectsUpgradeGet),
+  finishPluginBackgroundEffectsUpgrade: async () =>
+    ipcRenderer.invoke(CHANNELS.plugins.backgroundEffectsUpgradeDone),
   callPluginMethod: async (
     method: string,
     payload?: unknown,
@@ -1142,10 +1153,11 @@ export function buildInternalApiSurface() {
     ipcRenderer.on(WORK_BOARD.runStarted, listener);
     return () => ipcRenderer.removeListener(WORK_BOARD.runStarted, listener);
   },
-  // Coarse marker: a run finished for `itemId` with a terminal status (renderer clears the running flag). `status` mirrors WorkItemRunResult.status.
+  // Coarse marker: a run for `itemId` returned its result (renderer clears the running flag). `status` mirrors WorkItemRunResult.status.
   onWorkBoardRunFinished: (
     handler: (payload: {
       itemId: number;
+      /** For a template run: the state it went quiet in, which may already be past a gate. Gate state comes from events. */
       status: import("../shared/work-board-types.js").WorkItemRunResult["status"];
       at: string;
     }) => void,

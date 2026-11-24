@@ -1,7 +1,9 @@
 // Egress scopes must be among those offered by the gate; terminal asks stay in the owning window/tab. Grants belong to the egress store, never user-decision memory.
-import type { NetworkRuleScope, PermissionManager } from "./permission-manager.js";
+import type { NetworkPermissionEvaluation, NetworkRuleScope, PermissionManager } from "./permission-manager.js";
+import type { EgressGrantScope } from "../shared/egress-grant-scopes.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
 import { NO_APPROVER_MESSAGE } from "./decision-pipeline.js";
+import { remoteControllerOriginOf } from "../shared/chat-origin.js";
 import { randomUUID } from "node:crypto";
 import { isIP } from "node:net";
 import { canonicalRuleSpecifier } from "./rules/rule-specifier.js";
@@ -36,19 +38,29 @@ export function createShellNetworkPermissionEvaluator(manager?: PermissionManage
     if (request.scopes.includes("always")) ruleScopes.push("user");
     if (request.scopes.includes("project")) ruleScopes.push("project");
     if (request.scopes.includes("session")) ruleScopes.push("session");
-    const evaluated = await manager.checkNetworkPermission({ ...request.destination, source: "builtin", network: request.network, ruleScopes }, {
+    const destination = { ...request.destination, source: "builtin" as const, network: request.network, ruleScopes };
+    const context = {
       ...request.context.permissionContext,
       headless: request.context.headless === true || request.context.approvalSurface === "unavailable",
       approvalSurface: request.context.approvalSurface,
       ownerUnattended: request.context.ownerUnattended ?? request.context.permissionContext?.ownerUnattended,
       projectRulesCwd: cwd, sessionId: request.context.sessionId,
-    });
-    const permission = request.rememberedGrant === undefined ? evaluated.permission
-      : manager.resolveRememberedPermission(evaluated.permission, "An existing destination grant covers this exact connection.");
-    if (!permission.pipelineRequest) throw new Error("Network permission request has no normalized evidence");
-    const { reviewer: _reviewer, ...identity } = permission.pipelineRequest;
-    return { ...evaluated, permission, reasonKey: permission.reasonCode ?? evaluated.reasonKey,
-      policyEpoch: manager.getPolicyEpoch(), approvalIdentity: canonicalStringify(identity) };
+    };
+    const snapshot = (evaluated: NetworkPermissionEvaluation, rememberedGrant: EgressGrantScope | undefined) => {
+      const permission = rememberedGrant === undefined ? evaluated.permission
+        : manager.resolveRememberedPermission(evaluated.permission, "An existing destination grant covers this exact connection.");
+      if (!permission.pipelineRequest) throw new Error("Network permission request has no normalized evidence");
+      const { reviewer: _reviewer, ...identity } = permission.pipelineRequest;
+      return { ...evaluated, permission, reasonKey: permission.reasonCode ?? evaluated.reasonKey,
+        policyEpoch: manager.getPolicyEpoch(), approvalIdentity: canonicalStringify(identity) };
+    };
+    const evaluated = await manager.checkNetworkPermission(destination, context);
+    return {
+      ...snapshot(evaluated, request.rememberedGrant),
+      recheck: (rememberedGrant, approvalSurface) => snapshot(manager.checkLoadedNetworkPermission(destination, {
+        ...context, approvalSurface, headless: request.context.headless === true || approvalSurface === "unavailable",
+      }), rememberedGrant),
+    };
   };
 }
 
@@ -98,6 +110,7 @@ export function createApprovalGateEgressRequester(
       }
       if (headless) { request.onNoApprover?.(); return { allow: false, reason: NO_APPROVER_MESSAGE }; }
     }
+    const remoteControllerAuthority = terminal ? undefined : request.permissionContext?.remoteControllerAuthority;
     const decision = await gate.requestAndWait({
       id: requestId,
       category: "tool",
@@ -115,6 +128,11 @@ export function createApprovalGateEgressRequester(
       durableApprovalRecordAllowed: false,
       forceExplicit: true,
       ...(!terminal ? { ownerUnattended: request.ownerUnattended, toolApprovalWait: request.toolApprovalWait } : {}),
+      ...(remoteControllerAuthority === undefined ? {} : {
+        remoteControllerAuthority,
+        remoteControllerOrigin: remoteControllerOriginOf(remoteControllerAuthority),
+        trustOrigin: remoteControllerAuthority.kind === "tailnet-controller" ? "tailnet-surface" : "platform-bridge",
+      }),
       egressHost: {
         host,
         port,
@@ -135,13 +153,16 @@ export function createApprovalGateEgressRequester(
       if (forced && decision.egressScope !== "once") return { allow: false, reason: "A forced network approval is valid for one connection only." };
       return { allow: true, scope: decision.egressScope, ...(forced ? { oneConnection: true as const } : {}) };
     }
+    const timedOut = Boolean(isHostApprovalTimeoutDecision(decision));
+    const rejected = Boolean(isHostApprovalRejectedDecision(decision));
     return {
       allow: false,
-      reason: isHostApprovalTimeoutDecision(decision)
+      reason: timedOut
         ? EGRESS_APPROVAL_DENY_REASONS.timeout
-        : isHostApprovalRejectedDecision(decision)
+        : rejected
           ? EGRESS_APPROVAL_DENY_REASONS.rejected
           : EGRESS_APPROVAL_DENY_REASONS.denied,
+      ...(!timedOut && !rejected && decision.choice.startsWith("deny") ? { humanDenied: true as const } : {}),
     };
   };
 }

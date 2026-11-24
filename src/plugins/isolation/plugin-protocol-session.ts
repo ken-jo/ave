@@ -269,6 +269,7 @@ export async function openPluginProtocolSession(
           count: entry.count,
           summary: entry.summary,
           ...(entry.bucket === undefined ? {} : { bucket: entry.bucket }),
+          ...(entry.reason === undefined ? {} : { reason: entry.reason }),
         });
       } catch { /* audit sink failure cannot alter a dispatcher result */ }
       log.warn(entry, entry.type);

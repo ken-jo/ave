@@ -2,7 +2,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
-import { isAwaitingStageReview } from "../../work-board/workflow/run-state.js";
+import { boardRunState, isAwaitingStageReview } from "../../work-board/workflow/run-state.js";
 import { autoStageOf, stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
 import { stageRunHarness } from "../../work-board/workflow/__tests__/stage-run-harness.js";
 import { WorkflowTemplateError } from "../../work-board/template-graph.js";
@@ -13,13 +13,10 @@ import { en } from "../../i18n/messages/en.js";
 import { ko } from "../../i18n/messages/ko.js";
 
 type Harness = Awaited<ReturnType<typeof stageRunHarness>>;
+/** Every engine's detached run work is observed and drained before cleanup, so none of it writes into a removed folder. */
 async function withHarness(run: (h: Harness) => Promise<void>, opts: Parameters<typeof stageRunHarness>[0] = {}): Promise<void> {
-  const h = await stageRunHarness(opts);
-  try {
-    await run(h);
-  } finally {
-    await h.cleanup();
-  }
+  const h = await stageRunHarness({ ...opts, observeRunWork: true });
+  await h.runThenEnd(() => run(h));
 }
 
 const auto = autoStageOf;
@@ -35,8 +32,11 @@ it("spawns only the pinned version's stages with the stage's tool scope", () => 
   expect(a.input.toolScope).toEqual({ kind: "exactly", names: ["read_file", "grep_files", "sample_lookup"] });
   expect(a.input.profileMode).toBe("plan");
   a.finish();
-  await h.untilStage(id, "a", "awaiting_gate");
+  // The launch call settles once the run waits at its first gate; nothing is decided before it has.
+  expect(await run).toMatchObject({ status: "awaiting_approval" });
+  expect(await h.stageRun(id, "a")).toMatchObject({ status: "awaiting_gate", gate: { type: "human", status: "pending" } });
   expect(h.children).toHaveLength(1);
+  expect(await run).toMatchObject({ status: "awaiting_approval" });
   expect(await h.decide(id, "a", "approve")).toEqual({ ok: true, status: "approved" });
   const [b] = await h.untilLive(1);
   expect(b.input.title).toContain("Stage b");
@@ -45,13 +45,86 @@ it("spawns only the pinned version's stages with the stage's tool scope", () => 
   expect(b.input.instructions).toContain("output of child-1");
   b.finish();
   await h.untilStage(id, "b", "awaiting_gate");
-  await h.decide(id, "b", "approve");
+  expect(await h.decide(id, "b", "approve")).toEqual({ ok: true, status: "approved" });
   const done = await h.until(id, item => item.runStatus === "completed");
   expect(done.output).toBe("output of child-2");
   expect(done.planApproval).toBeUndefined();
+  expect(done.stageRuns).toMatchObject([
+    { stageId: "a", status: "passed", gate: { type: "human", status: "approved" } },
+    { stageId: "b", status: "passed", gate: { type: "human", status: "approved" } },
+  ]);
   expect(h.children).toHaveLength(2);
-  expect(await run).toMatchObject({ status: "awaiting_approval" });
 }));
+
+it("a gate decision taken before the launch call settles is part of its result, and each stage still passes only by its own approval", async () => {
+  // Each write that opens a gate returns only once the test has read that gate from the run file after the hold began and the event loop
+  // has turned: a reader that decides on the run file before the engine's write returns. The harness's signal wait reads the gate during
+  // the write, before the hold begins, so that read does not release it; the read in `decide` does.
+  // Invariant: from that read to the engine's `enqueue` in `decide` only microtasks run, so the decision is queued before the write returns.
+  let held: { stageId: string; release: () => void } | null = null;
+  const heldOnce = new Set<string>();
+  await withHarness(async (h) => {
+    const read = h.board.runs.get.bind(h.board.runs);
+    vi.spyOn(h.board.runs, "get").mockImplementation(async (runId) => {
+      const result = await read(runId);
+      if (result.status !== "found") return result;
+      for (const stage of result.run.stageRuns) {
+        if (stage.status !== "awaiting_gate") continue;
+        const gate = held;
+        if (gate?.stageId !== stage.stageId) continue;
+        held = null;
+        setImmediate(gate.release);
+      }
+      return result;
+    });
+    const version = await h.confirm([stageOf("a"), stageOf("b", { inputs: ["a"] })]);
+    const id = await h.addItem(version);
+    const run = h.start(id, h.local(version));
+    let settled = false;
+    run.then(() => { settled = true; }, () => { settled = true; });
+    (await h.untilLive(1))[0].finish();
+    await h.untilStage(id, "a", "awaiting_gate");
+    expect(h.children).toHaveLength(1);
+    expect(await h.decide(id, "a", "approve")).toEqual({ ok: true, status: "approved" });
+    (await h.untilLive(1))[0].finish();
+    const atB = await h.untilStage(id, "b", "awaiting_gate");
+    // The decision queued at a took the launch call past gate a; b waits at its own gate, and nothing settles before b's decision.
+    expect(settled).toBe(false);
+    expect(atB.stageRuns).toMatchObject([
+      { stageId: "a", status: "passed", gate: { type: "human", status: "approved" } },
+      { stageId: "b", status: "awaiting_gate", gate: { type: "human", status: "pending" } },
+    ]);
+    expect(await h.decide(id, "b", "approve")).toEqual({ ok: true, status: "approved" });
+    expect(await run).toMatchObject({ status: "completed", output: "output of child-2" });
+    expect((await h.item(id)).stageRuns).toMatchObject([
+      { stageId: "a", status: "passed", gate: { type: "human", status: "approved" } },
+      { stageId: "b", status: "passed", gate: { type: "human", status: "approved" } },
+    ]);
+    expect(h.children).toHaveLength(2);
+  }, {
+    wiring: (store) => {
+      const records = boardRunState(store);
+      return {
+        runs: {
+          ...records,
+          update: async (itemId, runId, mutate, removedAs) => {
+            let waiting: string[] = [];
+            const written = await records.update(itemId, runId, (current) => {
+              waiting = current.stageRuns.filter(stage => stage.status === "awaiting_gate").map(stage => stage.stageId);
+              return mutate(current);
+            }, removedAs);
+            const opened = written.ok ? written.run.stageRuns.find(stage => stage.status === "awaiting_gate" && !waiting.includes(stage.stageId)) : undefined;
+            if (opened && !heldOnce.has(opened.stageId)) {
+              heldOnce.add(opened.stageId);
+              await new Promise<void>((release) => { held = { stageId: opened.stageId, release }; });
+            }
+            return written;
+          },
+        },
+      };
+    },
+  });
+});
 
 it("a run whose template gained v2 with the same scope mid-run still spawns v1 stages", () => withHarness(async (h) => {
   const v1 = await h.confirm([auto("a"), auto("b", { inputs: ["a"] })]);

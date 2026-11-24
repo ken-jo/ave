@@ -136,6 +136,21 @@ export const CHANNELS = {
     // renderer before it mounts so both sides resolve against the same one.
     getModelCatalog: "ave:llm:get-model-catalog",
   },
+  memoryMap: {
+    get: "ave:memory-map:graph-get",
+    build: "ave:memory-map:graph-build",
+    cancel: "ave:memory-map:graph-cancel",
+    facets: "ave:memory-map:facets",
+    retrieve: "ave:memory-map:retrieve",
+    modelStatus: "ave:memory-map:model-status",
+    modelDownload: "ave:memory-map:model-download",
+    modelCancel: "ave:memory-map:model-cancel",
+    modelUseExisting: "ave:memory-map:model-use-existing",
+    settingsGet: "ave:memory-map:embedding-settings-get",
+    settingsSet: "ave:memory-map:embedding-settings-set",
+    progress: "ave:memory-map:progress",
+    modelProgress: "ave:memory-map:model-progress",
+  },
   memory: {
     detailGet: "ave:memory:detail-get",
     summariesGet: "ave:memory:summaries-get",
@@ -208,6 +223,10 @@ export const CHANNELS = {
     call: "ave:plugins:call",
     contributionTrustList: "ave:plugins:contribution-trust:list",
     contributionTrustSet: "ave:plugins:contribution-trust:set",
+    backgroundEffectsGet: "ave:plugins:background-effects:get",
+    backgroundEffectsApprove: "ave:plugins:background-effects:approve",
+    backgroundEffectsUpgradeGet: "ave:plugins:background-effects:upgrade-get",
+    backgroundEffectsUpgradeDone: "ave:plugins:background-effects:upgrade-done",
     /** Trusted-renderer, AVE_E2E-only bundle generation observation. */
     e2eBundleSnapshot: "ave:plugins:e2e:bundle-snapshot",
     // Lifecycle event channels (main → renderer). Not registered via ipcMain.

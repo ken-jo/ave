@@ -9,6 +9,7 @@ import { ApprovalGate, type ApprovalRequest, type ApprovalRequestInput } from ".
 import { createApprovalGateEgressRequester as createRequester, EGRESS_APPROVAL_DENY_REASONS } from "../egress-approval.js";
 import type { EgressShellApprovalRequest, EgressTerminalApprovalRequest } from "../egress-ask.js";
 import { sentApprovalCards } from "../../__tests__/test-helpers.js";
+import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
 
 let permissionManager: PermissionManager;
 beforeEach(() => {
@@ -68,6 +69,33 @@ async function cardSent(wc: ReturnType<typeof makeWebContents>): Promise<Approva
 }
 
 describe("egress-host approval requests", () => {
+  it("binds a remote shell's desk answer to the live controller", async () => {
+    const { wc, gate } = makeGate();
+    const requestAndWait = vi.spyOn(gate, "requestAndWait");
+    let ownerObserved = true;
+    const refreshCurrent = vi.fn(async () => ownerObserved);
+    const authority = bindRemoteControllerToSession({
+      kind: "tailnet-controller",
+      actorId: "tailnet:controller-digest",
+      pairedShare: { pairingId: "pairing", pairingEpoch: 1, shareId: "share", shareEpoch: 1, scope: "scope" },
+      pairedShareGuard: { isCurrent: () => true, refreshCurrent },
+    }, "session-1");
+    const answer = createApprovalGateEgressRequester(gate)(egressRequest({
+      permissionContext: { remoteControllerAuthority: authority },
+    }));
+    const card = await cardSent(wc);
+    expect(requestAndWait).toHaveBeenCalledWith(expect.objectContaining({
+      remoteControllerOrigin: "tailnet-controller", remoteControllerAuthority: authority,
+    }));
+    expect(card).not.toHaveProperty("remoteControllerAuthority");
+    ownerObserved = false;
+    await gate.resolveFromDesktopRendererWithFreshIdentity(card.id, {
+      requestId: card.id, choice: "allow-once", egressScope: "always", nonce: card.nonce, hmac: card.hmac,
+    }, wc as never);
+    expect(refreshCurrent).toHaveBeenCalledOnce();
+    await expect(answer).resolves.toEqual({ allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.rejected });
+  });
+
   it("sends the card with the destination and the offered scopes, as the gate's egress-host card", async () => {
     const { wc, gate } = makeGate();
     const answer = createApprovalGateEgressRequester(gate)(egressRequest());
@@ -104,7 +132,7 @@ describe("egress-host approval requests", () => {
     const answer = createApprovalGateEgressRequester(gate)(egressRequest());
     const card = await cardSent(wc);
     gate.resolveFromDesktopRenderer(card.id, { requestId: card.id, choice: "deny-once", nonce: card.nonce, hmac: card.hmac }, wc as never);
-    await expect(answer).resolves.toEqual({ allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.denied });
+    await expect(answer).resolves.toEqual({ allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.denied, humanDenied: true });
   });
 
   it("ignores an allow from outside the desktop window and keeps the card pending for the desktop", async () => {
@@ -376,7 +404,7 @@ describe("shell egress uses the common decision pipeline", () => {
     const check = vi.spyOn(permissionManager, "checkDetailed");
     const review = vi.spyOn(permissionManager, "dispatchReviewer");
     const gate = { requestAndWait: vi.fn(async () => ({ requestId: "terminal", choice: "deny-once" as const })) };
-    await expect(createRequester(gate, permissionManager)(terminalRequest())).resolves.toEqual({ allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.denied });
+    await expect(createRequester(gate, permissionManager)(terminalRequest())).resolves.toEqual({ allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.denied, humanDenied: true });
     expect(check).not.toHaveBeenCalled();
     expect(review).not.toHaveBeenCalled();
     expect(gate.requestAndWait).toHaveBeenCalledOnce();
@@ -401,7 +429,7 @@ describe("shell egress human fallback termination", () => {
       permissionManager.setRules([{ pattern: "Network(github.com:443)", action: "deny" }]);
       return { requestId: request.id, choice: "deny-once" as const };
     }) };
-    await expect(createRequester(gate, permissionManager)(egressRequest())).resolves.toEqual({ allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.denied });
+    await expect(createRequester(gate, permissionManager)(egressRequest())).resolves.toEqual({ allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.denied, humanDenied: true });
     expect(permissionManager.getPolicyEpoch()).not.toBe(before);
   });
 

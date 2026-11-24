@@ -9,6 +9,7 @@ import { parsePluginSkillSelector } from "../shared/plugin-skill-selector.js";
 import { renderSkillReadResult, type SkillOverlay } from "../main/skill-overlay.js";
 import type { SkillApprovalsStore } from "../main/skill-approvals-store.js";
 import { isHostApprovalRejectedDecision, type ApprovalGate } from "../permissions/approval-gate.js";
+import { ApprovalPersistenceError } from "../permissions/approval-persistence-guard.js";
 import { refreshRemoteControllerBoundToSession, isRemoteControllerBoundToSession, remoteControllerOriginOf } from "../shared/chat-origin.js";
 import { turnExtensionPolicyContext } from "../shared/turn-extension-policy.js";
 import { mcpSkillSelector, parseMcpSkillSelector } from "../shared/mcp-skill-selector.js";
@@ -92,9 +93,13 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
       const remoteControllerAuthority = turnExtensionPolicyContext.getStore()?.remoteControllerAuthority;
       const remoteControllerOrigin = remoteControllerOriginOf(remoteControllerAuthority);
       const sessionId = typeof ctx.metadata?.sessionId === "string" ? ctx.metadata.sessionId : "";
-      const controllerCurrent = () => isRemoteControllerBoundToSession(remoteControllerAuthority, sessionId);
-      const revoked = () => ({ output: JSON.stringify({ error: "Remote controller authority was revoked or is not bound to this session" }), isError: true });
-      if (!await refreshRemoteControllerBoundToSession(remoteControllerAuthority, sessionId) || !controllerCurrent()) return revoked();
+      const { abortSignal } = ctx;
+      const invocationCurrent = () => !abortSignal?.aborted && isRemoteControllerBoundToSession(remoteControllerAuthority, sessionId);
+      const refreshController = () => refreshRemoteControllerBoundToSession(remoteControllerAuthority, sessionId);
+      const interrupted = () => ({ output: JSON.stringify({
+        error: abortSignal?.aborted ? "Skill load was cancelled" : "Remote controller authority was revoked or is not bound to this session",
+      }), isError: true });
+      if (!invocationCurrent() || !await refreshController() || !invocationCurrent()) return interrupted();
       const a = (rawInput ?? {}) as Record<string, unknown>;
       if ((a.serverId !== undefined || a.uri !== undefined) && (a.skillName !== undefined
         || typeof a.serverId !== "string" || !a.serverId || typeof a.uri !== "string" || !a.uri || a.uri.length > 4096)) {
@@ -162,6 +167,7 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
         approvalMaterial(skill),
       );
       if (!alreadyApproved) {
+        if (!invocationCurrent()) return interrupted();
         const decision = await deps.approvalGate.requestAndWait({
           id: randomUUID(),
           category: "tool",
@@ -172,14 +178,14 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
           ...(typeof ctx.metadata?.sessionId === "string" && ctx.metadata.sessionId
             ? { sessionId: ctx.metadata.sessionId }
             : {}),
-          remoteControllerAuthority, remoteControllerOrigin,
+          remoteControllerAuthority, remoteControllerOrigin, abortSignal,
           args: { skillName: skill.name, ...(skill.mcpOwner ? { serverId: skill.mcpOwner.serverId, uri: skill.mcpOwner.entry.uri, codeExecutionOptIn: true, manifestDigest: skill.mcpOwner.fingerprint } : {}) },
           reason: skill.mcpOwner ? t("be_skillLoad.mcpApprovalReason", { server: skill.mcpOwner.serverId, uri: skill.mcpOwner.entry.uri }) : t("be_skillLoad.approvalReason", { name: skill.name }),
           ...(skill.mcpOwner ? { forceExplicit: true, allowedChoices: ["allow-once", "deny-once"] as const, durableApprovalRecordAllowed: false } : {}),
           source: "builtin",
           createdAt: Date.now(),
         });
-        if (!await refreshRemoteControllerBoundToSession(remoteControllerAuthority, sessionId) || !controllerCurrent()) return revoked();
+        if (!invocationCurrent()) return interrupted();
         const rejected = Boolean(isHostApprovalRejectedDecision(decision));
         if (rejected || decision.choice.startsWith("deny") || (skill.mcpOwner && decision.choice !== "allow-once")) {
           return {
@@ -192,7 +198,6 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
       }
 
       // Refuse missing session identity; a shared synthetic bucket would leak skill attribution across calls.
-      if (!await refreshRemoteControllerBoundToSession(remoteControllerAuthority, sessionId) || !controllerCurrent()) return revoked();
       if (!sessionId) {
         return {
           output: JSON.stringify({
@@ -202,22 +207,27 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
           isError: true,
         };
       }
+      const skillOwner = skill.mcpOwner;
+      const skillCurrent = () => !skillOwner || deps.store.isMcpSkillCurrent(skillOwner);
+      const skillChanged = () => ({ output: JSON.stringify({ error: "Skill changed during approval; reload and approve it again" }), isError: true });
       if (!alreadyApproved) {
-        if (skill.mcpOwner && !deps.store.isMcpSkillCurrent(skill.mcpOwner)) {
-          return { output: JSON.stringify({ error: "Skill changed during approval; reload and approve it again" }), isError: true };
+        if (!skillCurrent()) return skillChanged();
+        try {
+          await deps.approvals.approve(approvalRecordKey(skill), approvalMaterial(skill), {
+            refresh: async () => invocationCurrent() && await refreshController(),
+            isCurrent: () => invocationCurrent() && skillCurrent(),
+          });
+        } catch (error) {
+          if (error instanceof ApprovalPersistenceError) return abortSignal?.aborted || skillCurrent() ? interrupted() : skillChanged();
+          log.warn("skill_load: approval persistence failed (non-fatal): %s", errorMessage(error));
         }
-        // The fresh probe above precedes the store's write queue; the synchronous fence guards the commit after any time spent queued or preparing the write.
-        await deps.approvals.approve(approvalRecordKey(skill), approvalMaterial(skill), () => controllerCurrent() && (!skill.mcpOwner || deps.store.isMcpSkillCurrent(skill.mcpOwner))).catch((err) => {
-          log.warn("skill_load: approval persistence failed (non-fatal): %s", (err as Error).message);
-        });
-        if (!await refreshRemoteControllerBoundToSession(remoteControllerAuthority, sessionId) || !controllerCurrent()) return revoked();
       }
-      if (skill.mcpOwner && !deps.store.isMcpSkillCurrent(skill.mcpOwner)) {
-        return { output: JSON.stringify({ error: "Skill changed during approval; reload and approve it again" }), isError: true };
-      }
+      if (!invocationCurrent() || !await refreshController() || !invocationCurrent()) return interrupted();
+      if (!skillCurrent()) return skillChanged();
       const lateSkillDenial = deps.overlay.mcpAdmissionDenial?.(deps.store, sessionId, "skill_load", { skillName });
       if (lateSkillDenial) return { output: JSON.stringify({ error: lateSkillDenial }), isError: true };
       // Record approved identity in this conversation's overlay; skill_read reacquires and compares generation rather than retaining the lease.
+      if (!invocationCurrent()) return interrupted();
       deps.overlay.register(sessionId, skill);
 
       deps.emit({

@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setImmediate } from "node:timers/promises";
 import type {
   RunAuthoritySource, StageJoin, TemplateScope, TemplateStage, TemplateVersion, TemplateVersionPin, WorkItemStageRun,
 } from "../../../shared/workflow-template-types.js";
@@ -13,6 +14,7 @@ import { mintHostDecisionProof } from "../../../main/workflow-template-decision.
 import { createWorkBoardEngine, type WorkBoardEngineDeps } from "../../../core/work-board-engine.js";
 import { deferred } from "../../../__tests__/support/deferred.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
+import { type Bound, boundWait, type Expire, untilAsserted, within } from "../../../__tests__/support/signal-wait.js";
 import { boardParentToolRegistry } from "../../__tests__/board-test-fixtures.js";
 import { authoriseRunSource } from "../run-authority.js";
 import { boardRunState, type RunRecord } from "../run-state.js";
@@ -41,6 +43,8 @@ type ChildWaitPulse = { error: Error; originSessionId?: string };
  * failure. The failure stands while it is newer than the latest start and every pending call. The origin is in flight while its latest
  * start is newer than its latest end, or a call is pending. A call changes nothing until it resolves. */
 type Flight = { startedAt: number; endedAt: number; pending: number[]; failure?: ChildWaitFailure };
+
+const ITEM_RECHECK_BURST = 8;
 
 function observeRunWork(launches: AsyncLocalStorage<ObservedLaunch>, onScheduled?: () => void) {
   const pending = new Set<Promise<unknown>>();
@@ -86,7 +90,17 @@ export async function stageRunHarness(opts: {
 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ave-stage-run-"));
   const boardPath = join(dir, "board.json");
-  let board = new WorkBoardStore(boardPath);
+  const runWaits = new Set<(runId: string) => void>();
+  const stopRunSources: (() => void)[] = [];
+  function openBoard(): WorkBoardStore {
+    const store = new WorkBoardStore(boardPath);
+    // Retired stores can still commit to the shared run file.
+    stopRunSources.push(store.runs.runChanged.subscribe(runId => {
+      for (const wake of runWaits) wake(runId);
+    }));
+    return store;
+  }
+  let board = openBoard();
   const templates = new WorkflowTemplateStore(join(dir, "templates.json"));
   const events: WorkBoardRunEvent[] = [];
   const children: FakeChild[] = [];
@@ -95,6 +109,26 @@ export async function stageRunHarness(opts: {
   const audits: Parameters<NonNullable<WorkflowDeps["audit"]>>[0][] = [];
   const unauthorised = new Set<string>();
   const workspaceCalls: string[] = [];
+  const callWaits = new Set<() => void>();
+  const wakeCalls = () => { for (const wake of callWaits) wake(); };
+  function recordCall(call: string): void {
+    workspaceCalls.push(call);
+    wakeCalls();
+  }
+  /** A replaced workspace part wakes the workspace-call waits as the harness's own parts do: once its synchronous part has run, and once
+   * its call settles. */
+  function waking(call: (...args: never[]) => unknown): (...args: never[]) => unknown {
+    return (...args) => {
+      let result: unknown;
+      try {
+        result = call(...args);
+      } finally {
+        wakeCalls();
+      }
+      void Promise.resolve(result).then(wakeCalls, wakeCalls);
+      return result;
+    };
+  }
   /** The run ids each boot sweep kept. */
   const sweeps: string[][] = [];
   const registry = boardParentToolRegistry();
@@ -102,7 +136,11 @@ export async function stageRunHarness(opts: {
   const runWorkObservers: ReturnType<typeof observeRunWork>[] = [];
   /** `recheck` is set when a call closed refused: a failure it held off stands again, as if the wait were created now. */
   const childChanges = new Set<(pulse?: ChildWaitPulse, recheck?: boolean) => void>();
-  const progressChanges = new Set<() => void>();
+  const itemWaits = new Set<(itemId?: number) => void>();
+  /** Called with an error, a listener ends its wait with it. */
+  const progressChanges = new Set<(ended?: Error) => void>();
+  /** Assertion waits woken by progress events; cleanup ends them through `assertionWaits`. */
+  const progressWakes = new Set<() => void>();
   let closed = false;
   let lastRequestedOrigin: string | undefined;
   /** The harness clock: every start, call and failure takes the next tick, so "newer" is a plain comparison. */
@@ -211,20 +249,23 @@ export async function stageRunHarness(opts: {
 
   const workspace: StageWorkspaceProvider = {
     open: async (run, projectRoot) => {
-      workspaceCalls.push(`open:${projectRoot ?? ""}`);
+      recordCall(`open:${projectRoot ?? ""}`);
       return { ok: true, workspace: { kind: "folder", runRoot: join(dir, "runs", run.runId) } };
     },
     prepare: async (run, stage, attempt) => {
-      workspaceCalls.push(`prepare:${stage.id}#${attempt}`);
+      recordCall(`prepare:${stage.id}#${attempt}`);
       const root = join(dir, "runs", run.runId, `${stage.id}-${attempt}`);
       mkdirSync(root, { recursive: true });
       return { ok: true, workspace: { kind: "folder", root } };
     },
-    seal: async (_run, stageId) => { workspaceCalls.push(`seal:${stageId}`); return { ok: true }; },
-    integrate: async (_run, joinId) => { workspaceCalls.push(`integrate:${joinId}`); return opts.integrate?.() ?? { ok: true }; },
+    seal: async (_run, stageId) => { recordCall(`seal:${stageId}`); return { ok: true }; },
+    integrate: async (_run, joinId) => { recordCall(`integrate:${joinId}`); return opts.integrate?.() ?? { ok: true }; },
     release: async () => undefined,
-    sweep: async (active) => { sweeps.push([...active]); },
-    ...opts.workspace,
+    sweep: async (active) => {
+      sweeps.push([...active]);
+      wakeCalls();
+    },
+    ...Object.fromEntries(Object.entries(opts.workspace ?? {}).map(([name, part]) => [name, typeof part === "function" ? waking(part) : part])) as Partial<StageWorkspaceProvider>,
   };
 
   function engineOn(store: WorkBoardStore): ReturnType<typeof createWorkBoardEngine> {
@@ -273,8 +314,15 @@ export async function stageRunHarness(opts: {
         events.push(event);
         own.push(event);
         for (const changed of progressChanges) changed();
+        for (const wake of progressWakes) wake();
       },
-      workflow,
+      workflow: {
+        ...workflow,
+        itemChanged: (itemId) => {
+          if (board === store) for (const wake of itemWaits) wake(itemId);
+          workflow.itemChanged?.(itemId);
+        },
+      },
     });
     /** A user call on an item's run: it starts the item only if the engine accepts it. */
     function accepted<T extends { ok: boolean }>(itemId: number, call: () => Promise<T>): Promise<T> {
@@ -335,8 +383,9 @@ export async function stageRunHarness(opts: {
     lastRequestedOrigin = undefined;
     flights = new Map();
     generation += 1;
-    board = new WorkBoardStore(boardPath);
+    board = openBoard();
     engine = engineOn(board);
+    for (const wake of itemWaits) wake();
     return engine;
   };
   /** Hand-edit a row of the board file, as nothing in the app would. A loaded store keeps its copy: the next `makeEngine` reads it. */
@@ -368,14 +417,16 @@ export async function stageRunHarness(opts: {
   }
   const detach = (id: string): Promise<boolean> => templates.detachSchedule(id, mintHostDecisionProof("local-desktop"));
   /** The stored run, read by its id from the run file whether or not a row still names it. */
-  async function runOf(runId: string): Promise<RunRecord | null> {
-    const read = await board.runs.get(runId);
+  async function runOf(runId: string, store = board): Promise<RunRecord | null> {
+    const read = await store.runs.get(runId);
     return read.status === "found" ? read.run : null;
   }
-  async function item(itemId: number): Promise<StageRunView> {
-    const got = await board.get(itemId);
+  async function item(itemId: number, store = board, onRunId?: (runId: string | undefined) => void): Promise<StageRunView> {
+    const got = await store.get(itemId);
     if (got.status !== "found") throw new Error("item not found");
-    const record = got.item.runId === undefined ? null : await runOf(got.item.runId);
+    const runId = got.item.runId;
+    onRunId?.(runId);
+    const record = runId === undefined ? null : await runOf(runId, store);
     return { ...got.item, stageRuns: record?.stageRuns ?? [], stageJoins: record?.stageJoins ?? [], record };
   }
   async function stageRun(itemId: number, stageId: string): Promise<WorkItemStageRun> {
@@ -383,31 +434,119 @@ export async function stageRunHarness(opts: {
     if (!run) throw new Error(`no stage run ${stageId}`);
     return run;
   }
-  /** Poll until the stored item satisfies `check`; the engine works through its own queue, so a test never sleeps a fixed time. */
-  async function until(itemId: number, check: (item: StageRunView) => boolean): Promise<StageRunView> {
-    for (let i = 0; i < 400; i += 1) {
-      const current = await item(itemId);
-      if (check(current)) return current;
-      await new Promise(resolve => setTimeout(resolve, 5));
-    }
-    throw new Error(`timed out: ${JSON.stringify((await item(itemId)).stageRuns)}`);
+  function until(itemId: number, check: (item: StageRunView) => boolean, description = `item ${itemId} to satisfy its predicate`): Promise<StageRunView> {
+    const closedError = () => new Error(`Wait for ${description} ended: harness cleaned up`);
+    if (closed) return Promise.reject(closedError());
+    return new Promise((resolve, reject) => {
+      type ItemCheck = {
+        store: WorkBoardStore;
+        stopBoard: () => void;
+        checking: boolean;
+        changed: boolean;
+        runId?: string;
+        pendingRunIds?: Set<string>;
+      };
+      let active: ItemCheck | undefined;
+      let reads = 0;
+      let yielding = false;
+      const onStoreChanged = () => wake();
+      function onRunChanged(runId: string): void {
+        if (active?.pendingRunIds) active.pendingRunIds.add(runId);
+        else if (active?.runId === runId) wake();
+      }
+      const clearBound = boundWait(() => fail(new Error(`timed out waiting for ${description}`)));
+      function settle(): void {
+        itemWaits.delete(wake);
+        active?.stopBoard();
+        runWaits.delete(onRunChanged);
+        clearBound();
+      }
+      function fail(error: unknown): void {
+        settle();
+        reject(error);
+      }
+      function checkPending(): void {
+        if (!active?.changed || active.checking || yielding || !itemWaits.has(wake)) return;
+        if (reads === ITEM_RECHECK_BURST) {
+          yielding = true;
+          void setImmediate().then(() => {
+            reads = 0;
+            yielding = false;
+            checkPending();
+          });
+          return;
+        }
+        reads += 1;
+        void recheck(active);
+      }
+      async function recheck(source: ItemCheck): Promise<void> {
+        source.checking = true;
+        source.changed = false;
+        const pendingRunIds = new Set<string>();
+        source.pendingRunIds = pendingRunIds;
+        try {
+          const current = await item(itemId, source.store, runId => {
+            source.runId = runId;
+            source.pendingRunIds = undefined;
+            if (runId !== undefined && pendingRunIds.has(runId)) source.changed = true;
+          });
+          // A wake can invalidate the board or run part of this snapshot.
+          if (source.changed || active !== source || !itemWaits.has(wake)) return;
+          if (check(current) && active === source && itemWaits.has(wake)) {
+            settle();
+            resolve(current);
+          }
+        } catch (error) {
+          if (active === source && itemWaits.has(wake)) fail(error);
+        } finally {
+          source.checking = false;
+          checkPending();
+        }
+      }
+      function wake(changedItemId?: number): void {
+        if (closed) {
+          fail(closedError());
+          return;
+        }
+        if (changedItemId !== undefined && changedItemId !== itemId) return;
+        if (active?.store !== board) {
+          active?.stopBoard();
+          active = {
+            store: board, stopBoard: board.boardChanged.subscribe(onStoreChanged), checking: false, changed: false,
+          };
+        }
+        active.changed = true;
+        checkPending();
+      }
+      runWaits.add(onRunChanged);
+      itemWaits.add(wake);
+      wake();
+    });
   }
   const statusOf = (current: StageRunView, stageId: string) => current.stageRuns.find(run => run.stageId === stageId)?.status;
-  const untilStage = (itemId: number, stageId: string, status: WorkItemStageRun["status"]) => until(itemId, current => statusOf(current, stageId) === status);
+  const untilStage = (itemId: number, stageId: string, status: WorkItemStageRun["status"]) =>
+    until(itemId, current => statusOf(current, stageId) === status, `item ${itemId} stage ${stageId} to reach ${status}`);
   const live = () => [...liveChildren];
-  function waitForSignal<T>(listeners: Set<() => void>, get: () => T | undefined, description?: string): Promise<T> {
+  /** Resolves on the signal that makes `get` defined; rejects with `failure` once the bound expires, or with the error it is signalled. */
+  function waitForSignal<T>(listeners: Set<(ended?: Error) => void>, get: () => T | undefined, failure: string): Promise<T> {
     const current = get();
     if (current !== undefined) return Promise.resolve(current);
     return new Promise<T>((resolve, reject) => {
-      const timeout = description === undefined ? undefined : setTimeout(() => {
+      const clear = boundWait(() => {
         listeners.delete(changed);
-        reject(new Error(`timed out waiting for ${description}`));
-      }, 2_000);
-      function changed() {
+        reject(new Error(failure));
+      });
+      function changed(ended?: Error) {
+        if (ended) {
+          listeners.delete(changed);
+          clear();
+          reject(ended);
+          return;
+        }
         const value = get();
         if (value === undefined) return;
         listeners.delete(changed);
-        clearTimeout(timeout);
+        clear();
         resolve(value);
       }
       listeners.add(changed);
@@ -457,16 +596,13 @@ export async function stageRunHarness(opts: {
     const failedAtCreation = createdFailed();
     if (failedAtCreation) return Promise.reject(failedAtCreation);
     return new Promise((resolve, reject) => {
-      // Bounded below the test timeout, so a stuck wait names what it was waiting on; a slow preparation stays inside it.
-      const timeout = setTimeout(() => {
+      const clear = boundWait(() => {
         childChanges.delete(changed);
         reject(new Error(`timed out waiting for children; in flight: ${inFlight().join(", ") || "none"}`));
-      }, 30_000);
-      // The bound never keeps the process alive by itself.
-      timeout.unref();
+      });
       function settle(): void {
         childChanges.delete(changed);
-        clearTimeout(timeout);
+        clear();
       }
       function changed(pulse?: ChildWaitPulse, recheck = false) {
         const value = get();
@@ -491,9 +627,38 @@ export async function stageRunHarness(opts: {
   const untilLive = (count: number, itemId?: number) => waitForChildren(() => forItem(ofCurrentEngine(live()), itemId), active => active.length === count, true, itemId);
   const waitForLive = untilLive;
   const untilSpawned = (count: number, itemId?: number) => waitForChildren(() => forItem(ofCurrentEngine(children), itemId), spawned => spawned.length >= count, false, itemId);
-  const waitForProgress = (check: (event: WorkBoardRunEvent) => boolean) => waitForSignal(progressChanges, () => events.find(check), "run progress");
+  const progressEnded = () => new Error("Progress wait ended: harness cleaned up");
+  /** `from` is the first event index to consider; `what` names the wait if it expires. */
+  const waitForProgress = (check: (event: WorkBoardRunEvent) => boolean, what: string, from = 0) => closed
+    ? Promise.reject(progressEnded())
+    : waitForSignal(progressChanges, () => events.slice(from).find(check), `progress signal never arrived for ${what}`);
+  const signalOf = <T>(waits: Set<(change: T) => void>) => (wake: () => void) => { waits.add(wake); return () => { waits.delete(wake); }; };
+  /** Assertion waits still pending; cleanup ends each, saying the harness was cleaned up. */
+  const assertionWaits = new Set<Expire>();
+  /** An assertion wait under the harness bound: past it, or at cleanup, it rejects naming `what`, how it ended and the assertion's last failure. */
+  function untilPasses(subscribe: (wake: () => void) => () => void, assertion: () => void | Promise<void>, what: string): Promise<void> {
+    if (closed) return Promise.reject(new Error(`the harness was cleaned up before waiting for ${what}`));
+    return untilAsserted(subscribe, assertion, what, expire => {
+      const clearBound = boundWait(expire);
+      assertionWaits.add(expire);
+      return () => { clearBound(); assertionWaits.delete(expire); };
+    });
+  }
+  /** Reruns `assertion` after each run-file commit, by any store, until it passes. */
+  const untilRunFile = (assertion: () => void | Promise<void>, what = "a run-file commit that passes the assertion") =>
+    untilPasses(signalOf(runWaits), assertion, what);
+  /** Reruns `assertion` after each run-file commit or progress event until it passes. */
+  const untilObserved = (assertion: () => void | Promise<void>, what = "a run-file commit or progress event that passes the assertion") =>
+    untilPasses(wake => {
+      const stops = [signalOf(runWaits)(wake), signalOf(progressWakes)(wake)];
+      return () => { for (const stop of stops) stop(); };
+    }, assertion, what);
+  /** Reruns `assertion` after each workspace call or sweep until it passes. */
+  const untilWorkspaceCalls = (assertion: () => void | Promise<void>, what = "a workspace call or sweep that passes the assertion") =>
+    untilPasses(signalOf(callWaits), assertion, what);
   /** The event that ended the run; it follows the stored status, so a test waits for it. */
-  const settleEvent = () => waitForProgress(event => event.phase === "cancelled" || event.phase === "done" || event.phase === "denied" || event.phase === "error");
+  const settleEvent = () => waitForProgress(event => event.phase === "cancelled" || event.phase === "done" || event.phase === "denied" || event.phase === "error",
+    "a run's end (cancelled, done, denied or error)");
   /** The decision the board would send for the stored gate of the stage. */
   async function decide(itemId: number, stageId: string, decision: "approve" | "reject" | "request_changes", note?: string) {
     const current = await item(itemId);
@@ -501,16 +666,40 @@ export async function stageRunHarness(opts: {
     return engine.decideStageGate(itemId, { runId: current.runId ?? "", stageId, attempt: run.attempt, resultHash: run.resultHash ?? "", decision, ...(note !== undefined ? { note } : {}) });
   }
   const start = (itemId: number, source: RunAuthoritySource) => engine.runItem(itemId, { templateSource: source });
+  const drainRunWork = async (options?: { includeLaunches?: boolean }) => { await runWorkObservers.at(-1)?.drain(options); };
+  const drainAllRunWork = async () => { await Promise.all(runWorkObservers.map(runWork => runWork.drain())); };
+  function cleanup(): Promise<void> {
+    closed = true;
+    for (const wake of itemWaits) wake();
+    for (const stop of stopRunSources.splice(0)) stop();
+    pulse("harness cleaned up");
+    const ended = progressEnded();
+    for (const changed of progressChanges) changed(ended);
+    for (const end of [...assertionWaits]) end("the harness was cleaned up");
+    return cleanupTmpDir(dir);
+  }
+  /** Runs `body`, then ends the harness: finishes every child, drains observed run work under the signal-wait bound (every engine's, only
+   * the latest engine's where a test abandons an earlier one mid-write, or none), and cleans up. The first failure is rethrown, so a drain
+   * that cannot finish never hides why the body failed. */
+  async function runThenEnd(body: () => Promise<void>, { drain = "all", bound }: { drain?: "all" | "latest" | "none"; bound?: Bound } = {}): Promise<void> {
+    let failure: { error: unknown } | undefined;
+    const step = async (work: () => Promise<void>) => {
+      try { await work(); } catch (error) { failure ??= { error }; }
+    };
+    await step(body);
+    await step(async () => {
+      for (const child of children) child.finish();
+      if (drain !== "none") await within(drain === "all" ? drainAllRunWork() : drainRunWork(), "the run work to drain", bound);
+    });
+    await step(cleanup);
+    if (failure) throw failure.error;
+  }
 
   return {
     dir, boardPath, get board() { return board; }, templates, get engine() { return engine; }, makeEngine, editRow, runOf, events, children, interrupts, audits, unauthorised, workspaceCalls, sweeps,
-    confirm: confirmTemplate, pinOf, addItem, local, attach, detach, item, stageRun, until, untilStage, untilLive, untilSpawned, settleEvent, waitForLive, waitForProgress, live, decide, statusOf, start,
-    drainRunWork: async (options?: { includeLaunches?: boolean }) => { await runWorkObservers.at(-1)?.drain(options); },
-    drainAllRunWork: async () => { await Promise.all(runWorkObservers.map(runWork => runWork.drain())); },
-    cleanup: () => {
-      closed = true;
-      pulse("harness cleaned up");
-      return cleanupTmpDir(dir);
-    },
+    confirm: confirmTemplate, pinOf, addItem, local, attach, detach, item, stageRun, until, untilStage, untilLive, untilSpawned, settleEvent, waitForLive, waitForProgress, untilRunFile, untilObserved, untilWorkspaceCalls, live, decide, statusOf, start,
+    drainRunWork, drainAllRunWork, runThenEnd, cleanup,
+    /** Child, progress, item and assertion waits still pending. */
+    pendingWaits: () => childChanges.size + progressChanges.size + itemWaits.size + assertionWaits.size,
   };
 }

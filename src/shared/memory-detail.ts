@@ -59,5 +59,5 @@ export type MemorySummariesResult =
   | { ok: false; error: "project-not-allowed" | "read-failed" | "unauthorized-frame" };
 
 export type MemoryDetailResult =
-  | { ok: true; history: MemoryHistoryRead; origin: MemoryResolvedOrigin; usage: MemoryUsageRead }
+  | { ok: true; history: MemoryHistoryRead; origin: MemoryResolvedOrigin; usage: MemoryUsageRead; source?: { content: string; contentRevision: string } }
   | { ok: false; error: "invalid-input" | "project-not-allowed" | "not-found" | "read-failed" | "unauthorized-frame" };

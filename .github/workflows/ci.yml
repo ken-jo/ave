@@ -1148,6 +1148,7 @@ jobs:
           src/permissions/__tests__/egress-deny-native.test.ts
           src/permissions/__tests__/egress-token-isolation-native.test.ts
           src/main/terminal/__tests__/terminal-egress-native.test.ts
+          src/main/memory-map/__tests__/inference-child-native.test.ts
           test/scripts/asrt-patched-symbols.test.ts
           src/permissions/__tests__/allowed-directories.test.ts
           src/permissions/__tests__/asrt-sandbox.test.ts
@@ -1344,6 +1345,7 @@ jobs:
           src/permissions/__tests__/egress-deny-native.test.ts
           src/permissions/__tests__/egress-token-isolation-native.test.ts
           src/main/terminal/__tests__/terminal-egress-native.test.ts
+          src/main/memory-map/__tests__/inference-child-native.test.ts
           test/scripts/asrt-patched-symbols.test.ts
           src/main/terminal/__tests__/pty-manager-linux-sandbox.test.ts
           src/permissions/__tests__/sandbox-control-writes.integration.test.ts

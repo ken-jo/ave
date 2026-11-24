@@ -93,6 +93,7 @@ function migrateLegacyEntry(
   if (cleanedAccess.access !== undefined) migrated.approvedPluginAccess = cleanedAccess.access;
   if (installSource !== undefined) migrated.installSource = installSource;
   if (entry.origin !== undefined) migrated.origin = entry.origin;
+  if (entry.installedAt !== undefined) migrated.installedAt = entry.installedAt;
   if (entry.pendingUpdate !== undefined) migrated.pendingUpdate = entry.pendingUpdate;
   if (entry.pendingCleanup !== undefined) {
     migrated.pendingCleanup = entry.pendingCleanup.map((item) => ({ ...item }));
@@ -100,12 +101,17 @@ function migrateLegacyEntry(
   return migrated;
 }
 
-/** Prune from installed IDs only when the registry can vouch for them; malformed or replaced files return undefined. */
-export async function vouchedInstalledPluginIds(registryPath: string): Promise<ReadonlySet<string> | undefined> {
+/** Prune from installed entries only when the registry can vouch for them; malformed or replaced files return undefined. */
+export async function vouchedInstalledPluginEntries(registryPath: string): Promise<readonly PluginRegistryEntry[] | undefined> {
   if (!existsSync(registryPath)) return undefined;
   const registry = await readPluginRegistry(registryPath);
   if (registry.pendingReview || registry.plugins.some((entry) => entry.pendingUpdate)) return undefined;
-  return new Set(registry.plugins.map((entry) => entry.id));
+  return registry.plugins;
+}
+
+export async function vouchedInstalledPluginIds(registryPath: string): Promise<ReadonlySet<string> | undefined> {
+  const entries = await vouchedInstalledPluginEntries(registryPath);
+  return entries && new Set(entries.map((entry) => entry.id));
 }
 
 export async function readPluginRegistry(registryPath: string): Promise<PluginRegistry> {
@@ -212,7 +218,7 @@ export async function readPluginRegistry(registryPath: string): Promise<PluginRe
 
 const REGISTRY_ENTRY_KEYS = new Set([
   "id", "manifestPath", "manifestSha256", "enabled", "bundleRefs",
-  "approvedPluginAccess", "installSource", "origin", "pendingUpdate",
+  "approvedPluginAccess", "installSource", "origin", "installedAt", "pendingUpdate",
   "pendingCleanup",
 ]);
 const LEGACY_REGISTRY_ENTRY_KEYS = new Set([...REGISTRY_ENTRY_KEYS, "installedBy", "_devLinked"]);
@@ -268,6 +274,9 @@ function validateRegistryEntry(
   }
   if (value.approvedPluginAccess !== undefined) validatePluginAccess(value.approvedPluginAccess, value.id, allowLegacy);
   if (value.origin !== undefined) validateOrigin(value.origin, value.id);
+  if (value.installedAt !== undefined && (typeof value.installedAt !== "string" || value.installedAt.length === 0)) {
+    throw new Error(`Invalid plugin registry install stamp: ${value.id}`);
+  }
   if (value.pendingUpdate !== undefined) validatePendingUpdate(value.pendingUpdate, value.id);
   if (value.pendingCleanup !== undefined) validatePendingCleanup(value.pendingCleanup, value.id);
 }

@@ -379,6 +379,12 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "contribution-trust-update-failed": "formatIpcError.writeFailed",
   "contribution-trust-review-stale": "formatIpcError.contributionReviewStale",
   "unknown-plugin-id": "formatIpcError.unknownPluginId",
+  "no-such-plugin": "formatIpcError.unknownPluginId",
+  "invalid-background-effects-request": "formatIpcError.invalidRequest",
+  "background-effects-review-stale": "formatIpcError.contributionReviewStale",
+  "background-effects-update-failed": "pluginConfigTab.backgroundEffectsError",
+  "background-effects-unavailable": "formatIpcError.backgroundEffectsUnavailable",
+  "background-effects-upgrade-elsewhere": "formatIpcError.backgroundEffectsUpgradeElsewhere",
   // The target Electron webview was already destroyed or is not registered
   // as a live plugin panel. Reuse the established not-registered wording.
   "webview-not-live": "formatIpcError.notRegistered",

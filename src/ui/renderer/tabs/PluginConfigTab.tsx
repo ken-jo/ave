@@ -18,6 +18,7 @@ import type {
 import { PluginAuthSection } from "../components/PluginAuthSection.js";
 import { usePluginAuthStatuses } from "../hooks/use-plugin-auth-status.js";
 import { PluginUninstallDialog } from "../dialogs/PluginUninstallDialog.js";
+import { onPluginBackgroundEffectsAnswered, requestPluginBackgroundEffectsReview } from "../dialogs/PluginBackgroundEffectsPrompt.js";
 import {
   getPluginDoctorInstallKey,
   repairPluginFromMarketplace,
@@ -230,6 +231,8 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
   const [contributionTrustError, setContributionTrustError] = useState<string | null>(null);
   const contributionTrustRefreshRef = useRef(0);
   const [trustUpdating, setTrustUpdating] = useState<string | null>(null);
+  const [backgroundPending, setBackgroundPending] = useState<{ pluginId: string; reviewable: boolean } | null>(null);
+  const backgroundRefreshRef = useRef(0);
   useEffect(() => {
     setToolsExpanded(false);
   }, [selectedId]);
@@ -310,6 +313,33 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
       setTrustUpdating(null);
     }
   }, [refreshContributionTrust, showBanner]);
+
+  const refreshBackgroundEffects = useCallback(async (pluginId: string | null): Promise<void> => {
+    const refreshId = ++backgroundRefreshRef.current;
+    if (!pluginId) {
+      setBackgroundPending(null);
+      return;
+    }
+    try {
+      const result = await getApi().getPluginBackgroundEffects(pluginId);
+      if (refreshId !== backgroundRefreshRef.current) return;
+      // A declared scope from an unpinned source can never be approved, so the row says why instead of offering a review.
+      setBackgroundPending(result.ok && result.declared && !result.approved ? { pluginId, reviewable: result.reviewSha256 !== null } : null);
+    } catch {
+      // The host denies unapproved background effects, so a failed read only hides the prompt.
+      if (refreshId === backgroundRefreshRef.current) setBackgroundPending(null);
+    }
+  }, []);
+
+  // Re-read on every card refresh too, so an install, update or enable of the selected plugin shows its pending review.
+  useEffect(() => {
+    void refreshBackgroundEffects(plugins.some((plugin) => plugin.id === selectedId) ? selectedId : null);
+  }, [plugins, refreshBackgroundEffects, selectedId]);
+
+  // The app-level card owner reports each closed card, so the Review row re-reads after Allow or Cancel.
+  useEffect(() => onPluginBackgroundEffectsAnswered((pluginId) => {
+    if (pluginId === selectedId) void refreshBackgroundEffects(pluginId);
+  }), [refreshBackgroundEffects, selectedId]);
 
   // Refresh cards on install/uninstall results; only the latest read may replace visible state, while callers still receive
   // their own result.
@@ -1181,6 +1211,31 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                       state={authStatuses.get(selectedPlugin.id) ?? { kind: "loading" }}
                       onRefresh={() => refreshAuthStatus(selectedPlugin.id)}
                     />
+                  </>
+                )}
+
+                {backgroundPending?.pluginId === selectedPlugin.id && (
+                  <>
+                    <Separator />
+                    <div className="flex items-center justify-between gap-3" data-testid={`plugin-config:background-effects:${selectedPlugin.id}`}>
+                      <div className="min-w-0">
+                        <p className="text-tiny font-medium uppercase tracking-wide text-muted-foreground">
+                          {t("pluginConfigTab.backgroundEffectsLabel")}
+                        </p>
+                        <p className="text-dense text-muted-foreground">
+                          {t(backgroundPending.reviewable ? "pluginConfigTab.backgroundEffectsPending" : "pluginConfigTab.backgroundEffectsUnpinned")}
+                        </p>
+                      </div>
+                      {backgroundPending.reviewable && (
+                        <Button
+                          size="sm"
+                          className="h-7 px-2 text-xs"
+                          onClick={() => requestPluginBackgroundEffectsReview(selectedPlugin.id)}
+                        >
+                          {t("pluginConfigTab.backgroundEffectsReview")}
+                        </Button>
+                      )}
+                    </div>
                   </>
                 )}
 

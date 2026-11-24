@@ -1,3 +1,4 @@
+import { registerMemoryMapHandlers } from './memory-map.js';
 import { readMemoryDetail, readMemorySummaries } from "../../memory/memory-detail.js";
 import { decideTurnChange, getTurnChangeReview, restoreCodeCheckpoint } from "../../memory/code-checkpoints.js";
 import { parseTurnReviewDecision, type TurnReviewError, type TurnReviewResult } from "../../shared/turn-change-review.js";
@@ -1808,6 +1809,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     branchContinuations.set(group, continuation);
     return { ...branched, branchContinuation: continuation.id };
   });
+  const readGraphSource = registerMemoryMapHandlers(deps, parseMemoryProjectOptions);
   const memoryConversationStores = () => {
     const runner = deps.getSubAgentRunner?.();
     const subagent = runner ? {
@@ -1829,12 +1831,18 @@ export function registerChatHandlers(deps: IpcDeps): void {
     if (!project.ok) return PROJECT_NOT_ALLOWED;
     return readMemorySummaries(memoryManager, project.options, memoryConversationStores(), defaultWorkspaceProject().projectRoot);
   });
-  ipcMain.handle(CHANNELS.memory.detailGet, async (e, id: unknown, opts?: unknown) => {
+  ipcMain.handle(CHANNELS.memory.detailGet, async (e, id: unknown, opts?: unknown, contentRevision?: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.memory.detailGet, e); return UNAUTHORIZED_FRAME; }
     if (typeof id !== "string") return { ok: false, error: "invalid-input" };
     const project = parseMemoryProjectOptions(opts);
     if (!project.ok) return PROJECT_NOT_ALLOWED;
-    return readMemoryDetail(memoryManager, id, project.options, memoryConversationStores());
+    if (contentRevision !== undefined && (typeof contentRevision !== "string" || !/^[a-f0-9]{64}$/.test(contentRevision))) {
+      return { ok: false, error: "invalid-input" };
+    }
+    const source = contentRevision === undefined ? undefined : {
+      contentRevision, read: () => readGraphSource(id, opts, contentRevision),
+    };
+    return readMemoryDetail(memoryManager, id, project.options, memoryConversationStores(), source);
   });
   ipcMain.handle(CHANNELS.memory.entriesDelete, async (e, filename: unknown, opts?: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.memory.entriesDelete, e); return UNAUTHORIZED_FRAME; }

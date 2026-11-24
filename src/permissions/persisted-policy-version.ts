@@ -1,12 +1,24 @@
-import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, statSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { resolve } from "node:path";
 import { canonicalStringify } from "../shared/canonical-json.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
+import { readAveHomeInputSync } from "../shared/ave-home-trust.js";
+
+export const STALE_PERMISSION_POLICY = { code: "policy-changed", reason: "Permission policy changed before execution." } as const;
+
+export class StalePermissionPolicyError extends Error {
+  constructor() {
+    super(STALE_PERMISSION_POLICY.reason);
+    this.name = "StalePermissionPolicyError";
+  }
+}
 
 export interface PersistedPolicyVersion {
   readonly filePath: string;
   readonly digest: string | null;
   readonly contentsDigest: string;
+  // The file was present but withheld (pending review, refused home): the loader used its restriction overlay, and the digest is
+  // of the withheld bytes. It stays current only while the same bytes are still withheld.
+  readonly withheld?: true;
 }
 
 // The exact written bytes and their parsed document must describe the same policy.
@@ -19,42 +31,30 @@ export function persistedPolicyVersionForContent(filePath: string, raw: string |
   });
 }
 
-// Absence and empty lock placeholders are versions; read and JSON errors are not.
-export function capturePersistedPolicyVersion(filePath: string): PersistedPolicyVersion | undefined {
+// Absence and empty lock placeholders are versions; read and JSON errors are not. A withheld file is a version only for a caller
+// that loads its overlay and asks for it; to anyone else it is not a version.
+export function capturePersistedPolicyVersion(filePath: string, { withheld = false } = {}): PersistedPolicyVersion | undefined {
   filePath = resolve(filePath);
   try {
-    return persistedPolicyVersionForContent(filePath, readRegularFile(filePath));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") return undefined;
-    // A dangling component must not masquerade as an absent rule store.
-    for (let candidate = filePath; ; candidate = dirname(candidate)) {
-      try {
-        lstatSync(candidate);
-      } catch (missing) {
-        if ((missing as NodeJS.ErrnoException).code !== "ENOENT") return undefined;
-        if (dirname(candidate) === candidate) return undefined;
-        continue;
-      }
-      if (candidate === filePath) return undefined;
-      try { if (!statSync(candidate).isDirectory()) return undefined; } catch { return undefined; }
-      return Object.freeze({ filePath, digest: null, contentsDigest: sha256Hex("null") });
+    const input = readAveHomeInputSync(filePath, { requireRegularFile: true });
+    if (input.status === "untrusted") {
+      return withheld ? Object.freeze({ filePath, digest: sha256Hex(input.bytes), contentsDigest: sha256Hex("withheld"), withheld: true as const }) : undefined;
     }
+    if (input.status === "trusted") return persistedPolicyVersionForContent(filePath, input.bytes);
+    return Object.freeze({ filePath, digest: null, contentsDigest: sha256Hex("null") });
+  } catch {
+    return undefined;
   }
 }
 
-// Opens without blocking and reads only a regular file: a FIFO planted at the rule store must not hang boot (a refused home's
-// root store is unverified). Anything else is a read error, which is not a version.
-function readRegularFile(filePath: string): Buffer {
-  const descriptor = openSync(filePath, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
+// Verify the loaded digest against the same trust verdict used by the covered-input loader.
+export function isPersistedPolicyVersionCurrent({ filePath, digest, withheld }: Pick<PersistedPolicyVersion, "filePath" | "digest" | "withheld">): boolean {
   try {
-    if (!fstatSync(descriptor).isFile()) throw new Error("Permission rule store is not a regular file");
-    return readFileSync(descriptor);
-  } finally {
-    closeSync(descriptor);
+    const input = readAveHomeInputSync(filePath, { requireRegularFile: true });
+    if (withheld === true) return input.status === "untrusted" && sha256Hex(input.bytes) === digest;
+    return input.status === "absent" ? digest === null
+      : input.status === "trusted" && sha256Hex(input.bytes) === digest;
+  } catch {
+    return false;
   }
-}
-
-export function isPersistedPolicyVersionCurrent(version: PersistedPolicyVersion): boolean {
-  const current = capturePersistedPolicyVersion(version.filePath);
-  return current !== undefined && current.digest === version.digest;
 }
