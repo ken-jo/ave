@@ -452,6 +452,30 @@ describe("host shells under an unverifiable Ave home boundary", () => {
       expect(execute).not.toHaveBeenCalled();
       expect(result[0]?.content).toContain(NO_APPROVER_MESSAGE);
     });
+
+    const routes = [
+      { route: "default", plan: { fallbackReason: "requested-sandbox-unavailable", executionRequest: "default" } },
+      { route: "host", plan: { fallbackReason: "none", executionRequest: "host" } },
+      { route: "worker-only", plan: { fallbackReason: "disabled-by-setting", executionRequest: "default" } },
+    ] as const;
+    const routeCases = routes.flatMap(route => DIALECTS.map(dialect => ({ ...route, dialect })));
+
+    it.each(routeCases)("$route route: $dialect.toolName in allow mode with a saved prefix asks, and headless is denied", async ({ route, plan, dialect }) => {
+      if (route === "worker-only") setShellSandboxRequestedAtBoot(false);
+      const execute = vi.fn();
+      const registry = probe(dialect.create, execute);
+      const run = sessionRun(dialect, route, `privacy-${route}`);
+
+      const denied = cardGate("deny-once");
+      const refused = await run(manager("allow", [dialect.prefixRule, dialect.toolName]), denied.gate, registry);
+      expect(denied.cards()).toHaveLength(1);
+      expect(defined(denied.cards()[0], "approval card").executionPlan).toMatchObject({ mode: "plain", sandboxed: false, requiresExplicitUserApproval: true, ...plan });
+      expect(refused[0]?.is_error).toBe(true);
+
+      const headless = await run(manager("allow", [dialect.prefixRule, dialect.toolName]), cardGate("allow-once").gate, registry, true);
+      expect(headless[0]?.content).toContain(NO_APPROVER_MESSAGE);
+      expect(execute).not.toHaveBeenCalled();
+    });
   });
 
   it.each(sessionCases)("$category, $route route: $dialect.toolName allowed for this session runs the same command again without a card ($label)", async ({ category, dialect, route, mode, rules, command }) => {
