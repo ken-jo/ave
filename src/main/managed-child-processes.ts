@@ -581,7 +581,9 @@ function runRecordedRelease(state: ResourceState): Promise<void> {
     const failures: unknown[] = [];
     for (const step of state.steps.splice(0)) {
       try {
-        await step();
+        // A synchronous step runs in the same turn, as before.
+        const result = step();
+        if (result instanceof Promise) await result;
       } catch (error) {
         failures.push(error);
         state.steps.push(step);
