@@ -160,13 +160,18 @@ describe("repository inspection worker", () => {
   });
 
   it("yields the main thread while the worker inspects", async () => {
-    await client.inspectGitRepositoryAsync(cwd);
-    let turned = false;
-    setImmediate(() => { turned = true; });
-    const inspection = client.inspectGitRepositoryAsync(cwd);
-    expect(turned).toBe(false);
-    expect((await inspection)?.workTree ?? cwd).toBe(cwd);
-    expect(turned).toBe(true);
+    // The worker blocks its own thread for 200 ms, as a slow inspection would. A fast real
+    // inspection (win32 refuses at once) can answer before an immediate runs, so timing a
+    // real reply would race; a blocked worker proves the main thread keeps turning.
+    paths.mainDir = standInWorker(
+      "const until = Date.now() + 200; while (Date.now() < until) {} parentPort.postMessage({ id: request.id, result: null });");
+    let turns = 0;
+    const ticker = setInterval(() => { turns += 1; }, 10);
+    const inspection = client.inspectGitRepositoryAsync("blocked");
+    expect(turns).toBe(0);
+    expect(await inspection).toBeNull();
+    clearInterval(ticker);
+    expect(turns).toBeGreaterThan(5);
   });
 
   it("refuses a request whose reply misses the named deadline and replaces the worker", async () => {
