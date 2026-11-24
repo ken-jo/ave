@@ -49,8 +49,16 @@ inline bool missing(DWORD error) {
   return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND;
 }
 
+#if defined(AVE_TEST_DIR_RECOVERY)
+bool test_file_id_result(bool queried, FILE_ID_INFO& id);
+#endif
+
 inline bool read_id(HANDLE file, FILE_ID_INFO& id) {
-  if (!GetFileInformationByHandleEx(file, FileIdInfo, &id, sizeof(id))) return false;
+  bool queried = GetFileInformationByHandleEx(file, FileIdInfo, &id, sizeof(id)) != 0;
+#if defined(AVE_TEST_DIR_RECOVERY)
+  queried = test_file_id_result(queried, id);
+#endif
+  if (!queried) return false;
   const FILE_ID_128 empty{};
   if (std::memcmp(&id.FileId, &empty, sizeof(empty)) != 0) return true;
   SetLastError(ERROR_NOT_SUPPORTED);

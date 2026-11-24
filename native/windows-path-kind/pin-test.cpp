@@ -16,6 +16,18 @@ namespace dir_ops {
 enum class RecoveryBoundary { kNone, kRestoreTarget, kRestoreError, kUnsupportedIsolation, kCommitMismatch, kCommitBlocked, kReplaceCommitFailure, kReplaceRestoreFailure };
 RecoveryBoundary recovery_boundary = RecoveryBoundary::kNone;
 std::wstring boundary_path;
+int file_id_query_to_fault = 0;
+bool zero_file_id = false;
+
+bool test_file_id_result(bool queried, FILE_ID_INFO& id) {
+  if (file_id_query_to_fault >= 0 && (file_id_query_to_fault == 0 || --file_id_query_to_fault != 0)) return queried;
+  if (zero_file_id && queried) {
+    id.FileId = {};
+    return true;
+  }
+  SetLastError(ERROR_NOT_SUPPORTED);
+  return false;
+}
 
 bool sharing_blocked() {
   const DWORD error = GetLastError();
@@ -213,6 +225,13 @@ int non_surrogate_child(const std::wstring& path) {
 int wmain(int argc, wchar_t** argv) {
   if (argc >= 8) {
     const std::wstring test(argv[1]);
+    if (test == L"file-id-query-failure-first" || test == L"file-id-query-failure-second" ||
+        test == L"file-id-zero-first" || test == L"file-id-zero-second" || test == L"file-id-zero-recovery") {
+      dir_ops::file_id_query_to_fault = test == L"file-id-zero-recovery" ? -1
+        : test.find(L"second") == std::wstring::npos ? 1 : 2;
+      dir_ops::zero_file_id = test.find(L"zero") != std::wstring::npos;
+      return dir_ops::run(argc - 1, argv + 1);
+    }
     if (test == L"replace-commit-failure" || test == L"replace-restore-failure") {
       if (argc != 12) return 2;
       dir_ops::recovery_boundary = test == L"replace-commit-failure"

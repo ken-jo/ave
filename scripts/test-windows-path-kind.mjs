@@ -260,6 +260,38 @@ async function recoveryTests() {
       }
     });
   }
+  for (const fault of ["query-failure", "zero"]) {
+    for (const site of ["directory", "writer", "recovery"]) {
+      add(`unverifiable FileId (${fault}) leaves every entry at ${site}`, async (dir) => {
+        const source = join(dir, "source");
+        const target = join(dir, "target");
+        const temporary = join(dir, part);
+        const existing = join(dir, hidden);
+        writeFileSync(source, "download bytes");
+        writeFileSync(existing, "existing bytes");
+        const recovery = site === "recovery";
+        const zeroRecovery = recovery && fault === "zero";
+        const known = snapshot(existing);
+        if (zeroRecovery) known[1] = "0".repeat(32);
+        const args = recovery ? ["--dir-remove-id", ...held(dir), hidden, ...known]
+          : ["--dir-copy", ...held(dir), "source", ...held(dir), "target", part];
+        const position = zeroRecovery ? "recovery" : site === "writer" ? "second" : "first";
+        const result = await runCopy([`file-id-${fault}-${position}`, ...args], (line, stdin) => {
+          if (line === "ready") stdin.write("c");
+          if (line === "copied") stdin.end("c");
+        }, join(tmpdir(), "ave-path-pin-test.exe"));
+        const expected = site === "directory" ? { code: 3, lines: ["refused to"] }
+          : site === "writer" ? { code: 4, lines: ["ready", "failed EUNKNOWN left"] }
+          : { code: 0, lines: ["ready", "left"] };
+        assert.deepEqual({ code: result.code, lines: result.lines }, expected);
+        assert.deepEqual(readdirSync(dir).sort(), (site === "writer" ? [hidden, part, "source"] : [hidden, "source"]).sort());
+        assert.equal(readFileSync(source, "utf8"), "download bytes");
+        assert.equal(readFileSync(existing, "utf8"), "existing bytes");
+        assert.ok(!existsSync(target));
+        if (site === "writer") assert.equal(readFileSync(temporary, "utf8"), "");
+      });
+    }
+  }
   for (const blocked of [false, true]) {
     add(`commit identity mismatch with ${blocked ? "occupied" : "vacant"} rollback name`, async (dir) => {
       writeFileSync(join(dir, "source"), "source");
