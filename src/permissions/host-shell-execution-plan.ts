@@ -193,7 +193,7 @@ export function buildHostShellExecutionPlan(input: {
   // What would confine a sandboxed child: `mxc` only when the host's MXC route is live and `activeCapability` is that route's capability. Defaults to the ASRT wrap.
   shellSubstrate?: "asrt" | "mxc";
   executionMode?: HostShellExecutionRequest;
-  // Boot could not establish Ave home privacy (any category, an unverifiable read boundary included): every plain host shell
+  // Boot could not establish Ave home privacy (any category but helper-unavailable, which `unconfinedShellDenied` blocks): every plain host shell
   // (unavailable sandbox, shell scope off, Windows partial shell or explicit host) then needs a human ask for every command.
   unavailableSandboxRequiresAsk?: boolean;
   // Boot got no answer from the home privacy helper: every route above that would run unconfined is blocked instead, so no approval runs it.
@@ -267,7 +267,7 @@ export function buildHostShellExecutionPlan(input: {
     });
   }
 
-  // A requested sandbox that is unavailable (missing bwrap/socat, start failure) yields an honest plain child on every platform. It takes the same policy path as explicit sandbox-off, floor and deny rules included, so it needs no one-shot permit: a saved exact or prefix allow rule runs it unasked and everything else asks (decision tree, host shell row; this replaces the 2026-10-25 exact-only rule). Exception: while boot cannot establish Ave home privacy (any category, an unverifiable read boundary included), the plan requires explicit approval and the permission floor asks for every command, with no saved-rule or mode pass. The fallback reason stays on the plan so the approval card, the tool result and audit can say the sandbox was unavailable.
+  // A requested sandbox that is unavailable (missing bwrap/socat, start failure) yields an honest plain child on every platform. It takes the same policy path as explicit sandbox-off, floor and deny rules included, so it needs no one-shot permit: a saved exact or prefix allow rule runs it unasked and everything else asks (decision tree, host shell row; this replaces the 2026-10-25 exact-only rule). Exception: while boot cannot establish Ave home privacy (any category but helper-unavailable, which is blocked; an unverifiable read boundary included), the plan requires explicit approval and the permission floor asks for every command, with no saved-rule or mode pass. The fallback reason stays on the plan so the approval card, the tool result and audit can say the sandbox was unavailable.
   if (requestedSandbox && input.activeCapability.kind === "none") {
     const fallbackReason: HostShellFallbackReason = "requested-sandbox-unavailable";
     const capability = noneCapability(
@@ -370,7 +370,7 @@ export function isHomePrivacyHelperUnavailablePlan(plan: Pick<HostShellExecution
 }
 
 // An unconfined plan (unavailable sandbox, shell scope off, or explicit host) that boot marked for a human ask on every command (a boot home privacy
-// failure of any category). The permission floor reads this, so saved allows, auto review and mode allows cannot run it unasked.
+// failure of any category but helper-unavailable, whose plan is blocked). The permission floor reads this, so saved allows, auto review and mode allows cannot run it unasked.
 // Outside that state an explicit-host plan keeps its ordinary rule and mode handling.
 export function requiresUnsandboxedShellAsk(plan: HostShellExecutionPlan | undefined): boolean {
   if (plan === undefined || plan.mode !== "plain" || plan.sandboxed || plan.capability.kind !== "none" ||

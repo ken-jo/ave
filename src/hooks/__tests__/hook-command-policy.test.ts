@@ -422,6 +422,21 @@ describe("hook command permission admission", () => {
       expect(p.requestAndWait).not.toHaveBeenCalled();
       expect(permits.minted).toBe(0);
     });
+
+    // An exact rule admits this command with no card outside the failure, so the deny is what refuses it here.
+    it.each([{ mode: "default" as const }, { mode: "allow" as const }])("denies an exactly allowed hook command in $mode mode", async ({ mode }) => {
+      setShellSandboxRequestedAtBoot(requested);
+      const p = policy("allow-once");
+      p.permissionManager.setMode(mode);
+      p.permissionManager.setRules([{ pattern: "Bash('printf' 'ready')", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
+      const exact = { ...hook, command: ["printf", "ready"] };
+      expect((await p.authorizeCommand(exact, payload, process.cwd())).decision).toBe("allow");
+      setAveHomePrivacyAtBoot({ enforcement: "none", home: "C:\\Users\\alice\\.ave", reason: "helper-unavailable", category: "helper-unavailable" });
+      const denied = await p.authorizeCommand(exact, payload, process.cwd());
+      expect(denied.decision).toBe("deny");
+      expect(denied.reason).toContain("Restart Ave; if it persists, reinstall Ave.");
+      expect(p.requestAndWait).not.toHaveBeenCalled();
+    });
   });
 
   it("keeps the ordinary sandbox-off hook policy outside the boundary state", async () => {

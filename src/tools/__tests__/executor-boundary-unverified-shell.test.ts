@@ -480,6 +480,19 @@ describe("host shells under an unverifiable Ave home boundary", () => {
       expect(execute).not.toHaveBeenCalled();
     });
 
+    it.each(DIALECTS)("an out-of-directory $toolName is denied with the restart notice and no card", async (dialect) => {
+      const execute = vi.fn();
+      const registry = probe(dialect.create, execute);
+      const approvals = cardGate("allow-once");
+      const result = await new ToolExecutor(registry, undefined, manager("allow", [dialect.prefixRule, dialect.toolName]), undefined, approvals.gate).executeAll(
+        [{ id: "helper-directory", name: dialect.toolName, input: { command: dialect.command, cwd: testRoot } }],
+        { sessionId: "helper-directory", permissionContext: permissionContext() },
+      );
+      expect(approvals.cards()).toHaveLength(0);
+      expect(result[0]?.content).toContain(RESTART);
+      expect(execute).not.toHaveBeenCalled();
+    });
+
     it.each(routeCases)("$route route: a direct $dialect.toolName call is refused with the restart notice", async ({ route, dialect }) => {
       if (route === "worker-only") setShellSandboxRequestedAtBoot(false);
       const result = await dialect.create().execute({ command: dialect.command, ...(route === "host" ? HOST : {}) },
