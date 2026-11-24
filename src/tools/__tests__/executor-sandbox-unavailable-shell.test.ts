@@ -81,11 +81,12 @@ describe.each(PLATFORMS)("host shells when the requested sandbox is unavailable 
     rmSync(testRoot, { recursive: true, force: true });
   });
 
-  const run = (dialect: (typeof DIALECTS)[number], sessionId: string, command: string = dialect.command) => {
+  const run = (dialect: (typeof DIALECTS)[number], sessionId: string, command: string = dialect.command, host = false) => {
+    const input = host ? { command, executionMode: "host", justification: "Retry outside the OS sandbox" } : { command };
     let serial = 0;
     return (pm: PermissionManager, gate: ApprovalGate, registry: ToolRegistry, headless = false) => runWithToolExecutionCwd(testRoot, () =>
       new ToolExecutor(registry, undefined, pm, undefined, gate).executeAll(
-        [{ id: `${sessionId}-${++serial}`, name: dialect.toolName, input: { command } }],
+        [{ id: `${sessionId}-${++serial}`, name: dialect.toolName, input }],
         { sessionId, permissionContext: permissionContext(headless ? { headless: true } : {}) },
       ));
   };
@@ -138,6 +139,55 @@ describe.each(PLATFORMS)("host shells when the requested sandbox is unavailable 
     expect(approvals.cards()).toHaveLength(0);
     expect(execute).not.toHaveBeenCalled();
     expect(result[0]?.content).toContain(NO_APPROVER_MESSAGE);
+  });
+
+  // An explicit host request on this host is the same uncontained shell, so it takes the same ask.
+  it.each(DIALECTS)("an explicit-host $toolName asks on the forced card under allow mode with matching saved rules", async (dialect) => {
+    const execute = vi.fn();
+    const registry = probe(dialect.create, execute);
+    const pm = manager("allow", [dialect.prefixRule, dialect.toolName]);
+    const start = run(dialect, "unavailable-host", dialect.command, true);
+
+    const denied = cardGate("deny-once");
+    const refused = await start(pm, denied.gate, registry);
+    expect(denied.cards()).toHaveLength(1);
+    const card = defined(denied.cards()[0], "approval card");
+    expect(card.executionPlan).toMatchObject({ platform, mode: "plain", executionRequest: "host", requiresExplicitUserApproval: true });
+    expect(card.allowedChoices).toEqual(["allow-once", "deny-once"]);
+    expect(card.shellRule).toMatchObject({ exactRule: null, sessionAllowed: true, persistentAllowed: false, denyAllowed: false, floorSessionOnly: true });
+    expect(execute).not.toHaveBeenCalled();
+    expect(refused[0]?.is_error).toBe(true);
+
+    const approved = cardGate("allow-once");
+    await start(pm, approved.gate, registry);
+    expect(approved.cards()).toHaveLength(1);
+    expect(execute).toHaveBeenCalledOnce();
+    const again = cardGate("deny-once");
+    await start(pm, again.gate, registry);
+    expect(again.cards()).toHaveLength(1);
+    expect(execute).toHaveBeenCalledOnce();
+
+    const headless = await start(pm, cardGate("allow-once").gate, registry, true);
+    expect(headless[0]?.content).toContain(NO_APPROVER_MESSAGE);
+    expect(execute).toHaveBeenCalledOnce();
+  });
+
+  it.each(DIALECTS)("$toolName allowed for this session also runs later explicit-host shells without a card", async (dialect) => {
+    const execute = vi.fn();
+    const registry = probe(dialect.create, execute);
+    const pm = manager("allow", []);
+    const first = sessionGate(pm);
+    await run(dialect, "unavailable-host-session")(pm, first.gate, registry);
+    expect(first.saves).toEqual([expect.objectContaining({ ok: true, scope: "session", action: "allow" })]);
+
+    const next = cardGate("deny-once");
+    await run(dialect, "unavailable-host-session", dialect.command, true)(pm, next.gate, registry);
+    expect(next.cards()).toHaveLength(0);
+    expect(execute).toHaveBeenCalledTimes(2);
+    const other = cardGate("deny-once");
+    await run(dialect, "unavailable-host-other", dialect.command, true)(pm, other.gate, registry);
+    expect(other.cards()).toHaveLength(1);
+    expect(execute).toHaveBeenCalledTimes(2);
   });
 
   it.each(DIALECTS)("$toolName allowed for this session runs later shells of that conversation without a card and saves no rule", async (dialect) => {

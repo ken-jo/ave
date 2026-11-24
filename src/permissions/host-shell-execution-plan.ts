@@ -224,6 +224,8 @@ export function buildHostShellExecutionPlan(input: {
   const askEveryCommand = input.unavailableSandboxRequiresAsk === true;
 
   if (executionRequest === "host") {
+    // With the requested sandbox unavailable an explicit host request is the same uncontained shell, so it takes the same ask.
+    const forcedAsk = askEveryCommand || (requestedSandbox && input.activeCapability.kind === "none");
     return Object.freeze({
       version: HOST_SHELL_EXECUTION_PLAN_VERSION,
       platform: input.platform,
@@ -236,7 +238,7 @@ export function buildHostShellExecutionPlan(input: {
       capability: noneCapability(input.platform, "Explicit host execution runs as the current user without OS confinement."),
       fallbackReason: "none" as const,
       requiresExplicitUserApproval: true,
-      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":explicit-host" + (askEveryCommand ? ASK_EVERY_COMMAND_SUFFIX : ""),
+      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":explicit-host" + (forcedAsk ? ASK_EVERY_COMMAND_SUFFIX : ""),
     });
   }
 
@@ -355,9 +357,9 @@ export function buildHostShellExecutionPlan(input: {
 
 const ASK_EVERY_COMMAND_SUFFIX = ":ask";
 
-// An unconfined plan that needs a human ask for every command: the requested-but-unavailable sandbox always, and a shell-scope-off or
-// explicit-host plan while boot cannot verify the Ave home boundary. The permission floor reads this, so saved allows, auto review and
-// mode allows cannot run it unasked. Outside that state an explicit-host plan keeps its ordinary rule and mode handling.
+// An unconfined plan that needs a human ask for every command: the requested-but-unavailable sandbox always, an explicit host request
+// on such a host, and a shell-scope-off or explicit-host plan while boot cannot verify the Ave home boundary. The permission floor reads
+// this, so saved allows, auto review and mode allows cannot run it unasked. Otherwise an explicit-host plan keeps its ordinary rule and mode handling.
 export function requiresUnsandboxedShellAsk(plan: HostShellExecutionPlan | undefined): boolean {
   if (plan === undefined || plan.mode !== "plain" || plan.sandboxed || plan.capability.kind !== "none" ||
     plan.requiresExplicitUserApproval !== true || !plan.identity.endsWith(ASK_EVERY_COMMAND_SUFFIX)) return false;

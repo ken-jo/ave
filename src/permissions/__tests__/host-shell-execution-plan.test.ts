@@ -175,6 +175,19 @@ describe("host shell execution plan", () => {
     },
   );
 
+  it("puts an explicit host request under the forced ask only when the requested sandbox is unavailable", () => {
+    const host = (requestedSandbox: boolean, activeCapability: Parameters<typeof buildHostShellExecutionPlan>[0]["activeCapability"]) =>
+      buildHostShellExecutionPlan({ platform: "linux", requestedSandbox, executionMode: "host", activeCapability });
+    const unavailable = host(true, { ...NONE, platform: "linux" });
+    expect(unavailable.identity).toBe("host-shell-execution-plan/v4:linux:explicit-host:ask");
+    expect(requiresUnsandboxedShellAsk(unavailable)).toBe(true);
+    // Sandbox off by the person's choice, or a ready backend: the explicit request keeps its ordinary handling.
+    for (const plan of [host(false, { ...NONE, platform: "linux" }), host(true, { ...FULL_ASRT, platform: "linux" })]) {
+      expect(plan.identity).toBe("host-shell-execution-plan/v4:linux:explicit-host");
+      expect(requiresUnsandboxedShellAsk(plan)).toBe(false);
+    }
+  });
+
   it("names what to install only on the unavailable plan, and only for causes an install fixes", () => {
     const unavailable = (unavailableCauses: Parameters<typeof buildHostShellExecutionPlan>[0]["unavailableCauses"]) =>
       buildHostShellExecutionPlan({ platform: "linux", requestedSandbox: true, activeCapability: { ...NONE, platform: "linux" }, unavailableCauses });

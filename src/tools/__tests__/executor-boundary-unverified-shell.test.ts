@@ -294,7 +294,7 @@ describe("host shells under an unverifiable Ave home boundary", () => {
     expect(result[0]?.content).toContain(NO_APPROVER_MESSAGE);
   });
 
-  it.each(DIALECTS)("keeps the ordinary explicit-host route for $toolName under any other boot failure", async (dialect) => {
+  it.each(DIALECTS)("asks for the explicit-host route for $toolName under any other boot failure, allow mode included", async (dialect) => {
     setAveHomePrivacyAtBoot({ enforcement: "none", home: HOME, reason: "icacls failed", category: "icacls-failed" });
     const execute = vi.fn();
     const registry = probe(dialect.create, execute);
@@ -303,9 +303,9 @@ describe("host shells under an unverifiable Ave home boundary", () => {
       [{ id: "other-failure-host", name: dialect.toolName, input: { command: dialect.command, ...HOST } }],
       { sessionId: "other-failure-host", permissionContext: permissionContext() },
     ));
-    expect(approvals.cards()).toHaveLength(0);
-    expect(execute).toHaveBeenCalledOnce();
-    expect((defined(execute.mock.calls[0], "execute call")[0] as ToolExecutionContext).hostShellExecutionPlan).toMatchObject({ executionRequest: "host" });
+    expect(approvals.cards()).toHaveLength(1);
+    expect(defined(approvals.cards()[0], "forced card")).toMatchObject({ requireExplicit: true, executionPlan: { executionRequest: "host" } });
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it.each(DIALECTS)("asks for the unavailable-sandbox route for $toolName under any other boot failure, saved allows included", async (dialect) => {
@@ -415,7 +415,7 @@ describe("host shells under an unverifiable Ave home boundary", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
-  it.each(DIALECTS)("a floor session grant does not satisfy the ordinary ask once the boundary state clears for $toolName", async (dialect) => {
+  it.each(DIALECTS)("a floor session grant does not satisfy the ordinary ask after the boundary state changes for $toolName", async (dialect) => {
     publishBoundary("boundary-unlisted");
     const execute = vi.fn();
     const registry = probe(dialect.create, execute);
@@ -426,7 +426,7 @@ describe("host shells under an unverifiable Ave home boundary", () => {
     expect(granted.saves).toEqual([expect.objectContaining({ ok: true })]);
     expect(execute).toHaveBeenCalledOnce();
 
-    // Another boot failure: an explicit host request is outside the floor and asks in the default mode with no rules.
+    // Another boot failure: the grant waives only the sandbox ask, so with no rule the ordinary ask still shows the card.
     setAveHomePrivacyAtBoot({ enforcement: "none", home: HOME, reason: "icacls failed", category: "icacls-failed" });
     const ordinary = cardGate("deny-once");
     await sessionRun(dialect, "host", "boundary-leak")(pm, ordinary.gate, registry);
