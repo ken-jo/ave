@@ -234,7 +234,7 @@ export interface HeldFileOperations {
  * What took the target's place: the writer as published (a full match); `renamed`, the writer as it was before its commit rename, known
  * by its file ID and volume alone, since that rename may have changed its creation time; or `retire` when the target is known committed.
  */
-export type TargetReplacement = FileIdentity | { readonly renamed: FileIdentity } | "retire";
+type TargetReplacement = FileIdentity | { readonly renamed: FileIdentity } | "retire";
 
 const HELPER_BUILD: Partial<Record<NodeJS.Platform, string>> = {
   darwin: "node scripts/build-macos-dir-ops.mjs",
