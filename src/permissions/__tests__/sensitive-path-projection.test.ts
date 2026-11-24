@@ -47,12 +47,19 @@ function hostDeniesAsSensitive(absPath: string, allowedRoot: string): boolean {
   return result.ok === false && result.error === "sensitive-path";
 }
 
+// Building the floor does real filesystem work, so a loop builds it once instead of once per row.
+function sandboxFloor(): (absPath: string) => boolean {
+  const foldedDenies = getDefaultSensitiveReadDenyPaths().map((denied) =>
+    caseFoldForMatch(denied).replace(/\\/g, "/").replace(/\/$/, ""),
+  );
+  return (absPath) => {
+    const folded = caseFoldForMatch(absPath).replace(/\\/g, "/");
+    return foldedDenies.some((foldedDeny) => folded === foldedDeny || folded.startsWith(foldedDeny + "/"));
+  };
+}
+
 function sandboxDenies(absPath: string): boolean {
-  const folded = caseFoldForMatch(absPath).replace(/\\/g, "/");
-  return getDefaultSensitiveReadDenyPaths().some((denied) => {
-    const foldedDeny = caseFoldForMatch(denied).replace(/\\/g, "/").replace(/\/$/, "");
-    return folded === foldedDeny || folded.startsWith(foldedDeny + "/");
-  });
+  return sandboxFloor()(absPath);
 }
 
 describe("sensitive paths — one table, two projections", () => {
@@ -68,6 +75,7 @@ describe("sensitive paths — one table, two projections", () => {
   });
 
   it("projects each table row's read policy to both surfaces", () => {
+    const floorDenies = sandboxFloor();
     for (const entry of SENSITIVE_PATH_ENTRIES) {
       const base = entryPath(entry);
       const target = entry.kind === "dir" ? base + "/probe-child" : base;
@@ -78,7 +86,7 @@ describe("sensitive paths — one table, two projections", () => {
         `host guard must hard-block ${target}`,
       ).toBe(entry.access !== "read-only");
       // The macOS floor leaves out rows only another OS creates; every other floor protects every row.
-      expect(sandboxDenies(target), `shared sandbox floor must protect ${target}`).toBe(sensitiveEntryOnSandboxFloor(entry));
+      expect(floorDenies(target), `shared sandbox floor must protect ${target}`).toBe(sensitiveEntryOnSandboxFloor(entry));
     }
   });
 

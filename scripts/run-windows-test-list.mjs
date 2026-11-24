@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { availableParallelism } from "node:os";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { runCommand, splitArgumentsWithinBudget } from "./hooks/spawn-command.mjs";
@@ -6,7 +7,7 @@ import { collectedVitestFiles, isCollectedVitestFile } from "./lib/vitest-collec
 
 // Windows runs every collected suite. Shard IDs are fixed; the planner assigns
 // each suite to exactly one of them, so a new suite needs no list edit.
-export const WINDOWS_TEST_SHARDS = [1, 2, 3, 4, 5];
+export const WINDOWS_TEST_SHARDS = [1, 2, 3, 4, 5, 6];
 
 /** Keep every selected suite while respecting the native command-line bound. */
 export function windowsTestCommands(files, bun = "bun.exe") {
@@ -67,6 +68,6 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
   const { AVE_WINDOWS_TEST_PLAN: planPath, AVE_WINDOWS_TEST_SHARD: shard } = process.env;
   if (!planPath || !/^[1-9]\d*$/u.test(shard ?? "")) throw new Error("A Windows test shard requires AVE_WINDOWS_TEST_PLAN and AVE_WINDOWS_TEST_SHARD");
   const files = windowsShardFiles(JSON.parse(readFileSync(planPath, "utf8")), Number(shard), process.cwd());
-  console.log(`Windows shard ${shard}: ${files.length} suite(s)`);
+  console.log(`Windows shard ${shard}: ${files.length} suite(s), ${availableParallelism()} logical CPU(s)`);
   runWindowsTests(files);
 }
