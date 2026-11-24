@@ -67,11 +67,13 @@ export function EgressGrantsList({ fetcher, revoker }: EgressGrantsListProps): R
   const { t: translate } = useTranslation();
   const [grants, setGrants] = useState<ListedEgressGrant[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const refresh = useCallback(async () => {
     setBusy(true);
     setError(null);
+    setNotice(null);
     try {
       const result = await (fetcher ?? (() => window.ave!.permission!.egressGrantsList()))();
       const failed = failureMessage(result);
@@ -93,12 +95,17 @@ export function EgressGrantsList({ fetcher, revoker }: EgressGrantsListProps): R
   const revoke = useCallback(async (grant: ListedEgressGrant) => {
     setBusy(true);
     setError(null);
+    setNotice(null);
     try {
       const result = await (revoker ?? ((g: ListedEgressGrant) => window.ave!.permission!.egressGrantRevoke(revokeTarget(g))))(grant);
       const failed = failureMessage(result);
       // A refused revoke stays on screen with the grant still listed.
       if (failed !== undefined) { setError(failed); return; }
       await refresh();
+      // The grant is gone and its connections closed; only making that durable failed.
+      if (result !== null && typeof result === "object" && (result as { durabilitySyncFailed?: unknown }).durabilitySyncFailed === true) {
+        setNotice(translate("permissionsTab.networkGrantRevokeSyncFailed"));
+      }
     } catch {
       setError(translate("permissionsTab.networkGrantRevokeFailed"));
     } finally {
@@ -120,6 +127,9 @@ export function EgressGrantsList({ fetcher, revoker }: EgressGrantsListProps): R
         <p role="alert" className="text-dense text-destructive" data-testid="egress-grants-error">
           {translate("permissionsTab.networkGrantsError", { message: error })}
         </p>
+      ) : null}
+      {notice !== null ? (
+        <p role="status" className="text-dense text-warning" data-testid="egress-grants-notice">{notice}</p>
       ) : null}
       {grants === null ? (
         error === null ? <p className="text-dense text-muted-foreground">{translate("permissionsTab.networkGrantsLoading")}</p> : null

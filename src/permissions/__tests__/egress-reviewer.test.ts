@@ -31,7 +31,7 @@ describe("sandbox domain review", () => {
     const manager = reviewer("ask");
     const requestAndWait = vi.fn(async () => ({ requestId: "network-ask", choice: "deny-once" as const }));
     await expect(createApprovalGateEgressRequester({ requestAndWait }, manager)(request))
-      .resolves.toEqual({ allow: false, reason: "denied by the user" });
+      .resolves.toEqual({ allow: false, humanDenied: true, reason: "denied by the user" });
     expect(requestAndWait).toHaveBeenCalledWith(expect.objectContaining({
       kind: "egress-host", toolCategory: "network", durableApprovalRecordAllowed: false,
       allowedChoices: ["allow-once", "deny-once"],

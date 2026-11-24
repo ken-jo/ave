@@ -1550,7 +1550,7 @@ export type AvePermissionApi = {
     | IpcErrorResult
   >;
   /** MUTATING: revoke one shell egress grant. */
-  egressGrantRevoke: (grant: RevocableEgressGrant) => Promise<{ ok: boolean; error?: string; message?: string } | IpcErrorResult>;
+  egressGrantRevoke: (grant: RevocableEgressGrant) => Promise<{ ok: boolean; error?: string; message?: string; durabilitySyncFailed?: true } | IpcErrorResult>;
   /**
    * MUTATING: trigger the one-time Windows srt-win install (one self-elevating
    * UAC prompt). The ONLY user-consented privilege-escalation entry point —

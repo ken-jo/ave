@@ -139,13 +139,14 @@ describe("skill_load — plugin skills obey the turn's plugin scope", () => {
 
 
 describe("skill body approval controller authority", () => {
-  it("records no grant when the host observes revocation while approval persistence waits in the write queue", async () => {
+  it.each(["revocation", "owner change", "local Stop", "remote Stop"] as const)("records no grant after %s while skill approval waits in the write queue", async interruption => {
     const sessionId = "skill-persistence-owner";
     let current = true;
     let ownerAvailable = true;
-    const authority = bindRemoteControllerToSession({ kind: "tailnet-controller", actorId: "tailnet:skill-owner",
+    const abort = new AbortController();
+    const authority = interruption === "local Stop" ? undefined : bindRemoteControllerToSession({ kind: "tailnet-controller", actorId: "tailnet:skill-owner",
       pairedShare: { pairingId: "pair", pairingEpoch: 1, shareId: "share", shareEpoch: 1, scope: "scope" },
-      pairedShareGuard: { isCurrent: () => current, refreshCurrent: async () => { current = ownerAvailable; return current; } },
+      pairedShareGuard: { isCurrent: () => current, refreshCurrent: async () => ownerAvailable },
     }, sessionId);
     const file = approvalPath();
     const approvals = new SkillApprovalsStore(file);
@@ -155,26 +156,34 @@ describe("skill body approval controller authority", () => {
     await vi.waitFor(() => expect(release).toBeTypeOf("function"));
     const wc = makeMockWebContents();
     const gate = new ApprovalGate(wc as never);
+    const requestAndWait = vi.spyOn(gate, "requestAndWait");
     const register = vi.fn();
     const emit = vi.fn();
     const tool = createSkillLoadTool({ store: { load: async () => skillFixture("user-skill") } as unknown as SkillLoadToolDeps["store"],
       approvals, approvalGate: gate, overlay: { register } as unknown as SkillLoadToolDeps["overlay"], emit });
     const pending = turnExtensionPolicyContext.run(resolveTurnExtensionPolicy(authority), () => tool.execute({ skillName: "user-skill" }, {
-      cwd: process.cwd(), extraAllowedDirectories: [], metadata: { sessionId },
+      cwd: process.cwd(), extraAllowedDirectories: [], metadata: { sessionId }, abortSignal: abort.signal,
     }));
     try {
       await vi.waitFor(() => expect(wc.send).toHaveBeenCalled());
       const request = wc.send.mock.calls[0]?.[1] as ApprovalRequest;
-      await gate.resolveWithFreshIdentity(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac });
+      const accepted = await gate.resolveFromDesktopRendererWithFreshIdentity(request.id, {
+        requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac,
+      }, wc as never);
+      expect(accepted?.choice).toBe("allow-once");
       await vi.waitFor(() => expect(approve).toHaveBeenCalledOnce());
-      // The fresh probe ran before the queue; the synchronous commit fence sees a revocation recorded during the wait.
-      current = false;
-      ownerAvailable = false;
+      if (interruption.endsWith("Stop")) abort.abort();
+      else {
+        if (interruption === "revocation") current = false;
+        ownerAvailable = false;
+      }
     } finally { release(); await held; }
-    expect((await pending).isError).toBe(true);
+    const result = await pending;
     expect(await new SkillApprovalsStore(file).isApproved("user-skill", "body")).toBe(false);
+    expect(result.isError).toBe(true);
     expect(register).not.toHaveBeenCalled();
     expect(emit).not.toHaveBeenCalled();
+    expect(requestAndWait).toHaveBeenCalledWith(expect.objectContaining({ abortSignal: abort.signal }));
   });
   it.each(["local", "current", "revoked", "fresh-unavailable"] as const)("checks %s authority after an actual pending content card", async state => {
     const sessionId = "skill-controller-card";

@@ -13,13 +13,10 @@ import { en } from "../../i18n/messages/en.js";
 import { ko } from "../../i18n/messages/ko.js";
 
 type Harness = Awaited<ReturnType<typeof stageRunHarness>>;
+/** Every engine's detached run work is observed and drained before cleanup, so none of it writes into a removed folder. */
 async function withHarness(run: (h: Harness) => Promise<void>, opts: Parameters<typeof stageRunHarness>[0] = {}): Promise<void> {
-  const h = await stageRunHarness(opts);
-  try {
-    await run(h);
-  } finally {
-    await h.cleanup();
-  }
+  const h = await stageRunHarness({ ...opts, observeRunWork: true });
+  await h.runThenEnd(() => run(h));
 }
 
 const auto = autoStageOf;
@@ -60,11 +57,12 @@ it("spawns only the pinned version's stages with the stage's tool scope", () => 
 }));
 
 it("a gate decision taken before the launch call settles is part of its result, and each stage still passes only by its own approval", async () => {
-  // Each write that opens a gate returns only once the test has read that gate from the run file and the event loop has turned: a
-  // reader that decides on the run file before the engine's write returns. A gate the test read before the hold began is not held.
+  // Each write that opens a gate returns only once the test has read that gate from the run file after the hold began and the event loop
+  // has turned: a reader that decides on the run file before the engine's write returns. The harness's signal wait reads the gate during
+  // the write, before the hold begins, so that read does not release it; the read in `decide` does.
   // Invariant: from that read to the engine's `enqueue` in `decide` only microtasks run, so the decision is queued before the write returns.
   let held: { stageId: string; release: () => void } | null = null;
-  const seen = new Set<string>();
+  const heldOnce = new Set<string>();
   await withHarness(async (h) => {
     const read = h.board.runs.get.bind(h.board.runs);
     vi.spyOn(h.board.runs, "get").mockImplementation(async (runId) => {
@@ -72,7 +70,6 @@ it("a gate decision taken before the launch call settles is part of its result, 
       if (result.status !== "found") return result;
       for (const stage of result.run.stageRuns) {
         if (stage.status !== "awaiting_gate") continue;
-        seen.add(stage.stageId);
         const gate = held;
         if (gate?.stageId !== stage.stageId) continue;
         held = null;
@@ -117,7 +114,10 @@ it("a gate decision taken before the launch call settles is part of its result, 
               return mutate(current);
             }, removedAs);
             const opened = written.ok ? written.run.stageRuns.find(stage => stage.status === "awaiting_gate" && !waiting.includes(stage.stageId)) : undefined;
-            if (opened && !seen.has(opened.stageId)) await new Promise<void>((release) => { held = { stageId: opened.stageId, release }; });
+            if (opened && !heldOnce.has(opened.stageId)) {
+              heldOnce.add(opened.stageId);
+              await new Promise<void>((release) => { held = { stageId: opened.stageId, release }; });
+            }
             return written;
           },
         },

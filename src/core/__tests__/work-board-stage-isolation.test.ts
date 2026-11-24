@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { expect, it, vi } from "vitest";
+import { deferred } from "../../__tests__/support/deferred.js";
+import { type Bound, boundWait, within } from "../../__tests__/support/signal-wait.js";
 import { workflowEngineExtensions } from "../../boot/steps/workflow-engine-extensions.js";
 import { boundStageWorkspace, isOwnStageWorkspacePath } from "../../permissions/stage-workspace-binding.js";
 import { aveHome } from "../../shared/ave-home.js";
@@ -12,15 +14,21 @@ import type { StageWorkspaceProvider } from "../../work-board/workflow/stage-wor
 import { createStageWorkspaceProvider } from "../../work-board/workflow/stage-workspaces.js";
 
 type Harness = Awaited<ReturnType<typeof stageRunHarness>>;
+const WORKSPACE_WAIT_MS = 5_000;
+const workspaceBound: Bound = expire => boundWait(expire, WORKSPACE_WAIT_MS);
 /** The provider the production wiring chose for the engine now running. */
 let production: StageWorkspaceProvider;
 async function withProductionParts(run: (h: Harness) => Promise<void>): Promise<void> {
-  const h = await stageRunHarness({ wiring: (store, { templates }) => { const parts = workflowEngineExtensions(store, templates); production = parts.workspace; return parts; } });
-  try {
-    await run(h);
-  } finally {
-    await h.cleanup();
-  }
+  const h = await stageRunHarness({ observeRunWork: true, wiring: (store, { templates, waking }) => {
+    const parts = workflowEngineExtensions(store, templates);
+    production = parts.workspace;
+    const release = production.release.bind(production);
+    const discard = production.discard.bind(production);
+    vi.spyOn(production, "release").mockImplementation(waking(release));
+    vi.spyOn(production, "discard").mockImplementation(waking(discard));
+    return parts;
+  } });
+  await h.runThenEnd(() => run(h));
 }
 const folderOf = (child: Harness["children"][number]): string => child.input.projectRoot ?? "";
 /** As a stop between a record's removal and the discard, or a board recovery, leaves it: a run folder with an output folder and no run
@@ -58,7 +66,7 @@ it("two stages run in two folders under the home, each bound to its own session"
   expect(h.engine.cancelRun(id)).toEqual({ ok: true });
   await h.until(id, item => item.runStatus === "cancelled");
   expect(boundStageWorkspace(second.sessionId)).toBeUndefined();
-  await vi.waitFor(() => expect(existsSync(folderOf(second))).toBe(false), { timeout: 5000 });
+  await h.untilWorkspaceCalls(() => { expect(existsSync(folderOf(second))).toBe(false); }, "workspace cleanup", WORKSPACE_WAIT_MS);
 }));
 
 it("request changes reruns in the same folder", () => withProductionParts(async (h) => {
@@ -165,7 +173,7 @@ it("the run output folder stays when the run settles and goes when its item is r
 
   expect(h.engine.cancelRun(id)).toEqual({ ok: true });
   await h.until(id, item => item.runStatus === "cancelled");
-  await vi.waitFor(() => expect(existsSync(folderOf(first))).toBe(false), { timeout: 5000 });
+  await h.untilWorkspaceCalls(() => { expect(existsSync(folderOf(first))).toBe(false); }, "workspace cleanup", WORKSPACE_WAIT_MS);
   // Settled, its stage folders released: the row still lists the run, so its record and its output stay.
   expect((await h.runOf(runId))?.settled?.status).toBe("cancelled");
   expect(readFileSync(join(out, "result.md"), "utf8")).toBe("collected\n");
@@ -173,7 +181,7 @@ it("the run output folder stays when the run settles and goes when its item is r
 
   expect(await h.board.remove(id)).toMatchObject({ status: "deleted" });
   expect(await h.runOf(runId)).toBeNull();
-  await vi.waitFor(() => expect(existsSync(runRoot)).toBe(false), { timeout: 5000 });
+  await h.untilWorkspaceCalls(() => { expect(existsSync(runRoot)).toBe(false); }, "workspace cleanup", WORKSPACE_WAIT_MS);
 }));
 
 it("a superseded run keeps its output folder when its record goes, until its item is removed", () => withProductionParts(async (h) => {
@@ -182,16 +190,17 @@ it("a superseded run keeps its output folder when its record goes, until its ite
   const runRoots: string[] = [];
   const runIds: string[] = [];
   for (const round of [1, 2]) {
-    void h.start(id, h.local(version));
+    const run = h.start(id, h.local(version));
     const child = (await h.untilSpawned(round))[round - 1];
     if (child === undefined) throw new Error("no stage child");
-    await vi.waitFor(() => expect(existsSync(folderOf(child))).toBe(true), { timeout: 5000 });
+    expect(existsSync(folderOf(child))).toBe(true);
     runRoots.push(dirname(folderOf(child)));
     writeFileSync(join(dirname(folderOf(child)), "_out", "result.md"), `collected ${round}\n`);
     runIds.push((await h.item(id)).runId ?? "");
     expect(h.engine.cancelRun(id)).toEqual({ ok: true });
     await h.until(id, item => item.runStatus === "cancelled");
-    await vi.waitFor(() => expect(existsSync(folderOf(child))).toBe(false), { timeout: 5000 });
+    await h.untilWorkspaceCalls(() => { expect(existsSync(folderOf(child))).toBe(false); }, "workspace cleanup", WORKSPACE_WAIT_MS);
+    await run;
   }
   const [first, second] = runRoots as [string, string];
   expect(first).not.toBe(second);
@@ -200,14 +209,14 @@ it("a superseded run keeps its output folder when its record goes, until its ite
   const discarded = vi.spyOn(production, "discard");
   await h.board.runs.prune(run => run.runId === runIds[0] ? null : run);
   expect(await h.runOf(runIds[0] ?? "")).toBeNull();
-  await vi.waitFor(() => expect(discarded).toHaveBeenCalled(), { timeout: 5000 });
+  await h.untilWorkspaceCalls(() => { expect(discarded).toHaveBeenCalled(); }, "the removed record's workspace discard", WORKSPACE_WAIT_MS);
   await discarded.mock.results.at(-1)?.value;
   expect(readFileSync(join(first, "_out", "result.md"), "utf8")).toBe("collected 1\n");
   expect(existsSync(join(first, "_run.json"))).toBe(true);
 
   expect(await h.board.remove(id)).toMatchObject({ status: "deleted" });
-  await vi.waitFor(() => expect(existsSync(second)).toBe(false), { timeout: 5000 });
-  await vi.waitFor(() => expect(existsSync(first)).toBe(false), { timeout: 5000 });
+  await h.untilWorkspaceCalls(() => { expect(existsSync(second)).toBe(false); }, "workspace cleanup", WORKSPACE_WAIT_MS);
+  await h.untilWorkspaceCalls(() => { expect(existsSync(first)).toBe(false); }, "workspace cleanup", WORKSPACE_WAIT_MS);
 }));
 
 it("a delete of a live run's item keeps the output folder until the run has settled and its record is gone", () => withProductionParts(async (h) => {
@@ -252,8 +261,8 @@ it("a delete of a live run's item keeps the output folder until the run has sett
   // The same call's own settle, whatever other writes of the live run came in between.
   expect(seen.slice(ending + 1).find(at => at.step === "settled" && at.call === seen[ending]?.call)).toEqual({ step: "settled", out: true, ends: "item-removed", call: seen[ending]?.call });
   expect(seen.filter(at => !at.out)).toEqual([]);
-  await vi.waitFor(async () => expect(await h.runOf(runId)).toBeNull(), { timeout: 5000 });
-  await vi.waitFor(() => expect(existsSync(runRoot)).toBe(false), { timeout: 5000 });
+  await h.untilRunFile(async () => { expect(await h.runOf(runId)).toBeNull(); }, "the settled run record to be removed", WORKSPACE_WAIT_MS);
+  await h.untilWorkspaceCalls(() => { expect(existsSync(runRoot)).toBe(false); }, "workspace cleanup", WORKSPACE_WAIT_MS);
 }));
 
 it("a discard whose first read of the stores is older than an item keeps the workspace of that item's starting run", () => withProductionParts(async (h) => {
@@ -262,43 +271,44 @@ it("a discard whose first read of the stores is older than an item keeps the wor
   await h.addItem(version);
   const readStores = h.board.runsWithoutItem.bind(h.board);
   let reads = 0;
-  let taken = false;
-  let deliver = (): void => undefined;
-  const held = new Promise<void>((resolve) => { deliver = resolve; });
+  const firstRead = deferred<void>();
+  const held = deferred<void>();
   vi.spyOn(h.board, "runsWithoutItem").mockImplementation(async () => {
     reads += 1;
     const answer = await readStores();
     if (reads > 1) return answer;
-    taken = true;
-    await held;
+    firstRead.resolve();
+    await held.promise;
     return answer;
   });
   const discarding = production.discard(new Map());
-  await vi.waitFor(() => expect(taken).toBe(true), { timeout: 5000 });
+  await within(firstRead.promise, "the discard to read the stores", workspaceBound);
 
   // An unrelated item is added and started; its start is held where the folder is published and no record is stored yet.
   const open = production.open.bind(production);
-  let runRoot = "";
-  let proceed = (): void => undefined;
-  const publishedOnly = new Promise<void>((resolve) => { proceed = resolve; });
+  const published = deferred<Awaited<ReturnType<StageWorkspaceProvider["open"]>>>();
+  const proceed = deferred<void>();
   vi.spyOn(production, "open").mockImplementation(async (...args) => {
     const opened = await open(...args);
-    if (opened.ok) runRoot = opened.workspace.runRoot;
-    await publishedOnly;
+    published.resolve(opened);
+    await proceed.promise;
     return opened;
   });
   const id = await h.addItem(version);
   void h.start(id, h.local(version));
-  await vi.waitFor(() => expect(runRoot).not.toBe(""), { timeout: 5000 });
+  const opened = await within(published.promise, "the starting run folder to be published", workspaceBound);
+  if (!opened.ok) throw new Error(opened.code);
+  const runRoot = opened.workspace.runRoot;
+  expect(runRoot).not.toBe("");
   expect((await h.item(id)).runId).toBeUndefined();
 
-  deliver();
+  held.resolve();
   await discarding;
   expect(reads).toBeGreaterThan(1);
   expect(existsSync(join(runRoot, "_out"))).toBe(true);
   expect(existsSync(join(runRoot, "_run.json"))).toBe(true);
 
-  proceed();
+  proceed.resolve();
   const [child] = await h.untilLive(1);
   expect(dirname(folderOf(child))).toBe(runRoot);
   expect(h.engine.cancelRun(id)).toEqual({ ok: true });
@@ -316,7 +326,7 @@ it("deleting a row whose runs have no record left removes their output folders",
   h.board.runs.onRunsRemoved = announced;
 
   expect(await h.board.remove(id)).toMatchObject({ status: "deleted" });
-  await vi.waitFor(() => expect(existsSync(ofRow)).toBe(false), { timeout: 5000 });
+  await h.untilWorkspaceCalls(() => { expect(existsSync(ofRow)).toBe(false); }, "workspace cleanup", WORKSPACE_WAIT_MS);
   expect(announced).not.toHaveBeenCalled();
   expect(readFileSync(join(ofOther, "_out", "result.md"), "utf8")).toBe("left behind\n");
   expect(existsSync(join(ofOther, "_run.json"))).toBe(true);
@@ -366,7 +376,7 @@ it("removing an unreadable row whose runs have no record left removes their outp
   const card = (listed.status === "ok" ? listed.unreadableRows ?? [] : []).find(row => row.hash === createHash("sha256").update(JSON.stringify(entry)).digest("hex"));
   if (card === undefined) throw new Error("the row is not listed as unreadable");
   expect(await h.board.removeUnreadable(card, () => true)).toMatchObject({ status: "deleted" });
-  await vi.waitFor(() => expect(existsSync(ofRow)).toBe(false), { timeout: 5000 });
+  await h.untilWorkspaceCalls(() => { expect(existsSync(ofRow)).toBe(false); }, "workspace cleanup", WORKSPACE_WAIT_MS);
   expect(announced).not.toHaveBeenCalled();
   expect(readFileSync(join(ofOther, "_out", "result.md"), "utf8")).toBe("left behind\n");
   expect(existsSync(join(ofOther, "_run.json"))).toBe(true);

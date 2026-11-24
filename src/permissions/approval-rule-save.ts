@@ -9,7 +9,7 @@ import { errorMessage } from "../shared/error-message.js";
 import { AveHomeConfigurationRefusedWriteError } from "../shared/ave-home.js";
 import { HOME_FOLDER_REFUSED } from "../shared/permissions-events.js";
 
-import { refreshApprovalPersistence, type ApprovalPersistenceGuard } from "./approval-persistence-guard.js";
+import { assertApprovalPersistenceCurrent, refreshApprovalPersistence, type ApprovalPersistenceGuard } from "./approval-persistence-guard.js";
 import { getWindowsShellConsentRevision, isWindowsShellConsentCurrent } from "./sandbox-capability.js";
 
 type RequestSnapshot = NonNullable<ReturnType<ApprovalGate["getRequestSnapshot"]>>;
@@ -133,6 +133,7 @@ export async function saveApprovalCardRule(
       await beforePersist?.(saved);
       await refreshApprovalPersistence(authority);
       if (!isShellConsentCurrent()) return fail("rule-save-failed", "Shell consent changed during approval");
+      assertApprovalPersistenceCurrent(authority);
       permissionManager.addFloorSessionGrant(sessionId, floorGrant);
     } catch (error) {
       return fail("rule-save-failed", errorMessage(error));
@@ -182,6 +183,7 @@ export async function saveApprovalCardRule(
       if (snapshot.sessionId === undefined) return fail("missing-session", "This request has no conversation session");
       await refreshApprovalPersistence(authority);
       if (target.kind === "shell" && !isShellConsentCurrent()) return fail("rule-save-failed", "Shell consent changed during approval");
+      assertApprovalPersistenceCurrent(authority);
       permissionManager.addSessionRule(snapshot.sessionId, pattern);
     } else if (scope === "project") {
       const projectCwd = target.context.projectCwd;

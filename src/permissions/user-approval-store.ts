@@ -2,7 +2,7 @@
 // The live gate controls persistence: completed HIGH and mandatory one-shot allows cannot persist, exact denies may. Session decisions stay in memory, persistent decisions use private namespace files and atomic exclusive staging/fsync/rename writes; legacy session rows retain process lifetime.
 import { mkdir, stat, chmod } from "node:fs/promises";
 import { resolve, dirname, isAbsolute } from "node:path";
-import { writeFileAtomicAtPath, writeFileAtomicAtPathIf } from "../main/storage/feature-namespace.js";
+import { preparePrivateFileDirectory, writeFileAtomicAtPath } from "../main/storage/feature-namespace.js";
 import { aveHome } from "../shared/ave-home.js";
 import { assertAveHomeInputWritable, readAveHomeInput } from "../shared/ave-home-trust.js";
 import { matchesMcpToolApprovalMemory, mcpToolApprovalCacheKey, isMcpToolApprovalScope } from "../shared/mcp-tool-approval.js";
@@ -21,7 +21,7 @@ import { sessionAuthorityWithheld } from "../shared/turn-extension-policy.js";
 import { createSerialQueue } from "../lib/with-file-lock.js";
 import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
 
-import { refreshApprovalPersistence, type ApprovalPersistenceGuard } from "./approval-persistence-guard.js";
+import { assertApprovalPersistenceCurrent, commitApprovalFile, refreshApprovalPersistence, type ApprovalPersistenceGuard } from "./approval-persistence-guard.js";
 
 let persistentWrites = createSerialQueue();
 
@@ -271,7 +271,8 @@ async function atomicWrite(data: ApprovalsFile, authority?: ApprovalPersistenceG
 
 // The shared namespace writer owns exclusive random staging, file/directory fsync and rename to prevent symlink redirection.
   if (authority) {
-    if (!await writeFileAtomicAtPathIf(path, `${JSON.stringify(data, null, 2)}\n`, authority.isCurrent)) throw new Error("Approval authority is unavailable");
+    await preparePrivateFileDirectory(path);
+    await commitApprovalFile(path, `${JSON.stringify(data, null, 2)}\n`, authority);
   } else {
     await writeFileAtomicAtPath(path, `${JSON.stringify(data, null, 2)}\n`);
   }
@@ -284,8 +285,6 @@ async function mutatePersistentApprovals(
   // The store reads as absent in a refused home; rewriting it from that view would erase the user's file.
   const path = userApprovalFilePath();
   assertAveHomeInputWritable(path);
-  // Probe before the write queue; inside it only the synchronous fence in atomicWrite guards the commit.
-  await refreshApprovalPersistence(authority);
   return persistentWrites(async () => {
     const file = await readApprovalsFile();
     await mutator(file);
@@ -361,6 +360,7 @@ export async function recordApproval(
 
   if (entry.scope === "session") {
     await refreshApprovalPersistence(authority);
+    assertApprovalPersistenceCurrent(authority);
     sessionStore.set(key, full);
     approvalGeneration += 1;
     return;

@@ -64,7 +64,9 @@ export class ProjectRuleScopes {
     const load = (async () => {
       const stamp = await fileStamp(location.filePath);
       const cached = this.states.get(location.identity);
-      if (cached && this.stamps.get(location.identity) === stamp) return cached;
+      // A completed review leaves the stamp unchanged, so a version that is no longer current also reloads.
+      const version = this.policyVersions.get(location.identity);
+      if (cached && this.stamps.get(location.identity) === stamp && version !== undefined && isPersistedPolicyVersionCurrent(version)) return cached;
       return this.reload(projectCwd);
     })();
     this.pendingLoads.set(location.identity, load);
@@ -78,12 +80,13 @@ export class ProjectRuleScopes {
   async reload(projectCwd: string): Promise<ProjectRuleState> {
     const location = projectRulesLocation(this.baseDir, projectCwd);
     const stamp = await fileStamp(location.filePath);
-    const policyVersion = capturePersistedPolicyVersion(location.filePath);
+    const policyVersion = capturePersistedPolicyVersion(location.filePath, { withheld: true });
     let state: ProjectRuleState;
     let loadedPolicy = false;
     try {
       const file = await readProjectRulesFile(location);
-      loadedPolicy = policyVersion?.contentsDigest === sha256Hex(canonicalStringify(file));
+      // A withheld file loads its restriction overlay, which no contents digest describes; the currency check below still binds its bytes.
+      loadedPolicy = policyVersion?.withheld === true || policyVersion?.contentsDigest === sha256Hex(canonicalStringify(file));
       state = { ok: true, projectRoot: location.projectRoot, rules: Object.freeze([...(file?.rules ?? [])]) };
     } catch (error) {
       if (!(error instanceof PermissionRulesFileCorruptError)) throw error;
