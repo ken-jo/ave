@@ -241,6 +241,12 @@ export interface WrapOptions {
   readonly denyUnixSockets?: boolean;
 }
 
+const DEFAULT_POSIX_WRAPPER_SHELL = "/bin/bash";
+
+function wrapperShell(binShell: WrapOptions["binShell"]): WrapOptions["binShell"] {
+  return binShell ?? (process.platform === "win32" ? undefined : DEFAULT_POSIX_WRAPPER_SHELL);
+}
+
 // What every wrap must carry: the invocation's egress token (`egress-invocations.ts`), passed to ASRT as `commandId`. ASRT records the proxy denies of the wrapped process under it and puts it in the proxy username, so a deny can be attributed to the tool call, terminal tab or worker that opened the connection. Without it ASRT keys on the command text, which two invocations can share and which the violation store compares on its first 100 characters only, so it is required, not defaulted.
 export interface AttributedWrapOptions extends WrapOptions {
   readonly commandId: string;
@@ -2299,10 +2305,10 @@ async function verifyAsrtRuntime(
   try {
     await openEgressListener(SandboxManager, "sandbox runtime probe", invocation.token);
     listenerOpened = true;
-    // The probe covers the same attributed listener path as regular shells. No binShell/customConfig override: this is the exact initialized wrapper configuration used by regular tool execution, with the fixed `true` probe.
+    // The probe uses the regular wrapper's default shell and initialized configuration with the fixed `true` command.
     const probe = await SandboxManager.wrapWithSandboxArgv(
       ASRT_LINUX_RUNTIME_PROBE_COMMAND,
-      undefined,
+      DEFAULT_POSIX_WRAPPER_SHELL,
       undefined,
       abortController.signal,
       process.cwd(),
@@ -2612,7 +2618,7 @@ export async function wrapToolCommand(
     assertWindowsSession(session);
     const pendingWrap = SandboxManager.wrapWithSandboxArgv(
       command,
-      options.binShell,
+      wrapperShell(options.binShell),
       customConfig,
       options.abortSignal,
       undefined,
@@ -2808,7 +2814,7 @@ async function wrapLongLivedCommand(
     assertWindowsSession(session);
     const pendingWrap = SandboxManager.wrapWithSandboxArgv(
       command,
-      options.binShell,
+      wrapperShell(options.binShell),
       customConfig,
       options.abortSignal,
       undefined,

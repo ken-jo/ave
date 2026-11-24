@@ -22,9 +22,9 @@ import { openEgressInvocation } from "../egress-invocations.js";
 import { getLocale, setLocale } from "../../i18n/index.js";
 import { isHostGitWorkspaceAvailable } from "../../shared/host-git.js";
 import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
-import { installProgramsOnPath } from "../../__tests__/support/planted-program.js";
 import * as policyHome from "../../shared/policy-home.js";
 import { configureHostResources, getHostResources } from "../../main/host-resources.js";
+import { parseSandboxWrappedWords } from "../sandbox-wrapped-command.js";
 
 useVerifiedAveHomePrivacy();
 
@@ -496,15 +496,29 @@ describe("Linux wrap filesystem discovery snapshot", () => {
 });
 
 describe("initializeAsrtSandbox — Linux configured-wrapper runtime probe", () => {
-  it("keeps the default /bin/bash when another bash is ahead of /usr/bin on PATH", async () => {
-    const programs = installProgramsOnPath(["bash"], "linux");
+  it.each(["linux", "darwin"] as const)("renders the fixed default and explicit shell at both wrapper layers on %s", async (platform) => {
+    const { SandboxManager } = await vi.importActual<typeof import("@anthropic-ai/sandbox-runtime")>("@anthropic-ai/sandbox-runtime");
+    setProcessPlatform(platform);
+    vi.stubGlobal("Bun", { which: (shell: string) => shell === "bash" ? "/alternate/bin/bash" : shell });
+    h.wrapWithSandboxArgv.mockImplementation((command, shell) => SandboxManager.wrapWithSandboxArgv(command, shell));
+    const invocation = openEgressInvocation({ kind: "terminal", tabId: "sandbox-shell-path" });
     try {
-      process.env.PATH = `${programs.dir}:/usr/bin`;
+      const assertShell = (argv: readonly string[], shell: string) => {
+        expect(argv.slice(0, 2)).toEqual([shell, "-c"]);
+        const words = parseSandboxWrappedWords(argv[2] ?? "").map(word => word.value);
+        const inner = platform === "linux" ? words.indexOf("--") + 1 : words.length - 3;
+        expect(words.slice(inner, inner + 2)).toEqual([shell, "-c"]);
+      };
       await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
-      expect(h.wrapWithSandboxArgv.mock.calls[0]?.[1]).toBeUndefined();
-      expect(h.spawn.mock.calls[0]?.[0]).toBe("/bin/bash");
+      const [probeShell, probeArgs] = h.spawn.mock.calls[0] ?? [];
+      assertShell([probeShell, ...(probeArgs ?? [])], "/bin/bash");
+      assertShell((await wrapToolCommand("true", { commandId: TEST_COMMAND_ID })).argv, "/bin/bash");
+      assertShell((await wrapWorkerCommand("true", { commandId: invocation.token })).argv, "/bin/bash");
+      assertShell((await wrapWorkerCommand("true", { commandId: invocation.token, binShell: "/bin/zsh" })).argv, "/bin/zsh");
     } finally {
-      await programs.restore();
+      invocation.release();
+      vi.unstubAllGlobals();
+      await SandboxManager.reset();
     }
   });
 
@@ -514,7 +528,7 @@ describe("initializeAsrtSandbox — Linux configured-wrapper runtime probe", () 
     expect(h.wrapWithSandboxArgv).toHaveBeenCalledTimes(1);
     const wrapCall = h.wrapWithSandboxArgv.mock.calls[0];
     expect(wrapCall?.[0]).toBe("true");
-    expect(wrapCall?.[1]).toBeUndefined();
+    expect(wrapCall?.[1]).toBe("/bin/bash");
     expect(wrapCall?.[2]).toBeUndefined();
     expect(wrapCall?.[3]).toBeInstanceOf(AbortSignal);
     expect(wrapCall?.[4]).toBe(process.cwd());
