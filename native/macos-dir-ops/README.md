@@ -18,29 +18,60 @@ changes nothing the mode does: it still acts in the directory it checked.
 ## Modes
 
 ```text
-ave-dir-ops --dir-rename <from> <dev> <ino> <name> <to> <dev> <ino> <target>
+ave-dir-ops --dir-rename <from> <dev> <ino> <name> <to> <dev> <ino> <target> --expect <token>
 ave-dir-ops --dir-copy   <from> <dev> <ino> <name> <to> <dev> <ino> <target> <part> <hidden>
-ave-dir-ops --dir-remove <dir> <dev> <ino> <name>
-ave-dir-ops --dir-sweep  <dir> <dev> <ino> [keep-records]
+ave-dir-ops --dir-remove <dir> <dev> <ino> <name> --expect <token>
+ave-dir-ops --dir-stamp  <dir> <dev> <ino> <name>
+ave-dir-ops --dir-sweep  <dir> <dev> <ino> [--keep-records]
 ave-dir-ops --dir-list-records <dir> <dir-dev> <dir-ino>
 ave-dir-ops --dir-read <dir> <dir-dev> <dir-ino> <name> <max>
 ave-dir-ops --dir-write-record <dir> <dir-dev> <dir-ino> <name> <hex>
-ave-dir-ops --dir-remove-record <dir> <dir-dev> <dir-ino> <name> <file-dev> <file-ino> <birth-ns> <length> <sha256>
-ave-dir-ops --dir-remove-id <dir> <dir-dev> <dir-ino> <name> <file-dev> <file-ino> [<birth-ns>:<fingerprint>]
-ave-dir-ops --dir-restore <dir> <dir-dev> <dir-ino> <hidden> <part> <file-dev> <file-ino> <birth-ns>:<fingerprint>
-ave-dir-ops --dir-restore-target <dir> <dir-dev> <dir-ino> <hidden> <target> <file-dev> <file-ino> <birth-ns>:<fingerprint-or-dash> [<writer-ino>:<writer-birth-ns>|retire]
+ave-dir-ops --dir-remove-record <dir> <dir-dev> <dir-ino> <name> --expect <token> --length <n> --digest <sha256>
+ave-dir-ops --dir-remove-id <dir> <dir-dev> <dir-ino> <name> --expect <token> [--content <fingerprint>]
+ave-dir-ops --dir-restore <dir> <dir-dev> <dir-ino> <hidden> <part> --expect <token> --content <fingerprint>
+ave-dir-ops --dir-restore-target <dir> <dir-dev> <dir-ino> <hidden> <target> --expect <token> [--content <fingerprint>] [--writer <token> | --renamed-writer <token> | --retire]
 ave-dir-ops --dir-sweep-record <dir> <dir-dev> <dir-ino> <name> <max>
 ```
 
+The operands and options are the ones `native/windows-path-kind/README.md`
+lists for the Windows helper. Options follow the positional operands in any
+order; a repeated, unknown or valueless option, more than one of `--writer`,
+`--renamed-writer` and `--retire`, or a malformed token or fingerprint is a
+usage error (exit 2).
+
+Every file operand and every identity a frame carries is an evidence token
+`<dev>:<ino>:<class>:<value>`, with the device and inode in decimal. This
+helper emits and accepts only `birth`: the file's birth time in nanoseconds,
+nonzero. A token of any other class (`none:-` among them) is unresolved and
+matches nothing, so it leaves the entry in place. A file without a birth time
+has no token this helper can name: `--dir-stamp` answers `refused source` for
+it, and a frame about it carries `none:-`, which the host refuses. A rename on
+macOS keeps the birth time (APFS and HFS+ do not tunnel names), so
+`--renamed-writer` is matched in full, exactly as `--writer` is; the Windows
+helper matches it by file ID and volume alone.
+
 Names are single path components. `rename` moves the ordinary file `name` to
-a vacant `target` exclusively. It answers `replace` for an existing ordinary
-file and `cross-volume` across volumes. Both outcomes use the journaled copy
+a vacant `target` exclusively, only while `name` is still the file `--expect`
+names (`refused source`, exit 3, otherwise). After the move it reads the moved
+file's identity from the descriptor that moved it and writes
+`published <token>` before `committed`. It answers `replace` for an existing
+ordinary file and `cross-volume` across volumes. Both outcomes use the journaled copy
 protocol. `copy` creates `part` exclusively, never through a
 link, copies `name` into it, syncs it and renames it to `target`; that rename
 is the commit point. Cross-volume publication requires a vacant target and
-support for exclusive rename. `remove` handles files and links, and `sweep`
-cleans those entries directly in the held directory. Both preserve recovery
-record names.
+support for exclusive rename. `remove` removes the staged file only while it
+is still the file `--expect` names; another entry there is `refused source`
+(exit 3) and stays. `stamp` answers `stamp <token>` for the regular file at
+the name, `absent`, or `refused source` for another kind of entry. `sweep`
+cleans the files and links directly in the held directory, each only while it
+still has the stamp the listing read for it (a changed entry is kept and not
+counted). All three preserve recovery record names.
+
+There is no `refused volume` on macOS. A volume without exclusive rename
+(exFAT, FAT) does not commit a copy: the commit and the move-aside of an old
+target need `RENAME_EXCL`, so the copy ends `refused target left` after
+`copied`, with its part left and recorded. The volume notices, worded for
+NTFS, stay Windows-only.
 
 The recovery modes use the same `ready` handshake. Values identifying files
 are separate from the required identity of the directory. All names are
@@ -54,11 +85,12 @@ single components.
   `failed EFBIG`. An empty record is represented by `record ` with a space.
 - `write-record` creates a private record exclusively, writes at most 8192
   bytes of payload, syncs and verifies it before answering
-  `written <dev>:<ino>:<birth-ns>`.
-- `sweep-record` emits `record <dev>:<ino>:<birth-ns> <hex>` from its held
+  `written <token>`.
+- `sweep-record` emits `record <token> <hex>` from its held
   descriptor. A second authorization retires the entry only while the full
   stamp and digest match the classified content.
-- `remove-record` checks the expected full stamp, length and SHA-256.
+- `remove-record` checks the expected full stamp, length and SHA-256. An
+  unresolved `--expect` token is a usage error.
   It replies `removed` after observed absence, `absent` if already absent,
   or `kept` if verification or retirement remains incomplete.
 - `remove-id` opens the named file without following links, verifies its
@@ -67,7 +99,6 @@ single components.
   against the opened file before unlinking. It answers `removed`, `absent`,
   or `left`. If it moves an entry that it cannot put back or remove, it
   answers with the named leftover format below.
-  A legacy identity with birth time alone uses the token `<birth-ns>:-`.
 - `restore` opens the hidden source without following links and verifies the
   file identity and fingerprint on that descriptor. It copies from that
   descriptor to an exclusive new part, syncs it, and verifies the part name
@@ -76,9 +107,9 @@ single components.
   `absent` when the source is missing, or `left` when the part is occupied,
   verification fails or cleanup cannot finish.
 - `restore-target` answers `resolved` after verified rollback or retirement,
-  or `left` if unresolved. The optional writer is on `file-dev`. The `retire`
-  operand retries a verified commit recorded by an older release. A birth-only
-  token uses `<birth-ns>:-`.
+  or `left` if unresolved. The writer must share the old file's device and
+  differ in inode. `--retire` retries a verified commit recorded by an older
+  release.
 
 A fingerprint is one ASCII token `<size>:<mtime-ns>:<head>:<tail>`.
 Size and modification time are decimal. The two digests are lowercase
@@ -105,8 +136,10 @@ stdin.
   ordinary file, or `target` holds something other than an ordinary file.
   Exit `4`: `failed <errno name>`. Exit `2`: the arguments are wrong.
 - After creating the part exclusively and before reporting progress or
-  `copied`, the copy writes `writing <dev> <ino> <birth-ns>` once. The unsigned
-  decimal identity comes from the writing descriptor. The host never
+  `copied`, the copy writes `writing <token>` once. The identity comes from
+  the writing descriptor, read after the first chunk is written (exFAT gives
+  a new file its lasting file id only then), or before the copy stops or ends
+  without one. The host never
   samples the part name for ownership. A failed exclusive open has no
   `writing` line and may answer `failed EEXIST`.
 - Source and target refusals before work starts precede `ready`. After
@@ -123,27 +156,32 @@ stdin.
   retire the isolated source. An incomplete copy-back is left in place.
 - A cancelled, failed or refused copy can add ` left` when a file remains.
   A named leftover adds
-  ` <hidden> <own-dev> <own-ino> <verdict> <snapshot>` after `left`.
+  ` <hidden> <own-token> <verdict> <snapshot>` after `left`.
   The own identity comes from the writing descriptor. A verdict is
   `mismatch` when ownership was unverified, or `remove-failed` when the
   verified file could not be removed. The snapshot is
-  `<dev>:<ino>:<birth-ns>:<fingerprint>` from the hidden descriptor, or
+  `<token>/<fingerprint>` from the hidden descriptor, or
   `-` if it could not be obtained. The suffix ` part-left` additionally
   reports an incomplete or unverified copy-back at the part name.
   `remove-id` and `restore` may also return the named `left` outcome
   when they isolate a file under a new hidden name.
 - Before `ready`, the helper holds any existing ordinary target and emits
-  `target-id <dev> <ino> <birth-ns>`. For a replacement, the helper reads
+  `target-id <token>`. For a replacement, the helper reads
   the final stamp from the writing descriptor after syncing and announces
-  `copy-id <dev> <ino> <birth-ns>` before `copied`.
+  `copy-id <token>` before `copied`. The host refuses a `copy-id` that
+  differs from `writing`.
   After authorization at `copied` it verifies the part, moves any
   old target to the supplied hidden name exclusively and verifies it against its descriptor.
   The helper commits the part with an exclusive rename and verifies the
-  new target against the writing descriptor before retiring the old target.
+  new target against the writing descriptor. It then writes
+  `published <token>`, read from that descriptor, before retiring the old
+  target. The host records it before it resolves its write-ahead record, and
+  takes nothing after it but `target-retired` or a `target-left` with
+  `remove-failed`, then `committed`.
   A mismatched commit is rolled back exclusively if possible. If commit
   fails, the helper restores the old target exclusively.
 - A failed restore or retirement of the old target sends
-  `target-left left <hidden> <own-dev> <own-ino> <verdict> <snapshot>`
+  `target-left left <hidden> <own-token> <verdict> <snapshot>`
   before the terminal copy reply. The old identity comes from its held
   descriptor. The verdict is `mismatch` for a failed restore and
   `remove-failed` for retirement after a verified commit. A verified restore

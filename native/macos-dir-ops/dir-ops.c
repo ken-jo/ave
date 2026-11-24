@@ -124,6 +124,119 @@ static int parse_u64(const char *text, uint64_t *value) {
   return 1;
 }
 
+// A file named by an evidence token, `<dev>:<ino>:<class>:<value>`. This helper backs only `birth` (the birth time in nanoseconds,
+// which a rename keeps on macOS); any other class is unresolved (`birth` stays 0) and matches nothing.
+struct expected_file {
+  uint64_t dev;
+  uint64_t ino;
+  uint64_t birth;
+};
+
+// A token: decimal device and inode, a lowercase class and a value without blanks. `birth` needs a nonzero decimal value. Returns 0
+// for a malformed token, which is a usage error.
+static int parse_token(const char *text, struct expected_file *expected) {
+  char number[21];
+  const char *cursor = text;
+  uint64_t *fields[] = { &expected->dev, &expected->ino };
+  for (size_t index = 0; index < 2; ++index) {
+    const char *colon = strchr(cursor, ':');
+    if (colon == NULL || (size_t)(colon - cursor) >= sizeof number) return 0;
+    memcpy(number, cursor, (size_t)(colon - cursor));
+    number[colon - cursor] = '\0';
+    if (!parse_u64(number, fields[index])) return 0;
+    cursor = colon + 1;
+  }
+  const char *colon = strchr(cursor, ':');
+  if (colon == NULL || colon == cursor || strspn(cursor, "abcdefghijklmnopqrstuvwxyz") != (size_t)(colon - cursor)) return 0;
+  const char *value = colon + 1;
+  if (*value == '\0' || strpbrk(value, " \t\r\n") != NULL) return 0;
+  expected->birth = 0;
+  if ((size_t)(colon - cursor) != strlen("birth") || strncmp(cursor, "birth", strlen("birth")) != 0) return 1;
+  return parse_u64(value, &expected->birth) && expected->birth != 0;
+}
+
+// The size of a token this helper writes: two 20-digit numbers, `:birth:` and a third, the separators and the end.
+#define TOKEN_SIZE 72
+
+static uint64_t nanos(struct timespec time);
+
+// The token for a file's stat: its device, inode and birth time. A file without a birth time has no evidence this helper can name,
+// so its token is `none:-`, which the host refuses.
+static void token_text(const struct stat *info, char out[TOKEN_SIZE]) {
+  const uint64_t birth = nanos(info->st_birthtimespec);
+  if (birth == 0) snprintf(out, TOKEN_SIZE, "%" PRIu64 ":%" PRIu64 ":none:-", (uint64_t)info->st_dev, (uint64_t)info->st_ino);
+  else snprintf(out, TOKEN_SIZE, "%" PRIu64 ":%" PRIu64 ":birth:%" PRIu64, (uint64_t)info->st_dev, (uint64_t)info->st_ino, birth);
+}
+
+// Say `<frame> <token>` for a file's stat.
+static void say_token(const char *frame, const struct stat *info) {
+  char token[TOKEN_SIZE];
+  token_text(info, token);
+  printf("%s %s\n", frame, token);
+  fflush(stdout);
+}
+
+// Named options after the positional operands: each one this mode allows at most once, a valued one with its value, nothing else.
+enum {
+  OPTION_EXPECT = 1 << 0, OPTION_CONTENT = 1 << 1, OPTION_WRITER = 1 << 2, OPTION_RENAMED_WRITER = 1 << 3, OPTION_RETIRE = 1 << 4,
+  OPTION_LENGTH = 1 << 5, OPTION_DIGEST = 1 << 6, OPTION_KEEP_RECORDS = 1 << 7,
+};
+
+struct options {
+  unsigned seen;
+  const char *values[8];
+};
+
+static const struct { const char *name; unsigned bit; int valued; } OPTION_NAMES[] = {
+  { "--expect", OPTION_EXPECT, 1 }, { "--content", OPTION_CONTENT, 1 }, { "--writer", OPTION_WRITER, 1 },
+  { "--renamed-writer", OPTION_RENAMED_WRITER, 1 }, { "--retire", OPTION_RETIRE, 0 }, { "--length", OPTION_LENGTH, 1 },
+  { "--digest", OPTION_DIGEST, 1 }, { "--keep-records", OPTION_KEEP_RECORDS, 0 },
+};
+
+static int parse_options(int argc, char **argv, int first, unsigned allowed, struct options *options) {
+  memset(options, 0, sizeof *options);
+  if (argc < first) return 0;
+  for (int index = first; index < argc; ++index) {
+    size_t known = sizeof OPTION_NAMES / sizeof OPTION_NAMES[0];
+    for (size_t candidate = 0; candidate < sizeof OPTION_NAMES / sizeof OPTION_NAMES[0]; ++candidate) {
+      if (strcmp(argv[index], OPTION_NAMES[candidate].name) == 0) known = candidate;
+    }
+    if (known == sizeof OPTION_NAMES / sizeof OPTION_NAMES[0]) return 0;
+    const unsigned bit = OPTION_NAMES[known].bit;
+    if ((allowed & bit) == 0 || (options->seen & bit) != 0) return 0;
+    options->seen |= bit;
+    if (OPTION_NAMES[known].valued) {
+      if (index + 1 >= argc) return 0;
+      options->values[known] = argv[++index];
+    }
+  }
+  return 1;
+}
+
+static const char *option(const struct options *options, unsigned bit) {
+  for (size_t index = 0; index < sizeof OPTION_NAMES / sizeof OPTION_NAMES[0]; ++index) {
+    if (OPTION_NAMES[index].bit == bit) return options->values[index];
+  }
+  return NULL;
+}
+
+// A fingerprint operand: `<size>:<mtime-ns>:<head>:<tail>`, both digests 64 lowercase hex digits.
+static int fingerprint_text(const char *text) {
+  char number[21];
+  const char *cursor = text;
+  for (size_t index = 0; index < 2; ++index) {
+    const char *colon = strchr(cursor, ':');
+    uint64_t value = 0;
+    if (colon == NULL || (size_t)(colon - cursor) >= sizeof number) return 0;
+    memcpy(number, cursor, (size_t)(colon - cursor));
+    number[colon - cursor] = '\0';
+    if (!parse_u64(number, &value)) return 0;
+    cursor = colon + 1;
+  }
+  return strlen(cursor) == 129 && cursor[64] == ':' && strspn(cursor, "0123456789abcdef") == 64 &&
+    strspn(cursor + 65, "0123456789abcdef") == 64;
+}
+
 // One path component: no separator, not `.` or `..`, and short enough to be a directory entry.
 static int plain_name(const char *name) {
   const size_t length = strlen(name);
@@ -354,14 +467,16 @@ static void report_left(const char *answer, int directory, const struct left_par
   if (*answer != '\0') printf("%s ", answer);
   fputs("left", stdout);
   if (*left->name != '\0') {
-    printf(" %s %" PRIu64 " %" PRIu64 " %s ", left->name, (uint64_t)left->own.st_dev,
-      (uint64_t)left->own.st_ino, left->verdict);
+    char own[TOKEN_SIZE];
+    token_text(&left->own, own);
+    printf(" %s %s %s ", left->name, own, left->verdict);
     const int fd = left->observed;
     struct stat identity;
     char content[FINGERPRINT_SIZE];
     if (fd >= 0 && fingerprint(fd, &identity, content) && names_file(directory, left->name, fd)) {
-      printf("%" PRIu64 ":%" PRIu64 ":%" PRIu64 ":%s", (uint64_t)identity.st_dev, (uint64_t)identity.st_ino,
-        nanos(identity.st_birthtimespec), content);
+      char token[TOKEN_SIZE];
+      token_text(&identity, token);
+      printf("%s/%s", token, content);
     } else {
       fputc('-', stdout);
     }
@@ -515,9 +630,10 @@ static int entry_absent(int directory, const char *name) {
   return fstatat(directory, name, &entry, AT_SYMLINK_NOFOLLOW) != 0 && errno == ENOENT;
 }
 
+// `writer` is the file that took the target's place, as published after the commit (`--writer`) or as recorded before the commit
+// rename (`--renamed-writer`). A rename on macOS keeps the birth time, so both are matched in full.
 static int recover_target(int directory, const char *hidden, const char *target, uint64_t dev, uint64_t ino,
-    uint64_t birth, const char *expected, const char *replacement, uint64_t writer, uint64_t writer_birth) {
-  const int retire_only = replacement != NULL && strcmp(replacement, "retire") == 0;
+    uint64_t birth, const char *expected, int retire_only, const struct expected_file *writer) {
   const int flags = (expected == NULL ? O_EVTONLY : O_RDONLY) | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC;
   int published = -1;
   int vacant = 0;
@@ -526,7 +642,7 @@ static int recover_target(int directory, const char *hidden, const char *target,
     published = openat(directory, target, flags);
     vacant = published < 0 && errno == ENOENT;
     if (published < 0 && !vacant) return done("left");
-    committed = published >= 0 && replacement != NULL && matches_file(published, dev, writer, writer_birth) &&
+    committed = published >= 0 && writer != NULL && matches_file(published, writer->dev, writer->ino, writer->birth) &&
       names_file(directory, target, published);
   }
   const int fd = openat(directory, hidden, flags);
@@ -547,42 +663,36 @@ static int recover_target(int directory, const char *hidden, const char *target,
   return done(mutate_entry(directory, hidden, fd, &change, NULL) == REMOVE_DONE ? "resolved" : "left");
 }
 
-static int run_recovery(char **argv, enum recovery_mode mode, int with_fingerprint, const char *replacement) {
+static int run_recovery(int argc, char **argv, enum recovery_mode mode) {
   const int restore = mode != RECOVER_REMOVE;
   const char *name = argv[3];
   const char *part = restore ? argv[4] : NULL;
-  const int file_arg = restore ? 5 : 4;
-  const char *expected = NULL;
-  uint64_t dev, ino, birth = 0;
-  if (!plain_name(name) || (restore && (!plain_name(part) || strcmp(name, part) == 0)) ||
-      !parse_u64(argv[file_arg], &dev) || !parse_u64(argv[file_arg + 1], &ino)) return EXIT_USAGE;
+  if (!plain_name(name) || (restore && (!plain_name(part) || strcmp(name, part) == 0))) return EXIT_USAGE;
   if (mode == RECOVER_RESTORE_TARGET && !hidden_name(name)) return EXIT_USAGE;
-  uint64_t writer = 0, writer_birth = 0;
-  if (replacement != NULL && strcmp(replacement, "retire") != 0) {
-    const char *separator = strchr(replacement, ':');
-    char number[21];
-    if (separator == NULL || (size_t)(separator - replacement) >= sizeof number) return EXIT_USAGE;
-    memcpy(number, replacement, (size_t)(separator - replacement));
-    number[separator - replacement] = '\0';
-    if (!parse_u64(number, &writer) || writer == ino || !parse_u64(separator + 1, &writer_birth) || writer_birth == 0)
-      return EXIT_USAGE;
-  }
-  if (with_fingerprint) {
-    const char *token = argv[file_arg + 2];
-    const char *colon = strchr(token, ':');
-    char time[21];
-    if (colon == NULL || (size_t)(colon - token) >= sizeof time) return EXIT_USAGE;
-    memcpy(time, token, (size_t)(colon - token));
-    time[colon - token] = '\0';
-    if (!parse_u64(time, &birth) || birth == 0) return EXIT_USAGE;
-    if (strcmp(colon + 1, "-") != 0) expected = colon + 1;
-  }
-  if (mode == RECOVER_RESTORE_PART && expected == NULL) return EXIT_USAGE;
+  struct options options;
+  const unsigned allowed = OPTION_EXPECT | OPTION_CONTENT |
+    (mode == RECOVER_RESTORE_TARGET ? OPTION_WRITER | OPTION_RENAMED_WRITER | OPTION_RETIRE : 0);
+  if (!parse_options(argc, argv, restore ? 5 : 4, allowed, &options)) return EXIT_USAGE;
+  const char *expect = option(&options, OPTION_EXPECT);
+  const char *expected = option(&options, OPTION_CONTENT);
+  const char *full_writer = option(&options, OPTION_WRITER);
+  const char *renamed_writer = option(&options, OPTION_RENAMED_WRITER);
+  const int retire_only = (options.seen & OPTION_RETIRE) != 0;
+  const char *writer_token = full_writer != NULL ? full_writer : renamed_writer;
+  if (expect == NULL || (full_writer != NULL && renamed_writer != NULL) || (writer_token != NULL && retire_only) ||
+      (mode == RECOVER_RESTORE_PART && expected == NULL) || (expected != NULL && !fingerprint_text(expected))) return EXIT_USAGE;
+  struct expected_file file;
+  struct expected_file writer;
+  if (!parse_token(expect, &file) ||
+      (writer_token != NULL && (!parse_token(writer_token, &writer) || writer.dev != file.dev || writer.ino == file.ino)))
+    return EXIT_USAGE;
+  const uint64_t dev = file.dev, ino = file.ino, birth = file.birth;
   int directory = -1;
   const int status = hold_directory(argv[0], argv[1], argv[2], "from", &directory);
   if (status != 0) return status;
   if (!proceed("ready")) return done("cancelled");
-  if (mode == RECOVER_RESTORE_TARGET) return recover_target(directory, name, part, dev, ino, birth, expected, replacement, writer, writer_birth);
+  if (mode == RECOVER_RESTORE_TARGET)
+    return recover_target(directory, name, part, dev, ino, birth, expected, retire_only, writer_token == NULL ? NULL : &writer);
   const int fd = open_regular(directory, name);
   if (fd < 0) {
     return done(errno == ENOENT ? "absent" : "left");
@@ -637,11 +747,12 @@ static int run_records(char **argv) {
 
 enum record_mode { RECORD_READ, RECORD_WRITE, RECORD_REMOVE, RECORD_SWEEP };
 
-static int run_record(char **argv, enum record_mode mode) {
+static int run_record(int argc, char **argv, enum record_mode mode) {
   const char *name = argv[3];
   if (!record_name(name)) return EXIT_USAGE;
   uint64_t max = 0;
   uint64_t device = 0, inode = 0, birth = 0;
+  const char *digest_text = NULL;
   static unsigned char bytes[MAX_RECORD_BYTES + 1];
   if (mode == RECORD_WRITE) {
     const size_t size = strlen(argv[4]);
@@ -653,9 +764,19 @@ static int run_record(char **argv, enum record_mode mode) {
       bytes[i] = (unsigned char)(16 * hi + lo);
     }
   } else if (mode == RECORD_REMOVE) {
-    if (!parse_u64(argv[4], &device) || !parse_u64(argv[5], &inode) || !parse_u64(argv[6], &birth) || birth == 0 ||
-        !parse_u64(argv[7], &max) || max > MAX_RECORD_BYTES || strlen(argv[8]) != 64 ||
-        strspn(argv[8], "0123456789abcdef") != 64) return EXIT_USAGE;
+    struct options options;
+    struct expected_file stamp;
+    if (!parse_options(argc, argv, 4, OPTION_EXPECT | OPTION_LENGTH | OPTION_DIGEST, &options)) return EXIT_USAGE;
+    const char *expect = option(&options, OPTION_EXPECT);
+    const char *length = option(&options, OPTION_LENGTH);
+    digest_text = option(&options, OPTION_DIGEST);
+    // A record is removed only by a stamp this helper can compare.
+    if (expect == NULL || length == NULL || digest_text == NULL || !parse_token(expect, &stamp) || stamp.birth == 0 ||
+        !parse_u64(length, &max) || max > MAX_RECORD_BYTES || strlen(digest_text) != 64 ||
+        strspn(digest_text, "0123456789abcdef") != 64) return EXIT_USAGE;
+    device = stamp.dev;
+    inode = stamp.ino;
+    birth = stamp.birth;
   } else if (!parse_u64(argv[4], &max) || max == 0 || max > MAX_RECORD_BYTES) {
     return EXIT_USAGE;
   }
@@ -667,10 +788,8 @@ static int run_record(char **argv, enum record_mode mode) {
     struct stat written;
     const struct entry_change change = { .mode = ENTRY_RECORD_WRITE, .body = bytes, .length = (size_t)max, .written = &written };
     if (mutate_entry(directory, name, -1, &change, NULL) != REMOVE_DONE) return failed(errno);
-    char answer[80];
-    snprintf(answer, sizeof answer, "written %" PRIu64 ":%" PRIu64 ":%" PRIu64,
-      (uint64_t)written.st_dev, (uint64_t)written.st_ino, nanos(written.st_birthtimespec));
-    return done(answer);
+    say_token("written", &written);
+    return EXIT_DONE;
   }
   const int fd = open_regular(directory, name);
   if (fd < 0) return errno == ENOENT || errno == ELOOP ? done("absent") : failed(errno);
@@ -682,7 +801,7 @@ static int run_record(char **argv, enum record_mode mode) {
       return done("kept");
     char expected[FINGERPRINT_SIZE];
     snprintf(expected, sizeof expected, "%" PRIu64 ":%" PRIu64 ":%s:%s", max,
-      nanos(info.st_mtimespec), argv[8], argv[8]);
+      nanos(info.st_mtimespec), digest_text, digest_text);
     const struct entry_change change = { .mode = ENTRY_RECORD_REMOVE, .stamp = &info, .fingerprint = expected };
     const enum remove_result removed = mutate_entry(directory, name, fd, &change, NULL);
     return done(removed == REMOVE_DONE ? "removed" : "kept");
@@ -697,10 +816,11 @@ static int run_record(char **argv, enum record_mode mode) {
     used += (size_t)count;
   }
   if (used > max) return failed(EFBIG);
-  static char encoded[2 * MAX_RECORD_BYTES + 3 * 21 + sizeof "record   "];
+  static char encoded[2 * MAX_RECORD_BYTES + TOKEN_SIZE + sizeof "record  "];
+  char token[TOKEN_SIZE];
+  token_text(&info, token);
   const int prefix = mode == RECORD_READ ? snprintf(encoded, sizeof encoded, "record ")
-    : snprintf(encoded, sizeof encoded, "record %" PRIu64 ":%" PRIu64 ":%" PRIu64 " ",
-      (uint64_t)info.st_dev, (uint64_t)info.st_ino, nanos(info.st_birthtimespec));
+    : snprintf(encoded, sizeof encoded, "record %s ", token);
   hex_encode(bytes, used, encoded + prefix);
   if (mode == RECORD_READ) return done(encoded);
   if (!names_file(directory, name, fd) || info.st_size != (off_t)used) return done("absent");
@@ -741,29 +861,40 @@ static int abandon(int to, const char *part, const struct written_file *written,
   return stopped_copy(to, part, written, answer, EXIT_FAILED);
 }
 
-static int run_rename(char **argv) {
+// Move the staged file `name` to a vacant `target`, only while `name` is still the file `--expect` names.
+static int run_rename(int argc, char **argv) {
   const char *name = argv[3];
   const char *target = argv[7];
-  if (!plain_name(name) || !plain_name(target)) return EXIT_USAGE;
+  struct options options;
+  struct expected_file expected;
+  if (!plain_name(name) || !plain_name(target) || !parse_options(argc, argv, 8, OPTION_EXPECT, &options) ||
+      option(&options, OPTION_EXPECT) == NULL || !parse_token(option(&options, OPTION_EXPECT), &expected)) return EXIT_USAGE;
   int from = -1;
   int to = -1;
   int status = hold_directory(argv[0], argv[1], argv[2], "from", &from);
   if (status == 0) status = hold_directory(argv[4], argv[5], argv[6], "to", &to);
   if (status != 0) return status;
   if (!proceed("ready")) return done("cancelled");
+  const int fd = open_regular(from, name);
+  if (fd < 0) return errno == ENOENT || errno == ELOOP ? refused("source") : failed(errno);
   struct stat info;
-  if (fstatat(from, name, &info, AT_SYMLINK_NOFOLLOW) != 0) return errno == ENOENT ? refused("source") : failed(errno);
-  if (!S_ISREG(info.st_mode)) return refused("source");
+  if (fstat(fd, &info) != 0) return failed(errno);
+  if (!matches_file(fd, expected.dev, expected.ino, expected.birth) || !names_file(from, name, fd)) return refused("source");
   status = check_replaceable(to, target);
   if (status != 0) return status;
   if (!entry_absent(to, target)) return done("replace");
-  const int fd = open_regular(from, name);
-  if (fd < 0) return errno == ENOENT ? refused("source") : failed(errno);
   const struct entry_change change = { .mode = ENTRY_RENAME_AWAY, .directory = to, .name = target, .stamp = &info };
   const enum remove_result renamed = mutate_entry(from, name, fd, &change, NULL);
   const int error = errno;
+  struct stat moved;
+  const int read_back = renamed == REMOVE_DONE && fstat(fd, &moved) == 0;
   close(fd);
-  if (renamed == REMOVE_DONE) return done("committed");
+  if (renamed == REMOVE_DONE) {
+    if (!read_back) return failed(EIO);
+    // What the moved file is now, read from the descriptor that moved it; the caller records it before it settles the move.
+    say_token("published", &moved);
+    return done("committed");
+  }
   if (error == EXDEV) return done("cross-volume");
   if (error == EEXIST || error == ESTALE) return refused("target");
   return failed(error);
@@ -804,6 +935,20 @@ static void finish_copy_target(int directory, const char *target, const char *as
   report_left("target-left", directory, &left, 0);
 }
 
+// Announce `writing` once, with the identity of the file a copy writes, from its writing descriptor. exFAT gives a new file its lasting
+// file id only once it is written, so the copy announces it after the first chunk, or before it stops or ends without one. Returns 0
+// (also when already announced), or the errno for an identity that cannot be read or cannot be the part's (ENOTSUP).
+static int announce_writing(int fd, const struct stat *directory, int old, const struct stat *old_identity, struct stat *identity,
+    int *announced) {
+  if (*announced) return 0;
+  if (fstat(fd, identity) != 0) return errno;
+  if (nanos(identity->st_birthtimespec) == 0 || identity->st_dev != directory->st_dev ||
+      (old >= 0 && old_identity->st_ino == identity->st_ino)) return ENOTSUP;
+  say_token("writing", identity);
+  *announced = 1;
+  return 0;
+}
+
 static int run_copy(char **argv) {
   const char *name = argv[3];
   const char *target = argv[7];
@@ -832,9 +977,7 @@ static int run_copy(char **argv) {
   if (old >= 0) {
     if (fstat(old, &old_identity) != 0 || !S_ISREG(old_identity.st_mode) ||
         old_identity.st_dev != directory_identity.st_dev) return refused("target");
-    printf("target-id %" PRIu64 " %" PRIu64 " %" PRIu64 "\n", (uint64_t)old_identity.st_dev,
-      (uint64_t)old_identity.st_ino, nanos(old_identity.st_birthtimespec));
-    fflush(stdout);
+    say_token("target-id", &old_identity);
   }
   if (!proceed("ready")) return done("cancelled");
   // The temporary file is created exclusively, never through a link, in the held folder, and opened for reading too, so a cleanup can
@@ -850,24 +993,15 @@ static int run_copy(char **argv) {
     close(copy);
     return abandon(to, part, NULL, code);
   }
+  // `writing` is said once, before any progress: after the first chunk is written, or before the copy stops or ends without one.
   struct stat identity;
-  if (fstat(written.fd, &identity) != 0) {
-    const int code = errno;
-    close(copy);
-    return abandon(to, part, NULL, code);
-  }
-  if (nanos(identity.st_birthtimespec) == 0 || identity.st_dev != directory_identity.st_dev ||
-      (old >= 0 && old_identity.st_ino == identity.st_ino)) {
-    close(copy);
-    return abandon(to, part, NULL, ENOTSUP);
-  }
-  printf("writing %" PRIu64 " %" PRIu64 " %" PRIu64 "\n",
-    (uint64_t)identity.st_dev, (uint64_t)identity.st_ino, nanos(identity.st_birthtimespec));
-  fflush(stdout);
+  int announced = 0;
+  int refusal = 0;
   unsigned char *buffer = malloc(COPY_CHUNK);
   if (buffer == NULL) {
+    refusal = announce_writing(written.fd, &directory_identity, old, &old_identity, &identity, &announced);
     close(copy);
-    return abandon(to, part, &written, ENOMEM);
+    return abandon(to, part, refusal == 0 ? &written : NULL, refusal == 0 ? ENOMEM : refusal);
   }
   int failure = 0;
   unsigned long long copied = 0;
@@ -875,14 +1009,21 @@ static int run_copy(char **argv) {
   for (;;) {
     if (stop_requested()) {
       free(buffer);
+      refusal = announce_writing(written.fd, &directory_identity, old, &old_identity, &identity, &announced);
       close(copy);
-      return abandon(to, part, &written, 0);
+      return abandon(to, part, refusal == 0 ? &written : NULL, refusal);
     }
     const ssize_t count = read(source, buffer, COPY_CHUNK);
     if (count < 0 && errno == EINTR) continue;
     if (count < 0) failure = errno;
     else if (count > 0) failure = write_all(copy, buffer, (size_t)count);
     if (count <= 0 || failure != 0) break;
+    refusal = announce_writing(written.fd, &directory_identity, old, &old_identity, &identity, &announced);
+    if (refusal != 0) {
+      free(buffer);
+      close(copy);
+      return abandon(to, part, NULL, refusal);
+    }
     copied += (unsigned long long)count;
     unsynced += (unsigned long long)count;
     if (unsynced >= SYNC_INTERVAL) {
@@ -897,6 +1038,11 @@ static int run_copy(char **argv) {
     fflush(stdout);
   }
   free(buffer);
+  refusal = announce_writing(written.fd, &directory_identity, old, &old_identity, &identity, &announced);
+  if (refusal != 0) {
+    close(copy);
+    return abandon(to, part, NULL, refusal);
+  }
   if (failure == 0 && fsync(copy) != 0) failure = errno;
   struct stat final;
   if (failure == 0 && fstat(copy, &final) != 0) failure = errno;
@@ -905,9 +1051,7 @@ static int run_copy(char **argv) {
   if (nanos(final.st_birthtimespec) == 0 || final.st_dev != identity.st_dev ||
       (old >= 0 && final.st_ino == old_identity.st_ino)) return abandon(to, part, &written, EIO);
   if (old >= 0) {
-    printf("copy-id %" PRIu64 " %" PRIu64 " %" PRIu64 "\n",
-      (uint64_t)final.st_dev, (uint64_t)final.st_ino, nanos(final.st_birthtimespec));
-    fflush(stdout);
+    say_token("copy-id", &final);
   }
   // The rename below is the commit point: the caller answers here whether the copy is still wanted.
   if (!proceed("copied")) return abandon(to, part, &written, 0);
@@ -947,16 +1091,30 @@ static int run_copy(char **argv) {
       return stopped_copy(to, part, &written, "refused target", EXIT_REFUSED);
     return abandon(to, part, &written, code);
   }
+  // The commit rename verified the target against the writing descriptor. What the published file is now, read from that descriptor;
+  // the caller records it before it treats the commit as settled, so nothing but the old target's retirement follows.
+  struct stat published;
+  if (fstat(written.fd, &published) != 0) published = final;
+  say_token("published", &published);
   finish_copy_target(to, target, aside, old, &old_identity, 1);
   return done("committed");
 }
 
-static enum remove_result remove_staged_entry(int directory, const char *name) {
+// Remove a file or link directly in the held directory through its own descriptor, only while it is still the entry `stamp` names:
+// the same type, device, inode and birth time. REMOVE_LEFT with `*kept` set reports another entry at the name, which stays.
+static enum remove_result remove_staged_entry(int directory, const char *name, const struct stat *stamp, int *kept) {
+  *kept = 0;
   const int fd = openat(directory, name, O_RDONLY | O_SYMLINK | O_NONBLOCK | O_CLOEXEC);
   if (fd < 0) return errno == ENOENT ? REMOVE_ABSENT : REMOVE_LEFT;
   struct stat info;
   enum remove_result result = REMOVE_LEFT;
-  if (fstat(fd, &info) == 0 && (S_ISREG(info.st_mode) || S_ISLNK(info.st_mode))) {
+  if (fstat(fd, &info) != 0) {
+    close(fd);
+    return REMOVE_LEFT;
+  }
+  if ((!S_ISREG(info.st_mode) && !S_ISLNK(info.st_mode)) || !same_stamp(&info, stamp)) {
+    *kept = 1;
+  } else {
     struct left_part left = { .observed = -1 };
     result = retire_held(directory, name, fd, &left, NULL, 1);
     if (left.observed >= 0 && left.observed != fd) close(left.observed);
@@ -965,19 +1123,52 @@ static enum remove_result remove_staged_entry(int directory, const char *name) {
   return result;
 }
 
-static int run_remove(char **argv) {
+// Remove the staged file `name`, only while it is still the file `--expect` names; `refused source` for another entry, which stays.
+static int run_remove(int argc, char **argv) {
+  const char *name = argv[3];
+  struct options options;
+  struct expected_file expected;
+  if (!plain_name(name) || record_name(name) || !parse_options(argc, argv, 4, OPTION_EXPECT, &options) ||
+      option(&options, OPTION_EXPECT) == NULL || !parse_token(option(&options, OPTION_EXPECT), &expected)) return EXIT_USAGE;
+  int directory = -1;
+  const int status = hold_directory(argv[0], argv[1], argv[2], "from", &directory);
+  if (status != 0) return status;
+  if (!proceed("ready")) return done("cancelled");
+  struct stat info;
+  if (fstatat(directory, name, &info, AT_SYMLINK_NOFOLLOW) != 0) return errno == ENOENT ? done("absent") : failed(errno);
+  if (S_ISDIR(info.st_mode)) return failed(EISDIR);
+  // The stamp an entry must still have: the regular file the token names.
+  struct stat stamp = { .st_mode = S_IFREG, .st_dev = (dev_t)expected.dev, .st_ino = (ino_t)expected.ino };
+  stamp.st_birthtimespec.tv_sec = (time_t)(expected.birth / UINT64_C(1000000000));
+  stamp.st_birthtimespec.tv_nsec = (long)(expected.birth % UINT64_C(1000000000));
+  if ((uint64_t)stamp.st_dev != expected.dev || (uint64_t)stamp.st_ino != expected.ino) return refused("source");
+  int kept = 0;
+  const enum remove_result result = remove_staged_entry(directory, name, &stamp, &kept);
+  if (kept) return refused("source");
+  return result == REMOVE_LEFT ? failed(EIO) : done(result == REMOVE_DONE ? "removed" : "absent");
+}
+
+// The stamp of the regular file `name` in the held directory, which a later move or removal of that entry must carry.
+static int run_stamp(char **argv) {
   const char *name = argv[3];
   if (!plain_name(name) || record_name(name)) return EXIT_USAGE;
   int directory = -1;
   const int status = hold_directory(argv[0], argv[1], argv[2], "from", &directory);
   if (status != 0) return status;
   if (!proceed("ready")) return done("cancelled");
-  const enum remove_result result = remove_staged_entry(directory, name);
-  return result == REMOVE_LEFT ? failed(EIO) : done(result == REMOVE_DONE ? "removed" : "absent");
+  struct stat info;
+  if (fstatat(directory, name, &info, AT_SYMLINK_NOFOLLOW) != 0) return errno == ENOENT ? done("absent") : failed(errno);
+  // Another kind of entry, or a file without a birth time, has no stamp this helper can name.
+  if (!S_ISREG(info.st_mode) || nanos(info.st_birthtimespec) == 0) return refused("source");
+  say_token("stamp", &info);
+  return EXIT_DONE;
 }
 
-// Remove the files and links directly in the held folder; directories and anything else stay, and nothing is removed recursively.
-static int run_sweep(char **argv) {
+// Remove the files and links directly in the held folder, each only while it is still the entry the listing stamped; directories and
+// anything else stay, and nothing is removed recursively.
+static int run_sweep(int argc, char **argv) {
+  struct options options;
+  if (!parse_options(argc, argv, 3, OPTION_KEEP_RECORDS, &options)) return EXIT_USAGE;
   int directory = -1;
   const int status = hold_directory(argv[0], argv[1], argv[2], "from", &directory);
   if (status != 0) return status;
@@ -1002,7 +1193,9 @@ static int run_sweep(char **argv) {
       return failed(errno);
     }
     if (!S_ISREG(info.st_mode) && !S_ISLNK(info.st_mode)) continue;
-    const enum remove_result result = remove_staged_entry(directory, entry->d_name);
+    int kept = 0;
+    const enum remove_result result = remove_staged_entry(directory, entry->d_name, &info, &kept);
+    if (kept) continue;
     if (result == REMOVE_LEFT) return failed(EIO);
     if (result == REMOVE_DONE) removed += 1;
   }
@@ -1014,20 +1207,26 @@ static int run_sweep(char **argv) {
 int main(int argc, char **argv) {
   // An answer written after the caller stopped listening must not end the process before it cleans up.
   signal(SIGPIPE, SIG_IGN);
-  if (argc == 10 && strcmp(argv[1], "--dir-rename") == 0) return run_rename(argv + 2);
-  if (argc == 12 && strcmp(argv[1], "--dir-copy") == 0) return run_copy(argv + 2);
-  if (argc == 6 && strcmp(argv[1], "--dir-remove") == 0) return run_remove(argv + 2);
-  if ((argc == 5 || (argc == 6 && strcmp(argv[5], "keep-records") == 0)) && strcmp(argv[1], "--dir-sweep") == 0)
-    return run_sweep(argv + 2);
-  if (argc == 5 && strcmp(argv[1], "--dir-list-records") == 0) return run_records(argv + 2);
-  if (argc == 7 && strcmp(argv[1], "--dir-read") == 0) return run_record(argv + 2, RECORD_READ);
-  if (argc == 7 && strcmp(argv[1], "--dir-write-record") == 0) return run_record(argv + 2, RECORD_WRITE);
-  if (argc == 7 && strcmp(argv[1], "--dir-sweep-record") == 0) return run_record(argv + 2, RECORD_SWEEP);
-  if (argc == 11 && strcmp(argv[1], "--dir-remove-record") == 0) return run_record(argv + 2, RECORD_REMOVE);
-  if ((argc == 8 || argc == 9) && strcmp(argv[1], "--dir-remove-id") == 0) return run_recovery(argv + 2, RECOVER_REMOVE, argc == 9, NULL);
-  if (argc == 10 && strcmp(argv[1], "--dir-restore") == 0) return run_recovery(argv + 2, RECOVER_RESTORE_PART, 1, NULL);
-  if ((argc == 10 || argc == 11) && strcmp(argv[1], "--dir-restore-target") == 0)
-    return run_recovery(argv + 2, RECOVER_RESTORE_TARGET, 1, argc == 11 ? argv[10] : NULL);
-  fputs("usage: ave-dir-ops --dir-rename|--dir-copy|--dir-remove|--dir-sweep <arguments>\n", stderr);
+  if (argc < 2) {
+    fputs("usage: ave-dir-ops --dir-<mode> <arguments>\n", stderr);
+    return EXIT_USAGE;
+  }
+  const char *mode = argv[1];
+  const int count = argc - 2;
+  char **const rest = argv + 2;
+  if (strcmp(mode, "--dir-rename") == 0 && count >= 8) return run_rename(count, rest);
+  if (strcmp(mode, "--dir-copy") == 0 && count == 10) return run_copy(rest);
+  if (strcmp(mode, "--dir-remove") == 0 && count >= 4) return run_remove(count, rest);
+  if (strcmp(mode, "--dir-stamp") == 0 && count == 4) return run_stamp(rest);
+  if (strcmp(mode, "--dir-sweep") == 0 && count >= 3) return run_sweep(count, rest);
+  if (strcmp(mode, "--dir-list-records") == 0 && count == 3) return run_records(rest);
+  if (strcmp(mode, "--dir-read") == 0 && count == 5) return run_record(count, rest, RECORD_READ);
+  if (strcmp(mode, "--dir-write-record") == 0 && count == 5) return run_record(count, rest, RECORD_WRITE);
+  if (strcmp(mode, "--dir-sweep-record") == 0 && count == 5) return run_record(count, rest, RECORD_SWEEP);
+  if (strcmp(mode, "--dir-remove-record") == 0 && count >= 4) return run_record(count, rest, RECORD_REMOVE);
+  if (strcmp(mode, "--dir-remove-id") == 0 && count >= 4) return run_recovery(count, rest, RECOVER_REMOVE);
+  if (strcmp(mode, "--dir-restore") == 0 && count >= 5) return run_recovery(count, rest, RECOVER_RESTORE_PART);
+  if (strcmp(mode, "--dir-restore-target") == 0 && count >= 5) return run_recovery(count, rest, RECOVER_RESTORE_TARGET);
+  fputs("usage: ave-dir-ops --dir-<mode> <arguments>\n", stderr);
   return EXIT_USAGE;
 }

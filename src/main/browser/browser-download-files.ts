@@ -1034,8 +1034,8 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
     let protocolFailure: string | null = null;
     const mode = args[0];
     const needsDestinationStamp = mode === "--dir-copy" && parseInode === parseWindowsInode;
-    // The Windows helper says what it published before it commits; a rename's moved file is the one `--expect` names.
-    const publishes = parseInode === parseWindowsInode && (mode === "--dir-copy" || mode === "--dir-rename");
+    // The helper says what it published before it commits; a rename's moved file is the one `--expect` names.
+    const publishes = mode === "--dir-copy" || mode === "--dir-rename";
     const expectAt = args.indexOf("--expect");
     const renamedFile = mode === "--dir-rename" && expectAt > 0 ? parseRecordFile(args[expectAt + 1] ?? "", parseInode) : null;
     let destinationDev = mode === "--dir-copy" && !needsDestinationStamp ? BigInt(args[6] ?? "-1") : null;
@@ -1488,7 +1488,8 @@ function helperFileOperations(helper: string, windowsFileIds: boolean, bounds: H
       const writerFile = typeof replacement === "object" ? "renamed" in replacement ? replacement.renamed : replacement : undefined;
       const writer = writerFile === undefined ? undefined : tokenText(writerFile, windowsFileIds);
       if (expect === null || writer === null || (writerFile !== undefined && writerFile.dev !== file.dev)) return "left";
-      const writerOption = renamed && windowsFileIds ? "--renamed-writer" : "--writer";
+      // The macOS helper matches a renamed writer in full, since a rename there keeps the birth time; Windows by file ID and volume.
+      const writerOption = renamed ? "--renamed-writer" : "--writer";
       return oneOf(helper, await run(["--dir-restore-target", ...directoryArguments(folder), hidden, target, "--expect", expect,
         ...(content === undefined ? [] : ["--content", fingerprintKey(content)]),
         ...(replacement === "retire" ? ["--retire"] : writer === undefined ? [] : [writerOption, writer])], go, UNSTOPPED), ["resolved", "left"] as const);

@@ -238,8 +238,8 @@ describe("a copy whose helper ignores the end of its input", () => {
     script((helper) => {
       helper.say("ready");
       helper.once("input", () => {
-        helper.say("copied");
-        helper.once("input", () => helper.say("committed"));
+        helper.say("writing 1:10:birth:20", "copied");
+        helper.once("input", () => helper.say("published 1:10:birth:20", "committed"));
       });
     });
     const run = follow(files.copy(from, "staged", to, "report.pdf", ".0123.part", () => true, UNSTOPPED));
@@ -329,6 +329,41 @@ describe("a helper that does not keep to its protocol", () => {
     await flush();
     if (answer === "committed") expect(run.value).toBe(answer);
     else expect(run.error).toBeInstanceOf(HeldFileHelperUnavailableError);
+  });
+
+  it.each([
+    ["the staged file as published", STAGED_TOKEN, "committed"],
+    ["no published identity", null, null],
+    ["another file published", "1:10:birth:7", null],
+  ] as const)("takes a macOS move's commit only after it names %s", async (_case, published, answer) => {
+    script((helper) => {
+      helper.say("ready");
+      helper.once("input", () => {
+        if (published !== null) helper.say(`published ${published}`);
+        helper.say("committed");
+        helper.exit(0);
+      });
+    });
+    const run = follow(files.move(from, "staged", to, "report.pdf", () => true, UNSTOPPED, STAGED));
+    await flush();
+    expect(helpers()[0]?.args).toEqual(["--dir-rename", "/staging", "1", "2", "staged", "/chosen", "1", "3", "report.pdf", "--expect", STAGED_TOKEN]);
+    if (answer === "committed") expect(run.value).toBe(answer);
+    else expect(run.error).toBeInstanceOf(HeldFileHelperUnavailableError);
+  });
+
+  it.each([
+    ["published", STAGED, "--writer"],
+    ["recorded before its commit rename", { renamed: STAGED }, "--renamed-writer"],
+  ] as const)("names a writer %s to the macOS helper by its own option", async (_case, replacement, option) => {
+    script((helper) => {
+      helper.say("ready");
+      helper.once("input", () => { helper.say("resolved"); helper.exit(0); });
+    });
+    const old = { dev: 1n, ino: 3n, evidence: { class: "birth", value: "15" } } as const;
+    const run = follow(files.recoverTarget(to, ".0123456789abcdef0123456789abcdef.removing", "report.pdf", old, undefined, replacement));
+    await flush();
+    expect(run.value).toBe("resolved");
+    expect(helpers()[0]?.args.slice(-4)).toEqual(["--expect", "1:3:birth:15", option, STAGED_TOKEN]);
   });
 
   it.each(["volume", "volume-unknown"] as const)("names the refusal of a chosen folder whose volume cannot be shown to replace a file safely (%s)", async (refusal) => {
@@ -562,7 +597,7 @@ describe("a helper that does not keep to its protocol", () => {
             helper.say(`failed ${code}`);
             helper.stderr.write(`Windows error ${nativeCode}\n`);
             helper.exit(4);
-          } else { helper.say("committed"); helper.exit(0); }
+          } else { helper.say(`published ${STAGED_TOKEN}`, "committed"); helper.exit(0); }
         });
       });
       const recovered = follow(retryOnFileLock(() => files.move(from, "staged", to, "report.pdf", () => true, UNSTOPPED, STAGED)));
@@ -596,7 +631,7 @@ describe("a helper that does not keep to its protocol", () => {
   it.each(["progress 1\n", "committed\n", "\n", "x", "\r", "\u00e9"])("rejects every trailing stdout byte after an outcome: %j", async (extra) => {
     script((helper) => {
       helper.say("ready");
-      helper.once("input", () => helper.say("committed"));
+      helper.once("input", () => helper.say(`published ${STAGED_TOKEN}`, "committed"));
     });
     const run = follow(files.move(from, "staged", to, "report.pdf", () => true, UNSTOPPED, STAGED));
     await flush();
@@ -623,7 +658,7 @@ describe("a helper that does not keep to its protocol", () => {
   });
 
   it("rejects a stderr byte after an outcome", async () => {
-    script((helper) => { helper.say("ready"); helper.once("input", () => helper.say("committed")); });
+    script((helper) => { helper.say("ready"); helper.once("input", () => helper.say(`published ${STAGED_TOKEN}`, "committed")); });
     const run = follow(files.move(from, "staged", to, "report.pdf", () => true, UNSTOPPED, STAGED));
     await flush();
     helpers()[0]?.stderr.write("x");
@@ -636,7 +671,7 @@ describe("a helper that does not keep to its protocol", () => {
     script((helper) => {
       helper.diesWhenKilled = false;
       helper.say("ready");
-      helper.once("input", () => helper.say("committed"));
+      helper.once("input", () => helper.say(`published ${STAGED_TOKEN}`, "committed"));
     });
     const run = follow(files.move(from, "staged", to, "report.pdf", () => true, UNSTOPPED, STAGED));
     await flush();
@@ -1017,7 +1052,8 @@ describe("a copy whose helper says it left its temporary file", () => {
       helper.say("target-id 1:3:birth:15", "ready");
       helper.once("input", () => {
         helper.say("writing 1:2:birth:20", "copy-id 1:2:birth:20", "copied");
-        helper.once("input", () => { helper.say("committed"); helper.exit(0); });
+        // The commit is published, so only the old target's missing resolution is wrong.
+        helper.once("input", () => { helper.say("published 1:2:birth:20", "committed"); helper.exit(0); });
       });
     });
     const journal = { hidden: HIDDEN, write: vi.fn().mockResolvedValue(undefined), published: vi.fn().mockResolvedValue(undefined), resolved: vi.fn() };

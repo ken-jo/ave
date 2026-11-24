@@ -564,9 +564,13 @@ describe("a staged download", () => {
   });
 
   it("keeps a replacement saved when the identity it published after its commit rename cannot be recorded", async () => {
+    let refused = 0;
     const root = withFiles(acrossVolumes(prepare()), (files) => ({
       writeRecord: async (folder, name, body) => {
-        if ((JSON.parse(body.toString("utf8")) as { published?: unknown }).published !== undefined) throw new Error("EIO: simulated");
+        if ((JSON.parse(body.toString("utf8")) as { published?: unknown }).published !== undefined) {
+          refused += 1;
+          throw new Error("EIO: simulated");
+        }
         return files.writeRecord(folder, name, body);
       },
     }));
@@ -583,6 +587,8 @@ describe("a staged download", () => {
     expect(await done).toEqual({ state: "completed", cleanup: "removed" });
     expect(readFileSync(join(chosen, "report.pdf"), "utf8")).toBe("new bytes");
     expect(readdirSync(chosen)).toEqual(["report.pdf"]);
+    // The helper published the replacement, so the failing write was reached.
+    expect(refused).toBe(1);
   });
 
   it.each([false, true])("restart preserves the original and handles an occupied target: %s", async (occupied) => {
@@ -1561,9 +1567,10 @@ describe.runIf(process.platform === "darwin")("a native helper that stops answer
     const { chosen, ended } = await publishing(root, chunks(1));
     const { state, ms } = await ended;
     expect(state).toBe("interrupted");
-    // The move, then the removal of the staged file, each stall once and are killed.
-    expect(ms).toBeGreaterThanOrEqual(2 * BOUNDS.stallMs);
-    expect(ms).toBeLessThan(2 * (BOUNDS.stallMs + BOUNDS.killMs));
+    // The stamp taken at completion stalls once and is killed. The staged file is then never identified, so nothing moves or removes
+    // it, and no second helper starts.
+    expect(ms).toBeGreaterThanOrEqual(BOUNDS.stallMs);
+    expect(ms).toBeLessThan(BOUNDS.stallMs + BOUNDS.killMs);
     expect(helpersStillRunning()).toEqual([]);
     expect(readdirSync(chosen)).toEqual([]);
     // The staged file is not claimed removed: it stays in the verified staging folder for the next start to sweep.
@@ -1773,11 +1780,16 @@ const boundArgs = (path: string): string[] => {
   const { dev, ino } = statSync(path, { bigint: true });
   return [path, String(dev), String(ino)];
 };
+// The macOS helper's evidence token for a file, and its content fingerprint.
+const tokenOf = (path: string): string => {
+  const { dev, ino, birthtimeNs } = statSync(path, { bigint: true });
+  return `${dev}:${ino}:birth:${birthtimeNs}`;
+};
 const contentKey = (path: string): string => {
-  const { birthtimeNs, size, mtimeNs } = statSync(path, { bigint: true });
+  const { size, mtimeNs } = statSync(path, { bigint: true });
   const bytes = readFileSync(path);
   const sha = (slice: Buffer) => createHash("sha256").update(slice).digest("hex");
-  return `${birthtimeNs}:${size}:${mtimeNs}:${sha(bytes.subarray(0, 65536))}:${sha(bytes.subarray(-65536))}`;
+  return `${size}:${mtimeNs}:${sha(bytes.subarray(0, 65536))}:${sha(bytes.subarray(-65536))}`;
 };
 
 const RECOVERY_RECORD = "0123456789abcdef0123456789abcdef.cleanup.json";
@@ -1792,7 +1804,7 @@ function writeRecoveryRecord(root: Root, name: string, path: string, at: string,
 
 function hiddenSnapshot(path: string) {
   const { dev, ino, birthtimeNs, size, mtimeNs } = statSync(path, { bigint: true });
-  const [, , , head, tail] = contentKey(path).split(":");
+  const [, , head, tail] = contentKey(path).split(":");
   return {
     file: { dev: String(dev), ino: String(ino), evidence: `birth:${birthtimeNs}` },
     content: { size: String(size), mtimeNs: String(mtimeNs), head, tail },
@@ -1885,10 +1897,9 @@ describe.runIf(process.platform === "darwin")("native recovery through a held di
     mkdirSync(path, { recursive: true });
     const hidden = join(path, HIDDEN_FOR_RECOVERY);
     writeFileSync(hidden, "verified original");
-    const id = boundArgs(hidden).slice(1);
     const args = operation === "restore"
-      ? ["--dir-restore", ...boundArgs(path), HIDDEN_FOR_RECOVERY, PART_FOR_RECOVERY, ...id, contentKey(hidden)]
-      : ["--dir-remove-id", ...boundArgs(path), HIDDEN_FOR_RECOVERY, ...id];
+      ? ["--dir-restore", ...boundArgs(path), HIDDEN_FOR_RECOVERY, PART_FOR_RECOVERY, "--expect", tokenOf(hidden), "--content", contentKey(hidden)]
+      : ["--dir-remove-id", ...boundArgs(path), HIDDEN_FOR_RECOVERY, "--expect", tokenOf(hidden)];
     const transcript = await nativeAtReady(args, () => {
       moveAside(ancestor, moved);
       mkdirSync(path, { recursive: true });
@@ -1905,7 +1916,7 @@ describe.runIf(process.platform === "darwin")("native recovery through a held di
   it("keeps the hidden source when the part is replaced during copy-back", () => {
     const hidden = join(home, HIDDEN_FOR_RECOVERY);
     writeFileSync(hidden, "to be restored");
-    const args = ["--dir-restore", ...boundArgs(home), HIDDEN_FOR_RECOVERY, PART_FOR_RECOVERY, ...boundArgs(hidden).slice(1), contentKey(hidden)];
+    const args = ["--dir-restore", ...boundArgs(home), HIDDEN_FOR_RECOVERY, PART_FOR_RECOVERY, "--expect", tokenOf(hidden), "--content", contentKey(hidden)];
     const transcript = execFileSync(macHelper("-swap-restored"), args, { input: "c", encoding: "utf8" });
     expect(transcript).toMatch(/\nleft .* mismatch .* part-left\n$/u);
     expect(readFileSync(hidden, "utf8")).toBe("to be restored");
@@ -2012,6 +2023,116 @@ describe.runIf(process.platform === "darwin")("native recovery through a held di
       expect(readFileSync(join(path, PART_FOR_RECOVERY), "utf8")).toBe("replacement");
       expect(existsSync(join(path, "report.pdf"))).toBe(false);
     }
+  });
+});
+
+// The macOS helper's token and named-option interface, as native/windows-path-kind/README.md defines it for the Windows helper.
+describe.runIf(process.platform === "darwin")("the macOS helper's tokens and options", () => {
+  const run = (args: string[]): { status: number | null; stdout: string } => {
+    try {
+      return { status: 0, stdout: execFileSync(macHelper(), args, { input: "c", encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }) };
+    } catch (error) {
+      const failure = error as { status: number | null; stdout: string };
+      return { status: failure.status, stdout: failure.stdout };
+    }
+  };
+  const staged = (): { folder: string; file: string } => {
+    const folder = join(home, "held");
+    mkdirSync(folder, { recursive: true });
+    const file = join(folder, "staged");
+    writeFileSync(file, "download");
+    return { folder, file };
+  };
+  const wrongBirth = (path: string): string => {
+    const { dev, ino, birthtimeNs } = statSync(path, { bigint: true });
+    return `${dev}:${ino}:birth:${birthtimeNs + 1n}`;
+  };
+
+  it("stamps a regular file and refuses another kind of entry", () => {
+    const { folder, file } = staged();
+    expect(run(["--dir-stamp", ...boundArgs(folder), "staged"])).toEqual({ status: 0, stdout: `ready\nstamp ${tokenOf(file)}\n` });
+    expect(run(["--dir-stamp", ...boundArgs(folder), "missing"])).toEqual({ status: 0, stdout: "ready\nabsent\n" });
+    symlinkSync(file, join(folder, "link"));
+    expect(run(["--dir-stamp", ...boundArgs(folder), "link"])).toEqual({ status: 3, stdout: "ready\nrefused source\n" });
+  });
+
+  it("publishes the moved file's token before it commits a rename", () => {
+    const { folder, file } = staged();
+    const token = tokenOf(file);
+    const chosen = join(home, "chosen");
+    mkdirSync(chosen);
+    expect(run(["--dir-rename", ...boundArgs(folder), "staged", ...boundArgs(chosen), "report.pdf", "--expect", token]))
+      .toEqual({ status: 0, stdout: `ready\npublished ${token}\ncommitted\n` });
+    expect(readFileSync(join(chosen, "report.pdf"), "utf8")).toBe("download");
+  });
+
+  it.each(["birth one tick off", "another class", "no evidence"] as const)("leaves the staged file in place for a token with %s", (kind) => {
+    const { folder, file } = staged();
+    const { dev, ino } = statSync(file, { bigint: true });
+    const token = kind === "birth one tick off" ? wrongBirth(file) : kind === "another class" ? `${dev}:${ino}:creation:20` : `${dev}:${ino}:none:-`;
+    const chosen = join(home, "chosen");
+    mkdirSync(chosen);
+    expect(run(["--dir-rename", ...boundArgs(folder), "staged", ...boundArgs(chosen), "report.pdf", "--expect", token]))
+      .toEqual({ status: 3, stdout: "ready\nrefused source\n" });
+    expect(run(["--dir-remove", ...boundArgs(folder), "staged", "--expect", token])).toEqual({ status: 3, stdout: "ready\nrefused source\n" });
+    expect(run(["--dir-remove-id", ...boundArgs(folder), "staged", "--expect", token])).toEqual({ status: 0, stdout: "ready\nleft\n" });
+    expect(readFileSync(file, "utf8")).toBe("download");
+    expect(run(["--dir-remove", ...boundArgs(folder), "staged", "--expect", tokenOf(file)])).toEqual({ status: 0, stdout: "ready\nremoved\n" });
+    expect(existsSync(file)).toBe(false);
+  });
+
+  it("matches a renamed writer in full, as a rename keeps the birth time", () => {
+    const folder = join(home, "held");
+    mkdirSync(folder);
+    writeFileSync(join(folder, HIDDEN_FOR_RECOVERY), "old bytes");
+    writeFileSync(join(folder, "report.pdf"), "new bytes");
+    const old = tokenOf(join(folder, HIDDEN_FOR_RECOVERY));
+    const target = join(folder, "report.pdf");
+    const restore = (option: string, writer: string) =>
+      run(["--dir-restore-target", ...boundArgs(folder), HIDDEN_FOR_RECOVERY, "report.pdf", "--expect", old, option, writer]);
+    expect(restore("--renamed-writer", wrongBirth(target))).toEqual({ status: 0, stdout: "ready\nleft\n" });
+    expect(restore("--writer", wrongBirth(target))).toEqual({ status: 0, stdout: "ready\nleft\n" });
+    expect(existsSync(join(folder, HIDDEN_FOR_RECOVERY))).toBe(true);
+    expect(restore("--renamed-writer", tokenOf(target))).toEqual({ status: 0, stdout: "ready\nresolved\n" });
+    expect(existsSync(join(folder, HIDDEN_FOR_RECOVERY))).toBe(false);
+    expect(readFileSync(target, "utf8")).toBe("new bytes");
+  });
+
+  it.each([
+    ["no --expect", []],
+    ["a repeated option", ["--expect", "1:2:birth:3", "--expect", "1:2:birth:3"]],
+    ["an unknown option", ["--expect", "1:2:birth:3", "--force"]],
+    ["a valueless option", ["--expect"]],
+    ["a wildcard token", ["--expect", "*"]],
+    ["a zero birth", ["--expect", "1:2:birth:0"]],
+    ["an empty value", ["--expect", "1:2:birth:"]],
+    ["a short token", ["--expect", "1:2"]],
+    ["an uppercase class", ["--expect", "1:2:Birth:3"]],
+    ["a malformed fingerprint", ["--expect", "1:2:birth:3", "--content", "1:2:ab:cd"]],
+    ["a writer outside a target recovery", ["--expect", "1:2:birth:3", "--writer", "1:4:birth:5"]],
+  ] as const)("is a usage error for %s", (_case, options) => {
+    const { folder } = staged();
+    expect(run(["--dir-remove-id", ...boundArgs(folder), "staged", ...options])).toEqual({ status: 2, stdout: "" });
+  });
+
+  it.each([
+    ["--writer and --renamed-writer", ["--writer", "1:4:birth:5", "--renamed-writer", "1:4:birth:5"]],
+    ["--writer and --retire", ["--writer", "1:4:birth:5", "--retire"]],
+    ["a writer with the old file's inode", ["--writer", "1:2:birth:5"]],
+    ["a writer on another device", ["--renamed-writer", "7:4:birth:5"]],
+  ] as const)("refuses a target recovery that names %s", (_case, options) => {
+    const { folder } = staged();
+    expect(run(["--dir-restore-target", ...boundArgs(folder), HIDDEN_FOR_RECOVERY, "report.pdf", "--expect", "1:2:birth:3", ...options]))
+      .toEqual({ status: 2, stdout: "" });
+  });
+
+  it("removes a record only by a stamp it can compare", () => {
+    const { folder } = staged();
+    const name = `${"a".repeat(32)}.cleanup.json`;
+    expect(run(["--dir-remove-record", ...boundArgs(folder), name, "--expect", "1:2:none:-", "--length", "2", "--digest", "a".repeat(64)]))
+      .toEqual({ status: 2, stdout: "" });
+    expect(run(["--dir-sweep", ...boundArgs(folder), "keep-records"])).toEqual({ status: 2, stdout: "" });
+    expect(run(["--dir-sweep", ...boundArgs(folder), "--keep-records"])).toEqual({ status: 0, stdout: "ready\nswept 1\n" });
   });
 });
 
@@ -2135,7 +2256,11 @@ describe.runIf(process.platform === "darwin")("a stopped native copy's temporary
   it.for(ENDINGS)("records its own temporary file instead of unlinking it when the copy is %s", async (ending, { skip }) => {
     const { outcome, chosen, root } = await stoppedNativeCopy(ending, false, onVolume(skip));
     expect(entriesOf(chosen)).toEqual([expect.stringMatching(/^\.[0-9a-f]{32}\.part$/u), ...theTarget[ending]]);
-    expect(await root.files.listRecords(root)).toHaveLength(1);
+    // A copy that found an existing target also keeps the write-ahead record it wrote for that target, since the helper could not
+    // move it aside (no exclusive rename) and said nothing more about it.
+    const records = await Promise.all((await root.files.listRecords(root)).map((name) => readFileSync(join(root.path, name), "utf8")));
+    expect(records.filter((record) => !("target" in JSON.parse(record)))).toHaveLength(1);
+    expect(records).toHaveLength(ending === "failed" ? 2 : 1);
     expect(outcome).toEqual({ state: "interrupted", cleanup: "part-left" });
   });
   it("leaves a directory at the temporary file's name", async ({ skip }) => {
@@ -2233,7 +2358,7 @@ describe.runIf(process.platform === "darwin")("a stopped native copy's temporary
     // Send both bytes in one write: authorize creation at ready, with the stop byte pending at the first poll.
     const transcript = execFileSync(helper, ["--dir-copy", root.path, String(root.dev), String(root.ino), source, chosen,
       String(folder.dev), String(folder.ino), "report.pdf", `.${source}.part`, HIDDEN_FOR_RECOVERY], { input: "cx", encoding: "utf8" });
-    expect(transcript).toMatch(/^ready\nwriting \d+ \d+ \d+\ncancelled left\n$/u);
+    expect(transcript).toMatch(/^ready\nwriting \d+:\d+:birth:[1-9]\d*\ncancelled left\n$/u);
     expect(statSync(join(chosen, `.${source}.part`)).size).toBe(0);
   });
 });
