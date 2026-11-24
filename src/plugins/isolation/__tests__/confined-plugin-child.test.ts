@@ -90,6 +90,7 @@ import { verifyPluginIntegrity } from "../../runtime/index.js";
 import { installPythonSmoke, reportSmoke } from "./python-smoke-harness.js";
 import { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
+import { Writable } from "node:stream";
 import { promisify } from "node:util";
 
 useVerifiedAveHomePrivacy();
@@ -3007,7 +3008,7 @@ ELECTRON_RUN_AS_NODE=1 exec ${JSON.stringify(process.execPath)} "$PLUGIN_ROOT/in
   async function spawnBelowHardening(
     plugin: InstalledPlugin,
     env: Record<string, string>,
-  ): Promise<void> {
+  ): Promise<string> {
     const launcher = join(plugin.pluginRoot, "bin", "plugin");
     const child = await spawnConfinedPluginChild({
       pluginId: plugin.pluginId,
@@ -3027,8 +3028,9 @@ ELECTRON_RUN_AS_NODE=1 exec ${JSON.stringify(process.execPath)} "$PLUGIN_ROOT/in
     });
     const exited = new Promise<string>((resolve) => child.link.onGone(resolve));
     child.link.output.end();
-    await exited;
+    const reason = await exited;
     await child.waitForExit?.();
+    return reason;
   }
 
   /** A launcher that does nothing, so anything that ran came from the environment. */
@@ -3040,6 +3042,38 @@ ELECTRON_RUN_AS_NODE=1 exec ${JSON.stringify(process.execPath)} "$PLUGIN_ROOT/in
     chmodSync(launcher, 0o755);
     return plugin;
   }
+
+  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+    "reports a forced environment shim failure without its payload",
+    async () => {
+      if (!(await sandboxCasesRun())) return;
+      const fx = fixture;
+      if (!fx) throw new Error("Expected the confinement fixture");
+      const plugin = installInertPlugin(fx);
+      await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+      const gatedSpawn = vi.mocked(managedChildren.spawnGatedManagedProcess);
+      const spawnThroughGate = gatedSpawn.getMockImplementation();
+      if (!spawnThroughGate) throw new Error("Expected the real process group gate");
+      let stderr = "";
+      gatedSpawn.mockImplementationOnce(async (...args) => {
+        const child = await spawnThroughGate(...args);
+        const payload = child.stdio[4];
+        if (!(payload instanceof Writable)) throw new Error("Expected the target environment pipe");
+        const end = payload.end.bind(payload);
+        vi.spyOn(payload, "end").mockImplementationOnce(() =>
+          end(`LC_ALL=${PROCESS_LOCALE_CANARY}\0invalid-name=${PROCESS_LOCALE_CANARY}\0\0`));
+        child.stderr?.on("data", chunk => { stderr += chunk; });
+        return child;
+      });
+      try {
+        const reason = await spawnBelowHardening(plugin, { LC_ALL: PROCESS_LOCALE_CANARY });
+        expect(reason).toBe(`[out-of-process-plugin] ${plugin.pluginId}: sandbox target environment setup failed`);
+        expect(stderr).not.toContain(PROCESS_LOCALE_CANARY);
+      } finally {
+        gatedSpawn.mockReset().mockImplementation(spawnThroughGate);
+      }
+    },
+  );
 
   it.runIf(process.platform === "darwin" || process.platform === "linux")(
     "refuses an incompatible process entry environment before registering the sandbox command",

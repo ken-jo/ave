@@ -80,6 +80,34 @@ describe("plugin stderr capture", () => {
     },
   );
 
+  it("masks each exact launch value from eight characters and preserves shorter values", () => {
+    const stream = new PassThrough();
+    const info = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      capturePluginStderr(stream, "resolved-env", ["literal.*canary", "abcdefgh", "1234567"]);
+      stream.end("literal.*canary literalXXcanary abcdefgh 1234567 literal.*canary\n");
+      expect(info).toHaveBeenCalledExactlyOnceWith(
+        "[plugin-stderr] [REDACTED] literalXXcanary [REDACTED] 1234567 [REDACTED]",
+        { pluginId: "resolved-env" },
+      );
+    } finally { stream.destroy(); info.mockRestore(); }
+  });
+
+  it("masks launch values across stream chunks and embedded line breaks", () => {
+    const stream = new PassThrough();
+    const info = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      capturePluginStderr(stream, "split-env", ["multi\r\nline-🔒", "split-canary"]);
+      const diagnostic = Buffer.from("before multi\r\nline-🔒 split-canary after\n");
+      const splitAt = diagnostic.indexOf(Buffer.from("🔒")) + 2;
+      stream.write(diagnostic.subarray(0, splitAt));
+      stream.write(diagnostic.subarray(splitAt, -8));
+      expect(info).not.toHaveBeenCalled();
+      stream.end(diagnostic.subarray(-8));
+      expect(info).toHaveBeenCalledExactlyOnceWith("[plugin-stderr] before [REDACTED] [REDACTED] after", { pluginId: "split-env" });
+    } finally { stream.destroy(); info.mockRestore(); }
+  });
+
   it("redacts a credential crossing the output byte cap before truncation", () => {
     const stream = new PassThrough();
     const info = vi.spyOn(console, "log").mockImplementation(() => {});

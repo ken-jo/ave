@@ -1633,6 +1633,53 @@ describe("the factory's launch reaches the spawn as decided", () => {
     }
   });
 
+  it("redacts resolved values only from the stderr of the launch that received them", async () => {
+    const roots = spawnableRoots();
+    const platform = process.platform;
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    const firstStderr = new PassThrough();
+    const secondStderr = new PassThrough();
+    const info = vi.spyOn(console, "log").mockImplementation(() => {});
+    const canary = "resolved-env-canary";
+    const launch = processLaunch(roots.context.pluginRoot!);
+    sandbox.active = true;
+    fakeSandboxHome.on = true;
+    setProcessPlatform("linux");
+    try {
+      for (const [stderr, env] of [
+        [firstStderr, { ...launch.env, LC_ALL: canary }],
+        [secondStderr, launch.env],
+      ] as const) {
+        const child = Object.assign(new EventEmitter(), { exitCode: 0, signalCode: null, stdin, stdout, stderr });
+        spawnConfinedChild.mockResolvedValueOnce({ child, confinement: "linux-bubblewrap" });
+        await spawnConfinedPluginChild({
+          pluginId: PROCESS_MANIFEST.id,
+          socketDir: resolvePluginSocketDir(launch.env.PLUGIN_DATA),
+          envelope: { read: [], write: [] },
+          launch: { ...launch, env },
+        });
+        stderr.end(`diagnostic ${canary}\n`);
+      }
+      const fields = { pluginId: PROCESS_MANIFEST.id };
+      expect(info.mock.calls.filter(([, data]) => (data as { pluginId?: string } | undefined)?.pluginId === fields.pluginId)).toEqual([
+        ["[plugin-stderr] diagnostic [REDACTED]", fields],
+        [`[plugin-stderr] diagnostic ${canary}`, fields],
+      ]);
+    } finally {
+      setProcessPlatform(platform);
+      sandbox.active = false;
+      fakeSandboxHome.on = false;
+      spawnConfinedChild.mockReset();
+      stdin.destroy();
+      stdout.destroy();
+      firstStderr.destroy();
+      secondStderr.destroy();
+      info.mockRestore();
+      roots.remove();
+    }
+  });
+
   it.runIf(process.platform === "linux" || process.platform === "darwin")(
     "kills a process launch that comes back unconfined before exposing it to the session",
     async () => {

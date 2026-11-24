@@ -8,6 +8,7 @@ const LINE_BYTES_MAX = 16_384;
 const RAW_LINE_BYTES_MAX = 65_536;
 const LINES_PER_SECOND = 100;
 const LINE_BURST_MAX = 500;
+const REDACTED_ENV_VALUE = Buffer.from("[REDACTED]");
 
 interface PluginRate {
   users: number;
@@ -20,7 +21,15 @@ interface PluginRate {
 const rates = new Map<string, PluginRate>();
 
 /** Read only diagnostics; protocol output remains owned by the transport. Simultaneous children share their plugin's budget. */
-export function capturePluginStderr(stream: Readable, pluginId: string): void {
+export function capturePluginStderr(stream: Readable, pluginId: string, resolvedEnvValues: readonly string[] = []): void {
+  const valuesByFirstByte: Buffer[][] = [];
+  for (const value of new Set(resolvedEnvValues)) {
+    // Values shorter than eight characters bypass this check to preserve common diagnostic text.
+    if (!/^.{8}/su.test(value)) continue;
+    const needle = Buffer.from(value);
+    (valuesByFirstByte[needle[0]!] ??= []).push(needle);
+  }
+  for (const values of valuesByFirstByte) values?.sort((a, b) => b.length - a.length);
   let rate = rates.get(pluginId);
   if (!rate) {
     rate = { users: 0, tokens: LINE_BURST_MAX, updatedAt: Date.now(), droppedLines: 0 };
@@ -37,12 +46,14 @@ export function capturePluginStderr(stream: Readable, pluginId: string): void {
   };
   let parts: Buffer[] = [];
   let bytes = 0;
+  let rawBytes = 0;
   let truncated = false;
   let finished = false;
   const emitLine = (): void => {
     const raw = truncated ? "" : Buffer.concat(parts, bytes).toString("utf8").replace(/\r$/u, "");
     parts = [];
     bytes = 0;
+    rawBytes = 0;
     const overflowed = truncated;
     truncated = false;
     const now = Date.now();
@@ -68,26 +79,23 @@ export function capturePluginStderr(stream: Readable, pluginId: string): void {
     else if (line.startsWith("WARN ")) log.warn({ pluginId }, line);
     else log.info({ pluginId }, line);
   };
-  const append = (part: Buffer): void => {
+  const append = (part: Buffer, rawLength = part.length): void => {
     if (truncated) return;
-    const remaining = RAW_LINE_BYTES_MAX - bytes;
-    if (part.length > remaining) {
+    rawBytes += rawLength;
+    if (rawBytes > RAW_LINE_BYTES_MAX) {
       // A clipped credential may no longer match the redactor. Discard rather than expose its prefix.
       truncated = true;
       parts = [];
       bytes = 0;
       return;
     }
-    if (remaining > 0 && part.length > 0) {
-      const kept = part.subarray(0, remaining);
+    if (part.length > 0) {
       // Copy so a small pending line never retains a large child-output buffer.
-      parts.push(Buffer.from(kept));
-      bytes += kept.length;
+      parts.push(Buffer.from(part));
+      bytes += part.length;
     }
   };
-  stream.on("data", (chunk: Buffer | string) => {
-    if (finished) return;
-    const buffer = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+  const captureChunk = (buffer: Buffer): void => {
     let start = 0;
     for (let end = buffer.indexOf(10); end !== -1; end = buffer.indexOf(10, start)) {
       append(buffer.subarray(start, end));
@@ -95,10 +103,42 @@ export function capturePluginStderr(stream: Readable, pluginId: string): void {
       start = end + 1;
     }
     append(buffer.subarray(start));
-  });
+  };
+  let pending: Buffer | undefined;
+  const redactChunk = (chunk: Buffer, final = false): void => {
+    const buffer = pending ? Buffer.concat([pending, chunk]) : chunk;
+    pending = undefined;
+    let plainStart = 0;
+    for (let offset = 0; offset < buffer.length; offset++) {
+      const match = valuesByFirstByte[buffer[offset]!]?.find(value => {
+        const length = Math.min(value.length, buffer.length - offset);
+        return (!final || length === value.length) && value.compare(buffer, offset, offset + length, 0, length) === 0;
+      });
+      if (!match) continue;
+      captureChunk(buffer.subarray(plainStart, offset));
+      if (match.length > buffer.length - offset) {
+        // Look ahead only when a value could continue in the next chunk.
+        pending = Buffer.from(buffer.subarray(offset));
+        return;
+      }
+      append(REDACTED_ENV_VALUE, match.length);
+      offset += match.length - 1;
+      plainStart = offset + 1;
+    }
+    captureChunk(buffer.subarray(plainStart));
+  };
+  const handleData = (chunk: Buffer | string): void => {
+    const buffer = typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+    if (valuesByFirstByte.length > 0) redactChunk(buffer);
+    else captureChunk(buffer);
+  };
+  stream.on("data", handleData);
   const finish = (): void => {
     if (finished) return;
     finished = true;
+    stream.off("data", handleData);
+    if (pending) redactChunk(Buffer.alloc(0), true);
+    valuesByFirstByte.length = 0;
     if (bytes > 0 || truncated) emitLine();
     budget.users--;
     if (budget.users === 0) {
