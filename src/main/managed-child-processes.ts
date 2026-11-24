@@ -1,6 +1,7 @@
 import { spawn, spawnSync, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { Writable } from "node:stream";
 import { readFile, rm } from "node:fs/promises";
+import { resolve, sep } from "node:path";
 import { win32SystemBinary } from "../shared/windows-system-path.js";
 import { findHostProgram } from "../shared/host-program-path.js";
 import { createLogger } from "../lib/logger.js";
@@ -552,8 +553,33 @@ export function recordManagedCleanup(resources: ManagedResources, ...steps: read
   openState(resources).steps.push(...steps.filter((step): step is () => unknown => step !== undefined));
 }
 
+// Folded paths recorded by handles not yet released. An ancestor's release does not release a descendant, so entries drop only on their own release.
+const livePaths = new Map<ResourceState, string[]>();
+
+function foldedPath(path: string): string {
+  const full = resolve(path);
+  return process.platform === "win32" || process.platform === "darwin" ? full.toLowerCase() : full;
+}
+
+function overlaps(left: string, right: string): boolean {
+  const within = (path: string, root: string): boolean => path === root || path.startsWith(root.endsWith(sep) ? root : root + sep);
+  return within(left, right) || within(right, left);
+}
+
+/** Refuses, at the record call, a path equal to, inside or containing one that another live handle recorded. */
 export function recordManagedPaths(resources: ManagedResources, ...paths: readonly PathToRemove[]): void {
-  openState(resources).paths.push(...paths.map(path => ({ ...path })));
+  const state = openState(resources);
+  const folded = paths.map(path => foldedPath(path.path));
+  const own = new Set(lineage(state));
+  for (const [other, recorded] of livePaths) {
+    // Only the owner sets lineage, when it mints a child from its parent handle; a record argument cannot claim one.
+    if (other === state || own.has(other) || lineage(other).includes(state)) continue;
+    const shared = folded.find(path => recorded.some(entry => overlaps(path, entry)));
+    if (shared !== undefined) throw new Error(`Managed path ${shared} overlaps a path another live handle recorded.`);
+  }
+  if (folded.length === 0) return;
+  state.paths.push(...paths.map(({ path, recursive }) => ({ path, recursive })));
+  livePaths.set(state, [...livePaths.get(state) ?? [], ...folded]);
 }
 
 // Acquisition counts on the handle and every ancestor; the verdict's receipt is bound to the generations it saw.
@@ -600,6 +626,7 @@ function runRecordedRelease(state: ResourceState): Promise<void> {
     if (failures.length === 1) throw failures[0];
     if (failures.length > 1) throw new AggregateError(failures, "Managed resource release failed.");
     state.released = true;
+    livePaths.delete(state);
   })().finally(() => { state.releasing = undefined; });
   return state.releasing;
 }

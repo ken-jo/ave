@@ -18,6 +18,7 @@
 // listed in RAW_IMPORTERS are not covered by this owner.
 import { ChildProcess } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, posix, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as ts from "typescript/unstable/ast";
@@ -26,7 +27,7 @@ import { describe, expect, it, vi } from "vitest";
 import { readRepoFile } from "../../__tests__/test-helpers.js";
 import {
   abandonManagedLaunch, createManagedRelayResources, createManagedResources, observeManagedProcessGroup,
-  observeManagedWindowsRelayExit, recordManagedCleanup, releaseManagedResources, type ConfirmedExit,
+  observeManagedWindowsRelayExit, recordManagedCleanup, recordManagedPaths, releaseManagedResources, type ConfirmedExit,
 } from "../managed-child-processes.js";
 
 const SRC = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -495,6 +496,60 @@ describe("managed child receipts", () => {
     const done = await confirmedUnder(sibling);
     await expect(releaseManagedResources(parent, done)).rejects.toThrow("Managed exit was not confirmed.");
     await expect(abandonManagedLaunch(parent)).rejects.toThrow("Managed exit was not confirmed.");
+  });
+
+  it("refuses at the record call a path another live handle outside the subtree recorded", async () => {
+    const directory = join(tmpdir(), `ave-managed-overlap-${process.pid}-${Date.now()}`);
+    const holder = join(directory, "output", "holder");
+    const runtime = createManagedResources();
+    recordManagedPaths(runtime, { path: directory, recursive: true });
+    const resident = createManagedResources(runtime);
+    recordManagedPaths(resident, { path: holder, recursive: true });
+    const request = createManagedResources(runtime);
+    recordManagedPaths(request, { path: join(directory, "input", "a.fodt") }, { path: join(directory, "output", "a"), recursive: true });
+    // The engine mutation: a request also records the resident's holder.
+    expect(() => recordManagedPaths(request, { path: holder, recursive: true })).toThrow("another live handle recorded");
+    expect(() => recordManagedPaths(createManagedResources(runtime), { path: join(holder, "frame.fodt") })).toThrow("another live handle recorded");
+    expect(() => recordManagedPaths(createManagedResources(), { path: join(directory, "output") })).toThrow("another live handle recorded");
+    if (process.platform === "win32" || process.platform === "darwin") {
+      expect(() => recordManagedPaths(createManagedResources(), { path: holder.toUpperCase() })).toThrow("another live handle recorded");
+    }
+    await releaseManagedResources(resident, await confirmedUnder(resident));
+    await releaseManagedResources(request, await confirmedUnder(request));
+    await releaseManagedResources(runtime, await confirmedUnder(runtime));
+    const next = createManagedResources();
+    recordManagedPaths(next, { path: holder, recursive: true });
+    await abandonManagedLaunch(next);
+  });
+
+  it("refuses a forged lineage claim: lineage is only what the owner minted", async () => {
+    const directory = join(tmpdir(), `ave-managed-lineage-${process.pid}-${Date.now()}`);
+    const live = createManagedResources();
+    recordManagedPaths(live, { path: join(directory, "a"), recursive: true });
+    const lookalike = Object.freeze({ ...live });
+    expect(() => createManagedResources(lookalike)).toThrow("not issued by the owner");
+    expect(() => recordManagedPaths(lookalike, { path: join(directory, "a", "x") })).toThrow("not issued by the owner");
+    const released = createManagedResources();
+    await abandonManagedLaunch(released);
+    expect(() => createManagedResources(released)).toThrow("already released");
+    const claimed = { path: join(directory, "a", "x"), parent: live, lineage: [live] } as never;
+    expect(() => recordManagedPaths(createManagedResources(), claimed)).toThrow("another live handle recorded");
+    const parent = createManagedResources();
+    const first = createManagedResources(parent);
+    recordManagedPaths(first, { path: join(directory, "b"), recursive: true });
+    const sibling = createManagedResources(parent);
+    expect(() => recordManagedPaths(sibling, { path: join(directory, "b", "c") })).toThrow("another live handle recorded");
+    // A descendant stays live after its ancestor is released, and its release still removes its paths.
+    const ancestor = createManagedResources();
+    recordManagedPaths(ancestor, { path: join(directory, "d"), recursive: true });
+    const descendant = createManagedResources(ancestor);
+    recordManagedPaths(descendant, { path: join(directory, "d", "e"), recursive: true });
+    await abandonManagedLaunch(ancestor);
+    expect(() => recordManagedPaths(createManagedResources(), { path: join(directory, "d", "e", "f") })).toThrow("another live handle recorded");
+    for (const handle of [live, first, sibling, parent, descendant]) await abandonManagedLaunch(handle);
+    const next = createManagedResources();
+    recordManagedPaths(next, { path: join(directory, "a") }, { path: join(directory, "b") }, { path: join(directory, "d", "e") });
+    await abandonManagedLaunch(next);
   });
 
   it("issues the never-spawned release only before any child was acquired beneath the handle", async () => {
