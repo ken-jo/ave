@@ -214,15 +214,17 @@ async function recoveryTests() {
       "--writer", `${dev}:${"c".repeat(32)}:creation:1`]).code, 2);
     assert.equal(readFileSync(source, "utf8"), "hidden bytes");
   });
-  add("a volume without file-ID opens refuses the copy before it starts", (dir) => {
+  for (const existing of [false, true]) add(`a volume without file-ID opens refuses the copy before it starts (existing target: ${existing})`, (dir) => {
     writeFileSync(join(dir, "source"), "source");
+    if (existing) writeFileSync(join(dir, "target"), "old bytes");
     const result = spawnSync(join(tmpdir(), "ave-path-pin-test.exe"),
       ["volume-without-file-ids", "--dir-copy", ...held(dir), "source", ...held(dir), "target", part, hidden],
       { input: "c", windowsHide: true, shell: false, env: {}, timeout: 10_000, encoding: "utf8" });
     assert.ifError(result.error);
     assert.equal(result.status, 3, result.stdout);
     assert.deepEqual(result.stdout.trimEnd().split(/\r?\n/u), ["refused volume"]);
-    assert.deepEqual(readdirSync(dir), ["source"]);
+    assert.deepEqual(readdirSync(dir).sort(), existing ? ["source", "target"] : ["source"]);
+    if (existing) assert.equal(readFileSync(join(dir, "target"), "utf8"), "old bytes");
   });
   add("record round trip and exclusive collision", (dir) => {
     const folder = held(dir);
