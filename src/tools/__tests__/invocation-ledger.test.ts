@@ -201,7 +201,9 @@ it("records a deny committed after the invocation's abort as a cancellation, unl
   expect(fired.map((denial) => denial.reason)).toEqual(["probe"]);
 });
 
-it.each([undefined, "refused"])("refuses a deny row whose kind is %s as an integrity failure; the host writes the one denial", async (kind) => {
+it.each([
+  [undefined, false], ["refused", false], [undefined, true],
+] as const)("refuses a deny row whose kind is %s (aborted %s) as an integrity failure; the host writes the one denial", async (kind, aborted) => {
   const ledger = await import("../invocation-ledger.js");
   const appended: Array<Record<string, unknown>> = [];
   const logger = { appendPermissionAuditEntry: vi.fn(async (entry: Record<string, unknown>) => { appended.push(entry); return entry; }) };
@@ -209,7 +211,10 @@ it.each([undefined, "refused"])("refuses a deny row whose kind is %s as an integ
   const write = vi.fn(async (_cause: string, _detail: string, _selected: unknown, row: TerminalRowWriter) => {
     await row({ logger: logger as never, entry: ENTRY, kind: "denied" });
   });
-  const admission = ledger.admitToolInvocation("kindless");
+  // An abort before the refusal leaves the host's integrity row a denial: it is the host's own refusal, not the abort's.
+  const stop = new AbortController();
+  if (aborted) stop.abort();
+  const admission = ledger.admitToolInvocation("kindless", stop.signal);
   admission.terminal.hostTerminal(write, { governed: () => false, fire: async (denial) => { fired.push(denial); } });
   const written = admission.terminal.commit(async (row) => {
     await row({ logger: logger as never, entry: ENTRY, kind } as never);
