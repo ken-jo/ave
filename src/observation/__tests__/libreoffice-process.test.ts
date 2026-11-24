@@ -528,9 +528,14 @@ describe("private conversion process ownership", () => {
       expect(verdict).toMatchObject({ code: "engine-confinement-unavailable", message: "Document engine termination was not confirmed." });
       expect(group.kill).toHaveBeenCalledWith(-group.pid, 0);
       expect(group.wrap).not.toHaveBeenCalled();
-      const launch = vi.mocked(wrapOfflineProcess).mock.calls.at(-1)![0];
+      const launch = vi.mocked(wrapOfflineProcess).mock.calls.at(-1)?.[0];
+      if (!launch) throw new Error("Expected an acquired engine launch.");
       expect((await stat(dirname(launch.inputDirectory))).isDirectory()).toBe(true);
-      if (entry === "existing runtime") expect(await readFile(launch.args.at(-1)!, "utf8")).toBe("retained input");
+      if (entry === "existing runtime") {
+        const input = launch.args.at(-1);
+        if (!input) throw new Error("Expected a staged document.");
+        expect(await readFile(input, "utf8")).toBe("retained input");
+      }
       await expect(pool.releaseSession("one")).rejects.toBe(verdict);
     } finally { await group.restore(); }
   });
@@ -552,7 +557,9 @@ describe("private conversion process ownership", () => {
       expect(verdict).toMatchObject({ code: "engine-confinement-unavailable", message: "Document engine termination was not confirmed." });
       expect(group.kill).toHaveBeenCalledWith(-group.pid, "SIGKILL");
       expect(group.wrap).not.toHaveBeenCalled();
-      expect((await stat(residents()[0].holder!)).isFile()).toBe(true);
+      const holder = residents()[0]?.holder;
+      if (!holder) throw new Error("Expected the resident holder file.");
+      expect((await stat(holder)).isFile()).toBe(true);
       await release;
     } finally { await group.restore(); }
   });
