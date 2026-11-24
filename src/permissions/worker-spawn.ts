@@ -539,6 +539,7 @@ async function spawnContainedWorker(
       ownedReadRoots: [...(spec.allowReadPaths ?? [])],
       egressOwner: { kind: "worker", role: "worker", pluginId: spec.pluginId, instanceId: spec.workerId },
       workerTransport: control,
+      ...(spec.floorPierces !== undefined ? { floorPierces: spec.floorPierces } : {}),
     });
   } catch (error) {
     releaseWorkerReservation(error instanceof MxcProcessCleanupError);
