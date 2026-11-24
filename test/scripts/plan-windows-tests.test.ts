@@ -87,7 +87,8 @@ describe("Windows plan check against the checkout", () => {
   it("returns one shard's files and refuses an unknown shard ID", () => {
     const plan = committedPlan();
     expect(windowsShardFiles(plan, 3, root)).toEqual(plan.shards[2]?.files);
-    expect(() => windowsShardFiles(plan, 6, root)).toThrow("Invalid Windows test shard: 6");
+    const unknown = WINDOWS_TEST_SHARDS.length + 1;
+    expect(() => windowsShardFiles(plan, unknown, root)).toThrow(`Invalid Windows test shard: ${unknown}`);
   });
 });
 
