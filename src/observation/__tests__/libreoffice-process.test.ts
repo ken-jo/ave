@@ -564,6 +564,44 @@ describe("private conversion process ownership", () => {
     } finally { await group.restore(); }
   });
 
+  it.each(["conversion", "readiness"] as const)("retains staged files when wrap cleanup fails during %s", async entry => {
+    const group = mockManagedEngineGroup(true);
+    const cleanupFailure = new Error("Injected mount ownership descriptor release failure");
+    const signal = new AbortController().signal;
+    const staged = deferred<ConversionJob>();
+    const failForwarding = async (client: ProcessFixture): Promise<void> => {
+      staged.resolve(client.job!);
+      client.end(1);
+    };
+    const failingWrap = async (input: Parameters<typeof wrapOfflineProcess>[0]) => ({
+      argv: [input.command, ...input.args], env: input.env, release: () => { throw cleanupFailure; },
+    });
+    try {
+      if (entry === "conversion") {
+        await pool.prepare(installation, "one", "docx", signal);
+        conversion = failForwarding;
+      } else {
+        readiness = failForwarding;
+      }
+      vi.mocked(wrapOfflineProcess).mockImplementationOnce(failingWrap);
+      const request = entry === "conversion"
+        ? pool.convert(installation, "one", Buffer.from("retained input"), "docx", signal)
+        : pool.prepare(installation, "one", "docx", signal);
+      const settlement = request.catch((error: unknown) => error);
+      const [resident, job] = await Promise.all([group.launched.promise, staged.promise]);
+      const original = await readFile(job.source, "utf8").catch((error: NodeJS.ErrnoException) => error.code);
+      resident.emit("close", 0, null);
+      const verdict = await settlement;
+      expect(verdict).toMatchObject({
+        code: "engine-confinement-unavailable", message: "Document engine termination was not confirmed.",
+      });
+      expect(original).toEqual(entry === "conversion" ? "retained input" : expect.stringContaining("office:document"));
+      expect(await readFile(job.source, "utf8")).toBe(original);
+      expect((await stat(job.outputDirectory)).isDirectory()).toBe(true);
+      expect(group.wrap).not.toHaveBeenCalled();
+    } finally { await group.restore(); }
+  });
+
   it("refuses empty and over-budget requests without starting a process", async () => {
     await expect(pool.convert(installation, "one", Buffer.alloc(0), "xlsx", new AbortController().signal))
       .rejects.toMatchObject({ code: "corrupt-document" });

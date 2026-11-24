@@ -204,7 +204,10 @@ function engineUsesManagedStop(source: string): boolean {
       if (!runtime) return;
       const processes = [...runtime.children];
       runtime.resident = undefined;
-      await Promise.all(processes.map(process => this.finishProcess(runtime, process)));
+      const verdicts = await Promise.allSettled(processes.map(process => this.finishProcess(runtime, process)));
+    if (runtime.unconfirmedExit) return;
+    const rejected = verdicts.find(verdict => verdict.status === "rejected");
+    if (rejected) throw rejected.reason;
     }
 
     private finishProcess(runtime: SessionRuntime, running: RunningProcess, reason = "document engine cleanup"): Promise<void> {
