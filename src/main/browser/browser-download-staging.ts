@@ -473,8 +473,18 @@ function readPartRecord(text: string): PartRecord | null {
 }
 
 // Retry through the file backend. The decoded record never gives the host authority to open an entry by path.
-function removeRecordedPart(root: BrowserDownloadStagingRoot, { folder, part, at, target }: PartRecord) {
-  return root.files.recover(folder, at.name, target ?? part, at.identity);
+async function removeRecordedPart(root: BrowserDownloadStagingRoot, { folder, part, at, target }: PartRecord) {
+  if (target === undefined) return root.files.recover(folder, at.name, part, at.identity);
+  const observed = at.identity.kind === "helper" ? at.identity.observed : null;
+  if (observed !== null) {
+    try {
+      if (await root.files.recoverTarget(folder, at.name, target, observed.file, observed.content) === "restored") return { outcome: "restored" as const };
+    } catch (error) {
+      if (error instanceof HeldFileHelperStalledError && error.stillRunning) throw error;
+      log.warn({ path: join(folder.path, target), error: (error as Error).message }, "the previous download target could not be recovered");
+    }
+  }
+  return { outcome: "left" as const, at };
 }
 
 async function removeRecordedParts(root: BrowserDownloadStagingRoot): Promise<{ readonly name: string; readonly record: PartRecord; readonly was: LeftPart }[]> {

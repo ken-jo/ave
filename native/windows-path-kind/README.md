@@ -77,6 +77,7 @@ authorizes the action. Other input or EOF stops it. The recovery modes are:
 | `--dir-write-record <name> <hex>` | `written` after exclusive creation with a protected current-user DACL, write and sync. Maximum 8192 bytes. |
 | `--dir-remove-id <name> <file-dev> <file-ino> [<birth-ns>:<fingerprint>]` | `removed`, `absent`, or `left` with an optional named leftover. A birth-only token uses `<birth-ns>:-`. |
 | `--dir-restore <hidden> <part> <file-dev> <file-ino> <birth-ns>:<fingerprint>` | `restored` after verification and source retirement, `absent` if the source is missing, or `left` with an optional named leftover. |
+| `--dir-restore-target <hidden> <target> <file-dev> <file-ino> <birth-ns>:<fingerprint-or-dash>` | `restored` after exclusive rename and handle verification, or `left` if occupied or unverifiable. |
 
 A fingerprint is `<size>:<mtime-ns>:<head>:<tail>`. The digests are lowercase
 SHA-256 of the first and last 64 KiB, each truncated to the file size. The
@@ -119,6 +120,11 @@ still-open writing handle. A failed copy-back leaves both entries. If full
 file identity or exclusive isolation is unavailable, the helper leaves
 existing entries in place. The host retains an existing recovery record or
 records the writing identity when available.
+
+I4. A displaced original moves only by identity-preserving rename. Startup
+uses the separate target recovery operation for its record. An occupied or
+unverifiable destination leaves the original and its record in place.
+Copy-back applies only to copy-part recovery.
 
 Accepted residual.
 

@@ -13,7 +13,7 @@
 #pragma comment(lib, "advapi32.lib")
 
 namespace dir_ops {
-enum class RecoveryBoundary { kNone, kRestoreTarget, kRestoreError, kUnsupportedIsolation, kCommitMismatch, kCommitBlocked, kReplaceCommitFailure, kReplaceRestoreFailure };
+enum class RecoveryBoundary { kNone, kRestoreTarget, kRestoreError, kUnsupportedIsolation, kCommitMismatch, kCommitBlocked, kReplaceCommitFailure, kReplaceRestoreFailure, kReplaceOccupied };
 RecoveryBoundary recovery_boundary = RecoveryBoundary::kNone;
 std::wstring boundary_path;
 int file_id_query_to_fault = 0;
@@ -56,6 +56,11 @@ FileFailure test_isolation_result(HANDLE file, HANDLE directory, const std::wstr
 }
 
 bool test_fail_replacement_rename(bool restoring) {
+  if (!restoring && recovery_boundary == RecoveryBoundary::kReplaceOccupied) {
+    const PinnedHandle occupied(CreateFileW(boundary_path.c_str(), FILE_WRITE_DATA, 0, nullptr, CREATE_NEW, 0, nullptr));
+    constexpr char contents[] = "competing bytes";
+    if (occupied.value != INVALID_HANDLE_VALUE) write_all(occupied.value, reinterpret_cast<const BYTE*>(contents), static_cast<DWORD>(sizeof(contents) - 1));
+  }
   return recovery_boundary == RecoveryBoundary::kReplaceRestoreFailure ||
     (!restoring && recovery_boundary == RecoveryBoundary::kReplaceCommitFailure);
 }
@@ -230,6 +235,12 @@ int wmain(int argc, wchar_t** argv) {
       dir_ops::file_id_query_to_fault = test == L"file-id-zero-recovery" ? -1
         : test.find(L"second") == std::wstring::npos ? 1 : 2;
       dir_ops::zero_file_id = test.find(L"zero") != std::wstring::npos;
+      return dir_ops::run(argc - 1, argv + 1);
+    }
+    if (test == L"replace-occupied") {
+      if (argc != 12) return 2;
+      dir_ops::recovery_boundary = dir_ops::RecoveryBoundary::kReplaceOccupied;
+      dir_ops::boundary_path = std::wstring(argv[7]) + L"\\" + argv[10];
       return dir_ops::run(argc - 1, argv + 1);
     }
     if (test == L"replace-commit-failure" || test == L"replace-restore-failure") {

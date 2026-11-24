@@ -1178,6 +1178,11 @@ Important rules:
   retirement. A failed commit restores the previous target exclusively or
   records a leftover. See the [helper protocol](../../native/macos-dir-ops/README.md).
 
+  I4. A displaced original moves only by identity-preserving rename. Startup
+  uses the separate target recovery operation for its record. An occupied or
+  unverifiable destination leaves the original and its record in place.
+  Copy-back applies only to copy-part recovery.
+
   Accepted residual.
 
   (a) the gap between the final fd verify and the unlink of a random hidden name; (b) anything after a verified restore or commit (the user's own act). Nothing else.

@@ -247,6 +247,24 @@ async function recoveryTests() {
     assert.equal(readFileSync(join(dir, "target"), "utf8"), "unrelated bytes");
     assert.ok(!existsSync(join(dir, part)));
   });
+  add("replacement rollback leaves a genuinely occupied destination alone", async (dir) => {
+    const target = join(dir, "target");
+    writeFileSync(join(dir, "source"), "new bytes");
+    writeFileSync(target, "old bytes");
+    const old = snapshot(target);
+    const args = ["replace-occupied", "--dir-copy", ...held(dir), "source", ...held(dir), "target", part];
+    const result = await runCopy(args, (line, stdin) => {
+      if (line === "ready") stdin.write("c");
+      if (line === "copied") stdin.end("c");
+    }, join(tmpdir(), "ave-path-pin-test.exe"));
+    assert.equal(result.code, 3, JSON.stringify(result));
+    assert.equal(result.lines.at(-1), "refused target removed");
+    assert.equal(readFileSync(target, "utf8"), "competing bytes");
+    const [aside] = readdirSync(dir).filter((name) => /^\.[0-9a-f]{32}\.removing$/u.test(name));
+    assert.ok(aside);
+    assert.deepEqual(snapshot(join(dir, aside)), old);
+    assert.ok(result.lines.some((line) => line.startsWith(`target-left left ${aside} ${old[0]} ${old[1]} mismatch `)));
+  });
   for (const failure of ["none", "commit", "restore"]) {
     add(`copy replacement with ${failure} failure mode`, async (dir) => {
       const source = join(dir, "source");

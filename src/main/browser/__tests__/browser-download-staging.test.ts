@@ -1,7 +1,8 @@
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { chmodSync, linkSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statfsSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, linkSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statfsSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -467,6 +468,74 @@ describe("a staged download", () => {
     expectOnlyHeldPathOperations();
   });
 
+  it.each([false, true])("restart preserves the original and handles an occupied target: %s", async (occupied) => {
+    const prepared = prepare();
+    const chosen = join(home, "chosen");
+    mkdirSync(chosen);
+    const target = join(chosen, "report.pdf");
+    const hidden = ".0123456789abcdef0123456789abcdef.removing";
+    const hiddenPath = join(chosen, hidden);
+    const alias = join(chosen, "alias.pdf");
+    const content = Buffer.from("old bytes");
+    writeFileSync(hiddenPath, content);
+    linkSync(hiddenPath, alias);
+    const auxiliary = "original auxiliary data";
+    const attribute = "user.ave";
+    const libc = process.platform === "linux" ? (createRequire(import.meta.url)("koffi") as typeof import("koffi")).load("libc.so.6") : null;
+    if (process.platform === "win32") writeFileSync(`${hiddenPath}:original`, auxiliary);
+    else if (libc === null) execFileSync("xattr", ["-w", attribute, auxiliary, hiddenPath]);
+    else {
+      const setAttribute = libc.func("int setxattr(const char *, const char *, const void *, size_t, int)");
+      const data = Buffer.from(auxiliary);
+      expect(setAttribute(hiddenPath, attribute, data, data.length, 0)).toBe(0);
+    }
+    const stamp = new Date("2003-01-01T00:00:00Z");
+    utimesSync(hiddenPath, stamp, stamp);
+    const original = statSync(hiddenPath, { bigint: true });
+    const folder = statSync(chosen, { bigint: true });
+    const windows = process.platform === "win32";
+    const [facts] = windows ? JSON.parse(execFileSync(WINDOWS_PATH_KIND, ["--pin", hiddenPath], { encoding: "utf8" })) : [];
+    const dev = String(windows ? BigInt(facts.volumeSerial) : original.dev);
+    const ino = String(windows ? BigInt(facts.fileId) : original.ino);
+    const epoch = windows ? 11644473600000000000n : 0n;
+    const digest = createHash("sha256").update(content).digest("hex");
+    await prepared.files.writeRecord(prepared, `${"a".repeat(32)}.cleanup.json`, Buffer.from(JSON.stringify({
+      folder: { path: chosen, dev: String(folder.dev), ino: String(folder.ino) },
+      part: `.${"b".repeat(32)}.part`,
+      target: "report.pdf",
+      at: hidden,
+      identity: { kind: "helper", dev, ino, verdict: "mismatch", observed: {
+        file: { dev, ino, birthtimeNs: String(original.birthtimeNs + epoch) },
+        content: { size: String(original.size), mtimeNs: String(original.mtimeNs + epoch), head: digest, tail: digest },
+      } },
+    })));
+    if (occupied) writeFileSync(target, "competing bytes");
+
+    const restarted = prepare();
+    await sweepBrowserDownloadStaging(restarted);
+
+    const recovered = occupied ? hiddenPath : target;
+    expect(readFileSync(recovered)).toEqual(content);
+    expect(statSync(recovered, { bigint: true })).toMatchObject({ ino: original.ino, mtimeNs: original.mtimeNs, nlink: 2n });
+    expect(statSync(alias, { bigint: true }).ino).toBe(original.ino);
+    if (windows) {
+      const [actual] = JSON.parse(execFileSync(WINDOWS_PATH_KIND, ["--pin", recovered], { encoding: "utf8" }));
+      expect(actual.fileId).toBe(facts.fileId);
+      expect(readFileSync(`${recovered}:original`, "utf8")).toBe(auxiliary);
+    } else if (libc === null) {
+      expect(execFileSync("xattr", ["-p", attribute, recovered], { encoding: "utf8" }).trim()).toBe(auxiliary);
+    } else {
+      const getAttribute = libc.func("int getxattr(const char *, const char *, void *, size_t)");
+      const data = Buffer.alloc(Buffer.byteLength(auxiliary));
+      expect(getAttribute(recovered, attribute, data, data.length)).toBe(data.length);
+      expect(data.toString()).toBe(auxiliary);
+      libc.unload();
+    }
+    if (occupied) expect(readFileSync(target, "utf8")).toBe("competing bytes");
+    else expect(existsSync(hiddenPath)).toBe(false);
+    expect(await restarted.files.listRecords(restarted)).toHaveLength(occupied ? 1 : 0);
+  });
+
   it("records the previous target separately from the completed copy part", async () => {
     const prepared = prepare();
     const chosen = join(home, "chosen");
@@ -474,13 +543,14 @@ describe("a staged download", () => {
     const target = join(chosen, "report.pdf");
     const hidden = ".fedcba9876543210fedcba9876543210.removing";
     const recover = vi.fn(async () => ({ outcome: "left" as const, at: null }));
+    const recoverTarget = vi.fn(async () => "left" as const);
     const root = withFiles(acrossVolumes(prepared), () => ({
       copy: async (_from, _name, _to, _target, _part, _proceed, _stop, onTargetLeft) => {
         writeFileSync(join(chosen, hidden), "old bytes");
         onTargetLeft?.({ name: hidden, identity: { kind: "helper", dev: 1n, ino: 2n, verdict: "mismatch", observed: null } });
         throw new Error("injected commit failure");
       },
-      recover,
+      recover, recoverTarget,
     }));
     const item = fakeItem();
     const dialogsForCopy = dialogs();
@@ -495,25 +565,29 @@ describe("a staged download", () => {
     expect(record).toMatch(/\.cleanup\.json$/u);
     expect(JSON.parse(readFileSync(join(root.path, record), "utf8"))).toMatchObject({ at: hidden, target: "report.pdf" });
     await sweepBrowserDownloadStaging(root);
-    expect(recover).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ path: chosen }), hidden, "report.pdf",
-      { kind: "helper", dev: 1n, ino: 2n, verdict: "mismatch", observed: null });
+    expect(recover).not.toHaveBeenCalled();
+    expect(recoverTarget).not.toHaveBeenCalled();
     expect(readFileSync(join(chosen, hidden), "utf8")).toBe("old bytes");
     expect(readdirSync(root.path)).toHaveLength(1);
   });
 
-  it.runIf(process.platform === "darwin" || process.platform === "linux").each(["commit", "restore"] as const)(
-    "preserves old bytes and handles the record when exclusive %s fails",
+  it.runIf(process.platform === "darwin" || process.platform === "linux").each(["commit", "restore", "occupied"] as const)(
+    "preserves old bytes and handles the record after replacement failure: %s",
     async (failure) => {
       const prepared = prepare();
-      const files = process.platform === "darwin"
-        ? _helperFileOperationsForTest(macHelper(`-copy-${failure}-failure`))
-        : _descriptorFileOperationsForTest((from) => {
-          if (from.endsWith(".part") || failure === "restore") throw Object.assign(new Error("injected rename failure"), { code: "EIO" });
-        });
-      const root = acrossVolumes({ ...prepared, files });
       const chosen = join(home, "chosen");
       mkdirSync(chosen);
       const target = join(chosen, "report.pdf");
+      const files = process.platform === "darwin"
+        ? _helperFileOperationsForTest(macHelper(failure === "occupied" ? "-copy-occupied" : `-copy-${failure}-failure`))
+        : _descriptorFileOperationsForTest((from) => {
+          if (failure === "occupied") {
+            if (from.endsWith(".part")) writeFileSync(target, "competing bytes");
+          } else if (from.endsWith(".part") || failure === "restore") {
+            throw Object.assign(new Error("injected rename failure"), { code: "EIO" });
+          }
+        });
+      const root = acrossVolumes({ ...prepared, files });
       writeFileSync(target, "old bytes");
       const item = fakeItem();
       const { asked, askSavePath } = dialogs();
@@ -530,14 +604,20 @@ describe("a staged download", () => {
         expect(readdirSync(root.path)).toEqual([]);
         return;
       }
-      const [hidden = ""] = readdirSync(chosen);
-      expect(readdirSync(chosen)).toHaveLength(1);
+      const hidden = readdirSync(chosen).find((name) => name.endsWith(".removing")) ?? "";
+      expect(readdirSync(chosen)).toHaveLength(failure === "occupied" ? 2 : 1);
       expect(hidden).toMatch(/^\.[0-9a-f]{32}\.removing$/u);
       expect(readFileSync(join(chosen, hidden), "utf8")).toBe("old bytes");
       const [record = ""] = readdirSync(root.path);
       expect(record).toMatch(/\.cleanup\.json$/u);
       expect(JSON.parse(readFileSync(join(root.path, record), "utf8"))).toMatchObject({ at: hidden, target: "report.pdf" });
       await sweepBrowserDownloadStaging(prepared);
+      if (failure === "occupied") {
+        expect(readFileSync(target, "utf8")).toBe("competing bytes");
+        expect(readFileSync(join(chosen, hidden), "utf8")).toBe("old bytes");
+        expect(await prepared.files.listRecords(prepared)).toHaveLength(1);
+        return;
+      }
       expect(readFileSync(target, "utf8")).toBe("old bytes");
       expect(readdirSync(chosen)).toEqual(["report.pdf"]);
       expect(readdirSync(root.path)).toEqual([]);

@@ -81,6 +81,7 @@ describe("buildMacosDirOps", () => {
       macosDirOpsOutput(root, "arm64", "ave-dir-ops-fail-restored"),
       macosDirOpsOutput(root, "arm64", "ave-dir-ops-copy-commit-failure"),
       macosDirOpsOutput(root, "arm64", "ave-dir-ops-copy-restore-failure"),
+      macosDirOpsOutput(root, "arm64", "ave-dir-ops-copy-occupied"),
     ]);
     expect(calls[0]?.some((arg) => arg.startsWith("-D"))).toBe(false);
     expect(calls[1]).toContain("-DAVE_DIR_OPS_TEST_WRITE_LIMIT=4093");
@@ -94,6 +95,7 @@ describe("buildMacosDirOps", () => {
     expect(calls[9]).toContain("-DAVE_DIR_OPS_TEST_FAIL_RESTORED");
     expect(calls[10]).toContain("-DAVE_DIR_OPS_TEST_COPY_COMMIT_FAILURE");
     expect(calls[11]).toContain("-DAVE_DIR_OPS_TEST_COPY_RESTORE_FAILURE");
+    expect(calls[12]).toContain("-DAVE_DIR_OPS_TEST_COPY_OCCUPIED");
   });
 
   it("leaves helpers newer than every source alone, and rebuilds them once a source or the build script changes", () => {

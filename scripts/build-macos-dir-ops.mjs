@@ -29,6 +29,7 @@ export const MACOS_DIR_OPS_TEST_BUILDS = Object.freeze([
   Object.freeze({ executable: "ave-dir-ops-fail-restored", defines: ["AVE_DIR_OPS_TEST_FAIL_RESTORED"] }),
   Object.freeze({ executable: "ave-dir-ops-copy-commit-failure", defines: ["AVE_DIR_OPS_TEST_COPY_COMMIT_FAILURE"] }),
   Object.freeze({ executable: "ave-dir-ops-copy-restore-failure", defines: ["AVE_DIR_OPS_TEST_COPY_RESTORE_FAILURE"] }),
+  Object.freeze({ executable: "ave-dir-ops-copy-occupied", defines: ["AVE_DIR_OPS_TEST_COPY_OCCUPIED"] }),
 ]);
 
 export function macosDirOpsOutput(root, arch, executable = MACOS_DIR_OPS_EXECUTABLE) {

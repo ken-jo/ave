@@ -27,6 +27,7 @@ ave-dir-ops --dir-read <dir> <dir-dev> <dir-ino> <name> <max>
 ave-dir-ops --dir-write-record <dir> <dir-dev> <dir-ino> <name> <hex>
 ave-dir-ops --dir-remove-id <dir> <dir-dev> <dir-ino> <name> <file-dev> <file-ino> [<birth-ns>:<fingerprint>]
 ave-dir-ops --dir-restore <dir> <dir-dev> <dir-ino> <hidden> <part> <file-dev> <file-ino> <birth-ns>:<fingerprint>
+ave-dir-ops --dir-restore-target <dir> <dir-dev> <dir-ino> <hidden> <target> <file-dev> <file-ino> <birth-ns>:<fingerprint-or-dash>
 ```
 
 Names are single path components. `rename` moves the ordinary file `name` to
@@ -63,6 +64,9 @@ single components.
   rule as `remove-id`. It answers `restored` only after both steps,
   `absent` when the source is missing, or `left` when the part is occupied,
   verification fails or cleanup cannot finish.
+- `restore-target` verifies the held source, renames it exclusively to
+  the target and verifies that the target names the same file. It answers
+  `restored` or `left`. A birth-only token uses `<birth-ns>:-`.
 
 A fingerprint is one ASCII token `<size>:<mtime-ns>:<head>:<tail>`.
 Size and modification time are decimal. The two digests are lowercase
@@ -129,6 +133,11 @@ stdin.
   descriptor. The verdict is `mismatch` for a failed restore and
   `remove-failed` for retirement after a verified commit. The host records
   this separately from the part's outcome.
+
+  I4. A displaced original moves only by identity-preserving rename. Startup
+  uses the separate target recovery operation for its record. An occupied or
+  unverifiable destination leaves the original and its record in place.
+  Copy-back applies only to copy-part recovery.
 
   Accepted residual.
 

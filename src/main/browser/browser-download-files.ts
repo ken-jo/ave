@@ -166,6 +166,7 @@ export interface HeldFileOperations {
   readRecord(directory: HeldDirectory, name: string, max: number): Promise<Buffer | null>;
   writeRecord(directory: HeldDirectory, name: string, body: Buffer): Promise<void>;
   recover(directory: HeldDirectory, name: string, original: string, identity: PartIdentity | HelperPartIdentity): Promise<OwnFileResult | { outcome: "restored" }>;
+  recoverTarget(directory: HeldDirectory, hidden: string, target: string, file: FileIdentity, content?: Fingerprint): Promise<"restored" | "left">;
 }
 
 const HELPER_BUILD: Partial<Record<NodeJS.Platform, string>> = {
@@ -443,6 +444,26 @@ function descriptorFileOperations(renameCopy = renameExclusive): HeldFileOperati
     }
   }
 
+  function recoverTarget(directory: number, hidden: string, target: string, file: FileIdentity, content?: Fingerprint): "restored" | "left" {
+    try {
+      const fd = boundOpen(directory, hidden);
+      if (fd === null) return "left";
+      try {
+        const info = fstatSync(fd, { bigint: true });
+        if (!info.isFile() || !sameFile(info, file) || (content !== undefined && !verifyFingerprint(fd, content)) ||
+            !entryMatches(directory, hidden, info)) return "left";
+        renameExclusive(directory, hidden, target);
+        if (entryMatches(directory, target, info)) return "restored";
+        renameExclusive(directory, target, hidden);
+      } finally {
+        closeSync(fd);
+      }
+    } catch {
+      return "left";
+    }
+    return "left";
+  }
+
   function purgeStaged(fd: number, name: string): "absent" | "removed" {
     let entry: number;
     try {
@@ -600,6 +621,8 @@ function descriptorFileOperations(renameCopy = renameExclusive): HeldFileOperati
         return { outcome: "left", at: { name, identity } };
       }
     },
+    recoverTarget: async (directory, hidden, target, file, content) =>
+      holdingSync(directory, (fd) => recoverTarget(fd, hidden, target, file, content)),
     listRecords: async (directory) => holdingSync(directory, (fd) => readdirSync(inHeld(fd, ".")).filter((name) => RECORD_NAME.test(name))),
     readRecord: async (directory, name, max) => holdingSync(directory, (fd) => {
       const record = boundOpen(fd, name);
@@ -881,6 +904,7 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
     const isOutcome = (line: string): boolean => {
       const left = parsePartLeft(line, parseInode);
       if (left !== null) {
+        if (mode === "--dir-restore-target") return passed === "ready" && line === "left";
         if (mode === "--dir-remove-id" || mode === "--dir-restore") return passed === "ready" && left.answer === "";
         // Only a copy let past `ready`, which may have created its temporary file, says what became of it.
         if (mode !== "--dir-copy" || passed === null) return false;
@@ -898,6 +922,7 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
       if (mode === "--dir-rename") return line === "committed" || line === "cross-volume";
       if (mode === "--dir-remove" || mode === "--dir-remove-id") return line === "removed" || line === "absent";
       if (mode === "--dir-restore") return line === "restored" || line === "absent";
+      if (mode === "--dir-restore-target") return line === "restored" || line === "left";
       if (mode === "--dir-list-records") return RECORDS_LINE.test(line);
       if (mode === "--dir-read") return line === "absent" || (line.length <= 7 + 2 * Number(args[5]) && RECORD_LINE.test(line));
       if (mode === "--dir-write-record") return line === "written";
@@ -1085,6 +1110,12 @@ function helperFileOperations(helper: string, windowsFileIds: boolean, bounds: H
       await run(["--dir-remove", ...directoryArguments(directory), name], proceed, stop),
       ["removed", "absent", "cancelled"] as const),
     recover,
+    recoverTarget: async (folder, hidden, target, file, content) => {
+      if (file.birthtimeNs === undefined) return "left";
+      const ino = windowsFileIds ? file.ino.toString(16).padStart(32, "0") : String(file.ino);
+      return oneOf(helper, await run(["--dir-restore-target", ...directoryArguments(folder), hidden, target,
+        String(file.dev), ino, `${file.birthtimeNs}:${content === undefined ? "-" : fingerprintKey(content)}`], go, UNSTOPPED), ["restored", "left"] as const);
+    },
     listRecords: async (directory) => {
       const answer = await run(["--dir-list-records", ...directoryArguments(directory)], go, UNSTOPPED);
       return answer === "records" ? [] : answer.slice(8).split(" ");
