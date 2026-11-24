@@ -10,6 +10,7 @@ const manager = vi.hoisted(() => ({
   setParentProxyRouter: vi.fn(),
 }));
 vi.mock("@anthropic-ai/sandbox-runtime", () => ({ SandboxManager: manager }));
+vi.mock("../../shared/host-program-path.js", () => ({ resolveHostProgram: (name: string) => `/configured/${name}` }));
 installVerifiedAveHomePrivacy();
 const ORIGINAL_PLATFORM = process.platform;
 

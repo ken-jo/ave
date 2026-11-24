@@ -24,12 +24,24 @@ import { isHostGitWorkspaceAvailable } from "../../shared/host-git.js";
 import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
 import * as policyHome from "../../shared/policy-home.js";
 import { configureHostResources, getHostResources } from "../../main/host-resources.js";
+import { wrapCommandWithSandboxLinux } from "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js";
 
 useVerifiedAveHomePrivacy();
 
 // Simulated win32 on a POSIX host: drive-path math, an empty simulated drive, ASRT resolved on it, and spelling-only stamp pins.
 vi.mock("node:path", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDrivePath(await original()));
-vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDriveFs(await original()));
+vi.mock("node:fs", async original => {
+  const fs = (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDriveFs(await original());
+  const isLocalHelper = (path: unknown) => path === "/usr/local/bin/bwrap" || path === "/usr/local/bin/socat";
+  return {
+    ...fs,
+    statSync: (path: unknown, ...args: unknown[]) => isLocalHelper(path)
+      ? { isFile: () => true } : Reflect.apply(fs.statSync, fs, [path, ...args]),
+    accessSync: (path: unknown, ...args: unknown[]) => {
+      if (!isLocalHelper(path)) Reflect.apply(fs.accessSync, fs, [path, ...args]);
+    },
+  };
+});
 vi.mock("node:module", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDriveModule(await original()));
 vi.mock("../windows-stamp-targets.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedStampTargets(await original()));
 
@@ -132,6 +144,7 @@ async function flushMicrotasks(): Promise<void> {
 beforeEach(() => {
   setLocale("en");
   setProcessPlatform("linux");
+  vi.stubEnv("PATH", `/usr/local/bin:${process.env.PATH ?? ""}`);
   h.initialize.mockResolvedValue(undefined);
   h.openInvocationListener.mockResolvedValue({ port: 12345 });
   h.wrapWithSandboxArgv.mockResolvedValue({
@@ -495,6 +508,34 @@ describe("Linux wrap filesystem discovery snapshot", () => {
 });
 
 describe("initializeAsrtSandbox — Linux configured-wrapper runtime probe", () => {
+  it("uses the same pinned local helpers at boot and in a worker wrap with a restricted launcher PATH", async () => {
+    const root = mkdtempSync(join(tmpdir(), "asrt-local-helpers-"));
+    temporaryRoots.push(root);
+    const socketPath = join(root, "bridge.sock");
+    writeFileSync(socketPath, "");
+    vi.stubEnv("PATH", "relative:/usr/local/bin:/usr/bin:/bin");
+    h.wrapWithSandboxArgv.mockImplementation(async (command: string) => {
+      const config = h.initialize.mock.lastCall?.[0] as SandboxRuntimeConfig;
+      const wrapped = await wrapCommandWithSandboxLinux({
+        command, needsNetworkRestriction: true, readConfig: undefined, writeConfig: undefined,
+        httpSocketPath: socketPath, socksSocketPath: socketPath,
+        binShell: process.execPath.replaceAll("\\", "/"), allowAllUnixSockets: true, allowNestedUserNamespaces: true,
+        bwrapPath: config.bwrapPath, socatPath: config.socatPath,
+      });
+      return { argv: ["/bin/bash", "-c", wrapped], env: { PATH: process.env.PATH } };
+    });
+    await initializeAsrtSandbox({ allowedDomains: [] });
+    expect(h.initialize.mock.lastCall?.[0]).toMatchObject({ bwrapPath: "/usr/local/bin/bwrap", socatPath: "/usr/local/bin/socat" });
+    const [, probeArgs, probeOptions] = h.spawn.mock.lastCall!;
+    expect(probeOptions.env).toEqual({ PATH: "/usr/bin:/bin:/usr/sbin:/sbin" });
+    vi.stubEnv("PATH", "/another-install/bin:/usr/bin:/bin");
+    const worker = await wrapWorkerCommand("true", { commandId: TEST_COMMAND_ID });
+    for (const command of [probeArgs[1], worker.argv[2]]) {
+      expect(command).toContain("/usr/local/bin/bwrap");
+      expect(command).toContain("/usr/local/bin/socat");
+    }
+  });
+
   it("runs the fixed no-I/O command through ASRT's exact configured argv before activation", async () => {
     await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
 
@@ -513,7 +554,7 @@ describe("initializeAsrtSandbox — Linux configured-wrapper runtime probe", () 
       ["-c", CONFIGURED_LINUX_BWRAP_COMMAND],
       {
         cwd: process.cwd(),
-        env: { ASRT_PROBE_ENV: "configured" },
+        env: { PATH: "/usr/bin:/bin:/usr/sbin:/sbin" },
         shell: false,
         stdio: "ignore",
         windowsHide: true,

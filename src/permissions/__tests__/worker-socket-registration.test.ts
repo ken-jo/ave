@@ -39,6 +39,8 @@ vi.mock("node:child_process", () => ({
   },
 }));
 
+vi.mock("../../shared/host-program-path.js", () => ({ resolveHostProgram: (name: string) => `/configured/${name}` }));
+
 describe("worker socket directory ownership", () => {
   const originalPlatform = process.platform;
   const dir = "/run/plugin/sockets";

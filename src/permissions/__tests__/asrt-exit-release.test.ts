@@ -26,6 +26,7 @@ const manager = vi.hoisted(() => ({
   initialize: vi.fn<() => Promise<void>>(async () => undefined),
   setSignalCleanupOwnedByHost: vi.fn<(owned: boolean) => void>(),
 }));
+vi.mock("../../shared/host-program-path.js", () => ({ resolveHostProgram: (name: string) => `/configured/${name}` }));
 vi.mock("@anthropic-ai/sandbox-runtime", () => ({ SandboxManager: {
   setParentProxyRouter: () => undefined,
   initialize: () => manager.initialize(),

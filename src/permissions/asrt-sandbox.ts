@@ -4,6 +4,8 @@ import { MxcExtensionReadinessRefusedError, MxcNativeEntryRequiredError, MxcProc
 import { assertMxcExtensionFilesystemOwnership, type MxcExtensionFilesystemOwnership } from "./mxc-filesystem-ownership.js";
 import type { ShellFilesystemPolicy } from "./mxc-windows.js";
 import { issueFilesystemSandboxBlock, type SandboxBlock } from "../shared/sandbox-block.js";
+import { resolveHostProgram } from "../shared/host-program-path.js";
+import { buildLauncherEnvironment } from "./launcher-environment.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn } from "node:child_process";
 import { createHmac, randomBytes } from "node:crypto";
@@ -349,6 +351,7 @@ interface WindowsWrapDenies {
 type WindowsDocumentsQuery = (signal?: AbortSignal) => Promise<string>;
 
 interface AsrtSandboxSession {
+  linuxPrograms?: Required<Pick<SandboxRuntimeConfig, "bwrapPath" | "socatPath">>;
   readonly queryWindowsDocumentsPath?: WindowsDocumentsQuery;
   sharedWindowsDocumentsPath?: () => string;
   readonly windowsLiveGrants: Map<string, WindowsLiveGrantCounts>;
@@ -2126,6 +2129,7 @@ export function buildSandboxConfig(
     network,
     filesystem: finishFilesystemPolicy(filesystem, trustedSettings, trustedSettings.denyWrite ?? [], hasConfiguredDenies(trustedSettings)) as FilesystemConfig,
     ...(windows !== undefined ? { windows } : {}),
+    ...sandboxSession?.linuxPrograms,
     ...(applySeccompPath !== undefined ? { seccomp: { applyPath: applySeccompPath } } : {}),
     ...(process.platform === "darwin" || process.platform === "linux"
       ? { javaAgentJarPath: getVendoredJavaProxyAgentJarPath() }
@@ -2218,7 +2222,7 @@ function executeAsrtRuntimeProbe(
       child = spawn(executable, args, {
         cwd: process.cwd(),
         windowsHide: true,
-        env: wrapped.env,
+        env: process.platform === "linux" ? buildLauncherEnvironment() : wrapped.env,
         shell: false,
         stdio: "ignore",
       });
@@ -2499,6 +2503,14 @@ async function initializeSandboxRuntime(
   windowsDenyStatWarnings.clear();
   _workerUnixSocketDirs.clear();
   try {
+    if (process.platform === "linux") {
+      // Capture one host PATH result for the boot probe and every subsequent wrapper.
+      try {
+        session.linuxPrograms = { bwrapPath: resolveHostProgram("bwrap"), socatPath: resolveHostProgram("socat") };
+      } catch (cause) {
+        throw new AsrtLinuxRuntimeProbeError("required Linux sandbox program is unavailable", { cause });
+      }
+    }
     useAppOwnedSandboxTempRoot();
     _baseReadDenyEvidence = await gatherWindowsReadDenyEvidence(trustedSettings);
     startupSignal?.throwIfAborted();
