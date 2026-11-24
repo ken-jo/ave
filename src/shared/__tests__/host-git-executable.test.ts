@@ -213,6 +213,31 @@ describe("resolveHostGit", () => {
     }
   }, 5_000);
 
+  it("stops discovery when a check finishes after the deadline, before the next check starts", async () => {
+    const { withHostGitRecovery } = await import("../host-git-executable.js");
+    vi.stubEnv("PATH", host);
+    vi.mocked(statSync).mockReturnValue({ isFile: () => true } as ReturnType<typeof statSync>);
+    let now = 1_000;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+    const deadline = now + 5_000;
+    let statsAtProbe = -1;
+    vi.mocked(spawn).mockImplementation(() => gitProbeChild((complete) => {
+      statsAtProbe = vi.mocked(statSync).mock.calls.length;
+      now = deadline + 1;
+      complete("git version 2.56.0");
+    }));
+    const use = vi.fn(async () => "used");
+    try {
+      await expect(withHostGitRecovery(null, use, deadline)).rejects.toMatchObject({ name: "TimeoutError", message: "Git discovery timed out" });
+      expect(spawn).toHaveBeenCalledOnce();
+      // The identity recheck that follows the probe never starts.
+      expect(vi.mocked(statSync).mock.calls.length).toBe(statsAtProbe);
+      expect(use).not.toHaveBeenCalled();
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it.each([false, true])("rechecks identity across an awaited probe (second replacement: %s)", async (replaceAgain) => {
     const fs = await vi.importActual<typeof import("node:fs")>("node:fs");
     const { discoverHostGitAsync } = await import("../host-git-executable.js");
