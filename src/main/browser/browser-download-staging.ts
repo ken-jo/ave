@@ -422,8 +422,9 @@ function readPartRecord(text: string): PartRecord | null {
   if (typeof folder.path !== "string" || !isAbsolute(folder.path) || !decimal(folder.dev) || !decimal(folder.ino)) return null;
   if (typeof part !== "string" || !PART_NAME.test(part) || typeof at !== "string" || (at !== part && !MOVED_ASIDE_NAME.test(at))) return null;
   let known: PartIdentity | HelperPartIdentity;
-  if (exactly(identity, ["kind", "dev", "ino", "birthtimeNs"]) && identity.kind === "fileId") {
-    const file = fileId(identity);
+  if ((exactly(identity, ["kind", "dev", "ino", "birthtimeNs"]) || exactly(identity, ["kind", "dev", "ino"])) && identity.kind === "fileId") {
+    const file = !("birthtimeNs" in identity) && decimal(identity.dev) && decimal(identity.ino)
+      ? { dev: BigInt(identity.dev), ino: BigInt(identity.ino) } : fileId(identity);
     if (file === null) return null;
     known = { kind: "fileId", file };
   } else if (exactly(identity, ["kind", "size", "mtimeNs", "head", "tail"]) && identity.kind === "fingerprint") {

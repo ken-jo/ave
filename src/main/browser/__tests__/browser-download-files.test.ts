@@ -347,6 +347,20 @@ describe("a move or removal stopped by its signal", () => {
 });
 
 describe("a helper that does not keep to its protocol", () => {
+  it("kills a copy that refuses its source after making progress", async () => {
+    script((helper) => {
+      helper.say("ready");
+      helper.once("input", () => {
+        helper.say("writing 1 2", "progress 8", "refused source");
+        helper.exit(3);
+      });
+    });
+    const run = follow(files.copy(from, "staged", to, "report.pdf", ".part", () => true, UNSTOPPED));
+    await flush();
+    expect(run.error).toBeInstanceOf(HeldFileHelperUnavailableError);
+    expect(helpers()[0]?.killed).toBe(1);
+  });
+
   it.each([
     ["move", () => files.move(from, "staged", to, "report.pdf", () => true, UNSTOPPED)],
     ["copy", () => files.copy(from, "staged", to, "report.pdf", ".part", () => true, UNSTOPPED)],
@@ -935,11 +949,12 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
     // The copy answers that it failed once it has written its temporary file, and ends.
     readonly copyFails: boolean;
     readonly hiddenVerdict?: "mismatch" | "remove-failed";
+    readonly replaceBeforeProgress?: boolean;
     // Runs as a removal is let go, before it acts; answering "refuse" ends it without an outcome.
     readonly beforeRemove: (helper: FakeHelper) => "refuse" | undefined;
   }
   const namedLeftover = ".0123456789abcdef0123456789abcdef.removing";
-  const actOnRealFolders = ({ copyDiesWhenKilled, quietCopy, copyFails, beforeRemove, hiddenVerdict }: Faults) => (helper: FakeHelper): void => {
+  const actOnRealFolders = ({ copyDiesWhenKilled, quietCopy, copyFails, beforeRemove, hiddenVerdict, replaceBeforeProgress }: Faults) => (helper: FakeHelper): void => {
     const [mode] = helper.args;
     helper.say("ready");
     if (mode === "--dir-copy") {
@@ -947,8 +962,14 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
       helper.once("input", () => {
         const part = join(arg(helper, 5), arg(helper, 9));
         fs.writeFileSync(part, "partial copy");
+        const written = fs.statSync(part, { bigint: true });
+        if (!quietCopy) helper.say(`writing ${written.dev} ${written.ino}`);
         // Whole seconds, which a copy of the file keeps exactly, as FAT keeps only coarse times.
         if (boundary.linkless) fs.utimesSync(part, 1_700_000_000, 1_700_000_000);
+        if (replaceBeforeProgress) {
+          fs.renameSync(part, `${part}.saved`);
+          fs.writeFileSync(part, "replacement before progress");
+        }
         if (!quietCopy) helper.say("progress 1048576");
         if (hiddenVerdict !== undefined) {
           const own = fs.statSync(part, { bigint: true });
@@ -1002,6 +1023,7 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
   const stalledCopy = async ({
     copyDiesWhenKilled = false, quietCopy = false, copyFails = false, beforeRemove = (_helper: FakeHelper): "refuse" | undefined => undefined, beforeStall = (_chosen: string): void => {},
     hiddenVerdict = undefined as Faults["hiddenVerdict"],
+    replaceBeforeProgress = false,
   } = {}) => {
     const staging = join(base, "staging");
     const chosen = join(base, "chosen");
@@ -1009,7 +1031,7 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
     fs.mkdirSync(chosen);
     const info = fs.statSync(staging, { bigint: true });
     const root = { path: staging, dev: info.dev, ino: info.ino, files: { ...files, move: async () => "cross-volume" as const } };
-    script(actOnRealFolders({ copyDiesWhenKilled, quietCopy, copyFails, beforeRemove, hiddenVerdict }));
+    script(actOnRealFolders({ copyDiesWhenKilled, quietCopy, copyFails, beforeRemove, hiddenVerdict, replaceBeforeProgress }));
     const item = Object.assign(new EventEmitter(), {
       getFilename: () => "report.pdf", getURL: () => "https://site.example/report", getURLChain: () => ["https://site.example/report"],
       hasUserGesture: () => true, getReceivedBytes: () => 8, getTotalBytes: () => 8, getState: () => "completed" as const,
@@ -1031,6 +1053,16 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
   const removalsIn = (folder: string) => helpers().filter((helper) => helper.args[0] === "--dir-remove" && helper.args[1] === folder);
   const records = (staging: string) => fs.readdirSync(staging).filter((name) => /^[0-9a-f]{32}\.cleanup\.json$/u.test(name));
   const recordedAt = (staging: string) => records(staging).map((name) => (JSON.parse(fs.readFileSync(join(staging, name), "utf8")) as { at: string }).at);
+
+  it.each([true, false])("preserves a replacement before the first progress line (immediate exit: %s)", async (copyDiesWhenKilled) => {
+    const { root, part } = await stalledCopy({ copyDiesWhenKilled, replaceBeforeProgress: true });
+    const swept = follow(sweepBrowserDownloadStaging(root));
+    await flush();
+    await flush();
+    expect(swept.error).toBeUndefined();
+    expect(fs.readFileSync(part, "utf8")).toBe("replacement before progress");
+    expect(fs.readFileSync(`${part}.saved`, "utf8")).toBe("partial copy");
+  });
 
   it.each(["remove-failed", "mismatch"] as const)("records a helper's %s verdict and retries it at startup", async (hiddenVerdict) => {
     const { root, staging, chosen, part, done } = await stalledCopy({ hiddenVerdict });

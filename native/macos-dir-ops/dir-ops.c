@@ -404,9 +404,9 @@ static int run_copy(char **argv) {
   struct stat info;
   if (fstat(source, &info) != 0) return failed(errno);
   if (!S_ISREG(info.st_mode)) return refused("source");
-  if (!proceed("ready")) return done("cancelled");
   status = check_replaceable(to, target);
   if (status != 0) return status;
+  if (!proceed("ready")) return done("cancelled");
   // The temporary file is created exclusively, never through a link, in the held folder, and opened for reading too, so a cleanup can
   // compare what it wrote.
   const int copy = openat(to, part, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, info.st_mode & 0777);
@@ -420,6 +420,14 @@ static int run_copy(char **argv) {
     close(copy);
     return abandon(to, part, NULL, code);
   }
+  struct stat identity;
+  if (fstat(written.fd, &identity) != 0) {
+    const int code = errno;
+    close(copy);
+    return abandon(to, part, NULL, code);
+  }
+  printf("writing %" PRIu64 " %" PRIu64 "\n", (uint64_t)identity.st_dev, (uint64_t)identity.st_ino);
+  fflush(stdout);
   unsigned char *buffer = malloc(COPY_CHUNK);
   if (buffer == NULL) {
     close(copy);

@@ -96,7 +96,7 @@ export class HeldFileHelperStalledError extends HeldFileHelperUnavailableError {
 export interface FileIdentity {
   readonly dev: bigint;
   readonly ino: bigint;
-  readonly birthtimeNs: bigint;
+  readonly birthtimeNs?: bigint;
 }
 
 /** A file's content: its size, its last change, and digests of its first and last 64 KiB. */
@@ -151,7 +151,8 @@ function compareFile(folder: HeldDirectory, name: string, expected: FileIdentity
 }
 
 function sameFile(info: FileIdentity, expected: FileIdentity): boolean {
-  return info.dev === expected.dev && info.ino === expected.ino && info.birthtimeNs === expected.birthtimeNs;
+  return info.dev === expected.dev && info.ino === expected.ino &&
+    (expected.birthtimeNs === undefined || info.birthtimeNs === expected.birthtimeNs);
 }
 
 function sameContent(found: Fingerprint, expected: Fingerprint): boolean {
@@ -461,16 +462,6 @@ export async function retryHelperPart(
   return keep;
 }
 
-// The identity of the ordinary file `name` in `folder` while `folder` is still the held one, or null.
-function identityOf(folder: HeldDirectory, name: string): FileIdentity | null {
-  try {
-    const info = entryIn(folder, name);
-    return info?.isFile() ? { dev: info.dev, ino: info.ino, birthtimeNs: info.birthtimeNs } : null;
-  } catch {
-    return null;
-  }
-}
-
 // Throws a refusal unless `folder` is still the held one; one that cannot be checked (unmounted, say) is not.
 function heldFolder(folder: HeldDirectory): void {
   let held: BigIntStats;
@@ -748,6 +739,7 @@ const EXIT_REFUSED = 3;
 const EXIT_FAILED = 4;
 const REFUSALS: ReadonlySet<string> = new Set<HeldRefusal>(["from", "to", "source", "target"]);
 const PROGRESS = /^progress (\d+)$/u;
+const WRITING = /^writing (0|[1-9][0-9]{0,19}) (0|[1-9][0-9]{0,19})$/u;
 const FAILURE_DIAGNOSTIC = /^Windows error \d+(?: \(NTSTATUS 0x[0-9A-F]{8}, (?:NtCreateFile|NtSetInformationFile)\))?\r?\n$/u;
 // A stopped copy may add ` left`, or ` left <hidden name> <dev> <ino> <verdict>` when a file stays at the moved-aside name.
 const PART_LEFT = / left(?: (\.[0-9a-f]{32}\.removing) (0|[1-9][0-9]{0,19}) (0|[1-9][0-9]{0,19}) (mismatch|remove-failed))?$/u;
@@ -823,7 +815,7 @@ function statusOf(last: string): number {
  * delivery order is independent of stdout. Killing and confirming exit share one independent `killMs` ceiling, including
  * when the platform's kill request does not finish. A valid outcome before a confirmed kill is retained only if the protocol stayed valid.
  */
-function runHelper(helper: string, args: readonly string[], proceed: Proceed, stop: AbortSignal, bounds: HelperBounds, onProgress?: () => void): Promise<string> {
+function runHelper(helper: string, args: readonly string[], proceed: Proceed, stop: AbortSignal, bounds: HelperBounds, onWriting?: (file: FileIdentity) => void): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawnManaged(helper, args, { stdio: ["pipe", "pipe", "pipe"], shell: false, env: {} }, { label: "browser-download-files" });
     const { stdin, stdout, stderr } = child;
@@ -832,6 +824,7 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
     let outcome: string | null = null;
     let phase: "holding" | "copying" | "acting" | "copied" = "holding";
     let copiedBytes = 0n;
+    let writing = false;
     let protocolFailure: string | null = null;
     const mode = args[0];
     let errors = "";
@@ -952,7 +945,8 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
         if (answer === "refused target") return passed === "copied";
         return /^failed E[A-Z0-9_]+$/u.test(answer);
       }
-      if (/^refused (from|to|source|target)$/u.test(line) || /^failed E[A-Z0-9_]+$/u.test(line)) return true;
+      if (/^refused (from|to|source|target)$/u.test(line)) return mode !== "--dir-copy" || phase === "holding";
+      if (/^failed E[A-Z0-9_]+$/u.test(line)) return true;
       if (line === "cancelled") return phase !== "holding" && stopping;
       if (mode === "--dir-copy") return line === "committed" && passed === "copied";
       if (passed !== "ready") return false;
@@ -969,12 +963,22 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
       for (let newline = pending.indexOf("\n"); newline >= 0; newline = pending.indexOf("\n")) {
         const line = pending.slice(0, newline).replace(/\r$/u, "");
         pending = pending.slice(newline + 1);
+        const identity = WRITING.exec(line);
+        if (identity?.[1] !== undefined && identity[2] !== undefined) {
+          const dev = BigInt(identity[1]);
+          const ino = BigInt(identity[2]);
+          if (mode !== "--dir-copy" || phase !== "copying" || passed !== "ready" || writing || copiedBytes !== 0n ||
+              dev > MAX_HELPER_FILE_ID || ino > MAX_HELPER_FILE_ID) { violate(); return; }
+          writing = true;
+          onWriting?.({ dev, ino });
+          awaitLine("after opening the part");
+          continue;
+        }
         const progress = PROGRESS.exec(line)?.[1];
         if (progress !== undefined) {
           const bytes = BigInt(progress);
           if (mode !== "--dir-copy" || phase !== "copying" || passed !== "ready" || bytes <= copiedBytes) { violate(); return; }
           copiedBytes = bytes;
-          onProgress?.();
           awaitLine("while copying");
           continue;
         }
@@ -1035,23 +1039,15 @@ export function _helperFileOperationsForTest(helper: string, bounds?: HelperBoun
 }
 
 function helperFileOperations(helper: string, bounds: HelperBounds = POLICY_BOUNDS): HeldFileOperations {
-  const run = (args: readonly string[], proceed: Proceed, stop: AbortSignal, onProgress?: () => void): Promise<string> =>
-    runHelper(helper, args, proceed, stop, bounds, onProgress);
+  const run = (args: readonly string[], proceed: Proceed, stop: AbortSignal, onWriting?: (file: FileIdentity) => void): Promise<string> =>
+    runHelper(helper, args, proceed, stop, bounds, onWriting);
   const removeNamed = async (folder: HeldDirectory, name: string): Promise<"removed" | "absent"> =>
     oneOf(helper, await run(["--dir-remove", ...directoryArguments(folder), name], () => true, UNSTOPPED), ["removed", "absent"] as const);
   // A copy that ended after it may have written its temporary file, with the helper seen to end: the file is removed through the chosen
   // folder, held anew, only while it is the file the copy wrote. One never seen while it was written is never removed by name: when
   // something is at its name it is left, and so is whatever a folder that can no longer be checked holds, when `unknownIsLeft`.
-  const removePartialCopy = async (to: HeldDirectory, part: string, partFile: FileIdentity | null, unknownIsLeft: boolean): Promise<OwnFileResult | null> => {
+  const removePartialCopy = async (to: HeldDirectory, part: string, partFile: FileIdentity | null): Promise<OwnFileResult> => {
     if (partFile !== null) return removeOwnFile(to, part, part, { kind: "fileId", file: partFile }, removeNamed);
-    let found: "absent" | "present" | "unknown" = "unknown";
-    try {
-      found = entryIn(to, part) === null ? "absent" : "present";
-    } catch {
-      // The folder cannot be told to be the held one.
-    }
-    if (found === "absent") return { outcome: "absent" };
-    if (found === "unknown" && !unknownIsLeft) return null;
     log.warn({ path: join(to.path, part) }, "a stopped download copy's temporary file is left: it was never seen while the copy wrote it");
     return { outcome: "left", at: null };
   };
@@ -1062,13 +1058,9 @@ function helperFileOperations(helper: string, bounds: HelperBounds = POLICY_BOUN
     copy: async (from, name, to, target, part, proceed, stop) => {
       // The temporary file's identity, taken once the helper says it is writing it, so a later cleanup removes only that file.
       let partFile: FileIdentity | null = null;
-      const seen = (): void => { partFile ??= identityOf(to, part); };
-      const proceedSeeing: Proceed = (step) => {
-        if (step === "copied") seen();
-        return proceed(step);
-      };
       try {
-        const answer = await run(["--dir-copy", ...directoryArguments(from), name, ...directoryArguments(to), target, part], proceedSeeing, stop, seen);
+        const answer = await run(["--dir-copy", ...directoryArguments(from), name, ...directoryArguments(to), target, part], proceed, stop,
+          (file) => { partFile = file; });
         const left = parsePartLeft(answer);
         if (left !== null) {
           // Cancelled with its temporary file left: reported as a failure, as a cancelled Linux copy whose file is left is.
@@ -1089,11 +1081,9 @@ function helperFileOperations(helper: string, bounds: HelperBounds = POLICY_BOUN
           error.partFile = partFile;
           // A helper that may still be running is not raced: its file is left for a cleanup once it ends.
           if (error instanceof HeldFileHelperStalledError && error.stillRunning) error.partialCopy = "left";
-          else markStoppedCopy(error, await removePartialCopy(to, part, partFile, true) ?? { outcome: "left", at: null });
-        } else if (!(error instanceof HeldFileHelperUnavailableError) && !(error instanceof HeldDirectoryRefusedError)) {
-          // The helper answered that the copy failed, and has ended. A temporary file it wrote and did not remove is cleaned the same way.
-          const result = await removePartialCopy(to, part, partFile, false);
-          if (result !== null) markStoppedCopy(error, result);
+          else markStoppedCopy(error, await removePartialCopy(to, part, partFile));
+        } else if (partFile !== null && !(error instanceof HeldDirectoryRefusedError)) {
+          markStoppedCopy(error, await removePartialCopy(to, part, partFile));
         }
         throw error;
       }
