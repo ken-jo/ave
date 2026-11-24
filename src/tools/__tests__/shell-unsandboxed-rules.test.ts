@@ -61,6 +61,7 @@ async function run(input: {
   pm?: PermissionManager;
   beforeExecute?: (pm: PermissionManager) => void | Promise<void>;
   mockOutput?: string;
+  headless?: boolean;
 }) {
   arrangeSubstrate(input.substrate);
   const pm = input.pm ?? new PermissionManager(join(dir, "permissions.json"));
@@ -107,7 +108,7 @@ async function run(input: {
   };
   const [result] = await runWithToolExecutionCwd(dir, () => executor.executeAll(
     [{ id: `unsandboxed-${input.substrate}-${input.executionMode}`, name: "bash", input: toolInput }],
-    { sessionId: "unsandboxed-rules", permissionContext: userPermissionContext() },
+    { sessionId: "unsandboxed-rules", permissionContext: userPermissionContext(input.headless ? { headless: true } : {}) },
   ));
   return { result: result!, cards, execute, decision: check.mock.results[0]?.value, pm, review };
 }
@@ -295,6 +296,20 @@ describe("requested sandbox unavailable", () => {
       requiresExplicitUserApproval: true,
       capability: { kind: "none" },
     });
+  });
+
+  // The policy decision itself denies: no approver can answer the forced ask.
+  it.each([
+    { label: "a matching allow rule", mode: "default" as const, rules: [{ pattern: "Bash(printf fallback-ran)", action: "allow" as const }] },
+    { label: "allow mode", mode: "allow" as const, rules: [] },
+  ])("denies headless with $label at the policy decision", async ({ mode, rules }) => {
+    const { decision, cards, execute, result } = await run({
+      substrate: "sandbox-unavailable", rules, mode, command: "printf fallback-ran", executionMode: "default", answer: "allow-once", headless: true,
+    });
+    expect(decision).toMatchObject({ decision: "deny", reasonCode: "no-approver" });
+    expect(cards).toHaveLength(0);
+    expect(execute).not.toHaveBeenCalled();
+    expect(result.is_error).toBe(true);
   });
 });
 
