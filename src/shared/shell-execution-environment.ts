@@ -6,12 +6,12 @@ type ShellEnvironmentPlan = Pick<HostShellExecutionPlanAuditProjection,
 
 /** Public descriptions of the selected child, never the host's environment values. */
 export function shellExecutionEnvironmentLines(plan: ShellEnvironmentPlan): readonly string[] {
-  if (plan.mode === "blocked") return [t("shellExecution.blocked")];
+  if (plan.mode === "blocked") return [t(plan.fallbackReason === "home-privacy-helper-unavailable" ? "shellExecution.homePrivacyHelperUnavailable" : "shellExecution.blocked")];
   return [
     // When requested confinement is unavailable, report the unsandboxed route wherever the plan is shown.
     ...(plan.fallbackReason === "requested-sandbox-unavailable"
       ? [t(plan.requiresExplicitUserApproval ? "shellExecution.sandboxUnavailableAsk" : "shellExecution.sandboxUnavailable")]
-      // A shell-scope-off plan requires approval only while boot cannot verify the Ave home boundary.
+      // A shell-scope-off plan requires approval only while boot cannot establish Ave home privacy (any category but helper-unavailable, whose plan is blocked).
       : plan.requiresExplicitUserApproval && (plan.fallbackReason === "disabled-by-setting" || plan.fallbackReason === "platform-unsupported")
         ? [t("shellExecution.boundaryUnverifiedAsk")] : []),
     t("shellExecution.location", { platform: plan.platform }),
@@ -38,7 +38,9 @@ export function shellExecutionEnvironmentPrompt(plan: ShellEnvironmentPlan, inte
     t("shellExecution.defaultRoute"),
     // Bash cannot start in Windows containers; model guidance and tool refusal must agree.
     ...(plan.mode === "asrt" && plan.substrate === "mxc" ? [t("shellExecution.mxcBashUnavailable")] : []),
-    interactive ? t("shellExecution.hostRequest") : t("shellExecution.noInteractiveApproval"),
+    // A helper-unavailable plan blocks the host route too, so no host request is offered.
+    ...(!interactive ? [t("shellExecution.noInteractiveApproval")]
+      : plan.fallbackReason === "home-privacy-helper-unavailable" ? [] : [t("shellExecution.hostRequest")]),
     t("shellExecution.pipelineStatus"),
     "</shell-execution-environment>",
   ].join("\n");
