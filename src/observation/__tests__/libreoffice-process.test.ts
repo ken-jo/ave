@@ -10,6 +10,7 @@ import type { ChildProcess } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { VerifiedDocumentEngineInstallation } from "../../main/document-engine-installation.js";
 import { PREVIEW_DOCUMENT_LIMITS } from "../../shared/preview-document.js";
+import { TableDocumentError } from "../../tools/table-document-error.js";
 
 const residentStartup = { publish: true };
 const javaFixture = vi.hoisted(() => ({ home: undefined as string | undefined, broken: false, registrationFails: false }));
@@ -388,6 +389,14 @@ describe("private conversion process ownership", () => {
       .rejects.toMatchObject({ code: "engine-runtime-unavailable", message: "Document importer registration failed in the private profile." });
     await pool.convert(installation, "one", Buffer.from("docx"), "docx", new AbortController().signal);
     expect(residents()).toHaveLength(2);
+  });
+
+  it("does not spawn an engine when offline setup refuses the scan", async () => {
+    const refusal = new TableDocumentError("engine-confinement-unavailable", "Offline scan did not complete.");
+    vi.mocked(wrapOfflineProcess).mockRejectedValueOnce(refusal);
+    await expect(pool.prepare(installation, "one", "docx", new AbortController().signal)).rejects.toBe(refusal);
+    expect(wrapOfflineProcess).toHaveBeenCalledTimes(1);
+    expect(spawnManaged).not.toHaveBeenCalled();
   });
 
   it("refuses empty and over-budget requests without starting a process", async () => {

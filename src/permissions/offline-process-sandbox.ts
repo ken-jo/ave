@@ -1,5 +1,5 @@
-import { access, constants, lstat, realpath } from "node:fs/promises";
-import { isAbsolute, resolve, sep } from "node:path";
+import { access, constants, lstat, mkdtemp, realpath, rm } from "node:fs/promises";
+import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { shellQuote } from "../lib/shell-resolver.js";
 import { noteConfinedProcessesMayRun } from "../lib/confined-process-phase.js";
 import { buildSafeChildEnv } from "../tools/safe-env.js";
@@ -34,6 +34,22 @@ export interface OfflineProcessWrap {
   /** Release only after the process tree has ended. */
   release(): void;
 }
+
+// Record success only after the scan exits. Stop and reap it if the launcher is cancelled.
+const OFFLINE_SCAN_SCRIPT = `
+receipt=$1
+shift
+"$@" &
+scanPid=$!
+trap 'kill -KILL "$scanPid" 2>/dev/null; wait "$scanPid"; exit 2' HUP INT TERM
+wait "$scanPid"
+status=$?
+trap - HUP INT TERM
+case "$status" in
+  0|1) : > "$receipt" || exit 2 ;;
+esac
+exit "$status"
+`;
 
 function within(parent: string, child: string): boolean {
   return child === parent || child.startsWith(`${parent}${sep}`);
@@ -126,22 +142,45 @@ export async function wrapOfflineProcess(input: OfflineProcessInput): Promise<Of
   const bwrap = "/usr/bin/bwrap";
   await assertCodexExecutableLocation(bwrap);
   const ripgrep = "/usr/bin/rg";
+  const shell = "/bin/sh";
   try {
     await assertCodexExecutableLocation(ripgrep);
     await access(ripgrep, constants.X_OK);
+    await assertCodexExecutableLocation(shell);
   } catch {
-    throw new TableDocumentError("engine-confinement-unavailable", `Offline scan helper ${ripgrep} is unavailable or not executable.`);
+    throw new TableDocumentError("engine-confinement-unavailable", `Offline scan helper ${ripgrep} or its launcher is unavailable.`);
   }
   const { wrapCommandWithSandboxLinux, cleanupBwrapMountPoints } = await import("@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js");
-  const wrapped = await wrapCommandWithSandboxLinux({
-    command, needsNetworkRestriction: true, readConfig, writeConfig,
-    allowAllUnixSockets: true, allowNestedUserNamespaces: false, enableWeakerNestedSandbox: false,
-    binShell: "/bin/sh", bwrapPath: bwrap, ripgrepConfig: { command: ripgrep },
-    abortSignal: input.signal, unsetEnvVars: ["JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS"],
+  // The builder can return after a failed scan. Require proof from its own invocation, outside the writable output.
+  const scanDirectory = await mkdtemp(join(dirname(source), ".offline-scan-")).catch(() => {
+    throw new TableDocumentError("engine-confinement-unavailable", "Offline scan setup failed.");
   });
-  let released = false;
-  const release = (): void => { if (!released) { released = true; cleanupBwrapMountPoints(); } };
+  const receipt = join(scanDirectory, "complete");
+  let ownsMounts = false;
+  const release = (): void => {
+    if (!ownsMounts) return;
+    ownsMounts = false;
+    cleanupBwrapMountPoints();
+  };
   try {
+    let wrapped: string;
+    try {
+      wrapped = await wrapCommandWithSandboxLinux({
+        command, needsNetworkRestriction: true, readConfig, writeConfig,
+        allowAllUnixSockets: true, allowNestedUserNamespaces: false, enableWeakerNestedSandbox: false,
+        binShell: shell, bwrapPath: bwrap,
+        ripgrepConfig: { command: shell, args: ["-c", OFFLINE_SCAN_SCRIPT, "offline-scan", receipt, ripgrep] },
+        abortSignal: input.signal, unsetEnvVars: ["JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS"],
+      });
+      ownsMounts = true;
+      input.signal.throwIfAborted();
+      const completed = await lstat(receipt).catch(() => undefined);
+      if (!completed?.isFile()) {
+        throw new TableDocumentError("engine-confinement-unavailable", "Offline scan did not complete.");
+      }
+    } finally {
+      await rm(scanDirectory, { recursive: true, force: true });
+    }
     // Local IPC needs AF_UNIX; nested namespaces must therefore be refused by the native wrapper itself.
     if (!wrapped.includes("--disable-userns")) {
       throw new TableDocumentError("engine-confinement-unavailable", "Offline local IPC requires namespace creation to be disabled.");

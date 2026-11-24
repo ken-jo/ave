@@ -1,7 +1,10 @@
-import childProcess, { execFileSync } from "node:child_process";
+import childProcess, { execFileSync, type ChildProcess } from "node:child_process";
+import { EventEmitter } from "node:events";
+import fs from "node:fs";
+import { PassThrough } from "node:stream";
 import { access, mkdtemp, mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
-import { join } from "node:path";
+import path, { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
@@ -42,6 +45,9 @@ import { wrapCommandWithSandboxMacOS } from "@anthropic-ai/sandbox-runtime/dist/
 import { wrapCommandWithSandboxLinux, cleanupBwrapMountPoints } from "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js";
 
 const HOST_PLATFORM = process.platform;
+const HOST_CWD = process.cwd();
+const LINUX_WRAPPER = "bwrap --disable-userns --unshare-net -- /bin/sh -c command";
+let linuxWrapper: string;
 let root: string;
 let runtime: string;
 let input: string;
@@ -61,13 +67,64 @@ beforeEach(async () => {
   vi.mocked(isOfflineProcessConfinementActive).mockReturnValue(true);
   vi.mocked(detectSandboxCapability).mockReturnValue({ kind: "asrt", confidence: "verified", platform: HOST_PLATFORM,
     reason: "native test boundary", confines: { filesystem: true, process: true, network: true } });
-  vi.mocked(wrapCommandWithSandboxLinux).mockResolvedValue("bwrap --disable-userns --unshare-net -- /bin/sh -c command");
+  linuxWrapper = LINUX_WRAPPER;
+  vi.mocked(wrapCommandWithSandboxLinux).mockImplementation(async ({ ripgrepConfig }) => {
+    fs.writeFileSync(ripgrepConfig!.args![3], "");
+    return linuxWrapper;
+  });
+  vi.mocked(cleanupBwrapMountPoints).mockReset();
   root = await realpath(await mkdtemp(join(tmpdir(), "offline-process-policy-")));
   runtime = join(root, "runtime"); input = join(root, "input"); output = join(root, "output"); ipc = join(output, "ipc");
   await Promise.all([mkdir(runtime), mkdir(input), mkdir(ipc, { recursive: true })]);
 });
 
-afterEach(async () => { setProcessPlatform(HOST_PLATFORM); await rm(root, { recursive: true, force: true }); });
+afterEach(async () => {
+  vi.restoreAllMocks();
+  syncBuiltinESMExports();
+  setProcessPlatform(HOST_PLATFORM);
+  process.chdir(HOST_CWD);
+  await rm(root, { recursive: true, force: true });
+});
+
+async function useNativeLinuxBuilder() {
+  const actual = await vi.importActual<typeof import("@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js")>(
+    "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js",
+  );
+  const fixture = join(root, "system-executable");
+  await writeFile(fixture, "", { mode: 0o755 });
+  const { statSync } = fs;
+  vi.spyOn(fs, "statSync").mockImplementation(((candidate, options) =>
+    statSync(candidate === "/usr/bin/bwrap" ? fixture : candidate, options)
+  ) as typeof statSync);
+  vi.spyOn(childProcess, "spawnSync").mockImplementation((command) => {
+    const stdout = command === "which" ? "/bin/sh" : "--disable-userns";
+    return { pid: 1, status: 0, signal: null, output: [null, stdout, ""], stdout, stderr: "" };
+  });
+  vi.mocked(wrapCommandWithSandboxLinux).mockImplementation(async config => {
+    // Ave routes as Linux; the builder resolves the fixture on the actual host filesystem.
+    setProcessPlatform(HOST_PLATFORM);
+    try {
+      return await actual.wrapCommandWithSandboxLinux(config);
+    } finally {
+      setProcessPlatform("linux");
+    }
+  });
+  vi.mocked(cleanupBwrapMountPoints).mockImplementation(actual.cleanupBwrapMountPoints);
+  process.chdir(root);
+  setProcessPlatform("linux");
+  syncBuiltinESMExports();
+}
+
+function scanChild(stdout: string, outcome: number | Error): ChildProcess {
+  const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough() });
+  queueMicrotask(() => {
+    child.stdout.end(stdout);
+    child.stderr.end();
+    if (outcome instanceof Error) child.emit("error", outcome);
+    else child.emit("close", outcome);
+  });
+  return child as unknown as ChildProcess;
+}
 
 describe("offline process confinement", () => {
   it("hands the native profile no IP proxy exceptions and only its private local socket directory", async () => {
@@ -114,7 +171,8 @@ describe("offline process confinement", () => {
       bwrapPath: "/usr/bin/bwrap", enableWeakerNestedSandbox: false,
     }));
     const native = vi.mocked(wrapCommandWithSandboxLinux).mock.calls[0][0];
-    expect(native.ripgrepConfig).toEqual({ command: "/usr/bin/rg" });
+    expect(native.ripgrepConfig?.command).toBe("/bin/sh");
+    expect(native.ripgrepConfig?.args?.[4]).toBe("/usr/bin/rg");
     expect(native.httpSocketPath).toBeUndefined();
     expect(native.socksSocketPath).toBeUndefined();
     wrapped.release(); wrapped.release();
@@ -142,13 +200,76 @@ describe("offline process confinement", () => {
     syncBuiltinESMExports();
     try {
       await expect(wrapOfflineProcess({ ...request(), signal: controller.signal })).rejects.toBe(stop);
-      expect(spawn).toHaveBeenCalledExactlyOnceWith("/usr/bin/rg", expect.arrayContaining(["--files", root]), expect.any(Object));
+      expect(spawn).toHaveBeenCalledExactlyOnceWith("/bin/sh", expect.arrayContaining(["--files", root]), expect.any(Object));
+      expect(spawn.mock.calls[0][1]?.[4]).toBe("/usr/bin/rg");
     } finally {
       spawn.mockRestore();
       syncBuiltinESMExports();
       setProcessPlatform(HOST_PLATFORM);
       vi.unstubAllEnvs();
       process.chdir(previousCwd);
+    }
+  });
+
+  it.each([
+    ["spawn error", Object.assign(new Error("spawn ENOENT"), { code: "ENOENT" })],
+    ["launcher exit", 127],
+    ["partial scan", 2],
+  ] as const)("refuses setup when the preflighted scan has a %s", async (_description, outcome) => {
+    await useNativeLinuxBuilder();
+    const nativeSpawn = childProcess.spawn;
+    const spawn = vi.spyOn(childProcess, "spawn").mockImplementation((command, args, options) => {
+      if (HOST_PLATFORM !== "win32" && outcome === 127 && Array.isArray(args)) {
+        return nativeSpawn(command, [...args.slice(0, 4), join(root, "missing-scan"), ...args.slice(5)], options);
+      }
+      const partialResult = outcome === 2 ? join(output, ".bashrc") + "\n" : "";
+      return scanChild(partialResult, outcome);
+    });
+    syncBuiltinESMExports();
+
+    await expect(wrapOfflineProcess(request())).rejects.toMatchObject({ code: "engine-confinement-unavailable" });
+    expect(assertCodexExecutableLocation).toHaveBeenCalledWith("/usr/bin/rg");
+    expect(access).toHaveBeenCalledWith("/usr/bin/rg", expect.any(Number));
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(fs.existsSync(spawn.mock.calls[0][1]![3])).toBe(false);
+    expect(cleanupBwrapMountPoints).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a discovered write deny in the wrapper after a complete scan", async () => {
+    const denied = join(output, "nested", ".bashrc");
+    await mkdir(join(output, "nested"));
+    await writeFile(denied, "");
+    if (HOST_PLATFORM === "win32") {
+      // Keep the POSIX ancestor walk bounded and exercise matching with an exact write allow.
+      const driveRoot = path.parse(root).root;
+      const { dirname } = path;
+      vi.spyOn(path, "dirname").mockImplementation(candidate => candidate === driveRoot ? "/" : dirname(candidate));
+      vi.mocked(buildPerCommandSandboxCustomConfig).mockImplementationOnce(policy => ({
+        filesystem: { ...policy, allowWrite: [...(policy?.allowWrite ?? []), denied] },
+      }));
+    }
+    const scanner = join(root, "scan-fixture");
+    await writeFile(scanner, "#!/bin/sh\nprintf '%s\\n' output/nested/.bashrc\n", { mode: 0o755 });
+    await useNativeLinuxBuilder();
+    const nativeSpawn = childProcess.spawn;
+    const spawn = vi.spyOn(childProcess, "spawn").mockImplementation((command, args, options) => {
+      if (!Array.isArray(args)) throw new Error("Expected scan arguments.");
+      if (HOST_PLATFORM !== "win32") {
+        return nativeSpawn(command, [...args.slice(0, 4), scanner, ...args.slice(5)], options);
+      }
+      fs.writeFileSync(args[3], "");
+      return scanChild(denied + "\n", 0);
+    });
+    syncBuiltinESMExports();
+
+    const wrapped = await wrapOfflineProcess(request());
+    try {
+      const words = parseSandboxWrappedWords(wrapped.argv[2]).map(word => word.value);
+      expect(words).toContain(denied);
+      expect(words.some((word, index) => word === "--ro-bind" && words[index + 1] === denied && words[index + 2] === denied)).toBe(true);
+      expect(fs.existsSync(spawn.mock.calls[0][1]![3])).toBe(false);
+    } finally {
+      wrapped.release();
     }
   });
 
@@ -171,8 +292,10 @@ describe("offline process confinement", () => {
 
   it("refuses a local-IPC backend that cannot disable new namespaces", async () => {
     setProcessPlatform("linux");
-    vi.mocked(wrapCommandWithSandboxLinux).mockResolvedValue("bwrap --unshare-net -- /bin/sh -c command");
-    await expect(wrapOfflineProcess(request())).rejects.toMatchObject({ code: "engine-confinement-unavailable" });
+    linuxWrapper = "bwrap --unshare-net -- /bin/sh -c command";
+    await expect(wrapOfflineProcess(request())).rejects.toMatchObject({
+      code: "engine-confinement-unavailable", message: expect.stringContaining("namespace creation"),
+    });
     expect(cleanupBwrapMountPoints).toHaveBeenCalledTimes(1);
   });
 
