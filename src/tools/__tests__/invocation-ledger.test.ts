@@ -201,6 +201,29 @@ it("records a deny committed after the invocation's abort as a cancellation, unl
   expect(fired.map((denial) => denial.reason)).toEqual(["probe"]);
 });
 
+it.each([undefined, "refused"])("refuses a deny row whose kind is %s as an integrity failure; the host writes the one denial", async (kind) => {
+  const ledger = await import("../invocation-ledger.js");
+  const appended: Array<Record<string, unknown>> = [];
+  const logger = { appendPermissionAuditEntry: vi.fn(async (entry: Record<string, unknown>) => { appended.push(entry); return entry; }) };
+  const fired: TerminalDenial[] = [];
+  const write = vi.fn(async (_cause: string, _detail: string, _selected: unknown, row: TerminalRowWriter) => {
+    await row({ logger: logger as never, entry: ENTRY, kind: "denied" });
+  });
+  const admission = ledger.admitToolInvocation("kindless");
+  admission.terminal.hostTerminal(write, { governed: () => false, fire: async (denial) => { fired.push(denial); } });
+  const written = admission.terminal.commit(async (row) => {
+    await row({ logger: logger as never, entry: ENTRY, kind } as never);
+  });
+  await expect(written).rejects.toThrow("deny row of kindless names no terminal kind");
+  admission.settle(new Error("late"));
+  await vi.waitFor(() => expect(admission.terminal.state).toBe("failed"));
+  expect(write).toHaveBeenCalledOnce();
+  expect(write).toHaveBeenCalledWith("error", "the terminal row failed its integrity check: deny row of kindless names no terminal kind", undefined, expect.any(Function));
+  expect(appended).toHaveLength(1);
+  expect(appended[0]).toMatchObject({ terminalKind: "denied" });
+  expect(fired).toHaveLength(1);
+});
+
 it("gives an attempt the host's row only while it is unclaimed, keeping a selected outcome", async () => {
   const ledger = await import("../invocation-ledger.js");
   const write = vi.fn(hostRow);

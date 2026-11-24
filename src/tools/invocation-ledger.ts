@@ -161,6 +161,13 @@ class TerminalLedger implements InvocationTerminal {
   #commitAs<T>(by: TerminalOwner | "host", enqueue: (row: TerminalRowWriter) => Promise<T>): Promise<T | undefined> {
     if (this.#refusal(by)) return Promise.resolve(undefined);
     const row: TerminalRowWriter = (terminal) => {
+      // The type requires a deny's kind; a row that reaches here without a valid one is refused before the claim, so the
+      // attempt stays open and the host writes its one integrity denial.
+      if (terminal.entry.decision === "deny" && terminal.kind !== "denied" && terminal.kind !== "cancelled") {
+        const error = new Error(`deny row of ${this.tool} names no terminal kind`);
+        recordToolInvocationAuditFailure(error);
+        throw error;
+      }
       if (this.#refusal(by)) return Promise.resolve();
       this.#take();
       const { logger, reason } = terminal;
