@@ -49,7 +49,7 @@ import {
   type ToolExecutionResult,
 } from "./base.js";
 import { buildHostShellChildEnv, buildSafeChildEnv, buildSandboxedChildEnv } from "./safe-env.js";
-import { prepareShellInvocation, matchesPreparedShellInvocation, preparedShellFacts, preparedShellToolUseId, preparedShellCommand, preparedShellCwdProbe, bindPreparedShellExecutableReadPaths, preparedShellExecutableReadPaths, preparedSandboxBootstrap, preparedSandboxEnvironment, disposePreparedShellInvocation, claimPreparedShellInvocation, transferPreparedShellInvocation, type PreparedShellInvocation } from "./prepared-shell-invocation.js";
+import { assertPreparedShellAvailable, prepareShellInvocation, matchesPreparedShellInvocation, preparedShellFacts, preparedShellToolUseId, preparedShellCommand, preparedShellCwdProbe, bindPreparedShellExecutableReadPaths, preparedShellExecutableReadPaths, preparedSandboxBootstrap, preparedSandboxEnvironment, disposePreparedShellInvocation, claimPreparedShellInvocation, transferPreparedShellInvocation, type PreparedShellInvocation } from "./prepared-shell-invocation.js";
 import { POWER_SHELL_AST_PARSER, normalizePowerShellAstSummary, type PowerShellArgument, type PowerShellAstSummary } from "./powershell-ast.js";
 import { resolveShellFilesystemPath } from "../shared/shell-filesystem-path.js";
 import {
@@ -2765,16 +2765,18 @@ async function spawnWithTimeout(
     assertManagedChildProcessAdmissionOpen("tool:bash");
     const observation = startShellObservation(command, cwd, sandbox);
     let child: PipedChild;
-    try { child = spawn(shell.cmd, [...argv], {
-      windowsHide: true,
-      detached: process.platform !== "win32",
-      cwd,
-      stdio: prelude === undefined ? ["ignore", "pipe", "pipe"] : ["ignore", "pipe", "pipe", "pipe"],
-      // Strip secrets (AVE_*, *_API_KEY, GITHUB_TOKEN, AWS_*, etc.) from
-      // the child's environment. Only generic shell/locale vars pass through.
-      env: { ...environment },
-      shell: false,
-    }) as PipedChild; }
+    try {
+      assertPreparedShellAvailable(prepared);
+      child = spawn(shell.cmd, [...argv], {
+        windowsHide: true,
+        detached: process.platform !== "win32",
+        cwd,
+        stdio: prelude === undefined ? ["ignore", "pipe", "pipe"] : ["ignore", "pipe", "pipe", "pipe"],
+        // Only generic shell and locale variables pass through.
+        env: { ...environment },
+        shell: false,
+      }) as PipedChild;
+    }
     catch (error) { observation?.finish(null, "failed"); throw error; }
     const closed = checkedShellClose(child, waitForClose);
     const control = prelude === undefined || spawnAuthorization === undefined ? undefined : attachHostShellControlChannel(child, spawnAuthorization);

@@ -169,15 +169,20 @@ export function disposePreparedShellInvocation(handle: PreparedShellInvocation |
 export function claimPreparedShellInvocation(handle: PreparedShellInvocation): () => void {
   const state = stateOf(handle);
   if (state.phase !== "prepared") throw new Error("Shell preparation has already been claimed");
-  if (state.identity.verifiedShellCommand !== undefined && verifiedShellExecution(state.identity.verifiedShellCommand, {
-    command: state.identity.command, dialect: "bash", cwd: state.identity.resolvedCwd,
-  }) === undefined) throw new Error("Verified shell command is no longer available for this invocation");
+  assertPreparedShellAvailable(handle);
   state.phase = "claimed";
   return () => {
     if (state.phase !== "claimed") return;
     state.phase = "disposed";
     state.home?.cleanup();
   };
+}
+
+export function assertPreparedShellAvailable(handle: PreparedShellInvocation): void {
+  const { command, resolvedCwd, verifiedShellCommand } = stateOf(handle).identity;
+  if (verifiedShellCommand !== undefined && verifiedShellExecution(verifiedShellCommand, {
+    command, dialect: "bash", cwd: resolvedCwd,
+  }) === undefined) throw new Error("Verified shell command is no longer available for this invocation");
 }
 
 /** Call immediately after successful spawn; invoke the returned cleanup only after termination. */

@@ -181,8 +181,9 @@ describe("host git starts only where the hold is asked", () => {
   const src = fileURLToPath(new URL("../../", import.meta.url));
   /** The one start, and the one caller that asks the hold for a plan the shell tool runs later. */
   const ASKS_THE_HOLD = new Set(["shared/host-git.ts", "permissions/verified-shell-command.ts"]);
-  /** Modules that run the git the host resolved on a workspace. */
-  const WORKSPACE_GIT = ["work-board/workflow/host-git.ts", "memory/project-agents-md.ts"];
+  const HOST_GIT_RESOLUTION = /\b(?:resolveHostGit|withHostGitLaunch|withHostGitRecovery|discoverHostGitAsync)\b|["'][^"'\n]*\/host-git-executable\.js["']/u;
+  const DIRECT_PROCESS_START = /\b(?:spawn|spawnSync|execFile|execFileSync|exec|execSync|fork)\s*\(/gu;
+  const PROCESS_IMPORT = /^\s*import\s+(?!type\b)[^;]*from\s+["'](?:node:)?child_process["']|\b(?:require|import)\s*\(\s*["'](?:node:)?child_process["']/mu;
   const productSources = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap(entry => entry.isDirectory()
     ? entry.name === "__tests__" ? [] : productSources(join(dir, entry.name))
     : /\.tsx?$/u.test(entry.name) && !/\.d\.ts$/u.test(entry.name) ? [join(dir, entry.name)] : []);
@@ -193,17 +194,44 @@ describe("host git starts only where the hold is asked", () => {
     for (const [file, text] of sources) {
       if (/\bisHostGitWorkspaceAvailable\b/u.test(text) && !ASKS_THE_HOLD.has(file)) found.push(`${file}: asks the hold apart from the start`);
     }
-    for (const file of WORKSPACE_GIT) {
-      const text = sources.get(file) ?? "";
-      if (/\b(?:spawn|spawnSync|execFile|execFileSync|exec|execSync|fork)\s*\(/u.test(text)) found.push(`${file}: starts a process itself`);
-      if (/^import\s+(?!type\b)[^;]*from\s+["']node:child_process["']/mu.test(text)) found.push(`${file}: imports a process start`);
+    for (const [file, text] of sources) {
+      if (!HOST_GIT_RESOLUTION.test(text) || file === "shared/host-git-executable.ts") continue;
+      // The verified plan only probes the executable version from the installation directory.
+      const other = file === "permissions/verified-shell-command.ts"
+        ? text.replace(/import \{ execFileSync \} from "node:child_process";/u, "")
+          .replace(/execFileSync\(executable, \["--version"\], \{\s*encoding: "utf8", cwd: dirname\(executable\),/u, "")
+        : text;
+      if ([...other.matchAll(DIRECT_PROCESS_START)].length !== 0) found.push(`${file}: starts a process itself`);
+      if (PROCESS_IMPORT.test(other)) found.push(`${file}: imports a process start`);
     }
     if ((sources.get("shared/host-git.ts") ?? "").match(/\bspawn\(/gu)?.length !== 1) found.push("shared/host-git.ts: starts git other than in the one start");
+    const shellTools = sources.get("tools/shell-tools.ts") ?? "";
+    const hostBash = shellTools.slice(shellTools.indexOf("async function spawnWithTimeout("), shellTools.indexOf("function reportedHostCwd("));
+    if (!/const launch = \(\)[\s\S]*?assertPreparedShellAvailable\(prepared\);\s*child = spawn\(shell\.cmd,/u.test(hostBash)) {
+      found.push("tools/shell-tools.ts: starts verified Bash without checking the hold at launch");
+    }
     return found;
   }
 
   it("in the tree", () => {
     expect(problems(tree())).toEqual([]);
+  });
+
+  it("refuses process starts by newly added consumers of the host Git resolver", () => {
+    const sources = tree();
+    sources.set("workspace/new-consumer.ts", `
+      import { spawn as start } from "node:child_process";
+      import { withHostGitRecovery } from "../shared/host-git-executable.js";
+      withHostGitRecovery(null, async ({ git }) => start(git.path, args, { cwd }));
+    `);
+    expect(problems(sources)).toContain("workspace/new-consumer.ts: imports a process start");
+  });
+
+  it("refuses a verified Bash launch with the availability check removed", () => {
+    const sources = tree();
+    const file = "tools/shell-tools.ts";
+    sources.set(file, (sources.get(file) ?? "").replace("assertPreparedShellAvailable(prepared);", ""));
+    expect(problems(sources)).toContain(`${file}: starts verified Bash without checking the hold at launch`);
   });
 
   it("refuses a planted start of the resolved git and a planted hold check", () => {
@@ -212,11 +240,11 @@ describe("host git starts only where the hold is asked", () => {
     planted.set("memory/project-agents-md.ts", `${sources.get("memory/project-agents-md.ts")}\nexecFile(git.path, args);\n`);
     planted.set("work-board/workflow/host-git.ts", `import { spawn } from "node:child_process";\n${sources.get("work-board/workflow/host-git.ts")}\nspawn(git.path, args, {});\n`);
     planted.set("marketplace/git/run-git.ts", `${sources.get("marketplace/git/run-git.ts")}\nisHostGitWorkspaceAvailable(root);\n`);
-    expect(problems(planted)).toEqual([
+    expect(problems(planted).sort()).toEqual([
       "marketplace/git/run-git.ts: asks the hold apart from the start",
-      "work-board/workflow/host-git.ts: starts a process itself",
-      "work-board/workflow/host-git.ts: imports a process start",
       "memory/project-agents-md.ts: starts a process itself",
+      "work-board/workflow/host-git.ts: imports a process start",
+      "work-board/workflow/host-git.ts: starts a process itself",
     ]);
   });
 });
