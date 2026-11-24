@@ -7,6 +7,7 @@ import {
   restoreWindowsPreparation, sealWindowsPreparation, windowsPreparationInputs, windowsPreparationKey,
   type WindowsPreparationManifest,
 } from "../../scripts/lib/windows-preparation-cache.mjs";
+import { readInstalledPtyHeaders, verifyInstalledPackagingInputs } from "../../scripts/check-mxc-packaging.mjs";
 import { createTmpDirTracker } from "../../src/__tests__/support/tmp-dir-teardown.js";
 
 const tracker = createTmpDirTracker();
@@ -15,6 +16,34 @@ afterAll(() => tracker.cleanup());
 const identity = { image: "windows", imageVersion: "1", compiler: { msvc: "14.44", sdk: "10.0.26100" } } satisfies WindowsPreparationManifest["identity"];
 
 describe("Windows preparation inputs", () => {
+  it("changes the key when an installed input is changed or removed", async () => {
+    const root = makeDir();
+    execFileSync("git", ["-C", root, "init", "--quiet"]);
+    writeFileSync(join(root, "bun.lock"), "lock");
+    execFileSync("git", ["-C", root, "add", "bun.lock"]);
+    const header = "node_modules/node-pty/node_modules/node-addon-api/package.json";
+    mkdirSync(dirname(join(root, header)), { recursive: true });
+    const manifest = () => windowsPreparationInputs(root, identity, [header]);
+    writeFileSync(join(root, header), '{"name":"node-addon-api","version":"1"}');
+    const first = await manifest();
+    expect(first.files[header]).toMatch(/^[a-f0-9]{64}$/);
+    writeFileSync(join(root, header), '{"name":"node-addon-api","version":"2"}');
+    const second = await manifest();
+    expect(windowsPreparationKey(second)).not.toBe(windowsPreparationKey(first));
+    const output = join(root, "verified");
+    mkdirSync(output);
+    writeFileSync(join(output, "package.bin"), "verified output");
+    await sealWindowsPreparation(output, windowsPreparationKey(second), ["package.bin"]);
+    rmSync(join(root, header));
+    expect(windowsPreparationKey(await manifest())).not.toBe(windowsPreparationKey(second));
+    const cold = await readInstalledPtyHeaders(join(root, "node_modules")).catch((error: Error) => error.message);
+    expect(cold).toMatch(/ENOENT.*node-addon-api/);
+    const verifyIdentity = vi.fn();
+    await expect(restoreWindowsPreparation(output, windowsPreparationKey(second), ["package.bin"], true, verifyIdentity,
+      () => verifyInstalledPackagingInputs(root, ["x64"]))).rejects.toThrow(cold);
+    expect(verifyIdentity).not.toHaveBeenCalled();
+  });
+
   it("changes the key when a tracked source, lockfile, runner image, compiler or SDK changes", async () => {
     const root = makeDir();
     const git = (...args: string[]) => execFileSync("git", ["-C", root, ...args]);

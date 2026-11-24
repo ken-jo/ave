@@ -29,10 +29,14 @@ async function hashFile(path: string) {
 
 // Inventory the tracked build, workflow and packaging input trees. The payload
 // check writes a generated application entry, and imports its tracked pins
-// under src/permissions. Installed dependencies come from the frozen lockfile.
+// under src/permissions. Also bind the installed files the packager validates.
 const INPUT_TREES = /^(?:\.github|build|config|native|patches|resources|scripts|src\/permissions)\//u;
 
-export async function windowsPreparationInputs(root: string, identity: WindowsPreparationManifest["identity"]): Promise<WindowsPreparationManifest> {
+export async function windowsPreparationInputs(
+  root: string,
+  identity: WindowsPreparationManifest["identity"],
+  installed: readonly string[] = [],
+): Promise<WindowsPreparationManifest> {
   const paths = execFileSync("git", ["-C", root, "ls-files", "-z"], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 })
     .split("\0").filter(path => path && (!path.includes("/") || INPUT_TREES.test(path))).sort();
   if (!paths.includes("bun.lock")) throw new Error("Missing preparation input: bun.lock");
@@ -41,6 +45,12 @@ export async function windowsPreparationInputs(root: string, identity: WindowsPr
     const path = join(root, file);
     if (!lstatSync(path).isFile()) throw new Error(`Invalid preparation input: ${file}`);
     files[file] = await hashFile(path);
+  }
+  for (const file of installed) {
+    if (!file.startsWith("node_modules/") || file.split("/").includes("..")) throw new Error(`Invalid installed preparation input: ${file}`);
+    const path = join(root, file);
+    const stat = lstatSync(path, { throwIfNoEntry: false });
+    files[file] = stat?.isFile() ? await hashFile(path) : stat ? "not a regular file" : "missing";
   }
   return { identity, files };
 }
@@ -82,8 +92,10 @@ export async function restoreWindowsPreparation(
   required: readonly string[],
   exactHit: boolean,
   verifyIdentity: () => void | Promise<void>,
+  verifyInputs?: () => void | Promise<void>,
 ): Promise<boolean> {
   if (key && exactHit) {
+    await verifyInputs?.();
     try {
       await verifyWindowsPreparation(store, key, required);
       await verifyIdentity();

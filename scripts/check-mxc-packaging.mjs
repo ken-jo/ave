@@ -15,6 +15,31 @@ import PINS from "../src/permissions/mxc-launcher-pins.json" with { type: "json"
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const require = createRequire(import.meta.url);
+const PTY_HEADERS = "node-pty/node_modules/node-addon-api/package.json";
+
+function installedPackager(project) {
+  const resolve = createRequire(path.join(project, "package.json")).resolve;
+  return { electron: resolve("electron/package.json"), builder: resolve("electron-builder/cli.js") };
+}
+
+export function packagingInstalledInputFiles(project) {
+  const native = [...Object.keys(PINS.sdk.files), ...Object.values(PINS.sdk.architectures).flatMap(Object.keys), PTY_HEADERS];
+  return [
+    ...native.map(file => `node_modules/${file}`),
+    ...Object.values(installedPackager(project)).map(file => path.relative(project, file).split(path.sep).join("/")),
+  ];
+}
+
+export async function readInstalledPtyHeaders(modules) {
+  const headers = JSON.parse(await readFile(path.join(modules, PTY_HEADERS), "utf8"));
+  if (headers.name !== "node-addon-api") throw new Error("Expected installed nested PTY build headers");
+  return headers;
+}
+
+async function readInstalledPackager(project) {
+  const { electron, builder } = installedPackager(project);
+  return { electronVersion: JSON.parse(await readFile(electron, "utf8")).version, builder };
+}
 
 export async function copyPackagingDependencies(source, destination) {
   const entries = await readdir(source);
@@ -93,6 +118,40 @@ export async function assertPackagingStagePaths(modules, arch) {
   await inspect(path.join(modules, "@koromix", `koffi-win32-${arch}`), true);
 }
 
+async function verifyPackagingProject(project, arch) {
+  const modules = path.join(project, "node_modules");
+  await assertPackagingStagePaths(modules, arch);
+  await stageMxcSdkAddon({ arch, projectRoot: project });
+  verifyMxcSdkSource(modules, arch, PINS, {});
+}
+
+export async function verifyInstalledPackagingInputs(project, architectures) {
+  const modules = path.join(project, "node_modules");
+  await readInstalledPtyHeaders(modules);
+  await readInstalledPackager(project);
+  for (const arch of architectures) {
+    const addon = PINS.sdk.addons[arch].package;
+    if (existsSync(path.join(modules, addon))) {
+      await verifyPackagingProject(project, arch);
+      continue;
+    }
+    await assertPackagingStagePaths(modules, arch);
+    // A runner may only have its host addon installed. Stage the other
+    // pinned addon with the same package roots and checks as the builder.
+    const stage = await realpath(await mkdtemp(path.join(tmpdir(), "ave-mxc-input-check-")));
+    try {
+      const roots = new Set(Object.values(PINS.sdk.packages).map(name =>
+        name.startsWith("@") ? name.split("/").slice(0, 2).join("/") : name.split("/")[0]));
+      for (const name of roots) {
+        await cp(path.join(modules, name), path.join(stage, "node_modules", name), {
+          recursive: true, dereference: false, verbatimSymlinks: true, mode: constants.COPYFILE_FICLONE,
+        });
+      }
+      await verifyPackagingProject(stage, arch);
+    } finally { await rm(stage, { recursive: true, force: true }); }
+  }
+}
+
 export async function finishPackagingCheck(work, result) {
   if (result.passed) {
     try {
@@ -127,25 +186,22 @@ export async function verifyPackagingOutput(appOut, arch, productName) {
 
 async function buildPackagingOutput(work, arch, sourcePackage, electronCache) {
   const project = path.join(work, arch), modules = path.join(project, "node_modules");
+  await readInstalledPtyHeaders(path.join(ROOT, "node_modules"));
+  const { electronVersion, builder } = await readInstalledPackager(ROOT);
   await mkdir(modules, { recursive: true });
   // Preserve the complete installed graph and the production root manifest.
   // Adding synthetic direct dependencies changes collector hoisting decisions.
   await copyPackagingDependencies(path.join(ROOT, "node_modules"), modules);
-  const sourceHeaders = JSON.parse(await readFile(path.join(modules, "node-pty/node_modules/node-addon-api/package.json"), "utf8"));
-  if (sourceHeaders.name !== "node-addon-api") throw new Error("Expected installed nested PTY build headers");
-  await assertPackagingStagePaths(modules, arch);
-  await stageMxcSdkAddon({ arch, projectRoot: project });
-  verifyMxcSdkSource(modules, arch, PINS, {});
+  const sourceHeaders = await readInstalledPtyHeaders(modules);
+  await verifyPackagingProject(project, arch);
   await cp(path.join(ROOT, "bun.lock"), path.join(project, "bun.lock"));
   await cp(path.join(ROOT, "resources/licenses/mxc"), path.join(project, "resources/licenses/mxc"), { recursive: true });
   await mkdir(path.dirname(path.join(project, sourcePackage.main)), { recursive: true });
   await writeFile(path.join(project, sourcePackage.main), "// Packaging entry only; this application is never executed.\n");
   await writeFile(path.join(project, "package.json"), JSON.stringify(sourcePackage));
-  const config = packagingCheckConfiguration(sourcePackage, { project, electronCache,
-    electronVersion: JSON.parse(await readFile(require.resolve("electron/package.json"), "utf8")).version });
+  const config = packagingCheckConfiguration(sourcePackage, { project, electronCache, electronVersion });
   const configFile = path.join(project, "builder.json");
   await writeFile(configFile, JSON.stringify(config));
-  const builder = require.resolve("electron-builder/cli.js");
   const args = [builder, "--win", "--dir", `--${arch}`, "--publish=never", "--config", configFile, "--projectDir", project];
   const build = spawnSync(process.execPath, args, {
     cwd: project, env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", CSC_IDENTITY_AUTO_DISCOVERY: "false",

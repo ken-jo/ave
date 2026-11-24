@@ -7,7 +7,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { verifyPackagingOutput } from "../../scripts/check-mxc-packaging.mjs";
+import { packagingInstalledInputFiles, verifyInstalledPackagingInputs, verifyPackagingOutput } from "../../scripts/check-mxc-packaging.mjs";
 import {
   restoreWindowsPreparation, sealWindowsPreparation, windowsPreparationInputs, windowsPreparationKey,
 } from "../../scripts/lib/windows-preparation-cache.mts";
@@ -60,7 +60,7 @@ async function main(operation, root, env) {
       console.log("Runner image identity unavailable, building preparation outputs");
       return;
     }
-    const manifest = await windowsPreparationInputs(root, compilerIdentity(root, env));
+    const manifest = await windowsPreparationInputs(root, compilerIdentity(root, env), packagingInstalledInputFiles(root));
     writeFileSync(join(temp, "windows-preparation-inputs.json"), JSON.stringify(manifest, null, 2) + "\n");
     appendFileSync(outputs, `key=${windowsPreparationKey(manifest)}\n`);
     return;
@@ -81,7 +81,7 @@ async function main(operation, root, env) {
       assertSrtWinVendor(vendor, ARCHES, receipts);
       assertUpstreamSrtWinVendor(vendor);
       for (const arch of ARCHES) await verifyPackagingOutput(join(store, "payload", arch), arch, productName);
-    });
+    }, () => verifyInstalledPackagingInputs(root, ARCHES));
     if (verified) {
       for (const file of native) copyOutput(join(store, "native", file), join(root, file));
       copyOutput(join(store, "native", pinTest), join(tmpdir(), pinTest));
