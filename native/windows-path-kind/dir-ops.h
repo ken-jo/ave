@@ -386,7 +386,9 @@ inline int run_copy(wchar_t** argv) {
   ULONGLONG old_birth = 0;
   if (replacing && (!ordinary(old.value) || !read_id(old.value, old_id))) return refused("target");
   FILE_ID_INFO directory_id{};
-  if (!read_id(to.handle(), directory_id)) return refused("to");
+  ULONGLONG directory_birth = 0;
+  if (!read_id(to.handle(), directory_id) || !read_birth(to.handle(), directory_birth)) return refused("to");
+  say(("destination-id " + id_text(directory_id, ' ') + " " + std::to_string(directory_birth)).c_str());
   if (replacing) {
     if (old_id.VolumeSerialNumber != directory_id.VolumeSerialNumber ||
         !read_birth(old.value, old_birth)) return refused("target");

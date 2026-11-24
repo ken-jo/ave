@@ -89,7 +89,9 @@ when unavailable. `part-left` reports incomplete or unverified copy-back at
 the original part name.
 
 `--dir-copy` takes the hidden name after the part name and checks source
-and target before `ready`. Its exclusive create
+and target before `ready`. It emits `destination-id <dev> <ino> <birth-ns>`
+from the held destination directory and uses the full volume serial to bind
+all subsequent file identities. Its exclusive create
 can fail with plain `failed EEXIST`. On success it emits `writing <dev> <ino> <birth-ns>`
 from the open part handle before progress or `copied`. It reports progress
 per 1 MiB chunk and flushes every 16 MiB. It keeps the handle open across

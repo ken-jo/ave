@@ -728,6 +728,7 @@ const EXIT_FAILED = 4;
 const REFUSALS: ReadonlySet<string> = new Set<HeldRefusal>(["from", "to", "source", "target"]);
 const PROGRESS = /^progress (\d+)$/u;
 const TARGET_ID = /^target-id ([0-9]+) ([0-9a-f]+) ([0-9]+)$/u;
+const DESTINATION_ID = /^destination-id ([0-9]+) ([0-9a-f]+) ([0-9]+)$/u;
 const WRITING = /^(writing|copy-id) (0|[1-9][0-9]{0,19}) ([0-9a-f]{1,32}) ([1-9][0-9]{0,19})$/u;
 const FAILURE_DIAGNOSTIC = /^Windows error \d+(?: \(NTSTATUS 0x[0-9A-F]{8}, (?:NtCreateFile|NtSetInformationFile)\))?\r?\n$/u;
 // A stopped copy may add ` left`, or ` left <hidden name> <dev> <ino> <verdict>` when a file stays at the moved-aside name.
@@ -847,9 +848,8 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
     let writingRefreshed = false;
     let protocolFailure: string | null = null;
     const mode = args[0];
-    const destinationDev = mode === "--dir-copy" ? BigInt(args[6] ?? "-1") : null;
-    // Directory validation uses the legacy volume serial on Windows; FileIdInfo includes its upper 32 bits too.
-    const onDestination = (dev: bigint): boolean => destinationDev === (parseInode === parseWindowsInode ? BigInt.asUintN(32, dev) : dev);
+    const needsDestinationStamp = mode === "--dir-copy" && parseInode === parseWindowsInode;
+    let destinationDev = mode === "--dir-copy" && !needsDestinationStamp ? BigInt(args[6] ?? "-1") : null;
     let errors = "";
     let inputOpen = true;
     let thrown: unknown;
@@ -1012,13 +1012,23 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
       for (let newline = pending.indexOf("\n"); newline >= 0; newline = pending.indexOf("\n")) {
         const line = pending.slice(0, newline).replace(/\r$/u, "");
         pending = pending.slice(newline + 1);
+        const destination = DESTINATION_ID.exec(line);
+        if (destination !== null) {
+          const dev = parseUnsigned(destination[1]);
+          const ino = parseInode(destination[2]);
+          const birthtimeNs = parseUnsigned(destination[3]);
+          if (!needsDestinationStamp || phase !== "holding" || destinationDev !== null ||
+              dev === null || !ino || !birthtimeNs) { violate(); return; }
+          destinationDev = dev;
+          continue;
+        }
         const targetId = TARGET_ID.exec(line);
         if (targetId !== null) {
           const dev = parseUnsigned(targetId[1]);
           const ino = parseInode(targetId[2]);
           const birthtimeNs = parseUnsigned(targetId[3]);
           if (mode !== "--dir-copy" || phase !== "holding" || oldTarget !== null ||
-              dev === null || !onDestination(dev) || ino === null || birthtimeNs === null) { violate(); return; }
+              dev === null || dev !== destinationDev || ino === null || !birthtimeNs) { violate(); return; }
           oldTarget = { dev, ino, birthtimeNs };
           continue;
         }
@@ -1039,7 +1049,7 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
               (parseInode === parseWindowsInode && (writing.ino !== ino || writing.birthtimeNs !== birthtimeNs))
             : writing !== null || copiedBytes !== 0n;
           if (mode !== "--dir-copy" || phase !== "copying" || passed !== "ready" || invalidPhase ||
-              dev === null || !onDestination(dev) || ino === null || birthtimeNs === null ||
+              dev === null || dev !== destinationDev || ino === null || birthtimeNs === null ||
               (oldTarget !== null && (oldTarget.dev !== dev || oldTarget.ino === ino))) { violate(); return; }
           writing = { dev, ino, birthtimeNs };
           writingRefreshed = refresh;
@@ -1080,6 +1090,7 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
           return;
         }
         if (line === "ready" ? phase !== "holding" : mode !== "--dir-copy" || phase !== "copying" || passed !== "ready") { violate(); return; }
+        if (line === "ready" && needsDestinationStamp && destinationDev === null) { violate(); return; }
         if (line === "copied" && oldTarget !== null && !writingRefreshed) { violate(); return; }
         phase = line === "copied" ? "copied" : mode === "--dir-copy" ? "copying" : "acting";
         let go = false;

@@ -281,10 +281,27 @@ describe("a move or removal stopped by its signal", () => {
 });
 
 describe("a helper that does not keep to its protocol", () => {
+  it.each([null, "8589934593"])("rejects a copy with a matching low volume serial and held destination %s", async (destination) => {
+    const windows = _helperFileOperationsForTest("/helper/ave-path-kind.exe", BOUNDS, true);
+    script((helper) => {
+      if (destination !== null) helper.say(`destination-id ${destination} 00000000000000000000000000000003 15`);
+      helper.say("ready");
+      helper.once("input", () => {
+        helper.say("writing 4294967297 fedcba9876543210123456789abcdef0 20", "copied");
+        helper.once("input", () => { helper.say("committed"); helper.exit(0); });
+      });
+    });
+    const run = follow(windows.copy(from, "staged", to, "report.pdf", ".part", () => true, UNSTOPPED));
+    await flush();
+    expect(run.error).toBeInstanceOf(HeldFileHelperUnavailableError);
+    expect(helpers()[0]?.input).toBe(destination === null ? "" : "c");
+  });
+
   it("keeps the entire Windows writer identity when rejecting a plain refusal after progress", async () => {
     const windows = _helperFileOperationsForTest("/helper/ave-path-kind.exe", BOUNDS, true);
     const fileId = "fedcba9876543210123456789abcdef0";
     script((helper) => {
+      if (helper.args[0] === "--dir-copy") helper.say("destination-id 4294967297 00000000000000000000000000000003 15");
       helper.say("ready");
       helper.once("input", () => {
         if (helper.args[0] === "--dir-remove-id") {
@@ -733,7 +750,7 @@ it("keeps the Windows writer identity for recording when isolation leaves its pa
   const windows = _helperFileOperationsForTest("/helper/ave-path-kind.exe", BOUNDS, true);
   const fileId = "fedcba9876543210123456789abcdef0";
   script((helper) => {
-    helper.say("ready");
+    helper.say("destination-id 4294967297 00000000000000000000000000000003 15", "ready");
     helper.once("input", () => {
       helper.say(`writing 4294967297 ${fileId} 20`, "progress 8", "copied");
       helper.afterInputEnds(() => { helper.say("cancelled left"); helper.exit(0); });

@@ -76,7 +76,7 @@ async function recoveryTests() {
   const expect = (args, lines, code = 0) => {
     const result = answered(args);
     assert.equal(result.code, code, JSON.stringify(result));
-    assert.deepEqual(result.lines, lines);
+    assert.deepEqual(result.lines.filter((line) => !line.startsWith("destination-id ")), lines);
     if (code !== 4) assert.equal(result.stderr, "");
   };
   const snapshot = (path) => {
@@ -228,7 +228,10 @@ async function recoveryTests() {
     });
     assert.equal(result.code, 0, result.stderr);
     const [dev, ino, stamp] = snapshot(join(dir, "target"));
-    assert.deepEqual(result.lines, ["ready", `writing ${dev} ${ino} ${stamp.split(":")[0]}`, "progress 6", "copied", "committed"]);
+    const [destination, ...copyLines] = result.lines;
+    assert.match(destination, /^destination-id \d+ [0-9a-f]{32} [1-9][0-9]*$/u);
+    assert.equal(destination.split(" ")[1], dev);
+    assert.deepEqual(copyLines, ["ready", `writing ${dev} ${ino} ${stamp.split(":")[0]}`, "progress 6", "copied", "committed"]);
     assert.ok(!existsSync(join(dir, part)));
     assert.ok(!existsSync(join(dir, "moved")));
   });
@@ -242,8 +245,8 @@ async function recoveryTests() {
       }
     });
     assert.equal(result.code, 3, JSON.stringify(result));
-    assert.match(result.lines[1], /^writing \d+ [0-9a-f]{32} \d+$/u);
-    assert.deepEqual(result.lines.slice(2), ["progress 6", "copied", "refused target removed"]);
+    assert.match(result.lines[2], /^writing \d+ [0-9a-f]{32} \d+$/u);
+    assert.deepEqual(result.lines.slice(3), ["progress 6", "copied", "refused target removed"]);
     assert.equal(readFileSync(join(dir, "target"), "utf8"), "unrelated bytes");
     assert.ok(!existsSync(join(dir, part)));
   });
@@ -351,7 +354,7 @@ async function recoveryTests() {
         }
       }, join(tmpdir(), "ave-path-pin-test.exe"));
       assert.equal(result.code, 7, JSON.stringify(result));
-      assert.equal(result.lines[0], `target-id ${old[0]} ${old[1]} ${birth}`);
+      assert.equal(result.lines[1], `target-id ${old[0]} ${old[1]} ${birth}`);
       if (boundary === "leftover") assert.match(result.lines.at(-1), /^target-left left /u);
       else assert.equal(result.lines.at(-1), "copied");
       expect(["--dir-read", ...held(root), record, "8192"], ["ready", `record ${saved}`]);
@@ -394,7 +397,7 @@ async function recoveryTests() {
         const expected = site === "directory" ? { code: 3, lines: ["refused to"] }
           : site === "writer" ? { code: 4, lines: ["ready", "failed EUNKNOWN left"] }
           : { code: 0, lines: ["ready", "left"] };
-        assert.deepEqual({ code: result.code, lines: result.lines }, expected);
+        assert.deepEqual({ code: result.code, lines: result.lines.filter((line) => !line.startsWith("destination-id ")) }, expected);
         assert.deepEqual(readdirSync(dir).sort(), (site === "writer" ? [hidden, part, "source"] : [hidden, "source"]).sort());
         assert.equal(readFileSync(source, "utf8"), "download bytes");
         assert.equal(readFileSync(existing, "utf8"), "existing bytes");
@@ -570,8 +573,8 @@ try {
   assert.ok(existsSync(join(from, "b")));
 
   result = answered(["--dir-copy", ...held(from), "b", ...held(to), "copied.pdf", ".0123.part", ".0123456789abcdef0123456789abcdef.removing"], "cc");
-  assert.match(result.lines[1], /^writing \d+ [0-9a-f]{32} \d+$/u);
-  assert.equal(result.lines[2], "cancelled", "input that arrives while bytes are copied stops the copy");
+  assert.match(result.lines[2], /^writing \d+ [0-9a-f]{32} \d+$/u);
+  assert.equal(result.lines[3], "cancelled", "input that arrives while bytes are copied stops the copy");
   assert.deepEqual(readdirSync(to).sort(), ["junction.pdf", "report.pdf"]);
   const copy = spawn(helper, ["--dir-copy", ...held(from), "b", ...held(to), "copied.pdf", ".0123.part", ".0123456789abcdef0123456789abcdef.removing"], { windowsHide: true, shell: false, env: {} });
   const copied = await new Promise((resolveCopy, rejectCopy) => {
@@ -594,7 +597,7 @@ try {
   });
   assert.equal(copied.code, 0);
   // One chunk of "staged b": the copy reports its progress once before it is complete.
-  const [ready, writing, ...outcome] = copied.output.split(/\r?\n/u).filter(Boolean);
+  const [, ready, writing, ...outcome] = copied.output.split(/\r?\n/u).filter(Boolean);
   assert.equal(ready, "ready");
   assert.match(writing, /^writing \d+ [0-9a-f]{32} \d+$/u);
   assert.deepEqual(outcome, ["progress 8", "copied", "committed"]);
