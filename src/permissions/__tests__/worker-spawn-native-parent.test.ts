@@ -91,10 +91,10 @@ describe.skipIf(process.platform !== "win32")("contained worker under a real plu
 
   const startPluginChild = async () => {
     const gen = join(pluginRoot(), "gen");
-    const intent = { pluginId: PLUGIN, command: process.execPath, args: [join(gen, "entry.js")], cwd: gen,
+    const intent = { pluginId: PLUGIN, command: process.execPath, args: [join(gen, "entry.js")], cwd: gen, baseEnv: buildSafeChildEnv({ ELECTRON_RUN_AS_NODE: "1" }),
       envelope: { read: [gen, dataDir(), join(pluginRoot(), "socket")], write: [dataDir(), join(pluginRoot(), "socket")] } };
     const launch = await prepareMxcPluginChildLaunch(intent);
-    return spawnMxcPluginChild(launch, { ...intent, floorPierces: [], baseEnv: buildSafeChildEnv({ ELECTRON_RUN_AS_NODE: "1" }) });
+    return spawnMxcPluginChild(launch, { ...intent, floorPierces: [] });
   };
   const startWorker = (grants: { read?: string[]; write?: string[] } = {}) => spawnWorker({
     pluginId: PLUGIN, workerId: "indexer", command: process.execPath, control: "output-only-v1",

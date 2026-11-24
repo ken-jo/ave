@@ -12,9 +12,11 @@ export async function prepareMxcPluginChildLaunch(intent: {
   readonly command: string;
   /** The plugin's generation root. */
   readonly cwd: string;
+  readonly baseEnv: NodeJS.ProcessEnv;
   readonly envelope: DelegatedWorkerConfinement;
 }): Promise<MxcPluginChildLaunch> {
-  const start = prepareMxcHolderStart({ label: `plugin-child:${intent.pluginId}`, executable: intent.command, allowWrite: intent.envelope.write });
+  const start = prepareMxcHolderStart({ label: `plugin-child:${intent.pluginId}`, executable: intent.command, baseEnv: intent.baseEnv,
+    allowWrite: intent.envelope.write });
   return {
     home: start.home,
     temp: start.temp,

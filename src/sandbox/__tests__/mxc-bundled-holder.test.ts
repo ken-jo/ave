@@ -643,7 +643,7 @@ describe("plugin child start resources", () => {
   const GEN = "C:\\ave\\plugins\\fs\\gen";
   const DATA = "C:\\ave\\mcp\\fs\\sandbox";
   const intent = (overrides: Partial<Parameters<typeof prepareMxcPluginChildLaunch>[0]> = {}): Parameters<typeof prepareMxcPluginChildLaunch>[0] =>
-    ({ pluginId: "fs", command: NODE, cwd: GEN, envelope: { read: [GEN, DATA], write: [DATA] }, ...overrides });
+    ({ pluginId: "fs", command: NODE, cwd: GEN, baseEnv: { SYSTEMROOT: "C:\\Windows", ELECTRON_RUN_AS_NODE: "1" }, envelope: { read: [GEN, DATA], write: [DATA] }, ...overrides });
   const stagingExists = (): boolean => [...state.dirs].some((dir) => dir.includes("mxc-staging\\"));
 
   it("lays out a fresh staging HOME/temp, the captured ownership and the registered probe, and spawns nothing", async () => {
@@ -684,6 +684,13 @@ describe("plugin child start resources", () => {
     state.live = ["D:\\work\\out"];
     await expect(prepareMxcPluginChildLaunch(intent({ envelope: { read: [GEN, "D:\\work"], write: ["D:\\work"] } })))
       .rejects.toBeInstanceOf(MxcHolderWorkspaceBusyError);
+    expect(stagingExists()).toBe(false);
+  });
+
+  it("refuses a loader or SDK override in the child's environment by name, before any staging exists", async () => {
+    for (const baseEnv of [{ NODE_OPTIONS: "--require x" }, { ELECTRON_RUN_AS_NODE: "0" }]) {
+      await expect(prepareMxcPluginChildLaunch(intent({ baseEnv }))).rejects.toBeInstanceOf(MxcHolderEnvironmentRefusedError);
+    }
     expect(stagingExists()).toBe(false);
   });
 });

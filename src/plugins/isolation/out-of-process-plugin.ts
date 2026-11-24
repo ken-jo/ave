@@ -751,6 +751,8 @@ export interface OutOfProcessPluginSpec {
     readonly command: string;
     readonly args: readonly string[];
     readonly cwd: string;
+    /** The child's environment; the planner refuses a loader or SDK override in it before it creates anything. */
+    readonly baseEnv: NodeJS.ProcessEnv;
     readonly envelope: DelegatedWorkerConfinement;
   }) => Promise<MxcPluginChildLaunch>;
   readonly registerSandboxEnvelope?: (paths: readonly string[], pluginRoot: string, pluginDataDir: string) => {
