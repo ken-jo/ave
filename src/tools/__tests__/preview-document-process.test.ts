@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { buildPreviewDocumentRuntime } from "../../__tests__/support/preview-document-runtime.js";
+import { within } from "../../__tests__/support/signal-wait.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { cyclicWorkbook, offsetWorkbook } from "../../__tests__/support/table-document-fixtures.js";
 import { pdfFixture, presentationFixture } from "../../__tests__/support/page-document-fixtures.js";
@@ -26,14 +27,23 @@ let bundleDir: string;
 let entry: string;
 let original: string;
 let ownerId = 0;
+/** Parses still running, so a case that ends early cannot leave its slot or child to the next case. */
+const inFlight = new Map<AbortController, Promise<unknown>>();
 
-async function parseTableDocumentIsolated(bytes: Buffer, format: PreviewDocumentFormat, sheetIndex: number) {
-  const slot = await acquireParseSlot(`document-test:${++ownerId}`);
-  try {
-    return await slot.parse(bytes, format, sheetIndex);
-  } finally {
-    slot.release();
-  }
+function parseTableDocumentIsolated(bytes: Buffer, format: PreviewDocumentFormat, sheetIndex: number) {
+  const controller = new AbortController();
+  const parse = (async () => {
+    const slot = await acquireParseSlot(`document-test:${++ownerId}`, controller);
+    try {
+      return await slot.parse(bytes, format, sheetIndex);
+    } finally {
+      slot.release();
+    }
+  })();
+  const settled = parse.then(() => undefined, () => undefined);
+  inFlight.set(controller, settled);
+  void settled.then(() => inFlight.delete(controller));
+  return parse;
 }
 
 beforeAll(async () => {
@@ -42,10 +52,17 @@ beforeAll(async () => {
   entry = join(bundleDir, "preview-document-child-main.js");
   original = readFileSync(entry, "utf8");
 });
-afterEach(() => {
-  runtime.mainDir = bundleDir;
-  writeFileSync(entry, original);
-  vi.unstubAllEnvs();
+afterEach(async () => {
+  try {
+    for (const controller of inFlight.keys()) controller.abort();
+    await within(Promise.all(inFlight.values()), "leftover document parses to settle");
+    expect(getManagedChildProcessCount()).toBe(0);
+    (await acquireParseSlot("released-after-case")).release();
+  } finally {
+    runtime.mainDir = bundleDir;
+    writeFileSync(entry, original);
+    vi.unstubAllEnvs();
+  }
 });
 afterAll(async () => {
   await cleanupTmpDir(bundleDir);
@@ -233,10 +250,10 @@ describe("isolated table parsing", () => {
     const stopped = vi.spyOn(managedChildren, "forceKillManagedChildProcess");
     const started = performance.now();
     try {
-      await expect(parseTableDocumentIsolated(Buffer.from("a"), "csv", 0)).rejects.toMatchObject({ code: "parse-limit" });
+      await expect(within(parseTableDocumentIsolated(Buffer.from("a"), "csv", 0), "the parse deadline kill"))
+        .rejects.toMatchObject({ code: "parse-limit" });
       expect(stopped).toHaveBeenCalled();
       expect(performance.now() - started).toBeGreaterThanOrEqual(PREVIEW_DOCUMENT_LIMITS.parseTimeoutMs);
-      expect(performance.now() - started).toBeLessThan(PREVIEW_DOCUMENT_LIMITS.parseTimeoutMs + 2_000);
       expect(getManagedChildProcessCount()).toBe(0);
     } finally {
       stopped.mockRestore();
@@ -360,16 +377,17 @@ describe("isolated table parsing", () => {
     expect(document.sheet.rows).toEqual([["a", "b"]]);
     expect(performance.now() - started).toBeGreaterThan(PREVIEW_DOCUMENT_LIMITS.parseTimeoutMs);
     expect(getManagedChildProcessCount()).toBe(0);
-  }, PREVIEW_DOCUMENT_LIMITS.startupTimeoutMs + 2_000);
+  });
 
   it("kills a child that never becomes ready with a startup error", async () => {
     writeFileSync(entry, "for (;;) {}");
     const started = performance.now();
-    await expect(parseTableDocumentIsolated(Buffer.from("a"), "csv", 0)).rejects.toMatchObject({ code: "read-failed" });
+    // The signal-wait bound, not a fixed slack over the deadline, caps the kill: spawn and tree-kill latency grow with host load.
+    await expect(within(parseTableDocumentIsolated(Buffer.from("a"), "csv", 0), "the startup deadline kill"))
+      .rejects.toMatchObject({ code: "read-failed" });
     expect(performance.now() - started).toBeGreaterThanOrEqual(PREVIEW_DOCUMENT_LIMITS.startupTimeoutMs);
-    expect(performance.now() - started).toBeLessThan(PREVIEW_DOCUMENT_LIMITS.startupTimeoutMs + 2_000);
     expect(getManagedChildProcessCount()).toBe(0);
-  }, PREVIEW_DOCUMENT_LIMITS.startupTimeoutMs + 2_000);
+  });
 
   it("recognizes a ready marker split across stdout chunks", async () => {
     const expected = await parseTableDocumentIsolated(Buffer.from("a"), "csv", 0);
