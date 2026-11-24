@@ -931,7 +931,7 @@ jobs:
       ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
       electron_config_cache: ${{ github.workspace }}/.cache/electron
       # Three workers and their child processes overloaded the runner until
-      # approval waits and 45 s tests timed out.
+      # 45 s tests timed out.
       AVE_VITEST_MAX_WORKERS: "2"
       AVE_WINDOWS_TEST_SHARD: ${{ matrix.shard }}
     steps:
