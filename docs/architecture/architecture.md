@@ -3650,9 +3650,8 @@ is an audit integrity error and its row contributes no entries to the audit
 view or verification counts. Chain and seal checks still use the raw lines.
 
 The ledger fires one `PermissionDenied` lifecycle event for each `denied` row
-it commits unless the effective abort stopped a rationale card after the gate
-settled the human denial. In that case the ledger keeps the denied row and skips
-lifecycle dispatch. A `cancelled` row fires none. Governed tools
+it commits, including a human denial the rationale gate settled before Stop.
+A `cancelled` row fires none. Governed tools
 fire none either: a tool with an operation policy, or a call under a plugin
 authorization lifecycle, still gets its deny row but no event. This one rule
 lives in the ledger's row writer and uses the persisted kind and invocation state.

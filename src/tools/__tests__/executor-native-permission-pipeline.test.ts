@@ -1079,7 +1079,7 @@ describe("native invocation permission evidence", () => {
     if (source === "headless" || source === "retired") {
       expect(terminalDenyKindOf({ denyReasons: row.denyReasons })).toBe(kind);
     } else {
-      expect(lifecycle.mock.calls.filter(([event]) => event === "PermissionDenied")).toEqual([]);
+      expect(lifecycle.mock.calls.filter(([event]) => event === "PermissionDenied")).toHaveLength(settledDenialReason === undefined ? 0 : 1);
     }
   });
 

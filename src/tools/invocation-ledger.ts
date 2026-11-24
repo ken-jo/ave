@@ -219,9 +219,8 @@ class TerminalLedger implements InvocationTerminal {
       const audited = generalWrite ? append.then(() => generalWrite) : append;
       this.#track(audited);
       const lifecycle = this.#lifecycle;
-      const stoppedRationaleDenial = this.#signal.aborted && !abortSupersedesApprovalDecision(this.#signal, this.#settledRationaleDecision);
       return (async () => {
-        if (entry.decision === "deny" && denyKind === "denied" && lifecycle !== undefined && !lifecycle.governed() && !stoppedRationaleDenial) {
+        if (entry.decision === "deny" && denyKind === "denied" && lifecycle !== undefined && !lifecycle.governed()) {
           await lifecycle.fire(new LedgerDenial(reason ?? entry.denyReasons[0]?.reason ?? ""));
         }
         await audited;
