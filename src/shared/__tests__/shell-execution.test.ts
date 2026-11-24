@@ -286,3 +286,18 @@ describe.skipIf(process.platform==="win32")("typed shell execution and native ar
     for(const command of ["if", "for x in y; do", "printf '","cat <<EOF\ndata"]){expect(analyzeShell(command).ok).toBe(false);}
   });
 });
+
+describe("host cd outcome", () => {
+  function commands(command: string, cwd: string, environment: Record<string, string>): string[][] {
+    const seen: string[][] = [];
+    inspectShellExecution(command, cwd, { dialect: "bash", environment }, {
+      path() {}, command(event) { seen.push(event.argv.map((argument) => argument ?? "")); },
+    });
+    return seen;
+  }
+
+  it("inspects the success body of a cd whose destination is missing during analysis", () => {
+    const { cwd, environment } = fixture();
+    expect(commands("cd missing && cat body.txt", cwd, environment)).toContainEqual(["cat", "body.txt"]);
+  });
+});
