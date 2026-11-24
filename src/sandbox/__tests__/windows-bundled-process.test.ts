@@ -162,8 +162,9 @@ describe("spawnWindowsBundledProcess", () => {
     const child = brokerChild();
     child.pid = undefined;
     confinedSpawn.mockImplementationOnce(spawnedAs(child));
-    await spawnWindowsBundledProcess(input);
+    const spawned = await spawnWindowsBundledProcess(input);
     child.emit("error", new Error("spawn EPERM"));
+    await spawned.exit;
     expect(grantRelease).toHaveBeenCalledTimes(1);
     expect(homeCleanup).toHaveBeenCalledTimes(1);
   });
@@ -233,7 +234,7 @@ describe("spawnWindowsBundledProcess", () => {
     expect(terminate).toHaveBeenCalledWith(child);
     expect(grantRelease).not.toHaveBeenCalled();
     child.emit("close", 0, null);
-    await Promise.resolve();
+    await new Promise(resolve => setImmediate(resolve));
     expect(grantRelease).toHaveBeenCalledTimes(1);
   });
 
@@ -250,7 +251,7 @@ describe("spawnWindowsBundledProcess", () => {
     expect(homeCleanup).not.toHaveBeenCalled();
     expect(asrtCleanup).not.toHaveBeenCalled();
     child.emit("close", null, "SIGKILL");
-    await Promise.resolve();
+    await new Promise(resolve => setImmediate(resolve));
     expect(grantRelease).toHaveBeenCalledOnce();
     expect(homeCleanup).toHaveBeenCalledOnce();
     expect(asrtCleanup).toHaveBeenCalledOnce();

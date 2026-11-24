@@ -472,105 +472,148 @@ export async function forceKillAndDrainManagedChildProcesses(
   return { killedCount, unresolvedCount: unresolved.length };
 }
 
-const CONFIRMED_EXIT = Symbol("confirmed managed exit");
-export type ConfirmedExit = { readonly [CONFIRMED_EXIT]: true };
-const exitProofs = new WeakMap<ConfirmedExit, { scope?: ManagedExitScope; isCurrent: () => boolean }>();
-
-function issueConfirmedExit(scope?: ManagedExitScope, isCurrent = (): boolean => true): ConfirmedExit {
-  const proof: ConfirmedExit = Object.freeze({ [CONFIRMED_EXIT]: true });
-  exitProofs.set(proof, { scope, isCurrent });
-  return proof;
-}
-
-export interface ManagedExitScope {
-  confirmedExit(): ConfirmedExit | undefined;
-}
-
-interface ExitScopeState {
-  active: number;
-  generation: number;
-  parent?: ManagedExitScope;
-}
-
-const exitScopes = new WeakMap<ManagedExitScope, ExitScopeState>();
-
-export function createManagedExitScope(parent?: ManagedExitScope): ManagedExitScope {
-  const state: ExitScopeState = { active: 0, generation: 0, parent };
-  const scope: ManagedExitScope = {
-    confirmedExit(): ConfirmedExit | undefined {
-      if (state.active !== 0) return undefined;
-      const generation = state.generation;
-      return issueConfirmedExit(scope, () => state.active === 0 && state.generation === generation);
-    },
-  };
-  exitScopes.set(scope, state);
-  return scope;
-}
-
-function retainManagedExit(scope: ManagedExitScope | undefined): () => ConfirmedExit {
-  const states: ExitScopeState[] = [];
-  for (let current = scope; current !== undefined;) {
-    const state = exitScopes.get(current);
-    if (!state) throw new Error("Managed exit scope was not issued by the owner.");
-    state.active++;
-    state.generation++;
-    states.push(state);
-    current = state.parent;
-  }
-  let confirmed: ConfirmedExit | undefined;
-  return () => {
-    if (confirmed) return confirmed;
-    for (const state of states) state.active--;
-    confirmed = issueConfirmedExit(scope);
-    return confirmed;
-  };
-}
-
-const MANAGED_CLEANUP = Symbol("managed child cleanup");
-export type ManagedChildCleanup = { readonly [MANAGED_CLEANUP]: true };
-const managedCleanups = new WeakMap<ManagedChildCleanup, { scope: ManagedExitScope; steps: readonly ((() => unknown) | undefined)[] }>();
-
-export function registerManagedChildCleanup(scope: ManagedExitScope, ...steps: readonly ((() => unknown) | undefined)[]): ManagedChildCleanup {
-  const cleanup: ManagedChildCleanup = Object.freeze({ [MANAGED_CLEANUP]: true });
-  managedCleanups.set(cleanup, { scope, steps });
-  return cleanup;
-}
-
-function assertConfirmedExit(proof: ConfirmedExit, scope?: ManagedExitScope): void {
-  const evidence = exitProofs.get(proof);
-  if (!evidence?.isCurrent() || (scope !== undefined && evidence.scope !== scope)) {
-    throw new Error("Managed exit was not confirmed.");
+/** The owner refused a release: no receipt covers the handle, or something beneath it still lacks a verdict. */
+export class ManagedExitUnconfirmedError extends Error {
+  constructor() {
+    super("Managed exit was not confirmed.");
+    this.name = "ManagedExitUnconfirmedError";
   }
 }
 
-export function releaseManagedChildResources(proof: ConfirmedExit, cleanup?: ManagedChildCleanup): void {
-  const registered = cleanup && managedCleanups.get(cleanup);
-  assertConfirmedExit(proof, registered?.scope);
-  if (!registered || !cleanup) return;
-  managedCleanups.delete(cleanup);
-  for (const step of registered.steps) void step?.();
-}
+const RECEIPT = Symbol("managed exit receipt");
+/** Owner-issued only after confirmed whole-tree exit: POSIX group gone, Windows job empty, or every swept PID gone. */
+export type ConfirmedExit = { readonly [RECEIPT]: "confirmed" };
+/** Owner-issued when a Windows relay settles: main's best-effort evidence, weaker than a confirmed exit. */
+export type RelayBestEffortExit = { readonly [RECEIPT]: "relay-best-effort" };
+type ExitReceipt = ConfirmedExit | RelayBestEffortExit;
+type ExitEvidence = ExitReceipt[typeof RECEIPT];
 
-const MANAGED_PATHS = Symbol("managed child paths");
-export type ManagedChildPaths = { readonly [MANAGED_PATHS]: true };
+const RESOURCES = Symbol("managed child resources");
+/** Opaque handle to what children acquired under it hold. Only the owner releases it. */
+export type ManagedResources = { readonly [RESOURCES]: true };
+
 type PathToRemove = { readonly path: string; readonly recursive?: boolean };
-const managedPaths = new WeakMap<ManagedChildPaths, { scope: ManagedExitScope; paths: readonly PathToRemove[] }>();
 
-export function registerManagedChildPaths(scope: ManagedExitScope, ...paths: readonly PathToRemove[]): ManagedChildPaths {
-  const handle: ManagedChildPaths = Object.freeze({ [MANAGED_PATHS]: true });
-  managedPaths.set(handle, { scope, paths: paths.map(path => ({ ...path })) });
-  return handle;
+interface ResourceState {
+  readonly parent?: ResourceState;
+  /** The only receipt kind that acquires under, or releases, this handle. */
+  readonly evidence: ExitEvidence;
+  /** Children in this subtree without an exit verdict. */
+  pending: number;
+  /** Advanced by every acquisition in this subtree; a receipt covers only the generation it saw. */
+  generation: number;
+  readonly steps: (() => unknown)[];
+  readonly paths: PathToRemove[];
+  released: boolean;
+  releasing?: Promise<void>;
 }
 
-export async function removeManagedChildPaths(proof: ConfirmedExit, handle: ManagedChildPaths): Promise<void> {
-  const registered = managedPaths.get(handle);
-  if (!registered) throw new Error("Managed child paths were not registered.");
-  assertConfirmedExit(proof, registered.scope);
-  for (const { path, recursive = false } of registered.paths) await rm(path, { force: true, recursive });
+const resourceStates = new WeakMap<ManagedResources, ResourceState>();
+const exitReceipts = new WeakMap<ExitReceipt, ReadonlyMap<ResourceState, number>>();
+
+function issuedState(resources: ManagedResources): ResourceState {
+  const state = resourceStates.get(resources);
+  if (!state) throw new Error("Managed resources were not issued by the owner.");
+  return state;
 }
 
-export function observeManagedWindowsJobExit(child: ChildProcess, receiptPath: string, scope: ManagedExitScope) {
-  const recordExit = retainManagedExit(scope);
+function openState(resources: ManagedResources): ResourceState {
+  const state = issuedState(resources);
+  if (state.released) throw new Error("Managed resources were already released.");
+  return state;
+}
+
+function lineage(state: ResourceState): ResourceState[] {
+  const chain: ResourceState[] = [];
+  for (let current: ResourceState | undefined = state; current; current = current.parent) chain.push(current);
+  return chain;
+}
+
+function issueResources(evidence: ExitEvidence, parent?: ManagedResources): ManagedResources {
+  const parentState = parent && openState(parent);
+  if (parentState && parentState.evidence !== evidence) throw new Error("Managed resources cannot nest under a different exit evidence.");
+  const resources: ManagedResources = Object.freeze({ [RESOURCES]: true });
+  resourceStates.set(resources, { parent: parentState, evidence, pending: 0, generation: 0, steps: [], paths: [], released: false });
+  return resources;
+}
+
+/** A handle released only by a confirmed whole-tree exit beneath it. */
+export function createManagedResources(parent?: ManagedResources): ManagedResources {
+  return issueResources("confirmed", parent);
+}
+
+/** A handle for a Windows relay launch, released by the relay settling: main's best-effort baseline, never a confirmed exit. */
+export function createManagedRelayResources(): ManagedResources {
+  return issueResources("relay-best-effort");
+}
+
+/** Registering wrap modules hand their raw teardown to the owner; callers keep only the handle. */
+export function recordManagedCleanup(resources: ManagedResources, ...steps: readonly ((() => unknown) | undefined)[]): void {
+  openState(resources).steps.push(...steps.filter((step): step is () => unknown => step !== undefined));
+}
+
+export function recordManagedPaths(resources: ManagedResources, ...paths: readonly PathToRemove[]): void {
+  openState(resources).paths.push(...paths.map(path => ({ ...path })));
+}
+
+// Acquisition counts on the handle and every ancestor; the verdict's receipt is bound to the generations it saw.
+function acquireManagedExit<Receipt extends ExitReceipt>(resources: ManagedResources | undefined, kind: Receipt[typeof RECEIPT]): () => Receipt {
+  const state = resources && openState(resources);
+  const chain = state ? lineage(state) : [];
+  if (state && state.evidence !== kind) throw new Error("Managed resources do not accept this exit evidence.");
+  for (const node of chain) {
+    node.pending++;
+    node.generation++;
+  }
+  let receipt: Receipt | undefined;
+  return () => {
+    if (receipt) return receipt;
+    for (const node of chain) node.pending--;
+    receipt = Object.freeze({ [RECEIPT]: kind }) as Receipt;
+    exitReceipts.set(receipt, new Map(chain.map(node => [node, node.generation])));
+    return receipt;
+  };
+}
+
+function runRecordedRelease(state: ResourceState): Promise<void> {
+  state.releasing ??= (async () => {
+    // A step leaves the list only after it returns, so a throwing step and those after it stay for the next release.
+    for (let step = state.steps[0]; step; step = state.steps[0]) {
+      const result = step();
+      if (result instanceof Promise) await result;
+      state.steps.shift();
+    }
+    for (let entry = state.paths[0]; entry; entry = state.paths[0]) {
+      await rm(entry.path, { force: true, recursive: entry.recursive ?? false });
+      state.paths.shift();
+    }
+    state.released = true;
+  })().finally(() => { state.releasing = undefined; });
+  return state.releasing;
+}
+
+/** Release with the receipt of a child acquired under this handle or an ancestor, once that node has no child without a verdict. */
+export async function releaseManagedResources(resources: ManagedResources, receipt: ExitReceipt): Promise<void> {
+  const state = issuedState(resources);
+  if (state.released) return;
+  const generations = exitReceipts.get(receipt);
+  const covering = generations && lineage(state).find(node => generations.has(node));
+  if (!covering || covering.evidence !== receipt[RECEIPT] || covering.generation !== generations.get(covering) || covering.pending !== 0) {
+    throw new ManagedExitUnconfirmedError();
+  }
+  await runRecordedRelease(state);
+}
+
+/** The owner's never-spawned receipt, for a preparation failure: no child was ever acquired under this handle or beneath it. */
+export async function abandonManagedLaunch(resources: ManagedResources): Promise<void> {
+  const state = issuedState(resources);
+  if (state.released) return;
+  if (state.generation !== 0) throw new ManagedExitUnconfirmedError();
+  await runRecordedRelease(state);
+}
+
+export function observeManagedWindowsJobExit(child: ChildProcess, receiptPath: string, resources: ManagedResources) {
+  const recordExit = acquireManagedExit<ConfirmedExit>(resources, "confirmed");
   // The native owner bounds the job-empty query and publishes the receipt before it exits.
   const completion = new Promise<ConfirmedExit | undefined>(resolve => {
     const removeListeners = (): void => {
@@ -609,8 +652,8 @@ async function waitForManagedProcessGroupExit(child: ChildProcess, closed: Promi
   return result.ok;
 }
 
-export function observeManagedProcessGroup(child: ChildProcess, scope?: ManagedExitScope) {
-  const recordExit = retainManagedExit(scope);
+export function observeManagedProcessGroup(child: ChildProcess, resources?: ManagedResources) {
+  const recordExit = acquireManagedExit<ConfirmedExit>(resources, "confirmed");
   const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null; error?: Error }>(resolve => {
     child.once("close", (code, signal) => resolve({ code, signal }));
     child.once("error", error => {
@@ -623,9 +666,9 @@ export function observeManagedProcessGroup(child: ChildProcess, scope?: ManagedE
   };
 }
 
-// Relay settlement is the current Windows evidence. Native job-empty receipts are separate.
-export function observeManagedWindowsRelayExit(child: ChildProcess, scope?: ManagedExitScope): Promise<ConfirmedExit> {
-  const recordExit = retainManagedExit(scope);
+// Relay settlement is main's Windows evidence, so it gets the weaker receipt kind. Native job-empty receipts are separate.
+export function observeManagedWindowsRelayExit(child: ChildProcess, resources: ManagedResources): Promise<RelayBestEffortExit> {
+  const recordExit = acquireManagedExit<RelayBestEffortExit>(resources, "relay-best-effort");
   return new Promise(resolve => {
     const onExit = (): void => {
       child.off("exit", onExit);
@@ -782,8 +825,8 @@ function processExists(pid: number): boolean {
   }
 }
 
-export async function stopOrphanedManagedProcesses(pids: readonly number[], scope?: ManagedExitScope): Promise<ConfirmedExit | undefined> {
-  const recordExit = retainManagedExit(scope);
+export async function stopOrphanedManagedProcesses(pids: readonly number[], resources: ManagedResources): Promise<ConfirmedExit | undefined> {
+  const recordExit = acquireManagedExit<ConfirmedExit>(resources, "confirmed");
   for (const pid of pids) {
     try { process.kill(pid, "SIGKILL"); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }

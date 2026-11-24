@@ -7,8 +7,8 @@ import { noteConfinedProcessesMayRun } from "../lib/confined-process-phase.js";
 import { buildSafeChildEnv } from "../tools/safe-env.js";
 import { runWithCeiling } from "../tools/executor-ceiling.js";
 import {
-  createManagedExitScope, observeManagedProcessGroup, observeManagedWindowsJobExit, registerManagedChildCleanup,
-  registerManagedChildPaths, releaseManagedChildResources, removeManagedChildPaths, spawnManaged, type ManagedChildCleanup, type ManagedExitScope,
+  abandonManagedLaunch, createManagedResources, observeManagedProcessGroup, observeManagedWindowsJobExit, recordManagedCleanup,
+  recordManagedPaths, releaseManagedResources, spawnManaged, type ConfirmedExit, type ManagedResources,
 } from "../main/managed-child-processes.js";
 import { resolveWindowsJobLauncher } from "../main/windows-job-launcher.js";
 import { TableDocumentError } from "../tools/table-document-error.js";
@@ -34,13 +34,15 @@ interface OfflineProcessInput {
   ipcDirectory: string;
   env: NodeJS.ProcessEnv;
   signal: AbortSignal;
-  lifetime: ManagedExitScope;
+  /** The wrapped process's handle; the wrap records its own teardown on it. */
+  resources: ManagedResources;
+  /** Each confirmed scanner exit, for the caller that releases an ancestor handle. */
+  noteExit?: (receipt: ConfirmedExit) => void;
 }
 
 export interface OfflineProcessWrap {
   argv: string[];
   env: NodeJS.ProcessEnv;
-  cleanup?: ManagedChildCleanup;
 }
 
 export class OfflineScanExitUnconfirmedError extends TableDocumentError {
@@ -50,7 +52,7 @@ export class OfflineScanExitUnconfirmedError extends TableDocumentError {
 }
 
 async function runOfflineScan(command: string, args: string[], signal: AbortSignal, timeoutMs: number,
-  scanDirectory: string, scope: ManagedExitScope) {
+  scanDirectory: string, resources: ManagedResources, noteExit: (receipt: ConfirmedExit) => void) {
   const jobReceipt = process.platform === "win32" ? join(scanDirectory, "job-empty") : undefined;
   if (jobReceipt !== undefined) await writeFile(jobReceipt, "", { flag: "wx" });
   const start = (onSpawn: (child: ChildProcess) => void) => jobReceipt === undefined
@@ -67,8 +69,8 @@ async function runOfflineScan(command: string, args: string[], signal: AbortSign
   const scan = await runWithCeiling(async (stop) => {
     stop.throwIfAborted();
     const child = start(acquired => {
-      const exit = observeManagedProcessGroup(acquired, jobReceipt === undefined ? scope : undefined);
-      const job = jobReceipt === undefined ? undefined : observeManagedWindowsJobExit(acquired, jobReceipt, scope);
+      const exit = observeManagedProcessGroup(acquired, jobReceipt === undefined ? resources : undefined);
+      const job = jobReceipt === undefined ? undefined : observeManagedWindowsJobExit(acquired, jobReceipt, resources);
       running = { exit, job };
     });
     const exit = running?.exit;
@@ -87,6 +89,7 @@ async function runOfflineScan(command: string, args: string[], signal: AbortSign
       ? await exit.confirmExit(scan.ok ? undefined : "offline scan interrupted")
       : await (scan.ok ? job.completion : job.stop());
     if (!confirmed) throw new OfflineScanExitUnconfirmedError();
+    noteExit(confirmed);
   }
   if (scan.ok) return scan.value;
   signal.throwIfAborted();
@@ -198,9 +201,10 @@ export async function wrapOfflineProcess(input: OfflineProcessInput): Promise<Of
   });
   let scanCompleted = false;
   let unconfirmedExit: OfflineScanExitUnconfirmedError | undefined;
-  const scanLifetime = createManagedExitScope();
-  const scanPaths = registerManagedChildPaths(scanLifetime, { path: scanDirectory, recursive: true });
-  let cleanup: ManagedChildCleanup | undefined;
+  // The scans are children of the wrapped process's handle, so it cannot be released while one lacks a verdict.
+  const scanResources = createManagedResources(input.resources);
+  recordManagedPaths(scanResources, { path: scanDirectory, recursive: true });
+  let lastScanExit: ConfirmedExit | undefined;
   try {
     let wrapped: string;
     try {
@@ -213,7 +217,8 @@ export async function wrapOfflineProcess(input: OfflineProcessInput): Promise<Of
           run: async (executable, args, signal, timeoutMs) => {
             try {
               if (unconfirmedExit) throw unconfirmedExit;
-              const result = await runOfflineScan(executable, args, signal, timeoutMs, scanDirectory, scanLifetime);
+              const result = await runOfflineScan(executable, args, signal, timeoutMs, scanDirectory, scanResources,
+                receipt => { lastScanExit = receipt; input.noteExit?.(receipt); });
               scanCompleted = result.code === 0 || result.code === 1;
               return result;
             } catch (error) {
@@ -224,26 +229,25 @@ export async function wrapOfflineProcess(input: OfflineProcessInput): Promise<Of
         },
         abortSignal: input.signal, unsetEnvVars: ["JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS"],
       });
-      cleanup = registerManagedChildCleanup(input.lifetime, cleanupBwrapMountPoints);
+      recordManagedCleanup(input.resources, cleanupBwrapMountPoints);
       input.signal.throwIfAborted();
       if (!scanCompleted) {
         throw new TableDocumentError("engine-confinement-unavailable", "Offline scan did not complete.");
       }
     } finally {
-      const proof = scanLifetime.confirmedExit();
-      if (proof) await removeManagedChildPaths(proof, scanPaths);
+      if (!unconfirmedExit) await (lastScanExit ? releaseManagedResources(scanResources, lastScanExit) : abandonManagedLaunch(scanResources));
     }
     // Local IPC needs AF_UNIX; nested namespaces must therefore be refused by the native wrapper itself.
     if (!wrapped.includes("--disable-userns")) {
       throw new TableDocumentError("engine-confinement-unavailable", "Offline local IPC requires namespace creation to be disabled.");
     }
     input.signal.throwIfAborted();
-    return { ...hardenLinuxSandboxWrap({ argv: ["/bin/sh", "-c", wrapped], env }, {
+    return hardenLinuxSandboxWrap({ argv: ["/bin/sh", "-c", wrapped], env }, {
       allowRead: [...reads.patterns, ...reads.literals, ...runtimes], denyWrite: [...writeDenies.patterns, ...writeDenies.literals],
-    }), cleanup };
+    });
   } catch (error) {
-    const proof = input.lifetime.confirmedExit();
-    if (!unconfirmedExit && proof) releaseManagedChildResources(proof, cleanup);
+    // A setup failure releases what the wrap recorded, unless a scanner still lacks a verdict.
+    if (!unconfirmedExit) await (lastScanExit ? releaseManagedResources(input.resources, lastScanExit) : abandonManagedLaunch(input.resources));
     throw unconfirmedExit ?? error;
   }
 }

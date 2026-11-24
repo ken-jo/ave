@@ -30,10 +30,19 @@ vi.mock("../../main/managed-child-processes.js", async (original) => {
     },
     observeManagedProcessGroup: (...args: Parameters<typeof real.observeManagedProcessGroup>) => {
       if (HOST_PLATFORM !== "win32") return real.observeManagedProcessGroup(...args);
-      const [child, scope] = args;
-      const exit = real.observeManagedProcessGroup(child);
-      const proof = real.observeManagedWindowsRelayExit(child, scope);
-      return { ...exit, confirmExit: () => proof };
+      // A Windows host has no POSIX groups: the simulated group is its leader, gone once it has exited.
+      const [child] = args;
+      const group = real.observeManagedProcessGroup(...args);
+      return { ...group, confirmExit: async (reason?: string) => {
+        const kill = process.kill.bind(process);
+        const leader = vi.spyOn(process, "kill").mockImplementation(((pid: number, signal?: string | number) => {
+          if (child.pid === undefined || pid !== -child.pid) return kill(pid, signal);
+          if (signal !== 0) { child.kill(); return true; }
+          if (child.exitCode !== null || child.signalCode !== null) throw Object.assign(new Error("ESRCH"), { code: "ESRCH" });
+          return true;
+        }) as typeof process.kill);
+        try { return await group.confirmExit(reason); } finally { leader.mockRestore(); }
+      } };
     },
   };
 });
@@ -73,9 +82,8 @@ vi.mock("../../sandbox/wrap-bundled-command.js", async (original) => {
     child.stdout.pipe(stdout);
     Object.defineProperty(child, "stdin", { value: null });
     Object.defineProperty(child, "stdout", { value: null });
-    const { createManagedExitScope, observeManagedWindowsRelayExit } = await import("../../main/managed-child-processes.js");
-    const lifetime = createManagedExitScope();
-    return { child, stdin, stdout, lifetime, exit: observeManagedWindowsRelayExit(child, lifetime), releaseHold: releaseHoldMock };
+    const { createManagedRelayResources, observeManagedWindowsRelayExit } = await import("../../main/managed-child-processes.js");
+    return { child, stdin, stdout, exit: observeManagedWindowsRelayExit(child, createManagedRelayResources()), releaseHold: releaseHoldMock };
   } };
 });
 

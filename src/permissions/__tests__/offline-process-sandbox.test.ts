@@ -54,7 +54,9 @@ import { detectSandboxCapability } from "../sandbox-capability.js";
 import { parseSandboxWrappedWords } from "../sandbox-wrapped-command.js";
 import { assertCodexExecutableLocation } from "../../main/codex-executable-location.js";
 import { wrapCommandWithSandboxMacOS } from "@anthropic-ai/sandbox-runtime/dist/sandbox/macos-sandbox-utils.js";
-import { createManagedExitScope, releaseManagedChildResources } from "../../main/managed-child-processes.js";
+import {
+  createManagedResources, releaseManagedResources, type ConfirmedExit,
+} from "../../main/managed-child-processes.js";
 import { wrapCommandWithSandboxLinux, cleanupBwrapMountPoints } from "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js";
 
 const registration = vi.hoisted(() => ({ refuse: false }));
@@ -82,7 +84,7 @@ let ipc: string;
 function request() {
   return { command: join(runtime, "engine"), args: ["--headless"], runtimeDirectories: [runtime],
     inputDirectory: input, outputDirectory: output, ipcDirectory: ipc,
-    env: { HOME: output, SAL_USE_VCLPLUGIN: "svp", PATH: "/usr/bin:/bin" }, signal: new AbortController().signal, lifetime: createManagedExitScope() };
+    env: { HOME: output, SAL_USE_VCLPLUGIN: "svp", PATH: "/usr/bin:/bin" }, signal: new AbortController().signal, resources: createManagedResources() };
 }
 
 beforeEach(async () => {
@@ -199,8 +201,9 @@ describe("offline process confinement", () => {
 
   it("uses an isolated network namespace with no bridge and releases native mount ownership once", async () => {
     setProcessPlatform("linux");
-    const options = request();
-    const wrapped = await wrapOfflineProcess(options);
+    let scanExit: ConfirmedExit | undefined;
+    const options = { ...request(), noteExit: (receipt: ConfirmedExit) => { scanExit = receipt; } };
+    await wrapOfflineProcess(options);
     expect(wrapCommandWithSandboxLinux).toHaveBeenCalledWith(expect.objectContaining({
       needsNetworkRestriction: true, allowAllUnixSockets: true, allowNestedUserNamespaces: false,
       bwrapPath: "/usr/bin/bwrap", enableWeakerNestedSandbox: false,
@@ -209,10 +212,9 @@ describe("offline process confinement", () => {
     expect(native.ripgrepConfig?.command).toBe("/usr/bin/rg");
     expect(native.httpSocketPath).toBeUndefined();
     expect(native.socksSocketPath).toBeUndefined();
-    const proof = options.lifetime.confirmedExit();
-    if (!proof) throw new Error("Expected an unlaunched wrapper.");
-    releaseManagedChildResources(proof, wrapped.cleanup);
-    releaseManagedChildResources(proof, wrapped.cleanup);
+    if (!scanExit) throw new Error("Expected a confirmed scan.");
+    await releaseManagedResources(options.resources, scanExit);
+    await releaseManagedResources(options.resources, scanExit);
     expect(cleanupBwrapMountPoints).toHaveBeenCalledTimes(1);
   });
 
@@ -462,9 +464,8 @@ describe("offline process confinement", () => {
     });
     syncBuiltinESMExports();
 
-    const options = request();
-    const proof = options.lifetime.confirmedExit();
-    if (!proof) throw new Error("Expected an unlaunched wrapper.");
+    let scanExit: ConfirmedExit | undefined;
+    const options = { ...request(), noteExit: (receipt: ConfirmedExit) => { scanExit = receipt; } };
     const wrapped = await wrapOfflineProcess(options);
     try {
       const words = parseSandboxWrappedWords(wrapped.argv[2]).map(word => word.value);
@@ -472,8 +473,9 @@ describe("offline process confinement", () => {
       expect(words.some((word, index) => word === "--ro-bind" && words[index + 1] === denied && words[index + 2] === denied)).toBe(true);
       expect(await fs.promises.readdir(root)).not.toEqual(expect.arrayContaining([expect.stringMatching(/^\.offline-scan-/u)]));
     } finally {
-      releaseManagedChildResources(proof, wrapped.cleanup);
+      if (scanExit) await releaseManagedResources(options.resources, scanExit);
     }
+    expect(scanExit).toBeDefined();
   });
 
   it.each(["ENOENT", "EACCES"])("refuses offline setup when the fixed scan helper fails with %s", async (code) => {

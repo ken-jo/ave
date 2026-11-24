@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
-import { stopOrphanedManagedProcesses } from "../managed-child-processes.js";
+import { createManagedResources, stopOrphanedManagedProcesses } from "../managed-child-processes.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -18,7 +18,7 @@ describe("orphaned managed processes", () => {
       return true;
     });
     const settled = vi.fn();
-    const sweep = stopOrphanedManagedProcesses([12345]).then(settled);
+    const sweep = stopOrphanedManagedProcesses([12345], createManagedResources()).then(settled);
     expect(vi.getTimerCount()).toBe(1);
     expect(settled).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
@@ -34,7 +34,7 @@ describe("orphaned managed processes", () => {
       throw Object.assign(new Error("Process exited"), { code: "ESRCH" });
     });
     const timer = vi.spyOn(globalThis, "setTimeout");
-    await expect(stopOrphanedManagedProcesses([12345])).resolves.not.toBeUndefined();
+    await expect(stopOrphanedManagedProcesses([12345], createManagedResources())).resolves.not.toBeUndefined();
     expect(timer).not.toHaveBeenCalled();
   });
 });

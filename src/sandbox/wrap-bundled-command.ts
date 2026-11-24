@@ -12,14 +12,15 @@ import { createAveHomeBoundarySnapshot } from "../permissions/ave-home-boundary-
 import { buildSandboxedChildEnv } from "../tools/safe-env.js";
 import type { ChildProcess } from "node:child_process";
 import {
-  createManagedExitScope, observeManagedWindowsRelayExit, registerManagedChildCleanup,
-  releaseManagedChildResources, type ConfirmedExit, type ManagedExitScope,
+  abandonManagedLaunch, createManagedRelayResources, observeManagedWindowsRelayExit, recordManagedCleanup,
+  releaseManagedResources, type ManagedResources, type RelayBestEffortExit,
 } from "../main/managed-child-processes.js";
 import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, rmdirSync, statSync, unlinkSync } from "node:fs";
 import { join, win32 as winPath } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { t } from "../i18n/index.js";
+import { errorMessage } from "../shared/error-message.js";
 import { createLogger } from "../lib/logger.js";
 import {
   liveMxcHolderWritableRoots,
@@ -128,16 +129,38 @@ export function bundledWrappedEnv(
   return { ...baseEnv, ...overlay, ...sandboxHomeEnv };
 }
 
+/** {@link wrapBundledCommand} with a throwaway HOME, whose teardown the owner holds on `resources` from acquisition: the caller
+ * gets the launch and the egress group hook, never the cleanup. A wrap failure records only the HOME. */
+export async function wrapManagedBundledCommand(input: Omit<BundledWrapInput, "sandboxHome"> & {
+  readonly resources: ManagedResources;
+}): Promise<{ argv: string[]; env: NodeJS.ProcessEnv; homeEnv: Record<string, string>; noteProcessGroup: (pid: number) => void }> {
+  const { resources, ...wrapInput } = input;
+  const sandboxHome = createSandboxProcessHome();
+  let wrapped: Awaited<ReturnType<typeof wrapBundledCommand>>;
+  try {
+    wrapped = await wrapBundledCommand({ ...wrapInput, sandboxHome });
+  } catch (error) {
+    recordManagedCleanup(resources, sandboxHome.cleanup);
+    throw error;
+  }
+  recordManagedCleanup(resources, wrapped.egress.release, cleanupAsrtSandboxAfterCommand, sandboxHome.cleanup);
+  return {
+    argv: wrapped.argv,
+    env: wrapped.env,
+    homeEnv: sandboxHome.env,
+    noteProcessGroup: (pid) => wrapped.egress.noteProcessGroup(pid),
+  };
+}
+
 /** A bundled process started under srt-win, and what it holds while it runs. */
 export interface WindowsBundledSpawn {
   readonly child: ChildProcess;
   /** The program's input and output, through the stdio relay (`confined-child.ts`). */
   readonly stdin: Writable;
   readonly stdout: Readable;
-  readonly exit: Promise<ConfirmedExit>;
-  readonly lifetime: ManagedExitScope;
-  /** Revoke the filesystem grant and remove the throwaway HOME. Idempotent; the HOME removal stays retryable, as `createSandboxProcessHome`
-   * documents. Call it on the child's exit and again on its close. ASRT's per-command cleanup is the caller's, as it is for {@link wrapBundledCommand}. */
+  readonly exit: Promise<RelayBestEffortExit>;
+  /** Revoke the filesystem grant and remove the throwaway HOME once the relay settles. Idempotent; the HOME removal stays retryable, as
+   * `createSandboxProcessHome` documents. ASRT's per-command cleanup is the caller's unless it passed `ownsCommandSandbox`. */
   readonly releaseHold: () => void;
 }
 
@@ -158,27 +181,29 @@ export async function spawnWindowsBundledProcess(input: {
   readonly refreshStillValid?: () => Promise<void>;
   /** A user hook's host-issued admitted shell plan; see `ConfinedChildSpec.userHookShellPlan`. */
   readonly userHookShellPlan?: HostShellExecutionPlan;
+  /** The owner also runs ASRT's per-command cleanup with the hold. */
+  readonly ownsCommandSandbox?: boolean;
 }): Promise<WindowsBundledSpawn> {
   if (process.platform !== "win32") {
     throw new Error(`[wrap-bundled-command] ${input.label}: spawnWindowsBundledProcess is the Windows path`);
   }
   const sandboxHome = createSandboxProcessHome();
-  const lifetime = createManagedExitScope();
+  const resources = createManagedRelayResources();
   let grant: HeldWindowsGrant | undefined;
   let wrapped = false;
+  let launchFailed = false;
   let child: ChildProcess | undefined;
-  let exit: Promise<ConfirmedExit> | undefined;
-  const settleHold = (cleanupWrap: boolean): void => {
-    const cleanup = registerManagedChildCleanup(
-      lifetime, cleanupWrap ? cleanupAsrtSandboxAfterCommand : undefined, grant?.release, sandboxHome.cleanup,
-    );
-    const proof = lifetime.confirmedExit();
-    if (proof) releaseManagedChildResources(proof, cleanup);
-    else if (exit) void exit.then(confirmed => releaseManagedChildResources(confirmed, cleanup));
+  let exit: Promise<RelayBestEffortExit> | undefined;
+  // Recorded with the handle; the grant and wrap state are read when the owner releases.
+  recordManagedCleanup(resources,
+    () => (wrapped && (launchFailed || input.ownsCommandSandbox) ? cleanupAsrtSandboxAfterCommand() : undefined), () => grant?.release(), sandboxHome.cleanup);
+  const settleHold = (): void => {
+    const release = exit ? exit.then(receipt => releaseManagedResources(resources, receipt)) : abandonManagedLaunch(resources);
+    void release.catch((error: unknown) => log.warn(`[${input.label}] sandbox hold release failed: ${errorMessage(error)}`));
   };
   const acquire = (running: ChildProcess): void => {
     child = running;
-    exit = observeManagedWindowsRelayExit(running, lifetime);
+    exit = observeManagedWindowsRelayExit(running, resources);
   };
   try {
     grant = await holdWindowsFilesystemGrant({
@@ -221,12 +246,13 @@ export async function spawnWindowsBundledProcess(input: {
     });
     // A start that produced no process emits `error` and may emit nothing else.
     running.once("error", () => {
-      if (running.pid === undefined) settleHold(false);
+      if (running.pid === undefined) settleHold();
     });
-    return { child: running, stdin: spawned.stdin!, stdout: spawned.stdout!, exit, lifetime, releaseHold: () => settleHold(false) };
+    return { child: running, stdin: spawned.stdin!, stdout: spawned.stdout!, exit, releaseHold: settleHold };
   } catch (error) {
     if (child !== undefined) terminateChildBestEffort(child);
-    settleHold(wrapped);
+    launchFailed = true;
+    settleHold();
     throw error instanceof Error ? error : new Error(String(error));
   }
 }

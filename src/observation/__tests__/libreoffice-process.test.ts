@@ -26,7 +26,7 @@ const READ_ONLY_FILE_MODE = process.platform === "win32" ? 0o444 : 0o400;
 vi.mock("../../permissions/offline-process-sandbox.js", async (original) => ({
   ...await original<typeof import("../../permissions/offline-process-sandbox.js")>(),
   wrapOfflineProcess: vi.fn<typeof import("../../permissions/offline-process-sandbox.js").wrapOfflineProcess>(async input => ({
-    argv: [input.command, ...input.args], env: input.env, cleanup: registerManagedChildCleanup(input.lifetime, vi.fn()),
+    argv: [input.command, ...input.args], env: input.env,
   })),
 }));
 vi.mock("../../main/managed-child-processes.js", async original => {
@@ -67,7 +67,7 @@ vi.mock("node:fs/promises", async importOriginal => {
 });
 
 import { LibreOfficeSessionPool, sweepStaleDocumentEngineRuntimes } from "../libreoffice-process.js";
-import { __resetManagedChildProcessesForTest, spawnManaged, forceKillManagedChildProcess, registerManagedChildCleanup } from "../../main/managed-child-processes.js";
+import { __resetManagedChildProcessesForTest, spawnManaged, forceKillManagedChildProcess, recordManagedCleanup } from "../../main/managed-child-processes.js";
 import { OfflineScanExitUnconfirmedError, wrapOfflineProcess } from "../../permissions/offline-process-sandbox.js";
 import { fakeFixtureAclTransport, installFixtureAclTransport } from "../../__tests__/support/native-executable.js";
 import { _setWindowsAclTransportForTest } from "../../main/windows-acl-host.js";
@@ -225,9 +225,10 @@ function mockManagedEngineGroup(startResident = false) {
     }
   });
   const wrap = vi.fn();
-  vi.mocked(wrapOfflineProcess).mockImplementationOnce(async input => ({
-    argv: [input.command, ...input.args], env: input.env, cleanup: registerManagedChildCleanup(input.lifetime, wrap),
-  }));
+  vi.mocked(wrapOfflineProcess).mockImplementationOnce(async input => {
+    recordManagedCleanup(input.resources, wrap);
+    return { argv: [input.command, ...input.args], env: input.env };
+  });
   const markGroupGone = (): void => { groupAlive = false; };
   return { pid: groupPid, launched, kill, wrap, markGroupGone, restore: async () => {
     markGroupGone();
@@ -574,9 +575,10 @@ describe("private conversion process ownership", () => {
       staged.resolve(client.job);
       client.end(1);
     };
-    const failingWrap = async (input: Parameters<typeof wrapOfflineProcess>[0]) => ({
-      argv: [input.command, ...input.args], env: input.env, cleanup: registerManagedChildCleanup(input.lifetime, () => { throw cleanupFailure; }),
-    });
+    const failingWrap = async (input: Parameters<typeof wrapOfflineProcess>[0]) => {
+      recordManagedCleanup(input.resources, () => { throw cleanupFailure; });
+      return { argv: [input.command, ...input.args], env: input.env };
+    };
     try {
       if (entry === "conversion") {
         await pool.prepare(installation, "one", "docx", signal);

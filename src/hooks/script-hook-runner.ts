@@ -15,16 +15,14 @@ import {
 } from "../lib/shell-resolver.js";
 import { createLogger } from "../lib/logger.js";
 import {
+  abandonManagedLaunch,
   assertManagedChildProcessAdmissionOpen,
-  createManagedExitScope,
+  createManagedResources,
   forceKillManagedChildProcess,
   observeManagedProcessGroup,
-  registerManagedChildCleanup,
-  releaseManagedChildResources,
+  releaseManagedResources,
   spawnManaged,
-  type ConfirmedExit,
-  type ManagedChildCleanup,
-  type ManagedExitScope,
+  type ManagedResources,
 } from "../main/managed-child-processes.js";
 import {
   DEFAULT_HOOK_TIMEOUT_MS,
@@ -52,10 +50,9 @@ import { isPathWithin } from "../plugins/plugin-storage-containment.js";
 import { getHostShellExecutionPlan, isIssuedHostShellExecutionPlan, isWindowsShellConsentCurrent } from "../permissions/sandbox-capability.js";
 import { getHostShellExecutionPlanAuditProjection, getHostShellExecutionPlanCacheIdentity, type HostShellExecutionPlan } from "../permissions/host-shell-execution-plan.js";
 import {
-  assertExtensionStartAllowed, cleanupAsrtSandboxAfterCommand, isPluginWorkerConfinementActive,
+  assertExtensionStartAllowed, isPluginWorkerConfinementActive,
 } from "../permissions/asrt-sandbox.js";
-import { createSandboxProcessHome } from "../permissions/sandbox-process-home.js";
-import type { EgressInvocation, WorkerEgressOwner } from "../permissions/egress-invocations.js";
+import type { WorkerEgressOwner } from "../permissions/egress-invocations.js";
 import {
   assertMxcHolderNotBashForm,
   bundledWrappedEnv,
@@ -63,7 +60,7 @@ import {
   MxcBashIncompatibleError,
   spawnMxcBundledHolder,
   spawnWindowsBundledProcess,
-  wrapBundledCommand,
+  wrapManagedBundledCommand,
   type MxcBundledHolder,
   type WindowsBundledSpawn,
 } from "../sandbox/wrap-bundled-command.js";
@@ -329,10 +326,9 @@ export async function runOneHookScript(
       return deny(`sandbox unavailable: ${(error as Error).message}`);
     }
   }
-  const hookLifetime = createManagedExitScope();
-  let cleanup: ManagedChildCleanup | undefined;
-  let windowsExit: Promise<ConfirmedExit> | undefined;
-  let wrappedEgress: EgressInvocation | undefined;
+  // The owner holds the hook's sandbox teardown; this runner sees only the handle.
+  const hookResources = createManagedResources();
+  let noteProcessGroup: ((pid: number) => void) | undefined;
   let windowsSpawn: WindowsBundledSpawn | undefined;
   let sandboxArgv = false;
   let contained: MxcBundledHolder | undefined;
@@ -397,45 +393,38 @@ export async function runOneHookScript(
         // A host-classified user hook on its admitted srt-win plan keeps that route under a container extension backend.
         ...(userHook && admittedPlan?.substrate === "asrt" ? { userHookShellPlan: admittedPlan } : {}),
         assertStillValid: assertHookStillAdmitted,
+        ownsCommandSandbox: true,
       });
     } catch (error) {
       return deny(`sandbox unavailable: ${(error as Error).message}`);
     }
-    windowsExit = windowsSpawn.exit;
-    cleanup = registerManagedChildCleanup(windowsSpawn.lifetime, cleanupAsrtSandboxAfterCommand, windowsSpawn.releaseHold);
   } else if (sandboxEnabled && process.platform !== "win32") {
-    const sandboxHome = createSandboxProcessHome();
-    cleanup = registerManagedChildCleanup(hookLifetime, sandboxHome.cleanup);
     try {
-      const wrapped = await wrapBundledCommand({ command: spawnCmd, args: spawnArgs,
-        sandboxHome,
+      const wrapped = await wrapManagedBundledCommand({ command: spawnCmd, args: spawnArgs,
+        resources: hookResources,
         allowWrite: confinement ? [confinement.dataDir] : [projectDir],
         ownPluginReads: confinement ? [confinement.generationRoot] : userScriptReads,
         tempPrincipal: confinement ? { kind: "plugin", id: confinement.pluginId }
           : { kind: "hook", id: sha256Hex(runnable.id) },
         egressOwner: hookEgressOwner });
-      wrappedEgress = wrapped.egress;
-      cleanup = registerManagedChildCleanup(
-        hookLifetime, wrappedEgress?.release, cleanupAsrtSandboxAfterCommand, sandboxHome.cleanup,
-      );
+      noteProcessGroup = wrapped.noteProcessGroup;
       [spawnCmd, ...spawnArgs] = wrapped.argv;
       sandboxArgv = true;
-      spawnEnv = bundledWrappedEnv(childEnvBase, wrapped.env, sandboxHome.env);
+      spawnEnv = bundledWrappedEnv(childEnvBase, wrapped.env, wrapped.homeEnv);
     } catch (error) {
-      const proof = hookLifetime.confirmedExit();
-      if (proof) releaseManagedChildResources(proof, cleanup);
+      await abandonManagedLaunch(hookResources);
       return deny(`sandbox unavailable: ${(error as Error).message}`);
     }
   }
 
+  // Before the child exists only the owner's never-spawned path releases; the Windows hold waits for its relay.
   const settlePreparedResources = (): void => {
     if (contained) {
       stopPreparedHolder(contained, runnable.id);
-    } else if (windowsExit) {
-      void windowsExit.then(proof => releaseManagedChildResources(proof, cleanup));
+    } else if (windowsSpawn) {
+      windowsSpawn.releaseHold();
     } else {
-      const proof = hookLifetime.confirmedExit();
-      if (proof) releaseManagedChildResources(proof, cleanup);
+      void abandonManagedLaunch(hookResources).catch((error: unknown) => log.warn("hook sandbox release failed: %s (%s)", runnable.id, (error as Error).message));
     }
   };
 
@@ -478,8 +467,8 @@ export async function runOneHookScript(
   );
   if (process.platform !== "win32") {
     return runPosixHook({ start: startHook, stdinJson, timeoutMs, abortSignal, hookId: runnable.id, deny,
-      noteProcessGroup: (pid) => wrappedEgress?.noteProcessGroup(pid),
-      lifetime: hookLifetime, cleanup,
+      noteProcessGroup: (pid) => noteProcessGroup?.(pid),
+      resources: hookResources,
       outcome: (observed) => hookOutcome(forensics, deny, { ...observed, timeoutMs, hookId: runnable.id,
         hookType: runnable.hookType, durationMs: Date.now() - start }) });
   }
@@ -698,8 +687,7 @@ async function runPosixHook(input: {
   readonly hookId: string;
   readonly deny: HookDeny;
   readonly noteProcessGroup: (pid: number) => void;
-  readonly lifetime: ManagedExitScope;
-  readonly cleanup?: ManagedChildCleanup;
+  readonly resources: ManagedResources;
   readonly outcome: (observed: ObservedHookRun) => ScriptHookInvocationResult;
 }): Promise<ScriptHookInvocationResult> {
   let owned: { child: ChildProcess; exit: ReturnType<typeof observeManagedProcessGroup> } | undefined;
@@ -724,7 +712,7 @@ async function runPosixHook(input: {
     try {
       input.abortSignal?.throwIfAborted();
       input.start(child => {
-        owned = { child, exit: observeManagedProcessGroup(child, input.lifetime) };
+        owned = { child, exit: observeManagedProcessGroup(child, input.resources) };
         child.on("error", (error: Error) => {
           fault ??= `hook process error: ${error.message}`;
           requestStop("hook process error");
@@ -742,8 +730,7 @@ async function runPosixHook(input: {
     }
     if (input.abortSignal?.aborted) onAbort();
     if (owned === undefined) {
-      const proof = input.lifetime.confirmedExit();
-      if (proof) releaseManagedChildResources(proof, input.cleanup);
+      await abandonManagedLaunch(input.resources);
       return input.deny(cancelled ? "Hook execution cancelled" : fault ?? "Hook launch failed.");
     }
     const { child, exit } = owned;
@@ -767,7 +754,7 @@ async function runPosixHook(input: {
       return input.deny(t("be_scriptHookRunner.terminationUnverified", { code: "hook-termination-unverified" }));
     }
     const { code, signal } = await exit.wait();
-    releaseManagedChildResources(proof, input.cleanup);
+    await releaseManagedResources(input.resources, proof);
     if (fault) return input.deny(fault);
     return input.outcome({ code, signal, cancelled, timedOut, stdout: stdout?.text() ?? "", stderr: stderr?.text() ?? "",
       stdoutCapped: stdout?.capped() ?? false });

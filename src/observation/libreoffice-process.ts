@@ -9,11 +9,10 @@ import { pathToFileURL } from "node:url";
 import type { VerifiedDocumentEngineInstallation } from "../main/document-engine-installation.js";
 import { createPrivateTempDirectory, assertCodexLocations } from "../main/codex-executable-location.js";
 import {
-  createManagedExitScope, forceKillManagedChildProcess, observeManagedProcessGroup, registerManagedChildPaths, releaseManagedChildResources,
-  removeManagedChildPaths, spawnManaged, stopOrphanedManagedProcesses,
-  type ConfirmedExit, type ManagedChildCleanup, type ManagedChildPaths, type ManagedExitScope,
+  abandonManagedLaunch, createManagedResources, forceKillManagedChildProcess, ManagedExitUnconfirmedError, observeManagedProcessGroup,
+  recordManagedPaths, releaseManagedResources, spawnManaged, stopOrphanedManagedProcesses, type ConfirmedExit, type ManagedResources,
 } from "../main/managed-child-processes.js";
-import { OfflineScanExitUnconfirmedError, wrapOfflineProcess, type OfflineProcessWrap } from "../permissions/offline-process-sandbox.js";
+import { OfflineScanExitUnconfirmedError, wrapOfflineProcess } from "../permissions/offline-process-sandbox.js";
 import { buildSandboxedChildEnv } from "../tools/safe-env.js";
 import { PREVIEW_DOCUMENT_LIMITS } from "../shared/preview-document.js";
 import { readPreviewDocumentInput } from "../tools/preview-document-input.js";
@@ -161,12 +160,12 @@ export async function sweepStaleDocumentEngineRuntimes(root = runtimeTempRoot())
     const pid = await readRuntimeOwner(directory);
     if (pid === undefined || pid === process.pid || processAlive(pid)) continue;
     const pids = (await processesUsingRuntime(directory, uid)).filter((pid) => pid !== process.pid);
-    const lifetime = createManagedExitScope();
-    const paths = registerManagedChildPaths(lifetime, { path: directory, recursive: true });
-    const proof = await stopOrphanedManagedProcesses(pids, lifetime);
-    if (!proof) throw new Error("An orphaned document engine process did not exit.");
+    const resources = createManagedResources();
+    recordManagedPaths(resources, { path: directory, recursive: true });
+    const receipt = await stopOrphanedManagedProcesses(pids, resources);
+    if (!receipt) throw new Error("An orphaned document engine process did not exit.");
     if ((await readdir(directory)).some(entry => entry.startsWith(".offline-scan-"))) continue;
-    await removeManagedChildPaths(proof, paths);
+    await releaseManagedResources(resources, receipt);
     removed.push(directory);
   }
   return removed;
@@ -179,11 +178,18 @@ interface RunningProcess {
   output: string;
   diagnosticBytes: number;
   failure?: Error;
-  cleanup?: ManagedChildCleanup;
+  resources: ManagedResources;
+  noteExit: (receipt: ConfirmedExit) => void;
   drain?: Promise<ConfirmedExit | undefined>;
 }
 
-interface SessionRuntime {
+/** A handle the engine releases with the latest receipt from beneath it. */
+interface EngineScope {
+  readonly resources: ManagedResources;
+  lastExit?: ConfirmedExit;
+}
+
+interface SessionRuntime extends EngineScope {
   directory: string;
   input: string;
   output: string;
@@ -193,8 +199,6 @@ interface SessionRuntime {
   runtimeDirectories: string[];
   resident?: RunningProcess;
   children: Set<RunningProcess>;
-  lifetime: ManagedExitScope;
-  paths: ManagedChildPaths;
   importerReady: boolean;
   unconfirmedExit?: TableDocumentError;
   javaHome?: string;
@@ -390,11 +394,11 @@ export class LibreOfficeSessionPool {
     const input = join(directory, "input");
     const profile = join(output, "profile");
     const ipc = join(output, "ipc");
-    const lifetime = createManagedExitScope();
+    const resources = createManagedResources();
+    recordManagedPaths(resources, { path: directory, recursive: true });
     const runtime: SessionRuntime = {
       directory, input, output, profile, ipc, env: { ...childEnvironment(output), OSL_SOCKET_PATH: ipc },
-      runtimeDirectories: [runtimeDirectory], children: new Set(), lifetime, importerReady: false,
-      paths: registerManagedChildPaths(lifetime, { path: directory, recursive: true }),
+      runtimeDirectories: [runtimeDirectory], children: new Set(), resources, importerReady: false,
     };
     // Publish ownership before any child starts, so cancellation can always drain it.
     session.runtime = runtime;
@@ -426,16 +430,20 @@ export class LibreOfficeSessionPool {
    */
   private async startResident(session: EngineSession, runtime: SessionRuntime, signal: AbortSignal): Promise<void> {
     // A fresh holder per start: a previous instance's lock file must never stand in for this instance's frame.
+    // It belongs to this resident's handle, so the resident's own exit receipt removes it.
     const holderDirectory = join(runtime.output, "holder");
-    const proof = runtime.lifetime.confirmedExit();
-    if (!proof) throw terminationUnconfirmed();
-    const holderPaths = registerManagedChildPaths(runtime.lifetime, { path: holderDirectory, recursive: true });
-    await removeManagedChildPaths(proof, holderPaths);
-    await mkdir(holderDirectory, { mode: 0o700 });
+    const residentResources = createManagedResources(runtime.resources);
+    recordManagedPaths(residentResources, { path: holderDirectory, recursive: true });
     const holder = join(holderDirectory, `${randomUUID()}.fodt`);
-    await writeFile(holder, HOST_TEXT_DOCUMENT, { flag: "wx", mode: 0o600 });
+    try {
+      await mkdir(holderDirectory, { mode: 0o700 });
+      await writeFile(holder, HOST_TEXT_DOCUMENT, { flag: "wx", mode: 0o600 });
+    } catch (error) {
+      await abandonManagedLaunch(residentResources);
+      throw error;
+    }
     const resident = await this.spawn(session, runtime, session.installation.executable,
-      [...this.baseArguments(runtime), holder], signal);
+      [...this.baseArguments(runtime), holder], signal, runtime, residentResources);
     runtime.resident = resident;
     await this.awaitInstanceReady(runtime, resident, holder, signal);
     await this.probeReadiness(session, runtime, signal);
@@ -477,23 +485,28 @@ export class LibreOfficeSessionPool {
     const source = join(runtime.input, `${id}.fodt`);
     const output = join(runtime.output, id);
     await mkdir(output, { mode: 0o700 });
-    const lifetime = createManagedExitScope(runtime.lifetime);
-    const paths = registerManagedChildPaths(lifetime, { path: source }, { path: output, recursive: true });
+    const request: EngineScope = { resources: createManagedResources(runtime.resources) };
+    recordManagedPaths(request.resources, { path: source }, { path: output, recursive: true });
     let completed = false;
     try {
       await writeFile(source, HOST_TEXT_DOCUMENT, { flag: "wx", mode: 0o400 });
-      const pdf = await this.dispatch(session, runtime, source, output, { extension: "pdf", filter: "writer_pdf_Export" }, undefined, signal, lifetime);
+      const pdf = await this.dispatch(session, runtime, source, output, { extension: "pdf", filter: "writer_pdf_Export" }, undefined, signal, request);
       if (!pdf.subarray(0, 5).equals(Buffer.from("%PDF-"))) throw failure("Document engine readiness probe did not produce a PDF document.");
       completed = true;
     } catch (error) {
       await this.stopRuntime(runtime);
       throw runtime.unconfirmedExit ?? error;
     } finally {
-      const proof = completed || runtime.lifetime.confirmedExit() ? lifetime.confirmedExit() : undefined;
-      if (!runtime.unconfirmedExit && proof) {
-        await removeManagedChildPaths(proof, paths);
-      }
+      await this.releaseRequest(runtime, request, completed);
     }
+  }
+
+  /** A completed request is released by its last client's receipt; a failed one, after stopRuntime, by the runtime's latest receipt. */
+  private async releaseRequest(runtime: SessionRuntime, request: EngineScope, completed: boolean): Promise<void> {
+    if (runtime.unconfirmedExit) return;
+    const receipt = completed ? request.lastExit : request.lastExit && runtime.lastExit;
+    await (receipt ? releaseManagedResources(request.resources, receipt) : abandonManagedLaunch(request.resources))
+      .catch((error: unknown) => { if (!(error instanceof ManagedExitUnconfirmedError)) throw error; });
   }
 
   /**
@@ -501,7 +514,7 @@ export class LibreOfficeSessionPool {
    * the resident's conversion failed, so success requires the resident's own receipt line and the expected file.
    */
   private async dispatch(session: EngineSession, runtime: SessionRuntime, source: string, outputDirectory: string,
-    target: ExportTarget, inputFilter: string | undefined, signal: AbortSignal, lifetime: ManagedExitScope): Promise<Buffer> {
+    target: ExportTarget, inputFilter: string | undefined, signal: AbortSignal, request: EngineScope): Promise<Buffer> {
     const resident = runtime.resident;
     if (!resident || resident.ended) throw failure("Document engine resident is unavailable.");
     resident.output = "";
@@ -510,7 +523,7 @@ export class LibreOfficeSessionPool {
     const destination = join(outputDirectory, `${stem}.${target.extension}`);
     const client = await this.run(session, runtime, session.installation.executable, [...this.baseArguments(runtime),
       ...(inputFilter ? [`--infilter=${inputFilter}`] : []),
-      "--convert-to", `${target.extension}:${target.filter}`, "--outdir", outputDirectory, source], signal, lifetime);
+      "--convert-to", `${target.extension}:${target.filter}`, "--outdir", outputDirectory, source], signal, request);
     const receipt = (text: string): boolean => text.split("\n").some(line => line.startsWith(`convert ${source}`)
       && line.endsWith(` -> ${destination} using filter : ${target.filter}`));
     if (receipt(client.output)) throw failure("Document engine conversion bypassed the session instance.");
@@ -533,23 +546,27 @@ export class LibreOfficeSessionPool {
   }
 
   private async spawn(session: EngineSession, runtime: SessionRuntime, command: string,
-    args: readonly string[], signal: AbortSignal, parentLifetime = runtime.lifetime): Promise<RunningProcess> {
-    aborted(signal);
-    await session.installation.verifyBeforeSpawn(signal);
-    const lifetime = createManagedExitScope(parentLifetime);
-    let wrapped: OfflineProcessWrap | undefined;
+    args: readonly string[], signal: AbortSignal, scope: EngineScope = runtime,
+    resources = createManagedResources(scope.resources)): Promise<RunningProcess> {
+    let scanExit: ConfirmedExit | undefined;
+    const noteExit = (receipt: ConfirmedExit): void => {
+      scope.lastExit = receipt;
+      runtime.lastExit = receipt;
+    };
     let running: RunningProcess | undefined;
     try {
-      wrapped = await wrapOfflineProcess({ command, args, inputDirectory: runtime.input, outputDirectory: runtime.output,
-        ipcDirectory: runtime.ipc, runtimeDirectories: runtime.runtimeDirectories, env: runtime.env, signal, lifetime });
+      aborted(signal);
+      await session.installation.verifyBeforeSpawn(signal);
+      const wrap = await wrapOfflineProcess({ command, args, inputDirectory: runtime.input, outputDirectory: runtime.output,
+        ipcDirectory: runtime.ipc, runtimeDirectories: runtime.runtimeDirectories, env: runtime.env, signal, resources,
+        noteExit: receipt => { scanExit = receipt; noteExit(receipt); } });
       aborted(signal);
       session.installation.assertCurrent();
-      const wrap = wrapped;
       spawnManaged(wrap.argv[0], wrap.argv.slice(1), {
         env: wrap.env, cwd: runtime.output, stdio: ["ignore", "pipe", "pipe"], detached: true, shell: false,
       }, { label: "document-engine", killProcessGroup: true }, child => {
         const process: RunningProcess = {
-          exit: observeManagedProcessGroup(child, lifetime), ended: false, output: "", diagnosticBytes: 0, cleanup: wrap.cleanup,
+          exit: observeManagedProcessGroup(child, resources), ended: false, output: "", diagnosticBytes: 0, resources, noteExit,
         };
         running = process;
         runtime.children.add(process);
@@ -579,10 +596,7 @@ export class LibreOfficeSessionPool {
     } catch (error) {
       if (running) await this.finishProcess(runtime, running, "document engine launch failed");
       else if (error instanceof OfflineScanExitUnconfirmedError) runtime.unconfirmedExit = error;
-      else {
-        const proof = lifetime.confirmedExit();
-        if (proof) releaseManagedChildResources(proof, wrapped?.cleanup);
-      }
+      else await (scanExit ? releaseManagedResources(resources, scanExit) : abandonManagedLaunch(resources));
       throw runtime.unconfirmedExit ?? error;
     }
     if (!running) {
@@ -593,8 +607,8 @@ export class LibreOfficeSessionPool {
   }
 
   private async run(session: EngineSession, runtime: SessionRuntime, command: string,
-    args: readonly string[], signal: AbortSignal, lifetime = runtime.lifetime): Promise<RunningProcess> {
-    const process = await this.spawn(session, runtime, command, args, signal, lifetime);
+    args: readonly string[], signal: AbortSignal, scope: EngineScope = runtime): Promise<RunningProcess> {
+    const process = await this.spawn(session, runtime, command, args, signal, scope);
     let proof: ConfirmedExit | undefined;
     const result = await process.exit.wait(signal)
       .finally(async () => { proof = await this.finishProcess(runtime, process); })
@@ -622,8 +636,8 @@ export class LibreOfficeSessionPool {
     await mkdir(output, { mode: 0o700 });
     const handle = await open(source, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o400);
     try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); }
-    const lifetime = createManagedExitScope(runtime.lifetime);
-    const paths = registerManagedChildPaths(lifetime, { path: source }, { path: output, recursive: true });
+    const request: EngineScope = { resources: createManagedResources(runtime.resources) };
+    recordManagedPaths(request.resources, { path: source }, { path: output, recursive: true });
     let completed = false;
     let monitoring = true;
     let monitorFailure: Error | undefined;
@@ -644,7 +658,7 @@ export class LibreOfficeSessionPool {
       const inputFilter = format === "hwp" || format === "hwpx" ? DOCUMENT_ENGINE_IMPORTER.filter : undefined;
       const outputs: Buffer[] = [];
       for (const target of EXPORTS[format]) {
-        outputs.push(await this.dispatch(session, runtime, source, output, target, inputFilter, signal, lifetime));
+        outputs.push(await this.dispatch(session, runtime, source, output, target, inputFilter, signal, request));
       }
       let result: ConvertedObservationDocument;
       if (format === "xlsx" || format === "ods") {
@@ -667,10 +681,7 @@ export class LibreOfficeSessionPool {
     } finally {
       monitoring = false;
       await monitor;
-      const proof = completed || runtime.lifetime.confirmedExit() ? lifetime.confirmedExit() : undefined;
-      if (!runtime.unconfirmedExit && proof) {
-        await removeManagedChildPaths(proof, paths);
-      }
+      await this.releaseRequest(runtime, request, completed);
     }
   }
 
@@ -793,9 +804,8 @@ export class LibreOfficeSessionPool {
   }
 
   private async removeRuntime(runtime: SessionRuntime): Promise<void> {
-    const proof = runtime.lifetime.confirmedExit();
-    if (!proof) throw terminationUnconfirmed();
-    await removeManagedChildPaths(proof, runtime.paths);
+    await (runtime.lastExit ? releaseManagedResources(runtime.resources, runtime.lastExit) : abandonManagedLaunch(runtime.resources))
+      .catch((error: unknown) => { throw error instanceof ManagedExitUnconfirmedError ? terminationUnconfirmed() : error; });
   }
 
   private async stopRuntime(runtime: SessionRuntime | undefined): Promise<void> {
@@ -815,7 +825,8 @@ export class LibreOfficeSessionPool {
         runtime.unconfirmedExit ??= terminationUnconfirmed();
         return undefined;
       }
-      releaseManagedChildResources(proof, running.cleanup);
+      running.noteExit(proof);
+      await releaseManagedResources(running.resources, proof);
       runtime.children.delete(running);
       return proof;
     })();
