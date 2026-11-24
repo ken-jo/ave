@@ -120,15 +120,14 @@ export async function wrapOfflineProcess(input: OfflineProcessInput): Promise<Of
     input.signal.throwIfAborted();
     return { ...hardenMacSandboxGitMetadata({ argv: ["/bin/sh", "-c", wrapped], env }), release: () => {} };
   }
-  const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
-  const config = SandboxManager.getConfig();
-  const bwrap = config?.bwrapPath ?? "/usr/bin/bwrap";
+  // Offline confinement selects its system executable independently of online dependency discovery.
+  const bwrap = "/usr/bin/bwrap";
   await assertCodexExecutableLocation(bwrap);
   const { wrapCommandWithSandboxLinux, cleanupBwrapMountPoints } = await import("@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js");
   const wrapped = await wrapCommandWithSandboxLinux({
     command, needsNetworkRestriction: true, readConfig, writeConfig,
     allowAllUnixSockets: true, allowNestedUserNamespaces: false, enableWeakerNestedSandbox: false,
-    binShell: "/bin/sh", bwrapPath: bwrap, ripgrepConfig: config?.ripgrep,
+    binShell: "/bin/sh", bwrapPath: bwrap,
     abortSignal: input.signal, unsetEnvVars: ["JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS"],
   });
   let released = false;

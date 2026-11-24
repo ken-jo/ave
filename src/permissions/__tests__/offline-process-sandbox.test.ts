@@ -16,7 +16,9 @@ vi.mock("../sandbox-capability.js", () => ({ detectSandboxCapability: vi.fn(() =
 vi.mock("../../main/codex-executable-location.js", () => ({ assertCodexExecutableLocation: vi.fn(async () => {}) }));
 vi.mock("../macos-sandbox-wrap.js", () => ({ hardenMacSandboxGitMetadata: (value: { argv: string[]; env: NodeJS.ProcessEnv }) => value }));
 vi.mock("../linux-sandbox-wrap.js", () => ({ hardenLinuxSandboxWrap: (value: { argv: string[]; env: NodeJS.ProcessEnv }) => value }));
-vi.mock("@anthropic-ai/sandbox-runtime", () => ({ SandboxManager: { getConfig: () => ({ bwrapPath: "/usr/bin/bwrap" }) } }));
+vi.mock("@anthropic-ai/sandbox-runtime", () => ({ SandboxManager: { getConfig: () => ({
+  bwrapPath: "/usr/local/bin/bwrap", ripgrep: { command: "/usr/local/bin/rg" },
+}) } }));
 vi.mock("@anthropic-ai/sandbox-runtime/dist/sandbox/macos-sandbox-utils.js", () => ({
   wrapCommandWithSandboxMacOS: vi.fn(() => "confined-native-command"),
 }));
@@ -84,6 +86,7 @@ describe("offline process confinement", () => {
       bwrapPath: "/usr/bin/bwrap", enableWeakerNestedSandbox: false,
     }));
     const native = vi.mocked(wrapCommandWithSandboxLinux).mock.calls[0][0];
+    expect(native.ripgrepConfig).toBeUndefined();
     expect(native.httpSocketPath).toBeUndefined();
     expect(native.socksSocketPath).toBeUndefined();
     wrapped.release(); wrapped.release();
