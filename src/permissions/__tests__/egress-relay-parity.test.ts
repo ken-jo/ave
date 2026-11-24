@@ -78,7 +78,7 @@ const DIFFERENCES = [
 
 // P24 on the wrapped-command route. Today has it on one OS only, where this suite's today adapter cannot run, so today's column is read
 // from the package manager module and the new relay is pinned to it: an ended listener keeps its port bound and refused for 30 minutes,
-// up to 24 hours while its process group lives (:147-152, :1887-1914); held listeners count toward the limit (:1738, :1907); after the hold
+// up to 24 hours while its process group lives (:147-152, :1882-1914); held listeners count toward the limit (:1738, :1907); after the hold
 // the port number stays refused and is never given out again until reset (:1158, :1762, :1910, :3739).
 const HELD = "HTTP/1.1 403 sandbox proxy listener";
 type RouteKind = "invocation" | "wrapped-command";
@@ -577,6 +577,35 @@ describe.each([today, next])("egress relay parity: $name relay", (adapter) => {
 
       expect(relay.port).not.toBe(ended.port);
       expect(await refused({ port: relay.port }, "asked.example:443")).toBe(recorded("unauthenticated"));
+    });
+
+    it.runIf(adapter.name === "new")("P24, wrapped-command route: opening fails when only retired port numbers come back", async () => {
+      await start({ ask: async () => true, maxRelays: 1, endedPortHold: { ms: 200, maxMs: 1000 } });
+      const ended = await open(newToken(), undefined, "wrapped-command");
+      await ended.close();
+      await expect.poll(() => unbound(ended.port), { timeout: 8000, interval: 100 }).toBe(true);
+      const address = vi.spyOn(net.Server.prototype, "address").mockImplementation(() => ({ address: "127.0.0.1", family: "IPv4", port: ended.port }));
+
+      const failed = adapter.open(newToken()).then(() => "opened", (error: Error) => error.message);
+      await expect(failed).resolves.toBe("egress relay: no port outside the retired ones");
+      address.mockRestore();
+      // The same failure under an admission, whose owner closes later: nothing is left unhandled meanwhile.
+      const retiredAgain = vi.spyOn(net.Server.prototype, "address").mockImplementation(() => ({ address: "127.0.0.1", family: "IPv4", port: ended.port }));
+      let adopted: (() => Promise<void>) | undefined;
+      const admission: InvocationProxyAdmission = {
+        signal: new AbortController().signal,
+        assertCanBind: () => {},
+        acceptsConnections: () => true,
+        adopt: (close) => { adopted = close; },
+      };
+      await expect(adapter.open(newToken(), admission)).rejects.toThrow("egress relay: no port outside the retired ones");
+      retiredAgain.mockRestore();
+      await new Promise((done) => setTimeout(done, 100));
+      await adopted?.();
+
+      // The failed relays left nothing behind: the one slot is free.
+      const relay = await open();
+      expect(relay.port).not.toBe(ended.port);
     });
 
     it.runIf(adapter.name === "new")("P24, wrapped-command route: held relays count toward the relay limit", async () => {

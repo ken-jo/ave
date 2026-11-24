@@ -963,7 +963,8 @@ export async function openEgressRelay(token: string, admission?: InvocationProxy
       }
       throw new Error("egress relay: no port outside the retired ones");
     })();
-    binding = bound.then(() => {});
+    // Settles either way: the opener gets the failure, close only waits.
+    binding = bound.then(() => {}, () => {});
     port = await bound;
     state.ports.add(port);
     // A listener error after this point ends the relay instead of reaching the process.
