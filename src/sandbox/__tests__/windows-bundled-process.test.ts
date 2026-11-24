@@ -114,6 +114,24 @@ describe("spawnWindowsBundledProcess", () => {
     expect(asrtCleanup).not.toHaveBeenCalled();
   });
 
+  it("keeps the grant, HOME and an owned command sandbox through an early hold release until the relay child exits", async () => {
+    const child = brokerChild();
+    confinedSpawn.mockImplementationOnce(spawnedAs(child));
+    const spawned = await spawnWindowsBundledProcess({ ...input, ownsCommandSandbox: true });
+    spawned.releaseHold();
+    spawned.releaseHold();
+    await new Promise(resolve => setImmediate(resolve));
+    expect(grantRelease).not.toHaveBeenCalled();
+    expect(homeCleanup).not.toHaveBeenCalled();
+    expect(asrtCleanup).not.toHaveBeenCalled();
+    child.emit("close", 0, null);
+    await spawned.exit;
+    await new Promise(resolve => setImmediate(resolve));
+    expect(asrtCleanup).toHaveBeenCalledOnce();
+    expect(grantRelease).toHaveBeenCalledOnce();
+    expect(homeCleanup).toHaveBeenCalledOnce();
+  });
+
   it("starts a command that names no directory in its granted sandbox HOME, never the host's cwd", async () => {
     confinedSpawn.mockImplementationOnce(spawnedAs(brokerChild()));
     const { cwd: _cwd, ...withoutCwd } = input;
