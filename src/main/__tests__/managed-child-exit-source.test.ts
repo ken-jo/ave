@@ -158,8 +158,7 @@ function fsRemovalImports(path: string, source: string): string[] {
     else found.push(...names.filter(name => FS_REMOVAL.test(name)));
   };
   function visit(node: ts.Node): void {
-    if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier) && FS_MODULE.test(node.moduleSpecifier.text)
-      && !node.importClause?.isTypeOnly) {
+    if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier) && FS_MODULE.test(node.moduleSpecifier.text)) {
       if (node.importClause?.name) found.push("default");
       const bindings = node.importClause?.namedBindings;
       if (bindings && ts.isNamespaceImport(bindings)) reach(undefined);
