@@ -1171,6 +1171,7 @@ export const ko: Record<MessageCatalogKey, string> = {
 
   // be_scriptHookRunner
   "be_scriptHookRunner.containedSettleDeadline": "훅의 격리 프로세스가 {ms} ms 안에 끝나지 않았습니다. 종료가 확인되지 않는 동안 샌드박스 자원을 유지합니다({code})",
+  "be_scriptHookRunner.terminationUnverified": "훅의 전체 프로세스 종료를 확인하지 못했습니다. 관련 자원을 유지합니다 ({code}).",
   "be_scriptHookRunner.containedTerminationUnverified": "훅의 격리 프로세스 종료를 확인하지 못했습니다. 샌드박스 자원을 유지합니다: {detail}({code})",
 
   // be_sessionGoal

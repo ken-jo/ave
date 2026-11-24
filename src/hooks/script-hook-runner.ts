@@ -1,6 +1,6 @@
 // Blocking hooks fail closed on command failures; successful commands may be silent or return decisions, and exit 2 uses stderr as denial feedback. Shell admission, sandbox policy, safe env and caller-side DLP apply; hook allows never upgrade upstream denies (docs/guides/user-hooks.md).
 // Generic argv never passes through an implicit shell; legacy scripts keep the resolved interpreter path.
-import { spawn, type ChildProcess } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { buildSafeChildEnv } from "../tools/safe-env.js";
 import { resolveHostProgram } from "../shared/host-program-path.js";
 import { t } from "../i18n/index.js";
@@ -17,7 +17,8 @@ import { createLogger } from "../lib/logger.js";
 import {
   assertManagedChildProcessAdmissionOpen,
   forceKillManagedChildProcess,
-  trackManagedChildProcess,
+  spawnManaged,
+  waitForManagedProcessGroupExit,
 } from "../main/managed-child-processes.js";
 import {
   DEFAULT_HOOK_TIMEOUT_MS,
@@ -472,6 +473,19 @@ export async function runOneHookScript(
         hookType: runnable.hookType, durationMs: Date.now() - start }) });
   }
 
+  const startHook = (onSpawn?: (child: ChildProcess) => void): ChildProcess => spawnManaged(
+    sandboxArgv || /[\\/]/u.test(spawnCmd) ? spawnCmd : resolveHostProgram(spawnCmd, spawnEnv), spawnArgs,
+    { cwd, env: spawnEnv, stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32" },
+    { label: "hook:script" }, onSpawn,
+  );
+  if (process.platform !== "win32") {
+    return runPosixHook({ start: startHook, stdinJson, timeoutMs, abortSignal, hookId: runnable.id, deny,
+      noteProcessGroup: (pid) => wrappedEgress?.noteProcessGroup(pid),
+      release: () => { wrappedEgress?.release(); cleanupWrap?.(); },
+      outcome: (observed) => hookOutcome(forensics, deny, { ...observed, timeoutMs, hookId: runnable.id,
+        hookType: runnable.hookType, durationMs: Date.now() - start }) });
+  }
+
   return new Promise<ScriptHookInvocationResult>((resolve) => {
     let child: ChildProcess;
     let settled = false;
@@ -490,39 +504,13 @@ export async function runOneHookScript(
     abortSignal?.addEventListener("abort", onAbort, { once: true });
 
     try {
-      // A bare host program resolves on PATH only; a path keeps its documented meaning relative to the sealed configuration directory.
-      child = windowsSpawn?.child ?? spawn(sandboxArgv || /[\\/]/u.test(spawnCmd) ? spawnCmd : resolveHostProgram(spawnCmd, spawnEnv), spawnArgs, {
-        windowsHide: true,
-        cwd,
-        // Forward only the stripped environment and host-owned hook variables.
-        env: spawnEnv,
-        stdio: ["pipe", "pipe", "pipe"],
-        // A detached group lets timeout termination include descendants.
-        detached: process.platform !== "win32",
-      });
+      child = windowsSpawn?.child ?? startHook();
     } catch (error) {
       abortSignal?.removeEventListener("abort", onAbort);
       wrappedEgress?.release();
       cleanupWrap?.();
       resolve(deny(`hook spawn error: ${(error as Error).message}`));
       return;
-    }
-    if (wrappedEgress !== undefined) {
-      const egress = wrappedEgress;
-      child.once("exit", () => egress.release());
-      child.once("close", () => egress.release());
-      child.once("error", () => { if (child.pid === undefined) egress.release(); });
-    }
-    // A Windows sandboxed hook is registered by `spawnConfinedChild`.
-    if (windowsSpawn === undefined) {
-      trackManagedChildProcess(child, {
-        label: "hook:script",
-        killProcessGroup: process.platform !== "win32",
-      });
-    }
-    // Retain the invocation listener while the detached process group lives.
-    if (wrappedEgress !== undefined && process.platform !== "win32" && child.pid !== undefined) {
-      wrappedEgress.noteProcessGroup(child.pid);
     }
     // Relay streams, not child pipes, carry hook input and output.
     const hookStdin = windowsSpawn?.stdin ?? child.stdin;
@@ -699,6 +687,94 @@ function captureBounded(stream: NodeJS.ReadableStream): { text(): string; capped
     bytes += kept.byteLength;
   });
   return { text: () => Buffer.concat(chunks).toString("utf-8"), capped: () => capped };
+}
+
+async function runPosixHook(input: {
+  readonly start: (onSpawn: (child: ChildProcess) => void) => ChildProcess;
+  readonly stdinJson: string;
+  readonly timeoutMs: number;
+  readonly abortSignal?: AbortSignal;
+  readonly hookId: string;
+  readonly deny: HookDeny;
+  readonly noteProcessGroup: (pid: number) => void;
+  readonly release: () => void;
+  readonly outcome: (observed: ObservedHookRun) => ScriptHookInvocationResult;
+}): Promise<ScriptHookInvocationResult> {
+  type Close = { code: number | null; signal?: NodeJS.Signals | null };
+  let owned: { child: ChildProcess; closed: Promise<Close> } | undefined;
+  let stopReason: string | undefined;
+  let fault: string | undefined;
+  let cancelled = false;
+  let timedOut = false;
+  let waitingForGroup = false;
+  let notifyStop = (): void => {};
+  const stopping = new Promise<void>(resolve => { notifyStop = resolve; });
+  const requestStop = (reason: string): void => {
+    if (stopReason !== undefined) return;
+    stopReason = reason;
+    if (waitingForGroup && owned) void forceKillManagedChildProcess(owned.child, reason);
+    notifyStop();
+  };
+  const onAbort = (): void => { cancelled = true; requestStop("hook caller aborted"); };
+  input.abortSignal?.addEventListener("abort", onAbort, { once: true });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let stdout: ReturnType<typeof captureBounded> | undefined;
+  let stderr: ReturnType<typeof captureBounded> | undefined;
+  try {
+    try {
+      input.abortSignal?.throwIfAborted();
+      input.start(child => {
+        const closed = new Promise<Close>(resolve => {
+          child.once("close", (code, signal) => resolve({ code, signal }));
+          child.on("error", (error: Error) => {
+            fault ??= `hook process error: ${error.message}`;
+            if (child.pid === undefined) resolve({ code: null });
+            requestStop("hook process error");
+          });
+        });
+        owned = { child, closed };
+        if (child.pid !== undefined) input.noteProcessGroup(child.pid);
+        if (child.stdout) stdout = captureBounded(child.stdout);
+        if (child.stderr) stderr = captureBounded(child.stderr);
+        child.stdin?.on("error", (error: NodeJS.ErrnoException) => {
+          if (error.code !== "EPIPE") log.warn("hook stdin error: %s (%s)", input.hookId, error.message);
+        });
+      });
+    } catch (error) {
+      fault = `hook spawn error: ${(error as Error).message}`;
+      requestStop("hook spawn error");
+    }
+    if (input.abortSignal?.aborted) onAbort();
+    if (owned === undefined) {
+      input.release();
+      return input.deny(cancelled ? "Hook execution cancelled" : fault ?? "Hook launch failed.");
+    }
+    const { child, closed } = owned;
+    if (stopReason === undefined) {
+      timer = setTimeout(() => { timedOut = true; requestStop("hook timeout"); }, input.timeoutMs);
+      try {
+        child.stdin?.write(input.stdinJson);
+        child.stdin?.end();
+      } catch (error) {
+        fault = `failed to serialise hook payload: ${(error as Error).message}`;
+        requestStop("hook stdin write failed");
+      }
+    }
+    await Promise.race([closed, stopping]);
+    clearTimeout(timer);
+    waitingForGroup = true;
+    if (!await waitForManagedProcessGroupExit(child, closed, stopReason)) {
+      return input.deny(t("be_scriptHookRunner.terminationUnverified", { code: "hook-termination-unverified" }));
+    }
+    const { code, signal } = await closed;
+    input.release();
+    if (fault) return input.deny(fault);
+    return input.outcome({ code, signal, cancelled, timedOut, stdout: stdout?.text() ?? "", stderr: stderr?.text() ?? "",
+      stdoutCapped: stdout?.capped() ?? false });
+  } finally {
+    clearTimeout(timer);
+    input.abortSignal?.removeEventListener("abort", onAbort);
+  }
 }
 
 /** A contained hook: JSON in on native stdin, bounded stdout/stderr, status from completion. Timeout and cancellation

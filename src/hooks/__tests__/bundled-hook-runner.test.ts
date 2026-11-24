@@ -17,16 +17,22 @@ let admissionOpen = true;
 const wrap = vi.fn<(cmdline: string, options?: unknown) => Promise<{ argv: string[]; env: NodeJS.ProcessEnv }>>();
 vi.mock("../../main/managed-child-processes.js", async (original) => {
   const real = await original<typeof import("../../main/managed-child-processes.js")>();
-  // Simulating the hook platform cannot create a native process group.
-  const trackManagedChildProcess: typeof real.trackManagedChildProcess = (child, options) =>
-    real.trackManagedChildProcess(child, HOST_PLATFORM === "win32" ? { ...options, killProcessGroup: false } : options);
   return {
     ...real,
     assertManagedChildProcessAdmissionOpen: (label: string) => {
       if (!admissionOpen) throw new Error("hook admission closed");
       return real.assertManagedChildProcessAdmissionOpen(label);
     },
-    trackManagedChildProcess,
+    spawnManaged: (...args: Parameters<typeof real.spawnManaged>) => {
+      if (HOST_PLATFORM !== "win32" || process.platform === "win32") return real.spawnManaged(...args);
+      const [command, argv, options, track, onSpawn] = args;
+      return real.spawnManaged(command, argv, { ...options, detached: false }, { ...track, killProcessGroup: false }, onSpawn);
+    },
+    waitForManagedProcessGroupExit: async (child: Parameters<typeof real.waitForManagedProcessGroupExit>[0], closed: Promise<unknown>, reason?: string) => {
+      if (HOST_PLATFORM !== "win32") return real.waitForManagedProcessGroupExit(child, closed, reason);
+      await closed;
+      return true;
+    },
   };
 });
 vi.mock("../../permissions/asrt-sandbox.js", async (original) => {
