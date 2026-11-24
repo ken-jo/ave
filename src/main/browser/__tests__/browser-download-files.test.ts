@@ -281,6 +281,28 @@ describe("a move or removal stopped by its signal", () => {
 });
 
 describe("a helper that does not keep to its protocol", () => {
+  it("keeps the entire Windows writer identity when rejecting a plain refusal after progress", async () => {
+    const windows = _helperFileOperationsForTest("/helper/ave-path-kind.exe", BOUNDS, true);
+    const fileId = "fedcba9876543210123456789abcdef0";
+    script((helper) => {
+      helper.say("ready");
+      helper.once("input", () => {
+        if (helper.args[0] === "--dir-remove-id") {
+          helper.say("left");
+          helper.exit(0);
+        } else {
+          helper.say(`writing 4294967297 ${fileId}`, "progress 8", "refused source");
+          helper.exit(3);
+        }
+      });
+    });
+    const run = follow(windows.copy(from, "staged", to, "report.pdf", ".part", () => true, UNSTOPPED));
+    await flush();
+    expect(run.error).toBeInstanceOf(HeldFileHelperUnavailableError);
+    expect(helpers()[0]?.killed).toBe(1);
+    expect(helpers()[1]?.args).toEqual(["--dir-remove-id", "/chosen", "1", "3", ".part", "4294967297", fileId]);
+  });
+
   it("kills a copy that refuses its source after making progress", async () => {
     script((helper) => {
       helper.say("ready");
@@ -690,6 +712,24 @@ describe("a helper that does not keep to its protocol", () => {
     const swept = follow(files.sweep(from));
     await flush();
     expect(swept).toMatchObject({ settled: true, value: 2 });
+  });
+});
+
+it("keeps the Windows writer identity for recording when isolation leaves its part in place", async () => {
+  const windows = _helperFileOperationsForTest("/helper/ave-path-kind.exe", BOUNDS, true);
+  const fileId = "fedcba9876543210123456789abcdef0";
+  script((helper) => {
+    helper.say("ready");
+    helper.once("input", () => {
+      helper.say(`writing 4294967297 ${fileId}`, "progress 8", "copied");
+      helper.afterInputEnds(() => { helper.say("cancelled left"); helper.exit(0); });
+    });
+  });
+  const run = follow(windows.copy(from, "staged", to, "report.pdf", ".part", (step) => step === "ready", UNSTOPPED));
+  await flush();
+  expect(stoppedCopyOf(run.error)).toEqual({
+    partialCopy: "left",
+    partLeftAt: { name: ".part", identity: { kind: "fileId", file: { dev: 4294967297n, ino: BigInt(`0x${fileId}`) } } },
   });
 });
 

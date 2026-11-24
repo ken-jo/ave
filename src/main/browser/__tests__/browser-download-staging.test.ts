@@ -95,6 +95,7 @@ const { renameSync: moveAside, unlinkSync: removeEntry } = await vi.importActual
 
 // The checkout's resources folder, where the native helper for this platform is built (test:prepare).
 const RESOURCES = resolve("resources");
+const WINDOWS_PATH_KIND = join(RESOURCES, "windows-path-kind", process.arch, "ave-path-kind.exe");
 
 let home: string;
 let aveHomeDir: string;
@@ -569,10 +570,18 @@ describe("a stalled copy's temporary file, removed through the native helper", (
     let onRemoved = (): void => {};
     const root = withFiles(acrossVolumes(prepared), (files) => ({
       copy: async (_from, _name, to, _target, part) => {
-        writeFileSync(join(to.path, part), "partial copy");
-        const info = statSync(join(to.path, part), { bigint: true });
+        const path = join(to.path, part);
+        writeFileSync(path, "partial copy");
+        const info = statSync(path, { bigint: true });
+        let partFile: { dev: bigint; ino: bigint; birthtimeNs?: bigint } = { dev: info.dev, ino: info.ino, birthtimeNs: info.birthtimeNs };
+        if (process.platform === "win32") {
+          const [facts] = JSON.parse(execFileSync(WINDOWS_PATH_KIND, ["--pin", path], { encoding: "utf8", windowsHide: true })) as
+            { volumeSerial: string; fileId: string }[];
+          if (facts === undefined) throw new Error("fixture file identity not available");
+          partFile = { dev: BigInt(facts.volumeSerial), ino: BigInt(facts.fileId) };
+        }
         const error = new HeldFileHelperStalledError("/helper", "did not end within 1 ms of being stopped", true);
-        Object.assign(error, { passed: "ready", partialCopy: "left", exited, partFile: { dev: info.dev, ino: info.ino, birthtimeNs: info.birthtimeNs } });
+        Object.assign(error, { passed: "ready", partialCopy: "left", exited, partFile });
         throw error;
       },
       remove: async (directory, name, proceed, stop) => {
@@ -1065,7 +1074,7 @@ describe.runIf(process.platform === "darwin")("a native helper that stops answer
 // Exercise the native sweep directly at its held step; Linux sweeps in process.
 describe.runIf(process.platform !== "linux")("the native sweep", () => {
   const helper = process.platform === "win32"
-    ? join(RESOURCES, "windows-path-kind", process.arch, "ave-path-kind.exe")
+    ? WINDOWS_PATH_KIND
     : join(RESOURCES, "macos-dir-ops", process.arch, "ave-dir-ops");
 
   it.each(["staging folder", "Ave home"] as const)("removes only from the held %s once it was swapped for a link to another tree", async (held) => {
@@ -1096,7 +1105,7 @@ describe.runIf(process.platform !== "linux")("the native sweep", () => {
 });
 
 describe("the native helper", () => {
-  it("refuses a replaced part at commit and keeps the replacement out of the final name", async () => {
+  it("keeps a substitute for the part out of the final name", async () => {
     const root = prepare();
     const name = "0123456789abcdef0123456789abcdef";
     const part = `.${name}.part`;
@@ -1106,11 +1115,21 @@ describe("the native helper", () => {
     const { dev, ino } = statSync(path, { bigint: true });
     const result = root.files.copy(root, name, { path, dev, ino }, "report.pdf", part, (step) => {
       if (step === "copied") {
+        if (process.platform === "win32") {
+          expect(() => moveAside(join(path, part), join(path, "download.saved"))).toThrow(/EBUSY|EPERM|EACCES/u);
+          return true;
+        }
         moveAside(join(path, part), join(path, "download.saved"));
         writeFileSync(join(path, part), "replacement");
       }
       return true;
     }, new AbortController().signal);
+    if (process.platform === "win32") {
+      await expect(result).resolves.toBe("committed");
+      expect(readFileSync(join(path, "report.pdf"), "utf8")).toBe("download");
+      expect(existsSync(join(path, part))).toBe(false);
+      return;
+    }
     await expect(result).rejects.toMatchObject({ refusal: "target" });
     expect(readFileSync(join(path, part), "utf8")).toBe("replacement");
     expect(existsSync(join(path, "report.pdf"))).toBe(false);
@@ -1199,6 +1218,38 @@ function hiddenSnapshot(path: string) {
     content: { size: String(size), mtimeNs: String(mtimeNs), head, tail },
   };
 }
+
+it.runIf(process.platform === "win32")("reads a wide writer ID and refuses a second record from a swapped staging directory", async () => {
+  const root = prepare();
+  const trusted = join(home, "trusted");
+  const forged = join(home, "forged");
+  mkdirSync(trusted);
+  mkdirSync(forged);
+  const ino = 0xfedcba9876543210123456789abcdef0n;
+  const identity = { kind: "fileId", dev: "4294967297", ino: String(ino) };
+  writeRecoveryRecord(root, RECOVERY_RECORD, trusted, PART_FOR_RECOVERY, identity);
+  writeRecoveryRecord(root, SECOND_RECOVERY_RECORD, trusted, PART_FOR_RECOVERY, identity);
+  writeRecoveryRecord({ ...root, path: forged }, SECOND_RECOVERY_RECORD, home, PART_FOR_RECOVERY, identity);
+  const recover = vi.fn(root.files.recover);
+  const swapped = withFiles(root, (files) => ({
+    recover,
+    listRecords: async (folder) => [...await files.listRecords(folder)].sort(),
+    readRecord: async (folder, name, max) => {
+      const bytes = await files.readRecord(folder, name, max);
+      if (name === RECOVERY_RECORD) {
+        moveAside(root.path, join(home, "old-staging"));
+        moveAside(forged, root.path);
+      }
+      return bytes;
+    },
+  }));
+  await expect(sweepBrowserDownloadStaging(swapped)).rejects.toThrow(/staging folder/u);
+  expect(recover).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({ path: trusted }), PART_FOR_RECOVERY, PART_FOR_RECOVERY,
+    { kind: "fileId", file: { dev: 4294967297n, ino } },
+  );
+  expect(existsSync(join(root.path, SECOND_RECOVERY_RECORD))).toBe(true);
+});
 
 async function nativeAtReady(args: string[], afterReady: () => void): Promise<string> {
   const child = spawn(macHelper(), args, { stdio: ["pipe", "pipe", "pipe"] });

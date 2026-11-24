@@ -178,7 +178,7 @@ export function heldFileOperations(resourcePath: string, platform: NodeJS.Platfo
   if (platform !== "darwin" && platform !== "win32") throw new Error(`held directory file operations are not available on ${platform}`);
   const helper = platform === "win32" ? windowsPathKindHelperIn(resourcePath) : join(resourcePath, "macos-dir-ops", process.arch, "ave-dir-ops");
   if (!existsSync(helper)) throw new HeldFileHelperUnavailableError(helper);
-  return helperFileOperations(helper);
+  return helperFileOperations(helper, platform === "win32");
 }
 
 // The answers a directory check can get when the directory is missing, unreadable, not a directory, or a link: it cannot be verified.
@@ -599,10 +599,10 @@ const EXIT_REFUSED = 3;
 const EXIT_FAILED = 4;
 const REFUSALS: ReadonlySet<string> = new Set<HeldRefusal>(["from", "to", "source", "target"]);
 const PROGRESS = /^progress (\d+)$/u;
-const WRITING = /^writing (0|[1-9][0-9]{0,19}) (0|[1-9][0-9]{0,19})$/u;
+const WRITING = /^writing (0|[1-9][0-9]{0,19}) ([0-9a-f]{1,32})$/u;
 const FAILURE_DIAGNOSTIC = /^Windows error \d+(?: \(NTSTATUS 0x[0-9A-F]{8}, (?:NtCreateFile|NtSetInformationFile)\))?\r?\n$/u;
 // A stopped copy may add ` left`, or ` left <hidden name> <dev> <ino> <verdict>` when a file stays at the moved-aside name.
-const PART_LEFT = /(?:^| )left(?: (\.[0-9a-f]{32}\.removing) (\d{1,20}) (\d{1,20}) (mismatch|remove-failed) ([^ ]+)( part-left)?)?$/u;
+const PART_LEFT = /(?:^| )left(?: (\.[0-9a-f]{32}\.removing) (\d{1,20}) ([0-9a-f]{1,32}) (mismatch|remove-failed) ([^ ]+)( part-left)?)?$/u;
 const MAX_HELPER_FILE_ID = (1n << 64n) - 1n;
 interface HelperLeftPart {
   readonly name: string;
@@ -616,10 +616,14 @@ function parseUnsigned(text: string | undefined): bigint | null {
   return value <= MAX_HELPER_FILE_ID ? value : null;
 }
 
-function parseSnapshot(text: string): PartSnapshot | null {
+function parseWindowsInode(text: string | undefined): bigint | null {
+  return text !== undefined && /^[0-9a-f]{32}$/u.test(text) ? BigInt(`0x${text}`) : null;
+}
+
+function parseSnapshot(text: string, parseInode: typeof parseUnsigned): PartSnapshot | null {
   const [devText, inoText, birthText, sizeText, mtimeText, head, tail, extra] = text.split(":");
   const dev = parseUnsigned(devText);
-  const ino = parseUnsigned(inoText);
+  const ino = parseInode(inoText);
   const birthtimeNs = parseUnsigned(birthText);
   const size = parseUnsigned(sizeText);
   const mtimeNs = parseUnsigned(mtimeText);
@@ -628,16 +632,16 @@ function parseSnapshot(text: string): PartSnapshot | null {
   return { file: { dev, ino, birthtimeNs }, content: { size, mtimeNs, head, tail } };
 }
 
-function parsePartLeft(line: string): { readonly answer: string; readonly at: HelperLeftPart | null; readonly partLeft: boolean } | null {
+function parsePartLeft(line: string, parseInode: typeof parseUnsigned): { readonly answer: string; readonly at: HelperLeftPart | null; readonly partLeft: boolean } | null {
   const match = PART_LEFT.exec(line);
   if (match === null) return null;
   const answer = line.slice(0, match.index);
   const [, name, devText, inoText, verdict, snapshot, partLeft] = match;
   if (name === undefined) return { answer, at: null, partLeft: true };
   const dev = parseUnsigned(devText);
-  const ino = parseUnsigned(inoText);
+  const ino = parseInode(inoText);
   if (dev === null || ino === null || (verdict !== "mismatch" && verdict !== "remove-failed") || snapshot === undefined) return null;
-  const observed = snapshot === "-" ? null : parseSnapshot(snapshot);
+  const observed = snapshot === "-" ? null : parseSnapshot(snapshot, parseInode);
   if (snapshot !== "-" && observed === null) return null;
   return { answer, at: { name, identity: { kind: "helper", dev, ino, verdict, observed } }, partLeft: partLeft !== undefined };
 }
@@ -658,8 +662,8 @@ function directoryArguments(directory: HeldDirectory): string[] {
 
 // Turn the helper's last line and exit status into the operation's outcome, or the error it ended with. A refusal and a filesystem failure
 // the helper reports are answers about the operation; any other ending, an unknown status or line among them, means the helper is broken.
-function helperOutcome(helper: string, status: number | null, signal: NodeJS.Signals | null, last: string, stderr: string): string | Error {
-  const left = parsePartLeft(last);
+function helperOutcome(helper: string, status: number | null, signal: NodeJS.Signals | null, last: string, stderr: string, parseInode: typeof parseUnsigned): string | Error {
+  const left = parsePartLeft(last, parseInode);
   const answer = left?.answer ?? last;
   if (status === EXIT_DONE && (left === null ? /^(?:committed|cancelled|cross-volume|removed|absent|restored|written|swept \d+)$/u.test(last) || RECORDS_LINE.test(last) || RECORD_LINE.test(last) : answer === "cancelled" || answer === "")) {
     return last;
@@ -697,7 +701,7 @@ function statusOf(last: string): number {
  * delivery order is independent of stdout. Killing and confirming exit share one independent `killMs` ceiling, including
  * when the platform's kill request does not finish. A valid outcome before a confirmed kill is retained only if the protocol stayed valid.
  */
-function runHelper(helper: string, args: readonly string[], proceed: Proceed, stop: AbortSignal, bounds: HelperBounds, onWriting?: (file: FileIdentity) => void): Promise<string> {
+function runHelper(helper: string, args: readonly string[], proceed: Proceed, stop: AbortSignal, bounds: HelperBounds, parseInode: typeof parseUnsigned, onWriting?: (file: FileIdentity) => void): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawnManaged(helper, args, { stdio: ["pipe", "pipe", "pipe"], shell: false, env: {} }, { label: "browser-download-files" });
     const { stdin, stdout, stderr } = child;
@@ -754,7 +758,7 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
       }
       if (killed !== null) {
         if (!stillRunning && outcome !== null && pending === "") {
-          const answered = helperOutcome(helper, statusOf(outcome), null, outcome, errors);
+          const answered = helperOutcome(helper, statusOf(outcome), null, outcome, errors, parseInode);
           if (answered instanceof HeldFileHelperUnavailableError) fail(answered);
           else if (answered instanceof Error) reject(answered);
           else resolve(answered);
@@ -765,7 +769,7 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
         fail(stalled);
         return;
       }
-      const answered = pending === "" ? helperOutcome(helper, status, signal, last, errors)
+      const answered = pending === "" ? helperOutcome(helper, status, signal, last, errors, parseInode)
         : new HeldFileHelperUnavailableError(helper, "it ended with an incomplete protocol line");
       if (answered instanceof HeldFileHelperUnavailableError) fail(answered);
       else if (answered instanceof Error) reject(answered);
@@ -818,7 +822,7 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
       kill(protocolFailure);
     };
     const isOutcome = (line: string): boolean => {
-      const left = parsePartLeft(line);
+      const left = parsePartLeft(line, parseInode);
       if (left !== null) {
         if (mode === "--dir-remove-id" || mode === "--dir-restore") return passed === "ready" && left.answer === "";
         // Only a copy let past `ready`, which may have created its temporary file, says what became of it.
@@ -854,10 +858,10 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
         pending = pending.slice(newline + 1);
         const identity = WRITING.exec(line);
         if (identity?.[1] !== undefined && identity[2] !== undefined) {
-          const dev = BigInt(identity[1]);
-          const ino = BigInt(identity[2]);
+          const dev = parseUnsigned(identity[1]);
+          const ino = parseInode(identity[2]);
           if (mode !== "--dir-copy" || phase !== "copying" || passed !== "ready" || writing || copiedBytes !== 0n ||
-              dev > MAX_HELPER_FILE_ID || ino > MAX_HELPER_FILE_ID) { violate(); return; }
+              dev === null || ino === null) { violate(); return; }
           writing = true;
           onWriting?.({ dev, ino });
           awaitLine("after opening the part");
@@ -923,13 +927,14 @@ function oneOf<T extends string>(helper: string, outcome: string, allowed: reado
  * The helper operations through a given build of the helper and, optionally, shorter bounds: tests run its fault-injecting builds
  * (scripts/build-macos-dir-ops.mjs) and stand-ins for a helper that hangs.
  */
-export function _helperFileOperationsForTest(helper: string, bounds?: HelperBounds): HeldFileOperations {
-  return helperFileOperations(helper, bounds);
+export function _helperFileOperationsForTest(helper: string, bounds?: HelperBounds, windowsFileIds = false): HeldFileOperations {
+  return helperFileOperations(helper, windowsFileIds, bounds);
 }
 
-function helperFileOperations(helper: string, bounds: HelperBounds = POLICY_BOUNDS): HeldFileOperations {
+function helperFileOperations(helper: string, windowsFileIds: boolean, bounds: HelperBounds = POLICY_BOUNDS): HeldFileOperations {
+  const parseInode = windowsFileIds ? parseWindowsInode : parseUnsigned;
   const run = (args: readonly string[], proceed: Proceed, stop: AbortSignal, onWriting?: (file: FileIdentity) => void): Promise<string> =>
-    runHelper(helper, args, proceed, stop, bounds, onWriting);
+    runHelper(helper, args, proceed, stop, bounds, parseInode, onWriting);
   const go = (): boolean => true;
   const recover: HeldFileOperations["recover"] = async (folder, name, original, identity) => {
     const left: OwnFileResult = { outcome: "left", at: { name, identity } };
@@ -937,7 +942,7 @@ function helperFileOperations(helper: string, bounds: HelperBounds = POLICY_BOUN
     const restore = identity.kind === "helper" && identity.verdict === "mismatch";
     const file = identity.kind === "fileId" ? identity.file : observed?.file;
     if (!file || (identity.kind === "helper" && !restore && (file.dev !== identity.dev || file.ino !== identity.ino))) return left;
-    const idArgs = [String(file.dev), String(file.ino)];
+    const idArgs = [String(file.dev), windowsFileIds ? file.ino.toString(16).padStart(32, "0") : String(file.ino)];
     const args = restore ? ["--dir-restore", ...directoryArguments(folder), name, original, ...idArgs]
       : ["--dir-remove-id", ...directoryArguments(folder), name, ...idArgs];
     if (observed !== null && file.birthtimeNs === undefined) return left;
@@ -945,7 +950,7 @@ function helperFileOperations(helper: string, bounds: HelperBounds = POLICY_BOUN
     try {
       const outcome = await run(args, go, UNSTOPPED);
       if (outcome === "absent" || outcome === "removed" || outcome === "restored") return { outcome };
-      const at = parsePartLeft(outcome)?.at;
+      const at = parsePartLeft(outcome, parseInode)?.at;
       // Keep the original snapshot if the same source stayed in place.
       return at && at.name !== name ? { outcome: "left", at } : left;
     } catch (error) {
@@ -977,7 +982,7 @@ function helperFileOperations(helper: string, bounds: HelperBounds = POLICY_BOUN
           if (step === "ready") authorized = allowed;
           return allowed;
         }, stop, (file) => { partFile = file; });
-        const left = parsePartLeft(answer);
+        const left = parsePartLeft(answer, parseInode);
         if (left !== null) {
           // Cancelled with its temporary file left: reported as a failure, as a cancelled Linux copy whose file is left is.
           const error = new Error("a stopped download copy's temporary file is left in the chosen folder");
@@ -988,7 +993,9 @@ function helperFileOperations(helper: string, bounds: HelperBounds = POLICY_BOUN
       } catch (error) {
         if (error instanceof Error && helperLeftParts.has(error)) {
           const left = helperLeftParts.get(error);
-          const at = left?.at ?? null;
+          const at = left?.at ?? (windowsFileIds && partFile !== null
+            ? { name: part, identity: { kind: "fileId" as const, file: partFile } }
+            : null);
           log.warn({ path: join(to.path, part), leftAs: at?.name, partLeft: left?.partLeft }, "a stopped download copy's temporary file is left");
           markStoppedCopy(error, { outcome: "left", at });
         } else if (error instanceof HeldFileHelperUnavailableError && error.passed !== null) {

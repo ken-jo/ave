@@ -336,6 +336,8 @@ interface PartRecord { readonly folder: HeldDirectory; readonly part: string; re
 const PART_RECORD = /^[0-9a-f]{32}\.cleanup\.json$/u;
 const PART_NAME = /^\.[0-9a-f]{32}\.part$/u;
 const DECIMAL = /^\d{1,20}$/u;
+const WINDOWS_FILE_ID = /^(0|[1-9][0-9]{0,38})$/u;
+const MAX_WINDOWS_FILE_ID = (1n << 128n) - 1n;
 const DIGEST = /^[0-9a-f]{64}$/u;
 const MAX_PART_RECORD_BYTES = 8192;
 
@@ -412,9 +414,11 @@ function readPartRecord(text: string): PartRecord | null {
   const exactly = (candidate: unknown, keys: readonly string[]): candidate is Record<string, unknown> => typeof candidate === "object"
     && candidate !== null && !Array.isArray(candidate) && Object.keys(candidate).sort().join() === [...keys].sort().join();
   const decimal = (candidate: unknown): candidate is string => typeof candidate === "string" && DECIMAL.test(candidate);
+  const fileInode = (candidate: unknown): candidate is string => decimal(candidate) ||
+    (process.platform === "win32" && typeof candidate === "string" && WINDOWS_FILE_ID.test(candidate) && BigInt(candidate) <= MAX_WINDOWS_FILE_ID);
   const digest = (candidate: unknown): candidate is string => typeof candidate === "string" && DIGEST.test(candidate);
   const fileId = ({ dev, ino, birthtimeNs }: Record<string, unknown>): FileIdentity | null =>
-    decimal(dev) && decimal(ino) && decimal(birthtimeNs) ? { dev: BigInt(dev), ino: BigInt(ino), birthtimeNs: BigInt(birthtimeNs) } : null;
+    decimal(dev) && fileInode(ino) && decimal(birthtimeNs) ? { dev: BigInt(dev), ino: BigInt(ino), birthtimeNs: BigInt(birthtimeNs) } : null;
   const fingerprint = ({ size, mtimeNs, head, tail }: Record<string, unknown>) =>
     decimal(size) && decimal(mtimeNs) && digest(head) && digest(tail) ? { size: BigInt(size), mtimeNs: BigInt(mtimeNs), head, tail } : null;
   if (!exactly(value, ["folder", "part", "at", "identity"]) || !exactly(value.folder, ["path", "dev", "ino"])) return null;
@@ -423,7 +427,7 @@ function readPartRecord(text: string): PartRecord | null {
   if (typeof part !== "string" || !PART_NAME.test(part) || typeof at !== "string" || (at !== part && !MOVED_ASIDE_NAME.test(at))) return null;
   let known: PartIdentity | HelperPartIdentity;
   if ((exactly(identity, ["kind", "dev", "ino", "birthtimeNs"]) || exactly(identity, ["kind", "dev", "ino"])) && identity.kind === "fileId") {
-    const file = !("birthtimeNs" in identity) && decimal(identity.dev) && decimal(identity.ino)
+    const file = !("birthtimeNs" in identity) && decimal(identity.dev) && fileInode(identity.ino)
       ? { dev: BigInt(identity.dev), ino: BigInt(identity.ino) } : fileId(identity);
     if (file === null) return null;
     known = { kind: "fileId", file };
@@ -433,7 +437,7 @@ function readPartRecord(text: string): PartRecord | null {
     known = { kind: "fingerprint", content };
   } else if (exactly(identity, ["kind", "dev", "ino", "verdict", "observed"]) && identity.kind === "helper") {
     const { dev, ino, verdict, observed } = identity;
-    if (!MOVED_ASIDE_NAME.test(at) || !decimal(dev) || !decimal(ino) || (verdict !== "remove-failed" && verdict !== "mismatch")) return null;
+    if (!MOVED_ASIDE_NAME.test(at) || !decimal(dev) || !fileInode(ino) || (verdict !== "remove-failed" && verdict !== "mismatch")) return null;
     let snapshot: HelperPartIdentity["observed"] = null;
     if (observed !== null) {
       if (!exactly(observed, ["file", "content"]) || !exactly(observed.file, ["dev", "ino", "birthtimeNs"]) ||
