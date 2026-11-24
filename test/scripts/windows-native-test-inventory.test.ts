@@ -66,6 +66,45 @@ function nativeImportChains(modules: Map<string, string>): Map<string, string[]>
 }
 
 describe("Windows runtime imports", () => {
+  it("retains a real platform-dependent rename followed by a byte read", () => {
+    const consumer = 'import { produce } from "../store.js"; import { readFileSync } from "node:fs"; expect(readFileSync(produce(from, to), "utf8")).toBe("payload");';
+    const rename = 'import { renameSync } from "node:fs"; export function produce(from, to) { if (process.platform === "win32") renameSync(from, to); return to; }';
+    expect(nativeBackedTestFiles(sources(consumer, rename)).get(SUITE)).toEqual([SUITE, STORE]);
+  });
+
+  it("retains real replacement and read-back across a class method holding a host descriptor", () => {
+    const holder = `
+      import { openSync, closeSync } from "node:fs";
+      import { platform as host } from "node:process";
+      export class Archive {
+        save(path, onOpen) {
+          const fd = openSync(path, host === "win32" ? "r+" : "r");
+          try { onOpen(); } finally { closeSync(fd); }
+        }
+        status() { return "idle"; }
+      }
+    `;
+    const imports = 'import { readFileSync, renameSync as replace } from "node:fs"; import { Archive } from "../store.js"; ';
+    const call = 'new Archive().save(active, () => { try { replace(other, active); } catch {} }); expect(readFileSync(archive)).toEqual(bytes);';
+    expect(nativeBackedTestFiles(sources(`${imports}${call}`, holder)).get(SUITE)).toEqual([SUITE, STORE]);
+    for (const source of [
+      `${imports}new Archive().status(); replace(other, active); readFileSync(archive);`,
+      `${imports}vi.mock("node:fs", () => ({ renameSync: vi.fn(), readFileSync: vi.fn() })); ${call}`,
+      `${imports}vi.mock("../store.js", () => ({ Archive: vi.fn() })); ${call}`,
+      `${imports}vi.mock("node:process", () => ({ platform: "win32" })); ${call}`,
+      `${imports}import { it } from "vitest"; it("replace", () => {
+        new Archive().save(active, () => replace(other, active));
+      }); it("read unrelated file", () => readFileSync(unrelated));`,
+    ]) expect(nativeBackedTestFiles(sources(source, holder)).has(SUITE)).toBe(false);
+  });
+
+  it("requires a test-local descriptor to stay open during a real rename", () => {
+    const imports = 'import { openSync, closeSync, renameSync, readFileSync } from "node:fs"; ';
+    const opened = `${imports}const fd = openSync(active, "r"); `;
+    expect(nativeBackedTestFiles(sources(`${opened}try { renameSync(other, active); } finally { closeSync(fd); } readFileSync(active);`)).has(SUITE)).toBe(true);
+    expect(nativeBackedTestFiles(sources(`${opened}closeSync(fd); renameSync(other, active); readFileSync(active);`)).has(SUITE)).toBe(false);
+  });
+
   it.each([
     'import { createRequire } from "node:module"; const load = createRequire(new URL("../../main/anchor.cjs", import.meta.url)); load("./windows-probe.cjs").read();',
     'import { createRequire as factory } from "node:module"; const anchor = new URL("../../main/", import.meta.url); const loader = factory(anchor); const load = loader; const { read } = load("./windows-probe.cjs"); read();',

@@ -416,12 +416,14 @@ function checksWindowsPlatform(source: string, tokens: readonly string[], mocks:
   if (!mocks.has("node:os") && !mocks.has("os") && conditionalGates(source).some(gate => gate.classification === "win32-only")) return true;
   if (!tokens.some(token => literal(token) === "win32")) return false;
   const bindings = bindingsFor(tokens, mocks, ["node:os", "os"]);
+  const processBindings = bindingsFor(tokens, mocks, ["node:process", "process"]);
   const platformAliases = new Set<string>();
   const windowsAliases = new Set<string>();
   const comparisons = new Set(["===", "!==", "==", "!="]);
   const declarations = new Set(["const", "let", "var"]);
   function platformEnd(index: number): number | undefined {
     if (tokens[index] === "process" && tokens[index + 1] === "." && tokens[index + 2] === "platform") return index + 3;
+    if (processBindings.get(tokens[index] ?? "") === "platform") return index + 1;
     const call = memberCall(tokens, bindings, index);
     if (call?.member === "platform" && tokens[call.opening + 1] === ")") return call.opening + 2;
     if (platformAliases.has(tokens[index] ?? "")) return index + 1;
@@ -457,17 +459,99 @@ function declarationEnd(tokens: readonly string[], start: number): number {
   return tokens.length;
 }
 
-function callsFilesystem(tokens: readonly string[], mocks: ReadonlySet<string>, methods: ReadonlySet<string>): boolean {
+function* filesystemCalls(tokens: readonly string[], mocks: ReadonlySet<string>): Generator<string> {
   const bindings = bindingsFor(tokens, mocks, FILESYSTEM_MODULES);
-  return tokens.some((_, i) => {
+  for (let i = 0; i < tokens.length; i++) {
     const call = memberCall(tokens, bindings, i);
-    return call !== undefined && methods.has(call.member);
+    if (call) yield call.member;
+  }
+}
+
+function callsFilesystem(tokens: readonly string[], mocks: ReadonlySet<string>, methods: ReadonlySet<string>): boolean {
+  for (const method of filesystemCalls(tokens, mocks)) if (methods.has(method)) return true;
+  return false;
+}
+
+const FILE_READS = new Set(["readFile", "readFileSync"]);
+const FILE_OBSERVATIONS = new Set([...FILE_READS, "stat", "statSync", "existsSync"]);
+const FILE_WRITES = new Set(["writeFile", "writeFileSync", "copyFile", "copyFileSync"]);
+const FILE_MODES = new Set(["chmod", "chmodSync"]);
+const FILE_RENAMES = new Set(["rename", "renameSync"]);
+const FILE_OPENS = new Set(["open", "openSync"]);
+const FILE_CLOSES = new Set(["close", "closeSync"]);
+
+function replacesOpenFile(tokens: readonly string[], mocks: ReadonlySet<string>): boolean {
+  const calls = [...filesystemCalls(tokens, mocks)];
+  const rename = calls.findIndex(method => FILE_RENAMES.has(method));
+  if (rename < 0) return false;
+  const prior = calls.slice(0, rename).filter(method => FILE_OPENS.has(method) || FILE_CLOSES.has(method));
+  const later = calls.slice(rename + 1);
+  return FILE_OPENS.has(prior.at(-1) ?? "") && later.some(method => FILE_CLOSES.has(method))
+    && later.some(method => FILE_READS.has(method));
+}
+
+function endDelimiter(tokens: readonly string[], start: number, opening: string, closing: string): number {
+  let depth = 1;
+  for (let i = start + 1; i < tokens.length; i++) {
+    if (tokens[i] === opening) depth++;
+    if (tokens[i] === closing && --depth === 0) return i;
+  }
+  return tokens.length;
+}
+
+function staticImports(tokens: readonly string[]): string[] {
+  return tokens.flatMap((token, index) => {
+    if (token !== "import" || tokens[index + 1] === "(" || tokens[index + 1] === ".") return [];
+    const end = tokens.indexOf(";", index);
+    return end >= 0 ? tokens.slice(index, end + 1) : [];
   });
 }
 
-const FILE_OBSERVATIONS = new Set(["readFile", "readFileSync", "stat", "statSync", "existsSync"]);
-const FILE_WRITES = new Set(["writeFile", "writeFileSync", "copyFile", "copyFileSync"]);
-const FILE_MODES = new Set(["chmod", "chmodSync"]);
+function testCases(tokens: readonly string[]): string[][] {
+  const { bindings } = moduleBindings(tokens, "vitest");
+  const cases: string[][] = [];
+  const imports = staticImports(tokens);
+  for (let i = 0; i < tokens.length; i++) {
+    if (!["it", "test"].includes(bindings.get(tokens[i] ?? "") ?? "")) continue;
+    let start = i + 1;
+    if (tokens[start] === "." && tokens[start + 1] === "each" && tokens[start + 2] === "(") {
+      start = endDelimiter(tokens, start + 2, "(", ")") + 1;
+    }
+    if (tokens[start] !== "(") continue;
+    const end = endDelimiter(tokens, start, "(", ")");
+    cases.push([...imports, ...tokens.slice(start + 1, end)]);
+    i = end;
+  }
+  return cases.length ? cases : [[...tokens]];
+}
+
+function callsDescriptorMethod(
+  use: readonly string[],
+  tokens: readonly string[],
+  used: ReadonlySet<string>,
+  inspect: (body: string[]) => boolean,
+): boolean {
+  const names = new Set(use.filter((_, i) => use[i - 1] === "." && use[i + 1] === "("));
+  for (let i = 1; i < tokens.length; i++) {
+    if (tokens[i] !== "class" || tokens[i - 1] !== "export" || !used.has(tokens[i + 1] ?? "")) continue;
+    const start = tokens.indexOf("{", i + 2);
+    if (start < 0) continue;
+    const end = endDelimiter(tokens, start, "{", "}");
+    for (let j = start + 1; j < end; j++) {
+      if (tokens[j] === "{") {
+        j = endDelimiter(tokens, j, "{", "}");
+        continue;
+      }
+      if (!names.has(tokens[j] ?? "") || tokens[j + 1] !== "(") continue;
+      const body = endDelimiter(tokens, j + 1, "(", ")") + 1;
+      if (tokens[body] !== "{") continue;
+      const last = endDelimiter(tokens, body, "{", "}");
+      if (inspect(tokens.slice(body + 1, last))) return true;
+      j = last;
+    }
+  }
+  return false;
+}
 
 function usesHostFilesystemOutput(
   suite: RuntimeModule,
@@ -484,11 +568,7 @@ function usesHostFilesystemOutput(
   const { tokens } = imported;
   const mocks = new Set([...suite.mocks, ...imported.mocks]);
   const functions = new Map<string, { exported: boolean; body: string[] }>();
-  const filesystemImports = tokens.flatMap((token, index) => {
-    if (token !== "import" || tokens[index + 1] === "(") return [];
-    const end = tokens.indexOf(";", index);
-    return end >= 0 && FILESYSTEM_MODULES.includes(literal(tokens[end - 1]) ?? "") ? tokens.slice(index, end + 1) : [];
-  });
+  const imports = staticImports(tokens);
   for (let i = 0; i < tokens.length - 2; i++) {
     const name = tokens[i + 1];
     if (tokens[i] !== "function" || !name || tokens[i + 2] !== "(") continue;
@@ -497,20 +577,30 @@ function usesHostFilesystemOutput(
       body: tokens.slice(i + 2, declarationEnd(tokens, i + 1)),
     });
   }
-  function materializes(body: string[]) {
-    if (!checksWindowsPlatform("", body, mocks)) return false;
-    const withImports = [...filesystemImports, ...body];
-    return callsFilesystem(withImports, mocks, FILE_WRITES) && callsFilesystem(withImports, mocks, FILE_MODES);
+  const readCases = testCases(suite.tokens).filter(test => callsFilesystem(test, suite.mocks, FILE_READS));
+  function materializes(body: string[], name: string) {
+    const withImports = [...imports, ...body];
+    if (!checksWindowsPlatform("", withImports, mocks)) return false;
+    return (callsFilesystem(withImports, mocks, FILE_RENAMES)
+      && readCases.some(test => usedMembers(test, specifier).has(name)))
+      || (callsFilesystem(withImports, mocks, FILE_WRITES) && callsFilesystem(withImports, mocks, FILE_MODES));
   }
   for (const name of used) {
     const entry = functions.get(name);
     if (!entry?.exported) continue;
-    if (materializes(entry.body) || entry.body.some((token, i) => {
+    if (materializes(entry.body, name) || entry.body.some((token, i) => {
       const helper = functions.get(token);
-      return helper && !helper.exported && entry.body[i + 1] === "(" && materializes(helper.body);
+      return helper && !helper.exported && entry.body[i + 1] === "(" && materializes(helper.body, name);
     })) return true;
   }
-  return false;
+  // A fixture can attempt the rename from a callback while a called method
+  // keeps the descriptor open. Both the replacement and the read are real.
+  return readCases.some(test => callsFilesystem(test, suite.mocks, FILE_RENAMES)
+    && callsDescriptorMethod(test, tokens, used, body => {
+      const withImports = [...imports, ...body];
+      return checksWindowsPlatform("", withImports, mocks) && callsFilesystem(withImports, mocks, FILE_OPENS)
+        && callsFilesystem(withImports, mocks, FILE_CLOSES);
+    }));
 }
 
 function forwardsNative(module: RuntimeModule, member: string, native: Edge): boolean {
@@ -555,7 +645,9 @@ function scanNativeBackedTestFiles(sources: ReadonlyMap<string, string>, replyTi
     const source = sources.get(file);
     if (source === undefined) throw new Error(`Missing Windows test source: ${file}`);
     if (hasWindowsInventoryMarker(source, "windows-native") || file.endsWith(".windows.test.ts") || module.uncertainLoad
-      || callsNativeHelper(module.tokens, module.mocks) || exercisesFilesystemLinks(module.tokens, module.mocks) || checksWindowsPlatform(source, module.tokens, module.mocks)) {
+      || callsNativeHelper(module.tokens, module.mocks) || exercisesFilesystemLinks(module.tokens, module.mocks)
+      || checksWindowsPlatform(source, module.tokens, module.mocks)
+      || (module.tokens.some(token => FILE_RENAMES.has(token)) && testCases(module.tokens).some(test => replacesOpenFile(test, module.mocks)))) {
       required.set(file, [file]);
       continue;
     }

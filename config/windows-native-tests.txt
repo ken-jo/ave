@@ -9,6 +9,7 @@ src/__tests__/support/native-executable.test.ts
 src/__tests__/support/tmp-dir-teardown-foreign-lock.test.ts
 src/__tests__/support/windows-native-tripwire.test.ts
 src/__tests__/vitest-global-setup.test.ts
+src/audit/__tests__/audit-logger-legacy-archive-replacement.test.ts
 src/audit/__tests__/audit-logger-permission-chain.test.ts
 src/audit/__tests__/audit-rotation.test.ts
 src/audit/__tests__/audit-writer.test.ts
