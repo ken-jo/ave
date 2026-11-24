@@ -3,8 +3,9 @@
 // backends except the fixture allow-list. The host rule is an import graph: only browser-download-files.ts may import mutating fs names,
 // and it may reference them only inside mutateEntry. Each reviewer bypass form is a named fixture below that must turn the lock red.
 // Residual, not detected: computed dynamic dispatch (a function pointer resolved at run time from a computed name, such as GetProcAddress
-// or dlsym with a built string, or a host call through a computed key or a computed module specifier), and code in modules outside
-// these scanned files.
+// or dlsym with a built string, or a host call through a computed key or a computed module specifier); a create disposition, open option
+// or flag written as a bare number other than the delete-on-close spellings below (such as NtCreateFile disposition 0 or 5, or O_TRUNC's
+// value); an open flag string built at run time; and code in modules outside these scanned files.
 import { mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { ts } from "ts-morph";
@@ -27,12 +28,15 @@ const NATIVE_RULES: readonly (readonly [string, RegExp])[] = [
   ["mutation name taken as a value", /(?:&\s*(?:::)?|=\s*(?:::)?)(?:_w?)?(?:unlink(?:at)?|rename(?:at2?|atx_np|x_np)?|remove|DeleteFile\w*|MoveFile\w*|RemoveDirectory\w*)\b(?!\s*\()/gu],
   ["set-information capability", /\b\w*Set\w*Information\w*\b/gu],
   ["information class type or numeric class", /\b(?:FILE_INFORMATION_CLASS|FILE_INFO_BY_HANDLE_CLASS)\b|\bFile(?:Disposition|Rename)Info\w*|\bFILE_(?:DISPOSITION|RENAME)_INFO\w*/gu],
-  ["delete on close", /\b(?:FILE_DELETE_ON_CLOSE|FILE_FLAG_DELETE_ON_CLOSE)\b|\b0x0*1000\b|\b0x0*4000000\b/gu],
+  ["delete on close", /\b(?:FILE_DELETE_ON_CLOSE|FILE_FLAG_DELETE_ON_CLOSE)\b|\b0x0*1000\b|\b0x0*4000000\b|\b4096u?\b|\b1u?\s*<<\s*12\b/gu],
+  ["truncating or superseding open", /\bFILE_(?:SUPERSEDE|OVERWRITE(?:_IF)?)\b|\b(?:CREATE_ALWAYS|TRUNCATE_EXISTING|O_TRUNC)\b/gu],
 ];
 // Native entry points looked up by name outside the primitive: only these read-only ones.
 const NATIVE_LOOKUPS = new Set(["NtCreateFile", "RtlNtStatusToDosError"]);
-const FS_MODULE = /^(?:node:)?fs(?:\/promises)?$/u;
-const MUTATING_FS = /^(?:unlink|rm|rmdir|rename|writeFile|appendFile|truncate|ftruncate|copyFile|cp|link|symlink|lchown|utimes|lutimes)(?:Sync)?$/u;
+const FS_MODULE = /^(?:node:)?(?:original-)?fs(?:\/promises)?$/u;
+const MUTATING_FS = /^(?:unlink|rm|rmdir|rename|writeFile|appendFile|truncate|ftruncate|copyFile|cp|link|symlink|lchown|utimes|lutimes)(?:Sync)?$|^createWriteStream$/u;
+// An open flag string that truncates: w without x (wx creates exclusively).
+const TRUNCATING_FLAG = /^[^x]*w[^x]*$/u;
 const HOST_RAW = /\b(?:unlink(?:at|Sync)?|rm(?:dir|dirSync|Sync)?|rename(?:at2?|Sync|Exclusive)?|linuxRename)\s*\(/gu;
 
 function removeFunction(source: string, signature: string): string {
@@ -96,6 +100,14 @@ function hostViolations(path: string, text: string): string[] {
       if (loads && node.arguments.some((arg) => ts.isStringLiteral(arg) && FS_MODULE.test(arg.text))) at(node, "fs module loaded at run time");
     }
     if (ts.isIdentifier(node) && mutating.has(node.text) && !primitive && !ts.isImportSpecifier(node.parent)) at(node, "mutating fs name outside mutateEntry");
+    if (!primitive && ts.isIdentifier(node) && node.text === "O_TRUNC") at(node, "truncating open flag outside mutateEntry");
+    if (!primitive && ts.isCallExpression(node)) {
+      const callee = ts.isPropertyAccessExpression(node.expression) ? node.expression.name.text : node.expression.getText(source);
+      if (/^open(?:Sync)?$/u.test(callee) && node.arguments.some((arg) => ts.isStringLiteralLike(arg) && TRUNCATING_FLAG.test(arg.text))) {
+        at(node, "truncating open outside mutateEntry");
+      }
+      if (ts.isPropertyAccessExpression(node.expression) && callee === "truncate") at(node, "truncate through a handle outside mutateEntry");
+    }
     ts.forEachChild(node, (child) => walk(child, primitive));
   };
   walk(source, false);
@@ -175,6 +187,30 @@ const BYPASSES: readonly (readonly [string, (sources: Map<string, string>) => vo
   ["7 identifier alias of a mutating import in the owner", insert(HOST_OWNER, "const log = createLogger(\"browser-download-files\");\n",
     "export function probeG(p: string): void { const probe = unlinkSync; probe(p); }\n"),
   [/browser-download-files\.ts:\d+ mutating fs name outside mutateEntry: unlinkSync/u]],
+  ["8 delete on close as a decimal or a shift", insert(WINDOWS_OPS, WINDOWS_ANCHOR,
+    "inline void probe_h(HANDLE dir, HANDLE& h) { open_relative(dir, L\"x\", DELETE, 0, kOpenExisting, 4096, h); open_relative(dir, L\"y\", DELETE, 0,\n" +
+    "  kOpenExisting, 1u << 12, h); }\n"),
+  [/delete on close: .*kOpenExisting, 4096, h\)/u, /delete on close: .*kOpenExisting, 1u << 12, h\)/u]],
+  ["9 superseding and overwriting create dispositions", insert(WINDOWS_OPS, WINDOWS_ANCHOR,
+    "inline const ULONG probe_i[] = {FILE_SUPERSEDE, FILE_OVERWRITE, FILE_OVERWRITE_IF};\n"),
+  [/truncating or superseding open: inline const ULONG probe_i/u]],
+  ["10 O_TRUNC in a native and a host open", (sources) => {
+    insert(WINDOWS_OPS, WINDOWS_ANCHOR, "inline const int probe_j = O_WRONLY | O_TRUNC;\n")(sources);
+    insert(HOST_OWNER, "const log = createLogger(\"browser-download-files\");\n",
+      "export function probeJ(p: string): number { return openSync(p, constants.O_WRONLY | constants.O_TRUNC); }\n")(sources);
+  }, [/truncating or superseding open: inline const int probe_j/u, /browser-download-files\.ts:\d+ truncating open flag outside mutateEntry: O_TRUNC/u]],
+  ["11 the original-fs module", insert("src/main/browser/browser-download-staging.ts", "const log = createLogger(\"browser-download-staging\");\n",
+    "import { unlinkSync as probeK } from \"original-fs\";\nexport function probeKUse(): void { probeK(\"x\"); }\n"),
+  [/browser-download-staging\.ts:\d+ mutating fs import outside the owner: unlinkSync as probeK/u]],
+  ["12 an open that truncates", insert("src/main/browser/browser-download-staging.ts", "const log = createLogger(\"browser-download-staging\");\n",
+    "export function probeL(): number { return openSync(\"x\", \"w\"); }\n"),
+  [/browser-download-staging\.ts:\d+ truncating open outside mutateEntry: openSync\("x", "w"\)/u]],
+  ["13 a write stream", insert(HOST_OWNER, "const log = createLogger(\"browser-download-files\");\n",
+    "import { createWriteStream } from \"node:fs\";\nexport function probeM(p: string): void { createWriteStream(p).end(); }\n"),
+  [/browser-download-files\.ts:\d+ mutating fs name outside mutateEntry: createWriteStream/u]],
+  ["14 a file handle's truncate", insert(HOST_OWNER, "const log = createLogger(\"browser-download-files\");\n",
+    "export async function probeN(handle: { truncate(length: number): Promise<void> }): Promise<void> { await handle.truncate(0); }\n"),
+  [/browser-download-files\.ts:\d+ truncate through a handle outside mutateEntry: handle\.truncate\(0\)/u]],
 ];
 
 describe("each named bypass form turns the lock red", () => {
