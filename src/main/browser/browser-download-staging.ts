@@ -262,7 +262,9 @@ async function removeStaged(root: BrowserDownloadStagingRoot, name: string, stag
     return "remove-failed";
   } catch (error) {
     if (error instanceof HeldDirectoryRefusedError) {
-      log.warn({ error: error.message }, "a staged browser download was left in place: its folder cannot be verified");
+      log.warn({ error: error.message }, error.refusal === "source"
+        ? "a staged browser download was left in place: another file now has its name"
+        : "a staged browser download was left in place: its folder cannot be verified");
       return "remove-failed";
     }
     log.warn({ error: (error as Error).message }, "a staged browser download could not be removed; the next start removes it");

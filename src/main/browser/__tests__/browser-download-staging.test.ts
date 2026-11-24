@@ -867,6 +867,8 @@ describe("what `done` reports when the staged file cannot be removed", () => {
     ["its helper is killed but not seen to end", () => new HeldFileHelperStalledError("/helper", "said nothing for 1 ms", true), "helper-still-running"],
   ] as const;
 
+  const STAGED_REPLACED = "a staged browser download was left in place: another file now has its name";
+  const STAGING_UNVERIFIED = "a staged browser download was left in place: its folder cannot be verified";
   const UNSTAMPED_LEFT = "a staged browser download was left in place: it was never identified; the next start removes it";
   // The cleanup `done` reports, with the reason a staged file was left.
   const doneWithReason = (download: Observed) => new Promise<{ state: string; cleanup: string; reason?: string }>((resolve) => {
@@ -889,6 +891,8 @@ describe("what `done` reports when the staged file cannot be removed", () => {
     expect(await done).toEqual({ state: "cancelled", cleanup: "remove-failed" });
     expect(readFileSync(item.path, "utf8")).toBe("another file");
     expect(stamps).toHaveLength(1);
+    expect(hooks.warnings).toContain(STAGED_REPLACED);
+    expect(hooks.warnings).not.toContain(STAGING_UNVERIFIED);
   });
 
   it("leaves a staged file it never saw the browser write, and never stamps it by name to remove it", async () => {
