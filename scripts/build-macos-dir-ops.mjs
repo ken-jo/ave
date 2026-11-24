@@ -16,12 +16,13 @@ const SOURCE_DIRECTORY = path.join("native", "macos-dir-ops");
 const SOURCE = path.join(SOURCE_DIRECTORY, "dir-ops.c");
 export const MACOS_DIR_OPS_EXECUTABLE = "ave-dir-ops";
 // Test variants: `defines` select the fault each one injects (short or stalled writes, a helper that never says it is ready, and one
-// that copies slowly, ignores every request to stop and never answers after `copied`).
+// that copies slowly and ignores requests to stop, plus a reused file identity on the plain-rename path).
 export const MACOS_DIR_OPS_TEST_BUILDS = Object.freeze([
   Object.freeze({ executable: "ave-dir-ops-short-writes", defines: ["AVE_DIR_OPS_TEST_WRITE_LIMIT=4093"] }),
   Object.freeze({ executable: "ave-dir-ops-stalled-writes", defines: ["AVE_DIR_OPS_TEST_STALLED_WRITES"] }),
   Object.freeze({ executable: "ave-dir-ops-never-ready", defines: ["AVE_DIR_OPS_TEST_NEVER_READY"] }),
   Object.freeze({ executable: "ave-dir-ops-ignores-eof", defines: ["AVE_DIR_OPS_TEST_IGNORES_EOF"] }),
+  Object.freeze({ executable: "ave-dir-ops-reused-file-id", defines: ["AVE_DIR_OPS_TEST_REUSED_FILE_ID"] }),
 ]);
 
 export function macosDirOpsOutput(root, arch, executable = MACOS_DIR_OPS_EXECUTABLE) {

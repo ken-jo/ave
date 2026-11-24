@@ -74,12 +74,14 @@ describe("buildMacosDirOps", () => {
       macosDirOpsOutput(root, "arm64", "ave-dir-ops-stalled-writes"),
       macosDirOpsOutput(root, "arm64", "ave-dir-ops-never-ready"),
       macosDirOpsOutput(root, "arm64", "ave-dir-ops-ignores-eof"),
+      macosDirOpsOutput(root, "arm64", "ave-dir-ops-reused-file-id"),
     ]);
     expect(calls[0]?.some((arg) => arg.startsWith("-D"))).toBe(false);
     expect(calls[1]).toContain("-DAVE_DIR_OPS_TEST_WRITE_LIMIT=4093");
     expect(calls[2]).toContain("-DAVE_DIR_OPS_TEST_STALLED_WRITES");
     expect(calls[3]).toContain("-DAVE_DIR_OPS_TEST_NEVER_READY");
     expect(calls[4]).toContain("-DAVE_DIR_OPS_TEST_IGNORES_EOF");
+    expect(calls[5]).toContain("-DAVE_DIR_OPS_TEST_REUSED_FILE_ID");
   });
 
   it("leaves helpers newer than every source alone, and rebuilds them once a source or the build script changes", () => {

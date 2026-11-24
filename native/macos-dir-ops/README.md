@@ -151,7 +151,9 @@ architecture, which `build.mac.extraResources` ships as
 `Contents/Resources/macos-dir-ops/<arch>/ave-dir-ops`. `--test-builds` adds
 variants that inject one fault each: writes that take part of what they are
 given or nothing, a helper that never says `ready`, and one that copies slowly,
-ignores every request to stop and never answers after `copied`. Only
+ignores every request to stop and never answers after `copied`. The test
+builds also include a variant that reports a reused file identity
+on volumes without exclusive rename. Only
 `src/main/browser/__tests__/browser-download-staging.test.ts` runs them. A
 missing or broken helper refuses every download with the staging notice; there
 is no fallback to path operations.

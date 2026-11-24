@@ -1128,7 +1128,7 @@ const ENDINGS = ["cancelled", "failed", "refused"] as const;
 const theTarget: Record<Ending, string[]> = { cancelled: [], failed: ["report.pdf"], refused: ["report.pdf"] };
 // A folder's entries, without the `._` entries a volume without extended attributes (exFAT) keeps them in.
 const entriesOf = (folder: string): string[] => readdirSync(folder).filter((name) => !name.startsWith("._")).sort();
-async function stoppedNativeCopy(ending: Ending, swap: boolean | "absent" | "directory" | "symlink" | ((path: string) => void), base: string) {
+async function stoppedNativeCopy(ending: Ending, swap: boolean | "absent" | "directory" | "symlink" | ((path: string) => void), base: string, files?: Files) {
   const chosen = join(base, "chosen");
   mkdirSync(chosen);
   const target = join(chosen, "report.pdf");
@@ -1139,7 +1139,8 @@ async function stoppedNativeCopy(ending: Ending, swap: boolean | "absent" | "dir
   }
   let download!: import("../browser-download-staging.js").ObservedDownload;
   let swapped = "";
-  const root = atStep(acrossVolumes(prepare()), "copy", "copied", ({ part }) => {
+  const prepared = prepare();
+  const root = atStep(acrossVolumes({ ...prepared, files: files ?? prepared.files }), "copy", "copied", ({ part }) => {
     if (swap === "absent") {
       removeEntry(join(chosen, part ?? ""));
     } else if (swap) {
@@ -1252,6 +1253,44 @@ describe.runIf(process.platform === "darwin")("a stopped native copy's temporary
     expect(entriesOf(chosen)).toEqual([expect.stringMatching(/^\.[0-9a-f]{32}\.removing$/u)]);
     expect(readFileSync(join(chosen, hidden ?? "")).equals(replacement)).toBe(true);
     expect(outcome).toEqual({ state: "interrupted", cleanup: "part-left" });
+  });
+
+  it("keeps different content when both entries report the same device and inode", async ({ skip }) => {
+    const base = onVolume(skip);
+    const files = _helperFileOperationsForTest(join(RESOURCES, "macos-dir-ops", process.arch, "ave-dir-ops-reused-file-id"));
+    // The replacement is the same length as "page data": the sampled bytes, rather than size, must distinguish it.
+    const { outcome, chosen, swapped } = await stoppedNativeCopy("cancelled", (path) => writeFileSync(path, "user data"), base, files);
+    expect(entriesOf(chosen)).toEqual([basename(swapped)]);
+    expect(readFileSync(swapped, "utf8")).toBe("user data");
+    expect(outcome).toEqual({ state: "interrupted", cleanup: "part-left" });
+  });
+
+  it("keeps identical content written to a different inode", async ({ skip }) => {
+    const base = onVolume(skip);
+    const { outcome, chosen, swapped } = await stoppedNativeCopy("cancelled", (path) => {
+      const own = join(base, "the copy's own file");
+      writeFileSync(path, readFileSync(own));
+      const written = statSync(own, { bigint: true });
+      const replacement = statSync(path, { bigint: true });
+      expect([replacement.dev, replacement.ino]).not.toEqual([written.dev, written.ino]);
+    }, base);
+    expect(entriesOf(chosen)).toEqual([basename(swapped)]);
+    expect(readFileSync(swapped, "utf8")).toBe("page data");
+    expect(outcome).toEqual({ state: "interrupted", cleanup: "part-left" });
+  });
+
+  it("removes an empty part cancelled before the first write", ({ skip }) => {
+    const chosen = onVolume(skip);
+    const root = prepare();
+    const source = "0123456789abcdef0123456789abcdef";
+    writeFileSync(join(root.path, source), "page data");
+    const folder = statSync(chosen, { bigint: true });
+    const helper = join(RESOURCES, "macos-dir-ops", process.arch, "ave-dir-ops");
+    // Send both bytes in one write: authorize creation at ready, with the stop byte pending at the first poll.
+    const transcript = execFileSync(helper, ["--dir-copy", root.path, String(root.dev), String(root.ino), source, chosen,
+      String(folder.dev), String(folder.ino), "report.pdf", `.${source}.part`], { input: "cx", encoding: "utf8" });
+    expect(transcript).toBe("ready\ncancelled\n");
+    expect(entriesOf(chosen)).toEqual([]);
   });
 });
 

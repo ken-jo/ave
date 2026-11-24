@@ -327,6 +327,13 @@ static int remove_own_part(int to, const char *part, const struct written_file *
     memcpy(hidden, aside, HIDDEN_NAME_SIZE);
     return 0;
   }
+#if defined(AVE_DIR_OPS_TEST_REUSED_FILE_ID)
+  // Model two different file contents reported with the same file id on the plain-rename path.
+  if (!exclusive) {
+    moved.st_dev = own.st_dev;
+    moved.st_ino = own.st_ino;
+  }
+#endif
   const int same_id = moved.st_dev == own.st_dev && moved.st_ino == own.st_ino;
   if (S_ISREG(moved.st_mode) && same_id && (exclusive || same_content(to, aside, written->fd))) {
     if (unlinkat(to, aside, 0) == 0) return 1;
