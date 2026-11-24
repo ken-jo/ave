@@ -245,7 +245,12 @@ describe("offline process confinement", () => {
       const { dirname } = path;
       vi.spyOn(path, "dirname").mockImplementation(candidate => candidate === driveRoot ? "/" : dirname(candidate));
       vi.mocked(buildPerCommandSandboxCustomConfig).mockImplementationOnce(policy => ({
-        filesystem: { ...policy, allowWrite: [...(policy?.allowWrite ?? []), denied] },
+        filesystem: {
+          allowRead: [...(policy?.allowRead ?? [])],
+          allowWrite: [...(policy?.allowWrite ?? []), denied],
+          denyRead: [...(policy?.denyRead ?? [])],
+          denyWrite: [...(policy?.denyWrite ?? [])],
+        },
       }));
     }
     const scanner = join(root, "scan-fixture");
