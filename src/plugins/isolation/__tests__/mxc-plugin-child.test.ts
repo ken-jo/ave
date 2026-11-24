@@ -23,6 +23,8 @@ const spawn = vi.hoisted(() => vi.fn());
 vi.mock("../../../permissions/confined-child.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../../permissions/confined-child.js")>(),
   spawnMxcConfinedChild: spawn,
+  // The admitted holders here are fakes; row 2 liveness is pinned with a real parent in worker-spawn-native-parent.test.ts.
+  isMxcConfinedChildLive: () => true,
 }));
 
 const STAGING_ID = "0123456789abcdef0123456789abcdef";

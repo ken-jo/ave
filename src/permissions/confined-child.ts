@@ -202,6 +202,11 @@ interface NativeHolderBinding {
 }
 const nativeHolderBindings = new WeakMap<MxcConfinedChildSpawn, NativeHolderBinding>();
 
+/** Whether row 2 still admits descendants of this holder: false from the start of its release. */
+export function isMxcConfinedChildLive(holder: MxcConfinedChildSpawn): boolean {
+  return nativeHolderBindings.get(holder)?.active === true;
+}
+
 /** The co-holder nesting rule, applied before anything is created to a descendant's declared grants against its live
  * parent: no declared path inside the parent's writable roots, and no declared write root above a parent path. Row 2's
  * own check at admission stays the authority, and refuses a parent it never admitted. */

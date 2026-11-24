@@ -5,7 +5,8 @@ import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 
-const state = vi.hoisted(() => ({ plan: undefined as unknown, natives: [] as Array<{ label: string; dispose: ReturnType<typeof vi.fn> }> }));
+const state = vi.hoisted(() => ({ plan: undefined as unknown, holdCompletion: false,
+  natives: [] as Array<{ label: string; dispose: ReturnType<typeof vi.fn> }> }));
 vi.mock("../asrt-sandbox.js", async (original) => ({
   ...await original<typeof import("../asrt-sandbox.js")>(),
   assertExtensionStartAllowed: () => {},
@@ -37,7 +38,10 @@ vi.mock("../mxc-extension-process.js", () => ({
       id: 4000 + state.natives.length, stdin: new PassThrough(), stdout, stderr,
       completion: new Promise<{ exitCode: number; timedOut: boolean }>((resolve) => { finish = resolve; }),
       diagnostics: { nodeVersion: "v0", nativeModules: [], nativeModuleCount: 0, nativeModulesTruncated: false, ownerHandle: "owner" },
-      dispose: vi.fn(async () => { stdout.end(); stderr.end(); finish({ exitCode: 0, timedOut: false }); }),
+      dispose: vi.fn(async () => {
+        if (state.holdCompletion) return;
+        stdout.end(); stderr.end(); finish({ exitCode: 0, timedOut: false });
+      }),
     };
     state.natives.push({ label: request.command, dispose: native.dispose });
     options.onOwned(native);
@@ -75,6 +79,7 @@ describe.skipIf(process.platform !== "win32")("contained worker under a real plu
   beforeEach(() => {
     state.plan = planWindowsExtensionHolder({ requested: true, mxc: { state: "available" }, fallback: { version: "0.0.80", ready: false } });
     state.natives.length = 0;
+    state.holdCompletion = false;
     __resetActiveWrappedWorkersForTest();
     unregisterProbe = registerMxcHolderReadinessProbe(async () => EVIDENCE as never);
     for (const dir of [join(pluginRoot(), "gen"), dataDir(), join(pluginRoot(), "socket"), work()]) mkdirSync(dir, { recursive: true });
@@ -125,5 +130,16 @@ describe.skipIf(process.platform !== "win32")("contained worker under a real plu
     await replacement.waitForExit();
     expect(workerNative.dispose).toHaveBeenCalled();
     await exited;
+  });
+
+  it("treats a parent row 2 has released as gone, though its adapter never reported termination", async () => {
+    await startPluginChild();
+    const parent = liveMxcPluginChildHolder(PLUGIN);
+    // Release reported by row 2 alone: no exit reaches the adapter, so its withdrawal never runs.
+    state.holdCompletion = true;
+    await parent!.release();
+    await expect(startWorker()).rejects.toThrow("refusing a container worker whose plugin has no live container process");
+    expect(liveMxcPluginChildHolder(PLUGIN)).toBeUndefined();
+    expect(state.natives).toHaveLength(1);
   });
 });

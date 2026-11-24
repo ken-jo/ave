@@ -1,7 +1,7 @@
 import { win32 as winPath } from "node:path";
 import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
 import type { OwnedMxcExtensionProcess } from "../../permissions/mxc-extension-process.js";
-import { spawnMxcConfinedChild, type MxcConfinedChildSpawn, type MxcConfinedChildSpec } from "../../permissions/confined-child.js";
+import { isMxcConfinedChildLive, spawnMxcConfinedChild, type MxcConfinedChildSpawn, type MxcConfinedChildSpec } from "../../permissions/confined-child.js";
 import { assertMxcHolderStaging, type MxcExtensionFilesystemOwnership } from "../../permissions/mxc-filesystem-ownership.js";
 import { registerMxcPluginChildHolder } from "../../permissions/mxc-holder-lifetime.js";
 import { isWindowsPathAtOrUnder } from "../../permissions/mxc-windows.js";
@@ -208,7 +208,7 @@ export async function spawnMxcPluginChild(
     },
   }, intent.pluginId);
   // This plugin's contained workers bind to this incarnation, and to none once its termination begins.
-  child.onTerminating(registerMxcPluginChildHolder(intent.pluginId, admitted));
+  child.onTerminating(registerMxcPluginChildHolder(intent.pluginId, admitted, () => isMxcConfinedChildLive(admitted)));
   if (onTerminating) child.onTerminating(onTerminating);
   try {
     launch.assertCurrent();

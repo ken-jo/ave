@@ -108,7 +108,7 @@ beforeEach(() => {
   __resetActiveWrappedWorkersForTest();
   withdrawParent();
   parent = pluginChild();
-  withdrawParent = registerMxcPluginChildHolder("example-plugin", parent);
+  withdrawParent = registerMxcPluginChildHolder("example-plugin", parent, () => true);
 });
 
 const spec = (write: string) => ({
@@ -236,7 +236,7 @@ describe("contained worker parent binding", () => {
     withdrawParent();
     await expect(start()).rejects.toThrow("refusing a container worker whose plugin has no live container process");
     // Another plugin's process is never a parent.
-    const other = registerMxcPluginChildHolder("other-plugin", pluginChild());
+    const other = registerMxcPluginChildHolder("other-plugin", pluginChild(), () => true);
     await expect(start()).rejects.toThrow("no live container process");
     other();
     expect(spawnMxcBundledHolder).not.toHaveBeenCalled();
@@ -246,7 +246,7 @@ describe("contained worker parent binding", () => {
 
   it("binds to the replacement incarnation, which the ended one's late withdrawal does not remove", async () => {
     const replacement = pluginChild();
-    const withdrawReplacement = registerMxcPluginChildHolder("example-plugin", replacement);
+    const withdrawReplacement = registerMxcPluginChildHolder("example-plugin", replacement, () => true);
     withdrawParent();
     await start();
     expect(holder(0).input.parent).toBe(replacement);
@@ -256,7 +256,7 @@ describe("contained worker parent binding", () => {
   it("keeps the incarnation it was admitted under when the plugin's process is replaced during startup", async () => {
     const starting = spawnWorker({ ...spec("D:\\work\\a"), stateDirectory: true, control: "output-only-v1" });
     withdrawParent();
-    const withdrawReplacement = registerMxcPluginChildHolder("example-plugin", pluginChild());
+    const withdrawReplacement = registerMxcPluginChildHolder("example-plugin", pluginChild(), () => true);
     await starting;
     expect(holder(0).input.parent).toBe(parent);
     withdrawReplacement();

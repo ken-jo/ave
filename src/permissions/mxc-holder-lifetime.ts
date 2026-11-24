@@ -46,17 +46,21 @@ export function drainMxcHolderLifetimes(): Promise<void> {
   return draining;
 }
 
-const pluginChildHolders = new Map<string, MxcConfinedChildSpawn>();
+const pluginChildHolders = new Map<string, { readonly holder: MxcConfinedChildSpawn; readonly isLive: () => boolean }>();
 
-/** A plugin's native child holder, from its admission until its termination begins: the parent every contained worker
- * of that plugin is bound to. The returned function withdraws this incarnation only, never a later one. */
-export function registerMxcPluginChildHolder(pluginId: string, holder: MxcConfinedChildSpawn): () => void {
-  pluginChildHolders.set(pluginId, holder);
+/** A plugin's native child holder, from its admission until its termination begins or row 2 stops admitting its
+ * descendants (`isLive`): the parent every contained worker of that plugin is bound to. The returned function withdraws
+ * this incarnation only, never a later one. */
+export function registerMxcPluginChildHolder(pluginId: string, holder: MxcConfinedChildSpawn, isLive: () => boolean): () => void {
+  pluginChildHolders.set(pluginId, { holder, isLive });
   return () => {
-    if (pluginChildHolders.get(pluginId) === holder) pluginChildHolders.delete(pluginId);
+    if (pluginChildHolders.get(pluginId)?.holder === holder) pluginChildHolders.delete(pluginId);
   };
 }
 
 export function liveMxcPluginChildHolder(pluginId: string): MxcConfinedChildSpawn | undefined {
-  return pluginChildHolders.get(pluginId);
+  const entry = pluginChildHolders.get(pluginId);
+  if (entry?.isLive() === true) return entry.holder;
+  if (entry !== undefined) pluginChildHolders.delete(pluginId);
+  return undefined;
 }
