@@ -292,7 +292,8 @@ export class AuditWriter {
     // The writer enqueues the row before its first await; the ledger's denial lifecycle runs after it and cannot lose it.
     const logger = ready ? { logger: this.auditLogger } : {};
     const appended = entry.decision === "deny"
-      ? terminal.row({ entry, kind: terminal.kind, ...logger, ...(permission?.decision === "deny" ? { reason: permission.reason } : {}) })
+      ? terminal.row({ entry, kind: terminal.kind, ...logger, ...(permission?.decision === "deny" ? { reason: permission.reason } : {}),
+        answered: permission?.provenance.kind === "answered" })
       : terminal.row({ entry, ...logger });
     try {
       await appended;

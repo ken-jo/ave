@@ -165,6 +165,42 @@ it("claims an attempt's terminal row exactly once and refuses a second claim as 
   admission.settle();
 });
 
+it("records a deny committed after the invocation's abort as a cancellation, unless a person answered it", async () => {
+  const ledger = await import("../invocation-ledger.js");
+  const { HostExitAbortError } = await import("../../shared/host-exit-abort.js");
+  const appended: Array<Record<string, unknown>> = [];
+  const logger = { appendPermissionAuditEntry: vi.fn(async (entry: Record<string, unknown>) => { appended.push(entry); return entry; }) };
+  const fired: TerminalDenial[] = [];
+  const lifecycle = { governed: () => false, fire: async (denial: TerminalDenial) => { fired.push(denial); } };
+  const hostDenial = async (_cause: string, _detail: string, _selected: unknown, row: TerminalRowWriter) => {
+    await row({ logger: logger as never, entry: ENTRY, kind: "denied" });
+  };
+  // An AbortError the invocation let escape reaches settle(failure), whose host row is the host's denial.
+  const stop = new AbortController();
+  const stopped = ledger.admitToolInvocation("stopped", stop.signal);
+  stopped.terminal.hostTerminal(hostDenial, lifecycle);
+  stop.abort();
+  stopped.settle(new DOMException("This operation was aborted", "AbortError"));
+  const quit = new AbortController();
+  const quitting = ledger.admitToolInvocation("quitting", quit.signal);
+  quitting.terminal.hostTerminal(hostDenial, lifecycle);
+  quit.abort(new HostExitAbortError());
+  quitting.settle(new DOMException("This operation was aborted", "AbortError"));
+  await vi.waitFor(() => expect(appended).toHaveLength(2));
+  expect(appended[0]).toMatchObject({ denyReasons: [{ reason: "user aborted turn" }, { reason: "probe" }] });
+  expect(appended[1]).toMatchObject({ denyReasons: [{ reason: "host-shutdown" }, { reason: "probe" }] });
+  expect(fired).toEqual([]);
+  // A person's settled deny committed after the abort stays theirs: a denial, and its one event.
+  const answered = new AbortController();
+  const human = ledger.admitToolInvocation("human", answered.signal);
+  human.terminal.hostTerminal(hostDenial, lifecycle);
+  answered.abort();
+  await human.terminal.commit(async (row) => { await row({ logger: logger as never, entry: ENTRY, kind: "denied", answered: true }); });
+  human.settle();
+  expect(appended[2]).toMatchObject({ denyReasons: [{ reason: "probe" }] });
+  expect(fired.map((denial) => denial.reason)).toEqual(["probe"]);
+});
+
 it("gives an attempt the host's row only while it is unclaimed, keeping a selected outcome", async () => {
   const ledger = await import("../invocation-ledger.js");
   const write = vi.fn(hostRow);

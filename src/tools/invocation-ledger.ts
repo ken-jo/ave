@@ -62,11 +62,13 @@ export type TerminalDenialLifecycle = {
 };
 /**
  * The attempt's terminal row. A deny row names its kind; any other row cannot. `logger` is absent when the chain is
- * neither set up nor required; `reason` is the finalized denial reason, defaulting to the row's first.
+ * neither set up nor required; `reason` is the finalized denial reason, defaulting to the row's first. `answered` marks
+ * a deny a person settled, which an abort committed after it cannot turn into a cancellation.
  */
 type TerminalRow = {
   logger?: Pick<AuditLogger, "appendPermissionAuditEntry">;
   reason?: string;
+  answered?: boolean;
 } & ({ entry: DenyEntry; kind: TerminalDenyKind } | { entry: Exclude<PermissionAuditEntryInput, { decision: "deny" }>; kind?: never });
 /**
  * Writes the attempt's terminal row; only the ledger hands one out. The call claims the attempt and enqueues the row
@@ -161,14 +163,18 @@ class TerminalLedger implements InvocationTerminal {
     const row: TerminalRowWriter = (terminal) => {
       if (this.#refusal(by)) return Promise.resolve();
       this.#take();
-      const { logger, entry, reason } = terminal;
+      const { logger, reason } = terminal;
+      const cancellation = terminal.kind === "denied" ? this.#abortCancellation(terminal.answered === true) : undefined;
+      const entry = cancellation === undefined || terminal.entry.decision !== "deny" ? terminal.entry
+        : { ...terminal.entry, denyReasons: [{ reason: cancellation, source: "tool-executor" }, ...terminal.entry.denyReasons] };
+      const kind = cancellation === undefined ? terminal.kind : "cancelled";
       const append = logger ? appendTerminalRow(logger, entry) : Promise.resolve();
       this.#track(append);
       const lifecycle = this.#lifecycle;
       return (async () => {
         // The one rule: a permission denial fires PermissionDenied unless the attempt is governed; a cancellation never does.
-        if (terminal.kind === "denied" && lifecycle !== undefined && !lifecycle.governed()) {
-          await lifecycle.fire(new LedgerDenial(reason ?? terminal.entry.denyReasons[0]?.reason ?? ""));
+        if (kind === "denied" && lifecycle !== undefined && !lifecycle.governed()) {
+          await lifecycle.fire(new LedgerDenial(reason ?? (entry.decision === "deny" ? entry.denyReasons[0]?.reason : undefined) ?? ""));
         }
         await append;
       })();
@@ -195,6 +201,16 @@ class TerminalLedger implements InvocationTerminal {
       void this.endByHost("error", `the terminal row failed its integrity check: ${errorMessage(error)}`)?.catch(() => {});
     });
     return written;
+  }
+
+  /**
+   * A denial committed after the invocation's abort is that abort's cancellation, whichever writer or site committed it
+   * (a hook the Stop cancelled, a step the abort made throw); only a person's settled deny and the host's own integrity
+   * refusal stay denials. Returns the cancellation's reason, or undefined when the row stays a denial.
+   */
+  #abortCancellation(answered: boolean): string | undefined {
+    if (!this.signal.aborted || answered || this.#integrityFailure) return undefined;
+    return isHostExitAbort(this.signal.reason) ? "host-shutdown" : "user aborted turn";
   }
 
   #track(append: Promise<unknown>): void {

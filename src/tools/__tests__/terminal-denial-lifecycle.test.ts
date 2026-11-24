@@ -11,13 +11,15 @@ import type { HostPluginAuthLifecycle } from "../executor-contract.js";
 
 const COMMAND = resolve(__dirname, "../../../test/fixtures/hooks/influence-command.cjs");
 const TOOL = "denial_probe";
+const SHELL_COMMAND = "printf lock-probe";
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await cleanupTmpDir(root); });
 
 type Source =
   | "rule" | "unknown-tool" | "human" | "hook-mutation" | "host" | "integrity" | "plugin-generation"
   | "user-abort" | "host-shutdown" | "deadline" | "mid-execution" | "plugin-generation-shutdown"
-  | "card-quit" | "card-abort" | "governed-operation" | "governed-auth";
+  | "card-quit" | "card-abort" | "governed-operation" | "governed-auth"
+  | "dir-hook-abort" | "shell-prep-abort" | "human-then-abort" | "human-then-quit";
 
 /** Each probe loads a fresh module graph, so a sealed or drained ledger never leaks into another case. */
 async function setup(source: Source) {
@@ -43,14 +45,23 @@ async function setup(source: Source) {
   const holds = source === "deadline" || source === "mid-execution" || source === "user-abort";
   const generation = source === "plugin-generation" || source === "plugin-generation-shutdown";
   const governed = source === "governed-operation";
+  const dirHook = source === "dir-hook-abort";
+  const humanThen = source === "human-then-abort" || source === "human-then-quit";
+  const outside = mkdtempSync(join(tmpdir(), "ave-denial-outside-"));
+  roots.push(outside);
   const registry = new ToolRegistry();
+  if (source === "shell-prep-abort") {
+    const { BashTool } = await import("../shell-tools.js");
+    registry.register(new BashTool());
+  }
   registry.register(createDynamicTool({ name: TOOL, description: "Performs a bounded operation",
+    ...(dirHook ? { pathFields: ["path"] } : {}),
     ...(generation || governed
       ? { source: "plugin" as const, pluginId: "probe-plugin", pluginGeneration: { pluginId: "probe-plugin", generationId: "gen-1" } }
       : { source: "builtin" as const }),
     ...(governed ? { operationPolicy: { discriminant: "operation", operations: { status: { kind: "read" as const, minimumRisk: "read" as const } } } } : {}),
     category: "write", isReadOnly: () => false,
-    jsonSchema: { type: "object", properties: {} },
+    jsonSchema: { type: "object", properties: dirHook ? { path: { type: "string" } } : {} },
     execute: async () => {
       started();
       if (holds) await held;
@@ -58,9 +69,43 @@ async function setup(source: Source) {
     } }));
   const permissions = new PermissionManager(join(root, "permissions.json"));
   if (source === "rule" || source === "governed-operation" || source === "governed-auth") permissions.setRules([{ pattern: TOOL, action: "deny" }]);
-  if (source === "human" || source === "host" || source === "integrity" || source === "card-quit" || source === "card-abort") permissions.setRules([{ pattern: TOOL, action: "ask" }]);
+  if (source === "human" || source === "host" || source === "integrity" || source === "card-quit" || source === "card-abort" || humanThen) {
+    permissions.setRules([{ pattern: TOOL, action: "ask" }]);
+  }
   if (holds || generation || source === "host-shutdown") permissions.setRules([{ pattern: TOOL, action: "allow" }]);
+  if (source === "shell-prep-abort") permissions.setRules([{ pattern: `Bash(${SHELL_COMMAND})`, action: "allow" }]);
+  const controller = new AbortController();
+  // shell-prep-abort: the Stop lands during the exact Settings lookup (invocation-runner.ts lookupUserDecision), the last
+  // await before the real shell preparation with no abort re-check between them.
+  if (source === "shell-prep-abort") {
+    const approvals = await import("../../permissions/user-approval-store.js");
+    const lookup = approvals.lookupUserDecision;
+    vi.spyOn(approvals, "lookupUserDecision").mockImplementation(async (...args) => {
+      const decision = await lookup(...args);
+      controller.abort();
+      return decision;
+    });
+  }
+  // human-then-*: the person's deny-always is accepted, and the Stop or the quit lands while its rule saves.
+  let persisted!: () => void;
+  const persisting = new Promise<void>((done) => { persisted = done; });
+  let saving!: () => void;
+  const saveStarted = new Promise<void>((done) => { saving = done; });
+  if (humanThen) {
+    vi.spyOn(permissions, "addAlwaysDeniedPersist").mockImplementation(async () => {
+      saving();
+      if (source === "human-then-abort") controller.abort();
+      else await persisting;
+    });
+  }
   const hooks = new ScriptHookManager();
+  // dir-hook-abort: the Stop lands during the folder card's PermissionRequest hook, so it returns the cancelled deny.
+  if (dirHook) {
+    vi.spyOn(hooks, "runPermissionRequest").mockImplementation(async () => {
+      controller.abort();
+      return new Promise(() => {});
+    });
+  }
   if (source === "hook-mutation") {
     const entries = parseHookConfig({ hooks: { PreToolUse: [{ hooks: [{ type: "command", command: ["node", COMMAND, "loop"] }] }] } }).entries;
     bindHookConfigPaths(entries, dirname(COMMAND));
@@ -69,8 +114,8 @@ async function setup(source: Source) {
   const lifecycle = vi.spyOn(hooks, "runLifecycleEvent");
   // human: the desk denies this call; host: an allow settled for another call; integrity: a deny settled for another call.
   const requestAndWait = vi.fn(async (request: ApprovalRequestInput) => answeredApprovalDecision(
-    { requestId: request.id, choice: source === "host" ? "allow-once" : "deny-once" }, "desk", request.toolName,
-    source === "human" ? request.invocationToolUseId : "another-call"));
+    { requestId: request.id, choice: source === "host" ? "allow-once" : humanThen ? "deny-always" : "deny-once" }, "desk", request.toolName,
+    source === "human" || humanThen ? request.invocationToolUseId : "another-call"));
   const lease = { generation: { generationId: "gen-1", state: { runtime: {} } }, release: () => {} };
   const access = {
     getActive: () => undefined,
@@ -93,18 +138,21 @@ async function setup(source: Source) {
     undefined, undefined, undefined, () => access);
   const authLifecycle = { binding: { pluginId: "probe-plugin", generationId: "gen-1", toolName: TOOL, appSessionId: "app", accountScopeHash: "hash" },
     beforeHandler: () => {}, completeSuccess: () => {}, completeFailure: () => {} } satisfies HostPluginAuthLifecycle;
-  const controller = new AbortController();
   const ids = source === "user-abort" ? ["held-call", "denied-call"] : ["denied-call"];
-  const run = () => executor.executeAll(ids.map((id) => ({ id, name: source === "unknown-tool" ? "missing_probe" : TOOL,
-    input: governed ? { operation: "status" } : {} })), {
-    sessionId: "denial-session", executionCwd: root, permissionContext: userPermissionContext(), abortSignal: controller.signal,
+  const input = governed ? { operation: "status" }
+    : dirHook ? { path: join(outside, "file.txt") }
+    : source === "shell-prep-abort" ? { command: SHELL_COMMAND, executionMode: "host", justification: "Print the lock fixture" }
+    : {};
+  const name = source === "unknown-tool" ? "missing_probe" : source === "shell-prep-abort" ? "bash" : TOOL;
+  const run = () => executor.executeAll(ids.map((id) => ({ id, name, input })), {
+    sessionId: "denial-session", executionCwd: root, permissionContext: userPermissionContext(dirHook ? { trustOrigin: "llm-tool-arg" } : {}), abortSignal: controller.signal,
     ...(source === "governed-auth" ? { pluginAuthLifecycle: authLifecycle } : {}),
   });
   const allRows = () => readFileSync(audit.getPermissionAuditLogFile(), "utf8").split("\n").filter(Boolean)
     .map((line) => JSON.parse(line) as Record<string, unknown>).filter((row) => row.decision !== "ask");
   const rows = (id = "denied-call") => allRows().filter((row) => row.toolUseId === id);
   const denials = () => lifecycle.mock.calls.filter(([event]) => event === "PermissionDenied");
-  return { ledger, audit, run, rows, denials, running, release, controller, cardOpen, gate: realGate };
+  return { ledger, audit, run, rows, denials, running, release, controller, cardOpen, gate: realGate, saveStarted, persisted };
 }
 
 type Probe = Awaited<ReturnType<typeof setup>>;
@@ -144,8 +192,13 @@ async function run(source: Source, check: (probe: Probe) => Promise<void>): Prom
     await check(probe);
   } finally {
     probe.release();
+    probe.persisted();
     await probe.audit.close();
   }
+}
+
+function reasons(row: Record<string, unknown>): string[] {
+  return (row.denyReasons as Array<{ reason: string }>).map((entry) => entry.reason);
 }
 
 describe("a permission denial fires one PermissionDenied; a cancellation and a governed deny fire none", () => {
@@ -253,6 +306,42 @@ describe("a permission denial fires one PermissionDenied; a cancellation and a g
       expect(probe.denials()).toEqual([]);
     } finally {
       probe.release();
+      await probe.audit.close();
+    }
+  });
+  it.each([
+    ["dir-hook-abort", /^Hook execution cancelled$/],
+    ["shell-prep-abort", /^Shell preparation failed: /],
+  ] as const)("%s: a deny committed after the Stop is a cancellation with no event", async (source, original) => {
+    await run(source, async (probe) => {
+      expect(probe.controller.signal.aborted).toBe(true);
+      await expectNoDenial(probe, "user aborted turn");
+      expect(reasons(await settledRow(probe))[1]).toMatch(original);
+    });
+  });
+
+  it("a person's settled deny stays a denial when the Stop lands before its row", async () => {
+    await run("human-then-abort", async (probe) => {
+      expect(probe.controller.signal.aborted).toBe(true);
+      await expectOneDenial(probe, "user denied approval request");
+    });
+  });
+
+  it("the host's row for a quit after a person's deny keeps it a denial with one event", async () => {
+    const probe = await setup("human-then-quit");
+    try {
+      const result = probe.run().catch(() => undefined);
+      await probe.saveStarted;
+      probe.ledger.sealToolInvocations();
+      expect(await probe.ledger.drainToolInvocationAuditForExit(() => probe.audit.close(), 5_000)).toBe("committed");
+      await expectOneDenial(probe, "user denied approval request");
+      probe.persisted();
+      await result;
+      await new Promise<void>((done) => setImmediate(done));
+      expect(probe.rows()).toHaveLength(1);
+      expect(probe.denials()).toHaveLength(1);
+    } finally {
+      probe.persisted();
       await probe.audit.close();
     }
   });
