@@ -464,6 +464,35 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     }
   });
 
+  // A profile-child home's container deny rows are pinned through the same helper, so a proxy-only start cannot isolate it.
+  it("refuses contained shells on a proxy-only start when the home privacy helper gave no answer", async () => {
+    setAveHomePrivacyAtBoot({ enforcement: "none", home: "C:\\Users\\alice\\.ave", category: "helper-unavailable", reason: "no answer" });
+    h.checkDeps.mockResolvedValue(SRT_WIN_MISSING);
+    h.detectMxc.mockResolvedValue(MXC_OK);
+    const context = harness.context(true, true, true);
+    context.bootAuditLogger.log = vi.fn();
+
+    await initSandboxGate(context);
+
+    expect(h.initialize).not.toHaveBeenCalled();
+    expect(getSandboxBootOutcome()).toMatchObject({ action: "degrade", reason: "degrade-ave-home-privacy-failed" });
+    await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({ shells: "none" }));
+    for (const plan of [getHostShellExecutionPlan(), getHostShellExecutionPlan("host")]) {
+      expect(plan).toMatchObject({ mode: "blocked", sandboxed: false, substrate: "none", fallbackReason: "home-privacy-helper-unavailable" });
+    }
+  });
+
+  it("keeps the proxy-only container route for an approvable home privacy failure", async () => {
+    setAveHomePrivacyAtBoot({ enforcement: "none", home: "C:\\Users\\alice\\.ave", category: "read-back-failed", reason: "read-back failed" });
+    h.checkDeps.mockResolvedValue(SRT_WIN_MISSING);
+    h.detectMxc.mockResolvedValue(MXC_OK);
+
+    await initSandboxGate(harness.context(true, true, true));
+
+    expect(getSandboxBootOutcome()).toMatchObject({ action: "activate", reason: "activate-windows-mxc-proxy-only" });
+    await vi.waitFor(() => expect(getHostShellExecutionPlan()).toMatchObject({ mode: "asrt", substrate: "mxc" }));
+  });
+
   it("keeps the ordinary sandbox-off plan when a worker-only boot fails for another reason", async () => {
     h.checkDeps.mockResolvedValue({ errors: [], warnings: [] });
     h.detectMxc.mockResolvedValue(MXC_OK);

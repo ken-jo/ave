@@ -210,7 +210,8 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
             });
 
       const privacyFailure = getAveHomePrivacyFailure();
-      if (privacyFailure !== undefined && windowsStart !== "proxy-only") {
+      // Container deny rows for a profile-child home are pinned through the same helper, so helper-unavailable also refuses proxy-only.
+      if (privacyFailure !== undefined && (windowsStart !== "proxy-only" || !isAveHomePrivacyApprovable(privacyFailure.category))) {
         const path = privacyFailure.failedPath ?? privacyFailure.home;
         log.warn("boot: extension isolation is OFF; AVE_HOME privacy failed (%s, %s). %s", privacyFailure.category, path,
           isAveHomePrivacyApprovable(privacyFailure.category)
