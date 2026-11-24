@@ -1,5 +1,8 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { parse } from "yaml";
+import { platformChecksRequired, type CiSuitePlan } from "../../scripts/run-ci-suite.mjs";
+import { modifiedEntry } from "../../src/__tests__/support/git-diff-entry.js";
 import { planWindowsTests } from "../../scripts/plan-windows-tests.js";
 import { plannedWindowsFiles, WINDOWS_TEST_LISTS, windowsTestFiles } from "../../scripts/run-windows-test-list.mjs";
 import {
@@ -28,6 +31,34 @@ describe("Windows shard planning", () => {
     plan.shards[0]?.files.push(plan.shards[1]?.files[0] ?? "");
     expect(() => plannedWindowsFiles(permission, text, plan, 1)).toThrow("Windows shards must cover every selected test exactly once");
   });
+});
+
+it.each([
+  { event: "pull_request", base: "main", mode: "affected", file: "src/core/route-input.ts", runs: true },
+  { event: "pull_request", base: "main", mode: "affected", file: "src/ui/renderer/hooks/use-chat-state.ts", runs: false },
+  { event: "pull_request", base: "integration/core", mode: "affected", file: "src/core/route-input.ts", runs: false },
+  { event: "push", base: "main", mode: "affected", file: "src/core/route-input.ts", runs: true },
+  { event: "schedule", base: "main", mode: "full", file: "", runs: true },
+  { event: "workflow_dispatch", base: "main", mode: "full", file: "", runs: true },
+] as const)("runs every committed suite exactly once when native checks run ($event, $base, $file)", ({ event, base, mode, file, runs }) => {
+  const workflow = parse(readFileSync(".github/workflows/ci.yml", "utf8"));
+  const job = workflow.jobs["windows-permission-tests"];
+  expect(workflow.jobs["windows-native-preparation"].if).toBe("needs.build.outputs.platform_checks == 'true'");
+  expect(job.if).toBe("needs.build.outputs.platform_checks == 'true' && needs.windows-native-preparation.result == 'success'");
+  const plan: CiSuitePlan = { mode, reason: "platform gate", tests: [] };
+  const selected = platformChecksRequired(event, plan, file ? [modifiedEntry(file)] : [], base);
+  expect(selected).toBe(runs);
+  if (!selected) return;
+
+  const shards: number[] = job.strategy.matrix.shard;
+  const lanes: string[] = job.steps.flatMap((step: { run?: string }) =>
+    step.run?.match(/run-windows-test-list\.mjs (config\/[\w-]+\.txt)$/u)?.[1] ?? []);
+  expect(lanes).toEqual([...WINDOWS_TEST_LISTS]);
+  const required = [...new Set(Object.values(inventories).flat())].sort();
+  const full = planWindowsTests(inventories);
+  const scheduled = shards.flatMap(shard => lanes.flatMap(lane =>
+    plannedWindowsFiles(lane, readFileSync(lane, "utf8"), full, shard)));
+  expect(scheduled.sort()).toEqual(required);
 });
 
 describe("last Windows lane removal", () => {

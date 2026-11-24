@@ -393,3 +393,11 @@ it("builds and checks shared native inputs once, before any shard provisions its
     assert.ok(after.indexOf(download) < initialize);
   }
 });
+
+test("rejects either Windows job bypassing the native platform gate", () => {
+  for (const job of ["windows-native-preparation", "windows-permission-tests"]) {
+    const parsed = parse(workflow);
+    parsed.jobs[job].if = "needs.build.outputs.docs_only == 'false'";
+    assert.throws(() => checkWindowsWorkflow(stringify(parsed), parsedLines), /must follow native platform selection/);
+  }
+});

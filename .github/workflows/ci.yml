@@ -1,7 +1,7 @@
 name: CI
 # Patch and category PRs use trusted affected tests plus change-triggered domain
-# checks. Windows runs on every non-documentation change. Other native
-# platforms run on backend/global changes. Unknown impact keeps full verification. Tags, nightly and manual
+# checks. Native platforms run on backend/global changes. Unknown impact
+# keeps full verification. Tags, nightly and manual
 # dispatch run the full suite; nightly and manual dispatch enforce coverage.
 # scripts/run-ci-suite.mjs owns selection and records the decision in summaries.
 on:
@@ -212,7 +212,7 @@ jobs:
         working-directory: ave
         run: bun run scripts/plan-windows-tests.ts "$RUNNER_TEMP/windows-ci/windows-plan.json"
       - name: Upload the Windows regression plan
-        if: steps.docs-impact.outputs.docs_only != 'true'
+        if: steps.plan.outputs.platform_checks == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-ci-plan
@@ -580,17 +580,9 @@ jobs:
             echo "::error::native platform selection was not resolved"
             exit 1
           fi
-          expected=success
-          if [ "$DOCS_ONLY" = "true" ]; then expected=skipped; fi
-          for result in "$WINDOWS_PREPARATION_RESULT" "$WINDOWS_RESULT"; do
-            if [ "$result" != "$expected" ]; then
-              echo "::error::Windows check ended $result, expected $expected"
-              exit 1
-            fi
-          done
           expected=skipped
           if [ "$PLATFORM_CHECKS" = "true" ]; then expected=success; fi
-          for result in "$MACOS_RESULT" "$LINUX_RESULT"; do
+          for result in "$WINDOWS_PREPARATION_RESULT" "$WINDOWS_RESULT" "$MACOS_RESULT" "$LINUX_RESULT"; do
             if [ "$result" != "$expected" ]; then
               echo "::error::native platform check ended $result, expected $expected"
               exit 1
@@ -620,7 +612,7 @@ jobs:
       group: ci-platform-${{ github.workflow }}-windows-prepare-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     needs: build
-    if: needs.build.outputs.docs_only == 'false'
+    if: needs.build.outputs.platform_checks == 'true'
     # GitHub-hosted runner, as every job is; see workflow-runner-policy.ts.
     # The runner needs Git for Windows (bash) and the C++ build tools that
     # scripts/build-windows-job.ps1 finds through vswhere. Pinned to
@@ -876,7 +868,7 @@ jobs:
       group: ci-platform-${{ github.workflow }}-windows-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}-${{ matrix.shard }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     needs: [build, windows-native-preparation]
-    if: needs.build.outputs.docs_only == 'false' && needs.windows-native-preparation.result == 'success'
+    if: needs.build.outputs.platform_checks == 'true' && needs.windows-native-preparation.result == 'success'
     runs-on: windows-2025
     strategy:
       fail-fast: false

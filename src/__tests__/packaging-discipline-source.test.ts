@@ -1591,7 +1591,7 @@ describe("installer smoke and packaging discipline", () => {
 
   it.runIf(process.platform !== "win32").each([
     { label: "selected success", selected: "true", native: "success", build: "success", vitest: "success", docs: "false", status: 0 },
-    { label: "non-documentation Windows skip", selected: "false", native: "skipped", build: "success", vitest: "success", docs: "false", status: 1 },
+    { label: "renderer-only platform skip", selected: "false", native: "skipped", build: "success", vitest: "success", docs: "false", status: 0 },
     { label: "selected skip", selected: "true", native: "skipped", build: "success", vitest: "success", docs: "false", status: 1 },
     { label: "selected failure", selected: "true", native: "failure", build: "success", vitest: "success", docs: "false", status: 1 },
     { label: "selected cancellation", selected: "true", native: "cancelled", build: "success", vitest: "success", docs: "false", status: 1 },
@@ -1624,8 +1624,8 @@ describe("installer smoke and packaging discipline", () => {
     const command = workflow.jobs["build-and-test"].steps[0].run as string;
     const result = spawnSync("bash", ["-e", "-c", command], { encoding: "utf8", env: {
       ...process.env, GATE_CORE_RESULT: "success", MXC_PINS_RESULT: "success", BUILD_RESULT: "success", VITEST_RESULT: "success",
-      DOCS_ONLY: "false", PLATFORM_CHECKS: "false", WINDOWS_PREPARATION_RESULT: preparation,
-      WINDOWS_RESULT: shards, MACOS_RESULT: "skipped", LINUX_RESULT: "skipped",
+      DOCS_ONLY: "false", PLATFORM_CHECKS: "true", WINDOWS_PREPARATION_RESULT: preparation,
+      WINDOWS_RESULT: shards, MACOS_RESULT: "success", LINUX_RESULT: "success",
     } });
     expect(result.status, result.stderr + result.stdout).toBe(status);
   });
@@ -1765,10 +1765,10 @@ describe("installer smoke and packaging discipline", () => {
     }
     const windowsPreparation = jobs.get("windows-native-preparation") ?? "";
     expect(windowsPreparation).toContain("needs: build");
-    expect(windowsPreparation).toContain("if: needs.build.outputs.docs_only == 'false'");
+    expect(windowsPreparation).toContain("if: needs.build.outputs.platform_checks == 'true'");
     const windows = jobs.get("windows-permission-tests") ?? "";
     expect(windows).toContain("needs: [build, windows-native-preparation]");
-    expect(windows).toContain("if: needs.build.outputs.docs_only == 'false' && needs.windows-native-preparation.result == 'success'");
+    expect(windows).toContain("if: needs.build.outputs.platform_checks == 'true' && needs.windows-native-preparation.result == 'success'");
     expect(body).toContain("WINDOWS_PREPARATION_RESULT: ${{ needs.windows-native-preparation.result }}");
     expect(body).toContain("WINDOWS_RESULT: ${{ needs.windows-permission-tests.result }}");
     expect(matched(commands, VERIFIES_THE_CODE)).toEqual([]);

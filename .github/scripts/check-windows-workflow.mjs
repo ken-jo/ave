@@ -281,6 +281,12 @@ function scopeContainedSteps(steps, job) {
 export function checkWindowsWorkflow(workflow, inspect) {
   const { jobs } = parse(workflow);
   const job = jobs[CONTAINED_JOB];
+  const platform = "needs.build.outputs.platform_checks == 'true'";
+  if (jobs[PREPARATION_JOB]?.if !== platform || jobs[PREPARATION_JOB]?.needs !== "build"
+    || job?.if !== `${platform} && needs.windows-native-preparation.result == 'success'`
+    || JSON.stringify(job?.needs) !== JSON.stringify(["build", PREPARATION_JOB])) {
+    throw new Error("Windows preparation and every shard must follow native platform selection");
+  }
   const strategy = job?.strategy;
   if (strategy?.["fail-fast"] !== false || Object.keys(strategy.matrix ?? {}).length !== 1
     || JSON.stringify(strategy.matrix.shard) !== JSON.stringify(WINDOWS_TEST_SHARDS)
