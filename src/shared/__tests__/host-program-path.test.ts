@@ -1,13 +1,15 @@
 // windows-native
 // Host programs resolve to an absolute path from PATH only; a current directory is never searched.
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { execFileSync } from "node:child_process";
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, renameSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 import { windowsAppAliasFixture } from "../../__tests__/support/windows-app-alias-fixture.js";
 import { findHostProgram, HostProgramNotFoundError, resolveHostProgram } from "../host-program-path.js";
+import { win32SystemBinary } from "../windows-system-path.js";
 
 const windows = process.platform === "win32";
 
@@ -124,6 +126,53 @@ describe("Windows app execution aliases", () => {
     const env = { LOCALAPPDATA: local, PATH: aliases };
     expect(find(env, { ...fs, pinWindowsDirectory: () => null })).toBeNull();
     expect(find(env, { ...fs, pinWindowsDirectory: () => ({ ...root, ino: 3n }) })).toBeNull();
+  });
+
+  it.runIf(windows)("checks short spellings, junction ancestry and root replacement with native directory identities", async () => {
+    const fixture = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-native-alias-")));
+    const parent = join(fixture, "Microsoft");
+    const aliases = join(parent, "WindowsApps");
+    const leaf = `${program}.exe`;
+    const missing = join(fixture, "missing-target");
+    try {
+      mkdirSync(aliases, { recursive: true });
+      const alias = join(aliases, leaf);
+      // A dangling junction exercises the alias path when stat fails but lstat sees a link.
+      symlinkSync(missing, alias, "junction");
+      expect(statSync(alias, { throwIfNoEntry: false })).toBeUndefined();
+      expect(lstatSync(alias).isSymbolicLink()).toBe(true);
+      const original = lstatSync(aliases, { bigint: true });
+
+      vi.stubEnv("LOCALAPPDATA", fixture);
+      vi.resetModules();
+      const { findHostProgram: findNative } = await import("../host-program-path.js");
+      expect(findNative(program, { Path: aliases })).toBe(alias);
+
+      const short = execFileSync(win32SystemBinary("cmd"), ["/d", "/c", "for %i in (WindowsApps) do @echo %~fsi"], {
+        cwd: parent, encoding: "utf8", windowsHide: true, windowsVerbatimArguments: true,
+      }).trim();
+      expect(realpathSync.native(short)).toBe(aliases);
+      if (short.toLowerCase() === aliases.toLowerCase()) {
+        console.info("The fixture volume returned no distinct 8.3 spelling for the alias directory.");
+      } else {
+        expect.soft(findNative(program, { Path: short })).toBe(alias);
+      }
+
+      const junction = join(fixture, "redirected-parent");
+      symlinkSync(parent, junction, "junction");
+      const redirected = join(junction, "WindowsApps");
+      expect(realpathSync.native(redirected)).toBe(aliases);
+      expect.soft(findNative(program, { Path: redirected })).toBeNull();
+
+      renameSync(aliases, join(parent, "original-root"));
+      mkdirSync(aliases);
+      symlinkSync(missing, alias, "junction");
+      expect(lstatSync(aliases, { bigint: true }).ino).not.toBe(original.ino);
+      expect.soft(findNative(program, { Path: aliases })).toBeNull();
+    } finally {
+      vi.unstubAllEnvs();
+      await cleanupTmpDir(fixture);
+    }
   });
 
   it.runIf(windows && canCreateSymlinks())("refuses a real link that cannot be stat'ed outside WindowsApps", async () => {
