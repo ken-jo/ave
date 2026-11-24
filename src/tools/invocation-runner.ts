@@ -1510,9 +1510,12 @@ async function runToolInvocationAttempt(
       approvalSignal && abortSignal ? AbortSignal.any([approvalSignal, abortSignal]) : approvalSignal ?? abortSignal;
     const directoryGrantGuard = (signal?: AbortSignal) =>
       invocationApprovalPersistenceGuard(invocationPermissionContext.remoteControllerAuthority, sessionId, signal);
-    const cancelDirectoryGrant = async (signal = services.invocationTerminal.bindAbortSignal()): Promise<ToolResult> => withHostShellExecutionPlan(await returnUserAbort({
-      ...abortDeps(finalInput), abortSignal: signal, permissionContext: invocationPermissionContext,
-    }));
+    const cancelDirectoryGrant = async (signal = services.invocationTerminal.bindAbortSignal()): Promise<ToolResult> => {
+      const cancellationSignal = signal.aborted ? signal : services.approvalGate?.shutdownSignal ?? signal;
+      return withHostShellExecutionPlan(await returnUserAbort({
+        ...abortDeps(finalInput), abortSignal: cancellationSignal, permissionContext: invocationPermissionContext,
+      }));
+    };
     const denyDirectoryGrant = async (signal?: AbortSignal): Promise<ToolResult> => {
       if (signal?.aborted) return cancelDirectoryGrant(signal);
       const reason = "remote-controller-revoked";

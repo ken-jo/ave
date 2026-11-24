@@ -2169,6 +2169,10 @@ export class ApprovalGate {
     };
   }
 
+  get shutdownSignal(): AbortSignal {
+    return this.lifetime.signal;
+  }
+
   // Permanently close admission, cancel approval stages, and deny parked requests during app shutdown.
   disposeAll(): void {
     this.lifetime.abort(new HostExitAbortError());

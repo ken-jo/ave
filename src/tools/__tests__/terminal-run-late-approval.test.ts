@@ -412,11 +412,17 @@ describe("one terminal row per surface invocation", () => {
       await vi.waitFor(() => expect(f.cards).toHaveLength(1));
       f.approve(f.cards[0], true);
       await vi.waitFor(() => expect(f.cards).toHaveLength(2));
+      expect(f.cards[1].userOwnedSurfaceReviewFallback).toBe(true);
       f.gate.disposeAll();
       const [result] = await pending;
       expect(result.is_error).toBe(true);
       expect(f.typed).toEqual([]);
-      expect(terminalRows(f.audit)).toEqual([expect.objectContaining({ decision: "deny", trustOrigin: "unknown" })]);
+      expect(terminalRows(f.audit)).toEqual([expect.objectContaining({
+        decision: "deny",
+        terminalKind: "cancelled",
+        trustOrigin: "unknown",
+        denyReasons: [expect.objectContaining({ reason: "host-shutdown" })],
+      })]);
     });
   });
 
