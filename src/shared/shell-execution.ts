@@ -1,5 +1,5 @@
 import { accessSync, constants, statSync } from "node:fs";
-import { isAbsolute, posix, relative as pathRelative, resolve as pathResolve, sep } from "node:path";
+import { dirname, isAbsolute, posix, relative as pathRelative, resolve as pathResolve, sep } from "node:path";
 import { analyzeShell, literalWord, staticShellWord, validatePreparedShellAnalysis, type PreparedShellAnalysis, type ShellAnalysis, type ShellCommand, type ShellRedirect, type ShellStatement, type ShellWord, type ShellWordPart } from "./shell-analysis.js";
 import { effectiveShellCommand, stripCommandPath, type EffectiveShellCommand } from "./shell-effective-command.js";
 import { SHELL_ANALYSIS_LIMITS } from "./shell-parser.js";
@@ -189,6 +189,16 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
   const within = (parent: string, path: string): boolean => {
     const rest = pathRelative(parent, path);
     return rest === "" || !isAbsolute(rest) && rest !== ".." && !rest.startsWith(`..${sep}`);
+  };
+  // One removal that failed a cd to missing can fail a cd to target iff it can contain both without containing cwd.
+  const sharesRemoval = (target: string, missing: string, cwd: string): boolean => {
+    let shared = target;
+    while (!within(shared, missing)) {
+      const parent = dirname(shared);
+      if (parent === shared) return false;
+      shared = parent;
+    }
+    return !within(shared, cwd);
   };
   let steps = 0;
   let nextExecutionBoundary = 0;
@@ -660,8 +670,8 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
         return state.cdFault.length === 1 ? failed : [success, ...failed];
       }
       if (observedDirectory && state.cwd !== null && within(destination, state.cwd) || state.errexit && !context.condition) return [success];
-      // A fault path models one failure: it forks again only after a possible change or for a fallback cd.
-      if (state.cdFault && observedDirectory && !filesystemMayChange && !context.fallback) return [success];
+      // A fault path models one removal: it forks again only after a possible change, for a fallback cd, or where that removal can fail this cd too.
+      if (state.cdFault && observedDirectory && !filesystemMayChange && !context.fallback && !state.cdFault.some((missing) => state.cwd === null || sharesRemoval(destination, missing, state.cwd))) return [success];
       if (filesystemMayChange) {
         if (++flaggedCdForks > SHELL_ANALYSIS_LIMITS.states) decline("unresolved working-directory destination", targetWord);
       } else if (observedDirectory && ++unflaggedCdForks > UNFLAGGED_CD_FORK_LIMIT) decline("unresolved working-directory destination", targetWord);

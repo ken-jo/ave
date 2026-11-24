@@ -22,7 +22,8 @@ beforeAll(() => {
   mkdirSync(join(CWD, "sub"), { recursive: true });
   for (const name of ["a", "b", "c", "sub", "build", "test", "prior", ...Array.from({ length: 8 }, (_, index) => `d${index}`)]) mkdirSync(join(ROOT, name));
   for (let index = 0; index < 8; index += 1) mkdirSync(join(ROOT, "a", `d${index}`));
-  mkdirSync(join(ROOT, "sub", "s2"));
+  mkdirSync(join(ROOT, "sub", "s2", "s3"), { recursive: true });
+  mkdirSync(join(ROOT, "sub", "t2"));
   writeFileSync(join(ROOT, "flag"), "");
   writeFileSync(join(ROOT, "src", "foo.ts"), "");
   mkdirSync(join(STAGING, "x"), { recursive: true });
@@ -358,6 +359,37 @@ describe("shell path policy — working directory tracking", () => {
       expect(verdict(`cd "$R/c" || true; ${absolute(8)}`)).toBeNull();
     });
 
+
+    // A removal that failed a recorded destination fails a later cd iff it also contains the target,
+    // possible iff the deepest directory containing both does not contain the fault path cwd.
+    it.each([
+      ["REL-anc-ancq", "cd sub/s2; cd \"$R\"; ls", null],
+      ["REL-disj-ancq", "cd a; cd ../b; cd \"$R/a\"; ls", null],
+      ["REL-eq-desc (SR1)", "cd sub; cd \"$R/sub\"; touch ../x", "sandbox-boundary"],
+      ["REL-desc-desc", "cd sub; cd \"$R/sub/s2\"; touch ../../x", "sandbox-boundary"],
+      ["REL-anc-desc (ANC1)", "cd sub/s2; cd \"$R/sub\"; touch ../x", "sandbox-boundary"],
+      ["ANC2", "cd sub/s2/s3; cd \"$R/sub\"; touch ../x", "sandbox-boundary"],
+      ["ANC3", "cd sub/s2 || true; cd sub; touch ../x", "sandbox-boundary"],
+      ["REL-disj-desc", "cd sub/s2; cd \"$R/sub/t2\"; touch ../../x", "sandbox-boundary"],
+      ["REL-disj-desc (shared ancestor holds the cwd)", "cd sub; cd \"$R/a\"; touch ../x", null],
+      ["REL-eq-disj", "cd a; cd ../sub/s2; cd \"$R/sub/s2\"; touch ../../x", "sandbox-boundary"],
+      ["REL-desc-disj", "cd a; cd ../sub; cd \"$R/sub/s2\"; touch ../../x", "sandbox-boundary"],
+      ["REL-anc-disj", "cd a; cd ../sub/s2/s3; cd \"$R/sub/s2\"; touch ../../x", "sandbox-boundary"],
+      ["REL-disj-disj", "cd a; cd ../sub/s2; cd \"$R/sub/t2\"; touch ../../x", "sandbox-boundary"],
+      ["REL-disj-disj (shared ancestor holds the cwd)", "cd b; cd ../sub/s2; cd \"$R/a/d0\"; touch ../../x", null],
+    ])("models a later cd against a recorded fault destination: %s: %s", (_cell, command, kind) => {
+      expect(verdict(command)).toBe(kind);
+    });
+
+    it("keeps a fault path ended where it leaves the starting directory, before a recorded ancestor (ANC4)", () => {
+      expect(verdict("cd \"$R/sub/s2\"; cd ..; cd \"$R/sub\"; touch ../x")).toBeNull();
+    });
+
+    it("keeps condition ladders without a cd as they are on main", () => {
+      expect(verdict(`cd a || exit 1; ${repeat(48, (index) => `if test -f q${index}; then echo ${index}; fi`)}`)).toBeNull();
+      expect(verdict(repeat(20, (index) => `test -f q${index} && echo ${index}`))).toBeNull();
+      expect(verdict(tests(24))).toBe("analysis-limit");
+    });
 
     it("models cd faults only for the unsandboxed host substrate", () => {
       const facts = (substrate: "none" | "asrt" | "mxc") => hostShellAnalysisFacts(undefined, { substrate });
