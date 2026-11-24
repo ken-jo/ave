@@ -6,7 +6,9 @@ import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
 import { resolvePluginPaths } from "../../plugins/plugin-paths.js";
 import { PLUGIN_WORKER_STATE_DIR_NAME } from "../../plugins/plugin-storage-layout.js";
+import type { MxcConfinedChildSpawn } from "../confined-child.js";
 import { MxcProcessCleanupError } from "../mxc-extension-errors.js";
+import { registerMxcPluginChildHolder } from "../mxc-holder-lifetime.js";
 
 interface FakeHolder {
   readonly input: Record<string, unknown>;
@@ -95,12 +97,18 @@ import { __resetActiveWrappedWorkersForTest, spawnWorker, WorkerAlreadyRunningEr
 const platform = process.platform;
 beforeAll(() => { Object.defineProperty(process, "platform", { value: "win32" }); });
 afterAll(() => { Object.defineProperty(process, "platform", { value: platform }); });
+const pluginChild = (): MxcConfinedChildSpawn => ({ confinement: "windows-mxc" }) as MxcConfinedChildSpawn;
+let parent: MxcConfinedChildSpawn;
+let withdrawParent: () => void = () => {};
 beforeEach(() => {
   holders.length = 0;
   selected = true;
   startFailure = undefined;
   vi.clearAllMocks();
   __resetActiveWrappedWorkersForTest();
+  withdrawParent();
+  parent = pluginChild();
+  withdrawParent = registerMxcPluginChildHolder("example-plugin", parent);
 });
 
 const spec = (write: string) => ({
@@ -213,5 +221,44 @@ describe("contained plugin worker", () => {
     selected = false;
     await expect(spawnWorker({ ...spec("D:\\work\\a"), control: "output-only-v1" })).rejects.toThrow("account grant holder reached");
     expect(spawnMxcBundledHolder).not.toHaveBeenCalled();
+  });
+});
+
+describe("contained worker parent binding", () => {
+  const start = () => spawnWorker({ ...spec("D:\\work\\a"), control: "output-only-v1" });
+
+  it("binds the worker's holder to its plugin's live container process", async () => {
+    await start();
+    expect(holder(0).input.parent).toBe(parent);
+  });
+
+  it("refuses a worker whose plugin has no live container process, and starts it on no other route", async () => {
+    withdrawParent();
+    await expect(start()).rejects.toThrow("refusing a container worker whose plugin has no live container process");
+    // Another plugin's process is never a parent.
+    const other = registerMxcPluginChildHolder("other-plugin", pluginChild());
+    await expect(start()).rejects.toThrow("no live container process");
+    other();
+    expect(spawnMxcBundledHolder).not.toHaveBeenCalled();
+    expect(marks.mark).not.toHaveBeenCalled();
+    for (const reached of Object.values(accountRoute)) expect(reached).not.toHaveBeenCalled();
+  });
+
+  it("binds to the replacement incarnation, which the ended one's late withdrawal does not remove", async () => {
+    const replacement = pluginChild();
+    const withdrawReplacement = registerMxcPluginChildHolder("example-plugin", replacement);
+    withdrawParent();
+    await start();
+    expect(holder(0).input.parent).toBe(replacement);
+    withdrawReplacement();
+  });
+
+  it("keeps the incarnation it was admitted under when the plugin's process is replaced during startup", async () => {
+    const starting = spawnWorker({ ...spec("D:\\work\\a"), stateDirectory: true, control: "output-only-v1" });
+    withdrawParent();
+    const withdrawReplacement = registerMxcPluginChildHolder("example-plugin", pluginChild());
+    await starting;
+    expect(holder(0).input.parent).toBe(parent);
+    withdrawReplacement();
   });
 });

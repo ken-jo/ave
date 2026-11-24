@@ -26,6 +26,7 @@ import {
   liveMxcHolderWritableRoots,
   spawnConfinedChild,
   spawnMxcConfinedChild,
+  type MxcConfinedChildSpawn,
   type MxcConfinedChildSpec,
 } from "../permissions/confined-child.js";
 import type { HostShellExecutionPlan } from "../permissions/host-shell-execution-plan.js";
@@ -569,6 +570,8 @@ export interface MxcBundledHolderInput {
   readonly assertStillValid?: () => void;
   /** A worker's declared control mode; required for the worker role. */
   readonly workerTransport?: MxcConfinedChildSpec["workerTransport"];
+  /** The live holder this one descends from: row 2 refuses the start once it is gone and ends this holder with it. */
+  readonly parent?: MxcConfinedChildSpawn;
   readonly signal?: AbortSignal;
 }
 
@@ -640,6 +643,7 @@ export async function spawnMxcBundledHolder(input: MxcBundledHolderInput): Promi
       probe,
       ...(input.assertStillValid ? { assertStillValid: input.assertStillValid } : {}),
       ...(input.workerTransport ? { workerTransport: input.workerTransport } : {}),
+      ...(input.parent ? { parent: input.parent } : {}),
       ...(input.signal ? { signal: input.signal } : {}),
     });
   } catch (error) {

@@ -141,7 +141,8 @@ import { planWindowsSandbox } from "../../boot/steps/windows-sandbox-plan.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { startFakeRelayPeer } from "../../__tests__/support/fake-relay-peer.js";
 import { installProgramsOnPath, withPlantedProgram } from "../../__tests__/support/planted-program.js";
-import { resolvePluginChildEntryPath } from "../confined-child.js";
+import { resolvePluginChildEntryPath, type MxcConfinedChildSpawn } from "../confined-child.js";
+import { registerMxcPluginChildHolder } from "../mxc-holder-lifetime.js";
 import { HostApiDispatcher, HOSTAPI_DISPATCH_TABLE, defineHostApiPath } from "../../plugins/isolation/host-api-dispatcher.js";
 import { PluginHostApiError } from "../../plugins/isolation/host-api-wire.js";
 import { hostApiRequest, settleHostApiReply } from "../../__tests__/support/host-protocol-wire.js";
@@ -252,9 +253,12 @@ describe("spawnWorker — selected container backend", () => {
       mxc: { state: "available" }, extensionMxc: { state: "available" }, windowsBuild: null, srtWinReady: false });
     setWindowsSandboxSubstrate(substrate);
     const start = () => spawnWorker({ pluginId: "sample", workerId: "control", command: "C:/runtime/worker.exe", control: "output-only-v1" as const });
+    await expect(start()).rejects.toThrow("refusing a container worker whose plugin has no live container process");
+    const withdraw = registerMxcPluginChildHolder("sample", { confinement: "windows-mxc" } as MxcConfinedChildSpawn);
     await expect(start()).rejects.toThrow("No extension holder readiness probe is registered");
     // The refusal frees the identity; a retry is refused for the same reason, never as a running worker.
     await expect(start()).rejects.toThrow("No extension holder readiness probe is registered");
+    withdraw();
     expect(spawnMock).not.toHaveBeenCalled();
   });
 });

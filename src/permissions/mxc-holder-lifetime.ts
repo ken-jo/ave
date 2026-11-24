@@ -1,3 +1,5 @@
+import type { MxcConfinedChildSpawn } from "./confined-child.js";
+
 /** Retain native and listener ownership until cleanup establishes termination. */
 interface MxcHolderLifetime {
   readonly label: string;
@@ -42,4 +44,19 @@ export function drainMxcHolderLifetimes(): Promise<void> {
     if (failures.length) throw new AggregateError(failures, "Container holder cleanup is unverified");
   })().finally(() => { draining = undefined; });
   return draining;
+}
+
+const pluginChildHolders = new Map<string, MxcConfinedChildSpawn>();
+
+/** A plugin's native child holder, from its admission until its termination begins: the parent every contained worker
+ * of that plugin is bound to. The returned function withdraws this incarnation only, never a later one. */
+export function registerMxcPluginChildHolder(pluginId: string, holder: MxcConfinedChildSpawn): () => void {
+  pluginChildHolders.set(pluginId, holder);
+  return () => {
+    if (pluginChildHolders.get(pluginId) === holder) pluginChildHolders.delete(pluginId);
+  };
+}
+
+export function liveMxcPluginChildHolder(pluginId: string): MxcConfinedChildSpawn | undefined {
+  return pluginChildHolders.get(pluginId);
 }

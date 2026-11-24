@@ -402,6 +402,16 @@ describe("environment before admission", () => {
   });
 });
 
+describe("parent binding", () => {
+  it("hands row 2 the parent holder unchanged, and none when the holder has no parent", async () => {
+    const parent = { confinement: "windows-mxc" } as NonNullable<Parameters<typeof spawnMxcBundledHolder>[0]["parent"]>;
+    await spawnMxcBundledHolder(input({ parent }));
+    expect(lastSpec().parent).toBe(parent);
+    await spawnMxcBundledHolder(input());
+    expect("parent" in lastSpec()).toBe(false);
+  });
+});
+
 describe("holder layout", () => {
   it("gives the holder its own staging HOME/temp sibling and its own incarnation, passing host env through", async () => {
     await spawnMxcBundledHolder(input());
