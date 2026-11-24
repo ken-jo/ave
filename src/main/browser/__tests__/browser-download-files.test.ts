@@ -1168,6 +1168,8 @@ describe("the outcome a staged download's removal reports", () => {
       });
       const staged = stageBrowserDownload(item, { root, askSavePath: async () => null }, Promise.resolve());
       const done = follow(new Promise<[string, string]>((resolve) => staged.download.once("done", (_event, state, outcome) => resolve([state, outcome]))));
+      // The browser says it wrote the staged file, which is when that file is identified.
+      item.emit("updated", {}, "progressing");
       await staged.answered;
       await flush();
       await advance(BOUNDS.stallMs + BOUNDS.killMs);
@@ -1206,6 +1208,8 @@ describe("the outcome a staged download's removal reports", () => {
       });
       const staged = stageBrowserDownload(item, { root: { path: directory, dev: info.dev, ino: info.ino, files: { ...files, stamp: async () => STAGED } }, askSavePath: async () => null }, Promise.resolve());
       const done = follow(new Promise<[string, string]>((resolve) => staged.download.once("done", (_event, state, outcome) => resolve([state, outcome]))));
+      // The browser says it wrote the staged file, which is when that file is identified.
+      item.emit("updated", {}, "progressing");
       await staged.answered;
       await flush();
       await advance(BOUNDS.stallMs);
