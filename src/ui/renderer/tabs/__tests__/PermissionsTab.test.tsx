@@ -1771,7 +1771,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
 
     // The catalog parity check cannot see a key the code names but no catalog defines; every reason must resolve in both locales.
     const EVERY_REASON = {
-      "not-windows": true, "unsupported-arch": true, "binary-missing": true, "probe-failed": true, "tier-unsupported": true,
+      "not-windows": true, "unsupported-arch": true, "binary-missing": true, "probe-failed": true, "container-unavailable": true,
       "request-rejected": true, "launcher-mismatch": true, "powershell-start-failed": true, "unverified-session": true,
       "not-requested": true, "native-validation-required": true, checking: true, ready: true, "readiness-deadline": true,
       "ancestor-policy-unsupported": true, "runtime-start-failed": true, "endpoint-isolation-unverified": true,
@@ -2028,16 +2028,16 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       boot: { action: "activate", reason: "deps-present", onSignal: "default-settings", causes: [] },
       windowsSubstrate: {
         shellLocalNetworkAccess: true,
-        mxc: { state: "unavailable", reason: "tier-unsupported" }, windowsBuild: "10.0.22631.4317", srtWinReady: true,
+        mxc: { state: "unavailable", reason: "container-unavailable" }, windowsBuild: "10.0.22631.4317", srtWinReady: true,
         shells: "approved-host", extensions: "srt-win", shellEgressIdentity: "shared", extensionEgressIdentity: "shared",
       },
     } as never);
     await act(async () => { render(<PermissionsTab />); });
     expect(screen.getByTestId("os-sandbox-windows-substrate-shells").textContent).toBe(t("permissionsTab.osSandboxWindowsShellsApprovedHost"));
     const reason = screen.getByTestId("os-sandbox-windows-mxc-reason");
-    expect(reason.dataset.reason).toBe("tier-unsupported");
+    expect(reason.dataset.reason).toBe("container-unavailable");
     expect(reason.textContent).toBe(t("permissionsTab.osSandboxWindowsMxcUnavailable", {
-      reason: t("permissionsTab.osSandboxWindowsMxcReasonTierUnsupported"),
+      reason: t("permissionsTab.osSandboxWindowsMxcReasonContainerUnavailable"),
       build: "10.0.22631.4317",
     }));
     expect(screen.getByTestId("os-sandbox-windows-shared-identity").textContent).toBe(t("permissionsTab.osSandboxWindowsSharedIdentity"));

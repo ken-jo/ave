@@ -4383,7 +4383,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "permissionsTab.osSandboxWindowsMxcReasonUnsupportedArch": "이 프로세서 아키텍처는 지원되지 않습니다",
   "permissionsTab.osSandboxWindowsMxcReasonBinaryMissing": "설치본에 컨테이너 실행기가 없습니다. Ave 를 다시 설치하세요",
   "permissionsTab.osSandboxWindowsMxcReasonProbeFailed": "컨테이너 실행기가 이 PC 를 확인하지 못했습니다",
-  "permissionsTab.osSandboxWindowsMxcReasonTierUnsupported": "이 Windows 버전은 Ave 에 필요한 컨테이너 격리를 제공하지 않습니다. Windows 11 을 업데이트하세요",
+  "permissionsTab.osSandboxWindowsMxcReasonContainerUnavailable": "이 PC 는 Ave 에 필요한 컨테이너 격리를 제공하지 못합니다. Windows 11 을 업데이트하면 지원될 수 있습니다",
   "permissionsTab.osSandboxWindowsMxcReasonRequestRejected": "이 Windows 버전은 컨테이너의 네트워크를 Ave 프록시로 보낼 수 없습니다. Windows 11 을 업데이트하세요",
   "permissionsTab.osSandboxWindowsMxcReasonLauncherMismatch": "설치본의 컨테이너 실행기가 예상한 빌드가 아닙니다. Ave 를 다시 설치하세요",
   "permissionsTab.osSandboxWindowsMxcReasonPowershellStartFailed": "이 PC 에서는 Windows PowerShell 이 컨테이너 안에서 시작되지 않았습니다",

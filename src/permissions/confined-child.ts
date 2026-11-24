@@ -48,6 +48,7 @@ import {
 } from "./mxc-extension-errors.js";
 import { createMxcExtensionAdmission, consumeMxcExtensionAdmission } from "./mxc-extension-admission.js";
 import type { MxcExtensionReadinessEvidence } from "./mxc-extension-readiness.js";
+import type { PluginWorkerControl } from "../plugins/public-contract.js";
 import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
 import { registerMxcHolderLifetime } from "./mxc-holder-lifetime.js";
 import { assertMxcHolderPrivateDirectories, type MxcExtensionFilesystemOwnership } from "./mxc-filesystem-ownership.js";
@@ -177,7 +178,7 @@ export interface MxcConfinedChildSpec extends Pick<ConfinedChildSpec,
   readonly parent?: MxcConfinedChildSpawn;
   readonly probe: (request: ContainerRequest, signal: AbortSignal) => Promise<MxcExtensionReadinessEvidence>;
   /** Host adapter's negotiated mode; public worker negotiation is owned by its contract. */
-  readonly workerTransport?: "stdio-control-v1";
+  readonly workerTransport?: PluginWorkerControl;
   readonly signal?: AbortSignal;
 }
 
@@ -188,8 +189,9 @@ export interface MxcConfinedChildSpawn {
   release(): Promise<void>;
 }
 
-function assertMxcWorkerTransport(owner: WorkerEgressOwner, transport?: "stdio-control-v1"): void {
-  if (owner.role === "worker" && transport !== "stdio-control-v1") throw new WorkerTransportUnsupportedError();
+// Both declared modes run over the container's own pipes; an undeclared or socket-based worker has no carrier.
+function assertMxcWorkerTransport(owner: WorkerEgressOwner, transport?: PluginWorkerControl): void {
+  if (owner.role === "worker" && transport !== "stdio-control-v1" && transport !== "output-only-v1") throw new WorkerTransportUnsupportedError();
 }
 
 interface NativeHolderBinding {

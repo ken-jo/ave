@@ -132,7 +132,7 @@
     "@ave/shell-parser-runtime": "file:resources/shell-parser",
     "@cosmos.gl/graph": "3.6.0",
     "@huggingface/tokenizers": "0.2.0",
-    "@microsoft/mxc-sdk": "1.0.1",
+    "@microsoft/mxc-sdk": "1.1.0",
     "@modelcontextprotocol/client": "2.4.0",
     "@modelcontextprotocol/ext-apps": "2.0.4",
     "@modelcontextprotocol/sdk": "1.32.2",
@@ -306,7 +306,7 @@
       "!node_modules/@microsoft/mxc-sdk/node_modules/.bin{,/**/*}",
       "!node_modules/@microsoft/mxc-sdk/bin/**/dotnet{,/**/*}",
       "!node_modules/@microsoft/mxc-sdk/bin/**/*.{exe,so,dylib}",
-      "!node_modules/@microsoft/mxc-sdk/bin/**/{lxc-exec,unix-test-proxy}"
+      "!node_modules/@microsoft/mxc-sdk/bin/**/{lxc-exec,unix-test-proxy,mxc-wslc-gateway.tar}"
     ],
     "asarUnpack": [
       "node_modules/@anthropic-ai/sandbox-runtime/vendor/**",
