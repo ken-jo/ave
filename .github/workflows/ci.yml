@@ -1040,6 +1040,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: node .github/scripts/python-download-mirror.mjs
       - name: Show the git the regressions run against
+        if: steps.docs-impact.outputs.docs_only != 'true'
         run: git --version
       - name: Run macOS permission regressions
         if: steps.docs-impact.outputs.docs_only != 'true'
