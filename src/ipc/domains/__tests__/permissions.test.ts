@@ -48,7 +48,7 @@ const loadPolicyMock = vi.hoisted(() => vi.fn());
 const savePolicyMock = vi.hoisted(() => vi.fn());
 const egressRuntimeMock = vi.hoisted(() => ({
   listEgressGrants: vi.fn(async (): Promise<unknown[]> => []),
-  revokeEgressGrant: vi.fn(async (_target: unknown) => ({ removed: true, closed: 0 })),
+  revokeEgressGrant: vi.fn(async (_target: unknown): Promise<{ removed: boolean; closed: number; durabilitySyncFailed?: true }> => ({ removed: true, closed: 0 })),
 }));
 vi.mock("../../../permissions/egress-runtime.js", () => egressRuntimeMock);
 
@@ -1650,6 +1650,17 @@ describe("shell egress grants in Settings", () => {
     egressRuntimeMock.revokeEgressGrant.mockResolvedValueOnce({ removed: false, closed: 0 });
     expect(await invoke(PERMISSIONS.egressGrantRevoke, { scope: "always", origin: "shell", host: "pypi.org", port: 443, intent: USER_INTENT }))
       .toMatchObject({ ok: false, error: "not-found" });
+  });
+
+  it("reports a removed grant with a durability sync warning", async () => {
+    const { deps } = await setup();
+    egressRuntimeMock.revokeEgressGrant.mockResolvedValueOnce({ removed: true, closed: 1, durabilitySyncFailed: true });
+    expect(await invoke(PERMISSIONS.egressGrantRevoke, {
+      scope: "always", origin: "shell", host: "pypi.org", port: 443, intent: USER_INTENT,
+    })).toEqual({ ok: true, durabilitySyncFailed: true });
+    expect(deps.auditLogger.log).toHaveBeenCalledWith(expect.objectContaining({
+      output: "[egress-grant:revoke] scope=always origin=shell host=pypi.org port=443 removed=true closedConnections=1 durabilitySyncFailed=true",
+    }));
   });
 
   it("refuses a revoke without user intent or with a malformed grant, before touching the store", async () => {

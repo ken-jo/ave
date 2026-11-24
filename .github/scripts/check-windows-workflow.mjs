@@ -3,7 +3,8 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parse } from "yaml";
-import { windowsTestCommands } from "../../scripts/run-windows-test-list.mjs";
+import { WINDOWS_TEST_SHARDS } from "../../scripts/run-windows-test-list.mjs";
+import { collectedVitestFiles } from "../../scripts/lib/vitest-collection.mjs";
 import { windowsPowerShellEnv, windowsPowerShellPath } from "../../scripts/lib/windows-powershell-env.mjs";
 
 const TEST_PATH = String.raw`[\w./\\-]+\.(?:test|spec)\.[cm]?[jt]sx?`;
@@ -13,19 +14,24 @@ const CONTAINED = String.raw`node[ \t]+\.github\/scripts\/run-in-job\.mjs[ \t]+`
 const TEST_COMMAND_RE = new RegExp(
   String.raw`^(?:${CONTAINED})?bun[ \t]+run[ \t]+(?:test[ \t]+--|test:vitest[ \t]+--(?:[ \t]+run)?)((?:[ \t]+${TEST_PATH})+)$`,
 );
-const REGRESSION_STEP = /^Run Windows (?:permission|appearance|session persistence|native import) regressions$/u;
+const REGRESSION_STEP = /^Run Windows (?:[\w ]+ )?regressions$/u;
+const REGRESSION_STEP_NAME = "Run Windows regressions";
 const REGRESSION_CONDITION = "steps.docs-impact.outputs.docs_only != 'true'";
-const LIST_INVOCATION = new RegExp(
-  String.raw`^(?:${CONTAINED})?bun[ \t]+run[ \t]+scripts\/run-windows-test-list\.mjs[ \t]+(config\/[\w-]+\.txt)$`, "u",
-);
+// The shard runner takes its plan and shard ID from the environment only.
+const SHARD_INVOCATION = "node .github/scripts/run-in-job.mjs bun run scripts/run-windows-test-list.mjs";
 // Test commands in the job that owns the isolated job root run inside the containment launcher.
 const CONTAINED_JOB = "windows-permission-tests";
+const PREPARATION_JOB = "windows-native-preparation";
 const ARM64_JOB = "windows-arm64-path-kind";
 const PATH_KIND_TIMEOUT_MINUTES = 30;
-const CONTAINED_JOBS = new Map([
+// The condition each contained job's contained steps carry; arm64 steps carry only the job condition.
+const CONTAINED_CONDITIONS = new Map([
+  [PREPARATION_JOB, REGRESSION_CONDITION],
   [CONTAINED_JOB, REGRESSION_CONDITION],
   [ARM64_JOB, undefined],
 ]);
+const CONTAINED_JOBS = [...CONTAINED_CONDITIONS.keys()];
+const WINDOWS_PLAN_PATH = "${{ runner.temp }}/windows-ci/windows-plan.json";
 const TEST_LINE_RE = /\bbun[ \t]+run[ \t]+test(?::[\w-]+)?(?=[ \t]|$)|\bnode[ \t]+scripts\/test-|[ \t]--test(?:-native)?(?=[ \t]|$)|\brun-windows-test-list\b/u;
 const CONTAINED_LINE_RE = new RegExp(String.raw`^[ \t]*${CONTAINED}\S`, "u");
 
@@ -71,6 +77,7 @@ const ARM64_AGGREGATE = [
 const UNCONTAINED_COMMANDS = new Map([
   ["bun install --frozen-lockfile", "installs dependencies; runs no test code"],
   ["node .github/scripts/check-windows-workflow.mjs", "this guard"],
+  ...["key", "restore", "seal", "verify-installed", "verify-publication"].map(operation => ["node .github/scripts/windows-preparation-cache.mjs " + operation, "inventories or verifies preparation bytes"]),
   ["node scripts/fetch-uv.mjs", "fetches a pinned tool"],
   ["node .github/scripts/python-archive-cache.mjs", "computes a cache key"],
   ...["", " -FailureFixture", " -QueryFailureFixture", " -Helper path-kind"].map(option => [
@@ -85,6 +92,7 @@ const UNCONTAINED_COMMANDS = new Map([
   ["& './node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/x64/srt-win.exe' user status", "reads the sandbox account"],
   ["ConvertFrom-Json", "parses in process"],
   ["node .github/scripts/python-download-mirror.mjs", "downloads an interpreter archive"],
+  ["node .github/scripts/restore-windows-ci-inputs.mjs", "restores the native helper artifacts and configures the mirror"],
   ["node ave/.github/scripts/isolate-job-home.mjs --cleanup", "removes the job root"],
 ]);
 
@@ -92,12 +100,12 @@ const UNCONTAINED_COMMANDS = new Map([
  * The contained-step manifest that run-in-job.mjs registers against: one
  * receipt per contained invocation, named from its step and its position.
  */
-export function containedSteps(workflow, containedJob = CONTAINED_JOB) {
-  if (!CONTAINED_JOBS.has(containedJob)) throw new Error(`unknown contained job: ${containedJob}`);
-  const expectedCondition = CONTAINED_JOBS.get(containedJob);
+export function containedSteps(workflow, job = CONTAINED_JOB) {
+  if (!CONTAINED_JOBS.includes(job)) throw new Error(`Unknown contained Windows job: ${job}`);
+  const expectedCondition = CONTAINED_CONDITIONS.get(job);
   const manifest = [];
   for (const { jobId, name, stepName, condition, lines } of windowsRunSteps(workflow)) {
-    if (jobId !== containedJob) continue;
+    if (jobId !== job) continue;
     const slug = (stepName ?? "").toLowerCase().replace(/[^a-z0-9]+/gu, "-").replace(/^-|-$/gu, "");
     let position = 0;
     for (const line of lines) {
@@ -115,24 +123,8 @@ export function containedSteps(workflow, containedJob = CONTAINED_JOB) {
       manifest.push({ id, receipt: `${id}.receipt`, invocation });
     }
   }
-  if (manifest.length === 0) throw new Error(`${containedJob}: no contained test steps`);
+  if (manifest.length === 0) throw new Error(`${job}: no contained test steps`);
   return manifest;
-}
-
-export function windowsRegressionStepFiles(run, readInventory, name) {
-  const invocation = run.trim();
-  const inventoryName = LIST_INVOCATION.exec(invocation)?.[1];
-  const directPaths = TEST_COMMAND_RE.exec(invocation)?.[1];
-  let list;
-  if (inventoryName !== undefined) {
-    list = readInventory(inventoryName);
-    if (list === undefined) throw new Error(`Windows test inventory is missing: ${inventoryName}`);
-  } else if (directPaths !== undefined) {
-    list = directPaths.trim().split(/[ \t]+/u).join("\n");
-  } else {
-    throw new Error(`${name}: expected one validated test invocation`);
-  }
-  return windowsTestCommands(list).slice(1).flatMap(args => args.slice(4).map(file => file.slice(2)));
 }
 
 function windowsRegressionSteps(steps) {
@@ -146,12 +138,16 @@ function windowsRegressionSteps(steps) {
   return regressions;
 }
 
-export function windowsRegressionFiles(workflow, inventories) {
-  const files = new Set();
-  for (const { name, run } of windowsRegressionSteps(windowsRunSteps(workflow))) {
-    for (const file of windowsRegressionStepFiles(run, path => inventories.get(path), name)) files.add(file);
+/**
+ * The suites the Windows regression step runs: every collected suite in the
+ * checkout at root, split by the build job's plan across the matrix shards.
+ */
+export function windowsRegressionSuites(workflow, root) {
+  const regressions = windowsRegressionSteps(windowsRunSteps(workflow));
+  if (regressions.length !== 1 || regressions[0].run.trim() !== SHARD_INVOCATION) {
+    throw new Error(`The Windows shard must run one ${REGRESSION_STEP_NAME} step: ${SHARD_INVOCATION}`);
   }
-  return [...files];
+  return collectedVitestFiles(root);
 }
 
 const WORKFLOW_EXECUTABLES = [
@@ -221,7 +217,7 @@ export function directCommandProblems(steps) {
     for (const line of lines) {
       const path = BARE_TEST_PATH_RE.exec(line)?.[0].trim();
       if (path !== undefined) problems.push(`${name}: bare test path ${path}`);
-      if (CONTAINED_JOBS.has(jobId) && TEST_LINE_RE.test(line) && !CONTAINED_LINE_RE.test(line)) {
+      if (CONTAINED_JOBS.includes(jobId) && TEST_LINE_RE.test(line) && !CONTAINED_LINE_RE.test(line)) {
         problems.push(`${name}: test command runs outside the job containment launcher: ${line.trim()}`);
       }
     }
@@ -260,7 +256,7 @@ function containedCommandProblems(commands, manifest, wrapped, jobId) {
   });
 }
 
-export function powerShellCommandProblems(steps, inspect = inspectPowerShell, manifest = [], jobId = CONTAINED_JOB) {
+export function powerShellCommandProblems(steps, inspect = inspectPowerShell, manifest = [], job = CONTAINED_JOB) {
   const failures = [];
   const wrapped = [];
   for (const shell of ["pwsh", "powershell"]) {
@@ -277,14 +273,14 @@ export function powerShellCommandProblems(steps, inspect = inspectPowerShell, ma
           || functions.some(fn => fn.name.toLowerCase() === command && scopes.includes(fn.scope)))) return [];
         return [`line ${line}: unrecognized command ${head}`];
       });
-      const contained = editionSteps[index].contained ? containedCommandProblems(commands, manifest, wrapped, jobId) : [];
+      const contained = editionSteps[index].contained ? containedCommandProblems(commands, manifest, wrapped, job) : [];
       failures.push(...[...errors, ...unknownCommands, ...contained].map(problem => `${editionSteps[index].name}: ${problem}`));
     }
   }
   if (steps.some(step => step.contained)) {
     for (const { id, invocation } of manifest) {
       if (wrapped.filter(entry => entry === invocation).length !== 1) {
-        failures.push(`${jobId}: manifest step ${id} is not exactly one contained command after job-root setup`);
+        failures.push(`${job}: manifest step ${id} is not exactly one contained command after job-root setup`);
       }
     }
   }
@@ -292,10 +288,151 @@ export function powerShellCommandProblems(steps, inspect = inspectPowerShell, ma
 }
 
 // Every run step after job-root setup in the contained job is checked command by command.
-function scopeContainedSteps(steps, jobId) {
+function scopeContainedSteps(steps, job) {
   const setup = steps.findIndex(({ run }) => run.trim() === SETUP_COMMAND);
-  if (setup < 0) throw new Error(`${jobId}: no job-root setup step`);
+  if (setup < 0) throw new Error(`${job}: no job-root setup step`);
   return steps.map((step, index) => index > setup ? { ...step, contained: true } : step);
+}
+
+const PREPARATION_CACHE_PATH = "${{ runner.temp }}/windows-preparation-cache";
+const PREPARATION_CACHE_KEY = "${{ steps.windows-preparation-key.outputs.key }}";
+const PREPARATION_CACHE_COMMAND = "node .github/scripts/windows-preparation-cache.mjs";
+const PREPARATION_CACHE_MAIN_SAVE = REGRESSION_CONDITION + " && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && env.AVE_WINDOWS_PREP_STORE != '' && env.AVE_WINDOWS_PREP_VERIFIED == 'false'";
+
+function checkPreparationCache(job) {
+  const steps = job.steps;
+  const find = name => steps.find(step => step.name === name);
+  const key = find("Generate the Windows preparation input manifest");
+  const restore = find("Restore Windows preparation outputs");
+  const verify = find("Verify Windows preparation outputs or rebuild");
+  const build = find("Build Windows launcher and classification helpers");
+  const seal = find("Seal Windows preparation outputs");
+  const cleanup = find("Remove isolated system-volume job directory");
+  const publication = find("Verify sealed Windows preparation outputs");
+  const save = find("Save Windows preparation outputs");
+  const before = (first, second) => first && second && steps.indexOf(first) < steps.indexOf(second);
+  const exact = (step, action) => step?.uses?.startsWith("actions/cache/" + action + "@")
+    && step.with?.key === PREPARATION_CACHE_KEY && step.with?.path === PREPARATION_CACHE_PATH
+    && Object.keys(step.with).length === 2;
+  if (key?.id !== "windows-preparation-key" || key.run !== PREPARATION_CACHE_COMMAND + " key"
+    || key.if !== REGRESSION_CONDITION || key["working-directory"] !== "ave"
+    || !exact(restore, "restore") || restore.id !== "windows-preparation-restore"
+    || restore.if !== REGRESSION_CONDITION + " && steps.windows-preparation-key.outputs.key != '' && (github.ref == 'refs/heads/main' || github.event_name == 'pull_request')"
+    || !before(key, restore)) {
+    throw new Error("Windows preparation needs a generated input key and an exact scoped restore");
+  }
+  if (verify?.run !== PREPARATION_CACHE_COMMAND + " restore" || verify.if !== REGRESSION_CONDITION
+    || verify["working-directory"] !== "ave" || verify.env?.AVE_WINDOWS_PREP_KEY !== PREPARATION_CACHE_KEY
+    || verify.env?.AVE_WINDOWS_PREP_EXACT_HIT !== "${{ steps.windows-preparation-restore.outputs.cache-hit }}"
+    || !before(restore, verify) || !before(verify, build)
+    || build.if !== REGRESSION_CONDITION + " && env.AVE_WINDOWS_PREP_VERIFIED != 'true'") {
+    throw new Error("Windows preparation cache must verify or rebuild before any output is used");
+  }
+  for (const name of ["Verify native background process ownership", "Verify both Windows native payload packages",
+    "Verify Windows folder classification", "Build and test patched Windows sandbox helper"]) {
+    const step = find(name);
+    if (!before(build, step) || step.if !== REGRESSION_CONDITION || !before(step, seal)) {
+      throw new Error("Windows preparation must run its checks on both cold and warm paths: " + name);
+    }
+  }
+  for (const env of [job.env, ...steps.map(step => step.env)]) {
+    if (env && ["AVE_WINDOWS_PREP_VERIFIED", "AVE_WINDOWS_PREP_STORE", "AVE_WINDOWS_PREP_RESTORED_DIGEST"].some(name => Object.hasOwn(env, name))) {
+      throw new Error("Only the Windows preparation verifier may set the cache state");
+    }
+  }
+  const saveOnlyOnSuccess = "success() && " + PREPARATION_CACHE_MAIN_SAVE;
+  // Publication depends on the declared preparation steps through the final digest check.
+  const verifiedAfterCleanup = saveOnlyOnSuccess
+    + " && steps.windows-preparation-seal.outcome == 'success' && steps.windows-job-cleanup.outcome == 'success'";
+  if (seal?.id !== "windows-preparation-seal" || seal.run !== PREPARATION_CACHE_COMMAND + " seal" || seal.if !== PREPARATION_CACHE_MAIN_SAVE
+    || seal["working-directory"] !== "ave" || seal.env?.AVE_WINDOWS_PREP_KEY !== PREPARATION_CACHE_KEY
+    || cleanup?.id !== "windows-job-cleanup" || cleanup.run !== SETUP_COMMAND + " --cleanup"
+    || cleanup.if !== REGRESSION_CONDITION + " && always() && env.AVE_CI_JOB_ROOT != ''"
+    || publication?.id !== "windows-preparation-publication" || publication.run !== PREPARATION_CACHE_COMMAND + " verify-publication"
+    || publication.if !== verifiedAfterCleanup || publication["working-directory"] !== "ave"
+    || publication.env?.AVE_WINDOWS_PREP_KEY !== PREPARATION_CACHE_KEY
+    || publication.env?.AVE_WINDOWS_PREP_SEAL_DIGEST !== "${{ steps.windows-preparation-seal.outputs.digest }}"
+    || !before(seal, cleanup) || !before(cleanup, publication) || !before(publication, save) || save !== steps.at(-1)
+    || !exact(save, "save") || save.if !== saveOnlyOnSuccess + " && steps.windows-preparation-publication.outcome == 'success'") {
+    throw new Error("Saving Windows helpers on main requires successful preparation steps through containment cleanup and the final digest check");
+  }
+}
+
+function checkFirstPreparationLaunch(steps) {
+  const firstLaunch = steps.find(step => step.run?.split(/\r?\n/u).some(line => CONTAINED_LINE_RE.test(line)));
+  if (firstLaunch?.name !== "Verify native background process ownership"
+    || firstLaunch["working-directory"] !== "ave" || firstLaunch.env?.AVE_WINDOWS_PREP_KEY !== PREPARATION_CACHE_KEY
+    || firstLaunch.run.trim() !== [
+      PREPARATION_CACHE_COMMAND + " verify-installed",
+      "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }",
+      "node .github/scripts/run-in-job.mjs node scripts/test-windows-job.mjs",
+    ].join("\n")) {
+    throw new Error("The first launcher step must rehash installed Windows helpers before executing the launcher");
+  }
+}
+
+// Restored or cached native binaries: the containment launcher (every
+// run-in-job line), its fixtures, the path classifier and the sandbox helper.
+const HELPER_EXECUTABLE_RE = /(?:^|[^\w-])(?:upstream-)?(?:srt-win|ave-job(?:-failure|-query-failure)?|ave-path-kind|ave-path-pin-test)\.exe(?![\w.-])/u;
+const SRT_WIN_EXECUTABLE_RE = /(?:^|[^\w-])srt-win\.exe(?![\w.-])/u;
+const EXIT_ON_FAILURE = "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }";
+const SRT_WIN_INTEGRITY = "node scripts/check-srt-win-integrity.cjs";
+// Where each job's helper bytes become the checked ones, and where the sandbox
+// helper in node_modules is replaced. The node_modules cache is saved after a
+// job has rebuilt or restored that helper, so its copy is never trusted.
+const HELPER_TRUST = {
+  [PREPARATION_JOB]: {
+    anchor: PREPARATION_CACHE_COMMAND + " verify-installed",
+    what: "rehashing the installed helpers",
+    srtWin: "node .github/scripts/run-in-job.mjs node scripts/build-srt-win.mjs --test-native",
+  },
+  [CONTAINED_JOB]: {
+    anchor: "node .github/scripts/restore-windows-ci-inputs.mjs",
+    what: "installing the checked helper artifacts",
+    srtWin: "node .github/scripts/restore-windows-ci-inputs.mjs",
+  },
+};
+
+function executesHelper(line) {
+  return CONTAINED_LINE_RE.test(line) || HELPER_EXECUTABLE_RE.test(line);
+}
+
+/**
+ * Every step that executes a restored or cached binary runs after the job's
+ * trust point, and the sandbox helper also runs only after this job replaced
+ * the node_modules copy and the same step checked its integrity.
+ */
+export function checkHelperExecutionOrder(jobId, steps) {
+  const trust = HELPER_TRUST[jobId];
+  if (!trust) throw new Error(`Unknown contained Windows job: ${jobId}`);
+  let anchored = false;
+  let replaced = false;
+  for (const step of steps) {
+    if (step.run === undefined) continue;
+    const lines = step.run.trimEnd().split(/\r?\n/u).map(line => line.trim());
+    let integrityChecked = false;
+    for (const [index, line] of lines.entries()) {
+      if (line === trust.anchor) {
+        if (anchored) throw new Error(`${jobId}: ${trust.what} must happen once`);
+        if (step["working-directory"] !== "ave" || step.if !== REGRESSION_CONDITION
+          || (index + 1 < lines.length && lines[index + 1] !== EXIT_ON_FAILURE)) {
+          throw new Error(`${jobId}: ${step.name}: ${trust.what} must stop the step when it fails`);
+        }
+        anchored = true;
+      }
+      if (line === SRT_WIN_INTEGRITY && lines[index + 1] === EXIT_ON_FAILURE) integrityChecked = true;
+      if (executesHelper(line)) {
+        if (!anchored) {
+          throw new Error(`${jobId}: ${step.name}: executes a restored or cached binary before ${trust.what}: ${line}`);
+        }
+        if (SRT_WIN_EXECUTABLE_RE.test(line) && !(replaced && integrityChecked)) {
+          throw new Error(`${jobId}: ${step.name}: runs the sandbox helper before this job replaced the cached node_modules copy and checked its integrity: ${line}`);
+        }
+      }
+      if (line === trust.srtWin) replaced = true;
+    }
+  }
+  if (!anchored) throw new Error(`${jobId}: no step for ${trust.what}`);
 }
 
 function checkArm64PathKindJob(jobs) {
@@ -344,29 +481,61 @@ function checkArm64PathKindJob(jobs) {
 export function checkWindowsWorkflow(workflow, inspect) {
   const { jobs } = parse(workflow);
   checkArm64PathKindJob(jobs);
-  const x64 = jobs[CONTAINED_JOB]?.steps?.filter(step => step.name === "Verify Windows folder classification");
+  const x64 = jobs[PREPARATION_JOB]?.steps?.filter(step => step.name === "Verify Windows folder classification");
   if (x64?.length !== 1 || x64[0]["timeout-minutes"] !== PATH_KIND_TIMEOUT_MINUTES) {
-    throw new Error(`${CONTAINED_JOB}: path-kind step expected a 30-minute timeout`);
+    throw new Error(`${PREPARATION_JOB}: path-kind step expected a 30-minute timeout`);
   }
+  const job = jobs[CONTAINED_JOB];
+  const platform = "needs.build.outputs.platform_checks == 'true'";
+  if (jobs[PREPARATION_JOB]?.if !== platform || jobs[PREPARATION_JOB]?.needs !== "build"
+    || job?.if !== `${platform} && needs.windows-native-preparation.result == 'success'`
+    || JSON.stringify(job?.needs) !== JSON.stringify(["build", PREPARATION_JOB])) {
+    throw new Error("Windows preparation and every shard must follow native platform selection");
+  }
+  const strategy = job?.strategy;
+  if (strategy?.["fail-fast"] !== false || Object.keys(strategy.matrix ?? {}).length !== 1
+    || JSON.stringify(strategy.matrix.shard) !== JSON.stringify(WINDOWS_TEST_SHARDS)
+    || job.env?.AVE_WINDOWS_TEST_SHARD !== "${{ matrix.shard }}") {
+    throw new Error("The Windows test job must run every contained shard");
+  }
+  for (const id of CONTAINED_JOBS) {
+    const contained = jobs[id];
+    if (contained?.["continue-on-error"] !== undefined || contained?.steps?.some(step => step["continue-on-error"] !== undefined)) {
+      throw new Error(`${id}: contained Windows failures must fail the job`);
+    }
+  }
+  checkPreparationCache(jobs[PREPARATION_JOB]);
   const steps = windowsRunSteps(workflow);
-  if (!windowsRegressionSteps(steps).some(step => step.stepName === "Run Windows permission regressions"
-    && POWERSHELL_SHELL_RE.test(step.shell))) {
-    throw new Error("The Windows permission step requires a PowerShell parser");
+  const regressions = windowsRegressionSteps(steps);
+  if (regressions.length !== 1 || regressions[0].jobId !== CONTAINED_JOB || regressions[0].stepName !== REGRESSION_STEP_NAME
+    || regressions[0].run.trim() !== SHARD_INVOCATION) {
+    throw new Error(`The Windows shard must run every collected suite through one ${REGRESSION_STEP_NAME} step: ${SHARD_INVOCATION}`);
   }
+  for (const step of job.steps ?? []) {
+    if (!REGRESSION_STEP.test(step.name ?? "")) continue;
+    if (Object.hasOwn(step.env ?? {}, "AVE_WINDOWS_TEST_SHARD")) {
+      throw new Error(`${step.name}: Windows regression steps must inherit the matrix shard ID`);
+    }
+    if (step.env?.AVE_WINDOWS_TEST_PLAN !== WINDOWS_PLAN_PATH) {
+      throw new Error(`${step.name}: Windows regression steps must use the matrix plan artifact`);
+    }
+  }
+  // Matrix copies share this exact template and receive distinct shard IDs.
   const failures = [
     ...directCommandProblems(steps),
-    ...powerShellCommandProblems(steps.filter(step => !CONTAINED_JOBS.has(step.jobId)), inspect),
+    ...CONTAINED_JOBS.flatMap(jobId => {
+      const scoped = scopeContainedSteps(steps.filter(step => step.jobId === jobId), jobId);
+      return [
+        ...scoped.filter(step => step.contained && !POWERSHELL_SHELL_RE.test(step.shell))
+          .map(({ name }) => `${name}: steps after job-root setup need a PowerShell shell`),
+        ...powerShellCommandProblems(scoped, inspect, containedSteps(workflow, jobId), jobId),
+      ];
+    }),
+    ...powerShellCommandProblems(steps.filter(step => !CONTAINED_JOBS.includes(step.jobId)), inspect),
   ];
-  for (const jobId of CONTAINED_JOBS.keys()) {
-    const jobSteps = scopeContainedSteps(steps.filter(step => step.jobId === jobId), jobId);
-    const manifest = containedSteps(workflow, jobId);
-    failures.push(
-      ...jobSteps.filter(step => step.contained && !POWERSHELL_SHELL_RE.test(step.shell))
-        .map(({ name }) => `${name}: steps after job-root setup need a PowerShell shell`),
-      ...powerShellCommandProblems(jobSteps, inspect, manifest, jobId),
-    );
-  }
   if (failures.length) throw new Error(failures.join("\n"));
+  checkFirstPreparationLaunch(jobs[PREPARATION_JOB].steps);
+  for (const id of Object.keys(HELPER_TRUST)) checkHelperExecutionOrder(id, jobs[id].steps);
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {

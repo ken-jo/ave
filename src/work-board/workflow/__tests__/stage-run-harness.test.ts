@@ -1510,22 +1510,30 @@ it("a progress wait whose signal never comes stays pending past 2 s and at 30 s 
   }
 });
 
-it("cleanup ends pending progress and child waits at once and leaves no listener or timer behind", async () => {
+it("cleanup ends every pending wait at once and leaves no listener or timer behind", async () => {
   const h = await stageRunHarness();
   let cleaned: Promise<void> | undefined;
   try {
+    const id = await h.addItem(await h.confirm([stageOf("a")]));
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const outcome = (wait: Promise<unknown>) => wait.then(() => "resolved", (error: unknown) => String(error));
-    const waits = Promise.all([outcome(h.settleEvent()), outcome(h.untilLive(1))]);
-    expect(h.pendingWaits()).toBe(2);
-    expect(vi.getTimerCount()).toBe(2);
+    const never = () => expect("waiting").toBe("passed");
+    const waits = Promise.all([outcome(h.settleEvent()), outcome(h.untilLive(1)), outcome(h.until(id, () => false, "a predicate that never holds")),
+      outcome(h.untilRunFile(never, "the stage to pass")), outcome(h.untilObserved(never)), outcome(h.untilWorkspaceCalls(never))]);
+    expect(h.pendingWaits()).toBe(6);
+    expect(vi.getTimerCount()).toBe(6);
     cleaned = h.cleanup();
     expect(h.pendingWaits()).toBe(0);
     expect(vi.getTimerCount()).toBe(0);
     // Past every bound before the directory removal can schedule anything: no wait fails late.
     vi.advanceTimersByTime(30_000);
     vi.useRealTimers();
-    expect(await waits).toEqual(["Error: Progress wait ended: harness cleaned up", "Error: Child wait ended: harness cleaned up"]);
+    // An assertion wait names what it waited for, says cleanup ended it, and keeps the assertion's last failure.
+    const unmet = (what: string) => `Error: the harness was cleaned up while waiting for ${what}; last failure: expected 'waiting' to be 'passed' // Object.is equality`;
+    expect(await waits).toEqual(["Error: Progress wait ended: harness cleaned up", "Error: Child wait ended: harness cleaned up",
+      "Error: Wait for a predicate that never holds ended: harness cleaned up", unmet("the stage to pass"),
+      unmet("a run-file commit or progress event that passes the assertion"), unmet("a workspace call or sweep that passes the assertion")]);
+    expect(await outcome(h.untilRunFile(never, "a late wait"))).toBe("Error: the harness was cleaned up before waiting for a late wait");
     expect(await outcome(h.settleEvent())).toBe("Error: Progress wait ended: harness cleaned up");
   } finally {
     vi.useRealTimers();
@@ -1637,4 +1645,113 @@ it.each(["accepted", "refused"] as const)("a late %s call that closes after its 
     await Promise.allSettled(runs);
     await h.cleanup();
   }
+});
+
+it("untilRunFile reruns its assertion on each run-file commit, a retired store's too, and not on a board write", async () => {
+  const h = await stageRunHarness();
+  try {
+    const version = await h.confirm([autoStageOf("a")]);
+    const id = await h.addItem(version);
+    const runId = "run-1";
+    expect(await h.board.beginRun(id, runId, "2026-11-16T00:00:00.000Z", {
+      ...h.pinOf(version), source: h.local(version), stageRuns: [{ stageId: "a", attempt: 1, status: "waiting" }],
+    })).toMatchObject({ status: "updated" });
+    const retired = h.board;
+    h.makeEngine();
+    const assertion = vi.fn(async () => expect((await h.runOf(runId, retired))?.stageRuns[0]?.status).toBe("running"));
+    const waiting = h.untilRunFile(assertion);
+    await setImmediate();
+    expect(assertion).toHaveBeenCalledTimes(1);
+    expect(await h.board.update(id, { title: "Renamed" })).toMatchObject({ status: "updated" });
+    await setImmediate();
+    expect(assertion).toHaveBeenCalledTimes(1);
+    expect(await retired.runs.update(runId, run => ({ ...run, stageRuns: [{ ...run.stageRuns[0], status: "running" }] })))
+      .toMatchObject({ status: "stored" });
+    await waiting;
+    expect(assertion).toHaveBeenCalledTimes(2);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+it("untilObserved reruns its assertion on progress events and passes once the run's end event is out", async () => {
+  const h = await stageRunHarness();
+  try {
+    const version = await h.confirm([autoStageOf("a")]);
+    const id = await h.addItem(version);
+    const run = h.start(id, h.local(version));
+    const [child] = await h.untilLive(1);
+    const ended = h.untilObserved(() => expect(h.events.some(event => event.itemId === id && event.phase === "done")).toBe(true));
+    child.finish();
+    await ended;
+    expect(await run).toMatchObject({ status: "completed" });
+  } finally {
+    await h.cleanup();
+  }
+});
+
+it("untilWorkspaceCalls wakes on the calls of a replaced workspace part as on the harness's own", async () => {
+  const sealed: string[] = [];
+  const release = deferred<void>();
+  // The seal holds the run, so no later workspace call of the harness's own can wake the wait.
+  const h = await stageRunHarness({ workspace: { seal: async (_run, stageId) => { sealed.push(stageId); await release.promise; return { ok: true }; } } });
+  try {
+    const version = await h.confirm([autoStageOf("a")]);
+    const id = await h.addItem(version);
+    const run = h.start(id, h.local(version));
+    const [child] = await h.untilLive(1);
+    const seen = h.untilWorkspaceCalls(() => expect(sealed).toEqual(["a"]));
+    child.finish();
+    await seen;
+    release.resolve();
+    expect(await run).toMatchObject({ status: "completed" });
+  } finally {
+    release.resolve();
+    await h.cleanup();
+  }
+});
+
+/** A join whose integration never returns holds the run's observed work; `armDrain` hands over the drain bound's expiry once armed. */
+async function heldJoinHarness() {
+  const integrating = deferred<void>();
+  const h = await stageRunHarness({ observeRunWork: true, integrate: () => { integrating.resolve(); return new Promise(() => undefined); } });
+  const armed = deferred<(reason?: string) => void>();
+  const armDrain = (expire: (reason?: string) => void) => { armed.resolve(expire); return () => undefined; };
+  const holdJoin = async () => {
+    const version = await h.confirm([autoStageOf("a")]);
+    const id = await h.addItem(version);
+    void h.start(id, h.local(version));
+    (await h.untilLive(1, id))[0].finish();
+    await integrating.promise;
+  };
+  /** Waits for the drain to arm its bound, shows the drain is held, then expires the bound. */
+  const expireHeldDrain = async () => {
+    const expire = await armed.promise;
+    const drained = vi.fn();
+    void h.drainAllRunWork().then(drained);
+    await setImmediate();
+    expect(drained).not.toHaveBeenCalled();
+    expire();
+  };
+  return { h, armDrain, holdJoin, expireHeldDrain };
+}
+const failureOf = (work: Promise<unknown>) => work.then(() => "resolved", (error: unknown) => error instanceof Error ? error.message : String(error));
+
+it("runThenEnd rethrows the body's own failure when run work is still held, not the drain's", async () => {
+  const { h, armDrain, holdJoin, expireHeldDrain } = await heldJoinHarness();
+  const ended = failureOf(h.runThenEnd(async () => {
+    await holdJoin();
+    throw new Error("the body's own failure");
+  }, { bound: armDrain }));
+  await expireHeldDrain();
+  expect(await ended).toBe("the body's own failure");
+  expect(h.pendingWaits()).toBe(0);
+});
+
+it("runThenEnd fails naming the drain once held run work outlasts its bound after a passing body, and still cleans up", async () => {
+  const { h, armDrain, holdJoin, expireHeldDrain } = await heldJoinHarness();
+  const ended = failureOf(h.runThenEnd(holdJoin, { bound: armDrain }));
+  await expireHeldDrain();
+  expect(await ended).toBe("timed out waiting for the run work to drain");
+  expect(await failureOf(h.untilRunFile(() => undefined, "a wait after cleanup"))).toBe("the harness was cleaned up before waiting for a wait after cleanup");
 });

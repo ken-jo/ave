@@ -7,6 +7,7 @@ import {
   approvalAnswererAuditToken,
   consumeHostApprovedOneShotExecutionBinding,
   IPC_APPROVAL_SETTLED,
+  isHostApprovalCancelledDecision,
   isHostApprovalRejectedDecision,
   isHostApprovalTimeoutDecision,
   remoteControllerOriginAuditToken,
@@ -210,6 +211,7 @@ describe("ApprovalGate", () => {
       else if (termination === "shutdown") gate.disposeAll();
       else controller.abort(new Error("turn stopped"));
       await expect(pending).resolves.toMatchObject({ choice: "deny-once" });
+      expect(isHostApprovalCancelledDecision(await pending)).toBe(termination !== "timeout");
       expect(gate.pendingCount).toBe(0);
       expect(announcedSettledIds(wc)).toContain(request.id);
       expect(auditLogger.log).toHaveBeenCalledWith(expect.objectContaining({
@@ -2163,16 +2165,20 @@ describe("same-card policy mutation evidence", () => {
 });
 
 describe("host-owned ordinary card cancellation", () => {
-  it.each(["tool", "out-of-allowed-dir"] as const)("retires only the exact %s card owned by the supplied session", async (kind) => {
+  it.each([
+    ["tool", "caller-abort"],
+    ["out-of-allowed-dir", "session-close"],
+  ] as const)("marks cancellation of the exact %s card for %s", async (kind, reason) => {
     const wc = makeMockWebContents();
     const gate = new ApprovalGate(wc as never);
     const request = makeRequest({ id: `owned-${kind}`, sessionId: "owning-session", kind });
     const pending = gate.requestAndWait(request);
     const sent = sentApprovalCards<ApprovalRequest>(wc)[0]!;
-    expect(gate.cancelPendingRequest(request.id, "another-session", "caller-abort")).toBe(false);
+    expect(gate.cancelPendingRequest(request.id, "another-session", reason)).toBe(false);
     expect(gate.pendingCount).toBe(1);
-    expect(gate.cancelPendingRequest(request.id, "owning-session", "caller-abort")).toBe(true);
+    expect(gate.cancelPendingRequest(request.id, "owning-session", reason)).toBe(true);
     await expect(pending).resolves.toMatchObject({ choice: "deny-once", requestId: request.id });
+    expect(isHostApprovalCancelledDecision(await pending)).toBe(true);
     expect(gate.pendingCount).toBe(0);
     expect(gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: "allow-once", nonce: sent.nonce, hmac: sent.hmac }, wc as never)).toBeNull();
   });

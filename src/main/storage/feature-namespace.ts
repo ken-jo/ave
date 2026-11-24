@@ -14,7 +14,7 @@ import {
   transientFsLockDelayMs,
 } from "../../lib/transient-fs-lock-retry.js";
 import { sleep } from "../../shared/abortable-deadline.js";
-import { guardAtomicWrite, PRIVATE_DIR_MODE, PRIVATE_FILE_MODE, replaceUtf8FileAtomicSyncIf } from "../../lib/atomic-file.js";
+import { committedDirectorySyncError, guardAtomicWrite, PRIVATE_DIR_MODE, PRIVATE_FILE_MODE, replaceUtf8FileAtomicSyncIf } from "../../lib/atomic-file.js";
 
 const log = createLogger("feature-namespace");
 
@@ -192,7 +192,9 @@ async function writeFileAtomicAtPathUnguarded(filePath: string, body: string | U
     await fs.rm(tmp, { force: true }).catch(() => undefined);
     throw err;
   }
-  await syncDirectoryEntry(dir);
+  // The rename has landed: a sync failure now is a committed write, so the trust record keeps the new bytes.
+  try { await syncDirectoryEntry(dir); }
+  catch (err) { throw committedDirectorySyncError(err); }
 }
 
 /** Atomically write `value` (serialized as pretty JSON + trailing newline) to `<dir>/<name>`, under the contract {@link writeFileAtomicAtPath} states. */
@@ -200,9 +202,14 @@ export async function writeJsonAtomic<T>(dir: string, name: string, value: T): P
   await writeFileAtomicAtPath(join(dir, name), `${JSON.stringify(value, null, 2)}\n`);
 }
 
-/** Finish directory preparation, then check authority and commit without yielding. Callers probe authority before entering their write queue. */
+/** Prepare a private parent directory before the caller's guarded commit. */
+export function preparePrivateFileDirectory(filePath: string): Promise<void> {
+  return ensureDir(dirname(filePath));
+}
+
+/** Finish directory preparation, then check authority and commit without yielding. */
 export async function writeFileAtomicAtPathIf(filePath: string, body: string, canCommit: () => boolean): Promise<boolean> {
-  await ensureDir(dirname(filePath));
+  await preparePrivateFileDirectory(filePath);
   return replaceUtf8FileAtomicSyncIf(filePath, body, canCommit);
 }
 

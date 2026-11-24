@@ -1,7 +1,7 @@
 name: CI
 # Patch and category PRs use trusted affected tests plus change-triggered domain
-# checks. Native platforms run on backend/global changes, not renderer-only
-# patches. Unknown impact keeps full verification. Tags, nightly and manual
+# checks. Native platforms run on backend/global changes. Unknown impact
+# keeps full verification. Tags, nightly and manual
 # dispatch run the full suite; nightly and manual dispatch enforce coverage.
 # scripts/run-ci-suite.mjs owns selection and records the decision in summaries.
 on:
@@ -211,6 +211,18 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/ci-plan"
           node scripts/run-ci-suite.mjs --write-plan "$RUNNER_TEMP/ci-plan/ci-plan.json"
+      - name: Plan Windows regressions
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        run: bun run scripts/plan-windows-tests.ts "$RUNNER_TEMP/windows-ci/windows-plan.json"
+      - name: Upload the Windows regression plan
+        if: steps.docs-impact.outputs.docs_only != 'true' && steps.plan.outputs.platform_checks == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-ci-plan
+          path: ${{ runner.temp }}/windows-ci/windows-plan.json
+          if-no-files-found: error
+          retention-days: 1
       - name: Upload the build for the Vitest shards
         if: steps.docs-impact.outputs.docs_only != 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -514,7 +526,7 @@ jobs:
     # .required_status_checks.contexts). gate-core and mxc-pins report under
     # names that list does not contain, so only this job's explicit result
     # check below lets them block a merge; skipped or cancelled fails too.
-    needs: [build, vitest, windows-permission-tests, windows-arm64-path-kind, macos-permission-tests, linux-confinement-tests, gate-core, mxc-pins]
+    needs: [build, vitest, windows-native-preparation, windows-permission-tests, windows-arm64-path-kind, macos-permission-tests, linux-confinement-tests, gate-core, mxc-pins]
     if: always()
     # Every job in every workflow runs on a GitHub-hosted runner
     # (src/__tests__/support/workflow-runner-policy.ts fails on anything
@@ -538,6 +550,7 @@ jobs:
           VITEST_RESULT: ${{ needs.vitest.result }}
           DOCS_ONLY: ${{ needs.build.outputs.docs_only }}
           PLATFORM_CHECKS: ${{ needs.build.outputs.platform_checks }}
+          WINDOWS_PREPARATION_RESULT: ${{ needs.windows-native-preparation.result }}
           WINDOWS_RESULT: ${{ needs.windows-permission-tests.result }}
           WINDOWS_ARM64_PATH_KIND: ${{ needs.build.outputs.windows_arm64_path_kind }}
           WINDOWS_ARM64_PATH_KIND_RESULT: ${{ needs.windows-arm64-path-kind.result }}
@@ -556,6 +569,10 @@ jobs:
             echo "::error::the build job ended $BUILD_RESULT"
             exit 1
           fi
+          if [ "$DOCS_ONLY" != "true" ] && [ "$DOCS_ONLY" != "false" ]; then
+            echo "::error::documentation impact was not resolved"
+            exit 1
+          fi
           case "$WINDOWS_ARM64_PATH_KIND:$WINDOWS_ARM64_PATH_KIND_RESULT" in
             true:success|false:skipped) ;;
             *)
@@ -568,9 +585,7 @@ jobs:
               echo "::error::a docs-only change ran Vitest shards ($VITEST_RESULT)"
               exit 1
             fi
-            exit 0
-          fi
-          if [ "$VITEST_RESULT" != "success" ]; then
+          elif [ "$VITEST_RESULT" != "success" ]; then
             echo "::error::the Vitest shards ended $VITEST_RESULT"
             exit 1
           fi
@@ -580,7 +595,7 @@ jobs:
           fi
           expected=skipped
           if [ "$PLATFORM_CHECKS" = "true" ]; then expected=success; fi
-          for result in "$WINDOWS_RESULT" "$MACOS_RESULT" "$LINUX_RESULT"; do
+          for result in "$WINDOWS_PREPARATION_RESULT" "$WINDOWS_RESULT" "$MACOS_RESULT" "$LINUX_RESULT"; do
             if [ "$result" != "$expected" ]; then
               echo "::error::native platform check ended $result, expected $expected"
               exit 1
@@ -604,16 +619,11 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: node --test test/scripts/report-ci-budget.test.mjs && node scripts/report-ci-budget.mjs
 
-  windows-permission-tests:
-    name: Windows permission path tests
-    # Every invocation runs the complete platform list, so the newest main
-    # push covers superseded pushes too. Keep PRs, tags, coverage and manual
-    # runs isolated. Build and affected-test jobs retain their per-commit groups.
+  windows-native-preparation:
+    name: Prepare Windows native tests
     concurrency:
-      group: ci-platform-${{ github.workflow }}-windows-${{ github.event_name }}-${{ github.ref }}-${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'latest' || github.run_id }}
-      cancel-in-progress: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-    # Selected backend/global patches and full runs keep the complete native
-    # list. Renderer-only patches do not allocate a platform runner.
+      group: ci-platform-${{ github.workflow }}-windows-prepare-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     needs: build
     if: needs.build.outputs.platform_checks == 'true'
     # GitHub-hosted runner, as every job is; see workflow-runner-policy.ts.
@@ -629,22 +639,22 @@ jobs:
       AVE_UV_DOWNLOAD_CACHE_DIR: ${{ github.workspace }}/.cache/uv-archives
       ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
       electron_config_cache: ${{ github.workspace }}/.cache/electron
-      # Seven native-process suites start together on this 4-vCPU runner; at
-      # 4 workers their cold PowerShell and helper starts stall each other.
-      AVE_VITEST_MAX_WORKERS: "3"
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - &windows-checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: ave
           fetch-depth: 2
           persist-credentials: false
       # Pin Node 24 rather than whichever Node the runner image ships. The
       # docs classifier below runs on it.
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - &windows-node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
           package-manager-cache: false
-      - name: Classify documentation impact
+      - &windows-docs-impact
+        name: Classify documentation impact
         id: docs-impact
         shell: bash
         working-directory: ave
@@ -655,10 +665,15 @@ jobs:
           if ! node scripts/hooks/classify-docs-diff.mjs "$BASE_SHA" HEAD "$EVENT_NAME" >> "$GITHUB_OUTPUT"; then
             echo 'docs_only=false' >> "$GITHUB_OUTPUT"
           fi
+          if grep -Fxq 'docs_only=true' "$GITHUB_OUTPUT"; then
+            echo '::error::The build selected Windows checks for a docs-only checkout'
+            exit 1
+          fi
       # The pinned bun from .bun-version goes under RUNNER_TEMP, not the runner
       # user's bun home; on Windows it is a checksum-verified release download
       # (see the action).
-      - uses: ./ave/.github/actions/setup-bun
+      - &windows-bun
+        uses: ./ave/.github/actions/setup-bun
         env:
           GITHUB_TOKEN: ${{ github.token }}
         if: steps.docs-impact.outputs.docs_only != 'true'
@@ -666,65 +681,79 @@ jobs:
           bun-version-file: ave/.bun-version
       # Native fixtures need system-volume aliases and trusted root ownership.
       # The unique job directory remains outside the account profile.
-      - name: Isolate home and temp directories on the system volume
+      - &windows-home
+        name: Isolate home and temp directories on the system volume
         if: steps.docs-impact.outputs.docs_only != 'true'
         shell: bash
         run: node ave/.github/scripts/isolate-job-home.mjs
       # node_modules first: the download cache is restored only on its miss
       # (see build-and-test).
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - &windows-modules
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: node-modules-cache
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           path: ave/node_modules
           key: ${{ runner.os }}-${{ runner.arch }}-ci-nm-${{ hashFiles('ave/bun.lock', 'ave/patches/**') }}
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - &windows-bun-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: steps.docs-impact.outputs.docs_only != 'true' && steps.node-modules-cache.outputs.cache-hit != 'true'
         with:
           path: .cache/bun
           key: ${{ runner.os }}-ci-bun-${{ hashFiles('ave/bun.lock') }}
           restore-keys: ${{ runner.os }}-ci-bun-
-      - uses: ./ave/.github/actions/cache-runtime-tools
+      - &windows-runtime-cache
+        uses: ./ave/.github/actions/cache-runtime-tools
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           repository: ave
-      - name: Cache Windows packaging runtime archives
+      - &windows-electron-cache
+        name: Cache Windows packaging runtime archives
         if: steps.docs-impact.outputs.docs_only != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .cache/electron
           key: windows-mxc-electron-${{ hashFiles('ave/bun.lock') }}
-      - run: bun install --frozen-lockfile
+      - &windows-install
+        run: bun install --frozen-lockfile
         env:
           GITHUB_TOKEN: ${{ github.token }}
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
-      - name: Validate Windows workflow commands
+      - &windows-validate-commands
+        name: Validate Windows workflow commands
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: node .github/scripts/check-windows-workflow.mjs
-      - name: Ensure uv toolchain
+      - &windows-uv
+        name: Ensure uv toolchain
         env:
           GITHUB_TOKEN: ${{ github.token }}
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: node scripts/fetch-uv.mjs
-      - name: Resolve the native interpreter archive key
+      - name: Generate the Windows preparation input manifest
+        id: windows-preparation-key
         if: steps.docs-impact.outputs.docs_only != 'true'
-        id: python-archive
         working-directory: ave
-        run: node .github/scripts/python-archive-cache.mjs
-      - name: Restore native interpreter archives
-        if: steps.docs-impact.outputs.docs_only != 'true'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        run: node .github/scripts/windows-preparation-cache.mjs key
+      - name: Restore Windows preparation outputs
+        id: windows-preparation-restore
+        if: steps.docs-impact.outputs.docs_only != 'true' && steps.windows-preparation-key.outputs.key != '' && (github.ref == 'refs/heads/main' || github.event_name == 'pull_request')
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ runner.temp }}/python-archives
-          key: ${{ steps.python-archive.outputs.key }}
-      - name: Verify native background process ownership
+          path: ${{ runner.temp }}/windows-preparation-cache
+          key: ${{ steps.windows-preparation-key.outputs.key }}
+      - name: Verify Windows preparation outputs or rebuild
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
-        # Windows PowerShell ships with every Windows install; the default
-        # shell depends on whether PowerShell 7 is present.
+        env:
+          AVE_WINDOWS_PREP_KEY: ${{ steps.windows-preparation-key.outputs.key }}
+          AVE_WINDOWS_PREP_EXACT_HIT: ${{ steps.windows-preparation-restore.outputs.cache-hit }}
+        run: node .github/scripts/windows-preparation-cache.mjs restore
+      - name: Build Windows launcher and classification helpers
+        if: steps.docs-impact.outputs.docs_only != 'true' && env.AVE_WINDOWS_PREP_VERIFIED != 'true'
+        working-directory: ave
         shell: powershell
         run: |
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1
@@ -732,6 +761,17 @@ jobs:
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -FailureFixture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -QueryFailureFixture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -Helper path-kind
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify native background process ownership
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        shell: powershell
+        env:
+          AVE_WINDOWS_PREP_KEY: ${{ steps.windows-preparation-key.outputs.key }}
+        run: |
+          node .github/scripts/windows-preparation-cache.mjs verify-installed
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node .github/scripts/run-in-job.mjs node scripts/test-windows-job.mjs
       # Both checks build under the job root's temp tree, so they run in the
@@ -756,8 +796,6 @@ jobs:
         # shell depends on whether PowerShell 7 is present.
         shell: powershell
         run: |
-          powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -Helper path-kind
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node .github/scripts/run-in-job.mjs node scripts/test-windows-path-kind.mjs
       # The tag build runs `bun run build` on Windows, and this check is part of
       # it: there the generator finds its sources through Windows path spellings
@@ -779,7 +817,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/check-srt-win-integrity.cjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Provision sandbox for native permission tests
+      - &windows-provision
+        name: Provision sandbox for native permission tests
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         shell: powershell
@@ -803,81 +842,44 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: node .github/scripts/run-in-job.mjs bun run test:scripts
-      - name: Run Windows appearance regressions
-        if: steps.docs-impact.outputs.docs_only != 'true'
-        working-directory: ave
-        run: >
-          node .github/scripts/run-in-job.mjs bun run test:vitest --
-          src/ui/renderer/__tests__/appearance-tab.test.tsx
-          src/ui/renderer/tabs/__tests__/AppearanceTab.font-escape.test.tsx
-          src/ui/renderer/theme/__tests__/ThemeProvider-initial-theme.test.tsx
-          src/shared/__tests__/appearance-font.test.ts
-          src/shared/__tests__/appearance-settings.test.ts
-          src/shared/__tests__/app-zoom.test.ts
-          src/main/browser/__tests__/browser-guest-tracking.test.ts
-          src/main/browser/__tests__/browser-workspace.test.ts
-          src/ui/renderer/components/__tests__/BrowserWorkspacePanel.test.tsx
-          src/main/__tests__/app-zoom.test.ts
-          src/__tests__/preload-shape.test.ts
-          src/main/browser/__tests__/browser-workspace-desktop.test.ts
-          src/shared/__tests__/shortcuts.test.ts
-          src/ui/renderer/tabs/__tests__/StartupTab.test.tsx
-          src/data/__tests__/settings-store.test.ts
-          src/main/__tests__/global-shortcuts.test.ts
-          src/main/__tests__/app-menu-accelerators.test.ts
-          src/ui/renderer/tabs/__tests__/ShortcutsTab.test.tsx
-          src/ui/renderer/components/__tests__/panel-commands.test.ts
-          src/main/__tests__/app-menu-zoom.test.ts
-          src/main/__tests__/main-window-multi.test.ts
-          src/main/__tests__/main-window-bounds.test.ts
-          src/__tests__/app-menu-edit-shortcuts-source.test.ts
-          src/ui/renderer/__tests__/MainToolbar.test.tsx
-          src/data/__tests__/settings-documents.test.ts
-          src/main/browser/__tests__/browser-upload.test.ts
-          src/main/browser/__tests__/browser-workspace-store.test.ts
-          src/ui/renderer/tabs/__tests__/PermissionsTab.test.tsx
-      - name: Run Windows session persistence regressions
-        if: steps.docs-impact.outputs.docs_only != 'true'
-        working-directory: ave
-        run: >
-          node .github/scripts/run-in-job.mjs bun run test:vitest --
-          src/memory/__tests__/session-repository.test.ts
-          src/memory/__tests__/session-turn-journal.test.ts
-          src/engine/__tests__/conversation-loop-resume.test.ts
-          src/memory/__tests__/code-checkpoints-recovery.test.ts
-          src/memory/__tests__/code-checkpoints-transient-rename.test.ts
-          src/memory/__tests__/code-checkpoints.test.ts
-          src/memory/__tests__/memory-usage-log.test.ts
-          src/memory/__tests__/tool-output-artifact-store.test.ts
-          src/engine/__tests__/conversation-loop-permission-mode.test.ts
       - name: Prepare authenticated interpreter mirror
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: node .github/scripts/python-download-mirror.mjs
-      - name: Run Windows permission regressions
+      - name: Upload the checked Windows native helpers
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-native-helpers
+          path: |
+            ave/resources/windows-job/x64/ave-job.exe
+            ave/resources/windows-path-kind/x64/ave-path-kind.exe
+            ave/node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/*/*.exe
+            ave/node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/*/build-receipt.json
+            ave/src/permissions/generated/srt-win-build-receipts.*
+          if-no-files-found: error
+          retention-days: 1
+      - name: Upload the interpreter mirror
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-interpreter-mirror
+          path: ${{ runner.temp }}/python-release-mirror
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 1
+
+      # Only the default branch writes this cache. PR merge-ref caches cannot
+      # cross into the base branch. Release tags build without this cache.
+      - name: Seal Windows preparation outputs
+        id: windows-preparation-seal
+        if: steps.docs-impact.outputs.docs_only != 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && env.AVE_WINDOWS_PREP_STORE != '' && env.AVE_WINDOWS_PREP_VERIFIED == 'false'
+        working-directory: ave
         env:
-          UV_PYTHON_CACHE_DIR: ${{ runner.temp }}/python-archives
-        if: steps.docs-impact.outputs.docs_only != 'true'
-        working-directory: ave
-        run: node .github/scripts/run-in-job.mjs bun run scripts/run-windows-test-list.mjs config/windows-permission-tests.txt
-      - name: Run Windows native import regressions
-        env:
-          UV_PYTHON_CACHE_DIR: ${{ runner.temp }}/python-archives
-        if: steps.docs-impact.outputs.docs_only != 'true'
-        working-directory: ave
-        run: node .github/scripts/run-in-job.mjs bun run scripts/run-windows-test-list.mjs config/windows-native-tests.txt
-      - name: Run native workbook and control-file confinement
-        if: steps.docs-impact.outputs.docs_only != 'true'
-        working-directory: ave
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          node scripts/fetch-mxc.mjs --arch x64
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          node .github/scripts/run-in-job.mjs bun run test:vitest -- run src/tools/__tests__/xlsx-edit-sandbox.integration.test.ts src/permissions/__tests__/sandbox-control-writes-mxc.integration.test.ts
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          AVE_WINDOWS_PREP_KEY: ${{ steps.windows-preparation-key.outputs.key }}
+        run: node .github/scripts/windows-preparation-cache.mjs seal
 
       # Each run-in-job line above is a manifest step: its wrapper registers the
       # step id and job-root identity in the step's receipt, and its launcher
@@ -903,10 +905,112 @@ jobs:
       # deletion or unlinked, so a successful cleanup does not prove that every
       # external holder has exited. Under this model deletion stays scoped to the
       # verified job root.
-      - name: Remove isolated system-volume job directory
+      - &windows-cleanup
+        name: Remove isolated system-volume job directory
+        id: windows-job-cleanup
         if: steps.docs-impact.outputs.docs_only != 'true' && always() && env.AVE_CI_JOB_ROOT != ''
         shell: powershell
         run: node ave/.github/scripts/isolate-job-home.mjs --cleanup
+      - name: Verify sealed Windows preparation outputs
+        id: windows-preparation-publication
+        if: success() && steps.docs-impact.outputs.docs_only != 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && env.AVE_WINDOWS_PREP_STORE != '' && env.AVE_WINDOWS_PREP_VERIFIED == 'false' && steps.windows-preparation-seal.outcome == 'success' && steps.windows-job-cleanup.outcome == 'success'
+        working-directory: ave
+        env:
+          AVE_WINDOWS_PREP_KEY: ${{ steps.windows-preparation-key.outputs.key }}
+          AVE_WINDOWS_PREP_SEAL_DIGEST: ${{ steps.windows-preparation-seal.outputs.digest }}
+        run: node .github/scripts/windows-preparation-cache.mjs verify-publication
+      - name: Save Windows preparation outputs
+        if: success() && steps.docs-impact.outputs.docs_only != 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && env.AVE_WINDOWS_PREP_STORE != '' && env.AVE_WINDOWS_PREP_VERIFIED == 'false' && steps.windows-preparation-publication.outcome == 'success'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/windows-preparation-cache
+          key: ${{ steps.windows-preparation-key.outputs.key }}
+
+  windows-permission-tests:
+    name: Windows tests (${{ matrix.shard }})
+    concurrency:
+      # Each matrix copy needs its own group, including on the same run.
+      group: ci-platform-${{ github.workflow }}-windows-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}-${{ matrix.shard }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    needs: [build, windows-native-preparation]
+    if: needs.build.outputs.platform_checks == 'true' && needs.windows-native-preparation.result == 'success'
+    runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5]
+    env:
+      BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
+      AVE_UV_DOWNLOAD_CACHE_DIR: ${{ github.workspace }}/.cache/uv-archives
+      ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
+      electron_config_cache: ${{ github.workspace }}/.cache/electron
+      # Native process suites need headroom for cold helper starts.
+      AVE_VITEST_MAX_WORKERS: "3"
+      AVE_WINDOWS_TEST_SHARD: ${{ matrix.shard }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: ave
+          fetch-depth: 2
+          fetch-tags: true
+          persist-credentials: false
+      - *windows-node
+      - *windows-docs-impact
+      - *windows-bun
+      - *windows-home
+      - *windows-modules
+      - *windows-bun-cache
+      - *windows-runtime-cache
+      - *windows-electron-cache
+      - *windows-install
+      - *windows-validate-commands
+      - *windows-uv
+      - name: Download the Windows regression plan
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: windows-ci-plan
+          path: ${{ runner.temp }}/windows-ci
+      - name: Download the checked Windows native helpers
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: windows-native-helpers
+          path: ave/.windows-native-inputs
+      - name: Download the interpreter mirror
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: windows-interpreter-mirror
+          path: ${{ runner.temp }}/python-release-mirror
+      - name: Verify and configure the shared test inputs
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        run: node .github/scripts/restore-windows-ci-inputs.mjs
+      # The sandbox account and permissions are local to each runner.
+      - *windows-provision
+      - name: Resolve the native interpreter archive key
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        id: python-archive
+        working-directory: ave
+        run: node .github/scripts/python-archive-cache.mjs
+      - name: Restore native interpreter archives
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/python-archives
+          key: ${{ steps.python-archive.outputs.key }}
+      # Every collected Vitest suite runs on Windows. The build job's plan
+      # assigns each one to exactly one shard; the runner re-derives the
+      # collected set from this checkout and refuses a plan that differs.
+      - name: Run Windows regressions
+        env:
+          AVE_WINDOWS_TEST_PLAN: ${{ runner.temp }}/windows-ci/windows-plan.json
+          UV_PYTHON_CACHE_DIR: ${{ runner.temp }}/python-archives
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        run: node .github/scripts/run-in-job.mjs bun run scripts/run-windows-test-list.mjs
+      - *windows-cleanup
 
   windows-arm64-path-kind:
     name: Windows arm64 folder classification

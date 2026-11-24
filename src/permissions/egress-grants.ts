@@ -11,14 +11,22 @@ import {
   LOOPBACK_RANGES,
 } from "@anthropic-ai/sandbox-runtime/dist/sandbox/address.js";
 import { BlockList, isIP } from "node:net";
-import { openFeatureNamespace, writeFileAtomicAtPath } from "../main/storage/feature-namespace.js";
-import { assertAveHomeInputWritable, readAveHomeInput } from "../shared/ave-home-trust.js";
+import { openFeatureNamespace, preparePrivateFileDirectory, writeFileAtomicAtPath } from "../main/storage/feature-namespace.js";
+import { assertAveHomeInputWritable, readAveHomeInput, readAveHomeInputSync } from "../shared/ave-home-trust.js";
+import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { createSerialQueue } from "../lib/with-file-lock.js";
+import { isPersistedPolicyVersionCurrent, StalePermissionPolicyError } from "./persisted-policy-version.js";
 import { projectRuleRoot } from "./rules/project-rule-files.js";
 import { canonicalizePathForMatch, foldCanonicalPathSeparators } from "./sensitive-paths.js";
 import { maxEgressGrantScope, type EgressIdentityStrength } from "../shared/sandbox-capability-info.js";
 import { sessionAuthorityWithheld } from "../shared/turn-extension-policy.js";
 import { approvalConversationRoot } from "./user-approval-store.js";
+import {
+  assertApprovalPersistenceCurrent,
+  commitApprovalFile,
+  refreshApprovalPersistence,
+  type ApprovalPersistenceGuard,
+} from "./approval-persistence-guard.js";
 import {
   EGRESS_GRANT_SCOPE_LADDERS,
   isEgressGrantScope,
@@ -177,6 +185,11 @@ interface GrantFile {
   readonly grants: PersistentEgressGrant[];
 }
 
+interface LoadedPersistentGrants {
+  readonly grants: readonly PersistentEgressGrant[];
+  readonly digest: string | null;
+}
+
 // A v1 `workspace` grant the v1 → v2 migration could not carry over exactly (see `migrateLegacyGrant`).
 export interface DroppedLegacyEgressGrant {
   readonly host: string;
@@ -283,6 +296,11 @@ function parseDestinationKey(key: string): EgressGrantDestination {
   return { host, port: Number(port), network };
 }
 
+function grantFileBody(grants: readonly PersistentEgressGrant[]): string {
+  const file: GrantFile = { version: FILE_VERSION, grants: [...grants] };
+  return `${JSON.stringify(file, null, 2)}\n`;
+}
+
 export class EgressGrantStore {
   private readonly once = new Map<string, Set<string>>();
   // Session id to destination key to the time it was granted.
@@ -291,7 +309,10 @@ export class EgressGrantStore {
   private readonly tab = new Map<string, Map<string, string>>();
   // Grant identity to the invocation tokens it let through (for closing them on revoke).
   private readonly uses = new Map<string, Set<string>>();
-  private persistent: PersistentEgressGrant[] | undefined;
+  private persistent: LoadedPersistentGrants | undefined;
+  private readonly pendingPersistentRevocations = new Map<string, number>();
+  // The digest of the body being committed, set only while its write is in flight (the queue runs one at a time).
+  private landingDigest: string | undefined;
   private readonly writes = createSerialQueue();
 
   // Destination keys of v1 grants already reported dropped, so a re-read before the file is rewritten does not report them twice.
@@ -309,20 +330,49 @@ export class EgressGrantStore {
     destination: EgressGrantDestination,
     eligibleScopes: readonly EgressGrantScope[],
   ): Promise<EgressGrantScope | undefined> {
+    const matched = this.matchingLoadedScope(subject, destination, eligibleScopes);
+    if (matched !== undefined || this.persistent !== undefined) return matched;
+    await this.writes(() => this.loadPersistent());
+    return this.matchingLoadedScope(subject, destination, eligibleScopes);
+  }
+
+  // Used at the connection boundary, where any persistent grants must already have been loaded.
+  matchingLoadedScope(
+    subject: EgressGrantSubject,
+    destination: EgressGrantDestination,
+    eligibleScopes: readonly EgressGrantScope[],
+    { verifyPersistent = false } = {},
+  ): EgressGrantScope | undefined {
     const key = destinationKey(destination);
     if (eligibleScopes.includes("once") && this.once.get(subject.token)?.has(key)) return "once";
     // A scheduled wake turn does not inherit the conversation's session grants.
     if (eligibleScopes.includes("session") && subject.sessionId !== undefined && !sessionAuthorityWithheld(subject.sessionId, approvalConversationRoot(subject.sessionId))
       && this.session.get(subject.sessionId)?.has(key)) return "session";
     if (eligibleScopes.includes("tab") && subject.tabId !== undefined && this.tab.get(subject.tabId)?.has(key)) return "tab";
+    if (!eligibleScopes.some(isPersistentScope)) return undefined;
+    const loaded = this.persistent;
+    if (loaded === undefined) return undefined;
     // Persistent grants of the subject's own origin only.
-    const persistent = (await this.loadPersistent()).filter((grant) =>
+    const persistent = loaded.grants.filter((grant) =>
       eligibleScopes.includes(grant.scope) && grant.origin === subject.origin && destinationKey(grant) === key
+      && !this.pendingPersistentRevocations.has(grantUseKey(grant))
       && egressScopesForNetwork([grant.scope], grantNetwork(destination)).length > 0);
     const projectRoot = subject.projectRoot === undefined ? undefined : canonicalProjectRoot(subject.projectRoot);
-    if (projectRoot !== undefined && persistent.some((g) => g.scope === "project" && g.projectRoot === projectRoot)) return "project";
-    if (persistent.some((g) => g.scope === "always")) return "always";
-    return undefined;
+    const matched = projectRoot !== undefined && persistent.some((g) => g.scope === "project" && g.projectRoot === projectRoot) ? "project"
+      : persistent.some((g) => g.scope === "always") ? "always" : undefined;
+    // A cached row authorizes only while its file is still the trusted version it was read from (or the save now landing).
+    if (matched !== undefined && verifyPersistent && !this.isPersistentSourceCurrent(loaded)) {
+      // Drop the unproven snapshot so the next lookup reloads the file instead of denying on the same rows again.
+      if (this.persistent === loaded) this.persistent = undefined;
+      throw new StalePermissionPolicyError();
+    }
+    return matched;
+  }
+
+  private isPersistentSourceCurrent(loaded: LoadedPersistentGrants): boolean {
+    if (isPersistedPolicyVersionCurrent({ filePath: this.filePath, digest: loaded.digest })) return true;
+    // Between the rename and the cache update the file holds the save in flight. The cached rows, less pending revocations, are a subset of it.
+    return this.landingDigest !== undefined && isPersistedPolicyVersionCurrent({ filePath: this.filePath, digest: this.landingDigest });
   }
 
   // Record a grant. `allowedScopes` is what the ask offered; a scope outside it, or one the subject cannot hold (a session grant without a conversation, a tab grant without a tab, a project grant without a project root), is an error, not a narrower grant.
@@ -334,6 +384,7 @@ export class EgressGrantStore {
     destination: EgressGrantDestination,
     now: Date = new Date(),
     signal?: AbortSignal,
+    authority?: ApprovalPersistenceGuard,
   ): Promise<void> {
     if (!isEgressGrantScope(scope)) throw new Error(`egress grant: unknown scope ${String(scope)}`);
     if (!allowedScopes.includes(scope)) throw new Error(`egress grant: scope ${scope} was not offered`);
@@ -343,6 +394,11 @@ export class EgressGrantStore {
     if (egressScopesForNetwork([scope], network).length === 0) throw new Error("egress grant: scope cannot cover this network class");
     const key = destinationKey(destination);
     signal?.throwIfAborted();
+    if (authority && !isPersistentScope(scope)) {
+      await refreshApprovalPersistence(authority);
+      signal?.throwIfAborted();
+      assertApprovalPersistenceCurrent(authority);
+    }
     switch (scope) {
       case "once":
         // A terminal's "Allow once" lets one connection through and is never held.
@@ -364,7 +420,7 @@ export class EgressGrantStore {
         await this.mutatePersistent((grants) => {
           if (grants.some((g) => g.scope === "project" && g.origin === "shell" && g.projectRoot === projectRoot && destinationKey(g) === key)) return grants;
           return [...grants, { scope: "project", origin: "shell", projectRoot, host: destination.host, port: destination.port, network: grantNetwork(destination), grantedAt: now.toISOString() }];
-        }, signal);
+        }, signal, authority);
         return;
       }
       case "always": {
@@ -372,7 +428,7 @@ export class EgressGrantStore {
         await this.mutatePersistent((grants) => {
           if (grants.some((g) => g.scope === "always" && g.origin === origin && destinationKey(g) === key)) return grants;
           return [...grants, { scope: "always", origin, host: destination.host, port: destination.port, network: grantNetwork(destination), grantedAt: now.toISOString() }];
-        }, signal);
+        }, signal, authority);
         return;
       }
     }
@@ -447,50 +503,74 @@ export class EgressGrantStore {
   }
 
   // Revoke one grant of any revocable scope. Resolves whether it existed and the live invocation tokens it had let through, whose open connections to that destination the caller closes.
-  async revoke(target: RevocableEgressGrant): Promise<{ readonly removed: boolean; readonly tokens: readonly string[] }> {
+  // A persistent removal whose rename landed resolves with `durabilitySyncFailed` when the write failed afterwards: the grant is gone, so its connections still close.
+  async revoke(target: RevocableEgressGrant): Promise<{ readonly removed: boolean; readonly tokens: readonly string[]; readonly durabilitySyncFailed?: true }> {
     let removed: boolean;
+    let durabilitySyncFailed = false;
     if (target.scope === "session") {
       removed = removeGrant(this.session, target.sessionId, destinationKey(target));
     } else if (target.scope === "tab") {
       removed = removeGrant(this.tab, target.tabId, destinationKey(target));
     } else {
-      removed = await this.revokePersistent(target);
+      ({ removed, durabilitySyncFailed } = await this.revokePersistent(target));
     }
     const key = grantUseKey(target);
     const tokens = [...(this.uses.get(key) ?? [])];
     this.uses.delete(key);
-    return { removed, tokens };
+    return { removed, tokens, ...(durabilitySyncFailed ? { durabilitySyncFailed: true as const } : {}) };
   }
 
   // The project and always grants, for Settings.
   async listPersistent(): Promise<readonly PersistentEgressGrant[]> {
-    return [...(await this.loadPersistent())];
+    return [...(this.persistent?.grants ?? await this.writes(() => this.loadPersistent()))];
   }
 
-  // Remove one persistent grant. Resolves true when it existed.
-  private async revokePersistent(target: Pick<PersistentEgressGrant, "scope" | "origin" | "host" | "port" | "network" | "projectRoot">): Promise<boolean> {
-    let removed = false;
-    await this.mutatePersistent((grants) => {
-      const kept = grants.filter((g) => {
-        const same = g.scope === target.scope && g.origin === target.origin && destinationKey(g) === destinationKey(target) &&
-          (g.scope === "always" || g.projectRoot === target.projectRoot);
-        if (same) removed = true;
-        return !same;
-      });
-      return kept;
-    });
-    return removed;
+  // Remove one persistent grant. Resolves whether it existed, and whether its landed removal failed to be made durable.
+  private async revokePersistent(
+    target: Pick<PersistentEgressGrant, "scope" | "origin" | "host" | "port" | "network" | "projectRoot">,
+  ): Promise<{ removed: boolean; durabilitySyncFailed: boolean }> {
+    const key = grantUseKey(target);
+    this.pendingPersistentRevocations.set(key, (this.pendingPersistentRevocations.get(key) ?? 0) + 1);
+    try {
+      let removed = false;
+      const { landedAfterFailure } = await this.mutatePersistent((grants) => {
+        const kept = grants.filter(grant => grantUseKey(grant) !== key);
+        removed = kept.length < grants.length;
+        return kept;
+      }, undefined, undefined, () => removed);
+      return { removed, durabilitySyncFailed: landedAfterFailure };
+    } finally {
+      const pending = this.pendingPersistentRevocations.get(key) ?? 0;
+      if (pending > 1) this.pendingPersistentRevocations.set(key, pending - 1);
+      else this.pendingPersistentRevocations.delete(key);
+    }
   }
 
-  private async loadPersistent(): Promise<readonly PersistentEgressGrant[]> {
-    if (this.persistent !== undefined) return this.persistent;
+  private fileHolds(body: string): boolean {
+    try {
+      const input = readAveHomeInputSync(this.filePath, { requireRegularFile: true });
+      return input.status !== "absent" && input.bytes.equals(Buffer.from(body));
+    } catch {
+      return false;
+    }
+  }
+
+  private async loadPersistent(refresh = false): Promise<readonly PersistentEgressGrant[]> {
+    if (!refresh && this.persistent !== undefined) return this.persistent.grants;
+    try {
+      this.persistent = await this.readPersistent();
+      return this.persistent?.grants ?? [];
+    } catch (error) {
+      this.persistent = undefined;
+      throw error;
+    }
+  }
+
+  private async readPersistent(): Promise<LoadedPersistentGrants | undefined> {
     // Remembered hosts grant network authority, so an unverified file (a refused home's, or one pending review) reads as absent (R2); none of it restricts.
     const input = await readAveHomeInput(this.filePath);
-    if (input.status === "untrusted") return [];
-    if (input.status === "absent") {
-      this.persistent = [];
-      return this.persistent;
-    }
+    if (input.status === "untrusted") return undefined;
+    if (input.status === "absent") return { grants: [], digest: null };
     const raw = input.bytes.toString("utf8");
     const parsed = parseGrantFile(this.filePath, raw);
     for (const dropped of parsed.droppedLegacy) {
@@ -499,24 +579,51 @@ export class EgressGrantStore {
       this.reportedLegacyDrops.add(key);
       this.onLegacyGrantDropped(dropped);
     }
-    this.persistent = parsed.grants;
-    return this.persistent;
+    return { grants: parsed.grants, digest: sha256Hex(input.bytes) };
   }
 
-  private mutatePersistent(mutate: (grants: readonly PersistentEgressGrant[]) => readonly PersistentEgressGrant[], signal?: AbortSignal): Promise<void> {
+  private mutatePersistent(
+    mutate: (grants: readonly PersistentEgressGrant[]) => readonly PersistentEgressGrant[],
+    signal?: AbortSignal,
+    authority?: ApprovalPersistenceGuard,
+    // Whether a failed write whose body is proven on disk counts as landed (a revoke that removed its grant). Never for a grant.
+    acceptLanded: () => boolean = () => false,
+  ): Promise<{ readonly landedAfterFailure: boolean }> {
     // The store reads as absent in a refused home; rewriting it from that view would erase the user's file.
     try { assertAveHomeInputWritable(this.filePath); }
     catch (error) { return Promise.reject(error); }
     return this.writes(async () => {
-      // Re-read under the queue so a second window's write is not lost.
-      this.persistent = undefined;
-      const current = await this.loadPersistent();
+      // Re-read under the queue while keeping committed grants visible to connection checks.
+      const current = await this.loadPersistent(true);
       signal?.throwIfAborted();
       const next = [...mutate(current)];
       const file: GrantFile = { version: FILE_VERSION, grants: next };
-      if (this.filePath === egressGrantFilePath()) await openFeatureNamespace("permissions").writeJson("shell-egress-hosts.json", file);
-      else await writeFileAtomicAtPath(this.filePath, `${JSON.stringify(file, null, 2)}\n`);
-      this.persistent = next;
+      const body = grantFileBody(next);
+      this.landingDigest = sha256Hex(body);
+      try {
+        if (authority || signal) {
+          const isCurrent = () => signal?.aborted !== true && (authority?.isCurrent() ?? true);
+          await preparePrivateFileDirectory(this.filePath);
+          signal?.throwIfAborted();
+          await commitApprovalFile(this.filePath, body, {
+            refresh: async () => isCurrent() && (authority === undefined || await authority.refresh()),
+            isCurrent,
+          });
+        } else if (this.filePath === egressGrantFilePath()) await openFeatureNamespace("permissions").writeJson("shell-egress-hosts.json", file);
+        else await writeFileAtomicAtPath(this.filePath, body);
+        this.persistent = { grants: next, digest: sha256Hex(body) };
+        return { landedAfterFailure: false };
+      } catch (error) {
+        // A write can report failure after its rename. Confirm what is on disk before a pending revoke is released.
+        await this.loadPersistent(true).catch(() => undefined);
+        signal?.throwIfAborted();
+        // Still inside the queue task, so no later write can have renamed over it: the rename landed when the file holds exactly
+        // this body. Its bytes are compared whatever their trust: a failed write never vouches for what it left behind.
+        if (acceptLanded() && this.fileHolds(body)) return { landedAfterFailure: true };
+        throw error;
+      } finally {
+        this.landingDigest = undefined;
+      }
     });
   }
 }

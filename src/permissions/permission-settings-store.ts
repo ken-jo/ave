@@ -2,7 +2,7 @@
 import { existsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { resolve as pathResolve } from "node:path";
-import { isCommittedAtomicWriteError, writeUtf8FileAtomicSync } from "../lib/atomic-file.js";
+import { isCommittedAtomicWriteError, replaceUtf8FileAtomicSyncIf, writeUtf8FileAtomicSync } from "../lib/atomic-file.js";
 import { createLogger } from "../lib/logger.js";
 import { aveHome, aveHomeConfigurationDirectory, AveHomeConfigurationUntrustedError, configurationHomeForFile, isAveHomeConfigurationAuthorityAbsent } from "../shared/ave-home.js";
 import { parseConfigurationObject } from "../shared/configuration-document.js";
@@ -12,6 +12,7 @@ import { UUID_PATTERN } from "../shared/uuid.js";
 import { isExecutionMode, type ExecutionMode } from "../shared/permission-mode.js";
 import { isLLMVendor } from "../shared/llm-vendor-defaults.js";
 import { isSystemSubagentModelRef, type SystemSubagentModelRef } from "../shared/system-subagent-model.js";
+import { ApprovalPersistenceError, refreshApprovalPersistence, type ApprovalPersistenceGuard } from "./approval-persistence-guard.js";
 import {
   JudgeSettingsError,
   normalizeJudgeSettings,
@@ -718,10 +719,13 @@ async function mutateAllowedDirectoriesPersist(
     pending: readonly PendingWorkspaceRootRemoval[],
   ) => string[],
   pathOverride?: string,
+  authority?: ApprovalPersistenceGuard,
 ): Promise<string[]> {
   const filePath = pathOverride ?? permissionSettingsPath();
   let result: string[] = [];
   await withPermissionSettingsWrite(filePath, async (filePath) => {
+    // A directory approval can wait for the settings queue while holding the workspace lifecycle lock.
+    if (authority) await refreshApprovalPersistence(authority);
     const existing = readSettingsObjectForUpdate(filePath);
     const existingPerm = { ...((existing.permissions ?? {}) as Record<string, unknown>) };
     const current = Array.isArray(existingPerm.additionalDirectories)
@@ -743,7 +747,14 @@ async function mutateAllowedDirectoriesPersist(
     const merged = composeSettingsForPersist(existing, existingPerm, {
       additionalDirectories: next,
     });
-    writeUtf8FileAtomicSync(filePath, JSON.stringify(merged, null, 2), 0o600);
+    const body = JSON.stringify(merged, null, 2);
+    if (authority) {
+      if (!replaceUtf8FileAtomicSyncIf(filePath, body, authority.isCurrent, 0o600)) {
+        throw new ApprovalPersistenceError();
+      }
+    } else {
+      writeUtf8FileAtomicSync(filePath, body, 0o600);
+    }
   });
   return result;
 }
@@ -752,6 +763,7 @@ async function mutateAllowedDirectoriesPersist(
 export async function addAllowedDirectoryPersist(
   dir: string,
   pathOverride?: string,
+  authority?: ApprovalPersistenceGuard,
 ): Promise<string[]> {
   const stored = persistedAllowedDirectory(dir);
   return mutateAllowedDirectoriesPersist((list, pending) => {
@@ -772,7 +784,7 @@ export async function addAllowedDirectoryPersist(
       return list;
     }
     return [...list, stored];
-  }, pathOverride);
+  }, pathOverride, authority);
 }
 
 // Remove a directory from `permissions.additionalDirectories`. Returns the post-removal list. No-op when the dir is not present.

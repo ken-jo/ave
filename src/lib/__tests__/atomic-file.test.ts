@@ -34,7 +34,10 @@ import {
 import { retryOnTransientFsLock } from "../transient-fs-lock-retry.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
-const staging = vi.hoisted(() => ({ beforeOpen: undefined as ((path: string) => void) | undefined }));
+const staging = vi.hoisted(() => ({
+  beforeOpen: undefined as ((path: string) => void) | undefined,
+  beforeRename: undefined as (() => void) | undefined,
+}));
 const atStaging = (path: unknown) => {
   if (!String(path).endsWith(".tmp") || !staging.beforeOpen) return;
   const run = staging.beforeOpen;
@@ -43,7 +46,14 @@ const atStaging = (path: unknown) => {
 };
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
-  return { ...actual, openSync: (...args: Parameters<typeof actual.openSync>) => { atStaging(args[0]); return actual.openSync(...args); } };
+  return {
+    ...actual,
+    openSync: (...args: Parameters<typeof actual.openSync>) => { atStaging(args[0]); return actual.openSync(...args); },
+    renameSync: (...args: Parameters<typeof actual.renameSync>) => {
+      staging.beforeRename?.();
+      return actual.renameSync(...args);
+    },
+  };
 });
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
@@ -58,7 +68,40 @@ beforeEach(() => {
 
 afterEach(async () => {
   staging.beforeOpen = undefined;
+  staging.beforeRename = undefined;
   await cleanupTmpDir(dir);
+});
+
+it("refuses a guarded atomic write when authority expires between replacement attempts", async () => {
+  const target = join(dir, "guarded.txt");
+  writeFileSync(target, "old");
+  let current = true;
+  const attempt = vi.fn(() => undefined);
+  attempt.mockImplementationOnce(() => {
+    throw Object.assign(new Error("Locked"), { code: "EACCES" });
+  });
+  const wait = vi.spyOn(Atomics, "wait").mockImplementationOnce(() => {
+    current = false;
+    return "timed-out";
+  });
+  vi.doMock("node:process", async original => ({
+    ...await original<typeof import("node:process")>(),
+    platform: "win32",
+  }));
+  vi.resetModules();
+  staging.beforeRename = attempt;
+  try {
+    const { replaceUtf8FileAtomicSyncIf: guardedReplace } = await import("../atomic-file.js");
+    expect(guardedReplace(target, "new", () => current)).toBe(false);
+    expect(wait).toHaveBeenCalledOnce();
+    expect(attempt).toHaveBeenCalledOnce();
+    expect(readFileSync(target, "utf8")).toBe("old");
+    expect(readdirSync(dir)).toEqual(["guarded.txt"]);
+  } finally {
+    vi.doUnmock("node:process");
+    vi.resetModules();
+    wait.mockRestore();
+  }
 });
 
 describe("syncExistingFileSync", () => {

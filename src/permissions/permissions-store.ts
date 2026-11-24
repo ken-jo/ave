@@ -5,12 +5,12 @@ import { aveHome, AveHomeConfigurationRefusedWriteError, isInRefusedAveHome } fr
 import type { PermissionRule } from "./permission-manager.js";
 import { DEFAULT_EXECUTION_MODE, type ExecutionMode } from "../shared/permission-mode.js";
 import { withFileLock } from "../lib/with-file-lock.js";
-import { writeUtf8FileAtomicSync, replaceUtf8FileAtomicSyncIf } from "../lib/atomic-file.js";
+import { writeUtf8FileAtomicSync } from "../lib/atomic-file.js";
 import { PermissionRulesFileCorruptError, inertRulePatterns, invalidJsonDetail, unverifiedDenyRules, validateRuleList } from "./rules/rule-files.js";
 import { readAveHomeInput } from "../shared/ave-home-trust.js";
 import { withShellPolicyMutation } from "./shell-policy-handoff.js";
 
-import { refreshApprovalPersistence, type ApprovalPersistenceGuard } from "./approval-persistence-guard.js";
+import { commitApprovalFile, type ApprovalPersistenceGuard } from "./approval-persistence-guard.js";
 
 // Location shared by the rules writer and sandbox write protection.
 export function permissionsFilePath(): string {
@@ -88,8 +88,6 @@ export async function updatePermissionsFile(
 ): Promise<void> {
   // The store reads as absent in a refused home; rewriting it from that view would erase the user's file.
   if (isInRefusedAveHome(filePath)) throw new AveHomeConfigurationRefusedWriteError(filePath);
-  // Probe before the global policy queue and cross-process lock; inside them only the synchronous fence below guards the commit.
-  await refreshApprovalPersistence(authority);
   await withShellPolicyMutation(() => withPermissionsLock(filePath, async () => {
     await withFileLock(filePath, async () => {
       const existing = await readPermissionsFile(filePath);
@@ -104,7 +102,7 @@ export async function updatePermissionsFile(
       validateRuleList(filePath, file.rules, { keepInertWildcards: inert });
       file.updatedAt = new Date().toISOString();
       if (authority) {
-        if (!replaceUtf8FileAtomicSyncIf(filePath, `${JSON.stringify(file, null, 2)}\n`, authority.isCurrent)) throw new Error("Approval authority is unavailable");
+        await commitApprovalFile(filePath, `${JSON.stringify(file, null, 2)}\n`, authority);
       } else {
         writeUtf8FileAtomicSync(filePath, `${JSON.stringify(file, null, 2)}\n`, 0o600);
       }

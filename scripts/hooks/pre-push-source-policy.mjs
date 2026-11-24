@@ -15,6 +15,7 @@
 // that names a changed key (selectMessageCatalogChecks).
 
 import { posix } from "node:path";
+import { isCollectedVitestFile } from "../lib/vitest-collection.mjs";
 import * as ast from "typescript/unstable/ast";
 import { parseSourceTexts, withParsedSourceTexts } from "../lib/ts7-ast.mjs";
 import { createMessageConsumerReader } from "./pre-push-message-consumers.mjs";
@@ -169,7 +170,6 @@ export function isMessageCatalogPath(relativePath) {
 }
 
 const safeCliPath = /^[A-Za-z0-9._+@/-]+$/;
-const collectedVitestPath = /^(?:src\/(?:[^/]+\/)*__tests__\/(?:[^/]+\/)*|test\/(?:[^/]+\/)*)(?:[^/]+)\.(?:test|spec)\.(?:ts|tsx)$/;
 const deniedTestTreeSegments = new Set(["e2e", "screenshots"]);
 const importableModulePath = /^(?:src|test)\/(?:[^/]+\/)*[^/]+\.(?:ts|tsx|mts|cts|js|mjs|cjs)$/;
 
@@ -184,12 +184,7 @@ export function isFullCheckGlobalInput(relativePath) {
   );
 }
 
-/** A path Vitest collects as a test file (see the Vitest config's include globs). */
-export function isCollectedVitestFile(relativePath) {
-  if (!collectedVitestPath.test(relativePath)) return false;
-  const segments = relativePath.split("/");
-  return !segments.some((segment) => deniedTestTreeSegments.has(segment));
-}
+export { isCollectedVitestFile };
 
 /** Local test helpers and fixture assets, excluding every shared global input. */
 export function isTestSupportFile(path) {

@@ -270,6 +270,8 @@ worker.onExit(({ reason }) => {
 const status = await worker.request("index_status", { scope: "all" });
 ```
 
+For a worker or a stdio server entered in MCP settings, use an absolute `command` path or a program name on `PATH`.
+
 `spawnWorker` resolves only after the hello. A worker that writes anything else
 first, answers wrongly or never answers is stopped and the call rejects with
 `worker-control-failed`. Reusing the `workerId` of a worker that is still running or

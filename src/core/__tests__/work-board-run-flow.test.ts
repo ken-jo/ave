@@ -4,6 +4,8 @@ import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { WorkBoardStore } from "../../main/work-board-store.js";
+import { deferred } from "../../__tests__/support/deferred.js";
+import { within } from "../../__tests__/support/signal-wait.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { createWorkBoardEngine } from "../work-board-engine.js";
 import type {
@@ -45,6 +47,7 @@ interface SpawnCall {
 /** Script thrown and returned failures separately; hold the plan promise to exercise single-flight behavior. */
 function fakeRunner(opts?: {
   onExecute?: () => void;
+  onPlan?: () => void;
   execFails?: boolean;
   holdPlan?: Promise<void>;
 }): { runner: SubAgentRunner; calls: SpawnCall[] } {
@@ -70,6 +73,7 @@ function fakeRunner(opts?: {
         originSessionId: input.originSessionId,
       });
       const isPlan = input.profileMode === "plan";
+      if (isPlan) opts?.onPlan?.();
       if (isPlan && opts?.holdPlan) await opts.holdPlan;
       if (!isPlan) opts?.onExecute?.();
       if (!isPlan && opts?.execFails) {
@@ -461,7 +465,8 @@ describe("WorkBoardEngine — run-flow contracts", () => {
       const holdPlan = new Promise<void>((resolve) => {
         releasePlan = resolve;
       });
-      const { runner, calls } = fakeRunner({ holdPlan });
+      const planSpawned = deferred<void>();
+      const { runner, calls } = fakeRunner({ holdPlan, onPlan: planSpawned.resolve });
       const engine = createWorkBoardEngine({
         store,
         getRunner: () => runner,
@@ -470,9 +475,7 @@ describe("WorkBoardEngine — run-flow contracts", () => {
 
       const firstRun = runThroughDecision(engine, store, id, "approve");
       // Wait for the first plan spawn before issuing the concurrent run.
-      while (calls.length === 0) {
-        await new Promise((r) => setTimeout(r, 0));
-      }
+      await within(planSpawned.promise, "the first run's plan spawn");
 
       const busy = await runThroughDecision(engine, store, id, "approve");
       expect(busy.status).toBe("already_running");

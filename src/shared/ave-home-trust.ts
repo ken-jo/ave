@@ -7,7 +7,7 @@
  * The gate is active for the one home boot evaluated in this process. A process that never booted (tests of single stores) reads
  * these files as before, the same scope slice 1 gives `isInRefusedAveHome`.
  */
-import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readSync, rmdirSync, unlinkSync, type Stats } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readFileSync, readSync, rmdirSync, statSync, unlinkSync, type Stats } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
@@ -181,12 +181,13 @@ function assertNoLinkBelow(home: string, path: string): Stats | undefined {
 }
 
 /** The bytes of one regular file read through a no-follow handle whose identity matches its pinned entry, or undefined when absent. */
-function readRegularFile(path: string, pinned: Stats): { bytes: Buffer; uid: number } {
-  if (!pinned.isFile()) throw new LinkedInputError(path);
-  const descriptor = openSync(path, constants.O_RDONLY | (process.platform === "win32" ? 0 : constants.O_NOFOLLOW | constants.O_NONBLOCK));
+function readRegularFile(path: string, pinned?: Stats): { bytes: Buffer; uid: number } {
+  if (pinned && !pinned.isFile()) throw new LinkedInputError(path);
+  const flags = process.platform === "win32" ? 0 : constants.O_NONBLOCK | (pinned ? constants.O_NOFOLLOW : 0);
+  const descriptor = openSync(path, constants.O_RDONLY | flags);
   try {
     const opened = fstatSync(descriptor);
-    if (!opened.isFile() || opened.ino !== pinned.ino || opened.dev !== pinned.dev) throw new Error(`${path} changed while it was opened`);
+    if (!opened.isFile() || (pinned && (opened.ino !== pinned.ino || opened.dev !== pinned.dev))) throw new Error(`${path} changed while it was opened`);
     if (opened.size > AVE_HOME_INPUT_MAX_BYTES) throw new AveHomeInputSizeLimitError(`${path} exceeds the size limit`);
     const bytes = Buffer.alloc(opened.size);
     let filled = 0;
@@ -197,6 +198,19 @@ function readRegularFile(path: string, pinned: Stats): { bytes: Buffer; uid: num
     }
     return { bytes: bytes.subarray(0, filled), uid: opened.uid };
   } finally { closeSync(descriptor); }
+}
+
+// A dangling component or an unreadable path cannot prove absence of a policy input.
+function isRegularInputAbsent(filePath: string): boolean {
+  filePath = resolve(filePath);
+  for (let candidate = filePath; ; candidate = dirname(candidate)) {
+    try { lstatSync(candidate); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT" || dirname(candidate) === candidate) return false;
+      continue;
+    }
+    return candidate !== filePath && statSync(candidate).isDirectory();
+  }
 }
 
 /**
@@ -278,14 +292,17 @@ function verdict(trust: ActiveTrust, key: string, hash: string, uids: Iterable<n
  * Loaders parse exactly the returned buffer and never reopen the path. Outside the gate this is a plain read, so a single store
  * under test behaves as before; a home refused at boot still reads untrusted.
  */
-export function readAveHomeInputSync(path: string): AveHomeInput {
+export function readAveHomeInputSync(path: string, { requireRegularFile = false } = {}): AveHomeInput {
   const gate = gateFor(path);
   // A file that is (or sits inside) a first-level item of skills/, agents/ or commands/ is vouched for by that whole item.
   if (gate !== undefined && gate.kind !== "file") return readThroughEntry(gate.trust.home, gate.key, path);
   if (gate === undefined) {
     if (isInRefusedAveHome(path)) return readRefusedInput(path);
-    try { return { status: "trusted", bytes: readFileSync(path) }; }
-    catch (error) { if (isMissingPathError(error)) return { status: "absent" }; throw error; }
+    try { return { status: "trusted", bytes: requireRegularFile ? readRegularFile(path).bytes : readFileSync(path) }; }
+    catch (error) {
+      if (isMissingPathError(error) && (!requireRegularFile || isRegularInputAbsent(path))) return { status: "absent" };
+      throw error;
+    }
   }
   let pinned: Stats | undefined;
   try { pinned = assertNoLinkBelow(gate.trust.home, path); }

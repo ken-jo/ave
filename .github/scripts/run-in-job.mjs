@@ -13,9 +13,9 @@ export const JOB_RECEIPTS = "job-receipts";
 const REPOSITORY = fileURLToPath(new URL("../..", import.meta.url));
 
 // Loaded on demand: job-root setup and cleanup import this module and must run without installed packages.
-export async function containedStepManifest(jobId) {
+export async function containedStepManifest(job) {
   const { containedSteps } = await import("./check-windows-workflow.mjs");
-  return containedSteps(readFileSync(new URL("../workflows/ci.yml", import.meta.url), "utf8"), jobId);
+  return containedSteps(readFileSync(new URL("../workflows/ci.yml", import.meta.url), "utf8"), job);
 }
 
 export function resolveCommand(command, path = process.env.PATH ?? "") {
