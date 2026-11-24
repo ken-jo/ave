@@ -68,6 +68,7 @@ const LAUNCH_FILES = [
   "permissions/mxc-extension-process.ts",
   "permissions/mxc-policy-pipe.ts",
   "permissions/mxc-windows.ts",
+  "permissions/offline-process-sandbox.ts",
   "permissions/srt-win-integrity.ts",
   "permissions/verified-shell-command.ts",
   "permissions/windows-acl-grant-holder.ts",
