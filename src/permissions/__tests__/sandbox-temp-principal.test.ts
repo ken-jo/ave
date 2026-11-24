@@ -139,8 +139,12 @@ describe("the launcher that sets a principal's temp directory", () => {
     });
   });
 
-  it("refuses a command env(1) would read as an assignment", () => {
-    expect(() => sandboxTempEnvLaunch("/t/plugin-70", "/opt/a=b/tool", [])).toThrow(/contains '='/);
+  it("launches a pathname containing an equals sign as an executable", () => {
+    expect(sandboxTempEnvLaunch("/t/plugin-70", "/opt/a=b/tool", ["a b"])).toEqual({
+      command: "/usr/bin/env",
+      args: ["TMPDIR=/t/plugin-70", "TMP=/t/plugin-70", "TEMP=/t/plugin-70",
+        "/bin/bash", "-c", 'exec -- "$@"', "sandbox-temp", "/opt/a=b/tool", "a b"],
+    });
   });
 });
 

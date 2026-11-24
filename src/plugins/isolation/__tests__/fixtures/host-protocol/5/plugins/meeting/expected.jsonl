@@ -7,7 +7,7 @@
 {"frame":{"id":2,"jsonrpc":"2.0","result":{"handleId":"<uuid-4>","height":240,"panelId":"panel-1"}},"from":"host"}
 {"frame":{"id":3,"jsonrpc":"2.0","method":"ai.agent-connector.ave/host/startAudioCapture","params":{"_meta":{"ai.agent-connector.ave/invocation":"<uuid-3>"},"request":{"frameMs":200,"microphone":true,"sampleRate":16000,"systemAudio":false}}},"from":"child"}
 {"frame":{"id":3,"jsonrpc":"2.0","result":{"captureId":"capture-1","handleId":"<uuid-5>","opened":{"microphone":true,"systemAudio":false}}},"from":"host"}
-{"frame":{"id":4,"jsonrpc":"2.0","method":"ai.agent-connector.ave/host/spawnWorker","params":{"_meta":{"ai.agent-connector.ave/invocation":"<uuid-3>"},"spec":{"args":["-version"],"command":"/usr/local/bin/ffmpeg","control":"output-only-v1","workerId":"ffmpeg"}}},"from":"child"}
+{"frame":{"id":4,"jsonrpc":"2.0","method":"ai.agent-connector.ave/host/spawnWorker","params":{"_meta":{"ai.agent-connector.ave/invocation":"<uuid-3>"},"spec":{"args":["-version"],"command":"ffmpeg","control":"output-only-v1","workerId":"ffmpeg"}}},"from":"child"}
 {"frame":{"id":4,"jsonrpc":"2.0","result":{"control":"output-only-v1","handleId":"<uuid-6>","pid":4242}},"from":"host"}
 {"frame":{"id":5,"jsonrpc":"2.0","method":"ai.agent-connector.ave/host/callLlm","params":{"_meta":{"ai.agent-connector.ave/invocation":"<uuid-3>"},"options":{"maxTokens":256,"systemPrompt":"You write meeting notes."},"prompt":"summarise the meeting"}},"from":"child"}
 {"frame":{"id":5,"jsonrpc":"2.0","result":"the host answered"},"from":"host"}

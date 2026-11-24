@@ -6,10 +6,14 @@ import {
   vi,
   beforeEach,
   afterEach,
+  beforeAll,
+  afterAll,
 } from "vitest";
 import { PassThrough } from "node:stream";
 import { getAveAppVersion } from "../../shared/app-version.js";
 import { EventEmitter } from "node:events";
+import { windowsAppAliasFixture } from "../../__tests__/support/windows-app-alias-fixture.js";
+import * as hostPrograms from "../../shared/host-program-path.js";
 
 /** Read the fetch stub at call time so per-test replacements affect the injected HTTP transport. */
 const stubbedGlobalNetworkFetch = ((input: RequestInfo | URL, init?: RequestInit) =>
@@ -38,11 +42,17 @@ vi.mock("node:child_process", () => ({
   },
 }));
 vi.mock("../../main/uv-runtime.js", () => ({
-  resolveBundledUvBinaryPath: vi.fn(() => "/test-runtime/uv"),
+  resolveBundledUvBinaryPath: vi.fn(() => (process.platform === "win32" ? "C:\\test-runtime\\uv.exe" : "/test-runtime/uv")),
 }));
 
 // Import after mocks so transport bindings use the test doubles.
 import { McpClient } from "../mcp-client.js";
+import { installProgramsOnPath, withPlantedProgram, type ProgramsOnPath } from "../../__tests__/support/planted-program.js";
+
+// Configured bare names resolve on PATH before the (faked) spawn.
+let programs: ProgramsOnPath;
+beforeAll(() => { programs = installProgramsOnPath(["ave-mcp-fs", "ave-mcp-stubborn", "ave-mcp-broken-stdin"]); });
+afterAll(async () => { await programs.restore(); });
 import { ToolRegistry } from "../../tools/registry.js";
 import {
   MCP_RESOURCE_MAX_CHARS,
@@ -698,6 +708,48 @@ describe("HttpTransport — SSE streaming", () => {
 });
 
 describe("StdioTransport — regression", () => {
+  it.each([false, true])("uses the host alias directory with child LOCALAPPDATA override %s", async (override) => {
+    const alias = windowsAppAliasFixture();
+    const env: Record<string, string> = override ? { PATH: alias.outside, LOCALAPPDATA: alias.outsideLocal } : { PATH: alias.aliases };
+    const resolve = vi.spyOn(hostPrograms, "resolveHostProgram").mockImplementationOnce((command, lookupEnv) => {
+      const found = hostPrograms.findHostProgram(command, lookupEnv, "win32", alias.fs);
+      if (found === null) throw new hostPrograms.HostProgramNotFoundError("Program was not found on PATH");
+      return found;
+    });
+    spawnMock.mockImplementationOnce(() => { throw new Error("stop after spawn"); });
+    try {
+      const client = new McpClient({ id: "alias", transport: "stdio", command: alias.program, env },
+        governanceWithPolicy(buildPolicy([stdioApproval("alias", alias.program)])), new ToolRegistry(), stubbedGlobalNetworkFetch);
+      await expect(client.connect()).rejects.toThrow(override ? "was not found on PATH" : "stop after spawn");
+      if (override) expect(spawnMock).not.toHaveBeenCalled();
+      else expect(spawnMock).toHaveBeenCalledWith(alias.executable, [], expect.objectContaining({ env: expect.not.objectContaining({ LOCALAPPDATA: expect.anything() }) }));
+    } finally {
+      resolve.mockRestore();
+    }
+  });
+
+  it("spawns a configured bare name from its absolute PATH location", async () => {
+    spawnMock.mockImplementationOnce(() => { throw new Error("stop after spawn"); });
+    const client = new McpClient({ id: "fs", transport: "stdio", command: "ave-mcp-fs" },
+      governanceWithPolicy(buildPolicy([stdioApproval("fs", "ave-mcp-fs")])), new ToolRegistry(), stubbedGlobalNetworkFetch);
+    await expect(client.connect()).rejects.toThrow();
+    expect(spawnMock.mock.calls[0]?.[0]).toBe(programs.program("ave-mcp-fs"));
+  });
+
+  it("refuses a configured name reachable only through the cwd or empty and relative PATH entries, and a relative path", async () => {
+    await withPlantedProgram(["ave-planted-mcp"], async () => {
+      for (const [command, message] of [
+        ["ave-planted-mcp", /'ave-planted-mcp' was not found on PATH/u],
+        ["./ave-planted-mcp", /mcp-command-relative-path: Use an absolute path or a program name on PATH/u],
+      ] as const) {
+        const client = new McpClient({ id: "planted", transport: "stdio", command },
+          governanceWithPolicy(buildPolicy([stdioApproval("planted", command)])), new ToolRegistry(), stubbedGlobalNetworkFetch);
+        await expect(client.connect()).rejects.toThrow(message);
+      }
+    });
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
   it("connects via subprocess with newline-delimited JSON-RPC", async () => {
     const fake = new FakeChildProcess();
     fake.responses = {
@@ -833,7 +885,7 @@ describe("StdioTransport — regression", () => {
 
     await client.connect();
     expect(spawnMock).toHaveBeenCalledWith(
-      "/test-runtime/uv",
+      process.platform === "win32" ? "C:\\test-runtime\\uv.exe" : "/test-runtime/uv",
       ["tool", "run", "--from", "browser-use[cli]==0.12.6", "browser-use", "--mcp"],
       expect.objectContaining({
         env: expect.objectContaining({

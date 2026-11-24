@@ -4,6 +4,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { registerLinuxWrapperProgramFixtures } from "../../__tests__/support/linux-wrapper-programs.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 
 import {
@@ -53,6 +54,7 @@ afterEach(async () => {
 });
 
 describe("scoped sandbox gates", () => {
+  registerLinuxWrapperProgramFixtures();
   beforeEach(() => {
     setProcessPlatform("linux");
     probeMocks.wrapWithSandboxArgv.mockResolvedValue({
@@ -81,7 +83,7 @@ describe("scoped sandbox gates", () => {
     expect(isShellSandboxActive()).toBe(shell);
     expect(isPluginWorkerConfinementActive()).toBe(workers);
     expect(probeMocks.wrapWithSandboxArgv).toHaveBeenCalledExactlyOnceWith(
-      "true", undefined, undefined, expect.any(AbortSignal), process.cwd(),
+      "true", "/bin/bash", undefined, expect.any(AbortSignal), process.cwd(),
       { commandId: expect.any(String), denyUnixSockets: true },
     );
     expect(probeMocks.spawn).toHaveBeenCalledExactlyOnceWith(

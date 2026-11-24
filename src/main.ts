@@ -1,3 +1,4 @@
+import "./main/bare-program-lookup.js";
 import { installSecuritySettingsGestureTracking } from "./main/security-settings-gesture.js";
 import { app, net, powerMonitor } from "electron";
 import { applyAppZoomLevel, configureAppZoom } from "./main/app-zoom.js";

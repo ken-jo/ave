@@ -3,17 +3,12 @@ import { describe, expect, it } from "vitest";
 import { resolve } from "node:path";
 import { ScriptHookManager } from "../script-hook-manager.js";
 import type { HookConfigEntry } from "../hook-config.js";
-import { hasExecutable } from "./test-helpers.js";
+import { hasExecutable, repoCommandHook, REPO_HOOK_FIXTURE_ROOT as FIXTURE_ROOT } from "./test-helpers.js";
 
-const FIXTURE_ROOT = resolve(__dirname, "..", "..", "..", "test", "fixtures", "hooks");
 const ECHO = resolve(FIXTURE_ROOT, "cmd-lifecycle-echo.js");
 const DENY = resolve(FIXTURE_ROOT, "cmd-lifecycle-deny.js");
-const SLOW = resolve(FIXTURE_ROOT, "cmd-slow.py");
-const EXIT_FAIL = resolve(FIXTURE_ROOT, "cmd-exit-fail.py");
-const BAD_JSON = resolve(FIXTURE_ROOT, "cmd-badjson.py");
 
 const HAS_NODE = hasExecutable("node");
-const HAS_PY = hasExecutable("python3");
 
 function upsEntry(command: string[], over: Partial<HookConfigEntry> = {}): HookConfigEntry {
   return {
@@ -54,25 +49,25 @@ describe("#811 m2 — UserPromptSubmit (BLOCKING) dispatch", () => {
     expect(out.results[0].decision).toBe("deny");
   });
 
-  it.skipIf(!HAS_PY)("a hook TIMEOUT → deny (fail-closed)", async () => {
+  it("a hook TIMEOUT → deny (fail-closed)", async () => {
     const m = new ScriptHookManager();
     // Clamp the per-entry timeout small so the 30s-sleep fixture trips it fast.
-    m.setTrustedRegistry([], [upsEntry(["python3", SLOW], { timeoutMs: 200 })]);
+    m.setTrustedRegistry([], [upsEntry(repoCommandHook("slow"), { timeoutMs: 200 })]);
     const out = await m.runUserPromptSubmit("s1", "user-keyboard", { inputText: "hi" });
     expect(out.decision).toBe("deny");
     expect(out.results[0].timedOut).toBe(true);
   });
 
-  it.skipIf(!HAS_PY)("a NONZERO-EXIT hook → deny (fail-closed even though it printed allow)", async () => {
+  it("a NONZERO-EXIT hook → deny (fail-closed even though it printed allow)", async () => {
     const m = new ScriptHookManager();
-    m.setTrustedRegistry([], [upsEntry(["python3", EXIT_FAIL])]);
+    m.setTrustedRegistry([], [upsEntry(repoCommandHook("exit-fail"))]);
     const out = await m.runUserPromptSubmit("s1", "user-keyboard", { inputText: "hi" });
     expect(out.decision).toBe("deny");
   });
 
-  it.skipIf(!HAS_PY)("a BAD-JSON hook → deny (fail-closed)", async () => {
+  it("a BAD-JSON hook → deny (fail-closed)", async () => {
     const m = new ScriptHookManager();
-    m.setTrustedRegistry([], [upsEntry(["python3", BAD_JSON])]);
+    m.setTrustedRegistry([], [upsEntry(repoCommandHook("bad-json"))]);
     const out = await m.runUserPromptSubmit("s1", "user-keyboard", { inputText: "hi" });
     expect(out.decision).toBe("deny");
   });

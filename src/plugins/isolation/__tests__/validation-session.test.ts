@@ -148,7 +148,7 @@ describe("the validation session's authority", () => {
         jsonrpc: "2.0",
         id: "into-approved",
         method: "ai.agent-connector.ave/host/spawnWorker",
-        params: { spec: { workerId: "into-approved", command: "/usr/bin/true", control: "output-only-v1", allowWritePaths: [approved] } },
+        params: { spec: { workerId: "into-approved", command: "true", control: "output-only-v1", allowWritePaths: [approved] } },
       });
       await vi.waitFor(() => expect(child.sent.find((frame) => frame.id === "into-approved")).toBeDefined());
       expect(child.sent.find((frame) => frame.id === "into-approved")).toMatchObject({

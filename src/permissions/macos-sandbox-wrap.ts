@@ -35,6 +35,7 @@ export function hardenMacSandboxGitMetadata<T extends { readonly argv: string[];
     throw new Error("macOS sandbox wrapper has an unexpected profile shape");
   }
   const argv = words.map((word, index) => index === profileIndex ? `${profile}\n${GIT_METADATA_RULES}` : word.value);
+  argv[0] = "/usr/bin/env";
   const command = argv.map(quoteSandboxWrappedWord).join(" ");
   const hardened = { ...wrapped, argv: [wrapped.argv[0]!, "-c", command] };
   assertMacSandboxWrapperSize(hardened.argv);
