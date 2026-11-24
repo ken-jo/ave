@@ -138,7 +138,9 @@ function fakeItem(name = "report.pdf") {
     getTotalBytes: () => item.received,
     getState: () => item.state,
     cancel: vi.fn(() => { if (item.state === "progressing") item.end("cancelled"); }),
-    complete: (content: string | Buffer = "data") => { writeFileSync(item.path, content); item.end("completed"); },
+    // The browser writes to the staged path and says so; the first write is where the staged file is first seen.
+    write: (content: string | Buffer) => { writeFileSync(item.path, content); item.emit("updated", {}, "progressing"); },
+    complete: (content: string | Buffer = "data") => { item.write(content); item.end("completed"); },
     end: (state: "completed" | "cancelled" | "interrupted") => { item.state = state; item.emit("done", {}, state); },
   });
   return item;
@@ -194,6 +196,19 @@ function chosenFolder(): string {
 
 // The staging root with some of its file operations replaced: the rest still run for real, natively on macOS and Windows.
 const withFiles = (root: Root, change: (files: Files) => Partial<Files>): Root => ({ ...root, files: { ...root.files, ...change(root.files) } });
+// Counts the staged file's stamps (each failing when `fail`); `stamped` waits for every stamp begun so far to end.
+const countingStamps = (root: Root, fail = false) => {
+  const stamps: string[] = [];
+  const pending: Promise<unknown>[] = [];
+  return { stamps, stamped: () => Promise.allSettled(pending), root: withFiles(root, (files) => ({
+    stamp: (folder, name) => {
+      stamps.push(name);
+      const stamping = fail ? Promise.reject(Object.assign(new Error("EIO: simulated"), { code: "EIO" })) : files.stamp(folder, name);
+      pending.push(stamping);
+      return stamping;
+    },
+  })) };
+};
 // Every rename reports another volume, so publication takes the real copy through a temporary file.
 const acrossVolumes = (root: Root): Root => withFiles(root, () => ({ move: async () => "cross-volume" as const }));
 // Runs `at` once, when the operation of that kind reaches `step` with its directories held, right before it acts.
@@ -383,7 +398,7 @@ describe("a staged download", () => {
     const item = fakeItem();
     const staged = stageBrowserDownload(item, { root, askSavePath }, Promise.resolve());
     const done = doneOutcome(staged.download);
-    writeFileSync(item.path, "partial");
+    item.write("partial");
     await settled();
     asked[0]?.answer(null);
     expect(await staged.answered).toBe(false);
@@ -400,7 +415,7 @@ describe("a staged download", () => {
     const failing = fakeItem();
     const staged = stageBrowserDownload(failing, { root, askSavePath }, new Promise<void>((resolve) => { release = resolve; }));
     const done = doneOutcome(staged.download);
-    writeFileSync(failing.path, "partial");
+    failing.write("partial");
     failing.end("interrupted");
     expect(await done).toEqual({ state: "interrupted", cleanup: "removed" });
     expect(existsSync(failing.path)).toBe(false);
@@ -849,7 +864,7 @@ describe("what `done` reports when the staged file cannot be removed", () => {
     const root = withFiles(prepared, () => ({ remove: async () => "cancelled" as const }));
     const staged = stageBrowserDownload(item, { root, askSavePath }, Promise.resolve());
     const done = doneOutcome(staged.download);
-    writeFileSync(item.path, "partial");
+    item.write("partial");
     await settled();
     asked[0]?.answer(null);
     expect(await done).toEqual({ state: "cancelled", cleanup: "remove-failed" });
@@ -862,7 +877,7 @@ describe("what `done` reports when the staged file cannot be removed", () => {
     const item = fakeItem();
     const staged = stageBrowserDownload(item, { root: failingRemoval(prepared, fault()), askSavePath }, Promise.resolve());
     const done = doneOutcome(staged.download);
-    writeFileSync(item.path, "partial");
+    item.write("partial");
     await settled();
     asked[0]?.answer(null);
     expect(await done).toEqual({ state: "cancelled", cleanup });
@@ -1044,11 +1059,12 @@ describe("cleanup and publication after the staging folder is swapped", () => {
   };
 
   it.each(["folder", "parent"] as const)("a cancel after the %s was swapped leaves the file of that name in the other tree", async (swap) => {
-    const root = prepare();
+    const { root, stamped } = countingStamps(prepare());
     const item = fakeItem();
     const staged = stageBrowserDownload(item, { root, askSavePath: dialogs().askSavePath }, new Promise(() => {}));
     const done = doneOutcome(staged.download);
-    writeFileSync(item.path, "partial");
+    item.write("partial");
+    await stamped();
     const lookalike = swapStaging(swap, basename(item.path));
     expect(() => staged.download.cancel()).not.toThrow();
     // The file is left in the folder that was verified, and `done` does not claim it removed.
@@ -1208,7 +1224,8 @@ describe("the final operation boundary", () => {
     const item = fakeItem();
     const staged = stageBrowserDownload(item, { root, askSavePath: dialogs().askSavePath }, new Promise(() => {}));
     const done = doneState(staged.download);
-    writeFileSync(item.path, "partial");
+    item.write("partial");
+    await settled();
     staged.download.cancel();
     expect(await done).toBe("cancelled");
     expect(readdirSync(now)).toEqual([]);
