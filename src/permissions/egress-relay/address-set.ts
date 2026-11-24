@@ -1,3 +1,4 @@
+// Portions derived from @anthropic-ai/sandbox-runtime (Apache-2.0); see THIRD-PARTY-NOTICES.
 // Address ranges as block lists: range entries, membership, the IPv4 address inside an IPv6 literal, loopback.
 import { BlockList, isIP } from "node:net";
 

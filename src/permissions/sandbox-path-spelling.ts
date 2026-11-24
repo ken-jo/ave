@@ -1,3 +1,4 @@
+// Portions derived from @anthropic-ai/sandbox-runtime (Apache-2.0); see THIRD-PARTY-NOTICES.
 // Path and pattern spelling helpers shared by the filesystem policy builders.
 import os from "node:os";
 import { posix, win32 } from "node:path";
