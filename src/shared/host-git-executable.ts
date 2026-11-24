@@ -71,7 +71,9 @@ function isFullyQualified(path: string, platform: NodeJS.Platform): boolean {
 
 /** A POSIX search path with only its absolute entries: an empty or relative one is read against the folder a call runs in. */
 export function absolutePosixSearchPath(searchPath: string): string {
-  return searchPath.split(":").filter((entry) => isFullyQualified(entry, "linux")).join(":");
+  const absolutePath = searchPath.split(":").filter((entry) => isFullyQualified(entry, "linux")).join(":");
+  // An empty PATH searches the current directory. The null device has no executable children.
+  return absolutePath || "/dev/null";
 }
 
 function windowsPathEntries(searchPath: string): string[] {

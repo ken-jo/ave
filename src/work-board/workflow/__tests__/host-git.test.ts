@@ -317,16 +317,20 @@ describe("host git", () => {
     expect.soft(() => plain(repo, ["cat-file", "-p", "HEAD:a.txt"])).not.toThrow();
   });
 
-  it("on POSIX git is given only the absolute entries of the host's search path, as an empty or relative one is read against the folder git runs in", async () => {
+  it.each([
+    [":.:./bin:bin:/usr/local/bin::/usr/bin:", "/usr/local/bin:/usr/bin"],
+    [":.:./bin:bin:", "/dev/null"],
+    ["", "/dev/null"],
+  ])("gives git an absolute POSIX search path for PATH=%j", async (path, expected) => {
     const platform = process.platform;
     replying({ code: 0 });
     setProcessPlatform("linux");
     try {
-      await createHostGit({ env: { PATH: ":.:./bin:bin:/usr/local/bin::/usr/bin:" }, resolve: use => use({ path: "/usr/bin/git" }) }).run(base, ["--version"]);
+      await createHostGit({ env: { PATH: path }, resolve: use => use({ path: "/usr/bin/git" }) }).run(base, ["--version"]);
     } finally {
       setProcessPlatform(platform);
     }
-    expect(spawned.env?.PATH).toBe("/usr/local/bin:/usr/bin");
+    expect(spawned.env?.PATH).toBe(expected);
   });
 
   it("git is given of the host's environment only what starts it and finds the user's configuration files, whatever a name's case, and the host's own git variables", async () => {
