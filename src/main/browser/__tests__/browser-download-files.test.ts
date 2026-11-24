@@ -856,7 +856,7 @@ describe("a copy whose helper says it left its temporary file", () => {
   it.each([
     ["another file number", "copy-id 1:4:birth:20"],
     ["another birth time", "copy-id 1:2:birth:21"],
-  ])("refuses a writer whose identity changes to %s, keeping the first one", async (_label, refreshed) => {
+  ])("refuses a writer whose identity changes to %s, removing nothing so its record is kept", async (_label, refreshed) => {
     let moveAuthorized = false;
     script((helper) => {
       if (helper.args[0] !== "--dir-copy") {
@@ -875,6 +875,9 @@ describe("a copy whose helper says it left its temporary file", () => {
     const run = follow(files.copy(from, "staged", to, "report.pdf", ".0123.part", () => true, UNSTOPPED, journal));
     await flush();
     expect(run.error).toBeInstanceOf(HeldDirectoryRefusedError);
+    // No cleanup claims the part, so the staging layer keeps its write-ahead record for the next start.
+    expect(stoppedCopyOf(run.error)).toBeNull();
+    expect(helpers().map((helper) => helper.args[0])).toEqual(["--dir-copy"]);
     expect(journal.write).not.toHaveBeenCalled();
     expect(moveAuthorized).toBe(false);
   });
