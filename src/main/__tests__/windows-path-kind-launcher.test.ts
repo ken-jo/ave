@@ -67,7 +67,7 @@ describe("Windows folder classifier launcher", () => {
     mocks.existsSync.mockReturnValue(false);
     // Unavailable, yet with no file-system code: a missing helper says nothing about the folder being read. Its install path stays out
     // of the message, which reaches the privacy failure reason, the boot gate and the audit log.
-    const missing = await queryDosDevice("C:").catch((error: unknown) => error as Error);
+    const missing = await queryDosDevice("C:").then(() => { throw new Error("resolved"); }, (error: unknown) => error as Error);
     expect(missing.message).toBe("Windows folder classifier is missing. Ave cannot tell whether a drive is on another computer, "
       + "so it reads no folder on a drive. Restart Ave; if it persists, reinstall Ave.");
     expect(isWindowsPathKindHelperUnavailable(missing)).toBe(true);
