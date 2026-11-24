@@ -1,15 +1,21 @@
 // Managed-child ownership lock. The owner (`managed-child-processes.ts`) holds every covered child's teardown on an opaque handle,
 // recorded at acquisition by the registering wrap modules; callers receive the handle and owner-issued receipts only.
 // - Import graph: raw teardown primitives reach only the owner, the registering wrap modules and the named out-of-scope
-//   launch sites below; the covered callers (hook runner, document engine) reach none, and no fs removal either.
+//   launch sites below; the covered callers (hook runner, document engine) reach none, and import no fs removal by a named,
+//   default, namespace, `promises` or literal dynamic import.
 // - Behaviour: forged, foreign, stale (generation), wrong-kind and early receipts are refused; every step runs past a throwing one,
 //   which alone stays retryable.
 //   The reviewer mutations that stayed green each have a named behaviour test in the suite that owns the path.
 // - Source rules kept from earlier rulings: main's Windows release paths, no local child-lifetime timer or completion wait.
 // - Owner call sites in covered callers are pinned per file, so a new fresh handle, path record or abandon fails the lock.
 // Residual: a covered caller can still record its own paths on an existing handle and abandon it unlaunched; only the behaviour
-// tests catch that form. A failed request's release is enforced by the caller (stopRuntime and unconfirmedExit). Raw primitives inside a registering wrap module (an alias, a direct call) are caught only by the
-// behaviour tests of that module. The out-of-scope importers listed in RAW_IMPORTERS are not covered by this owner.
+// tests catch that form. The owner checks only a handle's own subtree, so a path a caller records on a valid handle is removed by
+// that handle's receipt even if another live child uses it. A failed request's release is enforced by the caller (stopRuntime
+// and unconfirmedExit). Raw primitives inside a registering wrap module (an alias, a direct call) are caught only by the behaviour
+// tests of that module. The fs check parses import forms only: `require`, a computed specifier, fs handed in from another module,
+// or a removal helper defined elsewhere is not seen. The contained-hook holder's own `holder.release()` (stopPreparedHolder,
+// runContainedHook) is exempt from the direct-call check; its termination evidence is the holder's. The out-of-scope importers
+// listed in RAW_IMPORTERS are not covered by this owner.
 import { ChildProcess } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, posix, relative, resolve } from "node:path";
@@ -26,7 +32,10 @@ import {
 const SRC = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 const RAW_DEFINITIONS: Readonly<Record<string, readonly string[]>> = {
-  "src/permissions/asrt-sandbox.ts": ["cleanupAsrtSandboxAfterCommand"],
+  "src/permissions/asrt-sandbox.ts": ["cleanupAsrtSandboxAfterCommand", "releaseAsrtSandboxForExit", "resetAsrtSandbox"],
+  "src/permissions/egress-invocations.ts": ["releaseEgressInvocation"],
+  // Returns the raw egress invocation, whose release the caller would own.
+  "src/sandbox/wrap-bundled-command.ts": ["wrapBundledCommand"],
   "src/permissions/sandbox-process-home.ts": ["createSandboxProcessHome"],
   "src/permissions/windows-acl-grant-holder.ts": ["holdWindowsFilesystemGrant"],
   "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js": ["cleanupBwrapMountPoints"],
@@ -65,9 +74,11 @@ const RAW_IMPORTERS: Readonly<Record<string, readonly string[]>> = {
   "src/permissions/asrt-sandbox.ts": ["@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js:*"],
   // Out of scope for this owner: other launch sites with their own lifetime contracts, and boot/shutdown wiring.
   "src/boot/steps/marketplace-setup.ts": ["src/permissions/asrt-sandbox.ts:*"],
+  "src/main/app-shutdown.ts": ["releaseAsrtSandboxForExit"],
+  "src/tools/mxc-shell-launch.ts": ["releaseEgressInvocation"],
   "src/main/memory-map/inference-child.ts": ["cleanupAsrtSandboxAfterCommand", "createSandboxProcessHome"],
   "src/main/terminal/pty-manager.ts": ["cleanupAsrtSandboxAfterCommand", "createSandboxProcessHome"],
-  "src/mcp/mcp-client.ts": ["cleanupAsrtSandboxAfterCommand", "createSandboxProcessHome"],
+  "src/mcp/mcp-client.ts": ["cleanupAsrtSandboxAfterCommand", "createSandboxProcessHome", "wrapBundledCommand"],
   "src/permissions/worker-spawn.ts": ["cleanupAsrtSandboxAfterCommand", "createSandboxProcessHome"],
   "src/plugins/isolation/out-of-process-plugin.ts": ["cleanupAsrtSandboxAfterCommand", "createSandboxProcessHome", "holdWindowsFilesystemGrant"],
   "src/tools/powershell-launch.ts": ["createSandboxProcessHome"],
@@ -134,22 +145,37 @@ function rawImports(path: string, source: string): string[] {
   return [...reached].sort();
 }
 
-const FS_REMOVAL = /^(?:rm|rmSync|unlink|unlinkSync|rmdir|rmdirSync)$/u;
+const FS_MODULE = /^(?:node:)?fs(?:\/promises)?$/u;
+const FS_REMOVAL = /^(?:rm|rmSync|unlink|unlinkSync|rmdir|rmdirSync|promises)$/u;
 
+/** fs removal reached by a named (`promises` included), default, namespace or literal dynamic import. */
 function fsRemovalImports(path: string, source: string): string[] {
   const file = parseSourceTexts(new Map([[path, source]])).get(path) as ts.SourceFile | undefined;
   if (!file) throw new Error(`Cannot parse ${path}.`);
   const found: string[] = [];
-  for (const statement of file.statements) {
-    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
-    if (!/^(?:node:)?fs(?:\/promises)?$/u.test(statement.moduleSpecifier.text)) continue;
-    const bindings = statement.importClause?.namedBindings;
-    if (bindings && ts.isNamespaceImport(bindings)) found.push("*");
-    else if (bindings) for (const element of bindings.elements) {
-      const name = (element.propertyName ?? element.name).text;
-      if (FS_REMOVAL.test(name)) found.push(name);
+  const reach = (names: readonly string[] | undefined): void => {
+    if (names === undefined) found.push("*");
+    else found.push(...names.filter(name => FS_REMOVAL.test(name)));
+  };
+  function visit(node: ts.Node): void {
+    if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier) && FS_MODULE.test(node.moduleSpecifier.text)
+      && !node.importClause?.isTypeOnly) {
+      if (node.importClause?.name) found.push("default");
+      const bindings = node.importClause?.namedBindings;
+      if (bindings && ts.isNamespaceImport(bindings)) reach(undefined);
+      else if (bindings) reach(bindings.elements.filter(element => !element.isTypeOnly).map(element => (element.propertyName ?? element.name).text));
     }
+    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+      const [argument] = node.arguments;
+      if (argument && ts.isStringLiteral(argument) && FS_MODULE.test(argument.text)) {
+        let parent: ts.Node = node.parent;
+        while (ts.isAwaitExpression(parent) || ts.isParenthesizedExpression(parent)) parent = parent.parent;
+        reach(ts.isVariableDeclaration(parent) ? bindingNames(parent.name) : undefined);
+      }
+    }
+    node.forEachChild(visit);
   }
+  visit(file);
   return found;
 }
 
@@ -375,7 +401,7 @@ describe("managed child ownership by import graph", () => {
       .toEqual(Object.fromEntries(Object.entries(RAW_IMPORTERS).map(([path, names]) => [path, [...names].sort()] as const).sort(byPath)));
   });
 
-  it.each(COVERED_CALLERS)("keeps %s on the opaque handle, with no raw primitive or fs removal", path => {
+  it.each(COVERED_CALLERS)("keeps %s on the opaque handle, with no raw primitive or fs removal import", path => {
     expect(reached.get(path)).toBeUndefined();
     expect(fsRemovalImports(path, readRepoFile(path))).toEqual([]);
     expect(directTeardownCalls(readRepoFile(path))).toEqual([]);
@@ -408,7 +434,25 @@ describe("managed child ownership by import graph", () => {
     expect(probe('const { cleanupBwrapMountPoints } = await import("@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js");'))
       .toEqual(["cleanupBwrapMountPoints"]);
     expect(probe('const home = await import("../permissions/sandbox-process-home.js");')).toEqual(["src/permissions/sandbox-process-home.ts:*"]);
-    expect(fsRemovalImports("src/hooks/probe.ts", 'import { rm as remove } from "node:fs/promises";')).toEqual(["rm"]);
+    expect(probe('import { releaseEgressInvocation } from "../permissions/egress-invocations.js";')).toEqual(["releaseEgressInvocation"]);
+    expect(probe('import { wrapBundledCommand as wrap } from "../sandbox/wrap-bundled-command.js";')).toEqual(["wrapBundledCommand"]);
+    expect(probe('import { resetAsrtSandbox, releaseAsrtSandboxForExit } from "../permissions/asrt-sandbox.js";'))
+      .toEqual(["releaseAsrtSandboxForExit", "resetAsrtSandbox"]);
+  });
+
+  it.each([
+    ["named alias", 'import { rm as remove } from "node:fs/promises";', ["rm"]],
+    ["default", 'import fs from "node:fs";', ["default"]],
+    ["promises alias", 'import { promises as fsp } from "fs";', ["promises"]],
+    ["namespace", 'import * as fsp from "node:fs/promises";', ["*"]],
+    ["unbound dynamic", 'const fsp = await import("node:fs/promises");', ["*"]],
+    ["bound dynamic", 'const { rm: remove } = await import("node:fs/promises");', ["rm"]],
+  ] as const)("detects a %s fs removal import, alone and added to a covered caller", (_form, statement, expected) => {
+    expect(fsRemovalImports("src/hooks/probe.ts", statement)).toEqual(expected);
+    for (const path of COVERED_CALLERS) {
+      expect(fsRemovalImports(path, `${readRepoFile(path)}\n${statement}\n`)).toEqual(expected);
+    }
+    expect(fsRemovalImports("src/hooks/probe.ts", 'import type { Stats } from "node:fs";\nimport { readFile } from "node:fs/promises";')).toEqual([]);
   });
 });
 
