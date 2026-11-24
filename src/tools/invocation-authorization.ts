@@ -591,7 +591,7 @@ export async function authorizeToolInvocation(
             const cardAuthorization = await authorizeToolInvocation({ ...context, directoryAuthorization: undefined,
               rationaleBatchContext: undefined, rationaleResumeContext: undefined,
               reviewedPermissionForCard, cardRequestId: requestId,
-              ...(cardAbortSignal === undefined ? {} : { abortSignal: cardAbortSignal }),
+              abortSignal: services.invocationTerminal.bindAbortSignal(cardAbortSignal),
               onHumanDecision: (decision) => { humanDecision = decision; },
             });
             if (humanDecision === undefined && "tool_use_id" in cardAuthorization && cardAuthorization.is_error === true) {

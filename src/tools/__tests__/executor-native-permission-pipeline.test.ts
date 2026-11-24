@@ -960,6 +960,38 @@ describe("native invocation permission evidence", () => {
     expect(lifecycle.mock.calls.filter(([event]) => event === "PermissionDenied")).toEqual([]);
   });
 
+  it("cancels a rationale folder hook when only the coordinator signal stops", async () => {
+    await audit.setupPermissionAuditChain("aa".repeat(32));
+    manager.setMode("auto");
+    const classify = vi.fn(() => ({ level: "high" as const, reason: "The outside change needs explicit grounds" }));
+    setReviewerForTest(manager, { classifier: { classify }, cache: resources.makeVerdictCache(join(root, "coordinator-cache.jsonl")), recentlyDenied: makeRecentlyDeniedStore(join(root, "coordinator-denied.jsonl")) });
+    const { runtime, materialize } = createRationaleHostRuntime(createTestRequestAnchor({ sessionId }));
+    const hooks = new ScriptHookManager();
+    const lifecycle = vi.spyOn(hooks, "runLifecycleEvent");
+    const turn = new AbortController();
+    const coordinator = new AbortController();
+    vi.spyOn(hooks, "runPermissionRequest").mockImplementation(async () => {
+      coordinator.abort();
+      return new Promise(() => {});
+    });
+    const outcome = await executor(hooks).executeConversationBatch([
+      { id: "coordinator-stop", name: "write_file", input: { path: join(root, "outside-stop.txt"), content: "stopped before authority" } },
+    ], { executionCwd: project, sessionId, rationaleRuntime: runtime, abortSignal: turn.signal,
+      permissionContext: { trustOrigin: "llm-tool-arg", additionalDirectories: [] } });
+    expect(outcome.outcome).toBe("rationale-required");
+    const callback = materialize.mock.calls[0]?.[0].requestHumanApproval;
+    if (!callback) throw new Error("Expected the original folder approval callback");
+    await expect(callback({ requestId: "coordinator-stop-card", abortSignal: coordinator.signal })).rejects.toMatchObject({ reason: "Hook execution cancelled" });
+    expect(turn.signal.aborted).toBe(false);
+    expect(coordinator.signal.aborted).toBe(true);
+    const rows = (await readFile(audit.getPermissionAuditLogFile(), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>)
+      .filter((row) => row.toolUseId === "coordinator-stop" && row.decision !== "ask");
+    expect(rows).toEqual([expect.objectContaining({ decision: "deny", terminalKind: "cancelled", denyReasons: [
+      expect.objectContaining({ reason: "user aborted turn" }), expect.objectContaining({ reason: "Hook execution cancelled" }),
+    ] })]);
+    expect(lifecycle.mock.calls.filter(([event]) => event === "PermissionDenied")).toEqual([]);
+  });
+
   it.each([
     { scope: "session", change: "none" }, { scope: "always", change: "none" },
     { scope: "session", change: "unrelated-folder" }, { scope: "session", change: "deny-rule" },

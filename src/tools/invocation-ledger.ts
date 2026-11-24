@@ -95,6 +95,8 @@ export interface InvocationTerminal {
   /** The host's writer, which ends the attempt when a forced quit, a held card's abort or an invocation failure finds it
    * unclaimed, and the attempt's denial lifecycle. */
   hostTerminal(write: HostTerminalWrite, lifecycle: TerminalDenialLifecycle): void;
+  /** Adds a cancellation source when an approval wait supplies its signal. */
+  bindAbortSignal(signal?: AbortSignal): AbortSignal;
   /** Records a human outcome accepted before the next yield, so a host write in that window keeps it. */
   select(outcome: unknown): void;
   /** Runs `enqueue` with the owner's row writer, to be called before its first await. A refused claim runs nothing and
@@ -114,14 +116,21 @@ class TerminalLedger implements InvocationTerminal {
   #releaseAbort: (() => void) | undefined;
   #key: string | undefined;
   #integrityFailure = false;
+  #signal: AbortSignal;
 
-  constructor(readonly tool: string, readonly attempt: number, readonly signal: AbortSignal, lifecycle?: TerminalDenialLifecycle) {
+  constructor(readonly tool: string, readonly attempt: number, signal: AbortSignal, lifecycle?: TerminalDenialLifecycle) {
+    this.#signal = signal;
     this.#lifecycle = lifecycle;
   }
 
   get owner(): TerminalOwner { return this.#owner; }
   get state(): TerminalState { return this.#state; }
   get key(): string | undefined { return this.#key; }
+
+  bindAbortSignal(signal?: AbortSignal): AbortSignal {
+    if (signal !== undefined && signal !== this.#signal) this.#signal = AbortSignal.any([this.#signal, signal]);
+    return this.#signal;
+  }
 
   hostTerminal(write: HostTerminalWrite, lifecycle: TerminalDenialLifecycle): void {
     this.#write = write;
@@ -217,8 +226,8 @@ class TerminalLedger implements InvocationTerminal {
    * refusal stay denials. Returns the cancellation's reason, or undefined when the row stays a denial.
    */
   #abortCancellation(answered: boolean): string | undefined {
-    if (!this.signal.aborted || answered || this.#integrityFailure) return undefined;
-    return isHostExitAbort(this.signal.reason) ? "host-shutdown" : "user aborted turn";
+    if (!this.#signal.aborted || answered || this.#integrityFailure) return undefined;
+    return isHostExitAbort(this.#signal.reason) ? "host-shutdown" : "user aborted turn";
   }
 
   #track(append: Promise<unknown>): void {
@@ -249,16 +258,17 @@ class TerminalLedger implements InvocationTerminal {
     this.#owner = "rationale";
     this.#key = toolUseId;
     suspendedTerminals.set(toolUseId, this);
+    const signal = this.#signal;
     const onAbort = (): void => {
-      void this.endByHost(isHostExitAbort(this.signal.reason) ? "host-shutdown" : "user-abort", "rationale card stopped")
+      void this.endByHost(isHostExitAbort(signal.reason) ? "host-shutdown" : "user-abort", "rationale card stopped")
         ?.catch(() => {});
     };
-    this.signal.addEventListener("abort", onAbort, { once: true });
+    signal.addEventListener("abort", onAbort, { once: true });
     this.#releaseAbort = () => {
-      this.signal.removeEventListener("abort", onAbort);
+      signal.removeEventListener("abort", onAbort);
       this.#releaseAbort = undefined;
     };
-    if (this.signal.aborted) onAbort();
+    if (signal.aborted) onAbort();
   }
 
   /** The sealed start takes the attempt back from the rationale card. */
@@ -270,7 +280,7 @@ class TerminalLedger implements InvocationTerminal {
 
   nextAttempt(): InvocationTerminal {
     if (this.#state === "open") throw new TerminalClaimError(`attempt ${this.attempt} of ${this.tool} has no terminal row yet`, "already-claimed");
-    return new TerminalLedger(this.tool, this.attempt + 1, this.signal, this.#lifecycle);
+    return new TerminalLedger(this.tool, this.attempt + 1, this.#signal, this.#lifecycle);
   }
 }
 
@@ -288,10 +298,10 @@ export type ToolInvocationAdmission = {
 };
 
 export function admitToolInvocation(tool: string, parent?: AbortSignal, resumeOf?: string): ToolInvocationAdmission {
-  const signal = AbortSignal.any(parent ? [shutdown.signal, parent] : [shutdown.signal]);
   const held = resumeOf === undefined ? undefined : suspendedTerminals.get(resumeOf);
-  let ledger = held ?? new TerminalLedger(tool, 1, signal);
+  let ledger = held ?? new TerminalLedger(tool, 1, shutdown.signal);
   if (held) held.adopt();
+  const signal = ledger.bindAbortSignal(parent);
   if (auditClosed) {
     // Its denial can no longer be written, so refuse it and fail the shutdown.
     log.error("tool invocation admitted after audit close: %s", tool);
@@ -307,6 +317,7 @@ export function admitToolInvocation(tool: string, parent?: AbortSignal, resumeOf
     get owner() { return ledger.owner; },
     get state() { return ledger.state; },
     hostTerminal: (write, lifecycle) => { ledger.hostTerminal(write, lifecycle); },
+    bindAbortSignal: (abortSignal) => ledger.bindAbortSignal(abortSignal),
     select: (outcome) => { ledger.select(outcome); },
     commit: (enqueue) => ledger.commit(enqueue),
     nextAttempt: () => {

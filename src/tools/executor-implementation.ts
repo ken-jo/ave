@@ -50,6 +50,7 @@ import {
 } from "../permissions/plugin-operation-grant.js";
 import type { PluginRuntimeGenerationAccess } from "../plugins/plugin-host-generation.js";
 import type { PluginOperationIdentityProvider } from "./invocation-services.js";
+import { turnExtensionPolicyContext } from "../shared/turn-extension-policy.js";
 
 const log = createLogger("executor");
 /**
@@ -710,7 +711,9 @@ export class ToolExecutor {
   ): Promise<ToolResult | RationaleRequiredExecuteOneOutcome> {
     // Sealed-but-open work is admitted and writes its host-shutdown row; only a closed audit refuses without one.
     // A sealed start takes back the attempt its rationale card held.
-    const admission = admitToolInvocationWhileAuditOpen(toolUse.name, opts.abortSignal, rationaleResumeContext ? toolUse.id : undefined);
+    const signals = [opts.abortSignal, turnExtensionPolicyContext.getStore()?.abortSignal];
+    const admission = admitToolInvocationWhileAuditOpen(toolUse.name, AbortSignal.any(signals.filter((signal) => signal !== undefined)),
+      rationaleResumeContext ? toolUse.id : undefined);
     if (!admission) {
       return {
         tool_use_id: toolUse.id,

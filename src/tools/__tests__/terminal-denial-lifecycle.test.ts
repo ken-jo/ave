@@ -20,7 +20,7 @@ type Source =
   | "rule" | "unknown-tool" | "human" | "hook-mutation" | "host" | "integrity" | "plugin-generation"
   | "user-abort" | "host-shutdown" | "deadline" | "mid-execution" | "plugin-generation-shutdown"
   | "card-quit" | "card-abort" | "governed-operation" | "governed-auth"
-  | "dir-hook-abort" | "shell-prep-abort" | "human-then-abort" | "human-then-quit";
+  | "dir-hook-abort" | "dir-hook-inherited-abort" | "shell-prep-abort" | "human-then-abort" | "human-then-quit";
 
 /** Each probe loads a fresh module graph, so a sealed or drained ledger never leaks into another case. */
 async function setup(source: Source) {
@@ -46,7 +46,7 @@ async function setup(source: Source) {
   const holds = source === "deadline" || source === "mid-execution" || source === "user-abort";
   const generation = source === "plugin-generation" || source === "plugin-generation-shutdown";
   const governed = source === "governed-operation";
-  const dirHook = source === "dir-hook-abort";
+  const dirHook = source === "dir-hook-abort" || source === "dir-hook-inherited-abort";
   const humanThen = source === "human-then-abort" || source === "human-then-quit";
   const outside = mkdtempSync(join(tmpdir(), "ave-denial-outside-"));
   roots.push(outside);
@@ -76,6 +76,7 @@ async function setup(source: Source) {
   if (holds || generation || source === "host-shutdown") permissions.setRules([{ pattern: TOOL, action: "allow" }]);
   if (source === "shell-prep-abort") permissions.setRules([{ pattern: `Bash(${SHELL_COMMAND})`, action: "allow" }]);
   const controller = new AbortController();
+  const inherited = new AbortController();
   // shell-prep-abort: the Stop lands during the exact Settings lookup (invocation-runner.ts lookupUserDecision), the last
   // await before the real shell preparation with no abort re-check between them.
   if (source === "shell-prep-abort") {
@@ -103,7 +104,7 @@ async function setup(source: Source) {
   // dir-hook-abort: the Stop lands during the folder card's PermissionRequest hook, so it returns the cancelled deny.
   if (dirHook) {
     vi.spyOn(hooks, "runPermissionRequest").mockImplementation(async () => {
-      controller.abort();
+      (source === "dir-hook-inherited-abort" ? inherited : controller).abort();
       return new Promise(() => {});
     });
   }
@@ -145,15 +146,19 @@ async function setup(source: Source) {
     : source === "shell-prep-abort" ? { command: SHELL_COMMAND, executionMode: "host", justification: "Print the lock fixture" }
     : {};
   const name = source === "unknown-tool" ? "missing_probe" : source === "shell-prep-abort" ? "bash" : TOOL;
-  const run = () => executor.executeAll(ids.map((id) => ({ id, name, input })), {
+  const { turnExtensionPolicyContext } = await import("../../shared/turn-extension-policy.js");
+  const execute = () => executor.executeAll(ids.map((id) => ({ id, name, input })), {
     sessionId: "denial-session", executionCwd: root, permissionContext: userPermissionContext(dirHook ? { trustOrigin: "llm-tool-arg" } : {}), abortSignal: controller.signal,
     ...(source === "governed-auth" ? { pluginAuthLifecycle: authLifecycle } : {}),
   });
+  const run = () => source === "dir-hook-inherited-abort"
+    ? turnExtensionPolicyContext.run({ allowExternalHooks: true, abortSignal: inherited.signal }, execute)
+    : execute();
   const allRows = () => readFileSync(audit.getPermissionAuditLogFile(), "utf8").split("\n").filter(Boolean)
     .map((line) => JSON.parse(line) as Record<string, unknown>).filter((row) => row.decision !== "ask");
   const rows = (id = "denied-call") => allRows().filter((row) => row.toolUseId === id);
   const denials = () => lifecycle.mock.calls.filter(([event]) => event === "PermissionDenied");
-  return { ledger, audit, run, rows, denials, running, release, controller, cardOpen, gate: realGate, saveStarted, persisted, source };
+  return { ledger, audit, run, rows, denials, running, release, controller, inherited, cardOpen, gate: realGate, saveStarted, persisted, source };
 }
 
 type Probe = Awaited<ReturnType<typeof setup>>;
@@ -219,6 +224,15 @@ describe("a permission denial fires one PermissionDenied; a cancellation and a g
     ["plugin-generation", "Plugin generation admission denied: generation gen-1 is retired"],
   ] as const)("deny source %s: one row, one event", async (source, reason) => {
     await run(source, (probe) => expectOneDenial(probe, reason));
+  });
+
+  it("cancels a directory hook when only the inherited signal stops", async () => {
+    await run("dir-hook-inherited-abort", async (probe) => {
+      expect(probe.inherited.signal.aborted).toBe(true);
+      expect(probe.controller.signal.aborted).toBe(false);
+      await expectNoDenial(probe, "user aborted turn");
+      expect(reasons(await settledRow(probe))[1]).toBe("Hook execution cancelled");
+    });
   });
 
   it.each([

@@ -1511,6 +1511,7 @@ async function runToolInvocationAttempt(
       | { allowed: true; approvedDirectory: string; scope: "turn" | "session" | "always"; permissionResult?: PermissionCheckResult; humanApproved?: boolean; pendingRationale?: true; requestHumanApproval?: NonNullable<AuthorizationStageContext["directoryAuthorization"]>["requestHumanApproval"]; approvalDecision?: ApprovalDecision }
       | { allowed: false; result: ToolResult; approvalDecision?: ApprovalDecision }
     > => {
+      const abortSignal = services.invocationTerminal.bindAbortSignal(behavior?.abortSignal);
       const directoryScope = [...(behavior?.allowedDirectories ?? invocationAllowedScope.directories)];
       const makeDirectoryEvaluationContext = (input: Parameters<typeof makeEvaluationContext>[0]): PermissionEvaluationContext =>
         ({ ...makeEvaluationContext(input), allowedDirectories: [...directoryScope] });
@@ -1737,10 +1738,9 @@ async function runToolInvocationAttempt(
           ...hostTerminalApprovalFacts(tool, approvalMemory, finalInput.command),
           ...userOwnedSurfaceCardFacts(dirLayerResult),
         };
-
         const permissionHook = await runScriptHook(services.scriptHookManager, "perm", toolUse.name, source,
           invocationCategory, finalInput, sessionId, invocationPermissionContext, tool.mcpServerId, tool.pluginId,
-          undefined, undefined, tool.pluginGeneration !== undefined, behavior?.abortSignal ?? abortSignal);
+          undefined, undefined, tool.pluginGeneration !== undefined, abortSignal);
         if (permissionHook.decision === "deny") {
           const reason = permissionHook.reason;
           const denied = refusal(reason, RULE_PROVENANCE);
@@ -1764,7 +1764,7 @@ async function runToolInvocationAttempt(
           decision = await services.approvalGate.requestAndWait({
             ...approvalRequest,
             // A directory confirm parks the turn exactly like a tool ask does.
-            ...((behavior?.abortSignal ?? abortSignal) === undefined ? {} : { abortSignal: behavior?.abortSignal ?? abortSignal }),
+            abortSignal,
           });
         } catch (approvalErr) {
           const msg = t("be_executor.dirPolicyError", { name: toolUse.name, error: errorMessage(approvalErr) });
