@@ -324,6 +324,17 @@ static int fingerprint_matches(int fd, const char *expected) {
   return fingerprint(fd, &identity, found) && strcmp(found, expected) == 0;
 }
 
+#if defined(AVE_DIR_OPS_TEST_SWAP_RESTORED) || defined(AVE_DIR_OPS_TEST_FAIL_RESTORED) || defined(AVE_DIR_OPS_TEST_SWAP_COMMIT)
+static void swap_file(int directory, const char *part) {
+  if (renameat(directory, part, directory, "probe-written") != 0) return;
+  const int replacement = openat(directory, part, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+  if (replacement < 0) return;
+  static const unsigned char text[] = "replacement";
+  (void)write_all(replacement, text, sizeof text - 1);
+  close(replacement);
+}
+#endif
+
 // An incomplete or replaced restoration is left at part. The source is still held and is never retired on that result.
 enum restore_result { RESTORE_BLOCKED, RESTORE_PART_LEFT, RESTORE_VERIFIED };
 
@@ -338,12 +349,23 @@ static enum restore_result copy_held_source(int directory, int source, const cha
     const ssize_t count = read(source, bytes, sizeof bytes);
     if (count < 0 && errno == EINTR) continue;
     if (count == 0) break;
+#if defined(AVE_DIR_OPS_TEST_FAIL_RESTORED)
+    if (count > 0) (void)write_all(target, bytes, 1);
+    copied = 0;
+    break;
+#endif
     if (count < 0 || write_all(target, bytes, (size_t)count) != 0) {
       copied = 0;
       break;
     }
   }
   copied = copied && fsync(target) == 0;
+#if defined(AVE_DIR_OPS_TEST_SWAP_RESTORED)
+  if (copied) swap_file(directory, part);
+#endif
+#if defined(AVE_DIR_OPS_TEST_FAIL_RESTORED)
+  swap_file(directory, part);
+#endif
   const int verified = copied && fingerprint_matches(source, expected) && names_file(directory, part, target);
   return close(target) == 0 && verified ? RESTORE_VERIFIED : RESTORE_PART_LEFT;
 }
@@ -536,6 +558,9 @@ static int remove_own_part(int to, const char *part, const struct written_file *
     if (errno != ENOTSUP && errno != EINVAL) return 0;
     struct stat there;
     if (fstatat(to, aside, &there, AT_SYMLINK_NOFOLLOW) == 0 || errno != ENOENT) return 0;
+#if defined(AVE_DIR_OPS_TEST_SWAP_BEFORE_PLAIN_RENAME)
+    if (renameat(to, part, to, "probe-written") == 0) (void)mkdirat(to, part, 0700);
+#endif
     if (renameat(to, part, to, aside) != 0) return errno == ENOENT;
     exclusive = 0;
   }
@@ -699,7 +724,24 @@ static int run_copy(char **argv) {
   if (!proceed("copied")) return abandon(to, part, &written, 0);
   const int found = replaceable(to, target);
   if (found != 0) return stopped_copy(to, part, &written, "refused target", EXIT_REFUSED);
-  if (renameat(to, part, to, target) != 0) return abandon(to, part, &written, errno);
+  if (!names_file(to, part, written.fd)) {
+    struct stat entry;
+    if (fstatat(to, part, &entry, AT_SYMLINK_NOFOLLOW) != 0 && errno == ENOENT) return refused("target removed");
+    return refused("target left");
+  }
+#if defined(AVE_DIR_OPS_TEST_SWAP_COMMIT)
+  swap_file(to, part);
+#endif
+  if (renameatx_np(to, part, to, target, RENAME_EXCL) != 0) {
+    const int code = errno;
+    if (code == EEXIST || code == ENOTSUP || code == EINVAL) return stopped_copy(to, part, &written, "refused target", EXIT_REFUSED);
+    return abandon(to, part, &written, code);
+  }
+  if (!names_file(to, target, written.fd)) {
+    // Preserve the entry even if the part name is occupied again.
+    const int moved_back = renameatx_np(to, target, to, part, RENAME_EXCL);
+    return refused(moved_back == 0 ? "target left" : "target changed");
+  }
   return done("committed");
 }
 

@@ -1166,12 +1166,18 @@ Important rules:
   a killed copy's temporary file is removed through the chosen folder, held
   anew, only after it is moved aside and checked to be the file the copy
   wrote, a helper that stops a copy itself removes its temporary file the
-  same way. When the helper leaves a file under a hidden name, the host
-  records it for the next start. The sweep checks the recorded identity
-  before retrying removal, or restores a mismatched file by an exclusive
-  copy to the original part name. If verification or cleanup fails, it
-  logs the paths and leaves the hidden entry (README in
-  `native/macos-dir-ops`). A closed dialog, a failed download or a failed
+  same way. The writing handle supplies ownership. Record reads, record
+  writes, removal retries and restoration use held directories. The sweep
+  compares the recorded fingerprint inside the held operation before
+  restoring a mismatched file by an exclusive copy. The source stays if
+  the destination cannot be verified against the new writing handle.
+  When exclusive isolation is unavailable, cleanup keeps and records the
+  entry. Cross-volume publication verifies the part and the final entry
+  around an exclusive rename. See the [helper protocol](../../native/macos-dir-ops/README.md).
+
+  POSIX has no unlink-if-identity. The remaining windows are (a) between the final descriptor verify and the unlink of a random hidden name, and (b) after a verified restore or commit. Both are accepted: at (b), the restored or committed file was verified in place and visible, so a later change is the user's own act.
+
+  A closed dialog, a failed download or a failed
   move removes the staged file and is reported cancelled or failed.
   Staged files a crash left behind are removed at the next start. At most 4
   downloads wait for a dialog at once, and a waiting one that writes more

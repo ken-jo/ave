@@ -243,9 +243,9 @@ let linuxRename: ((fd: number, from: string, to: string) => void) | undefined;
 function renameExclusive(fd: number, from: string, to: string): void {
   if (linuxRename === undefined) {
     const ffi = requireNative("koffi") as typeof import("koffi");
-    const rename = ffi.load(null).func("int renameat2(int, const char *, int, const char *, unsigned int)");
+    const renameAt2 = ffi.load(null).func("int renameat2(int, const char *, int, const char *, unsigned int)");
     linuxRename = (directory, source, target) => {
-      if (rename(directory, source, directory, target, RENAME_NOREPLACE) === 0) return;
+      if (renameAt2(directory, source, directory, target, RENAME_NOREPLACE) === 0) return;
       const errno = ffi.errno();
       throw Object.assign(new Error("the exclusive download rename failed"), { code: getSystemErrorName(-errno) });
     };
@@ -499,8 +499,22 @@ function descriptorFileOperations(): HeldFileOperations {
         }
         await copy.sync();
         if (!proceed("copied")) return "cancelled";
-        assertReplaceable(toFd, target);
-        replaceStagedFile(inHeld(toFd, part), inHeld(toFd, target));
+        const current = await copy.stat({ bigint: true });
+        if (!entryMatches(toFd, part, current)) throw new HeldDirectoryRefusedError("target");
+        try {
+          renameExclusive(toFd, part, target);
+        } catch (error) {
+          if (["EEXIST", "ENOTSUP", "EOPNOTSUPP", "EINVAL"].includes(codeOf(error) ?? "")) throw new HeldDirectoryRefusedError("target");
+          throw error;
+        }
+        if (!entryMatches(toFd, target, current)) {
+          try {
+            renameExclusive(toFd, target, part);
+          } catch (error) {
+            log.warn({ path: join(to.path, target), part, code: codeOf(error) }, "a mismatched download target could not be moved back exclusively");
+          }
+          throw new HeldDirectoryRefusedError("target");
+        }
         committed = true;
         return "committed";
       } catch (error) {
