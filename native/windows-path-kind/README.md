@@ -64,6 +64,17 @@ file-time epoch.
 | `birth` (host, POSIX hosts) | `st_birthtime` ns, nonzero | As `creation`, where the file system records birth time. | Set by anyone who can change the file's times on file systems that allow it; absent on file systems without birth time, where the identity stays unresolved. |
 | `fingerprint` (host) | `<size>:<mtime-ns>:<head>:<tail>` | The file has these bytes at both ends, this size and this modification time. | The middle of the file, or a rewrite that restores size, ends and mtime. |
 
+Name tunnelling also changes a file's own creation time when it is renamed:
+on a volume that tunnels (the system volume by default), a file renamed onto a
+name another file left within about 15 seconds takes that file's creation
+time. Checking a moved name by ID and creation time therefore refused
+replacements and commits that had happened. Every rename now checks the
+moved name by the held handle's file ID and volume, and reads the creation
+time again from that handle; the copy and rename report it as
+`published <token>`, which the host records before it resolves its record.
+A record written before the commit rename is recovered with
+`--renamed-writer`.
+
 Tokens match exactly: same volume, same ID, same class and same value. A
 class the reader does not know, a wildcard, `none`, or an empty value is
 unresolved and matches nothing. This helper treats every class other than
@@ -103,14 +114,14 @@ authorizes the action. Other input or EOF stops it. The recovery modes are:
 | `--dir-remove-record <name> --expect <token> --length <n> --digest <sha256>` | `removed` after observed absence or `kept` if verification or removal remains incomplete. An already absent entry replies `absent`. |
 | `--dir-remove-id <name> --expect <token> [--content <fingerprint>]` | `removed`, `absent`, or `left` with an optional named leftover. |
 | `--dir-restore <hidden> <part> --expect <token> --content <fingerprint>` | `restored` after verification and source retirement, `absent` if the source is missing, or `left` with an optional named leftover. |
-| `--dir-restore-target <hidden> <target> --expect <token> [--content <fingerprint>] [--writer <token> \| --retire]` | `resolved` after verified rollback or retirement, or `left` if unresolved. The writer must share the old file's volume and differ in ID. `--retire` retries a verified commit recorded by an older release. |
+| `--dir-restore-target <hidden> <target> --expect <token> [--content <fingerprint>] [--writer <token> \| --renamed-writer <token> \| --retire]` | `resolved` after verified rollback or retirement, or `left` if unresolved. The writer must share the old file's volume and differ in ID. `--writer` is the identity published after the commit and matches in full; `--renamed-writer` is the identity recorded before the commit rename and matches the target by file ID and volume alone. `--retire` retries a verified commit recorded by an older release. |
 
 Options follow the positional operands in any order; a repeated, unknown or
 valueless option is a usage error. The staged-file modes are:
 
 | Mode and operands | Terminal replies |
 | --- | --- |
-| `--dir-rename <dir…> <name> <to…> <target> --expect <token>` | `committed`, `cross-volume`, `replace`, or `refused source` (exit 3) when the source is not the staged file. |
+| `--dir-rename <dir…> <name> <to…> <target> --expect <token>` | `committed` after `published <token>`, `cross-volume`, `replace`, or `refused source` (exit 3) when the source is not the staged file. |
 | `--dir-remove <dir…> <name> --expect <token>` | `removed`, `absent`, or `refused source` (exit 3) when the entry is not the staged file. |
 | `--dir-stamp <dir…> <name>` | `stamp <token>` of the regular file at the name, `absent`, or `refused source` for another kind of entry. |
 | `--dir-sweep <dir…> [--keep-records]` | `swept <n>`. Each entry is removed only if it still has the stamp the listing reported for it. |
@@ -130,14 +141,16 @@ original part name.
 
 `--dir-copy` takes the hidden name after the part name and checks source
 and target before `ready`. A destination volume without
-`FILE_SUPPORTS_OPEN_BY_FILE_ID` is `refused to` before `ready`. It emits
+`FILE_SUPPORTS_OPEN_BY_FILE_ID` (FAT, exFAT, and network shares that do
+not offer it) is `refused volume` before `ready`. It emits
 `destination-id <token>` from the held destination directory and uses the full
 volume serial to bind all subsequent file identities. Its exclusive create
 can fail with plain `failed EEXIST`. On success it emits `writing <token>`
 from the open part handle before progress or `copied`. It reports progress
 per 1 MiB chunk and flushes every 16 MiB. It keeps the handle open across
 `copied` and checks the part's identity before exclusive rename and the
-target's identity after rename. A post-rename mismatch triggers exclusive
+target's file ID and volume after rename, then emits `published <token>` with
+the creation time the committed file has at the target. A post-rename mismatch triggers exclusive
 rollback. Commit refusals are `refused target removed` when the part is gone,
 `refused target left` with the optional named leftover when it remains, or
 `refused target changed` if rollback fails. All use exit 3. Plain copy
