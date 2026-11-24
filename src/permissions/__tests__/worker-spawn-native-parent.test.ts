@@ -107,4 +107,23 @@ describe.skipIf(process.platform !== "win32")("contained worker under a real plu
     child.link.terminate("stop");
     await child.waitForExit();
   });
+
+  it("refuses a worker once its parent is gone, binds a later one to the replacement, and ends it with that parent", async () => {
+    const first = await startPluginChild();
+    first.link.terminate("stop");
+    await first.waitForExit();
+    await expect(startWorker()).rejects.toThrow("refusing a container worker whose plugin has no live container process");
+    expect(state.natives).toHaveLength(1);
+
+    const replacement = await startPluginChild();
+    const worker = await startWorker();
+    const exited = new Promise<unknown>((resolve) => { worker.onExit(resolve); });
+    expect(state.natives).toHaveLength(3);
+    const workerNative = state.natives[2]!;
+    expect(workerNative.dispose).not.toHaveBeenCalled();
+    replacement.link.terminate("stop");
+    await replacement.waitForExit();
+    expect(workerNative.dispose).toHaveBeenCalled();
+    await exited;
+  });
 });
