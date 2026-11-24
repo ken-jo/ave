@@ -5,7 +5,10 @@ import { promisify } from "node:util";
 const HELPER = "ave-path-kind.exe";
 const launches: string[] = [];
 
-/** Pass-through child_process that records each launch of the native path helper by its first argument; launches from worker threads are not seen. */
+/**
+ * Pass-through child_process that records each launch of the native path helper by its first argument.
+ * Worker-thread launches are not counted (for example, repository inspection if a verified Windows Git is ever added).
+ */
 export function countingChildProcess(actual: typeof ChildProcess): typeof ChildProcess {
   const counted = <F extends (...args: never[]) => unknown>(launch: F): F => {
     const wrapped = ((...args: Parameters<F>) => {

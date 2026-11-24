@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { takeWindowsHelperLaunches } from "../../../__tests__/support/windows-helper-spawns.js";
 import { configureHostResources } from "../../../main/host-resources.js";
-import { queryWindowsSystemDirectory, windowsPathKindHelperIn } from "../../../main/windows-path-kind-launcher.js";
+import { queryWindowsSystemDirectory, queryWindowsSystemDirectorySync, windowsPathKindHelperIn } from "../../../main/windows-path-kind-launcher.js";
 import { pinWindowsPaths } from "../../../shared/windows-path-facts.js";
 import { getMainWindows, registerMainWindow, setSessionContentsLookup, unregisterMainWindow } from "../../../main/app-state.js";
 
@@ -42,9 +42,10 @@ const helperPresent = process.platform === "win32" && existsSync(windowsPathKind
 const appWindows: Array<{ isDestroyed: () => boolean; webContents: object }> = [];
 const deps = { auditLogger: { log: vi.fn() }, getAppWindows: () => appWindows, getMainWindow: () => null } as never;
 
-// Ratchet: these are the counts measured on main cde88405d. Lower them when a change removes launches; never raise them.
-const PREVIEW_TEXT_OPEN_LAUNCHES = {};
+// The ceiling binds. The exact pin is the current measurement (0 on main cde88405d): lower it when launches are removed;
+// raise it only up to PREVIEW_TEXT_OPEN_TARGET, stating the measured count in the PR.
 const PREVIEW_TEXT_OPEN_TARGET = 4;
+const PREVIEW_TEXT_OPEN_LAUNCHES = {};
 
 let root: string;
 
@@ -57,6 +58,11 @@ function documentEvent() {
 }
 
 const total = (launches: Record<string, number>) => Object.values(launches).reduce((sum, count) => sum + count, 0);
+
+// Windows CI builds the helper, so a missing helper there is a failure, not a skip.
+it.runIf(Boolean(process.env.CI) && process.platform === "win32")("has the native path helper built on Windows CI", () => {
+  expect(helperPresent).toBe(true);
+});
 
 // The native helper only runs on Windows; elsewhere these launches do not exist.
 describe.skipIf(!helperPresent)("preview native helper launch budget", () => {
@@ -86,6 +92,12 @@ describe.skipIf(!helperPresent)("preview native helper launch budget", () => {
     expect(takeWindowsHelperLaunches()).toEqual({ "--system-directory": 1 });
   });
 
+  it("counts a synchronous helper spawn as one launch", () => {
+    takeWindowsHelperLaunches();
+    queryWindowsSystemDirectorySync();
+    expect(takeWindowsHelperLaunches()).toEqual({ "--system-directory": 1 });
+  });
+
   it.each(["first", "repeated"])("opens a text preview within its launch budget (%s open)", async () => {
     const event = documentEvent();
     for (const window of getMainWindows()) unregisterMainWindow(window);
@@ -95,10 +107,12 @@ describe.skipIf(!helperPresent)("preview native helper launch budget", () => {
     const read = handlers.get(CHANNELS.preview.readFile);
     if (!read) throw new Error("preview.readFile is not registered");
     const result = await read(event, join(root, "notes.txt"), { sessionId: "session-one" }) as PreviewReadFileResult;
+    // Let launches the handler left running land in this window, not the next one.
+    await new Promise(resolve => setImmediate(resolve));
     const launches = takeWindowsHelperLaunches();
     expect(result, JSON.stringify(result)).toMatchObject({ ok: true, content: "plain" });
+    expect(total(launches), JSON.stringify(launches)).toBeLessThanOrEqual(PREVIEW_TEXT_OPEN_TARGET);
     expect(launches, JSON.stringify(launches)).toEqual(PREVIEW_TEXT_OPEN_LAUNCHES);
-    expect(total(launches)).toBeLessThanOrEqual(PREVIEW_TEXT_OPEN_TARGET);
     event.sender.emit("destroyed");
   });
 });

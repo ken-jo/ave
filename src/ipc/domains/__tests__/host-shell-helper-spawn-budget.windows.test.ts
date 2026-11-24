@@ -44,11 +44,19 @@ const SESSION_ID = "spawn-budget-session";
 const resources = new PermissionTestResources();
 const cleanup: Array<() => Promise<void>> = [];
 
-// Ratchet: these are the counts measured on main cde88405d. Lower them when a change removes launches; never raise them.
+// LEAD target: at most 4 helper launches per phase (card, approved) for Bash and PowerShell.
+const HOST_SHELL_ADMISSION_TARGET = 4;
+// Binding per-phase ceiling, measured 0 on main cde88405d. PR-L raises this to 4 (the LEAD target) in the same commit that adds the
+// lookups, stating the measured count per phase in the PR body; a measured count above 4 is not raised: that PR waits for the
+// resident-helper design instead.
+const HOST_SHELL_ADMISSION_MEASURED = 0;
+// Per-verb detail of the current measurement; lower it when launches are removed.
 const HOST_SHELL_ADMISSION_LAUNCHES = {
   bash: { card: {}, approved: {} },
   powershell: { card: {}, approved: {} },
 } as const;
+
+const total = (launches: Record<string, number>) => Object.values(launches).reduce((sum, count) => sum + count, 0);
 
 afterEach(async () => {
   for (const close of cleanup.splice(0)) await close();
@@ -101,6 +109,11 @@ async function subject() {
   const event = { sender: contents, senderFrame: contents.mainFrame } as unknown as IpcMainInvokeEvent;
   return { root, executor, registry, event, card: firstCard.promise };
 }
+
+// Windows CI builds the helper, so a missing helper there is a failure, not a skip.
+it.runIf(Boolean(process.env.CI) && process.platform === "win32")("has the native path helper built on Windows CI", () => {
+  expect(helperPresent).toBe(true);
+});
 
 // The native helper only runs on Windows; elsewhere these launches do not exist.
 describe.skipIf(!helperPresent)("host shell admission native helper launch budget", () => {
@@ -155,6 +168,9 @@ describe.skipIf(!helperPresent)("host shell admission native helper launch budge
     expect(result.is_error, JSON.stringify(result)).toBeUndefined();
     expect(result.content).toBe("admitted");
     expect(execute).toHaveBeenCalledOnce();
+    expect(HOST_SHELL_ADMISSION_MEASURED).toBeLessThanOrEqual(HOST_SHELL_ADMISSION_TARGET);
+    expect(total(beforeCard), JSON.stringify(beforeCard)).toBeLessThanOrEqual(HOST_SHELL_ADMISSION_MEASURED);
+    expect(total(afterApproval), JSON.stringify(afterApproval)).toBeLessThanOrEqual(HOST_SHELL_ADMISSION_MEASURED);
     expect({ card: beforeCard, approved: afterApproval }, JSON.stringify({ card: beforeCard, approved: afterApproval }))
       .toEqual(HOST_SHELL_ADMISSION_LAUNCHES[toolName]);
   });
