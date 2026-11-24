@@ -1,6 +1,6 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { copyFileSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import * as runtime from "@anthropic-ai/sandbox-runtime";
@@ -19,6 +19,9 @@ import { configureHostResources } from "../../main/host-resources.js";
 import { prepareSrtWinExecutable, srtWinPrivateDirectories, sweepStaleSrtWinDirectories } from "../srt-win-integrity.js";
 import { recoverWindowsAcl, restoreWindowsAcl, stampWindowsAcl } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
 import { readWindowsDenyAcls } from "../windows-deny-acl.js";
+import { openEgressInvocation } from "../egress-invocations.js";
+import { isHostGitWorkspaceAvailable } from "../../shared/host-git.js";
+import { listWatchedQuarantine, WATCHED_ROW_VIOLATION, watchedProtectedRows } from "../windows-watched-rows.js";
 
 useVerifiedAveHomePrivacy();
 
@@ -46,6 +49,51 @@ describe.runIf(process.platform === "win32" && hasNativeSrtWinBuildReceipt())("W
           if($ace.IdentityReference.Value -eq '${sid}') { $p; $ace.ToString(); [string]$ace.FileSystemRights; [string]$ace.InheritanceFlags; [string]$ace.PropagationFlags; [string]$ace.IsInherited }
         }
       }`], { encoding: "utf8", env: windowsPowerShellEnv(), windowsHide: true });
+  }
+
+  // Quarantine moves are same-volume renames; the per-run Ave home may sit on another volume than the fixture.
+  function sameVolumeAveHome(): string {
+    const home = join(container, "quarantine-home");
+    mkdirSync(home, { recursive: true });
+    return home;
+  }
+
+  function entriesBelow(dir: string): string[] {
+    return (readdirSync(dir, { recursive: true }) as string[]).map(entry => entry.replace(/\\/g, "/")).sort();
+  }
+
+  async function grantedWorkspace() {
+    const workspace = join(root, "workspace");
+    mkdirSync(workspace);
+    await initializeRequiredSandbox({ allowRead: [root] });
+    const held = await holdWindowsFilesystemGrant({ label: "watched-tasks-native", allowRead: [], allowWrite: [workspace] });
+    expect(lstatSync(join(workspace, ".vscode"), { throwIfNoEntry: false })).toBeUndefined();
+    expect(watchedProtectedRows()).toContain(join(workspace, ".vscode"));
+    return { workspace, held };
+  }
+
+  // Adds an owner deny ACE for `rights` to the fixture folder; returns its removal.
+  function denyOwner(path: string, rights: number): () => void {
+    const command = `$ErrorActionPreference='Stop'; $path='${path.replace(/'/g, "''")}';
+      $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User;
+      $rule=[Security.AccessControl.FileSystemAccessRule]::new($sid, [Security.AccessControl.FileSystemRights]${rights}, 'Deny');
+      $acl=Get-Acl -LiteralPath $path; $acl.AddAccessRule($rule); Set-Acl -LiteralPath $path -AclObject $acl;`;
+    const run = (script: string) => execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"),
+      ["-NoProfile", "-NonInteractive", "-Command", script], { env: windowsPowerShellEnv(), windowsHide: true });
+    run(command);
+    return () => { run(command.replace("$acl.AddAccessRule($rule)", "$acl.RemoveAccessRuleSpecific($rule)")); };
+  }
+
+  async function runPlantingTasks(workspace: string) {
+    const invocation = openEgressInvocation({ kind: "shell", toolName: "bash", toolUseId: undefined,
+      context: { sessionId: undefined, workspaceRoot: workspace, approvalSurface: "unavailable" } });
+    const vscode = join(workspace, ".vscode");
+    const wrapped = await wrapToolCommand(`mkdir "${vscode}" & echo planted > "${join(vscode, "tasks.json")}" & echo allowed > "${join(workspace, "allowed")}"`,
+      { commandId: invocation.token });
+    spawnSync(wrapped.argv[0] ?? "", wrapped.argv.slice(1), { env: { ...process.env, ...wrapped.env }, cwd: root, windowsHide: true, stdio: "ignore" });
+    expect(readFileSync(join(vscode, "tasks.json"), "utf8")).toContain("planted");
+    expect(wrapped.cleanupCompleted).toBeDefined();
+    return { wrapped, invocation };
   }
 
   beforeEach(async (context) => {
@@ -127,7 +175,7 @@ describe.runIf(process.platform === "win32" && hasNativeSrtWinBuildReceipt())("W
     expect(lstatSync(join(root, "absent"), { throwIfNoEntry: false })).toBeUndefined();
   }, 60_000);
 
-  it("protects an earlier native wrap while a later worker grant permits a sibling write", async () => {
+  it("watches an absent row under a later worker grant and quarantines what an earlier wrap wrote there when the grant ends", async () => {
     const workspace = join(root, "workspace");
     mkdirSync(workspace);
     const target = join(workspace, "secret");
@@ -138,18 +186,90 @@ describe.runIf(process.platform === "win32" && hasNativeSrtWinBuildReceipt())("W
     const started = performance.now();
     const held = await holdWindowsFilesystemGrant({ label: "absent-deny-native", allowRead: [], allowWrite: [workspace] });
     console.log(`GRANT_LATENCY_MS=${(performance.now() - started).toFixed(2)}`);
+    let released = false;
     try {
-      expect(lstatSync(target, { throwIfNoEntry: false })).toBeDefined();
+      expect(lstatSync(target, { throwIfNoEntry: false })).toBeUndefined();
+      expect(watchedProtectedRows()).toContain(target);
       const allowed = await wrapToolCommand(`echo allowed > "${sibling}"`, { commandId: TEST_COMMAND_ID });
       execFileSync(allowed.argv[0]!, allowed.argv.slice(1), { env: { ...process.env, ...allowed.env }, cwd: root, windowsHide: true });
       expect(readFileSync(sibling, "utf8")).toContain("allowed");
-      expect(() => execFileSync(earlier.argv[0]!, earlier.argv.slice(1), {
-        env: { ...process.env, ...earlier.env }, cwd: root, windowsHide: true,
-      })).toThrow();
-      expect(readFileSync(target, "utf8")).not.toContain("unsafe");
-    } finally {
+      // The earlier wrap is a writer whose end Ave does not observe; its write is caught when the grant that reached the row ends.
+      execFileSync(earlier.argv[0] ?? "", earlier.argv.slice(1), { env: { ...process.env, ...earlier.env }, cwd: root, windowsHide: true });
+      expect(readFileSync(target, "utf8")).toContain("unsafe");
+      expect(isHostGitWorkspaceAvailable(workspace)).toBe(false);
+      vi.stubEnv("AVE_HOME", sameVolumeAveHome());
+      released = true;
       held.release();
+      await vi.waitFor(() => expect(lstatSync(target, { throwIfNoEntry: false })).toBeUndefined(), { timeout: 15_000 });
+      const [entry, ...rest] = listWatchedQuarantine();
+      expect(rest).toEqual([]);
+      expect(entry).toMatchObject({ original: target, row: target });
+      expect(readFileSync(entry?.quarantined ?? "", "utf8")).toContain("unsafe");
+      expect(isHostGitWorkspaceAvailable(workspace)).toBe(true);
+    } finally {
+      if (!released) held.release();
     }
+  }, 60_000);
+
+  it("creates nothing for a fresh git workspace grant or a home-root grant, and git status stays clean", async () => {
+    const workspace = join(root, "workspace");
+    mkdirSync(workspace);
+    const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=alice", "-c", "user.email=alice@example.com", ...args],
+      { cwd: workspace, encoding: "utf8", windowsHide: true });
+    git("init", "-q");
+    writeFileSync(join(workspace, "README.md"), "fixture\n");
+    git("add", "README.md");
+    git("commit", "-q", "-m", "fixture");
+    const before = entriesBelow(root);
+    await initializeRequiredSandbox({ allowRead: [root] });
+    for (const allowWrite of [[workspace], [root]]) {
+      const held = await holdWindowsFilesystemGrant({ label: "watched-fresh-native", allowRead: [], allowWrite });
+      try {
+        expect(entriesBelow(root)).toEqual(before);
+        expect(watchedProtectedRows()).toContain(join(allowWrite[0] ?? "", ".vscode"));
+      } finally { held.release(); }
+    }
+    await resetAsrtSandbox();
+    expect(entriesBelow(root)).toEqual(before);
+    expect(git("status", "--porcelain")).toBe("");
+  }, 120_000);
+
+  it("quarantines a .vscode\\tasks.json a command created under a worker grant when the command ends", async () => {
+    const { workspace, held } = await grantedWorkspace();
+    try {
+      const { wrapped, invocation } = await runPlantingTasks(workspace);
+      expect(isHostGitWorkspaceAvailable(workspace)).toBe(false);
+      vi.stubEnv("AVE_HOME", sameVolumeAveHome());
+      invocation.release();
+      const outcome = await wrapped.cleanupCompleted;
+      expect(outcome?.failure).toBeUndefined();
+      expect(outcome?.notice).toContain(WATCHED_ROW_VIOLATION);
+      expect(lstatSync(join(workspace, ".vscode"), { throwIfNoEntry: false })).toBeUndefined();
+      const [entry, ...rest] = listWatchedQuarantine();
+      expect(rest).toEqual([]);
+      expect(entry).toMatchObject({ original: join(workspace, ".vscode"), row: join(workspace, ".vscode"), commandId: invocation.token });
+      expect(readFileSync(join(entry?.quarantined ?? "", "tasks.json"), "utf8")).toContain("planted");
+      expect(readFileSync(join(workspace, "allowed"), "utf8")).toContain("allowed");
+      expect(isHostGitWorkspaceAvailable(workspace)).toBe(true);
+    } finally { held.release(); }
+  }, 60_000);
+
+  it("fails closed and moves nothing when the created row cannot be quarantined", async () => {
+    const { workspace, held } = await grantedWorkspace();
+    try {
+      const { wrapped, invocation } = await runPlantingTasks(workspace);
+      const home = sameVolumeAveHome();
+      writeFileSync(join(home, "sandbox-quarantine"), "");
+      vi.stubEnv("AVE_HOME", home);
+      invocation.release();
+      const outcome = await wrapped.cleanupCompleted;
+      expect(outcome?.notice).toBeUndefined();
+      expect(outcome?.failure).toContain(JSON.stringify(join(workspace, ".vscode")));
+      expect(readFileSync(join(workspace, ".vscode", "tasks.json"), "utf8")).toContain("planted");
+      expect(isHostGitWorkspaceAvailable(workspace)).toBe(false);
+      rmSync(join(workspace, ".vscode"), { recursive: true });
+      expect(isHostGitWorkspaceAvailable(workspace)).toBe(true);
+    } finally { held.release(); }
   }, 60_000);
 
   it("keeps a machine file unreadable after its parent receives a write grant", async () => {
@@ -179,38 +299,31 @@ describe.runIf(process.platform === "win32" && hasNativeSrtWinBuildReceipt())("W
       .rejects.toThrow(/glob/i);
   }, 60_000);
 
-  it("refuses a dropped native placeholder when its fixture parent denies owner creation", async () => {
+  it("watches an absent row whose fixture parent denies owner creation without creating it", async () => {
     const workspace = join(root, "workspace");
     mkdirSync(workspace);
     const target = join(workspace, "secret");
     await initializeRequiredSandbox({ allowRead: [root], denyRead: [target], denyWrite: [target] });
-    const command = `$ErrorActionPreference='Stop'; $path='${workspace.replace(/'/g, "''")}';
-      $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User;
-      $rule=[Security.AccessControl.FileSystemAccessRule]::new($sid, [Security.AccessControl.FileSystemRights]3, 'Deny');
-      $acl=Get-Acl -LiteralPath $path; $acl.AddAccessRule($rule); Set-Acl -LiteralPath $path -AclObject $acl;`;
-    const run = (script: string) => execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"),
-      ["-NoProfile", "-NonInteractive", "-Command", script], {
-        env: windowsPowerShellEnv(), windowsHide: true,
-      });
-    run(command);
+    const restore = denyOwner(workspace, 2);
     try {
       expect(() => writeFileSync(target, "owner cannot create")).toThrow();
-      await expect(holdWindowsFilesystemGrant({ label: "dropped-deny-native", allowRead: [], allowWrite: [workspace] }).then(held => { held.release(); }))
-        .rejects.toThrow(/verif|DACL/i);
+      const held = await holdWindowsFilesystemGrant({ label: "dropped-deny-native", allowRead: [], allowWrite: [workspace] });
+      try { expect(watchedProtectedRows()).toContain(target); }
+      finally { held.release(); }
       expect(lstatSync(target, { throwIfNoEntry: false })).toBeUndefined();
-    } finally {
-      run(command.replace("$acl.AddAccessRule($rule)", "$acl.RemoveAccessRuleSpecific($rule)"));
-    }
+    } finally { restore(); }
   }, 60_000);
 
-  it("preserves a directory placeholder and verifies its inherited deny", async () => {
+  it("watches an absent directory row instead of creating it", async () => {
     const workspace = join(root, "workspace");
     mkdirSync(workspace);
     const target = join(workspace, "private");
     await initializeRequiredSandbox({ allowRead: [root], denyRead: [target + sep], denyWrite: [target + sep] });
     const held = await holdWindowsFilesystemGrant({ label: "directory-deny-native", allowRead: [], allowWrite: [workspace] });
-    try { expect(lstatSync(target).isDirectory()).toBe(true); }
-    finally { held.release(); }
+    try {
+      expect(lstatSync(target, { throwIfNoEntry: false })).toBeUndefined();
+      expect(watchedProtectedRows()).toContain(target);
+    } finally { held.release(); }
   }, 60_000);
 });
 

@@ -145,6 +145,7 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
   });
 
   it.each([0, 5000, 5001])("logs numeric grant and release timings without identities at %s ms", async duration => {
+    writeFileSync(join(target, "denied"), "");
     await initializeAsrtSandbox({ denyRead: [join(target, "denied")] });
     vi.spyOn(denyAcl, "readWindowsDenyAcls").mockImplementation(paths => paths.map(() => ({
       denyMask: denyAcl.WINDOWS_READ_DENY_MASK, inheritableMask: denyAcl.WINDOWS_READ_DENY_MASK, parentMask: 0x40, directory: false,
@@ -184,6 +185,7 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
   });
 
   it("accumulates repeated reads and assertions and accounts for preparation", async () => {
+    writeFileSync(join(target, "denied"), "");
     await initializeAsrtSandbox({ denyRead: [join(target, "denied")] });
     let now = 0;
     vi.spyOn(performance, "now").mockImplementation(() => now);
@@ -504,6 +506,7 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
 
   it("retains both case-only deny obligations while preparing an overlapping write grant", async () => {
     const paths = [join(target, "Foo"), join(target, "foo")];
+    writeFileSync(join(target, "foo"), "");
     await initializeAsrtSandbox({ denyRead: paths });
     const read = vi.spyOn(denyAcl, "readWindowsDenyAcls").mockImplementation(requests => requests.map(() => ({
       denyMask: denyAcl.WINDOWS_READ_DENY_MASK, inheritableMask: denyAcl.WINDOWS_READ_DENY_MASK, parentMask: 0x40, directory: false,

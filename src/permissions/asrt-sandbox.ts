@@ -27,7 +27,7 @@ import { aveHome, assertAveHomePrivacyForConfinement, getAveHomePrivacyFailure, 
 import { agentPluginDataRoot } from "../marketplace/content/agent-plugin-data.js";
 import { AVE_HOME_ISOLATION_GUARD_ACTIVE, checkSandboxStampTargets, testSandboxPrivateBase } from "../shared/ave-home-test-guard.js";
 import { expandLeadingTilde, leadingTildeHome } from "../shared/home-tilde.js";
-import { holdSandboxGitWrites } from "../shared/host-git.js";
+import { holdSandboxGitWrites, setHostGitWorkspaceGuard } from "../shared/host-git.js";
 import { projectLocalWindowsFilesystemPath, resolvePhysicalFilesystemPath } from "../shared/shell-filesystem-path.js";
 import { compileGlobMatcher, globMatch } from "../lib/glob-matcher.js";
 import { llmRouteBaseUrls } from "../shared/llm-vendor-defaults.js";
@@ -55,6 +55,7 @@ import { defaultHooksDir } from "../hooks/hook-discovery.js";
 import { readWindowsReadDenyEvidence, recheckWindowsReadDenyEvidence, windowsReadDenyEvidence, windowsReadDenyKey, type WindowsReadDenyEvidence, type WindowsReadDenySnapshot } from "../shared/windows-read-deny-evidence.js";
 import type { SandboxWindowsStatusInfo } from "../shared/sandbox-capability-info.js";
 import { readWindowsDenyAcls, WINDOWS_READ_DENY_MASK, WINDOWS_WRITE_DENY_MASK } from "./windows-deny-acl.js";
+import { isWatchedWorkspaceConsumable, placeholderLeftovers, pruneWatchedRows, resetWatchedRows, sweepWatchedRows, watchAbsentProtectedRow, watchedProtectedRows } from "./windows-watched-rows.js";
 
 import type {
   SandboxRuntimeConfig,
@@ -292,17 +293,17 @@ export function closeAllEgressConnections(): number {
 // Retained after initialization so revocation can close connections synchronously.
 let loadedSandboxManagerForRelease: Awaited<ReturnType<typeof loadSandboxManager>> | undefined;
 interface PendingGitCleanup {
-  cleanup: () => string | undefined;
+  cleanup: () => string | undefined | Promise<string | undefined>;
   complete: (outcome: SandboxCleanupOutcome) => void;
   releaseHostGit: () => void;
 }
 const bareRepositoryCleanups = new Map<string, PendingGitCleanup>();
 
-function completeBareRepositoryCleanup(pending: PendingGitCleanup): void {
+async function completeBareRepositoryCleanup(pending: PendingGitCleanup): Promise<void> {
   let failure: string | undefined;
   let notice: string | undefined;
   try {
-    notice = pending.cleanup();
+    notice = await pending.cleanup();
     pending.releaseHostGit();
   } catch (error) {
     failure = t("sandboxPolicy.cleanupFailed", { reason: errorMessage(error) });
@@ -310,12 +311,41 @@ function completeBareRepositoryCleanup(pending: PendingGitCleanup): void {
   } finally { pending.complete({ ...(notice ? { notice } : {}), ...(failure ? { failure } : {}) }); }
 }
 
+setHostGitWorkspaceGuard(workspace => {
+  try { return isWatchedWorkspaceConsumable(workspace); }
+  catch { return false; }
+});
+
+function warnWindowsPlaceholderLeftovers(filesystem: Partial<FilesystemConfig> | undefined): void {
+  try {
+    const leftovers = placeholderLeftovers(spelledPathEntries(filesystem?.denyWrite ?? [], "denyWrite").filter(path => isAbsolute(path) && !containsGlobCharsWin(path)));
+    if (leftovers.length > 0) log.warn(t("sandboxPolicy.placeholderLeftovers", { paths: leftovers.join("\n") }));
+  } catch (error) { log.warn(`[sandbox-placeholder-leftovers] scan failed: ${errorMessage(error)}`); }
+}
+
+// Rows stay watched while a session or live worker write root reaches them; Windows wraps carry no write roots of their own.
+function watchedRootsInUse(session: AsrtSandboxSession | undefined): string[] {
+  return [...liveWindowsWriteRoots(session), ...expandedWindowsDenyGrants(_baseTrustedSettings?.allowWrite ?? [], windowsProfileHome())];
+}
+
+// Command end is a detection point: a created watched row is quarantined before the result reaches its owner.
+function watchedRowsCleanup(commandId: string, command: string): PendingGitCleanup["cleanup"] | undefined {
+  if (process.platform !== "win32" || watchedProtectedRows().length === 0) return undefined;
+  return () => sweepWatchedRows({ commandId, command: command.slice(0, 200) });
+}
+
+// Worker release is a detection point; a failed quarantine stays fail-closed for host consumers.
+function sweepWatchedRowsAfterRelease(session: AsrtSandboxSession, commandId: string): void {
+  void sweepWatchedRows({ commandId }).catch(error => { log.error(errorMessage(error)); })
+    .finally(() => { pruneWatchedRows(watchedRootsInUse(session)); });
+}
+
 // A released token's listener refuses every further connection from then on. On macOS the ended port stays bound for a quarantine, longer while the invocation's process group still has a process in it.
 onEgressInvocationReleased((token, { processGroup }) => {
   const pending = bareRepositoryCleanups.get(token);
   if (pending) {
     bareRepositoryCleanups.delete(token);
-    completeBareRepositoryCleanup(pending);
+    void completeBareRepositoryCleanup(pending);
   }
   loadedSandboxManagerForRelease?.closeInvocationListener(token, processGroup === undefined ? undefined : { processGroup });
 });
@@ -417,6 +447,10 @@ function snapshotWindowsLiveGrants(session: AsrtSandboxSession | undefined): Win
     allowRead: entries.filter(([, counts]) => counts.read > 0).map(([path]) => ({ path, literal: true })),
     allowWrite: entries.filter(([, counts]) => counts.write > 0).map(([path]) => ({ path, literal: true })),
   };
+}
+
+function liveWindowsWriteRoots(session: AsrtSandboxSession | undefined): string[] {
+  return [...(session?.windowsLiveGrants ?? [])].filter(([, counts]) => counts.write > 0).map(([path]) => path);
 }
 
 function filesystemDenyEntryKey(entry: FilesystemPathEntry): string {
@@ -1086,12 +1120,12 @@ export interface SandboxWrapResult {
   readonly gitControlSnapshot?: SandboxGitControlSnapshot;
 }
 
-function trackBareRepositoryCleanup(wrapped: SandboxWrapResult, commandId: string, cleanup: (() => string | undefined) | undefined, released: () => boolean): SandboxWrapResult {
+function trackBareRepositoryCleanup(wrapped: SandboxWrapResult, commandId: string, cleanup: PendingGitCleanup["cleanup"] | undefined, released: () => boolean): SandboxWrapResult {
   if (!cleanup) return wrapped;
   const releaseHostGit = holdSandboxGitWrites(spelledPathEntries(wrapped.filesystemPolicy?.allowWrite ?? [], "allowWrite"));
   const cleanupCompleted = new Promise<SandboxCleanupOutcome>(complete => {
     const pending = { cleanup, complete, releaseHostGit };
-    if (released()) completeBareRepositoryCleanup(pending);
+    if (released()) void completeBareRepositoryCleanup(pending);
     else bareRepositoryCleanups.set(commandId, pending);
   });
   return { ...wrapped, cleanupCompleted };
@@ -1757,7 +1791,7 @@ function windowsDenyTargets<T extends FilesystemPathEntry>(
     }
   });
   const literals = entries.filter((entry) => typeof entry !== "string")
-    .filter(entry => retainedMachineRows.has(entry) || keepWindowsDenyTarget(entry, expandedPaths.get(entry)!, expandedWriteGrants, grantWithin));
+    .filter(entry => (retainedMachineRows.has(entry) && !expandedPaths.has(entry)) || keepWindowsDenyTarget(entry, expandedPaths.get(entry)!, expandedWriteGrants, grantWithin));
   const paths = entries.filter((entry): entry is T & string => typeof entry === "string");
   const homes = sensitiveDenyHomes();
   const aveHomes = [aveHome(), ...homes.map((home) => join(home, ".ave"))];
@@ -1794,7 +1828,7 @@ function windowsDenyTargets<T extends FilesystemPathEntry>(
         return true;
       }
     })
-    .filter(path => retainedMachineRows.has(path) || keepWindowsDenyTarget(path, expandedPaths.get(path)!, expandedWriteGrants, grantWithin))
+    .filter(path => (retainedMachineRows.has(path) && !expandedPaths.has(path)) || keepWindowsDenyTarget(path, expandedPaths.get(path)!, expandedWriteGrants, grantWithin))
     .map((path): T | string => (!/[\\/]$/.test(path) && directories.has(caseFoldForMatch(path.replaceAll("\\", "/"))) ? `${path}\\` : path))
     .concat(literals);
 }
@@ -1808,12 +1842,12 @@ function keepWindowsDenyTarget(
   const path = typeof entry === "string" ? entry : entry.path;
   if (isUncPath(expanded) || ((typeof entry === "string" || !entry.literal) && containsGlobCharsWin(expanded))) return true;
   const target = resolve(toForwardSlashes(expanded));
-  let writeReachable: boolean;
+  let reachingGrants: readonly string[];
   try {
-    writeReachable = expandedGrants.some(grant => grantWithin(grant, target) || grantWithin(target, grant));
+    reachingGrants = expandedGrants.filter(grant => grantWithin(grant, target) || grantWithin(target, grant));
   } catch {
     // An unproven grant identity cannot justify leaving a target unprotected.
-    writeReachable = true;
+    reachingGrants = expandedGrants;
   }
   let present: boolean;
   try {
@@ -1831,7 +1865,11 @@ function keepWindowsDenyTarget(
     present = false;
   }
   if (!present) {
-    if (writeReachable) return true;
+    // Never hand an absent row to the native stamp: it would create it. A reachable row is watched instead.
+    if (reachingGrants.length > 0) {
+      watchAbsentProtectedRow(target, reachingGrants);
+      return false;
+    }
     const key = windowsReadDenyKey(target);
     if (!windowsAbsentDenyWarnings.has(key)) {
       windowsAbsentDenyWarnings.add(key);
@@ -2406,6 +2444,7 @@ async function discardFailedAsrtInitialization(
   _baseReadDenyEvidence = undefined;
   sandboxSession?.windowsLiveGrants.clear();
   sandboxSession = undefined;
+  resetWatchedRows();
   _workerUnixSocketDirs.clear();
   try {
     logResetRows(await SandboxManager.reset());
@@ -2422,8 +2461,29 @@ async function discardFailedAsrtInitialization(
 }
 
 // Initialize once from trusted settings and publish activity only after native execution succeeds. Empty global allow lists plus non-strict mode route each connection to the ask callback; on macOS/Linux accept only listener-vouched identities and literal true allows. Log monitoring defaults off.
+function windowsDenyTargetPresent(path: string): boolean {
+  try { return lstatSync(path, { throwIfNoEntry: false }) !== undefined; }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    // An unreadable target is not proven absent; it keeps its stamp.
+    return code !== "ENOENT" && code !== "ENOTDIR";
+  }
+}
+
+// The only gate between Ave and the native stamp: an absent literal row there would be created as a placeholder. Never reached by a shipping caller; a hit is a policy bug or a race and fails closed.
+function assertWindowsDenyTargetsPresent(paths: readonly string[]): void {
+  if (process.platform !== "win32") return;
+  for (const path of paths) {
+    const spelling = stripExtendedPathPrefix(path);
+    if (isUncPath(spelling) || containsGlobCharsWin(spelling) || !isAbsolute(spelling)) continue;
+    if (!windowsDenyTargetPresent(spelling)) throw new Error(`Windows deny target is absent and would be created: ${spelling}`);
+  }
+}
+
 function checkWindowsSandboxStampTargets(filesystem: Partial<FilesystemConfig> | undefined): void {
-  if (process.platform !== "win32" || !AVE_HOME_ISOLATION_GUARD_ACTIVE) return;
+  if (process.platform !== "win32") return;
+  assertWindowsDenyTargetsPresent([...spelledPathEntries(filesystem?.denyRead ?? [], "denyRead"), ...spelledPathEntries(filesystem?.denyWrite ?? [], "denyWrite")]);
+  if (!AVE_HOME_ISOLATION_GUARD_ACTIVE) return;
   // Check the deny path's runtime expansion without subjecting protective rows to grant admission.
   const targets = [...expandWindowsFsPaths([
     ...(filesystem?.denyRead ?? []),
@@ -2513,6 +2573,7 @@ async function initializeSandboxRuntime(
     // handler would reset it, and revoke its ACEs, while they still run (carried patch part 12).
     if (readAsrtSignalReleaseClaim()) SandboxManager.setSignalCleanupOwnedByHost(true);
     checkWindowsSandboxStampTargets(config.filesystem);
+    if (process.platform === "win32") warnWindowsPlaceholderLeftovers(config.filesystem);
     // From here the runtime may stamp ACEs that only its reset, spawning the private helper copy, releases.
     markSrtWinRuntimeReleasePending();
     const initialConfig = backgroundInitialization
@@ -2617,7 +2678,7 @@ export async function wrapToolCommand(
     checkWindowsSandboxStampTargets(customConfig?.filesystem);
     const result = applySandboxFilesystemPolicy(wrapped, customConfig?.filesystem, () => SandboxManager.cleanupAfterCommand());
     commitWindowsWrapDenies(session, grantRevision, filesystem);
-    return trackBareRepositoryCleanup({ ...result, ...(gitControlSnapshot ? { gitControlSnapshot } : {}), ...(customConfig?.filesystem ? { filesystemPolicy: customConfig.filesystem } : {}), ...(notices.length ? { notices: Object.freeze(notices) } : {}) }, options.commandId, cleanupBare,
+    return trackBareRepositoryCleanup({ ...result, ...(gitControlSnapshot ? { gitControlSnapshot } : {}), ...(customConfig?.filesystem ? { filesystemPolicy: customConfig.filesystem } : {}), ...(notices.length ? { notices: Object.freeze(notices) } : {}) }, options.commandId, cleanupBare ?? watchedRowsCleanup(options.commandId, command),
       () => invocation !== undefined && egressInvocationOwner(options.commandId) === undefined);
   }));
 }
@@ -2813,7 +2874,7 @@ async function wrapLongLivedCommand(
     checkWindowsSandboxStampTargets(customConfig?.filesystem);
     const result = applySandboxFilesystemPolicy(wrapped, customConfig?.filesystem, () => SandboxManager.cleanupAfterCommand());
     commitWindowsWrapDenies(session, grantRevision, filesystem);
-    return trackBareRepositoryCleanup({ ...result, ...(gitControlSnapshot ? { gitControlSnapshot } : {}), ...(customConfig?.filesystem ? { filesystemPolicy: customConfig.filesystem } : {}), ...(notices.length ? { notices: Object.freeze(notices) } : {}) }, options.commandId, cleanupBare,
+    return trackBareRepositoryCleanup({ ...result, ...(gitControlSnapshot ? { gitControlSnapshot } : {}), ...(customConfig?.filesystem ? { filesystemPolicy: customConfig.filesystem } : {}), ...(notices.length ? { notices: Object.freeze(notices) } : {}) }, options.commandId, cleanupBare ?? watchedRowsCleanup(options.commandId, command),
       () => invocation !== undefined && egressInvocationOwner(options.commandId) === undefined);
   }));
 }
@@ -2996,6 +3057,8 @@ async function grantWindowsWorkerFilesystemAccessInTurn(
   };
   try { return await runWithSandboxWritePreflight(undefined, () => grantWindowsWorkerFilesystemAccessTurnBody(request, timing)); }
   finally {
+    // A refused turn's rows are unreachable; only write roots still in use keep rows watched.
+    pruneWatchedRows(watchedRootsInUse(sandboxSession));
     // totalMs is turn wall time, including the dynamic import yield.
     const fields = { ...timing.steps, liveGrants, totalMs: performance.now() - started, rows: timing.rows };
     log.info(fields, "windows grant turn timing");
@@ -3098,10 +3161,16 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
         if (!distinct.has(key)) distinct.set(key, { path, read: kind === "denyRead" });
       }
     }
-    return [...distinct.values()];
+    // An absent row is watched, never stamped: the native stamp would create it.
+    return [...distinct.values()].filter(row => {
+      if (windowsDenyTargetPresent(row.path)) return true;
+      watchAbsentProtectedRow(row.path, allowWrite.filter(root => lexicalWindowsOverlap(root, row.path)));
+      return false;
+    });
   });
   const targets = rows.map(row => row.path);
   timing.rows = rows.length;
+  assertWindowsDenyTargetsPresent(targets);
   assertWindowsPolicyBudget({ denyWrite: targets }, hasConfiguredDenies(settings));
   const previous = timeStep("denyReadMs", () => readWindowsDenyAcls(targets, sandboxUserSid));
   assertWindowsGrantDenySnapshot(session, revision, allowWrite);
@@ -3241,7 +3310,9 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
         if (writable.has(path)) counts.write -= 1;
         if (counts.read === 0) session.windowsLiveGrants.delete(path);
       }
-      if (!revokeGrant()) return;
+      const revoked = revokeGrant();
+      if (allowWrite.length > 0) sweepWatchedRowsAfterRelease(session, `windows-grant-${holderPid}`);
+      if (!revoked) return;
       if (sandboxSession === session && active && _baseTrustedSettings !== undefined) {
         const configStarted = performance.now();
         try {
@@ -3413,6 +3484,7 @@ async function resetSandboxRuntime(): Promise<void> {
   _baseReadDenyEvidence = undefined;
   sandboxSession?.windowsLiveGrants.clear();
   sandboxSession = undefined;
+  resetWatchedRows();
   windowsProfileReadDenyWarnings.clear();
   windowsReadDenyWarnings.clear();
   windowsAbsentDenyWarnings.clear();
