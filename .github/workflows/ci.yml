@@ -924,14 +924,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5]
+        shard: [1, 2, 3, 4, 5, 6]
     env:
       BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
       AVE_UV_DOWNLOAD_CACHE_DIR: ${{ github.workspace }}/.cache/uv-archives
       ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
       electron_config_cache: ${{ github.workspace }}/.cache/electron
-      # Native process suites need headroom for cold helper starts.
-      AVE_VITEST_MAX_WORKERS: "3"
+      # Three workers and their child processes overloaded the runner until
+      # approval waits and 45 s tests timed out.
+      AVE_VITEST_MAX_WORKERS: "2"
       AVE_WINDOWS_TEST_SHARD: ${{ matrix.shard }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
