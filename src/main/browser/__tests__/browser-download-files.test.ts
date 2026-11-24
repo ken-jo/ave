@@ -880,6 +880,31 @@ describe("a copy whose helper says it left its temporary file", () => {
     expect(journal.resolved).not.toHaveBeenCalled();
   });
 
+  it.each([false, true])("rejects a copy identity on a different held destination device (old target: %s)", async (replacing) => {
+    script((helper) => {
+      if (helper.args[0] === "--dir-remove-id") {
+        helper.say("ready");
+        helper.once("input", () => { helper.say("absent"); helper.exit(0); });
+        return;
+      }
+      if (replacing) helper.say("target-id 2 3 15");
+      helper.say("ready");
+      helper.once("input", () => {
+        helper.say("writing 2 4", "copied");
+        helper.once("input", () => {
+          if (replacing) helper.say("target-retired");
+          helper.say("committed");
+          helper.exit(0);
+        });
+      });
+    });
+    const journal = { hidden: HIDDEN, write: vi.fn().mockResolvedValue(undefined), resolved: vi.fn() };
+    const run = follow(files.copy(from, "staged", to, "report.pdf", ".0123.part", () => true, UNSTOPPED, journal));
+    await flush();
+    expect(run.error).toBeInstanceOf(HeldFileHelperUnavailableError);
+    expect(journal.write).not.toHaveBeenCalled();
+  });
+
   const invalidTargets: { label: string; id?: string; hidden?: string; early?: boolean; duplicate?: boolean;
     old?: string; verdict?: string; snapshot?: string }[] = [
     { label: "before commit authorization", early: true },

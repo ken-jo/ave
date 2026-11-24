@@ -500,6 +500,15 @@ async function removeRecordedPart(root: BrowserDownloadStagingRoot, { folder, pa
   if (file !== undefined) {
     try {
       if (await root.files.recoverTarget(folder, at.name, target, file, observed?.content, replacement) === "resolved") {
+        if (writer !== undefined) {
+          const result = await root.files.recover(folder, part, part, { kind: "fileId", file: writer });
+          if (result.outcome === "left") {
+            if (result.at !== null && result.at.name !== part) {
+              await tryWritePartRecord(root, { folder, part, at: result.at });
+            }
+            return result;
+          }
+        }
         return { outcome: "resolved" as const };
       }
     } catch (error) {
@@ -521,6 +530,7 @@ async function finishRecord(root: BrowserDownloadStagingRoot, name: string): Pro
 
 async function removeRecordedParts(root: BrowserDownloadStagingRoot): Promise<number> {
   const records: { name: string; record: PartRecord }[] = [];
+  let removed = 0;
   for (const name of await root.files.listRecords(root)) {
     if (!PART_RECORD.test(name)) continue;
     const recordPath = join(root.path, name);
@@ -529,6 +539,7 @@ async function removeRecordedParts(root: BrowserDownloadStagingRoot): Promise<nu
       const record = bytes === null ? null : readPartRecord(bytes.toString("utf8"), name);
       if (record === null) {
         log.warn({ path: recordPath }, "a browser download cleanup record could not be verified");
+        if (await finishRecord(root, name)) removed += 1;
         continue;
       }
       records.push({ name, record });
@@ -538,7 +549,6 @@ async function removeRecordedParts(root: BrowserDownloadStagingRoot): Promise<nu
     }
   }
   records.sort((a, b) => Number(b.record.target !== undefined) - Number(a.record.target !== undefined));
-  let removed = 0;
   for (const { name, record } of records) {
     try {
       const result = await removeRecordedPart(root, record);

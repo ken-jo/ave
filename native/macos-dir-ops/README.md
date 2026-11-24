@@ -27,7 +27,7 @@ ave-dir-ops --dir-read <dir> <dir-dev> <dir-ino> <name> <max>
 ave-dir-ops --dir-write-record <dir> <dir-dev> <dir-ino> <name> <hex>
 ave-dir-ops --dir-remove-id <dir> <dir-dev> <dir-ino> <name> <file-dev> <file-ino> [<birth-ns>:<fingerprint>]
 ave-dir-ops --dir-restore <dir> <dir-dev> <dir-ino> <hidden> <part> <file-dev> <file-ino> <birth-ns>:<fingerprint>
-ave-dir-ops --dir-restore-target <dir> <dir-dev> <dir-ino> <hidden> <target> <file-dev> <file-ino> <birth-ns>:<fingerprint-or-dash>
+ave-dir-ops --dir-restore-target <dir> <dir-dev> <dir-ino> <hidden> <target> <file-dev> <file-ino> <birth-ns>:<fingerprint-or-dash> [<writer-ino>|retire]
 ```
 
 Names are single path components. `rename` moves the ordinary file `name` to
@@ -64,9 +64,10 @@ single components.
   rule as `remove-id`. It answers `restored` only after both steps,
   `absent` when the source is missing, or `left` when the part is occupied,
   verification fails or cleanup cannot finish.
-- `restore-target` verifies the held source, renames it exclusively to
-  the target and verifies that the target names the same file. It answers
-  `restored` or `left`. A birth-only token uses `<birth-ns>:-`.
+- `restore-target` answers `resolved` after verified rollback or retirement,
+  or `left` if unresolved. The optional writer is on `file-dev`. The `retire`
+  operand retries a verified commit recorded by an older release. A birth-only
+  token uses `<birth-ns>:-`.
 
 A fingerprint is one ASCII token `<size>:<mtime-ns>:<head>:<tail>`.
 Size and modification time are decimal. The two digests are lowercase
@@ -121,7 +122,10 @@ stdin.
   `remove-id` and `restore` may also return the named `left` outcome
   when they isolate a file under a new hidden name.
 - Before `ready`, the helper holds any existing ordinary target and emits
-  `target-id <dev> <ino> <birth-ns>`. After authorization at `copied` it verifies the part, moves any
+  `target-id <dev> <ino> <birth-ns>`. If the filesystem assigns the writing
+  descriptor a different inode during the copy, the helper announces
+  `copy-id <dev> <ino>` before `copied` for a replacement.
+  After authorization at `copied` it verifies the part, moves any
   old target to the supplied hidden name exclusively and verifies it against its descriptor.
   The helper commits the part with an exclusive rename and verifies the
   new target against the writing descriptor before retiring the old target.
@@ -136,19 +140,32 @@ stdin.
   terminal reply. The host keeps the write-ahead record when the outcome
   is unavailable.
 
-  I4. A displaced original moves only by identity-preserving rename. Startup
-  uses the separate target recovery operation for its record. An occupied or
-  unverifiable destination leaves the original and its record in place.
+  I1. The host touches part, hidden and record entries only through held
+  directory operations.
+
+  I2. The part's identity comes only from the writing handle.
+
+  I3. Destructive cleanup requires exclusive isolation and handle
+  verification. If that proof is unavailable, cleanup leaves and records
+  the entry.
+
+  I4. A displaced original moves only by identity-preserving rename.
+  Startup uses the separate target recovery operation for its record.
   Copy-back applies only to copy-part recovery.
 
-  I5. The host chooses the hidden name and syncs a record containing it,
-  the held original's identity, and the copy session before authorizing the
-  move. Startup reads target records before part recovery and preserves each
-  record until rollback or retirement verifies.
+  I5. Before authorizing isolation, the host syncs a record containing the
+  hidden name, the original and writer identities, and the copy session.
+  Startup reads target records first. A target matching the writer confirms
+  commit and any remaining hidden original is retired by identity. An absent
+  hidden entry and a target matching the original confirm rollback. A vacant
+  target permits exclusive restoration of the verified hidden original.
+  Other observations keep the record and are logged. The recorded part is
+  removed by identity before the record is removed. Failed or unconfirmed
+  retirement keeps the record for the next startup.
 
   I6. The copy session binds the old target identity captured before ready
   and the writing identity from the part handle. A target leftover must
-  match the authorized original and hidden name on the writing volume.
+  match the authorized original and hidden name on the held destination volume.
   A named copy-part leftover must carry the writing identity.
 
   Accepted residual.

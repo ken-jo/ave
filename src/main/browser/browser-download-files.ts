@@ -845,6 +845,9 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
     let writingRefreshed = false;
     let protocolFailure: string | null = null;
     const mode = args[0];
+    const destinationDev = mode === "--dir-copy" ? BigInt(args[6] ?? "-1") : null;
+    // Directory validation uses the legacy volume serial on Windows; FileIdInfo includes its upper 32 bits too.
+    const onDestination = (dev: bigint): boolean => destinationDev === (parseInode === parseWindowsInode ? BigInt.asUintN(32, dev) : dev);
     let errors = "";
     let inputOpen = true;
     let thrown: unknown;
@@ -1012,7 +1015,7 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
           const ino = parseInode(targetId[2]);
           const birthtimeNs = parseUnsigned(targetId[3]);
           if (mode !== "--dir-copy" || phase !== "holding" || oldTarget !== null ||
-              dev === null || ino === null || birthtimeNs === null) { violate(); return; }
+              dev === null || !onDestination(dev) || ino === null || birthtimeNs === null) { violate(); return; }
           oldTarget = { dev, ino, birthtimeNs };
           continue;
         }
@@ -1031,7 +1034,7 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
             ? parseInode === parseWindowsInode || writing === null || writingRefreshed || oldTarget === null
             : writing !== null || copiedBytes !== 0n;
           if (mode !== "--dir-copy" || phase !== "copying" || passed !== "ready" || invalidPhase ||
-              dev === null || ino === null ||
+              dev === null || !onDestination(dev) || ino === null ||
               (oldTarget !== null && (oldTarget.dev !== dev || oldTarget.ino === ino))) { violate(); return; }
           writing = { dev, ino };
           writingRefreshed = refresh;

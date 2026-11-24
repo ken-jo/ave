@@ -1178,19 +1178,32 @@ Important rules:
   retirement. A failed commit restores the previous target exclusively or
   records a leftover. See the [helper protocol](../../native/macos-dir-ops/README.md).
 
-  I4. A displaced original moves only by identity-preserving rename. Startup
-  uses the separate target recovery operation for its record. An occupied or
-  unverifiable destination leaves the original and its record in place.
+  I1. The host touches part, hidden and record entries only through held
+  directory operations.
+
+  I2. The part's identity comes only from the writing handle.
+
+  I3. Destructive cleanup requires exclusive isolation and handle
+  verification. If that proof is unavailable, cleanup leaves and records
+  the entry.
+
+  I4. A displaced original moves only by identity-preserving rename.
+  Startup uses the separate target recovery operation for its record.
   Copy-back applies only to copy-part recovery.
 
-  I5. The host chooses the hidden name and syncs a record containing it,
-  the held original's identity, and the copy session before authorizing the
-  move. Startup reads target records before part recovery and preserves each
-  record until rollback or retirement verifies.
+  I5. Before authorizing isolation, the host syncs a record containing the
+  hidden name, the original and writer identities, and the copy session.
+  Startup reads target records first. A target matching the writer confirms
+  commit and any remaining hidden original is retired by identity. An absent
+  hidden entry and a target matching the original confirm rollback. A vacant
+  target permits exclusive restoration of the verified hidden original.
+  Other observations keep the record and are logged. The recorded part is
+  removed by identity before the record is removed. Failed or unconfirmed
+  retirement keeps the record for the next startup.
 
   I6. The copy session binds the old target identity captured before ready
   and the writing identity from the part handle. A target leftover must
-  match the authorized original and hidden name on the writing volume.
+  match the authorized original and hidden name on the held destination volume.
   A named copy-part leftover must carry the writing identity.
 
   Accepted residual.

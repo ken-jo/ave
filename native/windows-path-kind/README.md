@@ -77,7 +77,7 @@ authorizes the action. Other input or EOF stops it. The recovery modes are:
 | `--dir-write-record <name> <hex>` | `written` after exclusive creation with a protected current-user DACL, write and sync. Maximum 8192 bytes. |
 | `--dir-remove-id <name> <file-dev> <file-ino> [<birth-ns>:<fingerprint>]` | `removed`, `absent`, or `left` with an optional named leftover. A birth-only token uses `<birth-ns>:-`. |
 | `--dir-restore <hidden> <part> <file-dev> <file-ino> <birth-ns>:<fingerprint>` | `restored` after verification and source retirement, `absent` if the source is missing, or `left` with an optional named leftover. |
-| `--dir-restore-target <hidden> <target> <file-dev> <file-ino> <birth-ns>:<fingerprint-or-dash>` | `restored` after exclusive rename and handle verification, or `left` if occupied or unverifiable. |
+| `--dir-restore-target <hidden> <target> <file-dev> <file-ino> <birth-ns>:<fingerprint-or-dash> [<writer-ino>\|retire]` | `resolved` after verified rollback or retirement, or `left` if unresolved. The optional writer is on `file-dev`. The `retire` operand retries a verified commit recorded by an older release. |
 
 A fingerprint is `<size>:<mtime-ns>:<head>:<tail>`. The digests are lowercase
 SHA-256 of the first and last 64 KiB, each truncated to the file size. The
@@ -105,7 +105,8 @@ retires the old target. If commit fails, it restores the old target exclusively.
 A failed restore or retirement sends `target-left left <hidden> <own-dev>
 <own-ino> <verdict> <snapshot>` before the terminal reply, independent of
 the copy part's outcome. It uses `mismatch` for a failed restore and
-`remove-failed` for retirement after a verified commit. The identity is
+`remove-failed` for unconfirmed retirement after a verified commit, including
+a delete-pending file held open by a reader. The identity is
 from the old target's handle. A verified restore or retirement emits
 `target-restored` or `target-retired` before the terminal reply. The host
 keeps the write-ahead record when the outcome is unavailable.
@@ -124,21 +125,32 @@ file identity or exclusive isolation is unavailable, the helper leaves
 existing entries in place. The host retains an existing recovery record or
 records the writing identity when available.
 
+I1. The host touches part, hidden and record entries only through held
+directory operations.
+
+I2. The part's identity comes only from the writing handle.
+
+I3. Destructive cleanup requires exclusive isolation and handle
+verification. If that proof is unavailable, cleanup leaves and records
+the entry.
+
 I4. A displaced original moves only by identity-preserving rename. Startup
-uses the separate target recovery operation for its record. An occupied or
-unverifiable destination leaves the original and its record in place.
-Copy-back applies only to copy-part recovery.
+uses the separate target recovery operation for its record. Copy-back applies
+only to copy-part recovery.
 
-The boot sweep passes `keep-records` to `--dir-sweep` so it leaves cleanup records in place.
-
-I5. The host chooses the hidden name and syncs a record containing it,
-the held original's identity, and the copy session before authorizing the
-move. Startup reads target records before part recovery and preserves each
-record until rollback or retirement verifies.
+I5. Before authorizing isolation, the host syncs a record containing the
+hidden name, the original and writer identities, and the copy session.
+Startup reads target records first. A target matching the writer confirms
+commit and any remaining hidden original is retired by identity. An absent
+hidden entry and a target matching the original confirm rollback. A vacant
+target permits exclusive restoration of the verified hidden original.
+Other observations keep the record and are logged. The recorded part is
+removed by identity before the record is removed. The general boot sweep
+uses `keep-records` after this recovery pass.
 
 I6. The copy session binds the old target identity captured before ready
 and the writing identity from the part handle. A target leftover must
-match the authorized original and hidden name on the writing volume.
+match the authorized original and hidden name on the held destination volume.
 A named copy-part leftover must carry the writing identity.
 
 Accepted residual.

@@ -537,7 +537,7 @@ describe("a staged download", () => {
     expect(await restarted.files.listRecords(restarted)).toHaveLength(occupied ? 1 : 0);
   });
 
-  it.each(["before move", "after move", "after commit", "after retirement", "competing target"] as const)("restarts after a stopped replacement: %s", async (boundary) => {
+  it.each(["before move", "after move", "after commit", "after retirement", "competing target", "replaced part"] as const)("restarts after a stopped replacement: %s", async (boundary) => {
     const prepared = prepare();
     const chosen = join(home, "chosen");
     mkdirSync(chosen);
@@ -563,7 +563,10 @@ describe("a staged download", () => {
         writeFileSync(partPath, "new bytes");
         writer = fileId(partPath);
         await journal.write(identity, writer);
-        if (boundary !== "before move") {
+        if (boundary === "replaced part") {
+          moveAside(partPath, join(chosen, "held-by-test"));
+          writeFileSync(partPath, "an unrelated file");
+        } else if (boundary !== "before move") {
           moveAside(target, join(chosen, hidden));
         }
         if (committed) moveAside(partPath, target);
@@ -589,18 +592,36 @@ describe("a staged download", () => {
       writer: { dev: String(writer?.dev), ino: String(writer?.ino) },
     });
 
-    const restarted = prepare();
+    const restarted = withFiles(prepare(), (files) => ({
+      remove: async (folder, name, proceed, stop) => {
+        if (name === records[0]) expect(existsSync(partPath)).toBe(false);
+        return files.remove(folder, name, proceed, stop);
+      },
+    }));
     await sweepBrowserDownloadStaging(restarted);
     if (boundary === "competing target") {
       expect(readFileSync(target, "utf8")).toBe("competing bytes");
       expect(statSync(join(chosen, hidden), { bigint: true }).ino).toBe(original.ino);
       expect(await restarted.files.listRecords(restarted)).toEqual(records);
+    } else if (boundary === "replaced part") {
+      expect(readFileSync(target, "utf8")).toBe("old bytes");
+      expect(readFileSync(partPath, "utf8")).toBe("an unrelated file");
+      expect(await restarted.files.listRecords(restarted)).toEqual(records);
     } else {
       expect(readFileSync(target, "utf8")).toBe(committed ? "new bytes" : "old bytes");
       if (!committed) expect(statSync(target, { bigint: true }).ino).toBe(original.ino);
       expect(existsSync(join(chosen, hidden))).toBe(false);
+      expect(existsSync(partPath)).toBe(false);
       expect(await restarted.files.listRecords(restarted)).toEqual([]);
     }
+  });
+
+  it("discards an unverifiable cleanup record in the verified staging folder", async () => {
+    const root = prepare();
+    const name = `${"a".repeat(32)}.cleanup.json`;
+    await root.files.writeRecord(root, name, Buffer.from('{"invalid":true}'));
+    expect(await sweepBrowserDownloadStaging(root)).toBe(1);
+    expect(await root.files.listRecords(root)).toEqual([]);
   });
 
   it.runIf(process.platform === "darwin" || process.platform === "linux").each(["commit", "restore", "occupied"] as const)(
