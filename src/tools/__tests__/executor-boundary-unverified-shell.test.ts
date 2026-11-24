@@ -16,6 +16,7 @@ vi.mock("node:child_process", async (importOriginal) => ({
 
 import { NO_APPROVER_MESSAGE } from "../../permissions/decision-pipeline.js";
 import { saveApprovalCardRule } from "../../permissions/approval-rule-save.js";
+import { HOST_SHELL_AUTHORIZATION_REVOKED_ERROR } from "../../permissions/host-shell-execution-permit.js";
 import { SHELL_RULE_CANONICAL_VERSION } from "../../shared/shell-rule-version.js";
 import { reviewerJudgeOutcomeForTest, setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
@@ -475,6 +476,14 @@ describe("host shells under an unverifiable Ave home boundary", () => {
       const headless = await run(manager("allow", [dialect.prefixRule, dialect.toolName]), cardGate("allow-once").gate, registry, true);
       expect(headless[0]?.content).toContain(NO_APPROVER_MESSAGE);
       expect(execute).not.toHaveBeenCalled();
+    });
+
+    it.each(routeCases)("$route route: a direct $dialect.toolName call without the card's permit never spawns", async ({ route, dialect }) => {
+      if (route === "worker-only") setShellSandboxRequestedAtBoot(false);
+      const result = await dialect.create().execute({ command: dialect.command, ...(route === "host" ? HOST : {}) },
+        { cwd: testRoot, extraAllowedDirectories: [], metadata: { toolUseId: `direct-${route}` } });
+      expect(result.isError).toBe(true);
+      expect(result.output).toContain(`spawn failed: ${HOST_SHELL_AUTHORIZATION_REVOKED_ERROR.split(". ")[0]}`);
     });
   });
 
