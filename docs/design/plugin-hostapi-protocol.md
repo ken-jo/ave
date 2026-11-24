@@ -739,10 +739,11 @@ Rules:
     surface, session, working directory, floor or admission code, exfiltration state,
     or attribution and rerun flags), the request is refused and audited with the reason
     `ambiguous-invocation-token`, so a child cannot pick the weaker of two contexts.
-    It runs once the other call settles. A live call with no effect-gate frame (a
-    trusted app-only call such as a panel's long poll) gates nothing, so it never makes
-    a token that names a gated call ambiguous; a token naming the frameless call is
-    still refused while a gated call is live.
+    It runs once the other call settles. Any live call with no effect-gate frame gates
+    nothing, because the effect gate and the enforced wrappers pass through without a
+    frame; an app-only call such as a panel's long poll is the usual case. Such a call
+    therefore never makes a token that names a gated call ambiguous. A token naming the
+    frameless call is still refused while a gated call is live.
   - The outside-invocation context is captured during boot, before invocation scopes
     are entered. Lazy evaluation inside an effect-gate or invocation-origin frame is
     refused, including the origin-only frame of a trusted app-only tool. Evaluation
