@@ -729,6 +729,8 @@ export function stageBrowserDownload(item: StageableDownloadItem, deps: BrowserD
       return null;
     }
     await download.observe();
+    // A stamp already in flight may have looked before the browser created the file; the completed file is there now.
+    await download.observe();
     return download.stagedFile;
   });
   const save = async (destination: Destination): Promise<void> => {

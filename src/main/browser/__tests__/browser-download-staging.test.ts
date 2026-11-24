@@ -965,6 +965,31 @@ describe("what `done` reports when the staged file cannot be removed", () => {
     expect(await sweepBrowserDownloadStaging(prepared)).toBe(1);
     expect(readdirSync(prepared.path)).toEqual([]);
   });
+
+  it("saves a completed download whose stamp in flight at completion began before the staged file existed", async () => {
+    const prepared = prepare();
+    let first = true;
+    const root = withFiles(prepared, (files) => ({
+      stamp: async (folder, name) => {
+        if (!first) return files.stamp(folder, name);
+        first = false;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return null;
+      },
+    }));
+    const { asked, askSavePath } = dialogs();
+    const item = fakeItem();
+    const staged = stageBrowserDownload(item, { root, askSavePath }, Promise.resolve());
+    const done = doneOutcome(staged.download);
+    await settled();
+    mkdirSync(join(home, "chosen"));
+    asked[0]?.answer(join(home, "chosen", "report.pdf"));
+    await settled();
+    item.emit("updated", {}, "progressing");
+    item.complete("whole");
+    expect(await done).toEqual({ state: "completed", cleanup: "removed" });
+    expect(readFileSync(join(home, "chosen", "report.pdf"), "utf8")).toBe("whole");
+  });
 });
 
 // A cross-volume copy whose helper stalled and was not seen to end (browser-download-files.test.ts drives that helper): the native helper
