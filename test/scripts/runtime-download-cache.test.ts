@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 
 import { githubExpression as expr, readRepoFile } from "../../src/__tests__/test-helpers.js";
 const workflow = parse(readRepoFile(".github/workflows/ci.yml"));
-const jobIds = ["build", "vitest", "gate-core", "mxc-pins", "windows-permission-tests", "macos-permission-tests", "linux-confinement-tests"];
+const jobIds = ["build", "vitest", "gate-core", "mxc-pins", "windows-native-preparation", "windows-permission-tests", "macos-permission-tests", "linux-confinement-tests"];
 const cacheAction = "actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9";
 const workspace = expr("github.workspace");
 const uvArchives = `${workspace}/.cache/uv-archives`;
