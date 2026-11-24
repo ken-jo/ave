@@ -8,6 +8,7 @@ import { basename, dirname, isAbsolute, join } from "node:path";
 import type { DownloadItem } from "electron";
 import { aveHome } from "../../shared/ave-home.js";
 import { createLogger } from "../../lib/logger.js";
+import { t } from "../../i18n/index.js";
 import { retryOnFileLock } from "../../lib/transient-fs-lock-retry.js";
 import { openFeatureNamespace } from "../storage/feature-namespace.js";
 import {
@@ -180,19 +181,24 @@ function withVerifiedRoot<T>(root: HeldDirectory, use: (fd: number | undefined) 
 }
 
 const ROOT_REPLACED = "the download staging folder was replaced";
-const STAGING_REFUSALS: Readonly<Record<HeldRefusal, string>> = {
+const STAGING_REFUSALS: Readonly<Record<Exclude<HeldRefusal, "volume">, string>> = {
   from: ROOT_REPLACED,
-  to: "the chosen folder could not be verified, or its volume does not provide file IDs",
+  to: "the chosen folder could not be verified",
   source: "the staged file was replaced",
   target: "the chosen file could not be safely replaced",
 };
+
+/** What a held operation's refusal says; a chosen folder whose volume cannot replace a file safely is told so in the user's language. */
+export function stagingRefusal(refusal: HeldRefusal): string {
+  return refusal === "volume" ? t("browserDownload.unsupportedVolume") : STAGING_REFUSALS[refusal];
+}
 
 // A held directory operation's refusal is a staging refusal; every other error passes through unchanged.
 async function refusingAsStaging<T>(operation: () => Promise<T>): Promise<T> {
   try {
     return await operation();
   } catch (error) {
-    if (error instanceof HeldDirectoryRefusedError) throw new BrowserDownloadStagingError(STAGING_REFUSALS[error.refusal], { cause: error });
+    if (error instanceof HeldDirectoryRefusedError) throw new BrowserDownloadStagingError(stagingRefusal(error.refusal), { cause: error });
     throw error;
   }
 }

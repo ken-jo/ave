@@ -381,6 +381,8 @@ inline int run_copy(wchar_t** argv) {
   FILE_ID_INFO old_id{};
   ULONGLONG old_birth = 0;
   if (replacing && (!ordinary(old.value) || !read_id(old.value, old_id))) return refused("target");
+  // A volume that cannot open files by ID (FAT, many network shares) cannot replace a file with the checks below: refused by name.
+  if (!creation_volume(to.handle())) return refused("volume");
   FILE_ID_INFO directory_id{};
   ULONGLONG directory_birth = 0;
   if (!read_id(to.handle(), directory_id) || !read_birth(to.handle(), directory_birth)) return refused("to");

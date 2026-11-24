@@ -82,8 +82,9 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   };
 });
 
-const { prepareBrowserDownloadStaging, stageBrowserDownload, sweepBrowserDownloadStaging, BrowserDownloadStagingError, UNANSWERED_DOWNLOAD_BYTES } =
+const { prepareBrowserDownloadStaging, stageBrowserDownload, sweepBrowserDownloadStaging, stagingRefusal, BrowserDownloadStagingError, UNANSWERED_DOWNLOAD_BYTES } =
   await import("../browser-download-staging.js");
+const { setLocale } = await import("../../../i18n/index.js");
 const { _descriptorFileOperationsForTest, _helperFileOperationsForTest, HeldFileHelperStalledError } = await import("../browser-download-files.js");
 type Root = import("../browser-download-staging.js").BrowserDownloadStagingRoot;
 type Observed = import("../browser-download-staging.js").ObservedDownload;
@@ -1070,6 +1071,19 @@ describe("a stalled copy's temporary file, removed through the native helper", (
     expect(await sweepBrowserDownloadStaging(prepared)).toBe(0);
     expect(readFileSync(part, "utf8")).toBe("the user's file");
     expect(readdirSync(prepared.path)).toEqual([expect.stringMatching(/\.cleanup\.json$/u)]);
+  });
+});
+
+describe("a chosen folder whose volume cannot replace a file safely", () => {
+  afterEach(() => { setLocale("en"); });
+
+  it.each([
+    ["en", "This location does not support safe replacement; choose a local NTFS folder."],
+    ["ko", "이 위치는 안전한 교체를 지원하지 않습니다. 로컬 NTFS 폴더를 선택하세요."],
+  ] as const)("is refused by name, worded in %s", (locale, wording) => {
+    setLocale(locale);
+    expect(stagingRefusal("volume")).toBe(wording);
+    expect(stagingRefusal("to")).not.toMatch(/file IDs/u);
   });
 });
 

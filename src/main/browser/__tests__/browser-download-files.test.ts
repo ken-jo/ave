@@ -325,6 +325,15 @@ describe("a helper that does not keep to its protocol", () => {
     else expect(run.value).toBe(answer);
   });
 
+  it("names the refusal of a chosen folder whose volume cannot replace a file safely", async () => {
+    const windows = _helperFileOperationsForTest("/helper/ave-path-kind.exe", BOUNDS, true);
+    script((helper) => { helper.say("refused volume"); helper.exit(3); });
+    const run = follow(windows.copy(from, "staged", to, "report.pdf", ".part", () => true, UNSTOPPED));
+    await flush();
+    expect(run.error).toBeInstanceOf(HeldDirectoryRefusedError);
+    expect((run.error as InstanceType<typeof HeldDirectoryRefusedError>).refusal).toBe("volume");
+  });
+
   it("keeps the entire Windows writer identity when rejecting a plain refusal after progress", async () => {
     const windows = _helperFileOperationsForTest("/helper/ave-path-kind.exe", BOUNDS, true);
     const fileId = "fedcba9876543210123456789abcdef0";

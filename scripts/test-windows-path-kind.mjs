@@ -221,7 +221,7 @@ async function recoveryTests() {
       { input: "c", windowsHide: true, shell: false, env: {}, timeout: 10_000, encoding: "utf8" });
     assert.ifError(result.error);
     assert.equal(result.status, 3, result.stdout);
-    assert.deepEqual(result.stdout.trimEnd().split(/\r?\n/u), ["refused to"]);
+    assert.deepEqual(result.stdout.trimEnd().split(/\r?\n/u), ["refused volume"]);
     assert.deepEqual(readdirSync(dir), ["source"]);
   });
   add("record round trip and exclusive collision", (dir) => {

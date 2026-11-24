@@ -1454,6 +1454,7 @@ export const en = {
   "browserContextMenu.forward": "Forward",
   "browserContextMenu.reload": "Reload",
   "browserContextMenu.openInSystemBrowser": "Open Page in System Browser",
+  "browserDownload.unsupportedVolume": "This location does not support safe replacement; choose a local NTFS folder.",
   "browserPagePrompt.downloadBlocked.title": "Download blocked",
   "browserPagePrompt.downloadBlocked.rate": "A download was blocked because several Save dialogs from this site were cancelled:",
   "browserPagePrompt.downloadBlocked.queue": "A download was not started because several downloads are already waiting for you to choose where to save them:",
