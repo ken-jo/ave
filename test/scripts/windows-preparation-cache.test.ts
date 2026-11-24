@@ -147,4 +147,20 @@ describe("Windows preparation output cache", () => {
     expect(existsSync(root)).toBe(false);
     expect(existsSync(directory)).toBe(false);
   });
+
+  it("rejects __proto__ and never verifies identity for an unmanifested file", async () => {
+    const root = await sealed();
+    writeFileSync(join(root, "__proto__"), "unexpected bytes");
+    const verifyIdentity = vi.fn();
+    expect(await restoreWindowsPreparation(root, key, required, true, { verifyIdentity })).toBe(false);
+    expect(verifyIdentity).not.toHaveBeenCalled();
+    expect(existsSync(root)).toBe(false);
+  });
+
+  it("refuses to seal a file named __proto__ even inside a payload directory", async () => {
+    const root = makeDir();
+    mkdirSync(join(root, "payload"));
+    writeFileSync(join(root, "payload/__proto__"), "unexpected bytes");
+    await expect(sealWindowsPreparation(root, key, [])).rejects.toThrow("Unexpected preparation output");
+  });
 });

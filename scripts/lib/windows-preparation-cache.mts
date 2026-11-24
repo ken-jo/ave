@@ -40,7 +40,7 @@ export async function windowsPreparationInputs(
   const paths = execFileSync("git", ["-C", root, "ls-files", "-z"], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 })
     .split("\0").filter(path => path && (!path.includes("/") || INPUT_TREES.test(path))).sort();
   if (!paths.includes("bun.lock")) throw new Error("Missing preparation input: bun.lock");
-  const files: Record<string, string> = {};
+  const files = Object.create(null) as Record<string, string>;
   for (const file of paths) {
     const path = join(root, file);
     if (!lstatSync(path).isFile()) throw new Error(`Invalid preparation input: ${file}`);
@@ -59,6 +59,7 @@ function* outputPaths(root: string, relative = ""): Generator<string> {
   if (!lstatSync(root).isDirectory()) throw new Error("Invalid preparation cache root");
   for (const name of readdirSync(join(root, relative)).sort()) {
     const file = relative ? `${relative}/${name}` : name;
+    if (name === "__proto__") throw new Error(`Unexpected preparation output: ${file}`);
     const stat = lstatSync(join(root, file));
     if (stat.isDirectory()) yield* outputPaths(root, file);
     else if (!stat.isFile() || stat.nlink !== 1) throw new Error(`Invalid preparation output: ${file}`);
@@ -66,9 +67,16 @@ function* outputPaths(root: string, relative = ""): Generator<string> {
   }
 }
 
-async function outputFiles(root: string) {
-  const files: Record<string, string> = {};
-  for (const file of outputPaths(root)) files[file] = await hashFile(join(root, file));
+function assertExpectedFile(expected: Readonly<Record<string, string>>, file: string) {
+  if (!Object.hasOwn(expected, file)) throw new Error(`Unexpected preparation output: ${file}`);
+}
+
+async function outputFiles(root: string, expected?: Readonly<Record<string, string>>) {
+  const files = Object.create(null) as Record<string, string>;
+  for (const file of outputPaths(root)) {
+    if (expected) assertExpectedFile(expected, file);
+    files[file] = await hashFile(join(root, file));
+  }
   return files;
 }
 
@@ -92,7 +100,7 @@ function readOutputManifest(root: string, digest?: string): { key: string; files
 }
 
 async function verifyWindowsPreparation(root: string, key: string, required: readonly string[], expected: ReturnType<typeof readOutputManifest>) {
-  const files = await outputFiles(root);
+  const files = await outputFiles(root, expected.files);
   if (expected.key !== key || required.some(file => !Object.hasOwn(files, file))
     || canonicalJson(expected.files) !== canonicalJson(files) || canonicalJson(readOutputManifest(root)) !== canonicalJson(expected)) {
     throw new Error("Windows preparation cache digest mismatch");
@@ -133,7 +141,7 @@ export async function restoreWindowsPreparation(
       if (stage) {
         // Preserve rejection of unsupported filesystem entries even when a
         // copy would turn them into ordinary files.
-        Array.from(outputPaths(store));
+        for (const file of outputPaths(store)) assertExpectedFile(expected.files, file);
         for (const name of readdirSync(store)) {
           cpSync(join(store, name), join(directory, name), {
             recursive: true, verbatimSymlinks: true, errorOnExist: true, force: false,
@@ -144,7 +152,7 @@ export async function restoreWindowsPreparation(
       await verifyIdentity(directory);
       await verifyWindowsPreparation(directory, key, required, expected);
       stage?.install(file => {
-        if (!Object.hasOwn(expected.files, file)) throw new Error(`Unexpected preparation output: ${file}`);
+        assertExpectedFile(expected.files, file);
         const bytes = readFileSync(join(directory, file));
         if (createHash("sha256").update(bytes).digest("hex") !== expected.files[file]) {
           throw new Error(`Windows preparation cache digest mismatch: ${file}`);
