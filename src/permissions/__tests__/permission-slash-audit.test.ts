@@ -23,6 +23,7 @@ import {
   sealDayFromFile,
 } from "../../audit/hmac-chain.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { terminalDenyKindOf } from "../../audit/audit-schema.js";
 
 let workDir: string;
 
@@ -397,6 +398,21 @@ describe("readRecentAuditEntries", () => {
     });
   });
 
+  it("skips invalid explicit terminal kinds in unverified JSONL", () => {
+    const deny = { decision: "deny", denyReasons: [{ reason: "host-shutdown", source: "tool-executor" }] };
+    const rows = [
+      { ...deny, auditId: "legacy" },
+      { ...deny, auditId: "null", terminalKind: null },
+      { ...deny, auditId: "refused", terminalKind: "refused" },
+      { ...deny, auditId: "denied", terminalKind: "denied" },
+    ];
+    writeFileSync(join(workDir, "2026-05-09.permission-audit.jsonl"), `${rows.map((entry) => JSON.stringify(entry)).join("\n")}\n`);
+    expect(readRecentAuditEntries(workDir, 10)).toEqual([
+      { ...rows[3], terminalKind: "denied" },
+      { ...rows[0], terminalKind: "cancelled" },
+    ]);
+  });
+
   it("returns entries newest-first across files", () => {
     const auditDir = join(workDir, "audit");
     mkdirSync(auditDir, { recursive: true });
@@ -455,6 +471,11 @@ describe("readRecentAuditEntries", () => {
     expect(result.length).toBe(1);
     expect((result[0] as { decision: string }).decision).toBe("allow");
   });
+});
+
+it.each([null, "refused", undefined])("rejects the explicit invalid kind %s instead of inferring it", (terminalKind) => {
+  const entry = { denyReasons: [{ reason: "host-shutdown", source: "tool-executor" }], terminalKind };
+  expect(() => terminalDenyKindOf(entry as never)).toThrow("Invalid terminal deny kind");
 });
 
 describe("verifyAllAuditFiles", () => {

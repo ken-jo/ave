@@ -149,6 +149,10 @@ interface AuditDeny extends AuditCommon {
 /** A permission denial (a rule, a person, a hook, a host policy, an integrity failure), or a cancellation no permission decided. */
 export type AuditDenyKind = "denied" | "cancelled";
 
+function isAuditDenyKind(kind: unknown): kind is AuditDenyKind {
+  return kind === "denied" || kind === "cancelled";
+}
+
 // The first reasons a cancellation's row carried before terminalKind was written. A reason alone cannot always tell the kind (the
 // plugin runtime's shutdown is told from a retired generation by its error code, not its message), so new rows persist it.
 const LEGACY_CANCELLATION_REASONS: ReadonlySet<string> = new Set([
@@ -162,7 +166,10 @@ const LEGACY_PLUGIN_ADMISSION_SHUTDOWN = /^Plugin generation admission denied: p
 
 /** The kind of a persisted deny row: its terminalKind when written, else derived from its first reason. */
 export function terminalDenyKindOf(entry: Pick<AuditDeny, "denyReasons" | "terminalKind">): AuditDenyKind {
-  if (entry.terminalKind !== undefined) return entry.terminalKind;
+  if (Object.hasOwn(entry, "terminalKind")) {
+    if (!isAuditDenyKind(entry.terminalKind)) throw new TypeError("Invalid terminal deny kind");
+    return entry.terminalKind;
+  }
   const first = entry.denyReasons[0]?.reason;
   return first !== undefined && (LEGACY_CANCELLATION_REASONS.has(first) || LEGACY_PLUGIN_ADMISSION_SHUTDOWN.test(first)) ? "cancelled" : "denied";
 }
@@ -214,5 +221,6 @@ export type PermissionAuditEntryInput = PermissionAuditEntry extends infer Entry
 export function isPermissionAuditEntry(value: unknown): value is PermissionAuditEntry {
   if (typeof value !== "object" || value === null) return false;
   const obj = value as Record<string, unknown>;
-  return typeof obj.decision === "string" && typeof obj.auditId === "string";
+  return typeof obj.decision === "string" && typeof obj.auditId === "string"
+    && (obj.decision !== "deny" || !Object.hasOwn(obj, "terminalKind") || isAuditDenyKind(obj.terminalKind));
 }
