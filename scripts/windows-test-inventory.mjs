@@ -5,7 +5,6 @@ export const WINDOWS_TEST_LISTS = [
   "config/windows-native-tests.txt",
   "config/windows-application-tests.txt",
 ];
-export const WINDOWS_INVENTORY_LOCK = "test/scripts/windows-ci-test-list.test.ts";
 export const WINDOWS_TEST_REMOVALS = "config/windows-test-removals.json";
 const MARKERS = new Map([
   ["windows-permission", WINDOWS_TEST_LISTS[0]],

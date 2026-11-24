@@ -741,6 +741,12 @@ describe("unresolved pull request diffs", () => {
 });
 
 describe("the must-run set", () => {
+  it("keeps both Windows inventory drift locks even when no domain triggers", () => {
+    expect(expandMustRunTests(mustRunDocument, trackedTests, [])).toEqual(expect.arrayContaining([
+      "test/scripts/windows-ci-test-list.test.ts",
+      "test/scripts/windows-native-test-inventory.test.ts",
+    ]));
+  });
   it("names security, permissions, sandbox, contract, IPC and naming tests that all exist", () => {
     expect(Object.keys((mustRunDocument as { groups: object }).groups).sort())
       .toEqual(["contract", "ipc", "naming", "out-of-process", "permissions", "sandbox", "security", "smoke", "tree-invariants"]);

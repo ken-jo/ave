@@ -85,7 +85,9 @@
       "test/scripts/pre-push-source-policy.test.ts",
       "test/scripts/pre-push-tier.test.ts",
       "test/scripts/repository-identity.test.ts",
-      "test/scripts/run-ci-suite.test.ts"
+      "test/scripts/run-ci-suite.test.ts",
+      "test/scripts/windows-ci-test-list.test.ts",
+      "test/scripts/windows-native-test-inventory.test.ts"
     ],
     "smoke": [
       "src/plugins/__tests__/tool-name-policy.test.ts",

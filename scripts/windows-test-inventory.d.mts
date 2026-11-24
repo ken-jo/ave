@@ -3,7 +3,6 @@ export const WINDOWS_TEST_LISTS: readonly [
   "config/windows-native-tests.txt",
   "config/windows-application-tests.txt",
 ];
-export const WINDOWS_INVENTORY_LOCK: string;
 export type WindowsDiffEntry = { path: string; status: string; oldMode?: string; newMode?: string };
 export type ReadWindowsVersion = (path: string, side: "before" | "after") => string | null;
 export function windowsTestFiles(text: string): string[];
