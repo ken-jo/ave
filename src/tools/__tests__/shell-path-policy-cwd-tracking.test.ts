@@ -1,5 +1,7 @@
 // Resolve operands against each possible execution directory, including changes made by cd.
-import { homedir } from "node:os";
+import { existsSync, mkdtempSync, realpathSync, rmdirSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { hostFilesystemPath } from "../../__tests__/support/host-filesystem-path.js";
@@ -69,6 +71,20 @@ describe("shell path policy — working directory tracking", () => {
   it("resolves a later operand against the directory cd moved to, not the session cwd", () => {
     // Resolve the operand against the directory entered by cd.
     expect(check("cd sub && cat ../notes.txt")).toBeNull();
+  });
+
+  it("checks the success body against a cd destination missing during analysis", () => {
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), "shell-cwd-tracking-")));
+    try {
+      expect(existsSync(join(root, "missing"))).toBe(false);
+      expect(findShellPathPolicyViolation("cd missing && cat ../../outside.txt", root, root, [], true)).toMatchObject({
+        kind: "sandbox-boundary",
+        candidate: "../../outside.txt",
+        path: join(dirname(root), "outside.txt"),
+      });
+    } finally {
+      rmdirSync(root);
+    }
   });
 
   describe("a cd whose destination argv does not decide", () => {
