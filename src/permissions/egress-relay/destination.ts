@@ -120,6 +120,7 @@ export function isReservedAddress(address: string): boolean {
   return [address, deliveredIPv4(address)].some((form) => form !== undefined && inList(RESERVED, form));
 }
 
+// Stricter than the address-set helper of the same name: that one drops a zone id first, so `127.0.0.1%eth0` and `::1%` are loopback there and not here.
 export function isLoopbackAddress(address: string): boolean {
   return inList(LOOPBACK, address);
 }

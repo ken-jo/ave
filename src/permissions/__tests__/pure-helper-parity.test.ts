@@ -223,6 +223,17 @@ describe("relay resolved-address check", () => {
     expect(resolvedAddressPermitted(host, resolved, 443, [], [])).toBe(false);
   });
 
+  it.each(["127.0.0.1%eth0", "::1%"])("does not take the zoned spelling %s as loopback, unlike the address-set helper", (zoned) => {
+    expect([isLoopbackAddress(zoned), address.isLoopbackAddress(zoned)]).toEqual([false, true]);
+    expect(resolvedAddressPermitted("localhost", zoned, 443, [], [])).toBe(false);
+  });
+
+  it("agrees with the address-set helper on unzoned and named-zone loopback", () => {
+    for (const spelled of ["127.0.0.1", "::1", "::1%lo0", "::ffff:127.0.0.1", "10.0.0.1", "::"]) {
+      expect({ spelled, loopback: isLoopbackAddress(spelled) }).toEqual({ spelled, loopback: address.isLoopbackAddress(spelled) });
+    }
+  });
+
   it("keeps the unspecified and loopback addresses in their own classes", () => {
     expect([isReservedAddress("::"), isLoopbackAddress("::")]).toEqual([true, false]);
     expect([isReservedAddress("::1"), isLoopbackAddress("::1")]).toEqual([false, true]);
