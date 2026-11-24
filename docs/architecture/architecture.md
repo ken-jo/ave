@@ -3643,10 +3643,12 @@ The ledger persists the kind on every terminal deny row as `terminalKind`.
 the first reason for older rows.
 
 The ledger fires one `PermissionDenied` lifecycle event for each `denied` row
-it commits, whatever the source. A `cancelled` row fires none. Governed tools
+it commits unless the effective abort stopped a rationale card after the gate
+settled the human denial. In that case the ledger keeps the denied row and skips
+lifecycle dispatch. A `cancelled` row fires none. Governed tools
 fire none either: a tool with an operation policy, or a call under a plugin
 authorization lifecycle, still gets its deny row but no event. This one rule
-lives in the ledger's row writer and reads only the persisted kind, never the reason.
+lives in the ledger's row writer and uses the persisted kind and invocation state.
 No call site emits `PermissionDenied` itself, and a source guard test enforces
 this. The guard also flags any lifecycle dispatch whose event is not a literal.
 The audit writer fires the event only for a denial that the ledger created, and

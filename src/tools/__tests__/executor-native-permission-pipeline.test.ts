@@ -993,7 +993,13 @@ describe("native invocation permission evidence", () => {
     expect(lifecycle.mock.calls.filter(([event]) => event === "PermissionDenied")).toEqual([]);
   });
 
-  it.each([["stopped", "cancelled"], ["headless", "denied"]] as const)("reads the actual %s rationale writer's legacy row as %s", async (source, kind) => {
+  it.each([
+    ["retired", "cancelled"],
+    ["headless", "denied"],
+    ["stop-while-open", "cancelled"],
+    ["deny-then-coordinator-stop", "denied"],
+    ["deny-then-turn-stop", "denied"],
+  ] as const)("records one %s rationale decision as %s", async (source, kind) => {
     await audit.setupPermissionAuditChain("aa".repeat(32));
     manager.setMode("auto");
     setReviewerForTest(manager, {
@@ -1001,7 +1007,11 @@ describe("native invocation permission evidence", () => {
       cache: resources.makeVerdictCache(join(root, "rationale-history-cache.jsonl")),
       recentlyDenied: makeRecentlyDeniedStore(join(root, "rationale-history-denied.jsonl")),
     });
-    const gate = new ApprovalGate({ isDestroyed: () => false, send: vi.fn() } as never);
+    const cards: ApprovalRequest[] = [];
+    const contents = { isDestroyed: () => false, send: (channel: string, card: ApprovalRequest) => {
+      if (channel === IPC_APPROVAL_REQUEST) cards.push(card);
+    } };
+    const gate = new ApprovalGate(contents as never);
     const coordinator = new RationaleHostCoordinator({
       requestAnchor: createTestRequestAnchor({ sessionId }), userRoleTexts: ["Perform the requested operation."],
       rationaleProvenance: { startedFromUserKeyboard: true, taint: "none" },
@@ -1012,35 +1022,64 @@ describe("native invocation permission evidence", () => {
       anchorRoundCas: new InMemoryHostAnchorRoundCasStore(), hostInvocationStartCas: new InMemoryHostInvocationStartCasStore(),
       onInvocationAudit: () => {}, onProjectionAudit: () => {},
     });
-    const realExecutor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined, audit);
+    const hooks = new ScriptHookManager();
+    const lifecycle = vi.spyOn(hooks, "runLifecycleEvent");
+    const turn = new AbortController();
+    const coordinatorStop = new AbortController();
+    const realExecutor = new ToolExecutor(registry, undefined, manager, undefined, gate, hooks, audit);
     const outcome = await realExecutor.executeConversationBatch([
       { id: "rationale-history", name: "write_file", input: { path: join(root, "outside.txt"), content: "await authority" } },
-    ], { executionCwd: project, sessionId, rationaleRuntime: coordinator,
+    ], { executionCwd: project, sessionId, rationaleRuntime: coordinator, abortSignal: turn.signal,
       permissionContext: { trustOrigin: "llm-tool-arg", additionalDirectories: [], headless: source === "headless" } });
     if (outcome.outcome !== "rationale-required") throw new Error("Expected an outside-write rationale card");
     const { ticketId, anchor, action } = outcome.control.control;
-    if (source === "stopped") {
+    let settledDenialReason: string | undefined;
+    if (source === "retired") {
       expect(coordinator.abort(ticketId)).toMatchObject({ state: "cancelled" });
     } else {
       await coordinator.handleRationaleRoundResult({ ticketId, result: { kind: "calls", calls: [{
         id: "rationale-choice", name: "permission_rationale",
         input: { contractVersion: 1, anchorId: anchor.anchorId, ticketId, actionDigest: action.actionDigest, round: 1, choice: "ask_user" },
       }] } });
-      await expect(coordinator.promptForApproval(ticketId)).resolves.toMatchObject({ outcome: "denied" });
+      if (source === "headless") {
+        await expect(coordinator.promptForApproval(ticketId)).resolves.toMatchObject({ outcome: "denied" });
+      } else {
+        const stop = source === "deny-then-turn-stop" ? turn : coordinatorStop;
+        const pending = coordinator.promptForApproval(ticketId, { abortSignal: stop.signal });
+        await vi.waitFor(() => expect(cards).toHaveLength(1));
+        const card = cards[0]!;
+        if (kind === "denied") {
+          expect(gate.resolveFromDesktopRenderer(card.id, {
+            requestId: card.id, choice: "deny-once", nonce: card.nonce, hmac: card.hmac,
+          }, contents as never)).toMatchObject({ choice: "deny-once" });
+          settledDenialReason = card.reason;
+        }
+        stop.abort();
+        expect(turn.signal.aborted).toBe(source === "deny-then-turn-stop");
+        await expect(pending).resolves.toBeNull();
+      }
     }
-    await audit.close();
-    const rows = (await readFile(audit.getPermissionAuditLogFile(), "utf8")).trim().split("\n")
+    const readRows = async () => (await readFile(audit.getPermissionAuditLogFile(), "utf8")).trim().split("\n")
       .map((line) => JSON.parse(line) as { toolUseId: string; decision: string; terminalKind: string; denyReasons: Array<{ reason: string; source: string }> })
-      .filter((row) => row.toolUseId === "rationale-history" && row.decision === "deny");
+      .filter((row) => row.toolUseId === "rationale-history" && row.decision !== "ask");
+    await vi.waitFor(async () => expect(await readRows()).toHaveLength(1));
+    await audit.close();
+    const rows = await readRows();
     expect(rows).toEqual([expect.objectContaining({
+      decision: "deny",
       terminalKind: kind,
-      denyReasons: [expect.objectContaining({ reason: source === "stopped"
-        ? "The permission request was stopped; the action was not executed."
-        : "Nobody can approve this request; do not retry." })],
+      ...(settledDenialReason !== undefined ? { trustOrigin: "user-keyboard" } : {}),
+      denyReasons: [expect.objectContaining({ reason: settledDenialReason ?? (source === "headless"
+        ? "Nobody can approve this request; do not retry."
+        : "The permission request was stopped; the action was not executed.") })],
     })]);
     const [row] = rows;
     if (row === undefined) throw new Error("Expected a terminal audit row");
-    expect(terminalDenyKindOf({ denyReasons: row.denyReasons })).toBe(kind);
+    if (source === "headless" || source === "retired") {
+      expect(terminalDenyKindOf({ denyReasons: row.denyReasons })).toBe(kind);
+    } else {
+      expect(lifecycle.mock.calls.filter(([event]) => event === "PermissionDenied")).toEqual([]);
+    }
   });
 
   it.each([

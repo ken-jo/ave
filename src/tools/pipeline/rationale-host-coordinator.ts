@@ -270,6 +270,7 @@ export interface CreateRationaleSealedResumeInput {
 
 interface ApprovalMetadata {
   readonly recordTerminalDenial?: (reason: string, stopped?: boolean) => Promise<void>;
+  readonly hasSettledHumanDenial?: () => boolean;
   readonly requestHumanApproval?: (input: { requestId: string; abortSignal?: AbortSignal }) => Promise<ApprovalDecision>;
   readonly sandboxCapability: SandboxCapability;
 }
@@ -666,6 +667,7 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
       approval: {
         requestHumanApproval: candidate.requestHumanApproval,
         recordTerminalDenial: candidate.recordTerminalDenial,
+        hasSettledHumanDenial: candidate.hasSettledHumanDenial,
         sandboxCapability: candidate.sandboxCapability,
       },
       snapshot: requested,
@@ -1284,7 +1286,7 @@ export class RationaleHostCoordinator implements RationaleHostRuntime, Rationale
 
   /** A card retired before its sealed resume was handed out ends the attempt it holds with a stop row. */
   #endUnstarted(context: TicketContext): void {
-    if (context.issuedResumeRequest !== null) return;
+    if (context.issuedResumeRequest !== null || context.approval.hasSettledHumanDenial?.()) return;
     void this.#recordTerminalDenial(context, RATIONALE_CARD_STOPPED, true).catch((error: unknown) => {
       log.error("rationale card terminal row failed: %s", errorMessage(error));
     });

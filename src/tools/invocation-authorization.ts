@@ -576,8 +576,10 @@ export async function authorizeToolInvocation(
             (target) => target.canonicalPath,
           ),
           ...(approvalCacheKey === undefined ? {} : { approvalCacheKey }),
+          hasSettledHumanDenial: () => services.invocationTerminal.hasSettledRationaleDenial,
           recordTerminalDenial: async (reason, stopped) => {
-            if (abortSignal?.aborted || context.terminalClaimed?.()) return;
+            if (abortSignal?.aborted || context.terminalClaimed?.() ||
+                (stopped && services.invocationTerminal.hasSettledRationaleDenial)) return;
             // A card stopped by the quit is the host's refusal; any other stop is the user's, as on the ordinary path.
             // Either stop is a cancellation; a card that ends without a stop is refused, a denial.
             const quit = stopped === true && toolInvocationShutdownStarted();
@@ -939,6 +941,10 @@ export async function authorizeToolInvocation(
             }) : undefined;
         const approvalRequest = {
           id: context.cardRequestId ?? randomUUID(),
+          ...(context.cardRequestId === undefined ? {} : {
+            onSettled: (answer: import("../permissions/approval-gate.js").ApprovalDecision) =>
+              services.invocationTerminal.selectRationaleDenial(answer, "user denied approval request"),
+          }),
           invocationToolUseId: toolUse.id,
           ...browserApprovalCardFacts(tool, invocationPermissionContext.approvalMemory),
           ...(permissionResult.forceModal === true

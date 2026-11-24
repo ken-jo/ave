@@ -1670,6 +1670,7 @@ async function runToolInvocationAttempt(
         const approvalRequest = {
           id: behavior?.requestId ?? randomUUID(),
           invocationToolUseId: toolUse.id,
+          ...(behavior === undefined ? {} : { onSettled: (answer: ApprovalDecision) => services.invocationTerminal.selectRationaleDenial(answer, dirLayerResult.reason) }),
           ...((dirLayerResult.forceModal === true)
             ? {
                 allowedChoices: ["allow-once", "deny-once"] as const,
@@ -1774,7 +1775,6 @@ async function runToolInvocationAttempt(
           await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, msg, true, startTime, refusal(`approval failed: ${errorMessage(approvalErr)}`, HOST_PROVENANCE), Infinity, invocationPermissionContext, invocationCategory, executionCwd);
           return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs }) };
         }
-
 
         // As on the tool-ask path: the gate's deny-once on an abort is the
         // right permission answer but the wrong transcript entry. The user

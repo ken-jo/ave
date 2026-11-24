@@ -325,6 +325,8 @@ export type ApprovalRequestInput = Omit<
   readonly remoteControllerAuthority?: RemoteControllerAuthority;
   // Observe turn abort while parked so Stop releases the execution lease immediately instead of waiting for approval timeout. Keep the live signal out of renderer, pending-entry and audit payloads; absent means no turn cancellation.
   readonly abortSignal?: AbortSignal;
+  /** Host-only observation of a parked card's settlement, before the waiter resumes. */
+  readonly onSettled?: (decision: ApprovalDecision) => void;
   // Host-tracked child provenance forces one-shot human approval and stays off renderer requests.
   readonly childProvenance?: ChildAgentProvenance;
 };
@@ -1151,6 +1153,7 @@ export class ApprovalGate {
       remoteControllerOrigin,
       remoteControllerAuthority,
       abortSignal,
+      onSettled,
       childProvenance,
       requestingAgentTitle: _requestedAgentTitle,
       reviewerOutcome,
@@ -1526,6 +1529,7 @@ export class ApprovalGate {
         detachOwnerRelease = undefined;
         detachOwnerDestroyed?.();
         detachOwnerDestroyed = undefined;
+        try { onSettled?.(decision); } catch { /* An observer cannot change the settled answer. */ }
         // Every way a PARKED request ends passes through here — desk answer, remote answer, timeout, turn abort, cancel, shutdown sweep — so this is the one place an observer's card — and the renderer's — can be told the request is no longer answerable.
         this.notifyPendingSettled(fullReq.id, decision);
         const refetchers = this.refetchedBy.get(fullReq.id) ?? [];
