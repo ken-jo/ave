@@ -117,6 +117,7 @@ import {
   setSandboxBootOutcome,
 } from "../../permissions/sandbox-capability.js";
 import { aveHome } from "../../shared/ave-home.js";
+import { t } from "../../i18n/index.js";
 import {
   governanceWithPolicy,
   stdioApproval,
@@ -543,6 +544,31 @@ describe("StdioTransport ASRT wrap — gate ON", () => {
     // A non-allow-listed host secret ASRT carried is NOT propagated.
     expect(assignments.some(entry => entry.includes("leaked-value"))).toBe(false);
 
+    await client.disconnect();
+  });
+
+  it.each([
+    ["a setup failure byte", true, "be_mcpClient.sandboxEnvironmentSetupFailed"],
+    ["no status byte", false, "be_mcpClient.processExitedUnexpectedly"],
+  ] as const)("names the exit cause from the target status pipe: %s", async (_name, failed, key) => {
+    gateActive = true;
+    const fake = new FakeChildProcess();
+    fake.responses = handshakeResponses("setupprobe");
+    const status = new PassThrough();
+    Object.assign(fake, { stdio: [null, null, null, null, new PassThrough(), status] });
+    wrapWorkerCommandMock.mockResolvedValueOnce({ argv: ["/bin/bash", "-c", "wrapped"], env: { ...process.env } });
+    spawnMock.mockReturnValueOnce(fake);
+    const config: McpStdioServerConfig = {
+      id: "setupprobe", transport: "stdio", command: "ave-mcp-setupprobe",
+      sandboxRoot: join(aveHome(), "mcp", "setupprobe", "sandbox"),
+    };
+    const client = new McpClient(config, governanceWithPolicy(buildPolicy([stdioApproval("setupprobe", "ave-mcp-setupprobe")])),
+      new ToolRegistry(), unusedNetworkFetch);
+    await client.connect();
+
+    fake.emit("exit", 1, null);
+    status.end(failed ? Buffer.from([1]) : undefined);
+    await vi.waitFor(() => expect(client.getState().lastError).toBe(t(key)));
     await client.disconnect();
   });
 

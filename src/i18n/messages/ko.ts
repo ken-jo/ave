@@ -947,6 +947,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "be_mcpClient.stdioCommandRequired": "stdio transport에 command가 필요합니다.",
   "be_mcpClient.stdinNotWritable": "stdin이 쓰기 불가 상태입니다.",
   "be_mcpClient.processExitedUnexpectedly": "프로세스가 예기치 않게 종료되었습니다.",
+  "be_mcpClient.sandboxEnvironmentSetupFailed": "샌드박스가 서버 환경을 설정하지 못했습니다.",
   "be_mcpClient.processError": "프로세스 오류: {message}",
   "be_mcpClient.httpFetchFailed": "http transport fetch 실패: {reason}",
   "be_mcpClient.httpJsonParseFailed": "http transport JSON 파싱 실패: {message}",

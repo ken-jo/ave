@@ -1,12 +1,14 @@
 import type { ChildProcess, StdioOptions } from "node:child_process";
-import { Writable } from "node:stream";
+import { Readable, Writable } from "node:stream";
 import { shellQuote } from "../lib/shell-resolver.js";
 import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-path.js";
 
 const LAUNCHER_PATH = "/usr/bin:/bin:/usr/sbin:/sbin";
 // fd 3 is used by the process-group launch gate or by the plugin protocol.
 const TARGET_ENV_FD = 4;
-export const SANDBOX_TARGET_ENV_FAILURE_EXIT_CODE = 1;
+// The shim writes one byte here only when setup fails before exec; the exec line closes it.
+const TARGET_STATUS_FD = 5;
+const SETUP_FAILURE_CODE = 1;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 const WINDOWS_LAUNCHER_ROOT_KEYS = new Set(["SYSTEMROOT", "WINDIR", "SYSTEMDRIVE"]);
 const STARTUP_ENV_GROUPS = [
@@ -69,8 +71,9 @@ export function buildLauncherEnvironment(platform: NodeJS.Platform = process.pla
 }
 
 const TARGET_ENV_SHIM = [
-  // Keep setup diagnostics private. The gate uses fd 3 and the payload uses fd 4.
-  "exec 9>&2 2>/dev/null",
+  // Keep setup diagnostics private. The gate uses fd 3, the payload fd 4 and the setup status fd 5.
+  `setup_failed() { printf '\\00${SETUP_FAILURE_CODE}' >&${TARGET_STATUS_FD}; exit 1; }`,
+  "exec 9>&2 2>/dev/null || setup_failed",
   "apply_target_env() {",
   "  unset name assignment target_env runtime_env",
   '  export -- "$@"',
@@ -88,13 +91,13 @@ const TARGET_ENV_SHIM = [
   '  if [[ -z "$assignment" ]]; then',
   `    exec ${TARGET_ENV_FD}<&-`,
   "    unset OLDPWD",
-  `    apply_target_env "\${target_env[@]}" "\${runtime_env[@]}" || exit ${SANDBOX_TARGET_ENV_FAILURE_EXIT_CODE}`,
-  '    exec 2>&9 9>&- -- "$@"',
+  `    apply_target_env "\${target_env[@]}" "\${runtime_env[@]}" || setup_failed`,
+  `    exec 2>&9 9>&- ${TARGET_STATUS_FD}>&- -- "$@"`,
   "  fi",
   '  target_env+=("$assignment")',
   "done",
   // A complete frame ends with an empty record. A closed or truncated pipe cannot start the target.
-  `exit ${SANDBOX_TARGET_ENV_FAILURE_EXIT_CODE}`,
+  "setup_failed",
 ].join("\n");
 
 function targetAssignments(env: NodeJS.ProcessEnv): string[] {
@@ -108,6 +111,26 @@ function targetAssignments(env: NodeJS.ProcessEnv): string[] {
     assignments.push(`${name}=${value}`);
   }
   return assignments;
+}
+
+const setupStatus = new WeakMap<ChildProcess, Promise<boolean>>();
+
+// Read from spawn on: unread stdio holds the child's close. Wrapper relays can keep the fd open past exit.
+function watchSetupStatus(child: ChildProcess): void {
+  const status = (child.stdio as readonly unknown[] | undefined)?.[TARGET_STATUS_FD];
+  if (!(status instanceof Readable)) return;
+  setupStatus.set(child, new Promise(resolve => {
+    status.once("data", () => resolve(true));
+    status.once("end", () => resolve(false));
+    status.once("close", () => resolve(false));
+    status.once("error", () => resolve(false));
+    status.resume();
+  }));
+}
+
+/** True when the shim reported a pre-exec setup failure; undefined for a launch without a status pipe. */
+export function sandboxTargetSetupFailed(child: ChildProcess): Promise<boolean> | undefined {
+  return setupStatus.get(child);
 }
 
 export interface SandboxTargetLaunch {
@@ -129,12 +152,16 @@ export function prepareSandboxTargetLaunch(
     command: `exec ${target.map(shellQuote).join(" ")}`,
     withStdio(stdio) {
       const entries = Array.isArray(stdio) ? [...stdio] : [stdio, stdio, stdio];
-      if (entries[TARGET_ENV_FD] != null) throw new Error("Sandbox environment pipe requires fd 4");
+      if (entries[TARGET_ENV_FD] != null || entries[TARGET_STATUS_FD] != null) {
+        throw new Error("Sandbox environment pipe requires fds 4 and 5");
+      }
       entries[3] ??= "ignore";
       entries[TARGET_ENV_FD] = "pipe";
+      entries[TARGET_STATUS_FD] = "pipe";
       return entries;
     },
     sendEnvironment(child) {
+      watchSetupStatus(child);
       const pipe = child.stdio?.[TARGET_ENV_FD];
       if (!(pipe instanceof Writable)) return;
       // The wrapper can exit before reading. A pipe error leaves the shim without a complete frame.

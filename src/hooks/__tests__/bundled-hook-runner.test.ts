@@ -252,6 +252,20 @@ process.stdin.on('end', () => process.stdout.write(JSON.stringify({action:'allow
       expect(existsSync(home)).toBe(false);
     });
 
+  it.each([
+    ["a setup failure byte", "require('node:fs').writeSync(5, Buffer.from([1])); process.exit(1)", true],
+    ["no status byte", "process.exit(1)", false],
+  ] as const)("names a sandbox setup failure only from the target status pipe: %s", async (_name, body, failed) => {
+    writeFileSync(script, body);
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    activateShellSandbox();
+    wrap.mockResolvedValueOnce({ argv: [fixtureNode, script], env: {} });
+    const { confinement: _confinement, ...userHook } = runnable();
+    const result = await runOneHookScript(userHook, payload, { cwd: dataDir });
+    expect(result.decision).toBe("deny");
+    expect(result.reason === "sandbox target environment setup failed", result.reason).toBe(failed);
+  });
+
   it("runs the rest of a wrapped handle's release past a rejected ASRT cleanup and retries only that step", async () => {
     vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
     activateShellSandbox();

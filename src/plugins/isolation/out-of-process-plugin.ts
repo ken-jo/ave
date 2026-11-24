@@ -9,7 +9,7 @@ import { isAbsolute, join, resolve as resolvePath } from "node:path";
 import { createLogger } from "../../lib/logger.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { capturePluginStderr } from "./plugin-stderr.js";
-import { SANDBOX_TARGET_ENV_FAILURE_EXIT_CODE } from "../../permissions/launcher-environment.js";
+import { sandboxTargetSetupFailed } from "../../permissions/launcher-environment.js";
 import {
   NODE_PRESERVE_SYMLINK_FLAGS,
   resolvePluginChildEntryPath,
@@ -576,16 +576,17 @@ export async function spawnConfinedPluginChild(
     });
     // Why the child is gone, settled from here on: a child that dies before anyone asks; while the channel is still being set up, or before the caller attaches `onGone`; is
     // still reported, and one that had already exited by the time the launch handed it back (`exitCode`/`signalCode` set, its `exit` possibly already emitted) is reported at once.
-    const exitedReason = (code: number | null, signal: NodeJS.Signals | null): string =>
-      processLaunch && code === SANDBOX_TARGET_ENV_FAILURE_EXIT_CODE
+    // The status pipe can outlive the exit while the wrapper tears down, so the cause waits for its end.
+    const exitedReason = async (code: number | null, signal: NodeJS.Signals | null): Promise<string> =>
+      (await sandboxTargetSetupFailed(child)) === true
         ? `[out-of-process-plugin] ${spec.pluginId}: sandbox target environment setup failed`
         : `[out-of-process-plugin] ${spec.pluginId}: child exited code=${String(code)} signal=${String(signal)}`;
     const gone = new Promise<string>((resolve) => {
       if (alreadyExited) {
-        resolve(exitedReason(child.exitCode, child.signalCode));
+        void exitedReason(child.exitCode, child.signalCode).then(resolve);
         return;
       }
-      child.once("exit", (code, signal) => resolve(exitedReason(code, signal)));
+      child.once("exit", (code, signal) => { void exitedReason(code, signal).then(resolve); });
       child.on("error", (error: Error) => {
         if (!hasProcess()) resolve(`[out-of-process-plugin] ${spec.pluginId}: child error: ${error.message}`);
       });
@@ -634,7 +635,7 @@ export async function spawnConfinedPluginChild(
         channel.destroy();
         terminateChild();
         throw new Error(
-          `${exitedReason(child.exitCode, child.signalCode)} as its channel was connected`,
+          `${await exitedReason(child.exitCode, child.signalCode)} as its channel was connected`,
         );
       }
       // stdout now carries nothing the protocol reads; keep it drained and logged, as stderr is.

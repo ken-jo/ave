@@ -449,6 +449,7 @@ export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<Confi
     }
   };
   const noteSpawn = (running: ChildProcess): void => {
+    targetLaunch?.sendEnvironment(running);
     spec.onSpawn?.(running);
     if (egress === undefined) return;
     if (process.platform !== "win32" && running.pid !== undefined) egress.noteProcessGroup(running.pid);
@@ -482,7 +483,6 @@ export async function spawnConfinedChild(spec: ConfinedChildSpec): Promise<Confi
       noteSpawn(child);
       trackManagedChildProcess(child, { label: spec.label, killProcessGroup: egress !== undefined && process.platform !== "win32" });
     }
-    targetLaunch?.sendEnvironment(child);
   } catch (error) {
     egress?.release();
     throw error;

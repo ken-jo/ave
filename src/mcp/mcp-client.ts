@@ -73,7 +73,7 @@ import {
   type MxcBundledHolder,
 } from "../sandbox/wrap-bundled-command.js";
 import type { EgressInvocation } from "../permissions/egress-invocations.js";
-import { assertConfiguredLauncherEnvironment } from "../permissions/launcher-environment.js";
+import { assertConfiguredLauncherEnvironment, sandboxTargetSetupFailed } from "../permissions/launcher-environment.js";
 import { buildSafeChildEnv } from "../tools/safe-env.js";
 import { HOST_PROGRAM_PATH_GUIDANCE, isRelativeHostProgram, resolveHostProgram } from "../shared/host-program-path.js";
 import { MCP_COMMAND_RELATIVE_PATH } from "../shared/mcp-error-code.js";
@@ -2124,6 +2124,7 @@ class StdioTransport implements McpTransport {
 
   private setupProcessHandlers(): void {
     if (!this.process) return;
+    const proc = this.process;
 
     this.processStdout?.on("data", (chunk: Buffer) => {
       try {
@@ -2147,9 +2148,16 @@ class StdioTransport implements McpTransport {
       // idempotent one-shot helper ensures exit and the later close event do not double-run the cleanup.
       this.runAsrtCleanupOnce();
       this.cleanupSandboxHome();
-      if (!this.closedExternally) {
-        this.closeHandler?.(t("be_mcpClient.processExitedUnexpectedly"));
+      const setupStatus = sandboxTargetSetupFailed(proc);
+      if (setupStatus === undefined) {
+        if (!this.closedExternally) this.closeHandler?.(t("be_mcpClient.processExitedUnexpectedly"));
+        return;
       }
+      void setupStatus.then(failed => {
+        if (failed) log.warn(`${this.config.id} sandbox target environment setup failed`);
+        if (this.closedExternally) return;
+        this.closeHandler?.(t(failed ? "be_mcpClient.sandboxEnvironmentSetupFailed" : "be_mcpClient.processExitedUnexpectedly"));
+      });
     });
 
     this.process.on("error", (err) => {

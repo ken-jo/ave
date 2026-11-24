@@ -170,6 +170,7 @@ import { TOOL_TIMEOUT_POLICY, windowsSrtPluginChildFactoryBudgetMs } from "../..
 import { setAveHomePrivacyAtBoot, approveExtensionsWithoutIsolation, _resetAveHomePrivacyForTest } from "../../../shared/ave-home.js";
 import { setPluginWorkerConfinementRequestedAtBoot, __resetSandboxRequestedAtBootForTest } from "../../../permissions/sandbox-capability.js";
 import { setProcessPlatform } from "../../../__tests__/support/process-platform.js";
+import { prepareSandboxTargetLaunch } from "../../../permissions/launcher-environment.js";
 import { getManagedChildProcessCount, trackManagedChildProcess } from "../../../main/managed-child-processes.js";
 import { createBoundHostApiDispatchTable } from "../bound-host-api-table.js";
 import {
@@ -1600,14 +1601,23 @@ describe("the factory's launch reaches the spawn as decided", () => {
     }
   });
 
-  it("reports sandbox environment setup failure without the resolved value", async () => {
+  it.each([
+    ["a setup failure byte", true, "sandbox target environment setup failed"],
+    ["no status byte", false, "child exited code=1 signal=null"],
+  ])("reports an exit 1 with %s without the resolved value", async (_case, setupFailed, expected) => {
     const roots = spawnableRoots();
     const platform = process.platform;
     const stdin = new PassThrough();
     const stdout = new PassThrough();
+    const status = new PassThrough();
     const canary = "invalid-locale-fixture-canary";
     const launch = processLaunch(roots.context.pluginRoot!);
-    const child = Object.assign(new EventEmitter(), { exitCode: 1, signalCode: null, stdin, stdout });
+    const child = Object.assign(new EventEmitter(), {
+      exitCode: 1, signalCode: null, stdin, stdout, stdio: [stdin, stdout, null, null, new PassThrough(), status],
+    });
+    prepareSandboxTargetLaunch("/bin/sh", [], {}).sendEnvironment(child as unknown as ChildProcess);
+    // The exit is already recorded; the status byte arrives afterwards.
+    setTimeout(() => status.end(setupFailed ? Buffer.from([1]) : undefined), 5);
     spawnConfinedChild.mockResolvedValueOnce({ child, confinement: "linux-bubblewrap" });
     sandbox.active = true;
     fakeSandboxHome.on = true;
@@ -1620,7 +1630,7 @@ describe("the factory's launch reaches the spawn as decided", () => {
         launch: { ...launch, env: { ...launch.env, LC_ALL: canary } },
       });
       const reason = await new Promise<string>(resolve => spawned.link.onGone(resolve));
-      expect(reason).toBe(`[out-of-process-plugin] ${PROCESS_MANIFEST.id}: sandbox target environment setup failed`);
+      expect(reason).toBe(`[out-of-process-plugin] ${PROCESS_MANIFEST.id}: ${expected}`);
       expect(reason).not.toContain(canary);
     } finally {
       setProcessPlatform(platform);
@@ -1629,6 +1639,7 @@ describe("the factory's launch reaches the spawn as decided", () => {
       spawnConfinedChild.mockReset();
       stdin.destroy();
       stdout.destroy();
+      status.destroy();
       roots.remove();
     }
   });

@@ -31,7 +31,7 @@ import {
 import { buildSafeChildEnv } from "../tools/safe-env.js";
 import { assertHostProgramNotRelative, resolveHostProgram } from "../shared/host-program-path.js";
 import { spawnConfinedChild } from "./confined-child.js";
-import { assertConfiguredLauncherEnvironment } from "./launcher-environment.js";
+import { assertConfiguredLauncherEnvironment, sandboxTargetSetupFailed } from "./launcher-environment.js";
 import {
   assertManagedChildProcessAdmissionOpen,
   trackManagedChildProcess,
@@ -446,6 +446,9 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
       },
     }));
     trackManagedChildProcess(child, { label: `worker:${safePlugin}:${safeWorker}:asrt` });
+    void sandboxTargetSetupFailed(child)?.then(failed => {
+      if (failed) log.warn(`[worker-spawn] worker:${safePlugin}:${safeWorker}: sandbox target environment setup failed`);
+    });
 
     // Idempotent definitive-termination cleanup (mirrors mcp-client): exit or close runs it once. A stop request and process-operation error retain ownership because neither proves the child is dead. Drops the reviewer marker and releases the per-command ASRT state.
     let cleanupRan = false;

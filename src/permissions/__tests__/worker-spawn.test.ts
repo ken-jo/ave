@@ -57,6 +57,19 @@ vi.mock("../sandbox-process-home.js", () => ({
     cleanup: sandboxHomeCleanupMock,
   }),
 }));
+const workerWarnings = vi.hoisted((): string[] => []);
+vi.mock("../../lib/logger.js", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../../lib/logger.js")>();
+  return {
+    ...original,
+    createLogger: (name: string) => {
+      const real = original.createLogger(name);
+      return name === "worker-spawn"
+        ? new Proxy(real, { get: (target, key) => (key === "warn" ? (message: string) => workerWarnings.push(message) : Reflect.get(target, key)) })
+        : real;
+    },
+  };
+});
 
 // child_process mock
 const spawnMock = vi.fn<
@@ -469,7 +482,7 @@ describe("spawnWorker — launcher environment", () => {
       const [, args, launch] = spawnMock.mock.calls[0] ?? [];
       const options = launch as { env: NodeJS.ProcessEnv; stdio: unknown } | undefined;
       expect(options?.env).toEqual({ PATH: "/usr/bin:/bin:/usr/sbin:/sbin" });
-      expect(options?.stdio).toEqual(["pipe", "pipe", "pipe", "ignore", "pipe"]);
+      expect(options?.stdio).toEqual(["pipe", "pipe", "pipe", "ignore", "pipe", "pipe"]);
       const cmdline = wrapWorkerCommandMock.mock.calls[0]?.[0];
       expect(cmdline).not.toContain("worker-canary");
       expect(JSON.stringify(args)).not.toContain("worker-canary");
@@ -565,6 +578,33 @@ describe("spawnWorker — gate ON (macOS)", () => {
     expect(spawnMock).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["a setup failure byte", true],
+    ["no status byte", false],
+  ])("logs a setup failure only from the target status pipe: %s", async (_name, failed) => {
+    workerWarnings.length = 0;
+    setProcessPlatform("darwin");
+    gateActive = true;
+    setActiveSandboxCapability({
+      kind: "asrt", confidence: "verified", platform: "darwin", reason: "test",
+      confines: { filesystem: true, process: true, network: true },
+    });
+    wrapWorkerCommandMock.mockResolvedValueOnce({ argv: ["/bin/bash", "-c", "wrapped"], env: { ...process.env } });
+    const child = new StubWorkerChild();
+    const status = new PassThrough();
+    child.stdio = [child.stdin, child.stdout, child.stderr, null, new PassThrough(), status];
+    spawnMock.mockReturnValueOnce(child);
+    await spawnWorker(workerOptions({ args: [] }));
+
+    child.exitCode = 1;
+    child.emit("exit", 1, null);
+    status.end(failed ? Buffer.from([1]) : undefined);
+    await new Promise(resolve => setTimeout(resolve, 10));
+    const reported = workerWarnings.some(message => message.includes("sandbox target environment setup failed"));
+    expect(reported).toBe(failed);
+    child.emit("close", 1, null);
+  });
+
   it("wraps with the FS jail only, grants the host-made state dir, registers no socket, marks wrapped", async () => {
     setProcessPlatform("darwin");
     gateActive = true;
@@ -649,7 +689,7 @@ describe("spawnWorker — gate ON (macOS)", () => {
     expect(scmd).toBe("/bin/bash");
     expect(sargs[0]).toBe("-c");
     expect(sopts.shell).toBe(false);
-    expect(sopts.stdio).toEqual(["pipe", "pipe", "pipe", "ignore", "pipe"]);
+    expect(sopts.stdio).toEqual(["pipe", "pipe", "pipe", "ignore", "pipe", "pipe"]);
 
     expect(worker.control).toBe("output-only-v1");
     expect(isPluginWorkerWrapped("local-indexer", "embed")).toBe(true);

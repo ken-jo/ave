@@ -2977,7 +2977,7 @@ ELECTRON_RUN_AS_NODE=1 exec ${JSON.stringify(process.execPath)} "$PLUGIN_ROOT/in
         const [program, args, options] = gatedSpawn.mock.lastCall ?? [];
         expect(program).toBeDefined();
         expect(JSON.stringify([program, args])).not.toContain(PROCESS_ENV_CANARY);
-        expect(options?.stdio).toEqual(["pipe", "pipe", "pipe", "ignore", "pipe"]);
+        expect(options?.stdio).toEqual(["pipe", "pipe", "pipe", "ignore", "pipe", "pipe"]);
         const result = gatedSpawn.mock.results[0];
         if (result?.type !== "return") throw new Error("Expected the process group gate to spawn");
         const spawned = await result.value;
@@ -3055,16 +3055,18 @@ ELECTRON_RUN_AS_NODE=1 exec ${JSON.stringify(process.execPath)} "$PLUGIN_ROOT/in
       const spawnThroughGate = gatedSpawn.getMockImplementation();
       if (!spawnThroughGate) throw new Error("Expected the real process group gate");
       let stderr = "";
-      gatedSpawn.mockImplementationOnce(async (...args) => {
-        const child = await spawnThroughGate(...args);
-        const payload = child.stdio[4];
-        if (!(payload instanceof Writable)) throw new Error("Expected the target environment pipe");
-        const end = payload.end.bind(payload);
-        vi.spyOn(payload, "end").mockImplementationOnce(() =>
-          end(`LC_ALL=${PROCESS_LOCALE_CANARY}\0invalid-name=${PROCESS_LOCALE_CANARY}\0\0`));
-        child.stderr?.on("data", chunk => { stderr += chunk; });
-        return child;
-      });
+      gatedSpawn.mockImplementationOnce((command, args, spawnOptions, options) => spawnThroughGate(command, args, spawnOptions, {
+        ...options,
+        onSpawn: (child) => {
+          const payload = child.stdio[4];
+          if (!(payload instanceof Writable)) throw new Error("Expected the target environment pipe");
+          const end = payload.end.bind(payload);
+          vi.spyOn(payload, "end").mockImplementationOnce(() =>
+            end(`LC_ALL=${PROCESS_LOCALE_CANARY}\0invalid-name=${PROCESS_LOCALE_CANARY}\0\0`));
+          child.stderr?.on("data", chunk => { stderr += chunk; });
+          options.onSpawn(child);
+        },
+      }));
       try {
         const reason = await spawnBelowHardening(plugin, { LC_ALL: PROCESS_LOCALE_CANARY });
         expect(reason).toBe(`[out-of-process-plugin] ${plugin.pluginId}: sandbox target environment setup failed`);
@@ -3072,6 +3074,23 @@ ELECTRON_RUN_AS_NODE=1 exec ${JSON.stringify(process.execPath)} "$PLUGIN_ROOT/in
       } finally {
         gatedSpawn.mockReset().mockImplementation(spawnThroughGate);
       }
+    },
+  );
+
+  it.runIf(process.platform === "darwin" || process.platform === "linux")(
+    "reports a target's own exit 1 after a successful setup as its exit status",
+    async () => {
+      if (!(await sandboxCasesRun())) return;
+      const fx = fixture;
+      if (!fx) throw new Error("Expected the confinement fixture");
+      const plugin = installPlugin(fx, "exitoneprobe");
+      mkdirSync(join(plugin.pluginRoot, "bin"), { recursive: true });
+      const launcher = join(plugin.pluginRoot, "bin", "plugin");
+      writeFileSync(launcher, "#!/bin/sh\nexit 1\n", "utf-8");
+      chmodSync(launcher, 0o755);
+      await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+      const reason = await spawnBelowHardening(plugin, {});
+      expect(reason).toBe(`[out-of-process-plugin] ${plugin.pluginId}: child exited code=1 signal=null`);
     },
   );
 

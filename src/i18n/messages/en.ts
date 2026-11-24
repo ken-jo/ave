@@ -945,6 +945,7 @@ export const en = {
   "be_mcpClient.stdioCommandRequired": "stdio transport requires a command.",
   "be_mcpClient.stdinNotWritable": "stdin is not writable.",
   "be_mcpClient.processExitedUnexpectedly": "Process exited unexpectedly.",
+  "be_mcpClient.sandboxEnvironmentSetupFailed": "The sandbox could not set up the server's environment.",
   "be_mcpClient.processError": "Process error: {message}",
   "be_mcpClient.httpFetchFailed": "http transport fetch failed: {reason}",
   "be_mcpClient.httpJsonParseFailed": "http transport JSON parse failed: {message}",
