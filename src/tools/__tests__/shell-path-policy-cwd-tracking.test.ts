@@ -232,9 +232,10 @@ describe("shell path policy — working directory tracking", () => {
       `cd b || mkdir -p b; ${repeat(8, (index) => `cd d${index} && test -f m && cd ..`)}`,
       `cd b || true; ${repeat(8, (index) => `cd d${index} && make && cd ..`)}`,
       `cd a || ls; ${repeat(6, (index) => `cd d${index}`)}`,
+      ...["ls", "true", "echo skip"].map((fallback) => `cd "$R/c" || ${fallback}; ${repeat(8, (index) => `cd "$R/d${index}" && make; cd "$R"`)}`),
     ])("ends a changed fault path in an ordinary ask: %s", (command) => {
       const start = performance.now();
-      const violation = atRoot(command);
+      const violation = atRoot(command, { R: ROOT.replaceAll("\\", "/") });
       expect(performance.now() - start).toBeLessThan(5_000);
       expect(violation).toMatchObject({ kind: "dynamic-path" });
     });

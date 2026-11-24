@@ -655,8 +655,8 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
       if (!observedDirectory && !mayChange) return [{ state, status: "failure" }];
       const changed = cloneState(state);
       changed.variables.set("OLDPWD", state.cwd ?? undefined); changed.cwd = destination; changed.variables.set("PWD", destination);
-      if (!filesystemMayChange && state.cdFaultChanged) {
-        // A fault path that changed the filesystem cannot bound its later cds; only an ancestor stays known.
+      if (state.cdFault !== undefined && mayChange) {
+        // A fault path never forks once the filesystem may have changed; only an ancestor stays known.
         if (observedDirectory && state.cwd !== null && within(destination, state.cwd)) return [{ state: changed, status: "success" }];
         decline("unresolved working-directory destination", effective.words[1]);
       }
