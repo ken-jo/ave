@@ -22,6 +22,7 @@ import { openEgressInvocation } from "../egress-invocations.js";
 import { getLocale, setLocale } from "../../i18n/index.js";
 import { isHostGitWorkspaceAvailable } from "../../shared/host-git.js";
 import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
+import { installProgramsOnPath } from "../../__tests__/support/planted-program.js";
 import * as policyHome from "../../shared/policy-home.js";
 import { configureHostResources, getHostResources } from "../../main/host-resources.js";
 
@@ -495,14 +496,25 @@ describe("Linux wrap filesystem discovery snapshot", () => {
 });
 
 describe("initializeAsrtSandbox — Linux configured-wrapper runtime probe", () => {
+  it("keeps the default /bin/bash when another bash is ahead of /usr/bin on PATH", async () => {
+    const programs = installProgramsOnPath(["bash"], "linux");
+    try {
+      process.env.PATH = `${programs.dir}:/usr/bin`;
+      await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+      expect(h.wrapWithSandboxArgv.mock.calls[0]?.[1]).toBeUndefined();
+      expect(h.spawn.mock.calls[0]?.[0]).toBe("/bin/bash");
+    } finally {
+      await programs.restore();
+    }
+  });
+
   it("runs the fixed no-I/O command through ASRT's exact configured argv before activation", async () => {
     await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
 
     expect(h.wrapWithSandboxArgv).toHaveBeenCalledTimes(1);
     const wrapCall = h.wrapWithSandboxArgv.mock.calls[0];
     expect(wrapCall?.[0]).toBe("true");
-    // The shell is named absolutely so the wrapper never looks bash up in a current directory.
-    expect(wrapCall?.[1]).toMatch(/^\/.*\/bash$/u);
+    expect(wrapCall?.[1]).toBeUndefined();
     expect(wrapCall?.[2]).toBeUndefined();
     expect(wrapCall?.[3]).toBeInstanceOf(AbortSignal);
     expect(wrapCall?.[4]).toBe(process.cwd());

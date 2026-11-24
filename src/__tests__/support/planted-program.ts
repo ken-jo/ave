@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { win32SystemBinary } from "../../shared/windows-system-path.js";
 
 const LOOKUP_VARIABLE = "NoDefaultCurrentDirectoryInExePath";
+const HOST_PLATFORM = process.platform;
 
 // Synchronous so callers that mock the promise file API can still use these fixtures.
 const removeFixture = (dir: string) => rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
@@ -64,23 +65,26 @@ export interface ProgramsOnPath {
 }
 
 /** Stub programs in a fully qualified folder prepended to PATH, for tests whose spawn is faked but whose program name must still resolve. */
-export function installProgramsOnPath(names: readonly string[]): ProgramsOnPath {
-  const windows = process.platform === "win32";
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), "ave-programs-on-path-")));
-  const file = (name: string) => join(dir, windows && !/\.(?:com|exe)$/iu.test(name) ? `${name}.exe` : name);
+export function installProgramsOnPath(names: readonly string[], platform = process.platform): ProgramsOnPath {
+  const windows = platform === "win32";
+  const fixture = realpathSync(mkdtempSync(join(tmpdir(), "ave-programs-on-path-")));
+  // A simulated POSIX lookup on Windows uses a root-relative path on the test drive.
+  const dir = !windows && HOST_PLATFORM === "win32" ? fixture.replace(/^[A-Za-z]:/u, "").replaceAll("\\", "/") : fixture;
+  const imageName = (name: string) => windows && !/\.(?:com|exe)$/iu.test(name) ? `${name}.exe` : name;
   for (const name of names) {
-    writeFileSync(file(name), windows ? "" : "#!/bin/sh\nexit 0\n");
-    if (!windows) chmodSync(file(name), 0o755);
+    const path = join(fixture, imageName(name));
+    writeFileSync(path, windows ? "" : "#!/bin/sh\nexit 0\n");
+    if (!windows) chmodSync(path, 0o755);
   }
   const previousPath = process.env.PATH;
   process.env.PATH = [dir, previousPath].filter(Boolean).join(windows ? ";" : ":");
   return {
     dir,
-    program: file,
+    program: (name) => windows ? join(dir, imageName(name)) : `${dir}/${name}`,
     async restore() {
       if (previousPath === undefined) delete process.env.PATH;
       else process.env.PATH = previousPath;
-      removeFixture(dir);
+      removeFixture(fixture);
     },
   };
 }

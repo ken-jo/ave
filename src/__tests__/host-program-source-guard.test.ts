@@ -97,7 +97,6 @@ const RESOLVED_SITES = [
   "main/managed-child-processes.ts",
   "main/corp-ca-extract.ts",
   "hooks/script-hook-runner.ts",
-  "permissions/asrt-sandbox.ts",
   "permissions/confined-child.ts",
 ];
 
@@ -123,4 +122,13 @@ describe("host program launch source guard", () => {
     const file = files.find(({ path }) => path === site);
     expect(file?.text, site).toMatch(/\b(?:resolveHostProgram|findHostProgram)\(/u);
   });
+
+  it.each(["permissions/asrt-sandbox.ts", "permissions/offline-process-sandbox.ts"])(
+    "%s does not search PATH for its fixed wrapper programs",
+    (site) => {
+      const file = files.find(({ path }) => path === site);
+      expect(file?.text, site).toBeDefined();
+      expect(file?.text, site).not.toMatch(/\b(?:resolveHostProgram|findHostProgram)\b/u);
+    },
+  );
 });

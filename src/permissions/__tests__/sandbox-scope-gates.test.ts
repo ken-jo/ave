@@ -81,7 +81,7 @@ describe("scoped sandbox gates", () => {
     expect(isShellSandboxActive()).toBe(shell);
     expect(isPluginWorkerConfinementActive()).toBe(workers);
     expect(probeMocks.wrapWithSandboxArgv).toHaveBeenCalledExactlyOnceWith(
-      "true", expect.stringMatching(/^\/.*\/bash$/u), undefined, expect.any(AbortSignal), process.cwd(),
+      "true", undefined, undefined, expect.any(AbortSignal), process.cwd(),
       { commandId: expect.any(String), denyUnixSockets: true },
     );
     expect(probeMocks.spawn).toHaveBeenCalledExactlyOnceWith(
