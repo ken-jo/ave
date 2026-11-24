@@ -1,6 +1,6 @@
 # Ave permission decision tree (v4)
 
-Status: owner-approved 2026-10-29. Mode names were updated 2026-10-30. Session surfaces, remote-user parity and shell-sandbox defaults: owner decision 2026-11-02. Ave home sandbox read boundary: owner decision 2026-11-07. Workflow templates (template runs, stage sub-agents, remote work approvals, run-scoped grant, unattended start, model-judged pass conditions): owner decision 2026-11-16. Unattended lane, schedule attachment, envelope, requested outputs, stage workspaces and per-stage breaker: owner decision 2026-11-16. Boot home privacy floor (any boot privacy failure) and helper-unavailable deny: owner decision 2026-11-24.
+Status: owner-approved 2026-10-29. Mode names were updated 2026-10-30. Session surfaces, remote-user parity and shell-sandbox defaults: owner decision 2026-11-02. Ave home sandbox read boundary: owner decision 2026-11-07. Workflow templates (template runs, stage sub-agents, remote work approvals, run-scoped grant, unattended start, model-judged pass conditions): owner decision 2026-11-16. Unattended lane, schedule attachment, envelope, requested outputs, stage workspaces and per-stage breaker: owner decision 2026-11-16. Boot home privacy floor (any boot privacy failure) and helper-unavailable deny: owner decision 2026-11-24. Windows absent protected names are watched, never materialised: owner decision 2026-11-24.
 Source design and reference comparison: artifact "에이전트 권한 결정 트리 비교", section 4.
 This file is the single source of truth for permission-decision work. Implementers and reviewers of any change
 to permission classification, approval cards, the reviewer, hooks or headless behaviour must read it and
@@ -223,13 +223,18 @@ Notes that are part of the contract:
   for approval once or for the session, for every boot privacy-failure category.
 - Privacy helper unavailable (boot category helper-unavailable: the Windows path-kind or ACL helper did not answer; owner decision
   2026-11-24): Ave cannot judge the home's protection, so host shells and host hooks are denied, and so is a confined shell whose home
-  denies were skipped or could not be applied without that helper; no extension is offered a start without isolation. A disposable
-  container run (operator container or workload broker) whose plan mounts no host Ave-home path is not a host shell and is unaffected. The notice tells the user to restart Ave. No approval, session grant or rule passes this denial.
+  denies were skipped or could not be applied without that helper; no extension is offered a start without isolation. The notice tells the user to restart Ave. No approval, session grant or rule passes this denial.
 - Limit of file rows (home dotfiles such as `.gitconfig` and `.npmrc`, and the top-level files of a Windows profile-child Ave home):
   Linux bind masks and Windows ACL stamps are bound to the file object present at spawn, so a long-lived confined child can read a
   file the host replaces by rename-over. A file absent at spawn has no object to bind; it is held only by that backend's absent-path
   handling, which this boundary does not change. macOS seatbelt rules are path-based, so neither case reopens a denied path there.
   Per-exec shells re-apply masks and stamps on every spawn.
+- Absent protected names on Windows (owner decision 2026-11-24): an ACL can only deny an existing object, and Ave never creates a
+  placeholder in the user's workspace or home to carry a deny. A protected name (for example `.vscode`, `.idea`, `.git/hooks`) that is
+  absent at launch is watched instead: when a sandboxed command ends, a worker is released, or a host-side consumer (host git, host hooks)
+  is about to act on that workspace while a sandboxed process is still live, a watched name that now exists is moved to quarantine under
+  the Ave home, the command result carries a named violation, and the user is told and may restore it. A failed move refuses host-side
+  consumers of that workspace. macOS seatbelt rules are patterns and cover absent names without this.
 - User-typed terminal-tab commands are user actions and stay outside this tree. A command the agent sends into a bound host terminal
   (`terminal_run`) runs on the host, so the boot home privacy floor above applies to it before the user-surface session choice.
 
