@@ -53,13 +53,16 @@ beforeAll(async () => {
   original = readFileSync(entry, "utf8");
 });
 afterEach(async () => {
-  for (const controller of inFlight.keys()) controller.abort();
-  await within(Promise.all(inFlight.values()), "leftover document parses to settle");
-  expect(getManagedChildProcessCount()).toBe(0);
-  (await acquireParseSlot("released-after-case")).release();
-  runtime.mainDir = bundleDir;
-  writeFileSync(entry, original);
-  vi.unstubAllEnvs();
+  try {
+    for (const controller of inFlight.keys()) controller.abort();
+    await within(Promise.all(inFlight.values()), "leftover document parses to settle");
+    expect(getManagedChildProcessCount()).toBe(0);
+    (await acquireParseSlot("released-after-case")).release();
+  } finally {
+    runtime.mainDir = bundleDir;
+    writeFileSync(entry, original);
+    vi.unstubAllEnvs();
+  }
 });
 afterAll(async () => {
   await cleanupTmpDir(bundleDir);
