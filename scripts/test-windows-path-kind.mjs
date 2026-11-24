@@ -120,6 +120,52 @@ async function recoveryTests() {
     assert.equal(readFileSync(path, "utf8"), "{}");
     expect(removeRecord(dir, record), ["ready", "removed"]);
   });
+  // Right file ID, wrong creation time: each identity-bound mode must leave the entry where it is.
+  add("wrong birth: identity removal keeps the entry", (dir) => {
+    writeFileSync(join(dir, hidden), "hidden bytes");
+    expect(["--dir-remove-id", ...held(dir), hidden, "--expect", tokenOf(join(dir, hidden), 1n)], ["ready", "left"]);
+    assert.equal(readFileSync(join(dir, hidden), "utf8"), "hidden bytes");
+  });
+  add("wrong birth: restore keeps the hidden file", (dir) => {
+    const source = join(dir, hidden);
+    writeFileSync(source, "hidden bytes");
+    const known = snapshot(source);
+    known[1] = tokenOf(source, 1n);
+    expect(["--dir-restore", ...held(dir), hidden, part, ...known], ["ready", "left"]);
+    assert.equal(readFileSync(source, "utf8"), "hidden bytes");
+    assert.ok(!existsSync(join(dir, part)));
+  });
+  add("wrong birth: target restore keeps the old file aside a vacant name", (dir) => {
+    const source = join(dir, hidden);
+    writeFileSync(source, "old bytes");
+    expect(["--dir-restore-target", ...held(dir), hidden, "target", "--expect", tokenOf(source, 1n)], ["ready", "left"]);
+    assert.equal(readFileSync(source, "utf8"), "old bytes");
+    assert.ok(!existsSync(join(dir, "target")));
+  });
+  add("wrong birth: target restore does not take the writer as committed", (dir) => {
+    const source = join(dir, hidden);
+    const target = join(dir, "target");
+    writeFileSync(source, "old bytes");
+    writeFileSync(target, "new bytes");
+    const args = ["--dir-restore-target", ...held(dir), hidden, "target", "--expect", tokenOf(source)];
+    expect([...args, "--writer", tokenOf(target, 1n)], ["ready", "left"]);
+    assert.equal(readFileSync(source, "utf8"), "old bytes");
+    expect([...args, "--writer", tokenOf(target)], ["ready", "resolved"]);
+    assert.ok(!existsSync(source));
+    assert.equal(readFileSync(target, "utf8"), "new bytes");
+  });
+  add("wrong birth: record removal keeps the record", (dir) => {
+    expect(["--dir-write-record", ...held(dir), record, "7b7d"], ["ready", "written"]);
+    expect(removeRecord(dir, record, 1n), ["ready", "kept"]);
+    assert.equal(readFileSync(join(dir, record), "utf8"), "{}");
+  });
+  add("wrong birth: a rename keeps the staged file", (dir) => {
+    writeFileSync(join(dir, "staged"), "staged bytes");
+    expect(["--dir-rename", ...held(dir), "staged", ...held(dir), "report.pdf", "--expect", tokenOf(join(dir, "staged"), 1n)],
+      ["ready", "refused source"], 3);
+    assert.equal(readFileSync(join(dir, "staged"), "utf8"), "staged bytes");
+    assert.ok(!existsSync(join(dir, "report.pdf")));
+  });
   add("evidence classes other than creation stay unresolved", (dir) => {
     const source = join(dir, hidden);
     writeFileSync(source, "hidden bytes");
@@ -704,6 +750,9 @@ try {
   assert.ok(!existsSync(join(to, ".0123.part")));
 
   const staged = tokenOf(join(from, "b"));
+  result = answered(["--dir-remove", ...held(from), "b", "--expect", tokenOf(join(from, "b"), 1n)], "c");
+  assert.deepEqual(result.lines, ["ready", "refused source"], "a removal whose stamp has another creation time keeps the file");
+  assert.equal(readFileSync(join(from, "b"), "utf8"), "staged b");
   result = answered(["--dir-stamp", ...held(from), "b"], "c");
   assert.deepEqual(result.lines, ["ready", `stamp ${staged}`]);
   result = answered(["--dir-remove", ...held(from), "b", "--expect", staged], "c");
