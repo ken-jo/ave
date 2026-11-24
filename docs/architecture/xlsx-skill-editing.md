@@ -237,9 +237,10 @@ message fragment.
 Skill integration exercises ordinary shell path policy and the native wrapper on
 macOS, Linux and Windows without blanket platform skips; its Windows command uses
 the confined PowerShell route. The existing host prerequisite probe permits a
-reason-bearing per-test skip only for the recognized unsupported
-`appcontainer-dacl` tier and logs the actual tier. Unknown tiers,
-launcher-integrity errors, broken probes, and native startup or editing failures
+reason-bearing per-test skip only when the launcher's probe reports no tier,
+an error and a host without the container API, and logs that report. Any other
+tier-less report, other tiers, launcher-integrity errors, broken probes, and
+native startup or editing failures
 remain failures. The product still requires `base-container`.
 
 Policy/launcher fixtures and capability skips cannot establish native execution.

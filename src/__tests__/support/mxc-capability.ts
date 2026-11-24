@@ -5,7 +5,7 @@ import { resolveWindowsPathKindHelper } from "../../main/windows-path-kind-launc
 import { detectHostMxcPrerequisites, probeHostMxcPowerShellStart } from "../../permissions/mxc-windows.js";
 import type { MxcSupport } from "../../permissions/mxc-windows.js";
 
-/** Only a recognized host tier can excuse native execution; damaged prerequisites still fail. */
+/** Only a host the launcher reports as lacking the container API can excuse native execution; damaged prerequisites still fail. */
 export async function requireMxcCapability(skip: TestContext["skip"]): Promise<Extract<MxcSupport, { state: "available" }>> {
   await requireMxcPrerequisites(skip);
   const started = await probeHostMxcPowerShellStart(() => true);
@@ -18,7 +18,7 @@ export async function requireMxcPrerequisites(skip: TestContext["skip"]): Promis
   const prerequisite = await detectHostMxcPrerequisites();
   if (prerequisite.state !== "available") {
     const reason = `Native container prerequisite: ${prerequisite.reason}: ${prerequisite.detail}`;
-    if (prerequisite.reason === "tier-unsupported" && prerequisite.detail === "tier appcontainer-dacl") {
+    if (prerequisite.reason === "tier-unsupported" && prerequisite.detail.startsWith("tier none (no container API): ")) {
       console.info(reason);
       skip(reason);
     }

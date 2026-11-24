@@ -48,6 +48,9 @@ export function wxcExecPathFor(resourcePath: string, arch: string): string | und
 export interface MxcProbeReport {
   readonly tier: string | undefined;
   readonly needsDaclAugmentation: boolean | undefined;
+  // Given instead of a tier when the backend cannot serve the request.
+  readonly error: string | undefined;
+  readonly baseContainerApiPresent: boolean | undefined;
 }
 
 // Parse `wxc-exec --probe` stdout (one JSON object), or undefined when it is not one.
@@ -62,16 +65,29 @@ export function parseMxcProbeOutput(stdout: string): MxcProbeReport | undefined 
     return undefined;
   }
   if (typeof parsed !== "object" || parsed === null) return undefined;
-  const record = parsed as { tier?: unknown; needsDaclAugmentation?: unknown };
+  const record = parsed as { tier?: unknown; needsDaclAugmentation?: unknown; error?: unknown; probes?: unknown };
+  const apiPresent = typeof record.probes === "object" && record.probes !== null
+    ? (record.probes as { baseContainerApiPresent?: unknown }).baseContainerApiPresent : undefined;
   return {
     tier: typeof record.tier === "string" ? record.tier : undefined,
     needsDaclAugmentation: typeof record.needsDaclAugmentation === "boolean" ? record.needsDaclAugmentation : undefined,
+    error: typeof record.error === "string" ? record.error : undefined,
+    baseContainerApiPresent: typeof apiPresent === "boolean" ? apiPresent : undefined,
   };
 }
 
 export type MxcDryRunResult = { readonly ok: true } | { readonly ok: false; readonly detail: string };
 
 const MXC_CONTAINER_TIER = "base-container";
+
+// Why the probe did not report the container tier. The 1.1.0 launcher names no lesser tier: it omits the tier and gives an error. Only its own host fact (no container API) is read as a host without the tier; any other tier-less report stays unrecognised.
+function unsupportedTierDetail(report: MxcProbeReport): string {
+  if (report.tier !== undefined) return `tier ${report.tier}`;
+  const detail = report.error !== undefined && report.baseContainerApiPresent === false
+    ? `tier none (no container API): ${report.error}`
+    : `tier unknown: ${report.error ?? "no probe error"} (container API ${String(report.baseContainerApiPresent)})`;
+  return detail.slice(0, 500);
+}
 
 function outputLines(stdout: string, stderr: string): string[] {
   return `${stdout}\n${stderr}`.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0);
@@ -189,7 +205,7 @@ export async function detectMxcPrerequisites(deps: DetectMxcSupportDeps): Promis
       ? unavailable("probe-failed", `--probe exit ${String(probe.code)}`)
       : unavailable("request-rejected", rejected.slice(0, 500));
   }
-  if (report.tier !== MXC_CONTAINER_TIER) return unavailable("tier-unsupported", `tier ${report.tier ?? "unknown"}`);
+  if (report.tier !== MXC_CONTAINER_TIER) return unavailable("tier-unsupported", unsupportedTierDetail(report));
   if (probe.code !== 0) return unavailable("probe-failed", `--probe exit ${String(probe.code)}`);
 
   let dryRun: MxcRunResult;

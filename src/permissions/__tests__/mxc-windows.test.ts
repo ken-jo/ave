@@ -29,6 +29,12 @@ const PROBE_BASE_CONTAINER = `{
     "baseContainerSupportsIngressHostLoopbackAllow": true }
 }
 `;
+// What the 1.1.0 launcher reports when the container backend cannot serve the request: no tier, an `error`, and the host facts (the shape its API validates; not captured on such a host).
+const PROBE_NO_TIER = (apiPresent: boolean, error: unknown = "the container backend is unavailable on this host"): string => JSON.stringify({
+  warnings: [],
+  probes: { baseContainerApiPresent: apiPresent, baseContainerSupportsDenyPaths: false },
+  error,
+});
 // What the 1.1.0 launcher prints for a validated request (measured 2026-11-25): no tier line.
 const DRY_RUN_PASSED = [
   "SECTION: Request simplified",
@@ -53,7 +59,15 @@ const DRY_RUN_NON_LOOPBACK =
 
 describe("parseMxcProbeOutput", () => {
   it("reads the tier from the probe JSON", () => {
-    expect(parseMxcProbeOutput(PROBE_BASE_CONTAINER)).toEqual({ tier: "base-container", needsDaclAugmentation: false });
+    expect(parseMxcProbeOutput(PROBE_BASE_CONTAINER)).toEqual({ tier: "base-container", needsDaclAugmentation: false, error: undefined, baseContainerApiPresent: true });
+  });
+  it("reads the error and the host fact a tier-less probe carries", () => {
+    expect(parseMxcProbeOutput(PROBE_NO_TIER(false))).toEqual({
+      tier: undefined, needsDaclAugmentation: undefined, error: "the container backend is unavailable on this host", baseContainerApiPresent: false,
+    });
+    expect(parseMxcProbeOutput(PROBE_NO_TIER(true, { code: "malformed_request" }))).toEqual({
+      tier: undefined, needsDaclAugmentation: undefined, error: undefined, baseContainerApiPresent: true,
+    });
   });
   it("returns undefined for output that is not JSON", () => {
     expect(parseMxcProbeOutput("Request error")).toBeUndefined();
@@ -189,6 +203,25 @@ describe("detectMxcSupport", () => {
     [{ sha256: async () => { throw new Error("EACCES"); } }, "probe-failed"],
   ])("reports %o as %s, never as available", async (override, reason) => {
     await expect(detectMxcSupport(deps(override))).resolves.toMatchObject({ state: "unavailable", reason });
+  });
+
+  it.each([0, 1])("names a host without the container API when the tier-less probe says so (exit %i)", async (code) => {
+    const d = deps({ runs: { "--probe": { code, stdout: PROBE_NO_TIER(false), stderr: "" } } });
+    await expect(detectMxcPrerequisites(d)).resolves.toEqual({
+      state: "unavailable", reason: "tier-unsupported", windowsBuild: "10.0.26300",
+      detail: "tier none (no container API): the container backend is unavailable on this host",
+    });
+    expect(d.calls.map((c) => c[0])).toEqual(["--probe"]);
+  });
+
+  it.each([
+    ["an error on a host that has the container API", PROBE_NO_TIER(true), "tier unknown: the container backend is unavailable on this host (container API true)"],
+    ["no error string", PROBE_NO_TIER(false, { code: "malformed_request" }), "tier unknown: no probe error (container API false)"],
+    ["no host facts", JSON.stringify({ error: { code: "malformed_request", message: "failed to load probe config" } }), "tier unknown: no probe error (container API undefined)"],
+    ["another tier", PROBE_BASE_CONTAINER.replace("base-container", "appcontainer-dacl"), "tier appcontainer-dacl"],
+  ])("keeps a tier-less probe with %s unrecognised", async (_name, stdout, detail) => {
+    await expect(detectMxcPrerequisites(deps({ runs: { "--probe": { code: 0, stdout, stderr: "" } } })))
+      .resolves.toMatchObject({ state: "unavailable", reason: "tier-unsupported", detail });
   });
 });
 
