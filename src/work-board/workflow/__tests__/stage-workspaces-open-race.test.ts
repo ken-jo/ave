@@ -3,6 +3,7 @@ import type { FileHandle } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, parse, resolve } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { deferred } from "../../../__tests__/support/deferred.js";
 import { aveHome } from "../../../shared/ave-home.js";
 import { createHostGit, type HostGit } from "../host-git.js";
 import type { OwnedDir } from "../owned-fs.js";
@@ -437,8 +438,8 @@ it.each([
   let replaceOnRead = false;
   let queries = 0;
   const read = vi.fn();
-  const pending = Promise.withResolvers<{ bytesRead: number; buffer: Buffer }>();
-  const closed = Promise.withResolvers<void>();
+  const pending = deferred<{ bytesRead: number; buffer: Buffer }>();
+  const closed = deferred<void>();
   const replace = (): void => { renameSync(config, saved); writeFileSync(config, readFileSync(saved)); };
   const git: HostGit = { ...real, run: (cwd, args, call) => {
     if (args.includes("extensions.refStorage")) queries += 1;
