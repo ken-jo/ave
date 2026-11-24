@@ -40,3 +40,8 @@ export function takeWindowsHelperLaunches(): Record<string, number> {
   }
   return byVerb;
 }
+
+/** All launches in a grouped count. */
+export function totalLaunches(launches: Record<string, number>): number {
+  return Object.values(launches).reduce((sum, count) => sum + count, 0);
+}

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { EventEmitter } from "node:events";
 import { fileURLToPath } from "node:url";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
-import { takeWindowsHelperLaunches } from "../../../__tests__/support/windows-helper-spawns.js";
+import { takeWindowsHelperLaunches, totalLaunches } from "../../../__tests__/support/windows-helper-spawns.js";
 import { configureHostResources } from "../../../main/host-resources.js";
 import { queryWindowsSystemDirectory, queryWindowsSystemDirectorySync, windowsPathKindHelperIn } from "../../../main/windows-path-kind-launcher.js";
 import { pinWindowsPaths } from "../../../shared/windows-path-facts.js";
@@ -57,7 +57,6 @@ function documentEvent() {
   return { sender, senderFrame: frame };
 }
 
-const total = (launches: Record<string, number>) => Object.values(launches).reduce((sum, count) => sum + count, 0);
 
 // Windows CI builds the helper, so a missing helper there is a failure, not a skip.
 it.runIf(Boolean(process.env.CI) && process.platform === "win32")("has the native path helper built on Windows CI", () => {
@@ -111,7 +110,7 @@ describe.skipIf(!helperPresent)("preview native helper launch budget", () => {
     await new Promise(resolve => setImmediate(resolve));
     const launches = takeWindowsHelperLaunches();
     expect(result, JSON.stringify(result)).toMatchObject({ ok: true, content: "plain" });
-    expect(total(launches), JSON.stringify(launches)).toBeLessThanOrEqual(PREVIEW_TEXT_OPEN_TARGET);
+    expect(totalLaunches(launches), JSON.stringify(launches)).toBeLessThanOrEqual(PREVIEW_TEXT_OPEN_TARGET);
     expect(launches, JSON.stringify(launches)).toEqual(PREVIEW_TEXT_OPEN_LAUNCHES);
     event.sender.emit("destroyed");
   });

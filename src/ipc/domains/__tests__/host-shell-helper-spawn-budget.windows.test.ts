@@ -7,7 +7,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { allowOnceCardAnswer } from "../../../__tests__/support/approval-card-answer.js";
 import { deferred } from "../../../__tests__/support/deferred.js";
 import { makeRecentlyDeniedStore } from "../../../__tests__/support/recently-denied.js";
-import { takeWindowsHelperLaunches } from "../../../__tests__/support/windows-helper-spawns.js";
+import { takeWindowsHelperLaunches, totalLaunches } from "../../../__tests__/support/windows-helper-spawns.js";
 import { AuditLogger } from "../../../audit/audit-logger.js";
 import { mxcShellCapability, planWindowsSandbox, windowsProxyOnlyCapability } from "../../../boot/steps/windows-sandbox-plan.js";
 import { ScriptHookManager } from "../../../hooks/script-hook-manager.js";
@@ -56,7 +56,6 @@ const HOST_SHELL_ADMISSION_LAUNCHES = {
   powershell: { card: {}, approved: {} },
 } as const;
 
-const total = (launches: Record<string, number>) => Object.values(launches).reduce((sum, count) => sum + count, 0);
 
 afterEach(async () => {
   for (const close of cleanup.splice(0)) await close();
@@ -169,8 +168,8 @@ describe.skipIf(!helperPresent)("host shell admission native helper launch budge
     expect(result.content).toBe("admitted");
     expect(execute).toHaveBeenCalledOnce();
     expect(HOST_SHELL_ADMISSION_MEASURED).toBeLessThanOrEqual(HOST_SHELL_ADMISSION_TARGET);
-    expect(total(beforeCard), JSON.stringify(beforeCard)).toBeLessThanOrEqual(HOST_SHELL_ADMISSION_MEASURED);
-    expect(total(afterApproval), JSON.stringify(afterApproval)).toBeLessThanOrEqual(HOST_SHELL_ADMISSION_MEASURED);
+    expect(totalLaunches(beforeCard), JSON.stringify(beforeCard)).toBeLessThanOrEqual(HOST_SHELL_ADMISSION_MEASURED);
+    expect(totalLaunches(afterApproval), JSON.stringify(afterApproval)).toBeLessThanOrEqual(HOST_SHELL_ADMISSION_MEASURED);
     expect({ card: beforeCard, approved: afterApproval }, JSON.stringify({ card: beforeCard, approved: afterApproval }))
       .toEqual(HOST_SHELL_ADMISSION_LAUNCHES[toolName]);
   });
