@@ -190,7 +190,7 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
     const rest = pathRelative(parent, path);
     return rest === "" || !isAbsolute(rest) && rest !== ".." && !rest.startsWith(`..${sep}`);
   };
-  // One removal that failed a cd to missing can fail a cd to target iff it can contain both without containing cwd.
+  // For lexical, link-free paths: one removal that failed a cd to missing can fail a cd to target iff it can contain both without containing cwd.
   const sharesRemoval = (target: string, missing: string, cwd: string): boolean => {
     let shared = target;
     while (!within(shared, missing)) {
