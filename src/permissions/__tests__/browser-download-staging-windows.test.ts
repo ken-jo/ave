@@ -125,8 +125,9 @@ vi.mock("node:fs", async (original) => {
     if (!present(path)) throw enoent(path);
     return win32.normalize(path).replace(/(?<!:)[\\/]+$/, "");
   };
+  // A host scratch path under the simulated win32 can carry a trailing `\` directory suffix, which is a separator there.
   const stats = (real: typeof actual.lstatSync) => ((path: unknown, options?: { bigint?: boolean; throwIfNoEntry?: boolean }) => {
-    if (!isDrive(path)) return real(path as string, options as never);
+    if (!isDrive(path)) return real(typeof path === "string" ? path.replace(/(?<=.)\\+$/u, "") : path as string, options as never);
     if (!present(path)) {
       if (options?.throwIfNoEntry === false) return undefined;
       throw enoent(path);
