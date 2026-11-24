@@ -67,11 +67,18 @@ cleans the files and links directly in the held directory, each only while it
 still has the stamp the listing read for it (a changed entry is kept and not
 counted). All three preserve recovery record names.
 
-There is no `refused volume` on macOS. A volume without exclusive rename
-(exFAT, FAT) does not commit a copy: the commit and the move-aside of an old
-target need `RENAME_EXCL`, so the copy ends `refused target left` after
-`copied`, with its part left and recorded. The volume notices, worded for
-NTFS, stay Windows-only.
+`copy` checks the destination volume before it opens the source or an
+existing target, and before `ready`. It reads the held destination
+directory's volume capabilities (`fgetattrlist` with `ATTR_VOL_CAPABILITIES`
+and `ATTR_VOL_ATTRIBUTES`), which the file system reports without anything
+being created. A volume that does not report exclusive rename
+(`VOL_CAP_INT_RENAME_EXCL`), persistent file ids
+(`VOL_CAP_FMT_PERSISTENTOBJECTIDS`) or creation times (`ATTR_CMN_CRTIME`) is
+`refused volume` (exit 3): the commit and the move-aside of an old target
+need exclusive rename, and every token needs a lasting inode and birth time.
+exFAT and FAT report neither of the first two. A volume whose capabilities
+cannot be read is `refused volume-unknown`. These are the frames the
+Windows helper uses for volumes without file-ID opens.
 
 The recovery modes use the same `ready` handshake. Values identifying files
 are separate from the required identity of the directory. All names are
@@ -133,16 +140,15 @@ stdin.
   `cross-volume`, `removed`, `absent` or `swept <n>`. Exit `3`: `refused
   from|to|source|target`, when a directory is not the checked one (gone,
   unreadable, a link, or another directory at its path), the source is not an
-  ordinary file, or `target` holds something other than an ordinary file.
+  ordinary file, or `target` holds something other than an ordinary file;
+  `refused volume|volume-unknown` from `copy` as above.
   Exit `4`: `failed <errno name>`. Exit `2`: the arguments are wrong.
 - After creating the part exclusively and before reporting progress or
-  `copied`, the copy writes `writing <token>` once. The identity comes from
-  the writing descriptor, read after the first chunk is written (exFAT gives
-  a new file its lasting file id only then), or before the copy stops or ends
-  without one. The host never
+  `copied`, the copy writes `writing <token>` once. The identity comes
+  from the writing descriptor. The host never
   samples the part name for ownership. A failed exclusive open has no
   `writing` line and may answer `failed EEXIST`.
-- Source and target refusals before work starts precede `ready`. After
+- Volume, source and target refusals before work starts precede `ready`. After
   `copied` on an authorized commit, a target refusal uses `refused target
   left` with the stopped-copy suffix rules, `refused target removed` when
   cleanup removed the part or found it absent, or `refused target changed`
@@ -269,7 +275,8 @@ variants that inject one fault each: writes that take part of what they are
 given or nothing, a helper that never says `ready`, and one that copies slowly,
 ignores every request to stop and never answers after `copied`. The test
 builds also include variants that report a reused file identity or substitute
-an entry during restore, plain rename or publication. Only
+an entry during restore, plain rename or publication, and one that cannot read
+its destination's volume capabilities. Only
 `src/main/browser/__tests__/browser-download-staging.test.ts` runs them. A
 missing or broken helper refuses every download with the staging notice; there
 is no fallback to path operations.

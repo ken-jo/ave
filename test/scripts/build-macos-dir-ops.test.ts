@@ -82,7 +82,9 @@ describe("buildMacosDirOps", () => {
       macosDirOpsOutput(root, "arm64", "ave-dir-ops-copy-commit-failure"),
       macosDirOpsOutput(root, "arm64", "ave-dir-ops-copy-restore-failure"),
       macosDirOpsOutput(root, "arm64", "ave-dir-ops-copy-occupied"),
+      macosDirOpsOutput(root, "arm64", "ave-dir-ops-volume-unknown"),
     ]);
+    expect(calls[13]).toContain("-DAVE_DIR_OPS_TEST_VOLUME_UNKNOWN");
     expect(calls[0]?.some((arg) => arg.startsWith("-D"))).toBe(false);
     expect(calls[1]).toContain("-DAVE_DIR_OPS_TEST_WRITE_LIMIT=4093");
     expect(calls[2]).toContain("-DAVE_DIR_OPS_TEST_STALLED_WRITES");

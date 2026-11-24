@@ -27,6 +27,8 @@ type Proceed = (step: HeldStep) => boolean;
 /**
  * What refused an operation before it acted: `from` or `to` is not the verified directory (gone, unreadable, a link, or another
  * directory now at its path), the `source` entry is not an ordinary file, or the `target` name holds something other than an ordinary file.
+ * A copy's destination volume that lacks what the protocol needs is `volume`, and one whose capabilities could not be read
+ * `volume-unknown`; both helpers answer these before they open anything there.
  */
 export type HeldRefusal = "from" | "to" | "source" | "target" | "volume" | "volume-unknown";
 

@@ -1,7 +1,7 @@
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { chmodSync, closeSync, linkSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, statfsSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, linkSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -1209,10 +1209,10 @@ describe("a chosen folder whose volume cannot replace a file safely", () => {
   afterEach(() => { setLocale("en"); });
 
   it.each([
-    ["en", "This location does not support safe replacement; choose a local NTFS folder.",
-      "Ave could not check whether this location supports safe replacement; try again or choose a local NTFS folder."],
-    ["ko", "이 위치는 안전한 교체를 지원하지 않습니다. 로컬 NTFS 폴더를 선택하세요.",
-      "이 위치가 안전한 교체를 지원하는지 확인하지 못했습니다. 다시 시도하거나 로컬 NTFS 폴더를 선택하세요."],
+    ["en", "This location does not support safe saving; choose a local folder on a drive that supports it.",
+      "Ave could not check whether this location supports safe saving; try again or choose a local folder on a drive that supports it."],
+    ["ko", "이 위치는 안전한 저장을 지원하지 않습니다. 안전한 저장을 지원하는 드라이브의 로컬 폴더를 선택하세요.",
+      "이 위치가 안전한 저장을 지원하는지 확인하지 못했습니다. 다시 시도하거나 안전한 저장을 지원하는 드라이브의 로컬 폴더를 선택하세요."],
   ] as const)("is refused by name, worded in %s", (locale, unsupported, unknown) => {
     setLocale(locale);
     expect(stagingRefusal("volume")).toBe(unsupported);
@@ -2214,9 +2214,9 @@ describe.runIf(process.platform === "darwin")("a stopped native copy's temporary
   });
 });
 
-// A volume without exclusive rename leaves an unretired part in place. The
-// fixtures create and attach a disk image for these cases.
-describe.runIf(process.platform === "darwin")("a stopped native copy's temporary file on an exFAT volume", () => {
+// A volume without exclusive rename or persistent file ids (exFAT, FAT) cannot commit a copy, so the macOS helper refuses it by name
+// before it opens anything there or writes a byte. The fixtures create and attach a disk image for these cases.
+describe.runIf(process.platform === "darwin")("a chosen folder on an exFAT volume", () => {
   let image = "";
   let mounted: string | null = null;
   let unavailable = "";
@@ -2245,121 +2245,67 @@ describe.runIf(process.platform === "darwin")("a stopped native copy's temporary
     return base;
   };
 
-  it.for(ENDINGS)("preserves a replacement when the copy is %s", async (ending, { skip }) => {
-    const { outcome, chosen, swapped } = await stoppedNativeCopy(ending, true, onVolume(skip));
-    expect(readFileSync(swapped, "utf8")).toBe("the user's file");
-    for (const name of entriesOf(chosen).filter((name) => name.endsWith(".removing"))) {
-      expect(readFileSync(join(chosen, name), "utf8")).toBe("the user's file");
-    }
-    expect(outcome).toEqual({ state: "interrupted", cleanup: "part-left" });
-  });
-  it.for(ENDINGS)("records its own temporary file instead of unlinking it when the copy is %s", async (ending, { skip }) => {
-    const { outcome, chosen, root } = await stoppedNativeCopy(ending, false, onVolume(skip));
-    expect(entriesOf(chosen)).toEqual([expect.stringMatching(/^\.[0-9a-f]{32}\.part$/u), ...theTarget[ending]]);
-    // A copy that found an existing target also keeps the write-ahead record it wrote for that target, since the helper could not
-    // move it aside (no exclusive rename) and said nothing more about it.
-    const records = await Promise.all((await root.files.listRecords(root)).map((name) => readFileSync(join(root.path, name), "utf8")));
-    expect(records.filter((record) => !("target" in JSON.parse(record)))).toHaveLength(1);
-    expect(records).toHaveLength(ending === "failed" ? 2 : 1);
-    expect(outcome).toEqual({ state: "interrupted", cleanup: "part-left" });
-  });
-  it("leaves a directory at the temporary file's name", async ({ skip }) => {
-    const { outcome, chosen, swapped } = await stoppedNativeCopy("cancelled", "directory", onVolume(skip));
-    expect(entriesOf(chosen)).toEqual([basename(swapped)]);
-    expect(statSync(swapped).isDirectory()).toBe(true);
-    expect(outcome).toEqual({ state: "interrupted", cleanup: "part-left" });
-  });
+  const savedInto = async (chosen: string, files?: Files) => {
+    const prepared = prepare();
+    const root = acrossVolumes({ ...prepared, files: files ?? prepared.files });
+    const { asked, askSavePath } = dialogs();
+    const item = fakeItem();
+    const staged = stageBrowserDownload(item, { root, askSavePath }, Promise.resolve());
+    const done = doneOutcome(staged.download);
+    await settled();
+    asked[0]?.answer(join(chosen, "report.pdf"));
+    await settled();
+    item.complete("page data");
+    return { outcome: await done, notice: staged.download.getNotice(), root };
+  };
 
-  it("keeps a replacement intact when the volume has no room for copy-back", async ({ skip }) => {
-    const base = onVolume(skip);
-    const replacement = Buffer.alloc(1024 * 1024, 0x61);
-    const { outcome, chosen, swapped, root } = await stoppedNativeCopy("cancelled", (path) => {
-      writeFileSync(path, replacement);
-      const { bavail, bsize } = statfsSync(base);
-      writeFileSync(join(base, "padding"), Buffer.alloc(bavail * bsize - 128 * 1024));
-      const remaining = statfsSync(base);
-      expect(remaining.bavail * remaining.bsize).toBeGreaterThan(0);
-      expect(remaining.bavail * remaining.bsize).toBeLessThan(replacement.length);
-    }, base).finally(() => { rmSync(join(base, "padding"), { force: true }); });
-    expect(entriesOf(chosen)).toEqual([basename(swapped)]);
-    expect(readFileSync(swapped).equals(replacement)).toBe(true);
-    expect(outcome).toEqual({ state: "interrupted", cleanup: "part-left" });
-    const records = readdirSync(root.path);
-    expect(records).toEqual([expect.stringMatching(/\.cleanup\.json$/u)]);
-    const written = statSync(join(base, "the copy's own file"), { bigint: true });
-    expect(JSON.parse(readFileSync(join(root.path, records[0] ?? ""), "utf8"))).toMatchObject({
-      part: basename(swapped), at: basename(swapped),
-      identity: { kind: "fileId", dev: String(written.dev), ino: String(written.ino) },
-    });
-    expect(await sweepBrowserDownloadStaging(root)).toBe(0);
-    expect(readFileSync(swapped).equals(replacement)).toBe(true);
-    removeEntry(swapped);
-    expect(await sweepBrowserDownloadStaging(root)).toBe(1);
-    expect(existsSync(swapped)).toBe(false);
-  });
-
-  it("keeps and records the part when exclusive isolation is unavailable", async ({ skip }) => {
-    const base = onVolume(skip);
-    const { outcome, chosen, root } = await stoppedNativeCopy("cancelled", false, base);
-    const [part] = entriesOf(chosen);
-    expect(part).toMatch(/^\.[0-9a-f]{32}\.part$/u);
-    expect(readFileSync(join(chosen, part ?? ""), "utf8")).toBe("page data");
-    expect(await root.files.listRecords(root)).toHaveLength(1);
-    expect(outcome).toEqual({ state: "interrupted", cleanup: "part-left" });
-  });
-
-  it("leaves a substituted part in place without starting copy-back", async ({ skip }) => {
-    const base = onVolume(skip);
-    const files = _helperFileOperationsForTest(macHelper("-swap-restored"));
-    const { chosen, swapped } = await stoppedNativeCopy("cancelled", true, base, files);
-    expect(entriesOf(chosen)).toEqual([basename(swapped)]);
-    expect(readFileSync(swapped, "utf8")).toBe("the user's file");
-  });
-
-  it("leaves a substituted part intact when copy-back fault injection is armed", async ({ skip }) => {
-    const base = onVolume(skip);
-    const files = _helperFileOperationsForTest(macHelper("-fail-restored"));
-    const { chosen, swapped } = await stoppedNativeCopy("cancelled", true, base, files);
-    expect(entriesOf(chosen)).toEqual([basename(swapped)]);
-    expect(readFileSync(swapped, "utf8")).toBe("the user's file");
-  });
-
-  it("keeps different content when both entries report the same device and inode", async ({ skip }) => {
-    const base = onVolume(skip);
-    const files = _helperFileOperationsForTest(join(RESOURCES, "macos-dir-ops", process.arch, "ave-dir-ops-reused-file-id"));
-    // The replacement is the same length as "page data": the sampled bytes, rather than size, must distinguish it.
-    const { outcome, chosen, swapped } = await stoppedNativeCopy("cancelled", (path) => writeFileSync(path, "user data"), base, files);
-    expect(entriesOf(chosen)).toContain(basename(swapped));
-    expect(readFileSync(swapped, "utf8")).toBe("user data");
-    expect(outcome).toEqual({ state: "interrupted", cleanup: "part-left" });
-  });
-
-  it("keeps identical content written to a different inode", async ({ skip }) => {
-    const base = onVolume(skip);
-    const { outcome, chosen, swapped } = await stoppedNativeCopy("cancelled", (path) => {
-      const own = join(base, "the copy's own file");
-      writeFileSync(path, readFileSync(own));
-      const written = statSync(own, { bigint: true });
-      const replacement = statSync(path, { bigint: true });
-      expect([replacement.dev, replacement.ino]).not.toEqual([written.dev, written.ino]);
-    }, base);
-    expect(entriesOf(chosen)).toContain(basename(swapped));
-    expect(readFileSync(swapped, "utf8")).toBe("page data");
-    expect(outcome).toEqual({ state: "interrupted", cleanup: "part-left" });
-  });
-
-  it("records an empty part cancelled before the first write when isolation cannot be exclusive", ({ skip }) => {
+  it.for([false, true])("refuses a download saved there by name, writing nothing, with an existing target: %s", async (existing, { skip }) => {
     const chosen = onVolume(skip);
+    if (existing) writeFileSync(join(chosen, "report.pdf"), "the user's report");
+    const { outcome, notice, root } = await savedInto(chosen);
+    expect(outcome.state).toBe("interrupted");
+    expect(notice).toBe("unsupported-volume");
+    expect(entriesOf(chosen)).toEqual(existing ? ["report.pdf"] : []);
+    if (existing) expect(readFileSync(join(chosen, "report.pdf"), "utf8")).toBe("the user's report");
+    expect(await root.files.listRecords(root)).toEqual([]);
+  });
+
+  it("answers `refused volume` before `ready`, before it opens an existing target", ({ skip }) => {
+    const chosen = onVolume(skip);
+    writeFileSync(join(chosen, "report.pdf"), "the user's report");
     const root = prepare();
     const source = "0123456789abcdef0123456789abcdef";
     writeFileSync(join(root.path, source), "page data");
     const folder = statSync(chosen, { bigint: true });
-    const helper = join(RESOURCES, "macos-dir-ops", process.arch, "ave-dir-ops");
-    // Send both bytes in one write: authorize creation at ready, with the stop byte pending at the first poll.
-    const transcript = execFileSync(helper, ["--dir-copy", root.path, String(root.dev), String(root.ino), source, chosen,
-      String(folder.dev), String(folder.ino), "report.pdf", `.${source}.part`, HIDDEN_FOR_RECOVERY], { input: "cx", encoding: "utf8" });
-    expect(transcript).toMatch(/^ready\nwriting \d+:\d+:birth:[1-9]\d*\ncancelled left\n$/u);
-    expect(statSync(join(chosen, `.${source}.part`)).size).toBe(0);
+    let transcript = "";
+    let status: number | null = 0;
+    try {
+      transcript = execFileSync(macHelper(), ["--dir-copy", root.path, String(root.dev), String(root.ino), source, chosen,
+        String(folder.dev), String(folder.ino), "report.pdf", `.${source}.part`, HIDDEN_FOR_RECOVERY], { input: "cc", encoding: "utf8" });
+    } catch (error) {
+      ({ stdout: transcript, status } = error as { stdout: string; status: number | null });
+    }
+    expect({ transcript, status }).toEqual({ transcript: "refused volume\n", status: 3 });
+    expect(entriesOf(chosen)).toEqual(["report.pdf"]);
+  });
+});
+
+describe.runIf(process.platform === "darwin")("a chosen folder whose volume capabilities cannot be read", () => {
+  it("ends the download interrupted with the volume-unknown notice", async () => {
+    const prepared = prepare();
+    const root = acrossVolumes({ ...prepared, files: _helperFileOperationsForTest(macHelper("-volume-unknown")) });
+    const { asked, askSavePath } = dialogs();
+    const item = fakeItem();
+    const staged = stageBrowserDownload(item, { root, askSavePath }, Promise.resolve());
+    const done = doneOutcome(staged.download);
+    await settled();
+    const chosen = chosenFolder();
+    asked[0]?.answer(join(chosen, "report.pdf"));
+    await settled();
+    item.complete("page data");
+    expect((await done).state).toBe("interrupted");
+    expect(staged.download.getNotice()).toBe("volume-unknown");
+    expect(readdirSync(chosen)).toEqual([]);
   });
 });
 

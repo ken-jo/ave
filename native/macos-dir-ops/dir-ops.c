@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/attr.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -935,18 +936,34 @@ static void finish_copy_target(int directory, const char *target, const char *as
   report_left("target-left", directory, &left, 0);
 }
 
-// Announce `writing` once, with the identity of the file a copy writes, from its writing descriptor. exFAT gives a new file its lasting
-// file id only once it is written, so the copy announces it after the first chunk, or before it stops or ends without one. Returns 0
-// (also when already announced), or the errno for an identity that cannot be read or cannot be the part's (ENOTSUP).
-static int announce_writing(int fd, const struct stat *directory, int old, const struct stat *old_identity, struct stat *identity,
-    int *announced) {
-  if (*announced) return 0;
-  if (fstat(fd, identity) != 0) return errno;
-  if (nanos(identity->st_birthtimespec) == 0 || identity->st_dev != directory->st_dev ||
-      (old >= 0 && old_identity->st_ino == identity->st_ino)) return ENOTSUP;
-  say_token("writing", identity);
-  *announced = 1;
-  return 0;
+// The destination volume must offer what a copy's protocol relies on: exclusive rename (RENAME_EXCL) for the commit and the old
+// target's move aside, file ids that persist (the inode the writing descriptor reports is the one the commit leaves at the target),
+// and birth times for every token. The held directory's own volume capabilities answer that before anything is created; exFAT and
+// FAT report neither of the first two. Returns 0, `refused volume` for a volume that lacks one, or `refused volume-unknown` when the
+// capabilities cannot be read.
+static int check_volume(int directory) {
+#if defined(AVE_DIR_OPS_TEST_VOLUME_UNKNOWN)
+  (void)directory;
+  return refused("volume-unknown");
+#else
+  struct attrlist request = {
+    .bitmapcount = ATTR_BIT_MAP_COUNT, .volattr = ATTR_VOL_INFO | ATTR_VOL_CAPABILITIES | ATTR_VOL_ATTRIBUTES,
+  };
+  struct {
+    uint32_t length;
+    vol_capabilities_attr_t capabilities;
+    vol_attributes_attr_t attributes;
+  } __attribute__((aligned(4), packed)) reply;
+  memset(&reply, 0, sizeof reply);
+  if (fgetattrlist(directory, &request, &reply, sizeof reply, 0) != 0 || reply.length < sizeof reply) return refused("volume-unknown");
+  const vol_capabilities_attr_t capabilities = reply.capabilities;
+  const vol_attributes_attr_t attributes = reply.attributes;
+  const uint32_t interfaces = capabilities.valid[VOL_CAPABILITIES_INTERFACES] & capabilities.capabilities[VOL_CAPABILITIES_INTERFACES];
+  const uint32_t format = capabilities.valid[VOL_CAPABILITIES_FORMAT] & capabilities.capabilities[VOL_CAPABILITIES_FORMAT];
+  const int supported = (interfaces & VOL_CAP_INT_RENAME_EXCL) != 0 && (format & VOL_CAP_FMT_PERSISTENTOBJECTIDS) != 0 &&
+    (attributes.validattr.commonattr & ATTR_CMN_CRTIME) != 0;
+  return supported ? 0 : refused("volume");
+#endif
 }
 
 static int run_copy(char **argv) {
@@ -960,6 +977,9 @@ static int run_copy(char **argv) {
   int to = -1;
   int status = hold_directory(argv[0], argv[1], argv[2], "from", &from);
   if (status == 0) status = hold_directory(argv[4], argv[5], argv[6], "to", &to);
+  if (status != 0) return status;
+  // Before the source or an existing target is opened, and before anything is written.
+  status = check_volume(to);
   if (status != 0) return status;
   const int source = openat(from, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
   if (source < 0) return errno == ENOENT || errno == ELOOP ? refused("source") : failed(errno);
@@ -993,15 +1013,22 @@ static int run_copy(char **argv) {
     close(copy);
     return abandon(to, part, NULL, code);
   }
-  // `writing` is said once, before any progress: after the first chunk is written, or before the copy stops or ends without one.
   struct stat identity;
-  int announced = 0;
-  int refusal = 0;
+  if (fstat(written.fd, &identity) != 0) {
+    const int code = errno;
+    close(copy);
+    return abandon(to, part, NULL, code);
+  }
+  if (nanos(identity.st_birthtimespec) == 0 || identity.st_dev != directory_identity.st_dev ||
+      (old >= 0 && old_identity.st_ino == identity.st_ino)) {
+    close(copy);
+    return abandon(to, part, NULL, ENOTSUP);
+  }
+  say_token("writing", &identity);
   unsigned char *buffer = malloc(COPY_CHUNK);
   if (buffer == NULL) {
-    refusal = announce_writing(written.fd, &directory_identity, old, &old_identity, &identity, &announced);
     close(copy);
-    return abandon(to, part, refusal == 0 ? &written : NULL, refusal == 0 ? ENOMEM : refusal);
+    return abandon(to, part, &written, ENOMEM);
   }
   int failure = 0;
   unsigned long long copied = 0;
@@ -1009,21 +1036,14 @@ static int run_copy(char **argv) {
   for (;;) {
     if (stop_requested()) {
       free(buffer);
-      refusal = announce_writing(written.fd, &directory_identity, old, &old_identity, &identity, &announced);
       close(copy);
-      return abandon(to, part, refusal == 0 ? &written : NULL, refusal);
+      return abandon(to, part, &written, 0);
     }
     const ssize_t count = read(source, buffer, COPY_CHUNK);
     if (count < 0 && errno == EINTR) continue;
     if (count < 0) failure = errno;
     else if (count > 0) failure = write_all(copy, buffer, (size_t)count);
     if (count <= 0 || failure != 0) break;
-    refusal = announce_writing(written.fd, &directory_identity, old, &old_identity, &identity, &announced);
-    if (refusal != 0) {
-      free(buffer);
-      close(copy);
-      return abandon(to, part, NULL, refusal);
-    }
     copied += (unsigned long long)count;
     unsynced += (unsigned long long)count;
     if (unsynced >= SYNC_INTERVAL) {
@@ -1038,11 +1058,6 @@ static int run_copy(char **argv) {
     fflush(stdout);
   }
   free(buffer);
-  refusal = announce_writing(written.fd, &directory_identity, old, &old_identity, &identity, &announced);
-  if (refusal != 0) {
-    close(copy);
-    return abandon(to, part, NULL, refusal);
-  }
   if (failure == 0 && fsync(copy) != 0) failure = errno;
   struct stat final;
   if (failure == 0 && fstat(copy, &final) != 0) failure = errno;
