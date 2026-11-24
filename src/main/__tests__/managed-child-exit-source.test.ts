@@ -2,7 +2,8 @@
 // recorded at acquisition by the registering wrap modules; callers receive the handle and owner-issued receipts only.
 // - Import graph: raw teardown primitives reach only the owner, the registering wrap modules and the named out-of-scope
 //   launch sites below; the covered callers (hook runner, document engine) reach none, and no fs removal either.
-// - Behaviour: forged, foreign, stale (generation), wrong-kind and early receipts are refused; a throwing step stays retryable.
+// - Behaviour: forged, foreign, stale (generation), wrong-kind and early receipts are refused; every step runs past a throwing one,
+//   which alone stays retryable.
 //   The reviewer mutations that stayed green each have a named behaviour test in the suite that owns the path.
 // - Source rules kept from earlier rulings: main's Windows release paths, no local child-lifetime timer or completion wait.
 // - Owner call sites in covered callers are pinned per file, so a new fresh handle, path record or abandon fails the lock.
@@ -501,21 +502,21 @@ describe("managed child receipts", () => {
     expect(() => observeManagedProcessGroup(exitedChild(), createManagedRelayResources())).toThrow("do not accept this exit evidence");
   });
 
-  it("keeps a throwing step and the steps after it for the next release", async () => {
+  it("runs every step past a throwing one and keeps only the failed step for the next release", async () => {
     const resources = createManagedResources();
     const steps: string[] = [];
     let fail = true;
-    recordManagedCleanup(resources, () => steps.push("first"), () => {
+    recordManagedCleanup(resources, () => steps.push("first"), async () => {
       if (fail) throw new Error("Injected step failure");
       steps.push("second");
     }, () => steps.push("third"));
     const receipt = await confirmedUnder(resources);
     await expect(releaseManagedResources(resources, receipt)).rejects.toThrow("Injected step failure");
-    expect(steps).toEqual(["first"]);
+    expect(steps).toEqual(["first", "third"]);
     fail = false;
     await releaseManagedResources(resources, receipt);
     await releaseManagedResources(resources, receipt);
-    expect(steps).toEqual(["first", "second", "third"]);
+    expect(steps).toEqual(["first", "third", "second"]);
     expect(() => recordManagedCleanup(resources, () => {})).toThrow("already released");
   });
 });
@@ -552,7 +553,7 @@ describe("managed process exit source rules", () => {
     expect(waited).toMatch(LOCAL_CHILD_WAIT);
     expect(appearsInOrder(posixHook, "observeManagedProcessGroup(child, input.resources)", "exit.wait(stopping.signal)",
       "const proof = await exit.confirmExit(stopReason);", "if (!proof)", 'return input.deny(t("be_scriptHookRunner.terminationUnverified"',
-      "await exit.wait();", "await releaseManagedResources(input.resources, proof);")).toBe(true);
+      "await exit.wait();", "await releaseManagedResources(input.resources, proof).catch(logReleaseFailure(input.hookId));")).toBe(true);
   });
 
   it.each(WINDOWS_RELEASE_PATHS)("%s preserves main's termination and cleanup steps", (_path, source, check) => {

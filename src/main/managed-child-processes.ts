@@ -577,16 +577,26 @@ function acquireManagedExit<Receipt extends ExitReceipt>(resources: ManagedResou
 
 function runRecordedRelease(state: ResourceState): Promise<void> {
   state.releasing ??= (async () => {
-    // A step leaves the list only after it returns, so a throwing step and those after it stay for the next release.
-    for (let step = state.steps[0]; step; step = state.steps[0]) {
-      const result = step();
-      if (result instanceof Promise) await result;
-      state.steps.shift();
+    // Steps are independent: every one runs, and only the failed ones stay recorded for the next release.
+    const failures: unknown[] = [];
+    for (const step of state.steps.splice(0)) {
+      try {
+        await step();
+      } catch (error) {
+        failures.push(error);
+        state.steps.push(step);
+      }
     }
-    for (let entry = state.paths[0]; entry; entry = state.paths[0]) {
-      await rm(entry.path, { force: true, recursive: entry.recursive ?? false });
-      state.paths.shift();
+    for (const entry of state.paths.splice(0)) {
+      try {
+        await rm(entry.path, { force: true, recursive: entry.recursive ?? false });
+      } catch (error) {
+        failures.push(error);
+        state.paths.push(entry);
+      }
     }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "Managed resource release failed.");
     state.released = true;
   })().finally(() => { state.releasing = undefined; });
   return state.releasing;

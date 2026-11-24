@@ -19,6 +19,7 @@ import {
   assertManagedChildProcessAdmissionOpen,
   createManagedResources,
   forceKillManagedChildProcess,
+  ManagedExitUnconfirmedError,
   observeManagedProcessGroup,
   releaseManagedResources,
   spawnManaged,
@@ -412,7 +413,7 @@ export async function runOneHookScript(
       sandboxArgv = true;
       spawnEnv = bundledWrappedEnv(childEnvBase, wrapped.env, wrapped.homeEnv);
     } catch (error) {
-      await abandonManagedLaunch(hookResources);
+      await abandonManagedLaunch(hookResources).catch(logReleaseFailure(runnable.id));
       return deny(`sandbox unavailable: ${(error as Error).message}`);
     }
   }
@@ -679,6 +680,14 @@ function captureBounded(stream: NodeJS.ReadableStream): { text(): string; capped
   return { text: () => Buffer.concat(chunks).toString("utf-8"), capped: () => capped };
 }
 
+/** A failed release step is logged, as on main, and the verdict stands; the owner's refusal still throws. */
+function logReleaseFailure(hookId: string): (error: unknown) => void {
+  return (error) => {
+    if (error instanceof ManagedExitUnconfirmedError) throw error;
+    log.warn("hook sandbox release failed: %s (%s)", hookId, (error as Error).message);
+  };
+}
+
 async function runPosixHook(input: {
   readonly start: (onSpawn: (child: ChildProcess) => void) => ChildProcess;
   readonly stdinJson: string;
@@ -730,7 +739,7 @@ async function runPosixHook(input: {
     }
     if (input.abortSignal?.aborted) onAbort();
     if (owned === undefined) {
-      await abandonManagedLaunch(input.resources);
+      await abandonManagedLaunch(input.resources).catch(logReleaseFailure(input.hookId));
       return input.deny(cancelled ? "Hook execution cancelled" : fault ?? "Hook launch failed.");
     }
     const { child, exit } = owned;
@@ -754,7 +763,7 @@ async function runPosixHook(input: {
       return input.deny(t("be_scriptHookRunner.terminationUnverified", { code: "hook-termination-unverified" }));
     }
     const { code, signal } = await exit.wait();
-    await releaseManagedResources(input.resources, proof);
+    await releaseManagedResources(input.resources, proof).catch(logReleaseFailure(input.hookId));
     if (fault) return input.deny(fault);
     return input.outcome({ code, signal, cancelled, timedOut, stdout: stdout?.text() ?? "", stderr: stderr?.text() ?? "",
       stdoutCapped: stdout?.capped() ?? false });
