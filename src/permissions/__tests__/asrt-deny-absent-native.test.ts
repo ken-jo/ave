@@ -314,6 +314,20 @@ describe.runIf(process.platform === "win32" && hasNativeSrtWinBuildReceipt())("W
     } finally { restore(); }
   }, 60_000);
 
+  it("refuses a worker grant whose write-root floor cannot list the workspace and creates nothing", async () => {
+    const workspace = join(root, "workspace");
+    mkdirSync(workspace);
+    const target = join(workspace, "secret");
+    await initializeRequiredSandbox({ allowRead: [root], denyRead: [target], denyWrite: [target] });
+    const restore = denyOwner(workspace, 3);
+    try {
+      expect(() => writeFileSync(target, "owner cannot create")).toThrow();
+      await expect(holdWindowsFilesystemGrant({ label: "unlisted-deny-native", allowRead: [], allowWrite: [workspace] }).then(held => { held.release(); }))
+        .rejects.toThrow(/floor could not cover/);
+      expect(lstatSync(target, { throwIfNoEntry: false })).toBeUndefined();
+    } finally { restore(); }
+  }, 60_000);
+
   it("watches an absent directory row instead of creating it", async () => {
     const workspace = join(root, "workspace");
     mkdirSync(workspace);

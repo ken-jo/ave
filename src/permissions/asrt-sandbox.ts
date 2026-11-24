@@ -2102,15 +2102,21 @@ export function buildSandboxConfig(
   const sensitiveWritePaths = spelledPathEntries(writeFloor.entries, "denyWrite");
   if (!writeFloor.bounded && liveGrants.allowWrite?.length) throw new Error(WINDOWS_PROFILE_WRITE_FLOOR_ERROR);
   const requestedWrite = admittedWindowsPolicies.get(trustedSettings)?.allowWrite ?? trustedSettings.allowWrite ?? [];
-  const mandatory = buildMandatorySandboxWritePolicy(
-    writeFloor.bounded ? requestedWrite : [],
+  // One floor function for every write root: shared allowWrite and live worker-grant roots get the same rows.
+  const writeRootFloor = (roots: readonly FilesystemPathEntry[]) => buildMandatorySandboxWritePolicy(
+    roots,
     trustedSettings.userDataDir,
     sensitiveWritePaths,
     sensitiveWritePaths.filter(path => isAbsolute(path) && !/[*?\[\]]/.test(path)),
   );
+  const mandatory = writeRootFloor(writeFloor.bounded ? requestedWrite : []);
+  const grantFloor = liveGrants.allowWrite?.length ? writeRootFloor(liveGrants.allowWrite) : undefined;
+  if (grantFloor !== undefined && grantFloor.narrowedWriteRoots.length > 0) {
+    throw new Error(`Windows worker grant floor could not cover every write root: ${grantFloor.narrowedWriteRoots.map(entry => entry.root).join(", ")}`);
+  }
   const denyWriteUnion: FilesystemPathEntry[] = [];
   const denyWriteSeen = new Set<string>();
-  for (const p of [...writeFloor.entries, ...mandatory.denyWrite, ...(trustedSettings.denyWrite ?? [])]) {
+  for (const p of [...writeFloor.entries, ...mandatory.denyWrite, ...(grantFloor?.denyWrite ?? []), ...(trustedSettings.denyWrite ?? [])]) {
     const key = filesystemDenyEntryKey(p);
     if (!denyWriteSeen.has(key)) {
       denyWriteSeen.add(key);

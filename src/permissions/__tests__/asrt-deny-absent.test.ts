@@ -1006,6 +1006,14 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
     expect(watchedProtectedRows()).toContain(row);
   });
 
+  it("gives a worker-grant-only write root the same protected-root rows as a shared write root", () => {
+    const shared = join(root, "shared-root");
+    const granted = join(root, "granted-root");
+    for (const dir of [shared, granted]) mkdirSync(join(dir, ".vscode"), { recursive: true });
+    const next = buildSandboxConfig({ allowWrite: [shared] }, undefined, { allowWrite: [{ path: granted, literal: true }] });
+    expect(paths(next.filesystem.denyWrite)).toEqual(expect.arrayContaining([join(shared, ".vscode"), join(granted, ".vscode")]));
+  });
+
   it("does not let a bracketed session write grant retain unrelated absent denies", async () => {
     captureRuntime();
     const target = join(profile, "unrelated-absent-secret");
