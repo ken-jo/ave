@@ -10,7 +10,8 @@ import { terminateChildProcess } from "../../../tools/terminate-child-process.js
 import { frameMessage, StdioFrameDecoder } from "../../../mcp/stdio-framing.js";
 import { INVOCATION_META, RPC_METHOD_NOT_FOUND } from "../../../mcp/protocol-constants.js";
 import { evaluateHostFetch } from "../../../main/host-fetch-guard.js";
-import { currentEffectGateContext, gateMutatingEffect, runWithEffectGateContext } from "../../../permissions/effect-enforcement.js";
+import { currentEffectGateContext, GATED_EFFECT_PATHS, gateMutatingEffect, runWithEffectGateContext } from "../../../permissions/effect-enforcement.js";
+import { runWithInvocationOrigin } from "../../runtime/origin-chain.js";
 import type { ApprovalGate } from "../../../permissions/approval-gate.js";
 import { PermissionManager } from "../../../permissions/permission-manager.js";
 import { backgroundEffectSubject, PluginBackgroundEffectApprovals, withinBackgroundScope } from "../../plugin-background-effects.js";
@@ -556,6 +557,71 @@ describe("a tools/call's invocation, as the child's hostApi requests reach it", 
       await expect(raiseAlertFromChild(rig, "via-b", tokenOf(b.frame))).resolves.toMatchObject({ result: { status: "raised" } });
       await expect(raiseAlertFromChild(rig, "via-a", tokenOf(a.frame))).resolves.toMatchObject({ result: { status: "raised" } });
       expect(rig.seen).toEqual(["call-b", "call-a"]);
+    } finally {
+      rig.transport.close("case over");
+      await pending;
+    }
+  });
+
+  it("lets a model tool call's own token carry its callLlm while a frameless app long-poll is live", async () => {
+    // A panel's `*_wait_changes` poll is an app-only call: an origin frame, no effect-gate frame.
+    const seenLlm: Array<string | undefined> = [];
+    const rig = invocationRig({ table: {
+      callLlm: defineHostApiPath("callLlm", async () => {
+        seenLlm.push(marker.getStore());
+        return "reply";
+      }),
+    } });
+    const before = rig.sent.length;
+    const poll = marker.run("app-poll", () => runWithInvocationOrigin("ui", undefined,
+      () => rig.transport.requestMcp("tools/call", { name: "speak", arguments: {} })));
+    await settle();
+    const [pollFrame] = rig.sent.slice(before).filter((frame) => frame.method === "tools/call");
+    if (pollFrame === undefined) throw new Error("the app poll was not sent");
+    const model = await callToolIn(rig, "model-call", { headless: false, sessionId: "session-1" });
+    const pending = Promise.allSettled([poll, model.reply]);
+    const callLlm = async (id: string, token: string) => {
+      rig.deliver({ jsonrpc: "2.0", id, method: hostApiMethodOf("callLlm"),
+        params: { prompt: "hello", options: {}, _meta: { [INVOCATION_META]: token } } });
+      await vi.waitFor(() => expect(rig.sent.some((frame) => frame.id === id)).toBe(true));
+      return rig.sent.find((frame) => frame.id === id)!;
+    };
+    try {
+      expect(GATED_EFFECT_PATHS.has("callLlm")).toBe(true);
+      await expect(callLlm("via-model", tokenOf(model.frame))).resolves.toMatchObject({ result: "reply" });
+      expect(seenLlm).toEqual(["model-call"]);
+      expect(rig.audit).not.toHaveBeenCalled();
+      // The frameless app token still cannot launder the live model call's effect out of its gate.
+      const viaPoll = await callLlm("via-poll", tokenOf(pollFrame));
+      expect(viaPoll.error).toMatchObject({ data: { code: "argument-marshalling-rejected" } });
+      expect(rig.audit).toHaveBeenCalledWith(expect.objectContaining({ method: "callLlm", reason: "ambiguous-invocation-token" }));
+      expect(seenLlm).toEqual(["model-call"]);
+      rig.deliver({ jsonrpc: "2.0", id: model.frame.id as string, result: { content: [] } });
+      await model.reply;
+      await expect(callLlm("poll-alone", tokenOf(pollFrame))).resolves.toMatchObject({ result: "reply" });
+      expect(seenLlm).toEqual(["model-call", "app-poll"]);
+    } finally {
+      rig.transport.close("case over");
+      await pending;
+    }
+  });
+
+  it("still refuses two differing gated calls while a frameless app call is also live", async () => {
+    const rig = invocationRig();
+    const before = rig.sent.length;
+    const poll = marker.run("app-poll", () => runWithInvocationOrigin("ui", undefined,
+      () => rig.transport.requestMcp("tools/call", { name: "speak", arguments: {} })));
+    await settle();
+    expect(rig.sent.slice(before).filter((frame) => frame.method === "tools/call")).toHaveLength(1);
+    const a = await callToolIn(rig, "call-a", { headless: false, sessionId: "session-1" });
+    const b = await callToolIn(rig, "call-b", { headless: true, sessionId: "session-1" });
+    const pending = Promise.allSettled([poll, a.reply, b.reply]);
+    try {
+      for (const [id, call] of [["via-a", a], ["via-b", b]] as const) {
+        const reply = await raiseAlertFromChild(rig, id, tokenOf(call.frame));
+        expect(reply.error).toMatchObject({ data: { code: "argument-marshalling-rejected", detail: { reason: "ambiguous-invocation-token" } } });
+      }
+      expect(rig.seen).toEqual([]);
     } finally {
       rig.transport.close("case over");
       await pending;
