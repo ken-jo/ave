@@ -525,6 +525,8 @@ export interface MxcBundledHolderInput {
   readonly workspaceRoots?: readonly string[];
   /** Synchronous caller authority, rechecked by row 2 immediately before native creation. */
   readonly assertStillValid?: () => void;
+  /** A worker's declared control mode; required for the worker role. */
+  readonly workerTransport?: MxcConfinedChildSpec["workerTransport"];
   readonly signal?: AbortSignal;
 }
 
@@ -574,6 +576,7 @@ export async function spawnMxcBundledHolder(input: MxcBundledHolderInput): Promi
       holder: Object.freeze({ label: input.label }),
       probe,
       ...(input.assertStillValid ? { assertStillValid: input.assertStillValid } : {}),
+      ...(input.workerTransport ? { workerTransport: input.workerTransport } : {}),
       ...(input.signal ? { signal: input.signal } : {}),
     });
   } catch (error) {

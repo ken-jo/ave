@@ -5,6 +5,7 @@ import { errorMessage } from "../shared/error-message.js";
 import { createLogger } from "../lib/logger.js";
 import { registerWorkerOutputFlow } from "./worker-flow.js";
 import { spawn, type ChildProcess, type StdioOptions } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { mkdir } from "node:fs/promises";
 import { chmodSync, lstatSync } from "node:fs";
 import { resolve as pathResolve } from "node:path";
@@ -30,6 +31,8 @@ import {
 } from "./worker-stdio-control.js";
 import { buildSafeChildEnv } from "../tools/safe-env.js";
 import { spawnConfinedChild } from "./confined-child.js";
+import { MxcProcessCleanupError } from "./mxc-extension-errors.js";
+import { isMxcExtensionBackendSelected, spawnMxcBundledHolder, type MxcBundledHolder } from "../sandbox/wrap-bundled-command.js";
 import {
   assertManagedChildProcessAdmissionOpen,
   trackManagedChildProcess,
@@ -106,7 +109,7 @@ function wrappedWorkerKey(pluginId: string, workerId: string): string {
   return `${pluginId.length}:${pluginId}:${workerId}`;
 }
 
-function reserveWrappedWorker(pluginId: string, workerId: string): () => void {
+function reserveWrappedWorker(pluginId: string, workerId: string): (keepReserved?: boolean) => void {
   const key = wrappedWorkerKey(pluginId, workerId);
   if (activeWrappedWorkerKeys.has(key)) {
     throw new WorkerAlreadyRunningError(pluginId, workerId);
@@ -115,10 +118,11 @@ function reserveWrappedWorker(pluginId: string, workerId: string): () => void {
   let resolveExit!: () => void;
   workerExitWaiters.set(key, new Promise<void>((resolve) => { resolveExit = resolve; }));
   let released = false;
-  return () => {
+  // `keepReserved` ends the wait without freeing the identity: its termination is unverified.
+  return (keepReserved = false) => {
     if (released) return;
     released = true;
-    activeWrappedWorkerKeys.delete(key);
+    if (!keepReserved) activeWrappedWorkerKeys.delete(key);
     workerExitWaiters.delete(key);
     resolveExit();
   };
@@ -261,6 +265,10 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
   // A wrapped worker owns a stable per-(plugin,worker) identity. Keep that key reserved while it is running OR stopping; otherwise a replacement can lose its marker when the old exit arrives.
   const releaseWorkerReservation = reserveWrappedWorker(safePlugin, safeWorker);
 
+  if (process.platform === "win32" && isMxcExtensionBackendSelected()) {
+    return await spawnContainedWorker(spec, { plugin: safePlugin, worker: safeWorker }, control, label, args, stateDir, releaseWorkerReservation);
+  }
+
   if (process.platform === "win32") {
     let holder: ChildProcess;
     try {
@@ -373,11 +381,11 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
         },
       });
       child = spawned.child;
-      child.once("exit", finalizeResources);
+      child.once("exit", () => finalizeResources());
       child.once("error", () => {
         // `error` can mean signal/message delivery failed while the child is still alive. Definitive resource finalization stays on exit/close.
       });
-      child.once("close", finalizeResources);
+      child.once("close", () => finalizeResources());
       assertHolderAlive();
 
       return await openHandle(child, control, label, spawned);
@@ -456,11 +464,11 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
       sandboxHome.cleanup();
       releaseWorkerReservation();
     };
-    child.once("exit", finalizeOnce);
+    child.once("exit", () => finalizeOnce());
     child.once("error", () => {
       // A process-operation error is not proof of death. `close` is the asynchronous-spawn-failure finalizer; live children finalize on exit.
     });
-    child.once("close", finalizeOnce);
+    child.once("close", () => finalizeOnce());
   } catch (err) {
     // FAIL CLOSED: wrap/spawn setup failed. If the wrap had SUCCEEDED (failure was the post-wrap spawn / empty-argv), also decrement ASRT's per-command state and drop the reviewer marker — `cleanupOnce` never wired up, so the catch owns that teardown.
     if (wrapped) {
@@ -475,12 +483,90 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
   return await openHandle(child, control, label);
 }
 
+// What a handle observes of its process: a spawned child, or a contained holder's owned streams and verified end.
+interface WorkerProcess {
+  readonly pid?: number | undefined;
+  readonly stdin: Writable | null;
+  readonly stdout: Readable | null;
+  readonly stderr: Readable | null;
+  readonly exitCode: number | null;
+  readonly signalCode: NodeJS.Signals | null;
+  once(event: "exit", listener: (code: number | null, signal: NodeJS.Signals | null) => void): unknown;
+  once(event: "close", listener: (code: number | null, signal: NodeJS.Signals | null) => void): unknown;
+}
+
+// The container route: one holder per worker, with no account grant and no ACL holder. `exit` follows the holder's release; an
+// unverified termination keeps the worker identity reserved, so it cannot be respawned.
+async function spawnContainedWorker(
+  spec: SpawnWorkerSpec,
+  ids: { readonly plugin: string; readonly worker: string },
+  control: PluginWorkerControl,
+  label: string,
+  args: readonly string[],
+  stateDir: string | undefined,
+  releaseWorkerReservation: (keepReserved?: boolean) => void,
+): Promise<SpawnedWorker> {
+  const holderEnv = { ...definedEnv(spec.env), ...(stateDir !== undefined ? { [WORKER_STATE_DIR_ENV]: stateDir } : {}) };
+  const stateGrant = stateDir !== undefined ? [stateDir] : [];
+  let holder: MxcBundledHolder;
+  try {
+    holder = await spawnMxcBundledHolder({
+      label,
+      command: spec.command,
+      args,
+      baseEnv: buildSafeChildEnv(holderEnv),
+      holderEnv,
+      allowRead: [...stateGrant, ...(spec.allowReadPaths ?? [])],
+      allowWrite: [...stateGrant, ...(spec.allowWritePaths ?? [])],
+      ownedReadRoots: [...(spec.allowReadPaths ?? [])],
+      egressOwner: { kind: "worker", role: "worker", pluginId: spec.pluginId, instanceId: spec.workerId },
+      workerTransport: control,
+    });
+  } catch (error) {
+    releaseWorkerReservation(error instanceof MxcProcessCleanupError);
+    throw error;
+  }
+  const events = new EventEmitter();
+  let exitCode: number | null = null;
+  let ended = false;
+  let finishing: Promise<void> | undefined;
+  const observed = holder.process.completion.then((result) => { exitCode = result.exitCode; }, () => {});
+  const finish = (): Promise<void> => finishing ??= holder.release().then(async () => {
+    await Promise.race([observed, new Promise<void>((resolve) => setImmediate(resolve))]);
+    unmarkPluginWorkerWrapped(ids.plugin, ids.worker);
+    ended = true;
+    exitCode ??= 1;
+    releaseWorkerReservation();
+    events.emit("exit", exitCode, null);
+  }, (error: unknown) => {
+    unmarkPluginWorkerWrapped(ids.plugin, ids.worker);
+    releaseWorkerReservation(true);
+    ended = true;
+    events.emit("exit", exitCode, null);
+    log.error(`[worker-spawn] ${label}: contained termination is unverified; respawn refused until restart: ${errorMessage(error)}`);
+  });
+  void observed.then(finish);
+  const owned: WorkerProcess = {
+    pid: holder.process.id,
+    stdin: holder.process.stdin,
+    stdout: holder.process.stdout,
+    stderr: holder.process.stderr,
+    get exitCode() { return ended ? exitCode : null; },
+    signalCode: null,
+    once: (event: "exit" | "close", listener: (code: number | null, signal: NodeJS.Signals | null) => void) => events.once(event, listener),
+  };
+  const handle = await openHandle(owned, control, label, owned, () => { void finish(); });
+  if (finishing === undefined) markPluginWorkerWrapped(ids.plugin, ids.worker);
+  return handle;
+}
+
 // Build the SpawnedWorker handle around a spawned child. A stdio-control worker must complete the hello first; when it does not, it is stopped and its exit awaited before the error surfaces, so no failed spawn leaves a process behind.
 async function openHandle(
-  child: ChildProcess,
+  child: WorkerProcess,
   control: PluginWorkerControl,
   label: string,
   io: { readonly stdin: Writable | null; readonly stdout: Readable | null } = child,
+  terminate: () => void = () => terminateChildBestEffort(child as ChildProcess),
 ): Promise<SpawnedWorker> {
   const outputBacklogMax = 1024 * 1024;
   const outputBacklogEventMax = 256;
@@ -494,7 +580,7 @@ async function openHandle(
     stopped = true;
     endReason ??= reason;
     channel?.close();
-    terminateChildBestEffort(child);
+    terminate();
   };
   type OutputState = {
     listeners: WorkerOutputListener[];
