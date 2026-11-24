@@ -13,6 +13,12 @@ vi.mock("../../main/main-paths.js", () => ({ get mainDir() { return paths.mainDi
 type Client = typeof import("../rules/git-repository-inspection-client.js");
 const WORKER_SOURCE = "src/permissions/rules/git-repository-inspection-worker-main.ts";
 const ORDINARY_CONFIG = "[core]\n\trepositoryformatversion = 0\n\tbare = false\n";
+/**
+ * Repository evidence is produced only on POSIX hosts. On win32 the inspection needs the
+ * host's native path-pinning helper, which neither this suite nor the worker thread has, so
+ * both sides refuse; the verified path never reaches it there, because no verified Git is registered.
+ */
+const EVIDENCE_HOST = process.platform !== "win32";
 let builtWorkerDir: string;
 let root: string;
 let cwd: string;
@@ -103,11 +109,18 @@ describe("repository inspection worker", () => {
 
   it.each(PARITY_CASES)("returns the in-process inspection result: %s", async (name, arrange) => {
     arrange();
-    const { actual, expected } = await inspectInStableWindow(cwd, EVIDENCE_CASES.has(name));
+    const admitted = EVIDENCE_HOST && EVIDENCE_CASES.has(name);
+    const { actual, expected } = await inspectInStableWindow(cwd, admitted);
     // Admitted repositories must yield evidence on both sides, so two refusals cannot pass as parity.
-    if (EVIDENCE_CASES.has(name)) {
+    if (admitted) {
       expect(expected).not.toBeNull();
       expect(actual).not.toBeNull();
+    }
+    if (!EVIDENCE_HOST) {
+      // Both sides refuse, and the refusal comes from the inspection itself, not from the transport.
+      expect(expected).toBeNull();
+      expect(actual).toBeNull();
+      expect(client.lastGitRepositoryInspectionRefusal()).toBeUndefined();
     }
     expect(actual).toEqual(expected);
   });
@@ -116,10 +129,27 @@ describe("repository inspection worker", () => {
     for (const path of ["relative", "", "invalid\0cwd"]) expect(await client.inspectGitRepositoryAsync(path)).toBeNull();
   });
 
-  it("correlates concurrent replies with their requests on one resident worker", async () => {
+  it("correlates replies by request id when the worker answers out of order", async () => {
+    // Holds every request, then answers in reverse order with a result naming the request's own cwd.
+    paths.mainDir = standInWorker(`globalThis.held ??= []; globalThis.held.push(request);
+      if (globalThis.held.length === 6) for (const held of globalThis.held.reverse()) parentPort.postMessage({ id: held.id,
+        result: { gitDirectory: held.cwd + "/.git", workTree: held.cwd, referenceBackend: "files", stateFingerprint: "fingerprint:" + held.cwd } });`);
+    const requested = Array.from({ length: 6 }, (_, index) => `/request-${index}`);
+    const results = await Promise.all(requested.map((path) => client.inspectGitRepositoryAsync(path)));
+    expect(results.map((result) => result?.stateFingerprint)).toEqual(requested.map((path) => `fingerprint:${path}`));
+    expect(client.lastGitRepositoryInspectionRefusal()).toBeUndefined();
+  });
+
+  it("answers concurrent inspections of real repositories on one resident worker", async () => {
     const workspaces = Array.from({ length: 6 }, (_, index) => repository(join(root, `workspace-${index}`)));
     for (const [index, workspace] of workspaces.entries()) writeFileSync(join(workspace, ".git", "refs", "heads", `only-${index}`), `${"c".repeat(40)}\n`);
     let results: Awaited<ReturnType<Client["inspectGitRepositoryAsync"]>>[] = [];
+    if (!EVIDENCE_HOST) {
+      results = await Promise.all(workspaces.map((workspace) => client.inspectGitRepositoryAsync(workspace)));
+      expect(results).toEqual(workspaces.map(() => null));
+      expect(client.lastGitRepositoryInspectionRefusal()).toBeUndefined();
+      return;
+    }
     for (let attempt = 0; attempt < 25 && !(results.length > 0 && results.every((result) => result !== null)); attempt += 1) {
       if (attempt > 0) await new Promise((settle) => setTimeout(settle, 20));
       results = await Promise.all(workspaces.map((workspace) => client.inspectGitRepositoryAsync(workspace)));
