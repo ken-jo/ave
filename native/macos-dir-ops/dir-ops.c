@@ -298,10 +298,11 @@ static int remove_own_part(int to, const char *part, const struct written_file *
   hidden[0] = '\0';
   int exclusive = 1;
   if (renameatx_np(to, part, to, aside, RENAME_EXCL) != 0) {
+    if (errno == ENOENT) return 1;
     if (errno != ENOTSUP && errno != EINVAL) return 0;
     struct stat there;
     if (fstatat(to, aside, &there, AT_SYMLINK_NOFOLLOW) == 0 || errno != ENOENT) return 0;
-    if (renameat(to, part, to, aside) != 0) return 0;
+    if (renameat(to, part, to, aside) != 0) return errno == ENOENT;
     exclusive = 0;
   }
   struct stat moved;

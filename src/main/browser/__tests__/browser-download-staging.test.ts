@@ -1128,7 +1128,7 @@ const ENDINGS = ["cancelled", "failed", "refused"] as const;
 const theTarget: Record<Ending, string[]> = { cancelled: [], failed: ["report.pdf"], refused: ["report.pdf"] };
 // A folder's entries, without the `._` entries a volume without extended attributes (exFAT) keeps them in.
 const entriesOf = (folder: string): string[] => readdirSync(folder).filter((name) => !name.startsWith("._")).sort();
-async function stoppedNativeCopy(ending: Ending, swap: boolean, base: string) {
+async function stoppedNativeCopy(ending: Ending, swap: boolean | "absent", base: string) {
   const chosen = join(base, "chosen");
   mkdirSync(chosen);
   const target = join(chosen, "report.pdf");
@@ -1140,7 +1140,9 @@ async function stoppedNativeCopy(ending: Ending, swap: boolean, base: string) {
   let download!: import("../browser-download-staging.js").ObservedDownload;
   let swapped = "";
   const root = atStep(acrossVolumes(prepare()), "copy", "copied", ({ part }) => {
-    if (swap) {
+    if (swap === "absent") {
+      removeEntry(join(chosen, part ?? ""));
+    } else if (swap) {
       swapped = join(chosen, part ?? "");
       moveAside(swapped, join(base, "the copy's own file"));
       writeFileSync(swapped, "the user's file");
@@ -1180,6 +1182,11 @@ async function expectOwnFileRemoved(ending: Ending, base: string): Promise<void>
 describe.runIf(process.platform === "darwin")("a stopped native copy's temporary file swapped for another file", () => {
   it.each(ENDINGS)("leaves a file put at the temporary file's name when the copy is %s", (ending) => expectSwappedFileLeft(ending, home));
   it.each(ENDINGS)("removes its own temporary file when the copy is %s", (ending) => expectOwnFileRemoved(ending, home));
+  it.each(ENDINGS)("reports no leftover when the temporary file is already absent and the copy is %s", async (ending) => {
+    const { outcome, chosen } = await stoppedNativeCopy(ending, "absent", home);
+    expect(entriesOf(chosen)).toEqual(theTarget[ending]);
+    expect(outcome).toEqual({ state: ending === "cancelled" ? "cancelled" : "interrupted", cleanup: "removed" });
+  });
 });
 
 // The same on a volume without an exclusive rename, where the helper moves the file aside under a name it checked is free and knows its own
