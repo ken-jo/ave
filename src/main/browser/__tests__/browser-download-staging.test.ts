@@ -563,6 +563,28 @@ describe("a staged download", () => {
     expect(await root.files.listRecords(root)).toEqual([]);
   });
 
+  it("keeps a replacement saved when the identity it published after its commit rename cannot be recorded", async () => {
+    const root = withFiles(acrossVolumes(prepare()), (files) => ({
+      writeRecord: async (folder, name, body) => {
+        if ((JSON.parse(body.toString("utf8")) as { published?: unknown }).published !== undefined) throw new Error("EIO: simulated");
+        return files.writeRecord(folder, name, body);
+      },
+    }));
+    const { asked, askSavePath } = dialogs();
+    const item = fakeItem();
+    const staged = stageBrowserDownload(item, { root, askSavePath }, Promise.resolve());
+    const done = doneOutcome(staged.download);
+    await settled();
+    const chosen = chosenFolder();
+    writeFileSync(join(chosen, "report.pdf"), "old bytes");
+    asked[0]?.answer(join(chosen, "report.pdf"));
+    await settled();
+    item.complete("new bytes");
+    expect(await done).toEqual({ state: "completed", cleanup: "removed" });
+    expect(readFileSync(join(chosen, "report.pdf"), "utf8")).toBe("new bytes");
+    expect(readdirSync(chosen)).toEqual(["report.pdf"]);
+  });
+
   it.each([false, true])("restart preserves the original and handles an occupied target: %s", async (occupied) => {
     const prepared = prepare();
     const chosen = join(home, "chosen");
