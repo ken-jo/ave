@@ -131,7 +131,6 @@ export interface OwnedDir {
   writeFileAtomic(name: string, data: string): void;
   /** A regular file with one name, verified by identity; undefined when nothing is there. */
   readFile(name: string): Buffer | undefined;
-  /** Reads a complete regular file of the expected identity within the byte limit. */
   /** Removes one entry and everything below it without following a link. With `expect`, only while the entry has that id. */
   remove(name: string, expect?: NodeId): Promise<void>;
   removeSelfIfEmpty(): boolean;
