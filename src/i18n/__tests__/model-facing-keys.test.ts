@@ -14,6 +14,7 @@ const SRC = fileURLToPath(new URL("../..", import.meta.url));
 const INTERFACE_KEYS: ReadonlyMap<string, readonly string[]> = new Map([
   ["boot/steps/home-privacy-notice.ts", ["homePrivacy."]], // private storage repair notification
   ["boot/steps/terminal-scrollback-setup.ts", ["ptyTerminal.outputNotSaved", "ptyTerminal.closedOutputNotRemoved"]], // notifications about kept terminal output
+  ["engine/turn/commands.ts", ["auditPanel.integrityInvalidTerminalKinds"]], // permission audit slash-command output
   ["floating-dock-window.tsx", ["floatingDock."]], // the dock renderer's own error line (it sits outside ui/)
   ["ipc/domains/attach.ts", ["mainDialog."]], // file picker title
   ["ipc/domains/chat.ts", ["mainDialog."]], // delete / import / export dialogs
