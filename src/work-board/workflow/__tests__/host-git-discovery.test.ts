@@ -89,6 +89,48 @@ describe("the git a stage workspace starts is the one the host's discovery resol
     expect(calls.filter(([program, , options]) => program === replacement && options?.cwd === workspace)).toEqual([]);
   });
 
+  it.each(["before selection", "after selection"] as const)("refuses a same-path, same-mtime Git replacement %s", async (timing) => {
+    setProcessPlatform("linux");
+    const program = "/fixture/git";
+    const workspace = tmpdir();
+    vi.stubEnv("PATH", dirname(program));
+    const fs = await vi.importActual<typeof import("node:fs")>("node:fs");
+    let ino = 1n;
+    let replaceAfterStat = false;
+    let replacementProbes = 0;
+    let workspaceStarts = 0;
+    vi.mocked(accessSync).mockImplementation((path) => { if (path !== program) throw new Error("missing"); });
+    vi.mocked(existsSync).mockImplementation(fs.existsSync);
+    vi.mocked(statSync).mockImplementation(((path: string) => {
+      if (path !== program) return fs.statSync(path);
+      const result = { isFile: () => true, dev: 1n, ino, size: 1n, mtimeNs: 1n, mtimeMs: 1 };
+      if (replaceAfterStat) { replaceAfterStat = false; ino = 2n; }
+      return result;
+    }) as typeof statSync);
+    vi.mocked(spawn).mockImplementation(((file: string, args: string[], options: { cwd?: string }) => {
+      if (file !== program) throw new Error("Unexpected Git executable");
+      if (args.includes("--version")) return ended(0, "git version 2.56.0\n");
+      if (args.includes("--allow-unknown-hook-name")) {
+        if (ino === 2n) { replacementProbes += 1; return ended(129); }
+        if (options.cwd === undefined) throw new Error("Missing hook probe directory");
+        writeFileSync(join(options.cwd, "ran"), "ran");
+      }
+      if (args.includes("worktree")) workspaceStarts += 1;
+      return ended(0);
+    }) as typeof spawn);
+    const { createHostGit } = await import("../host-git.js");
+    const git = createHostGit();
+    expect(await git.floorHolds()).toBe(true);
+
+    if (timing === "before selection") ino = 2n;
+    else replaceAfterStat = true;
+
+    await expect.soft(git.run(workspace, ["worktree", "add", "--no-checkout", "fixture", "main"], { requiresFloor: true }))
+      .rejects.toMatchObject({ reason: "unavailable" });
+    expect(workspaceStarts).toBe(0);
+    expect(replacementProbes).toBe(timing === "before selection" ? 1 : 0);
+  });
+
   it("on macOS without the command line tools the system shim is not started: the call is refused and nothing but the tools check runs", async () => {
     setProcessPlatform("darwin");
     vi.stubEnv("PATH", "/usr/bin");

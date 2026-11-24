@@ -1,5 +1,5 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { getIsPackaged, isConfigured, isPackagedElectronProcess } from "../../boot/dev-flags.js";
@@ -7,7 +7,7 @@ import { createLogger } from "../../lib/logger.js";
 import { forceKillManagedChildProcess } from "../../main/managed-child-processes.js";
 import { buildHostGitArgs, HOOK_EVENTS, HOOK_EVENTS_VALIDATED, spawnHostGitIfWorkspaceFree } from "../../shared/host-git.js";
 import { parseGitVersion } from "../../shared/git-version.js";
-import { absolutePosixSearchPath, installerGitRoot, withHostGitRecovery } from "../../shared/host-git-executable.js";
+import { absolutePosixSearchPath, executableIdentitySync, installerGitRoot, withHostGitRecovery } from "../../shared/host-git-executable.js";
 
 const log = createLogger("work-board-host-git");
 
@@ -53,7 +53,7 @@ export class HostGitError extends Error {
 
 /** The git a host call starts: an absolute program and, for the installation the app bundles, the search path and system folder its
  * discovery probed it with. */
-export interface HostGitProgram { path: string; bundled?: { searchPath: string; systemRoot: string } }
+export interface HostGitProgram { path: string; identity: string; bundled?: { searchPath: string; systemRoot: string } }
 /** Runs `use` with the git the host resolved, or null when it resolved none; a program that could not be started is resolved again. */
 export type HostGitResolver = <T>(use: (git: HostGitProgram | null) => Promise<T>) => Promise<T>;
 
@@ -62,6 +62,7 @@ const discoveredGit: HostGitResolver = (use) => {
   const packaged = isConfigured() ? getIsPackaged() : isPackagedElectronProcess();
   return withHostGitRecovery(installerGitRoot(packaged), ({ git }) => use(git === null ? null : {
     path: git.path,
+    identity: git.identity,
     ...git.installer === undefined ? {} : { bundled: { searchPath: git.options.env.PATH ?? "", systemRoot: git.installer.systemRoot } },
   }));
 };
@@ -130,6 +131,7 @@ export function createHostGit(options: { env?: NodeJS.ProcessEnv; resolve?: Host
   function start(git: HostGitProgram | null, cwd: string, args: string[], call: HostGitCall): Promise<{ code: number; stdout: Buffer; stderr: Buffer }> {
     if (git === null || !isAbsolute(git.path)) return Promise.reject(new HostGitError("unavailable", "no git installation was found"));
     return new Promise((resolve, reject) => {
+      if (executableIdentitySync(git.path) !== git.identity) return reject(new HostGitError("unavailable", "the selected git changed before launch"));
       const started = spawnHostGitIfWorkspaceFree(cwd, git.path, args, { cwd, env: programEnv(call.isolated === true ? isolated : env, git), windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
       if (started === "held") return reject(new HostGitError("held", "the workspace is held by a sandboxed command"));
       if (started === "no-folder") return reject(new HostGitError("unavailable", "the folder git would run in does not exist"));
@@ -244,7 +246,8 @@ export function createHostGit(options: { env?: NodeJS.ProcessEnv; resolve?: Host
     };
   }
 
-  return { run, drivers, floorHolds: () => resolve(git => git === null || !isAbsolute(git.path) ? Promise.resolve(false) : floorHoldsOn(git, base)).catch(() => false) };
+  return { run, drivers, floorHolds: () => resolve(async git => git !== null && isAbsolute(git.path)
+    && await floorHoldsOn(git, base) && executableIdentitySync(git.path) === git.identity).catch(() => false) };
 }
 
 const floorProbes = new Map<string, Promise<boolean>>();
@@ -252,14 +255,13 @@ let unprovenLogged = false;
 
 /**
  * Whether the host floor keeps every event `HOOK_EVENTS` lists from running a configured hook on `git`, the program a call starts, asked
- * once per program and its modification time. In a scratch repository, through the same calls every host git process makes, a hook is
+ * once per executable identity. In a scratch repository, through the same calls every host git process makes, a hook is
  * configured ahead of the floor and run: one for an event the floor leaves alone must run, or nothing tells whether one ran at all,
  * and none for a listed event may. Anything else, a failed call or a timeout among them, is no. Only an answer the probe finished with
  * is kept: a scratch folder that cannot be made or taken away decides nothing.
  */
 function floorHoldsOn(git: HostGitProgram, env: NodeJS.ProcessEnv): Promise<boolean> {
-  let key: string;
-  try { key = `${git.path}\0${statSync(git.path).mtimeMs}`; } catch { return Promise.resolve(false); }
+  const key = `${git.path}\0${git.identity}`;
   const known = floorProbes.get(key);
   if (known !== undefined) return known;
   let scratch: string;

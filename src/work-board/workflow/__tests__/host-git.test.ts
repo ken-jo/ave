@@ -7,8 +7,8 @@ import { PassThrough } from "node:stream";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { HOOK_EVENTS, holdSandboxGitWrites } from "../../../shared/host-git.js";
-import { discoverHostGitAsync } from "../../../shared/host-git-executable.js";
-import { createHostGit, HostGitError, type HostGitProgram } from "../host-git.js";
+import { discoverHostGitAsync, executableIdentitySync } from "../../../shared/host-git-executable.js";
+import { createHostGit, HostGitError } from "../host-git.js";
 import { setProcessPlatform } from "../../../__tests__/support/process-platform.js";
 import { removeTree } from "./stage-fixtures.js";
 
@@ -323,10 +323,14 @@ describe("host git", () => {
     ["", "/dev/null"],
   ])("gives git an absolute POSIX search path for PATH=%j", async (path, expected) => {
     const platform = process.platform;
+    const program = join(base, "git");
+    writeFileSync(program, "", { mode: 0o755 });
+    const identity = executableIdentitySync(program);
+    if (identity === null) throw new Error("Missing fixture executable");
     replying({ code: 0 });
     setProcessPlatform("linux");
     try {
-      await createHostGit({ env: { PATH: path }, resolve: use => use({ path: "/usr/bin/git" }) }).run(base, ["--version"]);
+      await createHostGit({ env: { PATH: path }, resolve: use => use({ path: program, identity }) }).run(base, ["--version"]);
     } finally {
       setProcessPlatform(platform);
     }
@@ -545,10 +549,11 @@ describe("host git on the installed git", () => {
   it("a hold a sandboxed command takes while the host resolves git still refuses the call, and git never starts", async () => {
     const held = join(base, "held");
     mkdirSync(held);
-    const program = (await discoverHostGitAsync(null)).git?.path as string;
+    const program = (await discoverHostGitAsync(null)).git;
+    if (program === null) throw new Error("Missing fixture executable");
     const git = createHostGit({ env, resolve: async (use) => {
       const release = holdSandboxGitWrites([held]);
-      try { return await use({ path: program }); } finally { release(); }
+      try { return await use(program); } finally { release(); }
     } });
     spawned.calls = 0;
     expect(await reasonOf(git.run(held, ["--version"]))).toBe("held");
@@ -582,7 +587,10 @@ describe("the hook floor's probe", () => {
   async function freshProbe(): Promise<(program: string | null, probeEnv?: NodeJS.ProcessEnv) => Promise<boolean>> {
     vi.resetModules();
     const fresh = await import("../host-git.js");
-    return (program, probeEnv = env) => fresh.createHostGit({ env: probeEnv, resolve: use => use(program === null ? null : { path: program } satisfies HostGitProgram) }).floorHolds();
+    return (program, probeEnv = env) => fresh.createHostGit({ env: probeEnv, resolve: use => {
+      const identity = program === null ? null : executableIdentitySync(program);
+      return use(program === null || identity === null ? null : { path: program, identity });
+    } }).floorHolds();
   }
   /** A program file at `dir`, named as git. */
   function planted(dir: string): string {

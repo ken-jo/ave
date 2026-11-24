@@ -171,7 +171,7 @@ function fileIdentity(stat: BigIntStats): string | null {
   return stat.isFile() ? [stat.dev, stat.ino, stat.size, stat.mtimeNs].join(":") : null;
 }
 
-function executableIdentitySync(path: string): string | null {
+export function executableIdentitySync(path: string): string | null {
   try {
     accessSync(path, executableAccessMode());
     return fileIdentity(statSync(path, { bigint: true }));
@@ -213,10 +213,12 @@ interface HostGitLaunch {
   options: { cwd?: string; env: NodeJS.ProcessEnv };
 }
 
-type DiscoveredGit = { path: string; version: GitVersion } & (
+type GitCandidate = { path: string; version: GitVersion } & (
   | { installer: VerifiedInstallerGit; options: HostGitLaunch["options"] }
   | { installer?: never }
 );
+
+type DiscoveredGit = GitCandidate & { identity: string };
 
 export interface GitDiscovery {
   git: DiscoveredGit | null;
@@ -238,9 +240,9 @@ function* findInstallerLayout(root: string, path: string): GitChecks<InstallerGi
 
 let retryBundledGitAt = 0;
 
-function* probeInstallerGit(install: InstallerGitInstall): GitChecks<DiscoveredGit | null> {
+function* probeInstallerGit(install: InstallerGitInstall): GitChecks<GitCandidate | null> {
   if (performance.now() < retryBundledGitAt) return null;
-  let selected: DiscoveredGit | null = null;
+  let selected: GitCandidate | null = null;
   try {
     const cwd = dirname(install.path);
     const pathEntries = [cwd, join(install.root, install.prefix, "bin"), join(install.root, "usr", "bin")];
@@ -301,7 +303,6 @@ function* probeSystemGit(path: string): GitChecks<{ version: GitVersion; support
 
 interface GitScan {
   selection: GitDiscovery;
-  identity: string | null;
   developerDirectory?: string;
 }
 
@@ -317,7 +318,7 @@ function* isDirectory(path: string): GitChecks<boolean> {
 }
 
 function* selectGit(installerRoot: string | null, cached: GitScan | undefined, failedPath?: string): GitChecks<GitScan> {
-  if (cached?.selection.git && (yield* executableIdentity(cached.selection.git.path)) === cached.identity
+  if (cached?.selection.git && (yield* executableIdentity(cached.selection.git.path)) === cached.selection.git.identity
     && (!cached.developerDirectory || (yield* isDirectory(cached.developerDirectory)))) return cached;
 
   const bundledPath = installerGitPath(installerRoot);
@@ -326,7 +327,7 @@ function* selectGit(installerRoot: string | null, cached: GitScan | undefined, f
       const bundled = yield* findInstallerLayout(installerRoot, bundledPath);
       return bundled ? yield* probeInstallerGit(bundled) : null;
     });
-    if (candidate) return { selection: { git: candidate.result }, identity: candidate.identity };
+    if (candidate) return { selection: { git: { ...candidate.result, identity: candidate.identity } } };
   }
 
   const selection: GitDiscovery = { git: null };
@@ -349,10 +350,10 @@ function* selectGit(installerRoot: string | null, cached: GitScan | undefined, f
     });
     if (!candidate) continue;
     const { version, supported, developerDirectory } = candidate.result;
-    if (supported) return { selection: { ...selection, git: { path, version } }, identity: candidate.identity, developerDirectory };
+    if (supported) return { selection: { ...selection, git: { path, version, identity: candidate.identity } }, developerDirectory };
     if (!meetsMinimumGitVersion(version)) selection.systemTooOld ??= { path, version: version.text };
   }
-  return { selection, identity: null };
+  return { selection };
 }
 
 function* probeStableGit<T>(path: string, probe: () => GitChecks<T | null>): GitChecks<{ result: T; identity: string } | null> {
@@ -369,7 +370,7 @@ function* probeStableGit<T>(path: string, probe: () => GitChecks<T | null>): Git
 function finishDiscovery(installerRoot: string | null, cached: GitScan | undefined, result: GitScan): GitDiscovery {
   // A synchronous caller may have already updated the memo while an async probe was pending.
   if (discoveredGit.get(installerRoot) === cached) {
-    if (result.identity === null) discoveredGit.delete(installerRoot);
+    if (result.selection.git === null) discoveredGit.delete(installerRoot);
     else discoveredGit.set(installerRoot, result);
   }
   return result.selection;
