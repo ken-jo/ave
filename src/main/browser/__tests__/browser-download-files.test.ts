@@ -752,7 +752,7 @@ describe("a copy whose helper says it left its temporary file", () => {
   const SUFFIXES = [["left", null], [`left ${HIDDEN}`, HIDDEN]] as const;
   const expectLeftByHelper = (error: unknown, hidden: string | null): void => {
     expect(stoppedCopyOf(error)).toEqual({ partialCopy: "left", partLeftAt: null });
-    expect(boundary.warn).toHaveBeenCalledWith({ path: "/chosen/.0123.part", leftAs: hidden ?? undefined }, expect.stringMatching(/did not find it to be its own/));
+    expect(boundary.warn).toHaveBeenCalledWith({ path: join(to.path, ".0123.part"), leftAs: hidden ?? undefined }, expect.stringMatching(/did not find it to be its own/));
     expect(helpers()).toHaveLength(1);
   };
 
