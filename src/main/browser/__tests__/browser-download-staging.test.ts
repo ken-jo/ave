@@ -960,6 +960,40 @@ describe("what `done` reports when the staged file cannot be removed", () => {
     expect(readFileSync(join(home, "chosen", "report.pdf"), "utf8")).toBe("whole");
   });
 
+  it("stamps a staged file again once its pause has passed, even after the wall clock was set back", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "performance"] });
+    try {
+      const prepared = prepare();
+      const stamps: string[] = [];
+      const root = withFiles(prepared, (files) => ({
+        stamp: async (folder, name) => {
+          stamps.push(name);
+          return existsSync(join(folder.path, name)) ? files.stamp(folder, name) : null;
+        },
+      }));
+      const { asked, askSavePath } = dialogs();
+      const item = fakeItem();
+      const staged = stageBrowserDownload(item, { root, askSavePath }, Promise.resolve());
+      const done = doneOutcome(staged.download);
+      await settled();
+      mkdirSync(join(home, "chosen"));
+      asked[0]?.answer(join(home, "chosen", "report.pdf"));
+      await settled();
+      item.emit("updated", {}, "progressing");
+      await settled();
+      expect(stamps).toHaveLength(1);
+      vi.setSystemTime(Date.now() - 3_600_000);
+      vi.advanceTimersByTime(1_001);
+      item.emit("updated", {}, "progressing");
+      await settled();
+      expect(stamps).toHaveLength(2);
+      item.complete("whole");
+      expect(await done).toEqual({ state: "completed", cleanup: "removed" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it.each(["cancelled", "completed"] as const)("leaves a %s download's staged file whose stamp failed, without stamping it again", async (ending) => {
     const prepared = prepare();
     const { stamps, root } = countingStamps(prepared, true);

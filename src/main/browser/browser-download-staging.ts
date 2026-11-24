@@ -696,10 +696,10 @@ class StagedDownload extends EventEmitter implements ObservedDownload {
    */
   observe(now = false): Promise<void> {
     if (this.stagedFile !== null || this.stampFailed) return Promise.resolve();
-    if (this.stamping === null && !now && Date.now() < this.nextStamp) return Promise.resolve();
+    if (this.stamping === null && !now && performance.now() < this.nextStamp) return Promise.resolve();
     this.stamping ??= this.root.files.stamp(this.root, this.name).then((file) => {
       this.stagedFile = file;
-      if (file === null) this.nextStamp = Date.now() + ABSENT_STAMP_PAUSE_MS;
+      if (file === null) this.nextStamp = performance.now() + ABSENT_STAMP_PAUSE_MS;
     }, (error: unknown) => {
       this.stampFailed = true;
       log.warn({ error: (error as Error).message }, "a browser download's staged file could not be identified");

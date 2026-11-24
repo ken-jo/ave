@@ -340,6 +340,26 @@ describe("a helper that does not keep to its protocol", () => {
     expect((run.error as InstanceType<typeof HeldDirectoryRefusedError>).refusal).toBe(refusal);
   });
 
+  it.each(["volume", "volume-unknown"] as const)("kills a copy that answers refused %s after it wrote its temporary file", async (refusal) => {
+    script((helper) => {
+      helper.say("ready");
+      helper.once("input", () => {
+        helper.say("writing 1:2:birth:20", "progress 8", `refused ${refusal}`);
+        helper.exit(3);
+      });
+    });
+    const run = follow(files.copy(from, "staged", to, "report.pdf", ".part", () => true, UNSTOPPED));
+    await flush();
+    expect(run.error).toBeInstanceOf(HeldFileHelperUnavailableError);
+  });
+
+  it.each(["volume", "volume-unknown"] as const)("does not take refused %s from a move as a refusal", async (refusal) => {
+    script((helper) => { helper.say(`refused ${refusal}`); helper.exit(3); });
+    const run = follow(files.move(from, "staged", to, "report.pdf", () => true, UNSTOPPED, STAGED));
+    await flush();
+    expect(run.error).toBeInstanceOf(HeldFileHelperUnavailableError);
+  });
+
   it("keeps the entire Windows writer identity when rejecting a plain refusal after progress", async () => {
     const windows = _helperFileOperationsForTest("/helper/ave-path-kind.exe", BOUNDS, true);
     const fileId = "fedcba9876543210123456789abcdef0";
@@ -856,6 +876,28 @@ describe("a copy whose helper says it left its temporary file", () => {
     expect(run.error).not.toBeInstanceOf(HeldFileHelperUnavailableError);
     expect(copy?.killed).toBe(0);
     expectLeftByHelper(run.error, hidden);
+  });
+
+  const WRITER = "4294967297:fedcba9876543210123456789abcdef0";
+  const REPLACED = "4294967297:00000000000000000000000000000004:creation:15";
+  it.each([
+    ["target-restored"],
+    [`target-left left ${HIDDEN} ${REPLACED} mismatch -`],
+  ])("kills a copy at once when it names its replaced file %s after publishing", async (frame) => {
+    const windows = _helperFileOperationsForTest("/helper/ave-path-kind.exe", BOUNDS, true);
+    script((helper) => {
+      helper.say("destination-id 4294967297:00000000000000000000000000000003:creation:15", `target-id ${REPLACED}`, "ready");
+      helper.once("input", () => {
+        helper.say(`writing ${WRITER}:creation:20`, "progress 8", `copy-id ${WRITER}:creation:20`, "copied");
+        helper.once("input", () => { helper.say(`published ${WRITER}:creation:31`, frame); });
+      });
+    });
+    const journal = { hidden: HIDDEN, write: vi.fn().mockResolvedValue(undefined), published: vi.fn().mockResolvedValue(undefined), resolved: vi.fn() };
+    const run = follow(windows.copy(from, "staged", to, "report.pdf", ".0123.part", () => true, UNSTOPPED, journal));
+    await flush();
+    expect(journal.published).toHaveBeenCalledOnce();
+    expect(run.error).toBeInstanceOf(HeldFileHelperUnavailableError);
+    expect(helpers()[0]?.killed).toBe(1);
   });
 
   it("awaits the synced target record even when the helper dies after a complete leftover", async () => {

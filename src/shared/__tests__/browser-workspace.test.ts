@@ -76,6 +76,9 @@ describe("browser workspace wire validation", () => {
       const noticed = { ...STATE, downloads: [{ id: "download-1", name: "a", receivedBytes: 1, totalBytes: 1, at: 1, state: "interrupted", notice }] };
       expect(parseBrowserWorkspaceState(noticed)).toEqual(noticed);
     }
+    for (const state of ["progressing", "completed", "cancelled", "blocked"]) {
+      expect(parseBrowserWorkspaceState({ ...STATE, downloads: [{ id: "download-1", name: "a", receivedBytes: 1, totalBytes: 1, at: 1, state, notice: "volume-unknown" }] })).toBeNull();
+    }
     for (const notice of ["unsupported", undefined, null]) {
       expect(parseBrowserWorkspaceState({ ...STATE, downloads: [{ id: "download-1", name: "a", receivedBytes: 1, totalBytes: 1, at: 1, state: "interrupted", notice }] })).toBeNull();
     }
