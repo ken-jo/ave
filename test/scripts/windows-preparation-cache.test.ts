@@ -1,0 +1,81 @@
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { describe, expect, it, vi } from "vitest";
+import {
+  restoreWindowsPreparation, sealWindowsPreparation, windowsPreparationInputs, windowsPreparationKey,
+} from "../../.github/scripts/windows-preparation-cache.mjs";
+import { useTempDirs } from "../../src/__tests__/test-helpers.js";
+
+const makeDir = useTempDirs("win-preparation-");
+const identity = { image: "windows", imageVersion: "1", compiler: { msvc: "14.44", sdk: "10.0.26100" } };
+
+describe("Windows preparation inputs", () => {
+  it("changes the key when a tracked source, lockfile, runner image, compiler or SDK changes", async () => {
+    const root = makeDir();
+    const git = (...args: string[]) => execFileSync("git", ["-C", root, ...args]);
+    git("init", "--quiet");
+    mkdirSync(join(root, "native"));
+    const source = join(root, "native", "helper.cpp");
+    const lockfile = join(root, "bun.lock");
+    writeFileSync(source, "original");
+    writeFileSync(lockfile, "lock");
+    git("add", "native/helper.cpp", "bun.lock");
+    const manifest = await windowsPreparationInputs(root, identity);
+    const key = windowsPreparationKey(manifest);
+    expect(Object.keys(manifest.files)).toEqual(["bun.lock", "native/helper.cpp"]);
+    for (const changed of [
+      { ...identity, imageVersion: "2" },
+      { ...identity, compiler: { ...identity.compiler, msvc: "14.45" } },
+      { ...identity, compiler: { ...identity.compiler, sdk: "10.0.26200" } },
+    ]) expect(windowsPreparationKey(await windowsPreparationInputs(root, changed))).not.toBe(key);
+    writeFileSync(source, "changed");
+    expect(windowsPreparationKey(await windowsPreparationInputs(root, identity))).not.toBe(key);
+    writeFileSync(source, "original");
+    writeFileSync(lockfile, "changed lock");
+    expect(windowsPreparationKey(await windowsPreparationInputs(root, identity))).not.toBe(key);
+  });
+});
+
+describe("Windows preparation output cache", () => {
+  const key = windowsPreparationKey({ identity, files: { "bun.lock": "digest" } });
+  const required = ["native/helper.exe", "payload/x64/app.exe"];
+  async function sealed() {
+    const root = makeDir();
+    for (const file of required) {
+      mkdirSync(join(root, file, ".."), { recursive: true });
+      writeFileSync(join(root, file), file);
+    }
+    await sealWindowsPreparation(root, key, required);
+    return root;
+  }
+
+  it("uses an exact entry after its bytes and identity both pass", async () => {
+    const root = await sealed();
+    const verifyIdentity = vi.fn();
+    expect(await restoreWindowsPreparation(root, key, required, true, verifyIdentity)).toBe(true);
+    expect(verifyIdentity).toHaveBeenCalledOnce();
+    expect(existsSync(join(root, required[0]!))).toBe(true);
+  });
+
+  it.each(["changed", "partial", "extra", "wrong key", "not an exact hit"])("rebuilds on a %s restore before using any outputs", async (problem) => {
+    const root = await sealed();
+    const path = join(root, required[0]!);
+    if (problem === "changed") writeFileSync(path, "changed bytes");
+    if (problem === "partial") rmSync(path);
+    if (problem === "extra") writeFileSync(join(root, "extra"), "extra bytes");
+    const verifyIdentity = vi.fn();
+    expect(await restoreWindowsPreparation(root, problem === "wrong key" ? "other-key" : key, required,
+      problem !== "not an exact hit", verifyIdentity)).toBe(false);
+    expect(verifyIdentity).not.toHaveBeenCalled();
+    expect(existsSync(root)).toBe(false);
+  });
+
+  it("rebuilds when the current signature or identity check rejects sealed bytes", async () => {
+    const root = await sealed();
+    const verifyIdentity = vi.fn(() => { throw new Error("identity changed"); });
+    expect(await restoreWindowsPreparation(root, key, required, true, verifyIdentity)).toBe(false);
+    expect(verifyIdentity).toHaveBeenCalledOnce();
+    expect(existsSync(root)).toBe(false);
+  });
+});

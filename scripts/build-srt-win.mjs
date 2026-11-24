@@ -133,6 +133,12 @@ export async function buildSrtWin(options) {
     }
   }
   const patch = readPlainFile(join(vendor, "srt-win", "object-only-parent-guard.patch"));
+  const reuseNative = options.testNative && !options.sourceArchive
+    && process.env.GITHUB_ACTIONS === "true" && process.env.AVE_WINDOWS_PREP_VERIFIED === "true";
+  if (reuseNative) {
+    assertSrtWinReceiptModule();
+    if (!canReuseSrtWinBuild(vendor, options.arches)) throw new Error("Verified helper build is unavailable");
+  }
   const scratch = mkdtempSync(join(tmpdir(), "ave-srt-native-build-"));
   try {
     let archive;
@@ -180,8 +186,9 @@ export async function buildSrtWin(options) {
       const target = TARGETS[arch];
       run("rustup", ["target", "add", "--toolchain", pins.rustToolchain, target], extracted);
       const cargoArgs = [`+${pins.rustToolchain}`, "--release", "--locked", "--manifest-path", join(source, "Cargo.toml"), "--target", target];
-      run("cargo", [cargoArgs[0], "build", ...cargoArgs.slice(1)], extracted);
+      if (!reuseNative) run("cargo", [cargoArgs[0], "build", ...cargoArgs.slice(1)], extracted);
       if (options.testNative && arch === process.arch) run("cargo", [cargoArgs[0], "test", "--no-fail-fast", ...cargoArgs.slice(1), "--", "--nocapture"], extracted);
+      if (reuseNative) continue;
       const binary = join(source, "target", target, "release", "srt-win.exe");
       const bytes = readPlainFile(binary);
       receipts[arch] = { schemaVersion: 1, sourceRevision: pins.source.revision, sourceArchiveSha256: pins.source.sha256,
@@ -190,6 +197,11 @@ export async function buildSrtWin(options) {
       mkdirSync(directory, { recursive: true });
       publishSrtWinExecutable(vendor, arch, bytes);
       atomicWrite(join(directory, "build-receipt.json"), `${JSON.stringify(receipts[arch], null, 2)}\n`);
+    }
+    if (reuseNative) {
+      assertSrtWinVendor(vendor, options.arches);
+      console.log("srt-win: tested current sources and retained the verified helper binaries");
+      return;
     }
     const complete = recordBuildReceipts(vendor, receipts);
     assertSrtWinVendor(vendor, options.arches, complete);

@@ -246,6 +246,7 @@ it("accepts the workflow's contained commands and stated exemptions from parsed 
 const EXEMPTIONS = [
   "bun install --frozen-lockfile",
   "node .github/scripts/check-windows-workflow.mjs",
+  ...["key", "restore", "seal"].map(operation => `node .github/scripts/windows-preparation-cache.mjs ${operation}`),
   "node scripts/fetch-uv.mjs",
   "node .github/scripts/python-archive-cache.mjs",
   ...["", " -FailureFixture", " -QueryFailureFixture", " -Helper path-kind"]
@@ -394,10 +395,37 @@ it("builds and checks shared native inputs once, before any shard provisions its
   }
 });
 
-test("rejects either Windows job bypassing the native platform gate", () => {
+it("rejects either Windows job bypassing the native platform gate", () => {
   for (const job of ["windows-native-preparation", "windows-permission-tests"]) {
     const parsed = parse(workflow);
     parsed.jobs[job].if = "needs.build.outputs.docs_only == 'false'";
     assert.throws(() => checkWindowsWorkflow(stringify(parsed), parsedLines), /must follow native platform selection/);
   }
 });
+
+for (const [name, change, expected] of [
+  ["a cache key without the generated manifest", (_steps, get) => {
+    get("Restore Windows preparation outputs").with.key = "windows-preparation";
+  }, /needs a generated input key/],
+  ["a partial fallback cache key", (_steps, get) => {
+    get("Restore Windows preparation outputs").with["restore-keys"] = "ave-windows-preparation-";
+  }, /needs a generated input key/],
+  ["using the output before verification", (steps, get) => {
+    const step = get("Verify Windows preparation outputs or rebuild");
+    steps.splice(steps.indexOf(step), 1);
+    steps.splice(steps.indexOf(get("Verify both Windows native payload packages")) + 1, 0, step);
+  }, /must verify or rebuild before any output is used/],
+  ["skipping a native test on a cache hit", (_steps, get) => {
+    get("Build and test patched Windows sandbox helper").if += " && env.AVE_WINDOWS_PREP_VERIFIED == 'false'";
+  }, /must run its checks on both cold and warm paths/],
+  ["forcing a hit without verification", (_steps, get) => {
+    get("Verify native background process ownership").env = { AVE_WINDOWS_PREP_VERIFIED: "true" };
+  }, /only the Windows preparation verifier/i],
+  ["saving prep outputs from an untrusted ref", (_steps, get) => {
+    get("Save Windows preparation outputs").if = CONDITION;
+  }, /must seal new outputs before saving on main/],
+]) {
+  it(`rejects ${name}`, () => {
+    assert.throws(() => checkWindowsWorkflow(changedWorkflow(change), parsedLines), expected);
+  });
+}

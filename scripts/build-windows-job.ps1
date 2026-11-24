@@ -2,14 +2,13 @@
 # native/windows-job/) or the folder classifier (`-Helper path-kind`,
 # native/windows-path-kind/). Both use the installed C++ build tools and
 # download nothing.
-param([string]$Arch = "x64", [switch]$FailureFixture, [switch]$QueryFailureFixture, [ValidateSet("job", "path-kind")][string]$Helper = "job")
+param([string]$Arch = "x64", [switch]$FailureFixture, [switch]$QueryFailureFixture, [switch]$ToolchainIdentity, [ValidateSet("job", "path-kind")][string]$Helper = "job")
 $ErrorActionPreference = "Stop"
 if ($Arch -notin @("x64", "arm64")) { throw "Unsupported job launcher architecture: $Arch" }
 if (($FailureFixture -or $QueryFailureFixture) -and $Helper -ne "job") { throw "The failure fixture belongs to the job launcher" }
 if ($FailureFixture -and $QueryFailureFixture) { throw "Build one failure fixture at a time" }
 $root = Split-Path $PSScriptRoot -Parent
 $out = Join-Path $root "resources/windows-$Helper/$Arch"
-New-Item -ItemType Directory -Force $out | Out-Null
 $vswhere = "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe"
 if (!(Test-Path $vswhere)) { throw "Windows job launcher requires the C++ build tools" }
 $installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
@@ -40,6 +39,12 @@ foreach ($line in ($environmentText -split "`r?`n")) {
         [Environment]::SetEnvironmentVariable($line.Substring(0, $separator), $line.Substring($separator + 1), "Process")
     }
 }
+if ($ToolchainIdentity) {
+    if (!$env:VCToolsVersion -or !$env:WindowsSDKVersion) { throw "Missing C++ toolchain identity" }
+    @{ msvc = $env:VCToolsVersion; sdk = $env:WindowsSDKVersion; ucrt = $env:UCRTVersion } | ConvertTo-Json -Compress
+    return
+}
+New-Item -ItemType Directory -Force $out | Out-Null
 $compilerArgs = @("/nologo", "/std:c++17", "/O2", "/MT", "/W4", "/WX", "/EHsc")
 if ($FailureFixture) { $compilerArgs += "/DAVE_TEST_INVALID_JOB" }
 if ($QueryFailureFixture) { $compilerArgs += "/DAVE_TEST_UNQUERYABLE_JOB" }

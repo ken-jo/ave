@@ -719,11 +719,28 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: node scripts/fetch-uv.mjs
-      - name: Verify native background process ownership
+      - name: Generate the Windows preparation input manifest
+        id: windows-preparation-key
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
-        # Windows PowerShell ships with every Windows install; the default
-        # shell depends on whether PowerShell 7 is present.
+        run: node .github/scripts/windows-preparation-cache.mjs key
+      - name: Restore Windows preparation outputs
+        id: windows-preparation-restore
+        if: steps.docs-impact.outputs.docs_only != 'true' && steps.windows-preparation-key.outputs.key != '' && (github.ref == 'refs/heads/main' || github.event_name == 'pull_request')
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/windows-preparation-cache
+          key: ${{ steps.windows-preparation-key.outputs.key }}
+      - name: Verify Windows preparation outputs or rebuild
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        env:
+          AVE_WINDOWS_PREP_KEY: ${{ steps.windows-preparation-key.outputs.key }}
+          AVE_WINDOWS_PREP_EXACT_HIT: ${{ steps.windows-preparation-restore.outputs.cache-hit }}
+        run: node .github/scripts/windows-preparation-cache.mjs restore
+      - name: Build Windows launcher and classification helpers
+        if: steps.docs-impact.outputs.docs_only != 'true' && env.AVE_WINDOWS_PREP_VERIFIED != 'true'
+        working-directory: ave
         shell: powershell
         run: |
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1
@@ -732,7 +749,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -QueryFailureFixture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          node .github/scripts/run-in-job.mjs node scripts/test-windows-job.mjs
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -Helper path-kind
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify native background process ownership
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        shell: powershell
+        run: node .github/scripts/run-in-job.mjs node scripts/test-windows-job.mjs
       # Both checks build under the job root's temp tree, so they run in the
       # containment launcher built by the previous step.
       - name: Verify both Windows native payload packages
@@ -754,8 +777,6 @@ jobs:
         # shell depends on whether PowerShell 7 is present.
         shell: powershell
         run: |
-          powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -Helper path-kind
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node .github/scripts/run-in-job.mjs node scripts/test-windows-path-kind.mjs
       # The tag build runs `bun run build` on Windows, and this check is part of
       # it: there the generator finds its sources through Windows path spellings
@@ -830,6 +851,21 @@ jobs:
           compression-level: 0
           if-no-files-found: error
           retention-days: 1
+
+      # Only the default branch writes this cache. PR merge-ref caches cannot
+      # cross into the base branch. Release tags build without this cache.
+      - name: Seal Windows preparation outputs
+        if: steps.docs-impact.outputs.docs_only != 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && env.AVE_WINDOWS_PREP_STORE != '' && env.AVE_WINDOWS_PREP_VERIFIED == 'false'
+        working-directory: ave
+        env:
+          AVE_WINDOWS_PREP_KEY: ${{ steps.windows-preparation-key.outputs.key }}
+        run: node .github/scripts/windows-preparation-cache.mjs seal
+      - name: Save Windows preparation outputs
+        if: steps.docs-impact.outputs.docs_only != 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && env.AVE_WINDOWS_PREP_STORE != '' && env.AVE_WINDOWS_PREP_VERIFIED == 'false'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/windows-preparation-cache
+          key: ${{ steps.windows-preparation-key.outputs.key }}
 
       # Each run-in-job line above is a manifest step: its wrapper registers the
       # step id and job-root identity in the step's receipt, and its launcher

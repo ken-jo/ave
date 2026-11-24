@@ -55,6 +55,7 @@ const WRAPPER = ["node", ".github/scripts/run-in-job.mjs"];
 const UNCONTAINED_COMMANDS = new Map([
   ["bun install --frozen-lockfile", "installs dependencies; runs no test code"],
   ["node .github/scripts/check-windows-workflow.mjs", "this guard"],
+  ...["key", "restore", "seal"].map(operation => ["node .github/scripts/windows-preparation-cache.mjs " + operation, "inventories or verifies preparation bytes"]),
   ["node scripts/fetch-uv.mjs", "fetches a pinned tool"],
   ["node .github/scripts/python-archive-cache.mjs", "computes a cache key"],
   ...["", " -FailureFixture", " -QueryFailureFixture", " -Helper path-kind"].map(option => [
@@ -278,6 +279,57 @@ function scopeContainedSteps(steps, job) {
   return steps.map((step, index) => index > setup ? { ...step, contained: true } : step);
 }
 
+const PREPARATION_CACHE_PATH = "${{ runner.temp }}/windows-preparation-cache";
+const PREPARATION_CACHE_KEY = "${{ steps.windows-preparation-key.outputs.key }}";
+const PREPARATION_CACHE_COMMAND = "node .github/scripts/windows-preparation-cache.mjs";
+const PREPARATION_CACHE_MAIN_SAVE = REGRESSION_CONDITION + " && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && env.AVE_WINDOWS_PREP_STORE != '' && env.AVE_WINDOWS_PREP_VERIFIED == 'false'";
+
+function checkPreparationCache(job) {
+  const steps = job.steps;
+  const find = name => steps.find(step => step.name === name);
+  const key = find("Generate the Windows preparation input manifest");
+  const restore = find("Restore Windows preparation outputs");
+  const verify = find("Verify Windows preparation outputs or rebuild");
+  const build = find("Build Windows launcher and classification helpers");
+  const seal = find("Seal Windows preparation outputs");
+  const save = find("Save Windows preparation outputs");
+  const before = (first, second) => first && second && steps.indexOf(first) < steps.indexOf(second);
+  const exact = (step, action) => step?.uses?.startsWith("actions/cache/" + action + "@")
+    && step.with?.key === PREPARATION_CACHE_KEY && step.with?.path === PREPARATION_CACHE_PATH
+    && Object.keys(step.with).length === 2;
+  if (key?.id !== "windows-preparation-key" || key.run !== PREPARATION_CACHE_COMMAND + " key"
+    || key.if !== REGRESSION_CONDITION || key["working-directory"] !== "ave"
+    || !exact(restore, "restore") || restore.id !== "windows-preparation-restore"
+    || restore.if !== REGRESSION_CONDITION + " && steps.windows-preparation-key.outputs.key != '' && (github.ref == 'refs/heads/main' || github.event_name == 'pull_request')"
+    || !before(key, restore)) {
+    throw new Error("Windows preparation needs a generated input key and an exact scoped restore");
+  }
+  if (verify?.run !== PREPARATION_CACHE_COMMAND + " restore" || verify.if !== REGRESSION_CONDITION
+    || verify["working-directory"] !== "ave" || verify.env?.AVE_WINDOWS_PREP_KEY !== PREPARATION_CACHE_KEY
+    || verify.env?.AVE_WINDOWS_PREP_EXACT_HIT !== "${{ steps.windows-preparation-restore.outputs.cache-hit }}"
+    || !before(restore, verify) || !before(verify, build)
+    || build.if !== REGRESSION_CONDITION + " && env.AVE_WINDOWS_PREP_VERIFIED != 'true'") {
+    throw new Error("Windows preparation cache must verify or rebuild before any output is used");
+  }
+  for (const name of ["Verify native background process ownership", "Verify both Windows native payload packages",
+    "Verify Windows folder classification", "Build and test patched Windows sandbox helper"]) {
+    const step = find(name);
+    if (!before(build, step) || step.if !== REGRESSION_CONDITION || !before(step, seal)) {
+      throw new Error("Windows preparation must run its checks on both cold and warm paths: " + name);
+    }
+  }
+  for (const env of [job.env, ...steps.map(step => step.env)]) {
+    if (env && ("AVE_WINDOWS_PREP_VERIFIED" in env || "AVE_WINDOWS_PREP_STORE" in env)) {
+      throw new Error("Only the Windows preparation verifier may set the cache state");
+    }
+  }
+  if (seal?.run !== PREPARATION_CACHE_COMMAND + " seal" || seal.if !== PREPARATION_CACHE_MAIN_SAVE
+    || seal["working-directory"] !== "ave" || seal.env?.AVE_WINDOWS_PREP_KEY !== PREPARATION_CACHE_KEY
+    || !exact(save, "save") || save.if !== PREPARATION_CACHE_MAIN_SAVE || !before(seal, save)) {
+    throw new Error("Windows preparation must seal new outputs before saving on main");
+  }
+}
+
 export function checkWindowsWorkflow(workflow, inspect) {
   const { jobs } = parse(workflow);
   const job = jobs[CONTAINED_JOB];
@@ -299,6 +351,7 @@ export function checkWindowsWorkflow(workflow, inspect) {
       throw new Error(`${id}: contained Windows failures must fail the job`);
     }
   }
+  checkPreparationCache(jobs[PREPARATION_JOB]);
   const steps = windowsRunSteps(workflow);
   const regressions = windowsRegressionSteps(steps);
   const inventories = regressions.map(step => LIST_INVOCATION.exec(step.run.trim())?.[1]);

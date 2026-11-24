@@ -65,7 +65,7 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
     const readVersion = readCoverageVersions(root, "HEAD^1", "HEAD");
     const departures = windowsCoverageDepartures(readVersion);
     assertWindowsRemovalRecords(departures, readVersion);
-    if (departures.size) summary += "### Departing Windows suites\n\n" + [...departures.keys()].map(file => "- " + file).join("\n") + "\n\n";
+    if (departures.size) summary += `### Departing Windows suites\n\n${[...departures.keys()].map(file => `- ${file}`).join("\n")}\n\n`;
   }
   const load = (file: string) => windowsTestFiles(readFileSync(resolve(root, file), "utf8"));
   const [permission, native, application] = WINDOWS_TEST_LISTS;
@@ -75,5 +75,5 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
   console.log(summary);
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);
   mkdirSync(dirname(resolve(output)), { recursive: true });
-  writeFileSync(output, JSON.stringify(plan, null, 2) + "\n");
+  writeFileSync(output, `${JSON.stringify(plan, null, 2)}\n`);
 }
