@@ -44,6 +44,10 @@ jobs:
     outputs:
       docs_only: ${{ steps.docs-impact.outputs.docs_only }}
       platform_checks: ${{ steps.plan.outputs.platform_checks || (steps.docs-impact.outputs.docs_only == 'true' && 'false' || 'unknown') }}
+      windows_arm64_path_kind: >-
+        ${{ (github.event_name == 'pull_request' && steps.plan.outputs.platform_checks == 'true') ||
+        (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+        github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
       # One shard when the plan step did not run (a docs-only change), so the
       # matrix below always reads a list.
       shards: ${{ steps.plan.outputs.shards || '[1]' }}
@@ -510,7 +514,7 @@ jobs:
     # .required_status_checks.contexts). gate-core and mxc-pins report under
     # names that list does not contain, so only this job's explicit result
     # check below lets them block a merge; skipped or cancelled fails too.
-    needs: [build, vitest, windows-permission-tests, macos-permission-tests, linux-confinement-tests, gate-core, mxc-pins]
+    needs: [build, vitest, windows-permission-tests, windows-arm64-path-kind, macos-permission-tests, linux-confinement-tests, gate-core, mxc-pins]
     if: always()
     # Every job in every workflow runs on a GitHub-hosted runner
     # (src/__tests__/support/workflow-runner-policy.ts fails on anything
@@ -535,6 +539,8 @@ jobs:
           DOCS_ONLY: ${{ needs.build.outputs.docs_only }}
           PLATFORM_CHECKS: ${{ needs.build.outputs.platform_checks }}
           WINDOWS_RESULT: ${{ needs.windows-permission-tests.result }}
+          WINDOWS_ARM64_PATH_KIND: ${{ needs.build.outputs.windows_arm64_path_kind }}
+          WINDOWS_ARM64_PATH_KIND_RESULT: ${{ needs.windows-arm64-path-kind.result }}
           MACOS_RESULT: ${{ needs.macos-permission-tests.result }}
           LINUX_RESULT: ${{ needs.linux-confinement-tests.result }}
         run: |
@@ -550,6 +556,13 @@ jobs:
             echo "::error::the build job ended $BUILD_RESULT"
             exit 1
           fi
+          case "$WINDOWS_ARM64_PATH_KIND:$WINDOWS_ARM64_PATH_KIND_RESULT" in
+            true:success|false:skipped) ;;
+            *)
+              echo "::error::Windows arm64 folder classification selection=$WINDOWS_ARM64_PATH_KIND result=$WINDOWS_ARM64_PATH_KIND_RESULT"
+              exit 1
+              ;;
+          esac
           if [ "$DOCS_ONLY" = "true" ]; then
             if [ "$VITEST_RESULT" != "skipped" ]; then
               echo "::error::a docs-only change ran Vitest shards ($VITEST_RESULT)"
@@ -891,6 +904,49 @@ jobs:
       # verified job root.
       - name: Remove isolated system-volume job directory
         if: steps.docs-impact.outputs.docs_only != 'true' && always() && env.AVE_CI_JOB_ROOT != ''
+        shell: powershell
+        run: node ave/.github/scripts/isolate-job-home.mjs --cleanup
+
+  windows-arm64-path-kind:
+    name: Windows arm64 folder classification
+    needs: build
+    if: needs.build.outputs.windows_arm64_path_kind == 'true'
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: ave
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          architecture: arm64
+          package-manager-cache: false
+      - uses: ./ave/.github/actions/setup-bun
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          bun-version-file: ave/.bun-version
+      - name: Isolate home and temp directories on the system volume
+        shell: bash
+        run: node ave/.github/scripts/isolate-job-home.mjs
+      - name: Install workflow parser dependencies
+        working-directory: ave
+        shell: powershell
+        run: bun install --frozen-lockfile --ignore-scripts --production
+      - name: Build the native job launcher
+        working-directory: ave
+        shell: powershell
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -Arch arm64
+      - name: Verify Windows folder classification
+        working-directory: ave
+        shell: powershell
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -Arch arm64 -Helper path-kind
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node .github/scripts/run-in-job.mjs node scripts/test-windows-path-kind.mjs
+      - name: Remove isolated system-volume job directory
+        if: always() && env.AVE_CI_JOB_ROOT != ''
         shell: powershell
         run: node ave/.github/scripts/isolate-job-home.mjs --cleanup
 

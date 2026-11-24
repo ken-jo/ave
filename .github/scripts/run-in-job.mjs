@@ -13,9 +13,9 @@ export const JOB_RECEIPTS = "job-receipts";
 const REPOSITORY = fileURLToPath(new URL("../..", import.meta.url));
 
 // Loaded on demand: job-root setup and cleanup import this module and must run without installed packages.
-export async function containedStepManifest() {
+export async function containedStepManifest(jobId) {
   const { containedSteps } = await import("./check-windows-workflow.mjs");
-  return containedSteps(readFileSync(new URL("../workflows/ci.yml", import.meta.url), "utf8"));
+  return containedSteps(readFileSync(new URL("../workflows/ci.yml", import.meta.url), "utf8"), jobId);
 }
 
 export function resolveCommand(command, path = process.env.PATH ?? "") {
@@ -54,6 +54,6 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   if (!command) throw new Error("Usage: run-in-job.mjs <command> [args...]");
   process.exitCode = await runInJob(command, args, {
     root: process.env.AVE_CI_JOB_ROOT, identity: process.env.AVE_CI_JOB_ROOT_IDENTITY,
-    manifest: await containedStepManifest(),
+    manifest: await containedStepManifest(process.env.GITHUB_JOB),
   });
 }

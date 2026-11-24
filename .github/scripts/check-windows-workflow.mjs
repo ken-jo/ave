@@ -20,6 +20,11 @@ const LIST_INVOCATION = new RegExp(
 );
 // Test commands in the job that owns the isolated job root run inside the containment launcher.
 const CONTAINED_JOB = "windows-permission-tests";
+const ARM64_JOB = "windows-arm64-path-kind";
+const CONTAINED_JOBS = new Map([
+  [CONTAINED_JOB, REGRESSION_CONDITION],
+  [ARM64_JOB, undefined],
+]);
 const TEST_LINE_RE = /\bbun[ \t]+run[ \t]+test(?::[\w-]+)?(?=[ \t]|$)|\bnode[ \t]+scripts\/test-|[ \t]--test(?:-native)?(?=[ \t]|$)|\brun-windows-test-list\b/u;
 const CONTAINED_LINE_RE = new RegExp(String.raw`^[ \t]*${CONTAINED}\S`, "u");
 
@@ -48,6 +53,19 @@ const PLAIN_INVOCATION_RE = new RegExp(`^${PLAIN_TOKEN}(?: ${PLAIN_TOKEN})*$`, "
 const POWERSHELL_SHELL_RE = /^(?:pwsh|powershell)(?:\.exe)?(?:\s|$)/i;
 const SETUP_COMMAND = "node ave/.github/scripts/isolate-job-home.mjs";
 const WRAPPER = ["node", ".github/scripts/run-in-job.mjs"];
+const ARM64_BUILD = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -Arch arm64";
+const ARM64_INSTALL = "bun install --frozen-lockfile --ignore-scripts --production";
+const ARM64_TEST = "node scripts/test-windows-path-kind.mjs";
+const ARM64_SELECTION = "needs.build.outputs.windows_arm64_path_kind";
+const ARM64_AGGREGATE = [
+  'case "$WINDOWS_ARM64_PATH_KIND:$WINDOWS_ARM64_PATH_KIND_RESULT" in',
+  "  true:success|false:skipped) ;;",
+  "  *)",
+  '    echo "::error::Windows arm64 folder classification selection=$WINDOWS_ARM64_PATH_KIND result=$WINDOWS_ARM64_PATH_KIND_RESULT"',
+  "    exit 1",
+  "    ;;",
+  "esac",
+].join("\n");
 // After job-root setup every command is a contained manifest invocation or one of these.
 const UNCONTAINED_COMMANDS = new Map([
   ["bun install --frozen-lockfile", "installs dependencies; runs no test code"],
@@ -73,17 +91,21 @@ const UNCONTAINED_COMMANDS = new Map([
  * The contained-step manifest that run-in-job.mjs registers against: one
  * receipt per contained invocation, named from its step and its position.
  */
-export function containedSteps(workflow) {
+export function containedSteps(workflow, containedJob = CONTAINED_JOB) {
+  if (!CONTAINED_JOBS.has(containedJob)) throw new Error(`unknown contained job: ${containedJob}`);
+  const expectedCondition = CONTAINED_JOBS.get(containedJob);
   const manifest = [];
   for (const { jobId, name, stepName, condition, lines } of windowsRunSteps(workflow)) {
-    if (jobId !== CONTAINED_JOB) continue;
+    if (jobId !== containedJob) continue;
     const slug = (stepName ?? "").toLowerCase().replace(/[^a-z0-9]+/gu, "-").replace(/^-|-$/gu, "");
     let position = 0;
     for (const line of lines) {
       if (!CONTAINED_LINE_RE.test(line)) continue;
       const invocation = line.replace(CONTAINED_PREFIX_RE, "").trim();
       if (!slug) throw new Error(`${name}: a contained step needs a name`);
-      if (condition !== REGRESSION_CONDITION) throw new Error(`${name}: a contained step needs if: ${REGRESSION_CONDITION}`);
+      if (condition !== expectedCondition) {
+        throw new Error(`${name}: a contained step needs ${expectedCondition ? `if: ${expectedCondition}` : "the job condition only"}`);
+      }
       if (!PLAIN_INVOCATION_RE.test(invocation)) throw new Error(`${name}: contained invocation needs plain single-spaced arguments: ${invocation}`);
       const id = `${slug}-${++position}`;
       if (manifest.some(step => step.id === id || step.invocation === invocation)) {
@@ -92,7 +114,7 @@ export function containedSteps(workflow) {
       manifest.push({ id, receipt: `${id}.receipt`, invocation });
     }
   }
-  if (manifest.length === 0) throw new Error(`${CONTAINED_JOB}: no contained test steps`);
+  if (manifest.length === 0) throw new Error(`${containedJob}: no contained test steps`);
   return manifest;
 }
 
@@ -198,7 +220,7 @@ export function directCommandProblems(steps) {
     for (const line of lines) {
       const path = BARE_TEST_PATH_RE.exec(line)?.[0].trim();
       if (path !== undefined) problems.push(`${name}: bare test path ${path}`);
-      if (jobId === CONTAINED_JOB && TEST_LINE_RE.test(line) && !CONTAINED_LINE_RE.test(line)) {
+      if (CONTAINED_JOBS.has(jobId) && TEST_LINE_RE.test(line) && !CONTAINED_LINE_RE.test(line)) {
         problems.push(`${name}: test command runs outside the job containment launcher: ${line.trim()}`);
       }
     }
@@ -220,10 +242,12 @@ function inspectPowerShell(shell, steps) {
   return JSON.parse(result.stdout);
 }
 
-function containedCommandProblems(commands, manifest, wrapped) {
+function containedCommandProblems(commands, manifest, wrapped, jobId) {
   return commands.flatMap(({ text, line, elements, redirected, operator }) => {
     if (elements[0]?.text !== WRAPPER[0] || elements[1]?.text !== WRAPPER[1]) {
-      return UNCONTAINED_COMMANDS.has(text) ? [] : [`line ${line}: command runs outside the job containment launcher: ${text}`];
+      const arm64Setup = jobId === ARM64_JOB && [ARM64_INSTALL, ARM64_BUILD, `${ARM64_BUILD} -Helper path-kind`].includes(text);
+      return arm64Setup || UNCONTAINED_COMMANDS.has(text)
+        ? [] : [`line ${line}: command runs outside the job containment launcher: ${text}`];
     }
     const invocation = elements.slice(2).map(element => element.text).join(" ");
     if (redirected || operator !== "Unknown" || !elements.every(element => element.plain && PLAIN_TOKEN_RE.test(element.text))
@@ -235,7 +259,7 @@ function containedCommandProblems(commands, manifest, wrapped) {
   });
 }
 
-export function powerShellCommandProblems(steps, inspect = inspectPowerShell, manifest = []) {
+export function powerShellCommandProblems(steps, inspect = inspectPowerShell, manifest = [], jobId = CONTAINED_JOB) {
   const failures = [];
   const wrapped = [];
   for (const shell of ["pwsh", "powershell"]) {
@@ -252,14 +276,14 @@ export function powerShellCommandProblems(steps, inspect = inspectPowerShell, ma
           || functions.some(fn => fn.name.toLowerCase() === command && scopes.includes(fn.scope)))) return [];
         return [`line ${line}: unrecognized command ${head}`];
       });
-      const contained = editionSteps[index].contained ? containedCommandProblems(commands, manifest, wrapped) : [];
+      const contained = editionSteps[index].contained ? containedCommandProblems(commands, manifest, wrapped, jobId) : [];
       failures.push(...[...errors, ...unknownCommands, ...contained].map(problem => `${editionSteps[index].name}: ${problem}`));
     }
   }
   if (steps.some(step => step.contained)) {
     for (const { id, invocation } of manifest) {
       if (wrapped.filter(entry => entry === invocation).length !== 1) {
-        failures.push(`${CONTAINED_JOB}: manifest step ${id} is not exactly one contained command after job-root setup`);
+        failures.push(`${jobId}: manifest step ${id} is not exactly one contained command after job-root setup`);
       }
     }
   }
@@ -267,24 +291,72 @@ export function powerShellCommandProblems(steps, inspect = inspectPowerShell, ma
 }
 
 // Every run step after job-root setup in the contained job is checked command by command.
-function scopeContainedSteps(steps) {
-  const setup = steps.findIndex(({ jobId, run }) => jobId === CONTAINED_JOB && run.trim() === SETUP_COMMAND);
-  if (setup < 0) throw new Error(`${CONTAINED_JOB}: no job-root setup step`);
-  return steps.map((step, index) => index > setup && step.jobId === CONTAINED_JOB ? { ...step, contained: true } : step);
+function scopeContainedSteps(steps, jobId) {
+  const setup = steps.findIndex(({ run }) => run.trim() === SETUP_COMMAND);
+  if (setup < 0) throw new Error(`${jobId}: no job-root setup step`);
+  return steps.map((step, index) => index > setup ? { ...step, contained: true } : step);
+}
+
+function checkArm64PathKindJob(jobs) {
+  const arm64 = jobs[ARM64_JOB];
+  if (arm64?.["runs-on"] !== "windows-11-arm" || arm64.needs !== "build"
+    || arm64.if !== `${ARM64_SELECTION} == 'true'` || arm64["continue-on-error"] !== undefined
+    || jobs.build?.outputs?.windows_arm64_path_kind !==
+      "${{ (github.event_name == 'pull_request' && steps.plan.outputs.platform_checks == 'true') || " +
+      "(github.event_name == 'push' && github.ref == 'refs/heads/main') || " +
+      "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}") {
+    throw new Error(`${ARM64_JOB}: expected the hosted arm64 runner and the path-kind selection`);
+  }
+  const [checkout, node, bun, isolate, install, launcher, test, cleanup] = arm64.steps ?? [];
+  if (arm64.steps?.length !== 8
+    || !checkout?.uses?.startsWith("actions/checkout@") || checkout.with?.path !== "ave"
+    || checkout.with?.["persist-credentials"] !== false
+    || !node?.uses?.startsWith("actions/setup-node@") || node.with?.["node-version"] !== "24"
+    || node.with?.architecture !== "arm64" || node.with?.["package-manager-cache"] !== false
+    || bun?.uses !== "./ave/.github/actions/setup-bun" || bun.with?.["bun-version-file"] !== "ave/.bun-version"
+    || isolate?.run !== SETUP_COMMAND || isolate.shell !== "bash"
+    || install?.run !== ARM64_INSTALL || launcher?.run !== ARM64_BUILD
+    || test?.run?.trimEnd() !== [`${ARM64_BUILD} -Helper path-kind`,
+      "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }", `${WRAPPER.join(" ")} ${ARM64_TEST}`].join("\n")
+    || [install, launcher, test].some(step => step["working-directory"] !== "ave" || step.shell !== "powershell")
+    || cleanup?.run !== `${SETUP_COMMAND} --cleanup` || cleanup.shell !== "powershell"
+    || cleanup.if !== "always() && env.AVE_CI_JOB_ROOT != ''"
+    || arm64.steps.some(step => step["continue-on-error"] !== undefined || (step !== cleanup && step.if !== undefined))) {
+    throw new Error(`${ARM64_JOB}: expected arm64 setup, contained path-kind test and job-root cleanup`);
+  }
+  const aggregate = jobs["build-and-test"];
+  const result = aggregate?.steps?.[0];
+  const arm64Check = result?.run?.indexOf(ARM64_AGGREGATE) ?? -1;
+  if (!Array.isArray(aggregate?.needs) || !aggregate.needs.includes(ARM64_JOB)
+    || aggregate.if !== "always()" || aggregate["continue-on-error"] !== undefined || result?.if !== "always()"
+    || result.env?.WINDOWS_ARM64_PATH_KIND !== `\${{ ${ARM64_SELECTION} }}`
+    || result.env?.WINDOWS_ARM64_PATH_KIND_RESULT !== `\${{ needs.${ARM64_JOB}.result }}`
+    || result["continue-on-error"] !== undefined || arm64Check < 0
+    || arm64Check >= result.run.indexOf('if [ "$DOCS_ONLY" = "true" ]; then')) {
+    throw new Error(`${ARM64_JOB}: expected build-and-test to require the selected arm64 result before the docs-only exit`);
+  }
 }
 
 export function checkWindowsWorkflow(workflow, inspect) {
-  const steps = scopeContainedSteps(windowsRunSteps(workflow));
+  checkArm64PathKindJob(parse(workflow).jobs);
+  const steps = windowsRunSteps(workflow);
   if (!windowsRegressionSteps(steps).some(step => step.stepName === "Run Windows permission regressions"
     && POWERSHELL_SHELL_RE.test(step.shell))) {
     throw new Error("The Windows permission step requires a PowerShell parser");
   }
-  const manifest = containedSteps(workflow);
   const failures = [
-    ...steps.filter(step => step.contained && !POWERSHELL_SHELL_RE.test(step.shell))
-      .map(({ name }) => `${name}: steps after job-root setup need a PowerShell shell`),
-    ...directCommandProblems(steps), ...powerShellCommandProblems(steps, inspect, manifest),
+    ...directCommandProblems(steps),
+    ...powerShellCommandProblems(steps.filter(step => !CONTAINED_JOBS.has(step.jobId)), inspect),
   ];
+  for (const jobId of CONTAINED_JOBS.keys()) {
+    const jobSteps = scopeContainedSteps(steps.filter(step => step.jobId === jobId), jobId);
+    const manifest = containedSteps(workflow, jobId);
+    failures.push(
+      ...jobSteps.filter(step => step.contained && !POWERSHELL_SHELL_RE.test(step.shell))
+        .map(({ name }) => `${name}: steps after job-root setup need a PowerShell shell`),
+      ...powerShellCommandProblems(jobSteps, inspect, manifest, jobId),
+    );
+  }
   if (failures.length) throw new Error(failures.join("\n"));
 }
 
