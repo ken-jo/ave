@@ -54,12 +54,16 @@ export type DoneState = "completed" | "cancelled" | "interrupted";
 /**
  * What became of the files a download staged by the time `done` is reported: `removed` (moved to the chosen path, or deleted),
  * `remove-failed` (the staged file may still be in the staging folder), `helper-still-running` (the removal's helper was killed but not seen
- * to end), or `part-left` (a stopped cross-volume copy's temporary file may remain in the chosen folder; it outranks the others). The next
- * start's sweep removes what was left in the staging folder and retries recorded cleanup in the chosen folder.
+ * to end), `left` (the staged file was never identified, so nothing removes it; `done` names why), or `part-left` (a stopped cross-volume
+ * copy's temporary file may remain in the chosen folder; it outranks the others). The next start's sweep removes what was left in the
+ * staging folder and retries recorded cleanup in the chosen folder.
  */
-export type StagedCleanup = "removed" | "remove-failed" | "helper-still-running" | "part-left";
+export type StagedCleanup = "removed" | "remove-failed" | "helper-still-running" | "left" | "part-left";
 
-type DoneListener = (event: unknown, state: DoneState, cleanup: StagedCleanup) => void;
+/** Why a staged file was left: it was never seen while the browser wrote it, or identifying it failed. */
+export type StagedLeftReason = "unstamped" | "stamp-failed";
+
+type DoneListener = (event: unknown, state: DoneState, cleanup: StagedCleanup, reason?: StagedLeftReason) => void;
 
 /** What the download list and the agent reports read of a download: a staged one that ends once the user chose and the file is in place. */
 export interface ObservedDownload {
@@ -239,12 +243,12 @@ function lstatEntry(path: string): BigIntStats | null {
 
 // Remove a staged file, only from inside the verified staging folder. When the folder can no longer be verified the file is left where it
 // is (the next start sweeps the verified folder) rather than removing whatever the old path now names. Only a removal the operation
-// confirmed is `removed`. The removal is bound to `staged`, the file's identity once its download completed; a download that never
-// completed is stamped just before it is removed.
+// confirmed is `removed`. The removal is bound to `staged`, the identity taken when the browser was first seen writing the file; a file never
+// identified is not removed, since whatever now has its name may not be the download's: it is `left` when it is there.
 async function removeStaged(root: BrowserDownloadStagingRoot, name: string, staged: FileIdentity | null): Promise<StagedCleanup> {
   try {
-    const file = staged ?? await root.files.stamp(root, name);
-    if (file === null) return "removed";
+    if (staged === null) return await root.files.stamp(root, name) === null ? "removed" : "left";
+    const file = staged;
     // Cleanup runs to its end; a helper that stalls is killed within the stall bound, so `done` is never held up for longer.
     const removed = await root.files.remove(root, name, proceedAlways, UNSTOPPED, file);
     if (removed !== "cancelled") return "removed";
@@ -628,8 +632,10 @@ class StagedDownload extends EventEmitter implements ObservedDownload {
   private ended = false;
   private publishing = false;
   private readonly cancellation = new AbortController();
-  /** The staged file's identity once its download completed, or null when it could not be taken. */
-  completedFile: FileIdentity | null = null;
+  /** The staged file's identity, taken when the browser was first seen writing it, or null while it is not known. */
+  stagedFile: FileIdentity | null = null;
+  private stampFailed = false;
+  private stamping: Promise<void> | null = null;
   constructor(private readonly item: StageableDownloadItem, private readonly root: BrowserDownloadStagingRoot, private readonly name: string) { super(); }
   getFilename(): string { return this.item.getFilename(); }
   getURL(): string { return this.item.getURL(); }
@@ -654,6 +660,18 @@ class StagedDownload extends EventEmitter implements ObservedDownload {
     this.publishing = true;
     return true;
   }
+  /**
+   * Identify the staged file the first time it is seen, once. A file not there yet is looked for again at the next observation; an identity
+   * that could not be read is never taken again by name, since another file may have that name by then.
+   */
+  observe(): Promise<void> {
+    if (this.stagedFile !== null || this.stampFailed) return Promise.resolve();
+    this.stamping ??= this.root.files.stamp(this.root, this.name).then((file) => { this.stagedFile = file; }, (error: unknown) => {
+      this.stampFailed = true;
+      log.warn({ error: (error as Error).message }, "a browser download's staged file could not be identified");
+    }).finally(() => { this.stamping = null; });
+    return this.stamping;
+  }
   // Ends the download once; `done` is reported, with what became of the staged file, after one that was not saved has been removed.
   finish(state: DoneState, saved?: { readonly path: string; readonly cleanup: StagedCleanup }, partLeft = false): void {
     if (this.ended) return;
@@ -663,7 +681,12 @@ class StagedDownload extends EventEmitter implements ObservedDownload {
       this.emit("done", {}, state, saved.cleanup);
       return;
     }
-    void removeStaged(this.root, this.name, this.completedFile).then((cleanup) => { this.emit("done", {}, state, partLeft ? "part-left" : cleanup); });
+    void Promise.resolve(this.stamping).then(async () => {
+      const cleanup = this.stampFailed ? "left" : await removeStaged(this.root, this.name, this.stagedFile);
+      if (partLeft) this.emit("done", {}, state, "part-left");
+      else if (cleanup === "left") this.emit("done", {}, state, cleanup, this.stampFailed ? "stamp-failed" : "unstamped");
+      else this.emit("done", {}, state, cleanup);
+    });
   }
 }
 
@@ -683,6 +706,7 @@ export function stageBrowserDownload(item: StageableDownloadItem, deps: BrowserD
   const received = new Promise<DoneState>((resolve) => { item.once("done", (_event, state) => resolve(state)); });
   item.on("updated", (event, state) => {
     if (download.isEnded) return;
+    void download.observe();
     if (!answered && item.getReceivedBytes() > UNANSWERED_DOWNLOAD_BYTES) {
       item.cancel();
       deps.onOverLimit?.();
@@ -691,19 +715,15 @@ export function stageBrowserDownload(item: StageableDownloadItem, deps: BrowserD
     }
     download.emit("updated", event, state);
   });
-  // A download that ends without completing ends at once; its dialog, if not yet shown, is skipped. A completed one is stamped at once, and
-  // every later move or removal of the staged file must still find that file.
+  // A download that ends without completing ends at once; its dialog, if not yet shown, is skipped. A completed one is identified when it was
+  // first seen written (or now, when it never was), and every later move or removal of the staged file must still find that file.
   const completed = received.then(async (state) => {
     if (state !== "completed") {
       download.finish(state);
       return null;
     }
-    try {
-      download.completedFile = await deps.root.files.stamp(deps.root, name);
-    } catch (error) {
-      log.warn({ error: (error as Error).message }, "a completed browser download's staged file could not be identified");
-    }
-    return download.completedFile;
+    await download.observe();
+    return download.stagedFile;
   });
   const save = async (destination: Destination): Promise<void> => {
     const state = await received;

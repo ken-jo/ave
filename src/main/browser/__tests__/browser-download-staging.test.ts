@@ -856,6 +856,66 @@ describe("what `done` reports when the staged file cannot be removed", () => {
     ["its helper is killed but not seen to end", () => new HeldFileHelperStalledError("/helper", "said nothing for 1 ms", true), "helper-still-running"],
   ] as const;
 
+  // The cleanup `done` reports, with the reason a staged file was left.
+  const doneWithReason = (download: Observed) => new Promise<{ state: string; cleanup: string; reason?: string }>((resolve) => {
+    download.once("done", (_event, state, cleanup, reason) => resolve({ state, cleanup, ...(reason === undefined ? {} : { reason }) }));
+  });
+
+  it("stamps the staged file when the browser first writes it, and later removes only that file", async () => {
+    const prepared = prepare();
+    const { stamps, stamped, root } = countingStamps(prepared);
+    const item = fakeItem();
+    const staged = stageBrowserDownload(item, { root, askSavePath: dialogs().askSavePath }, new Promise(() => {}));
+    const done = doneWithReason(staged.download);
+    item.write("partial");
+    await stamped();
+    expect(stamps).toEqual([basename(item.path)]);
+    // Another file put at the staged name after that is not the file the download wrote, so its removal is refused.
+    moveAside(item.path, join(home, "first-file"));
+    writeFileSync(item.path, "another file");
+    staged.download.cancel();
+    expect(await done).toEqual({ state: "cancelled", cleanup: "remove-failed" });
+    expect(readFileSync(item.path, "utf8")).toBe("another file");
+    expect(stamps).toHaveLength(1);
+  });
+
+  it("leaves a staged file it never saw the browser write, and never stamps it by name to remove it", async () => {
+    const prepared = prepare();
+    const { stamps, root } = countingStamps(prepared);
+    const item = fakeItem();
+    const staged = stageBrowserDownload(item, { root, askSavePath: dialogs().askSavePath }, new Promise(() => {}));
+    const done = doneWithReason(staged.download);
+    writeFileSync(item.path, "written unseen");
+    staged.download.cancel();
+    expect(await done).toEqual({ state: "cancelled", cleanup: "left", reason: "unstamped" });
+    expect(readFileSync(item.path, "utf8")).toBe("written unseen");
+    expect(readdirSync(prepared.path)).toEqual([basename(item.path)]);
+    expect(stamps.length).toBeLessThanOrEqual(1);
+  });
+
+  it.each(["cancelled", "completed"] as const)("leaves a %s download's staged file whose stamp failed, without stamping it again", async (ending) => {
+    const prepared = prepare();
+    const { stamps, root } = countingStamps(prepared, true);
+    const { asked, askSavePath } = dialogs();
+    const item = fakeItem();
+    const staged = stageBrowserDownload(item, { root, askSavePath }, Promise.resolve());
+    const done = doneWithReason(staged.download);
+    item.write("partial");
+    await settled();
+    if (ending === "cancelled") {
+      staged.download.cancel();
+    } else {
+      const chosen = join(home, "chosen");
+      mkdirSync(chosen);
+      asked[0]?.answer(join(chosen, "report.pdf"));
+      await settled();
+      item.complete("whole");
+    }
+    expect(await done).toEqual({ state: ending === "cancelled" ? "cancelled" : "interrupted", cleanup: "left", reason: "stamp-failed" });
+    expect(stamps).toHaveLength(1);
+    expect(existsSync(item.path)).toBe(true);
+  });
+
   // The helper may answer `cancelled` though it was let proceed; nothing is claimed removed.
   it("reports a closed dialog's staged file as not removed when its removal answers cancelled", async () => {
     const prepared = prepare();
