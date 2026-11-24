@@ -152,6 +152,8 @@ A parent's owned descendant set includes pending startups before their first
 asynchronous probe. Parent release aborts those starts and waits for startup
 settlement and native termination before reporting tree cleanup. A holder
 incarnation cannot be admitted twice while its earlier lifetime remains owned.
+A contained plugin worker's parent is the incarnation of its plugin's native
+child that is live when the worker's start begins.
 
 Native admission additionally requires a single-use receipt from
 `createMxcExtensionAdmission()`. Its actual-request probe observes a separate
