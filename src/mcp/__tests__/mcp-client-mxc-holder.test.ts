@@ -3,6 +3,7 @@
  * route and the 0.0.80 fallback. The holder adapter is mocked; its layout has its own tests. */
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { installProgramsOnPath } from "../../__tests__/support/planted-program-posix.js";
 import { t } from "../../i18n/runtime.js";
 
 const state = vi.hoisted(() => ({
@@ -282,11 +283,16 @@ describe("pinned 0.0.80 fallback and other platforms", () => {
       expect(state.legacySpawn.mock.calls[0]?.[0]).toMatchObject({ allowRead: [own], allowWrite: ["C:\\ave\\mcp\\fs\\sandbox"] });
 
       setProcessPlatform("linux");
-      state.posixWrap.mockRejectedValue(new Error("posix wrap reached"));
-      await expect(client({ sandboxRoot: "/ave/mcp/fs/sandbox" }).connect()).rejects.toThrow("posix wrap reached");
-      const wrap = state.posixWrap.mock.calls[0]?.[0] as { ownPluginReads: string[]; allowWrite: string[] };
-      expect(wrap.ownPluginReads).toEqual(["/ave/mcp/fs", own]);
-      expect(wrap.allowWrite).toEqual(["/ave/mcp/fs/sandbox"]);
+      const programs = installProgramsOnPath(["ave-mcp-fs"], "linux");
+      try {
+        state.posixWrap.mockRejectedValue(new Error("posix wrap reached"));
+        await expect(client({ sandboxRoot: "/ave/mcp/fs/sandbox" }).connect()).rejects.toThrow("posix wrap reached");
+        const wrap = state.posixWrap.mock.calls[0]?.[0] as { ownPluginReads: string[]; allowWrite: string[] };
+        expect(wrap.ownPluginReads).toEqual(["/ave/mcp/fs", own]);
+        expect(wrap.allowWrite).toEqual(["/ave/mcp/fs/sandbox"]);
+      } finally {
+        await programs.restore();
+      }
     } finally {
       rmSync(own, { recursive: true, force: true });
       rmSync(other, { recursive: true, force: true });

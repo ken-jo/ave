@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { useVerifiedAveHomePrivacy as installVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
 import { deferred } from "../../__tests__/support/deferred.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
-import { useLinuxWrapperProgramFixtures } from "../../__tests__/support/linux-wrapper-programs.js";
+import { registerLinuxWrapperProgramFixtures } from "../../__tests__/support/linux-wrapper-programs.js";
 import { initializeAsrtSandbox, isAsrtSandboxActive, releaseAsrtSandboxForExit } from "../asrt-sandbox.js";
 
 const manager = vi.hoisted(() => ({
@@ -12,7 +12,7 @@ const manager = vi.hoisted(() => ({
 }));
 vi.mock("@anthropic-ai/sandbox-runtime", () => ({ SandboxManager: manager }));
 installVerifiedAveHomePrivacy();
-useLinuxWrapperProgramFixtures();
+registerLinuxWrapperProgramFixtures();
 const ORIGINAL_PLATFORM = process.platform;
 
 afterEach(async () => {

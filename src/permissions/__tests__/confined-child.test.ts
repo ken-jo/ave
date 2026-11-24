@@ -609,7 +609,7 @@ describe("spawnConfinedChild reports the wrap it applied", () => {
     for (const platform of ["darwin", "linux", "win32"] as const) {
       setProcessPlatform(platform);
       const spawned = await spawnConfinedChild({ egressOwner: EGRESS_OWNER,
-        command: "/usr/bin/python3",
+        command: platform === "win32" ? "C:/runtime/python3.exe" : "/usr/bin/python3",
         args: [],
         label: "worker:x:main",
         grantMode: platform === "win32" ? "deny-only" : "allow-list",

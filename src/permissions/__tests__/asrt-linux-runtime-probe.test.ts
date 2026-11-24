@@ -12,7 +12,7 @@ import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
-import { useLinuxWrapperProgramFixtures } from "../../__tests__/support/linux-wrapper-programs.js";
+import { registerLinuxWrapperProgramFixtures } from "../../__tests__/support/linux-wrapper-programs.js";
 import * as globMatcher from "../../lib/glob-matcher.js";
 import { globMatch } from "../../lib/glob-matcher.js";
 import { expandLeadingTilde } from "../../shared/home-tilde.js";
@@ -28,7 +28,7 @@ import { configureHostResources, getHostResources } from "../../main/host-resour
 import { parseSandboxWrappedWords } from "../sandbox-wrapped-command.js";
 
 useVerifiedAveHomePrivacy();
-useLinuxWrapperProgramFixtures();
+registerLinuxWrapperProgramFixtures();
 
 // Simulated win32 on a POSIX host: drive-path math, an empty simulated drive, ASRT resolved on it, and spelling-only stamp pins.
 vi.mock("node:path", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDrivePath(await original()));
