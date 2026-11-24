@@ -246,6 +246,14 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
   }
   const label = `worker:${safePlugin}:${safeWorker}`;
   const args = [...(spec.args ?? [])];
+  if (contained) {
+    // The holder's ownership roots repeat the worker's declared grants, so, before anything is created, the host holds the declaration to the
+    // plugin's own install and cache here: nothing inside another plugin's storage, nothing at or above a plugin root.
+    const beyond = pluginGrantPathsBeyondOwnRoots(safePlugin, [...(spec.allowReadPaths ?? []), ...(spec.allowWritePaths ?? [])]);
+    if (beyond.length > 0) {
+      throw new Error(`[worker-spawn] ${label}: refusing a container grant beyond the plugin's own roots: ${[...new Set(beyond)].join(", ")}`);
+    }
+  }
 
   // Secret-stripped base env (Least Privilege), shared with other child process spawners so Windows runtime variables stay complete without forwarding provider/API-key secrets.
   const baseEnv: NodeJS.ProcessEnv = buildSafeChildEnv(definedEnv(spec.env));
@@ -254,12 +262,6 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
   const stateGrant = stateDir !== undefined ? [stateDir] : [];
 
   if (contained) {
-    // The holder's ownership roots repeat the worker's declared grants, so the host holds the declaration to the
-    // plugin's own install and cache here: nothing inside another plugin's storage, nothing at or above a plugin root.
-    const beyond = pluginGrantPathsBeyondOwnRoots(safePlugin, [...(spec.allowReadPaths ?? []), ...(spec.allowWritePaths ?? [])]);
-    if (beyond.length > 0) {
-      throw new Error(`[worker-spawn] ${label}: refusing a container grant beyond the plugin's own roots: ${[...new Set(beyond)].join(", ")}`);
-    }
     return await spawnContainedWorker(spec, { plugin: safePlugin, worker: safeWorker }, control, label, args, stateDir,
       reserveWrappedWorker(safePlugin, safeWorker));
   }

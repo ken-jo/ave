@@ -3354,7 +3354,8 @@ The remaining backend executables are excluded because Ave never takes their
 paths: `winhttp-proxy-shim.exe` is the elevated, UAC-raising proxy fallback of
 the AppContainer tier, which MXC refuses for `runtimeConfig.networkProxy` with
 egress deny + ingress allow (the only shape Ave sends; boot also requires the
-probe of that request to report `base-container`); `plm.exe` is the elevated tracing helper
+probe of that request to report that the `base-container` backend can serve
+it); `plm.exe` is the elevated tracing helper
 behind `telemetry`, which Ave never enables; the daemon and host-prep binaries
 serve the WSL-container, Windows Sandbox, isolation-session
 and AppContainer+DACL backends. Every PR 9 measurement ran the launcher alone
@@ -3365,8 +3366,11 @@ in its directory.
   egress, no DACL fallback) must report the `base-container` tier, and
   `--dry-run` of the same request must report that validation passed. The dry
   run prints no tier since 1.1.0, so the probed tier is required: a missing or
-  different tier, or exit 0 without the validation result, is refused. These
-  checks do not start a container. With shell
+  different tier, or exit 0 without the validation result, is refused. The
+  probe reports only whether the ProcessContainer backend can serve the
+  request; network-policy and PSEC checks happen at launch, so the start
+  probe below (loopback proxy, `exit 0`) is what refuses a proxy contract the
+  host cannot carry. These checks do not start a container. With shell
   local-network access off, the real start probe is deferred and shells stay
   on the approved-host route. Once access is on, MXC is `checking`: off the
   critical path, System32 Windows PowerShell

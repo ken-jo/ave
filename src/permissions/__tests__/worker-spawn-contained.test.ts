@@ -1,9 +1,11 @@
 // The container route for plugin workers: one holder per run, never the account grant path. A changed grant is a new
 // run; in-flight calls of the ended one are refused, never replayed.
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
 import { resolvePluginPaths } from "../../plugins/plugin-paths.js";
+import { PLUGIN_WORKER_STATE_DIR_NAME } from "../../plugins/plugin-storage-layout.js";
 import { MxcProcessCleanupError } from "../mxc-extension-errors.js";
 
 interface FakeHolder {
@@ -145,6 +147,10 @@ describe("contained plugin worker", () => {
       await expect(start([...read], [...write])).rejects.toThrow("refusing a container grant beyond the plugin's own roots");
     }
     expect(spawnMxcBundledHolder).not.toHaveBeenCalled();
+    // A refused declaration leaves no state directory behind.
+    await expect(spawnWorker({ ...spec("D:/work/a"), workerId: "refused", stateDirectory: true, allowReadPaths: [pluginsRoot], control: "output-only-v1" }))
+      .rejects.toThrow("refusing a container grant beyond the plugin's own roots");
+    expect(existsSync(join(pluginsRoot, "example-plugin", PLUGIN_WORKER_STATE_DIR_NAME, "refused"))).toBe(false);
 
     // The refusals reserved nothing: the same identity starts with its own install and cache.
     await start([join(pluginsRoot, "example-plugin", "dist"), join(cacheRoot, "example-plugin")], [join(pluginsRoot, "example-plugin", "data")]);
