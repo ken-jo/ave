@@ -746,13 +746,15 @@ describe("a helper that does not keep to its protocol", () => {
 });
 
 // A copy's helper that stops after creating its temporary file says when it did not remove what is at that name (native/macos-dir-ops/README.md):
-// the copy then reports the file as left, records nothing for the next start, and starts no removal of its own.
+// The copy reports the file as left and starts no removal of its own.
 describe("a copy whose helper says it left its temporary file", () => {
   const HIDDEN = ".0123456789abcdef0123456789abcdef.removing";
-  const SUFFIXES = [["left", null], [`left ${HIDDEN}`, HIDDEN]] as const;
-  const expectLeftByHelper = (error: unknown, hidden: string | null): void => {
-    expect(stoppedCopyOf(error)).toEqual({ partialCopy: "left", partLeftAt: null });
-    expect(boundary.warn).toHaveBeenCalledWith({ path: join(to.path, ".0123.part"), leftAs: hidden ?? undefined }, expect.stringMatching(/did not find it to be its own/));
+  const SUFFIXES = [["left", null], [`left ${HIDDEN} 1 18446744073709551615 mismatch`, "mismatch"],
+    [`left ${HIDDEN} 1 18446744073709551615 remove-failed`, "remove-failed"]] as const;
+  const expectLeftByHelper = (error: unknown, verdict: "mismatch" | "remove-failed" | null): void => {
+    expect(stoppedCopyOf(error)).toEqual({ partialCopy: "left", partLeftAt: verdict === null ? null : {
+      name: HIDDEN, identity: { kind: "helper", dev: 1n, ino: 18446744073709551615n, verdict, observed: null },
+    } });
     expect(helpers()).toHaveLength(1);
   };
 
@@ -798,7 +800,7 @@ describe("a copy whose helper says it left its temporary file", () => {
     expect(run.error).toBeInstanceOf(HeldDirectoryRefusedError);
     expect(run.error).toMatchObject({ refusal: "target" });
     expectLeftByHelper(run.error, hidden);
-    expect(stoppedCopyOf(new Error("wrapped", { cause: run.error }))).toEqual({ partialCopy: "left", partLeftAt: null });
+    expect(stoppedCopyOf(new Error("wrapped", { cause: run.error }))).toEqual(stoppedCopyOf(run.error));
   });
 
   it.each([
@@ -817,6 +819,27 @@ describe("a copy whose helper says it left its temporary file", () => {
     await flush();
     expect(run.error).toBeInstanceOf(HeldFileHelperUnavailableError);
     expect(String((run.error as Error).message)).toMatch(/outside its mode or phase/);
+  });
+
+  it.each([
+    HIDDEN,
+    `${HIDDEN} 1 2`,
+    `${HIDDEN} -1 2 mismatch`,
+    `${HIDDEN} 01 2 mismatch`,
+    `${HIDDEN} 18446744073709551616 2 mismatch`,
+    `${HIDDEN} 1 18446744073709551616 remove-failed`,
+    `${HIDDEN} 1 2 retry`,
+    `${HIDDEN} 1  2 mismatch`,
+    `${HIDDEN} 1 2 mismatch extra`,
+  ])("kills the helper for a malformed hidden leftover %s", async (suffix) => {
+    script((helper) => {
+      helper.say("ready");
+      helper.once("input", () => helper.say(`failed EIO left ${suffix}`));
+    });
+    const run = follow(files.copy(from, "staged", to, "report.pdf", ".0123.part", () => true, UNSTOPPED));
+    await flush();
+    expect(run.error).toBeInstanceOf(HeldFileHelperUnavailableError);
+    expect(helpers()[0]?.killed).toBe(1);
   });
 });
 
@@ -911,10 +934,12 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
     readonly quietCopy: boolean;
     // The copy answers that it failed once it has written its temporary file, and ends.
     readonly copyFails: boolean;
+    readonly hiddenVerdict?: "mismatch" | "remove-failed";
     // Runs as a removal is let go, before it acts; answering "refuse" ends it without an outcome.
     readonly beforeRemove: (helper: FakeHelper) => "refuse" | undefined;
   }
-  const actOnRealFolders = ({ copyDiesWhenKilled, quietCopy, copyFails, beforeRemove }: Faults) => (helper: FakeHelper): void => {
+  const namedLeftover = ".0123456789abcdef0123456789abcdef.removing";
+  const actOnRealFolders = ({ copyDiesWhenKilled, quietCopy, copyFails, beforeRemove, hiddenVerdict }: Faults) => (helper: FakeHelper): void => {
     const [mode] = helper.args;
     helper.say("ready");
     if (mode === "--dir-copy") {
@@ -925,6 +950,19 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
         // Whole seconds, which a copy of the file keeps exactly, as FAT keeps only coarse times.
         if (boundary.linkless) fs.utimesSync(part, 1_700_000_000, 1_700_000_000);
         if (!quietCopy) helper.say("progress 1048576");
+        if (hiddenVerdict !== undefined) {
+          const own = fs.statSync(part, { bigint: true });
+          const hidden = join(arg(helper, 5), namedLeftover);
+          if (hiddenVerdict === "mismatch") {
+            fs.unlinkSync(part);
+            fs.writeFileSync(hidden, "the user's file");
+          } else {
+            fs.renameSync(part, hidden);
+          }
+          helper.say(`failed EIO left ${namedLeftover} ${own.dev} ${own.ino} ${hiddenVerdict}`);
+          helper.exit(4);
+          return;
+        }
         if (copyFails) {
           helper.say("failed EIO");
           helper.exit(4);
@@ -963,6 +1001,7 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
 
   const stalledCopy = async ({
     copyDiesWhenKilled = false, quietCopy = false, copyFails = false, beforeRemove = (_helper: FakeHelper): "refuse" | undefined => undefined, beforeStall = (_chosen: string): void => {},
+    hiddenVerdict = undefined as Faults["hiddenVerdict"],
   } = {}) => {
     const staging = join(base, "staging");
     const chosen = join(base, "chosen");
@@ -970,7 +1009,7 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
     fs.mkdirSync(chosen);
     const info = fs.statSync(staging, { bigint: true });
     const root = { path: staging, dev: info.dev, ino: info.ino, files: { ...files, move: async () => "cross-volume" as const } };
-    script(actOnRealFolders({ copyDiesWhenKilled, quietCopy, copyFails, beforeRemove }));
+    script(actOnRealFolders({ copyDiesWhenKilled, quietCopy, copyFails, beforeRemove, hiddenVerdict }));
     const item = Object.assign(new EventEmitter(), {
       getFilename: () => "report.pdf", getURL: () => "https://site.example/report", getURLChain: () => ["https://site.example/report"],
       hasUserGesture: () => true, getReceivedBytes: () => 8, getTotalBytes: () => 8, getState: () => "completed" as const,
@@ -992,6 +1031,53 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
   const removalsIn = (folder: string) => helpers().filter((helper) => helper.args[0] === "--dir-remove" && helper.args[1] === folder);
   const records = (staging: string) => fs.readdirSync(staging).filter((name) => /^[0-9a-f]{32}\.cleanup\.json$/u.test(name));
   const recordedAt = (staging: string) => records(staging).map((name) => (JSON.parse(fs.readFileSync(join(staging, name), "utf8")) as { at: string }).at);
+
+  it.each(["remove-failed", "mismatch"] as const)("records a helper's %s verdict and retries it at startup", async (hiddenVerdict) => {
+    const { root, staging, chosen, part, done } = await stalledCopy({ hiddenVerdict });
+    const hidden = join(chosen, namedLeftover);
+    expect(done).toMatchObject({ settled: true, value: ["interrupted", "part-left"] });
+    expect(recordedAt(staging)).toEqual([namedLeftover]);
+    const [record] = records(staging);
+    expect(JSON.parse(fs.readFileSync(join(staging, record ?? ""), "utf8"))).toMatchObject({
+      part: basename(part), identity: { kind: "helper", verdict: hiddenVerdict, dev: expect.any(String), ino: expect.any(String) },
+    });
+    const swept = follow(sweepBrowserDownloadStaging(root));
+    await flush();
+    await flush();
+    expect(swept).toMatchObject({ settled: true, value: 1 });
+    expect(fs.existsSync(hidden)).toBe(false);
+    if (hiddenVerdict === "mismatch") expect(fs.readFileSync(part, "utf8")).toBe("the user's file");
+    else expect(fs.existsSync(part)).toBe(false);
+    expect(records(staging)).toEqual([]);
+  });
+
+  it("keeps the hidden file and its record when the original name is taken", async () => {
+    const { root, staging, chosen, part } = await stalledCopy({ hiddenVerdict: "mismatch" });
+    const hidden = join(chosen, namedLeftover);
+    fs.writeFileSync(part, "the file now at the original name");
+    const swept = follow(sweepBrowserDownloadStaging(root));
+    await flush();
+    await flush();
+    expect(swept).toMatchObject({ settled: true, value: 1 });
+    expect(fs.readFileSync(part, "utf8")).toBe("the file now at the original name");
+    expect(fs.readFileSync(hidden, "utf8")).toBe("the user's file");
+    expect(recordedAt(staging)).toEqual([namedLeftover]);
+    expect(boundary.warn).toHaveBeenCalledWith(expect.objectContaining({ path: part, movedTo: hidden, code: "EEXIST" }), expect.any(String));
+  });
+
+  it.each(["remove-failed", "mismatch"] as const)("leaves a hidden entry that changed after a %s verdict", async (hiddenVerdict) => {
+    const { root, staging, chosen, part } = await stalledCopy({ hiddenVerdict });
+    const hidden = join(chosen, namedLeftover);
+    fs.renameSync(hidden, join(chosen, "elsewhere"));
+    fs.writeFileSync(hidden, "the replacement");
+    const swept = follow(sweepBrowserDownloadStaging(root));
+    await flush();
+    await flush();
+    expect(swept).toMatchObject({ settled: true, value: 1 });
+    expect(fs.readFileSync(hidden, "utf8")).toBe("the replacement");
+    expect(fs.existsSync(part)).toBe(false);
+    expect(recordedAt(staging)).toEqual([namedLeftover]);
+  });
 
   it("never removes a file put over the temporary file's name before a helper that is seen to end was killed", async () => {
     const { staging, chosen, part, done } = await stalledCopy({

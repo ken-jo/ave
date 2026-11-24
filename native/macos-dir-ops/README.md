@@ -68,12 +68,23 @@ stdin.
   under the hidden name when `part` is taken or the copy fails. The identity
   is read through the descriptor at the cleanup, not when the file is
   created: exFAT gives a new file its lasting inode only once it is
-  written. When the file is not removed (it is
-  not the one written, it cannot be moved aside, or its removal fails), the
-  outcome ends with ` left`, or ` left <hidden name>` when a file stays under
-  that name: `cancelled left` (exit `0`), `failed <errno name> left` (exit
-  `4`), `refused target left` (exit `3`). The host reports such a copy's
-  temporary file as left and does not record it for the next start. Only
+  written. An absent part leaves the outcome unchanged. A directory or
+  symlink at the part name is left in place. When the part is left at its
+  original name, the outcome ends with ` left`: `cancelled left` (exit `0`),
+  `failed <errno name> left` (exit `4`), or `refused target left` (exit `3`).
+  A file left at the hidden name adds ` <hidden name> <dev> <ino> <verdict>`
+  after `left`. Device and inode are unsigned decimal values from the
+  descriptor the copy wrote through. The verdict is `mismatch` when the
+  helper could not establish that the entry was its own, or `remove-failed`
+  when it verified its file and unlinking failed. On failed copy-back the
+  helper removes its incomplete restoration when it can still identify it.
+  The host records named leftovers for the next start, along with an
+  identity and content snapshot of the hidden entry. The startup sweep
+  removes a `remove-failed` entry if it still matches the snapshot and the
+  helper's device and inode. It restores a verified `mismatch` entry using
+  an exclusive copy to the original part name. If that name is occupied or
+  verification or cleanup fails, the sweep leaves the hidden entry and logs
+  both paths. A bare `left` has no verified entry to retry. Only
   `--dir-copy` answers this way; `native/windows-path-kind` removes `part`
   through the handle it wrote it with and never does.
 - A `failed <errno name>` answer may have one stderr diagnostic,

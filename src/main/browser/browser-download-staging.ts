@@ -13,14 +13,15 @@ import { openFeatureNamespace } from "../storage/feature-namespace.js";
 import {
   MOVED_ASIDE_NAME,
   removeOwnFile,
+  retryHelperPart,
   stoppedCopyOf,
   heldFileOperations,
   HeldDirectoryRefusedError,
   HeldFileHelperStalledError,
   HeldFileHelperUnavailableError,
   type FileIdentity,
+  type HelperPartIdentity,
   type LeftPart,
-  type OwnFileResult,
   type PartIdentity,
   type HeldDirectory,
   type HeldFileOperations,
@@ -53,8 +54,7 @@ export type DoneState = "completed" | "cancelled" | "interrupted";
  * What became of the files a download staged by the time `done` is reported: `removed` (moved to the chosen path, or deleted),
  * `remove-failed` (the staged file may still be in the staging folder), `helper-still-running` (the removal's helper was killed but not seen
  * to end), or `part-left` (a stopped cross-volume copy's temporary file may remain in the chosen folder; it outranks the others). The next
- * start's sweep removes what was left in the staging folder, and a temporary file whose copy's helper had not ended if it is still the file
- * that copy wrote.
+ * start's sweep removes what was left in the staging folder and retries recorded cleanup in the chosen folder.
  */
 export type StagedCleanup = "removed" | "remove-failed" | "helper-still-running" | "part-left";
 
@@ -379,14 +379,15 @@ function tryWritePartRecord(root: BrowserDownloadStagingRoot, record: PartRecord
 function writePartRecord(root: BrowserDownloadStagingRoot, record: PartRecord): string {
   const name = `${randomBytes(16).toString("hex")}.cleanup.json`;
   const { identity } = record.at;
+  const known = identity.kind === "fileId" ? { kind: identity.kind, ...identity.file }
+    : identity.kind === "fingerprint" ? { kind: identity.kind, ...identity.content }
+    : identity;
   const body = JSON.stringify({
-    folder: { path: record.folder.path, dev: record.folder.dev.toString(), ino: record.folder.ino.toString() },
+    folder: { path: record.folder.path, dev: record.folder.dev, ino: record.folder.ino },
     part: record.part,
     at: record.at.name,
-    identity: identity.kind === "fileId"
-      ? { kind: "fileId", dev: identity.file.dev.toString(), ino: identity.file.ino.toString(), birthtimeNs: identity.file.birthtimeNs.toString() }
-      : { kind: "fingerprint", size: identity.content.size.toString(), mtimeNs: identity.content.mtimeNs.toString(), head: identity.content.head, tail: identity.content.tail },
-  });
+    identity: known,
+  }, (_key, value: unknown) => typeof value === "bigint" ? value.toString() : value);
   withVerifiedRoot(root, (fd) => {
     const path = fd !== undefined && process.platform === "linux" ? `/proc/self/fd/${fd}/${name}` : join(root.path, name);
     const out = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NOFOLLOW, 0o600);
@@ -412,26 +413,47 @@ function readPartRecord(text: string): PartRecord | null {
     && candidate !== null && !Array.isArray(candidate) && Object.keys(candidate).sort().join() === [...keys].sort().join();
   const decimal = (candidate: unknown): candidate is string => typeof candidate === "string" && DECIMAL.test(candidate);
   const digest = (candidate: unknown): candidate is string => typeof candidate === "string" && DIGEST.test(candidate);
+  const fileId = ({ dev, ino, birthtimeNs }: Record<string, unknown>): FileIdentity | null =>
+    decimal(dev) && decimal(ino) && decimal(birthtimeNs) ? { dev: BigInt(dev), ino: BigInt(ino), birthtimeNs: BigInt(birthtimeNs) } : null;
+  const fingerprint = ({ size, mtimeNs, head, tail }: Record<string, unknown>) =>
+    decimal(size) && decimal(mtimeNs) && digest(head) && digest(tail) ? { size: BigInt(size), mtimeNs: BigInt(mtimeNs), head, tail } : null;
   if (!exactly(value, ["folder", "part", "at", "identity"]) || !exactly(value.folder, ["path", "dev", "ino"])) return null;
   const { folder, part, at, identity } = value;
   if (typeof folder.path !== "string" || !isAbsolute(folder.path) || !decimal(folder.dev) || !decimal(folder.ino)) return null;
   if (typeof part !== "string" || !PART_NAME.test(part) || typeof at !== "string" || (at !== part && !MOVED_ASIDE_NAME.test(at))) return null;
-  let known: PartIdentity;
+  let known: PartIdentity | HelperPartIdentity;
   if (exactly(identity, ["kind", "dev", "ino", "birthtimeNs"]) && identity.kind === "fileId") {
-    if (!decimal(identity.dev) || !decimal(identity.ino) || !decimal(identity.birthtimeNs)) return null;
-    known = { kind: "fileId", file: { dev: BigInt(identity.dev), ino: BigInt(identity.ino), birthtimeNs: BigInt(identity.birthtimeNs) } };
+    const file = fileId(identity);
+    if (file === null) return null;
+    known = { kind: "fileId", file };
   } else if (exactly(identity, ["kind", "size", "mtimeNs", "head", "tail"]) && identity.kind === "fingerprint") {
-    if (!decimal(identity.size) || !decimal(identity.mtimeNs) || !digest(identity.head) || !digest(identity.tail)) return null;
-    known = { kind: "fingerprint", content: { size: BigInt(identity.size), mtimeNs: BigInt(identity.mtimeNs), head: identity.head, tail: identity.tail } };
+    const content = fingerprint(identity);
+    if (content === null) return null;
+    known = { kind: "fingerprint", content };
+  } else if (exactly(identity, ["kind", "dev", "ino", "verdict", "observed"]) && identity.kind === "helper") {
+    const { dev, ino, verdict, observed } = identity;
+    if (!MOVED_ASIDE_NAME.test(at) || !decimal(dev) || !decimal(ino) || (verdict !== "remove-failed" && verdict !== "mismatch")) return null;
+    let snapshot: HelperPartIdentity["observed"] = null;
+    if (observed !== null) {
+      if (!exactly(observed, ["file", "content"]) || !exactly(observed.file, ["dev", "ino", "birthtimeNs"]) ||
+          !exactly(observed.content, ["size", "mtimeNs", "head", "tail"])) return null;
+      const file = fileId(observed.file);
+      const content = fingerprint(observed.content);
+      if (file === null || content === null) return null;
+      snapshot = { file, content };
+    }
+    known = { kind: "helper", dev: BigInt(dev), ino: BigInt(ino), verdict, observed: snapshot };
   } else {
     return null;
   }
   return { folder: { path: folder.path, dev: BigInt(folder.dev), ino: BigInt(folder.ino) }, part, at: { name: at, identity: known } };
 }
 
-// Remove a recorded temporary file only while it is the file the copy wrote, through its folder held anew; anything else is left. Never throws.
-function removeRecordedPart(root: BrowserDownloadStagingRoot, record: PartRecord): Promise<OwnFileResult> {
-  return removeOwnFile(record.folder, record.part, record.at.name, record.at.identity, (folder, name) => root.files.remove(folder, name, proceedAlways, UNSTOPPED));
+// Retry a recorded removal or restoration through the chosen folder held anew.
+function removeRecordedPart(root: BrowserDownloadStagingRoot, { folder, part, at }: PartRecord) {
+  if (at.identity.kind === "helper") return retryHelperPart(folder, part, at.name, at.identity,
+    (directory, name, proceed, stop) => root.files.remove(directory, name, proceed, stop));
+  return removeOwnFile(folder, part, at.name, at.identity, (directory, name) => root.files.remove(directory, name, proceedAlways, UNSTOPPED));
 }
 
 // A record read through one descriptor that is checked to be the ordinary file listed, so a record swapped for a link is not followed.

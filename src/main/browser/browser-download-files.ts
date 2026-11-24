@@ -113,8 +113,19 @@ interface Fingerprint {
  */
 export type PartIdentity = { readonly kind: "fileId"; readonly file: FileIdentity } | { readonly kind: "fingerprint"; readonly content: Fingerprint };
 
+interface PartSnapshot { readonly file: FileIdentity; readonly content: Fingerprint }
+
+/** The writing descriptor's identity and a snapshot of the entry the helper left at its hidden name. */
+export interface HelperPartIdentity {
+  readonly kind: "helper";
+  readonly dev: bigint;
+  readonly ino: bigint;
+  readonly verdict: "mismatch" | "remove-failed";
+  readonly observed: PartSnapshot | null;
+}
+
 /** A temporary file a cleanup left: the name it has now in its folder, and how it is known there. */
-export interface LeftPart { readonly name: string; readonly identity: PartIdentity }
+export interface LeftPart { readonly name: string; readonly identity: PartIdentity | HelperPartIdentity }
 
 /** What a cleanup did. A file it left can still be tried again at `at`, or `at` is null when cleanup has no retry location. */
 export type OwnFileResult = { readonly outcome: "removed" | "absent" } | { readonly outcome: "left"; readonly at: LeftPart | null };
@@ -148,7 +159,7 @@ function sameContent(found: Fingerprint, expected: Fingerprint): boolean {
 }
 
 // The ordinary file at `name` in `folder`, read through one open descriptor: its identity and its content.
-function contentAt(folder: HeldDirectory, name: string): Exclude<Found, "same"> | { readonly file: FileIdentity; readonly content: Fingerprint } {
+function contentAt(folder: HeldDirectory, name: string): Exclude<Found, "same"> | PartSnapshot {
   try {
     heldFolder(folder);
   } catch {
@@ -156,7 +167,7 @@ function contentAt(folder: HeldDirectory, name: string): Exclude<Found, "same"> 
   }
   let fd: number;
   try {
-    fd = openSync(join(folder.path, name), constants.O_RDONLY | NOFOLLOW);
+    fd = openSync(join(folder.path, name), constants.O_RDONLY | NOFOLLOW | (constants.O_NONBLOCK ?? 0));
   } catch (error) {
     return codeOf(error) === "ENOENT" ? "absent" : "unreadable";
   }
@@ -167,7 +178,7 @@ function contentAt(folder: HeldDirectory, name: string): Exclude<Found, "same"> 
       const buffer = Buffer.alloc(length);
       for (let done = 0; done < length;) {
         const read = readSync(fd, buffer, done, length - done, position + done);
-        if (read === 0) break;
+        if (read === 0) throw new Error("the temporary download file ended while it was being checked");
         done += read;
       }
       return createHash("sha256").update(buffer).digest("hex");
@@ -365,11 +376,11 @@ async function removeByContent(
   if (typeof there !== "string" && sameContent(there.content, content)) {
     const removed = await removeMoved(folder, hidden, remove);
     if (removed === "removed" || removed === "absent") return { outcome: removed };
-    return { outcome: "left", at: await copyBack(folder, hidden, original, removed) ?? keep };
+    return { outcome: "left", at: (await copyBack(folder, hidden, original, removed))?.at ?? keep };
   }
   const why = typeof there !== "string" || there === "other" ? "it is not the file that was written"
     : there === "unheld" ? "its folder is no longer the chosen one" : "it could not be read";
-  const back = await copyBack(folder, hidden, original, why);
+  const back = (await copyBack(folder, hidden, original, why))?.at ?? null;
   if (typeof there !== "string" || there === "other") return { outcome: "left", at: back === null ? keep : null };
   return { outcome: "left", at: back ?? keep };
 }
@@ -377,7 +388,10 @@ async function removeByContent(
 // Copy a file moved aside back to its own name as a new file, which fails on anything at that name rather than replacing it, and remove it
 // under the hidden name only once the copy is seen to hold the same bytes. Returns where it then is and how it is known there (a copy has
 // its own last change), or null when it stays under the hidden name. Logs where it is left.
-async function copyBack(folder: HeldDirectory, hidden: string, original: string, why: string): Promise<LeftPart | null> {
+async function copyBack(
+  folder: HeldDirectory, hidden: string, original: string, why: string,
+  checked?: { readonly expected: PartSnapshot; readonly remove: Parameters<typeof removeMoved>[2] },
+): Promise<{ readonly at: LeftPart; readonly restored: boolean } | null> {
   const hiddenPath = join(folder.path, hidden);
   const path = join(folder.path, original);
   try {
@@ -390,23 +404,61 @@ async function copyBack(folder: HeldDirectory, hidden: string, original: string,
   }
   const copied = contentAt(folder, original);
   const source = contentAt(folder, hidden);
-  if (typeof copied === "string" || typeof source === "string" || !sameBytes(copied.content, source.content)) {
+  if (typeof copied === "string" || typeof source === "string" || !sameBytes(copied.content, source.content) ||
+      (checked !== undefined && !matchesSnapshot(source, checked.expected))) {
     log.warn({ path, alsoAt: hiddenPath, why }, "a temporary download file is left under another name: its copy at its own name could not be checked");
     return null;
   }
   const back: LeftPart = { name: original, identity: { kind: "fingerprint", content: copied.content } };
   try {
-    await retryOnFileLock(async () => { unlinkSync(hiddenPath); });
+    if (checked === undefined) {
+      await retryOnFileLock(async () => { unlinkSync(hiddenPath); });
+    } else {
+      const removed = await removeMoved(folder, hidden, checked.remove);
+      if (removed !== "removed" && removed !== "absent") throw new Error(removed);
+    }
   } catch (error) {
-    log.warn({ path, alsoAt: hiddenPath, why, code: codeOf(error) }, "a temporary download file is left, put back, but also still under another name");
-    return back;
+    log.warn({ path, alsoAt: hiddenPath, why, code: codeOf(error), error: (error as Error).message },
+      "a temporary download file is left, put back, but also still under another name");
+    return { at: back, restored: false };
   }
   log.warn({ path, why }, "a temporary download file is left, put back at its name");
-  return back;
+  return { at: back, restored: true };
 }
 
 function sameBytes(a: Fingerprint, b: Fingerprint): boolean {
   return a.size === b.size && a.head === b.head && a.tail === b.tail;
+}
+
+function matchesSnapshot(found: ReturnType<typeof contentAt>, expected: PartSnapshot): boolean {
+  return typeof found !== "string" && sameFile(found.file, expected.file) && sameContent(found.content, expected.content);
+}
+
+/** Retry a named leftover after checking the folder and the entry the helper left there. */
+export async function retryHelperPart(
+  folder: HeldDirectory, original: string, hidden: string, identity: HelperPartIdentity, remove: HeldFileOperations["remove"],
+): Promise<OwnFileResult | { readonly outcome: "restored" }> {
+  const found = contentAt(folder, hidden);
+  if (found === "absent") return { outcome: "absent" };
+  const keep: OwnFileResult = { outcome: "left", at: { name: hidden, identity } };
+  const path = join(folder.path, original);
+  const movedTo = join(folder.path, hidden);
+  const { observed, verdict } = identity;
+  if (observed === null || !matchesSnapshot(found, observed) ||
+      (verdict === "remove-failed" && (observed.file.dev !== identity.dev || observed.file.ino !== identity.ino))) {
+    log.warn({ path, movedTo, verdict }, "a helper's hidden download file is left: its identity could not be verified");
+    return keep;
+  }
+  const removeChecked = (directory: HeldDirectory, name: string) => remove(directory, name,
+    () => matchesSnapshot(contentAt(directory, name), observed), UNSTOPPED);
+  if (verdict === "mismatch") {
+    const back = await copyBack(folder, hidden, original, "the helper found a different file", { expected: observed, remove: removeChecked });
+    return back?.restored ? { outcome: "restored" } : keep;
+  }
+  const removed = await removeMoved(folder, hidden, removeChecked);
+  if (removed === "removed" || removed === "absent") return { outcome: removed };
+  log.warn({ path, movedTo, verdict, why: removed }, "a helper's hidden download file could not be removed");
+  return keep;
 }
 
 // The identity of the ordinary file `name` in `folder` while `folder` is still the held one, or null.
@@ -697,11 +749,27 @@ const EXIT_FAILED = 4;
 const REFUSALS: ReadonlySet<string> = new Set<HeldRefusal>(["from", "to", "source", "target"]);
 const PROGRESS = /^progress (\d+)$/u;
 const FAILURE_DIAGNOSTIC = /^Windows error \d+(?: \(NTSTATUS 0x[0-9A-F]{8}, (?:NtCreateFile|NtSetInformationFile)\))?\r?\n$/u;
-// A copy's `cancelled`, `failed` or `refused target` answer may end by saying its temporary file was not removed: ` left`, or
-// ` left <hidden name>` when a file stays under the name it was moved aside to (see MOVED_ASIDE_NAME).
-const PART_LEFT = / left(?: (\.[0-9a-f]{32}\.removing))?$/u;
-// For an error a copy's helper answered with such a line: the hidden name it gave, or null.
-const helperLeftParts = new WeakMap<Error, string | null>();
+// A stopped copy may add ` left`, or ` left <hidden name> <dev> <ino> <verdict>` when a file stays at the moved-aside name.
+const PART_LEFT = / left(?: (\.[0-9a-f]{32}\.removing) (0|[1-9][0-9]{0,19}) (0|[1-9][0-9]{0,19}) (mismatch|remove-failed))?$/u;
+const MAX_HELPER_FILE_ID = (1n << 64n) - 1n;
+interface HelperLeftPart {
+  readonly name: string;
+  readonly identity: HelperPartIdentity;
+}
+const helperLeftParts = new WeakMap<Error, HelperLeftPart | null>();
+
+function parsePartLeft(line: string): { readonly answer: string; readonly at: HelperLeftPart | null } | null {
+  const match = PART_LEFT.exec(line);
+  if (match === null) return null;
+  const answer = line.slice(0, match.index);
+  const [, name, devText, inoText, verdict] = match;
+  if (name === undefined) return { answer, at: null };
+  if (devText === undefined || inoText === undefined || (verdict !== "mismatch" && verdict !== "remove-failed")) return null;
+  const dev = BigInt(devText);
+  const ino = BigInt(inoText);
+  if (dev > MAX_HELPER_FILE_ID || ino > MAX_HELPER_FILE_ID) return null;
+  return { answer, at: { name, identity: { kind: "helper", dev, ino, verdict, observed: null } } };
+}
 
 /** How long a helper may say nothing (`stallMs`), and how long its exit may take to be seen once it is killed (`killMs`). */
 interface HelperBounds { readonly stallMs: number; readonly killMs: number }
@@ -720,13 +788,13 @@ function directoryArguments(directory: HeldDirectory): string[] {
 // Turn the helper's last line and exit status into the operation's outcome, or the error it ended with. A refusal and a filesystem failure
 // the helper reports are answers about the operation; any other ending, an unknown status or line among them, means the helper is broken.
 function helperOutcome(helper: string, status: number | null, signal: NodeJS.Signals | null, last: string, stderr: string): string | Error {
-  const left = PART_LEFT.exec(last);
-  const answer = left === null ? last : last.slice(0, left.index);
+  const left = parsePartLeft(last);
+  const answer = left?.answer ?? last;
   if (status === EXIT_DONE && (left === null ? /^(?:committed|cancelled|cross-volume|removed|absent|swept \d+)$/u.test(last) : answer === "cancelled")) {
     return last;
   }
   const leaving = (error: Error): Error => {
-    if (left !== null) helperLeftParts.set(error, left[1] ?? null);
+    if (left !== null) helperLeftParts.set(error, left.at);
     return error;
   };
   const refused = /^refused (\w+)$/u.exec(answer);
@@ -875,11 +943,11 @@ function runHelper(helper: string, args: readonly string[], proceed: Proceed, st
       kill(protocolFailure);
     };
     const isOutcome = (line: string): boolean => {
-      const left = PART_LEFT.exec(line);
+      const left = parsePartLeft(line);
       if (left !== null) {
         // Only a copy let past `ready`, which may have created its temporary file, says what became of it.
         if (mode !== "--dir-copy" || passed === null) return false;
-        const answer = line.slice(0, left.index);
+        const { answer } = left;
         if (answer === "cancelled") return stopping;
         if (answer === "refused target") return passed === "copied";
         return /^failed E[A-Z0-9_]+$/u.test(answer);
@@ -1001,21 +1069,22 @@ function helperFileOperations(helper: string, bounds: HelperBounds = POLICY_BOUN
       };
       try {
         const answer = await run(["--dir-copy", ...directoryArguments(from), name, ...directoryArguments(to), target, part], proceedSeeing, stop, seen);
-        const left = PART_LEFT.exec(answer);
+        const left = parsePartLeft(answer);
         if (left !== null) {
           // Cancelled with its temporary file left: reported as a failure, as a cancelled Linux copy whose file is left is.
           const error = new Error("a stopped download copy's temporary file is left in the chosen folder");
-          helperLeftParts.set(error, left[1] ?? null);
+          helperLeftParts.set(error, left.at);
           throw error;
         }
         return oneOf(helper, answer, ["committed", "cancelled"] as const);
       } catch (error) {
         if (error instanceof Error && helperLeftParts.has(error)) {
-          // The helper removes its temporary file only while it is the file it wrote, and said it did not remove what is at that name.
-          // It is not recorded for the next start: the identity taken at the first progress line may be of a file put there before it.
-          const hidden = helperLeftParts.get(error) ?? null;
-          log.warn({ path: join(to.path, part), leftAs: hidden ?? undefined }, "a stopped download copy's temporary file is left: the helper did not find it to be its own, or could not remove it");
-          markStoppedCopy(error, { outcome: "left", at: null });
+          // Bind the entry at the helper's hidden name for retry. Its identity may differ from the writing descriptor's identity.
+          const left = helperLeftParts.get(error) ?? null;
+          const observed = left === null ? null : contentAt(to, left.name);
+          const at = left === null ? null : { ...left, identity: { ...left.identity, observed: typeof observed === "string" ? null : observed } };
+          log.warn({ path: join(to.path, part), leftAs: at?.name }, "a stopped download copy's temporary file is left: the helper did not find it to be its own, or could not remove it");
+          markStoppedCopy(error, { outcome: "left", at });
         } else if (error instanceof HeldFileHelperUnavailableError && error.passed !== null) {
           error.partFile = partFile;
           // A helper that may still be running is not raced: its file is left for a cleanup once it ends.

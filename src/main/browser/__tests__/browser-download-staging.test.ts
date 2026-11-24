@@ -1164,7 +1164,7 @@ async function stoppedNativeCopy(ending: Ending, swap: boolean | "absent" | "dir
   await settled();
   item.complete("page data");
   try {
-    return { outcome: await done, chosen, swapped };
+    return { outcome: await done, chosen, swapped, root };
   } finally {
     if (ending === "failed") execFileSync("chflags", ["nouchg", target]);
   }
@@ -1241,7 +1241,7 @@ describe.runIf(process.platform === "darwin")("a stopped native copy's temporary
   it("removes a truncated restoration when the volume fills during copy-back", async ({ skip }) => {
     const base = onVolume(skip);
     const replacement = Buffer.alloc(1024 * 1024, 0x61);
-    const { outcome, chosen } = await stoppedNativeCopy("cancelled", (path) => {
+    const { outcome, chosen, swapped, root } = await stoppedNativeCopy("cancelled", (path) => {
       writeFileSync(path, replacement);
       const { bavail, bsize } = statfsSync(base);
       writeFileSync(join(base, "padding"), Buffer.alloc(bavail * bsize - 128 * 1024));
@@ -1253,6 +1253,16 @@ describe.runIf(process.platform === "darwin")("a stopped native copy's temporary
     expect(entriesOf(chosen)).toEqual([expect.stringMatching(/^\.[0-9a-f]{32}\.removing$/u)]);
     expect(readFileSync(join(chosen, hidden ?? "")).equals(replacement)).toBe(true);
     expect(outcome).toEqual({ state: "interrupted", cleanup: "part-left" });
+    const records = readdirSync(root.path);
+    expect(records).toEqual([expect.stringMatching(/\.cleanup\.json$/u)]);
+    const written = statSync(join(base, "the copy's own file"), { bigint: true });
+    expect(JSON.parse(readFileSync(join(root.path, records[0] ?? ""), "utf8"))).toMatchObject({
+      part: basename(swapped), at: hidden,
+      identity: { kind: "helper", verdict: "mismatch", dev: String(written.dev), ino: String(written.ino) },
+    });
+    expect(await sweepBrowserDownloadStaging(root)).toBe(1);
+    expect(entriesOf(chosen)).toEqual([basename(swapped)]);
+    expect(readFileSync(swapped).equals(replacement)).toBe(true);
   });
 
   it("keeps different content when both entries report the same device and inode", async ({ skip }) => {

@@ -6,6 +6,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <limits.h>
 #include <poll.h>
 #include <signal.h>
@@ -293,21 +294,27 @@ static int copy_back(int to, const char *hidden, const char *part) {
 
 // Remove the partial copy `part` from the held folder only while it is the file the copy wrote, never by its name alone: it is moved to a
 // fresh hidden name, which nothing else uses, checked there, and only then removed under that name. A file put at `part` meanwhile is put
-// back there if the name is still free, or stays under the hidden name. Returns 1 when the copy's file was removed; otherwise 0, with
-// `hidden` holding the hidden name a file stays under, or empty when nothing stays under one (the file at `part` could not be moved, or was
-// put back).
+// back there if the name is still free, or stays under the hidden name. Returns 1 when the part was removed or absent. On failure, a
+// named leftover carries the identity from the writing descriptor and the reason it stayed there.
 //
 // A volume without an exclusive rename (exFAT, FAT) is checked that the hidden name is free and then renamed to it plainly; the name is
 // random, so nothing else is there. There a file is removed only when both its id and its content (read through the copy's own
 // descriptor) are the copy's, and a file that is not is put back by copying it to a new file created exclusively at `part`, so it never
 // replaces one.
-static int remove_own_part(int to, const char *part, const struct written_file *written, char hidden[HIDDEN_NAME_SIZE]) {
+struct left_part {
+  char name[HIDDEN_NAME_SIZE];
+  struct stat own;
+  const char *verdict;
+};
+
+static int remove_own_part(int to, const char *part, const struct written_file *written, struct left_part *left) {
   char aside[HIDDEN_NAME_SIZE];
   fresh_hidden_name(aside);
-  hidden[0] = '\0';
   struct stat part_info;
   if (fstatat(to, part, &part_info, AT_SYMLINK_NOFOLLOW) != 0) return errno == ENOENT;
   if (!S_ISREG(part_info.st_mode)) return 0;
+  // If the writing descriptor cannot identify the copy, leave the part at its original name.
+  if (fstat(written->fd, &left->own) != 0) return 0;
   int exclusive = 1;
   if (renameatx_np(to, part, to, aside, RENAME_EXCL) != 0) {
     if (errno == ENOENT) return 1;
@@ -317,16 +324,13 @@ static int remove_own_part(int to, const char *part, const struct written_file *
     if (renameat(to, part, to, aside) != 0) return errno == ENOENT;
     exclusive = 0;
   }
+  memcpy(left->name, aside, HIDDEN_NAME_SIZE);
+  left->verdict = "mismatch";
   struct stat moved;
-  if (fstatat(to, aside, &moved, AT_SYMLINK_NOFOLLOW) != 0) {
-    if (errno != ENOENT) memcpy(hidden, aside, HIDDEN_NAME_SIZE);
-    return 0;
-  }
+  if (fstatat(to, aside, &moved, AT_SYMLINK_NOFOLLOW) != 0) return errno == ENOENT;
   struct stat own;
-  if (fstat(written->fd, &own) != 0) {
-    memcpy(hidden, aside, HIDDEN_NAME_SIZE);
-    return 0;
-  }
+  if (fstat(written->fd, &own) != 0) return 0;
+  left->own = own;
 #if defined(AVE_DIR_OPS_TEST_REUSED_FILE_ID)
   // Model two different file contents reported with the same file id on the plain-rename path.
   if (!exclusive) {
@@ -336,23 +340,24 @@ static int remove_own_part(int to, const char *part, const struct written_file *
 #endif
   const int same_id = moved.st_dev == own.st_dev && moved.st_ino == own.st_ino;
   if (S_ISREG(moved.st_mode) && same_id && (exclusive || same_content(to, aside, written->fd))) {
-    if (unlinkat(to, aside, 0) == 0) return 1;
-    if (errno != ENOENT) memcpy(hidden, aside, HIDDEN_NAME_SIZE);
+    if (unlinkat(to, aside, 0) == 0 || errno == ENOENT) return 1;
+    left->verdict = "remove-failed";
     return 0;
   }
   const int back = exclusive ? renameatx_np(to, aside, to, part, RENAME_EXCL) == 0 : copy_back(to, aside, part);
-  if (!back) memcpy(hidden, aside, HIDDEN_NAME_SIZE);
+  if (back) left->name[0] = '\0';
   return 0;
 }
 
 // End a copy that stopped after creating `part` with `answer` and its exit code, saying what became of `part`: nothing more when
-// the copy's own file was removed, ` left` when it was not, or ` left <hidden name>` when a file stays under that name. `written` is
+// the copy's own file was removed, ` left` when it was not, or a named leftover with its identity and verdict. `written` is
 // null when the copy's file could not be identified; it is then left.
 static int stopped_copy(int to, const char *part, const struct written_file *written, const char *answer, int exit_code) {
-  char hidden[HIDDEN_NAME_SIZE] = "";
-  if (written != NULL && remove_own_part(to, part, written, hidden)) printf("%s\n", answer);
-  else if (hidden[0] == '\0') printf("%s left\n", answer);
-  else printf("%s left %s\n", answer, hidden);
+  struct left_part left = { 0 };
+  if (written != NULL && remove_own_part(to, part, written, &left)) printf("%s\n", answer);
+  else if (left.name[0] == '\0') printf("%s left\n", answer);
+  else printf("%s left %s %" PRIu64 " %" PRIu64 " %s\n", answer, left.name, (uint64_t)left.own.st_dev,
+              (uint64_t)left.own.st_ino, left.verdict);
   fflush(stdout);
   return exit_code;
 }
