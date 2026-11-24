@@ -668,10 +668,13 @@ export async function stopOrphanedManagedProcesses(pids: readonly number[]): Pro
     try { process.kill(pid, "SIGKILL"); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
   }
-  const result = await runWithCeiling(async signal => {
-    while (pids.some(processExists)) await sleep(TOOL_TIMEOUT_POLICY.processGroupExitPollMs, signal);
-  }, TOOL_TIMEOUT_POLICY.orphanProcessCleanupMs, undefined, "orphaned process termination");
-  return result.ok;
+  const deadline = Date.now() + TOOL_TIMEOUT_POLICY.orphanProcessCleanupMs;
+  while (pids.some(processExists)) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return false;
+    await sleep(Math.min(TOOL_TIMEOUT_POLICY.processGroupExitPollMs, remaining));
+  }
+  return true;
 }
 
 const TASKKILL_PROCESS_NOT_FOUND = 128;
