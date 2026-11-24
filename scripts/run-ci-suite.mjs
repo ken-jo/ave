@@ -227,7 +227,8 @@ function inspectInputSource(source, exemptions) {
     if (ast.isIdentifier(node)) {
       const access = accessOf(node.parent);
       const name = access?.name ?? (access ? undefined : node.text);
-      if (node.text === "Bun" || node.text === "process") {
+      const propertyKey = ast.isPropertyAssignment(node.parent) && node.parent.name === node;
+      if (!propertyKey && (node.text === "Bun" || node.text === "process")) {
         const members = node.text === "Bun" ? ["file", "spawn", "spawnSync", "$", "Glob"] : ["binding"];
         if (!access || access.receiver !== node || access.name === undefined || members.includes(access.name)) classes.add("runtime");
       }
@@ -339,6 +340,66 @@ function identifiersOf(source) {
   };
   collect(source);
   return identifiers;
+}
+
+function assignmentTarget(reference) {
+  let node = reference;
+  let nested = false;
+  while (ast.isParenthesizedExpression(node.parent) || ast.isArrayLiteralExpression(node.parent) || ast.isObjectLiteralExpression(node.parent)
+    || ast.isShorthandPropertyAssignment(node.parent) || ast.isSpreadElement(node.parent) || ast.isSpreadAssignment(node.parent)
+    || (ast.isPropertyAssignment(node.parent) && node.parent.initializer === node)) {
+    if (!ast.isParenthesizedExpression(node.parent)) nested = true;
+    node = node.parent;
+  }
+  const parent = node.parent;
+  const assignment = ast.isBinaryExpression(parent) && parent.left === node
+    && parent.operatorToken.kind >= ast.SyntaxKind.FirstAssignment && parent.operatorToken.kind <= ast.SyntaxKind.LastAssignment;
+  const loopTarget = (ast.isForOfStatement(parent) || ast.isForInStatement(parent)) && parent.initializer === node;
+  const update = (ast.isPrefixUnaryExpression(parent) || ast.isPostfixUnaryExpression(parent))
+    && (parent.operator === ast.SyntaxKind.PlusPlusToken || parent.operator === ast.SyntaxKind.MinusMinusToken);
+  if (!assignment && !loopTarget && !update) return { write: false };
+  const simple = !nested && assignment && parent.operatorToken.kind === ast.SyntaxKind.EqualsToken && node === reference;
+  return { write: true, value: simple ? parent.right : null };
+}
+
+const TEMP_ENV_NAMES = new Set(["TMPDIR", "TEMP", "TMP"]);
+const MODULE_MOCKS = new Set(["mock", "doMock", "setMock", "unstable_mockModule", "stub"]);
+
+function canChangeTempRoots(source) {
+  let changed = false;
+  const visit = (node) => {
+    if (changed) return;
+    const access = accessOf(node);
+    if (access?.name === "env" && ast.isIdentifier(access.receiver) && access.receiver.text === "process") {
+      const parent = node.parent;
+      const member = accessOf(parent);
+      if (member?.receiver !== node
+        || ((member.name === undefined || TEMP_ENV_NAMES.has(member.name))
+          && (assignmentTarget(parent).write || ast.isDeleteExpression(parent.parent)))) {
+        changed = true;
+      }
+    }
+    if (access && (access.name === "stubEnv" || access.name === "stubGlobal" || MODULE_MOCKS.has(access.name))) {
+      const call = node.parent;
+      // Taking the method as a value also allows later calls through a binding.
+      if (!ast.isCallExpression(call) || call.expression !== node) {
+        changed = true;
+      } else {
+        const first = call.arguments[0];
+        const name = stringOf(first);
+        if (access.name === "stubEnv") changed = name === undefined || TEMP_ENV_NAMES.has(name);
+        else if (access.name === "stubGlobal") changed = name === undefined || name === "process";
+        else {
+          const module = first && ast.isCallExpression(first) && first.expression.kind === ast.SyntaxKind.ImportKeyword
+            ? stringOf(first.arguments[0]) : name;
+          changed = module === undefined || moduleFamily(module) !== null;
+        }
+      }
+    }
+    node.forEachChild(visit);
+  };
+  visit(source);
+  return changed;
 }
 
 function proveTempReads(path, declarations, fsLocals, context) {
@@ -479,26 +540,6 @@ function proveTempReads(path, declarations, fsLocals, context) {
     return { temp: true, values: [""] };
   };
 
-  const assignmentTarget = (reference) => {
-    let node = reference;
-    let nested = false;
-    while (ast.isParenthesizedExpression(node.parent) || ast.isArrayLiteralExpression(node.parent) || ast.isObjectLiteralExpression(node.parent)
-      || ast.isShorthandPropertyAssignment(node.parent) || ast.isSpreadElement(node.parent) || ast.isSpreadAssignment(node.parent)
-      || (ast.isPropertyAssignment(node.parent) && node.parent.initializer === node)) {
-      if (!ast.isParenthesizedExpression(node.parent)) nested = true;
-      node = node.parent;
-    }
-    const parent = node.parent;
-    const assignment = ast.isBinaryExpression(parent) && parent.left === node
-      && parent.operatorToken.kind >= ast.SyntaxKind.FirstAssignment && parent.operatorToken.kind <= ast.SyntaxKind.LastAssignment;
-    const loopTarget = (ast.isForOfStatement(parent) || ast.isForInStatement(parent)) && parent.initializer === node;
-    const update = (ast.isPrefixUnaryExpression(parent) || ast.isPostfixUnaryExpression(parent))
-      && (parent.operator === ast.SyntaxKind.PlusPlusToken || parent.operator === ast.SyntaxKind.MinusMinusToken);
-    if (!assignment && !loopTarget && !update) return { write: false };
-    const simple = !nested && assignment && parent.operatorToken.kind === ast.SyntaxKind.EqualsToken && node === reference;
-    return { write: true, value: simple ? parent.right : null };
-  };
-
   const deriveBinding = (declaration) => {
     if (!declaration || !ast.isVariableDeclaration(declaration) || !ast.isIdentifier(declaration.name)) return null;
     if (visiting.has(declaration)) return null;
@@ -542,12 +583,33 @@ function proveTempReads(path, declarations, fsLocals, context) {
   };
 
   let provedUse = false;
+  const importName = (declaration, use) => use === declaration.name || use === declaration.propertyName || use.parent === declaration;
   for (const [declaration, uses] of references) {
     const imported = importOf(declaration);
-    if (!imported || moduleFamily(imported.specifier) !== "fs") continue;
+    if (!imported) continue;
+    const family = moduleFamily(imported.specifier);
+    if (family === "os" || family === "path") {
+      for (const use of uses) {
+        if (importName(declaration, use)) continue;
+        const member = accessOf(use.parent);
+        const namespace = imported.name === "*" || imported.name === "posix";
+        if (namespace && member?.receiver !== use) return false;
+        let target = namespace ? use.parent : use;
+        if (namespace && member.name === "posix") {
+          if (accessOf(target.parent)?.receiver !== target) return false;
+          target = target.parent;
+        }
+        if (assignmentTarget(target).write || ast.isDeleteExpression(target.parent)) return false;
+        const callee = calleeOf(target);
+        if (["tmpdir", "join", "resolve"].includes(callee?.name)
+          && (!ast.isCallExpression(target.parent) || target.parent.expression !== target)) return false;
+      }
+      continue;
+    }
+    if (family !== "fs") continue;
     const namespace = imported.name === "*" || imported.name === "promises";
     for (const use of uses) {
-      if (use === declaration.name || use === declaration.propertyName || use.parent === declaration) continue;
+      if (importName(declaration, use)) continue;
       let callee = use;
       if (namespace) {
         const member = accessOf(use.parent);
@@ -646,7 +708,7 @@ function inspectTestInputs(tests, readText, exemptions) {
           }
         }
         if (roots.has(path) && classes.size === 1 && classes.has("read") && canProveFs
-          && proveTempReads(path, resolveDeclarations(path, identifiersOf(source)), fsLocals, context)) classes.delete("read");
+          && !canChangeTempRoots(source) && proveTempReads(path, resolveDeclarations(path, identifiersOf(source)), fsLocals, context)) classes.delete("read");
         graph.set(path, { hits, helpers, classes });
       }
     });
@@ -658,7 +720,7 @@ function inspectTestInputs(tests, readText, exemptions) {
     const digest = digests.get(path);
     const audited = typeof digest === "string" && digest === entry?.digest;
     for (const kind of classes ?? []) {
-      if (!audited || !Object.hasOwn(entry, kind)) hits.push(path + ":" + kind);
+      if (!audited || !Object.hasOwn(entry, kind)) hits.push(`${path}:${kind}`);
     }
   }
   return new Map(tests.map((test) => {
@@ -683,13 +745,17 @@ export function unboundedInputHits(testPath, readText, exemptions = UNBOUNDED_IN
   return inspectTestInputs([testPath], readText, exemptions).get(testPath);
 }
 
-const unboundedInputCache = new WeakMap();
+const unboundedInputCache = new Map();
+const INPUT_SNAPSHOT_LIMIT = 4;
 // Tests always run on affected plans because a primitive use could read any repository path.
 export function selectUnboundedInputTests(trackedTests, readText, exemptions = UNBOUNDED_INPUT_EXEMPTIONS) {
-  const byTests = unboundedInputCache.get(readText) ?? new WeakMap();
-  unboundedInputCache.set(readText, byTests);
-  const cached = exemptions === UNBOUNDED_INPUT_EXEMPTIONS ? byTests.get(trackedTests) : undefined;
-  if (cached && [...cached.sources].every(([path, text]) => readText(path) === text)) return cached.selected;
+  const key = trackedTests.join("\0");
+  const cached = exemptions === UNBOUNDED_INPUT_EXEMPTIONS ? unboundedInputCache.get(key) : undefined;
+  if (cached && [...cached.sources].every(([path, text]) => readText(path) === text)) {
+    unboundedInputCache.delete(key);
+    unboundedInputCache.set(key, cached);
+    return cached.selected;
+  }
   const sources = new Map();
   const readSnapshot = (path) => {
     if (!sources.has(path)) sources.set(path, readText(path));
@@ -697,7 +763,11 @@ export function selectUnboundedInputTests(trackedTests, readText, exemptions = U
   };
   const hits = inspectTestInputs(trackedTests, readSnapshot, exemptions);
   const selected = [...hits].filter(([, entries]) => entries.length > 0).map(([test]) => test).sort();
-  if (exemptions === UNBOUNDED_INPUT_EXEMPTIONS) byTests.set(trackedTests, { selected, sources });
+  if (exemptions === UNBOUNDED_INPUT_EXEMPTIONS) {
+    unboundedInputCache.delete(key);
+    unboundedInputCache.set(key, { selected, sources });
+    if (unboundedInputCache.size > INPUT_SNAPSHOT_LIMIT) unboundedInputCache.delete(unboundedInputCache.keys().next().value);
+  }
   return selected;
 }
 
@@ -837,10 +907,10 @@ export function selectCiTests({ changes, trackedTests, mustRunTests: requiredTes
   const deleted = new Set(changes.filter(({ status }) => status === "D").map(({ path }) => path));
   const inventoryTests = [...inventory.suites.keys()].filter(file => !deleted.has(file));
   if (inventory.changed) inventoryTests.push(WINDOWS_INVENTORY_LOCK);
-  const unboundedTests = selectUnboundedInputTests(trackedTests, readText);
   const invalidInventoryTest = inventoryTests.find(file => !tracked.has(file));
   if (invalidInventoryTest) throw new Error(`Windows inventory names an uncollected test: ${invalidInventoryTest}`);
   if (inventory.changed && inventory.ordinary.length === 0) {
+    const unboundedTests = selectUnboundedInputTests(trackedTests, readText);
     if (mustRunTests.length === 0 || mustRunTests.some(file => !tracked.has(file))) {
       throw new Error("Windows inventory-only diff requires a nonempty collected must-run set");
     }
@@ -937,6 +1007,7 @@ export function selectCiTests({ changes, trackedTests, mustRunTests: requiredTes
     return matches;
   });
 
+  const unboundedTests = selectUnboundedInputTests(trackedTests, readText);
   let tests = [...new Set([...traced, ...lockSuites, ...inventoryTests, ...mustRunTests, ...unboundedTests])].sort();
   const missing = tests.filter((test) => !trackedTests.includes(test));
   if (missing.length > 0) {

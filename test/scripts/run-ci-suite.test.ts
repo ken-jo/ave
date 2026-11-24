@@ -108,6 +108,8 @@ beforeAll(async () => {
   const coverage = JSON.parse(stdout) as { source: string; tests: string[] }[];
   graphCoverage = new Map(coverage.map(({ source, tests }) => [source, tests]));
   expect([...graphCoverage.keys()].sort()).toEqual([...GRAPH_SOURCES].sort());
+  // Like the related graph, the real source snapshot is shared across planner cases.
+  selectUnboundedInputTests(trackedTests, readText);
 }, 300_000);
 
 /** Discovery over this tree, as CI runs it, answered from the one discovery above. */
@@ -185,11 +187,15 @@ describe("Windows inventory metadata in CI plans", () => {
 });
 
 describe("CI test selection over the real import graph", () => {
-  it("selects a leaf module's own tests, plus the must-run set", () => {
-    const plan = select([modified("src/core/route-input.ts")]);
+  it("selects a leaf module's own tests, plus the triggered must-run set", () => {
+    const source = "src/core/route-input.ts";
+    const mustRun = (paths: string[]) => expandMustRunTests(mustRunDocument, trackedTests, paths);
+    const plan = selectCiTests({
+      changes: [modified(source)], trackedTests, mustRunTests: mustRun, readText, discoverRelated,
+    });
     expect(plan.mode).toBe("affected");
     expect(plan.tests).toContain("src/core/__tests__/route-input.test.ts");
-    expect(plan.tests).toEqual(expect.arrayContaining(mustRunTests));
+    expect(plan.tests).toEqual(expect.arrayContaining(mustRun([source])));
     // A leaf change does not drag in the rest of the suite.
     expect(plan.tests.length).toBeLessThan(trackedTests.length / 2);
   });
@@ -854,6 +860,21 @@ describe("the must-run set", () => {
     for (const test of missedWalkers) expect(untriggered, test).not.toContain(test);
   });
 
+  it("reuses an identical input snapshot and reselects after a helper changes", () => {
+    const suite = "test/snapshot.test.ts";
+    const helper = "test/snapshot-helper.ts";
+    const files: Record<string, string> = {
+      [suite]: 'import "./snapshot-helper";',
+      [helper]: 'export const value = 1;',
+    };
+    const read = (path: string) => files[path] ?? null;
+    const before = selectUnboundedInputTests([suite], read);
+    expect(before).toEqual([]);
+    expect(selectUnboundedInputTests([suite], (path) => read(path))).toBe(before);
+    files[helper] = 'export { readFileSync } from "node:fs";';
+    expect(selectUnboundedInputTests([suite], read)).toEqual([suite]);
+  });
+
   it.each(Object.entries(UNBOUNDED_INPUT_EXEMPTIONS))("keeps the exemption for %s current", (file, entry) => {
     const text = readText(file);
     expect(text, file).not.toBeNull();
@@ -879,6 +900,7 @@ describe("the must-run set", () => {
     ['const open = Bun["file"]; open(path);', ["runtime"]],
     ['const { spawn: run } = Bun; run(args);', ["runtime"]],
     ['const bind = process.binding; bind(name);', ["runtime"]],
+    ['const capabilities = { process: true };', []],
     ['import type { Stats } from "node:fs"; const readFileSync = () => 1; readFileSync();', []],
     ['inspectFile(target);', ["read"]],
     ['readPluginDataFixture(pluginRoot);', ["read"]],
@@ -932,9 +954,9 @@ describe("the must-run set", () => {
     const exemptions = { [helper]: { read: "fixture", digest } };
     expect(unboundedInputHits(suite, read, exemptions)).toEqual([]);
     files[indirect] += '\nexport const changed = true;';
-    expect(unboundedInputHits(suite, read, exemptions)).toEqual([helper + ":read"]);
+    expect(unboundedInputHits(suite, read, exemptions)).toEqual([`${helper}:read`]);
     delete files[indirect];
-    expect(unboundedInputHits(suite, read, exemptions)).toEqual([helper + ":read"]);
+    expect(unboundedInputHits(suite, read, exemptions)).toEqual([`${helper}:read`]);
   });
 
   describe("temp-bounded reads", () => {
@@ -983,18 +1005,32 @@ describe("the must-run set", () => {
       expect(hits(body)).toEqual(expect.arrayContaining(unbounded));
     });
 
+    it.each([
+      'vi.mock("node:os", () => ({ tmpdir: () => process.cwd() }));',
+      'vi.doMock(import("node:path"), () => ({ join: () => process.cwd() }));',
+      'vi["mock"]("fs", () => ({}));',
+      'process.env.TMPDIR = process.cwd();',
+      'process["env"]["TEMP"] ||= process.cwd();',
+      'vi.stubEnv("TMP", process.cwd());',
+      'const stub = vi.stubEnv; stub("TMPDIR", process.cwd());',
+      'const env = process.env; env.TEMP = process.cwd();',
+      'import * as os from "node:os"; vi.spyOn(os, "tmpdir").mockReturnValue(process.cwd());',
+    ])("refuses a temp proof when the test can override the temp root: %s", (setup) => {
+      expect(hits(`${setup}readFileSync(join(tmpdir(), "a"));`)).toEqual(expect.arrayContaining(unbounded));
+    });
+
     it("requires every fs binding in the file to be temp-rooted, including aliases and element accesses", () => {
       const temp = 'const dir = mkdtempSync(join(tmpdir(), "x-")); read(join(dir, "a")); fs["statSync"](dir);';
       const importAlias = 'import { readFileSync as read } from "node:fs";';
       expect(hits(importAlias + temp)).toEqual([]);
-      expect(hits(importAlias + temp + 'fs["statSync"](process.cwd());')).toEqual(unbounded);
+      expect(hits(`${importAlias + temp}fs["statSync"](process.cwd());`)).toEqual(unbounded);
     });
 
     it("keeps helper filesystem bindings even when the caller reads only temp paths", () => {
       const helper = "src/t/__tests__/seed.ts";
       expect(hits('import { seed } from "./seed"; seed(); readFileSync(join(tmpdir(), "a"));', {
         [helper]: 'import fs from "node:fs"; export const seed = () => fs.cpSync(process.cwd(), destination);',
-      })).toEqual([helper + ":read"]);
+      })).toEqual([`${helper}:read`]);
     });
 
     it("bounds a read through an audited temp factory only while its digest matches, and never through an unaudited helper", () => {
