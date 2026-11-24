@@ -24,7 +24,7 @@ import { classifySandboxDependencyErrors } from "../../permissions/sandbox-start
 import { errorMessage } from "../../shared/error-message.js";
 import { checkSandboxSweepRoot } from "../../shared/ave-home-test-guard.js";
 import { removeOwnedPluginTree } from "../../plugins/installed-entry-fs.js";
-import { AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE, aveHomeBoundaryFailure, getAveHomePrivacyFailure, setAveHomePrivacyAtBoot, setAveHomePrivacyRefusalReporter } from "../../shared/ave-home.js";
+import { AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE, aveHomeBoundaryFailure, getAveHomePrivacyFailure, isAveHomePrivacyApprovable, setAveHomePrivacyAtBoot, setAveHomePrivacyRefusalReporter } from "../../shared/ave-home.js";
 import { isAveHomeTrustPendingAtBoot } from "../../shared/ave-home-trust.js";
 import type { ProcessRunStateProbe } from "../../permissions/windows-process-start-time.js";
 import type { AsrtSandboxInitialization } from "../../permissions/asrt-sandbox.js";
@@ -210,9 +210,13 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
             });
 
       const privacyFailure = getAveHomePrivacyFailure();
-      if (privacyFailure !== undefined && windowsStart !== "proxy-only") {
+      // Every home pins its profile-child deny rows (the profile ~/.ave root is always one) through the same helper, so helper-unavailable also refuses proxy-only.
+      if (privacyFailure !== undefined && (windowsStart !== "proxy-only" || !isAveHomePrivacyApprovable(privacyFailure.category))) {
         const path = privacyFailure.failedPath ?? privacyFailure.home;
-        log.warn("boot: extension isolation is OFF; AVE_HOME privacy failed (%s, %s). Extensions require session approval in Settings > Permissions.", privacyFailure.category, path);
+        log.warn("boot: extension isolation is OFF; AVE_HOME privacy failed (%s, %s). %s", privacyFailure.category, path,
+          isAveHomePrivacyApprovable(privacyFailure.category)
+            ? "Extensions require session approval in Settings > Permissions."
+            : "Extensions stay blocked until a restart; if it persists, reinstall Ave.");
         recordWindows("none", true);
         recordGate("degrade", "degrade-ave-home-privacy-failed", [privacyFailure.reason], ["ave-home-privacy-failed"]);
       } else if (decision.action === "abort") {
@@ -424,11 +428,15 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
           const boundaryFailure = process.platform === "win32" ? aveHomeBoundaryFailure(initErr) : undefined;
           if (boundaryFailure !== undefined) {
             // Not the generic Windows degrade: publish it as an AVE_HOME privacy refusal, so confined extension starts refuse until the
-            // user approves running without isolation in Settings > Permissions. The log carries codes only; the error names paths.
+            // user approves running without isolation in Settings > Permissions, or, for helper-unavailable, until a restart.
+            // The log carries codes only; the error names paths.
             setAveHomePrivacyAtBoot({ enforcement: "none", home: boundaryFailure.home, reason: AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE,
               category: boundaryFailure.category });
-            log.warn("boot: extension isolation is OFF; the AVE_HOME read boundary could not be verified (%s, %s). Extensions require session approval in Settings > Permissions.",
-              AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE, boundaryFailure.category);
+            log.warn("boot: extension isolation is OFF; the AVE_HOME read boundary could not be verified (%s, %s). %s",
+              AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE, boundaryFailure.category,
+              isAveHomePrivacyApprovable(boundaryFailure.category)
+                ? "Extensions require session approval in Settings > Permissions."
+                : "Extensions stay blocked until a restart; if it persists, reinstall Ave.");
             recordWindows("none", true);
             recordGate("degrade", "degrade-ave-home-boundary-unverified", [AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE], ["ave-home-privacy-failed"]);
           } else {

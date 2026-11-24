@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
+import { parse } from "yaml";
 
 import {
   classifyDocumentationChanges,
@@ -303,32 +304,26 @@ describe("documentation impact policy", () => {
     expect(suiteJob?.split(/^      - /m)[1]).toContain("fetch-depth: 0");
     // `build` classifies for the required build-and-test check: the Vitest
     // shards and build-and-test read its docs_only output.
-    for (const jobName of ["build", "windows-permission-tests", "macos-permission-tests", "linux-confinement-tests"]) {
-      const job = workflow.split(`  ${jobName}:\n`)[1]?.split(/\n  [a-z][a-z0-9-]+:\n/)[0];
-      expect(job).toBeDefined();
-      const steps = job!.split(/^      - /m).slice(1);
-      expect(steps[0]).toContain(`fetch-depth: ${jobName === "build" ? 0 : 2}`);
-      const classify = steps.findIndex((step) => step.includes("id: docs-impact"));
+    const { jobs } = parse(workflow);
+    for (const jobName of ["build", "windows-native-preparation", "windows-permission-tests", "macos-permission-tests", "linux-confinement-tests"]) {
+      const steps = jobs[jobName].steps;
+      expect(steps[0].with["fetch-depth"]).toBe(jobName === "build" ? 0 : 2);
+      const classify = steps.findIndex((step: { id?: string }) => step.id === "docs-impact");
       expect(classify).toBeGreaterThan(0);
-      // Before the classifier only runner preflight may run: the pinned Node
-      // it runs on. That cannot turn a required check green on its own.
-      for (const step of steps.slice(1, classify)) {
-        expect(
-          step.startsWith("uses: actions/setup-node@"),
-          step.split("\n")[0],
-        ).toBe(true);
-      }
-      expect(steps[classify]).toContain('node scripts/hooks/classify-docs-diff.mjs "$BASE_SHA"');
-      expect(steps[classify]).toContain("echo 'docs_only=false' >> \"$GITHUB_OUTPUT\"");
+      // Only runner preflight may precede documentation classification.
+      for (const step of steps.slice(1, classify)) expect(step.uses).toMatch(/^actions\/setup-node@/u);
+      expect(steps[classify].run).toContain('node scripts/hooks/classify-docs-diff.mjs "$BASE_SHA"');
+      expect(steps[classify].run).toContain("echo 'docs_only=false' >> \"$GITHUB_OUTPUT\"");
+      if (jobName.startsWith("windows-")) expect(steps[classify].run).toContain("The build selected Windows checks for a docs-only checkout");
       for (const step of steps.slice(classify + 1)) {
-        if (step.startsWith("name: Check documentation diff")) {
-          expect(step).toContain("if: steps.docs-impact.outputs.docs_only == 'true'");
-          expect(step).toContain("git diff --check");
-        } else if (step.startsWith("name: Check documentation policy")) {
-          expect(step).toContain("if: steps.docs-impact.outputs.docs_only == 'true'");
-          expect(step).toContain("check-asrt-version-claims.mjs");
+        if (step.name === "Check documentation diff") {
+          expect(step.if).toContain("steps.docs-impact.outputs.docs_only == 'true'");
+          expect(step.run).toContain("git diff --check");
+        } else if (step.name === "Check documentation policy") {
+          expect(step.if).toContain("steps.docs-impact.outputs.docs_only == 'true'");
+          expect(step.run).toContain("check-asrt-version-claims.mjs");
         } else {
-          expect(step).toContain("if: steps.docs-impact.outputs.docs_only != 'true'");
+          expect(step.if).toContain("steps.docs-impact.outputs.docs_only != 'true'");
         }
       }
     }

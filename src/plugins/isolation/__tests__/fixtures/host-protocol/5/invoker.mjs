@@ -25,7 +25,7 @@ const CALLS = {
       body: "ping",
     }),
   spawnWorker: async (api) => {
-    const worker = await api.spawnWorker({ workerId: "golden", command: "/usr/bin/true", args: ["--version"], control: "stdio-control-v1" });
+    const worker = await api.spawnWorker({ workerId: "golden", command: "true", args: ["--version"], control: "stdio-control-v1" });
     // Control traffic crosses as a subscription send, not as a new host method.
     await worker.notify("golden_ping", { step: 1 });
     return worker;

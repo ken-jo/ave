@@ -1169,6 +1169,7 @@ export const en = {
 
   // be_scriptHookRunner
   "be_scriptHookRunner.containedSettleDeadline": "The hook's contained process did not settle within {ms} ms; it keeps its sandbox resources while its termination is unconfirmed ({code})",
+  "be_scriptHookRunner.terminationUnverified": "Hook process tree termination is unverified. Its resources are retained ({code}).",
   "be_scriptHookRunner.containedTerminationUnverified": "The hook's contained process termination is unverified; it keeps its sandbox resources: {detail} ({code})",
 
   // be_sessionGoal
@@ -3648,7 +3649,8 @@ export const en = {
   "mcpTab.apiKeyWriteOnlyLabel": "API Key (write-only)",
   "mcpTab.apiKeyPlaceholder": "API key",
   "mcpTab.commandRequiredLabel": "Command *",
-  "mcpTab.commandHint": "Enter just the executable or the full command line — arguments will be split automatically.",
+  "mcpTab.commandRelativePath": "Use an absolute path or a program name on PATH.",
+  "mcpTab.commandHint": "Enter just the executable or the full command line — arguments will be split automatically. Use an absolute path or a program name on PATH.",
   "mcpTab.argsLabel": "Args (additional arguments)",
   "mcpTab.envWriteOnlyLabel": "Env (KEY=value, write-only)",
   "mcpTab.urlRequiredLabel": "URL *",
@@ -4219,6 +4221,9 @@ export const en = {
   "permissionsTab.homePrivacyFixSystemRoot": "Make sure the SystemRoot environment variable points to the Windows folder, then restart Ave.",
   "permissionsTab.homePrivacyFixIdentity": "Restart Ave; if it persists, check that you are signed in with your own Windows account.",
   "permissionsTab.homePrivacyFixPermissions": "Fix the folder permissions, then restart Ave.",
+  "permissionsTab.homePrivacyFixHelperUnavailable": "Restart Ave; if it persists, reinstall Ave.",
+  "permissionsTab.homePrivacyShellAsk": "Shell commands will ask for approval once or for the session.",
+  "permissionsTab.homePrivacyShellDenied": "Shell commands and hooks are off until Ave restarts.",
   "permissionsTab.homeFolderRefusedSessionOnly": "The change applies to this session only. Ave could not verify that only your account can change its folder, so it did not save the setting. Fix the folder permissions, then restart Ave.",
   "permissionsTab.homePrivacyFixReparsePoint": "Ave does not change permissions through a link. Point AVE_HOME at a real directory, then restart Ave.",
   "permissionsTab.homePrivacyFixBoundaryLink": "Replace the link or junction with a real directory, whether it is the Ave home, a folder above it, or an entry directly inside it, then restart Ave.",
@@ -4260,12 +4265,13 @@ export const en = {
   "permissionsTab.homePrivacyIdentityFailed": "the current account SID could not be determined",
   "permissionsTab.homePrivacyIcaclsFailed": "the directory permission command failed",
   "permissionsTab.homePrivacyReadBackFailed": "the directory DACL could not be read back",
+  "permissionsTab.homePrivacyHelperUnavailable": "Ave's folder permission checker did not start or answer in time, so nothing about the folder was checked",
   "permissionsTab.homePrivacyNotProtected": "the directory DACL is not protected against inheritance",
   "permissionsTab.homePrivacyInvalidOwnerGrant": "the directory does not have the required owner-only inheritable access rule",
   "permissionsTab.homePrivacyOwnerClaimFailed": "the directory is owned by Administrators and could not be claimed; run Ave once elevated or fix the directory owner",
   "permissionsTab.homePrivacyReparsePoint": "the directory is a link or junction, so its permissions were not changed",
-  "permissionsTab.homePrivacyBoundaryLink": "the Ave home or its boundary (the home itself, a folder above it, or an entry directly inside it) is a link, junction or other reparse point, so the sandbox cannot deny reads inside it and shell commands will ask for approval once or for the session",
-  "permissionsTab.homePrivacyBoundaryUnlisted": "the Ave home or its boundary could not be verified (its contents could not be listed or pinned, an entry vanished, or the home is not a directory), so the sandbox cannot deny reads inside it and shell commands will ask for approval once or for the session",
+  "permissionsTab.homePrivacyBoundaryLink": "the Ave home or its boundary (the home itself, a folder above it, or an entry directly inside it) is a link, junction or other reparse point, so the sandbox cannot deny reads inside it",
+  "permissionsTab.homePrivacyBoundaryUnlisted": "the Ave home or its boundary could not be verified (its contents could not be listed or pinned, an entry vanished, or the home is not a directory), so the sandbox cannot deny reads inside it",
   "permissionsTab.homePrivacyExtraPrincipals": "extra access entries remain for {principals}; remove those entries or move AVE_HOME",
   "permissionsTab.homePrivacyWorkspaceExtraPrincipals": "other accounts can write to Ave's workspace folder: {principals}; remove those entries",
   "permissionsTab.osSandboxWindowsInstallFailedUnexpected": "Windows sandbox setup stopped with an unexpected error, and nothing was confirmed. Details are in the Ave log (Diagnostics → Recent logs). Re-provision or restart Ave.",
@@ -4379,7 +4385,7 @@ export const en = {
   "permissionsTab.osSandboxWindowsMxcReasonUnsupportedArch": "this processor architecture is not supported",
   "permissionsTab.osSandboxWindowsMxcReasonBinaryMissing": "the container launcher is missing from this installation; reinstall Ave",
   "permissionsTab.osSandboxWindowsMxcReasonProbeFailed": "the container launcher could not check this PC",
-  "permissionsTab.osSandboxWindowsMxcReasonTierUnsupported": "this Windows version does not offer the container isolation Ave needs; update Windows 11",
+  "permissionsTab.osSandboxWindowsMxcReasonContainerUnavailable": "this PC cannot provide the container isolation Ave needs; updating Windows 11 may add it",
   "permissionsTab.osSandboxWindowsMxcReasonRequestRejected": "this Windows version cannot route a container's network through Ave's proxy; update Windows 11",
   "permissionsTab.osSandboxWindowsMxcReasonLauncherMismatch": "the container launcher in this installation is not the expected build; reinstall Ave",
   "permissionsTab.osSandboxWindowsMxcReasonPowershellStartFailed": "Windows PowerShell did not start inside a container on this PC",
@@ -5171,8 +5177,9 @@ export const en = {
 
   // shellExecution
   "shellExecution.blocked": "Shell execution is unavailable under the current execution plan.",
+  "shellExecution.homePrivacyHelperUnavailable": "Shell commands and hooks are off: Ave could not check its home folder privacy at startup. Restart Ave; if it persists, reinstall Ave.",
   "shellExecution.sandboxUnavailable": "The OS sandbox is turned on but unavailable, so shell commands run without it under the normal permission rules.",
-  "shellExecution.boundaryUnverifiedAsk": "The Ave home boundary could not be verified, so a shell command runs without the OS sandbox only after you approve it. Approve it once, or waive this sandbox approval for later shell commands and hooks in this session while the boundary stays unverified. Other permission checks still apply and may ask again.",
+  "shellExecution.boundaryUnverifiedAsk": "Ave home privacy could not be established at startup, so a shell command runs without the OS sandbox only after you approve it. Approve it once, or waive this sandbox approval for later shell commands and hooks in this session while home privacy stays unverified. Other permission checks still apply and may ask again.",
   "shellExecution.sandboxUnavailableAsk": "The OS sandbox is turned on but unavailable, so a shell command runs without it only after you approve it. Approve it once, or waive this sandbox approval for later shell commands and hooks in this session while the sandbox is unavailable. Other permission checks still apply and may ask again.",
   "shellExecution.location": "Execution location: current host ({platform}).",
   "shellExecution.temporaryHome": "Shell HOME and configuration: temporary for each command; the user's login profile is not loaded.",

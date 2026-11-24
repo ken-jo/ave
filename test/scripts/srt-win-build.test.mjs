@@ -10,7 +10,7 @@ import test from "node:test";
 import { assertBaselineRegression, assertSourceArchive, canReuseSrtWinBuild, parseBuildOptions, publishSrtWinExecutable, recordBuildReceipts, retainUpstreamSrtWinInputs } from "../../scripts/build-srt-win.mjs";
 const require = createRequire(import.meta.url);
 const pins = require("../../src/permissions/srt-win-pins.json");
-const { TARGETS, assertBuildReceipt, assertSrtWinVendor, readUpstreamSrtWinInput, assertUpstreamSrtWinVendor, assertSrtWinBuildInputs } = require("../../scripts/lib/srt-win-integrity.cjs");
+const { TARGETS, assertBuildReceipt, assertSrtWinVendor, readUpstreamSrtWinInput, assertUpstreamSrtWinVendor, assertSrtWinBuildInputs, srtWinBuildInputDigests } = require("../../scripts/lib/srt-win-integrity.cjs");
 const installedVendor = join(dirname(require.resolve(`${pins.package}/package.json`)), "vendor");
 function fixture(t) {
   const vendor = mkdtempSync(join(tmpdir(), "ave-native-integrity-"));
@@ -40,6 +40,19 @@ test("native build accepts both target architectures and rejects ambiguous optio
   assert.deepEqual(parseBuildOptions([]).arches, ["x64", "arm64"]);
   assert.deepEqual(parseBuildOptions(["--arch", "arm64", "--test-native"]).arches, ["arm64"]);
   for (const args of [["--arch", "ia32"], ["--arch", "constructor"], ["--unknown"], ["--source-archive"]]) assert.throws(() => parseBuildOptions(args));
+});
+test("helper cache pins only the installed native patch and upstream binaries", (t) => {
+  const { vendor } = upstreamFixture(t);
+  const patch = join("srt-win", "object-only-parent-guard.patch");
+  writeFileSync(join(vendor, patch), readFileSync(join(installedVendor, patch)));
+  const expected = { nativePatchSha256: pins.nativePatchSha256, upstream: pins.sha256 };
+  assert.deepEqual(srtWinBuildInputDigests(vendor), expected);
+  retainUpstreamSrtWinInputs(vendor, Object.keys(TARGETS));
+  assert.deepEqual(srtWinBuildInputDigests(vendor), expected);
+  writeFileSync(join(vendor, "srt-win", "x64", "upstream-srt-win.exe"), "changed");
+  assert.throws(() => srtWinBuildInputDigests(vendor), /upstream-integrity-mismatch/);
+  rmSync(join(vendor, patch));
+  assert.throws(() => srtWinBuildInputDigests(vendor), /integrity-mismatch/);
 });
 test("source archive is independently hash pinned to an immutable revision", () => {
   assert.equal(pins.source.revision, "626a59671ee2be556d70a290a8036224be996193");

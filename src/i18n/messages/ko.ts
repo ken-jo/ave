@@ -1171,6 +1171,7 @@ export const ko: Record<MessageCatalogKey, string> = {
 
   // be_scriptHookRunner
   "be_scriptHookRunner.containedSettleDeadline": "훅의 격리 프로세스가 {ms} ms 안에 끝나지 않았습니다. 종료가 확인되지 않는 동안 샌드박스 자원을 유지합니다({code})",
+  "be_scriptHookRunner.terminationUnverified": "훅의 전체 프로세스 종료를 확인하지 못했습니다. 관련 자원을 유지합니다 ({code}).",
   "be_scriptHookRunner.containedTerminationUnverified": "훅의 격리 프로세스 종료를 확인하지 못했습니다. 샌드박스 자원을 유지합니다: {detail}({code})",
 
   // be_sessionGoal
@@ -3650,7 +3651,8 @@ export const ko: Record<MessageCatalogKey, string> = {
   "mcpTab.apiKeyWriteOnlyLabel": "API 키 (저장 전용)",
   "mcpTab.apiKeyPlaceholder": "API 키",
   "mcpTab.commandRequiredLabel": "명령 *",
-  "mcpTab.commandHint": "실행 파일만 입력하거나 전체 명령줄을 입력해도 자동 분리됩니다.",
+  "mcpTab.commandRelativePath": "절대 경로나 PATH에 있는 프로그램 이름을 사용하세요.",
+  "mcpTab.commandHint": "실행 파일만 입력하거나 전체 명령줄을 입력해도 자동 분리됩니다. 절대 경로나 PATH에 있는 프로그램 이름을 사용하세요.",
   "mcpTab.argsLabel": "Args (추가 인자)",
   "mcpTab.envWriteOnlyLabel": "환경 변수 (KEY=value, 저장 전용)",
   "mcpTab.urlRequiredLabel": "URL *",
@@ -4221,6 +4223,9 @@ export const ko: Record<MessageCatalogKey, string> = {
   "permissionsTab.homePrivacyFixSystemRoot": "SystemRoot 환경 변수가 Windows 폴더를 가리키는지 확인한 뒤 Ave를 다시 시작하세요.",
   "permissionsTab.homePrivacyFixIdentity": "Ave를 다시 시작하세요. 문제가 계속되면 본인 Windows 계정으로 로그인했는지 확인하세요.",
   "permissionsTab.homePrivacyFixPermissions": "폴더 권한을 수정한 뒤 Ave를 다시 시작하세요.",
+  "permissionsTab.homePrivacyFixHelperUnavailable": "Ave를 다시 시작하세요. 문제가 계속되면 Ave를 다시 설치하세요.",
+  "permissionsTab.homePrivacyShellAsk": "셸 명령은 한 번 또는 이 세션 동안의 승인을 요청합니다.",
+  "permissionsTab.homePrivacyShellDenied": "Ave를 다시 시작할 때까지 셸 명령과 훅은 꺼져 있습니다.",
   "permissionsTab.homeFolderRefusedSessionOnly": "이번 세션에만 적용됩니다. 내 계정만 Ave 폴더를 바꿀 수 있는지 확인하지 못해 설정을 저장하지 않았습니다. 폴더 권한을 수정한 뒤 Ave를 다시 시작하세요.",
   "permissionsTab.homePrivacyFixReparsePoint": "Ave는 링크를 거쳐 권한을 바꾸지 않습니다. AVE_HOME이 실제 디렉터리를 가리키게 한 뒤 Ave를 다시 시작하세요.",
   "permissionsTab.homePrivacyFixBoundaryLink": "링크나 정션을 실제 디렉터리로 바꾸세요. Ave 홈 자체, 그 상위 폴더, 바로 아래 항목 모두 해당합니다. 그런 다음 Ave를 다시 시작하세요.",
@@ -4262,12 +4267,13 @@ export const ko: Record<MessageCatalogKey, string> = {
   "permissionsTab.homePrivacyIdentityFailed": "현재 계정의 SID를 확인할 수 없음",
   "permissionsTab.homePrivacyIcaclsFailed": "디렉터리 권한 설정 명령 실패",
   "permissionsTab.homePrivacyReadBackFailed": "디렉터리 DACL을 다시 읽을 수 없음",
+  "permissionsTab.homePrivacyHelperUnavailable": "Ave의 폴더 권한 검사 도구가 시작되지 않았거나 제시간에 응답하지 않아 폴더를 검사하지 못함",
   "permissionsTab.homePrivacyNotProtected": "디렉터리 DACL의 권한 상속이 차단되지 않음",
   "permissionsTab.homePrivacyInvalidOwnerGrant": "현재 사용자만 접근하는 상속 가능한 필수 권한 항목이 없음",
   "permissionsTab.homePrivacyOwnerClaimFailed": "Administrators 소유 디렉터리의 소유권을 가져올 수 없음. Ave를 한 번 관리자 권한으로 실행하거나 디렉터리 소유자를 수정하세요",
   "permissionsTab.homePrivacyReparsePoint": "디렉터리가 링크 또는 정션이라 권한을 바꾸지 않음",
-  "permissionsTab.homePrivacyBoundaryLink": "Ave 홈 또는 그 경계(홈 자체, 상위 폴더, 바로 아래 항목)가 링크, 정션 또는 다른 재분석 지점이라 샌드박스가 그 안의 읽기를 차단할 수 없고, 셸 명령은 한 번 또는 이 세션 동안의 승인을 요청함",
-  "permissionsTab.homePrivacyBoundaryUnlisted": "Ave 홈 또는 그 경계를 확인할 수 없어(내용을 나열하거나 고정할 수 없음, 항목이 사라짐, 홈이 디렉터리가 아님) 샌드박스가 그 안의 읽기를 차단할 수 없고, 셸 명령은 한 번 또는 이 세션 동안의 승인을 요청함",
+  "permissionsTab.homePrivacyBoundaryLink": "Ave 홈 또는 그 경계(홈 자체, 상위 폴더, 바로 아래 항목)가 링크, 정션 또는 다른 재분석 지점이라 샌드박스가 그 안의 읽기를 차단할 수 없음",
+  "permissionsTab.homePrivacyBoundaryUnlisted": "Ave 홈 또는 그 경계를 확인할 수 없어(내용을 나열하거나 고정할 수 없음, 항목이 사라짐, 홈이 디렉터리가 아님) 샌드박스가 그 안의 읽기를 차단할 수 없음",
   "permissionsTab.homePrivacyExtraPrincipals": "다른 주체의 접근 항목이 남아 있음: {principals}. 해당 항목을 제거하거나 AVE_HOME을 옮기세요",
   "permissionsTab.homePrivacyWorkspaceExtraPrincipals": "다른 계정이 Ave 작업 폴더에 쓸 수 있음: {principals}. 해당 항목을 제거하세요",
   "permissionsTab.osSandboxWindowsInstallFailedUnexpected": "Windows 샌드박스 설정이 예상하지 못한 오류로 중단되었고 아무것도 확인되지 않았습니다. 자세한 내용은 Ave 로그(진단 → 최근 로그)에 기록되어 있습니다. 재설정하거나 Ave를 재시작하세요.",
@@ -4381,7 +4387,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "permissionsTab.osSandboxWindowsMxcReasonUnsupportedArch": "이 프로세서 아키텍처는 지원되지 않습니다",
   "permissionsTab.osSandboxWindowsMxcReasonBinaryMissing": "설치본에 컨테이너 실행기가 없습니다. Ave 를 다시 설치하세요",
   "permissionsTab.osSandboxWindowsMxcReasonProbeFailed": "컨테이너 실행기가 이 PC 를 확인하지 못했습니다",
-  "permissionsTab.osSandboxWindowsMxcReasonTierUnsupported": "이 Windows 버전은 Ave 에 필요한 컨테이너 격리를 제공하지 않습니다. Windows 11 을 업데이트하세요",
+  "permissionsTab.osSandboxWindowsMxcReasonContainerUnavailable": "이 PC 는 Ave 에 필요한 컨테이너 격리를 제공하지 못합니다. Windows 11 을 업데이트하면 지원될 수 있습니다",
   "permissionsTab.osSandboxWindowsMxcReasonRequestRejected": "이 Windows 버전은 컨테이너의 네트워크를 Ave 프록시로 보낼 수 없습니다. Windows 11 을 업데이트하세요",
   "permissionsTab.osSandboxWindowsMxcReasonLauncherMismatch": "설치본의 컨테이너 실행기가 예상한 빌드가 아닙니다. Ave 를 다시 설치하세요",
   "permissionsTab.osSandboxWindowsMxcReasonPowershellStartFailed": "이 PC 에서는 Windows PowerShell 이 컨테이너 안에서 시작되지 않았습니다",
@@ -5173,8 +5179,9 @@ export const ko: Record<MessageCatalogKey, string> = {
 
   // shellExecution
   "shellExecution.blocked": "현재 실행 계획에서는 셸을 실행할 수 없습니다.",
+  "shellExecution.homePrivacyHelperUnavailable": "시작할 때 Ave가 홈 폴더 보호를 확인하지 못해 셸 명령과 훅이 꺼져 있습니다. Ave를 다시 시작하세요. 문제가 계속되면 Ave를 다시 설치하세요.",
   "shellExecution.sandboxUnavailable": "OS 샌드박스가 켜져 있지만 사용할 수 없어, 셸 명령이 샌드박스 없이 일반 권한 규칙에 따라 실행됩니다.",
-  "shellExecution.boundaryUnverifiedAsk": "Ave 홈 경계를 확인할 수 없어, 셸 명령은 승인한 뒤에만 OS 샌드박스 없이 실행됩니다. 한 번만 승인하거나, 경계를 확인할 수 없는 동안 이 세션의 이후 셸 명령과 훅에 대한 샌드박스 승인을 면제할 수 있습니다. 다른 권한 검사는 계속 적용되며 다시 승인을 요청할 수 있습니다.",
+  "shellExecution.boundaryUnverifiedAsk": "시작할 때 Ave 홈 보호를 확인할 수 없어, 셸 명령은 승인한 뒤에만 OS 샌드박스 없이 실행됩니다. 한 번만 승인하거나, 홈 보호를 확인할 수 없는 동안 이 세션의 이후 셸 명령과 훅에 대한 샌드박스 승인을 면제할 수 있습니다. 다른 권한 검사는 계속 적용되며 다시 승인을 요청할 수 있습니다.",
   "shellExecution.sandboxUnavailableAsk": "OS 샌드박스가 켜져 있지만 사용할 수 없어, 셸 명령은 승인한 뒤에만 샌드박스 없이 실행됩니다. 한 번만 승인하거나, 샌드박스를 사용할 수 없는 동안 이 세션의 이후 셸 명령과 훅에 대한 샌드박스 승인을 면제할 수 있습니다. 다른 권한 검사는 계속 적용되며 다시 승인을 요청할 수 있습니다.",
   "shellExecution.location": "실행 위치: 현재 호스트({platform}).",
   "shellExecution.temporaryHome": "셸 HOME과 설정: 명령마다 임시 공간을 사용하며 사용자 로그인 프로필은 읽지 않습니다.",

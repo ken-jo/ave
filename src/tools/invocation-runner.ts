@@ -19,7 +19,7 @@ import { resolveToolPathForPermission } from "../shared/tool-path-resolution.js"
 import { areProjectWriteTargetsInside } from "./project-write-scope.js";
 import { prepareVerifiedShellCommand, type VerifiedShellCommand } from "../permissions/verified-shell-command.js";
 import { isPowerShellStartupPinned } from "../shared/powershell-startup-policy.js";
-import { prepareShellInvocation, preparedShellFacts, bindPreparedShellExecutableReadPaths, disposePreparedShellInvocation, type PreparedShellInvocation } from "./prepared-shell-invocation.js";
+import { hostShellAnalysisFacts, prepareShellInvocation, preparedShellFacts, bindPreparedShellExecutableReadPaths, disposePreparedShellInvocation, type PreparedShellInvocation } from "./prepared-shell-invocation.js";
 import { resolveHostShellWorkingDirectory } from "../permissions/host-shell-execution-permit.js";
 import { randomUUID } from "node:crypto";
 import { isStagedTurnSource } from "../shared/staged-origins.js";
@@ -101,8 +101,10 @@ import {
 } from "../permissions/sandbox-capability.js";
 import {
   getHostShellExecutionPlanAuditProjection,
+  isHomePrivacyHelperUnavailablePlan,
   parseHostShellExecutionInput,
   requiresExplicitHostShellApproval,
+  requiresUnsandboxedShellAsk,
   type HostShellExecutionPlanAuditProjection,
 } from "../permissions/host-shell-execution-plan.js";
 import {
@@ -1276,7 +1278,12 @@ async function runToolInvocationAttempt(
     const hostTerminalCommand = isCanonicalTerminalRunTool(tool) && approvalMemory.kind === "key"
       && approvalMemory.scope.kind === "terminal-command" && approvalMemory.scope.lane === "manual" && typeof finalInput.command === "string"
       ? { command: finalInput.command, cwd: approvalMemory.scope.physicalCwd } : undefined;
-    if (hostTerminalCommand !== undefined) {
+    // The agent's command is a host shell under the boot privacy floor: the permission check gets the host plan only when it carries that floor.
+    const hostTerminalPlan = hostTerminalCommand === undefined ? undefined : getHostShellExecutionPlan("host");
+    const hostTerminalFloorPlan = hostTerminalPlan !== undefined
+      && (isHomePrivacyHelperUnavailablePlan(hostTerminalPlan) || requiresUnsandboxedShellAsk(hostTerminalPlan)) ? hostTerminalPlan : undefined;
+    // A blocked plan has no host route to seal; its denial is decided below, and the tool types nothing without a sealed route.
+    if (hostTerminalCommand !== undefined && !isHomePrivacyHelperUnavailablePlan(hostTerminalFloorPlan)) {
       const buildHostTerminalRoute = async () => {
         const router = await import("../permissions/execution-router.js");
         const broker = await acquireConfiguredBrokerCapability();
@@ -1492,7 +1499,7 @@ async function runToolInvocationAttempt(
         agentBrowser: agentBrowserScopeOf(tool, approvalMemory),
         ...(terminalScope?.lane === "manual" ? { hostTerminalTurn: terminalScope, trustOrigin: invocationPermissionContext.trustOrigin } : {}),
         ...(invocationCategory === "read" && blockReadsOutsideWorkingDirectories ? { admissionDenial: { code: "read-boundary", reason: "This read is outside the configured allowed directories." } } : {}),
-        ...(invocationCategory === "shell" ? { ...(shellSubject ? { ruleSubject: shellSubject } : {}), hostShellExecutionPlan,
+        ...(invocationCategory === "shell" ? { ...(shellSubject ? { ruleSubject: shellSubject } : {}), hostShellExecutionPlan: hostShellExecutionPlan ?? hostTerminalFloorPlan,
           shellEscalated: true,
           shellExecution: { runsSandboxed: hostShellExecutionPlan !== undefined && isConfinedHostShellExecution(hostShellExecutionPlan, disposableSubstrate),
             ...(isCanonicalBashTool(tool) && preparedShellInvocation !== undefined && hostShellExecutionPlan?.substrate !== "mxc"
@@ -1956,8 +1963,9 @@ async function runToolInvocationAttempt(
     if ((hostShellToolName === "bash" || hostShellToolName === "powershell") && hostShellExecutionPlan !== undefined
       && hostShellExecutionPlan.substrate !== "mxc" && invocationPermissionContext.disposableSubstrate === undefined
       && !brokeredHostShellRouteSelected() && typeof finalInput.command === "string") {
-      verifiedShellCommand = prepareVerifiedShellCommand({ command: finalInput.command, dialect: hostShellToolName,
-        cwd: resolveHostShellWorkingDirectory(executionCwd, typeof finalInput.cwd === "string" ? finalInput.cwd : undefined) }, hostShellExecutionPlan);
+      verifiedShellCommand = await prepareVerifiedShellCommand({ command: finalInput.command, dialect: hostShellToolName,
+        cwd: resolveHostShellWorkingDirectory(executionCwd, typeof finalInput.cwd === "string" ? finalInput.cwd : undefined) }, hostShellExecutionPlan, abortSignal);
+      if (abortSignal?.aborted) return withHostShellExecutionPlan(await returnUserAbort(abortDeps(finalInput)));
     }
 
     // A broker capability names a Linux guest namespace. Host shell discovery,
@@ -2020,7 +2028,7 @@ async function runToolInvocationAttempt(
             : finalInput;
           shellPathViolation = shellPathPolicyViolation(
             pathPolicyInput, executionCwd, invocationRuntimeAllowedDirectories, blockReadsOutsideWorkingDirectories,
-            preparedShellInvocation ? preparedShellFacts(preparedShellInvocation) : undefined,
+            hostShellAnalysisFacts(preparedShellInvocation, hostShellExecutionPlan),
           );
         }
         if (!shellPathViolation) break;
@@ -2156,7 +2164,7 @@ async function runToolInvocationAttempt(
       services.bashAstValidator &&
       executionRoutePlan?.disposableCapability?.kind !== "workload-broker"
     ) {
-      const bashResult = services.bashAstValidator.validate(toolUse.name, finalInput, preparedShellInvocation ? { cwd: executionCwd, facts: preparedShellFacts(preparedShellInvocation) } : undefined);
+      const bashResult = services.bashAstValidator.validate(toolUse.name, finalInput, preparedShellInvocation ? { cwd: executionCwd, facts: hostShellAnalysisFacts(preparedShellInvocation, hostShellExecutionPlan) } : undefined);
       if (bashResult.decision === "deny") {
         const msg = t("be_executor.bashAstBlock", { reason: bashResult.reason ?? "", patternId: bashResult.patternId ?? "" })
           + buildPolicyDenialGuidance({
@@ -2456,7 +2464,7 @@ async function runToolInvocationAttempt(
       approvalReasonPrefix,
       overlayTriggerOrigin,
       hostShellRequiresExplicitApproval,
-      hostShellExecutionPlan,
+      hostShellExecutionPlan: hostShellExecutionPlan ?? hostTerminalFloorPlan,
       hostShellExecutionPlanAudit,
       hostShellPathPolicyRelaxations: executionRoutePathPolicyRelaxations,
       hostShellExecutionPermitBinding,

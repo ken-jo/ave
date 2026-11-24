@@ -1,6 +1,12 @@
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
+// The platform is simulated, so plain-start PATH lookups are pinned by name rather than run against this host.
+vi.mock("../../shared/host-program-path.js", async (original) => ({
+  ...await original<typeof import("../../shared/host-program-path.js")>(),
+  findHostProgram: (name: string) => `C:/resolved/${name}`,
+  resolveHostProgram: (name: string) => `C:/resolved/${name}`,
+}));
 vi.mock("../sandbox-process-home.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedSandboxProcessHome(await original()));
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";

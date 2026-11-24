@@ -1,5 +1,8 @@
 import { strict as assert } from "node:assert";
 import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "vitest";
 import { BashAstValidator } from "../bash-ast-validator.js";
 
@@ -273,5 +276,29 @@ describe("BashAstValidator — bash 도구 이름 매칭", () => {
   it("exec tool → validated", () => {
     const r = validator.validate("exec", makeInput("eval $X"));
     assert.equal(r.decision, "deny");
+  });
+});
+
+describe("BashAstValidator — cd fallback", () => {
+  it("walks that fallback on an unsandboxed host, where the cd can still fail", () => {
+    const cwd = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-validator-cd-")));
+    try {
+      mkdirSync(join(cwd, "sub"));
+      const r = new BashAstValidator().validate("bash", makeInput("cd sub || sudo ls"), { cwd, facts: { dialect: "bash", environment: {}, hostCdFaults: true } });
+      assert.equal(r.decision, "deny");
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not walk the fallback of a cd whose destination exists off the host route", () => {
+    const cwd = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-validator-cd-")));
+    try {
+      mkdirSync(join(cwd, "sub"));
+      const r = new BashAstValidator().validate("bash", makeInput("cd sub || sudo ls"), { cwd, facts: { dialect: "bash", environment: {} } });
+      assert.equal(r.decision, "allow");
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
   });
 });

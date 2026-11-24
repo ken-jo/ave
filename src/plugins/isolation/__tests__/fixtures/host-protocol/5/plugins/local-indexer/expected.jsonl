@@ -7,7 +7,7 @@
 {"frame":{"id":2,"jsonrpc":"2.0","result":"/Volumes/share"},"from":"host"}
 {"frame":{"id":3,"jsonrpc":"2.0","method":"ai.agent-connector.ave/host/resolveApiKey","params":{"_meta":{"ai.agent-connector.ave/invocation":"<uuid-3>"},"opts":{"purpose":"embedding","vendor":"openai"}}},"from":"child"}
 {"frame":{"id":3,"jsonrpc":"2.0","result":{"baseUrl":"https://api.example.com/v1","exposure":"lease","handleId":"lease_golden","ok":true,"vendor":"openai"}},"from":"host"}
-{"frame":{"id":4,"jsonrpc":"2.0","method":"ai.agent-connector.ave/host/spawnWorker","params":{"_meta":{"ai.agent-connector.ave/invocation":"<uuid-3>"},"spec":{"args":["-u","worker.py"],"command":"/usr/bin/python3","control":"stdio-control-v1","stateDirectory":true,"workerId":"indexer"}}},"from":"child"}
+{"frame":{"id":4,"jsonrpc":"2.0","method":"ai.agent-connector.ave/host/spawnWorker","params":{"_meta":{"ai.agent-connector.ave/invocation":"<uuid-3>"},"spec":{"args":["-u","worker.py"],"command":"python3","control":"stdio-control-v1","stateDirectory":true,"workerId":"indexer"}}},"from":"child"}
 {"frame":{"id":4,"jsonrpc":"2.0","result":{"control":"stdio-control-v1","handleId":"<uuid-4>","pid":4242}},"from":"host"}
 {"frame":{"jsonrpc":"2.0","method":"notifications/ai.agent-connector.ave/subscription/send","params":{"payload":{"id":0,"kind":"request","method":"index_status","params":{"scope":"all"}},"subscriptionId":"<uuid-4>"}},"from":"child"}
 {"frame":{"jsonrpc":"2.0","method":"notifications/ai.agent-connector.ave/subscription","params":{"payload":{"id":0,"kind":"result","result":{"echoed":"index_status","params":{"scope":"all"}}},"subscriptionId":"<uuid-4>"}},"from":"host"}

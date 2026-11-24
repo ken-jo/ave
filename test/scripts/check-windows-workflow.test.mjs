@@ -2,23 +2,29 @@ import assert from "node:assert/strict";
 import childProcess from "node:child_process";
 import { readFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
+import { fileURLToPath } from "node:url";
 import { it } from "node:test";
 import { parse, stringify } from "yaml";
 import { windowsTestCommands } from "../../scripts/run-windows-test-list.mjs";
 import { COMMAND_LINE_BUDGET_CHARS, commandLineLength } from "../../scripts/hooks/spawn-command.mjs";
-import { checkWindowsWorkflow, directCommandProblems, powerShellCommandProblems, windowsRunSteps } from "../../.github/scripts/check-windows-workflow.mjs";
+import { collectedVitestFiles } from "../../scripts/lib/vitest-collection.mjs";
+import {
+  checkHelperExecutionOrder, checkWindowsWorkflow, directCommandProblems, powerShellCommandProblems, windowsRegressionSuites, windowsRunSteps,
+} from "../../.github/scripts/check-windows-workflow.mjs";
 
 const workflow = readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8");
 
 it("runs the workflow guard before any Windows test commands", () => {
-  const steps = parse(workflow).jobs["windows-permission-tests"].steps;
-  const guard = steps.findIndex(step => step.name === "Validate Windows workflow commands");
-  const firstTest = steps.findIndex(step => /(?:\bbun run test|\bnode scripts\/test-|\s--test\s|run-windows-test-list)/u.test(step.run ?? ""));
-  assert.ok(firstTest >= 0);
-  assert.ok(guard >= 0 && guard < firstTest);
-  assert.equal(steps[guard].if, steps[firstTest].if);
-  assert.equal(steps[guard]["continue-on-error"], undefined);
-  assert.equal(steps[guard].run, "node .github/scripts/check-windows-workflow.mjs");
+  for (const job of ["windows-native-preparation", "windows-permission-tests"]) {
+    const steps = parse(workflow).jobs[job].steps;
+    const guard = steps.findIndex(step => step.name === "Validate Windows workflow commands");
+    const firstTest = steps.findIndex(step => /(?:\bbun run test|\bnode scripts\/test-|\s--test\s|run-windows-test-list)/u.test(step.run ?? ""));
+    assert.ok(firstTest >= 0);
+    assert.ok(guard >= 0 && guard < firstTest);
+    assert.equal(steps[guard].if, steps[firstTest].if);
+    assert.equal(steps[guard]["continue-on-error"], undefined);
+    assert.equal(steps[guard].run, "node .github/scripts/check-windows-workflow.mjs");
+  }
 });
 
 it("keeps the Windows direct test commands together and off bare path lines", () => {
@@ -43,7 +49,7 @@ it("rejects job-root test commands that run outside the containment launcher", (
   const commands = [
     "bun run test:scripts",
     "bun run test:vitest -- src/example.test.ts",
-    "bun run scripts/run-windows-test-list.mjs config/windows-permission-tests.txt",
+    "bun run scripts/run-windows-test-list.mjs",
     "node scripts/test-windows-job.mjs",
     "node --import ./scripts/lib/document-consumer-guard.mjs --test test/scripts/example.test.mjs",
     "node scripts/build-srt-win.mjs --test-native",
@@ -99,23 +105,36 @@ it("keeps every Windows run scalar within the workflow limit", () => {
   assert.deepEqual(oversized, []);
 });
 
-it("routes the permission and native inventories through bounded batches", () => {
+it("routes every collected suite through one bounded shard step", () => {
   const { steps } = parse(workflow).jobs["windows-permission-tests"];
-  for (const [name, inventory] of [
-    ["Run Windows permission regressions", "config/windows-permission-tests.txt"],
-    ["Run Windows native import regressions", "config/windows-native-tests.txt"],
-  ]) {
-    const step = steps.find(entry => entry.name === name);
-    assert.equal(step.run, `node .github/scripts/run-in-job.mjs bun run scripts/run-windows-test-list.mjs ${inventory}`);
-    assert.equal(step.env.UV_PYTHON_CACHE_DIR, `\${{ runner.temp }}/python-archives`);
-    const list = readFileSync(new URL(`../../${inventory}`, import.meta.url), "utf8");
-    const batches = windowsTestCommands(list);
-    assert.ok(batches.length > 2);
-    for (const args of batches) assert.ok(commandLineLength("bun.exe", args) <= COMMAND_LINE_BUDGET_CHARS);
-    assert.deepEqual(batches.slice(1).flatMap(args => args.slice(4)),
-      [...new Set(list.trim().split(/\r?\n/u))].map(file => `./${file}`));
-  }
+  const regressions = steps.filter(entry => /^Run Windows .*regressions$/u.test(entry.name ?? ""));
+  assert.deepEqual(regressions.map(step => step.name), ["Run Windows regressions"]);
+  const [step] = regressions;
+  assert.equal(step.run, "node .github/scripts/run-in-job.mjs bun run scripts/run-windows-test-list.mjs");
+  assert.equal(step.env.AVE_WINDOWS_TEST_PLAN, `\${{ runner.temp }}/windows-ci/windows-plan.json`);
+  assert.equal(step.env.UV_PYTHON_CACHE_DIR, `\${{ runner.temp }}/python-archives`);
+  const root = fileURLToPath(new URL("../..", import.meta.url));
+  const suites = windowsRegressionSuites(workflow, root);
+  assert.deepEqual(suites, collectedVitestFiles(root));
+  const batches = windowsTestCommands(suites);
+  assert.ok(batches.length > 2);
+  for (const args of batches) assert.ok(commandLineLength("bun.exe", args) <= COMMAND_LINE_BUDGET_CHARS);
+  assert.deepEqual(batches.slice(1).flatMap(args => args.slice(4)), suites.map(file => `./${file}`));
 });
+
+for (const [name, change] of [
+  ["a committed list argument", (_steps, get) => { get("Run Windows regressions").run += " config/windows-native-tests.txt"; }],
+  ["a second regression step", (steps, get) => {
+    const step = get("Run Windows regressions");
+    steps.splice(steps.indexOf(step), 0, { ...step, name: "Run Windows native import regressions" });
+  }],
+  ["a renamed regression step", (_steps, get) => { get("Run Windows regressions").name = "Run Windows permission regressions"; }],
+]) {
+  it(`rejects ${name} in place of the all-suites shard step`, () => {
+    const changed = changedWorkflow(change, "windows-permission-tests");
+    assert.throws(() => checkWindowsWorkflow(changed, parsedLines), /must run every collected suite through one Run Windows regressions step/);
+  });
+}
 
 it("uses the configured edition, its aliases, and the enclosing function scopes", () => {
   const steps = [
@@ -158,23 +177,27 @@ async function containedManifest(steps) {
 }
 const CONDITION = "steps.docs-impact.outputs.docs_only != 'true'";
 
-it("derives one receipt per contained workflow invocation", async () => {
+it("derives independent receipts for preparation and every shard", async () => {
   const { containedSteps } = await import("../../.github/scripts/check-windows-workflow.mjs");
-  const manifest = containedSteps(workflow);
-  assert.deepEqual(manifest.map(({ id }) => id), [
-    "verify-native-background-process-ownership-1",
-    "verify-both-windows-native-payload-packages-1", "verify-both-windows-native-payload-packages-2",
-    "verify-windows-folder-classification-1",
-    "build-and-test-patched-windows-sandbox-helper-1", "build-and-test-patched-windows-sandbox-helper-2",
-    "run-script-tests-1", "run-windows-appearance-regressions-1", "run-windows-session-persistence-regressions-1",
-    "run-windows-permission-regressions-1", "run-windows-native-import-regressions-1",
-    "run-native-workbook-and-control-file-confinement-1",
-  ]);
-  const lines = windowsRunSteps(workflow).filter(({ jobId }) => jobId === "windows-permission-tests")
-    .flatMap(({ lines }) => lines).filter(line => line.includes("run-in-job.mjs"))
-    .map(line => line.trim().replace("node .github/scripts/run-in-job.mjs ", ""));
-  assert.deepEqual(manifest.map(({ invocation }) => invocation), lines);
-  for (const { id, receipt } of manifest) assert.equal(receipt, `${id}.receipt`);
+  const expected = {
+    "windows-native-preparation": [
+      "verify-native-background-process-ownership-1",
+      "verify-both-windows-native-payload-packages-1", "verify-both-windows-native-payload-packages-2",
+      "verify-windows-folder-classification-1",
+      "build-and-test-patched-windows-sandbox-helper-1", "build-and-test-patched-windows-sandbox-helper-2",
+      "run-script-tests-1",
+    ],
+    "windows-permission-tests": ["run-windows-regressions-1"],
+  };
+  for (const [job, ids] of Object.entries(expected)) {
+    const manifest = containedSteps(workflow, job);
+    assert.deepEqual(manifest.map(({ id }) => id), ids);
+    const lines = windowsRunSteps(workflow).filter(({ jobId }) => jobId === job)
+      .flatMap(({ lines }) => lines).filter(line => line.includes("run-in-job.mjs"))
+      .map(line => line.trim().replace("node .github/scripts/run-in-job.mjs ", ""));
+    assert.deepEqual(manifest.map(({ invocation }) => invocation), lines);
+    for (const { id, receipt } of manifest) assert.equal(receipt, `${id}.receipt`);
+  }
 });
 
 for (const [name, steps, expected] of [
@@ -195,9 +218,9 @@ for (const [name, steps, expected] of [
   });
 }
 
-function changedWorkflow(change) {
+function changedWorkflow(change, job = "windows-native-preparation") {
   const parsed = parse(workflow);
-  const { steps } = parsed.jobs["windows-permission-tests"];
+  const { steps } = parsed.jobs[job];
   change(steps, name => steps.find(entry => entry.name === name));
   return stringify(parsed);
 }
@@ -236,6 +259,7 @@ it("accepts the workflow's contained commands and stated exemptions from parsed 
 const EXEMPTIONS = [
   "bun install --frozen-lockfile",
   "node .github/scripts/check-windows-workflow.mjs",
+  ...["key", "restore", "seal", "verify-installed", "verify-publication"].map(operation => `node .github/scripts/windows-preparation-cache.mjs ${operation}`),
   "node scripts/fetch-uv.mjs",
   "node .github/scripts/python-archive-cache.mjs",
   ...["", " -FailureFixture", " -QueryFailureFixture", " -Helper path-kind"]
@@ -248,6 +272,7 @@ const EXEMPTIONS = [
   "& './node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/x64/srt-win.exe' user status",
   "ConvertFrom-Json",
   "node .github/scripts/python-download-mirror.mjs",
+  "node .github/scripts/restore-windows-ci-inputs.mjs",
   "node ave/.github/scripts/isolate-job-home.mjs --cleanup",
 ];
 const containedStep = run => [{ name: "example", shell: "powershell", run, contained: true }];
@@ -279,7 +304,7 @@ for (const [name, change, expected] of [
   }, "manifest step early-1 is not exactly one contained command after job-root setup"],
 ]) {
   const rejects = inspect => () => assert.throws(() => checkWindowsWorkflow(changedWorkflow(change), inspect),
-    error => error.message.split("\n").includes(`windows-permission-tests: ${expected}`) || assert.fail(error.message));
+    error => error.message.split("\n").includes(`windows-native-preparation: ${expected}`) || assert.fail(error.message));
   it(`rejects ${name} in the contained job`, realParser, rejects());
   it(`rejects ${name} in the contained job from parsed lines`, rejects(parsedLines));
 }
@@ -316,3 +341,199 @@ it("rejects a second bare test command on a contained line", () => {
     step("Run script tests").run = "node .github/scripts/run-in-job.mjs bun run test:scripts; bun run test:scripts";
   })), /contained invocation needs plain single-spaced arguments: bun run test:scripts; bun run test:scripts/);
 });
+
+it("rejects dropping a shard or its shard ID", () => {
+  const parsed = parse(workflow);
+  const job = parsed.jobs["windows-permission-tests"];
+  job.strategy.matrix.shard.pop();
+  assert.throws(() => checkWindowsWorkflow(stringify(parsed), parsedLines), /must run every contained shard/);
+  job.strategy.matrix.shard.push(3);
+  delete job.env.AVE_WINDOWS_TEST_SHARD;
+  assert.throws(() => checkWindowsWorkflow(stringify(parsed), parsedLines), /must run every contained shard/);
+});
+
+it("rejects reusing shard one for every regression step", () => {
+  const changed = changedWorkflow(steps => {
+    for (const step of steps.filter(step => step.run?.includes("run-windows-test-list.mjs"))) {
+      step.env.AVE_WINDOWS_TEST_SHARD = "1";
+    }
+  }, "windows-permission-tests");
+  assert.throws(() => checkWindowsWorkflow(changed, parsedLines), /must inherit the matrix shard ID/);
+});
+
+for (const plan of [undefined, "config/alternate.json"]) {
+  it(`rejects a regression step with a changed plan binding (${plan})`, () => {
+    const changed = changedWorkflow((_steps, get) => {
+      const { env } = get("Run Windows regressions");
+      if (plan === undefined) delete env.AVE_WINDOWS_TEST_PLAN;
+      else env.AVE_WINDOWS_TEST_PLAN = plan;
+    }, "windows-permission-tests");
+    assert.throws(() => checkWindowsWorkflow(changed, parsedLines), /must use the matrix plan artifact/);
+  });
+}
+
+it("rejects a contained test step allowed to fail", () => {
+  const changed = changedWorkflow((_steps, get) => {
+    get("Run Windows regressions")["continue-on-error"] = true;
+  }, "windows-permission-tests");
+  assert.throws(() => checkWindowsWorkflow(changed, parsedLines), /contained Windows failures must fail the job/);
+});
+
+it("rejects a matrix test after the launcher wrapper is removed", () => {
+  const changed = changedWorkflow((_steps, get) => {
+    const step = get("Run Windows regressions");
+    step.run = step.run.replace(`${WRAPPER} `, "");
+  }, "windows-permission-tests");
+  assert.throws(() => checkWindowsWorkflow(changed, parsedLines), /must run every collected suite through one Run Windows regressions step/);
+});
+
+it("builds and checks shared native inputs once, before any shard provisions its account", () => {
+  const { jobs } = parse(workflow);
+  const before = jobs["windows-native-preparation"].steps;
+  const after = jobs["windows-permission-tests"].steps;
+  for (const name of ["Verify both Windows native payload packages", "Build and test patched Windows sandbox helper", "Prepare authenticated interpreter mirror"]) {
+    assert.equal(before.filter(step => step.name === name).length, 1);
+    assert.equal(after.some(step => step.name === name), false);
+  }
+  const initialize = after.findIndex(step => step.name === "Verify and configure the shared test inputs");
+  const provision = after.findIndex(step => step.name === "Provision sandbox for native permission tests");
+  assert.ok(initialize >= 0 && initialize < provision);
+  for (const name of ["windows-native-helpers", "windows-interpreter-mirror"]) {
+    const upload = before.find(step => step.with?.name === name);
+    const download = after.find(step => step.with?.name === name);
+    assert.match(upload.uses, /^actions\/upload-artifact@/);
+    assert.equal(upload.with["if-no-files-found"], "error");
+    assert.match(download.uses, /^actions\/download-artifact@/);
+    assert.ok(after.indexOf(download) < initialize);
+  }
+});
+
+it("rejects either Windows job bypassing the native platform gate", () => {
+  for (const job of ["windows-native-preparation", "windows-permission-tests"]) {
+    const parsed = parse(workflow);
+    parsed.jobs[job].if = "needs.build.outputs.docs_only == 'false'";
+    assert.throws(() => checkWindowsWorkflow(stringify(parsed), parsedLines), /must follow native platform selection/);
+  }
+});
+
+it("rehashes the installed helpers before the first launcher command", () => {
+  const steps = parse(workflow).jobs["windows-native-preparation"].steps;
+  const first = steps.find(step => step.run?.includes("node .github/scripts/run-in-job.mjs "));
+  assert.equal(first.run.trim().split("\n")[0], "node .github/scripts/windows-preparation-cache.mjs verify-installed");
+  for (const mutate of [
+    run => run.split("\n").slice(1).join("\n"),
+    run => `node scripts/fetch-uv.mjs\n${run}`,
+    run => run.replace("if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\n", ""),
+  ]) {
+    assert.throws(() => checkWindowsWorkflow(changedWorkflow((_steps, get) => {
+      const step = get("Verify native background process ownership");
+      step.run = mutate(step.run);
+    }), parsedLines), /first launcher step must rehash/);
+  }
+});
+
+it("runs every restored or cached binary after the job's trust point", () => {
+  const { jobs } = parse(workflow);
+  for (const job of ["windows-native-preparation", "windows-permission-tests"]) checkHelperExecutionOrder(job, jobs[job].steps);
+  const preparation = jobs["windows-native-preparation"].steps;
+  const rehash = preparation.findIndex(step => step.run?.trim().startsWith("node .github/scripts/windows-preparation-cache.mjs verify-installed"));
+  const provision = preparation.findIndex(step => step.name === "Provision sandbox for native permission tests");
+  assert.ok(rehash >= 0 && rehash < provision);
+});
+
+for (const [name, job, change, expected, workflowExpected] of [
+  // r9: the old lock only looked at the first run-in-job line, so this passed.
+  ["the sandbox provisioning above the rehash", "windows-native-preparation", (steps, get) => {
+    const provision = get("Provision sandbox for native permission tests");
+    steps.splice(steps.indexOf(provision), 1);
+    steps.splice(steps.indexOf(get("Verify native background process ownership")), 0, provision);
+  }, /windows-native-preparation: Provision sandbox for native permission tests: executes a restored or cached binary before rehashing the installed helpers/],
+  ["the sandbox provisioning above the helper rebuild", "windows-native-preparation", (steps, get) => {
+    const provision = get("Provision sandbox for native permission tests");
+    steps.splice(steps.indexOf(provision), 1);
+    steps.splice(steps.indexOf(get("Build and test patched Windows sandbox helper")), 0, provision);
+  }, /runs the sandbox helper before this job replaced the cached node_modules copy/],
+  ["a sandbox helper call without its integrity check", "windows-native-preparation", (_steps, get) => {
+    const provision = get("Provision sandbox for native permission tests");
+    provision.run = provision.run.replace("node scripts/check-srt-win-integrity.cjs\n", "");
+  }, /runs the sandbox helper before this job replaced the cached node_modules copy and checked its integrity/],
+  ["a launcher fixture run before the rehash", "windows-native-preparation", (_steps, get) => {
+    const build = get("Build Windows launcher and classification helpers");
+    build.run += "& './resources/windows-job/x64/ave-job-failure.exe' --probe\n";
+  }, /Build Windows launcher and classification helpers: executes a restored or cached binary before rehashing/,
+  // The command allowlist also refuses this uncontained helper call.
+  /command runs outside the job containment launcher: & '\.\/resources\/windows-job\/x64\/ave-job-failure\.exe' --probe/],
+  ["the shard provisioning above the artifact restore", "windows-permission-tests", (steps, get) => {
+    const restore = get("Verify and configure the shared test inputs");
+    steps.splice(steps.indexOf(restore), 1);
+    steps.splice(steps.indexOf(get("Provision sandbox for native permission tests")) + 1, 0, restore);
+  }, /windows-permission-tests: Provision sandbox for native permission tests: executes a restored or cached binary before installing the checked helper artifacts/],
+]) {
+  it(`rejects ${name}`, () => {
+    const changed = parse(changedWorkflow(change, job));
+    assert.throws(() => checkHelperExecutionOrder(job, changed.jobs[job].steps), expected);
+    assert.throws(() => checkWindowsWorkflow(stringify(changed), parsedLines), workflowExpected ?? expected);
+  });
+}
+
+const PUBLICATION_GATE = /requires successful preparation steps through containment cleanup and the final digest check/;
+
+it("publishes only after the preparation steps through cleanup and digest verification succeed", () => {
+  const steps = parse(workflow).jobs["windows-native-preparation"].steps;
+  const seal = steps.findIndex(step => step.name === "Seal Windows preparation outputs");
+  const cleanup = steps.findIndex(step => step.name === "Remove isolated system-volume job directory");
+  const verified = steps.findIndex(step => step.name === "Verify sealed Windows preparation outputs");
+  const save = steps.findIndex(step => step.name === "Save Windows preparation outputs");
+  assert.ok(seal >= 0 && seal < cleanup && cleanup < verified && verified < save);
+  assert.equal(save, steps.length - 1);
+  assert.match(steps[save].if, /^success\(\) && /);
+  assert.ok(steps[verified].if.includes(`steps.${steps[cleanup].id}.outcome == 'success'`));
+  assert.ok(steps[save].if.includes(`steps.${steps[verified].id}.outcome == 'success'`));
+  const publishedDespiteFailure = changedWorkflow((_steps, get) => {
+    const step = get("Verify sealed Windows preparation outputs");
+    step.if = step.if
+      .replace("success() && ", "always() && ")
+      .replace(" && steps.windows-job-cleanup.outcome == 'success'", "");
+  });
+  assert.throws(() => checkWindowsWorkflow(publishedDespiteFailure, parsedLines), PUBLICATION_GATE);
+});
+
+for (const [name, change, expected] of [
+  ["a cache key without the generated manifest", (_steps, get) => {
+    get("Restore Windows preparation outputs").with.key = "windows-preparation";
+  }, /needs a generated input key/],
+  ["a partial fallback cache key", (_steps, get) => {
+    get("Restore Windows preparation outputs").with["restore-keys"] = "ave-windows-preparation-";
+  }, /needs a generated input key/],
+  ["using the output before verification", (steps, get) => {
+    const step = get("Verify Windows preparation outputs or rebuild");
+    steps.splice(steps.indexOf(step), 1);
+    steps.splice(steps.indexOf(get("Verify both Windows native payload packages")) + 1, 0, step);
+  }, /must verify or rebuild before any output is used/],
+  ["skipping a native test on a cache hit", (_steps, get) => {
+    get("Build and test patched Windows sandbox helper").if += " && env.AVE_WINDOWS_PREP_VERIFIED == 'false'";
+  }, /must run its checks on both cold and warm paths/],
+  ["forcing a hit without verification", (_steps, get) => {
+    get("Verify native background process ownership").env = { AVE_WINDOWS_PREP_VERIFIED: "true" };
+  }, /only the Windows preparation verifier/i],
+  ["saving prep outputs from an untrusted ref", (_steps, get) => {
+    get("Save Windows preparation outputs").if = CONDITION;
+  }, PUBLICATION_GATE],
+  ["running more preparation after publishing", steps => {
+    steps.push({ name: "Later check", run: "node late-check.mjs" });
+  }, PUBLICATION_GATE],
+  ["publishing before cleanup completes", (steps, get) => {
+    const save = steps.pop();
+    steps.splice(steps.indexOf(get("Remove isolated system-volume job directory")), 0, save);
+  }, PUBLICATION_GATE],
+  ["publishing without a seal tied to the preparation checks", (_steps, get) => {
+    delete get("Verify sealed Windows preparation outputs").env.AVE_WINDOWS_PREP_SEAL_DIGEST;
+  }, PUBLICATION_GATE],
+  ["binding cache publication to a terminal job result", (_steps, get) => {
+    get("Save Windows preparation outputs").if += " && needs.windows-native-preparation.result == 'success'";
+  }, PUBLICATION_GATE],
+]) {
+  it(`rejects ${name}`, () => {
+    assert.throws(() => checkWindowsWorkflow(changedWorkflow(change), parsedLines), expected);
+  });
+}
