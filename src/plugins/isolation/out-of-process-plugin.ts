@@ -835,7 +835,10 @@ export function createOutOfProcessPluginFactory(
     let withdrawConfinement: (() => void) | undefined;
     try {
       if (spec.prepareMxcChild) {
-        const intent = { pluginId, command: process.execPath, args: [childEntryPath], cwd: context.pluginRoot };
+        // Derived before the planner creates anything, so nothing between its staging and the adapter can strand it.
+        const intent = { pluginId, command: process.execPath, args: [childEntryPath], cwd: context.pluginRoot,
+          baseEnv: buildSafeChildEnv({ ELECTRON_RUN_AS_NODE: "1" }) };
+        const floorPierces = declaredHostDirectoryFloorPierces(spec.manifest.sandbox);
         const launch = await spec.prepareMxcChild({ ...intent, envelope });
         // The incumbent may have begun terminating, or been quarantined, while admission was awaited:
         // recheck synchronously right before spawn (and again after it) through the registration.
@@ -848,8 +851,7 @@ export function createOutOfProcessPluginFactory(
         }, {
           ...intent,
           envelope,
-          floorPierces: declaredHostDirectoryFloorPierces(spec.manifest.sandbox),
-          baseEnv: buildSafeChildEnv({ ELECTRON_RUN_AS_NODE: "1" }),
+          floorPierces,
         }, () => {
           nativeRevoked = true;
           withdrawConfinement?.();
