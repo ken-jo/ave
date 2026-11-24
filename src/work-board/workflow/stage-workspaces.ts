@@ -3,8 +3,10 @@ import { basename, dirname, join, resolve } from "node:path";
 import { createLogger } from "../../lib/logger.js";
 import { isSensitivePath } from "../../permissions/sensitive-paths.js";
 import { aveHome, getAveHomePrivacyFailure, isAveHomeBoundaryUnverifiedAtBoot } from "../../shared/ave-home.js";
+import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { canonicalWorkflowJson, resultHashOf } from "../../shared/workflow-template-output.js";
 import type { TemplateStage } from "../../shared/workflow-template-types.js";
+import { runWithCeiling } from "../../tools/executor-ceiling.js";
 import { isStageId } from "../template-graph.js";
 import { type NameReader, plainFolderIgnore, projectFoldsCase } from "./folder-ignore.js";
 import { createHostGit, type HostGit, HostGitError } from "./host-git.js";
@@ -55,6 +57,7 @@ const warnedOnce = new Set<string>();
 const ABSOLUTE_LINKS = ["-c", "worktree.useRelativePaths=false"];
 /** Before every commit or ref in an argument vector: git reads what follows as one, never as an option. */
 const END_OF_OPTIONS = "--end-of-options";
+const MAX_REPOSITORY_CONFIG_BYTES = 1024 * 1024;
 const NUL = "\0";
 const nul = (text: string): string[] => text.split(NUL).filter(entry => entry !== "");
 const chunked = <T>(items: readonly T[], size = 200): T[][] => Array.from({ length: Math.ceil(items.length / size) }, (_, index) => items.slice(index * size, (index + 1) * size));
@@ -347,13 +350,19 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
 
   /** Ask git about the bytes read from the verified common-directory config. An absent key only counts after that read. */
   async function refStoreOf(root: string, repo: NonNullable<WorkspaceRecord["repo"]>): Promise<"own" | "elsewhere" | undefined> {
+    const deadline = performance.now() + TOOL_TIMEOUT_POLICY.stageWorkspaceGitMs;
     const common = holdDir(repo.gitDir, repo.id);
     const id = common.entryId("config");
     if (id === undefined) return undefined;
-    const config = common.readFile("config", id);
-    if (config === undefined) return undefined;
-    const read = await git.run(root, ["config", "--file", "-", "--get-all", "extensions.refStorage"], { stdin: config, isolated: true, exact: true, requiresFloor: true });
-    if (common.entryId("config") !== id) return undefined;
+    const remainingMs = deadline - performance.now();
+    if (remainingMs <= 0) return undefined;
+    const config = await runWithCeiling(
+      signal => common.readFileBounded("config", id, MAX_REPOSITORY_CONFIG_BYTES, signal),
+      remainingMs, undefined, "repository config read",
+    );
+    if (!config.ok || config.value === undefined || performance.now() >= deadline) return undefined;
+    const read = await git.run(root, ["config", "--file", "-", "--get-all", "extensions.refStorage"], { stdin: config.value, isolated: true, exact: true, requiresFloor: true, deadline });
+    if (common.entryId("config") !== id || performance.now() >= deadline) return undefined;
     if (read.stderr !== "") return undefined;
     if (read.code === 1 && read.stdout === "") return "own";
     if (read.code !== 0 || !read.stdout.endsWith("\n")) return undefined;

@@ -1,5 +1,5 @@
 import { type BigIntStats, chmodSync, closeSync, constants, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
-import { type FileHandle, open } from "node:fs/promises";
+import { type FileHandle, lstat, open } from "node:fs/promises";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { replaceStagedFile } from "../../lib/atomic-file.js";
 
@@ -131,6 +131,8 @@ export interface OwnedDir {
   writeFileAtomic(name: string, data: string): void;
   /** Reads a regular file by its verified identity. With `expectedId`, the file must still have that identity. */
   readFile(name: string, expectedId?: NodeId): Buffer | undefined;
+  /** Reads a complete regular file of the expected identity within the byte limit. */
+  readFileBounded(name: string, expectedId: NodeId, maxBytes: number, signal: AbortSignal): Promise<Buffer | undefined>;
   /** Removes one entry and everything below it without following a link. With `expect`, only while the entry has that id. */
   remove(name: string, expect?: NodeId): Promise<void>;
   removeSelfIfEmpty(): boolean;
@@ -275,6 +277,35 @@ class Dir implements OwnedDir {
       return readFileSync(fd);
     } finally {
       closeSync(fd);
+    }
+  }
+
+  async readFileBounded(name: string, expectedId: NodeId, maxBytes: number, signal: AbortSignal): Promise<Buffer | undefined> {
+    signal.throwIfAborted();
+    const path = join(this.path, entryName(name));
+    this.check();
+    const seen = await lstat(path, { bigint: true });
+    if (!seen.isFile() || seen.nlink !== 1n || idOf(seen) !== expectedId) return undefined;
+    signal.throwIfAborted();
+    const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+    try {
+      signal.throwIfAborted();
+      const opened = await handle.stat({ bigint: true });
+      if (!opened.isFile() || opened.nlink !== 1n || idOf(opened) !== expectedId || opened.size > BigInt(maxBytes)) return undefined;
+      signal.throwIfAborted();
+      const bytes = Buffer.alloc(Number(opened.size));
+      for (let offset = 0; offset < bytes.length;) {
+        const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, offset);
+        signal.throwIfAborted();
+        if (bytesRead === 0) return undefined;
+        offset += bytesRead;
+      }
+      const after = await handle.stat({ bigint: true });
+      signal.throwIfAborted();
+      if (after.nlink !== 1n || after.size !== opened.size || after.mtimeNs !== opened.mtimeNs || after.ctimeNs !== opened.ctimeNs) return undefined;
+      return bytes;
+    } finally {
+      await handle.close();
     }
   }
 

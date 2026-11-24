@@ -8,10 +8,10 @@ import { forceKillManagedChildProcess } from "../../main/managed-child-processes
 import { buildHostGitArgs, HOOK_EVENTS, HOOK_EVENTS_VALIDATED, spawnHostGitIfWorkspaceFree } from "../../shared/host-git.js";
 import { parseGitVersion } from "../../shared/git-version.js";
 import { absolutePosixSearchPath, executableIdentitySync, installerGitRoot, withHostGitRecovery } from "../../shared/host-git-executable.js";
+import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 
 const log = createLogger("work-board-host-git");
 
-const GIT_TIMEOUT_MS = 120_000;
 const GIT_MAX_OUTPUT_BYTES = 32 * 1024 * 1024;
 /** How long a process that was stopped, or that has exited, may keep its pipes open before the call is refused without it. */
 const GIT_TEARDOWN_MS = 5_000;
@@ -43,8 +43,8 @@ interface HostGitResult { code: number; stdout: string; stderr: string }
 /** `worktree`: the registration and the folder git works on, given to it outright; it then reads no `.git` file to find them.
  * `exact`: the answer holds names the caller compares, looks up on disk or hands back to git, so it must be text as it stands: one
  * that is not would be read as other names, and is refused as `not-text`. `paths`: the paths the call is about, each given to git as
- * that one path and never as a pattern; an argument list carries none. */
-interface HostGitCall { stdin?: string | Buffer; drivers?: readonly string[]; isolated?: boolean; exact?: boolean; worktree?: { gitDir: string; workTree: string }; paths?: readonly string[]; requiresFloor?: boolean }
+ * that one path and never as a pattern; an argument list carries none. `deadline` is a `performance.now()` timestamp shared with input preparation. */
+interface HostGitCall { stdin?: string | Buffer; drivers?: readonly string[]; isolated?: boolean; exact?: boolean; worktree?: { gitDir: string; workTree: string }; paths?: readonly string[]; requiresFloor?: boolean; deadline?: number }
 /** Bytes as the text they are and nothing else: no byte replaced, no leading mark dropped. Throws for bytes that are no text. */
 const STRICT_TEXT = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 export class HostGitError extends Error {
@@ -107,7 +107,7 @@ export function createHostGit(options: { env?: NodeJS.ProcessEnv; resolve?: Host
   const resolve = options.resolve ?? discoveredGit;
   const env = gitEnv(base, name => INHERITED_ENV.has(name));
   const isolated = isolatedEnv(base);
-  const timeoutMs = options.timeoutMs ?? GIT_TIMEOUT_MS;
+  const timeoutMs = options.timeoutMs ?? TOOL_TIMEOUT_POLICY.stageWorkspaceGitMs;
   const maxOutputBytes = options.maxOutputBytes ?? GIT_MAX_OUTPUT_BYTES;
   const teardownMs = options.teardownMs ?? GIT_TEARDOWN_MS;
 
@@ -132,6 +132,9 @@ export function createHostGit(options: { env?: NodeJS.ProcessEnv; resolve?: Host
     if (git === null || !isAbsolute(git.path)) return Promise.reject(new HostGitError("unavailable", "no git installation was found"));
     return new Promise((resolve, reject) => {
       if (executableIdentitySync(git.path) !== git.identity) return reject(new HostGitError("unavailable", "the selected git changed before launch"));
+      const timeLeft = (): number => call.deadline === undefined ? timeoutMs : Math.min(timeoutMs, call.deadline - performance.now());
+      const timedOut = (): HostGitError => new HostGitError("timeout", "git did not finish in time");
+      if (timeLeft() <= 0) return reject(timedOut());
       const started = spawnHostGitIfWorkspaceFree(cwd, git.path, args, { cwd, env: programEnv(call.isolated === true ? isolated : env, git), windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
       if (started === "held") return reject(new HostGitError("held", "the workspace is held by a sandboxed command"));
       if (started === "no-folder") return reject(new HostGitError("unavailable", "the folder git would run in does not exist"));
@@ -163,7 +166,7 @@ export function createHostGit(options: { env?: NodeJS.ProcessEnv; resolve?: Host
         // The whole tree, within the bound that kill has of its own; then the wait for the pipes begins.
         void Promise.resolve().then(() => forceKillManagedChildProcess(child, `host git ${error.reason}`)).then(abandon, abandon);
       };
-      const timer = setTimeout(() => stop(new HostGitError("timeout", "git did not finish in time")), timeoutMs);
+      const timer = setTimeout(() => stop(timedOut()), Math.ceil(timeLeft()));
       const collect = (into: Buffer[]) => (chunk: Buffer): void => {
         size += chunk.length;
         if (size > maxOutputBytes) stop(new HostGitError("output-limit", "git wrote more than the host reads"));
@@ -175,6 +178,7 @@ export function createHostGit(options: { env?: NodeJS.ProcessEnv; resolve?: Host
       child.on("exit", abandon);
       child.on("close", (code) => settle(() => {
         if (failure) reject(failure);
+        else if (call.deadline !== undefined && timeLeft() <= 0) reject(timedOut());
         // Ended by something other than the host: what it wrote is not a whole answer.
         else if (code === null) reject(new HostGitError("terminated", "git ended without an exit code"));
         else resolve({ code, stdout: Buffer.concat(out), stderr: Buffer.concat(err) });

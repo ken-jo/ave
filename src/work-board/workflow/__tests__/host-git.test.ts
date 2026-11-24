@@ -91,6 +91,25 @@ describe("host git", () => {
     expect(hanging.killed()).toBe(1);
   });
 
+  it("uses the time left on the caller's deadline for the child", async () => {
+    const { git } = await discoverHostGitAsync(null);
+    if (git === null) throw new Error("expected fixture git");
+    const hanging = hangingChild();
+    spawned.fake = () => hanging.child;
+    vi.useFakeTimers({ toFake: ["performance", "setTimeout", "clearTimeout"] });
+    try {
+      const host = createHostGit({ env, timeoutMs: 1_000, resolve: use => use(git) });
+      const result = reasonOf(host.run(base, ["status"], { deadline: performance.now() + 20 }));
+      await vi.advanceTimersByTimeAsync(20);
+      const killedAtDeadline = hanging.killed();
+      await vi.advanceTimersByTimeAsync(980);
+      expect(await result).toBe("timeout");
+      expect(killedAtDeadline).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("a git process that never reports its end still ends the call: stopped, or exited with its pipes held open", async () => {
     // Nothing the host does makes it close.
     const deaf = (): { child: ChildProcess; kills: () => number } => {

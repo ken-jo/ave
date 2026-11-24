@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import type { FileHandle } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, parse, resolve } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -33,6 +34,7 @@ const between = vi.hoisted(() => ({
   unread: undefined as string | undefined,
   /** A file that cannot be opened. */
   unopened: undefined as string | undefined,
+  configHandle: undefined as ((path: string, handle: FileHandle) => void) | undefined,
 }));
 
 vi.mock("../../../shared/ave-home.js", async (original) => {
@@ -55,6 +57,16 @@ vi.mock("node:fs", async (original) => {
     return (real.openSync as (...args: unknown[]) => number)(path, ...rest);
   }) as typeof real.openSync;
   return { ...real, lstatSync, openSync, realpathSync: Object.assign((path: string) => real.realpathSync(path), { native }) };
+});
+
+vi.mock("node:fs/promises", async (original) => {
+  const real = await original<typeof import("node:fs/promises")>();
+  const open: typeof real.open = async (file, flags, mode) => {
+    const handle = await real.open(file, flags, mode);
+    between.configHandle?.(String(file), handle);
+    return handle;
+  };
+  return { ...real, open };
 });
 
 vi.mock("../owned-fs.js", async (original) => {
@@ -407,14 +419,19 @@ const onWindows = it.skipIf(process.platform !== "win32");
 const relink = (stage: string, link: string): void => { rmSync(join(stage, ".git")); writeFileSync(join(stage, ".git"), link); };
 const slashed = (path: string, volume: string): string => path.slice(volume.length).replaceAll("\\", "/");
 
-it.each(["missing", "readable", "replaced"] as const)("partial release verifies a %s repository config before removing its stage", async (scenario) => {
+it.each(["missing", "readable", "replaced", "over-cap", "timeout", "incomplete"] as const)("partial release verifies a %s repository config before removing its stage", async (scenario) => {
   const fx = gitFixture();
   const config = join(fx.repo, ".git", "config");
   const saved = join(fx.repo, ".git", "config-saved");
   const real = createHostGit({ env: fx.env });
   let replaceOnRead = false;
+  let queries = 0;
+  const read = vi.fn();
+  const pending = Promise.withResolvers<{ bytesRead: number; buffer: Buffer }>();
+  const closed = Promise.withResolvers<void>();
   const replace = (): void => { renameSync(config, saved); writeFileSync(config, readFileSync(saved)); };
   const git: HostGit = { ...real, run: (cwd, args, call) => {
+    if (args.includes("extensions.refStorage")) queries += 1;
     if (replaceOnRead && args.includes("extensions.refStorage")) {
       replaceOnRead = false;
       replace();
@@ -431,22 +448,66 @@ it.each(["missing", "readable", "replaced"] as const)("partial release verifies 
     if (admin === undefined) throw new Error("expected a stage registration");
     expect(readFileSync(config, "utf8")).not.toMatch(/refStorage/iu);
     if (scenario === "missing") renameSync(config, saved);
+    if (scenario === "over-cap") {
+      renameSync(config, saved);
+      writeFileSync(config, readFileSync(saved, "utf8") + "# fixture\n".repeat(110_000));
+    }
+    if (scenario === "timeout" || scenario === "incomplete") {
+      if (scenario === "timeout") vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      between.configHandle = (file, handle) => {
+        if (file !== config) return;
+        const close = handle.close.bind(handle);
+        vi.spyOn(handle, "close").mockImplementation(async () => {
+          await close();
+          closed.resolve();
+        });
+        vi.spyOn(handle, "read").mockImplementation(() => {
+          read();
+          if (scenario === "incomplete") return Promise.resolve({ bytesRead: 0, buffer: Buffer.alloc(0) });
+          queueMicrotask(() => vi.advanceTimersByTime(120_000));
+          return pending.promise;
+        });
+      };
+    }
     replaceOnRead = scenario === "replaced";
+    queries = 0;
     if (scenario === "readable") {
       await handle.provider.release(handle.run, ["s1"]);
       expect([existsSync(stage), existsSync(admin)]).toEqual([false, false]);
     } else {
       await expect(handle.provider.release(handle.run, ["s1"])).rejects.toThrow("repo.refStorage");
       expect([existsSync(stage), existsSync(admin)]).toEqual([true, true]);
-      expect(existsSync(saved)).toBe(true);
+      expect(queries).toBe(scenario === "replaced" ? 1 : 0);
+      if (scenario === "timeout" || scenario === "incomplete") {
+        expect(read).toHaveBeenCalledOnce();
+        pending.resolve({ bytesRead: 0, buffer: Buffer.alloc(0) });
+        await closed.promise;
+        expect(queries).toBe(0);
+      } else {
+        expect(existsSync(saved)).toBe(true);
+      }
     }
   } finally {
+    between.configHandle = undefined;
+    vi.useRealTimers();
+    pending.resolve({ bytesRead: 0, buffer: Buffer.alloc(0) });
     if (existsSync(saved)) {
       rmSync(config, { force: true });
       renameSync(saved, config);
     }
     await fx.done();
   }
+});
+
+it("reads repository configuration without synchronous bulk file I/O", () => {
+  const workspace = readFileSync(new URL("../stage-workspaces.ts", import.meta.url), "utf8");
+  const proof = workspace.slice(workspace.indexOf("async function refStoreOf("), workspace.indexOf("async function commonDirOf("));
+  expect(proof).toContain(".readFileBounded(");
+  expect(proof).not.toMatch(/\breadFile(?:Sync)?\(/u);
+  const owned = readFileSync(new URL("../owned-fs.ts", import.meta.url), "utf8");
+  const reader = owned.slice(owned.indexOf("async readFileBounded("), owned.indexOf("async remove("));
+  expect(reader).toContain("await handle.read(");
+  expect(reader).not.toMatch(/\breadFileSync\b/u);
 });
 
 /** A host git that notes where each call was made. */
