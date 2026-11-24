@@ -1497,13 +1497,14 @@ describe("a stalled copy's temporary file in the chosen folder", () => {
       expect(probes()).toHaveLength(1);
     });
 
-    it("says distinctly when the probe's name cannot be removed", async () => {
+    it("reports the copy's data as left when the probe's name cannot be removed", async () => {
       boundary.unlinkFault = (path) => (/\.probe$/u.test(path) ? "EIO" : null);
-      const { chosen, result } = await removeOne("first");
-      expect(result).toEqual({ outcome: "removed" });
+      const { chosen, part, done } = await stalledCopy({ copyDiesWhenKilled: true });
       const [probe] = probes();
       expect(fs.readdirSync(chosen)).toEqual([basename(probe ?? "")]);
-      expect(boundary.warn).toHaveBeenCalledWith({ path: join(chosen, name), probe, code: "EIO" }, expect.stringContaining("probe's name for a temporary download file is left"));
+      expect(fs.readFileSync(probe ?? "", "utf8")).toBe("partial copy");
+      expect(boundary.warn).toHaveBeenCalledWith({ path: part, probe, code: "EIO" }, expect.stringContaining("probe's name for a temporary download file is left"));
+      expect(done).toMatchObject({ settled: true, value: ["interrupted", "part-left"] });
     });
 
     it.runIf(process.platform === "win32")("removes the probe's name after another program's brief lock", async () => {

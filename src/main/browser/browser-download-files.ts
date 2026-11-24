@@ -116,7 +116,7 @@ export type PartIdentity = { readonly kind: "fileId"; readonly file: FileIdentit
 /** A temporary file a cleanup left: the name it has now in its folder, and how it is known there. */
 export interface LeftPart { readonly name: string; readonly identity: PartIdentity }
 
-/** What a cleanup did. A file it left can still be found at `at`, or is null when what it found there is not the file that was written. */
+/** What a cleanup did. A file it left can still be tried again at `at`, or `at` is null when cleanup has no retry location. */
 export type OwnFileResult = { readonly outcome: "removed" | "absent" } | { readonly outcome: "left"; readonly at: LeftPart | null };
 
 /** The hidden name a temporary file is moved to before it is checked and removed. */
@@ -192,9 +192,11 @@ function contentAt(folder: HeldDirectory, name: string): Exclude<Found, "same"> 
 // file, so only this cleanup checks by content and the next one probes again.
 const linkSupport = new Map<bigint, boolean>();
 const NO_LINKS: ReadonlySet<string> = new Set(process.platform === "win32" ? ["ENOTSUP", "EOPNOTSUPP", "EISDIR"] : ["ENOTSUP", "EOPNOTSUPP"]);
-async function linksIn(folder: HeldDirectory, name: string): Promise<boolean> {
+interface LinkProbeResult { readonly supported: boolean; readonly probeLeft: boolean }
+
+async function linksIn(folder: HeldDirectory, name: string): Promise<LinkProbeResult> {
   const known = linkSupport.get(folder.dev);
-  if (known !== undefined) return known;
+  if (known !== undefined) return { supported: known, probeLeft: false };
   const path = join(folder.path, name);
   const probe = join(folder.path, `.${randomBytes(16).toString("hex")}.probe`);
   try {
@@ -203,7 +205,7 @@ async function linksIn(folder: HeldDirectory, name: string): Promise<boolean> {
     const definitive = NO_LINKS.has(codeOf(error) ?? "");
     if (definitive) linkSupport.set(folder.dev, false);
     else log.warn({ path, code: codeOf(error) }, "a folder's hard-link support could not be probed; this cleanup checks the file by its content");
-    return false;
+    return { supported: false, probeLeft: false };
   }
   let supported = false;
   try {
@@ -212,14 +214,16 @@ async function linksIn(folder: HeldDirectory, name: string): Promise<boolean> {
   } catch {
     // Not seen through: answered for this cleanup only.
   }
+  let probeLeft = false;
   try {
     // A brief lock by another program is waited out: the probe's name is ours alone.
     await retryOnFileLock(async () => { removeIfPresent(probe); });
   } catch (error) {
+    probeLeft = true;
     log.warn({ path, probe, code: codeOf(error) }, "a hard-link probe's name for a temporary download file is left, and could not be removed");
   }
   if (supported) linkSupport.set(folder.dev, true);
-  return supported;
+  return { supported, probeLeft };
 }
 
 /** Forget every volume's probed hard-link support. */
@@ -249,8 +253,19 @@ export async function removeOwnFile(
   }
   const found = compareFile(folder, at, identity.file);
   if (found !== "same") return notMoved(found, path, { name: at, identity });
-  if (await linksIn(folder, at)) return removeByFileId(folder, original, at, identity, remove);
-  // No hard links: a rename may give the file another id, so it is known by its content from here on.
+  const { supported, probeLeft } = await linksIn(folder, at);
+  const result = supported
+    ? await removeByFileId(folder, original, at, identity, remove)
+    : await removeByVerifiedContent(folder, original, at, identity, remove);
+  return probeLeft && result.outcome !== "left" ? { outcome: "left", at: null } : result;
+}
+
+// Without a verified hard link, a rename may change the file id. Bind the content to the known file before moving it.
+async function removeByVerifiedContent(
+  folder: HeldDirectory, original: string, at: string, identity: Extract<PartIdentity, { kind: "fileId" }>,
+  remove: (folder: HeldDirectory, name: string) => Promise<"removed" | "absent" | "cancelled">,
+): Promise<OwnFileResult> {
+  const path = join(folder.path, at);
   const now = contentAt(folder, at);
   if (typeof now === "string") return notMoved(now, path, { name: at, identity });
   if (!sameFile(now.file, identity.file)) return notMoved("other", path, { name: at, identity });
