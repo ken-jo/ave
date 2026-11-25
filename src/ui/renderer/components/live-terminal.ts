@@ -705,7 +705,8 @@ export class LiveTerminal {
       for (const notice of notices) this.term.write(diagnostic(notice));
       if (!result.ok) {
         this.dropPending();
-        this.term.write(diagnostic(this.t(result.reason === "too-many-terminals" ? "ptyTerminal.capacity" : result.reason === "still-closing" ? "ptyTerminal.stillClosing" : "ptyTerminal.manualUnavailable")));
+        this.term.write(diagnostic(this.t(result.reason === "too-many-terminals" ? "ptyTerminal.capacity" : result.reason === "still-closing" ? "ptyTerminal.stillClosing"
+          : result.reason === "sandbox-unavailable" ? "ptyTerminal.sandboxUnavailable" : "ptyTerminal.manualUnavailable")));
         this.setState({ ended: { kind: "not-started" } });
         this.discardHeldInput();
         return;
@@ -730,7 +731,8 @@ export class LiveTerminal {
       if (this.disposed) return;
       if (!result.ok) {
         this.dropPending();
-        this.term.write(diagnostic(this.t(result.reason === "still-closing" ? "ptyTerminal.stillClosing" : "ptyTerminal.manualUnavailable")));
+        this.term.write(diagnostic(this.t(result.reason === "still-closing" ? "ptyTerminal.stillClosing"
+          : result.reason === "sandbox-unavailable" ? "ptyTerminal.sandboxUnavailable" : "ptyTerminal.manualUnavailable")));
         return;
       }
       await this.adopt(result, view.purpose);

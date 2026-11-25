@@ -438,6 +438,16 @@ describe("PtyTerminalView environment and session boundaries", () => {
     expect(terminal.spawn).toHaveBeenCalledTimes(1);
   });
 
+  it("names unavailable sandboxed processes in the pane and starts nowhere else", async () => {
+    const { api } = makeMockAveApi();
+    const terminal = terminalApi();
+    terminal.spawn.mockResolvedValueOnce({ ok: false, reason: "sandbox-unavailable", message: "unavailable" } as never);
+    render(<PtyTerminalView api={{ ...api, terminal } as never} location="side-panel" tabId="terminal:15" tabLabel="Terminal 15" initialCwd="/repo/app" />);
+    await waitFor(() => expect(fakeTerm().written.join("")).toContain(t("ptyTerminal.sandboxUnavailable")));
+    expect(fakeTerm().written.join("")).not.toContain(t("ptyTerminal.manualUnavailable"));
+    expect(terminal.spawn).toHaveBeenCalledTimes(1);
+  });
+
   it("buffers pre-reply replay by lane and incarnation, then ignores retired output", async () => {
     const { api } = makeMockAveApi();
     const terminal = terminalApi();

@@ -4794,6 +4794,7 @@ export const en = {
   "ptyTerminal.linkBlocked": "Only http and https links open from the terminal.",
   "ptyTerminal.capacity": "Terminal capacity reached. Close another terminal and retry.",
   "ptyTerminal.stillClosing": "The previous shell is still closing. Retry shortly.",
+  "ptyTerminal.sandboxUnavailable": "This terminal cannot start: Ave could not confirm that its container folder is private to this Windows account, so sandboxed processes (terminal, shells, MCP servers, workers, plugins, the memory map) are unavailable. Restart Ave; if it persists, repair the Ave installation.",
   "ptyTerminal.hostBadgeWorkspace": "My terminal (host) · Agent access follows this conversation's permissions",
   "ptyTerminal.workspaceEnvironment": "Your host profile and HOME. This pane's chat uses your terminal according to your conversation choice: allow, automatic review, or ask each time. Only its command output returns to that chat. Everything else stays private unless you attach it.",
   "ptyTerminal.agentRunning": "The agent is running an approved command: {command}",

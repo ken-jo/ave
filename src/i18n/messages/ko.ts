@@ -4796,6 +4796,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "ptyTerminal.linkBlocked": "터미널에서는 http·https 링크만 열 수 있습니다.",
   "ptyTerminal.capacity": "터미널 수 제한에 도달했습니다. 다른 터미널을 닫고 다시 시도하세요.",
   "ptyTerminal.stillClosing": "이전 셸이 종료되는 중입니다. 잠시 후 다시 시도하세요.",
+  "ptyTerminal.sandboxUnavailable": "이 터미널을 시작할 수 없습니다. Ave 가 컨테이너 폴더가 이 Windows 계정 전용인지 확인하지 못해 샌드박스 프로세스(터미널, 셸, MCP 서버, 워커, 플러그인, 메모리 맵)를 사용할 수 없습니다. Ave 를 다시 시작하고, 계속되면 Ave 설치를 복구하세요.",
   "ptyTerminal.hostBadgeWorkspace": "내 터미널 (호스트) · 에이전트 접근은 대화별 권한 적용",
   "ptyTerminal.workspaceEnvironment": "사용자의 호스트 프로필과 HOME을 사용합니다. 이 패널 채팅은 대화에서 선택한 허용, 자동 검토, 작업마다 확인 권한에 따라 터미널을 사용합니다. 에이전트가 실행한 명령의 출력만 해당 채팅으로 돌아가며, 그 밖의 내용은 직접 첨부하지 않는 한 공유되지 않습니다.",
   "ptyTerminal.agentRunning": "에이전트가 승인된 명령을 실행 중: {command}",

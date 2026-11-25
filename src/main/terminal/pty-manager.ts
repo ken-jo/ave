@@ -33,7 +33,7 @@ import { deriveSandboxWritePaths } from "../../permissions/sandbox-write-jail.js
 import { canonicalizePathForMatch, caseFoldForMatch } from "../../permissions/sensitive-paths.js";
 import { isPathAllowed } from "../../permissions/allowed-directories.js";
 import { listAuthorizedWorkspaceProjects } from "../project-root-authorization.js";
-import { createSandboxProcessHome } from "../../permissions/sandbox-process-home.js";
+import { createSandboxProcessHome, isSandboxHomeUnavailable } from "../../permissions/sandbox-process-home.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { installShellIntegration, TERMINAL_EDIT_LINE_QUERY } from "./shell-integration.js";
 import {
@@ -633,6 +633,7 @@ async function spawnNewTerminal(
     sandboxHome = createSandboxProcessHome();
     cleanupSandboxHome = addCleanup(() => sandboxHome.cleanup());
   } catch (err) {
+    if (isSandboxHomeUnavailable(err)) return { ok: false, reason: "sandbox-unavailable", message: err.message };
     return {
       ok: false,
       reason: "spawn-failed",
