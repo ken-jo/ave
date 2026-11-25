@@ -24,6 +24,7 @@ describe("plugin acceptance fixture over portable process pipes", () => {
       const owned: OwnedMxcExtensionProcess = {
         id: child.pid!, stdin: child.stdin!, stdout: child.stdout as PassThrough, stderr: child.stderr as PassThrough,
         completion, diagnostics: { nodeVersion: process.version, nativeModules: [], nativeModuleCount: 0, nativeModulesTruncated: false, ownerHandle: "" },
+        startEvidence: undefined,
         dispose: async () => {
           child.stdout!.resume(); child.stderr!.resume();
           if (child.exitCode === null && child.signalCode === null) child.kill();
