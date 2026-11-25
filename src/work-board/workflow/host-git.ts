@@ -315,6 +315,7 @@ function floorHoldsOn(git: HostGitProgram, env: NodeJS.ProcessEnv, deadline?: nu
   if (known !== undefined) return known;
   let scratch: string;
   try { scratch = mkdtempSync(join(tmpdir(), "ave-git-floor-")); } catch { return Promise.resolve(false); }
+  // A cold-cache probe shares the caller's deadline.
   // A probe that did not finish, held or timed out among them, answers no and is asked again next time.
   const verdict: Promise<boolean> = probeFloor(createHostGit({ env, resolve: use => use(git) }), scratch, deadline).catch(() => {
     if (floorProbes.get(key) === verdict) floorProbes.delete(key);

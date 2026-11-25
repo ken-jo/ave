@@ -135,7 +135,7 @@ function executableAccessMode(): number {
 }
 
 function fileIdentity(stat: BigIntStats): string | null {
-  return stat.isFile() ? [stat.dev, stat.ino, stat.size, stat.mtimeNs].join(":") : null;
+  return stat.isFile() ? [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(":") : null;
 }
 
 export function executableIdentitySync(path: string): string | null {
@@ -311,6 +311,9 @@ function* selectGit(installerRoot: string | null, cached: GitScan | undefined, f
 
   const selection: GitDiscovery = { git: null };
   let shimDirectory: string | undefined;
+  // The floor probe checks capability and relies on the host to trust the executable.
+  // System candidates come from absolute entries on the host process PATH and well-known locations.
+  // Earlier PATH entries already had priority. Floor discovery can now reach later entries when earlier ones fail the floor.
   for (const path of systemGitCandidates(process.platform, process.env.PATH)) {
     const candidate = yield* probeStableGit(path, function* () {
       if (failedPath !== undefined && (yield* sameFile(path, failedPath))) return null;
