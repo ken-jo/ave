@@ -1404,7 +1404,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
 
     expect(screen.getByTestId("os-sandbox-boot-degraded")).toBeTruthy();
     const detail = screen.getByTestId("os-sandbox-boot-degraded-detail");
-    expect(detail.textContent).toBe("시작 시 AVE_HOME 폴더 보호 검사가 실패했습니다(D:/ave-home: 다른 주체의 접근 항목이 남아 있음: S-1-5-11 (NT AUTHORITY\\Authenticated Users), S-1-5-32-545. 해당 항목을 제거하거나 AVE_HOME을 옮기세요). 셸 명령은 한 번 또는 이 세션 동안의 승인을 요청합니다.");
+    expect(detail.textContent).toBe(`시작 시 AVE_HOME 폴더 보호 검사가 실패했습니다(${homePrivacyError.path}: 다른 주체의 접근 항목이 남아 있음: S-1-5-11 (NT AUTHORITY\\Authenticated Users), S-1-5-32-545. 해당 항목을 제거하거나 AVE_HOME을 옮기세요). 셸 명령은 한 번 또는 이 세션 동안의 승인을 요청합니다.`);
     // The generic dependency hint is false for a folder-permission failure.
     expect(detail.textContent).not.toBe("시작 진단에 실패했습니다. 샌드박스 설정을 복구한 뒤 Ave를 재시작하세요.");
     expect(t("permissionsTab.osSandboxBootDegradedHomePrivacy")).not.toBe("permissionsTab.osSandboxBootDegradedHomePrivacy");
@@ -1424,7 +1424,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     expect(screen.queryByTestId("os-sandbox-windows-shared-identity")).toBeNull();
 
     const privacy = screen.getByTestId("os-sandbox-windows-home-privacy-error");
-    expect(privacy.textContent).toContain("시작 시 AVE_HOME 폴더 보호 검사 실패로 확장 기능이 차단되었습니다(D:/ave-home: 다른 주체의 접근 항목이 남아 있음: S-1-5-11 (NT AUTHORITY\\Authenticated Users), S-1-5-32-545. 해당 항목을 제거하거나 AVE_HOME을 옮기세요).");
+    expect(privacy.textContent).toContain(`시작 시 AVE_HOME 폴더 보호 검사 실패로 확장 기능이 차단되었습니다(${homePrivacyError.path}: 다른 주체의 접근 항목이 남아 있음: S-1-5-11 (NT AUTHORITY\\Authenticated Users), S-1-5-32-545. 해당 항목을 제거하거나 AVE_HOME을 옮기세요).`);
   });
 
   it("claims no shell outcome when the privacy failure carries no category", async () => {
@@ -1481,6 +1481,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
 
     it.each(rows)("%s: %s", async (locale, category) => {
       setLocale(locale);
+      const boundaryUnverifiedCode = "degrade-ave-home-boundary-unverified";
       const homePrivacyError = {
         path: "D:/ave-home", category,
         ...(category === "extra-principals" ? { extraPrincipals: [{ sid: "S-1-5-11" }] } : {}),
@@ -1493,13 +1494,13 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
         runtime: { available: false, kind: "none", reason: "r" }, confines: { filesystem: true, process: false, network: true },
         homePrivacyError,
         // An unverifiable read boundary reaches the same privacy refusal under its own gate reason.
-        boot: { action: "degrade", reason: category.startsWith("boundary-") ? "degrade-ave-home-boundary-unverified" : "degrade-ave-home-privacy-failed",
+        boot: { action: "degrade", reason: category.startsWith("boundary-") ? boundaryUnverifiedCode : "degrade-ave-home-privacy-failed",
           onSignal: "default-settings", causes: ["ave-home-privacy-failed"] },
       } as never);
       await act(async () => { render(<PermissionsTab />); });
       if (category.startsWith("boundary-")) {
         expect(screen.getByTestId("os-sandbox-boot-degraded").textContent)
-          .toContain(locale === "en" ? "Startup outcome: degrade-ave-home-boundary-unverified" : "시작 결과: degrade-ave-home-boundary-unverified");
+          .toContain(locale === "en" ? `Startup outcome: ${boundaryUnverifiedCode}` : `시작 결과: ${boundaryUnverifiedCode}`);
       }
       const reason = t(REASON[category], { principals: "S-1-5-11" });
       // Every other category forces the shell floor, so its notice says shell commands ask, once or for the session;
@@ -2533,12 +2534,13 @@ describe("PermissionsTab — failures never put raw text on screen", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const api = installApi([[]]);
     const detail = "unknown subcommand 'llm' — expected show|mode|model";
-    mock(api.permission.setMode).mockResolvedValueOnce({ ok: false, error: "reviewer-mode-change-failed", message: detail });
+    const errorCode = "reviewer-mode-change-failed";
+    mock(api.permission.setMode).mockResolvedValueOnce({ ok: false, error: errorCode, message: detail });
     await renderPermissionsTab();
     await act(async () => { fireEvent.click(screen.getByTestId(execModeTestId("auto"))); });
-    expect(screen.getByText("실행 모드 변경에 실패했습니다. (reviewer-mode-change-failed)")).toBeTruthy();
+    expect(screen.getByText(`실행 모드 변경에 실패했습니다. (${errorCode})`)).toBeTruthy();
     expect(document.body.textContent).not.toContain("unknown subcommand");
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining("mode change failed"), "reviewer-mode-change-failed", detail);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("mode change failed"), errorCode, detail);
     expect(api.permission.reviewerDispatch).not.toHaveBeenCalledWith("mode llm");
     warn.mockRestore();
   });
