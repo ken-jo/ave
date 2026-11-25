@@ -132,6 +132,8 @@ const repositoryLeft: Row[] = [
   ["repo.id", ["repo", "id"], () => "1:1"],
   ["registrations._join.admin", ["registrations", "_join", "admin"], at => at.userAdmin],
   ["registrations._join.id", ["registrations", "_join", "id"], () => "1:1+ave.id:1"],
+  // As where a removed admin folder's id was handed to the one now there: the folder's id is reused, its anchor is not the one recorded.
+  ["registrations._join.id (a reused folder id)", ["registrations", "_join", "id"], at => `${nodeIdOf(at.admin)}+ave.id:1`],
 ];
 
 /** A path of the record that is not the open project's by text: nothing is asked of it, and the run stays whole with its record. */

@@ -33,8 +33,17 @@ const between = vi.hoisted(() => ({
   unread: undefined as string | undefined,
   /** A file that cannot be opened. */
   unopened: undefined as string | undefined,
-  /** A second name the volume does not give: the code it answers with, for names that end so. */
-  unlinked: undefined as { ending: string; code: string } | undefined,
+  /** A second name the volume does not give: the code it answers with, for names that end so; with `pinOnly`, the volume gives every
+   * other second name, the probe's too. */
+  unlinked: undefined as { ending: string; code: string; pinOnly?: boolean } | undefined,
+  /** A volume that answers a second name for names that end so by making a copy, as a share can. */
+  copied: undefined as string | undefined,
+  /** A stop right before the `at`th write of a record begins: from then on nothing changes the disk or runs git. */
+  stop: undefined as { at: number; seen: number; stopped: boolean } | undefined,
+  /** Every path unlinked or removed while set. */
+  gone: undefined as string[] | undefined,
+  /** A project folder of the home that answers as on another device than the repository. */
+  otherDevice: undefined as string | undefined,
 }));
 
 vi.mock("../../../shared/ave-home.js", async (original) => {
@@ -52,15 +61,35 @@ vi.mock("node:fs", async (original) => {
     if (between.unread !== undefined && String(path).toLowerCase() === between.unread.toLowerCase()) throw Object.assign(new Error("fixture: the path cannot be read"), { code: "EACCES" });
     return real.lstatSync(path, options as never);
   }) as typeof real.lstatSync;
+  const stopped = (): void => {
+    if (between.stop?.stopped === true) throw Object.assign(new Error("fixture: stopped"), { code: "EIO" });
+  };
   const openSync = ((path: string, ...rest: unknown[]) => {
     if (between.unopened !== undefined && String(path).toLowerCase() === between.unopened.toLowerCase()) throw Object.assign(new Error("fixture: the file cannot be opened"), { code: "EACCES" });
+    const stop = between.stop;
+    if (stop !== undefined && String(path).endsWith(`${RUN_FILE}.tmp`) && ++stop.seen === stop.at) stop.stopped = true;
+    const flags = rest[0];
+    const { O_WRONLY, O_RDWR, O_CREAT } = real.constants;
+    if (typeof flags === "number" ? (flags & (O_WRONLY | O_RDWR | O_CREAT)) !== 0 : flags !== undefined && flags !== "r") stopped();
     return (real.openSync as (...args: unknown[]) => number)(path, ...rest);
   }) as typeof real.openSync;
   const linkSync = ((existing: string, path: string) => {
-    if (between.unlinked !== undefined && String(path).endsWith(between.unlinked.ending)) throw Object.assign(new Error("fixture: no second name"), { code: between.unlinked.code });
-    real.linkSync(existing, path);
+    stopped();
+    const unlinked = between.unlinked;
+    if (unlinked !== undefined && String(path).endsWith(unlinked.ending) && !(unlinked.pinOnly === true && basename(dirname(String(path))).startsWith(".probe-"))) throw Object.assign(new Error("fixture: no second name"), { code: unlinked.code });
+    if (between.copied !== undefined && String(path).endsWith(between.copied)) real.copyFileSync(existing, path);
+    else real.linkSync(existing, path);
   }) as typeof real.linkSync;
-  return { ...real, linkSync, lstatSync, openSync, realpathSync: Object.assign((path: string) => real.realpathSync(path), { native }) };
+  const changes = <T extends (...args: never[]) => unknown>(act: T, gone?: boolean): T => ((...args: Parameters<T>) => {
+    stopped();
+    if (gone === true) between.gone?.push(String(args[0]));
+    return act(...args);
+  }) as T;
+  return {
+    ...real, linkSync, lstatSync, openSync, realpathSync: Object.assign((path: string) => real.realpathSync(path), { native }),
+    mkdirSync: changes(real.mkdirSync), mkdtempSync: changes(real.mkdtempSync), writeFileSync: changes(real.writeFileSync), renameSync: changes(real.renameSync),
+    unlinkSync: changes(real.unlinkSync, true), rmdirSync: changes(real.rmdirSync, true), rmSync: changes(real.rmSync, true),
+  };
 });
 
 vi.mock("../owned-fs.js", async (original) => {
@@ -74,6 +103,7 @@ vi.mock("../owned-fs.js", async (original) => {
       if (key === "list" && between.unlisted === basename(target.path)) return () => { throw Object.assign(new Error("fixture: the folder cannot be listed"), { code: "EACCES" }); };
       if (key === "child") return (name: string, id: string) => { const found = target.child(name, id); between.child?.(found?.path); return found; };
       if (key === "list") return () => { const names = target.list(); between.listed?.(target.path); return names; };
+      if (key === "id" && target.path.toLowerCase() === between.otherDevice?.toLowerCase()) return `9${target.id}`;
       const value = Reflect.get(target, key) as unknown;
       return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
     },
@@ -122,6 +152,11 @@ afterEach(() => {
   between.listed = undefined;
   between.child = undefined;
   between.unread = undefined;
+  between.unlinked = undefined;
+  between.copied = undefined;
+  between.stop = undefined;
+  between.gone = undefined;
+  between.otherDevice = undefined;
   between.foreign.length = 0;
   between.asked.length = 0;
   rmSync(base, { recursive: true, force: true, maxRetries: 3 });
@@ -876,3 +911,121 @@ it.each(["EXDEV", "EPERM", "ENOTSUP"])("a volume that gives a file no second nam
     await fx.done();
   }
 });
+
+/** The home's folder for the fixture repository's runs. */
+const projectFolderOf = (fx: GitFixture, handle: GitHandle): string => {
+  const real = realpathSync.native(fx.repo);
+  return dirname(runRootOf(aveHome(), process.platform === "win32" ? real.toLowerCase() : real, handle.run.itemId, handle.run.runId));
+};
+const listing = (path: string): string[] => existsSync(path) ? readdirSync(path).sort() : [];
+
+it.each([
+  ["refuses the pin alone, as a permission does, while it gives the probe one", { ending: ".pin", code: "EPERM", pinOnly: true }, "workspace-unavailable"],
+  ["refuses the integration worktree's pin", { ending: "._join.pin", code: "ENOTSUP" }, "volume-unsupported"],
+] as const)("an open on a volume that %s is refused, and nothing of the attempt stays", async (_, unlinked, code) => {
+  const fx = gitFixture();
+  try {
+    const handle = fx.start();
+    between.unlinked = unlinked;
+    expect(await handle.provider.open(handle.run, fx.repo)).toEqual({ ok: false, code });
+    expect(listing(projectFolderOf(fx, handle))).toEqual([]);
+    expect(listing(join(fx.repo, ".git", "worktrees"))).toEqual([]);
+    expect(fx.userGit(fx.repo, "for-each-ref", "--format=%(refname)", "refs/heads/ave")).toBe("");
+  } finally {
+    between.unlinked = undefined;
+    await fx.done();
+  }
+});
+
+it("a volume that answers a second name with a copy gives no pin: the open is refused, and nothing of the attempt stays", async () => {
+  const fx = gitFixture();
+  try {
+    const handle = fx.start();
+    between.copied = ".pin";
+    expect(await handle.provider.open(handle.run, fx.repo)).toEqual({ ok: false, code: "workspace-unavailable" });
+    expect(listing(projectFolderOf(fx, handle))).toEqual([]);
+  } finally {
+    between.copied = undefined;
+    await fx.done();
+  }
+});
+
+it("a repository on another device than the home keeps its registrations' pins in its own ave-pins, which go with the run", async () => {
+  const fx = gitFixture();
+  try {
+    const handle = fx.start();
+    const projectFolder = projectFolderOf(fx, handle);
+    between.otherDevice = projectFolder;
+    const open = await handle.provider.open(handle.run, fx.repo);
+    if (!open.ok) throw new Error(open.code);
+    const slug = basename(open.workspace.runRoot);
+    await stageRoot(handle, "s1");
+    const pins = join(fx.repo, ".git", "ave-pins");
+    expect(listing(projectFolder)).toEqual([slug, `${slug}.pin`].sort());
+    expect(listing(pins)).toEqual([`${slug}._join.pin`, `${slug}.s1.pin`]);
+    await handle.provider.release(handle.run, "all");
+    expect([existsSync(pins), listing(join(fx.repo, ".git", "worktrees")), existsSync(projectFolder)]).toEqual([false, [], false]);
+  } finally {
+    await fx.done();
+  }
+});
+
+it("a pin deleted from a repository's ave-pins leaves its registration the run cannot prove its own: the release says so and removes nothing of it", async () => {
+  const fx = gitFixture();
+  try {
+    const handle = fx.start();
+    between.otherDevice = projectFolderOf(fx, handle);
+    const open = await handle.provider.open(handle.run, fx.repo);
+    if (!open.ok) throw new Error(open.code);
+    const stage = await stageRoot(handle, "s1");
+    rmSync(join(fx.repo, ".git", "ave-pins", `${basename(open.workspace.runRoot)}.s1.pin`));
+    await expect(handle.provider.release(handle.run, ["s1"])).rejects.toThrow("the entry is not the folder that was recorded");
+    expect([existsSync(join(stage, ".git")), existsSync(join(fx.repo, ".git", "worktrees", "s1", "gitdir"))]).toEqual([true, true]);
+  } finally {
+    await fx.done();
+  }
+});
+
+it("a stop right before any write of a record leaves a run whose later release removes nothing but the run's own", async () => {
+  const fx = gitFixture();
+  try {
+    const stoppable = (): HostGit => new Proxy(createHostGit({ env: fx.env }), {
+      get(target, key) {
+        const value = Reflect.get(target, key) as unknown;
+        if (typeof value !== "function") return value;
+        return (...args: unknown[]) => {
+          if (between.stop?.stopped === true) throw new Error("fixture: stopped");
+          return (value as (...args: unknown[]) => unknown).apply(target, args);
+        };
+      },
+    });
+    const steps = async (handle: GitHandle): Promise<void> => {
+      if ((await handle.provider.open(handle.run, fx.repo)).ok) await handle.provider.prepare(handle.run, stageOf("s1"), 1);
+    };
+    // A run branch git made before the record named it stays, never deleted: only the user's refs are compared.
+    const userRefs = (): string[] => fx.userGit(fx.repo, "for-each-ref", "--format=%(refname) %(objectname)", "refs").split("\n").filter(line => !line.startsWith("refs/heads/ave/"));
+    const before = userRefs();
+    between.stop = { at: 0, seen: 0, stopped: false };
+    await steps(fx.start({ git: stoppable() }, 20));
+    const writes = between.stop.seen;
+    expect(writes).toBeGreaterThan(4);
+    for (let at = 1; at <= writes; at++) {
+      const handle = fx.start({ git: stoppable() }, 20 + at);
+      between.stop = { at, seen: 0, stopped: false };
+      await steps(handle);
+      between.stop = undefined;
+      between.gone = [];
+      // As after a restart: a provider that knows nothing of the run finds it by its record.
+      await createStageWorkspaceProvider({ git: createHostGit({ env: fx.env }) }).release(handle.run, "all");
+      const own = [projectFolderOf(fx, handle), join(fx.repo, ".git", "worktrees", JOIN_DIR), join(fx.repo, ".git", "worktrees", "s1")];
+      expect(between.gone.filter(path => !own.some(root => resolve(path).toLowerCase().startsWith(resolve(root).toLowerCase())))).toEqual([]);
+      expect(userRefs()).toEqual(before);
+      expect(fx.userGit(fx.repo, "status", "--porcelain")).toBe("");
+      between.gone = undefined;
+    }
+  } finally {
+    between.stop = undefined;
+    between.gone = undefined;
+    await fx.done();
+  }
+}, 600_000);

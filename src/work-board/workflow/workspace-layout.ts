@@ -11,9 +11,10 @@ export const RUN_FILE = "_run.json";
  * was written in. Its pin is `<run>.pin` beside the run folder. */
 export const RUN_MARK = "_run.id";
 export const runPinOf = (slug: string): string => `${slug}.pin`;
-/** The anchor the host makes in the admin folder git made for a run's worktree. Its pin is `<run>.<key>.pin` beside the run folder, so
- * a repository on another volume than the home gets no git workspace. */
+/** The anchor the host makes in the admin folder git made for a run's worktree. Its pin is `<run>.<key>.pin` beside the run folder, or
+ * in the repository's `PIN_DIR` for a repository on another device than the home. The sandbox write policy keeps both off a stage. */
 export const ADMIN_MARK = "ave.id";
+export const PIN_DIR = "ave-pins";
 export const adminPinOf = (slug: string, key: string): string => `${slug}.${key}.pin`;
 /** `_ignore-<random>`: an empty repository git's ignore matcher needs for a plain folder; one per seeding, there only while it runs. */
 export const IGNORE_PREFIX = "_ignore-";

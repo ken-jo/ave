@@ -12,7 +12,7 @@ import { createHostGit, type HostGit, HostGitError } from "./host-git.js";
 import { type FolderId, holdDir, type NodeId, type OwnedDir, OwnedFsError, type Pin, realDirId, realWithin, type SourceRoot } from "./owned-fs.js";
 import type { JoinConflict } from "./shipped-shapes.js";
 import type { RemovedRunProject, RunRef, StageWorkspaceProvider, WORKSPACE_REFUSALS } from "./stage-workspace.js";
-import { ADMIN_MARK, adminPinOf, IGNORE_PREFIX, isIgnoreFolder, JOIN_DIR, OUT_DIR, RUN_FILE, RUN_MARK, runBranch, runPinOf, runRootOf, runSlug, stageDirName, WORKTREES_DIR } from "./workspace-layout.js";
+import { ADMIN_MARK, adminPinOf, IGNORE_PREFIX, isIgnoreFolder, JOIN_DIR, OUT_DIR, PIN_DIR, RUN_FILE, RUN_MARK, runBranch, runPinOf, runRootOf, runSlug, stageDirName, WORKTREES_DIR } from "./workspace-layout.js";
 import { isRecordFilePath, isWorkspaceRecord, type LiveRepo, type OutputFile, ownerOf, recordFits, type Registration, runFolderOf, type StageEntry, samePath, vetRecordPath, type WorkspaceRecord } from "./workspace-record.js";
 import { copySeedFiles, hashSeedFile, listSeedFiles, MAX_SEED_BYTES, MAX_SEED_FILES, type SeedRules } from "./workspace-seed.js";
 
@@ -114,6 +114,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
   }
 
   const noLink = (error: unknown): boolean => error instanceof OwnedFsError && error.reason === "no-link";
+  const devOf = (id: NodeId): string => id.slice(0, id.indexOf(":"));
 
   function writeRunFile(at: Pick<Held, "run">, file: WorkspaceRecord): void {
     at.run.writeFileAtomic(RUN_FILE, JSON.stringify(file));
@@ -168,7 +169,19 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     if (gitDir === undefined || at.file.repo === undefined) throw new OwnedFsError("not-plain", "the record's repository is not the open project's");
     return holdDir(gitDir, at.file.repo.id).existing("worktrees");
   }
-  const adminPin = (at: Held, key: string): Pin => ({ dir: at.project, name: adminPinOf(basename(at.runRoot), key) });
+  /** Where a registration's pin is. A pin is on its anchor's volume: beside the run folder for a repository on the home's device, and
+   * else in the repository's own `ave-pins`, which a stage cannot write either. With "make", that folder is made when it is not there. */
+  function adminPin(at: Held, key: string, make?: "make"): Pin {
+    const name = adminPinOf(basename(at.runRoot), key);
+    const repo = at.file.repo;
+    if (repo === undefined || devOf(repo.id) === devOf(at.project.id)) return { dir: at.project, name };
+    const gitDir = at.live?.gitDir;
+    if (gitDir === undefined) throw new OwnedFsError("not-plain", "the record's repository is not the open project's");
+    const common = holdDir(gitDir, repo.id);
+    const dir = make === "make" ? common.ensure(PIN_DIR) : common.existing(PIN_DIR);
+    if (dir === undefined) throw new OwnedFsError("changed", "the anchor's pin is gone");
+    return { dir, name };
+  }
 
   /**
    * The registration git made for a folder of the run, read from the folder's `.git` file and taken only when the two name each other by
@@ -201,9 +214,9 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     const found = captureRegistration(at, key, folder);
     if (found === undefined) return undefined;
     let id: FolderId;
-    try { id = found.held.anchor(ADMIN_MARK, adminPin(at, key)); } catch (error) {
+    try { id = found.held.anchor(ADMIN_MARK, adminPin(at, key, "make")); } catch (error) {
       await found.worktrees.remove(basename(found.admin), found.held.id).catch(() => undefined);
-      await dropPin(at.project, adminPin(at, key).name).catch(() => undefined);
+      await dropAdminPin(at, key).catch(() => undefined);
       throw error;
     }
     const registration: Registration = { admin: found.admin, id, gitdir: found.gitdir };
@@ -234,6 +247,17 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     return { worktrees, name };
   }
 
+  /** Unlinks a registration's pin whose anchor is gone; a repository's `ave-pins` goes with its last pin. */
+  async function dropAdminPin(at: Held, key: string): Promise<void> {
+    let pin: Pin;
+    try { pin = adminPin(at, key); } catch (error) {
+      if (error instanceof OwnedFsError && error.reason === "changed") return;
+      throw error;
+    }
+    await dropPin(pin.dir, pin.name);
+    if (pin.dir !== at.project) pin.dir.removeSelfIfEmpty();
+  }
+
   /** Takes the run's own registration out of the repository, host-side and by identity. Git's prune is never run: it would drop every
    * registration whose folder is missing, the user's too. */
   async function removeRegistration(at: Held, key: string): Promise<void> {
@@ -242,7 +266,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     await assertRepository(at);
     const found = ownRegistration(at, key, registration);
     if (found !== undefined) await found.worktrees.remove(found.name, registration.id);
-    await dropPin(at.project, adminPin(at, key).name);
+    await dropAdminPin(at, key);
     delete at.file.registrations[key];
     writeRunFile(at, at.file);
   }
@@ -415,6 +439,9 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     // A git whose hooks the floor is not proven to keep off is not run on the repository; the run waits for one that is.
     if (!(await git.floorHolds())) return { field: "git.hooks", side: "unverified" };
     // `live.root` is the caller's open project as `liveOf` (or `open`) read it from disk, not record text.
+    // `project.id` and `repo.id` are plain ids, with no pin: a folder made anew may carry a reused one. That never widens what goes, as
+    // the repository loses only a registration held by its pinned anchor and a ref the run recorded; an id that does not match only
+    // leaves the repository as it is.
     let rootId: NodeId | undefined;
     // A root that cannot be read may still be the recorded one: nothing of the run is taken apart on that.
     try { rootId = realDirId(live.root, "known"); } catch { return { field: "project.id", side: "unverified" }; }
@@ -1057,7 +1084,9 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     await at.run.remove(RUN_FILE);
     await at.run.remove(RUN_MARK);
     // The run's pins go with its record, those of registrations left in a repository too, and so does any pin a stop left that holds
-    // nothing. Only empty folders go from here on: the run folder, then the project folder while the levels above it are still the same.
+    // nothing. A pin whose anchor is still there stays: a stop before a record was written leaves it with the unrecorded run folder it
+    // pins, as that folder stays too. Only empty folders go from here on: the run folder, then the project folder while the levels above
+    // it are still the same.
     try {
       const own = `${basename(at.runRoot)}.`;
       for (const name of at.project.list()) if (name.endsWith(".pin")) await dropPin(at.project, name, name.startsWith(own) ? "any" : undefined);

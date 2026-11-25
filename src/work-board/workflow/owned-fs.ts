@@ -58,6 +58,25 @@ function isRecorded(path: string, stat: BigIntStats, id: FolderId): boolean {
 }
 /** What a volume answers when it cannot give a file a second name. */
 const NO_LINK = new Set(["EPERM", "ENOTSUP", "EOPNOTSUPP", "EXDEV", "EMLINK", "ENOSYS", "EINVAL", "EISDIR"]);
+/** Whether the volume of `dir` gives a file a second name there at all: a refusal it gives the probe too is the volume's, any other is
+ * the pin's own. */
+function linksIn(dir: OwnedDir, name: string): boolean {
+  const probe = dir.makeTemp(".probe-");
+  const file = join(probe.path, "a");
+  try {
+    closeSync(probe.createFile("a").fd);
+    probe.check();
+    linkSync(file, join(probe.path, entryName(name)));
+    return true;
+  } catch (error) {
+    if (NO_LINK.has(codeOf(error) ?? "")) return false;
+    throw error;
+  } finally {
+    unlinkEntry(join(probe.path, name));
+    unlinkEntry(file);
+    rmdirSync(probe.path);
+  }
+}
 /** A junction or any other link is no real directory. */
 const realDir = (stat: BigIntStats | undefined): stat is BigIntStats => stat?.isDirectory() === true && !stat.isSymbolicLink();
 const codeOf = (error: unknown): string | undefined => (error as NodeJS.ErrnoException).code;
@@ -270,9 +289,12 @@ class Dir implements OwnedDir {
     this.check();
     if (stats(path) === undefined) closeSync(this.createFile(name).fd);
     if (pin.dir.entryId(pin.name) === undefined) {
+      // Only a file with no other name is pinned: a link would pin what it points at, a second name another file's id.
+      const stat = stats(path);
+      if (stat === undefined || !stat.isFile() || stat.nlink !== 1n) throw new OwnedFsError("changed", "the anchor is not a file of its own");
       this.check();
       try { linkSync(path, join(pin.dir.path, entryName(pin.name))); } catch (error) {
-        if (NO_LINK.has(codeOf(error) ?? "")) throw new OwnedFsError("no-link", "the volume gives a file no second name");
+        if (NO_LINK.has(codeOf(error) ?? "") && !linksIn(pin.dir, pin.name)) throw new OwnedFsError("no-link", "the volume gives a file no second name");
         if (codeOf(error) === "EEXIST") throw new OwnedFsError("exists", "the pin's name is taken");
         throw error;
       }
