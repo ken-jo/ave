@@ -1322,7 +1322,6 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       confines: { filesystem: true, process: false, network: true },
       boot: { action: "activate", reason: "activate-windows-mxc-proxy-only", onSignal: "default-settings", causes: [] },
       windowsSubstrate: {
-
         mxc: { state: "available" }, windowsBuild: "10.0.26300.9711", srtWinReady: false,
         shells: "mxc", extensions: "none", shellEgressIdentity: "kernel-channel", extensionEgressIdentity: "shared",
       },
@@ -1395,7 +1394,6 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       homePrivacyError,
       boot: { action: "degrade", reason: "degrade-ave-home-privacy-failed", onSignal: "default-settings", causes: ["ave-home-privacy-failed"] },
       windowsSubstrate: {
-
         mxc: { state: "available" }, windowsBuild: "10.0.26300.9711", srtWinReady: false,
         shells: "none", extensions: "none", shellEgressIdentity: "shared", extensionEgressIdentity: "shared", extensionPlan,
       },
@@ -1655,7 +1653,6 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
         confines: { filesystem: true, process: false, network: true },
         boot: { action: "activate", reason: "activate-windows-mxc-proxy-only", onSignal: "default-settings", causes: [] },
         windowsSubstrate: {
-
           mxc: { state: "available" }, windowsBuild: "10.0.26300.9711", srtWinReady: extensionPlan.selectedBackend === "srt-win",
           shells, extensions: extensionPlan.selectedBackend, extensionPlan,
           shellEgressIdentity: shells === "mxc" ? "kernel-channel" : "shared", extensionEgressIdentity: extensionPlan.egressIdentity,
@@ -1791,7 +1788,6 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       confines: { filesystem: true, process: false, network: true },
       boot: { action: "activate", reason: "activate-windows-mxc-proxy-only", onSignal: "default-settings", causes: [] },
       windowsSubstrate: {
-
         mxc: { state: "available" }, windowsBuild: "10.0.26300", srtWinReady: false,
         shells: "mxc", extensions: "none", shellEgressIdentity: "kernel-channel", extensionEgressIdentity: "shared",
       },
@@ -1940,7 +1936,6 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       confines: { filesystem: true, process: false, network: true },
       boot: { action: "activate", reason: "activate-windows-mxc-proxy-only", onSignal: "default-settings", causes: [] },
       windowsSubstrate: {
-
         mxc: { state: "checking" }, windowsBuild: "10.0.26300", srtWinReady: false,
         shells: "approved-host", extensions: "none", shellEgressIdentity: "shared", extensionEgressIdentity: "shared",
       },
@@ -1960,7 +1955,6 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       confines: { filesystem: true, process: false, network: true },
       boot: { action: "degrade", reason: "degrade-windows-init-failed", onSignal: "default-settings", causes: ["init-failed"] },
       windowsSubstrate: {
-
         mxc: { state: "available" }, windowsBuild: "10.0.26300.9711", srtWinReady: true,
         shells: "none", extensions: "none", shellEgressIdentity: "shared", extensionEgressIdentity: "shared",
       },
@@ -1979,7 +1973,6 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       confines: { filesystem: true, process: false, network: true },
       boot: { action: "activate", reason: "deps-present", onSignal: "default-settings", causes: [] },
       windowsSubstrate: {
-
         mxc: { state: "unavailable", reason: "container-unavailable" }, windowsBuild: "10.0.22631.4317", srtWinReady: true,
         shells: "approved-host", extensions: "srt-win", shellEgressIdentity: "shared", extensionEgressIdentity: "shared",
       },
