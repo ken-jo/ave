@@ -1056,7 +1056,9 @@ export const ko: Record<MessageCatalogKey, string> = {
   "be_mxcRuntimeRoot.elevatedOwned": "{path} 폴더는 Ave 를 관리자 권한으로 실행했을 때 만들어져 일반 실행에서는 쓸 수 없습니다. 이 폴더를 삭제한 뒤 Ave 를 다시 시작하거나, 원래 그렇게 설정했다면 다시 관리자 권한으로 실행하세요",
 
   // be_confinementState
-  "be_confinementState.writeGrantRefused": "{path} 에 대한 쓰기 권한을 거부했습니다. 이 위치는 샌드박스 자체 상태이거나 그것을 포함하거나 그 안에 있어, 샌드박스 프로세스가 쓸 수 없습니다. 다른 폴더를 선택하세요({code})",
+  "be_confinementState.writeGrantRefused": "{path} 에 대한 쓰기 권한을 거부했습니다. 이 위치는 {stateClass}이거나 그것을 포함하거나 그 안에 있어, 샌드박스 프로세스가 쓸 수 없습니다. 다른 폴더를 선택하세요({code})",
+  "be_confinementState.helperLedgerClass": "샌드박스 도우미의 권한 기록",
+  "be_confinementState.containerRuntimeClass": "컨테이너 샌드박스의 런타임 폴더",
   "be_confinementState.unresolved": "쓰기 권한을 거부했습니다. 샌드박스 자체 상태의 위치를 확인할 수 없어 어떤 폴더도 그것과 대조할 수 없습니다({code})",
   "be_confinementState.grantUnresolved": "{path} 에 대한 쓰기 권한을 거부했습니다. 이 폴더의 실제 위치를 확인할 수 없어 샌드박스 자체 상태와 대조할 수 없습니다({code})",
 

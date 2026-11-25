@@ -151,7 +151,7 @@ describe("the Windows helper launcher's own environment", () => {
   it("carries the host's state variables, so the ledger it opens is one the state check protects and not the child's", () => {
     const env = buildLauncherEnvironment("win32", host);
     expect(env).toMatchObject(host);
-    expect(srtWinConfinementStatePaths(host, "C:\\Users\\alice")).toContain(win32.join(env.LOCALAPPDATA!, "sandbox-runtime"));
+    expect(srtWinConfinementStatePaths(host, "C:\\Users\\alice")).toContain(win32.join(String(env.LOCALAPPDATA), "sandbox-runtime"));
     const child = sandboxProcessProfileEnvironment(childHome, "win32");
     expect(env.LOCALAPPDATA).not.toBe(child.LOCALAPPDATA);
     expect(Object.values(env)).not.toContain(child.LOCALAPPDATA);

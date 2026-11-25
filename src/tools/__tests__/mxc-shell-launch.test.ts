@@ -40,6 +40,7 @@ import { prepareMxcShellLaunch } from "../mxc-shell-launch.js";
 import { createContainedShellLifecycle } from "../contained-shell-lifecycle.js";
 import { MXC_REQUEST_CHARACTER_LIMIT } from "../../permissions/mxc-windows.js";
 import { mxcConfinementStatePaths } from "../../permissions/mxc-runtime-root.js";
+import { srtWinConfinementStatePaths } from "../../permissions/srt-win-integrity.js";
 import { egressInvocationOwner, onEgressInvocationReleased, openEgressInvocation } from "../../permissions/egress-invocations.js";
 import * as policyPipe from "../../permissions/mxc-policy-pipe.js";
 import * as sandboxCapability from "../../permissions/sandbox-capability.js";
@@ -153,19 +154,20 @@ describe("prepareMxcShellLaunch", () => {
   });
 
   describe.runIf(process.platform === "win32")("the confinement backends' own state", () => {
-    const runtimeRoot = (): string => mxcConfinementStatePaths()[0]!;
+    const runtimeRoot = (): string => String(mxcConfinementStatePaths()[0]);
 
     it.each([
-      ["the runtime root", () => runtimeRoot()],
-      ["a child of the runtime root", () => winPath.join(runtimeRoot(), "runs", "other")],
-      ["an ancestor of the runtime root", () => winPath.dirname(winPath.dirname(runtimeRoot()))],
-    ])("refuses a write root at %s before ranking or any listener", async (_name, path) => {
+      ["the runtime root", () => runtimeRoot(), "container-runtime"],
+      ["a child of the runtime root", () => winPath.join(runtimeRoot(), "runs", "other"), "container-runtime"],
+      ["an ancestor of the runtime root", () => winPath.dirname(winPath.dirname(runtimeRoot())), undefined],
+      ["the other backend's state", () => String(srtWinConfinementStatePaths()?.[0]), "helper-ledger"],
+    ])("refuses a write root at %s before ranking or any listener", async (_name, path, reason) => {
       relay();
       const lifecycle = createContainedShellLifecycle();
       try {
         const allowWrite = [WS, path()];
         await expect(prepareMxcShellLaunch({ ...INPUT, filesystem: { ...INPUT.filesystem, allowWrite } }, lifecycle))
-          .rejects.toMatchObject({ code: "confinement-state-write-grant", path: allowWrite[1] });
+          .rejects.toMatchObject({ code: "confinement-state-write-grant", path: allowWrite[1], ...reason === undefined ? {} : { reason } });
         expect(h.openRelay).not.toHaveBeenCalled();
       } finally {
         expect(await lifecycle.dispose()).toEqual([]);
@@ -189,7 +191,7 @@ describe("prepareMxcShellLaunch", () => {
       const lifecycle = createContainedShellLifecycle();
       try {
         const launch = await prepareMxcShellLaunch({ ...INPUT, filesystem: { ...INPUT.filesystem, allowRead: [runtimeRoot()] } }, lifecycle);
-        expect(decodeRequest(launch.argv)["filesystem"]["readwritePaths"]).toEqual([WS]);
+        expect(decodeRequest(launch.argv).filesystem.readwritePaths).toEqual([WS]);
       } finally {
         expect(await lifecycle.dispose()).toEqual([]);
       }

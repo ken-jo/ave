@@ -1054,7 +1054,9 @@ export const en = {
   "be_mxcRuntimeRoot.elevatedOwned": "the folder {path} was created while Ave ran as administrator, so a normal run cannot use it. Delete that folder and restart Ave, or run Ave as administrator again if that is how you set it up",
 
   // be_confinementState
-  "be_confinementState.writeGrantRefused": "Write access to {path} was refused: it is, holds or lies inside the sandbox's own state, which no sandboxed process may write. Choose a different folder ({code})",
+  "be_confinementState.writeGrantRefused": "Write access to {path} was refused: it is, holds or lies inside {stateClass}, which no sandboxed process may write. Choose a different folder ({code})",
+  "be_confinementState.helperLedgerClass": "the sandbox helper's permission records",
+  "be_confinementState.containerRuntimeClass": "the container sandbox's runtime folder",
   "be_confinementState.unresolved": "Write access was refused: the location of the sandbox's own state could not be determined, so no folder can be checked against it ({code})",
   "be_confinementState.grantUnresolved": "Write access to {path} was refused: where that folder really is could not be determined, so it cannot be checked against the sandbox's own state ({code})",
 

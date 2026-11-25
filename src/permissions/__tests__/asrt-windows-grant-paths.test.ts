@@ -24,6 +24,7 @@ import { ConversationLoop } from "../../engine/conversation-loop.js";
 import { makeBasicConversationLoopDeps } from "../../engine/__tests__/support/conversation-loop-fixtures.js";
 import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
 import { admitMxcExtensionFilesystem, buildSandboxConfig, getDefaultSensitiveWriteDenyEntries, grantWindowsWorkerFilesystemAccess, initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox, runWithSandboxWritePreflight, wrapToolCommand } from "../asrt-sandbox.js";
+import { mxcConfinementStatePaths } from "../mxc-runtime-root.js";
 import { mxcPolicyRows } from "../mxc-windows.js";
 
 vi.mock("@anthropic-ai/sandbox-runtime", async importOriginal => ({
@@ -371,8 +372,13 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     await initializeAsrtSandbox({});
     for (const path of [state, join(state, "child"), local]) {
       await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [path] }))
-        .rejects.toMatchObject({ code: "confinement-state-write-grant", path });
+        .rejects.toMatchObject({ code: "confinement-state-write-grant", path, reason: "helper-ledger" });
     }
+    // The other backend's runtime root is a read deny here already; the state rule also refuses a folder holding it.
+    const container = dirname(String(mxcConfinementStatePaths()[0]));
+    mkdirSync(container, { recursive: true });
+    await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [container] }))
+      .rejects.toMatchObject({ code: "confinement-state-write-grant", path: container, reason: "container-runtime" });
     expect(runtime.grantWindowsAcl).not.toHaveBeenCalled();
     for (const request of [{ allowWrite: [sibling] }, { allowRead: [state] }]) {
       const grant = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 2, ...request });

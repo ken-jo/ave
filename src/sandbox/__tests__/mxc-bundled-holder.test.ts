@@ -6,7 +6,8 @@ import { SIMULATED_MXC_RUNTIME_ROOT, SYNTHETIC_MXC_STAGING_PARENT } from "../../
 import { escapeRegExp } from "../../shared/escape-reg-exp.js";
 import { assertSandboxWindowsExtensionPlan } from "../../shared/sandbox-capability-info.js";
 
-const STAGING_PATH_PREFIX = `${SYNTHETIC_MXC_STAGING_PARENT}\\`;
+const HELPER_STATE = "C:\\helper\\sandbox-runtime";
+const STAGING_PATH_PREFIX =`${SYNTHETIC_MXC_STAGING_PARENT}\\`;
 const STAGING_PARENT_PATTERN = escapeRegExp(SYNTHETIC_MXC_STAGING_PARENT);
 const STAGING_ROOT_PATTERN = new RegExp(String.raw`^${STAGING_PARENT_PATTERN}\\[0-9a-f]{32}$`, "u");
 const STAGING_TREE_PATTERN = new RegExp(String.raw`^${STAGING_PARENT_PATTERN}\\[0-9a-f]{32}`, "u");
@@ -30,6 +31,7 @@ const state = vi.hoisted(() => ({
   stagingParentRefusalFrom: 1,
   stagingParentCalls: 0,
   statePaths: [] as string[],
+  helperStatePaths: [] as string[] | undefined,
   renameFail: new Map<string, string>(),
   probe: vi.fn(),
 }));
@@ -60,6 +62,10 @@ vi.mock("../../permissions/mxc-filesystem-ownership.js", async (original) => {
   };
 });
 // The staging parent start-up establishes under the runtime root, on the in-memory drive below.
+vi.mock("../../permissions/srt-win-integrity.js", async (original) => ({
+  ...await original<typeof import("../../permissions/srt-win-integrity.js")>(),
+  srtWinConfinementStatePaths: () => state.helperStatePaths,
+}));
 vi.mock("../../permissions/mxc-runtime-root.js", async (original) => {
   const { SYNTHETIC_MXC_STAGING_PARENT } = await import("../../__tests__/support/mxc-staging-parent.js");
   return {
@@ -254,6 +260,7 @@ beforeEach(() => {
   state.stagingParentRefusalFrom = 1;
   state.stagingParentCalls = 0;
   state.statePaths = [SIMULATED_MXC_RUNTIME_ROOT];
+  state.helperStatePaths = [HELPER_STATE];
   state.renameFail = new Map();
   state.probe.mockReset();
   state.probe.mockResolvedValue(new Map());
@@ -463,7 +470,7 @@ describe("the backend's own state", () => {
   ])("refuses a caller write grant through %s, by the identity it resolves to", async (_name, path, target) => {
     state.links.set("C:\\alias", target);
     const refusal = await spawnMxcBundledHolder(input({ allowWrite: [path] })).catch((error: unknown) => error);
-    expect(refusal).toMatchObject({ code: "confinement-state-write-grant", path, reason: "overlap" });
+    expect(refusal).toMatchObject({ code: "confinement-state-write-grant", path, reason: "container-runtime" });
     await expect(prepareMxcPluginChildLaunch({ pluginId: "fs", command: NODE, cwd: "C:\\ave\\plugins\\fs\\gen", pluginDataDir: path,
       baseEnv: { SYSTEMROOT: "C:\\Windows" }, envelope: { read: [], write: [path] } })).rejects.toMatchObject({ code: "confinement-state-write-grant" });
     expect(state.spawn).not.toHaveBeenCalled();
@@ -474,6 +481,18 @@ describe("the backend's own state", () => {
     const path = "E:\\nowhere\\data";
     await expect(spawnMxcBundledHolder(input({ allowWrite: [path] })))
       .rejects.toMatchObject({ code: "confinement-state-write-grant", path, reason: "grant-unresolved" });
+    expect(state.spawn).not.toHaveBeenCalled();
+  });
+
+  it("also refuses the other backend's state, and every write when that state cannot be located", async () => {
+    const path = winPath.join(HELPER_STATE, "ledger");
+    await expect(spawnMxcBundledHolder(input({ allowWrite: [path] })))
+      .rejects.toMatchObject({ code: "confinement-state-write-grant", path, reason: "helper-ledger" });
+    await expect(prepareMxcPluginChildLaunch({ pluginId: "fs", command: NODE, cwd: "C:\\ave\\plugins\\fs\\gen", pluginDataDir: path,
+      baseEnv: { SYSTEMROOT: "C:\\Windows" }, envelope: { read: [], write: [path] } })).rejects.toMatchObject({ reason: "helper-ledger" });
+    state.helperStatePaths = undefined;
+    await expect(spawnMxcBundledHolder(input({ allowWrite: [sibling] })))
+      .rejects.toMatchObject({ code: "confinement-state-write-grant", path: undefined });
     expect(state.spawn).not.toHaveBeenCalled();
   });
 
@@ -828,7 +847,8 @@ describe("container refusal copy (row 6 disclosure)", () => {
     new MxcNativeEntryRequiredError(),
     new PluginChildTerminationUnverifiedError("demo", {}),
     new MxcExtensionReadinessRefusedError(),
-    new ConfinementStateWriteGrantError("C:\\state"),
+    new ConfinementStateWriteGrantError("C:\\state", "helper-ledger"),
+    new ConfinementStateWriteGrantError("C:\\state", "container-runtime"),
     new ConfinementStateWriteGrantError(undefined),
     new ConfinementStateWriteGrantError("C:\\elsewhere", "grant-unresolved"),
   ];
@@ -839,13 +859,14 @@ describe("container refusal copy (row 6 disclosure)", () => {
     try {
       const codes = refusals().map((error) => {
         // A missing key would render the raw key; a missing placeholder would render the braces.
-        expect(error.message).not.toMatch(/be_[A-Za-z]+\.|\{[a-z]+\}/u);
+        expect(error.message).not.toMatch(/be_[A-Za-z]+\.|\{[A-Za-z]+\}/u);
         expect(error.message.endsWith(`(${error.code})`)).toBe(true);
         return error.code;
       });
       expect(codes).toEqual(["executable-not-admissible", "holder-workspace-busy", "holder-workspace-busy", "bash-incompatible", "holder-environment-refused",
         "holder-quarantined", "worker-transport-unsupported", "native-entry-required", "plugin-child-termination-unverified",
-        "extension-readiness-refused", "confinement-state-write-grant", "confinement-state-write-grant", "confinement-state-write-grant"]);
+        "extension-readiness-refused", "confinement-state-write-grant", "confinement-state-write-grant", "confinement-state-write-grant",
+        "confinement-state-write-grant"]);
     } finally {
       setLocale(previous);
     }
