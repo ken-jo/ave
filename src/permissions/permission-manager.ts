@@ -628,7 +628,7 @@ export class PermissionManager {
   private resolveJudgeRootSession: (sessionId: string) => string = (sessionId) => sessionId;
   private verdictCache: VerdictCache | null = null;
   private recentlyDenied: RecentlyDeniedStore | null = null;
-  private readonly pipelineRequests = new WeakMap<PermissionCheckResult, { request: PermissionDecisionRequest; policyEpoch: string; hostTerminalContext?: HostTerminalPermissionContext }>();
+  private readonly pipelineRequests = new WeakMap<PermissionCheckResult, { request: PermissionDecisionRequest; policyEpoch: string; policyContextEpoch: string; hostTerminalContext?: HostTerminalPermissionContext }>();
   private reviewerCacheScope: Record<string, unknown> = {};
   // Runtime degrade flag — true when the persisted reviewer mode is "llm" but boot wiring could not instantiate the LLM provider adapter (fresh install: no chat provider/key configured) and fell back to the rule classifier. Surfaced to the renderer (PermissionsTab banner) so the user understands the reviewer is running rule-only until they configure a provider. Reset to false on every successful "llm" wiring.
   private reviewerDegradedToRule = false;
@@ -906,6 +906,10 @@ export class PermissionManager {
   // run's own memory-only allow rule, which a fresh permission check of the pending call reads. Different: something else changed
   // (a setting, a mode, a saved rule, a grant, the reviewer), and an answer given across it is refused.
   getPolicyContextEpoch(): string {
+    // The same refreshes as `getPolicyEpoch`, so the two are read of one state whichever is asked first.
+    this.refreshShellSessionConsent();
+    this.refreshPermissionStoreError();
+    this.refreshReviewerSettingsError();
     return `${this.policyGeneration - this.memoryRuleGeneration}:${this.projectRuleScopes.getRevision()}:${this.mode}`;
   }
 
@@ -1651,15 +1655,19 @@ export class PermissionManager {
       ...(decision.outcome === "ask-forced" || (request.manualRerun || request.agentBrowser && request.exfiltration !== undefined) && decision.outcome === "ask" ? { forceModal: true } : {}),
       ...(decision.reviewRequired ? { reviewer: { route: request.headless ? "headless" as const : "foreground-auto" as const } } : {}),
     };
-    this.pipelineRequests.set(result, { request, policyEpoch: this.getPolicyEpoch(), ...(hostTerminalContext ? { hostTerminalContext } : {}) });
+    this.pipelineRequests.set(result, { request, policyEpoch: this.getPolicyEpoch(), policyContextEpoch: this.getPolicyContextEpoch(), ...(hostTerminalContext ? { hostTerminalContext } : {}) });
     return result;
   }
 
-  recheckPermission(result: PermissionCheckResult): PermissionCheckResult {
+  // `acrossMemoryRuleChanges`: for a card a person answers or is about to (pending-answer-policy.ts). Steps that only added or dropped
+  // a memory-only allow rule since the request was issued do not make it stale; every other change still does. Never passed for a
+  // call no person answers: an allow a run's rule gave must not be re-read after the run ended.
+  recheckPermission(result: PermissionCheckResult, options?: { acrossMemoryRuleChanges: true }): PermissionCheckResult {
     const issued = this.pipelineRequests.get(result);
     if (!issued) throw new JudgeContractError("Permission recheck requires an issued pipeline request");
     this.pipelineRequests.delete(result);
-    const stale = issued.policyEpoch !== this.getPolicyEpoch();
+    const stale = issued.policyEpoch !== this.getPolicyEpoch()
+      && !(options?.acrossMemoryRuleChanges === true && issued.policyContextEpoch === this.getPolicyContextEpoch());
     const refreshed = this.pipelineResult({ ...issued.request,
       ...(stale ? { admissionDenial: STALE_PERMISSION_POLICY } : {}),
     }, issued.hostTerminalContext);

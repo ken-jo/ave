@@ -1,3 +1,4 @@
+import { registerRunSession, __resetRunGrantsForTest } from "../../permissions/run-grants.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -706,7 +707,9 @@ describe("executor automated approval pause", () => {
     expect(current.manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(true);
   });
 
-  it.each(["approved", "policy changed"] as const)("rechecks a reviewed host permit paused during final routing and keeps its late card normal: %s", async outcome => {
+  // "sibling run rule": another stage of a template run saves "Allow for this run" while this session's pause card is open. The answer
+  // to the pause card stands (pending-answer-policy.ts).
+  it.each(["approved", "sibling run rule", "policy changed"] as const)("rechecks a reviewed host permit paused during final routing and keeps its late card normal: %s", async outcome => {
     const f = await subject();
     const command = "printf late-card";
     f.manager.setMode("auto");
@@ -743,6 +746,12 @@ describe("executor automated approval pause", () => {
     expect(cards[0]).toMatchObject({ exactRecordAllowed: true,
       shellRule: expect.objectContaining({ sessionAllowed: true, persistentAllowed: true, exactRule: `Bash(${command})` }),
     });
+    if (outcome === "sibling run rule") {
+      registerRunSession("work-board:7#run-a", "sibling-stage-session", { stageId: "build", stageName: "Build", lane: "attended" });
+      const before = f.manager.getPolicyEpoch();
+      f.manager.addRunRule("sibling-stage-session", "Bash(npm test)");
+      expect(f.manager.getPolicyEpoch()).not.toBe(before);
+    }
     approve(cards[0]);
     await held.waits[1].reached;
     if (outcome === "policy changed") {
@@ -750,7 +759,8 @@ describe("executor automated approval pause", () => {
     }
     held.waits[1].release();
     const [result] = await pending;
-    if (outcome === "approved") {
+    __resetRunGrantsForTest();
+    if (outcome !== "policy changed") {
       expect(result.is_error, result.content).toBeUndefined();
       expect(result.content).toContain("late-card");
       expect(execute).toHaveBeenCalledOnce();

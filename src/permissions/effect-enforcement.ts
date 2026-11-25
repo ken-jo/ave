@@ -1,3 +1,4 @@
+import { answerEpochsOf, personAnswerStands } from "./pending-answer-policy.js";
 import { refreshRemoteControllerBoundToSession, isRemoteControllerBoundToSession, remoteControllerOriginOf, type RemoteControllerAuthority } from "../shared/chat-origin.js";
 // Actual host effects enter the common permission pipeline before recording and execution.
 // Authorize before recording and execution; network audit also records denied attempts. Invalid input snapshots never reach implementation.
@@ -368,7 +369,7 @@ export async function gateMutatingEffect(params: {
   }
   // No enclosing-tool grant is reused: exact payloads have independent policy and cache identities.
   const effectToolName = `effect_${params.methodPath.replaceAll(".", "_")}`;
-  let permission = manager.checkDetailed(effectToolName, "plugin", category, undefined, {
+  const checkEffect = (): PermissionCheckResult => manager.checkDetailed(effectToolName, "plugin", category, undefined, {
     ...ctx.permissionContext,
     headless,
     approvalCacheKey: key,
@@ -379,6 +380,7 @@ export async function gateMutatingEffect(params: {
     ...(network ? { ruleSubject: issueHostNetworkSubject({ url: actualUrl as string }) } : workerCommand ? { ruleSubject: { kind: "shell" as const, dialect: "bash" as const, command: workerCommand, cwd: process.cwd() }, shellExecution: { runsSandboxed: false } } : {}),
     ...(remembered === "deny-always" ? { admissionDenial: { code: "effect-denied", reason: "The user denied this exact effect." } } : {}),
   });
+  let permission = checkEffect();
   if (ctx.standalone) {
     // Storage reads and own-storage writes need no card but keep admission, floors and rules; remembered grants never widen the approved scope.
     const storageRead = params.effect === "read" && pathReadEffectPaths.has(params.methodPath);
@@ -432,7 +434,7 @@ export async function gateMutatingEffect(params: {
     ? `${params.methodPath} → ${params.target}`
     : params.methodPath;
   const reusableGrant = snapshot.reusable && !params.capabilityBound && !permission.forceModal && params.input !== undefined;
-  const policyEpoch = manager.getPolicyEpoch();
+  const opened = answerEpochsOf(manager);
   const decision = await params.approvalGate.requestAndWait({
     id: randomUUID(),
     category: "agent-action",
@@ -466,7 +468,8 @@ export async function gateMutatingEffect(params: {
 
   ctx.abortSignal?.throwIfAborted();
   if (!await refreshRemoteControllerBoundToSession(ctx.permissionContext?.remoteControllerAuthority, ctx.sessionId)) throw new Error("remote-controller-revoked");
-  if (policyEpoch !== manager.getPolicyEpoch()) throw new Error("Permission policy changed during effect approval");
+  // Another conversation's or run's memory-only allow rule leaves the answer standing; any other change refuses it.
+  if (!personAnswerStands(manager, opened, permission.forceModal === true, checkEffect)) throw new Error("Permission policy changed during effect approval");
   assertEffectPaths(paths);
   if (decision.rememberPattern === NO_APPROVER_MESSAGE) {
     noApproverLatch.get(ctx)?.();

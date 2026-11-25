@@ -311,7 +311,7 @@ describe("Allow for this run, from the card to node R", () => {
     expect(f.execute).not.toHaveBeenCalled();
   });
 
-  it("an open card whose call the policy now denies is refused, whatever the answer", async () => {
+  it("a card open while a deny rule is set is refused as a changed policy, whatever the answer", async () => {
     const f = await subject();
     f.link(RUN, "plan-session", "plan");
     f.link(RUN, "build-session", "build");

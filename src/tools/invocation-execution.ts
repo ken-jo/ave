@@ -1,3 +1,4 @@
+import { type AnswerEpochs, answerEpochsOf, answerSurvivesRecheck, onlyMemoryRulesChangedSince } from "../permissions/pending-answer-policy.js";
 import { dispatchReviewerForInteractiveAuto } from "./pipeline/reviewer-dispatch.js";
 import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pipeline/user-owned-surface.js";
 import { EXACT_HOST_RULE_REASON_CODE, NO_APPROVER_MESSAGE, offersFloorSessionAllow } from "../permissions/decision-pipeline.js";
@@ -744,7 +745,18 @@ export async function executeAuthorizedToolInvocation(
         if (!manager || !gate || !sessionId || origin === null || !validateExternalUrl(url).ok || invocationPermissionContext.headless || invocationPermissionContext.approvalSurface === "unavailable") throw new Error(NO_APPROVER_MESSAGE);
         siteSignal.throwIfAborted();
         if (!await refreshRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)) throw new Error("remote-controller-revoked");
-        const policyEpoch = manager.getPolicyEpoch();
+        const opened = answerEpochsOf(manager);
+        const policyEpoch = opened.epoch;
+        /** The destination judged again after a card the person answered, across memory-only allow-rule steps (pending-answer-policy.ts). */
+        const siteAnswerStands = async (): Promise<boolean> => {
+          if (manager.getPolicyEpoch() === policyEpoch) return true;
+          if (!onlyMemoryRulesChangedSince(manager, opened)) return false;
+          const now = await manager.checkNetworkRules(url, executionCwd, false);
+          // Never stricter than what was judged first: a destination that is now denied, or now asked for or flagged when it was not
+          // (a run's network rule went with its run), is refused.
+          return onlyMemoryRulesChangedSince(manager, opened) && !now.admissionDenial && now.decision !== "deny"
+            && (now.decision === "allow" || rules.decision === "ask") && (!now.exfiltration || Boolean(rules.exfiltration));
+        };
         const rules = await manager.checkNetworkRules(url, executionCwd, false);
         if (rules.admissionDenial || rules.decision === "deny") throw new Error(rules.admissionDenial ?? "Browser destination denied");
         const screened = screenEgressRequest({ url, allowPrivateNetwork: false });
@@ -757,11 +769,11 @@ export async function executeAuthorizedToolInvocation(
           });
           if (actionDecision.choice !== "allow-once" || isHostApprovalRejectedDecision(actionDecision)) throw new Error("Browser navigation denied");
           siteSignal.throwIfAborted();
-          if (!await refreshRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId) || manager.getPolicyEpoch() !== policyEpoch) throw new Error("Browser navigation authority changed");
+          if (!await refreshRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId) || !await siteAnswerStands()) throw new Error("Browser navigation authority changed");
         }
         if (manager.browserSites.allows(sessionId, url)) {
           siteSignal.throwIfAborted();
-          if (!await refreshRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId) || manager.getPolicyEpoch() !== policyEpoch || !isRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)) throw new Error("Browser navigation authority changed");
+          if (!await refreshRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId) || !await siteAnswerStands() || !isRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)) throw new Error("Browser navigation authority changed");
           return;
         }
         const decision = await gate.requestAndWait({
@@ -772,7 +784,7 @@ export async function executeAuthorizedToolInvocation(
         });
         siteSignal.throwIfAborted();
         if (!await refreshRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)) throw new Error("remote-controller-revoked");
-        if (manager.getPolicyEpoch() !== policyEpoch || !isRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)) throw new Error("Permission policy changed during site approval");
+        if (!await siteAnswerStands() || !isRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)) throw new Error("Permission policy changed during site approval");
         const choice = gate.consumeBrowserSiteChoice(decision, sessionId, origin);
         if (decision.choice !== "allow-once" || choice === undefined || isHostApprovalRejectedDecision(decision)) throw new Error("Browser site opening denied");
         siteSignal.throwIfAborted();
@@ -947,9 +959,24 @@ export async function executeAuthorizedToolInvocation(
   };
 
   let lateApprovalPolicyEpoch: string | undefined;
+  let lateApprovalAnswerEpochs: AnswerEpochs | undefined;
+  /** The late card's question judged again across memory-only allow-rule steps (pending-answer-policy.ts): it stands while it is still
+   * asked and no more forced than it was. Returns false for every other change, and when the question is denied or newly forced. */
+  const lateApprovalStandsAcrossMemoryRules = (): boolean => {
+    const manager = services.permissionManager;
+    if (!manager || lateApprovalAnswerEpochs === undefined || !permissionResult?.pipelineRequest || !onlyMemoryRulesChangedSince(manager, lateApprovalAnswerEpochs)) return false;
+    const forced = permissionResult.forceModal === true;
+    permissionResult = manager.recheckPermission(permissionResult, { acrossMemoryRuleChanges: true });
+    if (permissionResult.decision !== "ask" || !answerSurvivesRecheck(permissionResult, forced)) return false;
+    lateApprovalAnswerEpochs = answerEpochsOf(manager);
+    lateApprovalPolicyEpoch = lateApprovalAnswerEpochs.epoch;
+    return true;
+  };
   const assertLateApprovalPolicyCurrent = (): void => {
     const manager = services.permissionManager;
     if (manager && lateApprovalPolicyEpoch !== manager.getPolicyEpoch()) {
+      // A sibling stage's "Allow for this run", or a run that ended, does not withdraw a card that is about to be asked.
+      if (lateApprovalStandsAcrossMemoryRules()) return;
       if (permissionResult?.pipelineRequest) permissionResult = manager.recheckPermission(permissionResult);
       throw new Error(permissionResult?.reason ?? "Permission policy changed before execution.");
     }
@@ -970,7 +997,8 @@ export async function executeAuthorizedToolInvocation(
     });
     if (!userAvailable) throw new Error(NO_APPROVER_MESSAGE);
     if (sessionId === undefined) throw new Error("Automated approval is missing its session identity");
-    lateApprovalPolicyEpoch = services.permissionManager?.getPolicyEpoch();
+    lateApprovalAnswerEpochs = services.permissionManager ? answerEpochsOf(services.permissionManager) : undefined;
+    lateApprovalPolicyEpoch = lateApprovalAnswerEpochs?.epoch;
     let permHook: Awaited<ReturnType<typeof runScriptHook>>;
     try {
       permHook = await runScriptHook(
@@ -1090,9 +1118,11 @@ export async function executeAuthorizedToolInvocation(
     let decision = await services.approvalGate!.requestAndWait(liveRequest);
     abortSignal?.throwIfAborted();
     const currentEpoch = services.permissionManager?.getPolicyEpoch();
+    // The person's answer across another conversation's or run's memory-only allow rule stands; any other change refuses it.
     if (lateApprovalPolicyEpoch !== currentEpoch &&
         (lateApprovalPolicyEpoch === undefined || currentEpoch === undefined ||
-          !services.approvalGate!.allowsPolicyTransition(decision, lateApprovalPolicyEpoch, currentEpoch))) {
+          !services.approvalGate!.allowsPolicyTransition(decision, lateApprovalPolicyEpoch, currentEpoch)) &&
+        !lateApprovalStandsAcrossMemoryRules()) {
       permissionResult = { ...permissionResult, decision: "deny", reason: "Permission policy changed before execution." };
       throw new Error(permissionResult.reason);
     }

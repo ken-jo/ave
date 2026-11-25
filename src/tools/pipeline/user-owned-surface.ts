@@ -1,3 +1,4 @@
+import { answerEpochsOf, answerSurvivesRecheck, onlyMemoryRulesChangedSince } from "../../permissions/pending-answer-policy.js";
 import { randomUUID } from "node:crypto";
 import type { ApprovalDecision, ApprovalGate, ApprovalRequestInput } from "../../permissions/approval-gate.js";
 import { isHostApprovalRejectedDecision } from "../../permissions/approval-gate.js";
@@ -43,7 +44,8 @@ export async function resolveUserOwnedSurfaceApproval(input: {
   if (permission.reviewer && permission.decision === "ask") permission = await input.review(permission);
   if (permission.decision === "deny") throw new Error(permission.reason);
   if (permission.decision === "allow") return { permission, decision, humanApproved: false };
-  const epoch = manager.getPolicyEpoch();
+  const opened = answerEpochsOf(manager);
+  const epoch = opened.epoch;
   const fallback: ApprovalRequestInput = {
     ...request,
     id: randomUUID(),
@@ -55,8 +57,12 @@ export async function resolveUserOwnedSurfaceApproval(input: {
   decision = await gate.requestAndWait(fallback);
   if (request.abortSignal?.aborted && decision.choice.startsWith("deny")) return { permission, decision, humanApproved: false };
   request.abortSignal?.throwIfAborted();
-  if (epoch !== manager.getPolicyEpoch() && !gate.allowsPolicyTransition(decision, epoch, manager.getPolicyEpoch())) throw new Error("Permission policy changed while approval was pending.");
-  permission = manager.recheckPermission(permission);
+  if (epoch !== manager.getPolicyEpoch() && !gate.allowsPolicyTransition(decision, epoch, manager.getPolicyEpoch())) {
+    // Another conversation's or run's memory-only allow rule leaves the answer standing; any other change refuses it.
+    if (!onlyMemoryRulesChangedSince(manager, opened)) throw new Error("Permission policy changed while approval was pending.");
+    permission = manager.recheckPermission(permission, { acrossMemoryRuleChanges: true });
+    if (!answerSurvivesRecheck(permission, fallback.forceExplicit === true)) throw new Error("Permission policy changed while approval was pending.");
+  } else permission = manager.recheckPermission(permission);
   if (permission.decision === "deny") throw new Error(permission.reason);
   return { permission, decision, humanApproved: decision.choice === "allow-once" && !isHostApprovalRejectedDecision(decision) };
 }
