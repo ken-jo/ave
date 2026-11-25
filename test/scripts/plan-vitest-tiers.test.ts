@@ -108,6 +108,12 @@ describe("Vitest tier selection", () => {
       .toMatchObject({ census: false, native: false });
   });
 
+  it("selects every tier when a warning path spells a whole traced summary", () => {
+    const rule = "integration base: traced selection, strict fallback at the main boundary; ";
+    const reason = `pull request into integration/permissions; ${rule}${TRACED} is not a safe command-line path; ${rule}${TRACED}`;
+    expect(pr(["src/ui/renderer/app.tsx"], affected([UNRELATED_TEST], reason))).toMatchObject({ census: true, native: true });
+  });
+
   it("leaves both tiers out of an unrelated pull request", () => {
     expect(pr(["src/ui/renderer/app.tsx", "docs/README.md"])).toMatchObject({ census: false, native: false });
   });

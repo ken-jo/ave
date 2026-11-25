@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { planCiSuite } from "../../scripts/run-ci-suite.mjs";
-import { planVitestTiers, SUITE_PLAN_RULES } from "../../scripts/plan-vitest-tiers.mjs";
+import { planVitestTiers, SUITE_PLAN_RULES, TRACED_AFFECTED_REASON } from "../../scripts/plan-vitest-tiers.mjs";
 
 // planCiSuite reads the diff through git; the scenario supplies the merge commit, its changed paths and, when set, the related-test discovery result.
 type Discovery = { status: number; stdout: string } | undefined;
@@ -72,6 +72,14 @@ describe("Vitest tiers for written planCiSuite plans", () => {
     expect(tiers()).toMatchObject({ census: true, native: true });
   }, 120_000);
 
+  it("selects both tiers for an integration plan whose path warning opens like the traced summary", () => {
+    const path = "1 changed module(s) reach 1 test file(s); a.ts";
+    const { written, tiers } = suitePlan([UNRELATED_TEST, path], PULL_REQUEST, { headRef: "fix/paths", baseRef: "integration/renderer" }, { status: 0, stdout: "[]" });
+    expect(written).toMatchObject({ mode: "affected", reason: expect.stringMatching(/^pull request into integration\/renderer; 1 changed module\(s\) reach 1 test file\(s\); a\.ts is not a safe command-line path; /u) });
+    expect(written.tests.length).toBeGreaterThan(0);
+    expect(tiers()).toMatchObject({ census: true, native: true });
+  }, 120_000);
+
   it("selects both tiers for a full, invalid or empty written plan", () => {
     const fullPlan = suitePlan(["tsconfig.tests.json"], PULL_REQUEST, { headRef: "fix/config", baseRef: "main" });
     expect(fullPlan.written.mode).toBe("full");
@@ -91,5 +99,20 @@ describe("Vitest tiers for written planCiSuite plans", () => {
     expect(rule.replace(/"[^"]*"|`[^`]*`/gu, "")).toBe("mainPush ?  : isCategoryMergeToMain(headRef, baseRef) ? (isTestOnlyDiff(changes.entries) ?  : ) : ");
     expect(literals).toEqual([...SUITE_PLAN_RULES.push, ...SUITE_PLAN_RULES.pull_request]);
     expect(source.match(/reason: `\$\{rule\}; \$\{plan\.reason\}`/gu)).toHaveLength(1);
+  });
+
+  it("matches the selectCiTests summary template to the traced grammar", () => {
+    const source = readFileSync(resolve(root, "scripts/run-ci-suite.mjs"), "utf8");
+    const templates = [...source.matchAll(/reason:\s*warnings \+ selectionRule \+([\s\S]*?),\n\s*tests,/gu)].map(match => match[1]);
+    expect(templates).toHaveLength(1);
+    const pieces = templates[0].split("+").map(piece => piece.trim());
+    expect(pieces.every(piece => /^`[^`]*`$/u.test(piece))).toBe(true);
+    const summary = pieces.map(piece => piece.slice(1, -1).replace(/\$\{[^}]*\}/gu, "0")).join("");
+    const rules = [...(source.match(/const selectionRule = ([\s\S]*?);\n/u)?.[1] ?? "").matchAll(/"([^"]*)"/gu)].map(match => match[1]);
+    expect(rules).toEqual(["test-only diff: affected tests on every base; ", "integration base: traced selection, strict fallback at the main boundary; ", ""]);
+    for (const rule of rules) {
+      expect(TRACED_AFFECTED_REASON.test(`${rule}${summary}`), rule).toBe(true);
+      expect(TRACED_AFFECTED_REASON.test(`a.ts is a global test or build input; ${rule}${summary}`), rule).toBe(false);
+    }
   });
 });

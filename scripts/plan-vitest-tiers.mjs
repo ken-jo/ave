@@ -43,8 +43,8 @@ export const SUITE_PLAN_RULES = Object.freeze({
 const escapeRegExp = text => text.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 const SUITE_PLAN_RULE = Object.fromEntries(Object.entries(SUITE_PLAN_RULES).map(([event, rules]) => [event,
   new RegExp(`^(?:${rules.map(rule => rule.endsWith(" ") ? `${escapeRegExp(rule)}\\S+` : escapeRegExp(rule)).join("|")}); `, "u")]));
-// The selectCiTests summary that follows the rule when tracing raised no fallback warning; anything else is best-effort.
-const TRACED_AFFECTED_REASON = /^(?:test-only diff: affected tests on every base; |integration base: traced selection, strict fallback at the main boundary; )?\d+ changed module\(s\) reach \d+ test file\(s\); /u;
+// The whole remainder must be the selectCiTests summary; any warning text before it is best-effort.
+export const TRACED_AFFECTED_REASON = /^(?:test-only diff: affected tests on every base; |integration base: traced selection, strict fallback at the main boundary; )?\d+ changed module\(s\) reach \d+ test file\(s\); \d+ changed test file\(s\); \d+ test file\(s\) name a changed path; \d+ lock suite file\(s\); \d+ must-run file\(s\)$/u;
 
 /** True only for a reason of the form "<known rule for the event>; <traced summary>". */
 function tracedPlanReason(eventName, reason) {
