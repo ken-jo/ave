@@ -284,11 +284,11 @@ describe("prepareMxcShellLaunch", () => {
 
   it("expands a pattern deny over the filesystem by default, denies a placeholder directory whole and leaves links alone", async () => {
     relay();
-    const sessions = String.raw`C:\Users\u\.ave\sessions`;
+    const sessions = String.raw`C:\Users\bob\.ave\sessions`;
     // Listing reports every reparse point as a link; lstat separates a real link from a cloud placeholder directory.
     onDrive(`${sessions}\\one\\.ssh`);
-    onDrive(String.raw`C:\Users\u\elsewhere\.ssh`);
-    onDrive(`${sessions}\\link`, "link", String.raw`C:\Users\u\elsewhere`);
+    onDrive(String.raw`C:\Users\bob\elsewhere\.ssh`);
+    onDrive(`${sessions}\\link`, "link", String.raw`C:\Users\bob\elsewhere`);
     onDrive(`${sessions}\\cloud`, "placeholder");
     onDrive(`${sessions}\\gone`, "vanished");
     const lifecycle = createContainedShellLifecycle();
@@ -307,7 +307,7 @@ describe("prepareMxcShellLaunch", () => {
 
   it("skips entries removed since the listing, so they count toward no walk cap", async () => {
     relay();
-    const sessions = String.raw`C:\Users\u\.ave\sessions`;
+    const sessions = String.raw`C:\Users\bob\.ave\sessions`;
     onDrive(`${sessions}\\one\\.ssh`);
     // One more than the walk cap; a listing still reports each, as a link.
     for (let index = 0; index <= 20_000; index++) onDrive(`${sessions}\\gone-${index}`, "vanished");
