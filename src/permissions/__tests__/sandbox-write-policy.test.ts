@@ -570,6 +570,11 @@ describe("mandatory sandbox control-file writes", () => {
     writeFileSync(join(worktree, "ave.id"), "");
     const policy = buildMandatorySandboxWritePolicy([root]);
     expect(nativeDenyRows(policy.denyWrite)).toEqual(expect.arrayContaining([join(marker, "ave-pins"), join(worktree, "ave.id")]));
+    expect(nativeDenyRows(policy.denyWrite)).not.toContain(join(marker, "ave.id"));
+    expect(nativeDenyRows(policy.denyWrite)).not.toContain(join(worktree, "ave-pins"));
+    const darwin = (withPlatform("darwin", () => buildMandatorySandboxWritePolicy([root])).denyWrite ?? []).map(entry => typeof entry === "string" ? entry : entry.path);
+    expect(darwin).toEqual(expect.arrayContaining(["/**/.[gG][iI][tT]/[aA][vV][eE]-[pP][iI][nN][sS]", "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[aA][vV][eE].[iI][dD]"]));
+    expect(darwin.filter(row => row.endsWith("[aA][vV][eE]-[pP][iI][nN][sS]") || row.endsWith("[aA][vV][eE].[iI][dD]")).filter(row => row.startsWith("/**/"))).toHaveLength(2);
   });
 
   it("discovers new Linux repositories on each policy build using HEAD markers", () => {

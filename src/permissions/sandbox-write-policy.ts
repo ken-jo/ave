@@ -64,8 +64,6 @@ const MAX_REPOSITORY_ANCESTORS = 256;
 const GIT_CONTROL_ENTRIES = [
   "hooks", "config", "config.worktree", "commondir", "gitdir",
   "objects/info/alternates", "objects/info/http-alternates", "remotes", "branches",
-  // The anchor the host makes in a run's admin folder and the pins it keeps in a repository (work-board workspace-layout.ts).
-  "ave.id", "ave-pins",
 ] as const;
 const LINUX_GIT_CONTROL_ENTRIES = [...GIT_CONTROL_ENTRIES, "info/attributes"] as const;
 export const SANDBOX_BARE_REPOSITORY_ENTRIES = ["HEAD", "objects", "refs", "config"] as const;
@@ -76,7 +74,7 @@ const MAC_GIT_CONTROL_GLOBS = GIT_CONTROL_ENTRIES.flatMap(entry => [
   `/**/${caseInsensitiveGitPattern(`.git/${entry}`)}`,
   `/**/${caseInsensitiveGitPattern(".git/modules")}/**/${caseInsensitiveGitPattern(entry)}`,
   `/**/${caseInsensitiveGitPattern(".git/worktrees")}/*/${caseInsensitiveGitPattern(entry)}`,
-]);
+]).concat(`/**/${caseInsensitiveGitPattern(".git/ave-pins")}`, `/**/${caseInsensitiveGitPattern(".git/worktrees")}/*/${caseInsensitiveGitPattern("ave.id")}`);
 interface GitDiscoveryBudget { entries: number; metadataBytes: number }
 interface GitControlEntryIdentity {
   readonly dev: number | bigint;
@@ -120,6 +118,10 @@ interface GitControlDiscovery {
 }
 function gitControlEntries(discovery?: GitControlDiscovery): readonly string[] {
   return process.platform === "linux" || discovery ? LINUX_GIT_CONTROL_ENTRIES : GIT_CONTROL_ENTRIES;
+}
+// The host anchors a run's admin folder with ave.id and keeps a repository's pins in ave-pins (work-board workspace-layout.ts).
+function storeControlEntries(directory: string, discovery?: GitControlDiscovery): readonly string[] {
+  return [...gitControlEntries(discovery), basename(dirname(directory)) === "worktrees" ? "ave.id" : "ave-pins"];
 }
 function gitEntryIdentity(path: string): GitControlEntryIdentity | undefined {
   let stat;
@@ -629,7 +631,7 @@ function addGitDirectoryControls(
       addInheritedGitConfigHookPaths([directory, dirname(directory)], discovery?.loaderPaths ?? paths, routingPins, budget);
       for (const name of ["config", "config.worktree"]) addConfiguredGitHookPaths(join(directory, name), [directory, dirname(directory)], discovery?.loaderPaths ?? paths, routingPins, budget, new Set(), 0, false);
     }
-    for (const entry of gitControlEntries(discovery)) paths.add(join(directory, entry));
+    for (const entry of storeControlEntries(directory, discovery)) paths.add(join(directory, entry));
     if ([...paths, ...routingPins].reduce((bytes, path) => bytes + Buffer.byteLength(path), 0) > MAX_GIT_ROOT_POLICY_BYTES) return false;
     for (const containerName of ["modules", "worktrees"]) {
       const container = join(directory, containerName);
@@ -675,7 +677,7 @@ function addGitDirectoryControls(
               // An existing grouping directory can become a module store in the same invocation; protect its future controls as well.
               discovery?.stores.set(nested, gitEntryIdentity(nested));
               if (discovery) queue.push(nested);
-              for (const control of gitControlEntries(discovery)) paths.add(join(nested, control));
+              for (const control of storeControlEntries(nested, discovery)) paths.add(join(nested, control));
               if ([...paths, ...routingPins].reduce((bytes, path) => bytes + Buffer.byteLength(path), 0) > MAX_GIT_ROOT_POLICY_BYTES) return false;
               directories.push(nested);
             }
