@@ -10,6 +10,7 @@ import { setDestinationResolverForTesting } from "@anthropic-ai/sandbox-runtime/
 import { useTempDirs as tempDirs } from "../../__tests__/test-helpers.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import * as policyHome from "../../shared/policy-home.js";
+import * as relayDestination from "../egress-relay/destination.js";
 import {
   closeAllEgressConnections,
   closeEgressConnections,
@@ -456,6 +457,28 @@ describe.each([today, next])("egress relay parity: $name relay", (adapter) => {
       tunnel.socket.destroy();
 
       expect(ask.mock.calls.map(([destination, context]) => [destination.host, context.phase])).toEqual([["127.0.0.1", "name"], ["127.0.0.1", "resolved"]]);
+    });
+
+    it.skipIf(adapter.name !== "new")("P21: a loopback name in any spelling reaches the lookup and the resolved-address check as its canonical host", async () => {
+      const echo = net.createServer((socket) => { socket.on("error", () => {}); socket.pipe(socket); });
+      await new Promise<void>((done) => echo.listen(0, "127.0.0.1", done));
+      cleanups.push(() => new Promise<void>((done) => { echo.close(() => done()); }));
+      const port = (echo.address() as net.AddressInfo).port;
+      const ask = vi.fn<Ask>(async () => true);
+      const resolveName = resolverFor({ localhost: ["127.0.0.1"], "a.localhost": ["127.0.0.1"] });
+      const permitted = vi.spyOn(relayDestination, "resolvedAddressPermitted");
+      await start({ ask, resolve: resolveName });
+      const relay = await open();
+
+      for (const spelling of ["LOCALHOST.", "LocalHost", "a.Localhost", "A.LOCALHOST."]) {
+        const tunnel = await openTunnel(relay, `${spelling}:${port}`);
+        tunnel.socket.destroy();
+      }
+
+      const canonical = ["localhost", "a.localhost"];
+      expect(permitted.mock.calls.length).toBeGreaterThan(0);
+      expect([...new Set(permitted.mock.calls.map(([host]) => host))].sort()).toEqual([...canonical].sort());
+      expect([...new Set(resolveName.mock.calls.map(([name]) => name))].sort()).toEqual([...canonical].sort());
     });
 
     it("P21: a private-use literal is asked about", async () => {

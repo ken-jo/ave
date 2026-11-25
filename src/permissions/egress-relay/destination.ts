@@ -1,8 +1,9 @@
 // Destination spelling, allow entries and the resolved-address check of the egress relay.
 import net from "node:net";
 import { networkInterfaces } from "node:os";
+import { embeddedIPv4, isLoopbackName } from "./address-set.js";
 
-function stripBrackets(host: string): string {
+export function stripBrackets(host: string): string {
   return host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
 }
 
@@ -28,17 +29,10 @@ function dottedQuad(high: number, low: number): string {
   return `${high >> 8}.${high & 0xff}.${low >> 8}.${low & 0xff}`;
 }
 
-// The IPv4 address an IPv6 address is delivered to (mapped, translated, compatible, 64:ff9b::/96, 2002::/16), if any.
-function embeddedIPv4(address: string): string | undefined {
-  const g = hextets(address);
-  if (g === undefined) return undefined;
-  const zeroPrefix = g.slice(0, 5).every((group) => group === 0);
-  if (zeroPrefix && g[5] === 0xffff) return dottedQuad(g[6], g[7]);
-  if (g.slice(0, 4).every((group) => group === 0) && g[4] === 0xffff && g[5] === 0) return dottedQuad(g[6], g[7]);
-  if (zeroPrefix && g[5] === 0 && (g[6] !== 0 || g[7] > 1)) return dottedQuad(g[6], g[7]);
-  if (g[0] === 0x64 && g[1] === 0xff9b && g.slice(2, 6).every((group) => group === 0)) return dottedQuad(g[6], g[7]);
-  if (g[0] === 0x2002) return dottedQuad(g[1], g[2]);
-  return undefined;
+// The IPv4 address an IPv6 address is delivered to, if any. `::` and `::1` are judged as themselves (reserved, loopback), not as 0.0.0.0 and 0.0.0.1.
+function deliveredIPv4(address: string): string | undefined {
+  const own = canonicalRelayHost(address.split("%")[0] ?? address);
+  return own === "::" || own === "::1" ? undefined : embeddedIPv4(address);
 }
 
 // Control characters, zone ids and anything outside the DNS label alphabet never reach matching or the wire.
@@ -61,6 +55,12 @@ export function canonicalRelayHost(host: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+// `host[:port]` for a Host header or URL authority: IPv6 bracketed, the scheme's default port left out.
+export function formatAuthority(host: string, port: number, defaultPort: number): string {
+  const spelled = net.isIP(host) === 6 ? `[${host}]` : host;
+  return port === defaultPort ? spelled : `${spelled}:${port}`;
 }
 
 export interface RelayAllowEntry {
@@ -91,10 +91,6 @@ export function relayAllowEntryMatches(entry: RelayAllowEntry, canonicalHost: st
   return net.isIP(canonicalHost) === 0 && canonicalHost.endsWith(`.${entry.host}`);
 }
 
-export function isLoopbackName(host: string): boolean {
-  return host === "localhost" || host.endsWith(".localhost");
-}
-
 const LOOPBACK = new net.BlockList();
 LOOPBACK.addSubnet("127.0.0.0", 8, "ipv4");
 LOOPBACK.addAddress("::1", "ipv6");
@@ -121,9 +117,10 @@ function inList(list: net.BlockList, address: string): boolean {
 
 // A literal no destination may be: unspecified, link-local, multicast, broadcast or an instance-metadata endpoint. Loopback is not in it.
 export function isReservedAddress(address: string): boolean {
-  return [address, embeddedIPv4(address)].some((form) => form !== undefined && inList(RESERVED, form));
+  return [address, deliveredIPv4(address)].some((form) => form !== undefined && inList(RESERVED, form));
 }
 
+// Stricter than the address-set helper of the same name: that one drops a zone id first, so `127.0.0.1%eth0` and `::1%` are loopback there and not here.
 export function isLoopbackAddress(address: string): boolean {
   return inList(LOOPBACK, address);
 }
@@ -138,7 +135,7 @@ export function localInterfaceAddresses(): string[] {
 
 // Loopback, unspecified, or an address of one of this host's interfaces, in either spelling.
 export function isThisHostAddress(address: string, local: readonly string[]): boolean {
-  const forms = [address, embeddedIPv4(address)].filter((form): form is string => form !== undefined);
+  const forms = [address, deliveredIPv4(address)].filter((form): form is string => form !== undefined);
   return forms.some((form) => isLoopbackAddress(form) || form === "0.0.0.0" || form === "::"
     || local.some((own) => own.toLowerCase() === form.toLowerCase()));
 }
@@ -157,7 +154,7 @@ export function resolvedAddressPermitted(
   const literal = canonicalRelayHost(address);
   if (allow.some((entry) => !entry.wildcard && entry.host === literal && entry.port === port)) return true;
   if (isLoopbackName(canonicalHost)) return isLoopbackAddress(address);
-  const forms = [address, embeddedIPv4(address)].filter((form): form is string => form !== undefined);
+  const forms = [address, deliveredIPv4(address)].filter((form): form is string => form !== undefined);
   if (forms.some((form) => inList(LOOPBACK, form) || inList(RESERVED, form))) return false;
   return !isThisHostAddress(address, local);
 }
