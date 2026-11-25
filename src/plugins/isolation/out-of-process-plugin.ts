@@ -743,6 +743,8 @@ export interface OutOfProcessPluginSpec {
   readonly onChildSpawned?: (confinement: SpawnConfinement) => (() => void) | void;
   /** Takes the consent a person gave for this plugin's next child start, if one waits. */
   readonly takeExtensionStart?: () => ExtensionStartAuthority | undefined;
+  /** The install evidence this load was verified against. Part of what a start consent answers for; absent for a load with no receipt. */
+  readonly integrity?: object;
 }
 
 /** The host protocol version this plugin's connection speaks (§3.2). Its declared, served `requires.hostProtocol`. Omission and unserved
@@ -755,17 +757,16 @@ export function connectionHostProtocol(manifest: PluginManifest): HostProtocolVe
   return declared;
 }
 
-/** What a plugin child start runs from: its manifest, the entry it launches and the roots it is given. A consent answers exactly
- * this, so an upgraded or edited plugin is asked about again. */
+/** What a plugin child start runs: its manifest (id, version, declared entry and roots), the kind of launch, and the install
+ * evidence the load was verified against (the artifact hash, where one exists). A consent answers exactly this, so an upgraded,
+ * reinstalled or edited plugin is asked about again. The paths of one activation are left out on purpose: every activation runs
+ * from its own generation directory, and a consent given for a start must still fit that same plugin's next attempt. */
 export function pluginChildStartIdentity(facts: {
   readonly manifest: PluginManifest;
-  readonly launch: OutOfProcessPluginSpec["launch"];
-  readonly childEntryPath: string;
-  readonly pluginRoot: string;
-  readonly pluginDataDir: string;
+  readonly launchKind: OutOfProcessPluginSpec["launch"]["kind"];
+  readonly integrity?: object | undefined;
 }): string {
-  return extensionStartIdentity({ pluginId: facts.manifest.id, manifest: facts.manifest, launch: facts.launch, childEntryPath: facts.childEntryPath,
-    pluginRoot: facts.pluginRoot, pluginDataDir: facts.pluginDataDir });
+  return extensionStartIdentity({ pluginId: facts.manifest.id, manifest: facts.manifest, launchKind: facts.launchKind, integrity: facts.integrity ?? null });
 }
 
 /** Build the factory the lifecycle calls in place of the in-process one. The returned factory does the whole of the boundary's setup; spawn, dispatcher assembly, construct; inside ONE call, which is what puts it under
@@ -785,8 +786,7 @@ export function createOutOfProcessPluginFactory(
     // A native launch is admitted by row 2's own native-entry guard; the legacy guard refuses a selected container plan.
     // The factory, the child spawn and its wrap are three crossings of one start: they share this consent.
     const extensionStart = spec.prepareMxcChild ? undefined : {
-      identity: pluginChildStartIdentity({ manifest: spec.manifest, launch: spec.launch, childEntryPath,
-        pluginRoot: context.pluginRoot, pluginDataDir: context.pluginDataDir }),
+      identity: pluginChildStartIdentity({ manifest: spec.manifest, launchKind: spec.launch.kind, integrity: spec.integrity }),
       authority: spec.takeExtensionStart?.(),
     };
     if (extensionStart) assertExtensionStartAllowed({ start: { key: pluginChildStartKey(pluginId), ...extensionStart } });

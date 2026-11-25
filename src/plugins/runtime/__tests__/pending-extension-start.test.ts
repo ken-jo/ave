@@ -123,11 +123,16 @@ describe("a plugin child start that nothing confines", () => {
     expect(addPlugin).not.toHaveBeenCalled();
   });
 
-  it("fails clearly on a refusal that names no start, or another plugin's", () => {
+  it("does not wait on a refusal that names no start, or another start: it stays a failure of this load", () => {
     const internals = runtime() as unknown as RuntimeInternals;
-    expect(() => internals.reportAttemptFactoryFailure(MANIFEST, new ExtensionStartConsentRequiredError("no-backend"), {})).toThrow("without naming this start");
-    expect(() => internals.reportAttemptFactoryFailure(MANIFEST, new ExtensionStartConsentRequiredError("no-backend", { key: "plugin-child:other", identity: "v1" }), {}))
-      .toThrow("without naming this start");
+    for (const error of [
+      new ExtensionStartConsentRequiredError("no-backend"),
+      new ExtensionStartConsentRequiredError("no-backend", { key: `worker:${PLUGIN_ID}/w`, identity: "v1" }),
+      new ExtensionStartConsentRequiredError("no-backend", { key: "plugin-child:other", identity: "v1" }),
+    ]) {
+      internals.reportAttemptFactoryFailure(MANIFEST, error, {});
+      expect(internals.recordAttemptRefusal(MANIFEST, error, "restart")).toBe(false);
+    }
     expect(listPendingExtensionStarts()).toEqual([]);
   });
 

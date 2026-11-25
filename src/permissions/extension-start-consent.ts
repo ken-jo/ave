@@ -374,7 +374,7 @@ async function retryStart(entry: Entry): Promise<void> {
 
 async function runConfined(entry: Entry): Promise<void> {
   // A no refused an unconfined start; this one is confined, so it runs either way.
-  if (entries.get(entry.key) === entry) forget(entry.key);
+  forget(entry.key);
   record("confined", entry);
   await retryStart(entry);
 }
@@ -386,12 +386,14 @@ async function runConfined(entry: Entry): Promise<void> {
  */
 export async function settlePendingExtensionStarts(session?: ExtensionStartSession): Promise<void> {
   const asked: { entry: Entry; answered: Promise<AskOutcome> }[] = [];
+  const confined: Entry[] = [];
+  // Every waiting start is sorted before anything is awaited, so the ones that need a person all reach the same card.
   for (const waiting of [...entries.values()]) {
-    if (entries.get(waiting.key) !== waiting || asking.has(waiting.key)) continue;
+    if (asking.has(waiting.key)) continue;
     let entry = waiting;
     const now = entry.recheck?.();
     if (now === "confined") {
-      await runConfined(entry);
+      confined.push(entry);
       continue;
     }
     if (now === "refused" || session === undefined) continue;
@@ -401,11 +403,15 @@ export async function settlePendingExtensionStarts(session?: ExtensionStartSessi
     }
     asked.push({ entry, answered: answer(entry, session) });
   }
+  for (const entry of confined) {
+    // An earlier start's run may have removed or replaced this one.
+    if (entries.get(entry.key) === entry) await runConfined(entry);
+  }
   for (const { entry, answered } of asked) {
     const outcome = await answered;
     if (outcome === undefined) continue;
     if (outcome === "confined") {
-      await runConfined(entry);
+      if (entries.get(entry.key) === entry) await runConfined(entry);
       continue;
     }
     // Parked when the card was answered, so a removal or an edit while an earlier start ran has already burned it.

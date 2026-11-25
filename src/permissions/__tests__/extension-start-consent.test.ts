@@ -410,6 +410,22 @@ describe("one card for every waiting start", () => {
     expect(spawned).toHaveLength(2);
   });
 
+  it("keeps the starts that need a person on one card when a confined start waits between them", async () => {
+    const asker = fakeAsker(["yes", "yes"]);
+    setExtensionStartAsker(asker);
+    const ran: string[] = [];
+    const waiting = (key: string, now: "confined" | "no-backend"): PendingExtensionStart =>
+      ({ ...start(key, async () => { ran.push(`${key} ${takeExtensionStartGrant(key) === undefined ? "confined" : "consent"}`); }), recheck: () => now });
+    deferExtensionStart(waiting("plugin-child:a", "no-backend"));
+    deferExtensionStart(waiting("mcp-stdio:b", "confined"));
+    deferExtensionStart(waiting("plugin-child:c", "no-backend"));
+    await settlePendingExtensionStarts(ATTENDED);
+    expect(asker.ask).toHaveBeenCalledTimes(1);
+    expect(asker.ask.mock.calls[0]?.[0].map((asked) => asked.key)).toEqual(["plugin-child:a", "plugin-child:c"]);
+    expect(ran).toEqual(["mcp-stdio:b confined", "plugin-child:a consent", "plugin-child:c consent"]);
+    expect(listPendingExtensionStarts()).toEqual([]);
+  });
+
   it("gives a start the card did not answer no consent, even when the others got a yes", async () => {
     const asker = { ask: vi.fn<ExtensionStartAsker["ask"]>(async () => new Map([["plugin-child:a", "yes" as const], ["plugin-child:zz", "yes" as const]])), notify: vi.fn() };
     setExtensionStartAsker(asker);

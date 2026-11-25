@@ -52,7 +52,6 @@ import {
   PluginSandboxGrantError,
   type ObservedPluginChild,
 } from "../out-of-process-plugin.js";
-import { resolvePluginChildEntryPath } from "../../../permissions/confined-child.js";
 import { resolveProcessLaunch } from "../../process-entry.js";
 // Global setup owns the immutable shipped entry until all children finish.
 import { pluginChildEntryPath } from "../../../__tests__/support/plugin-child-entry.js";
@@ -366,10 +365,8 @@ async function spawnInstalled(
   let stdout = "";
   let observed: ObservedPluginChild | undefined;
   // An unwrapped start needs a person's yes for that one start.
-  const context = contextFor(installed, host, config);
-  const childEntryPath = installed.launch.kind === "entry" ? pluginChildEntryPath() : resolvePluginChildEntryPath();
   const unwrappedStart = wrapped ? undefined : await approvedExtensionStart(pluginChildStartKey(installed.manifest.id),
-    pluginChildStartIdentity({ manifest: installed.manifest, launch: installed.launch, childEntryPath, pluginRoot: context.pluginRoot, pluginDataDir: context.pluginDataDir }));
+    pluginChildStartIdentity({ manifest: installed.manifest, launchKind: installed.launch.kind }));
   const factory = createOutOfProcessPluginFactory({
     manifest: installed.manifest,
     launch: installed.launch,
@@ -382,7 +379,7 @@ async function spawnInstalled(
       });
     },
   });
-  const instance = await factory(context);
+  const instance = await factory(contextFor(installed, host, config));
   return { instance, host, stdout: () => stdout, child: () => observed };
 }
 

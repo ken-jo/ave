@@ -1318,12 +1318,14 @@ describe("construct negotiates the host protocol", () => {
       expect(refused).toMatchObject({ code: EXTENSION_START_CONSENT_REQUIRED_CODE, start: { key: pluginChildStartKey(MANIFEST.id), identity: expect.stringMatching(/^[0-9a-f]{64}$/u) } });
       const identity = named(refused);
       expect(spawnConfinedChild).not.toHaveBeenCalled();
-      // A yes for the same plugin id under another manifest version or another entry does not start this one, and is spent by trying.
+      // A yes for the same plugin id under another version, another declared entry or another verified artifact does not start
+      // this one, and is spent by trying.
       for (const other of [
-        { manifest: { ...MANIFEST, version: `${MANIFEST.version}-next` }, entry: "never-imported.mjs" },
-        { manifest: MANIFEST, entry: "another-entry.mjs" },
+        { manifest: { ...MANIFEST, version: `${MANIFEST.version}-next` } },
+        { manifest: { ...MANIFEST, entry: "another-entry.mjs" } },
+        { manifest: MANIFEST, integrity: { installSource: "marketplace", artifactSha256: "b".repeat(64) } },
       ]) {
-        const changed = createOutOfProcessPluginFactory({ manifest: other.manifest, launch: { kind: "entry", entryPath: join(String(roots.context.pluginRoot), other.entry) } });
+        const changed = createOutOfProcessPluginFactory({ ...other, launch: { kind: "entry", entryPath: join(String(roots.context.pluginRoot), "never-imported.mjs") } });
         const shown = await refusalOf(() => changed(hostContext(fakeHostApi(), roots.context)));
         expect(shown).toMatchObject({ start: { identity: expect.stringMatching(/^[0-9a-f]{64}$/u) } });
         expect(named(shown)).not.toBe(identity);
@@ -1331,6 +1333,11 @@ describe("construct negotiates the host protocol", () => {
         await expect(factory(hostContext(fakeHostApi(), roots.context))).rejects.toThrow(EXTENSION_START_CONSENT_REQUIRED_CODE);
         expect(waiting).toBeUndefined();
       }
+      // The same plugin's next activation runs from another generation directory: it is the same start to the person.
+      const nextActivation = createOutOfProcessPluginFactory({ manifest: MANIFEST,
+        launch: { kind: "entry", entryPath: join(String(roots.context.pluginRoot), "generations", "next", "never-imported.mjs") } });
+      expect(named(await refusalOf(() => nextActivation(hostContext(fakeHostApi(), { ...roots.context, pluginRoot: join(String(roots.context.pluginRoot), "generations", "next") })))))
+        .toBe(identity);
       expect(spawnConfinedChild).not.toHaveBeenCalled();
       waiting = await approvedExtensionStart(pluginChildStartKey(MANIFEST.id), identity);
       spawnConfinedChild.mockRejectedValueOnce(new Error("fixture spawn reached"));
