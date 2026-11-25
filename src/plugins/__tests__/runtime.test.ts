@@ -25,7 +25,7 @@ import { isCommittedPluginGenerationPublicationError } from "../committed-genera
 import { PluginDeploymentGuard } from "../deployment-guard.js";
 import type { PackageKey } from "../../marketplace/sources/policy.js";
 import { uninstallPluginWithLifecycle } from "../uninstall-lifecycle.js";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import {
   makeTestPluginEntrySource,
   makeTestPluginRuntime as constructTestPluginRuntime,
@@ -45,6 +45,11 @@ import { unavailableSecretEncryption } from "../../__tests__/support/host-runtim
 import { pluginChildEntryPath } from "../../__tests__/support/plugin-child-entry.js";
 import { deferred } from "../../__tests__/support/deferred.js";
 import { raceWithTimeout } from "../../shared/abortable-deadline.js";
+import {
+  __resetManagedChildProcessesForTest,
+  forceKillAndDrainManagedChildProcesses,
+} from "../../main/managed-child-processes.js";
+import { SANDBOX_HOME_OWNER_SUFFIX, sandboxProcessHomesInUse } from "../../permissions/sandbox-process-home.js";
 
 let manifestValidator: Awaited<ReturnType<typeof buildManifestValidator>>;
 const testRuntimes = new Set<PluginRuntime>();
@@ -52,6 +57,16 @@ const retainedRuntimes = new Set<PluginRuntime>();
 
 beforeAll(async () => {
   manifestValidator = await buildManifestValidator();
+});
+
+// Stopped runtimes leave no sandbox HOME behind; retained runtimes keep theirs on purpose.
+afterAll(async () => {
+  if (retainedRuntimes.size > 0) return;
+  const leftHomes = () => [...sandboxProcessHomesInUse()]
+    .flatMap((home) => [home, `${home}${SANDBOX_HOME_OWNER_SUFFIX}`].filter((path) => existsSync(path)));
+  const deadline = Date.now() + 2_000;
+  while (leftHomes().length > 0 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(leftHomes()).toEqual([]);
 });
 
 function prepareTestRuntime(runtime: PluginRuntime): PluginRuntime {
@@ -1818,6 +1833,9 @@ export default async function createPlugin() {
       await removal;
     } finally {
       vi.useRealTimers();
+      // The entry never settles stop, so its child is killed here or it keeps its sandbox HOME.
+      await forceKillAndDrainManagedChildProcesses("runtime test: stop handler never settles");
+      __resetManagedChildProcessesForTest();
     }
 
     expect(runtime.listPluginIds()).not.toContain(pluginId);
@@ -3329,7 +3347,7 @@ describe("PluginRuntime lifecycle log emission", () => {
       registryPath,
       pluginsRoot: installedDir,
     });
-    await runtime.load();
+    await runtime.startAll();
     const calls: unknown[][] = [];
     const spyLog = vi.spyOn(console, "log").mockImplementation((...args) => {
       calls.push(args);
