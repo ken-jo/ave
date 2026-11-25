@@ -82,6 +82,7 @@ export const en = {
   "memoryMap.error.project-not-allowed": "This memory scope is unavailable.",
   "memoryMap.error.model-unconfigured": "Set up a local embedding model first.",
   "memoryMap.error.local-runtime-unavailable": "Local embeddings are unavailable because the OS sandbox that keeps the local model off the network is not active.",
+  "memoryMap.error.sandbox-home-unavailable": "Local embeddings are unavailable: Ave could not confirm that its container folder is private to this Windows account, so sandboxed processes (terminal, shells, MCP servers, workers, plugins, the memory map) cannot start. Restart Ave; if it persists, repair the Ave installation.",
   "memoryMap.error.model-integrity-failed": "Model files do not match the pinned version.",
   "memoryMap.error.graph-unavailable": "Build the memory map first.",
   "memoryMap.error.graph-stale": "Memories changed. Rebuild the map.",

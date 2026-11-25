@@ -84,6 +84,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "memoryMap.error.project-not-allowed": "이 메모리 범위에 접근할 수 없습니다.",
   "memoryMap.error.model-unconfigured": "먼저 로컬 임베딩 모델을 설정하세요.",
   "memoryMap.error.local-runtime-unavailable": "로컬 모델을 네트워크에서 차단하는 OS 샌드박스가 활성화되어 있지 않아 로컬 임베딩을 사용할 수 없습니다.",
+  "memoryMap.error.sandbox-home-unavailable": "로컬 임베딩을 사용할 수 없습니다. Ave 가 컨테이너 폴더가 이 Windows 계정 전용인지 확인하지 못해 샌드박스 프로세스(터미널, 셸, MCP 서버, 워커, 플러그인, 메모리 맵)를 시작할 수 없습니다. Ave 를 다시 시작하고, 계속되면 Ave 설치를 복구하세요.",
   "memoryMap.error.model-integrity-failed": "모델 파일이 고정된 버전과 일치하지 않습니다.",
   "memoryMap.error.graph-unavailable": "먼저 메모리 지도를 만드세요.",
   "memoryMap.error.graph-stale": "메모리가 변경되었습니다. 지도를 다시 만드세요.",
