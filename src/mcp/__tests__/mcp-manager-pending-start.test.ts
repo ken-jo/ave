@@ -104,6 +104,30 @@ describe("an MCP server start that nothing confines", () => {
     expect(listPendingExtensionStarts()).toEqual([]);
   });
 
+  it.each([
+    ["command", { command: "bun" }],
+    ["args", { args: ["serve", "--all"] }],
+    ["env", { env: { MODE: "b" } }],
+  ])("asks again after a no once the server's %s is edited", async (_field, change) => {
+    const manager = await makeManager();
+    const stdio: McpServerConfig = { id: "files", transport: "stdio", command: "node", args: ["serve"], env: { MODE: "a" } };
+    mockConnect.mockRejectedValue(new ExtensionStartConsentRequiredError("no-backend"));
+    await expect(manager.connectServer(stdio)).rejects.toBeInstanceOf(ExtensionStartConsentRequiredError);
+    const ask = vi.fn(async () => "no" as const);
+    setExtensionStartAsker({ ask, notify: vi.fn() });
+    await settlePendingExtensionStarts({ sessionId: "s1", attended: true });
+    expect(ask).toHaveBeenCalledTimes(1);
+
+    // The same config keeps the no.
+    await expect(manager.connectServer({ ...stdio, args: ["serve"], env: { MODE: "a" } })).rejects.toBeInstanceOf(ExtensionStartConsentRequiredError);
+    await settlePendingExtensionStarts({ sessionId: "s1", attended: true });
+    expect(ask).toHaveBeenCalledTimes(1);
+
+    await expect(manager.connectServer({ ...stdio, ...change } as McpServerConfig)).rejects.toBeInstanceOf(ExtensionStartConsentRequiredError);
+    await settlePendingExtensionStarts({ sessionId: "s1", attended: true });
+    expect(ask).toHaveBeenCalledTimes(2);
+  });
+
   it("never reconnects the old config of a server edited while it waited", async () => {
     const manager = await makeManager();
     const edited: McpServerConfig = { ...SERVER, url: "https://example.org/mcp" };

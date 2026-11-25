@@ -364,7 +364,6 @@ const EXCEPTIONS: Readonly<Record<string, readonly string[]>> = {
 
 // Closed inconsistency -> the row that proves it, which answers as the policy core does.
 const RESOLVED: Readonly<Record<string, string>> = {
-  I2: "L5", // asked per start; one card for every waiting start is a UI follow-up, approved by the owner
   I5: "D34.b",
   I8: "L4",
 };
@@ -372,6 +371,7 @@ const RESOLVED: Readonly<Record<string, string>> = {
 // Inconsistencies no driven row can show, and why.
 const INCONSISTENCIES_WITHOUT_ROW: Readonly<Record<string, string>> = {
   I1: "an exact saved host rule on a no-backend host: an open owner question (loosening); D25 shows S1's forced ask, the core answer",
+  I2: "one shared card for every waiting start is not built (lane i2-batch-card); L5 shows the per-start ask",
   I3: "inference child route: spawn path, not driven",
   I4: "lives on the device-path branch, not on main",
   I6: "stage workspaces are not on main",

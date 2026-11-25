@@ -40,6 +40,7 @@ import { errorMessage } from "../shared/error-message.js";
 import { boundBundledCredential, bundledConfigId, bundledCredentialDeclaration, bundledCredentialKey, parseBundledConfigId, readBoundBundledCredential, type BundledPackageRef } from "./bundled-credential.js";
 import { MCP_CONFIG_RECOVERY_REQUIRED, MCP_CREDENTIAL_MIGRATION_FAILED } from "../shared/mcp-error-code.js";
 import { userServerApproval, userServerFingerprint, userServerTrustSecretId } from "./user-server-trust.js";
+import { isDeepStrictEqual } from "node:util";
 import { deferExtensionStart, dropExtensionStart, isExtensionStartConsentRequired, mcpStdioStartKey } from "../permissions/extension-start-consent.js";
 import { probeExtensionStart } from "../permissions/asrt-sandbox.js";
 const log = createLogger("mcp-manager");
@@ -109,6 +110,11 @@ function oauthErrorCode(error: unknown, status: McpAuthStatus | undefined): McpA
 }
 
 const defaultConfigPath = (): string => join(aveHome(), "mcp", "servers.json");
+
+/** What a person agreed to or declined when asked about an unconfined server start. */
+function sameStartIdentity(a: McpServerConfig, b: McpServerConfig): boolean {
+  return isDeepStrictEqual([a.command, a.args ?? [], a.env ?? {}], [b.command, b.args ?? [], b.env ?? {}]);
+}
 
 function validatedApiKey(value: unknown): string {
   if (typeof value !== "string") throw new Error("MCP credential must be text");
@@ -561,10 +567,13 @@ export class McpManager {
       if (this.clients.get(config.id) === client) this.clients.delete(config.id);
       // Nothing confines this server: it waits for a person, who is asked at the next attended turn.
       if (isExtensionStartConsentRequired(err)) {
+        // An edited command, args or env is another start: an earlier no does not cover it.
+        const waited = this.unconfinedStarts.get(config.id);
+        if (waited !== undefined && !sameStartIdentity(waited, config)) dropExtensionStart(mcpStdioStartKey(config.id));
         this.unconfinedStarts.set(config.id, config);
         deferExtensionStart({ key: mcpStdioStartKey(config.id), kind: "mcp-stdio", label: config.id, cause: err.unconfinedCause,
           recheck: () => probeExtensionStart(),
-          // Only the config that was refused is retried: an edited or removed server is not reconnected from here.
+          // Only the config that was refused is retried: a removed server is not reconnected from here.
           retry: async () => { if (this.unconfinedStarts.get(config.id) === config) await this.connectServer(config); } });
       }
       this.auditLogger?.log({
