@@ -176,7 +176,10 @@ describe("explicit host execution approval", () => {
   it("warns that the sandbox is unavailable on the forced fallback ask, with what to install", () => {
     const fallback = request(false);
     fallback.args = { command: "printf fallback" };
-    fallback.shellRule = { exactRule: null, floorSessionOnly: true, sessionAllowed: true, persistentAllowed: false, denyAllowed: false };
+    fallback.shellRule = {
+      dialect: "bash", exactRule: null, denyRule: null, projectCwd: "/workspace/project", projectRoot: "/workspace/project",
+      floorSessionOnly: true, sessionAllowed: true, persistentAllowed: false, denyAllowed: false,
+    };
     fallback.executionPlan = getHostShellExecutionPlanAuditProjection(buildHostShellExecutionPlan({
       platform: "linux", requestedSandbox: true, unavailableCauses: ["missing-bwrap"],
       activeCapability: { reason: "Fixture sandbox unavailable", kind: "none", confidence: "verified", platform: "linux" },
