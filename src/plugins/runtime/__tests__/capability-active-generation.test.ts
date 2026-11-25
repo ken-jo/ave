@@ -1008,6 +1008,8 @@ export default async function createPlugin() {
     await expect(fixture.runtime.waitForPluginReady(fixture.provider.id)).resolves.toBeUndefined();
     await nextTurn();
     await expect(fixture.runtime.call(prepared.toolName)).resolves.toBe("replacement-pong");
+    // The old candidate's stop still fails when shutdown retries it, so shutdown reports it instead of dropping it.
+    expect(await fixture.runtime.stopAll()).toEqual({ unfinished: [fixture.consumer.id] });
   });
 
   it("keeps an unpublished blocked candidate retryable when prepared durable commit fails", async () => {

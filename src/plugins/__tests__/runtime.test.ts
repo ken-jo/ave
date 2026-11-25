@@ -3976,6 +3976,67 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     }
   });
 
+  it("a restart whose publish fails before commit keeps the loaded incumbent listed and callable", async () => {
+    const f = await setup("success");
+    const lifecycle = bindNativeBundleLifecycle(f);
+    await f.runtime.load();
+    // A load()-only plugin is not started yet, so calls are refused before any restart.
+    await expect(f.runtime.call(PING, {})).rejects.toThrow(`Plugin '${ID}' is still starting`);
+    const coordinator = (lifecycle as unknown as { coordinator: { commit: (...args: unknown[]) => Promise<unknown> } }).coordinator;
+    const commit = coordinator.commit;
+    coordinator.commit = async () => {
+      coordinator.commit = commit;
+      throw new Error("coordinator commit refused");
+    };
+    await expect(f.runtime.restartPlugin(ID)).resolves.toBe("failed");
+    expect({
+      listed: f.runtime.listPluginIds().includes(ID),
+      constructed: f.constructed.length,
+      stops: f.stops(),
+    }).toEqual({ listed: true, constructed: 2, stops: 1 });
+    // The loaded incumbent still owns its tool; it serves once boot publishes it.
+    await expect(f.runtime.call(PING, {})).rejects.toThrow(`Plugin '${ID}' is still starting`);
+    await f.runtime.startAll();
+    await expect(f.runtime.call(PING, {})).resolves.toBe("pong");
+    expect(f.constructed.map((record) => record.stops)).toEqual([0, 1]);
+    expect(await f.runtime.stopAll()).toEqual({ unfinished: [] });
+    expect(f.stops()).toBe(f.constructed.length);
+  });
+
+  it("a restart that commits but fails to publish leaves no loaded instance or sandbox HOME at shutdown", async () => {
+    const f = await setup("success");
+    bindNativeBundleLifecycle(f, { loopbackPublish: new Error("loopback publish failed") });
+    const earlier = new Set(sandboxProcessHomesInUse());
+    await f.runtime.load();
+    await f.runtime.restartPlugin(ID);
+    const homes = [...sandboxProcessHomesInUse()].filter((home) => !earlier.has(home));
+    expect(await f.runtime.stopAll()).toEqual({ unfinished: [] });
+    expect(f.stops()).toBe(f.constructed.length);
+    expect(await waitForSandboxHomesRemoved(homes)).toEqual([]);
+  });
+
+  it("stopAll during an in-flight unpublished retirement reports it unfinished", async () => {
+    const f = await setup("success");
+    bindNativeBundleLifecycle(f);
+    await f.runtime.load();
+    const [orphan] = f.constructed;
+    if (!orphan) throw new Error("load() constructed no instance");
+    orphan.instance.stop = () => {
+      orphan.stops += 1;
+      return new Promise<void>(() => undefined);
+    };
+    try {
+      const restart = f.runtime.restartPlugin(ID);
+      await vi.waitFor(() => expect(orphan.stops).toBe(1));
+      expect(await f.runtime.stopAll()).toEqual({ unfinished: [ID] });
+      await expect(restart).resolves.toBe("started");
+    } finally {
+      // The orphan's stop never settles, so its child is killed here or it keeps its sandbox HOME.
+      await forceKillAndDrainManagedChildProcesses("runtime test: unpublished plugin stop never settles");
+      __resetManagedChildProcessesForTest();
+    }
+  });
+
   it.each(cases)("%s %s releases the attempt's root, incarnation and child exactly once", async (path, mode) => {
     const f = await setup(mode);
     let failure: unknown;
