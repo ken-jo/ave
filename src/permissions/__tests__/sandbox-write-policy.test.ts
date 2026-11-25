@@ -456,9 +456,9 @@ describe("mandatory sandbox control-file writes", () => {
 
   // Config another agent or cloud tool loads from the project. macOS carries each name once as a pattern, because a row per root does
   // not fit its policy budget; Linux carries a row per root; the Windows floor is not changed here.
-  it("denies agent and cloud config names in write roots on macOS and Linux", () => {
+  it("denies agent, cloud and project command names in write roots on macOS and Linux", () => {
     const roots = [join(root, "project"), join(root, "temp")];
-    const names = [".codex", ".agents", ".aws"];
+    const names = [".codex", ".agents", ".aws", ".ave/commands", ".ave/hooks"];
     const pattern = (name: string) => `/**/${name.replace(/[a-z]/gu, letter => `[${letter}${letter.toUpperCase()}]`)}`;
     withPlatform("darwin", () => {
       const denies = nativeDenyRows(buildMandatorySandboxWritePolicy(roots).denyWrite);

@@ -173,4 +173,30 @@ describe.skipIf(process.platform !== "darwin" || shouldSkipNativeSandboxTests())
     expect(readdirSync(join(project, "fresh"))).toEqual([]);
     expect(readdirSync(join(project, "fresh-other-case"))).toEqual([]);
   });
+
+  it("keeps project commands and hooks read-only, and their directory in place", async () => {
+    const project = join(root, "project-inputs");
+    for (const directory of [".ave/commands", ".ave/hooks", "fresh/.ave", "absent", "nested/app/.ave/commands"]) mkdirSync(join(project, directory), { recursive: true });
+    writeFileSync(join(project, ".ave", "commands", "deploy.md"), "host");
+    const result = await runConfined([
+      `printf x > .ave/commands/deploy.md 2>/dev/null; echo "edit=$?"`,
+      `printf x > .ave/commands/planted.md 2>/dev/null; echo "plant=$?"`,
+      `printf x > .ave/hooks/planted.json 2>/dev/null; echo "hooks=$?"`,
+      `printf x > nested/app/.ave/commands/planted.md 2>/dev/null; echo "nested=$?"`,
+      `mkdir fresh/.ave/commands 2>/dev/null; echo "create=$?"`,
+      `mkdir -p staged/commands && printf x > staged/commands/planted.md && mv staged absent/.ave 2>/dev/null; echo "rename-into=$?"`,
+      `mv .ave/commands .ave/commands-moved 2>/dev/null; echo "rename=$?"`,
+      // Moving the parent away would take the commands out from under their name, to be edited and moved back.
+      `mv .ave .ave-moved 2>/dev/null; echo "rename-parent=$?"`,
+      `printf x > .ave/notes.txt; echo "sibling=$?"`,
+      `printf x > ordinary.txt; echo "ordinary=$?"`,
+    ].join("\n"), project);
+    expect(statuses(result.stdout)).toEqual({
+      edit: "1", plant: "1", hooks: "1", nested: "1", create: "1", "rename-into": "1", rename: "1", "rename-parent": "1", sibling: "0", ordinary: "0",
+    });
+    expect(readFileSync(join(project, ".ave", "commands", "deploy.md"), "utf8")).toBe("host");
+    expect(readdirSync(join(project, ".ave", "commands"))).toEqual(["deploy.md"]);
+    expect(readdirSync(join(project, "fresh", ".ave"))).toEqual([]);
+    expect(readdirSync(join(project, "absent"))).toEqual([]);
+  });
 });

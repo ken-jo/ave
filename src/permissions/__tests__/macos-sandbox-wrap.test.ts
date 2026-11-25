@@ -49,6 +49,7 @@ describe("typed repository marker rules", () => {
     ]);
     expect(hardenedWords.slice(5).map(word => word.value)).toEqual(originalWords.slice(5).map(word => word.value));
     expect(hardenedWords[4]?.value).toContain('(deny file-write-create file-write-unlink (regex #"/\\.[gG][iI][tT]$"))');
+    expect(hardenedWords[4]?.value).toContain('(deny file-write-create file-write-unlink (regex #"/\\.[aA][vV][eE]$"))');
     expect(hardenedWords[4]?.value).toContain("(vnode-type REGULAR-FILE)");
     expect(hardenedWords[4]?.value.startsWith(originalWords[4]!.value)).toBe(true);
     expect(originalWords[4]?.value).not.toContain("REGULAR-FILE");

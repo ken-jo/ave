@@ -339,6 +339,8 @@
    "/**/.[cC][oO][dD][eE][xX]",
    "/**/.[aA][gG][eE][nN][tT][sS]",
    "/**/.[aA][wW][sS]",
+   "/**/.[aA][vV][eE]/[cC][oO][mM][mM][aA][nN][dD][sS]",
+   "/**/.[aA][vV][eE]/[hH][oO][oO][kK][sS]",
    "<FIXTURE>/ws/locked",
    {
     "path": "<FIXTURE>/ws/lit[1]",
@@ -642,7 +644,9 @@
    "/**/srt-sock-*",
    "/**/.[cC][oO][dD][eE][xX]",
    "/**/.[aA][gG][eE][nN][tT][sS]",
-   "/**/.[aA][wW][sS]"
+   "/**/.[aA][wW][sS]",
+   "/**/.[aA][vV][eE]/[cC][oO][mM][mM][aA][nN][dD][sS]",
+   "/**/.[aA][vV][eE]/[hH][oO][oO][kK][sS]"
   ]
  },
  "darwin · shared: two write roots and a user data directory": {
@@ -1015,7 +1019,9 @@
    "/**/srt-sock-*",
    "/**/.[cC][oO][dD][eE][xX]",
    "/**/.[aA][gG][eE][nN][tT][sS]",
-   "/**/.[aA][wW][sS]"
+   "/**/.[aA][wW][sS]",
+   "/**/.[aA][vV][eE]/[cC][oO][mM][mM][aA][nN][dD][sS]",
+   "/**/.[aA][vV][eE]/[hH][oO][oO][kK][sS]"
   ]
  },
  "darwin · shared: an empty read list": {
@@ -1344,7 +1350,9 @@
    "/**/srt-sock-*",
    "/**/.[cC][oO][dD][eE][xX]",
    "/**/.[aA][gG][eE][nN][tT][sS]",
-   "/**/.[aA][wW][sS]"
+   "/**/.[aA][wW][sS]",
+   "/**/.[aA][vV][eE]/[cC][oO][mM][mM][aA][nN][dD][sS]",
+   "/**/.[aA][vV][eE]/[hH][oO][oO][kK][sS]"
   ],
   "allowRead": []
  },
@@ -1528,7 +1536,9 @@
    "/**/srt-sock-*",
    "/**/.[cC][oO][dD][eE][xX]",
    "/**/.[aA][gG][eE][nN][tT][sS]",
-   "/**/.[aA][wW][sS]"
+   "/**/.[aA][wW][sS]",
+   "/**/.[aA][vV][eE]/[cC][oO][mM][mM][aA][nN][dD][sS]",
+   "/**/.[aA][vV][eE]/[hH][oO][oO][kK][sS]"
   ]
  },
  "darwin · wrap: pinned write root with the floors restated": {
@@ -1869,6 +1879,8 @@
    "/**/.[cC][oO][dD][eE][xX]",
    "/**/.[aA][gG][eE][nN][tT][sS]",
    "/**/.[aA][wW][sS]",
+   "/**/.[aA][vV][eE]/[cC][oO][mM][mM][aA][nN][dD][sS]",
+   "/**/.[aA][vV][eE]/[hH][oO][oO][kK][sS]",
    "<FIXTURE>/ws/.ave-pinned-write-root"
   ],
   "allowRead": [
@@ -2059,7 +2071,9 @@
    "/**/srt-sock-*",
    "/**/.[cC][oO][dD][eE][xX]",
    "/**/.[aA][gG][eE][nN][tT][sS]",
-   "/**/.[aA][wW][sS]"
+   "/**/.[aA][wW][sS]",
+   "/**/.[aA][vV][eE]/[cC][oO][mM][mM][aA][nN][dD][sS]",
+   "/**/.[aA][vV][eE]/[hH][oO][oO][kK][sS]"
   ]
  },
  "darwin · wrap: one read deny and an empty read list": {
@@ -2245,7 +2259,9 @@
    "/**/srt-sock-*",
    "/**/.[cC][oO][dD][eE][xX]",
    "/**/.[aA][gG][eE][nN][tT][sS]",
-   "/**/.[aA][wW][sS]"
+   "/**/.[aA][wW][sS]",
+   "/**/.[aA][vV][eE]/[cC][oO][mM][mM][aA][nN][dD][sS]",
+   "/**/.[aA][vV][eE]/[hH][oO][oO][kK][sS]"
   ],
   "allowRead": []
  },
@@ -2577,6 +2593,8 @@
    "/**/.[cC][oO][dD][eE][xX]",
    "/**/.[aA][gG][eE][nN][tT][sS]",
    "/**/.[aA][wW][sS]",
+   "/**/.[aA][vV][eE]/[cC][oO][mM][mM][aA][nN][dD][sS]",
+   "/**/.[aA][vV][eE]/[hH][oO][oO][kK][sS]",
    {
     "path": "<FIXTURE>/plain/x",
     "literal": true
@@ -2846,7 +2864,9 @@
    "/**/srt-sock-*",
    "/**/.[cC][oO][dD][eE][xX]",
    "/**/.[aA][gG][eE][nN][tT][sS]",
-   "/**/.[aA][wW][sS]"
+   "/**/.[aA][wW][sS]",
+   "/**/.[aA][vV][eE]/[cC][oO][mM][mM][aA][nN][dD][sS]",
+   "/**/.[aA][vV][eE]/[hH][oO][oO][kK][sS]"
   ]
  },
  "darwin · wrap: read grant only": {
@@ -3029,7 +3049,9 @@
    "/**/srt-sock-*",
    "/**/.[cC][oO][dD][eE][xX]",
    "/**/.[aA][gG][eE][nN][tT][sS]",
-   "/**/.[aA][wW][sS]"
+   "/**/.[aA][wW][sS]",
+   "/**/.[aA][vV][eE]/[cC][oO][mM][mM][aA][nN][dD][sS]",
+   "/**/.[aA][vV][eE]/[hH][oO][oO][kK][sS]"
   ],
   "allowRead": [
    "<FIXTURE>/ro"
@@ -3365,6 +3387,8 @@
    "/**/.[cC][oO][dD][eE][xX]",
    "/**/.[aA][gG][eE][nN][tT][sS]",
    "/**/.[aA][wW][sS]",
+   "/**/.[aA][vV][eE]/[cC][oO][mM][mM][aA][nN][dD][sS]",
+   "/**/.[aA][vV][eE]/[hH][oO][oO][kK][sS]",
    "<FIXTURE>/plain/.ave-pinned-write-root"
   ],
   "allowRead": [
@@ -3665,7 +3689,9 @@
    "/**/srt-sock-*",
    "/**/.[cC][oO][dD][eE][xX]",
    "/**/.[aA][gG][eE][nN][tT][sS]",
-   "/**/.[aA][wW][sS]"
+   "/**/.[aA][wW][sS]",
+   "/**/.[aA][vV][eE]/[cC][oO][mM][mM][aA][nN][dD][sS]",
+   "/**/.[aA][vV][eE]/[hH][oO][oO][kK][sS]"
   ],
   "allowRead": [
    "<FIXTURE>/ro"
@@ -4039,6 +4065,8 @@
    "<FIXTURE>/ws/.codex",
    "<FIXTURE>/ws/.agents",
    "<FIXTURE>/ws/.aws",
+   "<FIXTURE>/ws/.ave/commands",
+   "<FIXTURE>/ws/.ave/hooks",
    "/etc/ave/policy.json",
    "/private/etc/ave/policy.json",
    "<AVE_HOME>/sandbox-quarantine",
@@ -4762,6 +4790,8 @@
    "<FIXTURE>/ws/.codex",
    "<FIXTURE>/ws/.agents",
    "<FIXTURE>/ws/.aws",
+   "<FIXTURE>/ws/.ave/commands",
+   "<FIXTURE>/ws/.ave/hooks",
    "<FIXTURE>/plain/.vscode",
    "<FIXTURE>/plain/.idea",
    "<FIXTURE>/plain/.husky",
@@ -4792,6 +4822,8 @@
    "<FIXTURE>/plain/.codex",
    "<FIXTURE>/plain/.agents",
    "<FIXTURE>/plain/.aws",
+   "<FIXTURE>/plain/.ave/commands",
+   "<FIXTURE>/plain/.ave/hooks",
    "/etc/ave/policy.json",
    "/private/etc/ave/policy.json",
    "<AVE_HOME>/sandbox-quarantine",
@@ -5165,6 +5197,8 @@
    "<FIXTURE>/plain/.codex",
    "<FIXTURE>/plain/.agents",
    "<FIXTURE>/plain/.aws",
+   "<FIXTURE>/plain/.ave/commands",
+   "<FIXTURE>/plain/.ave/hooks",
    "/etc/ave/policy.json",
    "/private/etc/ave/policy.json",
    "<AVE_HOME>/sandbox-quarantine",
@@ -5734,6 +5768,8 @@
    "<FIXTURE>/ws/.codex",
    "<FIXTURE>/ws/.agents",
    "<FIXTURE>/ws/.aws",
+   "<FIXTURE>/ws/.ave/commands",
+   "<FIXTURE>/ws/.ave/hooks",
    "/etc/ave/policy.json",
    "/private/etc/ave/policy.json",
    "<AVE_HOME>/sandbox-quarantine",
@@ -6511,6 +6547,8 @@
    "<FIXTURE>/plain/.codex",
    "<FIXTURE>/plain/.agents",
    "<FIXTURE>/plain/.aws",
+   "<FIXTURE>/plain/.ave/commands",
+   "<FIXTURE>/plain/.ave/hooks",
    "/etc/ave/policy.json",
    "/private/etc/ave/policy.json",
    "<AVE_HOME>/sandbox-quarantine",
@@ -6752,6 +6790,8 @@
    "<FIXTURE>/ws/.codex",
    "<FIXTURE>/ws/.agents",
    "<FIXTURE>/ws/.aws",
+   "<FIXTURE>/ws/.ave/commands",
+   "<FIXTURE>/ws/.ave/hooks",
    "<FIXTURE>/plain/.vscode",
    "<FIXTURE>/plain/.idea",
    "<FIXTURE>/plain/.husky",
@@ -6782,6 +6822,8 @@
    "<FIXTURE>/plain/.codex",
    "<FIXTURE>/plain/.agents",
    "<FIXTURE>/plain/.aws",
+   "<FIXTURE>/plain/.ave/commands",
+   "<FIXTURE>/plain/.ave/hooks",
    "/etc/ave/policy.json",
    "/private/etc/ave/policy.json",
    "<AVE_HOME>/sandbox-quarantine",
@@ -7357,6 +7399,8 @@
    "<FIXTURE>/plain/.codex",
    "<FIXTURE>/plain/.agents",
    "<FIXTURE>/plain/.aws",
+   "<FIXTURE>/plain/.ave/commands",
+   "<FIXTURE>/plain/.ave/hooks",
    "/etc/ave/policy.json",
    "/private/etc/ave/policy.json",
    "<AVE_HOME>/sandbox-quarantine",

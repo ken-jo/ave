@@ -10,10 +10,15 @@ export function assertMacSandboxWrapperSize(argv: readonly string[]): void {
 }
 
 const GIT_MARKER_FILTER = '(regex #"/\\.[gG][iI][tT]$")';
+// A project's `.ave` holds the commands and hooks Ave loads, and their write denies are path patterns (sandbox-write-policy.ts). The
+// directory that carries those paths must stay where it is: moved away, its contents could be edited under another name and moved
+// back, and a prepared directory could be renamed into an absent `.ave`.
+const AVE_PROJECT_MARKER_FILTER = '(regex #"/\\.[aA][vV][eE]$")';
 const GIT_METADATA_RULES = [
   // Match the entry itself: an existing directory's children remain writable.
   `(deny file-write-create file-write-unlink ${GIT_MARKER_FILTER})`,
   `(deny file-write* (require-all ${GIT_MARKER_FILTER} (vnode-type REGULAR-FILE)))`,
+  `(deny file-write-create file-write-unlink ${AVE_PROJECT_MARKER_FILTER})`,
 ].join("\n");
 
 // Add typed entry protection that the runtime's subtree-deny API cannot express.

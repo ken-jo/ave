@@ -36,10 +36,15 @@ const SANDBOX_PROTECTED_ROOT_ENTRIES = [...new Set([
 // every name, and the longest supported darwin layout has well under one such set left in MAX_POSIX_WRITE_DENY_POLICY_BYTES. The
 // Windows floor is stamped and watched per row and is not changed here.
 const SANDBOX_FOREIGN_CONFIG_ENTRIES = [".codex", ".agents", ".aws"] as const;
+// What Ave itself loads from a project's `.ave` (custom-commands.ts, hook-source-controller.ts): the file tools ask before touching
+// any `.ave`, and a confined command must not edit them without that card. The two children are named, not `.ave` itself: under a
+// write root that holds the Ave home, `<root>/.ave` is the home, and a deny there would take the command's own HOME and temp with it.
+const SANDBOX_PROJECT_INPUT_ENTRIES = [".ave/commands", ".ave/hooks"] as const;
+const SANDBOX_NAMED_ENTRIES = [...SANDBOX_FOREIGN_CONFIG_ENTRIES, ...SANDBOX_PROJECT_INPUT_ENTRIES] as const;
 function caseInsensitivePattern(path: string): string {
   return path.replace(/[a-z]/gu, character => `[${character}${character.toUpperCase()}]`);
 }
-const MAC_FOREIGN_CONFIG_GLOBS = SANDBOX_FOREIGN_CONFIG_ENTRIES.map(entry => `/**/${caseInsensitivePattern(entry)}`);
+const MAC_NAMED_ENTRY_GLOBS = SANDBOX_NAMED_ENTRIES.map(entry => `/**/${caseInsensitivePattern(entry)}`);
 
 // Linux discovery depth; the admitted root is depth zero.
 export const SANDBOX_GIT_SCAN_DEPTH = 3;
@@ -1001,7 +1006,7 @@ export function buildMandatorySandboxWritePolicy(
     // A marked literal already carries the admitted identity; discovery must retain that canonical path.
     return { original, physical: typeof entry === "string" ? resolvePolicyPath(original, process.cwd()) : original };
   });
-  const rootEntries = process.platform === "linux" ? [...SANDBOX_PROTECTED_ROOT_ENTRIES, ...SANDBOX_FOREIGN_CONFIG_ENTRIES] : SANDBOX_PROTECTED_ROOT_ENTRIES;
+  const rootEntries = process.platform === "linux" ? [...SANDBOX_PROTECTED_ROOT_ENTRIES, ...SANDBOX_NAMED_ENTRIES] : SANDBOX_PROTECTED_ROOT_ENTRIES;
   const paths = new Set([
     ...rootSnapshots.flatMap(({ original, physical }) => [original, physical]).flatMap((root) =>
       rootEntries.map((entry) => join(root, entry))),
@@ -1119,7 +1124,7 @@ export function buildMandatorySandboxWritePolicy(
     entries.push(...[...routingPins].map(path => ({ path, literal: true } as const)));
   }
   // Backend globs cover future controls at any depth without denying ordinary object, ref, index and HEAD updates in existing metadata directories.
-  if (process.platform === "darwin") entries.push(...MAC_GIT_CONTROL_GLOBS, MAC_EGRESS_SOCKET_DIRECTORY_GLOB, ...MAC_FOREIGN_CONFIG_GLOBS);
+  if (process.platform === "darwin") entries.push(...MAC_GIT_CONTROL_GLOBS, MAC_EGRESS_SOCKET_DIRECTORY_GLOB, ...MAC_NAMED_ENTRY_GLOBS);
   // Mandatory loader denies scale with admitted root lengths, not metadata discovery.
   const backendEntries = nativeWriteDenyEntries(entries);
   const backendMandatoryPaths = new Set([...mandatoryPaths].map(nativeWriteDenyPath));
