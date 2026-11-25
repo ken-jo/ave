@@ -1,5 +1,5 @@
 // A requested OS sandbox that could not start leaves host shells to a human ask on every platform: once, or for this session; never saved.
-// One saved rule passes that ask: a rule that is exactly the command, while boot verified Ave home privacy (tree T:128, T:259).
+// One saved rule passes that ask: a rule that is exactly the command, while boot verified Ave home privacy (tree T:151, T:232).
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));

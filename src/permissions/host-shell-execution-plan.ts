@@ -216,7 +216,7 @@ export function buildHostShellExecutionPlan(input: {
   unavailableCauses?: readonly SandboxStartFailureCause[];
   // Boot got no answer from the home privacy helper: every route above that would run unconfined is blocked instead, so no approval runs it.
   unconfinedShellDenied?: boolean;
-  // Boot published a positive Ave home privacy result. Only then may an exact saved rule pass the no-backend ask (tree T:128); absent means unverified.
+  // Boot published a positive Ave home privacy result. Only then may an exact saved rule pass the no-backend ask (tree T:151); absent means unverified.
   homePrivacyVerified?: boolean;
 }): HostShellExecutionPlan {
   if (input.unconfinedShellDenied === true) {
@@ -409,7 +409,7 @@ export function requiresUnsandboxedShellAsk(plan: HostShellExecutionPlan | undef
     : plan.executionRequest === "default" && plan.fallbackReason !== "none";
 }
 
-// The one saved-rule pass of that ask (tree T:128, T:259): the plan asks only because no backend is usable and boot verified Ave home
+// The one saved-rule pass of that ask (tree T:151, T:232): the plan asks only because no backend is usable and boot verified Ave home
 // privacy. An exact saved rule may then run the command unasked; with home privacy unverified the boot floor governs and no rule passes.
 export function exactRulePassesUnsandboxedShellAsk(plan: HostShellExecutionPlan | undefined): boolean {
   return plan !== undefined && requiresUnsandboxedShellAsk(plan) && plan.identity.endsWith(EXACT_RULE_PASS_MARKER + ASK_EVERY_COMMAND_SUFFIX);

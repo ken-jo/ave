@@ -180,7 +180,7 @@ export function mintHostShellExecutionPermit(input: {
   // Any receipt-bearing mint attempt consumes its receipt before checking plan compatibility, so a mismatch cannot be probed or replayed.
   if (!requiresExplicitHostShellApproval(input.plan, input.binding.toolName)) return undefined;
   // On a plan under the sandbox-unavailable floor a saved rule stands in for fresh consent only as the exact-rule pass issued on this very plan
-  // (tree T:128); policy records are made only after a human card. A pass proof answers no other plan.
+  // (tree T:151); policy records are made only after a human card. A pass proof answers no other plan.
   if (allowRuleAuthorization !== undefined && (requiresUnsandboxedShellAsk(input.plan)
     ? !exactRulePassesUnsandboxedShellAsk(input.plan) || allowRuleAuthorization.floorPlanIdentity !== input.plan.identity
     : allowRuleAuthorization.floorPlanIdentity !== undefined)) return undefined;

@@ -1783,7 +1783,7 @@ export class PermissionManager {
     const shellRules = !analysisLimited && parsed ? evaluateShellSubject({ command: parsed, cwd: ruleSubject?.cwd, exactAllowOnly: shellSignals?.exactLiteralEvaluation === true,
         ...(ruleSubject?.hostTerminal === undefined ? {} : { hostTerminal: ruleSubject.hostTerminal }) }, this.rules, projectRules, sessionRules)
       : !analysisLimited && parsedPowerShell ? evaluatePowerShellSubject({ command: parsedPowerShell, cwd: ruleSubject?.cwd, hostShellExecutionPlan: context.hostShellExecutionPlan, exactAllowOnly: shellSignals?.exactLiteralEvaluation === true }, this.rules, projectRules, sessionRules) : undefined;
-    // Tree T:128, T:259: a saved rule that is exactly this command passes the sandbox-unavailable ask when the plan asks only for the missing
+    // Tree T:151, T:232: a saved rule that is exactly this command passes the sandbox-unavailable ask when the plan asks only for the missing
     // backend (boot home privacy verified) and no other floor applies. Session rules are not saved; a prefix rule, a tool-name rule and a
     // compound command keep the ask. It is offered only when its rule proof can be issued, so a pass never ends as a refused spawn.
     const exactRuleCwdIdentity = floorSessionEligible && exactRulePassesUnsandboxedShellAsk(context.hostShellExecutionPlan) && !analysisLimited &&

@@ -95,7 +95,7 @@ describe("ordered admission, floors and explicit rules", () => {
       expect(decidePermission({ ...evidence, rules: { ...evidence.rules, allow: "Allow rule." }, headless: true }).outcome).toBe("deny");
       expect(decidePermission({ ...evidence, rules: { allow: "Allow rule." } }).outcome).toBe("ask-forced");
     });
-    // Tree T:128, T:259: the one saved-rule pass of the sandbox-unavailable floor, in every mode.
+    // Tree T:151, T:232: the one saved-rule pass of the sandbox-unavailable floor, in every mode.
     it(`an exact saved rule passes the sandbox-unavailable floor only when nothing else asks, in ${mode}`, () => {
       const evidence = request({ mode, tool: SHELL, shell: { ...SAFE_SHELL, sandboxed: false }, floor: { code: "sandbox-unavailable", reason: "No sandbox." },
         floorSessionEligible: true, rules: { allow: "Bash(echo exact)", exactHostRule: "Bash(echo exact)" }, reviewer: { status: "success", level: "low" } });

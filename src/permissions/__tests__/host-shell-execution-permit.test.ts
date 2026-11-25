@@ -336,7 +336,7 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
     })).toBeUndefined();
   });
 
-  // Tree T:128, T:259 (owner decision 2026-11-25): the one saved rule that passes the no-backend ask.
+  // Tree T:151, T:232 (owner decision 2026-11-25): the one saved rule that passes the no-backend ask.
   it.each(["default", "host"] as const)("lets only an exact saved rule pass the %s no-backend ask, and only with verified boot home privacy", async (executionMode) => {
     const noBackend = (boot: { homePrivacyVerified?: boolean; unavailableSandboxRequiresAsk?: boolean }) => buildHostShellExecutionPlan({
       platform: "linux", requestedSandbox: true, executionMode, ...boot,

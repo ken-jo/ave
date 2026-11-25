@@ -202,7 +202,7 @@ describe("host shell execution plan", () => {
     }
   });
 
-  // Tree T:128, T:259: an exact saved rule may pass only the ask that the missing backend alone raises, with boot home privacy verified.
+  // Tree T:151, T:232: an exact saved rule may pass only the ask that the missing backend alone raises, with boot home privacy verified.
   it.each(["default", "host"] as const)("marks the %s no-backend plan for the exact-rule pass only with verified boot home privacy", (executionMode) => {
     const build = (extra: Partial<Parameters<typeof buildHostShellExecutionPlan>[0]>) => buildHostShellExecutionPlan({
       platform: "linux", requestedSandbox: true, activeCapability: { ...NONE, platform: "linux" }, executionMode, ...extra });
