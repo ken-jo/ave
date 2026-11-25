@@ -3,11 +3,13 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { mkdirSync, mkdtempSync, realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setLocale } from "../../../i18n/index.js";
 import { aveHome } from "../../../shared/ave-home.js";
 import { asrtCanInitialize } from "../../../permissions/__tests__/test-helpers.js";
 import { initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox } from "../../../permissions/asrt-sandbox.js";
+import { __resetSandboxRequestedAtBootForTest, setPluginWorkerConfinementRequestedAtBoot } from "../../../permissions/sandbox-capability.js";
 import { makeTestPluginRuntime, servedAgentPluginsDocument } from "../../__tests__/test-helpers.js";
 import type { PluginRuntime } from "../../runtime.js";
 import type { PluginManifest } from "../../types.js";
@@ -22,7 +24,9 @@ describe.runIf(process.platform === "darwin")("a user's read deny over a plugin'
 
   beforeEach(() => {
     setLocale("en");
-    testDir = realpathSync(mkdtempSync(join("/private/tmp", "ave-user-deny-pierce-")));
+    // Plugin children are wrapped only when plugin worker confinement was requested at boot.
+    setPluginWorkerConfinementRequestedAtBoot(true);
+    testDir = realpathSync(mkdtempSync(join(tmpdir(), "ave-user-deny-pierce-")));
     mkdirSync(certs(), { recursive: true });
   });
 
@@ -30,6 +34,7 @@ describe.runIf(process.platform === "darwin")("a user's read deny over a plugin'
     await runtime?.stopAll();
     runtime = undefined;
     if (isAsrtSandboxActive()) await resetAsrtSandbox();
+    __resetSandboxRequestedAtBootForTest();
     await rm(testDir, { recursive: true, force: true });
   });
 
@@ -72,6 +77,8 @@ describe.runIf(process.platform === "darwin")("a user's read deny over a plugin'
     expect(message).toMatch(/, which this launch needs to read; the launch is refused \(user-deny-covers-pierce\)$/u);
     expect(started.listPluginIds()).not.toContain(CERTS_PLUGIN);
     expect(card(OTHER_PLUGIN)?.installFailureMessage).toBeUndefined();
+    // The other plugin ran under the wrap, so the certs refusal was the wrap's own and not a skipped one.
+    expect(card(OTHER_PLUGIN)?.confinement).toBe("macos-sandbox");
     await expect(started.call("plain_reader_ping")).resolves.toBe("pong");
   });
 });
