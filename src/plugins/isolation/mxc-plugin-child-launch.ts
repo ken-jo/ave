@@ -5,7 +5,7 @@ import type { DelegatedWorkerConfinement } from "./host-api-dispatcher.js";
 import type { MxcPluginChildLaunch } from "./mxc-plugin-child.js";
 
 /** The production planner for a Windows plugin child's container start. It lays out what the MCP and hook holder
- * adapter lays out: a fresh `<AVE_HOME>\mxc-staging\<opaque-id>` HOME/temp added to the captured write roots, and the
+ * adapter lays out: a fresh `<runtime root>\staging\<opaque-id>` HOME/temp added to the captured write roots, and the
  * registered holder readiness probe. With no registered probe it throws, and the caller starts nothing. The command,
  * grants, floor pierces and egress owner stay the adapter's; the egress lease is row 2's. */
 export async function prepareMxcPluginChildLaunch(intent: {

@@ -702,7 +702,7 @@ export interface OutOfProcessPluginSpec {
   readonly childEntryPath?: string;
   /** Internal backend-plan integration. Absent until the policy owner admits this holder;
    * the existing path stays authoritative otherwise. Never infer readiness from the OS or a PID.
-   * The planner supplies the holder's staging HOME/temp (`<AVE_HOME>\mxc-staging\<opaque-id>`), the captured
+   * The planner supplies the holder's staging HOME/temp (`<runtime root>\staging\<opaque-id>`), the captured
    * filesystem ownership, the readiness probe and revocation. The command, arguments, cwd, environment and
    * grants are the host's, from this intent and the envelope; the spawn goes through row 2's admitted
    * `spawnMxcConfinedChild`, whose request forms `command` with `windowsCommandLine(intent.command, intent.args)`
