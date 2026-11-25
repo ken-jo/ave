@@ -51,6 +51,8 @@ jobs:
       # One shard when the plan step did not run (a docs-only change), so the
       # matrix below always reads a list.
       shards: ${{ steps.plan.outputs.shards || '[1]' }}
+      # scripts/plan-vitest-tiers.mjs selects the opt-in tiers; a docs-only change selects none.
+      census_tier: ${{ steps.tiers.outputs.census_tier || 'false' }}
     env:
       # Parallel runners may share a home; each workspace owns its Bun cache.
       ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
@@ -211,6 +213,15 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/ci-plan"
           node scripts/run-ci-suite.mjs --write-plan "$RUNNER_TEMP/ci-plan/ci-plan.json"
+      # Nightly, dispatch and tags select every tier; pull requests and main
+      # pushes select the census when the diff or the plan reaches the shell rules.
+      - name: Plan the Vitest tiers
+        id: tiers
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        env:
+          AVE_CI_DIFF_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: node scripts/plan-vitest-tiers.mjs "$RUNNER_TEMP/ci-plan/ci-plan.json"
       - name: Plan Windows regressions
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -429,6 +440,65 @@ jobs:
         run: bun run test:ci
         working-directory: ave
 
+  # Opt-in Vitest tiers the default shards leave out; build-and-test requires
+  # this job whenever the build job selected a tier.
+  vitest-tiers:
+    name: Vitest tiers
+    needs: build
+    if: needs.build.outputs.census_tier == 'true'
+    runs-on: ubuntu-24.04-arm
+    env:
+      ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
+      electron_config_cache: ${{ github.workspace }}/.cache/electron
+      BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
+      AVE_UV_DOWNLOAD_CACHE_DIR: ${{ github.workspace }}/.cache/uv-archives
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: ave
+          persist-credentials: false
+      - uses: ./ave/.github/actions/setup-bun
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          bun-version-file: ave/.bun-version
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: node-modules-cache
+        with:
+          path: ave/node_modules
+          key: ${{ runner.os }}-${{ runner.arch }}-ci-nm-${{ hashFiles('ave/bun.lock', 'ave/patches/**') }}
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.node-modules-cache.outputs.cache-hit != 'true'
+        with:
+          path: .cache/bun
+          key: ${{ runner.os }}-ci-bun-workspace-v1-${{ hashFiles('ave/bun.lock') }}
+          restore-keys: ${{ runner.os }}-ci-bun-workspace-v1-
+      - uses: ./ave/.github/actions/cache-runtime-tools
+        with:
+          repository: ave
+      - name: Restore runtime download archives
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.node-modules-cache.outputs.cache-hit != 'true'
+        with:
+          path: .cache/electron
+          key: ${{ runner.os }}-${{ runner.arch }}-runtime-electron-v1-${{ hashFiles('ave/bun.lock') }}
+      - run: bun install --frozen-lockfile
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        working-directory: ave
+      - name: Remove root-level Bun binary shims before Vitest
+        working-directory: ave
+        run: rm -f ajv pino
+      # The default shards run the lexical census and the full-pipeline
+      # representatives; this step adds all four layers for every code point.
+      - name: Run the complete encoded-unicode census
+        if: needs.build.outputs.census_tier == 'true'
+        env:
+          AVE_VITEST_TIERS: default,census
+          AVE_VITEST_MAX_WORKERS: "4"
+        run: bun run test:vitest -- run --silent=true src/permissions/__tests__/powershell-encoded-unicode/
+        working-directory: ave
+
   gate-core:
     runs-on: ubuntu-24.04-arm
     env:
@@ -531,7 +601,7 @@ jobs:
     # .required_status_checks.contexts). gate-core and mxc-pins report under
     # names that list does not contain, so only this job's explicit result
     # check below lets them block a merge; skipped or cancelled fails too.
-    needs: [build, vitest, windows-native-preparation, windows-permission-tests, windows-arm64-path-kind, macos-permission-tests, linux-confinement-tests, gate-core, mxc-pins]
+    needs: [build, vitest, vitest-tiers, windows-native-preparation, windows-permission-tests, windows-arm64-path-kind, macos-permission-tests, linux-confinement-tests, gate-core, mxc-pins]
     if: always()
     # Every job in every workflow runs on a GitHub-hosted runner
     # (src/__tests__/support/workflow-runner-policy.ts fails on anything
@@ -553,6 +623,8 @@ jobs:
           MXC_PINS_RESULT: ${{ needs.mxc-pins.result }}
           BUILD_RESULT: ${{ needs.build.result }}
           VITEST_RESULT: ${{ needs.vitest.result }}
+          CENSUS_TIER: ${{ needs.build.outputs.census_tier }}
+          VITEST_TIERS_RESULT: ${{ needs.vitest-tiers.result }}
           DOCS_ONLY: ${{ needs.build.outputs.docs_only }}
           PLATFORM_CHECKS: ${{ needs.build.outputs.platform_checks }}
           WINDOWS_PREPARATION_RESULT: ${{ needs.windows-native-preparation.result }}
@@ -582,6 +654,13 @@ jobs:
             true:success|false:skipped) ;;
             *)
               echo "::error::Windows arm64 folder classification selection=$WINDOWS_ARM64_PATH_KIND result=$WINDOWS_ARM64_PATH_KIND_RESULT"
+              exit 1
+              ;;
+          esac
+          case "$CENSUS_TIER:$VITEST_TIERS_RESULT" in
+            true:success|false:skipped) ;;
+            *)
+              echo "::error::Vitest tiers selection census=$CENSUS_TIER result=$VITEST_TIERS_RESULT"
               exit 1
               ;;
           esac

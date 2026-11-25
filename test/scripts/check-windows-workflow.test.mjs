@@ -397,6 +397,7 @@ it("requires the arm64 result for selected runs, including docs-only main pushes
         VITEST_RESULT: docs === "true" ? "skipped" : "success", DOCS_ONLY: docs, PLATFORM_CHECKS: "false",
         WINDOWS_PREPARATION_RESULT: "skipped", WINDOWS_RESULT: "skipped", MACOS_RESULT: "skipped", LINUX_RESULT: "skipped",
         WINDOWS_ARM64_PATH_KIND: selected, WINDOWS_ARM64_PATH_KIND_RESULT: arm64,
+        CENSUS_TIER: "false", VITEST_TIERS_RESULT: "skipped",
       } });
       assert.ifError(result.error);
       assert.equal(result.status, status, JSON.stringify({ docs, selected, arm64, output: result.stdout + result.stderr }));

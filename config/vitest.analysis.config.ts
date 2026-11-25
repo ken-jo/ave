@@ -7,10 +7,13 @@ import { electronNodeNormalizerArgument } from "../scripts/run-vitest-under-elec
 import { documentGuardImportArgument } from "../scripts/lib/document-consumer-node-options.mjs";
 import { assertAllowedDocumentRead } from "../scripts/lib/document-consumer-guard.mjs";
 import { baseExclude, rendererTestGlobs, suiteInclude } from "../scripts/lib/vitest-collection.mjs";
+import { selectedVitestTiers } from "../scripts/lib/vitest-tiers.mjs";
 import BoundarySequencer from "./vitest-sequencer.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const rootPath = (p: string) => path.resolve(ROOT, p);
+// Reject an unknown AVE_VITEST_TIERS before collection.
+selectedVitestTiers();
 
 const permissionTimingTests = [
   "src/permissions/__tests__/permission-decision-cost.test.ts",
