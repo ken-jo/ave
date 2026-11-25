@@ -39,8 +39,9 @@ export async function createMxcExtensionAdmission(input: AdmissionIdentity & {
   const capturedPlanDigest = canonicalStringify(input.bootPlan);
   // Probe a separate snapshot so a callback cannot mutate the later production request.
   const snapshot = JSON.parse(canonicalStringify(input.request)) as ContainerRequest;
+  let probeSignal: AbortSignal | undefined;
   const result = await settleWindowsExtensionReadiness({
-    probe: signal => input.probe(snapshot, signal),
+    probe: (signal) => { probeSignal = signal; return input.probe(snapshot, signal); },
     fallback: { version: "0.0.80", ready: false },
     // This holder is itself being admitted under the selected MXC plan: no fallback, no other backend.
     admittedAncestorBackend: () => "mxc",
@@ -51,7 +52,9 @@ export async function createMxcExtensionAdmission(input: AdmissionIdentity & {
     throw new MxcProcessContractError("Native admission request changed during readiness");
   }
   if (result.selectedBackend !== "mxc" || result.readiness !== "ready") {
-    throw new MxcCapabilityUnavailableError(`Native admission readiness failed: ${result.reason}`);
+    // Only the deadline aborts a probe whose caller did not cancel; the plan reason alone names the ancestor, not the cause.
+    const cause = probeSignal?.aborted === true ? "readiness-deadline (beneath an admitted holder)" : result.reason;
+    throw new MxcCapabilityUnavailableError(`Native admission readiness failed: ${cause}`);
   }
   const admission = Object.freeze({}) as MxcExtensionAdmission;
   admissions.set(admission, { holder: input.holder, executableIdentity: input.executableIdentity,

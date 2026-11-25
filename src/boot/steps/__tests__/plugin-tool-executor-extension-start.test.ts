@@ -40,23 +40,23 @@ describe("the extension start card, notice and audit rows at boot", () => {
     expect(bodies.every((body) => body.startsWith("Notes (notes) was not started"))).toBe(true);
   });
 
-  it("says on the card and the notice that the isolation check did not finish in time, and still that nothing isolates the start", async () => {
+  it("says on the card and the notice that the container check did not finish in time, and still that nothing isolates the start", async () => {
     const { asker, requestAndWait, deliver } = subject();
     const late: PendingExtensionStart = { ...START, cause: "readiness-deadline" };
     await asker.ask(late, { sessionId: "s1", attended: true });
     expect(requestAndWait.mock.calls.map(([request]) => request.reason)).toEqual([
-      "The isolation check did not finish in time. The extension Notes (notes) would start without OS isolation. Allow this one start?"]);
+      "The container check did not finish in time. The extension Notes (notes) would start without OS isolation. Allow this one start?"]);
     asker.notify(late, "declined");
     asker.notify(late, "unattended");
     const bodies = deliver.mock.calls.map(([notice]) => notice.body);
-    expect(bodies[0]).toMatch(/^Notes \(notes\) was not started: the isolation check did not finish in time and you declined to run it without OS isolation\./);
-    expect(bodies[1]).toMatch(/^Notes \(notes\) was not started: the isolation check did not finish in time, it would run without OS isolation and nobody approved it\./);
+    expect(bodies[0]).toMatch(/^Notes \(notes\) was not started: the container check did not finish in time and you declined to run it without OS isolation\. Restart Ave to run the check again; if the Windows sandbox is not installed, install it/);
+    expect(bodies[1]).toMatch(/^Notes \(notes\) was not started: the container check did not finish in time, it would run without OS isolation and nobody approved it\./);
     setLocale("ko");
     await asker.ask(late, { sessionId: "s1", attended: true });
     asker.notify(late, "unattended");
     const korean = [requestAndWait.mock.calls.map(([request]) => request.reason)[1], deliver.mock.calls.map(([notice]) => notice.body)[2]];
     expect(korean.every((text) => typeof text === "string")).toBe(true);
-    expect(korean.every((text) => text?.includes("제시간에") && text.includes("OS 격리 없이") && !text.includes("extensionStart."))).toBe(true);
+    expect(korean.every((text) => text?.includes("컨테이너 확인이 제한 시간 안에 끝나지") && text.includes("OS 격리 없이") && !text.includes("extensionStart."))).toBe(true);
   });
 
   it("writes one audit row per waiting, unanswered, declined or confined start", () => {
