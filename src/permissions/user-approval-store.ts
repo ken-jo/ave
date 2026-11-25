@@ -20,6 +20,7 @@ import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { sessionAuthorityWithheld } from "../shared/turn-extension-policy.js";
 import { createSerialQueue } from "../lib/with-file-lock.js";
 import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
+import { requireRunGrantKey, runGrantKeyOfSession } from "./run-grants.js";
 
 import { assertApprovalPersistenceCurrent, commitApprovalFile, refreshApprovalPersistence, type ApprovalPersistenceGuard } from "./approval-persistence-guard.js";
 
@@ -28,13 +29,15 @@ let persistentWrites = createSerialQueue();
 export interface UserApprovalEntry {
   // Root conversation identity for newly recorded session decisions.
   sessionId?: string;
+  // The template run a `run` decision belongs to. Such a row lives in memory only and is read by that run's stage sessions until the run ends.
+  runKey?: string;
   // Host-captured directory for display; never an authority supplied by the UI.
   projectCwd?: string;
   // Legacy entries omit this field and are interpreted as an allow.
   decision?: UserApprovalDecision;
   // ISO 8601 wall-clock time the approval was granted.
   approvedAt: string;
-  // "session" approvals are held in-memory only; "persistent" are written to disk.
+  // "session" and "run" approvals are held in-memory only; "persistent" and "global" are written to disk.
   scope: UserApprovalScope;
   // The reviewer verdict that was shown to the user when they approved.
   verdictAtApproval: UserApprovalVerdict;
@@ -203,6 +206,12 @@ function conversationEntryKey(key: string, sessionId: string): string {
   return sha256Hex(canonicalStringify({ version: "conversation/v1", key, sessionId }));
 }
 
+// "Allow for this run" (owner 2026-11-16): the tool's own remember key, scoped to the run instead of a folder. Each stage works in its
+// own workspace, so the key carries no working directory; the run is the scope.
+function runEntryKey(unscopedKey: string, runKey: string): string {
+  return sha256Hex(canonicalStringify({ version: "run/v1", key: unscopedKey, runKey }));
+}
+
 function readjudicationEntryKey(key: string, pluginId: string): string {
   return sha256Hex(canonicalStringify({ version: "plugin-readjudication/v1", pluginId, key }));
 }
@@ -260,6 +269,8 @@ async function readApprovalsFile(): Promise<ApprovalsFile> {
 
 async function atomicWrite(data: ApprovalsFile, authority?: ApprovalPersistenceGuard): Promise<void> {
   const path = userApprovalFilePath();
+  // A run decision ends with its run and is never saved.
+  if (Object.values(data.approvals).some((entry) => entry.scope === "run")) throw new Error("A run approval is never written to disk");
   const dir = dirname(path);
   await mkdir(dir, { recursive: true, mode: 0o700 });
 
@@ -292,7 +303,7 @@ async function mutatePersistentApprovals(
   });
 }
 
-// Record a user approval decision. For "session" scope, stores only in memory (no disk write). For "persistent" scope, appends to ~/.ave/permissions/user-approvals.json. The IPC caller must bind an allow to a live request whose host snapshot permits persistence. This storage layer does not derive authority from risk.
+// Record a user approval decision. For "session" and "run" scope, stores only in memory (no disk write). A "run" decision is an allow made by a stage session of a live attended template run, keyed to that run. For "persistent" scope, appends to ~/.ave/permissions/user-approvals.json. The IPC caller must bind an allow to a live request whose host snapshot permits persistence. This storage layer does not derive authority from risk.
 export async function recordApproval(
   toolName: string,
   args: string,
@@ -331,6 +342,7 @@ export async function recordApproval(
   const baseKey = entry.readjudication === undefined ? exactKey
     : readjudicationEntryKey(exactKey, entry.readjudication.pluginId);
   if (entry.scope === "global" && entry.projectCwd !== undefined) throw new Error("A global approval names no project");
+  if (entry.scope === "run") return recordRunApproval(toolName, args, source, entry, authority);
   if (entry.sessionId !== undefined && entry.scope !== "session") throw new Error("Conversation identity requires session scope");
   // A session approval requires an exact session identity.
   if (entry.scope === "session" && entry.sessionId === undefined) throw new Error("A session approval requires its conversation session");
@@ -371,6 +383,43 @@ export async function recordApproval(
     file.approvals[key] = full;
   }, authority);
   // Mirror into session cache for fast lookups.
+  sessionStore.set(key, full);
+  approvalGeneration += 1;
+}
+
+// "Allow for this run": an allow for the requesting stage session's run. The run comes from the host's membership record, never from the
+// caller, and is checked again after the authority wait: a run that ended meanwhile stores nothing.
+async function recordRunApproval(
+  toolName: string,
+  args: string,
+  source: string,
+  entry: Parameters<typeof recordApproval>[3],
+  authority?: ApprovalPersistenceGuard,
+): Promise<void> {
+  if ((entry.decision ?? "allow") !== "allow") throw new Error("A run approval is an allow; a deny is saved for the project or everywhere");
+  if (entry.readjudication !== undefined) throw new Error("A re-adjudication is not remembered for a run");
+  const runKey = requireRunGrantKey(entry.sessionId);
+  const key = runEntryKey(entryKey(toolName, args, source, entry.trustOrigin, entry.approvalCacheKey), runKey);
+  const full: UserApprovalEntry = {
+    runKey,
+    decision: "allow",
+    approvedAt: entry.approvedAt ?? new Date().toISOString(),
+    scope: "run",
+    verdictAtApproval: entry.verdictAtApproval,
+    ...(entry.riskCeilingAtApproval === undefined ? {} : { riskCeilingAtApproval: entry.riskCeilingAtApproval }),
+    nlJustification: entry.nlJustification,
+    revokedAt: null,
+    toolName,
+    source,
+    ...(entry.trustOrigin !== undefined ? { trustOrigin: entry.trustOrigin } : {}),
+    ...(entry.approvalCacheKey?.key !== undefined ? { approvalCacheKey: entry.approvalCacheKey.key } : {}),
+    rememberBy: entry.approvalCacheKey?.memoryKey !== undefined ? "key" : "args",
+    ...(entry.approvalCacheKey?.memoryKey !== undefined ? { argsIdentity: sha256Hex(args) } : {}),
+  };
+  await refreshApprovalPersistence(authority);
+  assertApprovalPersistenceCurrent(authority);
+  // Nothing is awaited between this check and the write.
+  if (requireRunGrantKey(entry.sessionId) !== runKey) throw new Error("The session changed its run while the approval was recorded");
   sessionStore.set(key, full);
   approvalGeneration += 1;
 }
@@ -450,9 +499,15 @@ export async function lookupUserDecision(
   const global = readActive(globalKey);
   if (global?.decision === "deny") return global;
   const conversation = sessionKey === undefined ? undefined : sessionStore.get(sessionKey);
+  const withheld = sessionAuthorityWithheld(sessionId, sessionId === undefined ? undefined : approvalConversationRoot(sessionId));
   // A scheduled wake turn reads only a conversation deny: it does not inherit the conversation's allows.
   if (conversation && !conversation.revokedAt && !Object.hasOwn(conversation, "readjudication")
-    && (sessionAuthorityWithheld(sessionId, sessionId === undefined ? undefined : approvalConversationRoot(sessionId)) ? conversation.decision === "deny" : hasValidRiskProvenance(conversation))) return conversation;
+    && (withheld ? conversation.decision === "deny" : hasValidRiskProvenance(conversation))) return conversation;
+  // "Allow for this run" (tree node R): read only by a live member of that attended run, after the conversation row and before the saved
+  // ones. Every deny was returned above. A turn that inherits no session allows reads none of the run's either.
+  const runKey = withheld ? undefined : runGrantKeyOfSession(sessionId);
+  const run = runKey === undefined ? undefined : sessionStore.get(runEntryKey(unscopedKey, runKey));
+  if (run && run.scope === "run" && run.runKey === runKey && run.decision === "allow" && !run.revokedAt && hasValidRiskProvenance(run)) return run;
   return legacy ?? global;
 }
 
@@ -540,7 +595,8 @@ export async function revokeApproval(
 
 // Revoke an approval by its raw composite key (as returned by listApprovals). Used by the PermissionsTab UI which receives pre-computed keys from the IPC list response.
 export async function revokeApprovalByKey(rawKey: string): Promise<void> {
-  if (sessionStore.get(rawKey)?.scope === "session") {
+  const held = sessionStore.get(rawKey)?.scope;
+  if (held === "session" || held === "run") {
     sessionStore.delete(rawKey);
     approvalGeneration += 1;
     return;
@@ -602,10 +658,23 @@ export function dropSessionApprovals(sessionId: string): number {
   return dropped;
 }
 
-// Session rows remain inspectable and revocable when the disk file is corrupt.
+// "Allow for this run" ends with its run (owner 2026-11-16): the run engine drops the run's rows when the run is over. Returns how many were dropped.
+export function dropRunApprovals(runKey: string): number {
+  let dropped = 0;
+  for (const [key, entry] of sessionStore) {
+    if (entry.scope === "run" && entry.runKey === runKey) {
+      sessionStore.delete(key);
+      dropped += 1;
+    }
+  }
+  if (dropped > 0) approvalGeneration += 1;
+  return dropped;
+}
+
+// Session and run rows remain inspectable and revocable when the disk file is corrupt.
 export function listSessionApprovals(): UserApprovalListEntry[] {
   return [...sessionStore.entries()]
-    .filter(([, entry]) => entry.scope === "session")
+    .filter(([, entry]) => entry.scope === "session" || entry.scope === "run")
     .map(([key, entry]) => projectApprovalForList(key, entry));
 }
 

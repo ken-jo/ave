@@ -1,4 +1,5 @@
 // Egress scopes must be among those offered by the gate; terminal asks stay in the owning window/tab. Grants belong to the egress store, never user-decision memory.
+import { type AnswerEpochs, personAnswerStands } from "./pending-answer-policy.js";
 import type { NetworkPermissionEvaluation, NetworkRuleScope, PermissionManager } from "./permission-manager.js";
 import type { EgressGrantScope } from "../shared/egress-grant-scopes.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
@@ -52,7 +53,7 @@ export function createShellNetworkPermissionEvaluator(manager?: PermissionManage
       if (!permission.pipelineRequest) throw new Error("Network permission request has no normalized evidence");
       const { reviewer: _reviewer, ...identity } = permission.pipelineRequest;
       return { ...evaluated, permission, reasonKey: permission.reasonCode ?? evaluated.reasonKey,
-        policyEpoch: manager.getPolicyEpoch(), approvalIdentity: canonicalStringify(identity) };
+        policyEpoch: manager.getPolicyEpoch(), policyContextEpoch: manager.getPolicyContextEpoch(), approvalIdentity: canonicalStringify(identity) };
     };
     const evaluated = await manager.checkNetworkPermission(destination, context);
     return {
@@ -77,7 +78,9 @@ export function createApprovalGateEgressRequester(
     const toolName = terminal ? TERMINAL_EGRESS_TOOL_NAME : request.toolName;
     let reviewerVerdict;
     let forced = false;
-    let policyEpoch: string | undefined;
+    // What the card is asked under, and the destination judged again by the policy as it is now (pending-answer-policy.ts).
+    let opened: AnswerEpochs | undefined;
+    let recheckDestination: (() => { decision: "allow" | "ask" | "deny"; forceModal?: boolean }) | undefined;
     if (request.origin === "shell") {
       if (!permissionManager) throw new Error("Shell egress requires a permission manager");
       const cwd = request.workspaceRoot ?? process.cwd();
@@ -89,7 +92,8 @@ export function createApprovalGateEgressRequester(
       if (evaluated.destination.host !== host || evaluated.destination.port !== port) throw new Error("Network permission destination changed");
       let permission = evaluated.permission;
       forced = permission.forceModal === true;
-      policyEpoch = evaluated.policyEpoch;
+      opened = { epoch: evaluated.policyEpoch, contextEpoch: evaluated.policyContextEpoch };
+      recheckDestination = () => evaluated.recheck(undefined, request.approvalSurface ?? (headless ? "unavailable" : "interactive")).permission;
       if (permission.reviewer && permission.decision === "ask" && !permission.forceModal) {
         const review = await permissionManager.dispatchReviewer("sandbox_network", {
           permissionDecision: permission,
@@ -149,7 +153,10 @@ export function createApprovalGateEgressRequester(
     if (!terminal && decision.rememberPattern === NO_APPROVER_MESSAGE) { request.onNoApprover?.(); return { allow: false, reason: NO_APPROVER_MESSAGE }; }
     if (decision.choice === "allow-once" && decision.egressScope !== undefined && request.scopes.includes(decision.egressScope)) {
       // Only an allow depends on the policy it was asked under. A deny stands, so the rule a "deny always" answer saves is not read as an outside change.
-      if (!terminal && permissionManager!.getPolicyEpoch() !== policyEpoch) return { allow: false, reason: "Permission policy changed during network approval." };
+      // A sibling stage's "Allow for this run", or a run that ended, leaves the answer standing; every other change refuses it.
+      if (!terminal && !(opened !== undefined && recheckDestination !== undefined && personAnswerStands(permissionManager!, opened, forced, recheckDestination))) {
+        return { allow: false, reason: "Permission policy changed during network approval." };
+      }
       if (forced && decision.egressScope !== "once") return { allow: false, reason: "A forced network approval is valid for one connection only." };
       return { allow: true, scope: decision.egressScope, ...(forced ? { oneConnection: true as const } : {}) };
     }

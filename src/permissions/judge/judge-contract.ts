@@ -26,7 +26,7 @@ export interface JudgeRequest {
   invocationId: string;
   // A host-owned rationale round counts a classifier denial only after its choice resolves.
   deferDenialCounting?: boolean;
-  // Root conversation session id. Subagents pass their parent's root id so they share one circuit breaker.
+  // The session whose circuit breaker this review counts on: the root conversation, which its subagents share, or a template run's stage session, which counts on its own.
   sessionId: string;
   lane: JudgeLane;
   invocation: ToolInvocationContext;

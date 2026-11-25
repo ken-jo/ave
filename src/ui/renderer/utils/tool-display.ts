@@ -1,4 +1,5 @@
 import { t } from "../../../i18n/runtime.js";
+import { WORKFLOW_TEMPLATE_PROPOSE_TOOL } from "../../../shared/workflow-template-types.js";
 
 /** Human-readable display name keys for LLM tool identifiers. */
 const TOOL_DISPLAY_KEYS: Record<string, string> = {
@@ -11,6 +12,7 @@ const TOOL_DISPLAY_KEYS: Record<string, string> = {
   task_overdue: "toolDisplay.taskOverdue",
   session_tasks: "toolDisplay.sessionTasks",
   routine_schedule: "toolDisplay.routineSchedule",
+  [WORKFLOW_TEMPLATE_PROPOSE_TOOL]: "toolDisplay.workflowTemplatePropose",
 
   agent_spawn: "toolDisplay.agentSpawn",
 
