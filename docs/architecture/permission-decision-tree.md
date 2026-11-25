@@ -7,7 +7,7 @@ to permission classification, approval cards, the reviewer, hooks or headless be
 keep the code in this order. A change to this tree needs an owner decision.
 
 Outcomes: allow, sandbox-auto, ask (normal card), ask-forced (질문†: this time only, no reviewer, no allow-mode pass,
-no memory, deny when headless; the `sandbox-unavailable` floor alone also offers this session, see below; one exception to no memory: on a no-backend host, an exactly matching saved host rule passes the `sandbox-unavailable` ask, see Shell default), deny.
+no memory, deny when headless; the `sandbox-unavailable` floor (when it is the only 질문†) and the Windows approved-host ask also offer this session, see below; one exception to no memory: on a no-backend host, an exactly matching saved host rule passes the `sandbox-unavailable` ask, see Shell default), deny.
 
 Modes: 기본 / Default (former 모두 확인 = strict; default for new installs) · 쓰기 허용 / Allow writes
 (former 쓰기만 확인) · auto · 허용 / Allow.
@@ -20,7 +20,7 @@ flowchart TD
   H -->|차단| DENY["거부"]
   H -->|신뢰한 훅 입력 변경: 전체 결정 재시작, 최대 3회| T
   H -->|"통과 (무인 실행: 격리 증명·봉투 존재 포함)"| F{"질문† 대상? 보호 경로 · 위험 삭제 · 탈출 · 다른 주체 턴 · 샌드박스 없는 셸(경계 미확인 · 백엔드 없음)"}
-  F -->|예| ASKF["질문† (이번 한 번; 예외: sandbox-unavailable가 유일한 질문†이면 이 세션의 이후 셸·훅을 이 세션 동안도 허용 가능, 사람 없으면 거부; 백엔드 없음 sandbox-unavailable가 유일한 질문†이고 부팅 홈 보호 확인됨: 명령과 정확히 일치하는 저장된 호스트 규칙만 묻지 않고 통과)"]
+  F -->|예| ASKF["질문† (이번 한 번; 예외: sandbox-unavailable가 유일한 질문†이면, 또는 Windows 승인 호스트 질문†이면 이 세션의 이후 셸·훅을 이 세션 동안도 허용 가능, 사람 없으면 거부; 백엔드 없음 sandbox-unavailable가 유일한 질문†이고 부팅 홈 보호 확인됨: 명령과 정확히 일치하는 저장된 호스트 규칙만 묻지 않고 통과)"]
   F -->|아니오| UN{"예약이 시작한 템플릿 실행의 단계 세션?"}
   UN -->|아니오| U{"사용자 소유 브라우저 · 호스트 터미널?"}
   U -->|아니오| R{"ask / allow 규칙 · 기억된 승인 (이번 실행 허용 포함)"}
@@ -251,7 +251,7 @@ Modes are behaviour, not labels. Each column matches the reference hosts' equiva
 | known-safe read-only shell (ls, cat, git status/diff/log, rg…, as the existing literal-proof/read-only classifier defines it) | allow | allow | allow | allow | Claude default read-only bash, Codex untrusted safe commands |
 | other sandboxed shell, incl. file-changing commands inside the project (mkdir/mv/cp/rm/build/test) | ask | sandbox-auto | sandbox-auto | sandbox-auto | Codex workspace-write sandbox, Claude sandboxed bash |
 | sandboxed shell with an unproven/destructive signal (incl. a command that exceeds any command-analysis limit, the 16-fork cd budget for directory changes among them: an ask, never a deny; owner decision 2026-11-25) | ask | ask | reviewer | allow (unless 질문†) | Codex dangerous heuristic, Claude critical rm |
-| sandbox escalation / host shell (sandbox off) | ask (prefix rule savable, except the Windows approved-host 질문†) | ask (prefix rule savable, except the Windows approved-host 질문†) | reviewer | allow (unless 질문†) | Codex escalation + prefix rules; owner "코덱스와 맞춰"; Windows approved-host ask is 질문†, waived once per session, never saved: owner decision 2026-11-25 |
+| sandbox escalation / host shell (sandbox off) | ask (prefix rule savable, except the Windows approved-host 질문†) | ask (prefix rule savable, except the Windows approved-host 질문†) | reviewer (except the Windows approved-host 질문†) | allow (unless 질문†) | Codex escalation + prefix rules; owner "코덱스와 맞춰"; Windows approved-host ask is 질문†, waived once per session, never saved: owner decision 2026-11-25 |
 | builtin browser in agent-opened tab | tool use allow; new origin ask (this-site / any-site) | same | same | same | owner decision 2026-11-08; session only, no child inheritance; headless deny |
 | network / web fetch | ask | ask | reviewer | allow | Codex sandbox network off, Claude WebFetch rules |
 | MCP readOnlyHint (server or plugin) | allow | allow | allow | allow | Codex MCP read-only; owner "우리도 맞춰"; plugin read declaration: owner decision 2026-11-06 |
