@@ -54,6 +54,7 @@ import {
   pluginGrantPathsBeyondOwnRoots,
   type WindowsWorkerFilesystemGrant,
 } from "./asrt-sandbox.js";
+import { workerStartKey, type ExtensionStartAuthority } from "./extension-start-consent.js";
 import {
   markPluginWorkerWrapped,
   unmarkPluginWorkerWrapped,
@@ -64,6 +65,8 @@ export type WorkerOutputListener = (chunk: string) => void;
 
 // The spec the HOST hands spawnWorker. The hostApi factory binds `pluginId` from the calling plugin instance; workerId/command/grant paths are declared by trusted first-party plugin code and reviewed at the HostApi effect boundary. `allowWritePaths` is the worker's filesystem write-jail; a requested state directory is added to it by the host.
 export interface SpawnWorkerSpec {
+  /** Host-set: the consent for this one start when nothing confines it. */
+  readonly extensionStart?: ExtensionStartAuthority;
   // Owning plugin id — selects the `~/.ave/plugins/<pluginId>/` sandbox root.
   readonly pluginId: string;
   // Stable per-worker id — names the `workers/<workerId>/` state dir + the reviewer wrapped-registry key. Sanitized to a single safe path segment.
@@ -227,7 +230,11 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
   // A selected container backend carries the worker itself; its holder asserts the native entry. The legacy guard
   // refuses that plan, and the legacy gate reads off under it, so neither is consulted on this route.
   const contained = process.platform === "win32" && isMxcExtensionBackendSelected();
-  if (!contained) assertExtensionStartAllowed({ holder: "worker" });
+  // An unconfined worker is a plain spawn below with no later crossing, so this one spends the consent.
+  if (!contained) {
+    assertExtensionStartAllowed({ holder: "worker",
+      start: { key: workerStartKey(spec.pluginId, spec.workerId), authority: spec.extensionStart, spend: true } });
+  }
   const safePlugin = safeSegment(spec.pluginId, "pluginId");
   const safeWorker = safeSegment(spec.workerId, "workerId");
   if (typeof spec.control !== "string" || !WORKER_CONTROLS.has(spec.control)) {

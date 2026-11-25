@@ -8,6 +8,7 @@ import { PluginSandboxGrantError } from "../../isolation/out-of-process-plugin.j
 import type { PluginManifest } from "../../types.js";
 import {
   bindTestPluginRuntimeGeneration,
+  stopTestPluginRuntimes,
   writeTestPluginRegistry,
 } from "../../__tests__/test-helpers.js";
 import { unavailableSecretEncryption } from "../../../__tests__/support/host-runtime.js";
@@ -69,7 +70,9 @@ describe("PluginRuntime boot preflight", () => {
   });
 
   afterEach(async () => {
+    const stopped = await stopTestPluginRuntimes();
     await rm(root, { recursive: true, force: true });
+    expect(stopped).toEqual({ unfinished: [], leftHomes: [] });
   });
 
   it("bounds receipt checks and reports staggered integrity failures in plan order", async () => {

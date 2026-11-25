@@ -32,6 +32,9 @@ import type { PluginOperationIdentityProvider } from "../../tools/invocation-ser
 import { isPluginRuntimeDetachedOperationError } from "../../plugins/runtime/detached-operation.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import type { HostPluginAuthLifecycle } from "../../tools/executor-contract.js";
+import { setExtensionStartAsker, type ExtensionStartAsker } from "../../permissions/extension-start-consent.js";
+import { createExtensionStartAsker } from "../../permissions/extension-start-asker.js";
+import { t } from "../../i18n/index.js";
 
 function toPluginToolInput(payload: unknown): Record<string, unknown> {
   if (payload === undefined || payload === null) return {};
@@ -46,8 +49,37 @@ function pluginInvocationSessionId(context: PluginToolInvocationContext): string
   return `plugin-${context.origin}-${subject}`;
 }
 
+const EXTENSION_START_CARD_KEYS = {
+  "plugin-child": "extensionStart.cardPluginChild",
+  "mcp-stdio": "extensionStart.cardMcpStdio",
+  worker: "extensionStart.cardWorker",
+  "plugin-hook": "extensionStart.cardPluginHook",
+} as const;
+
+/** The card, the notice and the audit rows of an extension start that nothing confines. */
+export function bootExtensionStartAsker(ctx: Pick<BootContext, "approvalGate" | "bootAuditLogger" | "notificationService">): ExtensionStartAsker {
+  const { approvalGate, bootAuditLogger } = ctx;
+  return createExtensionStartAsker({
+    approvalGate,
+    reason: (start) => t(EXTENSION_START_CARD_KEYS[start.kind], { name: start.label }),
+    notify: (start, why) => {
+      const body = start.cause === "no-backend"
+        ? (why === "declined" ? "extensionStart.declinedNoBackend" : "extensionStart.notStartedNoBackend")
+        : (why === "declined" ? "extensionStart.declinedHomePrivacy" : "extensionStart.notStartedHomePrivacy");
+      ctx.notificationService.deliver({ kind: "system", title: t("extensionStart.notStartedTitle"), body: t(body, { name: start.label }), bypassFocusGate: true });
+    },
+    record: (event, start) => bootAuditLogger.log({
+      timestamp: new Date().toISOString(), sessionId: "extension-start", type: "info",
+      input: JSON.stringify({ event, kind: start.kind, key: start.key, cause: start.cause }),
+      output: `[extension_start_${event}] ${start.label}`,
+    }),
+  });
+}
+
 export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
   const { toolRegistry, permissionManager, bashAstValidator, approvalGate, bootAuditLogger, pluginRuntime, lateBinding } = ctx;
+
+  setExtensionStartAsker(bootExtensionStartAsker(ctx));
 
   // External hooks use the single trust-quarantine path; the in-process runner is internal only.
   const hookRunner = createHookRunner();

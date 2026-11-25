@@ -1,7 +1,7 @@
 import { pluginChildEntryPath } from "../../__tests__/support/plugin-child-entry.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { execFile } from "node:child_process";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync } from "node:fs";
 import { chmod, mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
@@ -41,6 +41,7 @@ import type {
 import type { ActivePluginGeneration } from "../plugin-generation-coordinator.js";
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
 import { HOST_PROTOCOL_VERSION } from "../isolation/host-api-wire.js";
+import { SANDBOX_HOME_OWNER_SUFFIX, sandboxProcessHomesInUse } from "../../permissions/sandbox-process-home.js";
 
 type GenerationCommitScope = <T>(operation: () => Promise<T>) => Promise<T>;
 
@@ -546,6 +547,57 @@ export function makeTestPluginRuntime(
   }));
 }
 
+// A started entry plugin is a real child whose sandbox HOME is removed only when it exits, so files that start runtimes stop them in `afterEach`.
+const testRuntimes = new Set<PluginRuntime>();
+
+/** Registers a runtime built without `bindTestPluginRuntimeGeneration`, which registers its own. */
+export function trackTestPluginRuntime<T extends PluginRuntime>(runtime: T): T {
+  testRuntimes.add(runtime);
+  return runtime;
+}
+
+// HOMEs an earlier call already reported, so one leak fails only the case that made it.
+const reportedHomes = new Set<string>();
+// Covers the HOME removal retries (50/250/1000 ms) and a child exit observed after `stopAll` settles.
+const HOME_REMOVAL_WAIT_MS = 2_000;
+
+/** Waits for the given and the live sandbox HOMEs, except `skip`, to leave the disk; returns the HOMEs or `.owner` markers still there. */
+export async function waitForSandboxHomesRemoved(
+  homes: Iterable<string>,
+  skip: ReadonlySet<string> = new Set(),
+): Promise<string[]> {
+  const known = [...homes];
+  const remaining = (): string[] => [...new Set([...known, ...sandboxProcessHomesInUse()])]
+    .filter((home) => !skip.has(home))
+    .flatMap((home) => [home, `${home}${SANDBOX_HOME_OWNER_SUFFIX}`].filter((path) => existsSync(path)));
+  const deadline = Date.now() + HOME_REMOVAL_WAIT_MS;
+  let left = remaining();
+  while (left.length > 0 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    left = remaining();
+  }
+  return left;
+}
+
+/** Drops a runtime whose shutdown the caller owns, so `stopTestPluginRuntimes` never stops it again. */
+export function untrackTestPluginRuntime(runtime: PluginRuntime): void {
+  testRuntimes.delete(runtime);
+}
+
+/** Stops every registered runtime; returns the plugins that did not retire and the sandbox HOMEs (or `.owner` markers) still on disk. */
+export async function stopTestPluginRuntimes(): Promise<{ unfinished: string[]; leftHomes: string[] }> {
+  const homes = [...sandboxProcessHomesInUse()];
+  const runtimes = [...testRuntimes];
+  const results = await Promise.allSettled(runtimes.map((runtime) => runtime.stopAll()));
+  for (const runtime of runtimes) testRuntimes.delete(runtime);
+  const unfinished = results.flatMap((result) => result.status === "fulfilled"
+    ? result.value.unfinished
+    : [`stopAll rejected: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`]);
+  const leftHomes = await waitForSandboxHomesRemoved(homes, reportedHomes);
+  for (const path of leftHomes) reportedHomes.add(path.endsWith(SANDBOX_HOME_OWNER_SUFFIX) ? path.slice(0, -SANDBOX_HOME_OWNER_SUFFIX.length) : path);
+  return { unfinished, leftHomes };
+}
+
 export function makeTestPluginRuntimeWithAudit(
   fixture: TestPluginRuntimeFixture,
   auditEntries: Array<{ level: string; message: string; data?: unknown }>,
@@ -559,6 +611,7 @@ export function makeTestPluginRuntimeWithAudit(
 
 /** Runtime unit tests use mutable fixture roots with real coordinator publication; production keeps strict receipt-backed generation binding. */
 export function bindTestPluginRuntimeGeneration(runtime: PluginRuntime): PluginRuntime {
+  trackTestPluginRuntime(runtime);
   const active = new Map<string, ActivePluginGeneration<HostPluginGenerationState>>();
   const lifecycleTails = new Map<string, Promise<void>>();
   const lifecycleQueueContext = new AsyncLocalStorage<ReadonlyMap<string, object>>();
