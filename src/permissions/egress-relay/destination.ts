@@ -1,7 +1,7 @@
 // Destination spelling, allow entries and the resolved-address check of the egress relay.
 import net from "node:net";
 import { networkInterfaces } from "node:os";
-import { embeddedIPv4, isLoopbackName } from "./address-set.js";
+import { embeddedIPv4, isLoopbackAddress, isLoopbackName } from "./address-set.js";
 
 export function stripBrackets(host: string): string {
   return host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
@@ -91,9 +91,6 @@ export function relayAllowEntryMatches(entry: RelayAllowEntry, canonicalHost: st
   return net.isIP(canonicalHost) === 0 && canonicalHost.endsWith(`.${entry.host}`);
 }
 
-const LOOPBACK = new net.BlockList();
-LOOPBACK.addSubnet("127.0.0.0", 8, "ipv4");
-LOOPBACK.addAddress("::1", "ipv6");
 
 const RESERVED = new net.BlockList();
 // Unspecified, link-local, multicast, broadcast, then instance-metadata endpoints outside link-local space.
@@ -118,11 +115,6 @@ function inList(list: net.BlockList, address: string): boolean {
 // A literal no destination may be: unspecified, link-local, multicast, broadcast or an instance-metadata endpoint. Loopback is not in it.
 export function isReservedAddress(address: string): boolean {
   return [address, deliveredIPv4(address)].some((form) => form !== undefined && inList(RESERVED, form));
-}
-
-// Stricter than the address-set helper of the same name: that one drops a zone id first, so `127.0.0.1%eth0` and `::1%` are loopback there and not here.
-export function isLoopbackAddress(address: string): boolean {
-  return inList(LOOPBACK, address);
 }
 
 export function localInterfaceAddresses(): string[] {
@@ -157,6 +149,6 @@ export function resolvedAddressPermitted(
   if (allow.some((entry) => !entry.wildcard && entry.host === literal && entry.port === port)) return true;
   if (isLoopbackName(canonicalHost)) return isLoopbackAddress(address);
   const forms = [address, deliveredIPv4(address)].filter((form): form is string => form !== undefined);
-  if (forms.some((form) => inList(LOOPBACK, form))) return false;
+  if (forms.some(isLoopbackAddress)) return false;
   return !isThisHostAddress(address, local);
 }
