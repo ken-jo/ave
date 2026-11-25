@@ -1,12 +1,13 @@
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
-  chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, unlinkSync, writeFileSync,
+  chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmdirSync, unlinkSync, writeFileSync,
   type Stats,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { posix as posixPath, win32 as winPath } from "node:path";
 import { createLogger } from "../lib/logger.js";
+import { renameDirectorySyncOnce } from "../lib/transient-fs-lock-retry.js";
 import { aveHome } from "../shared/ave-home.js";
 import { AVE_HOME_ISOLATION_GUARD_ACTIVE } from "../shared/ave-home-test-guard.js";
 import { MxcProcessContractError } from "./mxc-extension-errors.js";
@@ -429,7 +430,7 @@ export function createMxcRunStaging(host: MxcRuntimeHost = currentMxcRuntimeHost
 
 /** A socket path inside the run's socket directory, refused when the platform could not bind it. On macOS the path
  * is `<home>/Library/Caches/<app id>/mxc-runtime/s/<8 hex>/<name>` within 103 bytes: 62 of them are fixed, so a name
- * may be as long as 41 bytes less the home directory's length (31 for `/Users/abc`, 15 for a 20-character account
+ * may be as long as 41 bytes less the home directory's length (31 for `/Users/you`, 15 for a 20-character account
  * name). A longer one is refused here, by name and byte count, before anything tries to bind it. */
 export function mxcRunSocketPath(run: MxcRunStaging, name: string, platform: NodeJS.Platform = process.platform): string {
   if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]*$/u.test(name)) throw new MxcProcessContractError("Container socket name must be one plain file name");
@@ -497,7 +498,7 @@ function removeRunSockets(root: string): void {
 function removeRunTree(root: string): void {
   const retired = `${root}${RETIRED_SUFFIX}`;
   try {
-    renameSync(root, retired);
+    renameDirectorySyncOnce(root, retired);
   } catch (error) {
     // Already retired by an interrupted removal, or never created.
     const code = (error as NodeJS.ErrnoException).code;

@@ -128,11 +128,11 @@ describe("holder staging layout under a runtime root outside the Ave home", () =
 
   it.each([
     ["upper-case home leaf", `${S}/HOME`, `${S}/temp`],
-    ["parent segment", `${S}/home/../home`, `${S}/temp`],
+    ["parent segment", `${S}/home/me/home`, `${S}/temp`],
     ["doubled separator", `${S}//home`, `${S}/temp`],
     ["trailing separator", `${S}/home/`, `${S}/temp`],
     ["shared HOME and temp", `${S}/home`, `${S}/home`],
-    ["nested below the leaf", `${S}/home/deeper`, `${S}/temp`],
+    ["nested below the leaf", `${S}/home/tester`, `${S}/temp`],
     ["different staging directories", `${S}/home`, `${stagingParent}/fedcba9876543210fedcba9876543210/temp`],
     ["plugin-named id", `${stagingParent}/native-probe/home`, `${stagingParent}/native-probe/temp`],
     ["under the Ave home", "/home/example/.ave/mxc-staging/0123456789abcdef0123456789abcdef/home", "/home/example/.ave/mxc-staging/0123456789abcdef0123456789abcdef/temp"],

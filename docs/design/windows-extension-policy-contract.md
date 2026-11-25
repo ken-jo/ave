@@ -359,7 +359,7 @@ check (`assertMxcHolderStaging`) take the staging parent from it.
   - A socket address holds 104 bytes on macOS and 108 on Linux. On macOS 62
     bytes of the path are fixed below the home directory, so a socket name may
     be as long as 41 bytes less the home directory's length: 31 for
-    `/Users/abc`, 15 for a 20-character account name. A longer path is refused
+    `/Users/you`, 15 for a 20-character account name. A longer path is refused
     with its byte count before anything binds it.
   - The runtime root, the staging parent and the socket parent are host-only.
 - **Cleanup.**
