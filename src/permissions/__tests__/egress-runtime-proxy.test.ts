@@ -140,14 +140,16 @@ async function invocationFrontend(token: string) {
   return frontend;
 }
 
-function connect(port: number, authorization?: string, authority = `${DESTINATION.host}:${DESTINATION.port}`) {
+// CONNECT by default; "GET" sends the plain-HTTP absolute-URI form for the same authority.
+function connect(port: number, authorization?: string, authority = `${DESTINATION.host}:${DESTINATION.port}`, method: "CONNECT" | "GET" = "CONNECT") {
   let response = "";
   let answered: (text: string) => void = () => {};
   // The status line, or whatever arrived before the socket closed.
   const status = new Promise<string>((resolve) => { answered = resolve; });
   const socket = track(net.connect(port, "127.0.0.1", () => {
     const auth = authorization === undefined ? "" : `Proxy-Authorization: ${authorization}\r\n`;
-    socket.write(`CONNECT ${authority} HTTP/1.1\r\nHost: ${authority}\r\n${auth}\r\n`);
+    const target = method === "GET" ? `http://${authority}/` : authority;
+    socket.write(`${method} ${target} HTTP/1.1\r\nHost: ${authority}\r\n${auth}\r\n`);
   }));
   socket.on("data", (chunk: Buffer) => {
     response += chunk.toString("latin1");
@@ -289,5 +291,19 @@ describe.skipIf(process.platform !== "win32")("native proxy with production egre
     // The same entry still reaches a loopback port that is no shell's: the refusal is the port's, not the address's.
     await connect(runtime.sharedPort, authorization, `${host}:${runtime.upstream.port}`).status;
     expect(runtime.observed.length).toBeGreaterThan(0);
+  });
+
+  // Plain HTTP reaches the same refusal as CONNECT: the shared filter serves both.
+  it("refuses a plain-HTTP absolute-URI request to a frontend port before asking", async () => {
+    setWorkerEgressAllowlists({ byExtension: new Map([["fixture", ["127.0.0.1"]]]), modelEndpointHosts: [] });
+    const runtime = await startRuntime();
+    const frontend = await invocationFrontend(openShell().token);
+    const worker = openEgressInvocation({ kind: "worker", role: "worker", pluginId: "fixture" });
+    invocations.push(worker);
+
+    await expectResponse(connect(runtime.sharedPort, proxyAuthorization(worker.token, runtime.credential), `127.0.0.1:${frontend.port}`, "GET"), 403);
+    expect(runtime.observed).toEqual([]);
+    expect(runtime.requestAndWait).not.toHaveBeenCalled();
+    expect(runtime.upstream.received).toEqual([]);
   });
 });
