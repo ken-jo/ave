@@ -1,6 +1,8 @@
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import * as ts from "typescript/unstable/ast";
+import { parseSourceTexts } from "../../../../scripts/lib/ts7-ast.mjs";
 import { describe, expect, it, vi } from "vitest";
 import { issueHostTerminalWriteAuthority } from "../../../permissions/host-terminal-write-authority.js";
 import { PermissionManager } from "../../../permissions/permission-manager.js";
@@ -56,11 +58,16 @@ function editor(editFailure?: { at: "echo" | "acknowledgement"; deny(): void }, 
     }
   };
   const onBeforeEnter = vi.fn(() => { order.push("disclose"); });
-  const run = (fence: () => string | undefined, refresh: () => void = () => {}, signal?: AbortSignal) => {
+  const run = (
+    fence: () => string | undefined,
+    refresh: () => void = () => {},
+    signal?: AbortSignal,
+    isCurrent: () => boolean = () => true,
+  ) => {
     const pairedShare = { pairingId: "pair", pairingEpoch: 1, shareId: "share", shareEpoch: 1, scope: "scope" };
     const remoteControllerAuthority = bindRemoteControllerToSession({
       kind: "tailnet-controller", actorId: "tailnet:owner", pairedShare,
-      pairedShareGuard: { isCurrent: () => true, refreshCurrent: async () => {
+      pairedShareGuard: { isCurrent, refreshCurrent: async () => {
         await Promise.resolve();
         order.push("refresh");
         refresh();
@@ -222,6 +229,104 @@ describe("terminal write fence", () => {
     expect(cancel.signal.aborted).toBe(true);
     expect(terminal.bytes).toEqual([RESET, TERMINAL_EDIT_LINE_QUERY, PASTE, TERMINAL_EDIT_LINE_QUERY, RESET]);
     expect(terminal.onBeforeEnter).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { changeReport: true, revoke: false },
+    { changeReport: true, revoke: true },
+    { changeReport: false, revoke: true },
+  ])("preserves a concurrent deny at the Enter boundary ($changeReport, $revoke)", async ({ changeReport, revoke }) => {
+    const directory = mkdtempSync(join(tmpdir(), "ave-terminal-fence-"));
+    try {
+      const manager = new PermissionManager(join(directory, "permissions.json"));
+      manager.setMode("allow");
+      const check = () => manager.checkDetailed("terminal_run", "builtin", "shell");
+      const authority = issueHostTerminalWriteAuthority({
+        manager, human: false, cardForced: false, reviewed: false, settled: check(), decidedBackend: "host",
+        check, backendIdentity: () => "host",
+      });
+      const terminal = editor();
+      let finalProof = false;
+      let controllerRevoked = false;
+      const editLineReport = terminal.blocks.editLineReport.bind(terminal.blocks);
+      vi.spyOn(terminal.blocks, "editLineReport").mockImplementation(() => {
+        const report = editLineReport();
+        if (report && terminal.bytes.includes(PASTE) && terminal.bytes.at(-1) === TERMINAL_EDIT_LINE_QUERY
+          && (finalProof || terminal.order.at(-1) === "fence")) {
+          if (!finalProof) manager.setRules([{ pattern: "terminal_run", action: "deny" }]);
+          finalProof = true;
+          if (changeReport) return { ...report, generation: report.generation + 1 };
+        }
+        return report;
+      });
+
+      const result = await terminal.run(authority.refusal, undefined, undefined, () => {
+        controllerRevoked ||= revoke && finalProof;
+        return !controllerRevoked;
+      });
+      expect(finalProof).toBe(true);
+      expect(controllerRevoked).toBe(revoke);
+      const deny = check();
+      expect(deny.decision).toBe("deny");
+      const writes = [RESET, TERMINAL_EDIT_LINE_QUERY, PASTE, TERMINAL_EDIT_LINE_QUERY];
+      if (revoke) {
+        expect(result).toEqual({ ok: false, reason: "effect-refused", pasteUncleared: true,
+          message: deny.reason + "\nThe pasted line could not be cleared. Enter was not pressed." });
+      } else {
+        writes.push(RESET);
+        expect(result).toEqual({ ok: false, reason: "effect-refused", message: deny.reason });
+      }
+      expect(terminal.bytes).toEqual(writes);
+      expect(terminal.onBeforeEnter).not.toHaveBeenCalled();
+    } finally {
+      await cleanupTmpDir(directory);
+    }
+  });
+
+  it("routes every post-paste exit through the finalizer", () => {
+    const path = "pty-manager.ts";
+    const text = readFileSync(new URL("../pty-manager.ts", import.meta.url), "utf8");
+    const source = parseSourceTexts(new Map([[path, text]])).get(path) as ts.SourceFile | undefined;
+    const typing = source?.statements.find((node): node is ts.FunctionDeclaration =>
+      ts.isFunctionDeclaration(node) && node.name?.text === "typeLineAtPrompt");
+    if (!typing?.body) throw new Error("Terminal typing protocol not found.");
+    const statements = typing.body.statements;
+    const pasteIndex = statements.findIndex((node) => ts.isVariableStatement(node)
+      && node.declarationList.declarations.some((declaration) => declaration.name.getText() === "pasteRefusal"));
+    expect(pasteIndex).toBeGreaterThanOrEqual(0);
+    const pasteGuard = statements[pasteIndex + 1];
+    expect(ts.isIfStatement(pasteGuard) && pasteGuard.expression.getText()).toBe("pasteRefusal !== undefined");
+    const exits: string[] = [];
+    const visit = (node: ts.Node): void => {
+      if (ts.isReturnStatement(node) || ts.isThrowStatement(node)) {
+        const expression = node.expression;
+        if (ts.isReturnStatement(node) && expression && ts.isCallExpression(expression)
+          && expression.expression.getText() === "finalizeAfterPaste") {
+          exits.push(expression.arguments.map((argument) => argument.getText()).join(", "));
+        } else {
+          exits.push(node.getText());
+        }
+      }
+      node.forEachChild(visit);
+    };
+    const postPaste = statements.slice(pasteIndex + 2);
+    expect(postPaste.map((node) => node.kind)).toEqual([ts.SyntaxKind.TryStatement, ts.SyntaxKind.ReturnStatement]);
+    const guarded = postPaste[0];
+    expect(ts.isTryStatement(guarded) && guarded.catchClause).toBeTruthy();
+    postPaste.forEach(visit);
+    expect(exits).toEqual([
+      'notTyped("aborted", "terminal command preparation was cancelled; Enter was not pressed")',
+      'notTyped("edit-line-mismatch", "the terminal\'s line editor did not show exactly the approved line after it was pasted, so Enter was not pressed")',
+      "beforeQuery",
+      'notTyped("aborted", "terminal command preparation was cancelled; Enter was not pressed")',
+      "effectRefused(confirmed)",
+      'notTyped("edit-line-mismatch", "the terminal\'s editable command buffer did not match the approved line; Enter was not pressed")',
+      "beforeEnter",
+      'notTyped("edit-line-mismatch", "the terminal prompt or editor acknowledgement changed before Enter; no further input was sent")',
+      "interrupted() ?? effectRefused(enterRefusal)",
+      "failure",
+      "{ ok: true, firstBlockId }",
+    ]);
   });
 
   it("routes the reset, query, paste and Enter through send", () => {
