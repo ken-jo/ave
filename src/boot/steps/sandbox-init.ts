@@ -21,6 +21,7 @@ import {
 } from "./windows-sandbox-plan.js";
 import type { SandboxStartFailureCause } from "../../shared/sandbox-capability-info.js";
 import { classifySandboxDependencyErrors } from "../../permissions/sandbox-start-failure.js";
+import { denyUnenforceableKind, isObligationRefusal, setWindowsDenyUnenforceableAtBoot } from "../../permissions/admitted-obligation.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { checkSandboxSweepRoot } from "../../shared/ave-home-test-guard.js";
 import { removeOwnedPluginTree } from "../../plugins/installed-entry-fs.js";
@@ -327,7 +328,7 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
             // A failed session setup clears runtime config, permitting clean proxy-only initialization for container shells.
             // An unverifiable Ave home boundary refuses every confined start, so a proxy-only retry cannot help.
             if (windowsInputs === undefined || windowsStart === undefined || !canRetryWindowsAsProxyOnly(windowsInputs, windowsStart)
-              || aveHomeBoundaryFailure(srtWinErr) !== undefined) {
+              || aveHomeBoundaryFailure(srtWinErr) !== undefined || isObligationRefusal(srtWinErr)) {
               throw srtWinErr;
             }
             log.warn(
@@ -339,6 +340,7 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
             await initializeAs(windowsStart);
           }
           if (initialization?.windowsIsolation !== undefined) windowsStart = "proxy-only";
+          if (process.platform === "win32") setWindowsDenyUnenforceableAtBoot(undefined);
           // Publish only initialized confinement: full on macOS/Linux, filesystem and network only on the Windows runtime.
           // Inactive or degraded activation must leave capability none; reviewers rely on these dimensions.
           const asrtBackend =
@@ -452,8 +454,11 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
                 ? "degrade-windows-init-failed"
                 : failDecision.reason;
             const cause = errorMessage(initErr);
+            // A deny the backend cannot enforce takes the forced sandbox-unavailable question for every shell command.
+            const denyUnenforceable = process.platform === "win32" ? denyUnenforceableKind(initErr) : undefined;
+            if (denyUnenforceable !== undefined) setWindowsDenyUnenforceableAtBoot(denyUnenforceable);
             const failureCauses: SandboxStartFailureCause[] = [
-              runtimeProbeFailed ? "linux-runtime-probe-failed" : "init-failed",
+              runtimeProbeFailed ? "linux-runtime-probe-failed" : denyUnenforceable === "network" ? "windows-deny-unenforceable" : denyUnenforceable === "path" ? "windows-deny-path-unenforceable" : "init-failed",
             ];
             if (failDecision.action === "abort") {
               // Explicit activation must fail closed on initialization errors.

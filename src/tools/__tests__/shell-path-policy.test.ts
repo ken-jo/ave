@@ -2,8 +2,9 @@ import { mkdirSync, mkdtempSync, realpathSync, symlinkSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join as nativeJoin, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { shellQuote } from "../../lib/shell-resolver.js";
+import { configureHostResources } from "../../main/host-resources.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { hostFilesystemPath } from "../../__tests__/support/host-filesystem-path.js";
 import { CURL_OPTION_TABLE, WGET_OPTION_TABLE, WGETRC_COMMAND_TABLE } from "../shell-option-tables.js";
@@ -37,6 +38,10 @@ const join = (...parts: string[]): string => nativeJoin(...parts).replaceAll("\\
 
 describe("shell-path-policy", () => {
   const roots: string[] = [];
+
+  beforeAll(() => {
+    if (process.platform === "win32") configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+  });
 
   afterEach(async () => {
     for (const root of roots.splice(0)) {

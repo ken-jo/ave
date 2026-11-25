@@ -1,5 +1,6 @@
 import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { beforeAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { createHash } from "node:crypto";
 import { chmod, lstat, link, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -37,6 +38,9 @@ beforeEach(async () => {
   await writeFile(source, bytes);
 });
 afterEach(async () => { await rm(root, { recursive: true, force: true }); });
+
+// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 describe("complete binary copy", () => {
   it("copies actual binary bytes at the exact path without modifying the source", async () => {

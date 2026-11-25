@@ -8,6 +8,7 @@ import { ProcessEntryUnconfinedError, type ProcessLaunch } from "../process-entr
 import { isAbsolute, join, resolve as resolvePath } from "node:path";
 import { createLogger } from "../../lib/logger.js";
 import { errorMessage } from "../../shared/error-message.js";
+import { admitWindowsLookupPaths, windowsObligationsApply } from "../../permissions/admitted-obligation.js";
 import { capturePluginStderr } from "./plugin-stderr.js";
 import { sandboxTargetSetupFailed } from "../../permissions/launcher-environment.js";
 import {
@@ -51,6 +52,7 @@ import { readPermissionSettings } from "../../permissions/permission-settings-st
 import {
   canonicalizePathForMatch,
   caseFoldForMatch,
+  foldCanonicalPathSeparators,
   isSensitivePath,
 } from "../../permissions/sensitive-paths.js";
 import { assertAveHomeRuntimeBoundary, AVE_HOME_RUNTIME_DIRECTORY, aveHome } from "../../shared/ave-home.js";
@@ -268,6 +270,16 @@ export function capturePluginSandboxGrant(path: string): {
   canonicalPath: string;
   identity?: FileIdentity;
 } {
+  if (windowsObligationsApply()) {
+    const admitted = admitWindowsLookupPaths([path], "preview").get(path);
+    if (admitted === undefined) throw new Error("Plugin filesystem grant cannot be admitted");
+    const { identity } = admitted;
+    return {
+      path,
+      canonicalPath: caseFoldForMatch(foldCanonicalPathSeparators(admitted.target)),
+      ...(identity === null ? {} : { identity: { dev: BigInt(identity.volumeSerial), ino: BigInt(identity.fileId) } }),
+    };
+  }
   const canonicalPath = caseFoldForMatch(canonicalizePathForMatch(path));
   const entry = statSync(path, { bigint: true, throwIfNoEntry: false });
   return {
@@ -284,10 +296,10 @@ export function isPluginSandboxGrantCovered(
   pluginDataDir: string,
 ): boolean {
   try {
-    if (caseFoldForMatch(canonicalizePathForMatch(grant.path)) !== grant.canonicalPath) return false;
-    const entry = statSync(grant.path, { bigint: true, throwIfNoEntry: false });
-    if (grant.identity && (!entry || !sameFileIdentity(entry, grant.identity))) return false;
-    if (!grant.identity && entry) grant.identity = { dev: entry.dev, ino: entry.ino };
+    const current = capturePluginSandboxGrant(grant.path);
+    if (current.canonicalPath !== grant.canonicalPath) return false;
+    if (grant.identity && (!current.identity || !sameFileIdentity(current.identity, grant.identity))) return false;
+    if (!grant.identity && current.identity) grant.identity = current.identity;
     return resolveUserChosenDirectory({
       pluginId: "sandbox-grant",
       pluginRoot,

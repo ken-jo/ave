@@ -1,5 +1,6 @@
 // Policy refusals must name the rule, state whether retries can help, and identify legitimate alternative directories.
-import { describe, it, expect } from "vitest";
+import { beforeAll, describe, it, expect } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,6 +17,9 @@ import type { ToolPermissionContext } from "../executor.js";
 
 // A readable system file outside the allowed directories, named natively on each host.
 const HOSTS_FILE = process.platform === "win32" ? `${process.env.SystemRoot!.replaceAll("\\", "/")}/System32/drivers/etc/hosts` : "/etc/hosts";
+
+// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 describe("buildPolicyDenialGuidance", () => {
   it("names the judged operand and the rule that judged it", () => {

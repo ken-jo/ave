@@ -1,7 +1,8 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
 import { verifyChain } from "../../audit/hmac-chain.js";
 import { ScriptHookManager } from "../../hooks/script-hook-manager.js";
@@ -251,6 +252,9 @@ function memoryReview(current: Awaited<ReturnType<typeof subject>>, input: Recor
     manager.dispatchReviewer.bind(manager),
   );
 }
+
+// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 describe("executor automated approval pause", () => {
   it("denies a late hook replacement without replaying an earlier completed hook effect", async () => {

@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { join, resolve } from "node:path";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { wireHookSystem } from "../../boot/steps/hook-system-wiring.js";
 import { loadHookConfig } from "../hook-config-trust.js";
@@ -11,6 +11,7 @@ import type { HookCommandAuthorizer } from "../hook-command-policy.js";
 import type { RunnableHook } from "../script-hook-runner.js";
 import type { ScriptHookStdin } from "../script-hook-types.js";
 import { hookDirLayout, type HookDirLayout } from "./test-helpers.js";
+import { configureHostResources } from "../../main/host-resources.js";
 
 const NODE_EXECUTABLE = process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath;
 const OPEN_POLICY: HookRuntimePolicy = { allowManagedHooksOnly: false, allowedHttpHookUrls: [], httpHookAllowedEnvVars: [], managedHooks: [] };
@@ -21,6 +22,8 @@ let root: string;
 let layout: HookDirLayout;
 let configPath: string;
 let workspace: string;
+
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 
 beforeEach(() => {
   root = realpathSync(mkdtempSync(join(tmpdir(), "deterministic-hook-")));

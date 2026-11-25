@@ -3,16 +3,21 @@ vi.mock("../../shared/windows-path-facts.js", async original => (await import(".
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const childProcessMock = vi.hoisted(() => ({ execFileSync: vi.fn() }));
-vi.mock("node:child_process", async (importOriginal) => ({
-  ...await importOriginal<typeof import("node:child_process")>(),
-  execFileSync: childProcessMock.execFileSync,
+const childProcessMock = vi.hoisted(() => ({
+  execFileSync: vi.fn(),
+  actualExecFileSync: undefined as unknown as typeof import("node:child_process").execFileSync,
 }));
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  childProcessMock.actualExecFileSync = actual.execFileSync;
+  return { ...actual, execFileSync: childProcessMock.execFileSync };
+});
 
 import { NO_APPROVER_MESSAGE } from "../../permissions/decision-pipeline.js";
 import { HOST_SHELL_AUTHORIZATION_REVOKED_ERROR } from "../../permissions/host-shell-execution-permit.js";
@@ -33,6 +38,7 @@ import { setProcessPlatform } from "../../__tests__/support/process-platform.js"
 import { __resetShellResolverCache } from "../../lib/shell-resolver.js";
 import { _resetAveHomePrivacyForTest, setAveHomePrivacyAtBoot, ensureAveHomePrivate, AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE, type AveHomePrivacyFailureCategory } from "../../shared/ave-home.js";
 import { shellExecutionEnvironmentLines } from "../../shared/shell-execution-environment.js";
+import { setWindowsDenyUnenforceableAtBoot } from "../../permissions/admitted-obligation.js";
 import { windowsPathKindHelperUnavailable } from "../../main/windows-path-kind-launcher.js";
 import { getLocale, setLocale, t } from "../../i18n/runtime.js";
 import { userPermissionContext as permissionContext } from "./tool-context-fixture.js";
@@ -67,13 +73,18 @@ function publishBoundary(category: "boundary-link" | "boundary-unlisted"): void 
   setAveHomePrivacyAtBoot({ enforcement: "none", home: HOME, reason: AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE, category });
 }
 
+// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
+
 describe("host shells under an unverifiable Ave home boundary", () => {
   beforeEach(() => {
     testRoot = realpathSync(mkdtempSync(join(tmpdir(), "boundary-shell-")));
     __resetShellResolverCache();
     vi.spyOn(powerShellStartup, "isPowerShellStartupPinned").mockReturnValue(true);
-    childProcessMock.execFileSync.mockImplementation((_file, args: readonly string[]) =>
-      args.join(" ").includes("AVE_PROBE_RHS") ? "parent\0AB\0" : "__ave_shell_ok__");
+    // The shipped path-kind helper that pins Windows paths still runs.
+    childProcessMock.execFileSync.mockImplementation((file: string, args: readonly string[], options?: object) =>
+      /[\\/]ave-path-kind\.exe$/i.test(file) ? childProcessMock.actualExecFileSync(file, args, options)
+        : args.join(" ").includes("AVE_PROBE_RHS") ? "parent\0AB\0" : "__ave_shell_ok__");
     requestedSandboxUnavailable("win32");
   });
 
@@ -156,6 +167,31 @@ describe("host shells under an unverifiable Ave home boundary", () => {
     await run(again.gate, "directory-again");
     expect(again.cards()).toHaveLength(1);
     expect(execute).toHaveBeenCalledOnce();
+  });
+
+  it.each(DIALECTS.flatMap(dialect => ([
+    { dialect, kind: "network" as const, key: "shellExecution.denyUnenforceableAsk" as const },
+    { dialect, kind: "path" as const, key: "shellExecution.denyPathUnenforceableAsk" as const },
+  ])))("$dialect.toolName asks on the unavailable-sandbox card, with the $kind reason, when boot could not enforce a Windows deny", async ({ dialect, kind, key }) => {
+    setWindowsDenyUnenforceableAtBoot(kind);
+    try {
+      const execute = vi.fn();
+      const registry = probe(dialect.create, execute);
+      const pm = manager("allow", [dialect.prefixRule, dialect.toolName]);
+      const denied = cardGate("deny-once");
+      await runWithToolExecutionCwd(testRoot, () => new ToolExecutor(registry, undefined, pm, undefined, denied.gate).executeAll(
+        [{ id: "deny-unenforceable", name: dialect.toolName, input: { command: dialect.command } }],
+        { sessionId: "deny-unenforceable", permissionContext: permissionContext() },
+      ));
+      expect(denied.cards()).toHaveLength(1);
+      const card = defined(denied.cards()[0], "approval card");
+      expect(card.executionPlan).toMatchObject({ mode: "plain", fallbackReason: "requested-sandbox-unavailable", requiresExplicitUserApproval: true });
+      expect(JSON.stringify(card)).toContain(JSON.stringify(t(key)).slice(1, -1));
+      if (kind === "path") expect(JSON.stringify(card)).not.toContain("network location");
+      expect(execute).not.toHaveBeenCalled();
+    } finally {
+      setWindowsDenyUnenforceableAtBoot(undefined);
+    }
   });
 
   const HOST = { executionMode: "host", justification: "Retry outside the OS sandbox" } as const;

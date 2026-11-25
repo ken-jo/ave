@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { spawnSync, type ChildProcess } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import sharp from "sharp";
@@ -10,6 +10,7 @@ import { buildMainBoundaryBundle, childBundleDir, repositoryRoot } from "../../p
 import { IMAGE_PREPARATION_POLICY, ImagePreparationOptionsSchema, ImagePreparationRequestSchema, type ImagePreparationOptions } from "../../shared/image-preparation-policy.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import * as managed from "../../main/managed-child-processes.js";
+import { configureHostResources } from "../../main/host-resources.js";
 import { projectSubscriptionImageHistory } from "../../main/subscription-image-history.js";
 import { MAX_ACP_SUBSCRIPTION_IMAGE_BYTES } from "../../main/acp-subscription-session-client.js";
 import type { GenericMessage } from "../../engine/llm/types.js";
@@ -42,6 +43,7 @@ async function useStalledImageRuntime(): Promise<void> {
   runtime.directory = stalled;
 }
 beforeAll(async () => {
+  configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
   directory = await buildImagePreparationEntry("image-preparation-runtime");
   runtime.directory = directory;
 });
@@ -221,14 +223,32 @@ describe("bounded image preparation", () => {
     await expect(prepareFixtureImage(imageFixturePath("grid.png"), { maxBytes: 1 })).rejects.toThrow("image-response-limit");
   });
 
+  it("refuses to read when the decoder is started without the host resources", () => {
+    const request = ImagePreparationRequestSchema.parse({
+      path: imageFixturePath("grid.png"), options: {},
+      scope: { cwd: repositoryRoot(), extraAllowedDirectories: [], blockReadsOutsideWorkingDirectories: true },
+    });
+    const node = process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath;
+    const result = spawnSync(node, [join(directory, "image-preparation-child.js"), JSON.stringify(request)], {
+      encoding: "utf8", timeout: TOOL_TIMEOUT_POLICY.imagePreparationMs, env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+    });
+    expect(result.status, result.stderr).toBe(1);
+    expect(JSON.parse(result.stdout)).toEqual({ ok: false, error: expect.stringMatching(/^image-processing-unavailable: host-resources-unavailable:/) });
+  });
+
   it("runs the complete file-to-decoder flow under the standalone runtime", async () => {
     const outdir = childBundleDir("image-preparation-standalone");
     try {
-      await buildMainBoundaryBundle({ entryPoints: { "image-client": join(repositoryRoot(), "src/tools/image-preparation.ts") }, outdir, splitting: true });
+      await buildMainBoundaryBundle({ entryPoints: {
+        "image-client": join(repositoryRoot(), "src/tools/image-preparation.ts"),
+        "host-resources": join(repositoryRoot(), "src/main/host-resources.ts"),
+      }, outdir, splitting: true });
       await buildImagePreparationEntry("image-preparation-standalone");
       const node = process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath;
       const result = spawnSync(node, ["--input-type=module", "-e", `
         import { prepareImageFile } from ${JSON.stringify(pathToFileURL(join(outdir, "image-client.mjs")).href)};
+        import { configureHostResources } from ${JSON.stringify(pathToFileURL(join(outdir, "host-resources.mjs")).href)};
+        configureHostResources({ resourcePath: ${JSON.stringify(resolve("resources"))}, isPackaged: false });
         const image = await prepareImageFile(process.argv[1], { cwd: process.argv[2], extraAllowedDirectories: [], blockReadsOutsideWorkingDirectories: true }, { maxDimension: 2, maxBytes: 512 });
         process.stdout.write(JSON.stringify({ image, electron: process.versions.electron ?? null }));
       `, imageFixturePath("grid.png"), repositoryRoot()], { encoding: "utf8", timeout: TOOL_TIMEOUT_POLICY.imagePreparationMs, env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } });

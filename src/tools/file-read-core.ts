@@ -1,14 +1,18 @@
 // Text previews and native agent reads share line windows; each caller retains its existing read policy.
-import { createReadStream, realpathSync } from "node:fs";
+import { createReadStream } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import { isAbsolute, resolve as pathResolve } from "node:path";
 import { finished } from "node:stream/promises";
 import { StringDecoder } from "node:string_decoder";
 
 import { expandLeadingTilde } from "../shared/home-tilde.js";
-import { validateSandboxPath } from "../sandbox/path-validator.js";
+import { withLocalityDecision } from "../shared/local-path-io.js";
+import { isLexicallyWithinSandbox, physicalReadTarget, pinSandboxLookups, validateSandboxPath } from "../sandbox/path-validator.js";
+import { windowsObligationsApply } from "../permissions/admitted-obligation.js";
 import {
   canonicalizePathForMatch,
+  createSensitivePathMatcher,
+  foldCanonicalPathSeparators,
   isSensitivePath,
   isConfiguredSessionReadPath,
   type KeyMaterialAudience,
@@ -65,16 +69,32 @@ export function assertReadableFilePath(
   audience: KeyMaterialAudience = "agent",
 ): AssertReadableResult {
   if (isGlobPattern(inputPath)) return { ok: false, error: "not-a-file" };
+  return withLocalityDecision(() => assertReadableInDecision(inputPath, cwd, extraAllowed, audience));
+}
+
+function assertReadableInDecision(
+  inputPath: string,
+  cwd: string,
+  extraAllowed: readonly string[],
+  audience: KeyMaterialAudience,
+): AssertReadableResult {
   const expanded = expandLeadingTilde(inputPath);
   const lexical = isAbsolute(expanded) ? pathResolve(expanded) : pathResolve(cwd, expanded);
-  // Guard and read the same canonical target so symlink swaps cannot redirect access to sensitive or outside files.
-  // Preserve lexical missing paths for clean downstream stat errors.
-  let resolved = lexical;
-  try {
-    resolved = realpathSync.native(lexical);
-  } catch {
-    resolved = lexical;
+  if (windowsObligationsApply()) {
+    const lexicalSensitivity = createSensitivePathMatcher("read", undefined, foldCanonicalPathSeparators, { includeKeyMaterial: false });
+    // The name-only matcher has no session read exception; a session path's nested rows are judged by the full check below.
+    const sessionRead = isConfiguredSessionReadPath(foldCanonicalPathSeparators(lexical));
+    if (!sessionRead && lexicalSensitivity(lexical)) return { ok: false, error: "sensitive-path" };
+    if (!isLexicallyWithinSandbox(lexical, cwd, extraAllowed) && !sessionRead) {
+      return { ok: false, error: "path-not-allowed" };
+    }
+    pinSandboxLookups([lexical, cwd, ...extraAllowed]);
   }
+  // Guard and read the same canonical target so symlink swaps cannot redirect access to sensitive or outside files.
+  // Preserve lexical missing paths for clean downstream stat errors. Only a route proven local, or one inside an
+  // authorized share root, is resolved; any other spelling is judged as written.
+  const resolved = physicalReadTarget(lexical, cwd, extraAllowed);
+  if (resolved === undefined) return { ok: false, error: "path-not-allowed" };
   const canonical = canonicalizePathForMatch(resolved);
   const sensitive = isSensitivePath(lexical, "read", audience)
     ?? isSensitivePath(resolved, "read", audience);

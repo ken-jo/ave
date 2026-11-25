@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { beforeAll, describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -71,6 +72,9 @@ function fixture(options: {
   ], { sessionId: "plugin-pipeline", executionCwd: directory, permissionContext: userPermissionContext({ headless }) });
   return { execute, manager, requests, run };
 }
+
+// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 describe("plugin permission pipeline", () => {
   it.each([false, true])("ordinary reads use the common policy with containment=%s", async (contained) => {

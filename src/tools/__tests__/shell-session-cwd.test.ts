@@ -2,7 +2,8 @@ import { SHELL_RULE_CANONICAL_VERSION } from "../../shared/shell-rule-version.js
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 
 vi.mock("../../permissions/asrt-sandbox.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../permissions/asrt-sandbox.js")>(),
@@ -29,6 +30,9 @@ import { _trackShellSessionCwdForTest, BashTool, spawnWithSandbox } from "../she
 import { prepareSandboxFixture } from "./support/prepared-shell.js";
 
 const SHELL_TIMEOUT_SECONDS = 10;
+
+// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 describe("shell cwd probe filter", () => {
   const probe = createShellCwdProbe("cd .")!;

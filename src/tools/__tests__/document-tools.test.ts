@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync, symlinkSync, unlinkSync } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import { join } from "node:path";
@@ -46,6 +47,9 @@ afterEach(() => {
   opens.wrapNext = undefined;
   rmSync(directory, { recursive: true, force: true });
 });
+
+// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 describe("agent document tools", () => {
   it("registers exactly the reader and opener without aliases", () => {
