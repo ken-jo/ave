@@ -6,12 +6,13 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { analysisLimitAnswer } from "../../__tests__/support/permission-lane.js";
+import { MAX_SHELL_ANALYSIS_TOKENS } from "../../shared/shell-analysis-limits.js";
 import { SHELL_ANALYSIS_LIMITS } from "../../shared/shell-parser.js";
 import { aveHome } from "../../shared/ave-home.js";
 import { PermissionManager, type PermissionRule } from "../permission-manager.js";
 import { canonicalizePathForMatch, SENSITIVE_PATH_ENTRIES } from "../sensitive-paths.js";
 import { inspectPowerShellCommand } from "../rules/powershell-exfiltration.js";
-import { shellExfiltrationSignal, shellSensitivePathSignal } from "../rules/literal-shell-inspection.js";
+import { inspectShellCommand, shellExfiltrationSignal, shellSensitivePathSignal } from "../rules/literal-shell-inspection.js";
 import { analyzeShellForRules, evaluateShellRules } from "../rules/shell-rule-matcher.js";
 import { parseRuleSpecifier } from "../rules/rule-specifier.js";
 import { SHELL_PREFIX_POLICY, wrapperPrefixLength } from "../rules/shell-prefix-policy.js";
@@ -560,12 +561,17 @@ describe("shared runner decisions", () => {
     expect(checkCommand(manager, dialect, command).decision).toBe("allow");
   });
 
-  it.each(["rm -rf build", "git push", "git config core.hooksPath x"])("asks for a contained command past the parse limit: %s", async (tail) => {
+  it.each([["rm -f build", true], ["printf ready", false]] as const)("keeps the saved deny ahead of the analysis floor: %s", async (first, denied) => {
     const manager = runnerManager();
     manager.setMode("allow");
     await manager.addRulePersist({ pattern: "Bash(rm *)", action: "deny" }, { kind: "user" });
-    const command = `# ${"x".repeat(SHELL_ANALYSIS_LIMITS.sourceBytes + 1)}\n${tail}`;
-    expect(checkCommand(manager, "bash", command, true)).toMatchObject({ decision: "ask", reasonCode: "shell-analysis-limit" });
+    const tail = Array.from({ length: Math.ceil(MAX_SHELL_ANALYSIS_TOKENS / 20) }, () => ":" + " x".repeat(19)).join("; ");
+    const command = `${first}; bash -c '${tail}'`;
+    expect(inspectShellCommand(command, CWD).analysisLimited).toBe(true);
+    const result = checkCommand(manager, "bash", command, true);
+    expect(result).toMatchObject(denied ? { decision: "deny", reasonCode: "rule-deny" } : analysisLimitAnswer(false));
+    expect(result.reviewer).toBeUndefined();
+    if (denied) expect(result.forceModal).toBeUndefined();
   });
 
   it.each(["saved allow rule", "remembered approval"])("requires a person past the contained parse limit with a %s", async (grant) => {
