@@ -5,6 +5,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { configureHostResources } from "../../main/host-resources.js";
 import { admitMxcExtensionFilesystem, buildSandboxConfig, getDefaultSensitiveWriteDenyPaths } from "../asrt-sandbox.js";
 import { rankMxcFilesystem } from "../mxc-windows.js";
+import { rankMxcLists } from "../../__tests__/support/mxc-policy-rows.js";
 import { resetWatchedRows, watchedProtectedRows } from "../windows-watched-rows.js";
 
 const ENGINES = ["WindowsPowerShell", "PowerShell"];
@@ -51,7 +52,7 @@ describe.skipIf(process.platform !== "win32")("Windows profile write floor", () 
     const resolveWindowsDocumentsPath = () => documents;
 
     const denyWrite = getDefaultSensitiveWriteDenyPaths(undefined, resolveWindowsDocumentsPath);
-    const grants = rankMxcFilesystem({ allowWrite: [documents], allowRead: [], denyWrite, denyRead: [], protectedFloor: [] }, existsSync);
+    const grants = rankMxcLists({ allowWrite: [documents], allowRead: [], denyWrite, denyRead: [], protectedFloor: [] }, existsSync);
     expect(grants).toEqual({ readwrite: [documents], readonly: present, denied: missing });
 
     const config = buildSandboxConfig({ allowWrite: [documents], resolveWindowsDocumentsPath, windows: { externalConfinement: true } });
@@ -64,7 +65,7 @@ describe.skipIf(process.platform !== "win32")("Windows profile write floor", () 
     const extension = admitMxcExtensionFilesystem({ allowWrite: [documents], allowRead: [], denyWrite }, {
       readRoots: [], writeRoots: [documents], hostStorageRoots: [],
     });
-    expect(rankMxcFilesystem(extension.policy, existsSync)).toMatchObject({
+    expect(rankMxcFilesystem(extension.model, existsSync)).toMatchObject({
       readwrite: [documents], readonly: expect.arrayContaining(present), denied: expect.arrayContaining(missing),
     });
   });
@@ -79,7 +80,7 @@ describe.skipIf(process.platform !== "win32")("Windows profile write floor", () 
         join(path, engine, "profile.ps1"), join(path, engine, "Microsoft.PowerShell_profile.ps1"),
       ]);
       expect(denyWrite).toEqual(expect.arrayContaining(profiles));
-      expect(rankMxcFilesystem({ allowWrite: [path], allowRead: [], denyWrite, denyRead: [], protectedFloor: [] }, existsSync))
+      expect(rankMxcLists({ allowWrite: [path], allowRead: [], denyWrite, denyRead: [], protectedFloor: [] }, existsSync))
         .toEqual({ readwrite: [path], readonly: [], denied: profiles });
     }
   });
@@ -93,7 +94,7 @@ describe.skipIf(process.platform !== "win32")("Windows profile write floor", () 
       readRoots: [], writeRoots: [defaultDocuments], hostStorageRoots: [],
     });
 
-    const grants = rankMxcFilesystem(extension.policy, existsSync);
+    const grants = rankMxcFilesystem(extension.model, existsSync);
     expect(grants.denied).toEqual(expect.arrayContaining(ENGINES.map(engine => join(defaultDocuments, engine))));
     expect(grants.readwrite).toContain(adjacent);
   });
@@ -118,7 +119,7 @@ describe.skipIf(process.platform !== "win32")("Windows profile write floor", () 
     for (const row of rows) expect(denyWrite).not.toContain(row);
     expect(watchedProtectedRows()).toEqual(expect.arrayContaining(rows));
     expect(existsSync(target)).toBe(false);
-    const grants = rankMxcFilesystem({
+    const grants = rankMxcLists({
       allowWrite: paths(filesystem.allowWrite), allowRead: [], denyWrite: [...denyWrite, ...watchedProtectedRows()], denyRead: [], protectedFloor: [],
     }, existsSync);
     expect(grants.denied).toContain(target);

@@ -7,6 +7,7 @@ import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-p
 import { WIN32_POWERSHELL_STARTUP_ARGS } from "../shared/powershell-startup-policy.js";
 import { WINDOWS_COMMAND_LINE_LIMIT, WINDOWS_COMMAND_LINE_MARGIN, windowsCommandLineLength } from "../shared/windows-command-line.js";
 import { openMxcPolicyPipe } from "./mxc-policy-pipe.js";
+import { isPolicyFloorRow, type PolicyModel, type PolicyRow } from "./policy-model.js";
 
 import { errorMessage } from "../shared/error-message.js";
 import { compileGlobMatcher, globToRegExp } from "../lib/glob-matcher.js";
@@ -265,19 +266,6 @@ export interface MxcFilesystemGrants {
   readonly denied: readonly string[];
 }
 
-// The per-command policy Ave's shells already compute for an ASRT wrap.
-export interface ShellFilesystemPolicy {
-  readonly allowWrite: readonly string[];
-  readonly allowRead: readonly string[];
-  // Broad and floor read denies (HOME, sandbox private roots, credential paths…).
-  readonly denyRead: readonly string[];
-  readonly denyWrite: readonly string[];
-  // The protected floor (credential paths, the user data directory, trusted custom denies). A grant at or beneath one is dropped, as Windows ASRT drops a grant beneath a credentials entry.
-  readonly protectedFloor: readonly string[];
-  // Grants the shell holds INSIDE the protected floor on purpose (the saved session history, `getBuiltinShellReadPolicy.floorPierces`). A grant at or beneath one is not dropped by the floor.
-  readonly floorPierces?: readonly string[];
-}
-
 function foldPath(path: string): string {
   const normalized = winPath.normalize(path).replace(/[\\/]+$/, "");
   return (normalized.endsWith(":") ? `${normalized}\\` : normalized).toLowerCase();
@@ -444,31 +432,64 @@ function expandPatternDenies(
   return dedupe(out).sort();
 }
 
+// The row classes the ranking below reads, each in the order its rows were stated.
+export interface MxcPolicyRows {
+  // Write and read grants.
+  readonly writeGrants: readonly string[];
+  readonly readGrants: readonly string[];
+  // Read denies a more specific grant re-opens (the Ave home boundary, sandbox private directories, a composer's own list).
+  readonly readDenies: readonly string[];
+  // The write floor.
+  readonly writeFloor: readonly string[];
+  // The protected read floor (`secrets` rows). A grant at or beneath one is dropped.
+  readonly protectedFloor: readonly string[];
+  // Host-minted pierces. A grant at or beneath one is not dropped by the floor.
+  readonly floorPierces: readonly string[];
+}
+
+export function mxcPolicyRows(model: PolicyModel): MxcPolicyRows {
+  const paths = (keep: (row: PolicyRow) => boolean): string[] => model.rows.filter(keep).map((row) => row.path);
+  const grant = (row: PolicyRow): boolean => !isPolicyFloorRow(row) && row.reason !== "floor-pierce";
+  return {
+    writeGrants: paths((row) => grant(row) && row.access === "rw"),
+    readGrants: paths((row) => grant(row) && row.access === "ro"),
+    readDenies: paths((row) => isPolicyFloorRow(row) && row.access === "denied" && row.reason !== "secrets"),
+    writeFloor: paths((row) => isPolicyFloorRow(row) && row.access === "ro"),
+    protectedFloor: paths((row) => row.reason === "secrets"),
+    floorPierces: paths((row) => row.reason === "floor-pierce"),
+  };
+}
+
+// The Windows container adapter: policy rows in, the three container lists out. It owns what this backend needs beyond the rows:
+// which grant wins against which floor row, what an absent path becomes, and which rows the container never needs to hear about.
+// A row is read as a pattern by its spelling, whatever its `literal` marker says: the shell hands over spellings, the extension
+// admission hands over literals, and both were always classified by spelling here.
 // Drop grants piercing protected floors except explicit history read exceptions; write denies downgrade grants to read-only. Missing write-deny targets must stay denied because read-only does not prevent creation. Preserve nested read denies, omit redundant denied ancestors, and drop nonexistent grants.
 export function rankMxcFilesystem(
-  policy: ShellFilesystemPolicy,
+  model: PolicyModel,
   exists: (path: string) => boolean,
   list?: (directory: string) => readonly MxcDirectoryEntry[],
 ): MxcFilesystemGrants {
+  const rows = mxcPolicyRows(model);
   // POSIX-rooted floor rows must not turn into current-drive paths.
   const windowsPaths = (paths: readonly string[]): readonly string[] => paths.filter((path) => !/^\/(?!\/)/.test(path));
-  const protectedFloor = windowsPaths(policy.protectedFloor);
-  const denyWrite = windowsPaths(policy.denyWrite);
-  const pierces = policy.floorPierces ?? [];
+  const protectedFloor = windowsPaths(rows.protectedFloor);
+  const denyWrite = windowsPaths(rows.writeFloor);
+  const pierces = rows.floorPierces;
   const floored = (path: string): boolean =>
     protectedFloor.some((floor) => isWindowsPathAtOrUnder(path, floor)) &&
     !pierces.some((pierce) => isWindowsPathAtOrUnder(path, pierce));
   const writeDenied = (path: string): boolean => denyWrite.some((deny) => isWindowsPathAtOrUnder(path, deny));
 
-  const writeGrants = dedupe(policy.allowWrite).filter((path) => exists(path) && !floored(path));
+  const writeGrants = dedupe(rows.writeGrants).filter((path) => exists(path) && !floored(path));
   const readwrite = writeGrants.filter((path) => !writeDenied(path));
   const demoted = writeGrants.filter((path) => writeDenied(path));
-  const readGrants = dedupe(policy.allowRead).filter((path) => exists(path) && !floored(path));
+  const readGrants = dedupe(rows.readGrants).filter((path) => exists(path) && !floored(path));
 
   // A pierced floor row is the read exception itself; kept, it would deny the pierced grant as soon as a wider grant contains it. Only the
   // exact row goes: a floor row above a pierce stays, and the more specific read grant carves the pierce out of it.
   const pierced = new Set(pierces.map(foldPath));
-  const readDenies = dedupe([...windowsPaths(policy.denyRead), ...protectedFloor.filter((row) => !pierced.has(foldPath(row)))]);
+  const readDenies = dedupe([...windowsPaths(rows.readDenies), ...protectedFloor.filter((row) => !pierced.has(foldPath(row)))]);
   // A relative row is unanchored, as a pattern is: it applies wherever the shell reads, so it is expanded rather than dropped.
   const isPatternDeny = (deny: string): boolean => PATTERN_SEGMENT.test(deny) || !WINDOWS_ABSOLUTE.test(deny);
   const literalDenies = readDenies.filter((deny) => !isPatternDeny(deny));

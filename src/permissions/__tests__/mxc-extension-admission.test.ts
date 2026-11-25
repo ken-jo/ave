@@ -10,7 +10,7 @@ import {
   setWindowsSandboxSubstrate,
 } from "../sandbox-capability.js";
 import { planWindowsSandbox } from "../../boot/steps/windows-sandbox-plan.js";
-import { rankMxcFilesystem } from "../mxc-windows.js";
+import { mxcPolicyRows, rankMxcFilesystem } from "../mxc-windows.js";
 import { buildMandatorySandboxWritePolicy } from "../sandbox-write-policy.js";
 
 // Admission projects the Ave home boundary, which pins a profile-child home natively.
@@ -60,10 +60,10 @@ describe("holder filesystem admission", () => {
     setProcessPlatform("win32");
     const admitted = admitMxcExtensionFilesystem({ allowRead: ["C:\\runtime"], allowWrite: ["C:\\holder\\data"],
       denyRead: ["C:\\holder\\data\\private"], denyWrite: ["C:\\holder\\data\\readonly"] }, HOLDER_OWNERSHIP);
-    expect(admitted.policy.allowRead).toEqual(["C:\\runtime"]);
-    expect(admitted.policy.allowWrite).toEqual(["C:\\holder\\data"]);
-    expect(admitted.policy.denyRead).toContain("C:\\holder\\data\\private");
-    expect(admitted.policy.denyWrite).toEqual(expect.arrayContaining(["C:\\holder\\data\\readonly", "C:\\holder\\data\\.envrc"]));
+    expect(mxcPolicyRows(admitted.model).readGrants).toEqual(["C:\\runtime"]);
+    expect(mxcPolicyRows(admitted.model).writeGrants).toEqual(["C:\\holder\\data"]);
+    expect(mxcPolicyRows(admitted.model).readDenies).toContain("C:\\holder\\data\\private");
+    expect(mxcPolicyRows(admitted.model).writeFloor).toEqual(expect.arrayContaining(["C:\\holder\\data\\readonly", "C:\\holder\\data\\.envrc"]));
     expect(buildMandatorySandboxWritePolicy).toHaveBeenCalledOnce();
     admitted.assertStillValid();
     identity.valid = false;
@@ -73,8 +73,8 @@ describe("holder filesystem admission", () => {
   it.each(["C:\\holder\\data", "C:\\holder"])("keeps explicit read deny %s over equal or descendant read/write grants", deny => {
     setProcessPlatform("win32");
     const admitted = admitMxcExtensionFilesystem({ allowRead: ["C:\\holder\\data"], allowWrite: ["C:\\holder\\data"], denyRead: [deny] }, HOLDER_OWNERSHIP);
-    expect(admitted.policy.protectedFloor).toContain(deny);
-    expect(rankMxcFilesystem(admitted.policy, () => true)).toMatchObject({ readwrite: [], readonly: [] });
+    expect(mxcPolicyRows(admitted.model).protectedFloor).toContain(deny);
+    expect(rankMxcFilesystem(admitted.model, () => true)).toMatchObject({ readwrite: [], readonly: [] });
   });
 
   it("binds every write grant to the host-captured write roots, inside or outside plugin namespaces", () => {

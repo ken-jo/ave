@@ -22,6 +22,7 @@ import { detectSandboxCapability } from "./sandbox-capability.js";
 import { hardenLinuxSandboxWrap } from "./linux-sandbox-wrap.js";
 import { hardenMacSandboxGitMetadata } from "./macos-sandbox-wrap.js";
 import { offlineProcessConfinementImplemented } from "./offline-confinement-platforms.js";
+// Sandbox runtime package types stay here on purpose: this module builds or feeds a package config. They go when the package dependency goes.
 import type { FilesystemPathEntry } from "@anthropic-ai/sandbox-runtime";
 
 interface OfflineProcessInput {

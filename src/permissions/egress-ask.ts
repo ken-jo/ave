@@ -12,6 +12,7 @@ import {
   refreshApprovalPersistence,
 } from "./approval-persistence-guard.js";
 import { NO_APPROVER_MESSAGE } from "./decision-pipeline.js";
+// The sandbox runtime package type stays here on purpose: this callback is still handed to the package's proxy. It goes when the package dependency goes.
 import type { SandboxAskCallback } from "@anthropic-ai/sandbox-runtime";
 import { matchesDomainPatternWithPort } from "./egress-relay/domain-pattern.js";
 import type { SandboxEgressDecisionAuditEntry, EgressDecisionBasis } from "../audit/sandbox-audit.js";
