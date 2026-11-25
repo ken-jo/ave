@@ -503,12 +503,12 @@ Files: new `src/work-board/workflow/stage-workspaces.ts` (the provider), `worksp
 | Field | What it names |
 | --- | --- |
 | `v`, `runId`, `itemId`, `kind` | The record version (2), the run, the board item, `git` or `folder`. |
-| `self` | Which directory the run folder is: its device and file id, as read when `open` made it. |
+| `self` | Which directory the run folder is: its device and file id, as read when `open` made it, and the file id of its anchor `_run.id`. The anchor is an empty file `open` makes in the new folder, and `<run>.pin` beside the run folder is its second name, made before the record is written. While the pin is there the anchor's file id is never handed out again, so a folder restored from a copy or made anew under the same id is no record. A folder whose anchor is not exactly that file with exactly those two names is no record. |
 | `project` `{ root, id }` | The project root's real path and which directory it was at `open`. |
 | `repo` `{ gitDir, id }` | Git only: the repository's common directory, real path and identity, as git named it at `open`. |
 | `branch`, `baseCommit` | Git only: `ave/workflow/<run>` and the commit the run started from. |
 | `refs` `[{ name, oid }]` | Git only: the refs the run made, each with the commit it was made at. A ref is listed once git answered that it made it. |
-| `registrations` `{ <stage or _join>: { admin, id, gitdir } }` | Git only: the worktree registrations git made for the run's folders: the admin folder under `<gitDir>/worktrees`, which directory it is, and the `.git` file it points at. |
+| `registrations` `{ <stage or _join>: { admin, id, gitdir } }` | Git only: the worktree registrations git made for the run's folders: the admin folder under `<gitDir>/worktrees`, which directory it is with the file id of the anchor `ave.id` the host makes in it (pinned as `<run>.<key>.pin` beside the run folder), and the `.git` file it points at. A stage cannot write the admin folder, so the stage rewriting its own `.git` file changes no identity. |
 | `joinDir`, `outDir` | Which directories `_join` and `_out` are. |
 | `stages` | Per stage: its attempt, which directory its folder is (`dir`), whether it is ready, what was seeded into it and its seal (the seal commit, or the manifest of sealed files). |
 | `joins`, `out`, `merging`, `ignoreRules` | The joins already collected, which stage put each file into `_out`, a merge in progress, and whether the project lies in a git work tree whose ignore rules apply to seeding. |
@@ -551,6 +551,8 @@ Accepted residuals of this design, each failing closed or leaking, never deletin
 
 - A branch creation git gave no answer for (timed out, ended from outside) may leave `ave/workflow/<run>` at the base commit. It is not recorded, so it is never deleted.
 - A stop while `git worktree add` runs, before git wrote the folder's `.git` file, leaves an admin folder the record does not name. It stays, and a retry of that path refuses `git-unavailable`.
+- A home and a repository that give a file no second name (a volume without hard links, or a repository on another volume than the home) get no workspace: `open` and `prepare` refuse `volume-unsupported`.
+- Stage folders, `_join` and `_out` are held by their device and file id alone. They lie in the pinned run folder, which only the host writes. A stage folder is dropped from the record once it is removed and before its registration goes, so a folder made at its name after a stop is none the run made, whatever id it got.
 - A file system that gives no stable file id (an id of 0, or ids that change on rename, as some removable and network volumes do) gets no workspace: `open` refuses, and a run whose ids no longer match is left alone.
 - A home restored or moved to another volume gives every run folder a new identity; those runs are no longer used or cleaned automatically.
 - A worktree of the run that the user moved or repaired with git no longer matches its registration; the registration and the branch then stay.
