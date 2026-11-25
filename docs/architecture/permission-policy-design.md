@@ -777,7 +777,8 @@ through a failed branch, the branch ends there if an ask comes before every
 command on that route anyway; with the sandbox off, and for a command the
 agent sends to the user's own host terminal, nothing asks first, so the branch goes on
 and checks its writes. Exhausting the branch budget leaves the command unproven, and the mode answers
-it as for other runtime opacity: allow mode runs it, the other modes ask. A
+it as for other runtime opacity; when the path-evidence pass also runs out of
+budget, the analysis-limit rule above applies instead. A
 session's working directory moves to the directory a run reports only when
 that run exits 0; any other run leaves it where it was.
 
