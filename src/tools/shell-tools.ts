@@ -2559,7 +2559,7 @@ export async function spawnWithSandbox(
   const sandboxWritePaths = [...writePaths, homePath];
   // One Ave home boundary snapshot serves this command's read policy and its wrap.
   const boundarySnapshot = createAveHomeBoundarySnapshot(sessionId);
-  const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy(
+  const { allowRead, denyRead, floorPierces, policyNotices } = getBuiltinShellReadPolicy(
     [resolvedCwd, ...sandboxWritePaths, ...preparedShellExecutableReadPaths(prepared)], home, homePath, boundarySnapshot,
   );
   const abortController = new AbortController();
@@ -2700,7 +2700,7 @@ export async function spawnWithSandbox(
       // Per-command cleanup (proxy/helper state) after the wrapped command ends.
       const { output: formatted, sandboxCleanupFailed } = await annotateSandboxCommandResult(egress.token, wrapped, lifetime.output(outputCollector.format(
         lifetime.timedOut || lifetime.aborted ? undefined : { code, signal },
-      )), command, lifecycleCleaned);
+      )), command, lifecycleCleaned, policyNotices);
       outputCollector.finishObservation(code, lifetime.aborted ? "cancelled" : lifetime.timedOut || signal !== null || sandboxCleanupFailed ? "failed" : undefined);
       if (lifetime.timedOut) {
         resolveResult(withReleaseFailures({
@@ -2734,7 +2734,7 @@ export async function spawnWithSandbox(
         // Node can emit `error` for a failed process operation while the child
         // remains alive. The later `close` event owns ASRT/HOME finalization.
         const released = await cleanupAfterTermination();
-        const annotated = await annotateSandboxCommandResult(egress.token, wrapped, `spawn failed: ${err.message}`, command, lifecycleCleaned);
+        const annotated = await annotateSandboxCommandResult(egress.token, wrapped, `spawn failed: ${err.message}`, command, lifecycleCleaned, policyNotices);
         outputCollector.finishObservation(null, "failed");
         const cleanupMetadata = annotated.sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {};
         resolveResult(withReleaseFailures({
@@ -3951,8 +3951,8 @@ async function spawnPowerShellWithSandbox(
   const home = getPolicyHome();
   const sandboxWritePaths = [...writePaths, sandboxHome.path];
   const boundarySnapshot = createAveHomeBoundarySnapshot(sessionId);
-  const { allowRead, denyRead, floorPierces, withheldSessionReadRoot } = getBuiltinShellReadPolicy([cwd, ...sandboxWritePaths, ...runtimeReadPaths, ...(verified === undefined ? [] : [verified.executable])], home, sandboxHome.path, boundarySnapshot);
-  const policyNotices = savedSessionReadNotices(withheldSessionReadRoot, commandReadPaths);
+  const { allowRead, denyRead, floorPierces, withheldSessionReadRoot, policyNotices: readNotices } = getBuiltinShellReadPolicy([cwd, ...sandboxWritePaths, ...runtimeReadPaths, ...(verified === undefined ? [] : [verified.executable])], home, sandboxHome.path, boundarySnapshot);
+  const policyNotices = [...readNotices, ...savedSessionReadNotices(withheldSessionReadRoot, commandReadPaths)];
   const abortController = new AbortController();
   const wrapAbortSignal = signal ? AbortSignal.any([signal, abortController.signal]) : abortController.signal;
   const egress = openEgressInvocation(
@@ -4199,8 +4199,8 @@ async function spawnPowerShellInMxc(
     const hostHome = process.env["USERPROFILE"] ?? process.env["HOME"];
     // One Ave home boundary snapshot serves this command's read policy and its container grants.
     const boundarySnapshot = createAveHomeBoundarySnapshot(sessionId);
-    const { allowRead, denyRead, floorPierces, withheldSessionReadRoot } = getBuiltinShellReadPolicy([cwd, ...sandboxWritePaths, ...runtimeReadPaths, ...(verified === undefined ? [] : [verified.executable])], hostHome, sandboxHome.path, boundarySnapshot);
-    policyNotices = savedSessionReadNotices(withheldSessionReadRoot, commandReadPaths);
+    const { allowRead, denyRead, floorPierces, withheldSessionReadRoot, policyNotices: readNotices } = getBuiltinShellReadPolicy([cwd, ...sandboxWritePaths, ...runtimeReadPaths, ...(verified === undefined ? [] : [verified.executable])], hostHome, sandboxHome.path, boundarySnapshot);
+    policyNotices = [...readNotices, ...savedSessionReadNotices(withheldSessionReadRoot, commandReadPaths)];
     const egress = openEgressInvocation(
       { kind: "shell", toolName: "powershell", toolUseId, requiresListener: true, context: ambientShellEgressContext() },
       signal ? { abortSignal: signal } : {},

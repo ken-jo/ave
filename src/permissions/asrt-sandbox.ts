@@ -1578,6 +1578,8 @@ function getBuiltinShellSessionReadPolicyInSnapshot(userDataDir = _baseTrustedSe
   readonly allowRead: readonly string[];
   readonly denyRead: readonly string[];
   readonly withheldSessionReadRoot?: string;
+  /** User read denies that withhold the saved-session store, or part of it, from the macOS and Linux shell. */
+  readonly sessionReadUserDenies: readonly { readonly rule: string; readonly whole: boolean }[];
 } {
   const sessionPolicy = getConfiguredSessionReadPolicy();
   const sessionRoot = sessionPolicy.allowRead[0];
@@ -1595,12 +1597,39 @@ function getBuiltinShellSessionReadPolicyInSnapshot(userDataDir = _baseTrustedSe
       allowRead: Object.freeze([]),
       denyRead: Object.freeze([...getDefaultSensitiveReadDenyPaths(userDataDir), ...userDenies]),
       ...(withheldSessionReadRoot === undefined ? {} : { withheldSessionReadRoot }),
+      sessionReadUserDenies: Object.freeze(userCover === undefined || floorCovers ? [] : [{ rule: userCover.rule, whole: true }]),
     });
   }
   // The session root is a re-allowed child of the Ave home boundary, so the boundary joins after the carve check.
   return Object.freeze({
     allowRead: sessionPolicy.allowRead,
     denyRead: Object.freeze([...otherDenies, ...aveHomeReadBoundaryDenies(children), ...sessionPolicy.denyRead]),
+    sessionReadUserDenies: Object.freeze(sessionRoot === undefined ? [] : userDenies
+      .filter((entry) => userDenyInside(entry, sessionRoot)).map((rule) => ({ rule, whole: false }))),
+  });
+}
+
+// A user deny whose literal prefix lies beneath `root`, so it withholds part of what a grant of `root` reads.
+function userDenyInside(entry: string, root: string): boolean {
+  const spelling = canonicalizePathForMatch(expandLeadingTilde(process.platform === "win32" ? expandWindowsEnvRefs(entry) : entry));
+  const wildcard = spelling.search(/[*?[\]{]/u);
+  const prefix = caseFoldForMatch(wildcard < 0 ? spelling : spelling.slice(0, wildcard));
+  return prefix.startsWith(`${caseFoldForMatch(root).replace(/\/+$/u, "")}/`);
+}
+
+// The saved-session notices already shown, per session setup and Ave session: each rule is named once.
+const shownSessionReadNotices = new WeakMap<object, Set<string>>();
+
+function sessionReadUserDenyNotices(root: string | undefined, denies: readonly { readonly rule: string; readonly whole: boolean }[]): string[] {
+  if (root === undefined || _baseTrustedSettings === undefined || denies.length === 0) return [];
+  let shown = shownSessionReadNotices.get(_baseTrustedSettings);
+  if (shown === undefined) shownSessionReadNotices.set(_baseTrustedSettings, shown = new Set());
+  const session = currentAveHomeBoundarySnapshot()?.sessionId ?? "";
+  return denies.flatMap(({ rule, whole }) => {
+    const key = `${session}\u0000${rule}`;
+    if (shown.has(key)) return [];
+    shown.add(key);
+    return [t(whole ? "sandboxPolicy.sessionReadUserDenyWhole" : "sandboxPolicy.sessionReadUserDenyPart", { rule, path: root })];
   });
 }
 
@@ -1616,6 +1645,8 @@ export function getBuiltinShellReadPolicy(
   // The saved-session grant, the one read the shell holds inside the floor.
   readonly floorPierces: readonly string[];
   readonly withheldSessionReadRoot?: string;
+  /** Lines for the command's result: a user's deny over the saved-session store, named once per session. */
+  readonly policyNotices: readonly string[];
 } {
   void hostHome;
   return inAveHomeBoundarySnapshot(boundarySnapshot, () => composeBuiltinShellReadPolicy(readPaths, sandboxHome));
@@ -1656,6 +1687,7 @@ function composeBuiltinShellReadPolicy(readPaths: readonly string[], sandboxHome
     denyRead,
     floorPierces: sessions.allowRead,
     ...(sessions.withheldSessionReadRoot === undefined ? {} : { withheldSessionReadRoot: sessions.withheldSessionReadRoot }),
+    policyNotices: Object.freeze(sessionReadUserDenyNotices(getConfiguredSessionReadPolicy().allowRead[0], sessions.sessionReadUserDenies)),
   });
 }
 

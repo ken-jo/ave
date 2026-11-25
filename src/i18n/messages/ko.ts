@@ -5034,6 +5034,8 @@ export const ko: Record<MessageCatalogKey, string> = {
   "sandboxPolicy.scanRouting": "쓰기 가능한 경로 링크가 보호된 저장소 경로를 교체할 수 있습니다",
   "sandboxPolicy.noWriteRoots": "쓰기 가능한 프로젝트 루트 없음",
   "sandboxPolicy.savedSessionReadWithheld": "Windows 셸 샌드박스에서 저장된 세션 저장소 읽기를 차단했습니다.",
+  "sandboxPolicy.sessionReadUserDenyPart": "읽기 거부 규칙 {rule}이(가) 저장된 세션 저장소 {path} 안에 적용되어 셸 명령이 해당 경로를 읽을 수 없습니다.",
+  "sandboxPolicy.sessionReadUserDenyWhole": "읽기 거부 규칙 {rule}이(가) 저장된 세션 저장소 {path}를 막고 있어 셸 명령이 이를 읽을 수 없습니다.",
   "sandboxPolicy.cleanupPending": "샌드박스 프로세스 종료를 확인하지 못해 저장소 항목 격리가 대기 중입니다.",
   "sandboxPolicy.cleanupFailed": "샌드박스 저장소 항목 격리 실패: {reason}. 저장소 항목이 남아 있을 수 있으므로 외부 Git을 실행하기 전에 확인하세요.",
   "sandboxPolicy.terminalWindow": "Linux 에이전트 터미널은 셸 시작 시 수행한 Git 보호 스캔을 유지합니다. 기존 쓰기 허용 루트 안에 나중에 생긴 저장소나 Git 제어 경로는 셸이 종료될 때까지 쓰기 가능할 수 있으며 시간 상한이 없습니다. 포그라운드 명령, 백그라운드 작업, 직접 터미널 입력에 같은 제한이 적용됩니다. 해당 저장소를 사용하기 전에 에이전트 셸을 닫았다가 다시 여세요. 초기 쓰기 허용 루트 밖의 프로젝트는 계속 읽기 전용입니다.",

@@ -175,7 +175,7 @@ describe("a user's read deny beats a plugin's host pierce in the package wrap", 
     expect(readFor(platform)).toEqual([certs(), corp()]);
   });
 
-  // The macOS and Linux shell withholds the saved-session read under a user's deny instead of refusing every command, only where the deny can match.
+  // The macOS and Linux shell withholds the saved-session read under a user's deny instead of refusing every command, and says so once per session.
   describe("the shell's saved-session read", () => {
     const shellPlatforms = ["darwin", "linux"] as const;
     const sessionRoot = () => getConfiguredSessionReadPolicy().allowRead[0]!;
@@ -190,6 +190,32 @@ describe("a user's read deny beats a plugin's host pierce in the package wrap", 
       const policy = shellFor(platform);
       expect(policy.allowRead).toEqual([workspace(), sessionRoot()]);
       expect(policy.floorPierces).toEqual([sessionRoot()]);
+      expect(policy.policyNotices).toEqual([]);
+    });
+
+    it.each(shellPlatforms)("on %s, withholds it under a user's deny and names the rule once per session", async (platform) => {
+      const rule = resolve(sessionRoot());
+      await initializeWith([rule]);
+      const first = shellFor(platform);
+      expect(first.allowRead).toEqual([workspace()]);
+      expect(first.floorPierces).toEqual([]);
+      expect(first.policyNotices).toEqual([
+        `Your read deny ${rule} covers the saved-session store ${sessionRoot()}, so shell commands cannot read it.`,
+      ]);
+      expect(shellFor(platform).policyNotices).toEqual([]);
+      expect(shellFor(platform, "session-b").policyNotices).toEqual(first.policyNotices);
+    });
+
+    it.each(shellPlatforms)("on %s, keeps it with a user's deny inside and names the rule once per session", async (platform) => {
+      const inner = join(sessionRoot(), "private.jsonl");
+      await initializeWith([inner]);
+      const first = shellFor(platform);
+      expect(first.allowRead).toEqual([workspace(), sessionRoot()]);
+      expect(first.denyRead).toContain(inner);
+      expect(first.policyNotices).toEqual([
+        `Your read deny ${inner} applies inside the saved-session store ${sessionRoot()}, so shell commands cannot read what it matches.`,
+      ]);
+      expect(shellFor(platform).policyNotices).toEqual([]);
     });
   });
 

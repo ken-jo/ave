@@ -5032,6 +5032,8 @@ export const en = {
   "sandboxPolicy.scanRouting": "A writable routing link could replace protected repository paths",
   "sandboxPolicy.noWriteRoots": "no writable project roots",
   "sandboxPolicy.savedSessionReadWithheld": "The Windows shell sandbox blocked reading the saved-session store.",
+  "sandboxPolicy.sessionReadUserDenyPart": "Your read deny {rule} applies inside the saved-session store {path}, so shell commands cannot read what it matches.",
+  "sandboxPolicy.sessionReadUserDenyWhole": "Your read deny {rule} covers the saved-session store {path}, so shell commands cannot read it.",
   "sandboxPolicy.cleanupPending": "Sandbox process termination is unconfirmed; repository quarantine is pending.",
   "sandboxPolicy.cleanupFailed": "Sandbox repository quarantine failed: {reason}. Repository entries may remain; inspect them before running independent Git.",
   "sandboxPolicy.terminalWindow": "Linux Agent terminals keep the Git protection scan from shell startup. Repositories or Git control paths created later inside its existing writable roots can remain writable until that shell exits, with no time limit; foreground commands, background jobs and raw terminal input share this window. Close and reopen the Agent shell before using those repositories. Projects outside its initial writable roots remain read-only.",
