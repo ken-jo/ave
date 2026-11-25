@@ -3926,6 +3926,55 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     expect(f.stops()).toBe(1);
   });
 
+  // Covers the window where boot has run load() but not startAll() yet, under the real generation coordinator.
+  it("a restart after load() but before startAll() leaves no sandbox HOME once stopAll settles", async () => {
+    const f = await setup("success");
+    bindNativeBundleLifecycle(f);
+    const earlier = new Set(sandboxProcessHomesInUse());
+    await f.runtime.load();
+    await expect(f.runtime.restartPlugin(ID)).resolves.toBe("started");
+    await expect(f.runtime.call(PING, {})).resolves.toBe("pong");
+    const homes = [...sandboxProcessHomesInUse()].filter((home) => !earlier.has(home));
+    expect(homes.length).toBeGreaterThan(0);
+    expect(await f.runtime.stopAll()).toEqual({ unfinished: [] });
+    expect(f.stops()).toBe(f.constructed.length);
+    expect(await waitForSandboxHomesRemoved(homes)).toEqual([]);
+  });
+
+  it("a restart of a published plugin still retires its predecessor through the coordinator", async () => {
+    const f = await setup("success");
+    bindNativeBundleLifecycle(f);
+    const earlier = new Set(sandboxProcessHomesInUse());
+    await f.runtime.startAll();
+    await expect(f.runtime.restartPlugin(ID)).resolves.toBe("started");
+    await expect(f.runtime.call(PING, {})).resolves.toBe("pong");
+    expect({ constructed: f.constructed.length, stops: f.stops() }).toEqual({ constructed: 2, stops: 1 });
+    const homes = [...sandboxProcessHomesInUse()].filter((home) => !earlier.has(home));
+    expect(await f.runtime.stopAll()).toEqual({ unfinished: [] });
+    expect(f.stops()).toBe(2);
+    expect(await waitForSandboxHomesRemoved(homes)).toEqual([]);
+  });
+
+  it("shutdown reports a loaded plugin a restart could not stop instead of dropping it", async () => {
+    const f = await setup("success");
+    bindNativeBundleLifecycle(f);
+    await f.runtime.load();
+    const orphan = f.constructed[0]!;
+    orphan.instance.stop = () => {
+      orphan.stops += 1;
+      return new Promise<void>(() => undefined);
+    };
+    try {
+      await expect(f.runtime.restartPlugin(ID)).resolves.toBe("started");
+      expect(orphan.stops).toBe(1);
+      expect(await f.runtime.stopAll()).toEqual({ unfinished: [ID] });
+    } finally {
+      // The orphan's stop never settles, so its child is killed here or it keeps its sandbox HOME.
+      await forceKillAndDrainManagedChildProcesses("runtime test: unpublished plugin stop never settles");
+      __resetManagedChildProcessesForTest();
+    }
+  });
+
   it.each(cases)("%s %s releases the attempt's root, incarnation and child exactly once", async (path, mode) => {
     const f = await setup(mode);
     let failure: unknown;

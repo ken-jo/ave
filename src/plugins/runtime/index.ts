@@ -1528,6 +1528,8 @@ abstract class PluginRuntimeState {
   protected generationLifecycle: PluginRuntimeGenerationLifecycle | undefined;
   /** A committed generation owns its resources even if runtime publication fails; retire it exactly once. */
   protected readonly committedUnmappedGenerations = new Map<string, PluginRuntimeGenerationProjection>();
+  /** Unpublished loaded plugins a restart detached but could not retire; shutdown retries them. */
+  protected readonly unretiredUnpublishedCandidates = new Set<PluginRuntimeRetirementView>();
   /** Checkpoint retirement per phase and generation; failed phases remain retryable. */
   private readonly retirementPhaseRuns = new WeakMap<RuntimePlugin, Map<PluginRuntimeRetirementPhase, Promise<void>>>();
   /** Retry failed disposers only; successful disposers must not run twice. */
@@ -5600,6 +5602,9 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
     const committedUnmapped = [...this.committedUnmappedGenerations.values()];
     this.committedUnmappedGenerations.clear();
     for (const runtime of committedUnmapped) retire(runtime);
+    const unretired = [...this.unretiredUnpublishedCandidates];
+    this.unretiredUnpublishedCandidates.clear();
+    for (const runtime of unretired) retire(runtime);
     for (const candidate of this.candidateConstructions) {
       track(candidate.pluginId, candidate.releaseForShutdown?.() ?? candidate.settled);
     }
@@ -6158,6 +6163,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
     // Coordinator commit transfers ownership of this exact candidate.
     let committed = false;
     this.commitHandoffs.set(candidate, () => { committed = true; });
+    const displaced: { view?: PluginRuntimeRetirementView; cleanup?: () => Promise<void> } = {};
     try {
       await generationLifecycle.replaceRuntime(
         candidate,
@@ -6172,6 +6178,20 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
             manifest,
             "plugin restart",
           );
+          // A loaded plugin that was never published has no predecessor for the coordinator to retire; detach it as removal does.
+          const incumbent = this.plugins.get(pluginId);
+          if (incumbent && this.isUnpublishedLoadedCandidate(pluginId, incumbent, generationLifecycle)) {
+            displaced.view = {
+              manifest: incumbent.manifest,
+              instance: incumbent.instance,
+              lifecycleHookScope: incumbent.lifecycleHookScope,
+              hostEffects: incumbent.hostEffects,
+              disposers: this.disposers.get(pluginId) ?? [],
+              deactivateHostApi: incumbent.deactivateHostApi,
+              drainHostApiOperations: incumbent.drainHostApiOperations,
+            };
+            displaced.cleanup = this.detachUnpublishedLoadedCandidate(pluginId, incumbent, "unpublished plugin restart");
+          }
           commitReplacementHostApi();
         }),
       );
@@ -6197,6 +6217,15 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       return "failed";
     } finally {
       this.commitHandoffs.delete(candidate);
+      if (displaced.cleanup && displaced.view) {
+        try {
+          await displaced.cleanup();
+        } catch (error) {
+          // Its child may still run: shutdown retries it and reports it unfinished if it still does not retire.
+          this.unretiredUnpublishedCandidates.add(displaced.view);
+          log.error(`${pluginId} restart could not retire the unpublished loaded plugin: ${errorMessage(error)}`);
+        }
+      }
     }
     this.onEnable?.(pluginId);
     return "started";
