@@ -3714,12 +3714,15 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
     const distinct = new Map<string, { path: string; read: boolean }>();
     for (const kind of ["denyRead", "denyWrite"] as const) {
       for (const entry of pending.filesystem[kind]) {
-        if (!isAdmittedWindowsEntry(entry)) throw new Error("Windows worker grant requires admitted deny rows");
-        const { path, admitted } = entry;
+        // A simulated Windows layout on another host admits no identities, so its rows are judged by spelling alone.
+        const admitted = isAdmittedWindowsEntry(entry) ? entry.admitted : undefined;
+        if (admitted === undefined && windowsObligationsApply()) throw new Error("Windows worker grant requires admitted deny rows");
+        const path = typeof entry === "string" ? entry : entry.path;
         const overlaps = allowWrite.some(grant => lexicalWindowsOverlap(grant, path))
-          || (admitted.volumeSerial !== undefined && admitted.fileId !== undefined
+          || (admitted?.volumeSerial !== undefined && admitted.fileId !== undefined
             && writePins.some(pin => pin.volumeSerial === admitted.volumeSerial && pin.fileId === admitted.fileId));
         if (!overlaps) continue;
+        if (admitted === undefined && containsGlobCharsWin(path)) throw new Error("Windows filesystem write grant overlaps a deny glob");
         const key = windowsDenyOperandKey(path);
         if (!distinct.has(key)) distinct.set(key, { path, read: kind === "denyRead" });
       }

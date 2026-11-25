@@ -25,6 +25,12 @@ vi.mock("../../shared/ave-home-test-guard.js", async original => {
     }
   } };
 });
+// A host whose kernel proves no Windows identities, as a simulated win32 process on macOS or Linux is.
+const foreignHost = vi.hoisted(() => ({ active: false }));
+vi.mock("../admitted-obligation.js", async original => {
+  const actual = await original<typeof import("../admitted-obligation.js")>();
+  return { ...actual, windowsObligationsApply: () => !foreignHost.active && actual.windowsObligationsApply() };
+});
 vi.mock("../../shared/policy-home.js", async original => {
   return {
     ...(await original<typeof import("../../shared/policy-home.js")>()),
@@ -184,7 +190,8 @@ describe("background session isolation", () => {
     expect(windowsDenyOperandKey(share.toLowerCase())).not.toBe(share);
   });
 
-  it("refuses confinement on a drive-relative deny, whose base is hidden per-drive state", async () => {
+  // Obligation admission runs only on a host that proves Windows paths; a simulated layout elsewhere admits nothing.
+  it.runIf(ORIGINAL_PLATFORM === "win32")("refuses confinement on a drive-relative deny, whose base is hidden per-drive state", async () => {
     const drive = win32.parse(fixtureRoot).root.slice(0, 2).toUpperCase();
     // A drive-relative row is always `drive-relative` and refuses.
     await expect(initializeAsrtSandbox({ denyRead: [`${drive}fixture\\worker\\denied`] }))
@@ -413,5 +420,34 @@ describe("background session isolation", () => {
     expect(isAsrtSandboxActive()).toBe(false);
     expect(isPluginWorkerConfinementActive()).toBe(false);
     expect(isOfflineProcessConfinementActive()).toBe(false);
+  });
+});
+
+describe("a worker grant on a host that proves no Windows identities", () => {
+  beforeEach(() => { foreignHost.active = true; });
+  afterEach(() => { foreignHost.active = false; });
+
+  it("stamps each spelled target the grant overlaps", async () => {
+    const root = win32.join(fixtureRoot, "worker");
+    const paths = Array.from({ length: 4 }, (_, index) => win32.join(root, `denied-${index}`));
+    present(paths);
+    await initializeAsrtSandbox({ denyWrite: [...paths, win32.join(fixtureRoot, "elsewhere", "denied")] });
+    pinWorkerRoot(root);
+    const read = vi.spyOn(denyAcl, "readWindowsDenyAcls").mockImplementation(requests => requests.map(() => ({
+      denyMask: denyAcl.WINDOWS_WRITE_DENY_MASK, inheritableMask: denyAcl.WINDOWS_WRITE_DENY_MASK, parentMask: 0x40, directory: false,
+    })));
+    const grant = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [root] });
+    try {
+      expect(read.mock.calls.map(([requested]) => requested)).toEqual([paths, paths]);
+      expect(stampWindowsAclAsync).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ denyWrite: paths, denyRead: [] }));
+    } finally { grant.release(); }
+  });
+
+  it("refuses a grant that overlaps a deny pattern it cannot stamp", async () => {
+    const root = win32.join(fixtureRoot, "worker");
+    await initializeAsrtSandbox({ denyRead: [win32.join(root, "*.secret")] });
+    pinWorkerRoot(root);
+    await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [root] })).rejects.toThrow(/glob/i);
+    expect(nativeWorker.grantWindowsAcl).not.toHaveBeenCalled();
   });
 });
