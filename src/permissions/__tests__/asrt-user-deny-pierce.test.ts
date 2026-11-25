@@ -1,13 +1,13 @@
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { randomUUID } from "node:crypto";
+import { afterEach, beforeEach, describe, expect, inject, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import os from "node:os";
-import { basename, dirname, join, parse, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+import { policyHomeAnchors } from "../../shared/policy-home.js";
 import { registerLinuxWrapperProgramFixtures } from "../../__tests__/support/linux-wrapper-programs.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { setLocale } from "../../i18n/index.js";
@@ -51,6 +51,21 @@ const hostPlatform = process.platform;
 const resources = resolve("resources");
 // The Windows package wrap is the fallback when the container backend is not ready; it composes with host path facts only.
 const platforms: NodeJS.Platform[] = hostPlatform === "win32" ? ["darwin", "linux", "win32"] : ["darwin", "linux"];
+
+// Each test gets its own Ave home and workspace in a temp directory: without AVE_TEST_TMP_ROOT the run home lies under the
+// account's own `.ave`, whose read boundary would withhold a workspace beside it, and no fixture belongs there.
+let scratch = "";
+let runHome: string | undefined;
+beforeEach(() => {
+  scratch = realpathSync(mkdtempSync(join(os.tmpdir(), "ave-pierce-")));
+  runHome = process.env.AVE_HOME;
+  process.env.AVE_HOME = join(scratch, "home");
+});
+afterEach(() => {
+  if (runHome === undefined) delete process.env.AVE_HOME;
+  else process.env.AVE_HOME = runHome;
+  rmSync(scratch, { recursive: true, force: true });
+});
 
 describe("a user's read deny beats a plugin's host pierce in the package wrap", () => {
   registerLinuxWrapperProgramFixtures();
@@ -204,10 +219,19 @@ describe("a user's read deny beats a plugin's host pierce in the package wrap", 
   describe("the shell's saved-session read", () => {
     const shellPlatforms = ["darwin", "linux"] as const;
     const sessionRoot = () => String(getConfiguredSessionReadPolicy().allowRead[0]);
-    // At the volume root, outside every Ave home: the run home and temp can sit under the account's own `.ave`, whose boundary
-    // withholds a workspace beside them. The workspace is only spelled, never created.
-    const workspaceRoot = join(parse(os.tmpdir()).root, `ave-pierce-workspace-${randomUUID()}`);
-    const workspace = () => canonicalizePathForMatch(workspaceRoot);
+    const workspace = () => canonicalizePathForMatch(join(scratch, "workspace"));
+
+    it("keeps every fixture path in its own temp directory, outside the account's Ave homes", () => {
+      const within = (path: string, root: string) => {
+        const rest = relative(root.toLowerCase(), resolve(path).toLowerCase());
+        return rest === "" || (!rest.startsWith("..") && !isAbsolute(rest));
+      };
+      const accountHomes = [String(inject("realAccountHome")), ...policyHomeAnchors()].map(home => resolve(home, ".ave"));
+      for (const path of [aveHome(), sessionRoot(), workspace(), certs()]) {
+        expect(within(path, scratch), path).toBe(true);
+        expect(accountHomes.filter(home => within(path, home)), path).toEqual([]);
+      }
+    });
     const shellFor = (platform: NodeJS.Platform, sessionId = "session-a") => {
       setProcessPlatform(platform);
       return getBuiltinShellReadPolicy([workspace()], undefined, undefined, createAveHomeBoundarySnapshot(sessionId));
