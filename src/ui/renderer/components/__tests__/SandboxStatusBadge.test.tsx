@@ -111,7 +111,7 @@ describe("SandboxStatusBadge — extension backend", () => {
     const extensionPlan: SandboxWindowsExtensionPlan = {
       requestedBackend: requested ? "mxc" : "none", selectedBackend, readiness,
       reason: readiness === "off" ? "not-requested" : readiness === "ready" ? "ready" : readiness === "checking" ? "checking"
-        : readiness === "rejected" ? "readiness-deadline" : "native-validation-required",
+        : readiness === "rejected" ? "ancestor-already-admitted" : "native-validation-required",
       fallbackVersion: selectedBackend === "srt-win" ? "0.0.80" : null, uiPolicy: "ui-enabled",
       egressIdentity: selectedBackend === "mxc" ? "kernel-channel" : "shared", proxyOwnerVerified: false,
       hostLoopback: "bidirectional", inboundProtection: "host-firewall",

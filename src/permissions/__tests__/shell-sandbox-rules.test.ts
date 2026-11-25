@@ -1,4 +1,5 @@
 import "../../__tests__/support/trusted-powershell.js";
+import { _resetAveHomePrivacyForTest, setAveHomePrivacyAtBoot } from "../../shared/ave-home.js";
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -466,6 +467,22 @@ describe("plain-shell invocation authorization", () => {
     expect(requests).toHaveLength(1);
   });
 
+  it("runs an explicit host request on its saved exact rule while the sandbox is unavailable and boot home privacy is verified", async () => {
+    __resetActiveSandboxCapabilityForTest();
+    setAveHomePrivacyAtBoot(process.platform === "win32" ? { enforcement: "win32-dacl", home: "C:\\Users\\alice\\.ave", sid: "S-1-5-21-1" } : { enforcement: "posix-mode", home: "/home/alice/.ave" });
+    try {
+      const { run, requests } = executorWithDock();
+      expect((await run())[0]).toMatchObject({ content: "ready" });
+      expect(requests).toHaveLength(1);
+      await manager.addRulePersist({ pattern: "Bash(printf ready)", action: "allow" }, { kind: "user" });
+      expect((await run())[0]).toMatchObject({ content: "ready" });
+      expect(requests).toHaveLength(1);
+    } finally {
+      _resetAveHomePrivacyForTest();
+    }
+  });
+
+  // No boot home privacy result is published in the two cases below, so the exact rule does not pass the ask.
   it("asks for an explicit host request while the sandbox is unavailable, and again after an exact rule is saved", async () => {
     __resetActiveSandboxCapabilityForTest();
     const { run, requests } = executorWithDock();

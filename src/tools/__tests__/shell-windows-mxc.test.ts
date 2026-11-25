@@ -31,7 +31,11 @@ vi.mock("node:child_process", async (importOriginal) => {
       ? Reflect.apply(actual.execFileSync, undefined, args) : Reflect.apply(childProcessMock.execFileSync, undefined, args),
   };
 });
-vi.mock("../mxc-shell-launch.js", () => ({ prepareMxcShellLaunch: mxcLaunchMock.prepare }));
+// Only the launch is replaced; the rest of the module stays real so its other exports keep resolving.
+vi.mock("../mxc-shell-launch.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../mxc-shell-launch.js")>(),
+  prepareMxcShellLaunch: mxcLaunchMock.prepare,
+}));
 // Mock Windows profile creation on POSIX so backslash paths cannot become entries in the working tree.
 vi.mock("../../permissions/sandbox-process-home.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../permissions/sandbox-process-home.js")>();
@@ -60,7 +64,8 @@ import { runWithAgentObservationInvocation, runWithAgentObservationTurn } from "
 import { setAgentTerminalObservationSink } from "../agent-terminal-observation.js";
 import { MAX_POWERSHELL_PARSER_RESPONSE_BYTES } from "../powershell-parser-response.js";
 import type { ToolExecutionContext } from "../types.js";
-import { MXC_BASH_UNAVAILABLE_MESSAGE, rankMxcFilesystem } from "../../permissions/mxc-windows.js";
+import { MXC_BASH_UNAVAILABLE_MESSAGE } from "../../permissions/mxc-windows.js";
+import { rankMxcLists } from "../../__tests__/support/mxc-policy-rows.js";
 import { permissionsFilePath } from "../../permissions/permissions-store.js";
 import { userApprovalFilePath } from "../../permissions/user-approval-store.js";
 import { egressGrantFilePath } from "../../permissions/egress-grants.js";
@@ -460,7 +465,7 @@ describe("builtin shell — Windows MXC containers", () => {
       }
       // Windows keeps denied workspace controls read-only when present and denied when absent.
       if (process.platform === "win32" && ORIGINAL_PLATFORM === "win32") {
-        const grants = rankMxcFilesystem({ ...filesystem, protectedFloor: [] }, existsSync);
+        const grants = rankMxcLists({ ...filesystem, protectedFloor: [] }, existsSync);
         // Compare Windows paths case-insensitively, including canonical drive letters.
         const folded = (paths: readonly string[]) => paths.map(pathKey);
         expect(folded(grants.readwrite)).toContain(pathKey(workspace));

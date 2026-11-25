@@ -2,18 +2,20 @@
 // A row whose answer differs from the policy core carries `core` and is listed in EXCEPTIONS; fixing it removes both.
 // LEAD rule: a fix PR that closes an I-id must flip or delete its exception row in the same PR, and move the id into RESOLVED
 // with the row that now proves it. Every I-id sits in exactly one of EXCEPTIONS, INCONSISTENCIES_WITHOUT_ROW and RESOLVED.
+// An id no driven row can show stays in INCONSISTENCIES_WITHOUT_ROW when it is closed: its note says so and names the tests that prove it.
 // Tree = docs/architecture/permission-decision-tree.md line(s), or "no row".
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { answerEachStart } from "../../__tests__/support/approved-extension-start.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { mxcShellCapability, planWindowsSandbox, windowsProxyOnlyCapability } from "../../boot/steps/windows-sandbox-plan.js";
 import { _resetAveHomePrivacyForTest, setAveHomePrivacyAtBoot } from "../../shared/ave-home.js";
 import {
   __resetExtensionStartsForTest, EXTENSION_START_CONSENT_REQUIRED_CODE, requestExtensionStartConsent, setExtensionStartAsker,
 } from "../extension-start-consent.js";
-import { assertExtensionStartAllowed } from "../asrt-sandbox.js";
+import { assertExtensionStartAllowed, probeExtensionStart } from "../asrt-sandbox.js";
 import {
   decidePermission, NO_APPROVER_MESSAGE, offersFloorSessionAllow,
   type PermissionDecisionRequest, type PermissionFloorCode, type PermissionPipelineOutcome,
@@ -22,7 +24,7 @@ import { openInvocationProxyListener } from "../egress-invocation-listener.js";
 import { isLoopbackAddress } from "../egress-relay/address-set.js";
 import { isReservedAddress, parseRelayAllowEntry, resolvedAddressPermitted } from "../egress-relay/destination.js";
 import {
-  buildHostShellExecutionPlan, HOME_PRIVACY_HELPER_UNAVAILABLE_SHELL_DENIAL, requiresUnsandboxedShellAsk,
+  buildHostShellExecutionPlan, exactRulePassesUnsandboxedShellAsk, HOME_PRIVACY_HELPER_UNAVAILABLE_SHELL_DENIAL, requiresUnsandboxedShellAsk,
   type HostShellExecutionPlan,
 } from "../host-shell-execution-plan.js";
 import { classifyMxcExtensionReadiness, planWindowsExtensionHolder, type MxcExtensionReadinessEvidence } from "../mxc-extension-readiness.js";
@@ -86,8 +88,8 @@ const capability = (platform: NodeJS.Platform, kind: SandboxCapability["kind"], 
 
 // A plan is a route, not a verdict. Read as: confined -> contained, blocked -> deny, the home-privacy floor -> ask-human for the
 // session, a per-invocation host authorization -> ask once, otherwise the ordinary policy (any saved scope may answer).
-// An explicit host request also sets requiresExplicitUserApproval, yet a saved rule answers it: the rule must be exact
-// (the permit mint accepts an issued rule decision only when executionRequest is "host").
+// An explicit host request also sets requiresExplicitUserApproval, yet a saved rule answers it (the permit mint accepts an issued
+// rule decision for an explicit host request, and for the exact-rule pass of the no-backend ask, D25.a).
 function plan(input: Parameters<typeof buildHostShellExecutionPlan>[0]): Observation {
   const built: HostShellExecutionPlan = buildHostShellExecutionPlan(input);
   const reason = `${built.executionRequest}:${built.fallbackReason}`;
@@ -95,6 +97,17 @@ function plan(input: Parameters<typeof buildHostShellExecutionPlan>[0]): Observa
   if (built.mode === "blocked") return { outcome: "deny", reason, waiver: "none" };
   if (requiresUnsandboxedShellAsk(built)) return { outcome: "ask-human", reason, waiver: "session" };
   return { outcome: "ask", reason, waiver: built.requiresExplicitUserApproval && built.executionRequest !== "host" ? "once" : "any" };
+}
+
+// A shell on a sandbox-on host with no usable backend (T:128), with one saved allow rule. The plan and the pipeline are driven. One
+// manager step is restated: it offers the saved rule as `exactHostRule` only when the rule is exactly the command, the plan is one
+// `exactRulePassesUnsandboxedShellAsk` marks, and no other floor applies; a second floor also withdraws the session offer.
+function noBackendShell(saved: "exact" | "prefix", boot: { homePrivacyVerified?: boolean; unavailableSandboxRequiresAsk?: boolean }, secondFloor = false): Observation {
+  const built = buildHostShellExecutionPlan({ platform: "linux", requestedSandbox: true, activeCapability: capability("linux", "none"), ...boot });
+  expect(requiresUnsandboxedShellAsk(built)).toBe(true);
+  const exact = saved === "exact" && !secondFloor && exactRulePassesUnsandboxedShellAsk(built);
+  return pipeline({ tool: SHELL, shell: HOST_SHELL, mode: "allow", floor: { code: "sandbox-unavailable", reason: "fixture" },
+    ...(secondFloor ? {} : { floorSessionEligible: true as const }), rules: { allow: "fixture", ...(exact ? { exactHostRule: "Bash(fixture)" } : {}) } });
 }
 
 // The permission manager reads this inspection and turns an `analysis-limit` into the admission denial `shell-analysis-limit`.
@@ -226,9 +239,26 @@ const ROWS: readonly Row[] = [
     today: { outcome: "ask", reason: "default:disabled-by-setting", waiver: "any" },
     observe: () => plan({ platform: "linux", requestedSandbox: false, activeCapability: capability("linux", "none") }) },
   { id: "D25", point: "sandbox on, no usable backend", tree: "T:128", unknown: "U2",
-    // S1 (#664) made this the forced ask the core names.
+    // S1 (#664) made this the forced ask the core names. D25.a is its one saved-rule pass; D25.b-d are that pass's controls.
     today: { outcome: "ask-human", reason: "default:requested-sandbox-unavailable", waiver: "session" },
     observe: () => plan({ platform: "linux", requestedSandbox: true, activeCapability: capability("linux", "none") }) },
+  // Nothing is unknown here: the missing boundary is the fact the saved exact rule consents to (owner decision 2026-11-25).
+  { id: "D25.a", point: "no usable backend: a saved rule that is exactly the command, boot home privacy verified", tree: "T:128, T:259", unknown: "-",
+    today: { outcome: "allow", reason: "exact-host-rule", headless: "deny" },
+    observe: () => noBackendShell("exact", { homePrivacyVerified: true }) },
+  { id: "D25.b", point: "no usable backend: a saved prefix rule and the allow mode", tree: "T:128, T:259", unknown: "U2",
+    today: { outcome: "ask-human", reason: "sandbox-unavailable", headless: "deny", waiver: "session" },
+    observe: () => noBackendShell("prefix", { homePrivacyVerified: true }) },
+  { id: "D25.c", point: "no usable backend: the exact rule while boot home privacy is unverified", tree: "T:128, T:205-223, T:259", unknown: "U2",
+    today: { outcome: "ask-human", reason: "sandbox-unavailable", headless: "deny", waiver: "session" },
+    observe: () => {
+      // A boot that published no result is not verified either.
+      expect(noBackendShell("exact", {})).toEqual(noBackendShell("exact", { unavailableSandboxRequiresAsk: true }));
+      return noBackendShell("exact", { unavailableSandboxRequiresAsk: true });
+    } },
+  { id: "D25.d", point: "no usable backend: the exact rule with a second forced reason", tree: "T:128, T:220-221, T:259", unknown: "U2",
+    today: { outcome: "ask-human", reason: "sandbox-unavailable", headless: "deny", waiver: "once" },
+    observe: () => noBackendShell("exact", { homePrivacyVerified: true }, true) },
   { id: "D26", point: "Windows capability that does not contain shells", tree: "T:128", unknown: "U2",
     today: { outcome: "ask", reason: "default:windows-partial-shell-acl-unsafe", waiver: "once" },
     core: { outcome: "ask-human", waiver: "session" },
@@ -263,13 +293,25 @@ const ROWS: readonly Row[] = [
     observe: () => ({ outcome: resolvedAddressPermitted("name.example", "169.254.169.254", 80, [parseRelayAllowEntry("169.254.169.254:80")], []) ? "allow" : "deny",
       reason: "relay:allow-listed-address" }) },
   // Layer 2: start and launch admission.
-  { id: "L1", point: "extension start after the readiness deadline", tree: "no row", unknown: "U2",
-    today: { outcome: "deny", reason: "extension-readiness-refused" },
-    core: { outcome: "ask-human" },
+  // The same per-start waiver as L4 and L5: the deadline is a start with no backend, and it keeps its own cause.
+  { id: "L1", point: "extension start after the readiness deadline", tree: "T:260", unknown: "U2",
+    today: { outcome: "ask-human", reason: "unavailable:readiness-deadline", waiver: "once" },
     observe: () => {
       setProcessPlatform("win32");
-      expect(publishExtensionPlan({ state: "unavailable", reason: "readiness-deadline" })).toBe("rejected:readiness-deadline");
-      return extensionStart();
+      setPluginWorkerConfinementRequestedAtBoot(true);
+      setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: FIXTURE_HOME, sid: "S-1-5-21-1" });
+      const reason = publishExtensionPlan({ state: "unavailable", reason: "readiness-deadline" });
+      expect(probeExtensionStart()).toBe("readiness-deadline");
+      const first = { outcome: extensionStart().outcome, reason };
+      setExtensionStartAsker({ ask: answerEachStart(() => "yes"), notify: () => {} });
+      const key = "plugin-child:fixture";
+      const identity = "fixture";
+      return requestExtensionStartConsent({ key, identity, kind: "plugin-child", label: "fixture", cause: "readiness-deadline" }, { sessionId: "s1", attended: true })
+        .then((authority): Observation => {
+          const start = () => extensionStart({ start: { key, identity, authority, spend: true } }).outcome;
+          if (start() !== "unasked") return { ...first, waiver: "none" };
+          return { ...first, waiver: start() === "ask-human" ? "once" : "session" };
+        });
     } },
   { id: "L2", point: "container selected, legacy entry", tree: "no row", unknown: "-",
     today: { outcome: "deny", reason: "native-entry-required+worker-transport-unsupported" },
@@ -295,11 +337,12 @@ const ROWS: readonly Row[] = [
       setPluginWorkerConfinementRequestedAtBoot(true);
       setAveHomePrivacyAtBoot({ enforcement: "none", home: FIXTURE_HOME, category: "read-back-failed", reason: "fixture" });
       const first = extensionStart();
-      setExtensionStartAsker({ ask: async () => "yes", notify: () => {} });
+      setExtensionStartAsker({ ask: answerEachStart(() => "yes"), notify: () => {} });
       const key = "plugin-child:fixture";
-      return requestExtensionStartConsent({ key, kind: "plugin-child", label: "fixture", cause: "home-privacy-unverified" }, { sessionId: "s1", attended: true })
+      const identity = "fixture";
+      return requestExtensionStartConsent({ key, identity, kind: "plugin-child", label: "fixture", cause: "home-privacy-unverified" }, { sessionId: "s1", attended: true })
         .then((authority): Observation => {
-          const start = () => extensionStart({ start: { key, authority, spend: true } }).outcome;
+          const start = () => extensionStart({ start: { key, identity, authority, spend: true } }).outcome;
           if (start() !== "unasked") return { ...first, waiver: "none" };
           return { ...first, waiver: start() === "ask-human" ? "once" : "session" };
         });
@@ -336,7 +379,7 @@ const ROWS: readonly Row[] = [
       return { outcome: "deny", reason: [...new Set(reasons)].join("+") };
     } },
   { id: "L17", point: "readiness classification", tree: "no row", unknown: "-",
-    today: { outcome: "state", reason: "rejected:readiness-deadline" },
+    today: { outcome: "state", reason: "unavailable:readiness-deadline" },
     observe: () => {
       expect(classifyMxcExtensionReadiness(READY)).toEqual({ state: "available" });
       expect(classifyMxcExtensionReadiness({ ...READY, ancestorQueriesSupported: false })).toEqual({ state: "unavailable", reason: "ancestor-policy-unsupported" });
@@ -394,7 +437,6 @@ const ROWS: readonly Row[] = [
 
 // Inconsistency id (policy design, section 3) -> the rows that still answer differently from the policy core.
 const EXCEPTIONS: Readonly<Record<string, readonly string[]>> = {
-  I10: ["L1"],
   I11: ["D26"],
   I12: ["D27"],
   I15: ["L3", "L13"],
@@ -405,14 +447,15 @@ const EXCEPTIONS: Readonly<Record<string, readonly string[]>> = {
 
 // Closed inconsistency -> the row that proves it, which answers as the policy core does.
 const RESOLVED: Readonly<Record<string, string>> = {
+  I1: "D25.a",
   I5: "D34.b",
   I8: "L4",
+  I10: "L1",
 };
 
 // Inconsistencies no driven row can show, and why.
 const INCONSISTENCIES_WITHOUT_ROW: Readonly<Record<string, string>> = {
-  I1: "an exact saved host rule on a no-backend host: an open owner question (loosening); D25 shows S1's forced ask, the core answer",
-  I2: "one shared card for every waiting start is not built (lane i2-batch-card); L5 shows the per-start ask",
+  I2: "built: the starts waiting in a session share one card and each keeps its own yes or no. A row observes one start's gate outcome (L5), not how the question is presented; extension-start-consent.test.ts, extension-start-card.test.ts and telegram-remote-approval.test.ts (one remote card per start) prove it",
   I3: "inference child route: spawn path, not driven",
   I4: "lives on the device-path branch, not on main",
   I6: "stage workspaces are not on main",

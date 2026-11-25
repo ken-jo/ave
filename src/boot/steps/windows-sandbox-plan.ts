@@ -133,7 +133,8 @@ export function windowsProxyOnlyCapability(substrate?: SandboxWindowsSubstrateIn
 }
 
 /** The boot warning for requested extension confinement with no extension substrate, true to what happens next:
- * a checking or rejected plan refuses extension starts; only a settled no-backend plan runs them unconfined. */
+ * a checking or rejected plan refuses extension starts; a settled no-backend plan, including one whose readiness deadline
+ * expired, runs each only after its own approval. */
 export function windowsExtensionBootWarning(substrate: SandboxWindowsSubstrateInfo): string | undefined {
   if (substrate.extensions !== "none") return undefined;
   const plan = substrate.extensionPlan;
@@ -147,7 +148,8 @@ export function windowsExtensionBootWarning(substrate: SandboxWindowsSubstrateIn
     : substrate.shells === "mxc"
       ? "; agent shells run in Microsoft Execution Containers"
       : "; agent shells run in Microsoft Execution Containers once the container start check passes";
-  return "boot: extension confinement is ON but the Windows sandbox (srt-win) is NOT ready — " +
+  const late = plan?.reason === "readiness-deadline" ? "the extension backend did not become ready in time (readiness-deadline) and " : "";
+  return `boot: extension confinement is ON but ${late}the Windows sandbox (srt-win) is NOT ready — ` +
     "plugin workers, plugin children, plugin hooks and MCP stdio servers each wait for a per-start approval and then run with NO OS isolation " +
     `until the one-time administrator install completes${shells}.`;
 }

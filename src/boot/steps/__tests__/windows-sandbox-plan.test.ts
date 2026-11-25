@@ -175,11 +175,11 @@ describe("independent holder backend selection", () => {
   });
 });
 
-it("preserves deadline rejection and off when no runtime can start", () => {
+it("preserves the expired deadline's reason and off when no runtime can start", () => {
   const input = { shellRequested: false, workerRequested: true, mxc: UNAVAILABLE,
     windowsBuild: BUILD, srtWinReady: false } as const;
   const deadline = planWindowsSandbox({ ...input, extensionMxc: { state: "unavailable", reason: "readiness-deadline" } }).substrate;
-  expect(deadline.extensionPlan).toMatchObject({ selectedBackend: "none", readiness: "rejected", reason: "readiness-deadline" });
+  expect(deadline.extensionPlan).toMatchObject({ selectedBackend: "none", readiness: "unavailable", reason: "readiness-deadline" });
   expect(windowsSubstrateWithoutAsrt(deadline).extensionPlan).toEqual(deadline.extensionPlan);
   const off = windowsSubstrateFor({ ...input, workerRequested: false }, "none");
   expect(windowsSubstrateWithoutAsrt(off).extensionPlan).toMatchObject({ selectedBackend: "none", readiness: "off" });
@@ -198,11 +198,19 @@ describe("boot warning for requested extension confinement", () => {
   const input = { shellRequested: false, workerRequested: true, mxc: UNAVAILABLE, windowsBuild: BUILD, srtWinReady: false } as const;
 
   it("says starts are refused, not unconfined, for a rejected plan", () => {
-    const substrate = windowsSubstrateFor({ ...input, extensionMxc: { state: "unavailable", reason: "readiness-deadline" } }, "none");
+    const substrate = windowsSubstrateFor({ ...input, extensionMxc: { state: "unavailable", reason: "runtime-start-failed" }, admittedAncestorBackend: "srt-win" }, "none");
     const warning = windowsExtensionBootWarning(substrate);
     expect(warning).toContain("REFUSED");
-    expect(warning).toContain("readiness-deadline");
+    expect(warning).toContain("ancestor-already-admitted");
     expect(warning).not.toContain("NO OS isolation");
+  });
+
+  it("says an expired readiness deadline waits for a per-start approval, and names the deadline", () => {
+    const substrate = windowsSubstrateFor({ ...input, extensionMxc: { state: "unavailable", reason: "readiness-deadline" } }, "none");
+    const warning = windowsExtensionBootWarning(substrate);
+    expect(warning).toContain("readiness-deadline");
+    expect(warning).toContain("each wait for a per-start approval and then run with NO OS isolation");
+    expect(warning).not.toContain("REFUSED");
   });
 
   it("says NO OS isolation only for a settled no-backend plan", () => {

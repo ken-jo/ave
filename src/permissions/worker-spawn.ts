@@ -54,7 +54,7 @@ import {
   pluginGrantPathsBeyondOwnRoots,
   type WindowsWorkerFilesystemGrant,
 } from "./asrt-sandbox.js";
-import { workerStartKey, type ExtensionStartAuthority } from "./extension-start-consent.js";
+import { extensionStartIdentity, workerStartKey, type ExtensionStartAuthority } from "./extension-start-consent.js";
 import {
   markPluginWorkerWrapped,
   unmarkPluginWorkerWrapped,
@@ -232,8 +232,10 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
   const contained = process.platform === "win32" && isMxcExtensionBackendSelected();
   // An unconfined worker is a plain spawn below with no later crossing, so this one spends the consent.
   if (!contained) {
+    // Everything the host was handed to run this worker from is its identity: a consent for another spec does not start this one.
+    const { extensionStart, ...facts } = spec;
     assertExtensionStartAllowed({ holder: "worker",
-      start: { key: workerStartKey(spec.pluginId, spec.workerId), authority: spec.extensionStart, spend: true } });
+      start: { key: workerStartKey(spec.pluginId, spec.workerId), identity: extensionStartIdentity(facts), authority: extensionStart, spend: true } });
   }
   const safePlugin = safeSegment(spec.pluginId, "pluginId");
   const safeWorker = safeSegment(spec.workerId, "workerId");

@@ -668,6 +668,7 @@ describe("the must-run set", () => {
     "src/memory/__tests__/project-agents-md.test.ts": "runs ls-files on the temporary project repository it creates",
     "src/permissions/__tests__/risk-classifier.test.ts": "`git grep` is a shell command it classifies, never runs",
     "src/shared/__tests__/shell-recursive-traversal.test.ts": "`git grep` is an argv it classifies as walking, never runs",
+    "src/work-board/workflow/__tests__/stage-workspaces-git.test.ts": "runs ls-files on the temporary repository it creates",
   };
 
   it.each([

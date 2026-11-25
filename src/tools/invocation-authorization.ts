@@ -78,7 +78,7 @@ import type {
 import type { ResolvedPluginOperation } from "./plugin-operation-governance.js";
 import type { PluginOperationPrincipal } from "../permissions/plugin-operation-grant.js";
 import { errorMessage } from "../shared/error-message.js";
-import { NO_APPROVER_MESSAGE, offersFloorSessionAllow, type PermissionDecisionRequest } from "../permissions/decision-pipeline.js";
+import { EXACT_HOST_RULE_REASON_CODE, NO_APPROVER_MESSAGE, offersFloorSessionAllow, type PermissionDecisionRequest } from "../permissions/decision-pipeline.js";
 import { issueAuthorizationRequiredControl } from "../shared/authorization-required.js";
 
 const log = createLogger("executor");
@@ -417,7 +417,7 @@ export async function authorizeToolInvocation(
     }
     // Retain the host-issued rule receipt where one exists. Other central
     // allows receive an exact live-action policy permit below.
-    if (hostShellExecutionPlan?.executionRequest === "host" &&
+    if ((hostShellExecutionPlan?.executionRequest === "host" || permissionResult.reasonCode === EXACT_HOST_RULE_REASON_CODE) &&
         isIssuedShellAllowRuleDecision(permissionResult, services.permissionManager)) {
       hostShellAllowRuleDecision = permissionResult;
     }

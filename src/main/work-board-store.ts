@@ -763,6 +763,9 @@ export class WorkBoardStore {
   private readonly now: () => number;
   /** Template-run state, keyed by runId, in the covered run file beside `board.json`. */
   readonly runs: WorkflowRunStore;
+  /** Told that a row left the board, once that write is on disk and the run file was pruned for it: what a run without a record kept
+   * for that row goes then. */
+  onItemRemoved: (() => void) | undefined;
 
   /**
    * @param filePath absolute path to `board.json`. Defaults to the
@@ -838,6 +841,20 @@ export class WorkBoardStore {
    * awaits review, does not parse or lists no items: such a board shows nothing. */
   async runRowsOnDisk(): Promise<RowStandings | undefined> {
     return (await readBoardOnDisk(this.filePath))?.standing;
+  }
+
+  /** Which runs the board holds nothing of: no record in the run file and no row of their item on the board file on disk. Undefined
+   * while either shows nothing. It decides what a run keeps on disk for its item's lifetime, never how a run ends. */
+  async runsWithoutItem(): Promise<((run: { runId: string; itemId: number }) => boolean) | undefined> {
+    const [runs, onDisk] = await Promise.all([this.runs.view(), readBoardOnDisk(this.filePath)]);
+    if (onDisk === undefined || runs.missing === undefined) return undefined;
+    return run => runs.missing?.(run.runId) === true && onDisk.standing(run) === "gone";
+  }
+
+  // The listener's failure is its own: the row's removal is already stored.
+  private itemRemoved(): void {
+    try { this.onItemRemoved?.(); }
+    catch (error) { log.warn("[work-board] a removed row was not announced: %s", (error as Error).message); }
   }
 
   // Each delete whose outcome is unknown, resolved from the board file on disk under the board lock by its operation (markerOutcome). A
@@ -1711,6 +1728,7 @@ export class WorkBoardStore {
         throw error;
       }
       if (item.templateId !== undefined) await this.pruneAfterWrite(this.retention(boardStanding(board)));
+      this.itemRemoved();
       await appendActivity(this.activity, {
         kind: "deleted",
         itemId: id,
@@ -1806,6 +1824,7 @@ export class WorkBoardStore {
         throw error;
       }
       await this.pruneAfterWrite(this.retention(boardStanding(next)));
+      this.itemRemoved();
       const id = rowIdOf(row);
       if (id === undefined) return { status: "deleted" as const };
       const title = (row as { title?: unknown }).title;

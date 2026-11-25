@@ -10,7 +10,7 @@ import { isRecord } from "../shared/is-record.js";
 import { canonicalWorkflowJson } from "../shared/workflow-template-output.js";
 import { requireTemplate, WorkflowTemplateError } from "../work-board/template-graph.js";
 import { assertWorkflowRunRecord } from "../work-board/template-run-fields.js";
-import type { WorkflowRunListResult, WorkflowRunReadResult, WorkflowRunRecord, WorkflowRunWriteResult } from "../shared/workflow-template-types.js";
+import type { RunAuthoritySource, WorkflowRunListResult, WorkflowRunReadResult, WorkflowRunRecord, WorkflowRunWriteResult } from "../shared/workflow-template-types.js";
 import { errorMessage } from "../shared/error-message.js";
 import type { MarkerOp, RunClass, RunFileFacts } from "./run-classification.js";
 
@@ -48,6 +48,8 @@ export interface WorkflowRunView {
   get(runId: string): WorkflowRunReadResult;
   missing?(runId: string): boolean;
 }
+/** A settled run a write removed, with what authorised it as the file held it: the project the run worked on is told from that. */
+export interface RemovedRun { runId: string; itemId: number; runStartedBy: RunAuthoritySource }
 /** What a write does with another readable run: null removes it, a record replaces it (same item, pin, start authority and end). */
 export type WorkflowRunRetention = (run: WorkflowRunRecord) => WorkflowRunRecord | null;
 
@@ -76,7 +78,7 @@ function lookup(file: RunsFile, runId: string): { result: WorkflowRunReadResult;
 }
 
 // Applies `retain` to every readable entry. An unreadable or repeated entry is never offered and always stays as it is.
-function retainRuns(file: RunsFile, retain: WorkflowRunRetention): string[] {
+function retainRuns(file: RunsFile, retain: WorkflowRunRetention, removed: RemovedRun[]): string[] {
   const count = new Map<unknown, number>();
   for (const entry of file.runs) if (isRecord(entry)) count.set(entry.runId, (count.get(entry.runId) ?? 0) + 1);
   const changed: string[] = [];
@@ -87,7 +89,11 @@ function retainRuns(file: RunsFile, retain: WorkflowRunRetention): string[] {
     catch (error) { if (error instanceof WorkflowTemplateError) { kept.push(entry); continue; } throw error; }
     const next = retain(structuredClone(entry));
     if (next === null) {
-      if (entry.settled === undefined) kept.push(entry); else changed.push(entry.runId);
+      if (entry.settled === undefined) kept.push(entry);
+      else {
+        changed.push(entry.runId);
+        removed.push({ runId: entry.runId, itemId: entry.itemId, runStartedBy: structuredClone(entry.runStartedBy) });
+      }
       continue;
     }
     assertWorkflowRunRecord(next);
@@ -236,6 +242,10 @@ export class WorkflowRunStore {
   // Deletes whose outcome is unknown and whose marker the file may not hold: a write or read of it failed (see markUnknown).
   private unknown: DeleteMarker[] = [];
   private stagedUnknownRemovals: ReadonlySet<DeleteMarker> | undefined;
+
+  /** Told which settled runs a write removed, once that write is on disk: what a run keeps for its item's lifetime goes then. Each
+   * comes with what authorised it, which is the last the file says of the run's project. */
+  onRunsRemoved: ((removed: readonly RemovedRun[]) => void) | undefined;
 
   constructor(private readonly filePath = join(openFeatureNamespace("work-board").dir, "workflow-runs.json")) {}
 
@@ -615,13 +625,21 @@ export class WorkflowRunStore {
     });
   }
 
+  // The listener's failure is its own: the removal is already stored.
+  private runsRemoved(removed: readonly RemovedRun[]): void {
+    if (removed.length === 0) return;
+    try { this.onRunsRemoved?.(removed); }
+    catch (error) { log.warn("[workflow-run-store] removed runs were not announced: %s", errorMessage(error)); }
+  }
+
   /** Apply `retain` to every readable run. Nothing is written while the file awaits review or when no run changes. */
   async prune(retain: WorkflowRunRetention): Promise<void> {
     return withInProcessFileQueue(this.filePath, async () => {
       const file = await this.read();
       if (file === undefined) return;
-      const runIds = retainRuns(file, retain);
-      if (runIds.length > 0) await this.commit(file, { runIds });
+      const removed: RemovedRun[] = [];
+      const runIds = retainRuns(file, retain, removed);
+      if (runIds.length > 0 && await this.commit(file, { runIds })) this.runsRemoved(removed);
     });
   }
 
@@ -650,7 +668,8 @@ export class WorkflowRunStore {
     return withInProcessFileQueue(this.filePath, async (): Promise<WorkflowRunWriteResult | { status: "cause-refused" }> => {
       const file = await this.read();
       if (file === undefined) return { status: "pending-review" };
-      const retainedChanges = retain ? retainRuns(file, retain) : [];
+      const removed: RemovedRun[] = [];
+      const retainedChanges = retain ? retainRuns(file, retain, removed) : [];
       const { result, index } = lookup(file, runId);
       if (result.status === "invalid" || result.status === "pending-review") return result;
       const stored = result.status === "found" ? result.run.settled : undefined;
@@ -671,6 +690,7 @@ export class WorkflowRunStore {
       }
       if (index === -1) file.runs.push(run); else file.runs[index] = run;
       if (!(await this.commit(file, { runIds: [runId, ...retainedChanges] }))) return { status: "too-large" };
+      this.runsRemoved(removed);
       return { status: "stored", run: structuredClone(run) };
     });
   }

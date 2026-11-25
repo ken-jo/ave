@@ -5,6 +5,7 @@ import { liveEgressInvocationCount } from "../egress-invocations.js";
 import { MxcNativeEntryRequiredError, MxcProcessCleanupError, WorkerTransportUnsupportedError } from "../mxc-extension-errors.js";
 import { drainMxcHolderLifetimes } from "../mxc-holder-lifetime.js";
 import { planWindowsExtensionHolder } from "../mxc-extension-readiness.js";
+import { mxcPolicyModel } from "../../__tests__/support/mxc-policy-rows.js";
 
 const state = vi.hoisted(() => ({
   plan: { selectedBackend: "mxc", readiness: "ready" },
@@ -79,8 +80,8 @@ function siblingChild(parent: MxcConfinedChildSpawn, root = "D:\\child"): MxcCon
     filesystemOwnership: { readRoots: [], writeRoots: [root], hostStorageRoots: [] }, holder: Object.freeze({ incarnation: root }) };
 }
 function admitWrites(...allowWrite: string[]): void {
-  state.admit.mockReturnValueOnce({ policy: { allowRead: ["C:\\runtime", "C:\\Windows"], allowWrite,
-    denyRead: [], denyWrite: [], protectedFloor: [] }, assertStillValid: state.validate });
+  state.admit.mockReturnValueOnce({ model: mxcPolicyModel({ allowRead: ["C:\\runtime", "C:\\Windows"], allowWrite,
+    denyRead: [], denyWrite: [], protectedFloor: [] }), assertStillValid: state.validate });
 }
 const ORIGINAL_PLATFORM = process.platform;
 beforeEach(() => {
@@ -94,8 +95,8 @@ beforeEach(() => {
     fallback: { version: "0.0.80", ready: false } });
   state.close.mockResolvedValue(undefined);
   state.lease.mockResolvedValue({ url: "http://127.0.0.1:43210", port: 43210, close: state.close });
-  state.admit.mockReturnValue({ policy: { allowRead: ["C:\\runtime", "C:\\Windows"], allowWrite: ["D:\\work"],
-    denyRead: [], denyWrite: [], protectedFloor: [] }, assertStillValid: state.validate });
+  state.admit.mockReturnValue({ model: mxcPolicyModel({ allowRead: ["C:\\runtime", "C:\\Windows"], allowWrite: ["D:\\work"],
+    denyRead: [], denyWrite: [], protectedFloor: [] }), assertStillValid: state.validate });
   state.spawn.mockImplementation(async (_request, options) => {
     const child = { id: 42, stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
       completion: new Promise(() => {}), dispose: vi.fn().mockResolvedValue(undefined) };
@@ -364,8 +365,8 @@ describe("co-holder nesting and executable identity", () => {
       filesystemOwnership: { readRoots: [], writeRoots: ["D:\\work", "D:\\parent-stage"], hostStorageRoots: [] } });
     // Production ranking always places floor denies (e.g. the .git control) below a writable root; the parent could
     // swap that denied subpath, so sharing the parent's exact root is refused as soon as such a deny exists.
-    state.admit.mockReturnValueOnce({ policy: { allowRead: ["C:\\runtime", "C:\\Windows"], allowWrite: ["D:\\work", "D:\\child"],
-      denyRead: [], denyWrite: ["D:\\work\\.git"], protectedFloor: [] }, assertStillValid: state.validate });
+    state.admit.mockReturnValueOnce({ model: mxcPolicyModel({ allowRead: ["C:\\runtime", "C:\\Windows"], allowWrite: ["D:\\work", "D:\\child"],
+      denyRead: [], denyWrite: ["D:\\work\\.git"], protectedFloor: [] }), assertStillValid: state.validate });
     await expect(spawnMxcConfinedChild({ ...siblingChild(parent), allowWrite: ["D:\\work", "D:\\child"],
       filesystemOwnership: { readRoots: [], writeRoots: ["D:\\work", "D:\\child"], hostStorageRoots: [] } }))
       .rejects.toThrow(/Container path lies inside another live holder's writable root/);

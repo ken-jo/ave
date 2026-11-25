@@ -1,13 +1,12 @@
 /** Load root-first project instructions below personal guidance, stopping repository discovery at home and first-touch discovery at nested repos or dependencies.
  * Each directory prefers nonempty AGENTS.md over CLAUDE.md; imports are depth-limited, unique, repository-contained, and sensitive-path checked.
  * Ignore import syntax inside code and clamp the shared byte budget root-first. */
-import { execFile } from "node:child_process";
 import { closeSync, fstatSync, openSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { getIsPackaged, isConfigured, isPackagedElectronProcess } from "../boot/dev-flags.js";
 import { isSensitivePath } from "../permissions/sensitive-paths.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
-import { buildHostGitArgs, isHostGitWorkspaceAvailable } from "../shared/host-git.js";
+import { buildHostGitArgs, isHostGitWorkspaceAvailable, spawnHostGitIfWorkspaceFree } from "../shared/host-git.js";
 import { withHostGitLaunch } from "../shared/host-git-executable.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 
@@ -229,7 +228,6 @@ export type GitIgnoreVerdicts = Map<string, boolean>;
 
 // Keep only definitive ignore verdicts for the session.
 async function gitIgnores(repoRoot: string, path: string, verdicts: GitIgnoreVerdicts | undefined): Promise<boolean> {
-  // An unsettled sandbox write is temporary, so do not cache its conservative answer.
   if (!isHostGitWorkspaceAvailable(repoRoot)) return false;
   const key = `${repoRoot}\0${path}`;
   const known = verdicts?.get(key);
@@ -240,9 +238,10 @@ async function gitIgnores(repoRoot: string, path: string, verdicts: GitIgnoreVer
 }
 
 /** Whether git reports `path` as ignored in the repository at `repoRoot`. A tracked file is never reported. Any failure to ask
- * reads as "not ignored". A missing executable is not a verdict, so the session can pick up a new Git installation. */
+ * reads as "not ignored". A missing executable is not a verdict, so the session can pick up a new Git installation; neither is a
+ * workspace an unsettled sandbox write holds. */
 async function askGitIgnores(repoRoot: string, path: string): Promise<boolean | undefined> {
-  if (!isHostGitWorkspaceAvailable(repoRoot) || !hasGitEntry(repoRoot)) return undefined;
+  if (!hasGitEntry(repoRoot)) return undefined;
   const packaged = isConfigured() ? getIsPackaged() : isPackagedElectronProcess();
   // Older Git must refuse the option before it can read a missing object.
   const args = buildHostGitArgs(["--no-lazy-fetch", "-C", repoRoot, "check-ignore", "-q", "--", relative(repoRoot, path)], {
@@ -250,13 +249,18 @@ async function askGitIgnores(repoRoot: string, path: string): Promise<boolean | 
   });
   try {
     return await withHostGitLaunch(packaged, async (git) => {
-      if (!git || !isHostGitWorkspaceAvailable(repoRoot)) return undefined;
-      return new Promise<boolean>((resolve, reject) => {
-        execFile(git.path, args, { ...git.options, windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.projectGitQueryMs }, (error) => {
-          if (!error) resolve(true);
-          else if (error.code === 1) resolve(false);
-          else reject(error);
-        }).stdin?.end();
+      if (!git) return undefined;
+      return new Promise<boolean | undefined>((resolve, reject) => {
+        const child = spawnHostGitIfWorkspaceFree(repoRoot, git.path, args, {
+          ...git.options, windowsHide: true, stdio: "ignore", timeout: TOOL_TIMEOUT_POLICY.projectGitQueryMs,
+        });
+        if (typeof child === "string") return resolve(undefined);
+        child.on("error", reject);
+        child.on("close", (code) => {
+          if (code === 0) resolve(true);
+          else if (code === 1) resolve(false);
+          else reject(new Error(`git check-ignore ended with ${code ?? "no exit code"}`));
+        });
       });
     });
   } catch {

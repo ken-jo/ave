@@ -33,6 +33,41 @@ export function isBrowserSiteChoice(value: unknown): value is BrowserSiteChoice 
   return value === "this-site" || value === "any-site";
 }
 
+export type ExtensionStartChoice = "yes" | "no";
+
+/** One start on the shared extension-start card. `id` names the row for this card only; the host keeps what it stands for. */
+export interface ExtensionStartApprovalRow {
+  readonly id: string;
+  readonly label: string;
+  readonly kind: "plugin-child" | "mcp-stdio" | "worker" | "plugin-hook";
+  readonly cause: "no-backend" | "readiness-deadline" | "home-privacy-unverified";
+}
+
+const EXTENSION_START_ROW_KINDS: readonly string[] = ["plugin-child", "mcp-stdio", "worker", "plugin-hook"];
+
+/** The rows an extension-start card carries in its signed `args`, or undefined when `args` is not such a list. */
+export function extensionStartApprovalRows(args: unknown): readonly ExtensionStartApprovalRow[] | undefined {
+  const starts = typeof args === "object" && args !== null ? (args as { starts?: unknown }).starts : undefined;
+  if (!Array.isArray(starts) || starts.length === 0) return undefined;
+  const rows: ExtensionStartApprovalRow[] = [];
+  for (const start of starts as unknown[]) {
+    if (typeof start !== "object" || start === null) return undefined;
+    const { id, label, kind, cause } = start as Record<string, unknown>;
+    if (typeof id !== "string" || id.length === 0 || typeof label !== "string" || typeof kind !== "string" || !EXTENSION_START_ROW_KINDS.includes(kind)
+      || (cause !== "no-backend" && cause !== "readiness-deadline" && cause !== "home-privacy-unverified")) return undefined;
+    rows.push({ id, label, kind: kind as ExtensionStartApprovalRow["kind"], cause });
+  }
+  return new Set(rows.map((row) => row.id)).size === rows.length ? rows : undefined;
+}
+
+/** A per-row answer map: plain own string keys, each "yes" or "no". Which rows it must cover is the host's check. */
+export function isExtensionStartChoices(value: unknown): value is Readonly<Record<string, ExtensionStartChoice>> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value) as unknown;
+  if (prototype !== Object.prototype && prototype !== null) return false;
+  return Object.values(value).every((choice) => choice === "yes" || choice === "no");
+}
+
 export type UserOwnedSurface = "browser" | "host-terminal";
 export type UserOwnedSurfaceChoice = "allow" | "auto" | "ask";
 

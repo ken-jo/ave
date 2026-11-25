@@ -1664,7 +1664,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
 
     it.each([
       ["checking", "checking"],
-      ["rejected", "readiness-deadline"],
+      ["rejected", "request-rejected"],
       ["rejected", "ancestor-already-admitted"],
     ] as const)("says a %s plan (%s) refuses starts and never calls extensions unconfined", async (readiness, reason) => {
       const fixture = plan(readiness, reason);
@@ -1673,7 +1673,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       expect(extensions()).toHaveAttribute("data-readiness", readiness);
       expect(extensions().textContent).toBe(readiness === "checking"
         ? t("permissionsTab.osSandboxWindowsExtensionsChecking")
-        : t("permissionsTab.osSandboxWindowsExtensionsRejected", { reason: t(`permissionsTab.osSandboxWindowsExtensionReason${reason === "readiness-deadline" ? "ReadinessDeadline" : "AncestorAlreadyAdmitted"}`) }));
+        : t("permissionsTab.osSandboxWindowsExtensionsRejected", { reason: t(reason === "request-rejected" ? "permissionsTab.osSandboxWindowsMxcReasonRequestRejected" : "permissionsTab.osSandboxWindowsExtensionReasonAncestorAlreadyAdmitted") }));
       // The pre-row-6 copy said "not confined: srt-win is not ready", which is false for a refusing plan.
       expect(extensions().textContent).not.toBe(t("permissionsTab.osSandboxWindowsExtensionsNone"));
       expect(extensions().textContent).not.toMatch(/not confined/u);
@@ -1736,13 +1736,15 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     });
 
     it.each([
-      ["off", "not-requested", "permissionsTab.osSandboxWindowsExtensionsOff"],
-      ["unavailable", "native-validation-required", "permissionsTab.osSandboxWindowsExtensionsUnavailable"],
-    ] as const)("reports a settled %s plan without container disclosures", async (readiness, reason, key) => {
+      ["off", "not-requested", "permissionsTab.osSandboxWindowsExtensionsOff", "permissionsTab.osSandboxWindowsExtensionReasonNativeValidationRequired"],
+      ["unavailable", "native-validation-required", "permissionsTab.osSandboxWindowsExtensionsUnavailable", "permissionsTab.osSandboxWindowsExtensionReasonNativeValidationRequired"],
+      // An expired readiness deadline is a start with no backend: not confined, and the reason says the check ran out of time.
+      ["unavailable", "readiness-deadline", "permissionsTab.osSandboxWindowsExtensionsUnavailable", "permissionsTab.osSandboxWindowsExtensionReasonReadinessDeadline"],
+    ] as const)("reports a settled %s plan (%s) without container disclosures", async (readiness, reason, key, reasonKey) => {
       const fixture = plan(readiness, reason);
       assertSandboxWindowsExtensionPlan(fixture);
       await renderWithPlan(fixture);
-      expect(extensions().textContent).toBe(t(key, { reason: t("permissionsTab.osSandboxWindowsExtensionReasonNativeValidationRequired") }));
+      expect(extensions().textContent).toBe(t(key, { reason: t(reasonKey) }));
       expect(screen.queryByTestId("os-sandbox-windows-extension-disclosure")).toBeNull();
     });
 

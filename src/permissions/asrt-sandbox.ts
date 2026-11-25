@@ -2,7 +2,9 @@
 
 import { MxcExtensionReadinessRefusedError, MxcNativeEntryRequiredError, MxcProcessContractError, WorkerTransportUnsupportedError } from "./mxc-extension-errors.js";
 import { assertMxcExtensionFilesystemOwnership, type MxcExtensionFilesystemOwnership } from "./mxc-filesystem-ownership.js";
-import type { ShellFilesystemPolicy } from "./mxc-windows.js";
+import { mxcRuntimeRootFloorPath } from "./mxc-runtime-root.js";
+import { buildPolicyModel, policyFloorRow, policyGrantRow, type PolicyFloorRow, type PolicyGrantRow, type PolicyModel } from "./policy-model.js";
+import { srtWriteFloorRow, toSrtConfig } from "./srt-policy-adapter.js";
 import { issueFilesystemSandboxBlock, type SandboxBlock } from "../shared/sandbox-block.js";
 import { buildLauncherEnvironment } from "./launcher-environment.js";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -38,6 +40,7 @@ import { projectLocalWindowsFilesystemPath, resolvePhysicalFilesystemPath } from
 import { compileGlobMatcher, globMatch } from "../lib/glob-matcher.js";
 import { llmRouteBaseUrls } from "../shared/llm-vendor-defaults.js";
 import { isAveHomeReadReallowed } from "./ave-home-read-boundary.js";
+import { isBoundStageWorkspacePath } from "./stage-workspace-binding.js";
 import { canonicalizePathForMatch, caseFoldForMatch, getConfiguredSessionReadPolicy, getRuntimeSensitiveKeyPaths, MAX_WALK_UP, resolvePathForPolicy, SENSITIVE_PATH_ENTRIES, sensitiveEntryOnSandboxFloor } from "./sensitive-paths.js";
 import { hardenLinuxSandboxWrap } from "./linux-sandbox-wrap.js";
 import { assertMacSandboxWrapperSize, hardenMacSandboxGitMetadata } from "./macos-sandbox-wrap.js";
@@ -817,7 +820,8 @@ export function admitMxcExtensionFilesystem(
 }
 
 function admitMxcExtensionFilesystemInSnapshot(filesystem: PerCommandFilesystem, ownership?: MxcExtensionFilesystemOwnership): {
-  readonly policy: ShellFilesystemPolicy;
+  /** The holder's admitted policy as rows, every path literal. */
+  readonly model: PolicyModel;
   readonly assertStillValid: () => void;
 } {
   if (process.platform !== "win32") throw new Error("Container filesystem admission requires win32");
@@ -882,18 +886,26 @@ function admitMxcExtensionFilesystemInSnapshot(filesystem: PerCommandFilesystem,
   const explicitReadFloor = literalDenies(admitted.denyRead).filter(path => !reallowableMasks.some(mask => samePath(path, mask)));
   const protectedFloor = [...new Set([...literalDenies(floor), ...explicitReadFloor])];
   const allowRead = readGrantsOutsideReadDenies(admitted.allowRead, protectedFloor, pierces);
-  const policy: ShellFilesystemPolicy = Object.freeze({
-    allowRead: Object.freeze(allowRead),
-    allowWrite: Object.freeze([...mandatory.allowWrite]),
-    denyRead: Object.freeze([...literalDenies([
-      ...getDefaultSensitiveReadDenyPaths(), ...admitted.denyRead,
-      ...namespaceRoots, ...(pinnedOwnership?.hostStorageRoots ?? []),
-    ])]),
-    denyWrite: Object.freeze([...literalDenies([...sensitiveWriteDenies, ...admitted.denyWrite, ...mandatory.denyWrite], true)]),
-    protectedFloor: Object.freeze(protectedFloor),
-    floorPierces: Object.freeze([...pierces]),
+  const readDenies = literalDenies([
+    ...getDefaultSensitiveReadDenyPaths(), ...admitted.denyRead,
+    ...namespaceRoots, ...(pinnedOwnership?.hostStorageRoots ?? []),
+  ]);
+  const writeFloor = literalDenies([...sensitiveWriteDenies, ...admitted.denyWrite, ...mandatory.denyWrite], true);
+  const model = buildPolicyModel({
+    floors: [
+      ...readDenies.map((path) => policyFloorRow(path, "denied", "read-boundary", true)),
+      ...writeFloor.map((path) => policyFloorRow(path, "ro", "protected-name", true)),
+      ...protectedFloor.map((path) => policyFloorRow(path, "denied", "secrets", true)),
+    ],
+    userGrants: [],
+    extensionManifests: [
+      ...mandatory.allowWrite.map((path) => policyGrantRow(path, "rw", "extension-manifest", true)),
+      ...allowRead.map((path) => policyGrantRow(path, "ro", "extension-manifest", true)),
+      ...pierces.map((path) => policyGrantRow(path, "ro", "floor-pierce", true)),
+    ],
+    launchGrants: [],
   });
-  assertSandboxWritePolicySize(policy.denyWrite, undefined, admitted.denyWrite);
+  assertSandboxWritePolicySize(writeFloor, undefined, admitted.denyWrite);
   const assertStillValid = (): void => {
     for (const entry of [...(pinned.allowRead ?? []), ...(pinned.allowWrite ?? []),
       ...(ownershipPins?.allowRead ?? []), ...(ownershipPins?.allowWrite ?? []), ...(namespacePins.allowRead ?? [])]) {
@@ -903,7 +915,7 @@ function admitMxcExtensionFilesystemInSnapshot(filesystem: PerCommandFilesystem,
       pluginNamespaceRoots: namespaceRoots, ownership: pinnedOwnership });
   };
   assertStillValid();
-  return { policy, assertStillValid };
+  return { model, assertStillValid };
 }
 
 export function buildPerCommandSandboxCustomConfig(
@@ -957,6 +969,11 @@ export function buildPerCommandSandboxCustomConfig(
     }
     const grants = admitFilesystemPolicy(configured);
     const fs: Partial<FilesystemConfig> = {};
+    // The wrap's policy as rows. Each package list is read off the rows as soon as its own are stated, so every later check and
+    // notice keeps its place in the composition.
+    const floors: PolicyFloorRow[] = [];
+    const launchGrants: PolicyGrantRow[] = [];
+    const lists = () => toSrtConfig(buildPolicyModel({ floors, userGrants: [], extensionManifests: [], launchGrants }));
     const floor = getProtectedReadDenyPaths();
     // A per-command deny REPLACES the shared one, so the trusted custom denies are restated here once for every wrap rather than by each composer.
     let hiddenSeccompHelper: string | undefined;
@@ -978,11 +995,21 @@ export function buildPerCommandSandboxCustomConfig(
       const pluginRoots = filesystem.denyPluginsRoot === true ? ensurePluginOwnedReadRoots() : [];
       const denyRead = [...new Set([...grants.denyRead, ...pluginRoots])];
       hiddenSeccompHelper = seccompHelperHiddenBy(denyRead);
+      // Each row names the floor its path came from, judged on the spelling the caller gave: the protected read floor, the Ave
+      // home boundary, or anything else the caller restated.
+      const protectedRows = new Set(floor);
+      const boundaryRows = new Set(aveHomeReadBoundaryDenies());
+      const requested = new Map(grants.denyRead.map((path, index) => [path, configured.denyRead[index] ?? path] as const));
+      floors.push(...denyRead.map((path) => {
+        const spelling = requested.get(path) ?? path;
+        return policyFloorRow(path, "denied",
+          protectedRows.has(spelling) ? "secrets" : boundaryRows.has(spelling) ? "ave-home" : "read-boundary", false);
+      }));
       fs.denyRead = windowsDenyTargets(
         asrtReadDenyPaths(
-          denyRead,
+          lists().denyRead,
           // The plugin roots are spelled exactly for the reason the private roots are: a wrap whose reads include an ancestor of one (a worker's or a bundled process's host temp directory, above a test `AVE_HOME`) would otherwise lose its own plugin directories to the re-emitted deny.
-          [...appOwnedSandboxPrivateRoots(), ...pluginRoots, ...aveHomeReadBoundaryMasks()],
+          [...appOwnedSandboxReallowableRoots(), ...pluginRoots, ...aveHomeReadBoundaryMasks()],
         ),
         _baseTrustedSettings?.userDataDir,
         windowsGrants,
@@ -999,7 +1026,9 @@ export function buildPerCommandSandboxCustomConfig(
       sensitiveWritePaths,
       sensitiveWritePaths.filter(path => isAbsolute(path) && !/[*?\[\]]/.test(path)),
     );
-    fs.allowWrite = process.platform === "win32" ? [] : writeRootsOutsideReadDenies(mandatory.allowWrite, floor);
+    launchGrants.push(...(process.platform === "win32" ? [] : writeRootsOutsideReadDenies(mandatory.allowWrite, floor))
+      .map((path) => policyGrantRow(path, "rw", "launch-grant", false)));
+    fs.allowWrite = lists().allowWrite;
     const reasonKeys = {
       "entry-budget": "sandboxPolicy.scanEntryBudget",
       "path-budget": "sandboxPolicy.scanPathBudget",
@@ -1016,13 +1045,15 @@ export function buildPerCommandSandboxCustomConfig(
       log.warn(notice);
     }
     {
+      const writeFloor = [...new Set([
+        ...sensitiveDenyWrite,
+        ...mandatory.denyWrite,
+        ...grants.denyWrite,
+        ...(filesystem.pinWriteRoots === true ? pinnedWriteRootDenies(filesystem.allowWrite === undefined ? [] : grants.allowWrite) : []),
+      ])];
+      floors.push(...writeFloor.map(srtWriteFloorRow));
       fs.denyWrite = windowsDenyTargets(
-        [...new Set([
-          ...sensitiveDenyWrite,
-          ...mandatory.denyWrite,
-          ...grants.denyWrite,
-          ...(filesystem.pinWriteRoots === true ? pinnedWriteRootDenies(filesystem.allowWrite === undefined ? [] : grants.allowWrite) : []),
-        ])],
+        lists().denyWrite,
         _baseTrustedSettings?.userDataDir,
         windowsGrants,
         windowsWriteGrants,
@@ -1032,12 +1063,13 @@ export function buildPerCommandSandboxCustomConfig(
     if (filesystem.allowRead !== undefined || hiddenSeccompHelper !== undefined) {
       // A per-command allowRead REPLACES the shared one, so a wrap that only restates its denies keeps the shared grants alongside the seccomp helper. The helper joins before the floor filter: a protected deny still wins.
       const readGrants = grants.allowRead ?? [];
-      fs.allowRead = readGrantsOutsideReadDenies(
+      launchGrants.push(...readGrantsOutsideReadDenies(
         hiddenSeccompHelper === undefined || readGrants.includes(hiddenSeccompHelper) ? readGrants : [...readGrants, hiddenSeccompHelper],
         floor,
         // Restated shared grants keep the shared config's pierces (none, as in buildSandboxConfig); a wrap's own pierces cover only its own grants.
         filesystem.allowRead !== undefined ? (filesystem.floorPierces ?? []) : [],
-      );
+      ).map((path) => policyGrantRow(path, "ro", "launch-grant", false)));
+      fs.allowRead = lists().allowRead;
     }
     if (Object.keys(fs).length === 0) return undefined;
     // The runtime and Linux mount replay consume one discovery snapshot. Freeze its lists so neither consumer can change the other's policy mid-wrap.
@@ -1265,10 +1297,16 @@ export function assertExtensionStartAllowed(options?: { readonly backend: "mxc" 
   // An unpublished home, a helper that gave no answer, and every start with no consent route are refused here.
   if (failure === undefined || !isAveHomePrivacyApprovable(failure.category) || !waivable) assertAveHomePrivacyForConfinement();
   if (!waivable) return;
-  const cause = failure !== undefined ? "home-privacy-unverified" : !isPluginWorkerConfinementActive() ? "no-backend" : undefined;
+  // An expired readiness deadline is this same no-backend ask; it keeps its reason for the card and the notice.
+  const cause = failure !== undefined ? "home-privacy-unverified"
+    : isPluginWorkerConfinementActive() ? undefined
+      : plan?.reason === "readiness-deadline" ? "readiness-deadline" : "no-backend";
   if (cause === undefined) return;
   // No setting, rule or earlier answer stands in for it: one consent, one start.
-  if (!presentExtensionStartConsent(legacy?.start)) throw new ExtensionStartConsentRequiredError(cause);
+  const start = legacy?.start;
+  if (!presentExtensionStartConsent(start)) {
+    throw new ExtensionStartConsentRequiredError(cause, start === undefined ? undefined : { key: start.key, identity: start.identity });
+  }
 }
 
 // Reads are deny-only: allowRead only re-allows within a covering deny, so unknown paths remain readable. Project the canonical sensitive table plus trusted runtime userData and private temp/HOME roots; re-allow only each process's own private directory.
@@ -1276,15 +1314,23 @@ export function assertExtensionStartAllowed(options?: { readonly backend: "mxc" 
 // The Ave home is one directory deny (aveHomeReadBoundaryRoots), so its file rows are left out here; they stay on the protected floor and the write floor.
 // A profile-child home's top-level children are enumerated once per composition snapshot (AveHomeBoundarySnapshot), never across commands or spawns.
 export function getDefaultSensitiveReadDenyPaths(userDataDir = _baseTrustedSettings?.userDataDir): string[] {
+  return sensitiveReadFloorRows(userDataDir).map((row) => row.path);
+}
+
+// The same list as policy rows: each path keeps the floor it came from.
+function sensitiveReadFloorRows(userDataDir = _baseTrustedSettings?.userDataDir): PolicyFloorRow[] {
   const children = aveHomeProfileChildren();
   const seen = new Set<string>();
-  return [...getDefaultSensitiveDenyPaths(userDataDir, undefined, true, children), ...aveHomeReadBoundaryDenies(children), ...appOwnedSandboxPrivateRoots()]
-    .filter((path) => {
-      const key = caseFoldForMatch(path.replace(/[\\/]+$/, ""));
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
+  return [
+    ...getDefaultSensitiveDenyPaths(userDataDir, undefined, true, children).map((path) => policyFloorRow(path, "denied", "secrets", false)),
+    ...aveHomeReadBoundaryDenies(children).map((path) => policyFloorRow(path, "denied", "ave-home", false)),
+    ...appOwnedSandboxPrivateRoots().map((path) => policyFloorRow(path, "denied", "read-boundary", false)),
+  ].filter(({ path }) => {
+    const key = caseFoldForMatch(path.replace(/[\\/]+$/, ""));
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 // Every spelling of the Ave home the sensitive table anchors to. Read-denied as a whole directory, so a child added later, a file created after a stamp, or a rename-over beneath it stays denied; a wrap re-opens only children AVE_HOME_READ_REALLOWS names.
@@ -1408,12 +1454,16 @@ function aveHomeReadBoundaryMatcher(): (canonicalPath: string) => string | undef
   const roots = aveHomeReadBoundaryRoots()
     .map((root) => ({ root, key: caseFoldForMatch(canonicalizePathForMatch(root)).replace(/\/+$/, "") }))
     .sort((left, right) => right.key.length - left.key.length);
+  const sessionId = currentAveHomeBoundarySnapshot()?.sessionId;
   return (canonicalPath) => {
     const folded = caseFoldForMatch(canonicalPath);
     const owner = roots.find(({ key }) => folded === key || folded.startsWith(`${key}/`));
     if (owner === undefined) return undefined;
     if (folded === owner.key) return owner.root;
-    return isAveHomeReadReallowed(folded.slice(owner.key.length + 1).split("/")) ? undefined : owner.root;
+    const segments = folded.slice(owner.key.length + 1).split("/");
+    if (!isAveHomeReadReallowed(segments)) return owner.root;
+    // Beneath `worktrees` the ceiling row is open only to the session this composition is for, and only for the stage workspace it is bound to.
+    return segments[0] === "worktrees" && !isBoundStageWorkspacePath(sessionId, canonicalPath) ? owner.root : undefined;
   };
 }
 
@@ -2174,13 +2224,13 @@ export function buildSandboxConfig(
   };
 
   // denyRead floor: ALWAYS union the centralized host-secret / sensitive read deny-list (getDefaultSensitiveReadDenyPaths) onto any caller-supplied denyRead. This is the SHARED config's read deny — the floor ASRT applies when a per-command wrap supplies NO `customConfig.filesystem.denyRead` of its own (ASRT's wrapWithSandbox does `customConfig?.filesystem?.denyRead ?? config.filesystem.denyRead` — a per-command denyRead REPLACES this, it does not union, so wraps that need this floor must restate it; see openWrapped in mcp-client.ts). Deduped, order-stable (sensitive floor first, then caller's).
-  const sensitiveDenyRead = getDefaultSensitiveReadDenyPaths(trustedSettings.userDataDir);
-  const denyReadUnion: string[] = [];
+  const sensitiveDenyRead = sensitiveReadFloorRows(trustedSettings.userDataDir);
+  const denyReadUnion: PolicyFloorRow[] = [];
   const denyReadSeen = new Set<string>();
-  for (const p of [...sensitiveDenyRead, ...(trustedSettings.denyRead ?? [])]) {
-    if (!denyReadSeen.has(p)) {
-      denyReadSeen.add(p);
-      denyReadUnion.push(p);
+  for (const row of [...sensitiveDenyRead, ...(trustedSettings.denyRead ?? []).map((path) => policyFloorRow(path, "denied", "secrets", false))]) {
+    if (!denyReadSeen.has(row.path)) {
+      denyReadSeen.add(row.path);
+      denyReadUnion.push(row);
     }
   }
   // denyWrite floor: same boot-level belt as denyRead for callers that do not supply per-command filesystem.denyWrite. Per-command wraps still restate this SOT because ASRT's customConfig filesystem section replaces the shared arrays, but the session config now has a real persistence-vector floor too.
@@ -2220,18 +2270,29 @@ export function buildSandboxConfig(
     ...(requestedSettings.allowWrite ?? []),
     ...(liveGrants.allowWrite ?? [])];
   const windowsGrants: FilesystemPathEntry[] = [...windowsWriteGrants, ...(requestedSettings.allowRead ?? []), ...(trustedSettings.allowRead ?? []), ...(allowRead ?? []), ...(liveGrants.allowRead ?? [])];
+  // The session's policy as rows; the package config below is one projection of them.
+  const lists = toSrtConfig(buildPolicyModel({
+    floors: [...denyReadUnion, ...denyWriteUnion.map(srtWriteFloorRow)],
+    userGrants: [
+      ...allowWrite.map((path) => policyGrantRow(path, "rw", "user-grant", false)),
+      ...(allowRead ?? []).map((path) => policyGrantRow(path, "ro", "user-grant", false)),
+    ],
+    extensionManifests: [],
+    launchGrants: [],
+  }));
   const filesystem: FilesystemConfig = {
     denyRead: windowsDenyTargets(
-      asrtReadDenyPaths(denyReadUnion, [...appOwnedSandboxPrivateRoots(), ...aveHomeReadBoundaryRoots()]),
+      asrtReadDenyPaths(lists.denyRead, [...appOwnedSandboxReallowableRoots(), ...aveHomeReadBoundaryRoots()]),
       trustedSettings.userDataDir,
       windowsGrants,
       windowsWriteGrants,
       "read",
       readDenyEvidence,
     ),
-    allowWrite,
-    denyWrite: windowsDenyTargets(denyWriteUnion, trustedSettings.userDataDir, windowsGrants, windowsWriteGrants, "write"),
-    ...(allowRead !== undefined ? { allowRead } : {}),
+    allowWrite: lists.allowWrite,
+    denyWrite: windowsDenyTargets(lists.denyWrite, trustedSettings.userDataDir, windowsGrants, windowsWriteGrants, "write"),
+    // An absent read list keeps the package's own default; an empty one grants nothing.
+    ...(allowRead !== undefined ? { allowRead: lists.allowRead } : {}),
   };
 
   // Windows-only: pin the egress proxy bind range so it matches the WFP permit (the install flow permits the SAME range — see DEFAULT_WINDOWS_PROXY_PORT_RANGE). Always emitted on win32 (default range when not supplied) so the runtime config and the WFP rule never desync. Inert on mac/linux — ASRT ignores the `windows` section off Windows, but we only emit it on win32 to keep the config minimal and the non-Windows config shape unchanged. Part 6 of the carried ASRT patch reads `externalConfinement`; the package's own WindowsConfig type does not declare it.
@@ -2851,10 +2912,16 @@ export function appOwnedTerminalHandoffRoot(): string {
   return join(sandboxPrivateBase(), "handoff");
 }
 
-// The roots of the confined processes' private directories, read-denied by the floor on macOS and Linux. Empty on Windows, whose floor is unchanged.
-export function appOwnedSandboxPrivateRoots(): string[] {
+// The private roots a wrap re-opens its own directory inside: each confined process's HOME and temp live under them, and the terminal's handoff. Their macOS denies are spelled exactly (asrtReadDenyPaths) so the re-allow survives.
+function appOwnedSandboxReallowableRoots(): string[] {
   if (process.platform === "win32") return [];
   return [appOwnedSandboxTempRoot(), appOwnedSandboxHomeRoot(), appOwnedTerminalHandoffRoot()];
+}
+
+// The roots of the confined processes' private directories, read-denied by the floor on macOS and Linux. Empty on Windows, whose floor is unchanged. The container runtime root is one of them: it holds what used to be staged under the Ave home, outside it, and stays as unreadable to every other confined process as it was there. No wrap on this route re-opens anything inside it, so its deny is a plain one, and naming it never throws, whatever state the account's cache directory is in.
+export function appOwnedSandboxPrivateRoots(): string[] {
+  if (process.platform === "win32") return [];
+  return [...appOwnedSandboxReallowableRoots(), mxcRuntimeRootFloorPath()];
 }
 
 // Create a sandbox private root `0o700` if it is absent, and refuse one that is not a real directory. Its ancestors may be links (`AVE_HOME` may be one); the root itself is the host's, and every directory a wrap grants is made inside it, so a link here would put them somewhere the read floor does not name.

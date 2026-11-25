@@ -1,3 +1,4 @@
+import '../bare-program-lookup.js';
 import { parentPort, workerData } from 'node:worker_threads';
 import { buildGraph } from './graph.js';
 import type { MemoryWorkerTask } from './worker-client.js';

@@ -389,6 +389,8 @@ vi.mock("../../main/work-board-store.js", () => ({
   WorkBoardStore: class {
     load = vi.fn(async () => {});
     reconcileInterruptedRuns = vi.fn(async () => {});
+    // A real store always carries its run store; the boot wiring sets its removal hook.
+    runs = { onRunsRemoved: undefined as unknown };
     proposalsChanged = { subscribe: vi.fn(() => () => {}) };
     boardChanged = { subscribe: vi.fn(() => () => {}) };
   },
