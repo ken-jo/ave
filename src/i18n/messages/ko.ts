@@ -6251,7 +6251,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "toolApprovalDialog.protectedEntryRuntimeSettings": "Ave 설정 파일",
   "toolApprovalDialog.reasonSecretRead": "비밀 정보가 들어 있을 수 있는 파일이라 읽으려면 승인이 필요합니다.",
   "toolApprovalDialog.reasonFileWrite": "이 파일을 바꾸려면 승인이 필요합니다.",
-  "toolApprovalDialog.reasonShellAnalysisLimit": "셸 명령이 분석 한도를 초과했습니다. 명령의 영향을 모두 확인하지 못했으므로 승인이 필요합니다.",
+  "toolApprovalDialog.reasonShellAnalysisLimit": "셸 명령이 분석 한도를 초과했습니다. 분석 한도 이후의 명령 내용은 확인하지 않았습니다.",
   "toolApprovalDialog.secretPattern": "일치한 비밀 파일 패턴:",
   "toolApprovalDialog.rowCaution": "주의",
   "toolApprovalDialog.cautionNonUserOrigin": "사용자 직접 입력이 아니라 {originLabel} 발원 — 인자·대상 경로 확인 후 승인.",

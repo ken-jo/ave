@@ -3,6 +3,7 @@ import "../../../../../test/renderer/setup.js";
 import { describe, expect, it } from "vitest";
 import { getLocale, setLocale, t } from "../../../../i18n/runtime.js";
 import { SHELL_ANALYSIS_LIMIT_REASON } from "../../../../permissions/decision-pipeline.js";
+import { MAX_SHELL_ANALYSIS_TOKENS } from "../../../../shared/shell-analysis-limits.js";
 import { renderApproval } from "./support/render-approval.js";
 import type { ApprovalRequest } from "../../types.js";
 import { buildHostShellExecutionPlan, getHostShellExecutionPlanAuditProjection } from "../../../../permissions/host-shell-execution-plan.js";
@@ -62,6 +63,38 @@ describe("explicit host execution approval", () => {
     } finally {
       setLocale(previous);
     }
+  });
+
+  describe.each([
+    ["en", /the rest of the command past that limit was not checked/i],
+    ["ko", /분석 한도 이후의 명령 내용은 확인하지 않았습니다/u],
+  ] as const)("analysis-limit disclosure in %s", (locale, notice) => {
+    it.each(["host", "contained"] as const)("shows the unchecked notice and the full %s command before consent", (route) => {
+      const previous = getLocale();
+      setLocale(locale);
+      try {
+        const approval = request(false);
+        const command = `printf '%s'${" word".repeat(MAX_SHELL_ANALYSIS_TOKENS)}\nprintf 'trailing marker'`;
+        approval.args = { command };
+        approval.reason = SHELL_ANALYSIS_LIMIT_REASON;
+        approval.reasonCode = "shell-analysis-limit";
+        if (route === "host") {
+          approval.executionPlan = getHostShellExecutionPlanAuditProjection(buildHostShellExecutionPlan({
+            platform: "darwin", requestedSandbox: false,
+            activeCapability: { reason: "Fixture sandbox disabled", kind: "none", confidence: "verified", platform: "darwin" },
+          }));
+        }
+        const { container, getByTestId } = renderApproval(approval, () => undefined);
+        const commandRow = getByTestId("tool-approval-input");
+        expect.soft(getByTestId("approval-ask-reason").textContent).toMatch(notice);
+        expect.soft(commandRow).toBeVisible();
+        expect(commandRow.textContent).toBe(command);
+        const fullInput = Array.from(container.querySelectorAll("details pre")).at(-1);
+        expect(fullInput?.textContent).toContain("trailing marker");
+      } finally {
+        setLocale(previous);
+      }
+    });
   });
 
   // An unavailable sandbox is a forced ask: the card says the sandbox is unavailable and shows the host warning, without the explicit-request justification.

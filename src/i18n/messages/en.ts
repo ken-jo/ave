@@ -6249,7 +6249,7 @@ export const en = {
   "toolApprovalDialog.protectedEntryRuntimeSettings": "Ave settings file",
   "toolApprovalDialog.reasonSecretRead": "This file may hold secrets, so reading it needs your approval.",
   "toolApprovalDialog.reasonFileWrite": "This file change needs your approval.",
-  "toolApprovalDialog.reasonShellAnalysisLimit": "The shell command exceeded the analysis limit. Its effects could not be fully checked, so it needs your approval.",
+  "toolApprovalDialog.reasonShellAnalysisLimit": "The shell command exceeded the analysis limit. The rest of the command past that limit was not checked.",
   "toolApprovalDialog.secretPattern": "Matched secret pattern:",
   "toolApprovalDialog.rowCaution": "Caution",
   "toolApprovalDialog.cautionNonUserOrigin": "Not user-initiated — originated from {originLabel}; verify the tool args and target path.",

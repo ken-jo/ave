@@ -979,7 +979,10 @@ export function ToolApprovalContent({
     && request.executionPlan.executionRequest === "host";
   const requiresHostConsent = request.executionPlan?.mode === "plain"
     && request.executionPlan.requiresExplicitUserApproval;
-  const argsTruncated = !requiresHostConsent && argsStr.length > 500 && !expanded;
+  const isShellAnalysisLimit = request.reasonCode === "shell-analysis-limit";
+  const showFullArgsByDefault = requiresHostConsent || isShellAnalysisLimit;
+  const canToggleArgs = !showFullArgsByDefault && argsStr.length > 500;
+  const argsTruncated = canToggleArgs && !expanded;
   // JSON escapes C0 controls only; bidi overrides and other invisibles would still reorder the shown input.
   const argsDisplay = revealHiddenCharacters(argsTruncated ? argsStr.slice(0, 500) + "\n…" : argsStr, { lineBreaks: false });
   const shownCandidatePath = revealHiddenCharacters(outOfDirCandidatePath, { lineBreaks: true });
@@ -1165,7 +1168,7 @@ export function ToolApprovalContent({
                   ) : null}
                   {request.executionPlan ? (
                     <div className="mt-1 space-y-0.5 text-xs text-muted-foreground" data-testid="tool-approval-shell-environment">
-                      {shellExecutionEnvironmentLines(request.executionPlan, { oneTimeApproval: request.reasonCode === "shell-analysis-limit" }).map((line) => <p key={line}>{line}</p>)}
+                      {shellExecutionEnvironmentLines(request.executionPlan, { oneTimeApproval: isShellAnalysisLimit }).map((line) => <p key={line}>{line}</p>)}
                     </div>
                   ) : null}
                   {requiresHostConsent ? (
@@ -1195,7 +1198,7 @@ export function ToolApprovalContent({
             <details
               className="group min-w-0 overflow-hidden rounded-lg border border-border-strong bg-muted/(--opacity-light)"
               data-testid={TEST_IDS.approvalReviewDetails}
-              open={requiresHostConsent || undefined}
+              open={showFullArgsByDefault || undefined}
             >
               <summary className="flex min-w-0 cursor-pointer list-none items-center gap-2 px-3 py-2.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
                 <span className="min-w-0 flex-1">
@@ -1284,7 +1287,7 @@ export function ToolApprovalContent({
                     <pre className="max-h-56 max-w-full overflow-auto px-3 py-2 whitespace-pre-wrap break-all font-mono text-dense leading-relaxed">
                       {argsDisplay}
                     </pre>
-                    {argsStr.length > 500 && (
+                    {canToggleArgs && (
                       <Button
                         type="button"
                         variant="ghost"

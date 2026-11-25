@@ -753,12 +753,14 @@ bounded by the character cap. General structural parsing retains its existing
 safety limits. The independent path-evidence pass uses the same complete-input
 400-record budget, including executed nested literal code. Exhausting a parser
 or evidence safety limit proves nothing about the command. The contained route
-asks in every mode. No rule, mode or grant passes the ask. The host route
-asks the person through the forced floor `shell-analysis-limit`. Both routes
-offer one-time approval, with no session grant, and deny when nobody can
-approve. The shell tool's own re-check accepts that verdict. On the host, the
-approval covers the whole command because analysis stopped before checking its
-tail. The 2,000-character reusable-rule limit alone does not stop path evidence
+asks in every mode. No rule, mode or grant passes the ask. The host route =
+ask-human (forced floor `shell-analysis-limit`: allow once, no session grant,
+denied headless; the card states that the rest of the command past the limit
+was not checked). The contained route also offers one-time approval, with no
+session grant, and denies when nobody can approve. The shared card displays the
+full command and the unchecked-part notice on both routes. One approval covers
+the whole command. The shell tool's own re-check accepts that verdict. The
+2,000-character reusable-rule limit alone does not stop path evidence
 collection or create a forced floor. Ordinary runtime opacity within the safety
 budget continues through the mode stage.
 
