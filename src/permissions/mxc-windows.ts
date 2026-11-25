@@ -462,7 +462,8 @@ export function mxcPolicyRows(model: PolicyModel): MxcPolicyRows {
 
 // The Windows container adapter: policy rows in, the three container lists out. It owns what this backend needs beyond the rows:
 // which grant wins against which floor row, what an absent path becomes, and which rows the container never needs to hear about.
-// A row is read as a pattern by its spelling, whatever its `literal` marker says.
+// A row is read as a pattern by its spelling, whatever its `literal` marker says: the shell hands over spellings, the extension
+// admission hands over literals, and both were always classified by spelling here.
 // Drop grants piercing protected floors except explicit history read exceptions; write denies downgrade grants to read-only. Missing write-deny targets must stay denied because read-only does not prevent creation. Preserve nested read denies, omit redundant denied ancestors, and drop nonexistent grants.
 export function rankMxcFilesystem(
   model: PolicyModel,

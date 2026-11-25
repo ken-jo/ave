@@ -5,7 +5,7 @@
 // The recorded file belongs to the host it was recorded on: path resolution differs between hosts (`/etc` is a link on macOS), so
 // each host platform has its own file. Record one with `AVE_RECORD_SRT_GOLDEN=1` and review the diff before committing it.
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,10 +24,17 @@ vi.mock("../../shared/policy-home.js", async (importOriginal) => {
   return { ...actual, policyHomeAnchors: () => [fixture.home] };
 });
 
+// The real module, with the built models observable.
+vi.mock("../policy-model.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../policy-model.js")>();
+  return { ...actual, buildPolicyModel: vi.fn(actual.buildPolicyModel) };
+});
+
 import { initializeRequiredSandbox, shouldSkipNativeSandboxTests } from "../../__tests__/support/native-sandbox.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { aveHome } from "../../shared/ave-home.js";
+import { buildPolicyModel, type PolicyRow } from "../policy-model.js";
 import {
   buildPerCommandSandboxCustomConfig, buildSandboxConfig, getDefaultSensitiveReadDenyPaths, getDefaultSensitiveWriteDenyEntries,
   resetAsrtSandbox,
@@ -71,6 +78,8 @@ function normalize(text: string): string {
     [dirname(aveHome()), "<AVE_HOME_PARENT>"],
     [fixture.root, "<FIXTURE>"],
     [process.cwd(), "<REPO>"],
+    // A checkout whose node_modules is a link resolves vendored paths outside the repository.
+    [realpathSync(join(process.cwd(), "node_modules")), "<REPO>/node_modules"],
     [tmpdir(), "<TMP>"],
     [homedir(), "<HOST_HOME>"],
   ];
@@ -150,6 +159,36 @@ describe.runIf(RECORDED_HOSTS.includes(HOST) || RECORDING)("sandbox runtime pack
 
   it("composes the same config twice", () => {
     expect(compose()).toEqual(compose());
+  });
+});
+
+// The package projection replays grants as stated, so each composer must withhold a grant beneath the protected read floor itself.
+describe.runIf(HOST !== "win32")("package config composers and the protected read floor", () => {
+  const floored = join(ssh, "known_hosts");
+
+  it("withholds a floored read grant from the shared config", () => {
+    expect(buildSandboxConfig({ allowRead: [floored, ro] }).filesystem.allowRead).toEqual([ro]);
+  });
+
+  it("withholds a floored read grant from a per-command config", () => {
+    const filesystem = buildPerCommandSandboxCustomConfig({
+      allowRead: [floored, ro], denyRead: getDefaultSensitiveReadDenyPaths(), denyWrite: getDefaultSensitiveWriteDenyEntries(),
+    })?.filesystem;
+    expect(filesystem?.allowRead).toEqual([ro]);
+  });
+
+  it("names the floor each per-command read deny came from", () => {
+    vi.mocked(buildPolicyModel).mockClear();
+    buildPerCommandSandboxCustomConfig({
+      denyRead: [...getDefaultSensitiveReadDenyPaths(), custom], denyWrite: getDefaultSensitiveWriteDenyEntries(), denyPluginsRoot: true,
+    });
+    const built = vi.mocked(buildPolicyModel).mock.results.at(-1);
+    const rows: readonly PolicyRow[] = built?.type === "return" ? built.value.rows : [];
+    const reasons = (path: string): string[] => rows.filter((row) => row.access === "denied" && row.path === path).map((row) => row.reason);
+    expect(reasons(ssh)).toEqual(["secrets"]);
+    expect(reasons(aveHome())).toEqual(["ave-home"]);
+    expect(reasons(custom)).toEqual(["read-boundary"]);
+    expect(rows.filter((row) => row.access === "denied").map((row) => row.reason)).toEqual(expect.arrayContaining(["secrets", "ave-home", "read-boundary"]));
   });
 });
 

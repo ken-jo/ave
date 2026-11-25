@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { synthesizeMxcAncestorQueries } from "../mxc-filesystem-policy.js";
 import { rankMxcFilesystem, type MxcFilesystemGrants } from "../mxc-windows.js";
 import {
-  buildPolicyModel, policyFloorRow as floor, policyGrantRow as grant,
+  buildPolicyModel, policyFloorRow, policyGrantRow,
   type PolicyFloorRow, type PolicyGrantRow, type PolicyModel, type PolicyModelInput,
 } from "../policy-model.js";
 import { toSrtConfig, type SrtFilesystemLists } from "../srt-policy-adapter.js";
@@ -13,6 +13,12 @@ import { toSrtConfig, type SrtFilesystemLists } from "../srt-policy-adapter.js";
 const HOME = "C:\\Users\\alice";
 const WORK = `${HOME}\\work`;
 const DATA = "C:\\plugins\\data";
+
+// Table rows are spellings unless a row says otherwise.
+const floor = (path: string, access: PolicyFloorRow["access"], reason: PolicyFloorRow["reason"], literal = false): PolicyFloorRow =>
+  policyFloorRow(path, access, reason, literal);
+const grant = (path: string, access: PolicyGrantRow["access"], reason: PolicyGrantRow["reason"], literal = false): PolicyGrantRow =>
+  policyGrantRow(path, access, reason, literal);
 
 const model = (input: Partial<PolicyModelInput>): PolicyModel =>
   buildPolicyModel({ floors: [], userGrants: [], extensionManifests: [], launchGrants: [], ...input });
@@ -186,6 +192,16 @@ describe("policy model adapters", () => {
     expect(Object.isFrozen(built.rows) && built.rows.every((row) => Object.isFrozen(row))).toBe(true);
   });
 
+  it("accepts a floor pierce from an extension manifest and from a launch", () => {
+    expect(model({ extensionManifests: [grant(WORK, "ro", "floor-pierce")], launchGrants: [grant(HOME, "ro", "floor-pierce")] }).rows)
+      .toHaveLength(2);
+  });
+
+  it("takes only a model that buildPolicyModel checked", () => {
+    // @ts-expect-error a hand-built object carries no proof of the checks
+    expect(toSrtConfig({ rows: [] })).toEqual({ allowRead: [], allowWrite: [], denyRead: [], denyWrite: [] });
+  });
+
   it("refuses the package projection of a literal row outside the write floor", () => {
     expect(() => toSrtConfig(model({ userGrants: [grant(WORK, "rw", "user-grant", true)] }))).toThrow(/literal rows only on the write floor/);
   });
@@ -198,6 +214,7 @@ describe("policy model adapters", () => {
     ["a grant under the wrong input", { extensionManifests: [grant(WORK, "rw", "user-grant")] }],
     ["a grant that denies", { userGrants: [{ ...grant(WORK, "ro", "user-grant"), access: "denied" } as unknown as PolicyGrantRow] }],
     ["a writable floor pierce", { launchGrants: [grant(WORK, "rw", "floor-pierce")] }],
+    ["a floor pierce among the user grants", { userGrants: [grant(WORK, "ro", "floor-pierce")] }],
     ["a row without a path", { userGrants: [{ literal: false, access: "rw", reason: "user-grant" } as unknown as PolicyGrantRow] }],
   ])("refuses %s", (_name, input) => {
     expect(() => model(input)).toThrow(/^Policy model row is invalid/);

@@ -22,6 +22,9 @@ export interface SrtFilesystemLists {
  * Rows keep their order inside each list and nothing is merged. A composer that omits a list from its config (a per-command config
  * replaces only the lists it names) still decides that itself.
  *
+ * This is a projection only. It does not withhold a grant beneath a `secrets` row: the caller must have filtered its read grants
+ * (`readGrantsOutsideReadDenies` in asrt-sandbox.ts) before stating them, as both composers there do.
+ *
  * @deprecated Throwaway adapter. It exists only while Ave still launches through the sandbox runtime package, and it is deleted
  * together with that package dependency. Do not add callers outside the code that builds a package config.
  */
@@ -37,6 +40,7 @@ export function toSrtConfig(model: PolicyModel): SrtFilesystemLists {
       continue;
     }
     // Only write-floor rows are ever marked literal by the package's composers; the other lists are replayed as plain spellings.
+    // So a model whose every row is literal, such as a container admission's, is refused here rather than replayed as patterns.
     if (row.literal) throw new Error(`Sandbox runtime config carries literal rows only on the write floor: ${row.reason} ${row.access}`);
     if (isPolicyFloorRow(row)) lists.denyRead.push(row.path);
     else if (row.access === "rw") lists.allowWrite.push(row.path);
@@ -47,5 +51,5 @@ export function toSrtConfig(model: PolicyModel): SrtFilesystemLists {
 
 /** A package path entry as a write-floor row. */
 export function srtWriteFloorRow(entry: FilesystemPathEntry): PolicyFloorRow {
-  return typeof entry === "string" ? policyFloorRow(entry, "ro", "protected-name") : policyFloorRow(entry.path, "ro", "protected-name", true);
+  return typeof entry === "string" ? policyFloorRow(entry, "ro", "protected-name", false) : policyFloorRow(entry.path, "ro", "protected-name", true);
 }

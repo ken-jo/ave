@@ -989,7 +989,16 @@ export function buildPerCommandSandboxCustomConfig(
       const pluginRoots = filesystem.denyPluginsRoot === true ? ensurePluginOwnedReadRoots() : [];
       const denyRead = [...new Set([...grants.denyRead, ...pluginRoots])];
       hiddenSeccompHelper = seccompHelperHiddenBy(denyRead);
-      floors.push(...denyRead.map((path) => policyFloorRow(path, "denied", "read-boundary")));
+      // Each row names the floor its path came from, judged on the spelling the caller gave: the protected read floor, the Ave
+      // home boundary, or anything else the caller restated.
+      const protectedRows = new Set(floor);
+      const boundaryRows = new Set(aveHomeReadBoundaryDenies());
+      const requested = new Map(grants.denyRead.map((path, index) => [path, configured.denyRead[index] ?? path] as const));
+      floors.push(...denyRead.map((path) => {
+        const spelling = requested.get(path) ?? path;
+        return policyFloorRow(path, "denied",
+          protectedRows.has(spelling) ? "secrets" : boundaryRows.has(spelling) ? "ave-home" : "read-boundary", false);
+      }));
       fs.denyRead = windowsDenyTargets(
         asrtReadDenyPaths(
           lists().denyRead,
@@ -1012,7 +1021,7 @@ export function buildPerCommandSandboxCustomConfig(
       sensitiveWritePaths.filter(path => isAbsolute(path) && !/[*?\[\]]/.test(path)),
     );
     launchGrants.push(...(process.platform === "win32" ? [] : writeRootsOutsideReadDenies(mandatory.allowWrite, floor))
-      .map((path) => policyGrantRow(path, "rw", "launch-grant")));
+      .map((path) => policyGrantRow(path, "rw", "launch-grant", false)));
     fs.allowWrite = lists().allowWrite;
     const reasonKeys = {
       "entry-budget": "sandboxPolicy.scanEntryBudget",
@@ -1053,7 +1062,7 @@ export function buildPerCommandSandboxCustomConfig(
         floor,
         // Restated shared grants keep the shared config's pierces (none, as in buildSandboxConfig); a wrap's own pierces cover only its own grants.
         filesystem.allowRead !== undefined ? (filesystem.floorPierces ?? []) : [],
-      ).map((path) => policyGrantRow(path, "ro", "launch-grant")));
+      ).map((path) => policyGrantRow(path, "ro", "launch-grant", false)));
       fs.allowRead = lists().allowRead;
     }
     if (Object.keys(fs).length === 0) return undefined;
@@ -1279,9 +1288,9 @@ function sensitiveReadFloorRows(userDataDir = _baseTrustedSettings?.userDataDir)
   const children = aveHomeProfileChildren();
   const seen = new Set<string>();
   return [
-    ...getDefaultSensitiveDenyPaths(userDataDir, undefined, true, children).map((path) => policyFloorRow(path, "denied", "secrets")),
-    ...aveHomeReadBoundaryDenies(children).map((path) => policyFloorRow(path, "denied", "ave-home")),
-    ...appOwnedSandboxPrivateRoots().map((path) => policyFloorRow(path, "denied", "read-boundary")),
+    ...getDefaultSensitiveDenyPaths(userDataDir, undefined, true, children).map((path) => policyFloorRow(path, "denied", "secrets", false)),
+    ...aveHomeReadBoundaryDenies(children).map((path) => policyFloorRow(path, "denied", "ave-home", false)),
+    ...appOwnedSandboxPrivateRoots().map((path) => policyFloorRow(path, "denied", "read-boundary", false)),
   ].filter(({ path }) => {
     const key = caseFoldForMatch(path.replace(/[\\/]+$/, ""));
     if (seen.has(key)) return false;
@@ -2180,7 +2189,7 @@ export function buildSandboxConfig(
   const sensitiveDenyRead = sensitiveReadFloorRows(trustedSettings.userDataDir);
   const denyReadUnion: PolicyFloorRow[] = [];
   const denyReadSeen = new Set<string>();
-  for (const row of [...sensitiveDenyRead, ...(trustedSettings.denyRead ?? []).map((path) => policyFloorRow(path, "denied", "secrets"))]) {
+  for (const row of [...sensitiveDenyRead, ...(trustedSettings.denyRead ?? []).map((path) => policyFloorRow(path, "denied", "secrets", false))]) {
     if (!denyReadSeen.has(row.path)) {
       denyReadSeen.add(row.path);
       denyReadUnion.push(row);
@@ -2227,8 +2236,8 @@ export function buildSandboxConfig(
   const lists = toSrtConfig(buildPolicyModel({
     floors: [...denyReadUnion, ...denyWriteUnion.map(srtWriteFloorRow)],
     userGrants: [
-      ...allowWrite.map((path) => policyGrantRow(path, "rw", "user-grant")),
-      ...(allowRead ?? []).map((path) => policyGrantRow(path, "ro", "user-grant")),
+      ...allowWrite.map((path) => policyGrantRow(path, "rw", "user-grant", false)),
+      ...(allowRead ?? []).map((path) => policyGrantRow(path, "ro", "user-grant", false)),
     ],
     extensionManifests: [],
     launchGrants: [],
