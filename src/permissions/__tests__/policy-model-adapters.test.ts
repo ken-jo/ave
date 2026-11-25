@@ -37,9 +37,9 @@ const TABLE: readonly AdapterRow[] = [
     model: model({
       floors: [floor(`${HOME}\\.ssh`, "denied", "secrets"), floor(`${WORK}\\.env`, "denied", "secrets")],
       userGrants: [
-        grant(WORK, "rw", "user-grant", null),
-        grant(`${HOME}\\.ssh\\config`, "ro", "user-grant", null),
-        grant("C:\\tools", "ro", "user-grant", null),
+        grant(WORK, "rw", "user-grant"),
+        grant(`${HOME}\\.ssh\\config`, "ro", "user-grant"),
+        grant("C:\\tools", "ro", "user-grant"),
       ],
     }),
     exists: everything,
@@ -60,7 +60,7 @@ const TABLE: readonly AdapterRow[] = [
         floor(`${HOME}\\.bashrc`, "ro", "protected-name"),
         floor(`${WORK}\\.envrc`, "ro", "protected-name", true),
       ],
-      userGrants: [grant(WORK, "rw", "user-grant", null)],
+      userGrants: [grant(WORK, "rw", "user-grant")],
     }),
     exists: (path) => path !== `${WORK}\\.vscode`,
     srt: {
@@ -80,8 +80,8 @@ const TABLE: readonly AdapterRow[] = [
         floor(`${DATA}\\p1\\.envrc`, "ro", "protected-name"),
       ],
       extensionManifests: [
-        grant(`${DATA}\\p1`, "rw", "extension-manifest", null),
-        grant("C:\\plugins\\gen\\p1", "ro", "extension-manifest", null),
+        grant(`${DATA}\\p1`, "rw", "extension-manifest"),
+        grant("C:\\plugins\\gen\\p1", "ro", "extension-manifest"),
       ],
     }),
     exists: everything,
@@ -97,9 +97,9 @@ const TABLE: readonly AdapterRow[] = [
     model: model({
       floors: [floor(`${HOME}\\.ave`, "denied", "ave-home"), floor(`${HOME}\\.ave\\secrets`, "denied", "secrets")],
       launchGrants: [
-        grant(WORK, "rw", "launch-grant", null),
-        grant(HOME, "ro", "launch-grant", null),
-        grant(`${HOME}\\.ave\\skills`, "ro", "launch-grant", null),
+        grant(WORK, "rw", "launch-grant"),
+        grant(HOME, "ro", "launch-grant"),
+        grant(`${HOME}\\.ave\\skills`, "ro", "launch-grant"),
       ],
     }),
     exists: everything,
@@ -115,10 +115,10 @@ const TABLE: readonly AdapterRow[] = [
     model: model({
       floors: [floor(`${HOME}\\notes`, "ro", "protected-name")],
       userGrants: [
-        grant(WORK, "rw", "user-grant", null),
-        grant(`${HOME}\\missing`, "rw", "user-grant", null),
-        grant(`${HOME}\\notes`, "rw", "user-grant", null),
-        grant("C:\\ref", "ro", "user-grant", null),
+        grant(WORK, "rw", "user-grant"),
+        grant(`${HOME}\\missing`, "rw", "user-grant"),
+        grant(`${HOME}\\notes`, "rw", "user-grant"),
+        grant("C:\\ref", "ro", "user-grant"),
       ],
     }),
     exists: (path) => path !== `${HOME}\\missing`,
@@ -133,7 +133,7 @@ const TABLE: readonly AdapterRow[] = [
     name: "volume-root",
     model: model({
       floors: [floor(`${HOME}\\.ave`, "denied", "ave-home")],
-      userGrants: [grant("C:\\", "rw", "user-grant", null)],
+      userGrants: [grant("C:\\", "rw", "user-grant")],
     }),
     exists: everything,
     srt: { allowRead: [], allowWrite: ["C:\\"], denyRead: [`${HOME}\\.ave`], denyWrite: [] },
@@ -146,10 +146,10 @@ const TABLE: readonly AdapterRow[] = [
     model: model({
       floors: [floor(`${HOME}\\.ave\\sessions`, "denied", "secrets"), floor(`${HOME}\\.ave\\keys`, "denied", "secrets")],
       launchGrants: [
-        grant(HOME, "ro", "launch-grant", null),
-        grant(`${HOME}\\.ave\\sessions`, "ro", "launch-grant", null),
-        grant(`${HOME}\\.ave\\keys`, "ro", "launch-grant", null),
-        grant(`${HOME}\\.ave\\sessions`, "ro", "floor-pierce", null),
+        grant(HOME, "ro", "launch-grant"),
+        grant(`${HOME}\\.ave\\sessions`, "ro", "launch-grant"),
+        grant(`${HOME}\\.ave\\keys`, "ro", "launch-grant"),
+        grant(`${HOME}\\.ave\\sessions`, "ro", "floor-pierce"),
       ],
     }),
     exists: everything,
@@ -177,9 +177,9 @@ describe("policy model adapters", () => {
   it("keeps the order rows were stated in, inside each input and across inputs", () => {
     const built = buildPolicyModel({
       floors: [floor("C:\\b", "denied", "read-boundary"), floor("C:\\a", "denied", "ave-home")],
-      userGrants: [grant("C:\\u", "rw", "user-grant", null)],
-      extensionManifests: [grant("C:\\e", "rw", "extension-manifest", "plugin-a")],
-      launchGrants: [grant("C:\\l", "rw", "launch-grant", null)],
+      userGrants: [grant("C:\\u", "rw", "user-grant")],
+      extensionManifests: [grant("C:\\e", "rw", "extension-manifest")],
+      launchGrants: [grant("C:\\l", "rw", "launch-grant")],
     });
     expect(built.rows.map((row) => row.path)).toEqual(["C:\\b", "C:\\a", "C:\\u", "C:\\e", "C:\\l"]);
     expect(toSrtConfig(built)).toMatchObject({ denyRead: ["C:\\b", "C:\\a"], allowWrite: ["C:\\u", "C:\\e", "C:\\l"] });
@@ -187,21 +187,18 @@ describe("policy model adapters", () => {
   });
 
   it("refuses the package projection of a literal row outside the write floor", () => {
-    expect(() => toSrtConfig(model({ userGrants: [grant(WORK, "rw", "user-grant", null, true)] }))).toThrow(/literal rows only on the write floor/);
+    expect(() => toSrtConfig(model({ userGrants: [grant(WORK, "rw", "user-grant", true)] }))).toThrow(/literal rows only on the write floor/);
   });
 
   it.each<[string, Partial<PolicyModelInput>]>([
     ["a floor row that gives access", { floors: [{ ...floor(WORK, "denied", "secrets"), access: "rw" } as unknown as PolicyFloorRow] }],
     ["a readable secrets row", { floors: [floor(WORK, "ro", "secrets")] }],
     ["a denied protected name", { floors: [floor(WORK, "denied", "protected-name")] }],
-    ["a floor row with a grant id", { floors: [{ ...floor(WORK, "denied", "secrets"), grantId: "g" } as unknown as PolicyFloorRow] }],
-    ["a grant reason among the floors", { floors: [grant(WORK, "ro", "user-grant", null) as unknown as PolicyFloorRow] }],
-    ["a grant under the wrong input", { extensionManifests: [grant(WORK, "rw", "user-grant", null)] }],
-    ["a grant that denies", { userGrants: [{ ...grant(WORK, "ro", "user-grant", null), access: "denied" } as unknown as PolicyGrantRow] }],
-    ["a writable floor pierce", { launchGrants: [grant(WORK, "rw", "floor-pierce", null)] }],
-    ["an empty grant id", { userGrants: [grant(WORK, "rw", "user-grant", "")] }],
-    ["a missing grant id", { userGrants: [{ path: WORK, literal: false, access: "rw", reason: "user-grant" } as unknown as PolicyGrantRow] }],
-    ["a row without a path", { userGrants: [{ literal: false, access: "rw", reason: "user-grant", grantId: null } as unknown as PolicyGrantRow] }],
+    ["a grant reason among the floors", { floors: [grant(WORK, "ro", "user-grant") as unknown as PolicyFloorRow] }],
+    ["a grant under the wrong input", { extensionManifests: [grant(WORK, "rw", "user-grant")] }],
+    ["a grant that denies", { userGrants: [{ ...grant(WORK, "ro", "user-grant"), access: "denied" } as unknown as PolicyGrantRow] }],
+    ["a writable floor pierce", { launchGrants: [grant(WORK, "rw", "floor-pierce")] }],
+    ["a row without a path", { userGrants: [{ literal: false, access: "rw", reason: "user-grant" } as unknown as PolicyGrantRow] }],
   ])("refuses %s", (_name, input) => {
     expect(() => model(input)).toThrow(/^Policy model row is invalid/);
   });

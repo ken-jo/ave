@@ -142,9 +142,9 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
     userGrants: [],
     extensionManifests: [],
     launchGrants: [
-      ...allowWrite.map((path) => policyGrantRow(path, "rw", "launch-grant", null)),
-      ...allowRead.map((path) => policyGrantRow(path, "ro", "launch-grant", null)),
-      ...(input.filesystem.floorPierces ?? []).map((path) => policyGrantRow(path, "ro", "floor-pierce", null)),
+      ...allowWrite.map((path) => policyGrantRow(path, "rw", "launch-grant")),
+      ...allowRead.map((path) => policyGrantRow(path, "ro", "launch-grant")),
+      ...(input.filesystem.floorPierces ?? []).map((path) => policyGrantRow(path, "ro", "floor-pierce")),
     ],
   }), input.exists, input.list ?? listDirectory);
   assertAdmission();

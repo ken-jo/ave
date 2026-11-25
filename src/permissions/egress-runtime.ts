@@ -1,4 +1,5 @@
 // Keep boot-owned stores and runtime wiring separate from injected egress decision logic.
+// The sandbox runtime package type stays here on purpose: this callback is still handed to the package's proxy. It goes when the package dependency goes.
 import type { SandboxAskCallback } from "@anthropic-ai/sandbox-runtime";
 import { createLogger } from "../lib/logger.js";
 import { errorMessage } from "../shared/error-message.js";

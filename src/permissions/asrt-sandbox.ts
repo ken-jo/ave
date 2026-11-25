@@ -893,9 +893,9 @@ function admitMxcExtensionFilesystemInSnapshot(filesystem: PerCommandFilesystem,
     ],
     userGrants: [],
     extensionManifests: [
-      ...mandatory.allowWrite.map((path) => policyGrantRow(path, "rw", "extension-manifest", null, true)),
-      ...allowRead.map((path) => policyGrantRow(path, "ro", "extension-manifest", null, true)),
-      ...pierces.map((path) => policyGrantRow(path, "ro", "floor-pierce", null, true)),
+      ...mandatory.allowWrite.map((path) => policyGrantRow(path, "rw", "extension-manifest", true)),
+      ...allowRead.map((path) => policyGrantRow(path, "ro", "extension-manifest", true)),
+      ...pierces.map((path) => policyGrantRow(path, "ro", "floor-pierce", true)),
     ],
     launchGrants: [],
   });
@@ -1012,7 +1012,7 @@ export function buildPerCommandSandboxCustomConfig(
       sensitiveWritePaths.filter(path => isAbsolute(path) && !/[*?\[\]]/.test(path)),
     );
     launchGrants.push(...(process.platform === "win32" ? [] : writeRootsOutsideReadDenies(mandatory.allowWrite, floor))
-      .map((path) => policyGrantRow(path, "rw", "launch-grant", null)));
+      .map((path) => policyGrantRow(path, "rw", "launch-grant")));
     fs.allowWrite = lists().allowWrite;
     const reasonKeys = {
       "entry-budget": "sandboxPolicy.scanEntryBudget",
@@ -1053,7 +1053,7 @@ export function buildPerCommandSandboxCustomConfig(
         floor,
         // Restated shared grants keep the shared config's pierces (none, as in buildSandboxConfig); a wrap's own pierces cover only its own grants.
         filesystem.allowRead !== undefined ? (filesystem.floorPierces ?? []) : [],
-      ).map((path) => policyGrantRow(path, "ro", "launch-grant", null)));
+      ).map((path) => policyGrantRow(path, "ro", "launch-grant")));
       fs.allowRead = lists().allowRead;
     }
     if (Object.keys(fs).length === 0) return undefined;
@@ -2227,8 +2227,8 @@ export function buildSandboxConfig(
   const lists = toSrtConfig(buildPolicyModel({
     floors: [...denyReadUnion, ...denyWriteUnion.map(srtWriteFloorRow)],
     userGrants: [
-      ...allowWrite.map((path) => policyGrantRow(path, "rw", "user-grant", null)),
-      ...(allowRead ?? []).map((path) => policyGrantRow(path, "ro", "user-grant", null)),
+      ...allowWrite.map((path) => policyGrantRow(path, "rw", "user-grant")),
+      ...(allowRead ?? []).map((path) => policyGrantRow(path, "ro", "user-grant")),
     ],
     extensionManifests: [],
     launchGrants: [],

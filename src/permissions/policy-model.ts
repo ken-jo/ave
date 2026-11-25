@@ -7,7 +7,7 @@
 type PolicyAccess = "rw" | "ro" | "denied";
 
 /**
- * Why a floor row exists. A floor row takes access away and belongs to no grant.
+ * Why a floor row exists. A floor row takes access away.
  * - `secrets`: the protected read floor (secret and credential stores, the app's user data directory, the denies the user
  *   configured). As `denied`, nothing is granted at or beneath it unless a `floor-pierce` row covers the grant.
  * - `ave-home`: the Ave home boundary. As `denied`, only a more specific grant (a re-allowed child) is readable beneath it.
@@ -35,14 +35,11 @@ interface PolicyRowPath {
 export interface PolicyFloorRow extends PolicyRowPath {
   readonly access: Extract<PolicyAccess, "ro" | "denied">;
   readonly reason: PolicyFloorReason;
-  readonly grantId?: never;
 }
 
 export interface PolicyGrantRow extends PolicyRowPath {
   readonly access: Extract<PolicyAccess, "rw" | "ro">;
   readonly reason: PolicyGrantReason;
-  /** The grant record the row came from. `null` when its source keeps no record to name. */
-  readonly grantId: string | null;
 }
 
 export type PolicyRow = PolicyFloorRow | PolicyGrantRow;
@@ -66,10 +63,8 @@ export function policyFloorRow(path: string, access: PolicyFloorRow["access"], r
   return { path, literal, access, reason };
 }
 
-export function policyGrantRow(
-  path: string, access: PolicyGrantRow["access"], reason: PolicyGrantReason, grantId: string | null, literal = false,
-): PolicyGrantRow {
-  return { path, literal, access, reason, grantId };
+export function policyGrantRow(path: string, access: PolicyGrantRow["access"], reason: PolicyGrantReason, literal = false): PolicyGrantRow {
+  return { path, literal, access, reason };
 }
 
 export function isPolicyFloorRow(row: PolicyRow): row is PolicyFloorRow {
@@ -92,7 +87,6 @@ function checkFloor(row: PolicyFloorRow): PolicyFloorRow {
   if (row.access !== "denied" && row.access !== "ro") refuse(row, "a floor row never gives access");
   // The write floor is the only floor a launch may still read.
   if ((row.access === "ro") !== (row.reason === "protected-name")) refuse(row, "floor access");
-  if ("grantId" in row) refuse(row, "a floor row belongs to no grant");
   return Object.freeze({ ...row });
 }
 
@@ -101,7 +95,6 @@ function checkGrant(row: PolicyGrantRow, source: PolicyGrantReason): PolicyGrant
   if (row.reason !== source && row.reason !== "floor-pierce") refuse(row, `not a ${source} row`);
   if (row.access !== "rw" && row.access !== "ro") refuse(row, "a grant row never denies");
   if (row.reason === "floor-pierce" && row.access !== "ro") refuse(row, "a floor pierce covers reads only");
-  if (row.grantId !== null && (typeof row.grantId !== "string" || row.grantId.length === 0)) refuse(row, "grantId");
   return Object.freeze({ ...row });
 }
 

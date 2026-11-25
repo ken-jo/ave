@@ -1,8 +1,6 @@
-// Container ranking fixtures state a policy as six path lists; this turns them into policy rows and back.
+// Container ranking fixtures state a policy as six path lists; this turns them into policy rows.
 import { rankMxcFilesystem, type MxcDirectoryEntry, type MxcFilesystemGrants } from "../../permissions/mxc-windows.js";
-import {
-  buildPolicyModel, isPolicyFloorRow, policyFloorRow, policyGrantRow, type PolicyModel, type PolicyRow,
-} from "../../permissions/policy-model.js";
+import { buildPolicyModel, policyFloorRow, policyGrantRow, type PolicyModel } from "../../permissions/policy-model.js";
 
 export interface MxcPolicyLists {
   readonly allowWrite: readonly string[];
@@ -26,24 +24,11 @@ export function mxcPolicyModel(lists: MxcPolicyLists): PolicyModel {
     userGrants: [],
     extensionManifests: [],
     launchGrants: [
-      ...lists.allowWrite.map((path) => policyGrantRow(path, "rw", "launch-grant", null)),
-      ...lists.allowRead.map((path) => policyGrantRow(path, "ro", "launch-grant", null)),
-      ...(lists.floorPierces ?? []).map((path) => policyGrantRow(path, "ro", "floor-pierce", null)),
+      ...lists.allowWrite.map((path) => policyGrantRow(path, "rw", "launch-grant")),
+      ...lists.allowRead.map((path) => policyGrantRow(path, "ro", "launch-grant")),
+      ...(lists.floorPierces ?? []).map((path) => policyGrantRow(path, "ro", "floor-pierce")),
     ],
   });
-}
-
-export function mxcPolicyLists(model: PolicyModel): Required<MxcPolicyLists> {
-  const paths = (keep: (row: PolicyRow) => boolean): string[] => model.rows.filter(keep).map((row) => row.path);
-  const grant = (row: PolicyRow): boolean => !isPolicyFloorRow(row) && row.reason !== "floor-pierce";
-  return {
-    allowWrite: paths((row) => grant(row) && row.access === "rw"),
-    allowRead: paths((row) => grant(row) && row.access === "ro"),
-    denyRead: paths((row) => isPolicyFloorRow(row) && row.access === "denied" && row.reason !== "secrets"),
-    denyWrite: paths((row) => isPolicyFloorRow(row) && row.access === "ro"),
-    protectedFloor: paths((row) => row.reason === "secrets"),
-    floorPierces: paths((row) => row.reason === "floor-pierce"),
-  };
 }
 
 /** Ranks a policy stated as lists. */

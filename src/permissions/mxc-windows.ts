@@ -433,7 +433,7 @@ function expandPatternDenies(
 }
 
 // The row classes the ranking below reads, each in the order its rows were stated.
-interface MxcPolicyRows {
+export interface MxcPolicyRows {
   // Write and read grants.
   readonly writeGrants: readonly string[];
   readonly readGrants: readonly string[];
@@ -447,7 +447,7 @@ interface MxcPolicyRows {
   readonly floorPierces: readonly string[];
 }
 
-function mxcPolicyRows(model: PolicyModel): MxcPolicyRows {
+export function mxcPolicyRows(model: PolicyModel): MxcPolicyRows {
   const paths = (keep: (row: PolicyRow) => boolean): string[] => model.rows.filter(keep).map((row) => row.path);
   const grant = (row: PolicyRow): boolean => !isPolicyFloorRow(row) && row.reason !== "floor-pierce";
   return {
