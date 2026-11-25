@@ -7,7 +7,7 @@ import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
 import { getHostResources } from "../main/host-resources.js";
 import { spawnManaged } from "../main/managed-child-processes.js";
 import { buildSafeChildEnv } from "../tools/safe-env.js";
-import { aveHome } from "../shared/ave-home.js";
+import { mxcStagingParent } from "./mxc-runtime-root.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { assertMxcExtensionRequest } from "./mxc-extension-request.js";
 import { MxcExtensionChannel } from "./mxc-extension-channel.js";
@@ -290,9 +290,10 @@ interface MxcNativeSpawnOptions {
 }
 
 /** The supervisor's own environment. No loader override reaches it, OS tools resolve before anything else on PATH,
- * and the runtime's per-user state lands under the Ave home instead of the account's application data. */
+ * and the runtime's per-user state lands beside the holder staging (`mxcStagingParent`) instead of the account's
+ * application data. */
 export function mxcSupervisorEnvironment(base: Readonly<Record<string, string>> = buildSafeChildEnv(),
-  stateDirectory: string = winPath.join(aveHome(), "mxc-staging", "supervisor-state")): Record<string, string> {
+  stateDirectory: string = winPath.join(mxcStagingParent("win32"), "supervisor-state")): Record<string, string> {
   const env: Record<string, string> = {};
   let systemRoot: string | undefined, path = "";
   for (const [key, value] of Object.entries(base)) {

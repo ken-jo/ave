@@ -3,13 +3,13 @@ import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
 import type { OwnedMxcExtensionProcess } from "../../permissions/mxc-extension-process.js";
 import { isMxcConfinedChildLive, spawnMxcConfinedChild, type MxcConfinedChildSpawn, type MxcConfinedChildSpec } from "../../permissions/confined-child.js";
 import { assertMxcHolderStaging, type MxcExtensionFilesystemOwnership } from "../../permissions/mxc-filesystem-ownership.js";
+import { mxcStagingParent } from "../../permissions/mxc-runtime-root.js";
 import { registerMxcPluginChildHolder } from "../../permissions/mxc-holder-lifetime.js";
 import { isWindowsPathAtOrUnder } from "../../permissions/mxc-windows.js";
 import { MxcProcessCleanupError, MxcProcessContractError } from "../../permissions/mxc-extension-errors.js";
 import { PluginChildTerminationUnverifiedError, terminationUnverified, type ChildLink } from "./plugin-child-transport.js";
 import type { DelegatedWorkerConfinement } from "./host-api-dispatcher.js";
 import { windowsCommandLine } from "../../shared/windows-command-line.js";
-import { aveHome } from "../../shared/ave-home.js";
 import { capturePluginStderr } from "./plugin-stderr.js";
 import { pacePluginChildInput } from "./plugin-child-credit.js";
 import { createLogger } from "../../lib/logger.js";
@@ -20,7 +20,7 @@ const log = createLogger("mxc-plugin-child");
 /** The backend planner's part of one incarnation's admission, never supplied by a manifest or a child message. The command,
  * arguments, cwd, environment and grants are not here: the adapter derives them from the host's intent and envelope. */
 export interface MxcPluginChildLaunch {
-  /** `<AVE_HOME>\mxc-staging\<opaque-id>\…`, see `assertMxcHolderStaging`. */
+  /** `<staging parent>\<opaque-id>\…` (`mxcStagingParent`), see `assertMxcHolderStaging`. */
   readonly home: string;
   readonly temp: string;
   /** Captured by the host from the owning incarnation. Its write roots must contain the staging directory and every
@@ -162,7 +162,7 @@ export async function spawnMxcPluginChild(
   try {
     launch.assertCurrent();
     if (launch.signal.aborted) throw new MxcProcessContractError("Plugin child admission was revoked");
-    const staging = assertMxcHolderStaging({ aveHome: aveHome(), home: launch.home, temp: launch.temp });
+    const staging = assertMxcHolderStaging({ stagingParent: mxcStagingParent("win32"), home: launch.home, temp: launch.temp });
     const args = Object.freeze([...intent.args]);
     const allowRead = pluginChildReadRoots(intent.envelope.read, intent.command, args[0]);
     admitted = await spawnMxcConfinedChild({

@@ -3,6 +3,7 @@
 import { MxcExtensionReadinessRefusedError, MxcNativeEntryRequiredError, MxcProcessContractError, WorkerTransportUnsupportedError } from "./mxc-extension-errors.js";
 import { assertMxcExtensionFilesystemOwnership, type MxcExtensionFilesystemOwnership } from "./mxc-filesystem-ownership.js";
 import type { ShellFilesystemPolicy } from "./mxc-windows.js";
+import { mxcRuntimeRootFloorPath } from "./mxc-runtime-root.js";
 import { issueFilesystemSandboxBlock, type SandboxBlock } from "../shared/sandbox-block.js";
 import { buildLauncherEnvironment } from "./launcher-environment.js";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -982,7 +983,7 @@ export function buildPerCommandSandboxCustomConfig(
         asrtReadDenyPaths(
           denyRead,
           // The plugin roots are spelled exactly for the reason the private roots are: a wrap whose reads include an ancestor of one (a worker's or a bundled process's host temp directory, above a test `AVE_HOME`) would otherwise lose its own plugin directories to the re-emitted deny.
-          [...appOwnedSandboxPrivateRoots(), ...pluginRoots, ...aveHomeReadBoundaryMasks()],
+          [...appOwnedSandboxReallowableRoots(), ...pluginRoots, ...aveHomeReadBoundaryMasks()],
         ),
         _baseTrustedSettings?.userDataDir,
         windowsGrants,
@@ -2225,7 +2226,7 @@ export function buildSandboxConfig(
   const windowsGrants: FilesystemPathEntry[] = [...windowsWriteGrants, ...(requestedSettings.allowRead ?? []), ...(trustedSettings.allowRead ?? []), ...(allowRead ?? []), ...(liveGrants.allowRead ?? [])];
   const filesystem: FilesystemConfig = {
     denyRead: windowsDenyTargets(
-      asrtReadDenyPaths(denyReadUnion, [...appOwnedSandboxPrivateRoots(), ...aveHomeReadBoundaryRoots()]),
+      asrtReadDenyPaths(denyReadUnion, [...appOwnedSandboxReallowableRoots(), ...aveHomeReadBoundaryRoots()]),
       trustedSettings.userDataDir,
       windowsGrants,
       windowsWriteGrants,
@@ -2854,10 +2855,16 @@ export function appOwnedTerminalHandoffRoot(): string {
   return join(sandboxPrivateBase(), "handoff");
 }
 
-// The roots of the confined processes' private directories, read-denied by the floor on macOS and Linux. Empty on Windows, whose floor is unchanged.
-export function appOwnedSandboxPrivateRoots(): string[] {
+// The private roots a wrap re-opens its own directory inside: each confined process's HOME and temp live under them, and the terminal's handoff. Their macOS denies are spelled exactly (asrtReadDenyPaths) so the re-allow survives.
+function appOwnedSandboxReallowableRoots(): string[] {
   if (process.platform === "win32") return [];
   return [appOwnedSandboxTempRoot(), appOwnedSandboxHomeRoot(), appOwnedTerminalHandoffRoot()];
+}
+
+// The roots of the confined processes' private directories, read-denied by the floor on macOS and Linux. Empty on Windows, whose floor is unchanged. The container runtime root is one of them: it holds what used to be staged under the Ave home, outside it, and stays as unreadable to every other confined process as it was there. No wrap on this route re-opens anything inside it, so its deny is a plain one, and naming it never throws, whatever state the account's cache directory is in.
+export function appOwnedSandboxPrivateRoots(): string[] {
+  if (process.platform === "win32") return [];
+  return [...appOwnedSandboxReallowableRoots(), mxcRuntimeRootFloorPath()];
 }
 
 // Create a sandbox private root `0o700` if it is absent, and refuse one that is not a real directory. Its ancestors may be links (`AVE_HOME` may be one); the root itself is the host's, and every directory a wrap grants is made inside it, so a link here would put them somewhere the read floor does not name.
