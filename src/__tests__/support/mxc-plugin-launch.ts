@@ -11,7 +11,6 @@ export function nativePluginLaunch(overrides: Partial<MxcPluginChildLaunch> = {}
   return {
     home: winPath.join(staging, "home"), temp: winPath.join(staging, "temp"),
     filesystemOwnership: { readRoots: [], writeRoots: [staging], hostStorageRoots: [] },
-    probe: async () => ({ version: "0.0.80", ready: true }) as never,
     signal: new AbortController().signal, assertCurrent() {}, release() {},
     ...overrides,
   };

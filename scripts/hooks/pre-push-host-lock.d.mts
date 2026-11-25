@@ -1,7 +1,6 @@
 export function resolveHostLockSettings(env?: NodeJS.ProcessEnv): {
   directory: string;
   timeoutMs: number;
-  fastSlots: number;
 };
 export function withHostLock<T>(
   options: {
@@ -9,7 +8,6 @@ export function withHostLock<T>(
     label: string;
     directory: string;
     timeoutMs: number;
-    slots?: number;
     pollMs?: number;
     now?: () => number;
     sleep?: (milliseconds: number) => void;

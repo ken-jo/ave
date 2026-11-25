@@ -1,40 +1,62 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { MxcCapabilityUnavailableError, MxcProcessContractError } from "../mxc-extension-errors.js";
+import { MXC_START_EVIDENCE_FIELDS, type MxcExtensionStartEvidence } from "../mxc-extension-protocol.js";
 import {
   classifyMxcExtensionReadiness,
+  classifyMxcReleaseGate,
   planWindowsExtensionHolder,
   settleWindowsExtensionReadiness,
-  type MxcExtensionReadinessEvidence,
+  type MxcExtensionReleaseGateEvidence,
 } from "../mxc-extension-readiness.js";
 
-const EVIDENCE: MxcExtensionReadinessEvidence = {
+// Contract fields 1-5: the holder's own start.
+const EVIDENCE: MxcExtensionStartEvidence = {
   installedPayloadVerified: true, baseContainerReady: true, exactRequestAccepted: true,
-  uiEnabledRuntimeStarted: true, ancestorQueriesSupported: true, standardStreamsRoundTrip: true,
-  cleanTermination: true, ownProxySucceeded: true, otherListenerRefused: true,
-  directEgressRefused: true, forgedLabelsAttributed: true, noWorkerPort: true, reparseSubstitutionRefused: true,
+  uiEnabledRuntimeStarted: true, ancestorQueriesSupported: true,
+};
+// Contract fields 8-13: the release gate, once per release.
+const RELEASE_GATE: MxcExtensionReleaseGateEvidence = {
+  ownProxySucceeded: true, otherListenerRefused: true, directEgressRefused: true,
+  forgedLabelsAttributed: true, noWorkerPort: true, reparseSubstitutionRefused: true,
 };
 const FALLBACK = { version: "0.0.80", ready: true };
 
 afterEach(() => vi.useRealTimers());
 
 describe("extension request readiness", () => {
-  it("requires every observation independently and rejects absent evidence", () => {
+  it("admits a start on fields 1-5 alone: release-gate fields are not start evidence", () => {
+    expect(Object.keys(EVIDENCE).sort()).toEqual([...MXC_START_EVIDENCE_FIELDS].sort());
+    expect(MXC_START_EVIDENCE_FIELDS).toHaveLength(5);
     expect(classifyMxcExtensionReadiness(EVIDENCE)).toEqual({ state: "available" });
-    for (const key of Object.keys(EVIDENCE) as (keyof MxcExtensionReadinessEvidence)[]) {
+  });
+
+  it("requires every start observation independently and rejects absent evidence", () => {
+    for (const key of MXC_START_EVIDENCE_FIELDS) {
       expect(classifyMxcExtensionReadiness({ ...EVIDENCE, [key]: false }).state, key).toBe("unavailable");
-      const absent: Partial<MxcExtensionReadinessEvidence> = { ...EVIDENCE };
+      const absent: Partial<MxcExtensionStartEvidence> = { ...EVIDENCE };
       delete absent[key];
-      expect(classifyMxcExtensionReadiness(absent as MxcExtensionReadinessEvidence).state, key).toBe("unavailable");
+      expect(classifyMxcExtensionReadiness(absent as MxcExtensionStartEvidence).state, key).toBe("unavailable");
     }
   });
 
   it.each([
     ["ancestorQueriesSupported", "ancestor-policy-unsupported"],
     ["uiEnabledRuntimeStarted", "runtime-start-failed"],
-    ["otherListenerRefused", "endpoint-isolation-unverified"],
+    ["exactRequestAccepted", "native-validation-required"],
   ] as const)("reports the observed %s failure", (key, reason) => {
     expect(classifyMxcExtensionReadiness({ ...EVIDENCE, [key]: false })).toEqual({ state: "unavailable", reason });
+  });
+
+  it("requires every release-gate observation independently and rejects absent evidence", () => {
+    expect(classifyMxcReleaseGate(RELEASE_GATE)).toEqual({ state: "available" });
+    for (const key of Object.keys(RELEASE_GATE) as (keyof MxcExtensionReleaseGateEvidence)[]) {
+      const reason = key === "reparseSubstitutionRefused" ? "native-validation-required" : "endpoint-isolation-unverified";
+      expect(classifyMxcReleaseGate({ ...RELEASE_GATE, [key]: false }), key).toEqual({ state: "unavailable", reason });
+      const absent: Partial<MxcExtensionReleaseGateEvidence> = { ...RELEASE_GATE };
+      delete absent[key];
+      expect(classifyMxcReleaseGate(absent as MxcExtensionReleaseGateEvidence).state, key).toBe("unavailable");
+    }
   });
 
   it("selects a compatible request without a fallback dependency", async () => {
@@ -66,7 +88,7 @@ describe("extension request readiness", () => {
 
   it("rechecks ancestor admission when the queued probe settles", async () => {
     let ancestor: "srt-win" | undefined;
-    let finish!: (evidence: MxcExtensionReadinessEvidence) => void;
+    let finish!: (evidence: MxcExtensionStartEvidence) => void;
     const result = settleWindowsExtensionReadiness({ probe: () => new Promise(resolve => { finish = resolve; }), fallback: FALLBACK, admittedAncestorBackend: () => ancestor });
     await Promise.resolve();
     ancestor = "srt-win";
@@ -104,8 +126,8 @@ describe("extension request readiness", () => {
     if (readiness === "rejected") expect(plan.reason).toBe("ancestor-already-admitted");
   });
 
-  it("requires the reparse-substitution refusal observation for readiness", () => {
-    expect(classifyMxcExtensionReadiness({ ...EVIDENCE, reparseSubstitutionRefused: false }))
+  it("requires the reparse-substitution refusal observation in the release-gate record", () => {
+    expect(classifyMxcReleaseGate({ ...RELEASE_GATE, reparseSubstitutionRefused: false }))
       .toEqual({ state: "unavailable", reason: "native-validation-required" });
   });
 });

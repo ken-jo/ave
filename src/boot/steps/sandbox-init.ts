@@ -676,7 +676,8 @@ async function detectWindowsBootInputs(
     shellLocalNetworkAccess,
     workerRequested,
     mxc: mxc.state === "available" ? { state: "checking" } : { state: "unavailable", reason: mxc.reason },
-    // Shell startup never certifies the separate installed SDK/request/endpoint native gate.
+    // Pinned until this installation carries a release-gate record (contract fields 8-13, gathered on the packaged build).
+    // Neither shell startup nor a holder's own start evidence (fields 1-5, known only after a start) certifies that gate.
     extensionMxc: { state: "unavailable", reason: "native-validation-required" },
     windowsBuild: mxc.windowsBuild,
     srtWinReady,

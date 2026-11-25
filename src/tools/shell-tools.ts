@@ -4197,7 +4197,7 @@ async function spawnPowerShellInMxc(
     token = egress.token;
     // MXC bypasses the ASRT wrap, so it takes the same mandatory write floor
     // the per-command ASRT config restates: workspace control files (.git
-    // controls, .vscode, .husky, .claude, .envrc, …) and Ave's permission,
+    // controls, .vscode, .husky, .envrc, …) and Ave's permission,
     // approval and egress grant stores. Ranking keeps a deny inside a granted
     // directory as read-only (existing) or denied (absent).
     const sensitiveDenyWrite = await runWithSandboxWritePreflight(signal, () => getDefaultSensitiveWriteDenyPaths());

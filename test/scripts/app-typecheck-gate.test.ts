@@ -38,7 +38,7 @@ describe("app typecheck pre-push gate", () => {
     ).toEqual([]);
   });
 
-  it("uses the shared gate in full, targeted-test, and comment-only paths", () => {
+  it("uses the shared gate in the manual and non-documentation pre-push paths", () => {
     const runner = readFileSync(
       resolve("scripts/hooks/run-local-checks.mjs"),
       "utf8",
@@ -48,23 +48,16 @@ describe("app typecheck pre-push gate", () => {
     expect(
       functionSegment(
         runner,
-        "function runAppChecks(dir) {",
-        "function runAppTargetedVitestChecks",
+        "function runAppChecksHoldingLock(dir) {",
+        "function runRetiredNameGate",
       ),
     ).toContain("runAppTypecheckGate(dir,");
-    expect(
-      functionSegment(
-        runner,
-        "function runAppTargetedVitestChecks",
-        "function runAppCommentOnlyChecks",
-      ),
-    ).toContain("runAppTypecheckGate(dir,");
-    expect(
-      functionSegment(
-        runner,
-        "function runAppCommentOnlyChecks",
-        "const { stage, repo, remote, remoteLocation }",
-      ),
-    ).toContain("runAppTypecheckGate(dir,");
+    const prePush = functionSegment(
+      runner,
+      "function runPrePushStaticChecks(dir, plan) {",
+      "const { stage, repo, remote, remoteLocation }",
+    );
+    expect(prePush.indexOf("if (plan.docsOnly) return;")).toBeGreaterThan(-1);
+    expect(prePush.indexOf("runAppTypecheckGate(dir,")).toBeGreaterThan(prePush.indexOf("if (plan.docsOnly) return;"));
   });
 });
