@@ -156,12 +156,16 @@
     "bwrap",
     // The system C compiler that builds the confined-child preload library.
     "cc",
+    // macOS file flags: the download-helper regression makes a target immutable so only the copy's commit rename fails.
+    "chflags",
     // file(1): the Linux release arch audit cross-checks every ELF with it.
     "file",
     // Windows per-folder case rule, set by the stage workspace case-rule regression where the installation allows it.
     "fsutil",
     // External Go toolchain for the explicit parser rebuild, pinned by go.mod.
     "go",
+    // macOS disk images: the download-helper regression attaches an exFAT volume to copy onto.
+    "hdiutil",
     // Windows ACL inspection from the ave-home privacy regression.
     "icacls",
     "lsof",

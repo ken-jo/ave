@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import childProcess from "node:child_process";
+import childProcess, { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { fileURLToPath } from "node:url";
@@ -341,6 +341,112 @@ it("rejects a second bare test command on a contained line", () => {
     step("Run script tests").run = "node .github/scripts/run-in-job.mjs bun run test:scripts; bun run test:scripts";
   })), /contained invocation needs plain single-spaced arguments: bun run test:scripts; bun run test:scripts/);
 });
+
+const ARM64_JOB = "windows-arm64-path-kind";
+const ARM64_RESULT_STEP = "Require the build and every Vitest shard";
+
+it("runs path classification with the arm64 runtime and native job launcher", () => {
+  const { jobs } = parse(workflow);
+  const arm64 = jobs[ARM64_JOB];
+  assert.ok(arm64, "missing Windows arm64 path-kind job");
+  assert.equal(arm64["runs-on"], "windows-11-arm");
+  assert.equal(arm64["timeout-minutes"], 30);
+  assert.equal(arm64.needs, "build");
+  assert.equal(arm64.if, "needs.build.outputs.windows_arm64_path_kind == 'true'");
+
+  const [, node, , isolate, install, build, test, cleanup] = arm64.steps;
+  assert.equal(node.with.architecture, "arm64");
+  assert.equal(isolate.run, "node ave/.github/scripts/isolate-job-home.mjs");
+  assert.equal(install.run, "bun install --frozen-lockfile --ignore-scripts --production");
+  assert.equal(build.run, "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -Arch arm64");
+  assert.deepEqual(test.run.trimEnd().split("\n"), [
+    "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows-job.ps1 -Arch arm64 -Helper path-kind",
+    "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }",
+    "node .github/scripts/run-in-job.mjs node scripts/test-windows-path-kind.mjs",
+  ]);
+  assert.equal(cleanup.if, "always() && env.AVE_CI_JOB_ROOT != ''");
+  assert.equal(cleanup.run, "node ave/.github/scripts/isolate-job-home.mjs --cleanup");
+});
+
+it("registers only the arm64 job's path-kind receipt in its manifest", async () => {
+  const { containedStepManifest } = await import("../../.github/scripts/run-in-job.mjs");
+  const manifest = await containedStepManifest(ARM64_JOB);
+  assert.deepEqual(manifest, [{
+    id: "verify-windows-folder-classification-1",
+    receipt: "verify-windows-folder-classification-1.receipt",
+    invocation: "node scripts/test-windows-path-kind.mjs",
+  }]);
+  await assert.rejects(containedStepManifest("example"), /Unknown contained Windows job/u);
+});
+
+it("requires the arm64 result for selected runs, including docs-only main pushes", () => {
+  const { jobs } = parse(workflow);
+  const aggregate = jobs["build-and-test"];
+  const step = aggregate.steps.find(entry => entry.name === ARM64_RESULT_STEP);
+  assert.ok(aggregate.needs.includes(ARM64_JOB));
+  assert.equal(step.env.WINDOWS_ARM64_PATH_KIND_RESULT, `\${{ needs.${ARM64_JOB}.result }}`);
+  assert.equal(step.env.WINDOWS_ARM64_PATH_KIND, `\${{ needs.build.outputs.windows_arm64_path_kind }}`);
+
+  for (const docs of ["true", "false"]) {
+    for (const [selected, arm64, status] of [
+      ["true", "success", 0], ["true", "failure", 1], ["true", "cancelled", 1], ["true", "skipped", 1],
+      ["false", "skipped", 0], ["false", "failure", 1], ["false", "cancelled", 1], ["", "skipped", 1],
+    ]) {
+      const result = spawnSync("bash", ["-e", "-c", step.run], { encoding: "utf8", windowsHide: true, env: {
+        ...process.env, GATE_CORE_RESULT: "success", MXC_PINS_RESULT: "success", BUILD_RESULT: "success",
+        VITEST_RESULT: docs === "true" ? "skipped" : "success", DOCS_ONLY: docs, PLATFORM_CHECKS: "false",
+        WINDOWS_PREPARATION_RESULT: "skipped", WINDOWS_RESULT: "skipped", MACOS_RESULT: "skipped", LINUX_RESULT: "skipped",
+        WINDOWS_ARM64_PATH_KIND: selected, WINDOWS_ARM64_PATH_KIND_RESULT: arm64,
+      } });
+      assert.ifError(result.error);
+      assert.equal(result.status, status, JSON.stringify({ docs, selected, arm64, output: result.stdout + result.stderr }));
+    }
+  }
+});
+
+const x64PathKind = (jobs) => jobs["windows-native-preparation"].steps.find(step => step.name === "Verify Windows folder classification");
+
+it("caps the x64 path-kind step at 30 minutes", () => {
+  assert.equal(x64PathKind(parse(workflow).jobs)["timeout-minutes"], 30);
+});
+
+for (const arch of ["arm64", "x64"]) {
+  for (const timeout of [undefined, 31]) {
+    it(`rejects a ${arch} path-kind timeout of ${timeout}`, () => {
+      const parsed = parse(workflow);
+      const item = arch === "arm64" ? parsed.jobs[ARM64_JOB] : x64PathKind(parsed.jobs);
+      item["timeout-minutes"] = timeout;
+      assert.throws(() => checkWindowsWorkflow(stringify(parsed), parsedLines), /expected a 30-minute timeout/u);
+    });
+  }
+}
+
+for (const [name, change, expected] of [
+  ["a different runner", jobs => { jobs[ARM64_JOB]["runs-on"] = "windows-2025"; }, /hosted arm64 runner/u],
+  ["a narrower selection", jobs => {
+    jobs.build.outputs.windows_arm64_path_kind = jobs.build.outputs.platform_checks;
+  }, /path-kind selection/u],
+  ["an emulated runtime", jobs => { jobs[ARM64_JOB].steps[1].with.architecture = "x64"; }, /expected arm64 setup/u],
+  ["a test outside the launcher", jobs => {
+    const step = jobs[ARM64_JOB].steps[6];
+    step.run = step.run.replace(`${WRAPPER} `, "");
+  }, /contained path-kind test/u],
+  ["cleanup without the job-root guard", jobs => { jobs[ARM64_JOB].steps[7].if = "always()"; }, /job-root cleanup/u],
+  ["a missing aggregate dependency", jobs => {
+    const aggregate = jobs["build-and-test"];
+    aggregate.needs = aggregate.needs.filter(jobId => jobId !== ARM64_JOB);
+  }, /expected build-and-test/u],
+  ["a bypassed failure result", jobs => {
+    const step = jobs["build-and-test"].steps[0];
+    step.run = step.run.replace("true:success|false:skipped", "true:*|false:skipped");
+  }, /require the selected arm64 result/u],
+]) {
+  it(`rejects ${name} for the arm64 path-kind job`, () => {
+    const parsed = parse(workflow);
+    change(parsed.jobs);
+    assert.throws(() => checkWindowsWorkflow(stringify(parsed), parsedLines), expected);
+  });
+}
 
 it("rejects dropping a shard or its shard ID", () => {
   const parsed = parse(workflow);

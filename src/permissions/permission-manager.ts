@@ -67,6 +67,8 @@ import {
 import {
   getHostShellExecutionPlanAuditProjection,
   requiresUnsandboxedShellAsk,
+  isHomePrivacyHelperUnavailablePlan,
+  HOME_PRIVACY_HELPER_UNAVAILABLE_SHELL_DENIAL,
   type HostShellExecutionPlan,
 } from "./host-shell-execution-plan.js";
 import type { PermissionEvaluationContext } from "./evaluation-context.js";
@@ -1647,7 +1649,8 @@ export class PermissionManager {
     overlayTriggerOrigin: string | null | undefined,
     context: PermissionCheckContext,
   ): PermissionCheckResult {
-    let admissionDenial = context.admissionDenial;
+    // Wins over every other stage, headless and session grants included: no approval may run this shell.
+    let admissionDenial = isHomePrivacyHelperUnavailablePlan(context.hostShellExecutionPlan) ? HOME_PRIVACY_HELPER_UNAVAILABLE_SHELL_DENIAL : context.admissionDenial;
     let floor = context.floor;
     // Raised after the other floors are known (it still wins over them, as before): only a sandbox-unavailable floor with nothing behind it may offer "This session".
     const sandboxUnavailableAsk = requiresUnsandboxedShellAsk(context.hostShellExecutionPlan);

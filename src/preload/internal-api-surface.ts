@@ -688,6 +688,10 @@ export function buildInternalApiSurface() {
     egressGrantsList: async () => ipcRenderer.invoke(PERMISSIONS.egressGrantsList),
     /** MUTATING: revoke one shell egress grant (user-keyboard intent attached). */
     egressGrantRevoke: async (grant: RevocableEgressGrant) => ipcRenderer.invoke(PERMISSIONS.egressGrantRevoke, { ...grant, intent: ipcUserKeyboardIntent() }),
+    /** Read-only: protected paths a contained process created, moved to quarantine. */
+    watchedQuarantineList: async () => ipcRenderer.invoke(PERMISSIONS.watchedQuarantineList),
+    /** MUTATING: restore one quarantined entry (user-keyboard intent attached). */
+    watchedQuarantineRestore: async (slot: string, index: number) => ipcRenderer.invoke(PERMISSIONS.watchedQuarantineRestore, { slot, index, intent: ipcUserKeyboardIntent() }),
     /** Read-only: the upstream proxy setting, whether credentials are stored, and the effective upstream. */
     upstreamProxyGet: async () => ipcRenderer.invoke(PERMISSIONS.upstreamProxyGet),
     updateSecuritySettings: async (patch: import("../shared/security-settings.js").SecuritySettingsPatch) =>

@@ -6,9 +6,31 @@ const mocks = vi.hoisted(() => ({ execFile: vi.fn(), execFileSync: vi.fn(), exis
 vi.mock("node:child_process", () => ({ execFile: mocks.execFile, execFileSync: mocks.execFileSync }));
 vi.mock("node:fs", () => ({ existsSync: mocks.existsSync }));
 vi.mock("node:fs/promises", () => ({ access: mocks.access }));
-import { queryDosDevice, queryWindowsDocumentsDirectory, queryWindowsSystemDirectory, resolveWindowsPathKindHelper, windowsSystemDirectorySpawnOptions } from "../windows-path-kind-launcher.js";
+vi.mock("../../shared/tool-timeout-policy.js", async original => {
+  const actual = await original<typeof import("../../shared/tool-timeout-policy.js")>();
+  return { ...actual, TOOL_TIMEOUT_POLICY: { ...actual.TOOL_TIMEOUT_POLICY, windowsPathKindQueryMs: 300 } };
+});
+import { isWindowsPathKindHelperUnavailable, queryDosDevice, queryWindowsDocumentsDirectory, queryWindowsSystemDirectory, resolveWindowsPathKindHelper, windowsSystemDirectorySpawnOptions } from "../windows-path-kind-launcher.js";
+import { sleepingHelper } from "../../__tests__/support/sleeping-helper.js";
 import { configureHostResources } from "../host-resources.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
+
+// The real spawn of a helper that never answers, under the caller's own deadline.
+function sleepingReply() {
+  return async (_file: string, _args: string[], options: { timeout: number }, callback: (error: Error | null, stdout: Buffer, stderr: Buffer) => void) => {
+    const { execFile } = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+    const sleeper = sleepingHelper();
+    execFile(sleeper.file, sleeper.args, { timeout: options.timeout, windowsHide: true, encoding: "buffer" }, (error, stdout, stderr) => callback(error, stdout, stderr));
+  };
+}
+
+async function unavailable(query: Promise<unknown>, message: string): Promise<void> {
+  const error = await query.then(() => undefined, (failure: unknown) => failure as NodeJS.ErrnoException);
+  expect(error).toMatchObject({ message, code: "ETIMEDOUT" });
+  expect(isWindowsPathKindHelperUnavailable(error)).toBe(true);
+  expect(error?.message).not.toContain("Reinstall");
+  expect(error?.message).not.toContain(sleepingHelper().file);
+}
 
 function helperReply(stdout: string | Buffer = "", stderr = "", error: Error | null = null) {
   return (_file: string, _args: string[], options: { encoding?: string }, callback: (error: Error | null, stdout: Buffer | string, stderr: Buffer | string) => void) => {
@@ -37,14 +59,20 @@ describe("Windows folder classifier launcher", () => {
     expect(mocks.execFile).toHaveBeenCalledWith(
       join("/trusted/resources", "windows-path-kind", "x64", "ave-path-kind.exe"),
       ["Z:"],
-      { windowsHide: true, timeout: 5000, encoding: "buffer" },
+      { windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.windowsPathKindQueryMs, encoding: "buffer" },
       expect.any(Function),
     );
   });
 
   it("fails clearly without the asset, off Windows, or for anything but a drive, and never runs a command", async () => {
     mocks.existsSync.mockReturnValue(false);
-    await expect(queryDosDevice("C:")).rejects.toThrow(/classifier is missing: .*ave-path-kind\.exe\. Ave cannot tell .* Reinstall Ave/u);
+    // Unavailable, yet with no file-system code: a missing helper says nothing about the folder being read. Its install path stays out
+    // of the message, which reaches the privacy failure reason, the boot gate and the audit log.
+    const missing = await queryDosDevice("C:").then(() => { throw new Error("resolved"); }, (error: unknown) => error as Error);
+    expect(missing.message).toBe("Windows folder classifier is missing. Ave cannot tell whether a drive is on another computer, "
+      + "so it reads no folder on a drive. Restart Ave; if it persists, reinstall Ave.");
+    expect(isWindowsPathKindHelperUnavailable(missing)).toBe(true);
+    expect(missing).not.toHaveProperty("code");
     mocks.existsSync.mockReturnValue(true);
     await expect(queryDosDevice("C:\\x")).rejects.toThrow("not a drive letter");
     await expect(queryDosDevice("\\\\server\\share")).rejects.toThrow("not a drive letter");
@@ -61,6 +89,11 @@ describe("Windows folder classifier launcher", () => {
     await expect(queryDosDevice("C:")).rejects.toThrow(/encoding utf-8/i);
   });
 
+  it("names a helper that does not answer within the policy bound as unavailable, with no reinstall advice", async () => {
+    mocks.execFile.mockImplementationOnce(sleepingReply());
+    await unavailable(queryDosDevice("Q:"), "the Windows folder classifier for Q: did not answer within 300 ms");
+  });
+
   it("answers null when the OS has no mapping for the drive (exit 1), the one failure that is about the drive", async () => {
     mocks.execFile.mockImplementationOnce(helperReply("", "QueryDosDeviceW failed: 2\n", Object.assign(new Error("Command failed"), { code: 1 })));
     await expect(queryDosDevice("Q:")).resolves.toBeNull();
@@ -69,14 +102,25 @@ describe("Windows folder classifier launcher", () => {
   it("rejects a broken helper with its cause and what to do, never as an answer about the drive", async () => {
     const fail = (error: Error & { code?: number | string | null; killed?: boolean }, stdout = "", stderr = "") =>
       mocks.execFile.mockImplementationOnce(helperReply(stdout, stderr, error));
-    fail(Object.assign(new Error("spawn EACCES"), { code: "EACCES" }));
-    await expect(queryDosDevice("Q:")).rejects.toThrow(/classifier failed for Q:: spawn EACCES\. Reinstall Ave/u);
-    fail(Object.assign(new Error("Command failed"), { code: 2 }), "", "usage: ave-path-kind.exe X:\n");
+    const helper = join("/trusted/resources", "windows-path-kind", "x64", "ave-path-kind.exe");
+    const rejection = (): Promise<Error> => queryDosDevice("Q:").then(() => { throw new Error("resolved"); }, (error: unknown) => error as Error);
+    // A helper that could not start gave no answer: unavailable, restart wording, no path and no file-system code.
+    fail(Object.assign(new Error(`spawn ${helper} EACCES`), { code: "EACCES", syscall: `spawn ${helper}`, path: helper }));
+    const launch = await rejection();
+    expect(launch.message).toBe("the Windows folder classifier for Q: could not start (EACCES). Restart Ave; if it persists, reinstall Ave.");
+    expect(isWindowsPathKindHelperUnavailable(launch)).toBe(true);
+    expect(launch).not.toHaveProperty("code");
+    expect(launch).not.toHaveProperty("cause");
+    fail(Object.assign(new Error(`Command failed: ${helper} Q:\nusage: ave-path-kind.exe X:`), { code: 2 }), "", "usage: ave-path-kind.exe X:\n");
     await expect(queryDosDevice("Q:")).rejects.toThrow("usage: ave-path-kind.exe X:");
-    fail(Object.assign(new Error("Command failed"), { code: 3 }), "", "could not write the mapping\n");
+    fail(Object.assign(new Error(`Command failed: ${helper} Q:`), { code: 3 }), "", "could not write the mapping\n");
     await expect(queryDosDevice("Q:")).rejects.toThrow("could not write the mapping");
-    fail(Object.assign(new Error("Command failed"), { code: null, killed: true }));
-    await expect(queryDosDevice("Q:")).rejects.toThrow("did not answer within 5000 ms");
+    // With nothing on stderr the exit status stands in for the spawn message, which names the install path.
+    fail(Object.assign(new Error(`Command failed: ${helper} Q:`), { code: 4 }));
+    const exit = await rejection();
+    expect(exit.message).toBe("the Windows folder classifier failed for Q: (exit 4). Reinstall Ave; in a development checkout, build it with scripts/build-windows-job.ps1 -Helper path-kind.");
+    expect(isWindowsPathKindHelperUnavailable(exit)).toBe(false);
+    expect(exit).not.toHaveProperty("cause");
     mocks.execFile.mockImplementationOnce(helperReply());
     await expect(queryDosDevice("Q:")).rejects.toThrow("not one mapping");
     mocks.execFile.mockImplementationOnce(helperReply("a\nb\n"));
@@ -108,6 +152,11 @@ describe("native Documents directory launcher", () => {
     abort.abort(new Error("cancel Documents lookup"));
     await expect(pending).rejects.toThrow("cancel Documents lookup");
     expect(mocks.execFile).toHaveBeenCalledTimes(1);
+  });
+
+  it("names a Documents helper that does not answer within the policy bound as unavailable", async () => {
+    mocks.execFile.mockImplementationOnce(sleepingReply());
+    await unavailable(Promise.resolve(queryWindowsDocumentsDirectory()), "The Windows Documents lookup did not answer within 300 ms");
   });
 
   it("bounds the Documents lookup and rejects a helper timeout", async () => {
@@ -171,6 +220,11 @@ describe("native system directory launcher", () => {
     vi.stubGlobal("process", { ...process, platform: "linux" });
     await expect(queryWindowsSystemDirectory()).rejects.toThrow("requires Windows");
     expect(mocks.execFile).not.toHaveBeenCalled();
+  });
+
+  it("names a system directory helper that does not answer within the caller's bound as unavailable", async () => {
+    mocks.execFile.mockImplementationOnce(sleepingReply());
+    await unavailable(queryWindowsSystemDirectory(300), "The Windows system directory query did not answer within 300 ms");
   });
 
   it("rejects malformed UTF-8 in a system directory", async () => {

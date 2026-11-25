@@ -13,6 +13,7 @@ vi.mock("node:fs", async original => (await import("../../__tests__/support/simu
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { basename, join } from "node:path";
 import { homedir } from "node:os";
+import { PassThrough } from "node:stream";
 import { egressInvocationOwner } from "../../permissions/egress-invocations.js";
 import * as hostPrograms from "../../shared/host-program-path.js";
 
@@ -116,6 +117,7 @@ import {
   setSandboxBootOutcome,
 } from "../../permissions/sandbox-capability.js";
 import { aveHome } from "../../shared/ave-home.js";
+import { t } from "../../i18n/index.js";
 import {
   governanceWithPolicy,
   stdioApproval,
@@ -289,13 +291,15 @@ describe("StdioTransport ASRT wrap — gate ON", () => {
       throw new hostPrograms.HostProgramNotFoundError(`Program '${command}' was not found on PATH`);
     });
     try {
+      vi.stubEnv("PATH", path);
       const gov = governanceWithPolicy(buildPolicy([stdioApproval("missing", command)]));
-      const client = new McpClient({ id: "missing", transport: "stdio", command, env: { PATH: path } }, gov, new ToolRegistry(), unusedNetworkFetch);
+      const client = new McpClient({ id: "missing", transport: "stdio", command }, gov, new ToolRegistry(), unusedNetworkFetch);
       await expect(client.connect()).rejects.toThrow(/was not found on PATH/u);
       expect(lookup).toHaveBeenCalledWith(command, expect.objectContaining({ PATH: path }));
       expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
       expect(spawnMock).not.toHaveBeenCalled();
     } finally {
+      vi.unstubAllEnvs();
       lookup.mockRestore();
     }
   });
@@ -363,9 +367,9 @@ describe("StdioTransport ASRT wrap — gate ON", () => {
     // The server's own temp directory, keyed by its server id, set as TMPDIR inside the wrap (ASRT's own assignment
     // names the shared root), then the command + args, every token shell-quoted (defensive against spaces/injection).
     const tempDir = join(SANDBOX_TEMP_ROOT, sandboxTempPrincipalDirName({ kind: "mcp", id: "fs" }));
-    expect(cmdline).toBe(
-      `'/usr/bin/env' 'TMPDIR=${tempDir}' 'TMP=${tempDir}' 'TEMP=${tempDir}' '/resolved/ave-mcp-fs' '--root' '/tmp'`,
-    );
+    expect(cmdline.startsWith("exec '/bin/bash' '-c' ")).toBe(true);
+    expect(cmdline).toContain(`'sandbox-target' '${tempDir}' '/resolved/ave-mcp-fs' '--root' '/tmp'`);
+    expect(cmdline).not.toContain("PLUGIN_ROOT");
     // Write-jail = the server's temp directory + the fresh process HOME + per-server sandbox root. The shared temp root is not granted.
     expect(options.filesystem.allowWrite).toEqual([tempDir, SANDBOX_HOME, sandboxRoot, pluginDataDir]);
     expect(options.filesystem.allowRead).toContain(tempDir);
@@ -408,7 +412,8 @@ describe("StdioTransport ASRT wrap — gate ON", () => {
     expect(spawnOpts.shell).toBe(false);
     expect(spawnOpts.stdio[0]).toBe("pipe"); // stdin must stay writable for framing
     expect(spawnOpts.cwd).toBe("/tmp/package-generation");
-    expect(spawnOpts.env.PLUGIN_DATA).toBe(pluginDataDir);
+    expect(spawnOpts.env.PLUGIN_DATA).toBeUndefined();
+    expect(spawnOpts.stdio[4]).toBe("pipe");
 
     // The server is now marked wrapped → reviewer can report genuine asrt.
     expect(isMcpServerWrapped("fs")).toBe(true);
@@ -484,11 +489,13 @@ describe("StdioTransport ASRT wrap — gate ON", () => {
     await client.disconnect();
   });
 
-  it("overlays ONLY the ASRT proxy keys, preserves apiKey + strips host secrets", async () => {
+  it("sends the apiKey and HOME only through the target pipe and strips host secrets", async () => {
     gateActive = true;
     const sandboxRoot = join(aveHome(), "mcp", "secure", "sandbox");
     const fake = new FakeChildProcess();
     fake.responses = handshakeResponses("secure");
+    const targetEnv = new PassThrough();
+    Object.assign(fake, { stdio: [null, null, null, null, targetEnv] });
     // Simulate an ASRT env carrying proxy keys plus a host secret that must NOT propagate (it is not allow-listed).
     wrapWorkerCommandMock.mockResolvedValueOnce({
       argv: ["C:/Git/bin/bash.exe", "-c", "wrapped"],
@@ -528,16 +535,40 @@ describe("StdioTransport ASRT wrap — gate ON", () => {
       string[],
       { env: Record<string, string> },
     ];
-    const env = spawnOpts.env;
-    // ASRT proxy/CA overlay propagated (the win32 "spread").
-    expect(env.HTTP_PROXY).toBe("http://127.0.0.1:60080");
-    expect(env.NODE_EXTRA_CA_CERTS).toBe("C:/tmp/ca.pem");
-    // Approved per-server apiKey preserved.
-    expect(env.MCP_API_KEY).toBe("secret-key");
+    // The launcher keeps only its program lookup; the wrapped command carries the proxy settings.
+    expect(spawnOpts.env).toEqual({ PATH: "/usr/bin:/bin:/usr/sbin:/sbin", SHLVL: "1" });
+    const assignments: string[] = targetEnv.read()?.toString().split("\0") ?? [];
+    // The approved per-server apiKey and the process HOME reach the server only through the target pipe.
+    expect(assignments).toContain("MCP_API_KEY=secret-key");
+    expect(assignments).toContain(`HOME=${SANDBOX_HOME}`);
     // A non-allow-listed host secret ASRT carried is NOT propagated.
-    expect(env.SOME_HOST_SECRET).toBeUndefined();
-    expect(env.HOME).toBe(SANDBOX_HOME);
+    expect(assignments.some(entry => entry.includes("leaked-value"))).toBe(false);
 
+    await client.disconnect();
+  });
+
+  it.each([
+    ["a setup failure byte", true, "be_mcpClient.sandboxEnvironmentSetupFailed"],
+    ["no status byte", false, "be_mcpClient.processExitedUnexpectedly"],
+  ] as const)("names the exit cause from the target status pipe: %s", async (_name, failed, key) => {
+    gateActive = true;
+    const fake = new FakeChildProcess();
+    fake.responses = handshakeResponses("setupprobe");
+    const status = new PassThrough();
+    Object.assign(fake, { stdio: [null, null, null, null, new PassThrough(), status] });
+    wrapWorkerCommandMock.mockResolvedValueOnce({ argv: ["/bin/bash", "-c", "wrapped"], env: { ...process.env } });
+    spawnMock.mockReturnValueOnce(fake);
+    const config: McpStdioServerConfig = {
+      id: "setupprobe", transport: "stdio", command: "ave-mcp-setupprobe",
+      sandboxRoot: join(aveHome(), "mcp", "setupprobe", "sandbox"),
+    };
+    const client = new McpClient(config, governanceWithPolicy(buildPolicy([stdioApproval("setupprobe", "ave-mcp-setupprobe")])),
+      new ToolRegistry(), unusedNetworkFetch);
+    await client.connect();
+
+    fake.emit("exit", 1, null);
+    status.end(failed ? Buffer.from([1]) : undefined);
+    await vi.waitFor(() => expect(client.getState().lastError).toBe(t(key)));
     await client.disconnect();
   });
 

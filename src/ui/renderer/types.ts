@@ -1549,6 +1549,14 @@ export type AvePermissionApi = {
     | { ok: false; error: string; message: string }
     | IpcErrorResult
   >;
+  /** Read-only: protected paths a contained process created that Ave moved to quarantine. */
+  watchedQuarantineList: () => Promise<
+    | { ok: true; entries: Array<{ slot: string; index: number; original: string; quarantined: string; row: string; time: string; commandId: string; sessionId?: string; command?: string; restored?: string }> }
+    | { ok: false; error: string; message: string }
+    | IpcErrorResult
+  >;
+  /** MUTATING: move one quarantined entry back to its original path. */
+  watchedQuarantineRestore: (slot: string, index: number) => Promise<{ ok: true; restored: string } | { ok: false; error: string; message: string } | IpcErrorResult>;
   /** MUTATING: revoke one shell egress grant. */
   egressGrantRevoke: (grant: RevocableEgressGrant) => Promise<{ ok: boolean; error?: string; message?: string; durabilitySyncFailed?: true } | IpcErrorResult>;
   /**

@@ -65,7 +65,7 @@ const reason = () => t("permissionsTab.homePrivacyExtraPrincipals", { principals
 async function expectDisclosure(container: HTMLElement): Promise<void> {
   await waitFor(() => expect(container.querySelector('[data-testid="os-sandbox-boot-degraded"]')).toBeTruthy());
   expect(container.querySelector('[data-testid="os-sandbox-boot-degraded-detail"]')?.textContent)
-    .toBe(t("permissionsTab.osSandboxBootDegradedHomePrivacy", { path: "D:/ave-home", reason: reason() }));
+    .toBe(`${t("permissionsTab.osSandboxBootDegradedHomePrivacy", { path: "D:/ave-home", reason: reason() })} ${t("permissionsTab.homePrivacyShellAsk")}`);
   const substrate = container.querySelector<HTMLElement>('[data-testid="os-sandbox-windows-substrate"]');
   expect(substrate?.dataset.mxc).toBe("available");
   expect(substrate?.dataset.shells).toBe("none");

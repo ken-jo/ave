@@ -17,6 +17,7 @@ export const HOOK_EVENTS = [
 ] as const;
 const MAX_WORKSPACE_PATH_COMPONENTS = 64;
 const sandboxGitWrites = new Map<symbol, readonly string[]>();
+let workspaceGuard: ((workspace: string) => boolean) | undefined;
 
 function canonicalWorkspacePath(root: string): string {
   const resolution = inspectPhysicalFilesystemPath(root, process.cwd(), MAX_WORKSPACE_PATH_COMPONENTS);
@@ -39,8 +40,14 @@ export function holdSandboxGitWrites(writeRoots: readonly string[]): () => void 
   return () => { sandboxGitWrites.delete(token); };
 }
 
+/** The sandbox installs one extra refusal (a workspace holding a contained process's unswept protected entry). */
+export function setHostGitWorkspaceGuard(guard: (workspace: string) => boolean): void {
+  workspaceGuard = guard;
+}
+
 /** In-process ordering only; independent sibling workspaces remain available. */
 export function isHostGitWorkspaceAvailable(root: string): boolean {
+  if (workspaceGuard !== undefined && !workspaceGuard(root)) return false;
   if (sandboxGitWrites.size === 0) return true;
   let workspace: string;
   try {

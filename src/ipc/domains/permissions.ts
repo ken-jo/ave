@@ -22,7 +22,7 @@ import {
 const UPSTREAM_PROXY_DIAGNOSTIC_URL = "https://example.com/";
 import { errorMessage } from "../../shared/error-message.js";
 import { exactCanonicalStringify } from "../../shared/exact-json.js";
-import { approveExtensionsWithoutIsolation, areExtensionsWithoutIsolationApproved, AveHomeConfigurationRefusedWriteError, getAveHomePrivacyFailure, isAveHomeBoundaryCategory } from "../../shared/ave-home.js";
+import { approveExtensionsWithoutIsolation, areExtensionsWithoutIsolationApproved, AveHomeConfigurationRefusedWriteError, getAveHomePrivacyFailure, isAveHomeBoundaryCategory, isAveHomePrivacyApprovable } from "../../shared/ave-home.js";
 import { approveAveHomeTrustItems, AveHomeTrustReviewError, getAveHomeTrustReview, removeAveHomeTrustItem, type AveHomeTrustReviewView } from "../../shared/ave-home-trust.js";
 import { AveHomeConfigurationNotOwnerError } from "../../shared/ave-home-configuration-access.js";
 import type { AuditLogger } from "../../audit/audit-logger.js";
@@ -494,6 +494,32 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     };
   };
 
+  ipcMain.handle(PERMISSIONS.watchedQuarantineList, async (e) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.watchedQuarantineList, e); return UNAUTHORIZED_FRAME; }
+    const { listWatchedQuarantine } = await import("../../permissions/windows-watched-rows.js");
+    try { return { ok: true as const, entries: listWatchedQuarantine() }; }
+    catch (error) { return { ok: false as const, error: "watched-quarantine-unreadable", message: errorMessage(error) }; }
+  });
+
+  ipcMain.handle(PERMISSIONS.watchedQuarantineRestore, async (e, payload: unknown) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.watchedQuarantineRestore, e); return UNAUTHORIZED_FRAME; }
+    const body = payloadRecord(payload);
+    const intent = requireUserKeyboardIntent(body.intent);
+    if (!intent.ok) return intent;
+    const { slot, index } = body;
+    if (typeof slot !== "string" || typeof index !== "number" || !Number.isInteger(index) || index < 0) {
+      return { ok: false, error: "invalid-watched-quarantine-entry", message: "restore: slot and index are required" };
+    }
+    const { restoreWatchedQuarantine } = await import("../../permissions/windows-watched-rows.js");
+    try {
+      const { restored } = await restoreWatchedQuarantine(slot, index);
+      auditLogger.log({ timestamp: new Date().toISOString(), sessionId: "settings", type: "approval", output: `[watched-quarantine:restore] slot=${slot} index=${index} restored=${JSON.stringify(restored)}` });
+      return { ok: true as const, restored };
+    } catch (error) {
+      return { ok: false as const, error: "watched-quarantine-restore-failed", message: errorMessage(error) };
+    }
+  });
+
   ipcMain.handle(PERMISSIONS.upstreamProxyGet, async (e) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.upstreamProxyGet, e); return UNAUTHORIZED_FRAME; }
     return upstreamProxyView();
@@ -605,7 +631,9 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     const intent = requireUserKeyboardIntent(payloadRecord(payload).intent);
     if (!intent.ok) return intent;
     const failure = getAveHomePrivacyFailure();
-    if (failure === undefined) return { ok: false, error: "not-applicable", message: "Home privacy approval is not applicable" };
+    if (failure === undefined || !isAveHomePrivacyApprovable(failure.category)) {
+      return { ok: false, error: "not-applicable", message: "Home privacy approval is not applicable" };
+    }
     if (!areExtensionsWithoutIsolationApproved()) {
       auditLogger.log({ timestamp: new Date().toISOString(), sessionId: "permissions", type: "approval",
         output: JSON.stringify({ action: "extensions_without_isolation_approved", who: "user-ui",

@@ -131,6 +131,19 @@ describe("private-directory confinement gate", () => {
     expect(areExtensionsWithoutIsolationApproved()).toBe(false);
   });
 
+  it("offers no run without isolation when the path-facts helper gave no answer, and tells the user to restart", () => {
+    setProcessPlatform("win32");
+    setPluginWorkerConfinementRequestedAtBoot(true);
+    setAveHomePrivacyAtBoot({ enforcement: "none", home: home(), category: "helper-unavailable", reason: "Windows path facts helper did not answer within 15000 ms" });
+    const report = vi.fn();
+    setAveHomePrivacyRefusalReporter(report);
+    expect(() => assertExtensionStartAllowed()).toThrow("Restart Ave; if it persists, reinstall Ave.");
+    expect(String(report.mock.calls[0]?.[0])).not.toContain("Approve running without isolation");
+    expect(() => approveExtensionsWithoutIsolation()).toThrow("not applicable");
+    expect(areExtensionsWithoutIsolationApproved()).toBe(false);
+    expect(() => assertExtensionStartAllowed()).toThrow("helper-unavailable");
+  });
+
   it("keeps approval only until a new boot or a changed privacy observation", async () => {
     setProcessPlatform("win32");
     setPluginWorkerConfinementRequestedAtBoot(true);

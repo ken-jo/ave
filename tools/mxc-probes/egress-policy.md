@@ -1,7 +1,7 @@
 # Endpoint-scoped egress acceptance
 
 Run from the repository root in a non-elevated interactive Windows x64 desktop
-session. Use a verified SDK 1.0.1 installation and its dependencies. The driver
+session. Use a verified SDK 1.1.0 installation and its dependencies. The driver
 and child runtime must be the same trusted executable; this probe starts one
 container and retains its fresh fixture directory. It makes no ACL, registry or
 account changes and does not remove files. The SDK applies its own temporary

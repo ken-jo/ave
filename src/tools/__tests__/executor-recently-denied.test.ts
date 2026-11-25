@@ -22,6 +22,8 @@ import { userPermissionContext } from "./tool-context-fixture.js";
 const resources = new PermissionTestResources();
 const cleanup: Array<() => Promise<void>> = [];
 const SESSION_ID = "75a4bf7c-9a43-486c-9266-a03a92aeb7ca";
+// Loaded runners deliver the replay card after the 1 s vi.waitFor default.
+const CARD_WAIT = { timeout: 30_000 };
 
 afterEach(async () => {
   for (const close of cleanup.splice(0)) await close();
@@ -268,7 +270,7 @@ describe("executor denial history and manual rerun", () => {
       expect(entry.invocationRef?.replayOrigin).toMatchObject({ overlayTriggerOrigin, otherPrincipal: true });
       expect(readFileSync(current.historyFile, "utf8")).toContain(overlayTriggerOrigin);
       const pending = history.rerun(entry.id);
-      await vi.waitFor(() => expect(current.cards).toHaveLength(1));
+      await vi.waitFor(() => expect(current.cards).toHaveLength(1), CARD_WAIT);
       expect(checks.mock.calls.some(([name, , , source]) => name === "send_probe" && source === overlayTriggerOrigin)).toBe(true);
       expect(checks.mock.results.some((result) => result.type === "return" && result.value.pipelineRequest?.floor?.code === "other-principal")).toBe(true);
       expect(current.cards[0]).toMatchObject({ sessionId: SESSION_ID, requireExplicit: true,
