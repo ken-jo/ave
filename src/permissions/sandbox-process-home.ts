@@ -259,6 +259,7 @@ export function createSandboxProcessHome(
     if (platform === "win32") recordIssuedContainerHome(homePath);
     registerAgentObservationHome(homePath);
   } catch (err) {
+    forgetIssuedContainerHome(homePath);
     if (
       dirname(createdPath) === parentRoot &&
       basename(createdPath).startsWith(SANDBOX_HOME_PREFIX)
