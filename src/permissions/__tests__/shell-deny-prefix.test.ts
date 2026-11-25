@@ -60,12 +60,16 @@ describe.each([
   if (dialect === "powershell") {
     const tokenFiller = " x".repeat(450);
     const inputFiller = ` ${"x".repeat(8000)}`;
+    const escapedVariableStart = `\${a\`};b`;
+    const quotedExpansionStart = `"\${a";b`;
+    const escapedVariableTokenLimit = `${escapedVariableStart}${tokenFiller}}; Write-Output s`;
+    const quotedExpansionInputLimit = `${quotedExpansionStart}${inputFiller}}" | Write-Output s`;
     it.each([
-      { shape: "an escaped brace at the token limit before a later command", command: '${a`};b' + tokenFiller + '}; Write-Output s' },
-      { shape: "a quote inside a braced expansion at the token limit before a later command", command: '"${a";b' + tokenFiller + '}"; Write-Output s' },
-      { shape: "a quote inside a braced expansion at the input limit before a pipeline stage", command: '"${a";b' + inputFiller + '}" | Write-Output s' },
-      { shape: "an escaped brace at the input limit inside an argument", command: 'date ${a`};b' + inputFiller + '}' },
-      { shape: "a quote inside a braced expansion at the input limit inside an argument", command: 'date "${a";b' + inputFiller + '}"' },
+      { shape: "an escaped brace at the token limit before a later command", command: escapedVariableTokenLimit },
+      { shape: "a quote inside a braced expansion at the token limit before a later command", command: `${quotedExpansionStart}${tokenFiller}}"; Write-Output s` },
+      { shape: "a quote inside a braced expansion at the input limit before a pipeline stage", command: quotedExpansionInputLimit },
+      { shape: "an escaped brace at the input limit inside an argument", command: `date ${escapedVariableStart}${inputFiller}}` },
+      { shape: "a quote inside a braced expansion at the input limit inside an argument", command: `date ${quotedExpansionStart}${inputFiller}}"` },
     ])("refuses $shape with a saved deny", async ({ command }) => {
       const withDeny = await evaluate({ executionMode: "default" });
       expect(withDeny(command)).toMatchObject(pastLimit);
@@ -73,13 +77,13 @@ describe.each([
 
     it.each(["strict", "default", "auto", "allow"] as const)("asks in %s mode at either limit without a saved deny", async (executionMode) => {
       const withoutDeny = await evaluate({ saveDeny: false, executionMode });
-      expect(withoutDeny('${a`};b' + tokenFiller + '}; Write-Output s')).toMatchObject(limitCard);
-      expect(withoutDeny('"${a";b' + inputFiller + '}" | Write-Output s')).toMatchObject(limitCard);
+      expect(withoutDeny(escapedVariableTokenLimit)).toMatchObject(limitCard);
+      expect(withoutDeny(quotedExpansionInputLimit)).toMatchObject(limitCard);
     });
 
     describe.each([
-      { shape: "an escaped brace in a variable name", command: '${a`};b}; Write-Output s' },
-      { shape: "a quote in a braced expansion", command: '"${a";b}"; Write-Output s' },
+      { shape: "an escaped brace in a variable name", command: `${escapedVariableStart}}; Write-Output s` },
+      { shape: "a quote in a braced expansion", command: `${quotedExpansionStart}}"; Write-Output s` },
     ])("unreadable command with $shape", ({ command }) => {
       it.each(["strict", "default", "auto", "allow"] as const)("refuses in %s mode with a saved deny", async (executionMode) => {
         const withDeny = await evaluate({ executionMode });
@@ -126,10 +130,10 @@ describe.each([
     });
   } else {
     it.each([
-      { construct: "quoted text", statement: (tail: string) => 'echo "a\\"; printf hidden"' + tail },
-      { construct: "parameter expansion", statement: (tail: string) => 'echo "${value:-a\\}; printf hidden}"' + tail },
+      { construct: "quoted text", statement: (tail: string) => `echo "a\\"; printf hidden"${tail}` },
+      { construct: "parameter expansion", statement: (tail: string) => `echo "\${value:-a\\}; printf hidden}"${tail}` },
       { construct: "quoted heredoc", statement: (tail: string) => `{ cat <<'END'\n; printf hidden\nEND\necho${tail}\n}` },
-      { construct: "command substitution", statement: (tail: string) => 'echo "$(echo a\\); printf hidden)"' + tail },
+      { construct: "command substitution", statement: (tail: string) => `echo "$(echo a\\); printf hidden)"${tail}` },
     ])("uses only complete statements around $construct", async ({ statement }) => {
       const check = await evaluate();
       const tokenLimited = statement(" x".repeat(450));
