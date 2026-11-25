@@ -89,6 +89,7 @@ describe("preload contextBridge world shape lock", () => {
     const api = exposed.get("aveApi") as AveApi;
     await api.listWorkflowTemplates(); expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateList);
     await api.getWorkflowTemplate("t"); expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateGet, "t");
+    await api.getWorkflowTemplateProposal("p"); expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateProposalGet, "p");
     const input = { expectedGraphHash: "a".repeat(64), expectedDraftRevision: "revision" };
     mockUserActivation.isActive = true; await api.confirmWorkflowTemplate("t", input);
     expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateConfirm, "t", input, { inputOrigin: "user-keyboard", userActivation: true });
@@ -483,6 +484,7 @@ describe("preload contextBridge world shape lock", () => {
           "getWorkBoardItem": "function",
           "getWorkBoardRunTranscript": "function",
           "getWorkflowTemplate": "function",
+          "getWorkflowTemplateProposal": "function",
           "gitMarketplace": [
             "acceptRewrite",
             "acknowledgeSource",

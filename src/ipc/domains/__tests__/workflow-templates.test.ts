@@ -1,4 +1,13 @@
 import { beforeEach, expect, it, vi } from "vitest";
+import { mkdtemp, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { registerBuiltinTools } from "../../../boot/tools.js";
+import { unusedNetworkFetch } from "../../../__tests__/support/network-fetch-stubs.js";
+import { WorkflowTemplateStore } from "../../../main/workflow-template-store.js";
+import { ToolRegistry } from "../../../tools/registry.js";
+import { isValidToolName } from "../../../tools/types.js";
+import { graphHashOf } from "../../../work-board/template-graph.js";
 import { registerWorkBoardHandlers } from "../work-board.js";
 import { WORK_BOARD } from "../../../shared/ipc-channels.js";
 import { validateHostRendererSender } from "../../gated.js";
@@ -24,9 +33,131 @@ function setup(extra: Partial<IpcDeps> = {}) {
   return { store, event: { sender, senderFrame: sender.mainFrame } };
 }
 beforeEach(() => { h.clear(); vi.mocked(validateHostRendererSender).mockReturnValue(true); vi.mocked(broadcastToAppWindows).mockClear(); });
+const proposalToolName = "workflow_template_propose";
+const reportDraft = {
+  name: "Daily report",
+  scope: { kind: "all" },
+  stages: [
+    { id: "gather", name: "Gather", goal: "Gather the daily source material", inputs: [], toolScope: "read", allowSubAgents: false,
+      gate: { type: "auto", pass: { kind: "stage_ok" } } },
+    { id: "review", name: "Review", goal: "Summarize the source material for review", inputs: ["gather"], toolScope: "read",
+      allowSubAgents: false, gate: { type: "human" } },
+  ],
+  edges: [{ from: "gather", to: "review" }],
+};
+
+function proposalRegistry(store: WorkflowTemplateStore) {
+  const registry = new ToolRegistry();
+  const deps = { workflowTemplateStore: store, networkFetch: unusedNetworkFetch, singleHopNetworkFetch: unusedNetworkFetch };
+  registerBuiltinTools(registry, { get: () => ({}) } as unknown as Parameters<typeof registerBuiltinTools>[1], deps);
+  return registry;
+}
+
+async function withTemplateProposal<T>(body: (fixture: {
+  store: WorkflowTemplateStore;
+  path: string;
+  event: ReturnType<typeof setup>["event"];
+  propose: (draft: unknown, headless?: boolean) => Promise<{ isError: boolean; output: string }>;
+}) => Promise<T>): Promise<T> {
+  const directory = await mkdtemp(join(tmpdir(), "template-proposals-"));
+  const path = join(directory, "templates.json");
+  const store = new WorkflowTemplateStore(path);
+  try {
+    const { event } = setup({ workflowTemplateStore: store });
+    const tool = proposalRegistry(store).getVisibleTools().find(entry => entry.name === proposalToolName);
+    if (!tool) throw new Error("Workflow template proposal tool is missing from host registration");
+    return await body({ store, path, event, propose: (draft, headless = false) =>
+      tool.execute(draft, { cwd: directory, extraAllowedDirectories: [], metadata: {}, headless }) });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
+it("registers a host-owned template proposal tool with a valid tool name", () => {
+  const registry = proposalRegistry(new WorkflowTemplateStore(join(tmpdir(), "unused-templates.json")));
+  const tool = registry.getVisibleTools().find(entry => entry.name === proposalToolName);
+  expect(isValidToolName(proposalToolName)).toBe(true);
+  expect(tool).toMatchObject({ name: proposalToolName, source: "builtin" });
+  expect(tool?.pluginId).toBeUndefined();
+});
+
+it("holds a valid draft with the graph hash and saves nothing before confirmation", async () => {
+  await withTemplateProposal(async ({ event, path, store, propose }) => {
+    const setupCommands = ["prepare-report"];
+    const draft = {
+      ...reportDraft,
+      stages: [
+        reportDraft.stages[0],
+        {
+          ...reportDraft.stages[1],
+          toolScope: "all",
+          gate: { type: "auto", pass: { kind: "model_verdict" } },
+          envelope: {
+            tools: [], writePaths: ["reports/**"], readRoots: [], network: [{ host: "reports.example" }],
+            commands: setupCommands, mcpReadOnlyTools: [], mcpGenerationTools: [], pluginGenerationTools: [],
+            outputs: [], budget: { rounds: 4, minutes: 3, costUsd: 0.1 },
+          },
+        },
+      ],
+      setupCommands,
+    };
+    const result = await propose(draft);
+    expect(result.isError).toBe(false);
+    const proposal = JSON.parse(result.output);
+    const graphHash = graphHashOf(draft);
+    expect(proposal).toMatchObject({ status: "pending-confirmation", proposalId: expect.any(String), graphHash });
+    expect(await handler(WORK_BOARD.templateProposalGet)(event, proposal.proposalId))
+      .toMatchObject({ ok: true, value: { id: proposal.proposalId, graphHash, draft } });
+    expect(await store.list()).toEqual([]);
+    await expect(stat(path)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+});
+
+it("saves a new version only through a matching user confirmation", async () => {
+  await withTemplateProposal(async ({ event, store, propose }) => {
+    const { proposalId, graphHash } = JSON.parse((await propose(reportDraft)).output);
+    const decision = { expectedGraphHash: graphHash, expectedDraftRevision: proposalId };
+    const confirm = handler(WORK_BOARD.templateConfirm);
+    expect(await confirm(event, proposalId, { ...decision, expectedGraphHash: "a".repeat(64) }, gesture))
+      .toEqual({ ok: false, error: "stale-draft" });
+    expect(await store.list()).toEqual([]);
+    expect(await confirm(event, proposalId, decision)).toEqual({ ok: false, error: "user-gesture-required" });
+    const results = await Promise.all([confirm(event, proposalId, decision, gesture), confirm(event, proposalId, decision, gesture)]);
+    expect(results.filter(result => (result as { ok: boolean }).ok)).toHaveLength(1);
+    const [template] = await store.list();
+    expect(template).toMatchObject({ currentVersion: 1, name: reportDraft.name });
+    expect(await store.getVersion(template.id, 1)).toMatchObject({ graphHash, version: 1, confirmation: { who: "user", origin: "local-desktop" } });
+  });
+});
+
+it.each([
+  ["stages.0.gate.pass.kind", { ...reportDraft, stages: [{ ...reportDraft.stages[0], gate: { type: "auto", pass: { kind: "unknown" } } }] }],
+  ["stages.0.allowSubAgents", { ...reportDraft, stages: [{ ...reportDraft.stages[0], allowSubAgents: undefined }] }],
+  ["stages.0.envelope.writePaths", { ...reportDraft, stages: [{ ...reportDraft.stages[0], envelope: {} }] }],
+  ["edges.0.to", { ...reportDraft, edges: [{ from: "gather", to: "missing" }] }],
+  ["edges", { ...reportDraft, edges: [...reportDraft.edges, { from: "review", to: "gather" }] }],
+  ["setupCommands", { ...reportDraft, setupCommands: ["prepare-report"] }],
+] as const)("refuses invalid draft field %s without saving", async (field, input) => {
+  await withTemplateProposal(async ({ path, propose }) => {
+    const result = await propose(input);
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.output)).toMatchObject({ error: expect.any(String), field });
+    await expect(stat(path)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+});
+
+it("refuses a headless proposal with a named reason and no confirmable draft", async () => {
+  await withTemplateProposal(async ({ store, path, propose }) => {
+    const result = await propose(reportDraft, true);
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.output)).toEqual({ error: "human-confirmation-unavailable" });
+    expect(await store.list()).toEqual([]);
+    await expect(stat(path)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+});
 it("guards every template handler before reading the store", async () => {
   const { event, store } = setup(); vi.mocked(validateHostRendererSender).mockReturnValue(false);
-  for (const channel of [WORK_BOARD.templateList, WORK_BOARD.templateGet, WORK_BOARD.templateDraft, WORK_BOARD.templateConfirm, WORK_BOARD.templateArchive, WORK_BOARD.templateAttachSchedule, WORK_BOARD.templateDetachSchedule]) expect(await handler(channel)(event)).toEqual({ ok: false, error: "unauthorized-frame" });
+  for (const channel of [WORK_BOARD.templateList, WORK_BOARD.templateGet, WORK_BOARD.templateProposalGet, WORK_BOARD.templateDraft, WORK_BOARD.templateConfirm, WORK_BOARD.templateArchive, WORK_BOARD.templateAttachSchedule, WORK_BOARD.templateDetachSchedule]) expect(await handler(channel)(event)).toEqual({ ok: false, error: "unauthorized-frame" });
   for (const fn of [store.list, store.get, store.draft, store.confirmDraft, store.archive, store.attachSchedule, store.detachSchedule]) expect(fn).not.toHaveBeenCalled();
 });
 it("rejects malformed input and renderer supplied hashes or versions", async () => {

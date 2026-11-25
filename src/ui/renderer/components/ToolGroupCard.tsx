@@ -19,6 +19,7 @@ import { CompactedToolResult } from "./CompactedToolResult.js";
 import { ToolPayloadBlock } from "./ToolPayloadBlock.js";
 import { DocumentToolLink } from "./DocumentToolLink.js";
 import { ScheduleToolResultLine } from "./schedule/ScheduleChatChip.js";
+import { WorkflowTemplateProposalCard } from "./work-board/WorkflowTemplateProposalCard.js";
 import { useOptionalChatContext } from "../context/ChatContext.js";
 import { PermissionReviewStatusCard } from "./PermissionReviewStatusCard.js";
 import type { TerminalObservedCommand } from "../../../shared/agent-observation.js";
@@ -340,6 +341,7 @@ function SingleToolInline({
       <ToolBrowserPreview tool={tool} />
       <DocumentToolLink name={tool.name} result={tool.result} sessionId={sessionId} failed={isError} />
       <ScheduleToolResultLine name={tool.name} input={tool.input} result={tool.result} failed={isError} onOpenRoutine={onOpenRoutine} />
+      {tool.source === "builtin" && <WorkflowTemplateProposalCard name={tool.name} result={tool.result} completed={tool.status === "done"} />}
       {open && (
         <div className="min-w-0 space-y-1 border-t px-3 py-1.5 font-mono text-tiny ave-anim-fade-in">
           {tool.input && (
@@ -540,6 +542,7 @@ export function ToolGroupCard({
                 <ToolBrowserPreview tool={tool} inset="px-2" />
                 <DocumentToolLink name={tool.name} result={tool.result} sessionId={sessionId} failed={tool.status === "error"} />
                 <ScheduleToolResultLine name={tool.name} input={tool.input} result={tool.result} failed={tool.status === "error"} onOpenRoutine={onOpenRoutine} />
+                {tool.source === "builtin" && <WorkflowTemplateProposalCard name={tool.name} result={tool.result} completed={tool.status === "done"} />}
                 {isExpanded && (
                   <div className="min-w-0 space-y-1 border-t px-2 py-1 font-mono text-tiny ave-anim-fade-in">
                     {tool.input && (

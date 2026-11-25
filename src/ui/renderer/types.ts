@@ -1,5 +1,5 @@
 import type { MemoryMapApi } from '../../shared/memory-map.js';
-import type { ScheduleAttachment, ScheduleAttachmentInput, WorkflowTemplateIpcResult, WorkflowTemplate, WorkflowTemplateRecord, WorkflowTemplateDraftInput, WorkflowTemplateConfirmInput, TemplateVersion } from "../../shared/workflow-template-types.js";
+import type { ScheduleAttachment, ScheduleAttachmentInput, WorkflowTemplateIpcResult, WorkflowTemplate, WorkflowTemplateRecord, WorkflowTemplateProposal, WorkflowTemplateDraftInput, WorkflowTemplateConfirmInput, TemplateVersion } from "../../shared/workflow-template-types.js";
 import type { NotificationToastPayload, NotificationClickPayload } from "../../shared/notification-types.js";
 export type { NotificationToastPayload, NotificationClickPayload } from "../../shared/notification-types.js";
 import type { WindowControlsPlacement } from "../../shared/shell-geometry.js";
@@ -423,6 +423,7 @@ export type AskUserQuestionResponse = {
 export type AvePreloadApi = {
   listWorkflowTemplates: () => Promise<WorkflowTemplateIpcResult<WorkflowTemplate[]>>;
   getWorkflowTemplate: (id: string) => Promise<WorkflowTemplateIpcResult<WorkflowTemplateRecord>>;
+  getWorkflowTemplateProposal: (id: string) => Promise<WorkflowTemplateIpcResult<WorkflowTemplateProposal>>;
   draftWorkflowTemplate: (id: string | null, input: WorkflowTemplateDraftInput) => Promise<WorkflowTemplateIpcResult<WorkflowTemplateRecord>>;
   confirmWorkflowTemplate: (id: string, input: WorkflowTemplateConfirmInput) => Promise<WorkflowTemplateIpcResult<TemplateVersion>>;
   attachWorkflowTemplateSchedule: (input: ScheduleAttachmentInput) => Promise<WorkflowTemplateIpcResult<ScheduleAttachment>>;

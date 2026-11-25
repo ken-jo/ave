@@ -131,6 +131,7 @@ export async function setupWorkflowStores(
   });
   const workflowDeps: WorkflowToolDeps = {
     routinesStore,
+    workflowTemplateStore: ctx.workflowTemplateStore,
     routineScheduleDeps: {
       projectRootForSession: routineProjectRootForSession,
       chatForSession: routineChatForSession,

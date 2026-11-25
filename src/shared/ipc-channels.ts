@@ -53,6 +53,7 @@ export const ROUTINES = {
 export const WORK_BOARD = {
   templateList: "ave:work-board:template-list",
   templateGet: "ave:work-board:template-get",
+  templateProposalGet: "ave:work-board:template-proposal-get",
   templateDraft: "ave:work-board:template-draft",
   templateConfirm: "ave:work-board:template-confirm",
   templateAttachSchedule: "ave:work-board:template-attach-schedule",
