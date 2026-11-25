@@ -8,7 +8,7 @@ import { type Bound, boundWait, within } from "../../__tests__/support/signal-wa
 import { workflowEngineExtensions } from "../../boot/steps/workflow-engine-extensions.js";
 import { boundStageWorkspace, isOwnStageWorkspacePath } from "../../permissions/stage-workspace-binding.js";
 import { aveHome } from "../../shared/ave-home.js";
-import { stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
+import { runScopePermissions, stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
 import { stageRunHarness } from "../../work-board/workflow/__tests__/stage-run-harness.js";
 import type { StageWorkspaceProvider } from "../../work-board/workflow/stage-workspace.js";
 import { createStageWorkspaceProvider } from "../../work-board/workflow/stage-workspaces.js";
@@ -20,7 +20,7 @@ const workspaceBound: Bound = expire => boundWait(expire, WORKSPACE_WAIT_MS);
 let production: StageWorkspaceProvider;
 async function withProductionParts(run: (h: Harness) => Promise<void>): Promise<void> {
   const h = await stageRunHarness({ observeRunWork: true, wiring: (store, { templates, waking }) => {
-    const parts = workflowEngineExtensions(store, templates);
+    const parts = workflowEngineExtensions(store, templates, runScopePermissions());
     production = parts.workspace;
     const release = production.release.bind(production);
     const discard = production.discard.bind(production);

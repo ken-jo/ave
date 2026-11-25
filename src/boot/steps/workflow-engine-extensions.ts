@@ -8,6 +8,8 @@ import { boardRunState } from "../../work-board/workflow/run-state.js";
 import type { RemovedRunProject } from "../../work-board/workflow/stage-workspace.js";
 import { createStageWorkspaceProvider } from "../../work-board/workflow/stage-workspaces.js";
 import { bindStageWorkspace, unbindStageWorkspace } from "../../permissions/stage-workspace-binding.js";
+import type { PermissionManager } from "../../permissions/permission-manager.js";
+import { createRunScopeHooks } from "../../permissions/run-scope.js";
 import type { StageRunEngineDeps } from "../../work-board/workflow/stage-run-engine.js";
 
 const log = createLogger("ave");
@@ -21,8 +23,9 @@ type WorkflowEngineExtensions = Pick<
 
 /** The one place the stage scheduler's replaceable parts are chosen. Each later part swaps its own line here and nowhere else. Run state
  * is the board store's covered run file. Every stage works in its own folder under the home's `worktrees`, bound to its session, and with
- * no lane only an all-read-only version may run unattended. */
-export function workflowEngineExtensions(store: WorkBoardStore, attachments: Pick<WorkflowTemplateStore, "getAttachment">): WorkflowEngineExtensions {
+ * no lane only an all-read-only version may run unattended. A run's "Allow for this run" grants and its stage sessions' reviewer
+ * breakers are held by the permission manager and end as the run tells it. */
+export function workflowEngineExtensions(store: WorkBoardStore, attachments: Pick<WorkflowTemplateStore, "getAttachment">, permissionManager: PermissionManager): WorkflowEngineExtensions {
   // A run's output folder lives as long as its item. A record can go while its row is still listed (a later run superseded it and the
   // row's history let it go): that run's output stays until the row goes. A board that cannot be read removes nothing.
   const workspace = createStageWorkspaceProvider({ removable: () => store.runsWithoutItem() });
@@ -96,5 +99,6 @@ export function workflowEngineExtensions(store: WorkBoardStore, attachments: Pic
     workspaceBinding: { bind: bindStageWorkspace, unbind: unbindStageWorkspace },
     authoriseRunSource,
     passConditions: createPassConditionRegistry(),
+    runScope: createRunScopeHooks(permissionManager),
   };
 }
