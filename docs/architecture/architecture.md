@@ -3442,7 +3442,11 @@ in its directory.
   fails with `STATUS_DLL_INIT_FAILED` (`0xC0000142`), which a non-interactive
   session such as SSH causes, is reported as `unverified-session`, not as MXC.
   A container runtime root that was not proved private is reported as
-  `runtime-root-unproved`, and the probe starts no container.
+  `runtime-root-unproved`, whatever the container prerequisites, and the probe
+  starts no container. Sandbox HOMEs live under that root, so every sandboxed
+  process (terminal, shells, MCP servers, workers, plugins, the memory map) is
+  then unavailable, each with that named reason, until a restart or an install
+  repair.
 - **Integrity.** Detection hashes the launcher at boot, and the first command
   hashes it again before its launch; that result is cached for the process. A
   mismatch at boot leaves the shells off MXC (`launcher-mismatch`); at launch

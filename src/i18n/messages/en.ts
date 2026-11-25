@@ -4427,7 +4427,7 @@ export const en = {
   "permissionsTab.osSandboxWindowsMxcReasonLauncherMismatch": "the container launcher in this installation is not the expected build; reinstall Ave",
   "permissionsTab.osSandboxWindowsMxcReasonPowershellStartFailed": "Windows PowerShell did not start inside a container on this PC",
   "permissionsTab.osSandboxWindowsMxcReasonUnverifiedSession": "Ave is running in a non-interactive session, where Windows PowerShell cannot start in a container; sign in to Windows and start Ave there",
-  "permissionsTab.osSandboxWindowsMxcReasonRuntimeRootUnproved": "Ave could not confirm that its container folder is private to this Windows account, so it starts no container",
+  "permissionsTab.osSandboxWindowsMxcReasonRuntimeRootUnproved": "Ave could not confirm that its container folder is private to this Windows account, so sandboxed processes (terminal, shells, MCP servers, workers, plugins, the memory map) are unavailable until Ave restarts. If it persists, repair the Ave installation",
   "permissionsTab.osSandboxWindowsExtensionsSrtWin": "Extensions: confined by srt-win under one shared sandbox account.",
   "permissionsTab.osSandboxWindowsExtensionsNone": "Extensions: not confined. srt-win (one-time administrator install) is not ready.",
   "permissionsTab.osSandboxWindowsSharedIdentity": "Extensions share one proxy identity, so the proxy cannot tell which extension process opened a connection.",
