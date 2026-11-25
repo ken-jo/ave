@@ -64,11 +64,13 @@ function resolvedStatePaths(statePaths: readonly ConfinementStatePath[] | undefi
  */
 export function assertWriteGrantsOutsideConfinementState(
   write: readonly string[],
-  statePaths: readonly ConfinementStatePath[] | undefined = declaredConfinementStatePaths(),
+  statePaths: readonly ConfinementStatePath[] | undefined,
 ): void {
   if (write.length === 0) return;
   const states = resolvedStatePaths(statePaths);
   if (states === undefined) throw new ConfinementStateWriteGrantError(undefined);
+  // Nothing declared (no backend that grants on this host): there is nothing to resolve a grant against.
+  if (states.length === 0) return;
   for (const grant of write) {
     const real = strictlyResolved(grant);
     if (real === undefined) throw new ConfinementStateWriteGrantError(grant, "grant-unresolved");

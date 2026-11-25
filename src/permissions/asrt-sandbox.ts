@@ -3,7 +3,7 @@
 import { MxcExtensionReadinessRefusedError, MxcNativeEntryRequiredError, MxcProcessContractError, WorkerTransportUnsupportedError } from "./mxc-extension-errors.js";
 import { assertMxcExtensionFilesystemOwnership, type MxcExtensionFilesystemOwnership } from "./mxc-filesystem-ownership.js";
 import { mxcRuntimeRootFloorPath } from "./mxc-runtime-root.js";
-import { assertWriteGrantsOutsideConfinementState } from "./confinement-state-paths.js";
+import { assertWriteGrantsOutsideConfinementState, declaredConfinementStatePaths } from "./confinement-state-paths.js";
 import { buildPolicyModel, policyFloorRow, policyGrantRow, type PolicyFloorRow, type PolicyGrantRow, type PolicyModel } from "./policy-model.js";
 import { srtWriteFloorRow, toSrtConfig } from "./srt-policy-adapter.js";
 import { issueFilesystemSandboxBlock, type SandboxBlock } from "../shared/sandbox-block.js";
@@ -3612,7 +3612,7 @@ function assertWindowsGrantBoundaries(read: readonly string[], write: readonly s
       throw new Error(`Windows filesystem write grant is inside a protected sensitive target: ${path}`);
     }
   }
-  assertWriteGrantsOutsideConfinementState(write);
+  assertWriteGrantsOutsideConfinementState(write, declaredConfinementStatePaths());
 }
 
 function overlappingWindowsDeny(entry: FilesystemPathEntry, allowWrite: readonly string[], preserveLiteral = false) {

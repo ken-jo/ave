@@ -13,6 +13,12 @@ const missingDrive = (): string => {
   return `${letter}:\\`;
 };
 
+describe("a host with no declared confinement state", () => {
+  it("admits any write, drive path or not, without resolving it", () => {
+    expect(() => assertWriteGrantsOutsideConfinementState(["/home/alice/project", "relative"], [])).not.toThrow();
+  });
+});
+
 describe.runIf(process.platform === "win32")("write admission resolves the declared state strictly", () => {
   let base: string;
   let unrelated: string;
@@ -65,7 +71,7 @@ describe.runIf(process.platform === "win32")("write admission resolves the decla
     expect(() => assertWriteGrantsOutsideConfinementState([unrelated], state)).not.toThrow();
   });
 
-  it("checks every backend's state by default and names the kind of state a refused write reaches", () => {
+  it("checks every backend's declared state and names the kind of state a refused write reaches", () => {
     const local = join(base, "Local");
     vi.stubEnv("LOCALAPPDATA", local);
     vi.stubEnv("ProgramData", join(base, "Machine"));
@@ -78,13 +84,13 @@ describe.runIf(process.platform === "win32")("write admission resolves the decla
         [helper, "helper-ledger", "the sandbox helper's permission records"],
         [join(container, "runs"), "container-runtime", "the container sandbox's runtime folder"],
       ] as const) {
-        expect(() => assertWriteGrantsOutsideConfinementState([grant])).toThrow(expect.objectContaining({
+        expect(() => assertWriteGrantsOutsideConfinementState([grant], declaredConfinementStatePaths())).toThrow(expect.objectContaining({
           code: "confinement-state-write-grant", path: grant, reason, message: expect.stringContaining(named),
         }));
       }
     } finally {
       setLocale(previous);
     }
-    expect(() => assertWriteGrantsOutsideConfinementState([unrelated])).not.toThrow();
+    expect(() => assertWriteGrantsOutsideConfinementState([unrelated], declaredConfinementStatePaths())).not.toThrow();
   });
 });

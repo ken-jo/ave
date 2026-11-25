@@ -36,7 +36,7 @@ import {
 } from "../../permissions/asrt-sandbox.js";
 import { extensionStartIdentity, pluginChildStartKey, type ExtensionStartAuthority } from "../../permissions/extension-start-consent.js";
 import { holdWindowsFilesystemGrant, type HeldWindowsGrant } from "../../permissions/windows-acl-grant-holder.js";
-import { assertWriteGrantsOutsideConfinementState, ConfinementStateWriteGrantError } from "../../permissions/confinement-state-paths.js";
+import { assertWriteGrantsOutsideConfinementState, ConfinementStateWriteGrantError, declaredConfinementStatePaths } from "../../permissions/confinement-state-paths.js";
 import {
   resolvePluginSocketDir,
   writeGrantsReachingHostStorage,
@@ -271,7 +271,7 @@ function resolveUserChosenDirectory(
   }
   // A write is refused before a backend is chosen and before the launch creates the directory; a read stays on the read floor above.
   if (access === "write") {
-    try { assertWriteGrantsOutsideConfinementState([target]); }
+    try { assertWriteGrantsOutsideConfinementState([target], declaredConfinementStatePaths()); }
     catch (error) {
       if (error instanceof ConfinementStateWriteGrantError) rejectEnvelopeGrant(inputs.pluginId, grant.configKey, error.message);
       throw error;

@@ -6,7 +6,7 @@ import { lstatSync, readdirSync } from "node:fs";
 import { windowsSystemRoot } from "../shared/windows-system-path.js";
 
 import { aveHomeReadBoundaryCovering, getProtectedReadDenyFloor } from "../permissions/asrt-sandbox.js";
-import { assertWriteGrantsOutsideConfinementState } from "../permissions/confinement-state-paths.js";
+import { assertWriteGrantsOutsideConfinementState, declaredConfinementStatePaths } from "../permissions/confinement-state-paths.js";
 import { openInvocationProxyListener } from "../permissions/egress-invocation-listener.js";
 import { openHostEgressListener } from "../permissions/egress-host-listener.js";
 import { egressInvocationAbortSignal, egressInvocationOwner, onEgressInvocationReleased, releaseEgressInvocation } from "../permissions/egress-invocations.js";
@@ -153,7 +153,7 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
     throw new Error("Contained shell launcher is missing from this installation");
   }
   // Before ranking: the runtime root is only an ordinary read deny there, which an equal or enclosing write survives.
-  assertWriteGrantsOutsideConfinementState(input.filesystem.allowWrite);
+  assertWriteGrantsOutsideConfinementState(input.filesystem.allowWrite, declaredConfinementStatePaths());
   // A grant would carve the Ave home deny open, so inside that home only a re-allowed child is granted.
   const insideBoundary = (path: string): boolean => aveHomeReadBoundaryCovering(path) !== undefined;
   const allowRead = input.filesystem.allowRead.filter((path) => !insideBoundary(path));
