@@ -9,7 +9,7 @@ import { mxcShellCapability, planWindowsSandbox, windowsProxyOnlyCapability } fr
 import { configureHostResources } from "../../main/host-resources.js";
 import { initializeAsrtSandbox, resetAsrtSandbox } from "../../permissions/asrt-sandbox.js";
 import { baseAllowedDirectories } from "../../permissions/base-allowed-directories.js";
-import { establishMxcRuntimeRoot, mxcRuntimeRootFloorPath } from "../../permissions/mxc-runtime-root.js";
+import { establishMxcRuntimeRoot, mxcRuntimeRootFloorPath, mxcStagingParent } from "../../permissions/mxc-runtime-root.js";
 import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, __resetWindowsSandboxSubstrateForTest,
   getHostShellExecutionPlan, setActiveSandboxCapability, setShellSandboxRequestedAtBoot, setWindowsSandboxSubstrate } from "../../permissions/sandbox-capability.js";
 import { _resolveHostOwnerMarkerForTest, createSandboxProcessHome, SANDBOX_HOME_OWNER_SUFFIX } from "../../permissions/sandbox-process-home.js";
@@ -19,7 +19,8 @@ import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { PowerShellTool } from "../shell-tools.js";
 
 const ATTACKS = ["home-parent-list", "sibling-list", "sibling-read", "sibling-create", "sibling-tmp-read", "sibling-tmp-create",
-  "temp-root-list", "temp-root-read", "temp-root-create", "owner-read", "owner-forge", "owner-plant", "owner-delete"] as const;
+  "temp-root-list", "temp-root-read", "temp-root-create", "owner-read", "owner-forge", "owner-plant", "owner-delete",
+  "staging-list", "staging-create"] as const;
 const CONTROLS = ["own-home-write", "own-temp-write", "cwd-write"] as const;
 
 // One probe per line, `<name>=ok` or `<name>=denied`. The sibling is found the way a confined shell would find it: beside its own HOME. The probes are lines piped to cmd.exe, because the shell's argument analysis refuses a composed path before launch and the container is what is under test.
@@ -46,6 +47,8 @@ function probeScript(input: { siblingName: string; tempRoot: string; nonce: stri
     attempt("owner-plant", write(`%USERPROFILE%\\..\\ave-sandbox-home-g1${input.nonce}${SANDBOX_HOME_OWNER_SUFFIX}`)),
     // del sets no error level; it prints a line only when it fails.
     cmd(`del /f /q ${marker} 2>&1 | findstr /r "." >nul && echo owner-delete=denied || echo owner-delete=ok`),
+    attempt("staging-list", "dir /b %USERPROFILE%\\..\\..\\staging"),
+    attempt("staging-create", write(`%USERPROFILE%\\..\\..\\staging\\g1-planted-${input.nonce}.txt`)),
     attempt("own-home-write", `${write("%USERPROFILE%\\own.txt")} && type %USERPROFILE%\\own.txt`),
     attempt("own-temp-write", `${write("%TEMP%\\own.txt")} && type %TEMP%\\own.txt`),
     attempt("cwd-write", `${write("cwd.txt")} && type cwd.txt`),
@@ -60,7 +63,9 @@ describe.runIf(process.platform === "win32")("container shell and sibling sandbo
     { name: "no additional directory", grantsBase: false },
     // The working directory's grant covers the runtime root's parent: the root's own access is what keeps a sibling closed.
     { name: "a working directory above the runtime root", grantsBase: false, aboveRoot: true },
-  ])("keeps a sibling HOME and the host temp root closed with $name", { timeout: 2 * TOOL_TIMEOUT_POLICY.shellDefaultMs + TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs }, async ({ grantsBase, aboveRoot }, testContext) => {
+    // Directories inside the runtime root named as additional directories: none of them is granted.
+    { name: "the runtime root, the HOME parent, a sibling HOME and staging as additional directories", grantsBase: false, grantsFloor: true },
+  ])("keeps a sibling HOME and the host temp root closed with $name", { timeout: 2 * TOOL_TIMEOUT_POLICY.shellDefaultMs + TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs }, async ({ grantsBase, aboveRoot, grantsFloor }, testContext) => {
     configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     const tempRoot = realpathSync.native(tmpdir());
     const directory = aboveRoot === true
@@ -90,10 +95,12 @@ describe.runIf(process.platform === "win32")("container shell and sibling sandbo
       writeFileSync(join(sibling.path, "secret.txt"), secret);
       writeFileSync(join(siblingTemp, "secret.txt"), secret);
       writeFileSync(hostFile, secret);
-      planted.push(join(sibling.path, "planted.txt"), join(siblingTemp, "planted.txt"),
+      const staging = mxcStagingParent("win32");
+      const floor = grantsFloor === true ? [dirname(staging), dirname(sibling.path), sibling.path, staging] : [];
+      planted.push(join(staging, `g1-planted-${nonce}.txt`), join(sibling.path, "planted.txt"), join(siblingTemp, "planted.txt"),
         join(dirname(sibling.path), `ave-sandbox-home-g1${nonce}${SANDBOX_HOME_OWNER_SUFFIX}`));
       // What `getTurnAdditionalDirectories` hands every tool when the user added no directory.
-      const context = { cwd: directory, extraAllowedDirectories: grantsBase ? [...baseAllowedDirectories()] : [], metadata: {},
+      const context = { cwd: directory, extraAllowedDirectories: [...(grantsBase ? baseAllowedDirectories() : []), ...floor], metadata: {},
         blockReadsOutsideWorkingDirectories: false, hostShellExecutionPlan: getHostShellExecutionPlan() };
       expect(context.hostShellExecutionPlan.mode).toBe("asrt");
       const result = await new PowerShellTool().execute({
@@ -110,7 +117,7 @@ describe.runIf(process.platform === "win32")("container shell and sibling sandbo
         planted: planted.filter((path) => existsSync(path)).map((path) => basename(path)),
         markerIntact: existsSync(marker) && readFileSync(marker, "utf8") === markerText,
       };
-      console.info(`G1 evidence ${JSON.stringify({ grantsBase, aboveRoot: aboveRoot === true, probes: Object.fromEntries(lines), hostConfirmed })}`);
+      console.info(`G1 evidence ${JSON.stringify({ grantsBase, aboveRoot: aboveRoot === true, grantsFloor: grantsFloor === true, probes: Object.fromEntries(lines), hostConfirmed })}`);
       expect(result.output).not.toContain(secret);
       // The shell's HOME is a sibling of the other process's, and its temp directory lies inside its own HOME.
       const ownHome = lines.get("own-home-path") ?? "";

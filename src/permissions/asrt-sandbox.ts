@@ -3,6 +3,7 @@
 import { MxcExtensionReadinessRefusedError, MxcNativeEntryRequiredError, MxcProcessContractError, WorkerTransportUnsupportedError } from "./mxc-extension-errors.js";
 import { assertMxcExtensionFilesystemOwnership, type MxcExtensionFilesystemOwnership } from "./mxc-filesystem-ownership.js";
 import { mxcRuntimeRootFloorPath } from "./mxc-runtime-root.js";
+import { liveSandboxProcessHomes } from "./sandbox-home-registry.js";
 import { buildPolicyModel, policyFloorRow, policyGrantRow, type PolicyFloorRow, type PolicyGrantRow, type PolicyModel } from "./policy-model.js";
 import { srtWriteFloorRow, toSrtConfig } from "./srt-policy-adapter.js";
 import { issueFilesystemSandboxBlock, type SandboxBlock } from "../shared/sandbox-block.js";
@@ -1551,7 +1552,9 @@ export function getBuiltinShellReadPolicy(
 function composeBuiltinShellReadPolicy(readPaths: readonly string[], sandboxHome: string | undefined): ReturnType<typeof getBuiltinShellReadPolicy> {
   const sessions = getBuiltinShellSessionReadPolicy();
   const privateRoots = appOwnedSandboxPrivateRoots();
-  const ownHome = sandboxHome === undefined ? undefined : canonicalizePathForMatch(sandboxHome);
+  // On Windows the HOME must be one this process created and still holds, not merely a path of that shape.
+  const held = sandboxHome !== undefined && (process.platform !== "win32" || liveSandboxProcessHomes.has(sandboxHome));
+  const ownHome = held ? canonicalizePathForMatch(sandboxHome) : undefined;
   // Refusing saved-session access restates private roots too. Those roots still
   // allow this invocation's own HOME; an explicit protected deny keeps priority.
   const protectedDenies = new Set(getProtectedReadDenyPaths());
@@ -3589,9 +3592,9 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
   return grant;
 }
 
-// Whether `path` is at or inside `sandboxHome`, and that HOME is a directory directly inside a private root's `homes`.
-function insideOwnWindowsSandboxHome(path: string, sandboxHome: string | undefined): boolean {
-  if (sandboxHome === undefined) return false;
+// Whether `path` is at or inside `sandboxHome`, a HOME this process created and still holds, directly inside a private root's `homes`. A path alone proves nothing: the HOME must be a live allocation.
+export function insideOwnWindowsSandboxHome(path: string, sandboxHome: string | undefined): boolean {
+  if (sandboxHome === undefined || !liveSandboxProcessHomes.has(sandboxHome)) return false;
   const home = win32.resolve(sandboxHome).toLowerCase();
   if (!appOwnedSandboxPrivateRoots().some(root => win32.dirname(home) === win32.join(root, "homes").toLowerCase())) return false;
   const resolved = win32.resolve(path).toLowerCase();

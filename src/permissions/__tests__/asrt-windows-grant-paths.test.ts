@@ -26,6 +26,7 @@ import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
 import { admitMxcExtensionFilesystem, appOwnedSandboxPrivateRoots, buildSandboxConfig, getBuiltinShellReadPolicy, getDefaultSensitiveWriteDenyEntries, grantWindowsWorkerFilesystemAccess, initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox, runWithSandboxWritePreflight, wrapToolCommand } from "../asrt-sandbox.js";
 import { mxcSandboxHomesParent } from "../mxc-runtime-root.js";
 import { mxcPolicyRows } from "../mxc-windows.js";
+import { createSandboxProcessHome } from "../sandbox-process-home.js";
 
 vi.mock("@anthropic-ai/sandbox-runtime", async importOriginal => ({
   ...(await importOriginal<typeof import("@anthropic-ai/sandbox-runtime")>()),
@@ -104,10 +105,13 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
 
   it("grants a sandbox HOME under the container runtime root to its own process only", async () => {
     const homes = mxcSandboxHomesParent();
-    const own = mkdtempSync(join(homes, "ave-sandbox-home-"));
+    const home = createSandboxProcessHome("win32");
+    const own = home.path;
+    // A directory of the right shape that the host never issued.
     const sibling = mkdtempSync(join(homes, "ave-sandbox-home-"));
+    const released = createSandboxProcessHome("win32");
+    released.cleanup();
     mkdirSync(`${own}-2`);
-    mkdirSync(join(own, "AppData"));
     mkdirSync(join(dirname(homes), "staging"), { recursive: true });
     try {
       // The deny on the root is reported as stamped: the grant is what is under test.
@@ -136,8 +140,14 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
       await expect(request(sibling, homes)).rejects.toThrow(refused);
       await expect(request(sibling, dirname(homes))).rejects.toThrow(refused);
       await expect(request(`${own}-2`, own)).rejects.toThrow(refused);
+      // Naming a path as the HOME proves nothing: only a HOME the host issued and still holds is reopened.
+      await expect(request(sibling, sibling)).rejects.toThrow(refused);
+      await expect(request(own, own.toUpperCase())).rejects.toThrow(refused);
+      mkdirSync(released.path);
+      await expect(request(released.path, released.path)).rejects.toThrow(refused);
     } finally {
-      rmSync(own, { recursive: true, force: true });
+      home.cleanup();
+      rmSync(released.path, { recursive: true, force: true });
       rmSync(sibling, { recursive: true, force: true });
       rmSync(`${own}-2`, { recursive: true, force: true });
     }
@@ -145,7 +155,8 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
 
   it("a shell's read policy keeps its own sandbox HOME and paths inside it, and drops another process's", async () => {
     const homes = mxcSandboxHomesParent();
-    const own = mkdtempSync(join(homes, "ave-sandbox-home-"));
+    const home = createSandboxProcessHome("win32");
+    const own = home.path;
     const sibling = mkdtempSync(join(homes, "ave-sandbox-home-"));
     try {
       await initializeAsrtSandbox({});
@@ -157,8 +168,11 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
       // Without a HOME of its own a wrap is granted none.
       const homeless = getBuiltinShellReadPolicy([own, inside], undefined);
       expect(homeless.allowRead.filter(path => !homeless.floorPierces.includes(path))).toEqual([]);
+      // Nor is a HOME the host never issued reopened by naming it.
+      const forged = getBuiltinShellReadPolicy([sibling], undefined, sibling);
+      expect(forged.allowRead.filter(path => !forged.floorPierces.includes(path))).toEqual([]);
     } finally {
-      rmSync(own, { recursive: true, force: true });
+      home.cleanup();
       rmSync(sibling, { recursive: true, force: true });
     }
   });

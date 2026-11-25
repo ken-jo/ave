@@ -14,6 +14,7 @@ import { createLogger } from "../lib/logger.js";
 import { errorMessage } from "../shared/error-message.js";
 import { appOwnedSandboxHomeRoot, ensureSandboxPrivateRoot } from "./asrt-sandbox.js";
 import { mxcSandboxHomesParent } from "./mxc-runtime-root.js";
+import { liveSandboxProcessHomes } from "./sandbox-home-registry.js";
 import { drainAgentObservationHome, registerAgentObservationHome } from "../tools/agent-observation-context.js";
 import { readWindowsProcessRunStates, type ProcessRunStateProbe } from "./windows-process-start-time.js";
 
@@ -25,7 +26,7 @@ const OWNER_MARKER_MAX_BYTES = 128;
 const CLEANUP_RETRY_DELAYS_MS = [50, 250, 1_000] as const;
 
 // The sandbox HOMEs this process created and has not yet removed.
-const liveHomes = new Set<string>();
+const liveHomes = liveSandboxProcessHomes;
 
 // The sandbox HOMEs this process created and has not yet removed. The boot sweep keeps them: a HOME a process started during this boot is using is never removed, whatever order boot and the first spawn run in.
 export function sandboxProcessHomesInUse(): ReadonlySet<string> {
@@ -246,6 +247,10 @@ export function createSandboxProcessHome(
       !basename(homePath).startsWith(SANDBOX_HOME_PREFIX)
     ) {
       throw new Error(`refusing unsafe sandbox process HOME: ${homePath}`);
+    }
+    // Asked again: a parent replaced while the HOME was created is refused, and the HOME is removed.
+    if (platform === "win32" && process.platform === "win32" && sandboxHomeParent(platform) !== parentRoot) {
+      throw new Error(`refusing sandbox process HOME under a replaced parent: ${homePath}`);
     }
 
     env = Object.freeze(sandboxProcessProfileEnvironment(homePath, platform));

@@ -4216,6 +4216,7 @@ async function spawnPowerShellInMxc(
         ])],
         floorPierces,
       },
+      sandboxHome: sandboxHome.path,
       env: powerShellExecutionEnvironment(verified, powerShellLaunch.env),
       timeoutMs: resolveShellTimeoutMs(timeoutSeconds),
       exists: existsSync,
