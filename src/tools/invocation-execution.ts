@@ -15,7 +15,8 @@ import { disposableContainerCapability, resolveReviewerSandboxCapability } from 
 import type { ToolOutputArtifactInfo, ToolOutputCapture } from "../shared/tool-output-artifact.js";
 import type { ApprovalDecision, ApprovalRequestInput, LinkedApprovalTarget } from "../permissions/approval-gate.js";
 import { randomUUID } from "node:crypto";
-import { isIssuedFloorSessionDecision, isIssuedShellAllowRuleDecision, type PermissionCheckResult } from "../permissions/permission-manager.js";
+import type { PermissionCheckResult } from "../permissions/permission-manager.js";
+import { HOST_TERMINAL_PERMISSION_CHANGED, issueHostTerminalWriteAuthority, type HostTerminalWriteAuthority } from "../permissions/host-terminal-write-authority.js";
 import type { ToolExecutionAuditMetadata } from "../audit/audit-schema.js";
 import { isPiiRedactionEnabled, maskSensitiveData } from "../audit/dlp-filter.js";
 import { emitEffectShadowLog } from "../permissions/reviewer/risk-shadow-log.js";
@@ -200,7 +201,7 @@ export interface ExecutionStageContext {
   hostShellExecutionPlan: HostShellExecutionPlan | undefined;
   executionRouteGrant?: ExecutionGrant;
   finalizeExecutionRouteGrant?: () => Promise<ExecutionGrant | undefined>;
-  hostTerminalRoute?: { recheck(): Promise<void> };
+  hostTerminalRoute?: { recheck(): Promise<void>; decidedBackend: string; backendIdentity(): string | undefined };
   checkCurrentHostTerminalPermission?: () => PermissionCheckResult;
   preparedShellInvocation?: import("./prepared-shell-invocation.js").PreparedShellInvocation;
   verifiedShellCommand?: import("../permissions/verified-shell-command.js").VerifiedShellCommand;
@@ -301,6 +302,18 @@ export async function executeAuthorizedToolInvocation(
   }
   let humanApproved = initialHumanApproved;
   let approvedPolicyEpoch = context.approvedPolicyEpoch;
+  let terminalWriteAuthority: HostTerminalWriteAuthority | undefined;
+  const issueTerminalWriteAuthority = (): void => {
+    const manager = services.permissionManager;
+    const check = context.checkCurrentHostTerminalPermission;
+    if (!hostTerminalRoute || !manager || !check || permissionResult?.decision !== "allow") return;
+    terminalWriteAuthority = issueHostTerminalWriteAuthority({
+      manager, check, settled: permissionResult,
+      human: humanApproved, cardForced: humanApproved && permissionResult.forceModal === true,
+      reviewed: permissionResult.reasonCode === "user-owned-surface-reviewed" && permissionResult.reviewer?.verdict !== undefined,
+      decidedBackend: hostTerminalRoute.decidedBackend, backendIdentity: hostTerminalRoute.backendIdentity,
+    });
+  };
   let permissionRecheckResult = context.permissionRecheckResult;
 
 
@@ -831,32 +844,8 @@ export async function executeAuthorizedToolInvocation(
     ...(hostShellExecutionPlan ? { hostShellExecutionPlan } : {}),
     ...(executionRouteGrant ? { executionRouteGrant } : {}),
     ...(hostTerminalRoute ? { hostTerminalRoute: {
-      recheck: async () => {
-        await hostTerminalRoute.recheck();
-        const manager = services.permissionManager;
-        const previous = permissionResult;
-        const current = context.checkCurrentHostTerminalPermission?.();
-        if (!manager || !previous || !current || current.decision === "deny") {
-          throw new Error("Host terminal permission changed before typing.");
-        }
-        if (humanApproved) {
-          // The one-time answer was settled before typing, so each write requires the same policy epoch.
-          if (approvedPolicyEpoch !== manager.getPolicyEpoch() ||
-              (current.forceModal && (!previous.forceModal || current.reasonCode !== previous.reasonCode))) {
-            throw new Error("Host terminal permission changed before typing.");
-          }
-          return;
-        }
-        const refreshed = manager.recheckPermission(previous);
-        if (refreshed.decision !== "allow" || current.forceModal ||
-            (previous.reasonCode === EXACT_HOST_RULE_REASON_CODE &&
-              (!isIssuedShellAllowRuleDecision(refreshed, manager) || !isIssuedShellAllowRuleDecision(current, manager))) ||
-            (previous.reasonCode === "floor-session-allow" &&
-              (!isIssuedFloorSessionDecision(refreshed, manager) || !isIssuedFloorSessionDecision(current, manager)))) {
-          throw new Error("Host terminal permission changed before typing.");
-        }
-        permissionResult = refreshed;
-      },
+      recheck: hostTerminalRoute.recheck,
+      refusal: () => terminalWriteAuthority === undefined ? HOST_TERMINAL_PERMISSION_CHANGED : terminalWriteAuthority.refusal(),
     } } : {}),
     ...(preparedShellInvocation ? { preparedShellInvocation } : {}),
     ...(verifiedShellCommand ? { verifiedShellCommand } : {}),
@@ -984,6 +973,7 @@ export async function executeAuthorizedToolInvocation(
       throw new Error("remote-controller-revoked");
     }
     signal.throwIfAborted();
+    issueTerminalWriteAuthority();
   };
 
   let lateApprovalPolicyEpoch: string | undefined;
@@ -1176,6 +1166,7 @@ export async function executeAuthorizedToolInvocation(
     }
     if (humanApproved) permissionResult = { ...permissionResult, decision: "allow", reason: `user approved approval request (${decision.choice})` };
     approvedPolicyEpoch = currentEpoch;
+    issueTerminalWriteAuthority();
     if (hostShellExecutionPlan && hostShellExecutionPermitBinding) {
       const permit = mintHostShellExecutionPermit({ plan: hostShellExecutionPlan, approvalDecision: decision,
         permissionManager: services.permissionManager, binding: hostShellExecutionPermitBinding });

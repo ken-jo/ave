@@ -327,7 +327,9 @@ export async function authorizeToolInvocation(
     reason: "another principal's request requires local allow-once approval",
   } : undefined);
   let checkCurrentHostTerminalPermission: AuthorizedInvocation["checkCurrentHostTerminalPermission"];
-  if (context.directoryAuthorization === undefined || context.directoryAuthorization.pendingRationale) {
+  let checkCurrentPermission: (() => PermissionCheckResult) | undefined;
+  const needsCentralDecision = context.directoryAuthorization === undefined || context.directoryAuthorization.pendingRationale === true;
+  if (needsCentralDecision || hostTerminalScope) {
     const shellDialect = isCanonicalBashTool(tool)
       ? "bash" as const
       : isCanonicalPowerShellTool(tool) ? "powershell" as const : undefined;
@@ -376,7 +378,7 @@ export async function authorizeToolInvocation(
       if (hostTerminalScope) await services.permissionManager.ensurePermissionRulesLoaded(projectRulesCwd);
       else await services.permissionManager.ensureProjectRulesLoaded(projectRulesCwd);
     }
-    const checkCurrentPermission = (): PermissionCheckResult => services.permissionManager
+    const checkPermission = (): PermissionCheckResult => services.permissionManager
       ? services.permissionManager.checkDetailed(
           toolUse.name,
           source,
@@ -411,15 +413,18 @@ export async function authorizeToolInvocation(
           reason: "Permission manager is unavailable",
           forceModal: true,
         };
+    checkCurrentPermission = checkPermission;
     if (hostTerminalScope && services.permissionManager) {
       const manager = services.permissionManager;
       checkCurrentHostTerminalPermission = () => {
         if (!manager.areLoadedPermissionRulesCurrent(projectRulesCwd)) {
           return { decision: "deny", reason: "Permission rules changed before typing." };
         }
-        return checkCurrentPermission();
+        return checkPermission();
       };
     }
+  }
+  if (needsCentralDecision && checkCurrentPermission) {
     permissionResult = context.reviewedPermissionForCard !== undefined && services.permissionManager !== undefined
       ? services.permissionManager.recheckPermission(context.reviewedPermissionForCard)
       : context.directoryAuthorization?.pendingRationale

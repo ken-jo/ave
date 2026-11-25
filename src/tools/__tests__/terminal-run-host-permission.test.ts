@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import {
-  __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, setActiveSandboxCapability, setShellSandboxRequestedAtBoot,
+  __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, markMcpServerWrapped, setActiveSandboxCapability, setShellSandboxRequestedAtBoot,
 } from "../../permissions/sandbox-capability.js";
 import { formatRuleSpecifier } from "../../permissions/rules/rule-specifier.js";
 import { canonicalizePathForMatch } from "../../permissions/sensitive-paths.js";
@@ -31,11 +31,20 @@ import { _resetAveHomePrivacyForTest, setAveHomePrivacyAtBoot } from "../../shar
 import { HOME_PRIVACY_HELPER_UNAVAILABLE_SHELL_DENIAL } from "../../permissions/host-shell-execution-plan.js";
 
 // A published operator container makes the host rebuild shell effects onto a disposable route; the harness lets a test publish one mid-command.
-const operatorHarness = vi.hoisted(() => ({ current: null as object | null, issued: new WeakSet<object>(), leases: new WeakMap<object, object>() }));
+const operatorHarness = vi.hoisted(() => ({ current: null as object | null, issued: new WeakSet<object>(), leases: new WeakMap<object, object>(), unreadable: false }));
+const brokerHarness = vi.hoisted(() => ({ active: false }));
+vi.mock("../../workload/runtime.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../workload/runtime.js")>();
+  return { ...actual, isWorkloadBrokerActive: () => brokerHarness.active };
+});
 vi.mock("../../permissions/operator-container-attestation.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../permissions/operator-container-attestation.js")>();
   return {
     ...actual,
+    isOperatorContainerPublished: () => {
+      if (operatorHarness.unreadable) throw new Error("Operator state unavailable");
+      return operatorHarness.current !== null;
+    },
     acquirePublishedOperatorContainerCapabilityForGrant: async () => {
       if (operatorHarness.current === null) return null;
       const capability = operatorHarness.current as OperatorContainerCapability;
@@ -73,6 +82,8 @@ afterEach(() => {
   vi.unstubAllEnvs();
   setProcessPlatform(ORIGINAL_PLATFORM);
   operatorHarness.current = null;
+  operatorHarness.unreadable = false;
+  brokerHarness.active = false;
   _resetAveHomePrivacyForTest();
   __resetTerminalBlocksForTest();
   __resetActiveSandboxCapabilityForTest();
@@ -96,6 +107,7 @@ async function run(command: string, options: {
   duringApproval?: () => void;
   /** Runs inside the PTY layer before its first pre-write effect check. */
   duringTyping?: () => void | Promise<void>;
+  afterEffectCheck?: () => void | Promise<void>;
 } = {}) {
   const sessionId = options.sessionId ?? "pane";
   const tracker = new TerminalBlockTracker({ nonce: TERMINAL_TEST_NONCE, marksPromptEnd: true });
@@ -130,6 +142,9 @@ async function run(command: string, options: {
         await options.duringTyping?.();
         const effect = await request.effectCheck();
         if (!effect.ok) { refusals.push(effect.message); return { ok: false, reason: "effect-refused", message: effect.message }; }
+        await options.afterEffectCheck?.();
+        const refusal = request.writeFence?.();
+        if (refusal !== undefined) { refusals.push(refusal); return { ok: false, reason: "effect-refused", message: refusal }; }
         typed.push(request.line);
         return { ok: true, firstBlockId: 1 };
       },
@@ -385,7 +400,7 @@ describe("terminal_run without Windows shell containment", () => {
     expect(refused.typed).toEqual([]);
   });
 
-  it.each(["allow-once", "floor waiver", "exact rule"] as const)("refuses to type when a deny arrives after authorization by %s", async (authority) => {
+  it.each(["allow-once", "floor waiver", "exact rule"] as const)("refuses to type when a deny arrives after the final async check for %s", async (authority) => {
     const permissionManager = new PermissionManager(join(dir, "permissions.json"));
     const options = { permissionManager, mode: "allow" as const, surfaceChoice: "allow" as const };
     if (authority === "floor waiver") {
@@ -396,17 +411,76 @@ describe("terminal_run without Windows shell containment", () => {
     if (authority === "exact rule") {
       setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: dir, sid: "S-1-5-21-1" });
     }
-    const duringTyping = vi.fn(async () => {
+    const afterEffectCheck = vi.fn(async () => {
       await permissionManager.addRulePersist({ ...exactRule, action: "deny" }, { kind: "user" });
     });
     const refused = await run(command, {
-      ...options, choice: "allow-once", ...(authority === "exact rule" ? { rules: [exactRule] } : {}), duringTyping,
+      ...options, choice: "allow-once", ...(authority === "exact rule" ? { rules: [exactRule] } : {}), afterEffectCheck,
     });
     expect(refused.decision?.reasonCode).toBe(authority === "allow-once" ? "sandbox-unavailable"
       : authority === "floor waiver" ? "floor-session-allow" : "exact-host-rule");
-    expect(duringTyping).toHaveBeenCalledOnce();
+    expect(afterEffectCheck).toHaveBeenCalledOnce();
     expect(refused.typed).toEqual([]);
     expect(refused.result.is_error).toBe(true);
+    expect(refused.result.content).toContain("Call terminal_run again");
+    const fresh = await run(command, options);
+    expect(fresh.decision).toMatchObject({ decision: "deny", reasonCode: "rule-deny" });
+    expect(fresh.typed).toEqual([]);
+  });
+
+  it.each(["allow-once", "floor waiver", "exact rule"] as const)("keeps %s across memory-only allows during typing", async (authority) => {
+    const permissionManager = new PermissionManager(join(dir, "permissions.json"));
+    const options = { permissionManager, mode: "allow" as const, surfaceChoice: "allow" as const };
+    if (authority === "floor waiver") {
+      expect((await run(command, { ...options, approvalGate: sessionGate(permissionManager).gate })).typed).toEqual([command]);
+    }
+    if (authority === "exact rule") setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: dir, sid: "S-1-5-21-1" });
+    for (const sessionId of ["pane", "other-pane"]) {
+      const result = await run(command, {
+        ...options, choice: "allow-once", ...(authority === "exact rule" && sessionId === "pane" ? { rules: [exactRule] } : {}),
+        duringTyping: () => permissionManager.addSessionRule(sessionId, "Bash(printf example)"),
+      });
+      expect(result.typed).toEqual([command]);
+    }
+  });
+
+  it("keeps the host route when another server is wrapped", async () => {
+    const result = await run(command, { choice: "allow-once", duringTyping: () => markMcpServerWrapped("other-server") });
+    expect(result.typed).toEqual([command]);
+  });
+
+  it("refuses a host write if an operator route appears after the final async check", async () => {
+    const result = await run(command, { choice: "allow-once", afterEffectCheck: publishOperatorContainer });
+    expect(result.typed).toEqual([]);
+    expect(result.result.content).toContain("Call terminal_run again");
+  });
+
+  it.each([
+    ["a workload broker becomes active", () => { brokerHarness.active = true; }],
+    ["operator route state cannot be read", () => { operatorHarness.unreadable = true; }],
+  ] as const)("refuses a host write after %s", async (_label, afterEffectCheck) => {
+    const result = await run(command, { choice: "allow-once", afterEffectCheck });
+    expect(result.typed).toEqual([]);
+    expect(result.result.content).toContain("Call terminal_run again");
+  });
+
+  it.each([
+    ["the mode changes", (manager: PermissionManager) => manager.setMode("allow")],
+    ["an unrelated allow is saved", (manager: PermissionManager) => manager.addRulePersist({ pattern: "Bash(printf example)", action: "allow" }, { kind: "user" })],
+    ["the exact rule is removed", (manager: PermissionManager) => manager.removeRulePersist(exactRule.pattern, "allow")],
+    ["an unrelated deny is removed", (manager: PermissionManager) => manager.removeRulePersist("Bash(printf example)", "deny")],
+    ["the rules file is deleted", () => unlinkSync(join(dir, "permissions.json"))],
+    ["the surface choice changes", (manager: PermissionManager) => manager.setUserOwnedSurfaceChoice("pane", "host-terminal", "ask")],
+  ] as const)("refuses an exact-rule write when %s after the final async check", async (_label, change) => {
+    setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: dir, sid: "S-1-5-21-1" });
+    const permissionManager = new PermissionManager(join(dir, "permissions.json"));
+    const result = await run(command, {
+      permissionManager, surfaceChoice: "allow",
+      rules: [exactRule, { pattern: "Bash(printf example)", action: "deny" }],
+      afterEffectCheck: async () => { await change(permissionManager); },
+    });
+    expect(result.typed).toEqual([]);
+    expect(result.result.is_error).toBe(true);
   });
 
   it("refuses to type after the exact rule that answered the floor is deleted during surface approval execution", async () => {

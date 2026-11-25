@@ -1317,7 +1317,7 @@ export async function typeHostTerminalCommand(
   request: HostTerminalTypingRequest,
   signal?: AbortSignal,
 ): Promise<TypeTerminalCommandResult> {
-  const { requestingSessionId, turn, line, expectedCwd, bound, effectCheck } = request;
+  const { requestingSessionId, turn, line, expectedCwd, bound, effectCheck, writeFence } = request;
   const session = hostSession(ref, ownerWindowId);
   const control = session?.control;
   const missing = `no running host terminal with tabId ${JSON.stringify(ref.tabId)} in this window`;
@@ -1342,6 +1342,7 @@ export async function typeHostTerminalCommand(
       signal: cancel,
       blocks: session.blocks,
       isLive: live,
+      fence: writeFence,
       // The final PTY write chokepoint for agent bytes: nothing reaches the shell once the lease is gone.
       write: (data) => { if (!cancel.aborted && live()) session.pty.write(data); },
       // Every check before a write (reset, paste, Enter) asks the operating system about the shell, then re-proves the sealed directory
@@ -1362,7 +1363,10 @@ export async function typeHostTerminalCommand(
     },
     line,
     () => log.info({ tabId: ref.tabId, terminalSessionId: ref.terminalSessionId, chars: line.length }, "terminal: typed an approved host command"),
-  );
+  ).catch((error: unknown) => {
+    control.abandon(lease);
+    throw error;
+  });
   if (!result.ok) {
     const revoked = lease.signal.aborted;
     control.abandon(lease);
@@ -1383,6 +1387,7 @@ export interface HostTerminalTypingRequest {
   readonly bound: () => boolean;
   /** The sealed directory identity and approved route, re-proved at each pre-write check. */
   readonly effectCheck: () => Promise<{ ok: true } | { ok: false; message: string }>;
+  readonly writeFence?: () => string | undefined;
 }
 
 /** A pane binding changed in `windowId`: end every host lease whose requesting conversation is no longer that tab's pane chat, so its
@@ -1654,6 +1659,7 @@ export async function typeAgentTerminalCommand(
 
 /** The terminal {@link typeLineAtPrompt} types into. */
 export interface PromptTypingTarget {
+  fence?: () => string | undefined;
   readonly signal?: AbortSignal;
   /** Its block tracker, or undefined when there is no such terminal. */
   readonly blocks: TerminalBlockTracker | undefined;
@@ -1680,14 +1686,28 @@ export async function typeLineAtPrompt(
   const authority = gate?.permissionContext?.remoteControllerAuthority;
   const sessionId = gate?.sessionId;
   const originalTarget = target;
-  target = { ...originalTarget, write(data) {
+  const assertRemoteControllerBound = (): void => {
     if (!isRemoteControllerBoundToSession(authority, sessionId)) throw new Error("remote-controller-revoked");
+  };
+  // The only path for agent input. The lease and fence are checked synchronously with the write.
+  const send = (data: string, beforeBytes?: () => void): string | undefined => {
+    assertRemoteControllerBound();
+    if (target.signal?.aborted || !target.isLive()) return "terminal command preparation was cancelled; no further input was sent";
+    const refusal = target.fence?.();
+    if (refusal !== undefined) return refusal;
+    beforeBytes?.();
     originalTarget.write(data);
-  } };
+    return undefined;
+  };
+  const clear = (data: string): void => {
+    assertRemoteControllerBound();
+    originalTarget.write(data);
+  };
   if (!hasOnlyTypeableCharacters(line) || line.length > MAX_TERMINAL_COMMAND_CHARS) {
     throw new Error("typeAgentTerminalCommand: the line holds characters that cannot be typed as one command");
   }
   const notTyped = (reason: TerminalNotTypedReason, message: string): TypeTerminalCommandResult => ({ ok: false, reason, message });
+  const effectRefused = (message: string): TypeTerminalCommandResult => notTyped("effect-refused", message);
   const blocks = target.blocks;
   const check = (): TypeTerminalCommandResult | null => {
     if (target.signal?.aborted) return notTyped("aborted", "terminal command preparation was cancelled; no further input was sent");
@@ -1705,7 +1725,10 @@ export async function typeLineAtPrompt(
     const verified = await target.verify(options);
     if (!verified.ok) return notTyped(verified.reason, verified.message);
     if (!await refreshRemoteControllerBoundToSession(authority, sessionId) || !isRemoteControllerBoundToSession(authority, sessionId)) return notTyped("effect-refused", "remote-controller-revoked");
-    return interrupted() ?? (!target.isLive() ? notTyped("no-terminal", target.missing) : null);
+    const stopped = interrupted() ?? (!target.isLive() ? notTyped("no-terminal", target.missing) : null);
+    if (stopped) return stopped;
+    const refusal = target.fence?.();
+    return refusal === undefined ? null : effectRefused(refusal);
   };
   const before = check();
   if (before || !blocks) return before ?? notTyped("no-terminal", target.missing);
@@ -1721,7 +1744,7 @@ export async function typeLineAtPrompt(
   if (afterCheck) return afterCheck;
 
   // 2–3. Reset the line editor and wait for the fresh prompt.
-  const resetFailure = await resetToFreshPrompt(blocks, target, safeToWrite, interrupted);
+  const resetFailure = await resetToFreshPrompt(blocks, target, safeToWrite, interrupted, send);
   if (resetFailure) return resetFailure;
   const reported = blocks.currentCwd();
   if (reported === null || canonicalizePathForMatch(reported) !== verified.cwd) {
@@ -1732,10 +1755,11 @@ export async function typeLineAtPrompt(
   const beforeWrite = await safeToWrite() ?? check();
   if (beforeWrite) return beforeWrite;
   const prompt = blocks.promptEndCount();
-  const empty = await requestEditLine(blocks, target, prompt, interrupted);
+  const empty = await requestEditLine(blocks, target, prompt, interrupted, send);
   if (target.signal?.aborted) return notTyped("aborted", "terminal command preparation was cancelled; no further input was sent");
+  if (typeof empty === "string") return effectRefused(empty);
   if (!empty || empty.line !== "" || interrupted()) {
-    if (target.isLive() && !await safeToWrite()) target.write("\u0003");
+    if (target.isLive() && !await safeToWrite()) clear("\u0003");
     return notTyped("edit-line-mismatch", "the terminal did not confirm an empty editable command buffer; no command was pasted");
   }
   const beforePaste = await safeToWrite() ?? check();
@@ -1743,25 +1767,28 @@ export async function typeLineAtPrompt(
   if (blocks.promptEndCount() !== prompt || blocks.editLineReport()?.generation !== empty.generation) {
     return notTyped("edit-line-mismatch", "the terminal prompt or editable buffer changed before pasting");
   }
-  target.write(`\u001b[200~${line}\u001b[201~`);
+  const pasteRefusal = send(`\u001b[200~${line}\u001b[201~`);
+  if (pasteRefusal !== undefined) return interrupted() ?? effectRefused(pasteRefusal);
   // A cancellation or a refused final effect check from here on leaves the pasted line at the prompt; the target may clear it.
   const cancelledAfterPaste = (result: TypeTerminalCommandResult): TypeTerminalCommandResult => {
-    if (!result.ok && (result.reason === "aborted" || result.reason === "effect-refused")) target.clearAfterAbort?.();
+    if (!result.ok && (result.reason === "aborted" || result.reason === "effect-refused") &&
+      isRemoteControllerBoundToSession(authority, sessionId)) target.clearAfterAbort?.();
     return result;
   };
   // 5. Confirm both the display and the editor's actual buffer before Enter.
   const shown = await waitForEditLine(blocks, prompt, line, target.signal);
   if (target.signal?.aborted) return cancelledAfterPaste(notTyped("aborted", "terminal command preparation was cancelled; Enter was not pressed"));
   if (!shown || !target.isLive() || interrupted()) {
-    if (target.isLive() && !await safeToWrite()) target.write("\u0003");
+    if (target.isLive() && !await safeToWrite()) clear("\u0003");
     return notTyped("edit-line-mismatch", "the terminal's line editor did not show exactly the approved line after it was pasted, so Enter was not pressed");
   }
   const beforeQuery = await safeToWrite();
   if (beforeQuery) return cancelledAfterPaste(beforeQuery);
-  const confirmed = await requestEditLine(blocks, target, prompt, interrupted);
+  const confirmed = await requestEditLine(blocks, target, prompt, interrupted, send);
   if (target.signal?.aborted) return cancelledAfterPaste(notTyped("aborted", "terminal command preparation was cancelled; Enter was not pressed"));
+  if (typeof confirmed === "string") return cancelledAfterPaste(effectRefused(confirmed));
   if (!confirmed || confirmed.line !== line || interrupted()) {
-    if (target.isLive() && !await safeToWrite()) target.write("\u0003");
+    if (target.isLive() && !await safeToWrite()) clear("\u0003");
     return notTyped("edit-line-mismatch", "the terminal's editable command buffer did not match the approved line; Enter was not pressed");
   }
   // No other process may share the terminal when Enter is pressed: whatever it writes would land in the agent's command output.
@@ -1773,8 +1800,8 @@ export async function typeLineAtPrompt(
     return notTyped("edit-line-mismatch", "the terminal prompt or editor acknowledgement changed before Enter; no further input was sent");
   }
   const firstBlockId = blocks.nextBlockId();
-  target.onBeforeEnter?.(firstBlockId);
-  target.write("\r");
+  const enterRefusal = send("\r", () => target.onBeforeEnter?.(firstBlockId));
+  if (enterRefusal !== undefined) return cancelledAfterPaste(interrupted() ?? effectRefused(enterRefusal));
   onTyped();
   return { ok: true, firstBlockId };
 }
@@ -1789,6 +1816,7 @@ async function resetToFreshPrompt(
   target: PromptTypingTarget,
   safeToWrite: () => Promise<TypeTerminalCommandResult | null>,
   interrupted: () => TypeTerminalCommandResult | null,
+  send: (data: string, beforeBytes?: () => void) => string | undefined,
 ): Promise<TypeTerminalCommandResult | null> {
   const deadline = Date.now() + FRESH_PROMPT_TIMEOUT_MS;
   const expired = (): TypeTerminalCommandResult => ({ ok: false, reason: "no-fresh-prompt", message: "the terminal's shell did not draw a fresh prompt with a full quiet window within three seconds" });
@@ -1812,10 +1840,13 @@ async function resetToFreshPrompt(
       if (!drawn && interrupted() === null && target.isLive()) return expired();
     } else {
       since = blocks.promptEndCount();
-      const fresh = waitForFreshPrompt(blocks, since, Math.min(RESET_REPEAT_MS, left), () => interrupted() !== null);
-      target.write("\u0003");
+      let fresh: Promise<boolean> | undefined;
+      const refusal = send("\u0003", () => {
+        fresh = waitForFreshPrompt(blocks, since, Math.min(RESET_REPEAT_MS, left), () => interrupted() !== null);
+      });
+      if (refusal !== undefined) return interrupted() ?? { ok: false, reason: "effect-refused", message: refusal };
       sent++;
-      drawn = await fresh;
+      drawn = await fresh ?? false;
     }
     const changed = interrupted();
     if (changed) return changed;
@@ -1843,8 +1874,8 @@ function waitForEditorState<T>(
   blocks: TerminalBlockTracker,
   signal: AbortSignal | undefined,
   read: () => T | null | undefined,
-  { includeEditLineOutput, write }: { includeEditLineOutput?: boolean; write?: () => void } = {},
-): Promise<T | null> {
+  { includeEditLineOutput, write }: { includeEditLineOutput?: boolean; write?: () => string | undefined } = {},
+): Promise<T | string | null> {
   return new Promise((resolve, reject) => {
     let done = false;
     let expiresAt = Infinity;
@@ -1859,12 +1890,16 @@ function waitForEditorState<T>(
       cleanup();
       resolve(null);
     };
-    const check = (writeIfPending?: () => void, deadlineReached = false): void => {
+    const check = (writeIfPending?: () => string | undefined, deadlineReached = false): void => {
       if (done) return;
       try {
         const value = signal?.aborted ? null : read();
         if (value === undefined && !deadlineReached && Date.now() < expiresAt) {
-          writeIfPending?.();
+          const refusal = writeIfPending?.();
+          if (refusal !== undefined) {
+            cleanup();
+            resolve(refusal);
+          }
           return;
         }
         cleanup();
@@ -1891,7 +1926,8 @@ async function requestEditLine(
   target: PromptTypingTarget,
   prompt: number,
   interrupted: () => TypeTerminalCommandResult | null,
-): Promise<{ readonly generation: number; readonly line: string } | null> {
+  send: (data: string) => string | undefined,
+): Promise<{ readonly generation: number; readonly line: string } | string | null> {
   const state = blocks.promptState();
   if (!blocks.supportsEditLineQuery() || !target.isLive() || interrupted()
     || blocks.promptEndCount() !== prompt || blocks.typedSincePromptEnd()
@@ -1905,7 +1941,7 @@ async function requestEditLine(
     return report && report.generation > generationAtQuery ? report : undefined;
   }, { write: () => {
     generationAtQuery = blocks.editLineReportGeneration();
-    target.write(TERMINAL_EDIT_LINE_QUERY);
+    return send(TERMINAL_EDIT_LINE_QUERY);
   } });
 }
 

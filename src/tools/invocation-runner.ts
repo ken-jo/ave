@@ -182,7 +182,7 @@ import {
   authorizeToolInvocation,
   type AuthorizationStageContext,
 } from "./invocation-authorization.js";
-import { executeAuthorizedToolInvocation } from "./invocation-execution.js";
+import { executeAuthorizedToolInvocation, type ExecutionStageContext } from "./invocation-execution.js";
 import {
   resolvePluginOperation,
   type ResolvedPluginOperation,
@@ -1274,9 +1274,8 @@ async function runToolInvocationAttempt(
       });
     }
     // A command typed into the user's own host terminal runs on the host and nowhere else. Seal that route with the same router the shells
-    // use, so the permission decision sees its (empty) path-policy relaxations, and re-prove it before every write to the terminal: a route
-    // that would now move the effect elsewhere, or relax path policy, is a contract violation and types nothing.
-    let hostTerminalRoute: { recheck(): Promise<void> } | undefined;
+    // use, with its empty path-policy relaxations. The write fence checks whether the command still belongs on that route.
+    let hostTerminalRoute: ExecutionStageContext["hostTerminalRoute"];
     const hostTerminalCommand = isCanonicalTerminalRunTool(tool) && approvalMemory.kind === "key"
       && approvalMemory.scope.kind === "terminal-command" && approvalMemory.scope.lane === "manual" && typeof finalInput.command === "string"
       ? { command: finalInput.command, cwd: approvalMemory.scope.physicalCwd } : undefined;
@@ -1285,7 +1284,7 @@ async function runToolInvocationAttempt(
     const hostTerminalFloorPlan = hostTerminalPlan !== undefined
       && (isHomePrivacyHelperUnavailablePlan(hostTerminalPlan) || requiresUnsandboxedShellAsk(hostTerminalPlan)) ? hostTerminalPlan : undefined;
     // A blocked plan has no host route to seal; its denial is decided below, and the tool types nothing without a sealed route.
-    if (hostTerminalCommand !== undefined && !isHomePrivacyHelperUnavailablePlan(hostTerminalFloorPlan)) {
+    if (hostTerminalCommand !== undefined && hostTerminalPlan !== undefined && !isHomePrivacyHelperUnavailablePlan(hostTerminalFloorPlan)) {
       const buildHostTerminalRoute = async (legacyPlan?: HostShellExecutionPlan) => {
         const router = await import("../permissions/execution-router.js");
         const broker = await acquireConfiguredBrokerCapability();
@@ -1306,17 +1305,31 @@ async function runToolInvocationAttempt(
         return { router, plan: route.plan };
       };
       try {
+        const [{ isWorkloadBrokerActive }, { isOperatorContainerPublished }] = await Promise.all([
+          import("../workload/runtime.js"),
+          import("../permissions/operator-container-attestation.js"),
+        ]);
         const sealed = await buildHostTerminalRoute(hostTerminalPlan);
         if (sealed.plan.route !== "host") {
           throw new Error("a command for the user's own terminal runs only on the host, and this host now routes shell effects elsewhere");
         }
         executionRoutePathPolicyRelaxations = sealed.router.executionPlanPathPolicyRelaxations(sealed.plan);
         const decided = executionRoutePathPolicyRelaxations;
+        const decidedLegacyPlanIdentity = sealed.plan.legacyPlanIdentity;
         hostTerminalRoute = Object.freeze({
+          decidedBackend: hostTerminalPlan.identity,
+          backendIdentity: () => {
+            try {
+              if (isWorkloadBrokerActive() || isOperatorContainerPublished()) return undefined;
+              return getHostShellExecutionPlan("host").identity;
+            } catch {
+              return undefined;
+            }
+          },
           recheck: async () => {
             const current = await buildHostTerminalRoute();
             current.router.assertDecidedPathPolicyRelaxations(current.plan, decided);
-            if (current.plan.identity !== sealed.plan.identity) {
+            if (current.plan.route !== "host" || current.plan.legacyPlanIdentity !== decidedLegacyPlanIdentity) {
               throw new Error(current.router.PATH_POLICY_DECISION_MISMATCH_ERROR);
             }
           },

@@ -1,3 +1,4 @@
+import { AsyncResource } from "node:async_hooks";
 import { refreshRemoteControllerBoundToSession, isRemoteControllerBoundToSession } from "../shared/chat-origin.js";
 import { currentEffectGateContext } from "../permissions/effect-enforcement.js";
 /** Type into the calling conversation's confined shell, or, for a workspace terminal's own pane chat, into that bound host terminal.
@@ -95,6 +96,7 @@ interface HostTerminalDeps {
     readonly expectedCwd: string;
     readonly bound: () => boolean;
     readonly effectCheck: () => Promise<{ ok: true } | { ok: false; message: string }>;
+    readonly writeFence?: () => string | undefined;
   }, signal?: AbortSignal) => Promise<{ ok: true; firstBlockId: number } | { ok: false; reason: string; message: string }>;
   waitDisclosure: (ref: TerminalSessionRef, windowId: number, sessionId: string, turnId: string, blockId: number, waitMs: number, signal?: AbortSignal) =>
     Promise<HostTerminalDisclosure | undefined>;
@@ -406,7 +408,8 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
     };
     const before = directoryChanged();
     if (before !== undefined || !tracker) return changed(before ?? `terminal ${scope.tabId} moved to another directory`);
-    // The directory proof is the last step, after the route recheck's await: nothing asynchronous lies between it and the write it guards.
+    // PTY callbacks may run outside the originating turn's async context.
+    const writeFence = AsyncResource.bind(() => directoryChanged() ?? route.refusal());
     const effectCheck = async (): Promise<{ ok: true } | { ok: false; message: string }> => {
       try {
         const gate = currentEffectGateContext();
@@ -418,13 +421,17 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
       catch (error) { return { ok: false, message: errorMessage(error) }; }
       const moved = directoryChanged();
       if (moved !== undefined) return { ok: false, message: `${moved} while the command was being prepared` };
-      return { ok: true };
+      const refusal = route.refusal();
+      return refusal === undefined ? { ok: true } : { ok: false, message: refusal };
     };
     ctx.abortSignal?.throwIfAborted();
     const typed = await deps.host.typeCommand(live, windowId, {
-      requestingSessionId: scope.sessionId, turn, line: input.command, expectedCwd: scope.cwd, bound, effectCheck,
+      requestingSessionId: scope.sessionId, turn, line: input.command, expectedCwd: scope.cwd, bound, effectCheck, writeFence,
     }, ctx.abortSignal);
-    if (!typed.ok) return fail(`nothing was typed into terminal ${scope.tabId}: ${typed.message}`);
+    if (!typed.ok) {
+      if (typed.reason === "effect-refused") return fail(`no command was sent in terminal ${scope.tabId}: ${typed.message} Call terminal_run again for a fresh decision.`);
+      return fail(`nothing was typed into terminal ${scope.tabId}: ${typed.message}`);
+    }
     const waitMs = BLOCK_START_WAIT_MS + input.waitSeconds * 1000;
     const span = await deps.host.waitDisclosure(live, windowId, scope.sessionId, scope.turnId, typed.firstBlockId, waitMs, ctx.abortSignal);
     if (span === undefined) throw new Error("Host terminal disclosure is missing for a command its lease typed.");
