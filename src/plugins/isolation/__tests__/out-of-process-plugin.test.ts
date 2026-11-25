@@ -1061,7 +1061,7 @@ function spawnableRoots(): { context: Partial<PluginRuntimeContext>; remove: () 
 
 /** The runtime's own envelope registration, so its checks see the factory deadline. */
 class EnvelopeRuntime extends PluginRuntime {
-  register(paths: readonly string[], pluginRoot: string, pluginDataDir: string) {
+  register(paths: Parameters<PluginRuntime["registerSandboxEnvelope"]>[1], pluginRoot: string, pluginDataDir: string) {
     return this.registerSandboxEnvelope(PLUGIN_ID, paths, pluginRoot, pluginDataDir);
   }
 }

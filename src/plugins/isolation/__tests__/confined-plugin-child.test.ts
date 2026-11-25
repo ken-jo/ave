@@ -42,8 +42,10 @@ import { pluginChildEntryPath } from "../../../__tests__/support/plugin-child-en
 import type { PluginHostApi, PluginManifest, PluginRuntimeContext, RuntimePlugin } from "../../types.js";
 import type { DelegatedWorkerConfinement } from "../host-api-dispatcher.js";
 import {
+  capturePluginSandboxGrant,
   createOutOfProcessPluginFactory,
   derivePluginChildEnvelope,
+  isPluginSandboxGrantCovered,
   PluginSandboxGrantError,
   type ObservedPluginChild,
 } from "../out-of-process-plugin.js";
@@ -813,7 +815,7 @@ describe("the host decides how far a plugin child reaches", () => {
       pluginRoot: fx.pluginRoot,
       pluginDataDir: fx.pluginDataDir,
       configValue: (key) => (key === "indexStorageRoot" ? inside : undefined),
-      onUserChosenDirectory: (path) => chosen.push(path),
+      onUserChosenDirectory: (grant) => chosen.push(grant.path),
     });
     // Folded into the data directory the envelope already grants: no reach is added, and no root is left below `data/` for the plugin to re-point.
     expect(envelope.write).toEqual([fx.pluginDataDir, socketDirOf(fx)]);
@@ -1024,6 +1026,46 @@ describe("the host decides how far a plugin child reaches", () => {
       }
       mkdirSync(join(local, "SomeTool"), { recursive: true });
       expect(derive(join(local, "SomeTool"))().write).toContain(join(local, "SomeTool"));
+    } finally {
+      vi.unstubAllEnvs();
+      if (inheritedBase === undefined) delete process.env.AVE_TEST_SANDBOX_BASE;
+      else process.env.AVE_TEST_SANDBOX_BASE = inheritedBase;
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it.runIf(process.platform === "win32").each([
+    ["the helper's state", (local: string) => join(local, "sandbox-runtime")],
+    ["a child of the helper's state", (local: string) => join(local, "sandbox-runtime", "child")],
+    ["an ancestor of the helper's state", (local: string) => local],
+    ["an ancestor of the container runtime root", () => dirname(mxcRuntimeRootFloorPath())],
+  ])("keeps a read of %s that a write of the same approved input is refused, at derivation and revalidation", (_name, pick) => {
+    const fx = fixture as NonNullable<typeof fixture>;
+    const inheritedBase = process.env.AVE_TEST_SANDBOX_BASE;
+    const base = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-chosen-access-")));
+    process.env.AVE_TEST_SANDBOX_BASE = base;
+    const local = join(base, "profile", "AppData", "Local");
+    vi.stubEnv("LOCALAPPDATA", local);
+    try {
+      approveWorkspaceRoot(fx, base);
+      const chosen = pick(local);
+      mkdirSync(chosen, { recursive: true });
+      const grant = { kind: "userChosenDirectory" as const, configKey: "indexStorageRoot", why: "Index data" };
+      const derive = (access: "read" | "write") => () => derivePluginChildEnvelope({
+        pluginId: WIDENED_PLUGIN_ID,
+        sandbox: { [access]: [grant] },
+        pluginRoot: fx.pluginRoot,
+        pluginDataDir: fx.pluginDataDir,
+        configValue: (key) => (key === "indexStorageRoot" ? chosen : undefined),
+      });
+      const read = derive("read")();
+      expect(read.read).toContain(chosen);
+      expect(read.write).not.toContain(chosen);
+      expect(derive("write")).toThrow("(confinement-state-write-grant)");
+      const covered = (access: "read" | "write") =>
+        isPluginSandboxGrantCovered(capturePluginSandboxGrant({ path: chosen, access }), fx.pluginRoot, fx.pluginDataDir);
+      expect(covered("read")).toBe(true);
+      expect(covered("write")).toBe(false);
     } finally {
       vi.unstubAllEnvs();
       if (inheritedBase === undefined) delete process.env.AVE_TEST_SANDBOX_BASE;

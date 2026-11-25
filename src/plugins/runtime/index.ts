@@ -58,7 +58,7 @@ import {
   deferExtensionStart, dropPluginExtensionStarts, isExtensionStartConsentRequired, pluginChildStartKey, pluginStartLabel, takeExtensionStartGrant,
 } from "../../permissions/extension-start-consent.js";
 import { probeExtensionStart } from "../../permissions/asrt-sandbox.js";
-import { capturePluginSandboxGrant, createOutOfProcessPluginFactory, isPluginSandboxGrantCovered, PluginSandboxGrantError, pluginFactoryDeadlineMs, pluginStopBudgetMs } from "../isolation/out-of-process-plugin.js";
+import { capturePluginSandboxGrant, type ChosenSandboxGrant, createOutOfProcessPluginFactory, isPluginSandboxGrantCovered, PluginSandboxGrantError, pluginFactoryDeadlineMs, pluginStopBudgetMs } from "../isolation/out-of-process-plugin.js";
 import { PluginChildTerminationUnverifiedError } from "../isolation/plugin-child-transport.js";
 import { bindPluginInstanceIntegrity, recordPluginFactoryIntegrity } from "../runtime-integrity-evidence.js";
 import {
@@ -1352,7 +1352,7 @@ abstract class PluginRuntimeState {
     resolveSettled: (settlement: SandboxEnvelopeSettlement) => void;
   }>>();
 
-  protected registerSandboxEnvelope(pluginId: string, paths: readonly string[], pluginRoot: string, pluginDataDir: string): {
+  protected registerSandboxEnvelope(pluginId: string, grants: readonly ChosenSandboxGrant[], pluginRoot: string, pluginDataDir: string): {
     assertCurrent(): void;
     dispose(): void;
     quarantine(reason: string): void;
@@ -1378,7 +1378,7 @@ abstract class PluginRuntimeState {
     const deadline = factoryAttemptDeadline.getStore();
     let resolveSettled!: (settlement: SandboxEnvelopeSettlement) => void;
     const settled = new Promise<SandboxEnvelopeSettlement>((resolve) => { resolveSettled = resolve; });
-    const record = { grants: paths.map(capturePluginSandboxGrant), pluginRoot, pluginDataDir, active: true, quarantined: false, terminating: false, settled, resolveSettled };
+    const record = { grants: grants.map(capturePluginSandboxGrant), pluginRoot, pluginDataDir, active: true, quarantined: false, terminating: false, settled, resolveSettled };
     const entries = this.sandboxEnvelopes.get(pluginId) ?? new Set<typeof record>();
     entries.add(record);
     this.sandboxEnvelopes.set(pluginId, entries);
@@ -5050,8 +5050,8 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       manifest,
       auditLog: this.auditLog,
       childEntryPath: this.childEntryPath,
-      registerSandboxEnvelope: (paths: readonly string[], pluginRoot: string, pluginDataDir: string) =>
-        this.registerSandboxEnvelope(manifest.id, paths, pluginRoot, pluginDataDir),
+      registerSandboxEnvelope: (grants: readonly ChosenSandboxGrant[], pluginRoot: string, pluginDataDir: string) =>
+        this.registerSandboxEnvelope(manifest.id, grants, pluginRoot, pluginDataDir),
       onChildSpawned: (confinement: SpawnConfinement) =>
         this.recordChildSpawnConfinement(createPlugin, confinement),
       takeExtensionStart: () => takeExtensionStartGrant(pluginChildStartKey(manifest.id)),
