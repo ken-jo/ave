@@ -46,6 +46,8 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
       runtimeRootUnproved = false;
     } catch (error) {
       runtimeRootUnproved = true;
+      const { markSandboxHomesUnavailable } = await import("../../permissions/sandbox-capability.js");
+      markSandboxHomesUnavailable();
       log.warn("boot: Windows sandbox HOME root unavailable: %s", errorMessage(error));
     }
     void sweepWindowsSandboxHomes();

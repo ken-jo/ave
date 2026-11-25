@@ -91,6 +91,8 @@ import {
   __resetSandboxBootOutcomeForTest,
   __resetSandboxRequestedAtBootForTest,
   __resetWindowsSandboxSubstrateForTest,
+  __resetSandboxHomesUnavailableForTest,
+  getSandboxHomesUnavailable,
   detectPluginWorkerSandboxCapability,
   detectSandboxCapability,
   detectShellSandboxCapability,
@@ -115,6 +117,7 @@ beforeEach(() => {
   __resetSandboxRequestedAtBootForTest();
   __resetSandboxBootOutcomeForTest();
   __resetWindowsSandboxSubstrateForTest();
+  __resetSandboxHomesUnavailableForTest();
   h.initialize.mockReset();
   h.initialize.mockResolvedValue(undefined);
   h.checkDeps.mockReset();
@@ -202,6 +205,18 @@ describe("initSandboxGate — Windows sandbox HOME parent", () => {
       await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({ mxc: { state: "unavailable", reason: "runtime-root-unproved" } }));
       expect(h.startProbe).not.toHaveBeenCalled();
     });
+
+  it("reports the unproved root to Settings with the sandbox setting off, where no substrate is recorded", async () => {
+    h.establishHomesError = new Error("root not private");
+    await initSandboxGate(harness.context(false, false));
+    expect(getWindowsSandboxSubstrate()).toBeNull();
+    expect(getSandboxHomesUnavailable()).toBe(true);
+  });
+
+  it("reports nothing of the kind when the root is proved", async () => {
+    await initSandboxGate(harness.context(false, false));
+    expect(getSandboxHomesUnavailable()).toBe(false);
+  });
 
   it("reports the container prerequisites again once a later boot proves the root", async () => {
     h.establishHomesError = new Error("root not private");

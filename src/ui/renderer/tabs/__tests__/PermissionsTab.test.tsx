@@ -1773,6 +1773,19 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     });
   });
 
+  it("names an unproved container runtime root with the sandbox setting off, where no substrate was recorded", async () => {
+    const { ave } = installApiWithWindows({ togglesOff: true });
+    ave.permission.sandboxCapability.mockResolvedValue({
+      platform: "win32", enabled: false, available: true, kind: "partial", reason: "r", potentialReason: "r",
+      runtime: { available: true, kind: "none", reason: "r" },
+      confines: { filesystem: true, process: false, network: true },
+      windowsSubstrate: null, sandboxHomesUnavailable: true,
+    } as never);
+    await act(async () => { render(<PermissionsTab />); });
+    expect(screen.getByTestId("os-sandbox-windows-homes-unavailable").textContent)
+      .toBe(t("permissionsTab.osSandboxWindowsMxcReasonRuntimeRootUnproved"));
+  });
+
   it.each([
     ["srt-win-not-found", "permissionsTab.osSandboxWindowsInstallFailedHelperMissing"],
     ["srt-win-integrity-mismatch", "permissionsTab.osSandboxWindowsHelperIntegrityError"],

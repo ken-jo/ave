@@ -15,6 +15,7 @@ import { errorMessage } from "../shared/error-message.js";
 import { appOwnedSandboxHomeRoot, ensureSandboxPrivateRoot } from "./asrt-sandbox.js";
 import { t } from "../i18n/index.js";
 import { MxcRuntimeRootError, mxcSandboxHomesParent } from "./mxc-runtime-root.js";
+import { markSandboxHomesUnavailable } from "./sandbox-capability.js";
 import { forgetIssuedContainerHome, liveSandboxProcessHomes, recordIssuedContainerHome } from "./sandbox-home-registry.js";
 import { drainAgentObservationHome, registerAgentObservationHome } from "../tools/agent-observation-context.js";
 import { readWindowsProcessRunStates, type ProcessRunStateProbe } from "./windows-process-start-time.js";
@@ -40,7 +41,10 @@ function sandboxHomeParent(platform: NodeJS.Platform): string {
     try {
       return realpathSync.native(mxcSandboxHomesParent());
     } catch (error) {
-      if (error instanceof MxcRuntimeRootError) throw new SandboxHomeUnavailableError(error);
+      if (error instanceof MxcRuntimeRootError) {
+        markSandboxHomesUnavailable();
+        throw new SandboxHomeUnavailableError(error);
+      }
       throw error;
     }
   }

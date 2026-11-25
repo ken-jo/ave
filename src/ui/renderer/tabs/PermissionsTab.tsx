@@ -1285,6 +1285,16 @@ export function PermissionsTab({
               {t("permissionsTab.osSandboxUnavailable", { platform: sandboxCapability.platform })}
             </p>
           ) : null}
+          {/* Shown whatever the sandbox setting; the substrate row below already names it when boot recorded the same reason. */}
+          {sandboxCapability?.sandboxHomesUnavailable && !(windowsSubstrate?.mxc.state === "unavailable" && windowsSubstrate.mxc.reason === "runtime-root-unproved") ? (
+            <p
+              role="alert"
+              data-testid="os-sandbox-windows-homes-unavailable"
+              className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-dense text-warning"
+            >
+              {t("permissionsTab.osSandboxWindowsMxcReasonRuntimeRootUnproved")}
+            </p>
+          ) : null}
           {sandboxCapability && sandboxCapability.available ? (
             <div className="space-y-1 rounded-md border bg-muted/(--opacity-light) px-3 py-2 text-dense text-muted-foreground">
               <p className="font-medium text-foreground">{t("permissionsTab.osSandboxCapabilityHeading")}</p>

@@ -387,6 +387,8 @@ export interface SandboxCapabilityInfo {
   boot?: SandboxBootOutcomeView | null;
   /** Windows: which substrate carries shells and extensions this boot, and how strongly their egress is attributed. `null` off Windows, and on Windows when boot never ran the gate. */
   windowsSubstrate?: SandboxWindowsSubstrateInfo | null;
+  /** Windows: no sandboxed process can start this run because the container runtime root is unproved; set whatever the sandbox setting. */
+  sandboxHomesUnavailable?: boolean;
   /** The shell sandbox as the chat input's permission card shows it. */
   shell: ShellSandboxStatusInfo;
   /** What the sandbox actually confines on this platform when active. */
