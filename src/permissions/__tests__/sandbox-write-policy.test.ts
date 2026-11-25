@@ -567,14 +567,58 @@ describe("mandatory sandbox control-file writes", () => {
     mkdirSync(join(marker, "ave-pins"));
     writeFileSync(join(marker, "HEAD"), "ref: refs/heads/main\n");
     writeFileSync(join(worktree, "HEAD"), "ref: refs/heads/main\n");
+    writeFileSync(join(worktree, "commondir"), "../..\n");
     writeFileSync(join(worktree, "ave.id"), "");
     const policy = buildMandatorySandboxWritePolicy([root]);
     expect(nativeDenyRows(policy.denyWrite)).toEqual(expect.arrayContaining([join(marker, "ave-pins"), join(worktree, "ave.id")]));
     expect(nativeDenyRows(policy.denyWrite)).not.toContain(join(marker, "ave.id"));
     expect(nativeDenyRows(policy.denyWrite)).not.toContain(join(worktree, "ave-pins"));
     const darwin = (withPlatform("darwin", () => buildMandatorySandboxWritePolicy([root])).denyWrite ?? []).map(entry => typeof entry === "string" ? entry : entry.path);
-    expect(darwin).toEqual(expect.arrayContaining(["/**/.[gG][iI][tT]/[aA][vV][eE]-[pP][iI][nN][sS]", "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[aA][vV][eE].[iI][dD]"]));
-    expect(darwin.filter(row => row.endsWith("[aA][vV][eE]-[pP][iI][nN][sS]") || row.endsWith("[aA][vV][eE].[iI][dD]")).filter(row => row.startsWith("/**/"))).toHaveLength(2);
+    expect(darwin).toEqual(expect.arrayContaining([
+      "/**/.[gG][iI][tT]/[aA][vV][eE]-[pP][iI][nN][sS]",
+      "/**/.[gG][iI][tT]/[mM][oO][dD][uU][lL][eE][sS]/**/[aA][vV][eE]-[pP][iI][nN][sS]",
+      "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[aA][vV][eE].[iI][dD]",
+    ]));
+    expect(darwin.filter(row => row.endsWith("[aA][vV][eE]-[pP][iI][nN][sS]") || row.endsWith("[aA][vV][eE].[iI][dD]")).filter(row => row.startsWith("/**/"))).toHaveLength(3);
+  });
+
+  it.each(["win32", "linux"] as const)("keeps the pins of stores under a folder named worktrees and the anchor of a stage's own admin folder on %s", platform => {
+    const head = (directory: string) => { mkdirSync(directory, { recursive: true }); writeFileSync(join(directory, "HEAD"), "ref: refs/heads/main\n"); };
+    const marker = join(root, ".git");
+    const moduleStore = join(marker, "modules", "worktrees", "foo");
+    const nestedModuleStore = join(marker, "modules", "group", "worktrees", "bar");
+    const separate = join(root, "worktrees", "proj.git");
+    const separateAdmin = join(separate, "worktrees", "w1");
+    const stageAdmin = join(marker, "worktrees", "stage");
+    // Linux denies only existing controls, so both names exist everywhere.
+    for (const directory of [marker, moduleStore, nestedModuleStore, separate, separateAdmin, stageAdmin]) {
+      head(directory);
+      mkdirSync(join(directory, "ave-pins"));
+      writeFileSync(join(directory, "ave.id"), "");
+    }
+    writeFileSync(join(separateAdmin, "commondir"), "../..\n");
+    writeFileSync(join(stageAdmin, "commondir"), "../..\n");
+    mkdirSync(join(root, "app"));
+    writeFileSync(join(root, "app", ".git"), `gitdir: ${separate}\n`);
+    const stage = join(root, "stage");
+    mkdirSync(stage);
+    writeFileSync(join(stage, ".git"), `gitdir: ${stageAdmin}\n`);
+    for (const roots of [[root], [stage]]) {
+      const rows = nativeDenyRows(withPlatform(platform, () => buildMandatorySandboxWritePolicy(roots)).denyWrite);
+      if (roots[0] === stage) {
+        expect(rows).toContain(join(stageAdmin, "ave.id"));
+        expect(rows).not.toContain(join(stageAdmin, "ave-pins"));
+        continue;
+      }
+      for (const store of [marker, moduleStore, nestedModuleStore, separate]) {
+        expect(rows).toContain(join(store, "ave-pins"));
+        expect(rows).not.toContain(join(store, "ave.id"));
+      }
+      for (const admin of [separateAdmin, stageAdmin]) {
+        expect(rows).toContain(join(admin, "ave.id"));
+        expect(rows).not.toContain(join(admin, "ave-pins"));
+      }
+    }
   });
 
   it("discovers new Linux repositories on each policy build using HEAD markers", () => {
