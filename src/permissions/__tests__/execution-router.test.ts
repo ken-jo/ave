@@ -824,14 +824,13 @@ describe("execution router", () => {
     expect(() => issueDecidedGrant(approvalPlan, { toolUseId: "tool-use-test", toolName: "bash" })).toThrow("requires another decision");
   });
 
-  it("selects the host route for a requested-but-unavailable sandbox and keeps its fallback reason", () => {
-    // An unavailable sandbox runs plain under the exact-rule policy (owner 2026-10-25, unsandboxed shell exact-rule requirement); the route records why it is uncontained.
+  it("requires approval on the host route for a requested-but-unavailable sandbox and keeps its fallback reason", () => {
     const fallback = issuedUnavailableFallback();
     expect(buildExecutionPlan({
       legacyPlan: fallback,
       effect: effect(),
       capability: capability(["host"], getSandboxGeneration()),
-    })).toMatchObject({ decision: "selected", route: "host", fallback: "requested-sandbox-unavailable" });
+    })).toMatchObject({ decision: "approval-required", route: "host", fallback: "requested-sandbox-unavailable" });
   });
 
   it.each([

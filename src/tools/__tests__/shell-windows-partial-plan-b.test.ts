@@ -3,7 +3,7 @@ vi.mock("../../shared/windows-configuration-handles.js", async original => (awai
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
 
 import { EventEmitter } from "node:events";
-import { PassThrough } from "node:stream";
+import { Duplex, PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const childProcessMock = vi.hoisted(() => ({
@@ -52,12 +52,14 @@ interface FakeChild extends EventEmitter {
   stdout: PassThrough;
   stderr: PassThrough;
   stdin: PassThrough;
+  stdio?: readonly unknown[];
   exitCode: number | null;
   killed: boolean;
   kill: ReturnType<typeof vi.fn>;
 }
 
-function fakeChild(parser: boolean): FakeChild {
+// `control` stands in for the POSIX prelude: it reports ready on fd 3 and the command runs once the host grants.
+function fakeChild(parser: boolean, control = false): FakeChild {
   const child = new EventEmitter() as FakeChild;
   child.stdout = new PassThrough();
   child.stderr = new PassThrough();
@@ -69,7 +71,7 @@ function fakeChild(parser: boolean): FakeChild {
     return true;
   });
 
-  queueMicrotask(() => {
+  const finish = (): void => {
     const output = parser
       ? JSON.stringify({
           errors: [], redirections: [], unsupported: [],
@@ -86,7 +88,13 @@ function fakeChild(parser: boolean): FakeChild {
     child.stderr.end();
     child.exitCode = 0;
     child.emit("close", 0);
-  });
+  };
+  if (control) {
+    const channel = new Duplex({ read() {}, write(_chunk, _encoding, done) { done(); } });
+    child.stdio = [null, child.stdout, child.stderr, channel];
+    channel.on("finish", finish);
+    queueMicrotask(() => channel.push("R"));
+  } else queueMicrotask(finish);
   return child;
 }
 
@@ -256,7 +264,7 @@ describe.each(["darwin", "linux", "win32"] as const)(
           options?: { stdio?: unknown },
         ) => {
           const parser = Array.isArray(options?.stdio) && options.stdio[0] === "pipe";
-          return fakeChild(parser);
+          return fakeChild(parser, Array.isArray(options?.stdio) && options.stdio.length === 4);
         },
       );
     });
@@ -271,7 +279,7 @@ describe.each(["darwin", "linux", "win32"] as const)(
       childProcessMock.execFileSync.mockReset();
     });
 
-    // Unavailable sandboxing retains its fallback plan; unpinned startup still needs one-shot authority.
+    // Unavailable sandboxing retains its fallback plan and spawns only on the one-shot authority of the forced ask.
     it.each(SHELLS)(
       "runs $label with the route's required authority and records the fallback plan",
       async ({ toolName, create, input, expectedSpawnCount }) => {
@@ -281,7 +289,7 @@ describe.each(["darwin", "linux", "win32"] as const)(
           requestedSandbox: true,
           mode: "plain",
           fallbackReason: "requested-sandbox-unavailable",
-          requiresExplicitUserApproval: false,
+          requiresExplicitUserApproval: true,
         });
         const toolUseId = `${toolName}-requested-unavailable-${platform}`;
         const context: ToolExecutionContext = {
@@ -291,13 +299,11 @@ describe.each(["darwin", "linux", "win32"] as const)(
           metadata: { toolUseId },
         };
 
-        if (platform === "win32" && toolName === "powershell") {
-          const refused = await create().execute(input, context);
-          expect(refused).toMatchObject({ isError: true, metadata: { sandboxed: false, isolation: "none" } });
-          expect(refused.output).toContain("one-shot host approval permit");
-          expect(childProcessMock.spawn).not.toHaveBeenCalled();
-          context.hostShellExecutionPermit = await mintOneShotPermit({ plan, toolName, toolUseId, rawInput: input, context });
-        }
+        const refused = await create().execute(input, context);
+        expect(refused).toMatchObject({ isError: true, metadata: { sandboxed: false, isolation: "none" } });
+        expect(refused.output).toContain("one-shot host approval permit");
+        expect(childProcessMock.spawn).not.toHaveBeenCalled();
+        context.hostShellExecutionPermit = await mintOneShotPermit({ plan, toolName, toolUseId, rawInput: input, context });
 
         const first = await create().execute(input, context);
         expect(first).toMatchObject({

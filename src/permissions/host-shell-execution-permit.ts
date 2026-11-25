@@ -187,7 +187,7 @@ export function mintHostShellExecutionPermit(input: {
   ) return undefined;
   // Any receipt-bearing mint attempt consumes its receipt before checking plan compatibility, so a mismatch cannot be probed or replayed.
   if (!requiresExplicitHostShellApproval(input.plan, input.binding.toolName)) return undefined;
-  // Under the unverifiable Ave home boundary a saved rule never stands in for fresh consent; policy records are made only after a human card.
+  // On a plan under the sandbox-unavailable floor a saved rule never stands in for fresh consent; policy records are made only after a human card.
   if (allowRuleAuthorization !== undefined && requiresUnsandboxedShellAsk(input.plan)) return undefined;
   // A floor session allow answers only the marked plan it was approved under.
   if (floorSessionAuthorized && (!requiresUnsandboxedShellAsk(input.plan) || input.plan.identity !== input.binding.planIdentity)) return undefined;
