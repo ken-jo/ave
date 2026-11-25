@@ -24,6 +24,7 @@ import { sandboxCasesRequired, sandboxCasesRun } from "../../plugins/isolation/_
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { TEST_SHELL_EGRESS_CONTEXT } from "../../__tests__/support/egress-fixture.js";
 import { shellQuote } from "../../lib/shell-resolver.js";
+import { shouldSkipNativeSandboxTests } from "../../__tests__/support/native-sandbox.js";
 
 afterEach(async () => {
   if (isAsrtSandboxActive()) await resetAsrtSandbox();
@@ -307,7 +308,7 @@ const LINUX_HOP_PROBE = [
   "",
 ].join("\n");
 
-describe.runIf(process.platform === "darwin" || process.platform === "linux")("egress identity isolation (R1, native)", () => {
+describe.runIf((process.platform === "darwin" || process.platform === "linux") && !shouldSkipNativeSandboxTests())("egress identity isolation (R1, native)", () => {
   it("a worker cannot read a concurrent shell's egress key", (context) => readCase(SHELL, WORKER, context), 120_000);
   it("a shell cannot read a concurrent worker's egress key", (context) => readCase(WORKER, SHELL, context), 120_000);
   it("a worker holding a concurrent shell's key is not attributed as that shell", (context) => impersonationCase(SHELL, WORKER, context), 120_000);
