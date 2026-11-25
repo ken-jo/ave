@@ -120,8 +120,8 @@ const DEFAULT_MAX_UPSTREAM_HEAD_BYTES = 16 * 1024;
 const MAX_LISTENER_BIND_ATTEMPTS = 16;
 
 const log = createLogger("egress-invocation-listener");
-// The one bind failure that means the address does not exist on this host, as opposed to someone else having the port.
-const IPV6_LOOPBACK_ABSENT = "EADDRNOTAVAIL";
+// The bind failures that mean this host has no such address (or no IPv6 sockets at all), as opposed to someone else having the port.
+const IPV6_LOOPBACK_ABSENT: ReadonlySet<string> = new Set(["EADDRNOTAVAIL", "EAFNOSUPPORT"]);
 const MAX_IPV6_HOLD_RETRIES = 4;
 let ipv6HoldNoticeLogged = false;
 
@@ -353,7 +353,7 @@ export async function openInvocationProxyListener(
       await binding;
       if (failure === undefined) {
         port = held;
-      } else if (failure === IPV6_LOOPBACK_ABSENT) {
+      } else if (IPV6_LOOPBACK_ABSENT.has(failure)) {
         // The host has no such address, so there is nothing there to own: the endpoint opens without the hold.
         if (!ipv6HoldNoticeLogged) {
           ipv6HoldNoticeLogged = true;

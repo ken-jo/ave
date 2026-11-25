@@ -325,11 +325,12 @@ describe.skipIf(process.platform !== "win32").each(["shell", "extension"] as con
     return ports;
   }
 
-  // A host with no IPv6 loopback address has nothing there for another process to own, so the endpoint opens without the hold.
-  it("opens without the IPv6 hold when the address is unavailable, and says so once", async () => {
+  // A host with no IPv6 loopback address (EADDRNOTAVAIL), or with no IPv6 sockets at all (EAFNOSUPPORT), has nothing there for
+  // another process to own, so the endpoint opens without the hold.
+  it.each(["EADDRNOTAVAIL", "EAFNOSUPPORT"])("opens without the IPv6 hold when the bind fails with %s, and says so once", async (code) => {
     __resetIpv6HoldNoticeForTest();
     const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const tried = failIpv6Hold("EADDRNOTAVAIL");
+    const tried = failIpv6Hold(code);
     const first = await openRoute();
     expect(await refusal(first.port)).toMatch(/^HTTP\/1\.[01] 200 /u);
     expect(await probe("::1", first.port)).toBe("ECONNREFUSED");
@@ -347,8 +348,8 @@ describe.skipIf(process.platform !== "win32").each(["shell", "extension"] as con
     expect(asked).toEqual([]);
   });
 
-  it.each(["EACCES", "EAFNOSUPPORT"])("releases both ports and tries a fresh pair when the IPv6 hold fails with %s", async (code) => {
-    const tried = failIpv6Hold(code, 2);
+  it("releases both ports and tries a fresh pair when the IPv6 hold fails with EACCES", async () => {
+    const tried = failIpv6Hold("EACCES", 2);
     const opened = await openRoute();
     expect(tried).toHaveLength(2);
     expect(tried).not.toContain(opened.port);
