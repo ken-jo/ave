@@ -8,10 +8,11 @@ import { createLogger } from "../lib/logger.js";
 import { isRecord } from "../shared/is-record.js";
 import { attachmentScopeMatches, isTemplateScope, hasTemplateKeys, canonicalTemplateGraph, validateStageForConfirm, isAllReadOnlyVersion, graphHashOf, isGraphHash, isTemplateId, isTemplateVersion, parseTemplateDraft, requireTemplate, WorkflowTemplateError } from "../work-board/template-graph.js";
 import { assertHostDecisionProof, type HostDecisionProof } from "./workflow-template-decision.js";
-import type { ScheduleAttachment, ScheduleAttachmentInput, TemplateScope, TemplateConfirmationOrigin, TemplateVersion, TemplateVersionPin, WorkflowTemplate, WorkflowTemplateConfirmInput, WorkflowTemplateDraftInput, WorkflowTemplateRecord } from "../shared/workflow-template-types.js";
+import { isWorkflowTemplateProposalId, type ScheduleAttachment, type ScheduleAttachmentInput, type TemplateScope, type TemplateConfirmationOrigin, type TemplateVersion, type TemplateVersionPin, type WorkflowTemplate, type WorkflowTemplateConfirmInput, type WorkflowTemplateDraftInput, type WorkflowTemplateProposal, type WorkflowTemplateRecord } from "../shared/workflow-template-types.js";
 
 interface TemplatesFile { version: 1; templates: WorkflowTemplateRecord[] }
 const log = createLogger("workflow-templates");
+const MAX_PENDING_PROPOSALS = 16;
 const emptyFile = (): TemplatesFile => ({ version: 1, templates: [] });
 const timestamp = (value: unknown): value is string => typeof value === "string" && Number.isFinite(Date.parse(value));
 
@@ -62,6 +63,8 @@ function validateFile(raw: unknown): TemplatesFile {
 
 export class WorkflowTemplateStore {
   readonly changed = new ChangeSignal(error => log.warn("Template change listener failed: %s", String(error)));
+  private readonly proposals = new Map<string, { sessionId: string; proposal: WorkflowTemplateProposal }>();
+  private readonly proposalIdsBySession = new Map<string, Set<string>>();
   constructor(private readonly filePath = join(openFeatureNamespace("work-board").dir, "templates.json"), private readonly now: () => number = Date.now) {}
   private async readFile(): Promise<TemplatesFile> {
     const input = await readAveHomeInput(this.filePath);
@@ -100,6 +103,41 @@ export class WorkflowTemplateStore {
     requireTemplate(version, "unknown-version"); requireTemplate(version.graphHash === pin.graphHash, "graph-hash-mismatch");
     return structuredClone(version);
   }
+  propose(sessionId: string, raw: WorkflowTemplateDraftInput): WorkflowTemplateProposal {
+    const draft = parseTemplateDraft(raw);
+    requireTemplate(draft.basedOn === undefined, "invalid-input", "basedOn");
+    for (const stage of draft.stages) {
+      const refusals = validateStageForConfirm(stage, draft);
+      if (refusals.length === 0) continue;
+      const path = `stages.${raw.stages.findIndex(entry => entry.id === stage.id)}`;
+      const field = refusals.includes("setup-outside-commands") ? "setupCommands"
+        : refusals.includes("outputs-need-human-gate") ? `${path}.gate` : `${path}.envelope`;
+      throw new WorkflowTemplateError("envelope-refused", "Stage confirmation refused", refusals, field);
+    }
+    const proposal = { id: `proposal-${randomUUID()}`, graphHash: graphHashOf(draft), draft };
+    const sessionProposals = this.proposalIdsBySession.get(sessionId) ?? new Set<string>();
+    if (sessionProposals.size >= MAX_PENDING_PROPOSALS) {
+      const oldest = sessionProposals.values().next().value;
+      if (oldest !== undefined) this.removeProposal(oldest);
+    }
+    sessionProposals.add(proposal.id);
+    this.proposalIdsBySession.set(sessionId, sessionProposals);
+    this.proposals.set(proposal.id, { sessionId, proposal });
+    return structuredClone(proposal);
+  }
+  getProposal(id: string): WorkflowTemplateProposal {
+    const proposal = this.proposals.get(id)?.proposal;
+    requireTemplate(proposal, "no-draft");
+    return structuredClone(proposal);
+  }
+  private removeProposal(id: string): void {
+    const entry = this.proposals.get(id);
+    if (!entry) return;
+    this.proposals.delete(id);
+    const sessionProposals = this.proposalIdsBySession.get(entry.sessionId);
+    sessionProposals?.delete(id);
+    if (sessionProposals?.size === 0) this.proposalIdsBySession.delete(entry.sessionId);
+  }
   async draft(id: string | null, raw: WorkflowTemplateDraftInput): Promise<WorkflowTemplateRecord> {
     const input = parseTemplateDraft(raw);
     requireTemplate(id === null || isTemplateId(id));
@@ -121,18 +159,28 @@ export class WorkflowTemplateStore {
     requireTemplate(hasTemplateKeys(input, ["expectedGraphHash", "expectedDraftRevision"]) && isGraphHash(input.expectedGraphHash) && isTemplateId(input.expectedDraftRevision));
     requireTemplate(actor?.origin === "local-desktop" && typeof actor.who === "string" && actor.who.length > 0 && actor.who.length <= 128);
     return withInProcessFileQueue(this.filePath, async () => {
-      const file = await this.readFile(); const record = this.find(file, id);
+      const file = await this.readFile();
+      const proposal = isWorkflowTemplateProposalId(id) ? this.getProposal(id) : undefined;
+      const at = new Date(this.now()).toISOString();
+      const record: WorkflowTemplateRecord = proposal
+        ? { template: { id: randomUUID(), name: proposal.draft.name, scope: proposal.draft.scope, currentVersion: 0, createdAt: at, updatedAt: at }, versions: [], draft: { ...proposal.draft, graphHash: proposal.graphHash, revision: proposal.id, updatedAt: at } }
+        : this.find(file, id);
       requireTemplate(!record.template.archivedAt, "template-archived");
       const draft = record.draft; requireTemplate(draft, "no-draft");
       const graphHash = graphHashOf(draft); requireTemplate(graphHash === input.expectedGraphHash && draft.revision === input.expectedDraftRevision, "stale-draft");
       const refusals = [...new Set(draft.stages.flatMap(stage => validateStageForConfirm(stage, draft)))];
       if (refusals.length) throw new WorkflowTemplateError("envelope-refused", "Stage confirmation refused", refusals);
-      const at = new Date(this.now()).toISOString(); const version = record.template.currentVersion + 1;
-      const confirmed: TemplateVersion = { templateId: id, version, graphHash, stages: structuredClone(draft.stages), edges: structuredClone(draft.edges), ...(draft.setupCommands !== undefined ? { setupCommands: [...draft.setupCommands] } : {}), confirmedAt: at, ...(draft.basedOn !== undefined ? { basedOn: draft.basedOn } : {}), confirmation: { templateId: id, version, graphHash, who: actor.who, origin: actor.origin, at } };
+      const version = record.template.currentVersion + 1;
+      const templateId = record.template.id;
+      const confirmed: TemplateVersion = { templateId, version, graphHash, stages: structuredClone(draft.stages), edges: structuredClone(draft.edges), ...(draft.setupCommands !== undefined ? { setupCommands: [...draft.setupCommands] } : {}), confirmedAt: at, ...(draft.basedOn !== undefined ? { basedOn: draft.basedOn } : {}), confirmation: { templateId, version, graphHash, who: actor.who, origin: actor.origin, at } };
       record.versions.push(confirmed);
       record.template = { ...record.template, name: draft.name, scope: structuredClone(draft.scope), currentVersion: version, updatedAt: at };
       if (draft.description === undefined) delete record.template.description; else record.template.description = draft.description;
-      delete record.draft; await this.commit(file); return structuredClone(confirmed);
+      delete record.draft;
+      if (proposal) file.templates.push(record);
+      await this.commit(file);
+      if (proposal) this.removeProposal(id);
+      return structuredClone(confirmed);
     });
   }
   async attachSchedule(input: ScheduleAttachmentInput, proof: HostDecisionProof, approvedScope: TemplateScope): Promise<ScheduleAttachment> {

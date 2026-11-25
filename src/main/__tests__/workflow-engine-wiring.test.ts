@@ -5,7 +5,7 @@ import { expect, it, type MockInstance, vi } from "vitest";
 import { aveHome } from "../../shared/ave-home.js";
 import { workflowEngineExtensions } from "../../boot/steps/workflow-engine-extensions.js";
 import type { RemovedRun } from "../workflow-run-store.js";
-import { setPath, stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
+import { runScopePermissions, setPath, stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
 import type { StageWorkspaceProvider } from "../../work-board/workflow/stage-workspace.js";
 import { gitFixture } from "../../work-board/workflow/__tests__/stage-git-fixture.js";
 import { stageRunHarness } from "../../work-board/workflow/__tests__/stage-run-harness.js";
@@ -17,7 +17,7 @@ const auto = (id: string, inputs: string[] = []) => stageOf(id, { inputs, gate: 
 
 it("with the production parts and a workspace provider, an authorised template run starts, is stored in the run file and completes", async () => {
   // Only the workspace provider is the harness's, and with it no session is bound: its folders are not under the home (the real ones are, below).
-  const h = await stageRunHarness({ wiring: (store, harness) => ({ ...workflowEngineExtensions(store, harness.templates), workspace: harness.workspace, workspaceBinding: undefined }) });
+  const h = await stageRunHarness({ wiring: (store, harness) => ({ ...workflowEngineExtensions(store, harness.templates, runScopePermissions()), workspace: harness.workspace, workspaceBinding: undefined }) });
   try {
     const version = await h.confirm([auto("a"), auto("b", ["a"])]);
     const id = await h.addItem(version);
@@ -47,7 +47,7 @@ it("with the production parts and a workspace provider, an authorised template r
 
 it("with the production parts alone a run works in stage folders under the home and leaves its output folder", async () => {
   const h = await stageRunHarness({ wiring: (store, { templates, waking }) => {
-    const parts = workflowEngineExtensions(store, templates);
+    const parts = workflowEngineExtensions(store, templates, runScopePermissions());
     const { workspace } = parts;
     const release = workspace.release.bind(workspace);
     vi.spyOn(workspace, "release").mockImplementation(waking(release));
@@ -78,7 +78,7 @@ it("the production parts give a discard the project of each run whose record wen
   const items: Map<string, number>[] = [];
   const atOnce: { removed: readonly RemovedRun[]; projects: () => Map<string, string> | undefined }[] = [];
   const h = await stageRunHarness({ wiring: (store, harness) => {
-    const parts = workflowEngineExtensions(store, harness.templates);
+    const parts = workflowEngineExtensions(store, harness.templates, runScopePermissions());
     vi.spyOn(parts.workspace, "discard").mockImplementation(harness.waking(async (projects) => {
       given.push(rootsOf(projects));
       items.push(new Map([...projects].map(([runId, named]) => [runId, named.itemId])));
@@ -129,7 +129,7 @@ async function withNotedDiscards(run: (announce: (runs: [runId: string, projectR
   const given: Map<string, string>[] = [];
   const taken: string[] = [];
   const h = await stageRunHarness({ wiring: (store, harness) => {
-    const parts = workflowEngineExtensions(store, harness.templates);
+    const parts = workflowEngineExtensions(store, harness.templates, runScopePermissions());
     vi.spyOn(parts.workspace, "discard").mockImplementation(harness.waking(async (projects) => { given.push(rootsOf(projects)); return [...taken]; }));
     return { ...parts, workspace: harness.workspace, workspaceBinding: undefined };
   } });
@@ -198,7 +198,7 @@ async function withGitRun(work: (scene: GitRunScene) => Promise<void>): Promise<
     h = await stageRunHarness({ wiring: (store, harness) => {
       const read = store.runsWithoutItem.bind(store);
       vi.spyOn(store, "runsWithoutItem").mockImplementation(async () => { await gates.shift(); return read(); });
-      parts = workflowEngineExtensions(store, { getAttachment: async (id) => { await reading; return { ...await harness.templates.getAttachment(id), approvedScope: { kind: "project", projectRoot: fx.repo } } as never; } });
+      parts = workflowEngineExtensions(store, { getAttachment: async (id) => { await reading; return { ...await harness.templates.getAttachment(id), approvedScope: { kind: "project", projectRoot: fx.repo } } as never; } }, runScopePermissions());
       const { workspace } = parts;
       const discardWorkspace = workspace.discard.bind(workspace);
       discard = vi.spyOn(workspace, "discard").mockImplementation(harness.waking(discardWorkspace));
@@ -318,7 +318,7 @@ interface HeldDiscard { given: Map<string, string>; answer: (taken: readonly str
 async function withHeldDiscards(run: (announce: (runs: [runId: string, projectRoot: string][]) => Promise<void>, discards: HeldDiscard[], settled: () => Promise<void>) => Promise<void>): Promise<void> {
   const discards: HeldDiscard[] = [];
   const h = await stageRunHarness({ wiring: (store, harness) => {
-    const parts = workflowEngineExtensions(store, harness.templates);
+    const parts = workflowEngineExtensions(store, harness.templates, runScopePermissions());
     vi.spyOn(parts.workspace, "discard").mockImplementation(projects => new Promise((answer, fail) => { discards.push({ given: rootsOf(projects), answer, fail }); }));
     return { ...parts, workspace: harness.workspace, workspaceBinding: undefined };
   } });

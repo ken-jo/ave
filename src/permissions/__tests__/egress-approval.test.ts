@@ -1,4 +1,5 @@
 // The egress ask on the approval dock: the `egress-host` request shape the gate accepts, the answers it honours (desktop window, allow-once, a scope the card offered) and how the requester maps them back (egress-approval.ts).
+import { registerRunSession, __resetRunGrantsForTest } from "../run-grants.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -450,6 +451,27 @@ describe("shell egress human fallback termination", () => {
     await cardSent(wc);
     permissionManager.setMode("default");
     await expect(answer).resolves.toEqual({ allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.timeout });
+  });
+
+  // The one rule for answered cards (pending-answer-policy.ts): a sibling stage's "Allow for this run" leaves the answer standing.
+  it("keeps an allow answered while a sibling stage saved a run rule, and refuses it when the destination is denied meanwhile", async () => {
+    try {
+      registerRunSession("work-board:7#run-a", "sibling-stage-session", { stageId: "build", stageName: "Build", lane: "attended" });
+      const answered = (during: () => void) => createRequester({ requestAndWait: vi.fn(async (request: ApprovalRequestInput) => {
+        during();
+        return { requestId: request.id, choice: "allow-once" as const, egressScope: "session" as const };
+      }) }, permissionManager)(egressRequest());
+      const before = permissionManager.getPolicyEpoch();
+      await expect(answered(() => permissionManager.addRunRule("sibling-stage-session", "Bash(npm test)"))).resolves.toEqual({ allow: true, scope: "session" });
+      expect(permissionManager.getPolicyEpoch()).not.toBe(before);
+      // A deny rule for the destination is a saved rule: any change of that kind still refuses the answer.
+      await expect(answered(() => {
+        permissionManager.addRunRule("sibling-stage-session", "Bash(npm run build)");
+        permissionManager.setRules([{ pattern: "Network(example.com:443)", action: "deny" }]);
+      })).resolves.toEqual({ allow: false, reason: "Permission policy changed during network approval." });
+    } finally {
+      __resetRunGrantsForTest();
+    }
   });
 
   it("still refuses an allow answered after the policy changed under the card", async () => {

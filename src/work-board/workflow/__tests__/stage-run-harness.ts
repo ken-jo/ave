@@ -80,6 +80,8 @@ function observeRunWork(launches: AsyncLocalStorage<ObservedLaunch>, onScheduled
 export async function stageRunHarness(opts: {
   /** Returns a result to end the child at once; undefined leaves it live until the test finishes it. */
   script?: (input: SubAgentSpawnInput) => Partial<SubAgentSpawnResult> | undefined;
+  /** Use a real runner for tests that need child-loop behavior. */
+  runner?: (dir: string) => SubAgentRunner;
   workflow?: Partial<WorkflowDeps>;
   /** Parts chosen for the board store the engine runs on (the production wiring is chosen this way); they replace the harness's own. */
   wiring?: (store: WorkBoardStore, harness: { workspace: StageWorkspaceProvider; templates: WorkflowTemplateStore; waking: WakingWorkspaceCall }) => Partial<WorkflowDeps>;
@@ -91,6 +93,7 @@ export async function stageRunHarness(opts: {
   onRunWorkScheduled?: () => void;
 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ave-stage-run-"));
+  const suppliedRunner = opts.runner?.(dir);
   const boardPath = join(dir, "board.json");
   const runWaits = new Set<(runId: string) => void>();
   const stopRunSources: (() => void)[] = [];
@@ -301,7 +304,7 @@ export async function stageRunHarness(opts: {
     });
     const current = createWorkBoardEngine({
       store,
-      getRunner: () => engineRunner,
+      getRunner: () => suppliedRunner ?? engineRunner,
       emitProgress: event => {
         const { itemId, phase, stageId, attempt } = event;
         if (engine === wrapped) {

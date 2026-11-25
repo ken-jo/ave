@@ -4,6 +4,7 @@ import { revealHiddenCharacters } from "../../../../shared/display-safe-text.js"
 import { isRecord } from "../../../../shared/is-record.js";
 import { parsePatchEnvelope, patchOperationPaths } from "../../../../shared/patch-envelope.js";
 import type { ApprovalRequest } from "../../types.js";
+import { WORKFLOW_TEMPLATE_PROPOSE_TOOL } from "../../../../shared/workflow-template-types.js";
 
 interface BuiltinAction {
   readonly title: MessageCatalogKey;
@@ -48,6 +49,7 @@ export const BUILTIN_APPROVAL_ACTIONS = {
   render_html: { title: "toolApprovalDialog.renderActionTitle", kind: "fields", fields: ["title"], context: "toolApprovalDialog.actionContext_conversation" },
   ask_user_question: { title: "toolApprovalDialog.questionActionTitle", kind: "questions", fields: ["questions"], context: "toolApprovalDialog.actionContext_conversation" },
   routine_schedule: { title: "toolApprovalDialog.routineActionTitle", kind: "fields", fields: ["action","title","routineId"], context: "toolApprovalDialog.actionContext_conversation" },
+  [WORKFLOW_TEMPLATE_PROPOSE_TOOL]: { title: "toolApprovalDialog.templateProposalTitle", kind: "fields", fields: ["name"], context: "toolApprovalDialog.actionContext_conversation" },
   session_tasks: { title: "toolApprovalDialog.tasksActionTitle", kind: "fields", fields: ["action","steps"], context: "toolApprovalDialog.actionContext_conversation" },
   session_goal: { title: "toolApprovalDialog.goalActionTitle", kind: "fields", fields: ["goal","status"], context: "toolApprovalDialog.actionContext_conversation" },
   agent_spawn: { title: "toolApprovalDialog.spawnActionUntitled", kind: "spawn", fields: ["title","resumeId"], context: "toolApprovalDialog.actionContext_conversation" },

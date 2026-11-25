@@ -1,4 +1,5 @@
 // Actual effects retain descriptor scope, common policy ordering and effect-before-execution enforcement.
+import { registerRunSession, __resetRunGrantsForTest } from "../run-grants.js";
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { AsyncResource } from "node:async_hooks";
@@ -1452,6 +1453,36 @@ describe("exact effect authority and sealed execution", () => {
     answer({ requestId: "ignored", choice: "allow-once" });
     await pending;
     expect(executed).toEqual([{ workerId: "worker", command: "/bin/echo", args: ["approved"], env: { TASK: "approved" } }]);
+  });
+
+  // One rule for every card a person answers (pending-answer-policy.ts): a sibling stage's "Allow for this run" leaves the answer
+  // standing; any other policy change refuses it.
+  it.each(["sibling run rule", "other policy change"] as const)("an effect card answered across a policy change: %s", async (change) => {
+    let answer!: (decision: ApprovalDecision) => void;
+    const gate = { requestAndWait: vi.fn((request: ApprovalRequest) => new Promise<ApprovalDecision>((resolve) => {
+      answer = (decision) => resolve({ ...decision, requestId: request.id });
+    })) } as unknown as ApprovalGate;
+    const executed: unknown[] = [];
+    const api = enforceMutatingEffects({ spawnWorker: async (spec: unknown) => { executed.push(spec); } }, deps(gate));
+    const pending = runWithEffectGateContext({ headless: false, toolName: "outer" }, () => api.spawnWorker({ workerId: "worker", command: "/bin/echo", args: ["approved"] }));
+    void pending.catch(() => undefined);
+    await vi.waitFor(() => expect(answer).toBeTypeOf("function"));
+    try {
+      if (change === "sibling run rule") {
+        registerRunSession("work-board:7#run-a", "sibling-stage-session", { stageId: "build", stageName: "Build", lane: "attended" });
+        permissionManager.addRunRule("sibling-stage-session", "Bash(npm test)");
+      } else permissionManager.setRules([{ pattern: "Bash(npm test)", action: "allow" }]);
+      answer({ requestId: "ignored", choice: "allow-once" });
+      if (change === "sibling run rule") {
+        await pending;
+        expect(executed).toHaveLength(1);
+      } else {
+        await expect(pending).rejects.toThrow("Permission policy changed during effect approval");
+        expect(executed).toEqual([]);
+      }
+    } finally {
+      __resetRunGrantsForTest();
+    }
   });
 
   it("different write contents cannot reuse a prior exact-path approval", async () => {

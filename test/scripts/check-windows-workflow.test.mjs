@@ -397,6 +397,7 @@ it("requires the arm64 result for selected runs, including docs-only main pushes
         VITEST_RESULT: docs === "true" ? "skipped" : "success", DOCS_ONLY: docs, PLATFORM_CHECKS: "false",
         WINDOWS_PREPARATION_RESULT: "skipped", WINDOWS_RESULT: "skipped", MACOS_RESULT: "skipped", LINUX_RESULT: "skipped",
         WINDOWS_ARM64_PATH_KIND: selected, WINDOWS_ARM64_PATH_KIND_RESULT: arm64,
+        VITEST_TIER_JOB: "false", VITEST_TIERS_RESULT: "skipped", WINDOWS_TIER_TESTS: "false", WINDOWS_TIER_RESULT: "skipped",
       } });
       assert.ifError(result.error);
       assert.equal(result.status, status, JSON.stringify({ docs, selected, arm64, output: result.stdout + result.stderr }));
@@ -457,6 +458,66 @@ it("rejects dropping a shard or its shard ID", () => {
   delete job.env.AVE_WINDOWS_TEST_SHARD;
   assert.throws(() => checkWindowsWorkflow(stringify(parsed), parsedLines), /must run every contained shard/);
 });
+
+it("rejects tier shards that skip tier selection, drop a shard or lose the tier", () => {
+  for (const change of [
+    job => { job.if = "needs.windows-native-preparation.result == 'success'"; },
+    job => { job.strategy.matrix.shard.pop(); },
+    job => { delete job.env.AVE_WINDOWS_TEST_TIER; },
+  ]) {
+    const parsed = parse(workflow);
+    change(parsed.jobs["windows-tier-tests"]);
+    assert.throws(() => checkWindowsWorkflow(stringify(parsed), parsedLines), /tier shards must follow|must run every contained shard/);
+  }
+  const parsed = parse(workflow);
+  parsed.jobs["windows-permission-tests"].env.AVE_WINDOWS_TEST_TIER = "tiers";
+  assert.throws(() => checkWindowsWorkflow(stringify(parsed), parsedLines), /must run every contained shard/);
+});
+
+it("requires selected Windows tiers when the platform matrix is skipped", () => {
+  const step = parse(workflow).jobs["build-and-test"].steps[0];
+  for (const [tiers, preparation, tierResult, status] of [
+    ["true", "success", "success", 0], ["true", "skipped", "skipped", 1], ["true", "success", "skipped", 1],
+    ["true", "failure", "skipped", 1], ["false", "skipped", "skipped", 0], ["false", "success", "skipped", 1],
+  ]) {
+    const result = spawnSync("bash", ["-e", "-c", step.run], { encoding: "utf8", windowsHide: true, env: {
+      ...process.env, GATE_CORE_RESULT: "success", MXC_PINS_RESULT: "success", BUILD_RESULT: "success",
+      VITEST_RESULT: "success", DOCS_ONLY: "false", PLATFORM_CHECKS: "false",
+      WINDOWS_PREPARATION_RESULT: preparation, WINDOWS_RESULT: "skipped", MACOS_RESULT: "skipped", LINUX_RESULT: "skipped",
+      WINDOWS_ARM64_PATH_KIND: "false", WINDOWS_ARM64_PATH_KIND_RESULT: "skipped",
+      VITEST_TIER_JOB: "false", VITEST_TIERS_RESULT: "skipped", WINDOWS_TIER_TESTS: tiers, WINDOWS_TIER_RESULT: tierResult,
+    } });
+    assert.ifError(result.error);
+    assert.equal(result.status, status, JSON.stringify({ tiers, preparation, tierResult, output: result.stdout + result.stderr }));
+  }
+});
+
+for (const [name, change, expected] of [
+  ["a platform-gated tier selection", jobs => {
+    jobs.build.outputs.windows_tier_tests = `\${{ steps.plan.outputs.platform_checks == 'true' && steps.tiers.outputs.windows_tiers != '' }}`;
+  }, /tier selection through preparation/u],
+  ["a platform-gated plan upload", jobs => {
+    jobs.build.steps.find(step => step.name === "Upload the Windows regression plan").if =
+      "steps.docs-impact.outputs.docs_only != 'true' && steps.plan.outputs.platform_checks == 'true'";
+  }, /tier selection through preparation/u],
+  ["a platform-gated preparation", jobs => {
+    jobs["windows-native-preparation"].if = "needs.build.outputs.platform_checks == 'true'";
+  }, /follow native platform selection/u],
+  ["platform-gated tier shards", jobs => {
+    const job = jobs["windows-tier-tests"];
+    job.if = `needs.build.outputs.platform_checks == 'true' && ${job.if}`;
+  }, /tier selection through preparation/u],
+  ["a platform-only preparation result", jobs => {
+    const step = jobs["build-and-test"].steps[0];
+    step.run = step.run.replace('for result in "$WINDOWS_RESULT"', 'for result in "$WINDOWS_PREPARATION_RESULT" "$WINDOWS_RESULT"');
+  }, /tier selection through preparation/u],
+]) {
+  it(`rejects ${name}`, () => {
+    const parsed = parse(workflow);
+    change(parsed.jobs);
+    assert.throws(() => checkWindowsWorkflow(stringify(parsed), parsedLines), expected);
+  });
+}
 
 it("rejects reusing shard one for every regression step", () => {
   const changed = changedWorkflow(steps => {

@@ -4,22 +4,43 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { platformChecksRequired, type CiSuitePlan } from "../../scripts/run-ci-suite.mjs";
 import { modifiedEntry } from "../../src/__tests__/support/git-diff-entry.js";
-import { planWindowsTests, WINDOWS_TEST_TIMES, windowsTestDurations } from "../../scripts/plan-windows-tests.js";
+import { planWindowsTests, WINDOWS_TEST_TIMES, windowsPlanTiers, windowsTestDurations } from "../../scripts/plan-windows-tests.js";
 import { collectedVitestFiles } from "../../scripts/lib/vitest-collection.mjs";
-import { assertWindowsPlan, WINDOWS_TEST_SHARDS, windowsShardFiles } from "../../scripts/run-windows-test-list.mjs";
+import { CENSUS_TIER_TESTS, NATIVE_TIER_TESTS } from "../../scripts/lib/vitest-tiers.mjs";
+import { assertWindowsPlan, WINDOWS_TEST_SHARDS, WINDOWS_TIER_TEST_SHARDS, windowsShardFiles } from "../../scripts/run-windows-test-list.mjs";
 
 const root = resolve(import.meta.dirname, "../..");
 const collected = collectedVitestFiles(root);
 const times = JSON.parse(readFileSync(resolve(root, WINDOWS_TEST_TIMES), "utf8"));
+const defaultSuites = collected.filter(file => !NATIVE_TIER_TESTS.includes(file));
 const committedPlan = () => planWindowsTests(collected, windowsTestDurations(times));
+const tieredPlan = () => planWindowsTests(collected, windowsTestDurations(times), ["native", "census"]);
 
 describe("Windows shard planning", () => {
-  it("assigns every collected suite to exactly one of the fixed shards", () => {
+  it("assigns every collected suite outside the native tier to exactly one of the fixed shards", () => {
     const plan = committedPlan();
     expect(plan.shards.map(shard => shard.id)).toEqual([...WINDOWS_TEST_SHARDS]);
-    expect(plan.suites).toBe(collected.length);
-    expect(plan.shards.flatMap(shard => shard.files).sort()).toEqual(collected);
+    expect(plan.suites).toBe(defaultSuites.length);
+    expect(defaultSuites.length).toBe(collected.length - NATIVE_TIER_TESTS.length);
+    expect(plan.shards.flatMap(shard => shard.files).sort()).toEqual(defaultSuites);
     for (const shard of plan.shards) expect(shard.files.length).toBeGreaterThan(0);
+    expect(plan).toMatchObject({ tiers: [], tierShards: [] });
+  });
+
+  it("assigns every selected tier suite to exactly one tier shard", () => {
+    const plan = tieredPlan();
+    expect(plan.tierShards.map(shard => shard.id)).toEqual([...WINDOWS_TIER_TEST_SHARDS]);
+    expect(plan.tierShards.flatMap(shard => shard.files).sort()).toEqual([...NATIVE_TIER_TESTS, ...CENSUS_TIER_TESTS].sort());
+    const nativeOnly = planWindowsTests(collected, windowsTestDurations(times), ["native"]);
+    expect(nativeOnly.tierShards.flatMap(shard => shard.files).sort()).toEqual([...NATIVE_TIER_TESTS].sort());
+    expect(nativeOnly.shards).toEqual(plan.shards);
+  });
+
+  it("reads the selected tiers from AVE_WINDOWS_TEST_TIERS", () => {
+    expect(windowsPlanTiers("")).toEqual([]);
+    expect(windowsPlanTiers("native,census")).toEqual(["native", "census"]);
+    expect(() => windowsPlanTiers(undefined)).toThrow("AVE_WINDOWS_TEST_TIERS");
+    expect(() => windowsPlanTiers("default")).toThrow("Unknown Windows test tier");
   });
 
   it("is deterministic for the same checkout and timings", () => {
@@ -84,11 +105,26 @@ describe("Windows plan check against the checkout", () => {
     expect(() => windowsShardFiles(plan, 1, root)).toThrow(message);
   });
 
+  it.each([
+    ["a tier suite dropped from the tier shards", (plan: ReturnType<typeof clone>) => { plan.tierShards[0]?.files.shift(); }, "Windows tier plan omits 1 collected suite"],
+    ["a native suite in a default shard", (plan: ReturnType<typeof clone>) => { plan.shards[0]?.files.push(NATIVE_TIER_TESTS[0] ?? ""); }, "names an uncollected suite"],
+    ["tier shards without a tier", (plan: ReturnType<typeof clone>) => { plan.tiers = []; }, "no tier shards"],
+    ["an unknown tier", (plan: ReturnType<typeof clone>) => { (plan.tiers as string[]).push("default"); }, "tiers must be a subset"],
+  ])("rejects %s in a tiered plan", (_name, mutate, message) => {
+    const plan = structuredClone(tieredPlan());
+    mutate(plan);
+    expect(() => assertWindowsPlan(plan, collected)).toThrow(message);
+  });
+
   it("returns one shard's files and refuses an unknown shard ID", () => {
     const plan = committedPlan();
     expect(windowsShardFiles(plan, 3, root)).toEqual(plan.shards[2]?.files);
     const unknown = WINDOWS_TEST_SHARDS.length + 1;
     expect(() => windowsShardFiles(plan, unknown, root)).toThrow(`Invalid Windows test shard: ${unknown}`);
+    expect(() => windowsShardFiles(plan, 1, root, "tiers")).toThrow("selects no tier");
+    const tiered = tieredPlan();
+    expect(windowsShardFiles(tiered, 2, root, "tiers")).toEqual(tiered.tierShards[1]?.files);
+    expect(() => windowsShardFiles(tiered, WINDOWS_TIER_TEST_SHARDS.length + 1, root, "tiers")).toThrow("Invalid Windows test shard");
   });
 });
 
@@ -99,10 +135,10 @@ it.each([
   { event: "push", base: "main", mode: "affected", file: "src/core/route-input.ts", runs: true },
   { event: "schedule", base: "main", mode: "full", file: "", runs: true },
   { event: "workflow_dispatch", base: "main", mode: "full", file: "", runs: true },
-] as const)("runs every collected suite exactly once when native checks run ($event, $base, $file)", ({ event, base, mode, file, runs }) => {
+] as const)("runs every collected suite when native checks run and the native tier is selected ($event, $base, $file)", ({ event, base, mode, file, runs }) => {
   const workflow = parse(readFileSync(resolve(root, ".github/workflows/ci.yml"), "utf8"));
   const job = workflow.jobs["windows-permission-tests"];
-  expect(workflow.jobs["windows-native-preparation"].if).toBe("needs.build.outputs.platform_checks == 'true'");
+  expect(workflow.jobs["windows-native-preparation"].if).toBe("needs.build.outputs.platform_checks == 'true' || needs.build.outputs.windows_tier_tests == 'true'");
   expect(job.if).toBe("needs.build.outputs.platform_checks == 'true' && needs.windows-native-preparation.result == 'success'");
   const plan: CiSuitePlan = { mode, reason: "platform gate", tests: [] };
   const selected = platformChecksRequired(event, plan, file ? [modifiedEntry(file)] : [], base);
@@ -111,7 +147,9 @@ it.each([
 
   const shards: number[] = job.strategy.matrix.shard;
   expect(shards).toEqual([...WINDOWS_TEST_SHARDS]);
-  const full = committedPlan();
-  const scheduled = shards.flatMap(shard => windowsShardFiles(full, shard, root));
+  const tierShards: number[] = workflow.jobs["windows-tier-tests"].strategy.matrix.shard;
+  expect(tierShards).toEqual([...WINDOWS_TIER_TEST_SHARDS]);
+  const windowsPlan = planWindowsTests(collected, windowsTestDurations(times), ["native"]);
+  const scheduled = [...shards.flatMap(shard => windowsShardFiles(windowsPlan, shard, root)), ...tierShards.flatMap(shard => windowsShardFiles(windowsPlan, shard, root, "tiers"))];
   expect(scheduled.sort()).toEqual(collected);
 });
