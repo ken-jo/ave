@@ -36,7 +36,7 @@ export function optionWith(point: number, position: Position): string {
 export const hex = (point: number) => `U+${point.toString(16).toUpperCase()}`;
 
 // The complete four-layer census runs only in the census tier.
-export const CENSUS_TIER = vitestTierEnabled("census");
+const CENSUS_TIER = vitestTierEnabled("census");
 
 const CATEGORIES = ["Cc", "Cf", "Zs", "Zl", "Zp", "Co", "Cs"] as const;
 const CATEGORY_RE = CATEGORIES.map((category) => [category, new RegExp(`^\\p{${category}}$`, "u")] as const);
@@ -73,7 +73,7 @@ export const representativeCodePoints = (() => {
 })();
 
 /** The launcher and literal-proof layers, which reject every code point; the key names the rejection reasons. */
-export function lexicalRejection(dialect: Dialect, option: string): { failure: string | null; key: string } {
+function lexicalRejection(dialect: Dialect, option: string): { failure: string | null; key: string } {
   const launcher = encodedPowerShellExecutionReason(["pwsh", option, PAYLOAD]);
   if (launcher === null) return { failure: "launcher character proof succeeded", key: "launcher proven" };
   const command = `pwsh '${option}' ${PAYLOAD}`;

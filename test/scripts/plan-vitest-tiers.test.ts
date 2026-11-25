@@ -7,6 +7,8 @@ import { collectedVitestFiles } from "../../scripts/lib/vitest-collection.mjs";
 import { CENSUS_TIER_TESTS, selectedVitestTiers, vitestTierEnabled } from "../../scripts/lib/vitest-tiers.mjs";
 
 const root = resolve(import.meta.dirname, "../..");
+// A GitHub expression as the workflow spells it.
+const gh = (body: string) => `\${{ ${body} }}`;
 const affected = (tests: string[]) => ({ mode: "affected", reason: "test", tests });
 const full = { mode: "full", reason: "test", tests: [] };
 const pr = (changedPaths: string[] | null, plan: unknown = affected([])) => planVitestTiers({ eventName: "pull_request", ref: "refs/pull/1/merge", plan, changedPaths });
@@ -86,8 +88,8 @@ describe("Vitest tier CI wiring", () => {
     const tierStep = build.steps.findIndex(step => step.id === "tiers");
     expect(tierStep).toBeGreaterThan(plan);
     expect(build.steps[tierStep].run).toBe(`node scripts/plan-vitest-tiers.mjs "$RUNNER_TEMP/ci-plan/ci-plan.json"`);
-    expect(build.steps[tierStep].env?.AVE_CI_DIFF_BASE).toBe("${{ github.event.pull_request.base.sha || github.event.before }}");
-    expect(build.outputs?.census_tier).toBe("${{ steps.tiers.outputs.census_tier || 'false' }}");
+    expect(build.steps[tierStep].env?.AVE_CI_DIFF_BASE).toBe(gh("github.event.pull_request.base.sha || github.event.before"));
+    expect(build.outputs?.census_tier).toBe(gh("steps.tiers.outputs.census_tier || 'false'"));
   });
 
   it("runs the complete census nightly and whenever the build job selects it", () => {
@@ -105,8 +107,8 @@ describe("Vitest tier CI wiring", () => {
   it("requires the tier job in build-and-test when selected", () => {
     expect(gate.needs).toContain("vitest-tiers");
     const check = gate.steps[0];
-    expect(check.env?.CENSUS_TIER).toBe("${{ needs.build.outputs.census_tier }}");
-    expect(check.env?.VITEST_TIERS_RESULT).toBe("${{ needs.vitest-tiers.result }}");
+    expect(check.env?.CENSUS_TIER).toBe(gh("needs.build.outputs.census_tier"));
+    expect(check.env?.VITEST_TIERS_RESULT).toBe(gh("needs.vitest-tiers.result"));
     expect(check.run).toContain(`case "$CENSUS_TIER:$VITEST_TIERS_RESULT" in\n  true:success|false:skipped) ;;`);
   });
 });

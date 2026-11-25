@@ -2,7 +2,7 @@
 export const CENSUS_TIER_TESTS = ["bash", "powershell"].flatMap(dialect => ["head", "middle", "tail"].flatMap(position =>
   ["first", "second"].map(half => `src/permissions/__tests__/powershell-encoded-unicode/${dialect}-${position}-${half}.test.ts`)));
 
-export const VITEST_TIERS = ["default", "census"];
+const VITEST_TIERS = ["default", "census"];
 const UNSET_TIERS = ["default"];
 
 /** AVE_VITEST_TIERS as a set; unset selects the default projects without the census. */
