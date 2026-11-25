@@ -414,7 +414,7 @@ function writeDriveFile(path: string): void {
 
 const { setProcessPlatform } = await import("../../__tests__/support/process-platform.js");
 const {
-  cleanupAsrtSandboxAfterCommand, getBuiltinShellReadPolicy, getDefaultSensitiveReadDenyPaths, getDefaultSensitiveWriteDenyPaths,
+  cleanupAsrtSandboxAfterCommand, getBuiltinShellReadPolicy, getDefaultSensitiveReadDenyPaths, getDefaultSensitiveWriteDenyEntries, getDefaultSensitiveWriteDenyPaths,
   initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox, wrapWorkerCommand,
 } = await import("../asrt-sandbox.js");
 const { holdWindowsFilesystemGrant } = await import("../windows-acl-grant-holder.js");
@@ -747,14 +747,16 @@ async function sessionFloor(): Promise<{ denyRead: DenyList; denyWrite: DenyList
 
 /** A deny-only worker wrap, as `spawnConfinedChild` composes it for an srt-win MCP server, hook or plugin child: the floor restated under
  * one boundary snapshot, handed to the runtime's wrap. */
-async function workerWrap(): Promise<{ denyRead: DenyList; denyWrite: DenyList }> {
+async function workerWrap(
+  compose: () => { denyRead: DenyList; denyWrite: DenyList } = () => ({ denyRead: getDefaultSensitiveReadDenyPaths(), denyWrite: getDefaultSensitiveWriteDenyEntries() }),
+): Promise<{ denyRead: DenyList; denyWrite: DenyList }> {
   const egress = openEgressInvocation(TEST_WORKER_EGRESS_OWNER);
   try {
     const boundarySnapshot = createAveHomeBoundarySnapshot();
     runtime.wrap.mockResolvedValueOnce({ argv: [srtPath, "node", "server.js"], env: {} });
     await wrapWorkerCommand("node server.js", {
       commandId: egress.token, boundarySnapshot,
-      filesystem: boundarySnapshot.run(() => ({ denyRead: getDefaultSensitiveReadDenyPaths(), denyWrite: getDefaultSensitiveWriteDenyPaths() })),
+      filesystem: boundarySnapshot.run(compose) as Parameters<typeof wrapWorkerCommand>[1]["filesystem"],
     });
     return (lastCall(runtime.wrap)[2] as { filesystem: { denyRead: DenyList; denyWrite: DenyList } }).filesystem;
   } finally {
@@ -877,6 +879,57 @@ describe("the browser download staging folder in the srt-win session floor and w
     expect(row).toBeDefined();
     for (const path of [staging(), stagedFile()]) expect(deniedBy(after.denyWrite, path), path).toBe(row);
     expect(deniedBy(after.denyWrite, `${aveHome()}\\logs\\main.log`)).toBeUndefined();
+  });
+
+  it("restates only the session floor's absent rows in a worker wrap, so its policy does not grow with them, while existing rows keep their deny", async () => {
+    useLayout(OUTSIDE_PROFILE, { staged: true });
+    const session = await sessionFloor();
+    const absentRows = (rows: DenyList) => spelledRows(rows)
+      .filter((row) => !/[*?]/.test(row) && !existsSync(row.replace(/[\\/]+$/, ""))).map(fold).sort();
+    const certs = `${aveHome()}\\certs`;
+    const before = await workerWrap();
+    expect(existsSync(certs)).toBe(false);
+    expect(absentRows(before.denyRead)).toEqual(absentRows(session.denyRead));
+    expect(absentRows(before.denyWrite)).toEqual(absentRows(session.denyWrite));
+    const root = directoryRow(before.denyRead, aveHome());
+    expect(root).toBeDefined();
+    expect(deniedBy(before.denyRead, certs)).toBe(root);
+    mkdirSync(certs);
+    const after = await workerWrap();
+    expect(directoryRow(after.denyWrite, certs)).toBeDefined();
+    expect(deniedBy(after.denyRead, certs)).toBeDefined();
+    expect(directoryRow(after.denyWrite, staging())).toBeDefined();
+  });
+
+  it("freezes generated floor lists, so a list derived from one keeps an added row as its own deny and never creates an absent one", async () => {
+    useLayout(OUTSIDE_PROFILE, { staged: false });
+    await sessionFloor();
+    // A floor write row inside the profile that no grant reaches is dropped; the request's own row is kept.
+    const own = `${profileRoot}\\extra-own`;
+    writeDriveFile(own);
+    const absent = `${aveHome()}-extra-absent`;
+    expect(existsSync(absent)).toBe(false);
+    expect(() => (getDefaultSensitiveReadDenyPaths() as string[]).push(own)).toThrow(TypeError);
+    expect(() => (getDefaultSensitiveWriteDenyEntries() as unknown[]).push(own)).toThrow(TypeError);
+    const derived = await workerWrap(() => ({
+      denyRead: [...getDefaultSensitiveReadDenyPaths(), own, absent],
+      denyWrite: [...getDefaultSensitiveWriteDenyEntries(), own, absent],
+    }));
+    expect(deniedBy(derived.denyWrite, own)).toBeDefined();
+    // An absent row is never stamped: the stamp would create it.
+    expect(deniedBy(derived.denyRead, absent)).toBeUndefined();
+    expect(deniedBy(derived.denyWrite, absent)).toBeUndefined();
+    expect(existsSync(absent)).toBe(false);
+  });
+
+  it("restates the session floor's absent rows in a worker wrap under a profile-child Ave home", async () => {
+    useLayout(PROFILE_CHILD, { staged: false });
+    const session = await sessionFloor();
+    const absentRows = (rows: DenyList) => spelledRows(rows)
+      .filter((row) => !/[*?]/.test(row) && !existsSync(row.replace(/[\\/]+$/, ""))).map(fold).sort();
+    const wrap = await workerWrap();
+    expect(absentRows(wrap.denyRead)).toEqual(absentRows(session.denyRead));
+    expect(absentRows(wrap.denyWrite)).toEqual(absentRows(session.denyWrite));
   });
 
   it("stamps a read deny on the folder under a profile-child Ave home where its DACL would let the sandbox account read it", async () => {

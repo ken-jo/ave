@@ -5,9 +5,10 @@ vi.mock("../../shared/windows-configuration-handles.js", async original => (awai
 // Publish an active adapter only after its initialized wrapper runs a fixed no-I/O probe; wrap, timeout or cleanup failures reset it.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -688,6 +689,8 @@ describe("initializeAsrtSandbox — Linux configured-wrapper runtime probe", () 
     const resourcePath = join(root, "resources");
     const scripts = join(resourcePath, "skill-scripts");
     mkdirSync(scripts, { recursive: true });
+    // The packaged path-facts helper admits each deny row; the suite runs from a planted cwd.
+    if (ORIGINAL_PLATFORM === "win32") cpSync(fileURLToPath(new URL("../../../resources/windows-path-kind", import.meta.url)), join(resourcePath, "windows-path-kind"), { recursive: true });
     const runtime = join(root, "host-runtime.exe");
     writeFileSync(runtime, "runtime image fixture");
     const profile = ORIGINAL_PLATFORM === "win32" ? join(root, "alice") : "C:\\Users\\alice";
@@ -891,7 +894,7 @@ describe.each(["darwin", "linux"] as const)("private HOME reads after session re
     const otherHome = join(homeRoot, "other-home");
     const policy = getBuiltinShellReadPolicy([ownHome, join(ownHome, "document-observation"), otherHome], homedir(), ownHome);
     expect(policy.allowRead).toEqual([ownHome, join(ownHome, "document-observation")]);
-    expect(policy.denyRead).toEqual(expect.arrayContaining(getDefaultSensitiveReadDenyPaths()));
+    expect(policy.denyRead).toEqual(expect.arrayContaining([...getDefaultSensitiveReadDenyPaths()]));
     expect(policy.floorPierces).toEqual([]);
   });
 

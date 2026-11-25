@@ -1,9 +1,19 @@
 import "../../__tests__/support/trusted-powershell.js";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { inspectShellCommand, shellSensitivePathSignal } from "../rules/literal-shell-inspection.js";
 import { inspectPowerShellCommand } from "../rules/powershell-exfiltration.js";
 import { findShellPathPolicyViolation } from "../../tools/shell-path-policy.js";
 import { resolveShellFilesystemPath } from "../../shared/shell-filesystem-path.js";
+import { resolve } from "node:path";
+import { setWindowsDriveQueryForTest } from "../../shared/windows-drive-locality.js";
+import { configureHostResources } from "../../main/host-resources.js";
+
+// The shared setup answers every drive as local; these cases need a host with no X: drive, as the query reports it.
+vi.unmock("../../shared/windows-drive-locality.js");
+// Grant locality is proven through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
+beforeEach(() => setWindowsDriveQueryForTest(drive => drive === "X:" ? null : String.raw`\Device\HarddiskVolume1`));
+afterEach(() => setWindowsDriveQueryForTest());
 
 afterEach(() => vi.unstubAllEnvs());
 

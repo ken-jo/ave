@@ -2,7 +2,7 @@ import { effectiveShellWords } from "../../shared/shell-effective-command.js";
 import { literalShellBodies, literalShellFlow, recordLiteralShellFlow, type LiteralBodyBudget } from "../../shared/shell-literal-bodies.js";
 import { homedir } from "node:os";
 import { posix, sep } from "node:path";
-import { modelShellPath } from "../../shared/shell-native-path.js";
+import { isWindowsNetworkOrDevicePath, modelShellPath } from "../../shared/shell-native-path.js";
 import { physicalParentReading, resolvePhysicalFilesystemPath } from "../../shared/shell-filesystem-path.js";
 import { aveHome } from "../../shared/ave-home.js";
 import { expandShellTildePaths } from "../../shared/home-tilde.js";
@@ -103,7 +103,8 @@ function pathCandidates(text: string): string[] {
   return values.map((value) => value.replace(/^(?:<|(?:FILE|OPEN|GOPEN):)/i, "").replace(/^file:\/\//i, ""))
     .filter((value) => value.length > 0 && value !== "-" && (!value.startsWith("-") || value.includes("=") || value.includes("@")))
     .flatMap((value) => {
-      const separator = value.indexOf(":", /^[A-Za-z]:[\\/]/.test(value) ? 2 : 0);
+      const drive = /^(?:[\\/]{2}\?[\\/])?[A-Za-z]:[\\/]/.exec(value);
+      const separator = value.indexOf(":", drive ? drive[0].length - 1 : 0);
       const source = separator > 0 ? value.slice(0, separator) : "";
       return separator > 0 && /[\\/]|^[.~]/.test(source) ? [value, source] : [value];
     });
@@ -241,7 +242,10 @@ export function sensitivePathInLiteralArgumentText(text: string, cwd: string | u
   context.visits.staticChars += text.length;
   if (!/[\/\\.@=]/.test(text) && !SENSITIVE_PATH_ENTRIES.some((entry) => entry.segments.includes(text))) return null;
   for (const candidate of pathCandidates(text)) {
-    if (/(?:^|[=:])(?:\\\\|\/\/)(?:\?\\UNC\\)?[^\\/]+[\\/][^\\/]+/i.test(candidate)) return "visible UNC path";
+    // PowerShell opens the extended form of a local drive path as that path, so it is probed as the drive path.
+    const extendedDrive = sep === "\\" && context.pathDialect === "powershell" && /^[\\/]{2}\?[\\/][A-Za-z]:[\\/]/u.test(candidate)
+      && !isWindowsNetworkOrDevicePath(candidate);
+    if (!extendedDrive && /(?:^|[=:])(?:\\\\|\/\/)(?:\?\\UNC\\)?[^\\/]+[\\/][^\\/]+/i.test(candidate)) return "visible UNC path";
     const { hit } = nativePathProbe(candidate, cwd, context);
     if (hit) return hit;
   }

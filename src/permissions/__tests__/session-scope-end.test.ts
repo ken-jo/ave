@@ -1,9 +1,13 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildHostShellExecutionPlan } from "../host-shell-execution-plan.js";
 import { __resetWindowsSandboxSubstrateForTest } from "../sandbox-capability.js";
+
+// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 const releaseEgressSessions = vi.fn<(ended: (sessionId: string) => boolean) => void>();
 vi.mock("../egress-runtime.js", () => ({ releaseEgressSessions }));

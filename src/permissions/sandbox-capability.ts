@@ -2,6 +2,7 @@
 
 import { assertSandboxWindowsExtensionPlan, egressProtocolCoverageFor } from "../shared/sandbox-capability-info.js";
 import { getAveHomePrivacyFailure, isAveHomePrivacyApprovable, isAveHomePrivacyVerifiedAtBoot } from "../shared/ave-home.js";
+import { windowsDenyUnenforceableAtBoot } from "./admitted-obligation.js";
 import { t } from "../i18n/index.js";
 import type { ToolCategory, ToolSource } from "../tools/types.js";
 import type {
@@ -338,7 +339,7 @@ export function getHostShellExecutionPlan(executionMode: HostShellExecutionReque
     shellSubstrate: mxc === undefined ? "asrt" : "mxc",
     executionMode,
     unavailableCauses: _bootOutcome?.causes,
-    unavailableSandboxRequiresAsk: privacyFailure !== undefined,
+    unavailableSandboxRequiresAsk: privacyFailure !== undefined || windowsDenyUnenforceableAtBoot() !== undefined,
     unconfinedShellDenied: privacyFailure !== undefined && !isAveHomePrivacyApprovable(privacyFailure.category),
     homePrivacyVerified: isAveHomePrivacyVerifiedAtBoot(),
   });

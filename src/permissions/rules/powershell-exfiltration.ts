@@ -30,8 +30,8 @@ import {
   type PowerShellTraversalValue,
 } from "../../shared/powershell-recursive-traversal.js";
 
-import { createPermissionPathEvidence, type PermissionPathEvidence } from "../sensitive-paths.js";
-import { isPowerShellFilesystemSyntax, modelShellPath } from "../../shared/shell-native-path.js";
+import { createPermissionPathEvidence, resolvePathForPolicy, type PermissionPathEvidence } from "../sensitive-paths.js";
+import { isPowerShellFilesystemSyntax, localDriveAlias, modelShellPath } from "../../shared/shell-native-path.js";
 import { resolveShellFilesystemPath } from "../../shared/shell-filesystem-path.js";
 import { inspectImplicitGitWriteTargets, inspectPosixShellPermissionPaths, inspectUnknownNativeWriteArguments, inspectUnknownNativeWriteLocation } from "../../tools/shell-path-policy.js";
 import { shellQuote } from "../../lib/shell-resolver.js";
@@ -861,13 +861,18 @@ function isUncPath(text: string): boolean {
   return /^(?:\\\\|\/\/)(?:\?\\UNC\\)?[^\\/]+[\\/][^\\/]+/i.test(path);
 }
 
-function containsVisibleUncPath(text: string): boolean {
+/** A share or device spelling other than a local drive alias, which is judged as the drive path it names. */
+function isRemoteUncPath(text: string): boolean {
+  return isUncPath(text) && localDriveAlias(text.replace(/^[^:]+::/, "")) === undefined;
+}
+
+function containsVisibleUncPath(text: string, share: (text: string) => boolean): boolean {
   const candidates = [text];
   const equals = text.indexOf("=");
   if (equals >= 0) candidates.push(text.slice(equals + 1));
   const optionValue = /^[-/][^:]*:(.*)$/s.exec(text)?.[1];
   if (optionValue !== undefined) candidates.push(optionValue);
-  return candidates.some(isUncPath);
+  return candidates.some(share);
 }
 
 function visiblePowerShellExfiltration(stage: StaticStage, fedByPipeline: boolean, skipped: ReadonlySet<number>): string | null {
@@ -875,7 +880,11 @@ function visiblePowerShellExfiltration(stage: StaticStage, fedByPipeline: boolea
   if (name === undefined) return null;
   const policy = POWERSHELL_COMMAND_POLICIES[name];
   const visibleArgs = stage.visible.map((value, index) => skipped.has(index) ? undefined : value);
-  if (visibleArgs.slice(1).some((value) => value !== undefined && containsVisibleUncPath(value))) return "PowerShell visible UNC upload";
+  // A local drive alias is judged as its drive path only where the stage can do nothing but read it.
+  const readOnly = policy?.effects.every(effect => effect === "read") === true
+    && policy.destination === undefined && policy.sink === undefined && policy.native === undefined && policy.credential === undefined;
+  const share = readOnly ? isRemoteUncPath : isUncPath;
+  if (visibleArgs.slice(1).some((value) => value !== undefined && containsVisibleUncPath(value, share))) return "PowerShell visible UNC upload";
   const visibleText = normalizeDashes(visibleArgs.filter((value): value is string => value !== undefined).join(" "));
   if (policy?.sink?.test(visibleText)) return `${name} catalogued transfer`;
   const bare = name.replace(/\.exe$/, "");
@@ -1345,25 +1354,28 @@ export function inspectPowerShellPermissionPaths(input: PowerShellCommandInput, 
     if (effect === "write" && !binding.dynamic && uncRelative !== undefined
       && (!isUncPath(cwd) || win32.isAbsolute(uncRelative) || uncRelative === ".." || uncRelative.startsWith("..\\"))) {
       // A parsed external share write has a known boundary even when the share is unavailable locally.
-      paths.push({ ...evidenceForPath({ lexical: value, canonical: win32.normalize(value), effect }), projectEscape: true,
+      paths.push({ ...evidenceForPath({ lexical: value, canonical: resolvePathForPolicy(value), effect }), projectEscape: true,
         ...(deleting ? { deleteIntent: true as const } : {}) });
       return;
     }
     const modeled = modelShellPath(value, { dialect: "powershell", location: base });
+    const lexical = absolute ? value : base + "/" + value;
     let canonical = modeled.normalizedPath;
     if (modeled.nativePath !== undefined) {
       try { canonical = resolveShellFilesystemPath(modeled.nativePath, base); }
       catch (error) {
-        if (error instanceof Error && "code" in error && error.code === "ENETWORKSHAREPATH" && (effect === "write" || deleting)) {
-          const lexical = absolute ? value : win32.resolve(base, value);
-          paths.push({ ...evidenceForPath({ lexical, canonical: win32.normalize(lexical), effect }), projectEscape: true,
+        const network = error instanceof Error && "code" in error && error.code === "ENETWORKSHAREPATH";
+        if (network && (effect === "write" || deleting)) {
+          const target = absolute ? value : win32.resolve(base, value);
+          paths.push({ ...evidenceForPath({ lexical: target, canonical: resolvePathForPolicy(target), effect }), projectEscape: true,
             ...(deleting ? { deleteIntent: true as const } : {}) });
           return;
         }
+        // A share or device spelling can pass outside the sandbox's folder rules, so it stays unproven; match its drive.
+        if (network) canonical = resolvePathForPolicy(lexical);
         unproven = true; if (effect === "write") unknownProtectedWrite ??= "The shell write target cannot be resolved away from protected paths.";
       }
     } else { unproven = true; if (effect === "write") unknownProtectedWrite ??= "The shell write target cannot be resolved away from protected paths."; }
-    const lexical = absolute ? value : base + "/" + value;
     paths.push({ ...evidenceForPath({ lexical, canonical, effect }), ...(deleting ? { deleteIntent: true as const } : {}) });
   };
   if (evidencePipelines === undefined) for (const redirect of redirectFacts ?? []) {

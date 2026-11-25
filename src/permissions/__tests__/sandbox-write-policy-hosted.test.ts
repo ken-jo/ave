@@ -116,6 +116,7 @@ import { expandWindowsFsPaths, rankWindowsFsAccess } from "@anthropic-ai/sandbox
 import { configureHostResources } from "../../main/host-resources.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { buildPerCommandSandboxCustomConfig, getDefaultSensitiveReadDenyPaths, getDefaultSensitiveWriteDenyPaths } from "../asrt-sandbox.js";
+import { entryPaths } from "../../__tests__/support/filesystem-policy-paths.js";
 import { buildMandatorySandboxWritePolicy } from "../sandbox-write-policy.js";
 import { resetWatchedRows, watchedProtectedRows } from "../windows-watched-rows.js";
 
@@ -218,9 +219,21 @@ describe("hosted write policy spellings", () => {
     mkdirSync(externalControl);
     symlinkSync(externalControl, linkedControl, hostPlatform === "win32" ? "junction" : "dir");
     const protectedDenies = getDefaultSensitiveWriteDenyPaths();
-    const nonCoveringDenies = ["pattern*", "pattern-files/key", "CaseRoot", "caseroot/data", "caf\u00e9", "cafe\u0301/data"]
+    // LEAD r7 Q2 denies a pattern on its static base, so this one sits below the home that holds the grants.
+    const nonCoveringDenies = ["pattern-files/k*", "pattern-files/key", "CaseRoot", "caseroot/data", "caf\u00e9", "cafe\u0301/data"]
       .map(path => join(root, ...path.split("/")));
-    nonCoveringDenies.push(linkedControl, join(literalRoot, ".vscode"));
+    if (platform === "win32") {
+      expect(() => buildPerCommandSandboxCustomConfig({ allowWrite: [], allowRead: [], denyWrite: [linkedControl] }))
+        .toThrow(expect.objectContaining({
+          code: "sandbox-obligation-unenforceable",
+          rows: [expect.objectContaining({ row: linkedControl, reason: "link-spelling" })],
+        }));
+    } else nonCoveringDenies.push(linkedControl);
+    // A bracket spelling is a pattern whose static base here is the profile root, which Windows refuses (LEAD r7 Q2).
+    if (platform === "win32") {
+      expect(() => buildPerCommandSandboxCustomConfig({ allowWrite: ordinaryRoots, allowRead: [], denyWrite: [join(literalRoot, ".vscode")] }))
+        .toThrow(expect.objectContaining({ code: "sandbox-obligation-unenforceable", rows: [expect.objectContaining({ reason: "glob-not-subtree" })] }));
+    } else nonCoveringDenies.push(join(literalRoot, ".vscode"));
     const filesystem = buildPerCommandSandboxCustomConfig({
       allowWrite: [...protectedRoots, ...ordinaryRoots], allowRead: [...protectedRoots, ...ordinaryRoots],
       denyRead: getDefaultSensitiveReadDenyPaths(), denyWrite: [...protectedDenies, ...nonCoveringDenies, deniedParent, deniedChild],
@@ -229,8 +242,14 @@ describe("hosted write policy spellings", () => {
     const writeDenies = filesystem?.denyWrite?.map(entry => typeof entry === "string"
       ? nativeSpelling(entry) : { ...entry, path: nativeSpelling(entry.path) });
     expect(filesystem?.allowWrite).toEqual(platform === "win32" ? [] : [...protectedRoots, ...ordinaryRoots]);
-    expect(filesystem?.allowRead).toEqual([xdgRoot, ...ordinaryRoots].map(path => platform === "win32"
-      ? { path: realpathSync.native(path), literal: true } : path));
+    const expectedAllowRead = [xdgRoot, ...ordinaryRoots];
+    if (platform === "win32") {
+      expect(filesystem?.allowRead).toMatchObject(expectedAllowRead.map(path => ({
+        path: realpathSync.native(path), literal: true, admitted: { kind: "dir" },
+      })));
+    } else {
+      expect(filesystem?.allowRead).toEqual(expectedAllowRead);
+    }
     for (const path of [...protectedRoots, ...ordinaryRoots]) {
       const target = join(platform === "win32" ? realpathSync.native(path) : path, ".bash_profile");
       expect(writeDenies?.some(entry => {
@@ -254,16 +273,17 @@ describe("hosted write policy spellings", () => {
       // so the longest supported root keeps 512 bytes of headroom.
       expect(Buffer.byteLength(JSON.stringify(filesystem?.denyWrite))).toBeLessThanOrEqual(65_536 - 512);
     }
-    expect(writeDenies).toContainEqual({ path: join(literalRoot, ".vscode"), literal: true });
+    const writeDenyPaths = writeDenies?.map(entry => typeof entry === "string" ? entry : entry.path);
+    expect(writeDenyPaths).toContain(join(literalRoot, ".vscode"));
     if (platform === "win32") {
       // Absent floor rows are watched, not stamped, so the native operand stays small; the raw floor below still exceeds the budget.
       expect(Buffer.byteLength(JSON.stringify(filesystem?.denyWrite))).toBeLessThan(65_536);
       expect(realpathSync.native(workRoot)).toBe(join(root, "MiXeD", "work"));
-      expect(writeDenies).toContain(join(root, "MiXeD", "work", ".bash_profile"));
-      expect(writeDenies).toContain(deniedChild);
-      // The native expander retains the spelling of a literal.
+      expect(writeDenyPaths).toContain(join(root, "MiXeD", "work", ".bash_profile"));
+      expect(writeDenyPaths).toContain(deniedChild);
+      // The native expander retains the spelling of an absent literal.
       // Check the actual operand before mapping it to the simulated drive's backing directory.
-      expect(filesystem?.denyWrite).toContain(deniedChild);
+      expect(entryPaths(filesystem?.denyWrite)).toContain(deniedChild);
       const denyWrite = expandWindowsFsPaths((filesystem?.denyWrite ?? []).map(entry =>
         typeof entry === "string" ? driveFixture.toHost(entry) : { ...entry, path: driveFixture.toHost(entry.path) }), { mode: "deny" });
       const atOrUnder = (parent: string, path: string): boolean => {
@@ -285,7 +305,7 @@ describe("hosted write policy spellings", () => {
       }
       expect(ranked.denyWrite).toContain(driveFixture.toHost(interveningGrant));
       const mandatoryTargets = mandatory.denyWrite.map(entry => typeof entry === "string" ? entry : entry.path);
-      for (const target of [...mandatoryTargets, ...protectedDenies, ...nonCoveringDenies.filter(path => !path.includes("*")), externalControl]) {
+      for (const target of [...mandatoryTargets, ...protectedDenies, ...nonCoveringDenies.filter(path => !path.includes("*"))]) {
         const physical = driveFixture.toHost(target);
         if (currentGrants.some(grant => atOrUnder(grant, physical))) {
           const denied = ranked.denyWrite.some(deny => atOrUnder(deny, physical));

@@ -104,9 +104,13 @@ import { errorMessage } from "../shared/error-message.js";
 import type { ExecutionMode } from "../shared/permission-mode.js";
 import type { ApprovalSurface } from "../shared/authorization-required.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
+import { withLocalityDecision } from "../shared/local-path-io.js";
+import { t } from "../i18n/index.js";
+import { windowsDenyUnenforceableAtBoot, windowsObligationsApply } from "./admitted-obligation.js";
 import { createSerialQueue } from "../lib/with-file-lock.js";
 import { capturePersistedPolicyVersion, isPersistedPolicyVersionCurrent, persistedPolicyVersionForContent, STALE_PERMISSION_POLICY, type PersistedPolicyVersion } from "./persisted-policy-version.js";
 import {
+  batchWindowsShellWorkingDirectories,
   captureShellWorkingDirectoryIdentity,
   matchesShellWorkingDirectoryIdentity,
   type ShellWorkingDirectoryIdentity,
@@ -1622,7 +1626,18 @@ export class PermissionManager {
     }, issued.hostTerminalContext);
   }
 
+  // One evaluation is one locality decision: its path judgments share drive answers, and the next evaluation reads them again.
   private evaluatePermission(
+    toolName: string,
+    source: ToolSource,
+    category: ToolCategory,
+    overlayTriggerOrigin: string | null | undefined,
+    context: PermissionCheckContext,
+  ): PermissionCheckResult {
+    return withLocalityDecision(() => this.evaluatePermissionInDecision(toolName, source, category, overlayTriggerOrigin, context));
+  }
+
+  private evaluatePermissionInDecision(
     toolName: string,
     source: ToolSource,
     category: ToolCategory,
@@ -1647,8 +1662,13 @@ export class PermissionManager {
     if (requestedRuleSubject && requestedRuleSubject.dialect !== "bash" && requestedRuleSubject.dialect !== "powershell") {
       throw new Error("Shell rule subject has no known dialect");
     }
-    const cwdIdentity = context.hostShellExecutionPlan?.executionRequest === "host" && requestedRuleSubject?.cwd !== undefined
-      ? captureShellWorkingDirectoryIdentity(requestedRuleSubject.cwd) : undefined;
+    const hostCwd = context.hostShellExecutionPlan?.executionRequest === "host" ? requestedRuleSubject?.cwd : undefined;
+    const cwdBatch = hostCwd !== undefined && requestedRuleSubject?.dialect === "bash" && windowsObligationsApply()
+      ? batchWindowsShellWorkingDirectories(requestedRuleSubject.command, hostCwd, {
+        dialect: "bash", environment: context.shellExecution?.environmentSnapshot ?? {},
+      }) : undefined;
+    const cwdIdentity = cwdBatch !== undefined ? cwdBatch.identity
+      : hostCwd === undefined ? undefined : captureShellWorkingDirectoryIdentity(hostCwd);
     const ruleSubject = requestedRuleSubject === undefined ? undefined : {
       ...requestedRuleSubject, ...(cwdIdentity ? { cwd: cwdIdentity.realpath } : {}),
     };
@@ -1748,7 +1768,7 @@ export class PermissionManager {
     // A confirmed broker guest route resolves drive-less operands as guest (Linux) paths. Host routes, and any substrate the live broker does not confirm, keep host semantics and the unchanged floor.
     const shellPaths = !shellInspectionExhausted && command !== undefined && analysisCwd !== undefined && ruleSubject?.dialect === "bash"
       ? inspectShellPermissionPaths(command, analysisCwd, { dialect: ruleSubject.dialect, environment: shellExecution.environmentSnapshot ?? {},
-          ...(brokerGuestRoute ? { guestPosixPaths: true as const, guestCwd: analysisCwd } : {}) }, parsed) : undefined;
+          ...(brokerGuestRoute ? { guestPosixPaths: true as const, guestCwd: analysisCwd } : {}) }, parsed, cwdBatch?.observeDirectory) : undefined;
     const powerShellPaths = !shellInspectionExhausted && command !== undefined && ruleSubject?.dialect === "powershell" && analysisCwd !== undefined
       ? inspectPowerShellPermissionPaths(parsedPowerShell ?? command, analysisCwd, shellExecution.environmentSnapshot ?? {}, undefined,
         { inspectHostFiles: !brokerGuestRoute }) : undefined;
@@ -1773,7 +1793,9 @@ export class PermissionManager {
     }
     const competingFloor = floor !== undefined;
     if (sandboxUnavailableAsk) {
-      floor = context.floor ?? { code: "sandbox-unavailable", reason: "The OS sandbox is unavailable, so this shell command would run without isolation; it needs your approval once or for this session." };
+      floor = context.floor ?? { code: "sandbox-unavailable", reason: windowsDenyUnenforceableAtBoot() === "network" ? t("shellExecution.denyUnenforceableAsk")
+        : windowsDenyUnenforceableAtBoot() === "path" ? t("shellExecution.denyPathUnenforceableAsk")
+        : "The OS sandbox is unavailable, so this shell command would run without isolation; it needs your approval once or for this session." };
     }
     const floorSessionEligible = sandboxUnavailableAsk && !competingFloor;
     const floorSessionGranted = floorSessionEligible && context.hostShellExecutionPlan !== undefined && requestedRuleSubject !== undefined &&

@@ -66,6 +66,8 @@ describe("share filesystem write boundaries", () => {
     const result = inspectPowerShellPermissionPaths(command, SHARE_PROJECT);
     expect(result.unknownProtectedWrite).toBeUndefined();
     expect(result.paths.filter(path => path.effect === "write")).toEqual([]);
-    expect(result.paths.some(path => path.projectEscape)).toBe(false);
+    // Only the read of a share outside the project escapes, and only as the floor for an unmapped spelling.
+    expect(result.paths.filter(path => path.projectEscape).map(path => path.effect))
+      .toEqual(command.startsWith("Get-Content '") ? ["read"] : []);
   });
 });

@@ -5,7 +5,7 @@ import { join, resolve, win32 } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { PermissionManager } from "../permission-manager.js";
 import type { ExecutionMode } from "../../shared/permission-mode.js";
-import { canonicalizePathForMatch, createPathCanonicalizer, isSensitivePath } from "../sensitive-paths.js";
+import { canonicalizePathForMatch, createPathCanonicalizer, foldCanonicalPathSeparators, isSensitivePath } from "../sensitive-paths.js";
 import { isWindowsNetworkOrDevicePath } from "../../shared/shell-native-path.js";
 import { inspectPhysicalFilesystemPath, physicalParentReading, resolvePhysicalFilesystemPath, resolveShellFilesystemPath, verifyLocalFilesystemChain } from "../../shared/shell-filesystem-path.js";
 import { editDepthCandidates } from "../rules/scoped-rule-matcher.js";
@@ -77,9 +77,8 @@ function check(dialect: "bash" | "powershell", command: string, headless = false
 
 describe("network operands before approval", () => {
   it.each([
-    String.raw`Get-Content '\\host\share\notes.txt'`,
     String.raw`Write-Output '\\host\share\notes.txt'`,
-  ])("allows a read or printed share path without network I/O: %s", command => {
+  ])("allows a printed share path without network I/O: %s", command => {
     probes.calls.length = 0;
     const result = check("powershell", command);
     const uncCalls = probes.calls.filter(call => call.unc).length;
@@ -93,32 +92,13 @@ describe("network operands before approval", () => {
     }
   });
 
+  // A share outside the project names no local drive, so it cannot be shown to avoid a protected target: both dialects
+  // send the read to the project-escape floor, a forced ask in every mode, "allow" included.
   it.each([
-    {
-      dialect: "bash", command: String.raw`cat '\\host\share\notes.txt'`,
-      // bash routes any UNC operand to the project-escape floor: a forced ask in
-      // every mode, "allow" included, because shell-path-policy pushes projectEscape
-      // on a refused network identity without gating on write/delete effect (unlike
-      // the PowerShell twin). A read therefore over-asks here rather than allowing.
-      foreground: {
-        strict: { decision: "ask", reasonCode: "project-escape", forceModal: true },
-        default: { decision: "ask", reasonCode: "project-escape", forceModal: true },
-        auto: { decision: "ask", reasonCode: "project-escape", forceModal: true },
-        allow: { decision: "ask", reasonCode: "project-escape", forceModal: true },
-      },
-    },
-    {
-      dialect: "powershell", command: String.raw`Get-Content '\\host\share\notes.txt'`,
-      // PowerShell routes a UNC read through the exfiltration guardrail: an ordinary
-      // (unforced) ask that tracks the mode and drops to allow-mode only in "allow".
-      foreground: {
-        strict: { decision: "ask", reasonCode: "exfiltration-guardrail" },
-        default: { decision: "ask", reasonCode: "exfiltration-guardrail" },
-        auto: { decision: "ask", reasonCode: "review-required" },
-        allow: { decision: "allow", reasonCode: "allow-mode" },
-      },
-    },
-  ] as const)("never lets a UNC read earn the read-only proof; headless always denies, zero UNC calls: $dialect", ({ dialect, command, foreground }) => {
+    { dialect: "bash", command: String.raw`cat '\\host\share\notes.txt'` },
+    { dialect: "powershell", command: String.raw`Get-Content '\\host\share\notes.txt'` },
+  ] as const)("never lets a UNC read earn the read-only proof; headless always denies, zero UNC calls: $dialect", ({ dialect, command }) => {
+    const floor = { decision: "ask", reasonCode: "project-escape", forceModal: true } as const;
     if (process.platform !== "win32") {
       expect(isWindowsNetworkOrDevicePath(String.raw`\\host\share\notes.txt`)).toBe(false);
       return;
@@ -132,7 +112,7 @@ describe("network operands before approval", () => {
       for (const mode of ["strict", "default", "auto", "allow"] as const) {
         probes.calls.length = 0;
         const result = check(dialect, command, false, { mode, sandboxed });
-        expect(result).toMatchObject(foreground[mode]);
+        expect(result).toMatchObject(floor);
         expect(result.reasonCode).not.toBe("read-only-shell");
         const headless = check(dialect, command, true, { mode, sandboxed });
         expect(headless).toMatchObject({ decision: "deny", reasonCode: "no-approver" });
@@ -204,15 +184,17 @@ describe("network operands before approval", () => {
     } finally { probes.links.clear(); }
   });
 
-  it("keeps a non-network PowerShell resolver failure on the protected floor", () => {
+  it("keeps a non-network PowerShell resolver failure on a floor", () => {
     const target = join(directory, "project", "unresolved").replaceAll("\\", "/").toLowerCase();
     probes.errors.set(target, "EUNRESOLVEDSHELLPATH");
+    // On Windows the failed lookup leaves the walk incomplete, so the path is judged as an unproven location.
+    const floor = process.platform === "win32" ? "project-escape" : "protected-path";
     try {
       probes.calls.length = 0;
       const result = check("powershell", "Set-Content unresolved x");
       expect(probes.calls.some(call => call.path.replaceAll("\\", "/").toLowerCase() === target)).toBe(true);
-      expect(result).toMatchObject({ decision: "ask", reasonCode: "protected-path", forceModal: true,
-        pipelineRequest: { floor: { code: "protected-path" } } });
+      expect(result).toMatchObject({ decision: "ask", reasonCode: floor, forceModal: true,
+        pipelineRequest: { floor: { code: floor } } });
       expect(probes.calls.filter(call => call.unc)).toEqual([]);
     } finally { probes.errors.clear(); }
   });
@@ -317,7 +299,100 @@ describe("network operands before approval", () => {
     else expect(probes.calls.length).toBeGreaterThan(0);
   });
 
-  it("preserves canonical identity when a local leaf lstat fails with EACCES", async () => {
+  it.runIf(process.platform === "win32")("resolves a loopback drive share through the drive without a network call", () => {
+    const plain = join(directory, "project", "notes.txt");
+    const expected = canonicalizePathForMatch(plain);
+    for (const alias of [`\\\\localhost\\${plain[0]}$\\${plain.slice(3)}`, `\\\\?\\UNC\\127.0.0.1\\${plain[0]}$\\${plain.slice(3)}`, `\\\\.\\${plain}`]) {
+      probes.calls.length = 0;
+      expect(canonicalizePathForMatch(alias)).toBe(expected);
+      expect(createPathCanonicalizer()(alias)).toBe(expected);
+      expect(probes.calls.filter(call => call.unc)).toEqual([]);
+    }
+  });
+
+  describe.runIf(process.platform === "win32")("links to a share", () => {
+    const key = (path: string) => path.replaceAll("\\", "/").toLowerCase();
+    const loopback = (path: string) => `\\\\localhost\\${path[0]}$\\${path.slice(3)}`;
+    type LinkCase = { links: ReadonlyArray<readonly [string, string]>; spelled: string; reached: string };
+    const cases = (): Record<"remote" | "loopback" | "nested", LinkCase> => {
+      const project = join(directory, "project");
+      const home = loopback(join(directory, "home"));
+      return {
+        remote: { links: [[join(project, "remote-link"), String.raw`\\e\s\x`]], spelled: join(project, "remote-link", "notes.txt"), reached: String.raw`\\e\s\x\notes.txt` },
+        loopback: { links: [[join(project, "home-link"), home]], spelled: join(project, "home-link", "config", "settings.json"), reached: `${home}\\config\\settings.json` },
+        nested: { links: [[join(project, "outer-link"), join(directory, "hop")], [join(directory, "hop", "to-home"), home]],
+          spelled: join(project, "outer-link", "to-home", "config", "settings.json"), reached: `${home}\\config\\settings.json` },
+      };
+    };
+    const withLinks = (links: LinkCase["links"], run: () => void) => {
+      for (const [from, to] of links) probes.links.set(key(from), to);
+      try { probes.calls.length = 0; run(); } finally { probes.links.clear(); }
+    };
+    beforeAll(() => mkdirSync(join(directory, "hop"), { recursive: true }));
+
+    it.each(["remote", "loopback", "nested"] as const)("judges the %s link by the spelling it reaches, opening nothing past it", name => {
+      const { links, spelled, reached } = cases()[name];
+      withLinks(links, () => {
+        expect(() => verifyLocalFilesystemChain(spelled)).toThrow(expect.objectContaining({ code: "ENETWORKSHAREPATH", reached }));
+        expect(canonicalizePathForMatch(spelled)).toBe(foldCanonicalPathSeparators(reached));
+        expect(createPathCanonicalizer()(spelled)).toBe(foldCanonicalPathSeparators(reached));
+        expect(probes.calls.filter(call => call.unc)).toEqual([]);
+      });
+    });
+
+    it.each(["bash", "powershell"] as const)("carries the drive evidence of a loopback link target in %s", dialect => {
+      vi.stubEnv("AVE_HOME", join(directory, "home"));
+      try {
+        for (const name of ["loopback", "nested"] as const) {
+          const { links, spelled } = cases()[name];
+          withLinks(links, () => {
+            const command = dialect === "bash" ? `cat '${spelled}'` : `Get-Content -LiteralPath '${spelled}'`;
+            expect(check(dialect, command, false, { mode: "strict" })).toMatchObject({
+              decision: "ask", reasonCode: "project-escape",
+              pipelineRequest: { secretRead: true, floor: { code: "project-escape" }, pathFacts: { secretPattern: "ave-home:config" } },
+            });
+            expect(check(dialect, command, true, { mode: "strict" })).toMatchObject({ decision: "deny", reasonCode: "no-approver" });
+            expect(probes.calls.filter(call => call.unc)).toEqual([]);
+          });
+        }
+      } finally { vi.unstubAllEnvs(); }
+    });
+
+    it.each(["bash", "powershell"] as const)("treats a key name behind a remote link or a loopback alias as key material in %s", dialect => {
+      const { links } = cases().remote;
+      for (const spelled of [join(directory, "project", "remote-link", "id.key"), loopback(join(directory, "project", "id.key"))]) {
+        withLinks(links, () => {
+          const command = dialect === "bash" ? `cat '${spelled}'` : `Get-Content -LiteralPath '${spelled}'`;
+          expect(check(dialect, command, false, { mode: "strict" })).toMatchObject({ decision: "ask", pipelineRequest: { secretRead: true } });
+          expect(probes.calls.filter(call => call.unc)).toEqual([]);
+        });
+      }
+    });
+  });
+
+  // Spellings the Win32 path rules can read more than one way are judged by their spelling: no call names the file.
+  describe.runIf(process.platform === "win32")("ambiguous spellings", () => {
+    const target = () => join(directory, "project", "ambiguous-target.txt");
+    const spellings: ReadonlyArray<[string, (path: string) => string]> = [
+      ["an NT prefix", path => `\\??\\${path}`],
+      ["a slash after the extended prefix", path => `\\\\?\\${path.slice(0, 3)}${path.slice(3).replaceAll("\\", "/")}`],
+      ["an empty component after the extended prefix", path => `\\\\?\\${path.replace(/\\(?=[^\\]*$)/u, "\\\\")}`],
+      ["a trailing dot", path => `\\\\.\\${path}.`],
+      ["a trailing space", path => `\\\\.\\${path} `],
+      ["a share-root parent", path => `\\\\localhost\\${path[0]}$\\..\\${path[0]}$\\${path.slice(3)}`],
+    ];
+    it.each(spellings.flatMap(([label, spell]) => (["bash", "powershell"] as const).map(dialect => ({ label, spell, dialect }))))(
+      "asks for $label in $dialect without a filesystem call", ({ spell, dialect }) => {
+        const spelled = spell(target());
+        const command = dialect === "bash" ? `cat '${spelled}'` : `Get-Content -LiteralPath '${spelled}'`;
+        probes.calls.length = 0;
+        expect(check(dialect, command, false, { mode: "strict" })).toMatchObject({ decision: "ask", pipelineRequest: { secretRead: true } });
+        expect(check(dialect, command, true, { mode: "strict" })).toMatchObject({ decision: "deny", reasonCode: "no-approver" });
+        expect(probes.calls.filter(call => call.path.toLowerCase().includes("ambiguous-target"))).toEqual([]);
+      });
+  });
+
+  it("keeps an opaque identity when a local leaf lstat fails with EACCES", async () => {
     const parent = join(directory, "eacces-parent");
     mkdirSync(parent);
     const leaf = join(parent, "missing-leaf");
@@ -332,10 +407,14 @@ describe("network operands before approval", () => {
     try {
       lstat.mockClear();
       expect(() => canonicalizePathForMatch(leaf)).not.toThrow();
-      expect(canonicalizePathForMatch(leaf)).toBe(expected);
       if (process.platform === "win32") {
+        probes.calls.length = 0;
+        // The unread entry leaves the walk incomplete, so it cannot authorize a later lookup on the leaf.
+        expect(canonicalizePathForMatch(leaf)).toBe(foldCanonicalPathSeparators(`\\\\?\\GLOBALROOT\\??\\${leaf}`));
         expect(lstat.mock.calls.some(call => String(call[0]) === leaf)).toBe(true);
+        expect(probes.calls.filter(call => call.path === leaf && call.operation !== "lstatSync")).toEqual([]);
       } else {
+        expect(canonicalizePathForMatch(leaf)).toBe(expected);
         probes.calls.length = 0;
         expect(isWindowsNetworkOrDevicePath(String.raw`\\host\share`)).toBe(false);
         expect(() => verifyLocalFilesystemChain(leaf)).not.toThrow();
@@ -356,7 +435,14 @@ describe("network operands before approval", () => {
     }
   });
 
-  it.each([String.raw`\?\C:\proc\self\environ`, String.raw`\\?\C:\proc\self\environ`])("resolves the local device chain without a bare drive or network call: %s", path => {
+  it.runIf(process.platform === "win32")("refuses a single-separator device prefix before any lookup", () => {
+    probes.calls.length = 0;
+    expect(() => verifyLocalFilesystemChain(String.raw`\?\C:\proc\self\environ`))
+      .toThrow(expect.objectContaining({ code: "ENETWORKSHAREPATH" }));
+    expect(probes.calls).toEqual([]);
+  });
+
+  it.each([String.raw`\\?\C:\proc\self\environ`])("resolves the local device chain without a bare drive or network call: %s", path => {
     probes.calls.length = 0;
     expect(() => verifyLocalFilesystemChain(path)).not.toThrow();
     if (process.platform === "win32") {
