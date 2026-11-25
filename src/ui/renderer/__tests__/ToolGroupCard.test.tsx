@@ -665,7 +665,7 @@ describe("ToolGroupCard", () => {
       ],
     });
     const { container } = render(<ToolGroupCard group={group} />);
-    expect(container.textContent).toContain(t("fileEditDiff.diffNotStored"));
+    expect(container.textContent).toContain("이 파일의 이전 내용이 더 이상 보관되어 있지 않아 여기서는 변경 내용을 보여 줄 수 없습니다.");
     expect(container.textContent).not.toContain(t("fileEditDiff.noChanges"));
   });
 });

@@ -4,7 +4,6 @@ import {
   formatIpcError,
   invokeErrorCode,
   invokeErrorDetail,
-  COMMON_IPC_ERROR_MESSAGES,
 } from "../format-ipc-error.js";
 import { getLocale, setLocale, t } from "../../../i18n/runtime.js";
 import { MCP_GOVERNANCE_UNAPPROVED_SERVER } from "../../../shared/mcp-error-code.js";
@@ -76,7 +75,7 @@ describe("formatIpcError (SOT — #830)", () => {
   it("resolves a known common code from the default map", () => {
     // The map now holds translation keys; formatIpcError resolves them via t().
     expect(formatIpcError("invalid-key", undefined)).toBe(
-      t(COMMON_IPC_ERROR_MESSAGES["invalid-key"]),
+      "유효하지 않은 키입니다.",
     );
   });
 

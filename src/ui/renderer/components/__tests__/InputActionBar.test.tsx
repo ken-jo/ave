@@ -581,7 +581,7 @@ describe("permission card (status-row permission cell)", () => {
     fireEvent.click(getByTestId("permission-quick-picker-option:auto"));
     await waitFor(() => expect(queryByTestId("permission-quick-picker")).toBeNull());
     expect(notice).toHaveBeenCalledTimes(1);
-    expect(notice).toHaveBeenCalledWith(t("permissionsTab.homeFolderRefusedSessionOnly"));
+    expect(notice).toHaveBeenCalledWith("이번 세션에만 적용됩니다. 내 계정만 Ave 폴더를 바꿀 수 있는지 확인하지 못해 설정을 저장하지 않았습니다. 폴더 권한을 수정한 뒤 Ave를 다시 시작하세요.");
   });
 
   it("stays open with the mark unmoved when the host refuses the pick", async () => {
@@ -1022,7 +1022,7 @@ describe("permission card sandbox checkbox", () => {
     relaunchApp.mockResolvedValue({ ok: false, error: "plugin-install-in-progress" });
     const view = await togglePending();
     await act(async () => { fireEvent.click(view.getByRole("button", { name: t("permissionsTab.sandboxRestartNow") })); });
-    expect(view.getByRole("alert")).toHaveTextContent(t("permissionsTab.sandboxRestartPluginBusy"));
+    expect(view.getByRole("alert")).toHaveTextContent("확장 설치가 진행 중입니다. 완료된 후 다시 시도해 주세요.");
     expect(view.getByRole("dialog", { name: t("permissionsTab.sandboxRestartTitle") })).toBeTruthy();
   });
 
@@ -1065,8 +1065,8 @@ describe("permission card sandbox checkbox", () => {
   it("shows application repair guidance for an integrity failure", async () => {
     sandboxCapability.mockResolvedValue(shellStatus({ state: "unavailable", setting: true, causes: ["windows-sandbox-integrity-failed"] }));
     const { getByTestId } = await openCard();
-    expect(getByTestId("permission-quick-picker-sandbox-status")).toHaveTextContent(t("inputActionBar.sandboxCauseWindowsSandboxIntegrityFailed"));
-    expect(getByTestId("permission-quick-picker-sandbox-status")).not.toHaveTextContent(t("inputActionBar.sandboxCauseWindowsSetupIncomplete"));
+    expect(getByTestId("permission-quick-picker-sandbox-status")).toHaveTextContent("Windows 샌드박스 헬퍼(srt-win)의 무결성 검사가 실패함 — Ave를 다시 설치하세요");
+    expect(getByTestId("permission-quick-picker-sandbox-status")).not.toHaveTextContent("Windows 샌드박스 설정(srt-win)이 완료되지 않음");
   });
 
   it("disables the checkbox on a platform with no sandbox and says so", async () => {
