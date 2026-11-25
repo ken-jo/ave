@@ -1,4 +1,4 @@
-// The same cases against the relay the routes use today and the relay in `egress-relay/`. RECORDED is the pin: one value per row means both
+// The same cases against the wrap runtime's relay ("today", which the contained routes used before) and the relay in `egress-relay/`. RECORDED is the pin: one value per row means both
 // relays must give it; a row with two values is an intended difference and is listed in DIFFERENCES. Direct sockets from a contained process
 // (P1) and its reach to other loopback ports (P5) are properties of the container request and are measured natively, not here.
 import http from "node:http";
@@ -6,21 +6,13 @@ import net from "node:net";
 import { resolve } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ParentProxyRouter, SandboxAskCallback } from "@anthropic-ai/sandbox-runtime";
-import { setDestinationResolverForTesting } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-manager.js";
+import { openHostInvocationProxy, SandboxManager, setDestinationResolverForTesting } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-manager.js";
 import { useTempDirs as tempDirs } from "../../__tests__/test-helpers.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import * as policyHome from "../../shared/policy-home.js";
 import * as relayDestination from "../egress-relay/destination.js";
-import {
-  closeAllEgressConnections,
-  closeEgressConnections,
-  initializeAsrtSandbox,
-  resetAsrtSandbox,
-  subscribeAsrtViolations,
-  type AsrtViolationRecord,
-} from "../asrt-sandbox.js";
+import { buildSandboxConfig, type AsrtViolationRecord } from "../asrt-sandbox.js";
 import { startEgressDenyMonitor } from "../egress-deny-monitor.js";
-import { openHostEgressListener } from "../egress-host-listener.js";
 import { openInvocationProxyListener, type InvocationProxyAdmission } from "../egress-invocation-listener.js";
 import { openEgressInvocation, releaseEgressInvocation } from "../egress-invocations.js";
 import {
@@ -74,15 +66,9 @@ const DIFFERENCES = [
   { row: "P16", today: "4096 relays, not exercised here", new: "4096 relays, exercised with a lower injected limit", why: "same limit" },
   { row: "P21", today: "a reserved address literal is asked about, then dialled", new: RECORDED.reservedLiteral.new, why: "no spelling of a link-local, metadata, multicast or unspecified address is a destination; loopback and private-use literals are asked as today; the allow list does not exempt a literal (today an allow-listed one is tunnelled without an ask)" },
   { row: "407 challenge", today: "its own realm name", new: 'realm "egress relay"', why: "nothing reads the realm" },
+  { row: "P24", today: "a route kind that keeps an ended invocation's ports refused for 30 minutes, or 24 hours while its process group lives", new: "no such route: every relay belongs to one invocation and frees its ports at close", why: "the hold existed for children left on the host after their invocation; a contained child is ended with its job, and a late client has no credential for any other relay (unauthenticated, otherInvocationName)" },
   { row: "listener", today: "a port outside the shared proxy range", new: "any ephemeral loopback port", why: "the container makes the connection, so no range has to match a host rule" },
 ] as const;
-
-// P24 on the wrapped-command route. Today has it on one OS only, where this suite's today adapter cannot run, so today's column is read
-// from the package manager module and the new relay is pinned to it: an ended listener keeps its port bound and refused for 30 minutes,
-// up to 24 hours while its process group lives (:147-152, :1882-1914); held listeners count toward the limit (:1738, :1907); after the hold
-// the port number stays refused and is never given out again until reset (:1158, :1762, :1910, :3739).
-const HELD = "HTTP/1.1 403 sandbox proxy listener";
-type RouteKind = "invocation" | "wrapped-command";
 
 type Ask = EgressRelayAsk;
 interface StartOptions {
@@ -91,7 +77,6 @@ interface StartOptions {
   readonly allow?: readonly string[];
   readonly resolve?: (name: string) => Promise<readonly { address: string; family?: number }[]>;
   readonly maxRelays?: number;
-  readonly endedPortHold?: { readonly ms: number; readonly maxMs: number; readonly groupAlive?: (group: number) => boolean };
 }
 interface RelayUnderTest {
   readonly port: number;
@@ -102,7 +87,7 @@ interface RelayUnderTest {
 interface Adapter {
   readonly name: RelayName;
   start(options: StartOptions): Promise<void>;
-  open(token: string, admission?: InvocationProxyAdmission, kind?: RouteKind): Promise<RelayUnderTest & { recordRefusal(destination: string, reason: string): void }>;
+  open(token: string, admission?: InvocationProxyAdmission): Promise<RelayUnderTest & { recordRefusal(destination: string, reason: string): void }>;
   setRouter(router: EgressRelayRouter): void;
   closeConnections(tokens: readonly string[], host: string, port: number): number;
   closeAll(): number;
@@ -117,20 +102,20 @@ const today: Adapter = {
   name: "today",
   async start(options) {
     setDestinationResolverForTesting(options.resolve);
-    await initializeAsrtSandbox({
-      allowedDomains: [...(options.allow ?? [])],
-      strictAllowlist: false,
-      windows: { externalConfinement: true },
-      ...(options.router ? { upstreamRouter: options.router } : {}),
-    }, options.ask as SandboxAskCallback | undefined);
+    SandboxManager.setParentProxyRouter(options.router);
+    const config = buildSandboxConfig({ allowedDomains: [...(options.allow ?? [])], strictAllowlist: false, windows: { externalConfinement: true } });
+    await SandboxManager.initialize(config, options.ask as SandboxAskCallback | undefined, false);
   },
-  open: (token, admission) => openHostEgressListener(token, admission),
+  async open(token, admission) {
+    const relay = await openHostInvocationProxy(token, admission);
+    return { ...relay, recordRefusal: (destination, reason) => relay.recordRefusal(destination, undefined, reason) };
+  },
   setRouter: () => { throw new Error("today's router is installed at start"); },
-  closeConnections: closeEgressConnections,
-  closeAll: closeAllEgressConnections,
-  subscribe: subscribeAsrtViolations,
+  closeConnections: (tokens, host, port) => SandboxManager.closeInvocationConnections(tokens, host, port),
+  closeAll: () => SandboxManager.closeAllInvocationConnections(),
+  subscribe: async (listener) => SandboxManager.getSandboxViolationStore().subscribe(listener),
   async stop() {
-    await resetAsrtSandbox();
+    await SandboxManager.reset();
     setDestinationResolverForTesting(undefined);
   },
 };
@@ -138,11 +123,10 @@ const today: Adapter = {
 const next: Adapter = {
   name: "new",
   async start(options) {
-    const { endedPortHold, ...rest } = options;
-    startEgressRelayService({ ...rest, ask: options.ask as Ask, ...(endedPortHold ? { endedPortHold: { "wrapped-command": endedPortHold } } : {}) });
+    startEgressRelayService({ ...options, ask: options.ask as Ask });
   },
-  async open(token, admission, kind) {
-    const relay = await openEgressRelay(token, admission, kind);
+  async open(token, admission) {
+    const relay = await openEgressRelay(token, admission);
     return { ...relay, recordRefusal: (destination, reason) => relay.recordRefusal(destination, undefined, reason) };
   },
   setRouter: setEgressRelayRouter,
@@ -242,7 +226,7 @@ afterEach(async () => {
 
 it("takes the ask callback and the router boot builds today", () => {
   expect(contracts).toBeTypeOf("function");
-  expect(DIFFERENCES.map((difference) => difference.row)).toEqual(["P17", "P18", "P14", "P15", "P16", "P21", "407 challenge", "listener"]);
+  expect(DIFFERENCES.map((difference) => difference.row)).toEqual(["P17", "P18", "P14", "P15", "P16", "P21", "407 challenge", "P24", "listener"]);
 });
 
 describe.each([today, next])("egress relay parity: $name relay", (adapter) => {
@@ -255,8 +239,8 @@ describe.each([today, next])("egress relay parity: $name relay", (adapter) => {
     await adapter.start(options);
     cleanups.push(adapter.stop);
   };
-  const open = async (token = newToken(), admission?: InvocationProxyAdmission, kind?: RouteKind) => {
-    const relay = await adapter.open(token, admission, kind);
+  const open = async (token = newToken(), admission?: InvocationProxyAdmission) => {
+    const relay = await adapter.open(token, admission);
     cleanups.push(relay.close);
     return relay;
   };
@@ -555,7 +539,7 @@ describe.each([today, next])("egress relay parity: $name relay", (adapter) => {
 
     it("P24, per-invocation route: an ended relay frees its port and its forwarding ports at once", async () => {
       const ask = vi.fn<Ask>(async () => ({ allow: false, reason: "asked" }));
-      await start({ ask, endedPortHold: { ms: 1500, maxMs: 6000 } });
+      await start({ ask });
       const ended = await open();
       const frontPort = await forwardingPort();
       ended.registerPort(frontPort);
@@ -564,125 +548,6 @@ describe.each([today, next])("egress relay parity: $name relay", (adapter) => {
 
       expect(await unbound(ended.port)).toBe(true);
       expect([await hopOutcome(relay, ask, ended.port), await hopOutcome(relay, ask, frontPort)]).toEqual([recorded("endedPortHop"), recorded("endedPortHop")]);
-    });
-
-    it.runIf(adapter.name === "new")("P24, wrapped-command route: an ended relay's ports are held back, then its port number is retired", async () => {
-      const ask = vi.fn<Ask>(async () => ({ allow: false, reason: "asked" }));
-      await start({ ask, endedPortHold: { ms: 1500, maxMs: 6000 } });
-      const ended = await open(newToken(), undefined, "wrapped-command");
-      const frontPort = await forwardingPort();
-      ended.registerPort(frontPort);
-      await ended.close();
-      const relay = await open();
-
-      expect([await hopOutcome(relay, ask, ended.port), await hopOutcome(relay, ask, frontPort)]).toEqual([HELD, HELD]);
-      // The held port is still bound, and answers nothing.
-      const late = connect({ port: ended.port, proxyAuthorization: ended.proxyAuthorization }, "asked.example:443");
-      await expect.poll(() => late.socket.destroyed).toBe(true);
-      expect(late.output()).toBe("");
-
-      // After the hold the port is unbound, its number stays refused, and the forwarding port is an ordinary port again.
-      await expect.poll(() => unbound(ended.port), { timeout: 8000, interval: 100 }).toBe(true);
-      expect(await hopOutcome(relay, ask, ended.port)).toBe(HELD);
-      expect(await hopOutcome(relay, ask, frontPort)).toBe("asked");
-    });
-
-    it.runIf(adapter.name === "new")("P24, wrapped-command route: a retired port number is never given to a later relay", async () => {
-      await start({ ask: async () => true, endedPortHold: { ms: 200, maxMs: 1000 } });
-      const ended = await open(newToken(), undefined, "wrapped-command");
-      await ended.close();
-      await expect.poll(() => unbound(ended.port), { timeout: 8000, interval: 100 }).toBe(true);
-      // The next listener is told it got the retired number once.
-      const address = vi.spyOn(net.Server.prototype, "address").mockImplementationOnce(() => ({ address: "127.0.0.1", family: "IPv4", port: ended.port }));
-
-      const relay = await open();
-      address.mockRestore();
-
-      expect(relay.port).not.toBe(ended.port);
-      expect(await refused({ port: relay.port }, "asked.example:443")).toBe(recorded("unauthenticated"));
-    });
-
-    it.runIf(adapter.name === "new")("P24, wrapped-command route: opening fails when only retired port numbers come back", async () => {
-      await start({ ask: async () => true, maxRelays: 1, endedPortHold: { ms: 200, maxMs: 1000 } });
-      const ended = await open(newToken(), undefined, "wrapped-command");
-      await ended.close();
-      await expect.poll(() => unbound(ended.port), { timeout: 8000, interval: 100 }).toBe(true);
-      const address = vi.spyOn(net.Server.prototype, "address").mockImplementation(() => ({ address: "127.0.0.1", family: "IPv4", port: ended.port }));
-
-      const failed = adapter.open(newToken()).then(() => "opened", (error: Error) => error.message);
-      await expect(failed).resolves.toBe("egress relay: no port outside the retired ones");
-      address.mockRestore();
-      // The same failure under an admission, whose owner closes later: nothing is left unhandled meanwhile.
-      const retiredAgain = vi.spyOn(net.Server.prototype, "address").mockImplementation(() => ({ address: "127.0.0.1", family: "IPv4", port: ended.port }));
-      let adopted: (() => Promise<void>) | undefined;
-      const admission: InvocationProxyAdmission = {
-        signal: new AbortController().signal,
-        assertCanBind: () => {},
-        acceptsConnections: () => true,
-        adopt: (close) => { adopted = close; },
-      };
-      await expect(adapter.open(newToken(), admission)).rejects.toThrow("egress relay: no port outside the retired ones");
-      retiredAgain.mockRestore();
-      await new Promise((done) => setTimeout(done, 100));
-      await adopted?.();
-
-      // The failed relays left nothing behind: the one slot is free.
-      const relay = await open();
-      expect(relay.port).not.toBe(ended.port);
-    });
-
-    it.runIf(adapter.name === "new")("P24, wrapped-command route: held relays count toward the relay limit", async () => {
-      await start({ ask: async () => true, maxRelays: 2, endedPortHold: { ms: 1500, maxMs: 6000 } });
-      const ended = await open(newToken(), undefined, "wrapped-command");
-      await open();
-      await ended.close();
-
-      await expect(adapter.open(newToken())).rejects.toThrow(/too many invocation relays/u);
-      await expect.poll(() => unbound(ended.port), { timeout: 8000, interval: 100 }).toBe(true);
-      await open();
-    });
-
-    it.runIf(adapter.name === "new")("P24, wrapped-command route: stopping the service frees held ports and forgets retired ones", async () => {
-      const ask = vi.fn<Ask>(async () => ({ allow: false, reason: "asked" }));
-      startEgressRelayService({ ask, endedPortHold: { "wrapped-command": { ms: 200, maxMs: 1000 } } });
-      const retired = await openEgressRelay(newToken(), undefined, "wrapped-command");
-      await retired.close();
-      await expect.poll(() => unbound(retired.port), { timeout: 8000, interval: 100 }).toBe(true);
-      await stopEgressRelayService();
-      startEgressRelayService({ ask, endedPortHold: { "wrapped-command": { ms: 60_000, maxMs: 120_000 } } });
-      cleanups.push(stopEgressRelayService);
-      const held = await openEgressRelay(newToken(), undefined, "wrapped-command");
-      await held.close();
-      expect(await unbound(held.port)).toBe(false);
-
-      await stopEgressRelayService();
-
-      expect(await unbound(held.port)).toBe(true);
-      startEgressRelayService({ ask });
-      const relay = await open();
-      expect([await hopOutcome(relay, ask, held.port), await hopOutcome(relay, ask, retired.port)]).toEqual(["asked", "asked"]);
-    });
-
-    it.runIf(adapter.name === "new")("P24, wrapped-command route: a live process group extends the hold-back, up to the maximum", async () => {
-      let alive = true;
-      const groupAlive = vi.fn(() => alive);
-      const ask = vi.fn<Ask>(async () => ({ allow: false, reason: "asked" }));
-      await start({ ask, endedPortHold: { ms: 500, maxMs: 1750, groupAlive } });
-      const first = await openEgressRelay(newToken(), undefined, "wrapped-command");
-      const second = await openEgressRelay(newToken(), undefined, "wrapped-command");
-
-      await first.close({ processGroup: 4242 });
-      await expect.poll(() => groupAlive.mock.calls.length, { timeout: 5000 }).toBeGreaterThanOrEqual(1);
-      expect(groupAlive).toHaveBeenCalledWith(4242);
-      expect(await unbound(first.port)).toBe(false);
-      // The maximum ends it although the group still looks alive.
-      await expect.poll(() => unbound(first.port), { timeout: 8000, interval: 50 }).toBe(true);
-
-      alive = false;
-      await second.close({ processGroup: 4243 });
-      expect(await unbound(second.port)).toBe(false);
-      await expect.poll(() => unbound(second.port), { timeout: 8000, interval: 50 }).toBe(true);
-      expect(groupAlive).toHaveBeenCalledWith(4243);
     });
 
     it.runIf(adapter.name === "new")("ends the relay when its listener reports an error", async () => {
