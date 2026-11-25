@@ -2428,7 +2428,6 @@
     "test/scripts/pre-push-related-tests.test.ts": 18,
     "test/scripts/pre-push-shared-history.test.ts": 9085,
     "test/scripts/pre-push-source-policy.test.ts": 49553,
-    "test/scripts/pre-push-tier.test.ts": 6984,
     "test/scripts/preload-sites.test.ts": 18575,
     "test/scripts/prepare-windows-job.test.ts": 243,
     "test/scripts/preview-document-bundle.test.ts": 743,

@@ -23,12 +23,28 @@ export function isSandboxGitMetadataEntry(entry: string): boolean {
 }
 const SANDBOX_LOADER_ENTRIES = [
   ".bash_profile", ".githooks", ".pre-commit-config.yaml", "lefthook.yml",
-  ".claude/settings.json", ".claude/settings.local.json", ".claude/hooks", ".claude/commands", ".idea/workspace.xml",
+  ".idea/workspace.xml",
   ".envrc", ".mise.toml", "mise.toml", ".tool-versions", ".npmrc", ".yarnrc.yml", "bunfig.toml", ".husky",
 ] as const;
 const SANDBOX_PROTECTED_ROOT_ENTRIES = [...new Set([
-  ...PROTECTED_ROOT_ENTRIES.filter(entry => !isSandboxGitMetadataEntry(entry)), ...SANDBOX_LOADER_ENTRIES,
+  // `.agents` rides with the named entries below, not as a row per root on every platform.
+  ...PROTECTED_ROOT_ENTRIES.filter(entry => !isSandboxGitMetadataEntry(entry) && entry !== ".agents"), ...SANDBOX_LOADER_ENTRIES,
 ])];
+
+// More entries directly beneath each write root, the same depth as the rest of this floor. `.agents` holds the skills, commands and
+// plugins agent hosts load, and is denied whole. `.ave/commands` and `.ave/hooks` are what Ave itself loads from a project
+// (custom-commands.ts, hook-source-controller.ts): the file tools ask before touching any `.ave`, and a confined command must not
+// edit them without that card. The two children are named, not `.ave` itself: under a write root that holds the Ave home,
+// `<root>/.ave` is the home, and a deny there would take the command's own HOME and temp with it. `.codex` and a project `.aws`
+// are not named (owner decision 2026-11-25).
+// Linux carries one row per root for each entry. macOS carries none here; its wrap appends rules anchored at the write roots
+// (macos-sandbox-wrap.ts), because a row per root costs the root's length for every entry, which the longest supported darwin
+// layout cannot fit in MAX_POSIX_WRITE_DENY_POLICY_BYTES, and because the `.ave` directory itself can be pinned there. The Windows
+// floor is stamped and watched per row and is not changed here.
+export const SANDBOX_NAMED_ENTRIES = [".agents", ".ave/commands", ".ave/hooks"] as const;
+function caseInsensitivePattern(path: string): string {
+  return path.replace(/[a-z]/gu, character => `[${character}${character.toUpperCase()}]`);
+}
 
 // Linux discovery depth; the admitted root is depth zero.
 export const SANDBOX_GIT_SCAN_DEPTH = 3;
@@ -68,14 +84,11 @@ const GIT_CONTROL_ENTRIES = [
 ] as const;
 const LINUX_GIT_CONTROL_ENTRIES = [...GIT_CONTROL_ENTRIES, "info/attributes"] as const;
 export const SANDBOX_BARE_REPOSITORY_ENTRIES = ["HEAD", "objects", "refs", "config"] as const;
-function caseInsensitiveGitPattern(path: string): string {
-  return path.replace(/[a-z]/gu, character => `[${character}${character.toUpperCase()}]`);
-}
 const MAC_GIT_CONTROL_GLOBS = GIT_CONTROL_ENTRIES.flatMap(entry => [
-  `/**/${caseInsensitiveGitPattern(`.git/${entry}`)}`,
-  `/**/${caseInsensitiveGitPattern(".git/modules")}/**/${caseInsensitiveGitPattern(entry)}`,
-  `/**/${caseInsensitiveGitPattern(".git/worktrees")}/*/${caseInsensitiveGitPattern(entry)}`,
-]).concat(`/**/${caseInsensitiveGitPattern(".git/ave-pins")}`, `/**/${caseInsensitiveGitPattern(".git/modules")}/**/${caseInsensitiveGitPattern("ave-pins")}`, `/**/${caseInsensitiveGitPattern(".git/worktrees")}/*/${caseInsensitiveGitPattern("ave.id")}`);
+  `/**/${caseInsensitivePattern(`.git/${entry}`)}`,
+  `/**/${caseInsensitivePattern(".git/modules")}/**/${caseInsensitivePattern(entry)}`,
+  `/**/${caseInsensitivePattern(".git/worktrees")}/*/${caseInsensitivePattern(entry)}`,
+]).concat(`/**/${caseInsensitivePattern(".git/ave-pins")}`, `/**/${caseInsensitivePattern(".git/modules")}/**/${caseInsensitivePattern("ave-pins")}`, `/**/${caseInsensitivePattern(".git/worktrees")}/*/${caseInsensitivePattern("ave.id")}`);
 interface GitDiscoveryBudget { entries: number; metadataBytes: number }
 interface GitControlEntryIdentity {
   readonly dev: number | bigint;
@@ -988,9 +1001,10 @@ export function buildMandatorySandboxWritePolicy(
     // A marked literal already carries the admitted identity; discovery must retain that canonical path.
     return { original, physical: typeof entry === "string" ? resolvePolicyPath(original, process.cwd()) : original };
   });
+  const rootEntries = process.platform === "linux" ? [...SANDBOX_PROTECTED_ROOT_ENTRIES, ...SANDBOX_NAMED_ENTRIES] : SANDBOX_PROTECTED_ROOT_ENTRIES;
   const paths = new Set([
     ...rootSnapshots.flatMap(({ original, physical }) => [original, physical]).flatMap((root) =>
-      SANDBOX_PROTECTED_ROOT_ENTRIES.map((entry) => join(root, entry))),
+      rootEntries.map((entry) => join(root, entry))),
     // The configuration directory is a control boundary, including future files.
     join(aveHome(), AVE_HOME_CONFIGURATION_DIRECTORY),
     permissionSettingsPath(),

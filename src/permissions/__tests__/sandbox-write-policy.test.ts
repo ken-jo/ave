@@ -82,7 +82,7 @@ describe("mandatory sandbox control-file writes", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  const loaderEntries = [".bash_profile", ".githooks", ".pre-commit-config.yaml", "lefthook.yml", ".claude/settings.json", ".claude/settings.local.json", ".claude/hooks", ".claude/commands", ".idea/workspace.xml", ".envrc", ".mise.toml", "mise.toml", ".tool-versions", ".npmrc", ".yarnrc.yml", "bunfig.toml", ".husky"];
+  const loaderEntries = [".bash_profile", ".githooks", ".pre-commit-config.yaml", "lefthook.yml", ".idea/workspace.xml", ".envrc", ".mise.toml", "mise.toml", ".tool-versions", ".npmrc", ".yarnrc.yml", "bunfig.toml", ".husky"];
 
   it.each(["win32", "linux"] as const)("keeps explicit descendant write denies for %s enforcement", platform => {
     const parent = join(root, "protected");
@@ -116,7 +116,7 @@ describe("mandatory sandbox control-file writes", () => {
     expect(literal.path).toBe(forwardSlashes);
   });
 
-  it.each([".claude", ".idea"].flatMap(entry => [false, true].map(reportsMissingChild => ({ entry, reportsMissingChild }))))
+  it.each([".idea"].flatMap(entry => [false, true].map(reportsMissingChild => ({ entry, reportsMissingChild }))))
   ("retains $entry protection after a regular placeholder with native missing-child reporting=$reportsMissingChild", async ({ entry, reportsMissingChild }) => {
     const project = join(root, "project");
     mkdirSync(project);
@@ -125,7 +125,7 @@ describe("mandatory sandbox control-file writes", () => {
     writeFileSync(placeholder, "");
     if (reportsMissingChild) await reportMissingChildrenUnder(placeholder);
     withPlatform("linux", () => {
-      const child = join(placeholder, entry === ".claude" ? "settings.json" : "workspace.xml");
+      const child = join(placeholder, "workspace.xml");
       const repeated = buildMandatorySandboxWritePolicy([project], undefined, [child]);
       expect(repeated.allowWrite).toEqual(initial.allowWrite);
       expect(nativeDenyRows(repeated.denyWrite)).toContain(placeholder);
@@ -134,7 +134,7 @@ describe("mandatory sandbox control-file writes", () => {
     });
   });
 
-  it.each([".claude", ".idea"])("pins a linked regular %s ancestor before omitting impossible children", entry => {
+  it.each([".idea"])("pins a linked regular %s ancestor before omitting impossible children", entry => {
     const project = join(root, "project");
     const work = join(project, "work");
     const target = join(root, "external-placeholder");
@@ -236,7 +236,7 @@ describe("mandatory sandbox control-file writes", () => {
     expect(policy.allowWrite).toEqual([missing]);
     expect(policy.narrowedWriteRoots).toEqual([]);
     expect(nativeDenyRows(policy.denyWrite)).toContain(join(missing, ".bash_profile"));
-    expectLiteralDenyCovers(policy.denyWrite, join(missing, ".claude", "settings.json"));
+    expectLiteralDenyCovers(policy.denyWrite, join(missing, ".idea", "workspace.xml"));
     expect(filesystem.existsSync(missing)).toBe(false);
   });
 
@@ -269,7 +269,7 @@ describe("mandatory sandbox control-file writes", () => {
         const project = join(root, existing ? "existing" : "absent");
         mkdirSync(project);
         if (existing) for (const entry of loaderEntries) {
-          if ([".husky", ".githooks", ".claude/hooks", ".claude/commands"].includes(entry)) mkdirSync(join(project, entry), { recursive: true });
+          if ([".husky", ".githooks"].includes(entry)) mkdirSync(join(project, entry), { recursive: true });
           else {
             mkdirSync(dirname(join(project, entry)), { recursive: true });
             writeFileSync(join(project, entry), "loader fixture");
@@ -323,14 +323,14 @@ describe("mandatory sandbox control-file writes", () => {
       const project = join(root, "project");
       const storage = join(root, "storage");
       const work = join(project, "work");
-      for (const directory of [join(project, ".claude"), join(project, ".idea"), work, storage]) {
+      for (const directory of [join(project, ".config"), join(project, ".idea"), work, storage]) {
         mkdirSync(directory, { recursive: true });
       }
       const hooks = join(storage, "hooks");
       const workspace = join(storage, "workspace.xml");
       mkdirSync(hooks);
       writeFileSync(workspace, "workspace fixture");
-      const hookLink = join(project, ".claude", "hooks");
+      const hookLink = join(project, ".config", "git");
       const workspaceLink = join(project, ".idea", "workspace.xml");
       symlinkSync(hooks, hookLink, "dir");
       symlinkSync(workspace, workspaceLink, "file");
@@ -445,13 +445,37 @@ describe("mandatory sandbox control-file writes", () => {
   });
 
   // The shared floor's own list, so a new entry cannot fall off the sandbox floor unnoticed; `.git/*` controls are covered by the Git tests below.
-  it.each([".git", ...PROTECTED_ROOT_ENTRIES.filter(entry => !isSandboxGitMetadataEntry(entry))])("protects missing %s in every writable root", (entry) => {
+  // `.agents` is a row per root on Linux only; the macOS wrap carries it as an appended rule (see the named-entry case below).
+  it.each([".git", ...PROTECTED_ROOT_ENTRIES.filter(entry => !isSandboxGitMetadataEntry(entry) && entry !== ".agents")])("protects missing %s in every writable root", (entry) => {
     const roots = [join(root, "project"), join(root, "temp")];
     const denies = buildMandatorySandboxWritePolicy(roots).denyWrite;
     for (const base of roots) {
       if (entry === ".git" && process.platform === "linux") expect(nativeDenyRows(denies)).not.toContain(join(base, entry));
       else expect(nativeDenyRows(denies)).toContain(join(base, entry));
     }
+  });
+
+  // `.agents`, and the commands and hooks Ave loads from the project. Linux carries a row per root.
+  // macOS carries none: a row per root does not fit its policy budget, so its wrap denies the names in the profile
+  // (macos-sandbox-wrap.ts). The Windows floor is not changed here.
+  it("denies .agents and the project command and hook names in write roots on Linux, and leaves the macOS policy without rows for them", () => {
+    const roots = [join(root, "project"), join(root, "temp")];
+    const names = [".agents", ".ave/commands", ".ave/hooks"];
+    const rowsNaming = (denies: ReturnType<typeof nativeDenyRows>, name: string) => (denies ?? [])
+      .map(entry => typeof entry === "string" ? entry : entry.path).filter(path => path.endsWith(`/${name}`));
+    const holding = (denies: ReturnType<typeof nativeDenyRows>, text: string) => (denies ?? [])
+      .map(entry => typeof entry === "string" ? entry : entry.path).filter(path => path.includes(text));
+    withPlatform("darwin", () => {
+      const denies = nativeDenyRows(buildMandatorySandboxWritePolicy(roots).denyWrite);
+      for (const name of names) expect(rowsNaming(denies, name)).toEqual([]);
+      for (const text of ["srt-sock", ".agents", ".aws", ".ave/"]) expect(holding(denies, text)).toEqual([]);
+    });
+    withPlatform("linux", () => {
+      const denies = nativeDenyRows(buildMandatorySandboxWritePolicy(roots).denyWrite);
+      for (const name of names) expect(rowsNaming(denies, name)).toEqual(roots.map(base => join(base, name)));
+      // The `.ave` directory is not a row itself, and `.codex` and a project `.aws` are not named.
+      for (const base of roots) for (const unnamed of [".ave", ".codex", ".aws"]) expect(holding(denies, join(base, unnamed)).filter(path => !path.includes("/.ave/"))).toEqual([]);
+    });
   });
 
   it.each(["darwin", "linux"] as const)("expands home grants before deriving controls on %s", (platform) => {
@@ -487,7 +511,7 @@ describe("mandatory sandbox control-file writes", () => {
     writeFileSync(join(marker, "modules", "inner", "HEAD"), "ref: refs/heads/main\n");
     writeFileSync(join(marker, "modules", "inner", "config"), "existing control");
     const denies = buildMandatorySandboxWritePolicy([project]).denyWrite;
-    for (const entry of [".gitconfig", ".githooks", ".husky", ".claude", ".claude/hooks"]) expectLiteralDenyCovers(denies, join(project, entry));
+    for (const entry of [".gitconfig", ".githooks", ".husky", ".idea", ".idea/workspace.xml"]) expectLiteralDenyCovers(denies, join(project, entry));
     for (const path of [marker, join(marker, "modules"), join(marker, "modules", "inner")]) expect(nativeDenyRows(denies)).not.toContain(path);
     for (const path of [join(marker, "hooks"), join(marker, "config"), join(marker, "modules", "inner", "hooks"), join(marker, "modules", "inner", "config")]) {
       expect(nativeDenyRows(denies)).toContain(path);
@@ -832,7 +856,7 @@ describe("mandatory sandbox control-file writes", () => {
   });
 
   it("bounds missing ancestry and Linux routing components independently", () => {
-    // The deepest protected root entry (`.claude/settings.json`) adds two components.
+    // The deepest protected root entry (`.idea/workspace.xml`) adds two components.
     const withinMissingLimit = join(root, ...Array.from({ length: 62 }, (_, index) => `missing-${index}`));
     const beyondMissingLimit = join(withinMissingLimit, "missing-62");
     const buildWithoutLinuxRouting = (path: string) => process.platform === "win32"

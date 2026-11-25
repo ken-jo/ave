@@ -41,7 +41,7 @@ export const TOOL_TIMEOUT_POLICY = {
   gitRepositoryInspectionMs: 30_000,
   // Bound policy delivery even when the container launcher never connects.
   mxcRequestTransportMs: 15_000,
-  // Exact installed extension runtime/request readiness must settle before a holder is admitted.
+  // A holder's own start must report its ready-frame evidence inside this bound, from supervisor start, or it is refused.
   mxcExtensionReadinessMs: 30_000,
   // Share the exact workload-identity handshake budget with the protocol.
   workloadBrokerPreEffectHandshakeMs: 15_000,
@@ -150,7 +150,7 @@ export function windowsSrtPluginChildFactoryBudgetMs(): number {
 
 /** Constructing a native plugin child: native startup, the construct request (import plus factory), and, after a
  * refused bring-up, the disposal deadline, so a termination verified in time never becomes a factory timeout.
- * Row-2 admission also runs inside this budget: the egress lease and the readiness probe with its `mxcExtensionReadinessMs` (30 s) deadline. */
+ * Row-2 admission also runs inside this budget: the egress lease and the holder's own start with its `mxcExtensionReadinessMs` (30 s) deadline. */
 export function nativePluginChildFactoryBudgetMs(): number {
   return TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs + TOOL_TIMEOUT_POLICY.pluginImportMs
     + TOOL_TIMEOUT_POLICY.pluginFactoryMs + TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs;

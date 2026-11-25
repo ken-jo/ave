@@ -1,6 +1,22 @@
 import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
 import { PassThrough } from "node:stream";
 import { vi } from "vitest";
+import { mxcRequestDigest, type MxcExtensionStartEvidence, type MxcExtensionStartRecord } from "../../permissions/mxc-extension-protocol.js";
+import type { MxcExtensionReleaseGateEvidence } from "../../permissions/mxc-extension-readiness.js";
+
+/** Contract fields 8-13 all observed: the install record a test registers in place of the release gate. */
+export const MXC_RELEASE_GATE_EVIDENCE: MxcExtensionReleaseGateEvidence = {
+  ownProxySucceeded: true, otherListenerRefused: true, directEgressRefused: true,
+  forgedLabelsAttributed: true, noWorkerPort: true, reparseSubstitutionRefused: true,
+};
+const MXC_START_EVIDENCE: MxcExtensionStartEvidence = {
+  installedPayloadVerified: true, baseContainerReady: true, exactRequestAccepted: true,
+  uiEnabledRuntimeStarted: true, ancestorQueriesSupported: true,
+};
+/** What a fake native start's ready frame carries for `request`: contract fields 1-5, all observed. */
+export function mxcStartRecord(request: unknown): MxcExtensionStartRecord {
+  return { requestDigest: mxcRequestDigest(request as ContainerRequest), evidence: MXC_START_EVIDENCE };
+}
 
 export function createMxcNativeProcess() {
   const stdin = new PassThrough(), stdout = new PassThrough(), stderr = new PassThrough();

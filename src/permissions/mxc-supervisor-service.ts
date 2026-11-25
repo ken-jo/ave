@@ -1,7 +1,7 @@
 import type { Readable } from "node:stream";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { MxcExtensionChannel } from "./mxc-extension-channel.js";
-import { MXC_STREAM_CHUNK_BYTES, mxcModuleDiagnostics } from "./mxc-extension-protocol.js";
+import { MXC_STREAM_CHUNK_BYTES, mxcModuleDiagnostics, mxcRequestDigest } from "./mxc-extension-protocol.js";
 import { MxcNativeProcess } from "./mxc-native-process.js";
 import { MxcIntegrityError } from "../../scripts/lib/mxc-sdk-integrity.mjs";
 import { MxcCapabilityUnavailableError, MxcProcessContractError, MxcProcessCleanupError, MxcSupervisorLostError } from "./mxc-extension-errors.js";
@@ -71,10 +71,10 @@ export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness:
             const runtime = await bootstrap();
             if (stopping) return null;
             const probe = runtime.sdk.probe(frame.request);
-            const enumeration = frame.request.containment?.type === "processcontainer"
-              ? frame.request.containment.config?.filesystem?.enumeratePaths ?? [] : [];
-            if (probe.tier !== "base-container" || probe.needsDaclAugmentation !== false
-              || (enumeration.length && probe.probes.baseContainerSupportsEnumeratePaths !== true)) {
+            // Start evidence (contract fields 1-5): each value is what this start observed, reported on its ready frame.
+            const baseContainerReady = probe.tier === "base-container" && probe.needsDaclAugmentation === false;
+            const ancestorQueriesSupported = probe.probes.baseContainerSupportsEnumeratePaths === true;
+            if (!baseContainerReady || !ancestorQueriesSupported) {
               throw new MxcCapabilityUnavailableError("Required native containment is unavailable");
             }
             runtime.auditModules();
@@ -90,6 +90,7 @@ export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness:
             // later native file opens atomic with the owner's identity check.
             // A single argument is deliberate: telemetry options are never passed.
             spawnPending = true;
+            const requestDigest = mxcRequestDigest(frame.request);
             const nativePending = runtime.sdk.spawn(frame.request).finally(() => { spawnPending = false; });
             // Keep adopting a late handle even if the notification channel fails.
             // The failure requests teardown while the native promise remains owned.
@@ -110,12 +111,22 @@ export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness:
             // before acknowledging. Owner loss releases the wait for teardown.
             await observed;
             processPin.close(); processPin = undefined;
+            // Bootstrap verified the installed payload before loading it; this audit covers what is loaded after native creation.
             const nativeModules = runtime.auditModules();
             if (stopping) {
               await owned.dispose();
               return null;
             }
-            await channel.send({ type: "ready", id: owned.id, nodeVersion: process.versions.node, ...mxcModuleDiagnostics(nativeModules), ownerHandle: runtime.ownerHandle });
+            await channel.send({ type: "ready", id: owned.id, nodeVersion: process.versions.node, ...mxcModuleDiagnostics(nativeModules), ownerHandle: runtime.ownerHandle,
+              requestDigest, startEvidence: {
+                installedPayloadVerified: Array.isArray(nativeModules),
+                baseContainerReady,
+                // The SDK created a native process for the request this digest names.
+                exactRequestAccepted: owned.id > 0,
+                // Created under the request's UI policy and attached; runtime initialisation inside it is not observed here.
+                uiEnabledRuntimeStarted: frame.request.ui?.disable === false && owned.state !== "cleanup-failed",
+                ancestorQueriesSupported,
+              } });
             forwarding = true;
             const stdout = forward(owned.stdout, "stdout"), stderr = forward(owned.stderr, "stderr");
             void stdout.catch(fail); void stderr.catch(fail);

@@ -28,7 +28,8 @@ import {
   type MxcConfinedChildSpec,
 } from "../permissions/confined-child.js";
 import type { HostShellExecutionPlan } from "../permissions/host-shell-execution-plan.js";
-import { MxcCapabilityUnavailableError, MxcProcessCleanupError, MxcProcessContractError } from "../permissions/mxc-extension-errors.js";
+import { assertMxcReleaseGateEvidence } from "../permissions/mxc-extension-admission.js";
+import { MxcProcessCleanupError, MxcProcessContractError } from "../permissions/mxc-extension-errors.js";
 import type { OwnedMxcExtensionProcess } from "../permissions/mxc-extension-process.js";
 import { planWindowsExtensionHolder } from "../permissions/mxc-extension-readiness.js";
 import { isWindowsPathAtOrUnder } from "../permissions/mxc-windows.js";
@@ -364,27 +365,6 @@ export function assertMxcHolderNotBashForm(command: string, shellFlavor?: string
   }));
 }
 
-type HolderReadinessProbe = MxcConfinedChildSpec["probe"];
-let holderReadinessProbe: HolderReadinessProbe | undefined;
-
-/** The exact-request readiness probe for MCP and hook holders. The native release gate (row 7) registers it; until then
- * every holder start fails closed with `MxcCapabilityUnavailableError`. Returns the unregister function. */
-export function registerMxcHolderReadinessProbe(probe: HolderReadinessProbe): () => void {
-  if (holderReadinessProbe !== undefined) throw new MxcProcessContractError("An extension holder readiness probe is already registered");
-  holderReadinessProbe = probe;
-  return () => {
-    if (holderReadinessProbe === probe) holderReadinessProbe = undefined;
-  };
-}
-
-function registeredHolderReadinessProbe(): HolderReadinessProbe {
-  const probe = holderReadinessProbe;
-  if (probe === undefined) {
-    throw new MxcCapabilityUnavailableError("No extension holder readiness probe is registered; native readiness has not been established");
-  }
-  return probe;
-}
-
 function stripExtendedPrefix(path: string): string {
   return path.replace(/^\\\\\?\\/u, "");
 }
@@ -577,16 +557,15 @@ export interface MxcBundledHolder {
   readonly quarantined: boolean;
 }
 
-/** What a plugin child's planner needs from this adapter: the registered readiness probe and a fresh staging tree. The
- * plugin-child adapter drives row 2 itself, so nothing is spawned here. Every refusal comes before the staging tree
- * exists; with no registered probe the start is refused, never run another way. */
+/** What a plugin child's planner needs from this adapter: a fresh staging tree. The plugin-child adapter drives row 2
+ * itself, so nothing is spawned here. Every refusal comes before the staging tree exists; with no registered
+ * release-gate evidence the start is refused, never run another way. */
 export function prepareMxcHolderStart(input: {
   readonly label: string;
   readonly executable: string;
   readonly baseEnv: Readonly<Record<string, string | undefined>>;
   readonly allowWrite: readonly string[];
 }): {
-  readonly probe: MxcConfinedChildSpec["probe"];
   readonly root: string;
   readonly home: string;
   readonly temp: string;
@@ -595,13 +574,13 @@ export function prepareMxcHolderStart(input: {
 } {
   if (!isMxcExtensionBackendSelected()) throw new MxcProcessContractError(`${input.label}: the extension container backend is not selected`);
   assertHolderEnvironmentAdmissible(input.baseEnv);
-  const probe = registeredHolderReadinessProbe();
+  assertMxcReleaseGateEvidence();
   const executable = resolveHolderExecutable(input.executable, {});
   assertMxcHolderNotBashForm(executable);
   assertExecutableAdmissible(executable, input.allowWrite, []);
   assertNoLiveWorkspaceWriter(input.allowWrite, []);
   const staging = createHolderStaging();
-  return { probe, root: staging.root, home: staging.home, temp: staging.temp, release: () => removeHolderStaging(staging.root) };
+  return { root: staging.root, home: staging.home, temp: staging.temp, release: () => removeHolderStaging(staging.root) };
 }
 
 /** One holder incarnation per call: its own sibling roots and staging, never the caller's plan passed through. */
@@ -609,7 +588,8 @@ export async function spawnMxcBundledHolder(input: MxcBundledHolderInput): Promi
   if (!isMxcExtensionBackendSelected()) throw new MxcProcessContractError(`${input.label}: the extension container backend is not selected`);
   assertMxcHolderNotBashForm(input.command);
   assertHolderEnvironmentAdmissible(input.baseEnv, input.holderEnv);
-  const probe = registeredHolderReadinessProbe();
+  // Before any staging: row 2 checks it again when it mints the receipt.
+  assertMxcReleaseGateEvidence();
   const executable = resolveHolderExecutable(input.command, input.baseEnv);
   assertMxcHolderNotBashForm(executable);
   const workspaceRoots = input.workspaceRoots ?? [];
@@ -638,7 +618,6 @@ export async function spawnMxcBundledHolder(input: MxcBundledHolderInput): Promi
       temp: staging.temp,
       filesystemOwnership: { readRoots: [...input.ownedReadRoots], writeRoots: allowWrite, hostStorageRoots: [] },
       holder: Object.freeze({ label: input.label }),
-      probe,
       ...(input.floorPierces !== undefined ? { floorPierces: [...input.floorPierces] } : {}),
       ...(input.assertStillValid ? { assertStillValid: input.assertStillValid } : {}),
       ...(input.workerTransport ? { workerTransport: input.workerTransport } : {}),

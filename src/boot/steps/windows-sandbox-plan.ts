@@ -29,8 +29,9 @@ export interface WindowsSandboxPlanInputs {
   readonly workerRequested: boolean;
   /** While the post-boot shell probe is checking, prepare the proxy but do not use container shells yet. */
   readonly mxc: WindowsMxcState;
-  /** Dedicated SDK/request readiness; a successful shell launcher probe cannot supply this evidence. Boot has no
-   * extension readiness settler, so it supplies a settled state only: `checking` belongs to per-holder readiness. */
+  /** Whether extension holders may select the container. A successful shell launcher probe cannot supply this, and
+   * neither can a holder's start evidence, which exists only after a start: it follows the install's release-gate record.
+   * Boot supplies a settled state only: `checking` belongs to per-holder readiness. */
   readonly extensionMxc?: Exclude<WindowsExtensionMxcState, { readonly state: "checking" }>;
   /** Readiness must belong to this boot, and the installed fallback must have the exact version. */
   readonly fallbackVersion?: string;

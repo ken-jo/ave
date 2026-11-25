@@ -692,7 +692,7 @@ describe("the must-run set", () => {
     for (const path of Object.keys(NOT_TREE_SCANNERS)) expect(matches, path).toContain(path);
     const treeScanners = matches.filter((test) => !(test in NOT_TREE_SCANNERS));
     expect(treeScanners).toEqual(expect.arrayContaining([
-      "test/scripts/run-ci-suite.test.ts", "test/scripts/pre-push-tier.test.ts",
+      "test/scripts/run-ci-suite.test.ts",
       "test/scripts/repository-identity.test.ts", "test/scripts/pre-push-markdown-policy.test.ts",
     ]));
     expect(mustRunTests).toEqual(expect.arrayContaining(treeScanners));
