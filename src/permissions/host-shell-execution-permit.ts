@@ -270,6 +270,12 @@ export function consumeHostShellExecutionPermitForSpawn(input: {
   return authorization;
 }
 
+function isHostShellSpawnDirectoryCurrent(record: PermitRecord): boolean {
+  // POSIX launches from the physical path after consumption has checked the requested path.
+  const cwd = process.platform === "win32" ? record.resolvedCwd : record.cwdIdentity.realpath;
+  return matchesShellWorkingDirectoryIdentity(cwd, record.cwdIdentity);
+}
+
 // Burn the spawn authority again at the final, serialized execution handoff.
 export function withHostShellExecutionHandoff<T>(
   authorization: HostShellSpawnAuthorization,
@@ -281,7 +287,7 @@ export function withHostShellExecutionHandoff<T>(
   return withShellPolicyHandoff(() => {
     if (record === undefined ||
       (record.allowRuleAuthorization !== undefined && !isShellAllowRulePolicyCurrent(record.allowRuleAuthorization)) ||
-      !matchesShellWorkingDirectoryIdentity(record.resolvedCwd, record.cwdIdentity)) return undefined;
+      !isHostShellSpawnDirectoryCurrent(record)) return undefined;
     // This host's persisted policy mutations share this queue. Uncoordinated external edits after this final validation apply from the next command. The synchronous handoff grants the waiting child (or spawns it on platforms without a child guard); it must never await between validation and grant.
     return handoff();
   }, prepare);
@@ -291,7 +297,7 @@ export function assertHostShellSpawnDirectory(authorization: HostShellSpawnAutho
   if (authorization === undefined) return;
   const record = pendingHandoffs.get(authorization);
   if (record === undefined ||
-      !matchesShellWorkingDirectoryIdentity(record.resolvedCwd, record.cwdIdentity)) {
+      !isHostShellSpawnDirectoryCurrent(record)) {
     throw new Error(HOST_SHELL_AUTHORIZATION_REVOKED_ERROR);
   }
   pendingHandoffs.delete(authorization);
