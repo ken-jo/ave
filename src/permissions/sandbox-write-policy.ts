@@ -1,7 +1,7 @@
 import { type BigIntStats, type Stats, closeSync, constants, fstatSync, lstatSync, openSync, opendirSync, readSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { FilesystemConfig, FilesystemPathEntry } from "@anthropic-ai/sandbox-runtime";
-import { normalizeCaseForComparison, stripExtendedPathPrefix } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
+import { normalizeCaseForComparison, stripExtendedPathPrefix } from "./sandbox-path-spelling.js";
 import { settingsFilePath } from "../data/settings-store.js";
 import { AVE_HOME_CONFIGURATION_DIRECTORY, aveHome } from "../shared/ave-home.js";
 import { inspectPhysicalFilesystemPath, resolvePhysicalFilesystemPath } from "../shared/shell-filesystem-path.js";

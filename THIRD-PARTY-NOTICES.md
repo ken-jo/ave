@@ -29,6 +29,14 @@ runtime.
 A copy of the Apache License 2.0, as required by Section 4 of the license,
 accompanies the bundled package at the path noted above.
 
+Portions derived from @anthropic-ai/sandbox-runtime (Apache-2.0), under the
+license text referenced above, and changed from the original:
+
+- `src/permissions/egress-relay/address-set.ts`
+- `src/permissions/egress-relay/domain-pattern.ts`
+- `src/permissions/sandbox-path-spelling.ts`
+- `src/permissions/egress-relay/destination.ts` (`formatAuthority`)
+
 ---
 
 ## models.dev model metadata

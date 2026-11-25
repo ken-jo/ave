@@ -65,7 +65,6 @@ import {
 } from "../permissions/asrt-sandbox.js";
 import {
   assertMxcHolderNotBashForm,
-  bundledWrappedEnv,
   isMxcExtensionBackendSelected,
   MxcHolderQuarantinedError,
   spawnMxcBundledHolder,
@@ -74,6 +73,7 @@ import {
   type MxcBundledHolder,
 } from "../sandbox/wrap-bundled-command.js";
 import type { EgressInvocation } from "../permissions/egress-invocations.js";
+import { assertConfiguredLauncherEnvironment, sandboxTargetSetupFailed } from "../permissions/launcher-environment.js";
 import { buildSafeChildEnv } from "../tools/safe-env.js";
 import { HOST_PROGRAM_PATH_GUIDANCE, isRelativeHostProgram, resolveHostProgram } from "../shared/host-program-path.js";
 import { MCP_COMMAND_RELATIVE_PATH } from "../shared/mcp-error-code.js";
@@ -1779,8 +1779,7 @@ class StdioTransport implements McpTransport {
       throw new Error(`${MCP_COMMAND_RELATIVE_PATH}: ${HOST_PROGRAM_PATH_GUIDANCE}`);
     }
 
-    // Minimal, secret-stripped base env (Least Privilege). On the PLAIN path this is the spawn env verbatim; on
-    // the WRAPPED path it is the baseline that the ASRT proxy keys are merged onto (see buildWrappedStdioEnv).
+    // Minimal base environment for the server, plus only its own configured variables and key.
     // The host-owned part: NODE_ENV, the approved configured variables and the API key. A container receives exactly
     // these on top of its forwarded runtime keys, as the other paths do.
     const holderEnv: Record<string, string> = {
@@ -1814,6 +1813,7 @@ class StdioTransport implements McpTransport {
     assertExtensionStartAllowed();
     if (isPluginWorkerConfinementActive()) {
       try {
+        assertConfiguredLauncherEnvironment(holderEnv);
         await this.openWrapped(spawnCommand, baseEnv);
         return;
       } catch (err) {
@@ -1866,10 +1866,11 @@ class StdioTransport implements McpTransport {
 
     let wrapped = false;
     try {
-      const { argv, env, egress } = await wrapBundledCommand({
+      const { argv, env, egress, targetLaunch } = await wrapBundledCommand({
         command,
         args: spawnCommand.args,
         sandboxHome,
+        targetEnv: baseEnv,
         allowWrite,
         // A plugin-bundled server reads its own generation payload under the plugins root it is refused. A server of no plugin reads, inside the
         // Ave home read deny, its own install directory (the parent of its sandbox root) and its marketplace data directory.
@@ -1893,15 +1894,16 @@ class StdioTransport implements McpTransport {
       assertManagedChildProcessAdmissionOpen(`mcp:${this.config.id}:asrt`);
       this.process = spawn(cmd, args, {
         // stdin pipe MUST stay writable for newline-delimited JSON-RPC.
-        stdio: ["pipe", "pipe", "pipe"],
+        stdio: targetLaunch.withStdio(["pipe", "pipe", "pipe"]),
         shell: false,
         windowsHide: true,
         // Its own process session, as for every wrapped child (confined-child.ts): the sandbox's cross-session process-info deny. close() then signals
         // the whole group. This path is POSIX-only: a Windows server returned to the srt-win path above, where `detached` would open a console instead.
         detached: true,
-        env: bundledWrappedEnv(baseEnv, env, { ...sandboxHome.env }),
+        env,
         ...(this.config.cwd ? { cwd: this.config.cwd } : {}),
       });
+      targetLaunch.sendEnvironment(this.process);
 
       trackManagedChildProcess(this.process, { label: `mcp:${this.config.id}:asrt`, killProcessGroup: true });
       // It leads its own process group: the sandbox keeps the ended invocation's listener port while anything in that group lives.
@@ -2122,6 +2124,7 @@ class StdioTransport implements McpTransport {
 
   private setupProcessHandlers(): void {
     if (!this.process) return;
+    const proc = this.process;
 
     this.processStdout?.on("data", (chunk: Buffer) => {
       try {
@@ -2145,9 +2148,16 @@ class StdioTransport implements McpTransport {
       // idempotent one-shot helper ensures exit and the later close event do not double-run the cleanup.
       this.runAsrtCleanupOnce();
       this.cleanupSandboxHome();
-      if (!this.closedExternally) {
-        this.closeHandler?.(t("be_mcpClient.processExitedUnexpectedly"));
+      const setupStatus = sandboxTargetSetupFailed(proc);
+      if (setupStatus === undefined) {
+        if (!this.closedExternally) this.closeHandler?.(t("be_mcpClient.processExitedUnexpectedly"));
+        return;
       }
+      void setupStatus.then(failed => {
+        if (failed) log.warn(`${this.config.id} sandbox target environment setup failed`);
+        if (this.closedExternally) return;
+        this.closeHandler?.(t(failed ? "be_mcpClient.sandboxEnvironmentSetupFailed" : "be_mcpClient.processExitedUnexpectedly"));
+      });
     });
 
     this.process.on("error", (err) => {

@@ -32,6 +32,7 @@ import {
 import { buildSafeChildEnv } from "../tools/safe-env.js";
 import { assertHostProgramNotRelative, resolveHostProgram } from "../shared/host-program-path.js";
 import { assertMxcDescendantOutsideParent, spawnConfinedChild, type MxcConfinedChildSpawn } from "./confined-child.js";
+import { assertConfiguredLauncherEnvironment, sandboxTargetSetupFailed } from "./launcher-environment.js";
 import { MxcProcessCleanupError } from "./mxc-extension-errors.js";
 import { isMxcExtensionBackendSelected, spawnMxcBundledHolder, type MxcBundledHolder } from "../sandbox/wrap-bundled-command.js";
 import { liveMxcPluginChildHolder } from "./mxc-holder-lifetime.js";
@@ -215,11 +216,7 @@ async function prepareWorkerStateDirectory(pluginId: string, workerId: string): 
 const WORKER_STDIO: StdioOptions = ["pipe", "pipe", "pipe"];
 
 function definedEnv(env: NodeJS.ProcessEnv | undefined): Record<string, string> {
-  const extra: Record<string, string> = {};
-  for (const [key, value] of Object.entries(env ?? {})) {
-    if (value !== undefined) extra[key] = value;
-  }
-  return extra;
+  return Object.fromEntries(Object.entries(env ?? {}).filter((entry): entry is [string, string] => entry[1] !== undefined));
 }
 
 // Spawn a plugin worker, host-mediated and (gate ON) ASRT-wrapped. See the module header for the model. A stdio-control worker resolves only after it answered the host's hello; otherwise it is stopped, its exit awaited, and the call rejects with WorkerControlFailedError.
@@ -272,7 +269,9 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
   }
 
   // Secret-stripped base env (Least Privilege), shared with other child process spawners so Windows runtime variables stay complete without forwarding provider/API-key secrets.
-  const baseEnv: NodeJS.ProcessEnv = buildSafeChildEnv(definedEnv(spec.env));
+  const configuredEnv = definedEnv(spec.env);
+  assertConfiguredLauncherEnvironment(configuredEnv);
+  const baseEnv: NodeJS.ProcessEnv = buildSafeChildEnv(configuredEnv);
   const stateDir = spec.stateDirectory === true ? await prepareWorkerStateDirectory(safePlugin, safeWorker) : undefined;
   if (stateDir !== undefined) baseEnv[WORKER_STATE_DIR_ENV] = stateDir;
   const stateGrant = stateDir !== undefined ? [stateDir] : [];
@@ -482,6 +481,9 @@ export async function spawnWorker(spec: SpawnWorkerSpec): Promise<SpawnedWorker>
       },
     }));
     trackManagedChildProcess(child, { label: `worker:${safePlugin}:${safeWorker}:asrt` });
+    void sandboxTargetSetupFailed(child)?.then(failed => {
+      if (failed) log.warn(`[worker-spawn] worker:${safePlugin}:${safeWorker}: sandbox target environment setup failed`);
+    });
 
     // Idempotent definitive-termination cleanup (mirrors mcp-client): exit or close runs it once. A stop request and process-operation error retain ownership because neither proves the child is dead. Drops the reviewer marker and releases the per-command ASRT state.
     let cleanupRan = false;

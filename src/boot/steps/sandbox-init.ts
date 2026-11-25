@@ -325,6 +325,7 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
               // Derive deny paths from actual userData so custom directories remain protected.
               userDataDir: ctx.host.userDataPath,
               queryWindowsDocumentsPath: ctx.host.queryWindowsDocumentsPath,
+              ...(deps.linuxWrapperPrograms !== undefined ? { linuxWrapperPrograms: deps.linuxWrapperPrograms } : {}),
               ...(start === "proxy-only" ? { windows: { externalConfinement: true } } : {}),
               ...(start === "srt-win" ? { windows: { backgroundInitialization: true } } : {}),
             }, egressAskCallback, false, startupSignal);

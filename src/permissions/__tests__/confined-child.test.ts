@@ -213,9 +213,9 @@ describe("spawnConfinedChild", () => {
       baseEnv: {},
     });
     const [cmdline] = wrapWorkerCommandMock.mock.calls.at(-1)!;
-    expect(cmdline).toBe(
-      `'/usr/bin/env' 'TMPDIR=${TEMP_DIR}' 'TMP=${TEMP_DIR}' 'TEMP=${TEMP_DIR}' '/usr/bin/python3' '-u'`,
-    );
+    expect(cmdline).toContain('runtime_env+=("TMPDIR=$1" "TMP=$1" "TEMP=$1")');
+    expect(cmdline).toContain(`'${TEMP_DIR}'`);
+    expect(cmdline).toContain("'/usr/bin/python3' '-u'");
   });
 
   it("refuses an allow-list spawn that names no temp principal, before any wrap", async () => {
@@ -246,9 +246,9 @@ describe("spawnConfinedChild", () => {
     expect(fs.allowRead).toBeUndefined();
     expect(fs.allowWrite).toBeUndefined();
     expect(fs.denyRead).toContain("/home/u/.ave/secrets");
-    // The sandbox HOME's own TEMP is per process there; no env launcher.
+    // An empty temp operand leaves the sandbox HOME's own TEMP in effect.
     const [cmdline] = wrapWorkerCommandMock.mock.calls.at(-1)!;
-    expect(cmdline).not.toContain("TMPDIR=");
+    expect(cmdline).toContain("'sandbox-target' '' 'python.exe'");
   });
 
   it("refuses an offline owner while the OS sandbox is not active, before any wrap or spawn", async () => {
@@ -488,6 +488,10 @@ describe("spawnConfinedChild", () => {
 
   it("lets the sandbox HOME win over the base environment", async () => {
     // The sandbox process home is the last overlay on purpose: a stale HOME inherited from the host would send the child's writes outside its jail.
+    const child = fakeChild();
+    const environmentPipe = new PassThrough();
+    child.stdio = [null, child.stdout, child.stderr, null, environmentPipe];
+    spawnMock.mockReturnValueOnce(child);
     await spawnConfinedChild({ egressOwner: EGRESS_OWNER,
       command: "/usr/bin/python3",
       args: [],
@@ -500,8 +504,13 @@ describe("spawnConfinedChild", () => {
 
     const [, , options] = spawnMock.mock.calls.at(-1)!;
     const env = (options as { env: NodeJS.ProcessEnv }).env;
-    expect(env.HOME).toBe("/sandbox/home");
-    expect(env.KEEP).toBe("1");
+    expect(env).toEqual({ PATH: "/usr/bin:/bin:/usr/sbin:/sbin", SHLVL: "1" });
+    const cmdline = wrapWorkerCommandMock.mock.calls.at(-1)?.[0];
+    expect(cmdline).not.toContain("HOME=");
+    const assignments = environmentPipe.read()?.toString().split("\0");
+    expect(assignments).toContain("HOME=/sandbox/home");
+    expect(assignments).toContain("KEEP=1");
+    expect(assignments).not.toContain("HOME=/home/u");
   });
 
   it("registers the child under the caller's label", async () => {
