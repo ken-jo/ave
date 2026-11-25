@@ -30,6 +30,9 @@ import type { AsrtSandboxInitialization } from "../../permissions/asrt-sandbox.j
 
 const log = createLogger("ave");
 
+// This start could not prove the container runtime root private: no container, and no sandbox HOME, until a restart.
+let runtimeRootUnproved = false;
+
 export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSignal): Promise<void> {
   startupSignal?.throwIfAborted();
   const { settingsService, bootAuditLogger, buildWorkerEgressAllowlists } = ctx;
@@ -40,7 +43,9 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
     const { establishMxcSandboxHomesParent } = await import("../../permissions/mxc-runtime-root.js");
     try {
       establishMxcSandboxHomesParent();
+      runtimeRootUnproved = false;
     } catch (error) {
+      runtimeRootUnproved = true;
       log.warn("boot: Windows sandbox HOME root unavailable: %s", errorMessage(error));
     }
     void sweepWindowsSandboxHomes();
@@ -663,11 +668,13 @@ async function detectWindowsBootInputs(
 ): Promise<WindowsSandboxPlanInputs> {
   const { detectHostMxcPrerequisites } = await import("../../permissions/mxc-windows.js");
   const mxc = await detectHostMxcPrerequisites();
-  if (mxc.state === "unavailable") logMxcUnavailable(mxc.reason, mxc.windowsBuild, mxc.detail);
+  if (runtimeRootUnproved) logMxcUnavailable("runtime-root-unproved", mxc.windowsBuild, "the container runtime root was not proved at start-up");
+  else if (mxc.state === "unavailable") logMxcUnavailable(mxc.reason, mxc.windowsBuild, mxc.detail);
   return {
     shellRequested,
     workerRequested,
-    mxc: mxc.state === "available" ? { state: "checking" } : { state: "unavailable", reason: mxc.reason },
+    mxc: runtimeRootUnproved ? { state: "unavailable", reason: "runtime-root-unproved" }
+      : mxc.state === "available" ? { state: "checking" } : { state: "unavailable", reason: mxc.reason },
     // Pinned until this installation carries a release-gate record (contract fields 8-13, gathered on the packaged build).
     // Neither shell startup nor a holder's own start evidence (fields 1-5, known only after a start) certifies that gate.
     extensionMxc: { state: "unavailable", reason: "native-validation-required" },

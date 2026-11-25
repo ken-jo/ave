@@ -30,10 +30,11 @@ vi.mock("../../permissions/mxc-runtime-root.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../permissions/mxc-runtime-root.js")>();
   return {
     ...actual,
-    establishMxcSandboxHomesParent: (...args: Parameters<typeof actual.establishMxcSandboxHomesParent>) => {
+    // This file's simulated drive holds no provable root; the boot gate's own handling of either outcome is what is checked.
+    establishMxcSandboxHomesParent: () => {
       h.homesCalls.push("establish");
       if (h.establishHomesError !== undefined) throw h.establishHomesError;
-      return actual.establishMxcSandboxHomesParent(...args);
+      return "C:/example/ave-runtime/homes";
     },
     mxcSandboxHomesParent: (...args: Parameters<typeof actual.mxcSandboxHomesParent>) => {
       h.homesCalls.push("parent");
@@ -190,6 +191,27 @@ describe("initSandboxGate — Windows sandbox HOME parent", () => {
     expect(h.logger.warn).toHaveBeenCalledWith("boot: Windows sandbox HOME root unavailable: %s", "root not private");
     expect(h.checkDeps).toHaveBeenCalled();
     expect(getSandboxBootOutcome()).not.toBeNull();
+  });
+
+  it.each([["passing", MXC_OK], ["failing", MXC_OLD]] as const)(
+    "reports the unproved root to Settings, starting no probe, whatever the container prerequisites (%s)", async (_case, prerequisites) => {
+      h.establishHomesError = new Error("root not private");
+      h.checkDeps.mockResolvedValue(SRT_WIN_MISSING);
+      h.detectMxc.mockResolvedValue(prerequisites);
+      await initSandboxGate(harness.context(true, false));
+      await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({ mxc: { state: "unavailable", reason: "runtime-root-unproved" } }));
+      expect(h.startProbe).not.toHaveBeenCalled();
+    });
+
+  it("reports the container prerequisites again once a later boot proves the root", async () => {
+    h.establishHomesError = new Error("root not private");
+    h.checkDeps.mockResolvedValue(SRT_WIN_MISSING);
+    h.detectMxc.mockResolvedValue(MXC_OLD);
+    await initSandboxGate(harness.context(true, false));
+    __resetWindowsSandboxSubstrateForTest();
+    h.establishHomesError = undefined;
+    await initSandboxGate(harness.context(true, false));
+    await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({ mxc: { state: "unavailable", reason: "container-unavailable" } }));
   });
 });
 
