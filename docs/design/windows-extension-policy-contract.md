@@ -235,9 +235,10 @@ below the shared private HOME, temp or handoff roots: an ancestor enumerate
 grant there would list every other holder's leaf. Holder adapters (rows 3 and 5)
 place them in a dedicated staging tree, `<staging parent>\<opaque-id>`, so the
 staging root's enumerate grant reveals only opaque IDs. The staging parent is
-the platform's ([Runtime root](#runtime-root)); on Windows it is still
-`<AVE_HOME>\mxc-staging`. That tree lives under the user profile, so its
-ancestor queries expose profile and `AVE_HOME` sibling names; the plugins root
+the platform's ([Runtime root](#runtime-root)); on Windows it is
+`<runtime root>\staging` under the account's local application data. That
+tree lives under the user profile, so its ancestor queries expose the names
+beside it in the profile, in `AppData` and in `AppData\Local`; the plugins root
 also gets enumerate access above a plugin's own data and generation roots,
 revealing other plugin IDs. Both are disclosed residuals
 (`ancestorNameExposure`), not privacy guarantees. Requested grants cannot declare their own ownership. Admission
@@ -304,11 +305,9 @@ Hard requirements for holder adapters (rows 3–5):
   both be live: the second is refused while the first is owned. Serialize such
   holders, or give each a disjoint root.
 - HOME/temp go in `<staging parent>\<opaque-id>`, inside the holder's captured
-  write roots. On Windows the staging parent is still under the Ave home, so
-  when a holder's grant sits above the Ave home, the Ave home is denied and a
-  staging HOME/temp beneath it is refused: the start fails closed. The
-  [runtime root](#runtime-root) removes that case on each platform that has
-  moved to it.
+  write roots. The staging parent is under the [runtime root](#runtime-root),
+  outside the Ave home, on every platform. A holder grant at or above the
+  runtime root is refused, as one at or above another holder's namespace is.
 - Executables come from installation or generation roots, never from a workspace
   or any holder-writable root.
 
@@ -330,7 +329,7 @@ check (`assertMxcHolderStaging`) take the staging parent from it.
 |---|---|---|
 | macOS | `~/Library/Caches/ai.agent-connector.ave/mxc-runtime` | `<runtime root>/staging` |
 | Linux | `$XDG_CACHE_HOME/ai.agent-connector.ave/mxc-runtime`, with `~/.cache` when the variable is unset or not absolute | `<runtime root>/staging` |
-| Windows | not moved yet | `<AVE_HOME>\mxc-staging`, unchanged |
+| Windows | `%LOCALAPPDATA%\ai.agent-connector.ave\mxc-runtime`, with `<profile>\AppData\Local` when the variable is unset or not a drive path | `<runtime root>\staging` |
 
 - **Selection.**
   - The base is the account's cache directory, named by the packaged app id.
@@ -365,8 +364,10 @@ check (`assertMxcHolderStaging`) take the staging parent from it.
     device and inode, and still holding the mark start-up left in it
     (`.established-<pid>-<random>`, 0600, created exclusively). The mark is
     what tells a replacement apart, because a filesystem may give a new
-    directory the inode of one just removed. Marks of processes that are gone
-    are dropped at the next start-up. Nothing on the run path creates the root.
+    directory the inode of one just removed. A process removes its own mark
+    when it exits and never another's: a pid names a process only inside one
+    pid namespace, so it cannot prove another instance gone. A crash leaves an
+    empty file. Nothing on the run path creates the root.
   - A root that start-up could not establish stays refused until the app
     restarts, even if it becomes creatable. So does a root that was removed or
     replaced mid-session.
@@ -434,14 +435,47 @@ check (`assertMxcHolderStaging`) take the staging parent from it.
     marker, an unreadable marker, a running or undetermined owner, or another
     account's ownership is kept. A sweep failure only warns and never blocks a
     start.
-- **Windows.** The Windows adapters below keep `<AVE_HOME>\mxc-staging`, their
-  own removal and their `retired-*` sweep. Windows honours a write grant nested
-  under a denied directory, so that placement works there. Moving it needs a
-  per-user location with a protected ACL and is a separate change. The moved
-  root must be inside the same read floor: denied to every confined process
-  except the container that owns the run. Until then the Ave home's read
-  re-allow for `mxc-staging` stays, on Windows only: on macOS and Linux no
-  child of the Ave home is re-opened for container staging.
+- **Windows.**
+  - The base is the account's local application data directory. It is
+    per-user. Unlike the roaming directory it is never copied to another
+    machine or redirected to a share. Unlike the temp directory nothing ages
+    files out of it. Under the test runner the base is the run's own directory.
+  - Start-up establishes the root as on the other platforms: once, before the
+    first wrap, and a root that could not be established then refuses every
+    container start until the next start-up. Nothing falls back into the Ave
+    home.
+  - The root must be a real directory on an NTFS volume of this machine. The
+    OS must report it at the planned drive path: a share reports another path,
+    and so does a mapped drive, which resolves to its share. No component of
+    its path may be a link or junction. Its access control list must be
+    protected from inheritance, owned by this account, and grant only this
+    account's inheritable full control. Deny entries are not grants: the
+    sandbox account's read deny is stamped on it.
+  - A missing root is created with that access control list as part of the
+    creation. A root that is already there is proved as it is and never given a
+    new one. A root inside or above the Ave home is refused before anything is
+    created.
+  - A run re-checks that the root is still the same directory (volume, 64-bit
+    file id, the start-up mark) without reading the access control list again:
+    only this account or an administrator can rewrite it.
+  - The root is on the read floor (`appOwnedSandboxPrivateRoots`): denied to
+    every confined process, a read grant inside it is refused, a plugin may not
+    choose a directory inside it, and a container reads only its own
+    `<runtime root>\staging\<opaque-id>`.
+  - Each holder's `<opaque-id>.owner` beside its tree records the process (pid,
+    creation time, a per-module nonce) before the tree exists. Removal renames
+    the tree to `<opaque-id>.retired`, deletes it without following links, and
+    removes the marker last. A sweep removes a tree only when its marker names
+    a holder this copy already released, a pid that no longer exists, or a pid
+    whose creation time is no longer the recorded one. Everything else is kept.
+  - The Windows adapters create no socket directory. The policy pipe is a
+    kernel object under a fresh random name, owned by the helper process that
+    created it, and it leaves nothing on disk to remove.
+  - The supervisor's per-user state directory sits beside the staging trees, so
+    it is per account, not per Ave home.
+  - Staging trees that an earlier version left under `<AVE_HOME>\mxc-staging`
+    are not moved or removed. The Ave home's read boundary no longer re-opens
+    `mxc-staging`, so they are denied like every other unlisted child.
 
 ## Holder adapters (row 5)
 
@@ -471,7 +505,7 @@ nesting and the lifetime registry stay row 2's.
   - Each start is a new holder incarnation with its own
     `<staging parent>\<opaque-id>\{home,temp}`. That staging root is added
     to the captured write roots. This adapter is the Windows one, whose staging
-    parent is `<AVE_HOME>\mxc-staging` (`mxcStagingParent`).
+    parent is `<runtime root>\staging` (`mxcStagingParent`).
   - The caller's roots are passed as the holder's own explicit roots, never as
     another holder's plan.
   - The executable's directory is the only added read. A configured cwd must

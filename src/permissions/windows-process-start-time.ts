@@ -3,7 +3,6 @@ import { promisify } from "node:util";
 
 import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-path.js";
 
-const execFileAsync = promisify(execFile);
 // A boot-time query, not a tool call: past this the result is unresolved and callers keep what it owns.
 const START_TIME_PROBE_TIMEOUT_MS = 10_000;
 
@@ -62,7 +61,7 @@ export const readWindowsProcessRunStates: ProcessRunStateProbe = async (pids) =>
     else if (alive === true) running.push(pid);
   }
   if (running.length === 0) return states;
-  const { stdout } = await execFileAsync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"), [
+  const { stdout } = await promisify(execFile)(win32SystemBinary("WindowsPowerShell/v1.0/powershell"), [
     "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", START_TIME_COMMAND,
   ], {
     env: { SystemRoot: windowsSystemRoot(), AVE_PROBE_PIDS: running.join(",") },

@@ -7,7 +7,7 @@ import type { MxcConfinedChildSpawn, MxcConfinedChildSpec } from "../../../permi
 import type { OwnedMxcExtensionProcess } from "../../../permissions/mxc-extension-process.js";
 import { MxcProcessCleanupError, MxcProcessContractError } from "../../../permissions/mxc-extension-errors.js";
 import { liveMxcPluginChildHolder, registerMxcHolderLifetime } from "../../../permissions/mxc-holder-lifetime.js";
-import { aveHome } from "../../../shared/ave-home.js";
+import { SYNTHETIC_MXC_STAGING_PARENT } from "../../../__tests__/support/mxc-staging-parent.js";
 import { windowsCommandLine } from "../../../shared/windows-command-line.js";
 import { PluginChildTerminationUnverifiedError } from "../plugin-child-transport.js";
 import { attachMxcPluginChild, spawnMxcPluginChild } from "../mxc-plugin-child.js";
@@ -20,6 +20,14 @@ vi.mock("../../../lib/logger.js", async (importOriginal) => {
 });
 
 const spawn = vi.hoisted(() => vi.fn());
+// The staging parent start-up establishes under the runtime root, as a synthetic path.
+vi.mock("../../../permissions/mxc-runtime-root.js", async (importOriginal) => {
+  const { SYNTHETIC_MXC_STAGING_PARENT } = await import("../../../__tests__/support/mxc-staging-parent.js");
+  return {
+    ...await importOriginal<typeof import("../../../permissions/mxc-runtime-root.js")>(),
+    mxcStagingParent: () => SYNTHETIC_MXC_STAGING_PARENT,
+  };
+});
 vi.mock("../../../permissions/confined-child.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../../permissions/confined-child.js")>(),
   spawnMxcConfinedChild: spawn,
@@ -45,7 +53,7 @@ function fixture() {
     dispose: vi.fn(async () => { resolve({ exitCode: 0, timedOut: false }); }),
   };
   const controller = new AbortController();
-  const staging = winPath.join(aveHome(), "mxc-staging", STAGING_ID);
+  const staging = winPath.join(SYNTHETIC_MXC_STAGING_PARENT, STAGING_ID);
   const launch = {
     home: winPath.join(staging, "home"), temp: winPath.join(staging, "temp"),
     filesystemOwnership: { readRoots: [], writeRoots: [staging], hostStorageRoots: [] },
@@ -269,19 +277,19 @@ describe("native plugin stream ownership", () => {
   });
 
   it.each([
-    ["outside AVE_HOME", (l: { home: string; temp: string }) => { l.home = "C:\\Other\\mxc-staging\\0123456789abcdef0123456789abcdef\\home"; }],
+    ["outside the runtime root", (l: { home: string; temp: string }) => { l.home = "C:\\Other\\staging\\0123456789abcdef0123456789abcdef\\home"; }],
     ["named after the plugin", (l: { home: string; temp: string }) => {
-      l.home = winPath.join(aveHome(), "mxc-staging", "native-probe", "home"); l.temp = winPath.join(aveHome(), "mxc-staging", "native-probe", "temp");
+      l.home = winPath.join(SYNTHETIC_MXC_STAGING_PARENT, "native-probe", "home"); l.temp = winPath.join(SYNTHETIC_MXC_STAGING_PARENT, "native-probe", "temp");
     }],
     ["shared between HOME and temp", (l: { home: string; temp: string }) => { l.temp = l.home; }],
     ["in different staging directories", (l: { home: string; temp: string }) => {
-      l.temp = winPath.join(aveHome(), "mxc-staging", "fedcba9876543210fedcba9876543210", "temp");
+      l.temp = winPath.join(SYNTHETIC_MXC_STAGING_PARENT, "fedcba9876543210fedcba9876543210", "temp");
     }],
     ["nested below the staging directory", (l: { home: string; temp: string }) => { l.home = winPath.join(l.home, "deeper"); }],
   ])("refuses HOME/temp %s before admission", async (_label, mutate) => {
     const { launch, intent } = fixture();
     mutate(launch);
-    await expect(spawnMxcPluginChild(launch, intent)).rejects.toThrow("mxc-staging");
+    await expect(spawnMxcPluginChild(launch, intent)).rejects.toThrow("runtime-root");
     expect(spawn).not.toHaveBeenCalled(); expect(launch.release).toHaveBeenCalledOnce();
   });
 

@@ -27,7 +27,7 @@ import {
 } from "node:fs";
 import type { Stats } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   PLUGIN_RUNTIME_DIR_NAMES,
@@ -962,16 +962,16 @@ describe("the host decides how far a plugin child reaches", () => {
     ).toThrow(/resolves inside the host's own storage namespace/);
   });
 
-  it.skipIf(process.platform === "win32")("refuses a chosen directory inside the container runtime root, whatever the user approved", () => {
+  it("refuses a chosen directory inside the container runtime root, whatever the user approved", () => {
     // The runtime root holds every container run's HOME and temp. It lives outside `~/.ave`, so the home subtraction does not reach it; it is one of the confined processes' private roots, and the read floor that denies those refuses a grant inside any of them.
     const fx = fixture as NonNullable<typeof fixture>;
     // A cache directory of its own, outside the Ave home and every other floor entry, so only the private-root rule can refuse.
     const inheritedBase = process.env.AVE_TEST_SANDBOX_BASE;
-    const base = realpathSync(mkdtempSync(join(tmpdir(), "ave-chosen-runtime-")));
+    const base = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-chosen-runtime-")));
     process.env.AVE_TEST_SANDBOX_BASE = base;
     try {
       const runtimeRoot = mxcRuntimeRootFloorPath();
-      expect(runtimeRoot.startsWith(`${base}/`)).toBe(true);
+      expect(runtimeRoot.startsWith(`${base}${sep}`)).toBe(true);
       approveWorkspaceRoot(fx, base);
       for (const chosen of [runtimeRoot, join(runtimeRoot, "staging", "0123456789abcdef0123456789abcdef", "home")]) {
         expect(() =>
