@@ -44,7 +44,8 @@ import { isDestructiveShellArgv, noReusableRuleReason, MAX_LITERAL_COMMAND_LENGT
 import { isStagedTurnSource } from "../shared/staged-origins.js";
 import { PERMISSION_REVIEWER_FRAMEWORK_VERSION } from "../shared/permission-reviewer-framework.js";
 import type { ApprovalMemory, UserApprovalHitPayload, UserApprovalVerdict } from "../shared/permissions-events.js";
-import { decidePermission, NO_APPROVER_MESSAGE, type PermissionDecisionRequest } from "./decision-pipeline.js";
+import { decidePermission, EXACT_HOST_RULE_REASON_CODE, NO_APPROVER_MESSAGE, type PermissionDecisionRequest } from "./decision-pipeline.js";
+import { exactShellRuleFor } from "./rules/shell-rule-approval.js";
 import { isHostNetworkSubject } from "./host-network-subject.js";
 import { canonicalEgressHost, isValidEgressPort } from "./egress-grants.js";
 import {
@@ -67,6 +68,7 @@ import {
 import {
   getHostShellExecutionPlanAuditProjection,
   requiresUnsandboxedShellAsk,
+  exactRulePassesUnsandboxedShellAsk,
   isHomePrivacyHelperUnavailablePlan,
   HOME_PRIVACY_HELPER_UNAVAILABLE_SHELL_DENIAL,
   type HostShellExecutionPlan,
@@ -427,6 +429,8 @@ export interface ShellAllowRuleAuthorization extends ShellAllowRuleSubject {
   readonly policyEpoch: string;
   readonly cwdIdentity: ShellWorkingDirectoryIdentity;
   readonly persistedPolicyVersions: readonly PersistedPolicyVersion[];
+  // Set when the rule passed the sandbox-unavailable ask (reason `exact-host-rule`): the identity of the plan it passed on.
+  readonly floorPlanIdentity?: string;
 }
 
 export function isShellAllowRulePolicyCurrent(
@@ -1590,7 +1594,7 @@ export class PermissionManager {
     if (!stale) {
       if (result.reviewer) refreshed.reviewer = result.reviewer;
       if (result.denyReasons) refreshed.denyReasons = result.denyReasons;
-      if (shellRule && refreshed.decision === "allow" && refreshed.reasonCode === "rule-allow") {
+      if (shellRule && refreshed.decision === "allow" && refreshed.reasonCode === (shellRule.floorPlanIdentity === undefined ? "rule-allow" : EXACT_HOST_RULE_REASON_CODE)) {
         issuedShellAllowRuleDecisions.set(refreshed, shellRule);
       }
       if (floorSession && refreshed.decision === "allow" && refreshed.reasonCode === "floor-session-allow") {
@@ -1782,6 +1786,23 @@ export class PermissionManager {
     const shellRules = !analysisLimited && parsed ? evaluateShellSubject({ command: parsed, cwd: ruleSubject?.cwd, exactAllowOnly: shellSignals?.exactLiteralEvaluation === true,
         ...(ruleSubject?.hostTerminal === undefined ? {} : { hostTerminal: ruleSubject.hostTerminal }) }, this.rules, projectRules, sessionRules)
       : !analysisLimited && parsedPowerShell ? evaluatePowerShellSubject({ command: parsedPowerShell, cwd: ruleSubject?.cwd, hostShellExecutionPlan: context.hostShellExecutionPlan, exactAllowOnly: shellSignals?.exactLiteralEvaluation === true }, this.rules, projectRules, sessionRules) : undefined;
+    // Tree T:128, T:259: a saved rule that is exactly this command passes the sandbox-unavailable ask when the plan asks only for the missing
+    // backend (boot home privacy verified) and no other floor applies. Session rules are not saved; a prefix rule, a tool-name rule and a
+    // compound command keep the ask. It is offered only when its rule proof can be issued, so a pass never ends as a refused spawn.
+    const exactRuleCwdIdentity = floorSessionEligible && exactRulePassesUnsandboxedShellAsk(context.hostShellExecutionPlan) && !analysisLimited &&
+      ruleSubject !== undefined && requestedRuleSubject?.cwd !== undefined && ruleSubject.dialect === toolName && ruleSubject.hostTerminal === undefined
+      ? cwdIdentity ?? captureShellWorkingDirectoryIdentity(requestedRuleSubject.cwd) : undefined;
+    const exactRuleProjectVersion = exactRuleCwdIdentity === undefined ? undefined : projectPolicyVersion ?? this.projectRuleScopes.policyVersionFor(exactRuleCwdIdentity.realpath);
+    const exactRuleVersions = this.userRulesVersion && this.userRulesVersion.withheld !== true && exactRuleProjectVersion && exactRuleProjectVersion.withheld !== true &&
+      isPersistedPolicyVersionCurrent(this.userRulesVersion) && isPersistedPolicyVersionCurrent(exactRuleProjectVersion)
+      ? Object.freeze([this.userRulesVersion, exactRuleProjectVersion]) : undefined;
+    let exactHostRule: string | undefined;
+    if (exactRuleVersions && ruleSubject?.cwd !== undefined && command !== undefined) {
+      const saved = parsed ? evaluateShellSubject({ command: parsed, cwd: ruleSubject.cwd, exactAllowOnly: true }, this.rules, projectRules)
+        : parsedPowerShell ? evaluatePowerShellSubject({ command: parsedPowerShell, cwd: ruleSubject.cwd, hostShellExecutionPlan: context.hostShellExecutionPlan, exactAllowOnly: true }, this.rules, projectRules) : undefined;
+      const pattern = saved?.decision === "allow" && saved.patterns.length === 1 ? saved.patterns[0] : undefined;
+      if (pattern !== undefined && pattern === exactShellRuleFor(ruleSubject.dialect, command, ruleSubject.cwd, context.verifiedShellCommand, context.hostShellExecutionPlan)) exactHostRule = pattern;
+    }
     const approvalKey = normalizeApprovalCacheKey(context.approvalCacheKey);
     const denyTargets = approvalKey ? [toolName, approvalKey] : [toolName];
     const allowTarget = approvalKey ?? toolName;
@@ -1796,6 +1817,7 @@ export class PermissionManager {
     if (ask || shellRules?.decision === "ask" || scopedRules?.decision === "ask") rules.ask = ask?.pattern ?? (shellRules?.decision === "ask" ? shellRules.pattern : undefined) ?? scopedRules?.pattern ?? "Ask rule matched";
     if (allow || shellRules?.decision === "allow" || scopedRules?.decision === "allow") rules.allow = allow?.pattern ?? (shellRules?.decision === "allow" ? shellRules.patterns.join(", ") : scopedRules?.pattern) ?? "Allow rule matched";
     if (floorSessionGranted) rules.floorSession = "You allowed shell commands without the sandbox for this session.";
+    if (exactHostRule !== undefined) rules.exactHostRule = exactHostRule;
     if (source === "builtin" && category === "meta" && context.decisionOverride === "always-allow-with-audit") rules.allow ??= "The host operation supplies its own audited decision.";
     if (context.fileWritePolicy?.directoryApproved) rules.remembered = "The user approved this write together with its directory grant.";
     const grant = this.alwaysAllowed.get(allowTarget);
@@ -1826,6 +1848,9 @@ export class PermissionManager {
     if (result.decision === "allow" && result.reasonCode === "floor-session-allow" && requestedRuleSubject?.cwd !== undefined && context.hostShellExecutionPlan !== undefined) {
       issuedFloorSessionDecisions.set(result, Object.freeze({ toolName, dialect: requestedRuleSubject.dialect, command: requestedRuleSubject.command, cwd: requestedRuleSubject.cwd,
         planIdentity: context.hostShellExecutionPlan.identity, issuer: this, policyEpoch: this.getPolicyEpoch() }));
+    }
+    if (result.decision === "allow" && result.reasonCode === EXACT_HOST_RULE_REASON_CODE && requestedRuleSubject?.cwd !== undefined && exactRuleCwdIdentity && exactRuleVersions && context.hostShellExecutionPlan !== undefined) {
+      issuedShellAllowRuleDecisions.set(result, Object.freeze({ toolName, dialect: requestedRuleSubject.dialect, command: requestedRuleSubject.command, cwd: requestedRuleSubject.cwd, cwdIdentity: exactRuleCwdIdentity, issuer: this, policyEpoch: this.getPolicyEpoch(), persistedPolicyVersions: exactRuleVersions, floorPlanIdentity: context.hostShellExecutionPlan.identity }));
     }
     if (result.decision === "allow" && result.reasonCode === "rule-allow" && context.hostShellExecutionPlan?.executionRequest === "host" && requestedRuleSubject?.cwd !== undefined && cwdIdentity && this.userRulesVersion && this.userRulesVersion.withheld !== true && projectPolicyVersion && projectPolicyVersion.withheld !== true && isPersistedPolicyVersionCurrent(this.userRulesVersion) && isPersistedPolicyVersionCurrent(projectPolicyVersion)) {
       issuedShellAllowRuleDecisions.set(result, Object.freeze({ toolName, dialect: requestedRuleSubject.dialect, command: requestedRuleSubject.command, cwd: requestedRuleSubject.cwd, cwdIdentity, issuer: this, policyEpoch: this.getPolicyEpoch(), persistedPolicyVersions: Object.freeze([this.userRulesVersion, projectPolicyVersion]) }));

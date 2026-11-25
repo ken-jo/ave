@@ -216,6 +216,8 @@ export function buildHostShellExecutionPlan(input: {
   unavailableCauses?: readonly SandboxStartFailureCause[];
   // Boot got no answer from the home privacy helper: every route above that would run unconfined is blocked instead, so no approval runs it.
   unconfinedShellDenied?: boolean;
+  // Boot published a positive Ave home privacy result. Only then may an exact saved rule pass the no-backend ask (tree T:128); absent means unverified.
+  homePrivacyVerified?: boolean;
 }): HostShellExecutionPlan {
   if (input.unconfinedShellDenied === true) {
     const route = buildHostShellExecutionPlan({ ...input, unconfinedShellDenied: false });
@@ -246,6 +248,8 @@ export function buildHostShellExecutionPlan(input: {
   }
   const requestedSandbox = input.requestedSandbox;
   const askEveryCommand = input.unavailableSandboxRequiresAsk === true;
+  // The no-backend ask with nothing else behind it at boot: the boot home privacy floor does not govern.
+  const noBackendAskSuffix = (input.homePrivacyVerified === true && !askEveryCommand ? EXACT_RULE_PASS_MARKER : "") + ASK_EVERY_COMMAND_SUFFIX;
 
   if (executionRequest === "host") {
     // With the requested sandbox unavailable an explicit host request is the same uncontained shell, so it takes the same ask.
@@ -262,7 +266,7 @@ export function buildHostShellExecutionPlan(input: {
       capability: noneCapability(input.platform, "Explicit host execution runs as the current user without OS confinement."),
       fallbackReason: "none" as const,
       requiresExplicitUserApproval: true,
-      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":explicit-host" + (forcedAsk ? ASK_EVERY_COMMAND_SUFFIX : ""),
+      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":explicit-host" + (forcedAsk ? noBackendAskSuffix : ""),
     });
   }
 
@@ -287,7 +291,7 @@ export function buildHostShellExecutionPlan(input: {
     });
   }
 
-  // A requested sandbox that is unavailable (missing bwrap/socat, start failure, host below the documented minimums) yields a plain child on every platform, and only through the sandbox-unavailable forced ask: once or for this session, never saved; saved rules, allow mode and auto review do not pass, and a headless run is denied. A helper-unavailable boot blocks it before this branch. The fallback reason stays on the plan so the approval card, the tool result and audit can say the sandbox was unavailable.
+  // A requested sandbox that is unavailable (missing bwrap/socat, start failure, host below the documented minimums) yields a plain child on every platform, and only through the sandbox-unavailable forced ask: once or for this session, never saved; allow mode, auto review and saved prefix rules do not pass, and a headless run is denied. One saved rule passes it: an exact one, and only on a plan `exactRulePassesUnsandboxedShellAsk` marks. A helper-unavailable boot blocks it before this branch. The fallback reason stays on the plan so the approval card, the tool result and audit can say the sandbox was unavailable.
   if (requestedSandbox && input.activeCapability.kind === "none") {
     const fallbackReason: HostShellFallbackReason = "requested-sandbox-unavailable";
     const capability = noneCapability(
@@ -307,7 +311,7 @@ export function buildHostShellExecutionPlan(input: {
       capability,
       fallbackReason,
       requiresExplicitUserApproval: true,
-      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":" + fallbackReason + ASK_EVERY_COMMAND_SUFFIX,
+      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":" + fallbackReason + noBackendAskSuffix,
       ...(installHints.length === 0 ? {} : { installHints: Object.freeze(installHints) }),
     });
   }
@@ -380,6 +384,7 @@ export function buildHostShellExecutionPlan(input: {
 }
 
 const ASK_EVERY_COMMAND_SUFFIX = ":ask";
+const EXACT_RULE_PASS_MARKER = ":home-verified";
 
 // The deny for a "home-privacy-helper-unavailable" plan: shells, hooks and their tool results all carry this restart notice.
 export const HOME_PRIVACY_HELPER_UNAVAILABLE_SHELL_DENIAL = Object.freeze({
@@ -393,14 +398,20 @@ export function isHomePrivacyHelperUnavailablePlan(plan: Pick<HostShellExecution
 
 // An unconfined plan that needs a human ask for every command: the requested-but-unavailable sandbox always, an explicit host request
 // on such a host, and a shell-scope-off or explicit-host plan while boot cannot establish Ave home privacy (any category but helper-unavailable,
-// whose plan is blocked). The permission floor reads this, so saved allows, auto review and mode allows cannot run it unasked. Otherwise an
-// explicit-host plan keeps its ordinary rule and mode handling.
+// whose plan is blocked). The permission floor reads this, so saved allows, auto review and mode allows cannot run it unasked (one exception:
+// `exactRulePassesUnsandboxedShellAsk`). Otherwise an explicit-host plan keeps its ordinary rule and mode handling.
 export function requiresUnsandboxedShellAsk(plan: HostShellExecutionPlan | undefined): boolean {
   if (plan === undefined || plan.mode !== "plain" || plan.sandboxed || plan.capability.kind !== "none" ||
     plan.requiresExplicitUserApproval !== true || !plan.identity.endsWith(ASK_EVERY_COMMAND_SUFFIX)) return false;
   return plan.executionRequest === "host"
     ? plan.fallbackReason === "none"
     : plan.executionRequest === "default" && plan.fallbackReason !== "none";
+}
+
+// The one saved-rule pass of that ask (tree T:128, T:259): the plan asks only because no backend is usable and boot verified Ave home
+// privacy. An exact saved rule may then run the command unasked; with home privacy unverified the boot floor governs and no rule passes.
+export function exactRulePassesUnsandboxedShellAsk(plan: HostShellExecutionPlan | undefined): boolean {
+  return plan !== undefined && requiresUnsandboxedShellAsk(plan) && plan.identity.endsWith(EXACT_RULE_PASS_MARKER + ASK_EVERY_COMMAND_SUFFIX);
 }
 
 // An unpinned native parser needs one-shot authority before startup. Existing

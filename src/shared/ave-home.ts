@@ -766,6 +766,11 @@ export function getAveHomePrivacyFailure(): Extract<AveHomePrivacy, { enforcemen
   return bootHomePrivacy?.enforcement === "none" ? bootHomePrivacy : undefined;
 }
 
+/** Boot published a positive result. An unpublished result is not verified. */
+export function isAveHomePrivacyVerifiedAtBoot(): boolean {
+  return bootHomePrivacy !== undefined && bootHomePrivacy.enforcement !== "none";
+}
+
 /** A read-boundary category: its failure carries no path into logs or audit. */
 export function isAveHomeBoundaryCategory(category: string | undefined): category is "boundary-link" | "boundary-unlisted" {
   return category === "boundary-link" || category === "boundary-unlisted";
