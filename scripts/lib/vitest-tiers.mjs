@@ -1,6 +1,5 @@
 // Suites that spawn real processes, stamp ACLs or run the real OS sandbox. The native project collects them.
 export const NATIVE_TIER_TESTS = [
-  "src/main/memory-map/__tests__/inference-child-native.test.ts",
   "src/permissions/__tests__/asrt-background-initialization.test.ts",
   "src/permissions/__tests__/asrt-deny-absent-native.test.ts",
   "src/permissions/__tests__/asrt-deny-absent.test.ts",

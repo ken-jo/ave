@@ -33,8 +33,8 @@ export const NATIVE_TRIGGERS = [
   "src/sandbox/",
   "tools/mxc-probes/",
 ];
-// Paths naming the MXC, srt-win or sandbox runtimes anywhere in the tree.
-const NATIVE_TRIGGER_NAME = /mxc|srt-win|asrt|sandbox/iu;
+// Paths naming the MXC, srt-win, sandbox or Windows native helper runtimes anywhere in the tree.
+const NATIVE_TRIGGER_NAME = /mxc|srt-win|asrt|sandbox|windows-job|path-kind/iu;
 
 const startsWithAny = (path, prefixes) => prefixes.some(prefix => path === prefix || path.startsWith(prefix));
 

@@ -23,13 +23,27 @@ describe("Vitest tier selection", () => {
   it("names only collected census partitions and native suites", () => {
     const collected = new Set(collectedVitestFiles(root));
     expect(CENSUS_TIER_TESTS).toHaveLength(12);
-    expect(NATIVE_TIER_TESTS).toHaveLength(20);
+    expect(NATIVE_TIER_TESTS).toHaveLength(19);
     for (const test of [...CENSUS_TIER_TESTS, ...NATIVE_TIER_TESTS]) expect(collected.has(test), test).toBe(true);
     expect(CENSUS_TIER_TESTS.filter(test => NATIVE_TIER_TESTS.includes(test))).toEqual([]);
   });
 
+  it("keeps tier suites out of the must-run groups every affected plan retains", () => {
+    const mustRun = JSON.parse(readFileSync(resolve(root, "config/ci-must-run-tests.json"), "utf8")) as { groups: Record<string, string[]>; triggers: Record<string, string[]> };
+    const retained = Object.entries(mustRun.groups).filter(([group]) => !Object.hasOwn(mustRun.triggers, group)).flatMap(([, entries]) => entries);
+    expect(retained.length).toBeGreaterThan(0);
+    const selects = (entry: string, test: string) => test === entry || test.startsWith(entry.endsWith("/") ? entry : `${entry}/`);
+    expect([...NATIVE_TIER_TESTS, ...CENSUS_TIER_TESTS].filter(test => retained.some(entry => selects(entry, test)))).toEqual([]);
+  });
+
   it("parses AVE_VITEST_TIERS and rejects unknown tiers", () => {
-    expect([...selectedVitestTiers(undefined)].sort()).toEqual(["default", "native"]);
+    const ambient = process.env.AVE_VITEST_TIERS;
+    delete process.env.AVE_VITEST_TIERS;
+    try {
+      expect([...selectedVitestTiers()].sort()).toEqual(["default", "native"]);
+    } finally {
+      if (ambient !== undefined) process.env.AVE_VITEST_TIERS = ambient;
+    }
     expect(vitestTierEnabled("census", "default,census")).toBe(true);
     expect(() => selectedVitestTiers("default,cencus")).toThrow(/unknown tier/);
     expect(() => selectedVitestTiers(" , ")).toThrow(/at least one tier/);
@@ -57,11 +71,11 @@ describe("Vitest tier selection", () => {
 
   it("selects the native tier for a pull request that changes permissions, sandbox, native helpers, MXC or srt-win", () => {
     for (const path of ["src/permissions/permission-manager.ts", "src/sandbox/runtime-grant.ts", "src/plugins/isolation/confined-child.ts",
-      "native/windows-job/main.c", "tools/mxc-probes/probe.ts", "patches/some-package.patch", "bun.lock", "scripts/build-srt-win.mjs",
+      "native/windows-job/main.c", "tools/mxc-probes/probe.ts", "patches/some-package.patch", "bun.lock", "scripts/build-srt-win.mjs", "scripts/build-windows-job.ps1", "scripts/test-windows-path-kind.mjs",
       "src/main/mxc-runtime.ts", "scripts/lib/asrt-paths.mjs", "src/shared/sandbox-paths.ts", NATIVE_TIER_TESTS[0]]) {
       expect(pr([path]).native, path).toBe(true);
     }
-    expect(pr(["src/main/memory-map/index.ts"], affected([NATIVE_TIER_TESTS[0]])).native).toBe(true);
+    expect(pr(["src/main/index.ts"], affected([NATIVE_TIER_TESTS[0]])).native).toBe(true);
     expect(pr(["src/__tests__/support/fixture-owner.ts"], full).native).toBe(true);
   });
 
