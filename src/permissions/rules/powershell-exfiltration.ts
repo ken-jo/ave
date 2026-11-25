@@ -948,7 +948,7 @@ function finalizeSignals(sensitive: string | null, exfiltration: string | null, 
 
 // Parsing and reusable exact identity
 
-type LexedPowerShell = { pipelines: PsPipeline[] | null; reason?: string; readable?: PsCommand[]; permissionPipelines?: PsPipeline[]; unreadable?: true };
+type LexedPowerShell = { pipelines: PsPipeline[] | null; reason?: string; readable?: PsCommand[]; permissionPipelines?: PsPipeline[] };
 let powerShellLexObserver: ((command: string) => void) | undefined;
 
 function lex(command: string, context: PowerShellAnalysisContext): LexedPowerShell {
@@ -968,7 +968,7 @@ function lex(command: string, context: PowerShellAnalysisContext): LexedPowerShe
   catch (error) {
     if (error instanceof PsUnreadable) {
       const partial = lexer.partialCommand();
-      return { pipelines: null, reason: error.message, readable: partial === undefined ? lexer.readable : [...lexer.readable, partial], unreadable: true };
+      return { pipelines: null, reason: error.message, readable: partial === undefined ? lexer.readable : [...lexer.readable, partial] };
     }
     throw error;
   }

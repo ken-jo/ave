@@ -33,15 +33,16 @@ describe.each([
   const longTail = Array.from({ length: 1800 }, () => "date x").join("; ");
   const pastLimit = { decision: "deny", reasonCode: "shell-analysis-limit" };
   const limitCard = { decision: "ask", forceModal: true, reasonCode: "shell-analysis-limit", pipelineRequest: { shellAnalysisLimited: true } };
-  async function evaluate({ saveDeny = true, generic = false, executionMode = "allow" }: {
+  async function evaluate({ saveDeny = true, denyPattern = pattern, generic = false, executionMode = "allow" }: {
     saveDeny?: boolean;
+    denyPattern?: string | undefined;
     generic?: boolean;
     executionMode?: ExecutionMode;
   } = {}) {
     const manager = new PermissionManager(join(cwd, "permissions.json"));
     manager.setMode(executionMode);
     if (generic) manager.setRules([{ pattern: dialect, action: "deny" }]);
-    if (saveDeny) await manager.addRulePersist({ pattern, action: "deny" }, { kind: "user" });
+    if (saveDeny) await manager.addRulePersist({ pattern: denyPattern, action: "deny" }, { kind: "user" });
     return (command: string, headless = false) => manager.checkDetailed(dialect, "builtin", "shell", null, {
       ruleSubject: { kind: "shell", dialect, command, cwd },
       shellExecution: { runsSandboxed: true },
@@ -84,12 +85,21 @@ describe.each([
     describe.each([
       { shape: "an escaped brace in a variable name", command: `${escapedVariableStart}}; Write-Output s` },
       { shape: "a quote in a braced expansion", command: `${quotedExpansionStart}}"; Write-Output s` },
-    ])("unreadable command with $shape", ({ command }) => {
+      { shape: "unsupported redirection", command: "echo hi > out.txt", denyPattern: "PowerShell(Get-Date *)" },
+      { shape: "an unsupported quote delimiter", command: "echo ‘hi’", denyPattern: "PowerShell(Get-Date *)" },
+    ])("unreadable command with $shape", ({ command, denyPattern }) => {
       it.each(["strict", "default", "auto", "allow"] as const)("refuses in %s mode with a saved deny", async (executionMode) => {
-        const withDeny = await evaluate({ executionMode });
+        const withDeny = await evaluate({ executionMode, denyPattern });
         const result = withDeny(command);
         expect(result).toMatchObject(pastLimit);
         expect(result.pipelineRequest?.rules).not.toHaveProperty("ask");
+        expect(result.forceModal).toBeUndefined();
+        expect(result.reviewer).toBeUndefined();
+      });
+
+      it("keeps the ordinary shell approval in default mode without a saved deny", async () => {
+        const withoutDeny = await evaluate({ saveDeny: false, executionMode: "default" });
+        expect(withoutDeny(command)).toMatchObject({ decision: "ask", reasonCode: "shell-approval" });
       });
 
       it("keeps the ordinary allow-mode decision without a saved deny", async () => {

@@ -372,7 +372,7 @@ export function shellDenyOnBoundedPrefix(input: {
   if (collectPowerShellRules(...denies).deny.length === 0) return {};
   if (input.analysisLimited || command.length > SHELL_FLOOR_INPUT_LIMIT) return { analysisRefused: true };
   const parsedCommand = parsedPowerShell ?? parsePowerShellCommand(command);
-  if (parsedCommand.analysisLimited || parsedCommand.syntax.unreadable) return { analysisRefused: true };
+  if (parsedCommand.analysisLimited || parsedCommand.syntax.pipelines === null) return { analysisRefused: true };
   const evaluated = evaluatePowerShellSubject({ command: parsedCommand, cwd, exactAllowOnly: false }, ...denies);
   if (evaluated.decision === "deny") return { pattern: evaluated.pattern };
   return evaluated.decision === "ask" ? { unreadable: true } : {};
