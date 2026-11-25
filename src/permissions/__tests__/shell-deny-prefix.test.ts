@@ -77,6 +77,23 @@ describe.each([
       expect(withoutDeny('"${a";b' + inputFiller + '}" | Write-Output s')).toMatchObject(limitCard);
     });
 
+    describe.each([
+      { shape: "an escaped brace in a variable name", command: '${a`};b}; Write-Output s' },
+      { shape: "a quote in a braced expansion", command: '"${a";b}"; Write-Output s' },
+    ])("unreadable command with $shape", ({ command }) => {
+      it.each(["strict", "default", "auto", "allow"] as const)("refuses in %s mode with a saved deny", async (executionMode) => {
+        const withDeny = await evaluate({ executionMode });
+        const result = withDeny(command);
+        expect(result).toMatchObject(pastLimit);
+        expect(result.pipelineRequest?.rules).not.toHaveProperty("ask");
+      });
+
+      it("keeps the ordinary allow-mode decision without a saved deny", async () => {
+        const withoutDeny = await evaluate({ saveDeny: false });
+        expect(withoutDeny(command)).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
+      });
+    });
+
     it.each([" |\n  ", "\n  | ", " ||\n  "])("refuses an over-budget first statement across %j", async (separator) => {
       const check = await evaluate();
       expect(check(`date${separator}${overBudgetTail}`)).toMatchObject(pastLimit);
