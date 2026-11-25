@@ -34,6 +34,7 @@ import type { PassConditionRegistry } from "./stage-gates.js";
 import { assertPinnedVersion, stepsOf } from "./stage-graph.js";
 import { MAX_STAGE_ATTEMPTS, reduceRun, type RunEffect, type RunEvent } from "./stage-machine.js";
 import { buildStagePrompt, type StageInput } from "./stage-prompt.js";
+import { OwnedFsError } from "./owned-fs.js";
 import { isAwaitingStageReview, reconcileRunRecord, type RunRecord, type RunWriteFailure, type WorkflowRunState } from "./run-state.js";
 import type { RunRef, StageWorkspaceProvider } from "./stage-workspace.js";
 import { WorkflowInvariantError } from "./workflow-errors.js";
@@ -934,7 +935,12 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
 
       // `Retry` starts from a fresh folder; a rerun after `Request changes` keeps the one it has.
       const revising = run.gate?.type === "human" && run.gate.status === "changes_requested";
-      if (attempt > 1 && !revising) await workspace.release(state.ref, [stageId]);
+      if (attempt > 1 && !revising) {
+        // A folder that is no longer the run's own is not removed, and the stage is not started in it.
+        try { await workspace.release(state.ref, [stageId]); } catch (error) {
+          throw new WorkflowInvariantError("workspace-missing", error instanceof OwnedFsError ? "workspace-identity-changed" : "workspace-unavailable");
+        }
+      }
       const prepared = await workspace.prepare(state.ref, stage, attempt);
       const runRoot = record.runWorkspace?.runRoot;
       if (!prepared.ok) throw new WorkflowInvariantError("workspace-missing", prepared.code);

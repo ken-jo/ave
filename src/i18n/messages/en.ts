@@ -126,6 +126,7 @@ export const en = {
   "reasonCodes.seed-unreadable": "The files a stage takes from the project could not be read.",
   "reasonCodes.identity-missing": "The project's repository has no git user name and email, so this template run's work cannot be saved. Set them, then try again.",
   "reasonCodes.volume-unsupported": "Template run workspaces need the Ave home folder and the project's repository on one drive that supports hard links, so this template cannot run here.",
+  "reasonCodes.workspace-identity-changed": "This stage's workspace is no longer the folder the run made, so it cannot be released for a retry. It was left as it is.",
   "reasonCodes.outputs-unavailable": "A stage of this template asks for outputs, which template runs cannot make yet.",
   "reasonCodes.template-run-unavailable": "Template runs are not available right now.",
   "reasonCodes.work-item-completed": "This item is completed. Reopen it to run it again.",

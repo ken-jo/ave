@@ -128,6 +128,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "reasonCodes.seed-unreadable": "단계가 프로젝트에서 가져오는 파일을 읽을 수 없습니다.",
   "reasonCodes.identity-missing": "프로젝트 저장소에 git 사용자 이름과 이메일이 없어 이 템플릿 실행의 작업을 저장할 수 없습니다. 설정한 뒤 다시 시도하세요.",
   "reasonCodes.volume-unsupported": "템플릿 실행 작업 공간은 Ave 홈 폴더와 프로젝트 저장소가 하드 링크를 지원하는 같은 드라이브에 있어야 하므로 여기서는 이 템플릿을 실행할 수 없습니다.",
+  "reasonCodes.workspace-identity-changed": "이 단계의 작업 공간이 더 이상 실행이 만든 폴더가 아니어서 다시 시도하기 위해 해제할 수 없습니다. 그대로 두었습니다.",
   "reasonCodes.outputs-unavailable": "이 템플릿의 단계가 출력을 요청하지만 템플릿 실행은 아직 출력을 만들 수 없습니다.",
   "reasonCodes.template-run-unavailable": "지금은 템플릿 실행을 사용할 수 없습니다.",
   "reasonCodes.work-item-completed": "이 항목은 완료되었습니다. 다시 실행하려면 항목을 다시 여세요.",
