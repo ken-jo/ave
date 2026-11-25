@@ -1,7 +1,7 @@
 import { pluginChildEntryPath } from "../../__tests__/support/plugin-child-entry.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { execFile } from "node:child_process";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync } from "node:fs";
 import { chmod, mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
@@ -41,6 +41,7 @@ import type {
 import type { ActivePluginGeneration } from "../plugin-generation-coordinator.js";
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
 import { HOST_PROTOCOL_VERSION } from "../isolation/host-api-wire.js";
+import { SANDBOX_HOME_OWNER_SUFFIX, sandboxProcessHomesInUse } from "../../permissions/sandbox-process-home.js";
 
 type GenerationCommitScope = <T>(operation: () => Promise<T>) => Promise<T>;
 
@@ -544,6 +545,33 @@ export function makeTestPluginRuntime(
     createHostApi: createNoopHostApiForTests,
     ...options,
   }));
+}
+
+/** Runtimes a file registers so `afterEach` stops them: a started entry plugin is a real child whose sandbox HOME is removed only when it exits. */
+export interface TestPluginRuntimeTracker {
+  track(runtime: PluginRuntime): PluginRuntime;
+  /** Stops every tracked runtime; returns the plugins that did not retire and the sandbox HOMEs (or `.owner` markers) still on disk. */
+  stopAll(): Promise<{ unfinished: string[]; leftHomes: string[] }>;
+}
+
+export function createTestPluginRuntimeTracker(): TestPluginRuntimeTracker {
+  const runtimes = new Set<PluginRuntime>();
+  return {
+    track(runtime) {
+      runtimes.add(runtime);
+      return runtime;
+    },
+    async stopAll() {
+      const homes = [...sandboxProcessHomesInUse()];
+      const tracked = [...runtimes];
+      runtimes.clear();
+      const unfinished: string[] = [];
+      for (const runtime of tracked) unfinished.push(...(await runtime.stopAll()).unfinished);
+      const leftHomes = [...new Set([...homes, ...sandboxProcessHomesInUse()])].flatMap((home) =>
+        [home, `${home}${SANDBOX_HOME_OWNER_SUFFIX}`].filter((path) => existsSync(path)));
+      return { unfinished, leftHomes };
+    },
+  };
 }
 
 export function makeTestPluginRuntimeWithAudit(

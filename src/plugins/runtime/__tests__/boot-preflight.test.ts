@@ -8,6 +8,7 @@ import { PluginSandboxGrantError } from "../../isolation/out-of-process-plugin.j
 import type { PluginManifest } from "../../types.js";
 import {
   bindTestPluginRuntimeGeneration,
+  createTestPluginRuntimeTracker,
   writeTestPluginRegistry,
 } from "../../__tests__/test-helpers.js";
 import { unavailableSecretEncryption } from "../../../__tests__/support/host-runtime.js";
@@ -21,6 +22,7 @@ describe("PluginRuntime boot preflight", () => {
   let pluginsRoot: string;
   let registryPath: string;
   let manifests: Map<string, PluginManifest>;
+  const runtimes = createTestPluginRuntimeTracker();
 
   beforeEach(async () => {
     root = await mkdtemp(join(tmpdir(), "ave-plugin-boot-preflight-"));
@@ -69,12 +71,14 @@ describe("PluginRuntime boot preflight", () => {
   });
 
   afterEach(async () => {
+    const stopped = await runtimes.stopAll();
     await rm(root, { recursive: true, force: true });
+    expect(stopped).toEqual({ unfinished: [], leftHomes: [] });
   });
 
   it("bounds receipt checks and reports staggered integrity failures in plan order", async () => {
     const integrityAuditPluginIds: string[] = [];
-    const runtime = bindTestPluginRuntimeGeneration(new PluginRuntime({ childEntryPath: pluginChildEntryPath(), encryption: unavailableSecretEncryption,
+    const runtime = runtimes.track(bindTestPluginRuntimeGeneration(new PluginRuntime({ childEntryPath: pluginChildEntryPath(), encryption: unavailableSecretEncryption,
       hostRoot,
       pluginsRoot,
       registryPath,
@@ -85,7 +89,7 @@ describe("PluginRuntime boot preflight", () => {
           integrityAuditPluginIds.push((data as { pluginId: string }).pluginId);
         }
       },
-    }));
+    })));
     const internals = runtime as unknown as {
       verifyReceiptAndDevGuard(
         pluginId: string,
@@ -138,13 +142,13 @@ describe("PluginRuntime boot preflight", () => {
 
   it("surfaces a receipt-rejected plugin as a repairable failed card", async () => {
     // Pre-manifest refusals need explicit cards so installed plugins remain visible for diagnosis and repair.
-    const runtime = bindTestPluginRuntimeGeneration(new PluginRuntime({ childEntryPath: pluginChildEntryPath(), encryption: unavailableSecretEncryption,
+    const runtime = runtimes.track(bindTestPluginRuntimeGeneration(new PluginRuntime({ childEntryPath: pluginChildEntryPath(), encryption: unavailableSecretEncryption,
       hostRoot,
       pluginsRoot,
       registryPath,
       createHostApi: createNoopHostApiForTests,
       installReceiptCacheRoot: join(root, "receipts"),
-    }));
+    })));
     const internals = runtime as unknown as {
       verifyReceiptAndDevGuard(
         pluginId: string,
@@ -169,13 +173,13 @@ describe("PluginRuntime boot preflight", () => {
 
   it("keeps loading the plugins listed after one that throws mid-load", async () => {
     // Unclassified materialization failures must isolate one plugin and leave a visible failed card.
-    const runtime = bindTestPluginRuntimeGeneration(new PluginRuntime({ childEntryPath: pluginChildEntryPath(), encryption: unavailableSecretEncryption,
+    const runtime = runtimes.track(bindTestPluginRuntimeGeneration(new PluginRuntime({ childEntryPath: pluginChildEntryPath(), encryption: unavailableSecretEncryption,
       hostRoot,
       pluginsRoot,
       registryPath,
       createHostApi: createNoopHostApiForTests,
       installReceiptCacheRoot: join(root, "receipts"),
-    }));
+    })));
     const internals = runtime as unknown as {
       verifyReceiptAndDevGuard(): Promise<{ ok: true }>;
       readManifest(path: string): Promise<PluginManifest>;
@@ -235,13 +239,13 @@ describe("PluginRuntime boot preflight", () => {
       { id: isolatedId, manifestPath: join(isolatedRoot, "plugin.json") },
       { id: "preflight-0", manifestPath: join(pluginsRoot, "preflight-0", "plugin.json") },
     ]);
-    const runtime = bindTestPluginRuntimeGeneration(new PluginRuntime({ childEntryPath: pluginChildEntryPath(), encryption: unavailableSecretEncryption,
+    const runtime = runtimes.track(bindTestPluginRuntimeGeneration(new PluginRuntime({ childEntryPath: pluginChildEntryPath(), encryption: unavailableSecretEncryption,
       hostRoot,
       pluginsRoot,
       registryPath,
       createHostApi: createNoopHostApiForTests,
       installReceiptCacheRoot: join(root, "receipts"),
-    }));
+    })));
     const internals = runtime as unknown as {
       verifyReceiptAndDevGuard(): Promise<{ ok: true }>;
       readManifest(path: string): Promise<PluginManifest>;
@@ -267,13 +271,13 @@ describe("PluginRuntime boot preflight", () => {
   });
 
   it("classifies a refused sandbox grant so Doctor does not reinstall the same version", async () => {
-    const runtime = bindTestPluginRuntimeGeneration(new PluginRuntime({ childEntryPath: pluginChildEntryPath(), encryption: unavailableSecretEncryption,
+    const runtime = runtimes.track(bindTestPluginRuntimeGeneration(new PluginRuntime({ childEntryPath: pluginChildEntryPath(), encryption: unavailableSecretEncryption,
       hostRoot,
       pluginsRoot,
       registryPath,
       createHostApi: createNoopHostApiForTests,
       installReceiptCacheRoot: join(root, "receipts"),
-    }));
+    })));
     const internals = runtime as unknown as {
       verifyReceiptAndDevGuard(): Promise<{ ok: true }>;
       readManifest(path: string): Promise<PluginManifest>;
@@ -322,13 +326,13 @@ describe("PluginRuntime boot preflight", () => {
       { id: "preflight-0", manifestPath: join(pluginsRoot, "preflight-0", "plugin.json") },
     ]);
     const readPaths: string[] = [];
-    const runtime = bindTestPluginRuntimeGeneration(new PluginRuntime({ childEntryPath: pluginChildEntryPath(), encryption: unavailableSecretEncryption,
+    const runtime = runtimes.track(bindTestPluginRuntimeGeneration(new PluginRuntime({ childEntryPath: pluginChildEntryPath(), encryption: unavailableSecretEncryption,
       hostRoot,
       pluginsRoot,
       registryPath,
       createHostApi: createNoopHostApiForTests,
       installReceiptCacheRoot: join(root, "receipts"),
-    }));
+    })));
     const internals = runtime as unknown as {
       verifyReceiptAndDevGuard(): Promise<{ ok: true }>;
       readManifest(path: string): Promise<PluginManifest>;
@@ -353,7 +357,7 @@ describe("PluginRuntime boot preflight", () => {
 
   it("isolates an unexpected receipt verifier rejection to its plugin", async () => {
     const rejected: Array<{ pluginId: string; reason: string }> = [];
-    const runtime = bindTestPluginRuntimeGeneration(new PluginRuntime({ childEntryPath: pluginChildEntryPath(), encryption: unavailableSecretEncryption,
+    const runtime = runtimes.track(bindTestPluginRuntimeGeneration(new PluginRuntime({ childEntryPath: pluginChildEntryPath(), encryption: unavailableSecretEncryption,
       hostRoot,
       pluginsRoot,
       registryPath,
@@ -365,7 +369,7 @@ describe("PluginRuntime boot preflight", () => {
           throw new Error("injected audit failure");
         }
       },
-    }));
+    })));
     const internals = runtime as unknown as {
       verifyReceiptAndDevGuard(pluginId: string): Promise<{ ok: true }>;
       readManifest(path: string): Promise<PluginManifest>;
@@ -398,14 +402,14 @@ describe("PluginRuntime boot preflight", () => {
       manifestPath: join(pluginsRoot, pluginId, "plugin.json"),
     }]);
     const auditMessages: string[] = [];
-    const runtime = bindTestPluginRuntimeGeneration(new PluginRuntime({ childEntryPath: pluginChildEntryPath(), encryption: unavailableSecretEncryption,
+    const runtime = runtimes.track(bindTestPluginRuntimeGeneration(new PluginRuntime({ childEntryPath: pluginChildEntryPath(), encryption: unavailableSecretEncryption,
       hostRoot,
       pluginsRoot,
       registryPath,
       createHostApi: createNoopHostApiForTests,
       installReceiptCacheRoot: join(root, "receipts"),
       auditLog: (_level, message) => auditMessages.push(message),
-    }));
+    })));
     const internals = runtime as unknown as {
       verifyReceiptAndDevGuard(): Promise<{
         ok: true;
@@ -441,7 +445,7 @@ describe("PluginRuntime boot preflight", () => {
       manifestPath: join(pluginsRoot, id, "plugin.json"),
     })));
     const auditEvents: Array<{ message: string; pluginId: string }> = [];
-    const runtime = bindTestPluginRuntimeGeneration(new PluginRuntime({ childEntryPath: pluginChildEntryPath(), encryption: unavailableSecretEncryption,
+    const runtime = runtimes.track(bindTestPluginRuntimeGeneration(new PluginRuntime({ childEntryPath: pluginChildEntryPath(), encryption: unavailableSecretEncryption,
       hostRoot,
       pluginsRoot,
       registryPath,
@@ -452,7 +456,7 @@ describe("PluginRuntime boot preflight", () => {
         const pluginId = record.pluginId ?? record.manifestPath?.split(/[\\/]/).at(-2);
         if (pluginId) auditEvents.push({ message, pluginId });
       },
-    }));
+    })));
     const internals = runtime as unknown as {
       verifyReceiptAndDevGuard(): Promise<{
         ok: true;

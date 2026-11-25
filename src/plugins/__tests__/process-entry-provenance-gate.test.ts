@@ -29,6 +29,7 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   agentPluginsDocument,
+  createTestPluginRuntimeTracker,
   makeTestPluginRuntime,
   makeTestPluginRuntimeFixture,
   makeTestTreeWritable,
@@ -135,6 +136,7 @@ let fixture: TestPluginRuntimeFixture;
 let cacheRoot: string;
 let pluginDir: string;
 let manifestPath: string;
+const runtimes = createTestPluginRuntimeTracker();
 
 beforeEach(async () => {
   reached.gate = 0;
@@ -147,24 +149,26 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  const stopped = await runtimes.stopAll();
   vi.unstubAllEnvs();
   resetDevFlags();
   await makeTestTreeWritable(fixture.rootDir);
   await rm(fixture.rootDir, { recursive: true, force: true });
+  expect(stopped).toEqual({ unfinished: [], leftHomes: [] });
 });
 
 async function registryRuntime(audit: unknown[] = []): Promise<PluginRuntime> {
   await writeTestPluginRegistry(fixture, [{ id: PLUGIN_ID, manifestPath, enabled: true }]);
-  return makeTestPluginRuntime(fixture, {
+  return runtimes.track(makeTestPluginRuntime(fixture, {
     installReceiptCacheRoot: cacheRoot,
     auditLog: (_level, message, data) => void audit.push({ message, data }),
-  });
+  }));
 }
 
 /** Plans without registry IDs provide no verified receipt evidence. */
 async function unidentifiedRuntime(): Promise<PluginRuntime> {
   await writeTestPluginRegistry(fixture, []);
-  return makeTestPluginRuntime(fixture, { installReceiptCacheRoot: cacheRoot, manifestPaths: [manifestPath] });
+  return runtimes.track(makeTestPluginRuntime(fixture, { installReceiptCacheRoot: cacheRoot, manifestPaths: [manifestPath] }));
 }
 
 const REFUSED: ReadonlyArray<[string, Provenance, boolean]> = [
@@ -270,7 +274,7 @@ describe("prepared activation", () => {
   }
 
   it("verifies the staged receipt itself and admits a release-rung artifact, which then reaches the factory", async () => {
-    const runtime = makeTestPluginRuntime(fixture, { installReceiptCacheRoot: cacheRoot });
+    const runtime = runtimes.track(makeTestPluginRuntime(fixture, { installReceiptCacheRoot: cacheRoot }));
     await expect(runtime.activatePreparedArtifact(await prepared("release"))).rejects.toBeInstanceOf(
       ProcessEntryUnconfinedError,
     );
@@ -279,7 +283,7 @@ describe("prepared activation", () => {
 
   it.each(REFUSED)("refuses %s at the gate", async (_name, provenance, devUnlocked) => {
     arrange(devUnlocked);
-    const runtime = makeTestPluginRuntime(fixture, { installReceiptCacheRoot: cacheRoot });
+    const runtime = runtimes.track(makeTestPluginRuntime(fixture, { installReceiptCacheRoot: cacheRoot }));
     await expect(runtime.activatePreparedArtifact(await prepared(provenance))).rejects.toBeInstanceOf(
       ProcessEntryRequiresPinnedArtifactError,
     );
