@@ -1,3 +1,4 @@
+import { answerEpochsOf, personAnswerStands } from "../permissions/pending-answer-policy.js";
 import { RationaleHumanApprovalDeniedError } from "./pipeline/rationale-control.js";
 import { agentBrowserScopeOf, browserApprovalCardFacts, userOwnedBrowserScopeOf } from "./browser-tools.js";
 import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pipeline/user-owned-surface.js";
@@ -919,6 +920,7 @@ export async function authorizeToolInvocation(
         const approvalRuleAssessment = permissionResult.reviewer?.verdict === undefined && permissionResult.forceModal !== true && !permissionResult.pipelineRequest?.userOwnedSurface
           ? classifyCurrentRule() : undefined;
         const approvalPolicyEpoch = services.permissionManager?.getPolicyEpoch();
+        const approvalAnswerEpochs = services.permissionManager ? answerEpochsOf(services.permissionManager) : undefined;
         const readjudicationAssessment = source === "plugin" && context.pluginRuntimeInstance !== undefined &&
           permissionResult.forceModal !== true && !evaluationContext.headless &&
           !permissionResult.pipelineRequest?.userOwnedSurface &&
@@ -1178,7 +1180,11 @@ export async function authorizeToolInvocation(
           services.approvalGate.allowsPolicyTransition(decision, approvalPolicyEpoch!, currentPolicyEpoch);
         // A saved rule decides this pending action too; a card answer cannot override its deny.
         if (sameCardPolicyTransition) permissionResult = checkCurrentPermission();
-        const approvalInvalidationReason = policyChanged && !sameCardPolicyTransition
+        // Any other change while the card was open is judged by the one rule for answered cards (pending-answer-policy.ts): a sibling
+        // stage's "Allow for this run" or a run that ended leaves the answer standing; everything else refuses it.
+        const answerOutdated = policyChanged && !sameCardPolicyTransition && !(services.permissionManager !== undefined && approvalAnswerEpochs !== undefined
+          && personAnswerStands(services.permissionManager, approvalAnswerEpochs, permissionResult.forceModal === true, checkCurrentPermission));
+        const approvalInvalidationReason = answerOutdated
           ? "Permission policy changed while approval was pending"
           : !isRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)
             ? "remote-controller-revoked"

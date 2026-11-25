@@ -4,11 +4,12 @@ import type { EgressGrantScope } from "../../../../shared/egress-grant-scopes.js
 import type { ApprovalRuleSave, ShellRuleApproval, ShellRuleSaveScope } from "../../../../shared/permissions-events.js";
 import { formatIpcError, resolveIpcErrorKey } from "../../format-ipc-error.js";
 
-/** The six choices of the row. The two dropdowns hold the four remembering ones; Allow for session is in its dropdown too, so a session rule can be selected and edited like the others. */
+/** The choices of the row. The two dropdowns hold the remembering ones; Allow for session is in its dropdown too, so a session rule can be selected and edited like the others. Allow for this run is listed only on a card a template run's stage session raised (owner decision 2026-11-16). */
 export type ApprovalCardChoice =
   | "deny-once"
   | "deny-always"
   | "allow-session"
+  | "allow-run"
   | "allow-project"
   | "allow-everywhere"
   | "allow-once";
@@ -17,6 +18,11 @@ export type ApprovalCardChoice =
 export type RememberingChoice = Exclude<ApprovalCardChoice, "deny-once" | "allow-once">;
 
 const ALLOW_MENU_CHOICES = ["allow-session", "allow-project", "allow-everywhere"] as const satisfies readonly RememberingChoice[];
+/** A stage card's lasting allows: the run sits between the conversation and the saved scopes. */
+const STAGE_ALLOW_MENU_CHOICES = ["allow-session", "allow-run", "allow-project", "allow-everywhere"] as const satisfies readonly RememberingChoice[];
+
+/** The template-run stage a card was raised for, as the host derived it (`ApprovalRequest.runStage`); absent on every other card. */
+type RunStage = NonNullable<ApprovalRequest["runStage"]>;
 
 /** How "Edit rule" edits a selected choice's rule: in the card (a rule the host checks against the card's grammar), in Settings (an exact tool approval), or not at all. */
 type RuleEditing = "inline" | "settings" | null;
@@ -50,6 +56,7 @@ export const DECISION_LABEL_KEYS: Readonly<Record<ApprovalCardChoice, string>> =
   "deny-once": "toolApprovalDialog.decisionDeny",
   "deny-always": "toolApprovalDialog.decisionDenyAlways",
   "allow-session": "toolApprovalDialog.decisionAllowSession",
+  "allow-run": "toolApprovalDialog.decisionAllowRun",
   "allow-project": "toolApprovalDialog.decisionAllowProject",
   "allow-everywhere": "toolApprovalDialog.decisionAllowEverywhere",
   "allow-once": "toolApprovalDialog.allowOnce",
@@ -69,8 +76,16 @@ function refused(reasonKey: string, labelKey: string): DecisionOption {
 
 const label = (choice: RememberingChoice): string => DECISION_LABEL_KEYS[choice];
 
+/** The run choice of a card that lists none, or whose host offers none: never offered. */
+const NO_RUN_ALLOW: DecisionOption = refused("toolApprovalDialog.runAllowUnavailable", label("allow-run"));
+
+/** A stage card lists "Allow for this run"; every other card keeps the three lasting allows. */
+function stageAllowChoices(stage: RunStage | undefined): Pick<ApprovalDecisionModel, "allowChoices"> {
+  return stage === undefined ? {} : { allowChoices: STAGE_ALLOW_MENU_CHOICES };
+}
+
 /** A bash or PowerShell card: every remembering choice saves a `Bash(...)` / `PowerShell(...)` rule, editable in the card. Always deny saves the command's literal argv, or a rule the person writes when there is none. */
-export function shellDecisionModel(rule: ShellRuleApproval): ApprovalDecisionModel {
+export function shellDecisionModel(rule: ShellRuleApproval, stage?: RunStage): ApprovalDecisionModel {
   if (rule.floorSessionOnly === true) {
     // The host saves the session grant it holds for this card; there is no rule to show or edit.
     const once = (choice: RememberingChoice) => refused("toolApprovalDialog.persistentUnavailableOneShot", label(choice));
@@ -79,10 +94,13 @@ export function shellDecisionModel(rule: ShellRuleApproval): ApprovalDecisionMod
       options: {
         "deny-always": once("deny-always"),
         "allow-session": rule.sessionAllowed ? offered(null, null, label("allow-session")) : once("allow-session"),
+        // A floor is answered once or for its own session; the run never passes it.
+        "allow-run": once("allow-run"),
         "allow-project": once("allow-project"),
         "allow-everywhere": once("allow-everywhere"),
       },
       warnsOnWildcardAllow: false,
+      ...stageAllowChoices(stage),
     };
   }
   const exact = rule.exactRule;
@@ -99,10 +117,13 @@ export function shellDecisionModel(rule: ShellRuleApproval): ApprovalDecisionMod
         ? offered(rule.denyRule, "inline", label("deny-always"), rule.denyRule === null)
         : refused("toolApprovalDialog.persistentUnavailableOneShot", label("deny-always")),
       "allow-session": allow("allow-session", rule.sessionAllowed),
+      // The run rule is the session rule's text, kept for the run's stage sessions instead of this one.
+      "allow-run": stage?.runAllowOffered === true ? allow("allow-run", rule.sessionAllowed) : NO_RUN_ALLOW,
       "allow-project": allow("allow-project", rule.persistentAllowed),
       "allow-everywhere": allow("allow-everywhere", rule.persistentAllowed),
     },
     warnsOnWildcardAllow: true,
+    ...stageAllowChoices(stage),
   };
 }
 
@@ -125,6 +146,7 @@ export function networkDecisionModel(payload: EgressPayload, sessionId: string |
         ? refused(terminal ? "toolApprovalDialog.networkRuleTerminal" : "toolApprovalDialog.networkRuleUnavailable", label("deny-always"))
         : offered(rule, "inline", label("deny-always")),
       "allow-session": scoped("allow-session", sessionScope, !terminal && sessionId !== undefined, terminal ? "toolApprovalDialog.decisionAllowShell" : label("allow-session")),
+      "allow-run": NO_RUN_ALLOW,
       "allow-project": scoped("allow-project", "project", payload.projectCwd !== undefined),
       "allow-everywhere": scoped("allow-everywhere", "always", true),
     },
@@ -143,6 +165,8 @@ export function exactDecisionModel(input: {
   readonly denyRefusalKey: string | null;
   /** Settings can hold this request's exact-deny draft. */
   readonly settingsEditing: boolean;
+  /** The template-run stage the card was raised for. */
+  readonly stage?: RunStage;
 }): ApprovalDecisionModel {
   const allow = (choice: RememberingChoice): DecisionOption =>
     input.allowRefusalKey !== null
@@ -155,10 +179,13 @@ export function exactDecisionModel(input: {
         ? refused(input.denyRefusalKey, label("deny-always"))
         : offered(null, input.settingsEditing ? "settings" : null, label("deny-always")),
       "allow-session": input.hasSession || input.allowRefusalKey !== null ? allow("allow-session") : refused("toolApprovalDialog.sessionAllowNeedsConversation", label("allow-session")),
+      "allow-run": input.sessionOnly ? refused("toolApprovalDialog.sessionOnlyRemember", label("allow-run"))
+        : input.stage?.runAllowOffered === true && input.hasSession ? allow("allow-run") : NO_RUN_ALLOW,
       "allow-project": input.sessionOnly ? refused("toolApprovalDialog.sessionOnlyRemember", label("allow-project")) : allow("allow-project"),
       "allow-everywhere": input.sessionOnly ? refused("toolApprovalDialog.sessionOnlyRemember", label("allow-everywhere")) : allow("allow-everywhere"),
     },
     warnsOnWildcardAllow: false,
+    ...stageAllowChoices(input.stage),
   };
 }
 
@@ -172,6 +199,7 @@ export function pathGrantDecisionModel(parent: string | null, parentReasonKey: s
         ? refused(denyRefusalKey, label("deny-always"))
         : offered(null, settingsEditing ? "settings" : null, label("deny-always")),
       "allow-session": sessionParent === null ? refused(parentReasonKey, label("allow-session")) : offered(sessionParent, null, label("allow-session")),
+      "allow-run": NO_RUN_ALLOW,
       "allow-project": notFolder("allow-project"),
       "allow-everywhere": parent === null ? refused(parentReasonKey, FOLDER_ALLOW_LABEL_KEY) : offered(parent, null, FOLDER_ALLOW_LABEL_KEY),
     },
@@ -187,6 +215,7 @@ export function oneShotDecisionModel(reasonKey: string): ApprovalDecisionModel {
     options: {
       "deny-always": refused(reasonKey, label("deny-always")),
       "allow-session": refused(reasonKey, label("allow-session")),
+      "allow-run": refused(reasonKey, label("allow-run")),
       "allow-project": refused(reasonKey, label("allow-project")),
       "allow-everywhere": refused(reasonKey, label("allow-everywhere")),
     },
@@ -220,9 +249,9 @@ export function wildcardWarningKey(model: ApprovalDecisionModel): string {
   return model.variant === "network" ? "toolApprovalDialog.wildcardHostAllowSandboxedOnly" : "toolApprovalDialog.wildcardAllowBroaderScope";
 }
 
-/** The card rule a remembering choice stores: Always deny is user-global; allows are saved for the conversation, the project or everywhere. */
+/** The card rule a remembering choice stores: Always deny is user-global; allows are saved for the conversation, the run, the project or everywhere. */
 export function ruleSaveFor(choice: RememberingChoice, editedRule: string | undefined): ApprovalRuleSave {
-  const scope: ShellRuleSaveScope = choice === "allow-session" ? "session" : choice === "allow-project" ? "project" : "always";
+  const scope: ShellRuleSaveScope = choice === "allow-session" ? "session" : choice === "allow-run" ? "run" : choice === "allow-project" ? "project" : "always";
   const action = choice === "deny-always" ? "deny" : "allow";
   return editedRule === undefined ? { action, scope } : { action, scope, pattern: editedRule };
 }
@@ -240,6 +269,9 @@ export function networkAnswer(
       return { rule: ruleSaveFor(choice, editedRule), choice: "deny-once" };
     case "allow-once":
       return { choice: "allow-once", egressScope: "once" };
+    case "allow-run":
+      // A network card keeps its own grant lifetimes and never offers the run.
+      throw new Error("A network card offers no run allow");
     default: {
       if (editedRule !== undefined) return { rule: ruleSaveFor(choice, editedRule), choice: "allow-once", egressScope: "once" };
       const scope: EgressGrantScope = choice === "allow-session"

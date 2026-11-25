@@ -1,4 +1,5 @@
 /** Construct workflow stores, register builtin tools, and late-bind the sub-agent runner. */
+import { setRunSessionParentResolver } from "../../permissions/run-grants.js";
 import { SessionTasksStore } from "../../main/session-tasks-store.js";
 import { CHANNELS } from "../../contract/app-contract.js";
 import { join } from "node:path";
@@ -302,5 +303,7 @@ export async function setupWorkflowStores(
     (sessionId) => subAgentRunnerRef.fn?.resolveOriginSessionId(sessionId),
   );
   setApprovalConversationRootResolver(ctx.resolveRootSessionId);
+  // A stage session's sub-agent works under its stage's run membership (run grants, the card's stage), by the same spawn record.
+  setRunSessionParentResolver((sessionId) => subAgentRunnerRef.fn?.resolveOriginSessionId(sessionId));
   ctx.idleScheduler = idleScheduler;
 }

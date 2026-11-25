@@ -916,7 +916,8 @@ export function App() {
   const handleUserApprovalHit = useCallback((hit: UserApprovalHitPayload) => {
     const high = hit.verdictAtApproval === "high";
     const scope = hit.scope === "persistent" ? t("chatView.approvalScopePersistent")
-      : hit.scope === "global" ? t("chatView.approvalScopeGlobal") : t("chatView.approvalScopeSession");
+      : hit.scope === "global" ? t("chatView.approvalScopeGlobal")
+      : hit.scope === "run" ? t("chatView.approvalScopeRun") : t("chatView.approvalScopeSession");
     statusUpsertToast(`approval-memory-hit:${hit.verdictAtApproval}`, {
       severity: high || hit.verdictAtApproval === "medium" ? "warning" : "success",
       message: `${t("chatView.approvalMemoryApplied")} · ${hit.toolName} · ${scope} · ${hit.verdictAtApproval.toUpperCase()}`,
