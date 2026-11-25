@@ -1,7 +1,7 @@
 // A contained worker under a real row-2 plugin child parent: the plugin child adapter, the worker route, the holder
 // adapter and row 2 run for real; only admission ranking input, the egress lease and the native process are mocked.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdirSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 
@@ -82,11 +82,14 @@ describe.skipIf(process.platform !== "win32")("contained worker under a real plu
     state.holdCompletion = false;
     __resetActiveWrappedWorkersForTest();
     unregisterProbe = registerMxcHolderReadinessProbe(async () => EVIDENCE as never);
-    for (const dir of [join(pluginRoot(), "gen"), dataDir(), join(pluginRoot(), "socket"), work()]) mkdirSync(dir, { recursive: true });
+    for (const dir of [join(pluginRoot(), "gen"), join(dataDir(), "cache"), join(dataDir(), "models"), join(pluginRoot(), "socket"), work()]) {
+      mkdirSync(dir, { recursive: true });
+    }
   });
   afterEach(async () => {
     await drainMxcHolderLifetimes();
     unregisterProbe();
+    rmSync(work(), { recursive: true, force: true });
   });
 
   const startPluginChild = async () => {
