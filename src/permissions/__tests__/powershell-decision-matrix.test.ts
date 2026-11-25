@@ -37,7 +37,7 @@ const MATRIX: readonly (readonly [string, string, string, string, string])[] = [
   ["Set-Content -Path C:/outside/x.txt -Value y", SANDBOX, SANDBOX, SANDBOX, SANDBOX], // main: ASK, ALLOW, =, =
   ["Set-Content -Path ~/x.txt -Value y", PROTECTED, PROTECTED, PROTECTED, PROTECTED],
   ["Set-Content -Path .git/config -Value y", PROTECTED, PROTECTED, PROTECTED, PROTECTED],
-  ["Set-Content -Path .claude/commands/a:b.md -Value y", PROTECTED, PROTECTED, PROTECTED, PROTECTED],
+  ["Set-Content -Path .agents/commands/a:b.md -Value y", PROTECTED, PROTECTED, PROTECTED, PROTECTED],
   ["Set-Content -Path .git/x:y -Value y", PROTECTED, PROTECTED, PROTECTED, PROTECTED],
   [String.raw`Set-Content -Path .git\hooks\pre-commit:s -Value y`, PROTECTED, PROTECTED, PROTECTED, PROTECTED],
   [String.raw`Set-Content -Path $env:TEMP\x -Value y`, PROTECTED, PROTECTED, PROTECTED, PROTECTED],
@@ -73,7 +73,7 @@ const MATRIX: readonly (readonly [string, string, string, string, string])[] = [
   ["Set-Content -Path FileSystem::x.txt -Value y", ASK, ALLOW, ASK, ALLOW], // main: =, =, SANDBOX, SANDBOX
   [String.raw`Set-Content -Path '.git\config::$DATA' -Value y`, PROTECTED, PROTECTED, PROTECTED, PROTECTED],
   ["Set-Content -Path '.git/config::$DATA' -Value y", PROTECTED, PROTECTED, PROTECTED, PROTECTED],
-  ["Set-Content -Path .claude/commands::x -Value y", PROTECTED, PROTECTED, PROTECTED, PROTECTED],
+  ["Set-Content -Path .agents/commands::x -Value y", PROTECTED, PROTECTED, PROTECTED, PROTECTED],
 ];
 
 const CAPABILITY = (platform: NodeJS.Platform) => ({ kind: "asrt", confidence: "verified", platform, reason: "fixture",

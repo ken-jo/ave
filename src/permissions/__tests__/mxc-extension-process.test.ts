@@ -3,11 +3,14 @@ import { createMxcNativeProcess } from "../../__tests__/support/mxc-supervisor.j
 import { describe, expect, it, vi } from "vitest";
 import { MxcNativeProcess } from "../mxc-native-process.js";
 import { MxcProcessCleanupError, MxcProcessContractError, MxcSupervisorLostError } from "../mxc-extension-errors.js";
-import { mxcModuleDiagnostics, encodeMxcFrame, MxcFrameDecoder, MXC_FRAME_MAX_BYTES, MXC_STREAM_CHUNK_BYTES, type MxcStreamFrame } from "../mxc-extension-protocol.js";
+import { mxcModuleDiagnostics, encodeMxcFrame, MxcFrameDecoder, MXC_FRAME_MAX_BYTES, MXC_START_EVIDENCE_FIELDS, MXC_STREAM_CHUNK_BYTES, type MxcStreamFrame } from "../mxc-extension-protocol.js";
 
 const GENERATION = "a".repeat(64);
 const KEY = Buffer.alloc(32, 1);
 const encode = (frame: MxcStreamFrame) => encodeMxcFrame(frame, KEY, "supervisor");
+// What a ready frame must carry beside its diagnostics: the request it started and contract fields 1-5.
+const STARTED = { requestDigest: "c".repeat(64), startEvidence: { installedPayloadVerified: true, baseContainerReady: true,
+  exactRequestAccepted: true, uiEnabledRuntimeStarted: true, ancestorQueriesSupported: true } };
 
 describe("owned native process state machine", () => {
   it("takes every stream before wait and disposes once after terminal drain", async () => {
@@ -140,12 +143,42 @@ describe("bounded supervisor frames", () => {
   });
 
   it.each(["0", "-1", "01", "18446744073709551616", "not-a-handle"])("rejects the invalid liveness handle diagnostic %s", (ownerHandle) => {
-    expect(() => encode({ version: 1, generation: GENERATION, sequence: 0, type: "ready", id: 42, nodeVersion: "24.22.1", nativeModules: [], nativeModuleCount: 0, nativeModulesTruncated: false, ownerHandle })).toThrow(MxcProcessContractError);
+    expect(() => encode({ version: 1, generation: GENERATION, sequence: 0, type: "ready", id: 42, nodeVersion: "24.22.1", nativeModules: [], nativeModuleCount: 0, nativeModulesTruncated: false, ownerHandle, ...STARTED })).toThrow(MxcProcessContractError);
   });
 
   it("round trips the maximum unsigned native liveness handle diagnostic", () => {
-    const frame: MxcStreamFrame = { version: 1, generation: GENERATION, sequence: 0, type: "ready", id: 42, nodeVersion: "24.22.1", nativeModules: [], nativeModuleCount: 0, nativeModulesTruncated: false, ownerHandle: "18446744073709551615" };
+    const frame: MxcStreamFrame = { version: 1, generation: GENERATION, sequence: 0, type: "ready", id: 42, nodeVersion: "24.22.1", nativeModules: [], nativeModuleCount: 0, nativeModulesTruncated: false, ownerHandle: "18446744073709551615", ...STARTED };
     expect([...new MxcFrameDecoder(GENERATION, KEY, "supervisor").read(encode(frame))]).toEqual([frame]);
+  });
+
+  describe("ready frame start evidence (contract fields 1-5)", () => {
+    const ready = { version: 1, generation: GENERATION, sequence: 0, type: "ready", id: 42, nodeVersion: "24.22.1",
+      nativeModules: [] as string[], nativeModuleCount: 0, nativeModulesTruncated: false, ownerHandle: "5" } as const;
+    const refused = (frame: object) => expect(() => encode(frame as MxcStreamFrame)).toThrow(MxcProcessContractError);
+
+    it("carries the started request and all five fields explicitly, true or false", () => {
+      const observed = { ...ready, ...STARTED, startEvidence: { ...STARTED.startEvidence, ancestorQueriesSupported: false } };
+      expect([...new MxcFrameDecoder(GENERATION, KEY, "supervisor").read(encode(observed))]).toEqual([observed]);
+    });
+
+    it("refuses a ready frame with no start evidence or no request digest", () => {
+      refused(ready);
+      refused({ ...ready, requestDigest: STARTED.requestDigest });
+      refused({ ...ready, startEvidence: STARTED.startEvidence });
+      refused({ ...ready, ...STARTED, requestDigest: "not-a-digest" });
+    });
+
+    it.each(MXC_START_EVIDENCE_FIELDS)("refuses a ready frame whose %s is absent or not a boolean", (field) => {
+      const absent: Record<string, unknown> = { ...STARTED.startEvidence };
+      delete absent[field];
+      refused({ ...ready, ...STARTED, startEvidence: absent });
+      refused({ ...ready, ...STARTED, startEvidence: { ...STARTED.startEvidence, [field]: "true" } });
+    });
+
+    // Field 6 is MCP-only and field 7 is teardown evidence: a start that claims either is refused, as is any 8-13 claim.
+    it.each(["standardStreamsRoundTrip", "cleanTermination", "noWorkerPort"])("refuses a ready frame that claims %s", (field) => {
+      refused({ ...ready, ...STARTED, startEvidence: { ...STARTED.startEvidence, [field]: true } });
+    });
   });
 
   it("round trips binary chunks across arbitrary boundaries", () => {
@@ -210,7 +243,7 @@ describe("bounded native dependency diagnostics", () => {
     expect(diagnostics.nativeModulesTruncated).toBe(true);
     expect(diagnostics.nativeModules).toContain(modules.at(-1));
     const frame: MxcStreamFrame = { version: 1, generation: GENERATION, sequence: 0, type: "ready", id: 42,
-      nodeVersion: "24.22.1", ownerHandle: "5", ...diagnostics };
+      nodeVersion: "24.22.1", ownerHandle: "5", ...STARTED, ...diagnostics };
     expect(() => encode(frame)).not.toThrow();
     expect(() => encode({ ...frame, nativeModulesTruncated: false })).toThrow(MxcProcessContractError);
     expect(() => encode({ ...frame, nativeModuleCount: 0 })).toThrow(MxcProcessContractError);

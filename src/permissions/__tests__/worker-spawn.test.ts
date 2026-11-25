@@ -273,9 +273,9 @@ describe("spawnWorker — selected container backend", () => {
     await expect(start()).rejects.toThrow("refusing a container worker whose plugin has no live container process");
     const withdraw = registerMxcPluginChildHolder("sample", { confinement: "windows-mxc" } as MxcConfinedChildSpawn, () => true);
     try {
-      await expect(start()).rejects.toThrow("No extension holder readiness probe is registered");
+      await expect(start()).rejects.toThrow("No release-gate evidence is registered for this installation");
       // The refusal frees the identity; a retry is refused for the same reason, never as a running worker.
-      await expect(start()).rejects.toThrow("No extension holder readiness probe is registered");
+      await expect(start()).rejects.toThrow("No release-gate evidence is registered for this installation");
     } finally { withdraw(); }
     expect(spawnMock).not.toHaveBeenCalled();
   });

@@ -43,7 +43,7 @@ import { isAveHomeReadReallowed } from "./ave-home-read-boundary.js";
 import { isBoundStageWorkspacePath } from "./stage-workspace-binding.js";
 import { canonicalizePathForMatch, caseFoldForMatch, getConfiguredSessionReadPolicy, getRuntimeSensitiveKeyPaths, MAX_WALK_UP, resolvePathForPolicy, SENSITIVE_PATH_ENTRIES, sensitiveEntryOnSandboxFloor } from "./sensitive-paths.js";
 import { hardenLinuxSandboxWrap } from "./linux-sandbox-wrap.js";
-import { assertMacSandboxWrapperSize, hardenMacSandboxGitMetadata } from "./macos-sandbox-wrap.js";
+import { assertMacSandboxWrapperSize, hardenMacSandboxGitMetadata, followNamedEntry, macAppOwnedDirectoryWriteRules, macLinkedNameTargetRules, macWriteRootNameRules } from "./macos-sandbox-wrap.js";
 import { prepareSandboxBareRepositoryCleanup } from "./sandbox-bare-repository-cleanup.js";
 import { createLogger } from "../lib/logger.js";
 import { createSerialQueue } from "../lib/with-file-lock.js";
@@ -52,7 +52,7 @@ import { findHostProgram, hostProgramSearchDirectories } from "../shared/host-pr
 import { t } from "../i18n/index.js";
 import { hostDirectoryFloorPierces } from "../plugins/sandbox-authority.js";
 import { resolvePluginPaths } from "../plugins/plugin-paths.js";
-import { assertSandboxWritePolicySize, buildMandatorySandboxWritePolicy, compactSandboxWriteDenies, isGrantPathWithin, restrictSandboxGitControlSnapshot, type SandboxGitControlSnapshot, windowsDenyOperandKey } from "./sandbox-write-policy.js";
+import { SANDBOX_NAMED_ENTRIES, assertSandboxWritePolicySize, buildMandatorySandboxWritePolicy, compactSandboxWriteDenies, isGrantPathWithin, restrictSandboxGitControlSnapshot, type SandboxGitControlSnapshot, windowsDenyOperandKey } from "./sandbox-write-policy.js";
 export { isGrantPathWithin } from "./sandbox-write-policy.js";
 import { egressInvocationOwner, onEgressInvocationReleased, openEgressInvocation } from "./egress-invocations.js";
 import {
@@ -1207,13 +1207,46 @@ function spelledPathEntries(entries: readonly FilesystemPathEntry[], field: stri
   });
 }
 
+// The rules a macOS wrap adds after the package's own, from its write roots: the named entries beneath each root, and the Ave home
+// and the private roots when a root holds one of them. A wrap on the shared config names no roots of its own, so the session's
+// requested roots stand in: a root the floor later withheld only adds a deny or an unused exception. Linux needs neither: it
+// carries the named entries as policy rows, and its read mask is a mount over the directory, which takes the writes with it.
+function macWriteRootRules(applied: Partial<FilesystemConfig> | undefined): string {
+  const spellings = (path: string): string[] => [...new Set([resolve(path), canonicalizePathForMatch(path)])];
+  // A root may hold `*` or `?`, as a wildcard or as part of a folder's name; the name rules anchor at both readings.
+  const roots = (applied?.allowWrite ?? _baseTrustedSettings?.allowWrite ?? [])
+    .flatMap(entry => spellings(typeof entry === "string" ? expandLeadingTilde(entry) : entry.path));
+  // Where a named entry is reached through a link, the resolved path and every name on the way are held too. A target that is a
+  // work folder, or holds one, cannot be denied without taking the work folder with it, so that wrap is refused by name.
+  const physicalRoots = [...new Set(roots.map(root => canonicalizePathForMatch(root)))];
+  const fold = (path: string): string => path.normalize("NFC").toLowerCase();
+  const targets = new Set<string>();
+  const visited = new Set<string>();
+  for (const root of physicalRoots) for (const entry of SANDBOX_NAMED_ENTRIES) {
+    const followed = followNamedEntry(root, entry);
+    if (!followed.linked) continue;
+    if (physicalRoots.some(held => fold(held) === fold(followed.physical) || fold(held).startsWith(`${fold(followed.physical).replace(/\/$/u, "")}/`))) {
+      throw new Error(t("sandboxPolicy.namedEntryLinksToWriteRoot", { entry }));
+    }
+    targets.add(followed.physical);
+    for (const path of followed.visited) visited.add(path);
+    // The walk starts at the root; where another write root holds this one, the names down to it are part of the walk as well.
+    for (let above = dirname(root); physicalRoots.some(held => above.startsWith(`${held.replace(/\/$/u, "")}/`)); above = dirname(above)) visited.add(above);
+  }
+  return [
+    macWriteRootNameRules(roots),
+    macLinkedNameTargetRules([...targets], [...visited], physicalRoots),
+    macAppOwnedDirectoryWriteRules([aveHome(), ...appOwnedSandboxPrivateRoots()].flatMap(spellings), roots),
+  ].filter(Boolean).join("\n");
+}
+
 function applySandboxFilesystemPolicy(
   wrapped: SandboxWrapResult,
   applied: Partial<FilesystemConfig> | undefined,
   cleanupAfterCommand: () => void,
 ): SandboxWrapResult {
   try {
-    if (process.platform === "darwin") return hardenMacSandboxGitMetadata(wrapped);
+    if (process.platform === "darwin") return hardenMacSandboxGitMetadata(wrapped, macWriteRootRules(applied));
     if (process.platform !== "linux") return wrapped;
     // The same slice the wrap was built from — the re-allows and write denies ASRT was given, after the floor withheld what it withholds.
     return hardenLinuxSandboxWrap(wrapped, {
@@ -1272,7 +1305,7 @@ export function probeExtensionStart(holder?: "worker"): ExtensionStartRecheck {
 
 // Refuse an extension start that nothing would confine unless a person consented to this one start.
 // `backend: "mxc"` is the native entry. A legacy adapter may declare `holder: "worker"` so a selected container backend refuses it with the worker transport code (D1); every other legacy holder gets the holder-neutral native-entry refusal.
-// `start` carries the per-start consent. `hostOwned` is a host process (the inference child): it has no consent route and keeps its own gate.
+// `start` carries the per-start consent. `hostOwned` is a host process (the inference child): outside this floor, so it has no consent route and keeps its own gate.
 export function assertExtensionStartAllowed(options?: { readonly backend: "mxc" } | {
   readonly holder?: "worker";
   readonly start?: ExtensionStartPresentation;

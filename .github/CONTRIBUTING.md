@@ -42,27 +42,18 @@ standalone Node in place; that would replace the binary used by Electron.
 Direct `bunx vitest` and `bun test` invocations fail fast by design; use the
 canonical wrapper command above for both full and targeted tests.
 
-Use the smallest affected checks while iterating. The pre-push hook logs the
-tier it picked and why. A source change on a branch push takes the fast tier:
-typecheck, the duplicate-helper scan, the lock suites whose trigger paths
-changed, the changed test files, the recorded readers of a changed test-read
-document, and `vitest related` for the changed modules, narrowed to direct
-importers when a shared module reaches over 150 test files. Each source module
-must have related test files; empty discovery selects the global-input tier
-and a zero-test run fails closed. A new sub-branch is measured from the closest live
-tip of the default or an `integration/*` branch. A non-fast-forward push is measured
-the same way, plus the remote commit it replaces. The full `bun run test` and
-`bun run build` run in CI on the merged tree before a category merges to
-`main`, and on every push to `main`. The hook never runs them; it runs the
-global-input tier for pushes to `main` or `integration/*`, deleted modules, documentation consumed by runtime,
-tests, build, or workflows without a recorded reader set, declaration files, generated catalogs, runtime
-entries, non-module assets, mode changes, and global inputs (`package.json`, `bun.lock`,
-compiler, Vitest and build configs, Vitest setup files, `scripts/`,
-`.github/`), including earlier commits in the push; `AVE_PREPUSH_FULL=1`
-forces that tier. `node scripts/hooks/run-local-checks.mjs` (manual stage)
-runs the full checks locally. Documentation prose with no such
-consumer skips those expensive gates after diff and policy checks. Eligible
-test-only pushes run typecheck and targeted Vitest in the hook. Register
+Use the smallest affected checks while iterating. The pre-push hook is fast
+and runs static checks only: ref and checkout guards, document safety, the
+retired-name and Biome gates, and, unless the push only changes documentation
+nothing consumes, the typecheck gate, the duplicate-helper scan,
+`check:i18n-catalog` when a locale catalog changes and a frozen-lockfile dry
+run when the manifest or lockfile changes. It
+runs no Vitest and no build; pull request CI runs the tests (see below), so do
+not skip the hook to save time. A new sub-branch is measured from the closest
+live tip of the default or an `integration/*` branch, and a non-fast-forward
+push also from the remote commit it replaces.
+`node scripts/hooks/run-local-checks.mjs` (manual stage) runs typecheck, the
+full suite, the build and gate-core locally. Register
 documents read by native or non-Node processes, or through `openAsBlob`, in
 `scripts/hooks/documentation-references.json`; the read guard cannot see them.
 CI's build job keeps typecheck, the test-typecheck ratchet and the build for
@@ -82,7 +73,7 @@ missing, zero or not an ancestor) with the same trusted-selection rule
 as other non-integration PRs: uncertainty falls back to full. Integration-base
 PRs retain the best traced selection, including uncertainty and wide fan-out;
 an unresolved merge-commit diff fails CI. Release tags, nightly schedules and
-manual dispatches run the full suite. Local pre-push policy is unchanged. Coverage is
+manual dispatches run the full suite. Coverage is
 periodic: instrumentation and the global thresholds (`check:test-coverage`)
 run only on the nightly schedule and a manual dispatch. Every other run, full
 or affected, skips coverage. A change that lowers coverage turns the next

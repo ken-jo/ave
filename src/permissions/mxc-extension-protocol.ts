@@ -1,11 +1,25 @@
 import { win32 as winPath } from "node:path";
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
+import { canonicalStringify } from "../shared/canonical-json.js";
 import { MxcProcessContractError } from "./mxc-extension-errors.js";
 import { assertMxcExtensionRequest } from "./mxc-extension-request.js";
 
 export const MXC_FRAME_MAX_BYTES = 64 * 1024;
 export const MXC_STREAM_CHUNK_BYTES = 32 * 1024;
+
+/** Contract fields 1-5: what a holder's own start observed, carried on its ready frame. Nothing else is start evidence. */
+export const MXC_START_EVIDENCE_FIELDS = ["installedPayloadVerified", "baseContainerReady", "exactRequestAccepted",
+  "uiEnabledRuntimeStarted", "ancestorQueriesSupported"] as const;
+export type MxcExtensionStartEvidence = Readonly<Record<typeof MXC_START_EVIDENCE_FIELDS[number], boolean>>;
+
+/** What one start reported on its ready frame: the request it started and what it observed. */
+export interface MxcExtensionStartRecord { readonly requestDigest: string; readonly evidence: MxcExtensionStartEvidence }
+
+/** Names one exact request, held proxy endpoint included, so start evidence cannot stand in for another holder's start. */
+export function mxcRequestDigest(request: ContainerRequest): string {
+  return createHash("sha256").update(canonicalStringify(request)).digest("hex");
+}
 
 type StreamFrame = { type: "stdin" | "stdout" | "stderr"; data: string };
 type ControlFrame = { type: "stdin-end" | "stop" | "creating" | "spawning" | "spawn-authorized" };
@@ -13,7 +27,8 @@ type StoppedFrame = { type: "stopped"; spawnPendingAtCancellation: boolean };
 type NativeCreatedFrame = { type: "native-created"; id: number; processHandle: string };
 type NativeObservedFrame = { type: "native-observed"; id: number };
 type StartFrame = { type: "start"; request: ContainerRequest };
-type ReadyFrame = { type: "ready"; id: number; nodeVersion: string; nativeModules: string[]; nativeModuleCount: number; nativeModulesTruncated: boolean; ownerHandle: string };
+type ReadyFrame = { type: "ready"; id: number; nodeVersion: string; nativeModules: string[]; nativeModuleCount: number; nativeModulesTruncated: boolean; ownerHandle: string;
+  requestDigest: string; startEvidence: MxcExtensionStartEvidence };
 type ExitFrame = { type: "exit"; exitCode: number; timedOut: boolean };
 type FailureFrame = { type: "error"; code: "contract" | "integrity" | "capability-unavailable" | "cleanup-unverified" | "supervisor-lost"; message: string };
 export type MxcStreamFrame = (StreamFrame | ControlFrame | StoppedFrame | NativeCreatedFrame | NativeObservedFrame | StartFrame | ReadyFrame | ExitFrame | FailureFrame) & {
@@ -60,7 +75,12 @@ function validateFrame(value: unknown, generation: string, sequence: number): as
         || frame.nativeModulesTruncated !== ((frame.nativeModuleCount as number) > frame.nativeModules.length)
         || typeof frame.ownerHandle !== "string" || !/^[1-9][0-9]{0,19}$/.test(frame.ownerHandle)
         || BigInt(frame.ownerHandle) > 18446744073709551615n) fail();
-      fields = ["id", "nodeVersion", "nativeModules", "nativeModuleCount", "nativeModulesTruncated", "ownerHandle"];
+      // Explicit start evidence: exactly fields 1-5 as booleans. A frame without them, or one claiming any other field, is refused.
+      if (typeof frame.requestDigest !== "string" || !/^[a-f0-9]{64}$/.test(frame.requestDigest)
+        || !frame.startEvidence || typeof frame.startEvidence !== "object" || Array.isArray(frame.startEvidence)
+        || Object.keys(frame.startEvidence).length !== MXC_START_EVIDENCE_FIELDS.length
+        || MXC_START_EVIDENCE_FIELDS.some((field) => typeof (frame.startEvidence as Record<string, unknown>)[field] !== "boolean")) fail();
+      fields = ["id", "nodeVersion", "nativeModules", "nativeModuleCount", "nativeModulesTruncated", "ownerHandle", "requestDigest", "startEvidence"];
       break;
     case "exit":
       if (!Number.isInteger(frame.exitCode) || typeof frame.timedOut !== "boolean") fail();

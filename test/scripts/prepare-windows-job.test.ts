@@ -184,17 +184,12 @@ describe("hasCppBuildTools", () => {
 });
 
 describe("Windows job launcher preparation wiring", () => {
-  it("runs from test:prepare and from the hook tiers that call test:vitest directly", () => {
+  it("runs from test:prepare, which every hook test run goes through", () => {
     const scripts = JSON.parse(readFileSync(resolve("package.json"), "utf8")).scripts;
     expect(scripts["test:prepare"]).toContain("node scripts/prepare-windows-job.mjs");
     const runner = readFileSync(resolve("scripts/hooks/run-local-checks.mjs"), "utf8");
-    for (const [start, end] of [
-      ["function runAppTargetedVitestChecks", "function runVitestWithReport"],
-      ["function runAppFastSourceChecksHoldingSlot", "function runAppCommentOnlyChecks"],
-    ]) {
-      const segment = runner.slice(runner.indexOf(start), runner.indexOf(end));
-      expect(segment.indexOf("ensureWindowsJobLauncher(dir);")).toBeGreaterThan(-1);
-      expect(segment.indexOf("ensureWindowsJobLauncher(dir);")).toBeLessThan(segment.indexOf('"test:vitest"'));
-    }
+    // The hook never calls test:vitest directly; the manual stage runs `test`, whose test:prepare builds it.
+    expect(runner).not.toContain('"run", "test:vitest"');
+    expect(runner).toContain('runPackageScripts(dir, ["test", "build"]');
   });
 });

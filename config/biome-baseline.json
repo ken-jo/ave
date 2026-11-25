@@ -43,11 +43,6 @@
       "count": 1
     },
     {
-      "file": "scripts/hooks/pre-push-comment-policy.mjs",
-      "category": "lint/complexity/noUselessEscapeInRegex",
-      "count": 1
-    },
-    {
       "file": "scripts/hooks/pre-push-markdown-policy.mjs",
       "category": "lint/suspicious/noControlCharactersInRegex",
       "count": 2
@@ -14171,11 +14166,6 @@
       "file": "test/scripts/pre-push-source-policy.test.ts",
       "category": "lint/suspicious/noTemplateCurlyInString",
       "count": 30
-    },
-    {
-      "file": "test/scripts/pre-push-tier.test.ts",
-      "category": "lint/suspicious/noTemplateCurlyInString",
-      "count": 1
     },
     {
       "file": "test/scripts/preview-document-bundle.test.ts",
