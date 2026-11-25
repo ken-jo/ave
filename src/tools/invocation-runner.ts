@@ -106,6 +106,7 @@ import {
   parseHostShellExecutionInput,
   requiresExplicitHostShellApproval,
   requiresUnsandboxedShellAsk,
+  type HostShellExecutionPlan,
   type HostShellExecutionPlanAuditProjection,
 } from "../permissions/host-shell-execution-plan.js";
 import {
@@ -1275,7 +1276,7 @@ async function runToolInvocationAttempt(
     // A command typed into the user's own host terminal runs on the host and nowhere else. Seal that route with the same router the shells
     // use, so the permission decision sees its (empty) path-policy relaxations, and re-prove it before every write to the terminal: a route
     // that would now move the effect elsewhere, or relax path policy, is a contract violation and types nothing.
-    let hostTerminalRoute: { recheck(requireSamePlan?: boolean): Promise<void> } | undefined;
+    let hostTerminalRoute: { recheck(): Promise<void> } | undefined;
     const hostTerminalCommand = isCanonicalTerminalRunTool(tool) && approvalMemory.kind === "key"
       && approvalMemory.scope.kind === "terminal-command" && approvalMemory.scope.lane === "manual" && typeof finalInput.command === "string"
       ? { command: finalInput.command, cwd: approvalMemory.scope.physicalCwd } : undefined;
@@ -1285,14 +1286,14 @@ async function runToolInvocationAttempt(
       && (isHomePrivacyHelperUnavailablePlan(hostTerminalPlan) || requiresUnsandboxedShellAsk(hostTerminalPlan)) ? hostTerminalPlan : undefined;
     // A blocked plan has no host route to seal; its denial is decided below, and the tool types nothing without a sealed route.
     if (hostTerminalCommand !== undefined && !isHomePrivacyHelperUnavailablePlan(hostTerminalFloorPlan)) {
-      const buildHostTerminalRoute = async () => {
+      const buildHostTerminalRoute = async (legacyPlan?: HostShellExecutionPlan) => {
         const router = await import("../permissions/execution-router.js");
         const broker = await acquireConfiguredBrokerCapability();
         const operator = broker === null
           ? await (await import("../permissions/operator-container-attestation.js")).acquirePublishedOperatorContainerCapabilityForGrant()
           : null;
         const route = router.buildHostShellExecutionRoute({
-          legacyPlan: getHostShellExecutionPlan("host"),
+          legacyPlan: legacyPlan ?? getHostShellExecutionPlan("host"),
           toolName: "bash",
           command: hostTerminalCommand.command,
           cwd: hostTerminalCommand.cwd,
@@ -1305,17 +1306,17 @@ async function runToolInvocationAttempt(
         return { router, plan: route.plan };
       };
       try {
-        const sealed = await buildHostTerminalRoute();
+        const sealed = await buildHostTerminalRoute(hostTerminalPlan);
         if (sealed.plan.route !== "host") {
           throw new Error("a command for the user's own terminal runs only on the host, and this host now routes shell effects elsewhere");
         }
         executionRoutePathPolicyRelaxations = sealed.router.executionPlanPathPolicyRelaxations(sealed.plan);
         const decided = executionRoutePathPolicyRelaxations;
         hostTerminalRoute = Object.freeze({
-          recheck: async (requireSamePlan = false) => {
+          recheck: async () => {
             const current = await buildHostTerminalRoute();
             current.router.assertDecidedPathPolicyRelaxations(current.plan, decided);
-            if (current.plan.route !== "host" || requireSamePlan && hostTerminalFloorPlan?.identity !== getHostShellExecutionPlan("host").identity) {
+            if (current.plan.identity !== sealed.plan.identity) {
               throw new Error(current.router.PATH_POLICY_DECISION_MISMATCH_ERROR);
             }
           },
@@ -2622,6 +2623,7 @@ async function runToolInvocationAttempt(
       executionRouteGrant,
       finalizeExecutionRouteGrant,
       hostTerminalRoute,
+      checkCurrentHostTerminalPermission: authorization.checkCurrentHostTerminalPermission,
       preparedShellInvocation,
       verifiedShellCommand,
       invocationRuntimeAllowedDirectories,

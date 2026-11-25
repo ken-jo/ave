@@ -1242,18 +1242,25 @@ export class PermissionManager {
     }
   }
 
+  async ensurePermissionRulesLoaded(projectCwd: string): Promise<void> {
+    await this.refreshUserRulesIfChanged();
+    await this.ensureProjectRulesLoaded(projectCwd);
+  }
+
+  areLoadedPermissionRulesCurrent(projectCwd?: string): boolean {
+    const versions = [this.userRulesVersion];
+    if (projectCwd !== undefined) versions.push(this.projectRuleScopes.policyVersionFor(projectCwd));
+    return versions.every(version => version !== undefined && isPersistedPolicyVersionCurrent(version));
+  }
+
   // Re-evaluate the live scopes at the resolved connection boundary, without another wait.
   checkLoadedNetworkPermission(destination: NetworkPermissionDestination, context: PermissionCheckContext): NetworkPermissionEvaluation {
     const subject = this.networkRuleSubject(destination, context);
-    if (subject !== undefined) {
-      const versions = [this.userRulesVersion];
-      if (subject.projectCwd !== undefined) versions.push(this.projectRuleScopes.policyVersionFor(subject.projectCwd));
-      if (versions.some(version => version === undefined || !isPersistedPolicyVersionCurrent(version))) {
-        return this.evaluateNetworkPermission(destination, {
-          ...context,
-          admissionDenial: context.admissionDenial ?? STALE_PERMISSION_POLICY,
-        }, subject, undefined);
-      }
+    if (subject !== undefined && !this.areLoadedPermissionRulesCurrent(subject.projectCwd)) {
+      return this.evaluateNetworkPermission(destination, {
+        ...context,
+        admissionDenial: context.admissionDenial ?? STALE_PERMISSION_POLICY,
+      }, subject, undefined);
     }
     try {
       const rule = subject === undefined ? undefined : this.matchLoadedNetworkRule(subject);

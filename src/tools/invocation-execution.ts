@@ -15,7 +15,7 @@ import { disposableContainerCapability, resolveReviewerSandboxCapability } from 
 import type { ToolOutputArtifactInfo, ToolOutputCapture } from "../shared/tool-output-artifact.js";
 import type { ApprovalDecision, ApprovalRequestInput, LinkedApprovalTarget } from "../permissions/approval-gate.js";
 import { randomUUID } from "node:crypto";
-import { isIssuedShellAllowRuleDecision, type PermissionCheckResult } from "../permissions/permission-manager.js";
+import { isIssuedFloorSessionDecision, isIssuedShellAllowRuleDecision, type PermissionCheckResult } from "../permissions/permission-manager.js";
 import type { ToolExecutionAuditMetadata } from "../audit/audit-schema.js";
 import { isPiiRedactionEnabled, maskSensitiveData } from "../audit/dlp-filter.js";
 import { emitEffectShadowLog } from "../permissions/reviewer/risk-shadow-log.js";
@@ -200,7 +200,8 @@ export interface ExecutionStageContext {
   hostShellExecutionPlan: HostShellExecutionPlan | undefined;
   executionRouteGrant?: ExecutionGrant;
   finalizeExecutionRouteGrant?: () => Promise<ExecutionGrant | undefined>;
-  hostTerminalRoute?: { recheck(requireSamePlan?: boolean): Promise<void> };
+  hostTerminalRoute?: { recheck(): Promise<void> };
+  checkCurrentHostTerminalPermission?: () => PermissionCheckResult;
   preparedShellInvocation?: import("./prepared-shell-invocation.js").PreparedShellInvocation;
   verifiedShellCommand?: import("../permissions/verified-shell-command.js").VerifiedShellCommand;
   hostShellRequiresExplicitApproval: boolean;
@@ -831,13 +832,27 @@ export async function executeAuthorizedToolInvocation(
     ...(executionRouteGrant ? { executionRouteGrant } : {}),
     ...(hostTerminalRoute ? { hostTerminalRoute: {
       recheck: async () => {
-        const exactRule = permissionResult?.reasonCode === EXACT_HOST_RULE_REASON_CODE ? permissionResult : undefined;
-        await hostTerminalRoute.recheck(exactRule !== undefined);
-        if (exactRule === undefined) return;
+        await hostTerminalRoute.recheck();
         const manager = services.permissionManager;
-        if (!manager) throw new Error("Host terminal permission changed before typing.");
-        const refreshed = manager.recheckPermission(exactRule);
-        if (!isIssuedShellAllowRuleDecision(refreshed, manager)) {
+        const previous = permissionResult;
+        const current = context.checkCurrentHostTerminalPermission?.();
+        if (!manager || !previous || !current || current.decision === "deny") {
+          throw new Error("Host terminal permission changed before typing.");
+        }
+        if (humanApproved) {
+          // The one-time answer was settled before typing, so each write requires the same policy epoch.
+          if (approvedPolicyEpoch !== manager.getPolicyEpoch() ||
+              (current.forceModal && (!previous.forceModal || current.reasonCode !== previous.reasonCode))) {
+            throw new Error("Host terminal permission changed before typing.");
+          }
+          return;
+        }
+        const refreshed = manager.recheckPermission(previous);
+        if (refreshed.decision !== "allow" || current.forceModal ||
+            (previous.reasonCode === EXACT_HOST_RULE_REASON_CODE &&
+              (!isIssuedShellAllowRuleDecision(refreshed, manager) || !isIssuedShellAllowRuleDecision(current, manager))) ||
+            (previous.reasonCode === "floor-session-allow" &&
+              (!isIssuedFloorSessionDecision(refreshed, manager) || !isIssuedFloorSessionDecision(current, manager)))) {
           throw new Error("Host terminal permission changed before typing.");
         }
         permissionResult = refreshed;

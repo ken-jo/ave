@@ -95,7 +95,7 @@ async function run(command: string, options: {
   permissionContext?: Partial<ToolPermissionContext>;
   duringApproval?: () => void;
   /** Runs inside the PTY layer before its first pre-write effect check. */
-  duringTyping?: () => void;
+  duringTyping?: () => void | Promise<void>;
 } = {}) {
   const sessionId = options.sessionId ?? "pane";
   const tracker = new TerminalBlockTracker({ nonce: TERMINAL_TEST_NONCE, marksPromptEnd: true });
@@ -127,7 +127,7 @@ async function run(command: string, options: {
       verifyShell: async (_ref, _windowId, reportedCwd) => ({ ok: true, cwd: reportedCwd }),
       // The PTY layer's pre-write effect check, then the write it guards.
       typeCommand: async (_ref, _windowId, request) => {
-        options.duringTyping?.();
+        await options.duringTyping?.();
         const effect = await request.effectCheck();
         if (!effect.ok) { refusals.push(effect.message); return { ok: false, reason: "effect-refused", message: effect.message }; }
         typed.push(request.line);
@@ -383,6 +383,49 @@ describe("terminal_run without Windows shell containment", () => {
     expect(refused.decision).toMatchObject({ decision: "allow", reasonCode: "exact-host-rule" });
     expect(refused.refusals).toEqual([PATH_POLICY_DECISION_MISMATCH_ERROR]);
     expect(refused.typed).toEqual([]);
+  });
+
+  it.each(["allow-once", "floor waiver", "exact rule"] as const)("refuses to type when a deny arrives after authorization by %s", async (authority) => {
+    const permissionManager = new PermissionManager(join(dir, "permissions.json"));
+    const options = { permissionManager, mode: "allow" as const, surfaceChoice: "allow" as const };
+    if (authority === "floor waiver") {
+      const session = sessionGate(permissionManager);
+      const first = await run(command, { ...options, approvalGate: session.gate });
+      expect(first.typed).toEqual([command]);
+    }
+    if (authority === "exact rule") {
+      setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: dir, sid: "S-1-5-21-1" });
+    }
+    const duringTyping = vi.fn(async () => {
+      await permissionManager.addRulePersist({ ...exactRule, action: "deny" }, { kind: "user" });
+    });
+    const refused = await run(command, {
+      ...options, choice: "allow-once", ...(authority === "exact rule" ? { rules: [exactRule] } : {}), duringTyping,
+    });
+    expect(refused.decision?.reasonCode).toBe(authority === "allow-once" ? "sandbox-unavailable"
+      : authority === "floor waiver" ? "floor-session-allow" : "exact-host-rule");
+    expect(duringTyping).toHaveBeenCalledOnce();
+    expect(refused.typed).toEqual([]);
+    expect(refused.result.is_error).toBe(true);
+  });
+
+  it("refuses to type after the exact rule that answered the floor is deleted during surface approval execution", async () => {
+    setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: dir, sid: "S-1-5-21-1" });
+    const refused = await run(command, {
+      surfaceChoice: "ask", choice: "allow-once", rules: [exactRule],
+      duringTyping: () => unlinkSync(join(dir, "permissions.json")),
+    });
+    expect(refused.requestAndWait).toHaveBeenCalledOnce();
+    expect(refused.typed).toEqual([]);
+    expect(refused.result.is_error).toBe(true);
+  });
+
+  it("refuses to type on a one-time answer when the issued host plan changes", async () => {
+    const changed = await run(command, {
+      choice: "allow-once", duringTyping: () => setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: dir, sid: "S-1-5-21-1" }),
+    });
+    expect(changed.refusals).toEqual([PATH_POLICY_DECISION_MISMATCH_ERROR]);
+    expect(changed.typed).toEqual([]);
   });
 
   it("denies headless with an exact rule, allow mode and the surface allow choice", async () => {

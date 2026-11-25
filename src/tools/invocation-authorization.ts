@@ -161,6 +161,7 @@ export interface AuthorizedInvocation {
   humanApproved: boolean;
   approvedPolicyEpoch?: string;
   permissionRecheckResult?: PermissionCheckResult;
+  checkCurrentHostTerminalPermission?: () => PermissionCheckResult;
   permissionResult: PermissionCheckResult | undefined;
   hostShellApprovalDecision: ApprovalDecision | undefined;
   /** Host-issued allow-rule decision that authorized an explicit host shell. */
@@ -325,6 +326,7 @@ export async function authorizeToolInvocation(
     code: "other-principal" as const,
     reason: "another principal's request requires local allow-once approval",
   } : undefined);
+  let checkCurrentHostTerminalPermission: AuthorizedInvocation["checkCurrentHostTerminalPermission"];
   if (context.directoryAuthorization === undefined || context.directoryAuthorization.pendingRationale) {
     const shellDialect = isCanonicalBashTool(tool)
       ? "bash" as const
@@ -371,7 +373,8 @@ export async function authorizeToolInvocation(
       ? undefined : scopedSubjectCandidate;
     const projectRulesCwd = shellRuleSubject !== undefined ? shellRuleSubject.cwd : executionCwd;
     if (services.permissionManager && projectRulesCwd !== undefined) {
-      await services.permissionManager.ensureProjectRulesLoaded(projectRulesCwd);
+      if (hostTerminalScope) await services.permissionManager.ensurePermissionRulesLoaded(projectRulesCwd);
+      else await services.permissionManager.ensureProjectRulesLoaded(projectRulesCwd);
     }
     const checkCurrentPermission = (): PermissionCheckResult => services.permissionManager
       ? services.permissionManager.checkDetailed(
@@ -408,6 +411,15 @@ export async function authorizeToolInvocation(
           reason: "Permission manager is unavailable",
           forceModal: true,
         };
+    if (hostTerminalScope && services.permissionManager) {
+      const manager = services.permissionManager;
+      checkCurrentHostTerminalPermission = () => {
+        if (!manager.areLoadedPermissionRulesCurrent(projectRulesCwd)) {
+          return { decision: "deny", reason: "Permission rules changed before typing." };
+        }
+        return checkCurrentPermission();
+      };
+    }
     permissionResult = context.reviewedPermissionForCard !== undefined && services.permissionManager !== undefined
       ? services.permissionManager.recheckPermission(context.reviewedPermissionForCard)
       : context.directoryAuthorization?.pendingRationale
@@ -1373,6 +1385,7 @@ export async function authorizeToolInvocation(
     humanApproved,
     approvedPolicyEpoch,
     permissionRecheckResult,
+    checkCurrentHostTerminalPermission,
     permissionResult,
     hostShellApprovalDecision,
     // Only while no later lane replaced the rule decision: a reviewer, hook or
