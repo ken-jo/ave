@@ -348,7 +348,7 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
   });
 
   // Tree T:128, T:259 (owner decision 2026-11-25): the one saved rule that passes the no-backend ask.
-  it.each(["default", "host"] as const)("lets only an exact saved rule pass the %s no-backend ask, and only with verified boot home privacy", (executionMode) => {
+  it.each(["default", "host"] as const)("lets only an exact saved rule pass the %s no-backend ask, and only with verified boot home privacy", async (executionMode) => {
     const noBackend = (boot: { homePrivacyVerified?: boolean; unavailableSandboxRequiresAsk?: boolean }) => buildHostShellExecutionPlan({
       platform: "linux", requestedSandbox: true, executionMode, ...boot,
       activeCapability: { kind: "none", confidence: "verified", platform: "linux", reason: "fixture unavailable sandbox" },
@@ -366,6 +366,8 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
       expect(isIssuedShellAllowRuleDecision(decision)).toBe(false);
     };
 
+    pm.setRules([]);
+    await pm.addRulePersist({ pattern: "Bash(echo one-shot)", action: "allow" }, { kind: "user" });
     const passed = decide();
     expect(passed).toMatchObject({ decision: "allow", reasonCode: "exact-host-rule" });
     // The audited reason names the rule.
@@ -399,15 +401,21 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
     pm.setRules([]);
     pm.addSessionRule("exact-rule", "Bash(echo one-shot)");
     asks(decide());
+    // The same exact rule set in code is not a saved rule.
     pm.setRules(([{ pattern: "Bash(echo one-shot)", action: "allow" }] as const).map(withCurrentShellRuleVersion));
+    asks(decide());
+    pm.setRules([]);
+    await pm.addRulePersist({ pattern: "Bash(echo one-shot)", action: "allow" }, { kind: "user" });
     expect(decide()).toMatchObject({ decision: "allow", reasonCode: "exact-host-rule" });
     // An ask rule and a second forced reason keep it too; the second floor's card is once-only.
     asks(decide("echo one-shot", verified, { floor: { code: "other-principal", reason: "fixture" } }));
     expect(offersFloorSessionAllow(decide("echo one-shot", verified, { floor: { code: "other-principal", reason: "fixture" } }))).toBe(false);
     asks(decide("echo one-shot", verified, { manualRerun: true }));
-    pm.setRules(([{ pattern: "Bash(echo one-shot)", action: "allow" }, { pattern: "Bash(echo *)", action: "ask" }] as const).map(withCurrentShellRuleVersion));
+    pm.setRules(([{ pattern: "Bash(echo *)", action: "ask" }] as const).map(withCurrentShellRuleVersion));
+    await pm.loadRulesFromFile();
     asks(decide());
-    pm.setRules(([{ pattern: "Bash(echo one-shot)", action: "allow" }] as const).map(withCurrentShellRuleVersion));
+    pm.setRules([]);
+    await pm.loadRulesFromFile();
 
     // Boot home privacy unverified or unpublished: the boot floor governs and no saved rule passes.
     for (const plan of [noBackend({}), noBackend({ unavailableSandboxRequiresAsk: true })]) {

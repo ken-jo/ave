@@ -1801,7 +1801,8 @@ export class PermissionManager {
       const saved = parsed ? evaluateShellSubject({ command: parsed, cwd: ruleSubject.cwd, exactAllowOnly: true }, this.rules, projectRules)
         : parsedPowerShell ? evaluatePowerShellSubject({ command: parsedPowerShell, cwd: ruleSubject.cwd, hostShellExecutionPlan: context.hostShellExecutionPlan, exactAllowOnly: true }, this.rules, projectRules) : undefined;
       const pattern = saved?.decision === "allow" && saved.patterns.length === 1 ? saved.patterns[0] : undefined;
-      if (pattern !== undefined && pattern === exactShellRuleFor(ruleSubject.dialect, command, ruleSubject.cwd, context.verifiedShellCommand, context.hostShellExecutionPlan)) exactHostRule = pattern;
+      // A rule set in code (`setRules`) is not a saved rule, even when the rules file repeats it.
+      if (pattern !== undefined && !this.baseRules.some((rule) => rule.action === "allow" && rule.pattern === pattern) && pattern === exactShellRuleFor(ruleSubject.dialect, command, ruleSubject.cwd, context.verifiedShellCommand, context.hostShellExecutionPlan)) exactHostRule = pattern;
     }
     const approvalKey = normalizeApprovalCacheKey(context.approvalCacheKey);
     const denyTargets = approvalKey ? [toolName, approvalKey] : [toolName];

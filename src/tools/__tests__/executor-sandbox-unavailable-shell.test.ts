@@ -190,12 +190,22 @@ describe.each(PLATFORMS)("host shells when the requested sandbox is unavailable 
   });
 
   const exactRule = (dialect: (typeof DIALECTS)[number], command: string = dialect.command) => `${dialect.toolName === "bash" ? "Bash" : "PowerShell"}(${command})`;
+  // Rules saved to the user rules file; `manager` sets its rules in code, and those are not saved rules.
+  const savedManager = async (mode: "default" | "auto" | "allow", rules: readonly string[]) => {
+    const pm = manager(mode, []);
+    for (const pattern of rules) await pm.addRulePersist({ pattern, action: "allow" }, { kind: "user" });
+    return pm;
+  };
   const routes = DIALECTS.flatMap(dialect => [{ dialect, host: false, route: "default" }, { dialect, host: true, route: "explicit-host" }]);
 
   it.each(routes)("$dialect.toolName ($route) runs on its exact saved rule without a card, saves nothing and audits the rule", async ({ dialect, host }) => {
     const execute = vi.fn();
     const registry = probe(dialect.create, execute);
-    const pm = manager("default", [exactRule(dialect)]);
+    const codeSet = cardGate("deny-once");
+    await run(dialect, "exact-rule-code-set", dialect.command, host)(manager("default", [exactRule(dialect)]), codeSet.gate, registry);
+    expect(codeSet.cards()).toHaveLength(1);
+    expect(execute).not.toHaveBeenCalled();
+    const pm = await savedManager("default", [exactRule(dialect)]);
     const rulesBefore = existsSync(rulesFile("default")) ? readFileSync(rulesFile("default"), "utf8") : undefined;
     const audit = recordingAuditLogger();
     const cards = cardGate("deny-once");
@@ -234,7 +244,7 @@ describe.each(PLATFORMS)("host shells when the requested sandbox is unavailable 
     unverify();
     const execute = vi.fn();
     const registry = probe(dialect.create, execute);
-    const pm = manager("allow", [exactRule(dialect)]);
+    const pm = await savedManager("allow", [exactRule(dialect)]);
     const denied = cardGate("deny-once");
     const refused = await run(dialect, "exact-rule-unverified", dialect.command, host)(pm, denied.gate, registry);
     expect(denied.cards()).toHaveLength(1);
@@ -249,7 +259,7 @@ describe.each(PLATFORMS)("host shells when the requested sandbox is unavailable 
   it.each(DIALECTS)("$toolName with exact rules for each part of a compound command still asks", async (dialect) => {
     const execute = vi.fn();
     const registry = probe(dialect.create, execute);
-    const pm = manager("allow", [exactRule(dialect), exactRule(dialect, `${dialect.command}2`)]);
+    const pm = await savedManager("allow", [exactRule(dialect), exactRule(dialect, `${dialect.command}2`)]);
     const denied = cardGate("deny-once");
     await run(dialect, "exact-rule-compound", `${dialect.command}; ${dialect.command}2`)(pm, denied.gate, registry);
     expect(denied.cards()).toHaveLength(1);

@@ -272,11 +272,11 @@ describe("hook command permission admission", () => {
   it("runs a hook command on its saved exact rule past the unavailable-sandbox ask only with verified boot home privacy", async () => {
     setShellSandboxRequestedAtBoot(true);
     const printfHook = { ...hook, command: ["printf", "ready"] };
-    const rule = { pattern: "Bash('printf' 'ready')", action: "allow" as const, shellRuleVersion: SHELL_RULE_CANONICAL_VERSION };
+    const rule = { pattern: "Bash('printf' 'ready')", action: "allow" as const };
     try {
       setAveHomePrivacyAtBoot(process.platform === "win32" ? { enforcement: "win32-dacl", home: "C:\\Users\\alice\\.ave", sid: "S-1-5-21-1" } : { enforcement: "posix-mode", home: "/home/alice/.ave" });
       const p = policy("deny-once");
-      p.permissionManager.setRules([rule]);
+      await p.permissionManager.addRulePersist(rule, { kind: "user" });
       const passed = await p.authorizeCommand(printfHook, payload, process.cwd());
       expect(passed.decision, passed.reason).toBe("allow");
       expect(passed.reason).toContain(rule.pattern);
@@ -287,7 +287,7 @@ describe("hook command permission admission", () => {
 
       _resetAveHomePrivacyForTest();
       const unverified = policy("deny-once");
-      unverified.permissionManager.setRules([rule]);
+      await unverified.permissionManager.addRulePersist(rule, { kind: "user" });
       expect((await unverified.authorizeCommand(printfHook, payload, process.cwd())).decision).toBe("deny");
       expect(unverified.requestAndWait).toHaveBeenCalledOnce();
     } finally {
