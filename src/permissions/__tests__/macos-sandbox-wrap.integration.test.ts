@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -66,5 +66,70 @@ describe.skipIf(process.platform !== "darwin" || shouldSkipNativeSandboxTests())
     expect((await run("printf replacement > one/two/three/four/.git", directory)).status).not.toBe(0);
     expect((await run("rm one/two/three/four/.git && printf replacement > one/two/three/four/.git", directory)).status).not.toBe(0);
     expect(readFileSync(join(parent, ".git"), "utf8")).toBe("gitdir: target\n");
+  });
+});
+
+// One confined bash command, wrapped the way the shell tool wraps it: the given write roots, the mandatory floor, no unix sockets.
+async function runConfined(command: string, directory: string, allowWrite: readonly string[] = [directory]) {
+  const invocation = openEgressInvocation({ kind: "shell", toolName: "bash", toolUseId: undefined,
+    context: { sessionId: undefined, workspaceRoot: directory, approvalSurface: "unavailable" } });
+  try {
+    const wrapped = await wrapToolCommand(command, {
+      commandId: invocation.token, denyUnixSockets: true,
+      filesystem: { allowWrite: [...allowWrite], denyWrite: [] },
+    });
+    const result = spawnSync(wrapped.argv[0]!, wrapped.argv.slice(1), {
+      cwd: directory, env: { ...process.env, ...wrapped.env }, encoding: "utf8", timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs,
+    });
+    if (result.error) throw result.error;
+    expect(result.status, result.stderr).not.toBe(71);
+    return result;
+  } finally {
+    invocation.release();
+    await cleanupAsrtSandboxAfterCommand();
+  }
+}
+
+function statuses(stdout: string): Record<string, string> {
+  return Object.fromEntries(stdout.trim().split("\n").filter(line => line.includes("=")).map(line => line.split("=") as [string, string]));
+}
+
+describe.skipIf(process.platform !== "darwin" || shouldSkipNativeSandboxTests())("native egress proxy socket directory", () => {
+  // The sandbox runtime keeps every proxy backend socket of this process in one `srt-sock-*` directory under the host temp directory,
+  // and the shell's write roots include that temp directory.
+  const temp = realpathSync(tmpdir());
+  let root: string;
+  let socketDirectory: string;
+  beforeAll(async () => {
+    root = realpathSync(mkdtempSync(join(temp, "sandbox-socket-floor-")));
+    const before = new Set(readdirSync(temp));
+    await initializeRequiredSandbox({ allowedDomains: [] });
+    const created = readdirSync(temp).filter(name => name.startsWith("srt-sock-") && !before.has(name));
+    expect(created).toHaveLength(1);
+    socketDirectory = join(temp, created[0]!);
+  });
+  afterAll(async () => {
+    if (isAsrtSandboxActive()) await resetAsrtSandbox();
+    if (root) rmSync(root, { recursive: true, force: true });
+  });
+
+  it("keeps another run's backend socket from being removed, renamed or replaced while the temp root stays writable", async () => {
+    const sockets = readdirSync(socketDirectory);
+    expect(sockets.length).toBeGreaterThan(0);
+    const socket = join(socketDirectory, sockets[0]!);
+    const control = join(temp, "sandbox-socket-floor-control");
+    const result = await runConfined([
+      `rm -f '${socket}' 2>/dev/null; test -e '${socket}'; echo "unlink=$?"`,
+      `mv '${socket}' '${socket}.moved' 2>/dev/null; echo "rename=$?"`,
+      `printf x > '${socketDirectory}/planted' 2>/dev/null; echo "plant=$?"`,
+      `mv '${socketDirectory}' '${socketDirectory}-moved' 2>/dev/null; echo "rename-directory=$?"`,
+      `rm -rf '${socketDirectory}' 2>/dev/null; test -d '${socketDirectory}'; echo "remove-directory=$?"`,
+      `printf x > '${control}' && rm '${control}'; echo "temp-write=$?"`,
+      `printf x > ordinary; echo "project-write=$?"`,
+    ].join("\n"), root, [root, temp]);
+    expect(statuses(result.stdout)).toEqual({
+      unlink: "0", rename: "1", plant: "1", "rename-directory": "1", "remove-directory": "0", "temp-write": "0", "project-write": "0",
+    });
+    expect(readdirSync(socketDirectory)).toEqual(sockets);
   });
 });

@@ -76,6 +76,11 @@ const MAC_GIT_CONTROL_GLOBS = GIT_CONTROL_ENTRIES.flatMap(entry => [
   `/**/${caseInsensitiveGitPattern(".git/modules")}/**/${caseInsensitiveGitPattern(entry)}`,
   `/**/${caseInsensitiveGitPattern(".git/worktrees")}/*/${caseInsensitiveGitPattern(entry)}`,
 ]).concat(`/**/${caseInsensitiveGitPattern(".git/ave-pins")}`, `/**/${caseInsensitiveGitPattern(".git/modules")}/**/${caseInsensitiveGitPattern("ave-pins")}`, `/**/${caseInsensitiveGitPattern(".git/worktrees")}/*/${caseInsensitiveGitPattern("ave.id")}`);
+// The patched sandbox runtime keeps every proxy backend socket of a host process in one `srt-sock-*` directory under the host temp
+// directory (ensurePrivateSocketDir in its sandbox manager), and that temp directory is a shell write root. Linux masks the directory in
+// every wrap; Seatbelt has no mask, so the name is write-denied wherever it appears. One short pattern holds for every temp spelling and
+// every running host, and costs the same few bytes whatever the roots are.
+const MAC_EGRESS_SOCKET_DIRECTORY_GLOB = "/**/srt-sock-*";
 interface GitDiscoveryBudget { entries: number; metadataBytes: number }
 interface GitControlEntryIdentity {
   readonly dev: number | bigint;
@@ -1105,7 +1110,7 @@ export function buildMandatorySandboxWritePolicy(
     entries.push(...[...routingPins].map(path => ({ path, literal: true } as const)));
   }
   // Backend globs cover future controls at any depth without denying ordinary object, ref, index and HEAD updates in existing metadata directories.
-  if (process.platform === "darwin") entries.push(...MAC_GIT_CONTROL_GLOBS);
+  if (process.platform === "darwin") entries.push(...MAC_GIT_CONTROL_GLOBS, MAC_EGRESS_SOCKET_DIRECTORY_GLOB);
   // Mandatory loader denies scale with admitted root lengths, not metadata discovery.
   const backendEntries = nativeWriteDenyEntries(entries);
   const backendMandatoryPaths = new Set([...mandatoryPaths].map(nativeWriteDenyPath));
