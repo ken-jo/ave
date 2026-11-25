@@ -7,7 +7,7 @@ import { createLogger } from "../../lib/logger.js";
 import { forceKillManagedChildProcess } from "../../main/managed-child-processes.js";
 import { buildHostGitArgs, HOOK_EVENTS, HOOK_EVENTS_VALIDATED, spawnHostGitIfWorkspaceFree } from "../../shared/host-git.js";
 import { parseGitVersion } from "../../shared/git-version.js";
-import { absolutePosixSearchPath, executableIdentitySync, installerGitRoot, withHostGitRecovery } from "../../shared/host-git-executable.js";
+import { absolutePosixSearchPath, executableIdentitySync, type GitDiscovery, installerGitRoot, withHostGitRecovery } from "../../shared/host-git-executable.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 
 const log = createLogger("work-board-host-git");
@@ -59,15 +59,13 @@ interface HostGitProgram { path: string; identity: string; bundled?: { searchPat
 /** Runs `use` with the git the host resolved, or null when it resolved none; a program that could not be started is resolved again. */
 export type HostGitResolver = <T>(use: (git: HostGitProgram | null) => Promise<T>, deadline?: number) => Promise<T>;
 
-/** The host's own discovery: never a name looked up from the folder a call runs in. */
-const discoveredGit: HostGitResolver = (use, deadline) => {
-  const packaged = isConfigured() ? getIsPackaged() : isPackagedElectronProcess();
-  return withHostGitRecovery(installerGitRoot(packaged), ({ git }) => use(git === null ? null : {
+function hostGitProgram(git: NonNullable<GitDiscovery["git"]>): HostGitProgram {
+  return {
     path: git.path,
     identity: git.identity,
     ...git.installer === undefined ? {} : { bundled: { searchPath: git.options.env.PATH ?? "", systemRoot: git.installer.systemRoot } },
-  }), deadline);
-};
+  };
+}
 
 const gitTimedOut = (): HostGitError => new HostGitError("timeout", "git did not finish in time");
 function checkDeadline(deadline: number | undefined): void {
@@ -116,7 +114,13 @@ function programEnv(env: NodeJS.ProcessEnv, git: HostGitProgram): NodeJS.Process
  * timeout and a bounded output. No program resolved refuses the call as `unavailable`. */
 export function createHostGit(options: { env?: NodeJS.ProcessEnv; resolve?: HostGitResolver; timeoutMs?: number; maxOutputBytes?: number; teardownMs?: number } = {}): HostGit {
   const base = options.env ?? process.env;
-  const resolve = options.resolve ?? discoveredGit;
+  const acceptsFloor = (git: NonNullable<GitDiscovery["git"]>, deadline?: number): Promise<boolean> =>
+    floorHoldsOn(hostGitProgram(git), base, deadline);
+  const resolver = (requiresFloor: boolean): HostGitResolver => options.resolve ?? ((use, deadline) => {
+    const packaged = isConfigured() ? getIsPackaged() : isPackagedElectronProcess();
+    return withHostGitRecovery(installerGitRoot(packaged), ({ git }) => use(git === null ? null : hostGitProgram(git)),
+      deadline, requiresFloor ? acceptsFloor : undefined);
+  });
   const env = gitEnv(base, name => INHERITED_ENV.has(name));
   const isolated = isolatedEnv(base);
   const timeoutMs = options.timeoutMs ?? TOOL_TIMEOUT_POLICY.stageWorkspaceGitMs;
@@ -132,6 +136,7 @@ export function createHostGit(options: { env?: NodeJS.ProcessEnv; resolve?: Host
   async function raw(cwd: string, args: readonly string[], call: HostGitCall = {}): Promise<{ code: number; stdout: Buffer; stderr: Buffer }> {
     if (args.includes("--")) throw new Error("a path reaches git only as one of the call's paths");
     const { deadline } = call;
+    const resolve = resolver(call.requiresFloor === true);
     checkDeadline(deadline);
     const configArgs = [...HARDENED_CONFIG.flatMap(entry => ["-c", entry]), ...(call.drivers ?? [])];
     const full = [
@@ -289,7 +294,7 @@ export function createHostGit(options: { env?: NodeJS.ProcessEnv; resolve?: Host
     };
   }
 
-  return { run, drivers, floorHolds: () => resolve(async git => git !== null && isAbsolute(git.path)
+  return { run, drivers, floorHolds: () => resolver(true)(async git => git !== null && isAbsolute(git.path)
     && await floorHoldsOn(git, base) && executableIdentitySync(git.path) === git.identity).catch(() => false) };
 }
 

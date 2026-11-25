@@ -186,6 +186,7 @@ type GitCandidate = { path: string; version: GitVersion } & (
 );
 
 type DiscoveredGit = GitCandidate & { identity: string };
+type GitAcceptance = (git: DiscoveredGit, deadline?: number) => Promise<boolean>;
 
 export interface GitDiscovery {
   git: DiscoveredGit | null;
@@ -275,6 +276,8 @@ interface GitScan {
 
 const discoveredGit = new Map<string | null, GitScan>();
 const pendingDiscoveries = new Map<string | null, Promise<GitDiscovery>>();
+// Callers that require extra evidence keep their selection separate from ordinary Git discovery.
+const qualifiedDiscoveries = new WeakMap<GitAcceptance, Map<string | null, GitScan>>();
 
 function* isDirectory(path: string): GitChecks<boolean> {
   try {
@@ -284,7 +287,13 @@ function* isDirectory(path: string): GitChecks<boolean> {
   }
 }
 
-function* selectGit(installerRoot: string | null, cached: GitScan | undefined, failedPath?: string): GitChecks<GitScan> {
+function* acceptsGit(git: DiscoveredGit, accept: GitAcceptance | undefined): GitChecks<boolean> {
+  if (accept === undefined) return true;
+  const accepted = yield* check(() => { throw new Error("Git qualification requires async discovery"); }, deadline => accept(git, deadline));
+  return accepted && (yield* executableIdentity(git.path)) === git.identity;
+}
+
+function* selectGit(installerRoot: string | null, cached: GitScan | undefined, failedPath?: string, accept?: GitAcceptance): GitChecks<GitScan> {
   if (cached?.selection.git && (yield* executableIdentity(cached.selection.git.path)) === cached.selection.git.identity
     && (!cached.developerDirectory || (yield* isDirectory(cached.developerDirectory)))) return cached;
 
@@ -294,7 +303,10 @@ function* selectGit(installerRoot: string | null, cached: GitScan | undefined, f
       const bundled = yield* findInstallerLayout(installerRoot, bundledPath);
       return bundled ? yield* probeInstallerGit(bundled) : null;
     });
-    if (candidate) return { selection: { git: { ...candidate.result, identity: candidate.identity } } };
+    if (candidate) {
+      const git = { ...candidate.result, identity: candidate.identity };
+      if (yield* acceptsGit(git, accept)) return { selection: { git } };
+    }
   }
 
   const selection: GitDiscovery = { git: null };
@@ -317,7 +329,8 @@ function* selectGit(installerRoot: string | null, cached: GitScan | undefined, f
     });
     if (!candidate) continue;
     const { version, supported, developerDirectory } = candidate.result;
-    if (supported) return { selection: { ...selection, git: { path, version, identity: candidate.identity } }, developerDirectory };
+    const git = { path, version, identity: candidate.identity };
+    if (supported && (yield* acceptsGit(git, accept))) return { selection: { ...selection, git }, developerDirectory };
     if (!meetsMinimumGitVersion(version)) selection.systemTooOld ??= { path, version: version.text };
   }
   return { selection };
@@ -334,11 +347,11 @@ function* probeStableGit<T>(path: string, probe: () => GitChecks<T | null>): Git
   return null;
 }
 
-function finishDiscovery(installerRoot: string | null, cached: GitScan | undefined, result: GitScan): GitDiscovery {
+function finishDiscovery(installerRoot: string | null, cached: GitScan | undefined, result: GitScan, cache = discoveredGit): GitDiscovery {
   // A synchronous caller may have already updated the memo while an async probe was pending.
-  if (discoveredGit.get(installerRoot) === cached) {
-    if (result.selection.git === null) discoveredGit.delete(installerRoot);
-    else discoveredGit.set(installerRoot, result);
+  if (cache.get(installerRoot) === cached) {
+    if (result.selection.git === null) cache.delete(installerRoot);
+    else cache.set(installerRoot, result);
   }
   return result.selection;
 }
@@ -381,8 +394,20 @@ export async function withHostGitRecovery<T>(
   installerRoot: string | null,
   use: (discovery: GitDiscovery) => Promise<T>,
   deadline?: number,
+  accept?: GitAcceptance,
 ): Promise<T> {
-  let discovery = await discoverGit(installerRoot, undefined, deadline);
+  let cache = discoveredGit;
+  if (accept !== undefined) {
+    cache = qualifiedDiscoveries.get(accept) ?? new Map();
+    qualifiedDiscoveries.set(accept, cache);
+  }
+  const discover = (failedPath?: string): Promise<GitDiscovery> => {
+    if (accept === undefined) return discoverGit(installerRoot, failedPath, deadline);
+    const cached = cache.get(installerRoot);
+    return runChecksAsync(selectGit(installerRoot, cached, failedPath, accept), deadline, DISCOVERY_TIMEOUT)
+      .then(result => finishDiscovery(installerRoot, cached, result, cache));
+  };
+  let discovery = await discover();
   for (let attempt = 0; ; attempt++) {
     checkDiscoveryDeadline(deadline);
     try {
@@ -390,13 +415,13 @@ export async function withHostGitRecovery<T>(
     } catch (error) {
       const { git } = discovery;
       if (!git || !isLaunchFailure(error, git.path)) throw error;
-      const ownsSelection = discoveredGit.get(installerRoot)?.selection.git === git;
+      const ownsSelection = cache.get(installerRoot)?.selection.git === git;
       if (ownsSelection) {
-        discoveredGit.delete(installerRoot);
-        pendingDiscoveries.delete(installerRoot);
+        cache.delete(installerRoot);
+        if (accept === undefined) pendingDiscoveries.delete(installerRoot);
       }
       if (attempt === 1) throw error;
-      discovery = await discoverGit(installerRoot, ownsSelection ? git.path : undefined, deadline);
+      discovery = await discover(ownsSelection ? git.path : undefined);
     }
   }
 }
