@@ -1,11 +1,8 @@
-// Fast pre-push tier for ordinary source changes.
-//
-// The full suite and the build run once, at merge time, on the exact
-// main + PR merged tree (the workspace merge gate), and in CI. A branch push
-// therefore runs what can be scoped to the change: the typecheck gate, the
-// duplicate-helper scan, the lock suites whose trigger paths changed, the
-// changed test files, the recorded readers of changed test-read documents,
-// and the Vitest tests related to the changed modules (bounded, below).
+// Source-change test selection for CI (scripts/run-ci-suite.mjs) and the
+// pre-push message-catalog check. An affected CI plan runs the lock suites
+// whose trigger paths changed, the changed test files, the recorded readers
+// of changed test-read documents, and the Vitest tests related to the changed
+// modules.
 //
 // `vitest related` follows the module import graph. Anything that reaches a
 // test without being imported — a setup file named in the Vitest config, a

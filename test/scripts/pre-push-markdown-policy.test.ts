@@ -458,8 +458,22 @@ describe("documentation impact policy", () => {
   it("removes hook Git context before the full test runner", () => {
     const hook = readFileSync(resolve(root, "scripts/hooks/run-local-checks.mjs"), "utf8");
     expect(hook).toContain('scriptName === "test" ? withoutGitContext() : process.env');
-    // Pre-push runs no Vitest; only the manual stage's `test` script does.
-    expect(hook).not.toContain('"run", "test:vitest"');
+    // Pre-push runs no test runner; only the manual stage's `test` script does.
+    const segment = (from: string, to: string) => {
+      const start = hook.indexOf(from);
+      const end = hook.indexOf(to, start);
+      expect(start, from).toBeGreaterThanOrEqual(0);
+      expect(end, to).toBeGreaterThan(start);
+      return hook.slice(start, end);
+    };
+    const prePushPath = [
+      segment("function collectPushedChanges(", "// Staged safety scan"),
+      segment("function runPrePushStaticChecks(", "const { stage, repo, remote, remoteLocation }"),
+      segment('} else if (stage === "pre-push") {', '} else if (stage === "manual") {'),
+    ].join("\n");
+    expect(prePushPath).not.toMatch(/["'`](?:test|test:vitest|vitest|test:ci)["'`]/);
+    expect(prePushPath).not.toMatch(/\bvitest\b|runAppChecks/i);
+    expect(hook).not.toMatch(/"run",\s*"(?:test:vitest|test:ci|vitest)"/);
     const source = {
       PATH: process.env.PATH,
       GIT_DIR: "/sentinel/.git",
