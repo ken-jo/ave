@@ -1927,14 +1927,15 @@ function withoutReportedCwd(result: SpawnResult): SpawnResult {
 /**
  * Carry a foreground command's final directory into the session. Only a
  * directory change made by the command itself moves the session: a per-call
- * `cwd` override that the command did not leave stays per-call. A directory
+ * `cwd` override that the command did not leave stays per-call. Only a run
+ * that exited 0 moves it; any other run keeps the session where it was. A directory
  * outside the workspace and allowed directories resets the session to the
  * workspace root and says so in the result.
  */
 function trackSessionCwd(result: SpawnResult, startCwd: string, ctx: ToolExecutionContext): SpawnResult {
   const reported = result.reportedCwd;
   const rest = withoutReportedCwd(result);
-  if (reported === undefined) return rest;
+  if (reported === undefined || result.metadata.returncode !== 0) return rest;
   const finalCwd = pathResolve(reported);
   if (finalCwd === pathResolve(startCwd)) return rest;
   const sessionId = ctx.metadata.sessionId;

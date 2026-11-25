@@ -100,6 +100,30 @@ describe("shell cwd probe selection", () => {
   });
 });
 
+describe("session cwd carried from a run's reported directory", () => {
+  const sessionId = "shell-cwd-exit-session";
+  let root: string;
+  const ctx = (): ToolExecutionContext => ({ cwd: root, extraAllowedDirectories: [], metadata: { sessionId } });
+  const result = (returncode: number | null) => ({ output: "done", isError: returncode !== 0, metadata: { returncode }, reportedCwd: join(root, "sub") });
+
+  afterEach(() => {
+    clearShellSessionCwd(sessionId);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("carries the directory only after the command exits 0", () => {
+    root = realpathSync(mkdtempSync(join(tmpdir(), "ave-shell-cwd-exit-")));
+    mkdirSync(join(root, "sub", "deeper"), { recursive: true });
+    _trackShellSessionCwdForTest(result(0), root, ctx());
+    expect(readShellSessionCwd(sessionId, root)).toBe(join(root, "sub"));
+    for (const code of [1, 3, null]) {
+      const failed = _trackShellSessionCwdForTest({ ...result(code), reportedCwd: join(root, "sub", "deeper") }, join(root, "sub"), ctx());
+      expect("reportedCwd" in failed).toBe(false);
+      expect(readShellSessionCwd(sessionId, root)).toBe(join(root, "sub"));
+    }
+  });
+});
+
 describe.skipIf(process.platform === "win32")("bash session working directory", () => {
   const sessionId = "shell-cwd-session";
   let root: string;
@@ -148,12 +172,12 @@ describe.skipIf(process.platform === "win32")("bash session working directory", 
     expect(readShellSessionCwd(sessionId, root)).toBe(join(root, "sub"));
   });
 
-  it("preserves the exit status and still tracks a cd before a failure", async () => {
+  it("preserves the exit status and does not carry a cd from a failed run", async () => {
     setup();
     const result = await run({ command: "cd sub; exit 3" });
     expect(result.isError).toBe(true);
     expect(result.metadata?.returncode).toBe(3);
-    expect(readShellSessionCwd(sessionId, root)).toBe(join(root, "sub"));
+    expect(readShellSessionCwd(sessionId, root)).toBeUndefined();
   });
 
   it("refuses a static cd outside the workspace before it runs", async () => {
