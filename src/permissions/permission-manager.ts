@@ -18,7 +18,7 @@ import { isCurrentShellRule, withCurrentShellRuleVersion, type ShellRuleVersion 
 
 import { BuiltinLlmJudge, assertRiskClassificationTrace, traceRiskClassifier, type TracingRiskClassifier } from "./judge/builtin-llm-judge.js";
 import { JudgeCircuitBreaker } from "./judge/judge-breaker.js";
-import { requireRunGrantKey, runGrantKeyOfSession, runSessionOf } from "./run-grants.js";
+import { isRunStageSession, requireRunGrantKey, runGrantKeyOfSession, runSessionOf } from "./run-grants.js";
 import { JudgeContractError, JudgeFailure, isSameOrStricter, type JudgeLane, type JudgeRequest } from "./judge/judge-contract.js";
 import { resolveJudge, type JudgeEngineDeps, type JudgeGate, type JudgeOutcome } from "./judge/judge-engine.js";
 import { DEFAULT_JUDGE_SETTINGS, type JudgeBreakerSettings } from "./judge/judge-settings.js";
@@ -635,6 +635,10 @@ export class PermissionManager {
   // Retained persisted reviewer preference for settings round trips; mode owns routing.
   private blockReadsOutsideWorkingDirectories = false;
   private policyGeneration = 0;
+  // How many of those steps only added or dropped a memory-only allow rule of one conversation or one template run (`addSessionRule`,
+  // `addRunRule`, `endRun`). Such a step changes nothing but what a fresh rule match returns, so an approval card that was open across it
+  // can be judged again instead of refused (`getPolicyContextEpoch`).
+  private memoryRuleGeneration = 0;
   private permissionStoreError: string | undefined;
   private reviewerSettingsError: string | undefined;
   private reviewerReconfiguration: object | undefined;
@@ -693,8 +697,9 @@ export class PermissionManager {
     return this.judgeBreaker;
   }
 
-  // Whose reviewer breaker a session counts on. A member of a template run (a stage session, of either lane) counts on its own: three
-  // blocks in one stage do not pause its siblings (owner decision 2026-11-16). Every other session shares its root's, as before.
+  // Whose reviewer breaker a session counts on. A session of a template run (a stage session of either lane, or a sub-agent under
+  // one) counts on its own: three blocks in one stage do not pause its siblings, nor a sub-agent's its stage (owner decision
+  // 2026-11-16). Every other session shares its root's, as before.
   private judgeBreakerSession(sessionId: string): string {
     return runSessionOf(sessionId) !== undefined ? sessionId : this.resolveJudgeRootSession(sessionId);
   }
@@ -705,7 +710,7 @@ export class PermissionManager {
 
   // A stage session linked to its run: its own reviewer count starts here. Its turns never pass the depth-0 reset.
   beginRunSessionReview(sessionId: string): void {
-    if (runSessionOf(sessionId) === undefined) throw new JudgeContractError("A run session's review starts after the run linked it");
+    if (!isRunStageSession(sessionId)) throw new JudgeContractError("A run session's review starts after the run linked it");
     this.judgeBreaker.beginTurn(sessionId);
   }
 
@@ -897,6 +902,13 @@ export class PermissionManager {
     return `${this.policyGeneration}:${this.projectRuleScopes.getRevision()}:${this.mode}`;
   }
 
+  // The policy epoch without the memory-only rule steps. Equal before and after: every change in between was a conversation's or a
+  // run's own memory-only allow rule, which a fresh permission check of the pending call reads. Different: something else changed
+  // (a setting, a mode, a saved rule, a grant, the reviewer), and an answer given across it is refused.
+  getPolicyContextEpoch(): string {
+    return `${this.policyGeneration - this.memoryRuleGeneration}:${this.projectRuleScopes.getRevision()}:${this.mode}`;
+  }
+
   private refreshReviewerSettingsError(): string | undefined {
     let error: string | undefined;
     try { error = this.readReviewerSettingsError?.(); }
@@ -1070,6 +1082,7 @@ export class PermissionManager {
     }
     this.sessionRules.set(sessionId, rules);
     this.policyGeneration += 1;
+    this.memoryRuleGeneration += 1;
     this.broadcastConfigChanged?.();
   }
 
@@ -1091,6 +1104,7 @@ export class PermissionManager {
     }
     this.runRules.set(runKey, rules);
     this.policyGeneration += 1;
+    this.memoryRuleGeneration += 1;
     this.broadcastConfigChanged?.();
   }
 
@@ -1099,6 +1113,7 @@ export class PermissionManager {
     const dropped = this.runRules.delete(runKey);
     if (dropped) {
       this.policyGeneration += 1;
+      this.memoryRuleGeneration += 1;
       this.broadcastConfigChanged?.();
     }
     return dropped;
@@ -1173,6 +1188,8 @@ export class PermissionManager {
     const root = approvalConversationRoot(sessionId);
     const ended = (held: string) => held === sessionId || (root === sessionId && approvalConversationRoot(held) === root);
     if (root === sessionId) this.judgeBreaker.forget(this.judgeBreakerSession(root));
+    // A session of a template run counted on its own breaker (`judgeBreakerSession`); its count ends with it.
+    this.judgeBreaker.forget(sessionId);
     let dropped = false;
     for (const held of this.sessionRules.keys()) if (ended(held)) dropped = this.sessionRules.delete(held) || dropped;
     for (const held of this.floorSessionGrants) if (ended(held)) dropped = this.floorSessionGrants.delete(held) || dropped;

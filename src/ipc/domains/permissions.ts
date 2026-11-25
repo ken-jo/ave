@@ -1281,7 +1281,8 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     }
     // "Allow for this run" (permission tree, node R): only a stage session of a live attended template run makes one, by the host's own
     // membership record. The floors and one-shot cards were refused above, like every remembered scope.
-    if (scope === "run" && runGrantKeyOfSession(snapshot.sessionId) === undefined) {
+    // The host offered the run on this card (`runStage.runAllowOffered`), and its session is still a member of a live attended run.
+    if (scope === "run" && (snapshot.runStage?.runAllowOffered !== true || runGrantKeyOfSession(snapshot.sessionId) === undefined)) {
       return { ok: false, error: "run-scope-unavailable", message: "This request does not belong to a run that takes a run allow" };
     }
     // A project allow is bound to the request's working directory; a global one (owner 2026-10-25, "Always allow everywhere") applies in every project

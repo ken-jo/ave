@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ApprovalGate, type ApprovalRequest, type ApprovalRequestInput } from "../approval-gate.js";
 import { buildPermissionEvaluationContext } from "../evaluation-context.js";
-import { endRun, registerRunSession, __resetRunGrantsForTest } from "../run-grants.js";
+import { endRun, registerRunSession, setRunSessionParentResolver, __resetRunGrantsForTest } from "../run-grants.js";
 import { makeMockWebContents, sentApprovalCards } from "../../__tests__/test-helpers.js";
 
 const RUN = "work-board:7#run-a";
@@ -60,6 +60,15 @@ describe("per-stage approval lanes (one lane per stage session, nothing batched)
     const [chatCard, planCard] = sent();
     expect(chatCard).not.toHaveProperty("runStage");
     expect(planCard?.runStage?.stageName.length).toBe(120);
+    gate.disposeAll();
+  });
+
+  it("a stage session's sub-agent's card shows its stage", async () => {
+    setRunSessionParentResolver(sessionId => sessionId === "plan-helper" ? "plan-session" : undefined);
+    registerRunSession(RUN, "plan-session", { stageId: "plan", stageName: "Plan", lane: "attended" });
+    const { gate, sent } = fixture();
+    void gate.requestAndWait(card("helper-card", "plan-helper"));
+    expect(sent().at(-1)?.runStage).toMatchObject({ stageId: "plan", stageName: "Plan" });
     gate.disposeAll();
   });
 

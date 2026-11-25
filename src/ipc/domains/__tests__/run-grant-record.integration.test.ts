@@ -15,6 +15,7 @@ import { __resetRunGrantsForTest } from "../../../permissions/run-grants.js";
 import { createRunScopeHooks } from "../../../permissions/run-scope.js";
 import * as approvals from "../../../permissions/user-approval-store.js";
 import { PERMISSIONS } from "../../../shared/ipc-channels.js";
+import { BashTool } from "../../../tools/shell-tools.js";
 import { ToolExecutor } from "../../../tools/executor.js";
 import { ToolRegistry } from "../../../tools/registry.js";
 import { makeWriteProbeTool } from "../../../tools/__tests__/approval-memory-test-fixtures.js";
@@ -94,6 +95,11 @@ async function subject() {
     [{ id: randomUUID(), name: "write_probe", input: { path: join(root, "shared", "result.txt") } }],
     { sessionId, executionCwd: join(root, stage), permissionContext: userPermissionContext({ additionalDirectories: [root] }) },
   ));
+  /** A host shell command from a stage session, in that stage's own folder. */
+  const shellRun = (sessionId: string, stage: string, command: string) => track(executor.executeAll(
+    [{ id: randomUUID(), name: "bash", input: { command, executionMode: "host", justification: "Print one local value", timeoutSeconds: 1 } }],
+    { sessionId, executionCwd: join(root, stage), permissionContext: userPermissionContext({ additionalDirectories: [root] }) },
+  ));
   const queueCard = (sessionId: string, overrides: Partial<ApprovalRequestInput> = {}) => {
     const request: ApprovalRequestInput = {
       id: randomUUID(), sessionId, category: "tool", kind: "tool", toolName: "write_probe", toolCategory: "write",
@@ -113,7 +119,7 @@ async function subject() {
   });
   const link = (runKey: string, sessionId: string, stageId: string, lane: "attended" | "unattended" = "attended") =>
     hooks.sessionLinked(runKey, sessionId, { stageId, stageName: stageId, lane });
-  return { root, gate, manager, hooks, execute, invoke, cards, nextCard, write, queueCard, record, link };
+  return { root, gate, manager, hooks, registry, execute, invoke, cards, nextCard, write, shellRun, queueCard, record, link };
 }
 
 describe("Allow for this run, from the card to node R", () => {
@@ -173,6 +179,15 @@ describe("Allow for this run, from the card to node R", () => {
     const scheduled = f.queueCard("scheduled-session");
     expect(await f.record(scheduled.request, {})).toMatchObject({ ok: false, error: "run-scope-unavailable" });
 
+    // A card the host did not offer the run on takes no run allow, whatever the renderer sends: here a user-owned surface's card.
+    const surface = f.queueCard("plan-session", { userOwnedSurface: "browser" });
+    expect(f.gate.getRequestSnapshot(surface.request.id)?.runStage).toMatchObject({ stageId: "plan", runAllowOffered: false });
+    expect(await f.record(surface.request, {})).toMatchObject({ ok: false });
+    const surfaceShell = f.queueCard("plan-session", { userOwnedSurface: "host-terminal", toolName: "bash", toolCategory: "shell", args: { command: "printf surface" } });
+    expect(f.gate.getRequestSnapshot(surfaceShell.request.id)?.runStage).toMatchObject({ runAllowOffered: false });
+    expect(await f.record(surfaceShell.request, { rule: { action: "allow", scope: "run" } })).toMatchObject({ ok: false });
+    expect(approvals.listSessionApprovals()).toEqual([]);
+
     const ordinary = f.queueCard("plan-session");
     expect(await f.record(ordinary.request, { decision: "deny" })).toMatchObject({ ok: false, error: "deny-requires-persistent-scope" });
 
@@ -214,5 +229,117 @@ describe("Allow for this run, from the card to node R", () => {
 
     f.hooks.runEnded(RUN);
     expect(shell("build-session")).toMatchObject({ decision: "ask" });
+  });
+
+  // Parallel stages each keep a card open. A policy change one of them makes must not void the others' answers, and must still
+  // refuse a call the policy now denies.
+  it("a sibling's open card is still answered after another stage saves a run rule", async () => {
+    const f = await subject();
+    f.link(RUN, "plan-session", "plan");
+    f.link(RUN, "build-session", "build");
+    const planning = f.write("plan-session", "plan");
+    const planCard = await f.nextCard(1);
+    const building = f.write("build-session", "build");
+    const buildCard = await f.nextCard(2);
+    const before = f.manager.getPolicyEpoch();
+    f.manager.addRunRule("plan-session", "Bash(npm test)");
+    expect(f.manager.getPolicyEpoch()).not.toBe(before);
+
+    f.invoke(PERMISSIONS.approvalRespond, allowOnceCardAnswer(buildCard));
+    const [built] = await building;
+    expect(built?.is_error, JSON.stringify(built)).toBeUndefined();
+    f.invoke(PERMISSIONS.approvalRespond, allowOnceCardAnswer(planCard));
+    const [planned] = await planning;
+    expect(planned?.is_error, JSON.stringify(planned)).toBeUndefined();
+    expect(f.execute).toHaveBeenCalledTimes(2);
+  });
+
+  it("two stages ask for the same command: one allows it for the run, and the other's open card is still answered", async () => {
+    const f = await subject();
+    const bash = new BashTool();
+    const ran = vi.spyOn(bash, "execute");
+    f.registry.register(bash);
+    f.link(RUN, "build-session", "build");
+    f.link(RUN, "test-session", "plan");
+    const building = f.shellRun("build-session", "build", "printf run-proof");
+    const buildCard = await f.nextCard(1);
+    const testing = f.shellRun("test-session", "plan", "printf run-proof");
+    const testCard = await f.nextCard(2);
+    expect(buildCard.runStage).toMatchObject({ stageId: "build", runAllowOffered: true });
+
+    expect(await f.record(buildCard, { rule: { action: "allow", scope: "run" } })).toEqual({ ok: true });
+    f.invoke(PERMISSIONS.approvalRespond, allowOnceCardAnswer(buildCard));
+    const [built] = await building;
+    expect(built?.is_error, JSON.stringify(built)).toBeUndefined();
+    // The run rule did not answer the sibling's card; the person does, and the answer is not void.
+    expect(f.gate.getRequestSnapshot(testCard.id)).not.toBeNull();
+    f.invoke(PERMISSIONS.approvalRespond, allowOnceCardAnswer(testCard));
+    const [tested] = await testing;
+    expect(tested?.is_error, JSON.stringify(tested)).toBeUndefined();
+    expect(tested?.content).toBe("run-proof");
+    expect(ran).toHaveBeenCalledTimes(2);
+  });
+
+  it("in auto mode a card the reviewer sent to a person is still answered after a sibling's run rule", async () => {
+    const f = await subject();
+    f.manager.setMode("auto");
+    f.manager.setReviewer({ classifier: { classify: () => ({ level: "high", reason: "blocked" }) }, cache: resources.makeVerdictCache(join(f.root, "verdicts.jsonl")) });
+    f.link(RUN, "plan-session", "plan");
+    f.link(RUN, "build-session", "build");
+    const building = f.write("build-session", "build");
+    const buildCard = await f.nextCard(1);
+    f.manager.addRunRule("plan-session", "Bash(npm test)");
+    f.invoke(PERMISSIONS.approvalRespond, allowOnceCardAnswer(buildCard));
+    const [built] = await building;
+    expect(built?.is_error, JSON.stringify(built)).toBeUndefined();
+    expect(f.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("a card open across any other policy change is refused as before: a mode change, a saved deny rule", async () => {
+    const f = await subject();
+    f.link(RUN, "plan-session", "plan");
+    f.link(RUN, "build-session", "build");
+    const building = f.write("build-session", "build");
+    const buildCard = await f.nextCard(1);
+    f.manager.addRunRule("plan-session", "Bash(npm test)");
+    f.manager.setMode("auto");
+    f.manager.setMode("default");
+    f.invoke(PERMISSIONS.approvalRespond, allowOnceCardAnswer(buildCard));
+    const [built] = await building;
+    expect(built?.is_error).toBe(true);
+    expect(built?.content).toContain("Permission policy changed");
+    expect(f.execute).not.toHaveBeenCalled();
+  });
+
+  it("an open card whose call the policy now denies is refused, whatever the answer", async () => {
+    const f = await subject();
+    f.link(RUN, "plan-session", "plan");
+    f.link(RUN, "build-session", "build");
+    const building = f.write("build-session", "build");
+    const buildCard = await f.nextCard(1);
+    f.manager.addRunRule("plan-session", "Bash(npm test)");
+    f.manager.setRules([{ pattern: "write_probe", action: "deny" }]);
+
+    f.invoke(PERMISSIONS.approvalRespond, allowOnceCardAnswer(buildCard));
+    const [built] = await building;
+    expect(built?.is_error).toBe(true);
+    expect(f.execute).not.toHaveBeenCalled();
+  });
+
+  it("another conversation's open card is still answered after a run that held a run rule ends", async () => {
+    const f = await subject();
+    f.link(RUN, "plan-session", "plan");
+    f.manager.addRunRule("plan-session", "Bash(npm test)");
+    const chatting = f.write("chat-session", "plan");
+    const chatCard = await f.nextCard(1);
+    expect(chatCard.runStage).toBeUndefined();
+    const before = f.manager.getPolicyEpoch();
+    f.hooks.runEnded(RUN);
+    expect(f.manager.getPolicyEpoch()).not.toBe(before);
+
+    f.invoke(PERMISSIONS.approvalRespond, allowOnceCardAnswer(chatCard));
+    const [chatted] = await chatting;
+    expect(chatted?.is_error, JSON.stringify(chatted)).toBeUndefined();
+    expect(f.execute).toHaveBeenCalledTimes(1);
   });
 });

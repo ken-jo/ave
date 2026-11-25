@@ -644,6 +644,9 @@ interface PendingEntry {
   // Host-owned permission to create a user-approval-store record.
   durableApprovalRecordAllowed: boolean;
   persistentAllowAllowed: boolean;
+  // The stage a template run's session asked for and whether the host offered "Allow for this run" on the card; the record handlers
+  // require the offer.
+  runStage: ApprovalRequest["runStage"];
   shellRule?: ShellRuleApproval;
   // Host-only: the floor a "This session" save on this card answers (never sent to the renderer).
   floorSessionGrant?: FloorSessionGrant;
@@ -1583,6 +1586,7 @@ export class ApprovalGate {
         approvalMemory: fullReq.approvalMemory,
         durableApprovalRecordAllowed,
         persistentAllowAllowed,
+        runStage,
         shellRule,
         ...(floorSessionGrant !== undefined && shellRule?.sessionAllowed === true ? { floorSessionGrant } : {}),
         verifiedShellCommand,
@@ -2137,6 +2141,7 @@ export class ApprovalGate {
     approvalMemory: ApprovalMemory | undefined;
     durableApprovalRecordAllowed: boolean;
     persistentAllowAllowed: boolean;
+    runStage: ApprovalRequest["runStage"];
     sessionId: string | undefined;
     projectCwd: string | undefined;
     shellRule: ShellRuleApproval | undefined;
@@ -2161,6 +2166,7 @@ export class ApprovalGate {
       approvalMemory: entry.approvalMemory,
       durableApprovalRecordAllowed: entry.durableApprovalRecordAllowed,
       persistentAllowAllowed: entry.persistentAllowAllowed,
+      runStage: entry.runStage,
       sessionId: entry.sessionId,
       projectCwd: entry.projectCwd,
       shellRule: entry.shellRule,

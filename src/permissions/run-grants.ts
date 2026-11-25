@@ -13,7 +13,7 @@ export interface RunSessionMember {
 }
 
 export class RunGrantError extends Error {
-  constructor(readonly code: "invalid-member" | "session-in-another-run" | "run-ended" | "not-a-run-member", message: string) {
+  constructor(readonly code: "invalid-member" | "session-in-another-run" | "run-ended" | "not-a-run-member" | "invalid-ancestry", message: string) {
     super(message);
     this.name = "RunGrantError";
   }
@@ -47,9 +47,34 @@ export function registerRunSession(runKey: string, sessionId: string, member: { 
   return true;
 }
 
-/** The run a session is a member of, whatever its lane. */
+// A session's parent, by the host's spawn record. Set once at boot; until then, and for a session the record does not know, a session
+// has no parent and only a linked stage session is a run member.
+let parentOf: (sessionId: string) => string | undefined = () => undefined;
+export function setRunSessionParentResolver(resolve: (sessionId: string) => string | undefined): void {
+  parentOf = resolve;
+}
+
+/**
+ * The run membership a session works under, whatever its lane: its own when the run linked it (a stage session), else that of its
+ * nearest ancestor a run linked (a stage session's sub-agent shares the stage's run grants and shows its stage). A stage that ended
+ * leaves its descendants no membership.
+ */
 export function runSessionOf(sessionId: string | undefined): RunSessionMember | undefined {
-  return sessionId === undefined ? undefined : members.get(sessionId);
+  // With no run open no session is a member, and no spawn record is read.
+  if (sessionId === undefined || members.size === 0) return undefined;
+  const seen = new Set<string>();
+  for (let current: string | undefined = sessionId; current !== undefined; current = parentOf(current)) {
+    const member = members.get(current);
+    if (member !== undefined) return member;
+    if (seen.has(current)) throw new RunGrantError("invalid-ancestry", "Session ancestry contains a cycle");
+    seen.add(current);
+  }
+  return undefined;
+}
+
+/** True for a session a run linked itself (a stage session), not for its descendants. */
+export function isRunStageSession(sessionId: string): boolean {
+  return members.has(sessionId);
 }
 
 /** The run whose grants this session reads and makes: an attended run it is a live member of. Undefined for every other session. */
@@ -86,6 +111,7 @@ export function endRun(runKey: string): readonly string[] {
 }
 
 export function __resetRunGrantsForTest(): void {
+  parentOf = () => undefined;
   members.clear();
   sessionsByRun.clear();
   endedRuns.clear();

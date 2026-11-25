@@ -919,6 +919,7 @@ export async function authorizeToolInvocation(
         const approvalRuleAssessment = permissionResult.reviewer?.verdict === undefined && permissionResult.forceModal !== true && !permissionResult.pipelineRequest?.userOwnedSurface
           ? classifyCurrentRule() : undefined;
         const approvalPolicyEpoch = services.permissionManager?.getPolicyEpoch();
+        const approvalPolicyContextEpoch = services.permissionManager?.getPolicyContextEpoch();
         const readjudicationAssessment = source === "plugin" && context.pluginRuntimeInstance !== undefined &&
           permissionResult.forceModal !== true && !evaluationContext.headless &&
           !permissionResult.pipelineRequest?.userOwnedSurface &&
@@ -1178,7 +1179,16 @@ export async function authorizeToolInvocation(
           services.approvalGate.allowsPolicyTransition(decision, approvalPolicyEpoch!, currentPolicyEpoch);
         // A saved rule decides this pending action too; a card answer cannot override its deny.
         if (sameCardPolicyTransition) permissionResult = checkCurrentPermission();
-        const approvalInvalidationReason = policyChanged && !sameCardPolicyTransition
+        // Any other change while the card was open refuses the answer, with one exception: a memory-only allow rule that another
+        // conversation or a template run saved or dropped (a sibling stage's "Allow for this run", a run that ended). The pending call
+        // is then judged again by the policy as it is now. Such a rule only moves a call between asked and allowed, so the person's
+        // answer stands; a call the policy nonetheless denies, or asks for under a forced card the person was not shown, is refused.
+        const foreignPolicyChange = policyChanged && !sameCardPolicyTransition;
+        const policyNow = foreignPolicyChange && approvalPolicyContextEpoch === services.permissionManager?.getPolicyContextEpoch()
+          ? checkCurrentPermission() : undefined;
+        const answerOutdated = foreignPolicyChange && (policyNow === undefined || policyNow.decision === "deny" || (policyNow.decision === "ask"
+          && policyNow.forceModal === true && permissionResult.forceModal !== true));
+        const approvalInvalidationReason = answerOutdated
           ? "Permission policy changed while approval was pending"
           : !isRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)
             ? "remote-controller-revoked"

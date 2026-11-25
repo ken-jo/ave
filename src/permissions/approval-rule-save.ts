@@ -51,7 +51,8 @@ function allowRefusal(target: Target, scope: ShellRuleSaveScope): string | undef
   if (scope === "run") {
     if (target.kind !== "shell") return "scope-not-offered";
     if (!target.context.sessionAllowed) return "one-shot-not-recordable";
-    return runGrantKeyOfSession(target.snapshot.sessionId) === undefined ? "run-scope-unavailable" : undefined;
+    // The card must be one the host offered the run on (never a host-terminal or user-owned-surface card), whatever the renderer sends.
+    return target.snapshot.runStage?.runAllowOffered !== true || runGrantKeyOfSession(target.snapshot.sessionId) === undefined ? "run-scope-unavailable" : undefined;
   }
   if (target.kind === "shell") {
     const offered = scope === "session" ? target.context.sessionAllowed : target.context.persistentAllowed;
@@ -198,7 +199,7 @@ export async function saveApprovalCardRule(
       if (target.kind === "shell" && !isShellConsentCurrent()) return fail("rule-save-failed", "Shell consent changed during approval");
       assertApprovalPersistenceCurrent(authority);
       // Asked again after the waits, with nothing awaited before the rule is added: a run that ended meanwhile gets no rule.
-      if (snapshot.sessionId === undefined || runGrantKeyOfSession(snapshot.sessionId) === undefined) {
+      if (snapshot.sessionId === undefined || snapshot.runStage?.runAllowOffered !== true || runGrantKeyOfSession(snapshot.sessionId) === undefined) {
         return fail("run-scope-unavailable", "This request's run has ended or takes no run allow");
       }
       permissionManager.addRunRule(snapshot.sessionId, pattern);

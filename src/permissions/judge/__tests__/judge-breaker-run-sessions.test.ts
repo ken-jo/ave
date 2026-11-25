@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { PermissionTestResources } from "../../__tests__/test-resources.js";
 import { NO_APPROVER_MESSAGE } from "../../decision-pipeline.js";
 import { PermissionManager } from "../../permission-manager.js";
-import { __resetRunGrantsForTest } from "../../run-grants.js";
+import { setRunSessionParentResolver, __resetRunGrantsForTest } from "../../run-grants.js";
 import { createRunScopeHooks } from "../../run-scope.js";
 import { DEFAULT_JUDGE_SETTINGS } from "../judge-settings.js";
 
@@ -86,6 +86,18 @@ describe("reviewer breaker of a template run (3 consecutive or 20 per turn, per 
     expect(manager.getJudgeBreaker().snapshot("plan-session")).toMatchObject({ total: 20, open: true });
     expect(paused("build-session")).toBeUndefined();
     expect(paused(ITEM)).toBeUndefined();
+  });
+
+  it("a stage session's sub-agent has its own breaker, apart from its stage's and the row's", async () => {
+    setRunSessionParentResolver(sessionId => sessionId === "plan-helper-session" ? "plan-session" : undefined);
+    link("plan-session", "plan");
+    await block("plan-helper-session", 3);
+    expect(paused("plan-helper-session")).toBe("consecutive");
+    expect(paused("plan-session")).toBeUndefined();
+    expect(paused(ITEM)).toBeUndefined();
+    // Its count ends with its session.
+    manager.endSession("plan-helper-session");
+    expect(manager.getJudgeBreaker().snapshot("plan-helper-session")).toEqual({ consecutive: 0, total: 0, open: false });
   });
 
   it("a non-run child still counts on its root", async () => {

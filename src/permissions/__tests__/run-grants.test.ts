@@ -6,7 +6,7 @@ import { withholdSessionAuthorityFor } from "../../shared/turn-extension-policy.
 
 const { PermissionManager } = await import("../permission-manager.js");
 const { createRunScopeHooks } = await import("../run-scope.js");
-const { RunGrantError, registerRunSession, runGrantKeyOfSession, runSessionOf, __resetRunGrantsForTest } = await import("../run-grants.js");
+const { RunGrantError, isRunStageSession, registerRunSession, runGrantKeyOfSession, runSessionOf, setRunSessionParentResolver, __resetRunGrantsForTest } = await import("../run-grants.js");
 const { lookupUserDecision, listApprovals, recordApproval, userApprovalFilePath, __resetSessionStoreForTest } = await import("../user-approval-store.js");
 
 const RUN = "work-board:7#run-a";
@@ -64,6 +64,45 @@ describe("run membership", () => {
     expect(runSessionOf("plan-session")).toBeUndefined();
     expect(() => link(RUN, "late-session", "build")).toThrow(expect.objectContaining({ code: "run-ended" }));
     expect(runSessionOf("late-session")).toBeUndefined();
+  });
+});
+
+// Permission tree, template runs: a stage session's sub-agent shares the run grant and shows its stage.
+describe("a stage session's sub-agent", () => {
+  const parents: Record<string, string> = { "plan-helper": "plan-session", "plan-helper-2": "plan-helper", "plan-session": "work-board:7", "chat-helper": "chat-session" };
+  beforeEach(() => setRunSessionParentResolver(sessionId => parents[sessionId]));
+
+  it("works under its nearest linked ancestor's membership, not the item's", async () => {
+    link(RUN, "plan-session", "plan");
+    expect(runSessionOf("plan-helper")).toEqual({ runKey: RUN, stageId: "plan", stageName: "plan", lane: "attended" });
+    expect(runSessionOf("plan-helper-2")).toMatchObject({ stageId: "plan" });
+    expect(isRunStageSession("plan-helper")).toBe(false);
+    expect(runSessionOf("chat-helper")).toBeUndefined();
+    expect(runSessionOf("work-board:7")).toBeUndefined();
+
+    // The sub-agent reads the grant its stage's card made, and makes one its stage's siblings read.
+    link(RUN, "build-session", "build");
+    await allowForRun("plan-session");
+    expect(await lookup("plan-helper", "plan")).toMatchObject({ scope: "run", decision: "allow" });
+    manager.addRunRule("plan-helper", "Bash(printf ready)");
+    expect(shell("printf ready", "build-session", "build")).toMatchObject({ decision: "allow", reasonCode: "rule-allow" });
+    expect(await lookup("chat-helper", "plan")).toBeNull();
+  });
+
+  it("has no membership once its stage ended, under a schedule-started stage makes no grant, and a cyclic record fails clearly", async () => {
+    link(RUN, "plan-session", "plan");
+    hooks.sessionEnded("plan-session");
+    expect(runSessionOf("plan-helper")).toBeUndefined();
+    await expect(allowForRun("plan-helper")).rejects.toMatchObject({ code: "not-a-run-member" });
+
+    link(OTHER_RUN, "scheduled-session", "plan", "unattended");
+    parents["scheduled-helper"] = "scheduled-session";
+    expect(runSessionOf("scheduled-helper")).toMatchObject({ lane: "unattended" });
+    expect(runGrantKeyOfSession("scheduled-helper")).toBeUndefined();
+
+    parents["loop-a"] = "loop-b";
+    parents["loop-b"] = "loop-a";
+    expect(() => runSessionOf("loop-a")).toThrow(expect.objectContaining({ name: "RunGrantError", code: "invalid-ancestry" }));
   });
 });
 
