@@ -4,7 +4,8 @@ vi.mock("../../shared/windows-configuration-handles.js", async original => (awai
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { join } from "node:path";
 import { mkdirSync } from "node:fs";
-import { ensureAveHomePrivate, setAveHomePrivacyAtBoot, _resetAveHomePrivacyForTest, approveExtensionsWithoutIsolation, areExtensionsWithoutIsolationApproved, setAveHomePrivacyRefusalReporter } from "../../shared/ave-home.js";
+import { EXTENSION_START_CONSENT_REQUIRED_CODE } from "../extension-start-consent.js";
+import { ensureAveHomePrivate, setAveHomePrivacyAtBoot, _resetAveHomePrivacyForTest, setAveHomePrivacyRefusalReporter } from "../../shared/ave-home.js";
 import { useTempDirs, useTempPaths } from "../../__tests__/test-helpers.js";
 import * as policyHome from "../../shared/policy-home.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
@@ -120,15 +121,15 @@ describe("private-directory confinement gate", () => {
     expect(await readAsrtWindowsStatus()).toMatchObject({ applicable: false });
   });
 
-  it("keeps headless starts refused, reports each refusal, and grants nothing automatically", () => {
+  it("refuses every start under an unverified home that carries no consent of its own", () => {
     setProcessPlatform("win32");
     setPluginWorkerConfinementRequestedAtBoot(true);
     setAveHomePrivacyAtBoot({ enforcement: "none", home: home(), category: "read-back-failed", reason: "fixture" });
     const report = vi.fn();
     setAveHomePrivacyRefusalReporter(report);
-    for (let attempt = 0; attempt < 3; attempt++) expect(() => assertExtensionStartAllowed()).toThrow("Settings > Permissions");
-    expect(report).toHaveBeenCalledTimes(3);
-    expect(areExtensionsWithoutIsolationApproved()).toBe(false);
+    for (let attempt = 0; attempt < 3; attempt++) expect(() => assertExtensionStartAllowed()).toThrow(EXTENSION_START_CONSENT_REQUIRED_CODE);
+    // A start that waits for a person is not a privacy refusal: its notice comes from the pending list.
+    expect(report).not.toHaveBeenCalled();
   });
 
   it("offers no run without isolation when the path-facts helper gave no answer, and tells the user to restart", () => {
@@ -138,32 +139,8 @@ describe("private-directory confinement gate", () => {
     const report = vi.fn();
     setAveHomePrivacyRefusalReporter(report);
     expect(() => assertExtensionStartAllowed()).toThrow("Restart Ave; if it persists, reinstall Ave.");
-    expect(String(report.mock.calls[0]?.[0])).not.toContain("Approve running without isolation");
-    expect(() => approveExtensionsWithoutIsolation()).toThrow("not applicable");
-    expect(areExtensionsWithoutIsolationApproved()).toBe(false);
+    expect(report).toHaveBeenCalledTimes(1);
     expect(() => assertExtensionStartAllowed()).toThrow("helper-unavailable");
-  });
-
-  it("keeps approval only until a new boot or a changed privacy observation", async () => {
-    setProcessPlatform("win32");
-    setPluginWorkerConfinementRequestedAtBoot(true);
-    const dir = home();
-    const privacy = { enforcement: "none" as const, home: dir, category: "read-back-failed" as const, reason: "fixture" };
-    setAveHomePrivacyAtBoot(privacy);
-    expect(() => assertExtensionStartAllowed()).toThrow(dir);
-    approveExtensionsWithoutIsolation();
-    expect(isPluginWorkerConfinementActive()).toBe(false);
-    expect(await readAsrtWindowsStatus()).toMatchObject({ ready: false, homePrivacyError: { approvedForSession: true } });
-    setAveHomePrivacyAtBoot(privacy);
-    expect(areExtensionsWithoutIsolationApproved()).toBe(true);
-    setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: dir, sid: OWNER_SID });
-    expect(areExtensionsWithoutIsolationApproved()).toBe(false);
-    setAveHomePrivacyAtBoot(privacy);
-    expect(() => assertExtensionStartAllowed()).toThrow(dir);
-    approveExtensionsWithoutIsolation();
-    _resetAveHomePrivacyForTest();
-    setAveHomePrivacyAtBoot(privacy);
-    expect(() => assertExtensionStartAllowed()).toThrow(dir);
   });
 
   it("reports inactive confinement without throwing or auditing a refused status query", async () => {
@@ -175,9 +152,6 @@ describe("private-directory confinement gate", () => {
     expect(isPluginWorkerConfinementActive()).toBe(false);
     await initializeAsrtSandbox({ allowedDomains: [], windows: { externalConfinement: true } });
     expect(isPluginWorkerConfinementActive()).toBe(false);
-    approveExtensionsWithoutIsolation();
-    expect(isPluginWorkerConfinementActive()).toBe(false);
-    expect(() => assertExtensionStartAllowed()).not.toThrow();
     expect(report).not.toHaveBeenCalled();
   });
 });

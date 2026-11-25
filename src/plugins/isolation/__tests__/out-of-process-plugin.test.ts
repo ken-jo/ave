@@ -167,7 +167,9 @@ import type {
 import { servePluginChild } from "../plugin-child-main.js";
 import { createOutOfProcessPluginFactory, PluginSandboxGrantError, pluginFactoryDeadlineMs, spawnConfinedPluginChild } from "../out-of-process-plugin.js";
 import { TOOL_TIMEOUT_POLICY, windowsSrtPluginChildFactoryBudgetMs } from "../../../shared/tool-timeout-policy.js";
-import { setAveHomePrivacyAtBoot, approveExtensionsWithoutIsolation, _resetAveHomePrivacyForTest } from "../../../shared/ave-home.js";
+import { setAveHomePrivacyAtBoot, _resetAveHomePrivacyForTest } from "../../../shared/ave-home.js";
+import { approvedExtensionStart } from "../../../__tests__/support/approved-extension-start.js";
+import { EXTENSION_START_CONSENT_REQUIRED_CODE, pluginChildStartKey, type ExtensionStartAuthority } from "../../../permissions/extension-start-consent.js";
 import { setPluginWorkerConfinementRequestedAtBoot, __resetSandboxRequestedAtBootForTest, __resetWindowsSandboxSubstrateForTest, setWindowsSandboxSubstrate } from "../../../permissions/sandbox-capability.js";
 import { planWindowsSandbox } from "../../../boot/steps/windows-sandbox-plan.js";
 import { prepareMxcPluginChildLaunch } from "../mxc-plugin-child-launch.js";
@@ -1296,21 +1298,27 @@ describe("construct negotiates the host protocol", () => {
     } finally { service.hostGone(); roots.remove(); rmSync(dir, { recursive: true, force: true }); }
   });
 
-  it("refuses a factory start before home privacy approval and reaches the child spawn after approval", async () => {
+  it("refuses a factory start under an unverified home until a person approves that one start", async () => {
     const roots = spawnableRoots();
     const originalPlatform = process.platform;
     spawnConfinedChild.mockReset();
     setProcessPlatform("win32");
     setPluginWorkerConfinementRequestedAtBoot(true);
     setAveHomePrivacyAtBoot({ enforcement: "none", home: roots.context.pluginRoot!, category: "read-back-failed", reason: "fixture" });
+    let waiting: ExtensionStartAuthority | undefined;
     const factory = createOutOfProcessPluginFactory({ manifest: MANIFEST,
-      launch: { kind: "entry", entryPath: join(roots.context.pluginRoot!, "never-imported.mjs") } });
+      launch: { kind: "entry", entryPath: join(roots.context.pluginRoot!, "never-imported.mjs") },
+      takeExtensionStart: () => { const taken = waiting; waiting = undefined; return taken; } });
     try {
-      await expect(factory(hostContext(fakeHostApi(), roots.context))).rejects.toThrow("Settings > Permissions");
+      await expect(factory(hostContext(fakeHostApi(), roots.context))).rejects.toThrow(EXTENSION_START_CONSENT_REQUIRED_CODE);
       expect(spawnConfinedChild).not.toHaveBeenCalled();
-      approveExtensionsWithoutIsolation();
+      waiting = await approvedExtensionStart(pluginChildStartKey(MANIFEST.id));
       spawnConfinedChild.mockRejectedValueOnce(new Error("fixture spawn reached"));
       await expect(factory(hostContext(fakeHostApi(), roots.context))).rejects.toThrow("fixture spawn reached");
+      expect(spawnConfinedChild).toHaveBeenCalledTimes(1);
+      expect(spawnConfinedChild.mock.calls[0]![0]).toMatchObject({ extensionStart: { key: pluginChildStartKey(MANIFEST.id) } });
+      // The next start has no consent of its own.
+      await expect(factory(hostContext(fakeHostApi(), roots.context))).rejects.toThrow(EXTENSION_START_CONSENT_REQUIRED_CODE);
       expect(spawnConfinedChild).toHaveBeenCalledTimes(1);
     } finally {
       _resetAveHomePrivacyForTest();

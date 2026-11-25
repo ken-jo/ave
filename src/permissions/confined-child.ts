@@ -46,6 +46,7 @@ import {
   WorkerTransportUnsupportedError,
 } from "./mxc-extension-errors.js";
 import { createMxcExtensionAdmission, consumeMxcExtensionAdmission } from "./mxc-extension-admission.js";
+import type { ExtensionStartPresentation } from "./extension-start-consent.js";
 import type { MxcExtensionReadinessEvidence } from "./mxc-extension-readiness.js";
 import type { PluginWorkerControl } from "../plugins/public-contract.js";
 import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
@@ -148,6 +149,8 @@ export interface ConfinedChildSpec {
   // substrate) plan of a plugin-less hook owner exempts the spawn from the extension-backend guard. A plugin holder can never
   // qualify: its egress owner names its plugin. See `isAdmittedUserHookShellRoute`.
   readonly userHookShellPlan?: HostShellExecutionPlan;
+  /** The per-start consent of an extension start nothing confines; this spawn spends it. */
+  readonly extensionStart?: Omit<ExtensionStartPresentation, "spend">;
 }
 
 // The wrap a spawn actually applied — never the `features.pluginWorkerConfinement` setting. A child spawned unwrapped is `unconfined` whatever the setting says, because "confined" is a claim about this process, and only the wrap makes it true. One value per substrate ASRT wraps with.
@@ -614,7 +617,9 @@ async function resolveSpawnLine(
   egress?: EgressInvocation;
   targetLaunch?: SandboxTargetLaunch;
 }> {
-  assertExtensionStartAllowed();
+  // The inference child is host code with its own gate below; every other owner is an extension start.
+  assertExtensionStartAllowed(isOfflineOwner(spec) ? { hostOwned: true }
+    : { ...(spec.extensionStart ? { start: { ...spec.extensionStart, spend: true } } : {}) });
   // An offline owner's refusal is enforced by the wrap, so it never runs without one; it follows the offline-service gate, not the extension setting.
   const offline = isOfflineOwner(spec);
   if (offline ? !isOfflineProcessConfinementActive() : !isPluginWorkerConfinementActive()) {

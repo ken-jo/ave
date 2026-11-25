@@ -11,6 +11,7 @@ import {
   writeTestPlugin,
   writeTestPluginRegistry,
   type TestPluginRuntimeFixture,
+  stopTestPluginRuntimes,
 } from "./test-helpers.js";
 
 // Directory junctions exercise Windows reparse traversal without symlink privileges.
@@ -41,8 +42,10 @@ describe("PluginRuntime.getPluginStorage — containment refusals are audited", 
   });
 
   afterEach(async () => {
+    const stopped = await stopTestPluginRuntimes();
     await rm(fixture.rootDir, { recursive: true, force: true });
     await rm(outsideDir, { recursive: true, force: true });
+    expect(stopped).toEqual({ unfinished: [], leftHomes: [] });
   });
 
   function pluginHostStorageDir(): string {

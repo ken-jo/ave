@@ -4,6 +4,7 @@ import { ApprovalSurfaceRegistry } from "../../permissions/approval-surface-regi
 import { ApprovalGate, isHostApprovalRejectedDecision, isHostApprovalTimeoutDecision, type ApprovalRequest } from "../../permissions/approval-gate.js";
 import { approvalSurfaceResolver } from "../approval-surface.js";
 import { makeTestPolicy } from "../../permissions/__tests__/test-helpers.js";
+import { createExtensionStartAsker } from "../../permissions/extension-start-asker.js";
 
 function surfaceFixture() {
   const state = { destroyed: false };
@@ -81,6 +82,16 @@ describe("registered approval surface resolution", () => {
     expect(isHostApprovalRejectedDecision(decision)).toBe(true);
     expect(gate.pendingCount).toBe(0);
     expect(owner.contents.send).not.toHaveBeenCalled();
+  });
+
+  it("reports an extension start card nobody answered as unanswered, never as a person's no", async () => {
+    vi.useFakeTimers();
+    const registry = new ApprovalSurfaceRegistry();
+    registry.register("board-root", surfaceFixture().contents);
+    const asker = createExtensionStartAsker({ approvalGate: gateFixture(registry), reason: () => "start it?", notify: vi.fn() });
+    const answer = asker.ask({ key: "mcp-stdio:files", kind: "mcp-stdio", label: "files", cause: "no-backend" }, { sessionId: "board-root", attended: true });
+    await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+    await expect(answer).resolves.toBe("no-approver");
   });
 
   it("keeps an ownerless parked card pending until the normal five-minute deny timeout", async () => {
