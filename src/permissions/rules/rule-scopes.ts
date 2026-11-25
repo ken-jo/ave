@@ -11,7 +11,7 @@ import { isMissingPathError } from "../../lib/atomic-file.js";
 import type { PermissionRule } from "../permission-manager.js";
 import { isRuleSpecifier, literalRuleWord, parseRuleSpecifier, type RuleSpecifier } from "./rule-specifier.js";
 import { canonicalPowerShellName, POWERSHELL_COMMAND_POLICIES } from "./powershell-command-policy.js";
-import { inspectPowerShellCommand, parsePowerShellCommand, powerShellBoundedDenyPrefix, powerShellRuleShape, proveLiteralPowerShell, type ParsedPowerShellCommand, type PowerShellCommandInput } from "./powershell-exfiltration.js";
+import { inspectPowerShellCommand, parsePowerShellCommand, powerShellRuleShape, proveLiteralPowerShell, type ParsedPowerShellCommand, type PowerShellCommandInput } from "./powershell-exfiltration.js";
 import { isRetiredHostTerminalRule, PermissionRulesFileCorruptError, storedRuleInvalidReason, validatePermissionRule } from "./rule-files.js";
 import { matchesProjectRuleRootBinding, ProjectRuleRootChangedError, projectRulesLocation, storedFileRulesLocation, readProjectRulesFile, updateProjectRulesFile, type ProjectRuleRootBinding } from "./project-rule-files.js";
 import { evaluateShellRules, type ShellRuleEvaluation, type ShellRuleInput, type ShellRuleSet } from "./shell-rule-matcher.js";
@@ -346,18 +346,18 @@ function bashBoundedDenyPrefix(command: string): { parsed?: ParsedShellCommand; 
     (outline.totalTokens ?? 0) > MAX_SHELL_ANALYSIS_TOKENS ? { firstStatementLimited: true } : {};
 }
 
-/** Only completed, bounded statements can prove a dialect deny. A prefix never supplies an allow or an ask rule. */
+/** Bash may prove a deny from a parser-verified prefix. PowerShell requires analysis of the full command within budget. */
 export function shellDenyOnBoundedPrefix(input: {
   command: string;
   dialect: "bash" | "powershell";
   cwd?: string | undefined;
   parsed?: ParsedShellCommand | undefined;
   parsedPowerShell?: ParsedPowerShellCommand | undefined;
+  analysisLimited?: boolean;
   ruleScopes: ReadonlyArray<readonly PermissionRule[]>;
 }): { pattern?: string; unreadable?: true; analysisRefused?: true } {
   const { command, dialect, cwd, parsed, parsedPowerShell, ruleScopes } = input;
-  const pastParseCap = command.length > SHELL_FLOOR_INPUT_LIMIT + SHELL_LITERAL_DATA_LIMIT;
-  if (dialect === "bash" && pastParseCap) return {};
+  if (dialect === "bash" && command.length > SHELL_FLOOR_INPUT_LIMIT + SHELL_LITERAL_DATA_LIMIT) return {};
   const denies = ruleScopes.map((scope) => scope.filter((rule) => rule.action === "deny"));
   if (dialect === "bash") {
     const rules = collectShellRuleSet(...denies);
@@ -369,18 +369,11 @@ export function shellDenyOnBoundedPrefix(input: {
     if ("firstStatementLimited" in bounded && bounded.firstStatementLimited) return { analysisRefused: true };
     return evaluated.decision === "ask" ? { unreadable: true } : {};
   }
-  const rules = collectPowerShellRules(...denies);
-  if (rules.deny.length === 0) return {};
-  if (pastParseCap) return { analysisRefused: true };
-  const parsedCommand = parsedPowerShell ?? (command.length <= SHELL_FLOOR_INPUT_LIMIT ? parsePowerShellCommand(command) : undefined);
-  if (parsedCommand && !parsedCommand.analysisLimited) {
-    const evaluated = evaluatePowerShellSubject({ command: parsedCommand, cwd, exactAllowOnly: false }, ...denies);
-    if (evaluated.decision === "deny") return { pattern: evaluated.pattern };
-    return evaluated.decision === "ask" ? { unreadable: true } : {};
-  }
-  const bounded = powerShellBoundedDenyPrefix(command, parsedCommand);
-  const visible = bounded.commands.map((argv) => ({ argv, normalized: restrictionTokens(argv) }));
-  const match = rules.deny.find((rule) => visible.some(({ argv, normalized }) =>
-    matchesPowerShellRule(rule.spec, argv) || matchesPowerShellRule(rule.restriction, normalized)));
-  return match ? { pattern: match.pattern } : bounded.boundaryUnproven ? { analysisRefused: true } : {};
+  if (collectPowerShellRules(...denies).deny.length === 0) return {};
+  if (input.analysisLimited || command.length > SHELL_FLOOR_INPUT_LIMIT) return { analysisRefused: true };
+  const parsedCommand = parsedPowerShell ?? parsePowerShellCommand(command);
+  if (parsedCommand.analysisLimited) return { analysisRefused: true };
+  const evaluated = evaluatePowerShellSubject({ command: parsedCommand, cwd, exactAllowOnly: false }, ...denies);
+  if (evaluated.decision === "deny") return { pattern: evaluated.pattern };
+  return evaluated.decision === "ask" ? { unreadable: true } : {};
 }

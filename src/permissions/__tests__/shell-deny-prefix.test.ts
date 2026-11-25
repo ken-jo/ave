@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import type { ExecutionMode } from "../../shared/permission-mode.js";
 import { PermissionManager } from "../permission-manager.js";
 import { SHELL_RULE_CANONICAL_VERSION } from "../../shared/shell-rule-version.js";
 import { evaluatePowerShellSubject, evaluateShellSubject, shellDenyOnBoundedPrefix } from "../rules/rule-scopes.js";
@@ -27,14 +28,20 @@ it("uses the bounded deny scan once and feeds it the decision's rule scopes", ()
 describe.each([
   { dialect: "bash" as const, pattern: "Bash(printf *)", first: "printf ready", long: `printf${" x".repeat(450)}` },
   { dialect: "powershell" as const, pattern: "PowerShell(Write-Output *)", first: "Write-Output ready", long: `Write-Output${" 1".repeat(450)}` },
-])("bounded $dialect deny rules", ({ dialect, pattern, first, long }) => {
+])("$dialect saved deny rules", ({ dialect, pattern, first, long }) => {
   const overBudgetTail = `date${" x".repeat(450)}`;
   const longTail = Array.from({ length: 1800 }, () => "date x").join("; ");
-  async function savedDeny(generic = false) {
+  const pastLimit = { decision: "deny", reasonCode: "shell-analysis-limit" };
+  const limitCard = { decision: "ask", forceModal: true, reasonCode: "shell-analysis-limit", pipelineRequest: { shellAnalysisLimited: true } };
+  async function evaluate({ saveDeny = true, generic = false, executionMode = "allow" }: {
+    saveDeny?: boolean;
+    generic?: boolean;
+    executionMode?: ExecutionMode;
+  } = {}) {
     const manager = new PermissionManager(join(cwd, "permissions.json"));
-    manager.setMode("allow");
+    manager.setMode(executionMode);
     if (generic) manager.setRules([{ pattern: dialect, action: "deny" }]);
-    await manager.addRulePersist({ pattern, action: "deny" }, { kind: "user" });
+    if (saveDeny) await manager.addRulePersist({ pattern, action: "deny" }, { kind: "user" });
     return (command: string, headless = false) => manager.checkDetailed(dialect, "builtin", "shell", null, {
       ruleSubject: { kind: "shell", dialect, command, cwd },
       shellExecution: { runsSandboxed: true },
@@ -43,26 +50,45 @@ describe.each([
   }
 
   it.each([overBudgetTail, longTail].map((tail, index) => ({ tail, limit: index === 0 ? "token" : "input" })))(
-    "keeps a saved deny in the completed prefix at the $limit limit", async ({ tail }) => {
-      expect((await savedDeny())(`${first}; ${tail}`)).toMatchObject({ decision: "deny", reasonCode: "rule-deny" });
+    "checks a saved deny before approval at the $limit limit", async ({ tail }) => {
+      expect((await evaluate())(`${first}; ${tail}`)).toMatchObject(
+        dialect === "bash" ? { decision: "deny", reasonCode: "rule-deny" } : pastLimit,
+      );
     },
   );
 
   if (dialect === "powershell") {
+    const tokenFiller = " x".repeat(450);
+    const inputFiller = ` ${"x".repeat(8000)}`;
+    it.each([
+      { shape: "an escaped brace at the token limit before a later command", command: '${a`};b' + tokenFiller + '}; Write-Output s' },
+      { shape: "a quote inside a braced expansion at the token limit before a later command", command: '"${a";b' + tokenFiller + '}"; Write-Output s' },
+      { shape: "a quote inside a braced expansion at the input limit before a pipeline stage", command: '"${a";b' + inputFiller + '}" | Write-Output s' },
+      { shape: "an escaped brace at the input limit inside an argument", command: 'date ${a`};b' + inputFiller + '}' },
+      { shape: "a quote inside a braced expansion at the input limit inside an argument", command: 'date "${a";b' + inputFiller + '}"' },
+    ])("refuses $shape with a saved deny", async ({ command }) => {
+      const withDeny = await evaluate({ executionMode: "default" });
+      expect(withDeny(command)).toMatchObject(pastLimit);
+    });
+
+    it.each(["strict", "default", "auto", "allow"] as const)("asks in %s mode at either limit without a saved deny", async (executionMode) => {
+      const withoutDeny = await evaluate({ saveDeny: false, executionMode });
+      expect(withoutDeny('${a`};b' + tokenFiller + '}; Write-Output s')).toMatchObject(limitCard);
+      expect(withoutDeny('"${a";b' + inputFiller + '}" | Write-Output s')).toMatchObject(limitCard);
+    });
+
     it.each([" |\n  ", "\n  | ", " ||\n  "])("refuses an over-budget first statement across %j", async (separator) => {
-      const check = await savedDeny();
-      expect(check(`date${separator}${overBudgetTail}`)).toMatchObject({ decision: "deny", reasonCode: "shell-analysis-limit" });
-      expect(check(`date; date${separator}${overBudgetTail}`))
-        .toMatchObject({ decision: "ask", forceModal: true, reasonCode: "shell-analysis-limit" });
+      const check = await evaluate();
+      expect(check(`date${separator}${overBudgetTail}`)).toMatchObject(pastLimit);
+      expect(check(`date; date${separator}${overBudgetTail}`)).toMatchObject(pastLimit);
     });
 
     it.each([
       { tail: overBudgetTail, limit: "token" },
       { tail: `date ${"x".repeat(8000)}`, limit: "input" },
-    ])("keeps a completed deny when quote ambiguity is beyond the $limit limit", async ({ tail }) => {
-      const check = await savedDeny();
-      expect(check(`${first}; ${tail}`)).toMatchObject({ decision: "deny", reasonCode: "rule-deny" });
-      expect(check(`${first}; ${tail} # it’s a comment`)).toMatchObject({ decision: "deny", reasonCode: "rule-deny" });
+    ])("refuses at the $limit limit even with a completed statement", async ({ tail }) => {
+      const check = await evaluate();
+      expect(check(`${first}; ${tail} # it’s a comment`)).toMatchObject(pastLimit);
       expect(check(`Write-Output ‘ready’; ${tail}`))
         .toMatchObject({ decision: "deny", reasonCode: "shell-analysis-limit" });
       expect(check(`date; Write-Output ‘open; ${tail}`))
@@ -74,18 +100,17 @@ describe.each([
       { position: "inline comment", command: `${first} # it’s a comment\n${overBudgetTail}` },
       { position: "double-quoted string", command: `Write-Output "it’s ready"; ${overBudgetTail}` },
       { position: "single-quoted string", command: `Write-Output 'say “ready”'; ${overBudgetTail}` },
-    ])("refuses an unproven prefix with a typographic quote in the $position", async ({ command }) => {
-      expect((await savedDeny())(command)).toMatchObject({ decision: "deny", reasonCode: "shell-analysis-limit" });
+    ])("refuses an over-limit command with a typographic quote in the $position", async ({ command }) => {
+      expect((await evaluate())(command)).toMatchObject(pastLimit);
     });
 
-    it("ignores quote ambiguity inside the clipped suffix after a completed deny", async () => {
-      const check = await savedDeny();
-      expect(check(`${first}; date ‘${"x".repeat(8000)}`)).toMatchObject({ decision: "deny", reasonCode: "rule-deny" });
+    it("refuses at the input limit with a typographic quote after a completed statement", async () => {
+      expect((await evaluate())(`${first}; date ‘${"x".repeat(8000)}`)).toMatchObject(pastLimit);
     });
   }
 
   it("preserves the merge-base refusal when the first statement exhausts the token budget", async () => {
-    const check = await savedDeny();
+    const check = await evaluate();
     expect(check(first)).toMatchObject({ decision: "deny", reasonCode: "rule-deny", reason: pattern });
     for (const headless of [false, true]) {
       expect(check(long, headless)).toMatchObject({ decision: "deny", reasonCode: "shell-analysis-limit" });
@@ -93,7 +118,7 @@ describe.each([
   });
 
   it("takes a generic deny before the exhausted dialect deny check", async () => {
-    expect((await savedDeny(true))(long)).toMatchObject({ decision: "deny", reasonCode: "rule-deny", reason: dialect });
+    expect((await evaluate({ generic: true }))(long)).toMatchObject({ decision: "deny", reasonCode: "rule-deny", reason: dialect });
   });
 
   it("keeps complete commands equivalent to the full evaluator", () => {
@@ -109,13 +134,13 @@ describe.each([
     }
   });
 
-  it("asks when the deny target occurs after the bound", async () => {
-    expect((await savedDeny())(`date; ${overBudgetTail}; ${first}`))
-      .toMatchObject({ decision: "ask", forceModal: true, reasonCode: "shell-analysis-limit" });
+  it("applies the dialect's limit policy when the deny target occurs after the bound", async () => {
+    expect((await evaluate())(`date; ${overBudgetTail}; ${first}`))
+      .toMatchObject(dialect === "bash" ? limitCard : pastLimit);
   });
 
   it("keeps the outer parse cap even when the first statement would be denied", async () => {
-    expect((await savedDeny())(`${first}; ${longTail.repeat(10)}`)).toMatchObject(
+    expect((await evaluate())(`${first}; ${longTail.repeat(10)}`)).toMatchObject(
       dialect === "powershell"
         ? { decision: "deny", reasonCode: "shell-analysis-limit" }
         : { decision: "ask", forceModal: true, reasonCode: "shell-analysis-limit" },

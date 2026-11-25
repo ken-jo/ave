@@ -1879,6 +1879,7 @@ export class PermissionManager {
     const deny = matchingRule("deny");
     const shellDeny = ruleSubject === undefined || deny !== undefined ? undefined : shellDenyOnBoundedPrefix({
       command: ruleSubject.command, dialect: ruleSubject.dialect, cwd: ruleSubject.cwd, parsed, parsedPowerShell, ruleScopes,
+      analysisLimited: shellAnalysisLimited,
     });
     const shellRuleScopes = ruleScopes.map(scope => scope.filter(rule => rule.action !== "deny"));
     const shellRules = !shellAnalysisLimited && parsed ? evaluateShellSubject({ command: parsed, cwd: ruleSubject?.cwd, exactAllowOnly: shellSignals?.exactLiteralEvaluation === true,
