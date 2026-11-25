@@ -49,7 +49,7 @@ import {
   type ToolExecutionResult,
 } from "./base.js";
 import { buildHostShellChildEnv, buildSafeChildEnv, buildSandboxedChildEnv } from "./safe-env.js";
-import { prepareShellInvocation, matchesPreparedShellInvocation, preparedShellFacts, preparedShellToolUseId, preparedShellCommand, preparedShellCwdProbe, bindPreparedShellExecutableReadPaths, preparedShellExecutableReadPaths, preparedSandboxBootstrap, preparedSandboxEnvironment, disposePreparedShellInvocation, claimPreparedShellInvocation, transferPreparedShellInvocation, type PreparedShellInvocation } from "./prepared-shell-invocation.js";
+import { assertPreparedShellAvailable, prepareShellInvocation, matchesPreparedShellInvocation, preparedShellFacts, preparedShellToolUseId, preparedShellCommand, preparedShellCwdProbe, bindPreparedShellExecutableReadPaths, preparedShellExecutableReadPaths, preparedSandboxBootstrap, preparedSandboxEnvironment, disposePreparedShellInvocation, claimPreparedShellInvocation, transferPreparedShellInvocation, type PreparedShellInvocation } from "./prepared-shell-invocation.js";
 import { POWER_SHELL_AST_PARSER, normalizePowerShellAstSummary, type PowerShellArgument, type PowerShellAstSummary } from "./powershell-ast.js";
 import { resolveShellFilesystemPath } from "../shared/shell-filesystem-path.js";
 import {
@@ -1838,7 +1838,7 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
         resolvedCwd,
         writePaths,
         input.timeoutSeconds, prepared, ctx.abortSignal, outputCapture,
-        outputProgress, holdsOutput,
+        outputProgress, holdsOutput, boundarySessionOf(ctx),
       ), ctx.verifiedShellCommand, verifiedIdentity, ctx.abortSignal);
       if (checked.refused) return checked.result;
       return withBackgroundUnavailable(
@@ -2548,6 +2548,7 @@ export async function spawnWithSandbox(
   outputCaptureFactory?: BoundOutputCaptureFactory,
   progress?: ToolOutputProgressSink,
   waitForClose = false,
+  sessionId?: string,
 ): Promise<SpawnResult> {
   const releaseClaim = claimPreparedShellInvocation(prepared);
   try {
@@ -2557,7 +2558,7 @@ export async function spawnWithSandbox(
   // Compose broad reads while retaining protected paths and private sessions.
   const sandboxWritePaths = [...writePaths, homePath];
   // One Ave home boundary snapshot serves this command's read policy and its wrap.
-  const boundarySnapshot = createAveHomeBoundarySnapshot();
+  const boundarySnapshot = createAveHomeBoundarySnapshot(sessionId);
   const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy(
     [resolvedCwd, ...sandboxWritePaths, ...preparedShellExecutableReadPaths(prepared)], home, homePath, boundarySnapshot,
   );
@@ -2773,16 +2774,18 @@ async function spawnWithTimeout(
     assertManagedChildProcessAdmissionOpen("tool:bash");
     const observation = startShellObservation(command, cwd, sandbox);
     let child: PipedChild;
-    try { child = spawn(shell.cmd, [...argv], {
-      windowsHide: true,
-      detached: process.platform !== "win32",
-      cwd,
-      stdio: prelude === undefined ? ["ignore", "pipe", "pipe"] : ["ignore", "pipe", "pipe", "pipe"],
-      // Strip secrets (AVE_*, *_API_KEY, GITHUB_TOKEN, AWS_*, etc.) from
-      // the child's environment. Only generic shell/locale vars pass through.
-      env: { ...environment },
-      shell: false,
-    }) as PipedChild; }
+    try {
+      assertPreparedShellAvailable(prepared);
+      child = spawn(shell.cmd, [...argv], {
+        windowsHide: true,
+        detached: process.platform !== "win32",
+        cwd,
+        stdio: prelude === undefined ? ["ignore", "pipe", "pipe"] : ["ignore", "pipe", "pipe", "pipe"],
+        // Only generic shell and locale variables pass through.
+        env: { ...environment },
+        shell: false,
+      }) as PipedChild;
+    }
     catch (error) { observation?.finish(null, "failed"); throw error; }
     const closed = checkedShellClose(child, waitForClose);
     const control = prelude === undefined || spawnAuthorization === undefined ? undefined : attachHostShellControlChannel(child, spawnAuthorization);
@@ -2963,6 +2966,12 @@ function interactiveHint(command: string, output: string): string | null {
     );
   }
   return null;
+}
+
+/** The session a sandboxed command is composed for: its Ave home read boundary re-opens that session's own stage workspace and no other. */
+function boundarySessionOf(ctx: ToolExecutionContext): string | undefined {
+  const raw = ctx.metadata.sessionId;
+  return typeof raw === "string" && raw !== "" ? raw : undefined;
 }
 
 function sessionIdOf(ctx: ToolExecutionContext | undefined): string {
@@ -3532,7 +3541,7 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
           input.timeoutSeconds, ctx.abortSignal, outputCapture,
           outputProgress,
           typeof ctx.metadata.toolUseId === "string" ? ctx.metadata.toolUseId : undefined,
-          undefined, runtimeReads, verified,
+          undefined, runtimeReads, verified, boundarySessionOf(ctx),
         ), ctx.verifiedShellCommand, verifiedIdentity, ctx.abortSignal);
         const block = sandboxBlockForResult(checked.result);
         if (block !== undefined && block.command !== input.command) attachSandboxBlock(checked.result, issueFilesystemSandboxBlock(input.command, resolvedCwd));
@@ -3545,7 +3554,7 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
         input.timeoutSeconds, ctx.abortSignal, outputCapture,
         outputProgress,
         typeof ctx.metadata.toolUseId === "string" ? ctx.metadata.toolUseId : undefined,
-        runtimeReads, verified,
+        runtimeReads, verified, boundarySessionOf(ctx),
       ), ctx.verifiedShellCommand, verifiedIdentity, ctx.abortSignal);
       const block = sandboxBlockForResult(checked.result);
       if (block !== undefined && block.command !== input.command) attachSandboxBlock(checked.result, issueFilesystemSandboxBlock(input.command, resolvedCwd));
@@ -3787,7 +3796,7 @@ async function parsePowerShellAstInMxc(command: string, cwd: string, ctx: ToolEx
   });
   const response = createPowerShellParserResponse();
   const result = await spawnPowerShellInMxc(plan, parserScript, cwd, writePaths, timeoutSeconds, ctx.abortSignal, undefined, undefined,
-    typeof ctx.metadata.toolUseId === "string" ? ctx.metadata.toolUseId : undefined, response);
+    typeof ctx.metadata.toolUseId === "string" ? ctx.metadata.toolUseId : undefined, response, [], undefined, boundarySessionOf(ctx));
   if (result.isError) return { failure: result };
   const text = response.read();
   let summary: unknown;
@@ -3901,6 +3910,7 @@ async function spawnPowerShellWithSandbox(
   toolUseId?: string,
   runtimeReadPaths: readonly string[] = [],
   verified?: VerifiedPowerShellExecution,
+  sessionId?: string,
 ): Promise<ToolExecutionResult> {
   const waitForClose = verified !== undefined && verifiedShellRequiresResultCheck(verified.handle, verified.identity);
   signal?.throwIfAborted();
@@ -3928,7 +3938,7 @@ async function spawnPowerShellWithSandbox(
 
   const home = getPolicyHome();
   const sandboxWritePaths = [...writePaths, sandboxHome.path];
-  const boundarySnapshot = createAveHomeBoundarySnapshot();
+  const boundarySnapshot = createAveHomeBoundarySnapshot(sessionId);
   const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy([cwd, ...sandboxWritePaths, ...runtimeReadPaths, ...(verified === undefined ? [] : [verified.executable])], home, sandboxHome.path, boundarySnapshot);
   const abortController = new AbortController();
   const wrapAbortSignal = signal ? AbortSignal.any([signal, abortController.signal]) : abortController.signal;
@@ -4135,6 +4145,7 @@ async function spawnPowerShellInMxc(
   parserResponse?: ReturnType<typeof createPowerShellParserResponse>,
   runtimeReadPaths: readonly string[] = [],
   verified?: VerifiedPowerShellExecution,
+  sessionId?: string,
 ): Promise<ToolExecutionResult> {
   if (!isWindowsShellConsentCurrent(plan) || detectMxcShellCapability() === undefined) {
     return mxcSpawnFailure("container shell route is no longer available");
@@ -4172,7 +4183,9 @@ async function spawnPowerShellInMxc(
     const powerShellLaunch = preparePowerShellLaunch(verified?.command ?? command, powerShellExecutionEnvironment(verified, buildSafeChildEnv({ ...sandboxHome.env })), sandboxHome);
     const sandboxWritePaths = [...writePaths, sandboxHome.path];
     const hostHome = process.env["USERPROFILE"] ?? process.env["HOME"];
-    const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy([cwd, ...sandboxWritePaths, ...runtimeReadPaths, ...(verified === undefined ? [] : [verified.executable])], hostHome, sandboxHome.path);
+    // One Ave home boundary snapshot serves this command's read policy and its container grants.
+    const boundarySnapshot = createAveHomeBoundarySnapshot(sessionId);
+    const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy([cwd, ...sandboxWritePaths, ...runtimeReadPaths, ...(verified === undefined ? [] : [verified.executable])], hostHome, sandboxHome.path, boundarySnapshot);
     const egress = openEgressInvocation(
       { kind: "shell", toolName: "powershell", toolUseId, requiresListener: true, context: ambientShellEgressContext() },
       signal ? { abortSignal: signal } : {},
@@ -4186,7 +4199,7 @@ async function spawnPowerShellInMxc(
     // directory as read-only (existing) or denied (absent).
     const sensitiveDenyWrite = await runWithSandboxWritePreflight(signal, () => getDefaultSensitiveWriteDenyPaths());
     const mandatory = buildMandatorySandboxWritePolicy(sandboxWritePaths, undefined, sensitiveDenyWrite);
-    launch = await prepareMxcShellLaunch({
+    launch = await boundarySnapshot.run(() => prepareMxcShellLaunch({
       egressToken: token,
       commandLine: powerShellMxcCommandLine(systemRoot, powerShellLaunch.args.at(-1)!),
       cwd,
@@ -4203,7 +4216,7 @@ async function spawnPowerShellInMxc(
       env: powerShellExecutionEnvironment(verified, powerShellLaunch.env),
       timeoutMs: resolveShellTimeoutMs(timeoutSeconds),
       exists: existsSync,
-    }, lifecycle);
+    }, lifecycle));
     signal?.throwIfAborted();
     const gate = currentEffectGateContext();
     if (!await refreshRemoteControllerBoundToSession(gate?.permissionContext?.remoteControllerAuthority, gate?.sessionId)) throw controllerRevoked;

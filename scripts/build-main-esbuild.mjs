@@ -21,6 +21,7 @@ import {
   formatMainBundleSummary,
 } from "./lib/main-bundle-budget.mjs";
 import { assertHeadlessBundleBoundary, HEADLESS_CHILD_ENTRY_POINTS } from "./lib/headless-bundle-boundary.mjs";
+import { MAIN_ENTRY_POINTS } from "./lib/main-entry-points.mjs";
 import { readBuildSourceIdentity } from "./lib/build-source-identity.mjs";
 import { MAIN_BUNDLE_EXTERNALS } from "./lib/main-bundle-externals.mjs";
 import { mxcVerificationBuild, mxcVerificationEntries } from "./lib/mxc-verification-build.mjs";
@@ -47,23 +48,8 @@ const buildOptions = {
   // it to this repository so the byte-budget is independent of invocation cwd.
   absWorkingDir: repoRoot,
   entryPoints: {
-    main: resolve(repoRoot, "src", "main.ts"),
-    headless: resolve(repoRoot, "src", "headless.ts"),
-    ...Object.fromEntries(Object.entries(HEADLESS_CHILD_ENTRY_POINTS).map(([name, path]) => [name, resolve(repoRoot, path)])),
-    "subscription-grok-tool-policy-hook": resolve(repoRoot, "src", "main", "subscription-grok-tool-policy-hook.ts"),
-    "subscription-tool-mcp-server": resolve(repoRoot, "src", "main", "subscription-tool-mcp-server.ts"),
-    // The entry of a confined plugin child process. It is its OWN entry point
-    // rather than a module of the main bundle because a different process
-    // executes it: `spawnConfinedPluginChild` runs `dist/src/main/plugin-child-main.js`
-    // directly, and a module buried inside `main.js` has no path to be run from.
-    "mxc-extension-supervisor": resolve(repoRoot, "src", "permissions", "mxc-extension-supervisor.ts"),
+    ...Object.fromEntries(Object.entries(MAIN_ENTRY_POINTS).map(([name, path]) => [name, resolve(repoRoot, path)])),
     ...mxcVerificationEntries(repoRoot),
-    "plugin-child-main": resolve(repoRoot, "src", "plugins", "isolation", "plugin-child-main.ts"),
-    "memory-map-worker": resolve(repoRoot, "src", "main", "memory-map", "worker-main.ts"),
-    // Verified shell commands inspect repository evidence in this resident worker thread.
-    "git-repository-inspection-worker": resolve(repoRoot, "src", "permissions", "rules", "git-repository-inspection-worker-main.ts"),
-    "memory-map-child": resolve(repoRoot, "src", "main", "memory-map", "inference-child-main.ts"),
-    "preview-document-child-main": resolve(repoRoot, "src", "tools", "preview-document-child-main.ts"),
   },
   outdir,
   entryNames: "[name]",

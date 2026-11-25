@@ -1,6 +1,6 @@
 // Attach first-touch directory instructions once per session and revalidate changed launch chains.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -77,14 +77,11 @@ describe("directoryInstructionsForToolResult", () => {
     let pending: Promise<unknown>[] = [];
     vi.mocked(execFileSync).mockClear().mockReturnValue("git version 2.56.0");
     vi.mocked(spawnSync).mockClear();
-    vi.mocked(spawn).mockClear().mockImplementation(() => gitProbeChild((complete) => {
+    vi.mocked(spawn).mockClear().mockImplementation((_file, args) => gitProbeChild((complete) => {
+      if (Array.isArray(args) && args.includes("check-ignore")) return complete("", 1);
       finishProbe = () => complete("git version 2.56.0");
       started.resolve();
     }));
-    vi.mocked(execFile).mockClear().mockImplementation((_file, _args, _options, callback) => {
-      callback?.(Object.assign(new Error("not ignored"), { code: 1, cmd: "check-ignore" }), "", "");
-      return {} as ReturnType<typeof execFile>;
-    });
     try {
       const first = Promise.resolve(attach(new Map()));
       const second = Promise.resolve(attach(new Map()));
@@ -98,11 +95,10 @@ describe("directoryInstructionsForToolResult", () => {
       finishProbe?.();
       await expect(first).resolves.toMatchObject({ text: expect.stringContaining("src rule") });
       await expect(second).resolves.toMatchObject({ text: expect.stringContaining("src rule") });
-      expect(vi.mocked(execFile).mock.calls.filter(([, args]) => Array.isArray(args) && args.includes("check-ignore"))).toHaveLength(2);
+      expect(vi.mocked(spawn).mock.calls.filter(([, args]) => Array.isArray(args) && args.includes("check-ignore"))).toHaveLength(2);
     } finally {
       finishProbe?.();
       await Promise.allSettled(pending);
-      vi.mocked(execFile).mockReset();
       vi.mocked(spawn).mockReset();
       vi.mocked(execFileSync).mockReset();
       vi.unstubAllEnvs();

@@ -5,7 +5,7 @@ import { queryWindowsSystemDirectory, queryWindowsSystemDirectorySync } from "..
 import { buildSafeChildEnv } from "../tools/safe-env.js";
 import { type GitVersion, meetsMinimumGitVersion, parseGitVersion } from "./git-version.js";
 import { runGitProbeAsync, runGitProbeSync } from "./host-git-probe.js";
-import { check, runChecksAsync, runChecksSync, type Checks } from "./sync-async-checks.js";
+import { check, runChecksAsync, runChecksSync, throwPastDeadline, type Checks } from "./sync-async-checks.js";
 import { TOOL_TIMEOUT_POLICY } from "./tool-timeout-policy.js";
 import { resolveVerifiedExecutableAsync, type VerifiedExecutableCandidate } from "./verified-executable.js";
 
@@ -70,6 +70,13 @@ function isFullyQualified(path: string, platform: NodeJS.Platform): boolean {
   return platform === "win32" ? /^[A-Za-z]:[\\/]/u.test(path) : posix.isAbsolute(path);
 }
 
+/** A POSIX search path with only its absolute entries: an empty or relative one is read against the folder a call runs in. */
+export function absolutePosixSearchPath(searchPath: string): string {
+  const absolutePath = searchPath.split(":").filter((entry) => isFullyQualified(entry, "linux")).join(":");
+  // An empty PATH searches the current directory. The null device has no executable children.
+  return absolutePath || "/dev/null";
+}
+
 function windowsPathEntries(searchPath: string): string[] {
   const entries: string[] = [];
   for (let start = 0; start < searchPath.length;) {
@@ -117,6 +124,12 @@ export function systemGitCandidates(
 
 type GitChecks<T> = Checks<T>;
 
+const DISCOVERY_TIMEOUT = "Git discovery timed out";
+
+function checkDiscoveryDeadline(deadline: number | undefined): void {
+  throwPastDeadline(deadline, DISCOVERY_TIMEOUT);
+}
+
 function executableAccessMode(): number {
   return process.platform === "win32" ? constants.F_OK : constants.X_OK;
 }
@@ -125,7 +138,7 @@ function fileIdentity(stat: BigIntStats): string | null {
   return stat.isFile() ? [stat.dev, stat.ino, stat.size, stat.mtimeNs].join(":") : null;
 }
 
-function executableIdentitySync(path: string): string | null {
+export function executableIdentitySync(path: string): string | null {
   try {
     accessSync(path, executableAccessMode());
     return fileIdentity(statSync(path, { bigint: true }));
@@ -167,10 +180,12 @@ interface HostGitLaunch {
   options: { cwd?: string; env: NodeJS.ProcessEnv };
 }
 
-type DiscoveredGit = { path: string; version: GitVersion } & (
+type GitCandidate = { path: string; version: GitVersion } & (
   | { installer: VerifiedInstallerGit; options: HostGitLaunch["options"] }
   | { installer?: never }
 );
+
+type DiscoveredGit = GitCandidate & { identity: string };
 
 export interface GitDiscovery {
   git: DiscoveredGit | null;
@@ -178,7 +193,7 @@ export interface GitDiscovery {
 }
 
 function runProbe(path: string, args: string[], options: Parameters<typeof runGitProbeAsync>[2] = {}) {
-  return check(() => runGitProbeSync(path, args, options), () => runGitProbeAsync(path, args, options));
+  return check(() => runGitProbeSync(path, args, options), deadline => runGitProbeAsync(path, args, options, deadline));
 }
 
 function* findInstallerLayout(root: string, path: string): GitChecks<InstallerGitInstall | null> {
@@ -192,23 +207,25 @@ function* findInstallerLayout(root: string, path: string): GitChecks<InstallerGi
 
 let retryBundledGitAt = 0;
 
-function* probeInstallerGit(install: InstallerGitInstall): GitChecks<DiscoveredGit | null> {
+function* probeInstallerGit(install: InstallerGitInstall): GitChecks<GitCandidate | null> {
   if (performance.now() < retryBundledGitAt) return null;
-  let selected: DiscoveredGit | null = null;
+  let selected: GitCandidate | null = null;
   try {
     const cwd = dirname(install.path);
     const pathEntries = [cwd, join(install.root, install.prefix, "bin"), join(install.root, "usr", "bin")];
     if (pathEntries.some((entry) => entry.includes(";"))) return null;
     const systemDirectory = yield* check(queryWindowsSystemDirectorySync,
-      () => queryWindowsSystemDirectory(TOOL_TIMEOUT_POLICY.projectGitQueryMs));
+      deadline => queryWindowsSystemDirectory(TOOL_TIMEOUT_POLICY.projectGitQueryMs, deadline));
     const systemRoot = win32.dirname(systemDirectory);
     if (systemDirectory.includes(";")) return null;
+    const lookupSwitch = process.env.NoDefaultCurrentDirectoryInExePath;
     const options = {
       cwd,
       env: {
         PATH: [...pathEntries, systemDirectory, systemRoot].join(";"),
         SystemRoot: systemRoot,
         WINDIR: systemRoot,
+        ...(lookupSwitch === undefined ? {} : { NoDefaultCurrentDirectoryInExePath: lookupSwitch }),
         GIT_CONFIG_NOSYSTEM: "1",
         GIT_CONFIG_GLOBAL: "NUL",
         GIT_ALLOW_PROTOCOL: "",
@@ -232,6 +249,7 @@ function systemGitEnvironment(): NodeJS.ProcessEnv {
   const gitVariable = process.platform === "win32" ? /^GIT_/iu : /^GIT_/u;
   for (const key of Object.keys(env)) if (gitVariable.test(key)) delete env[key];
   env.GIT_ALLOW_PROTOCOL = "";
+  if (process.platform !== "win32" && env.PATH !== undefined) env.PATH = absolutePosixSearchPath(env.PATH);
   return env;
 }
 
@@ -252,7 +270,6 @@ function* probeSystemGit(path: string): GitChecks<{ version: GitVersion; support
 
 interface GitScan {
   selection: GitDiscovery;
-  identity: string | null;
   developerDirectory?: string;
 }
 
@@ -268,7 +285,7 @@ function* isDirectory(path: string): GitChecks<boolean> {
 }
 
 function* selectGit(installerRoot: string | null, cached: GitScan | undefined, failedPath?: string): GitChecks<GitScan> {
-  if (cached?.selection.git && (yield* executableIdentity(cached.selection.git.path)) === cached.identity
+  if (cached?.selection.git && (yield* executableIdentity(cached.selection.git.path)) === cached.selection.git.identity
     && (!cached.developerDirectory || (yield* isDirectory(cached.developerDirectory)))) return cached;
 
   const bundledPath = installerGitPath(installerRoot);
@@ -277,7 +294,7 @@ function* selectGit(installerRoot: string | null, cached: GitScan | undefined, f
       const bundled = yield* findInstallerLayout(installerRoot, bundledPath);
       return bundled ? yield* probeInstallerGit(bundled) : null;
     });
-    if (candidate) return { selection: { git: candidate.result }, identity: candidate.identity };
+    if (candidate) return { selection: { git: { ...candidate.result, identity: candidate.identity } } };
   }
 
   const selection: GitDiscovery = { git: null };
@@ -300,10 +317,10 @@ function* selectGit(installerRoot: string | null, cached: GitScan | undefined, f
     });
     if (!candidate) continue;
     const { version, supported, developerDirectory } = candidate.result;
-    if (supported) return { selection: { ...selection, git: { path, version } }, identity: candidate.identity, developerDirectory };
+    if (supported) return { selection: { ...selection, git: { path, version, identity: candidate.identity } }, developerDirectory };
     if (!meetsMinimumGitVersion(version)) selection.systemTooOld ??= { path, version: version.text };
   }
-  return { selection, identity: null };
+  return { selection };
 }
 
 function* probeStableGit<T>(path: string, probe: () => GitChecks<T | null>): GitChecks<{ result: T; identity: string } | null> {
@@ -320,7 +337,7 @@ function* probeStableGit<T>(path: string, probe: () => GitChecks<T | null>): Git
 function finishDiscovery(installerRoot: string | null, cached: GitScan | undefined, result: GitScan): GitDiscovery {
   // A synchronous caller may have already updated the memo while an async probe was pending.
   if (discoveredGit.get(installerRoot) === cached) {
-    if (result.identity === null) discoveredGit.delete(installerRoot);
+    if (result.selection.git === null) discoveredGit.delete(installerRoot);
     else discoveredGit.set(installerRoot, result);
   }
   return result.selection;
@@ -332,10 +349,13 @@ function discoverHostGitSync(installerRoot: string | null): GitDiscovery {
   return finishDiscovery(installerRoot, cached, result);
 }
 
-function discoverGit(installerRoot: string | null, failedPath?: string): Promise<GitDiscovery> {
+function discoverGit(installerRoot: string | null, failedPath?: string, deadline?: number): Promise<GitDiscovery> {
+  checkDiscoveryDeadline(deadline);
   const pending = pendingDiscoveries.get(installerRoot);
   if (pending) return pending;
   const cached = discoveredGit.get(installerRoot);
+  if (deadline !== undefined) return runChecksAsync(selectGit(installerRoot, cached, failedPath), deadline, DISCOVERY_TIMEOUT)
+    .then(result => finishDiscovery(installerRoot, cached, result));
   const discovery: Promise<GitDiscovery> = runChecksAsync(selectGit(installerRoot, cached, failedPath))
     .then((result) => pendingDiscoveries.get(installerRoot) === discovery
       ? finishDiscovery(installerRoot, cached, result)
@@ -360,9 +380,11 @@ function isLaunchFailure(error: unknown, path: string): boolean {
 export async function withHostGitRecovery<T>(
   installerRoot: string | null,
   use: (discovery: GitDiscovery) => Promise<T>,
+  deadline?: number,
 ): Promise<T> {
-  let discovery = await discoverGit(installerRoot);
+  let discovery = await discoverGit(installerRoot, undefined, deadline);
   for (let attempt = 0; ; attempt++) {
+    checkDiscoveryDeadline(deadline);
     try {
       return await use(discovery);
     } catch (error) {
@@ -374,7 +396,7 @@ export async function withHostGitRecovery<T>(
         pendingDiscoveries.delete(installerRoot);
       }
       if (attempt === 1) throw error;
-      discovery = await discoverGit(installerRoot, ownsSelection ? git.path : undefined);
+      discovery = await discoverGit(installerRoot, ownsSelection ? git.path : undefined, deadline);
     }
   }
 }

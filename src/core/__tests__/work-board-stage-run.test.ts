@@ -6,6 +6,7 @@ import { boardRunState, isAwaitingStageReview } from "../../work-board/workflow/
 import { autoStageOf, stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
 import { stageRunHarness } from "../../work-board/workflow/__tests__/stage-run-harness.js";
 import { WorkflowTemplateError } from "../../work-board/template-graph.js";
+import { OwnedFsError } from "../../work-board/workflow/owned-fs.js";
 import { RUN_FILE_REFUSALS } from "../../work-board/workflow/stage-run-engine.js";
 import { WORKSPACE_REFUSALS } from "../../work-board/workflow/stage-workspace.js";
 import type { RunAuthorityVerdict } from "../../work-board/workflow/run-authority.js";
@@ -464,6 +465,26 @@ it("a retry is checked by the run authority before it spawns", () => withHarness
   expect(await h.settleEvent()).toMatchObject({ reasonCode: "scope-not-authorised" });
 }));
 
+it("a retry whose stage folder is no longer the run's own fails the stage there and starts nothing in it", () => withHarness(async (h) => {
+  const version = await h.confirm([stageOf("a")]);
+  const id = await h.addItem(version, A);
+  const run = h.start(id, h.local(version, A));
+  (await h.untilLive(1))[0].finish({ ok: false, summary: "failed", error: "failed" });
+  expect(await run).toMatchObject({ status: "awaiting_approval" });
+  const item = await h.untilStage(id, "a", "failed");
+  const warned = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  try {
+    expect(await h.engine.retryStage(id, { runId: item.runId ?? "", stageId: "a" })).toEqual({ ok: true });
+    const ended = await h.until(id, current => current.stageRuns.some(stage => stage.stageId === "a" && stage.attempt === 2 && stage.status === "failed"));
+    expect(ended.stageRuns.find(stage => stage.stageId === "a")).toMatchObject({ attempt: 2, status: "failed", failure: "error" });
+    expect(warned.mock.calls.flat().map(String).some(text => text.includes("workspace-missing: workspace-identity-changed"))).toBe(true);
+  } finally {
+    warned.mockRestore();
+  }
+  expect(h.children).toHaveLength(1);
+  expect(h.workspaceCalls.filter(call => call.startsWith("prepare:"))).toEqual(["prepare:a#1"]);
+}, { workspace: { release: async () => { throw new OwnedFsError("changed", "the entry is not the folder that was recorded"); } } }));
+
 it("after a restart continueRun starts the waiting stage once, and only while the source is still authorised", async () => {
   for (const authorised of [true, false]) {
     await withHarness(async (h) => {
@@ -572,7 +593,7 @@ it("has the text of every code a template start can be refused with in both cata
   };
   const codes = [
     ...Object.keys(verdicts), ...WORKSPACE_REFUSALS, ...RUN_FILE_REFUSALS,
-    "outputs-unavailable", "template-run-not-shown", "template-run-unavailable", "work-item-completed",
+    "outputs-unavailable", "template-run-not-shown", "template-run-unavailable", "work-item-completed", "workspace-identity-changed",
     // The run handler's own refusals of a template start.
     "user-gesture-required", "invalid-input",
   ];

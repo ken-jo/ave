@@ -1,3 +1,4 @@
+import "../main/bare-program-lookup.js";
 import { realpath } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import {

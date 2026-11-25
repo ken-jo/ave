@@ -1,6 +1,6 @@
 import { dispatchReviewerForInteractiveAuto } from "./pipeline/reviewer-dispatch.js";
 import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pipeline/user-owned-surface.js";
-import { NO_APPROVER_MESSAGE, offersFloorSessionAllow } from "../permissions/decision-pipeline.js";
+import { EXACT_HOST_RULE_REASON_CODE, NO_APPROVER_MESSAGE, offersFloorSessionAllow } from "../permissions/decision-pipeline.js";
 import { checkReplayRootBinding, type ReplayRootBinding } from "../permissions/reviewer/replay-root-binding.js";
 import { attachSandboxBlock, sandboxBlockForResult, type SandboxBlock } from "../shared/sandbox-block.js";
 import { approvalReasonFields, approvalRequestTarget, isHostApprovalRejectedDecision } from "../permissions/approval-gate.js";
@@ -918,8 +918,8 @@ export async function executeAuthorizedToolInvocation(
       const refreshed = services.permissionManager.recheckPermission(recheckTarget);
       if (permissionRecheckResult) permissionRecheckResult = refreshed;
       const paused = refreshed.decision === "ask" && refreshed.pipelineRequest?.automationPause !== undefined;
-      // A floor session allow is the person's own earlier answer on this floor's card, so it still stands.
-      const forced = refreshed.forceModal === true || refreshed.pipelineRequest?.floor !== undefined && refreshed.reasonCode !== "floor-session-allow" || refreshed.pipelineRequest?.manualRerun === true;
+      // A floor session allow is the person's own earlier answer on this floor's card, and an exact saved rule is their saved one, so both still stand.
+      const forced = refreshed.forceModal === true || refreshed.pipelineRequest?.floor !== undefined && refreshed.reasonCode !== "floor-session-allow" && refreshed.reasonCode !== EXACT_HOST_RULE_REASON_CODE || refreshed.pipelineRequest?.manualRerun === true;
       if (!permissionRecheckResult || refreshed.decision === "deny" || paused || forced) permissionResult = refreshed;
       if (refreshed.decision === "deny") throw new Error(refreshed.reason);
       if (paused || refreshed.decision === "ask" && (refreshed.pipelineRequest?.floor !== undefined || refreshed.pipelineRequest?.userOwnedSurface !== undefined)) throw new HandlerPermissionAskError();

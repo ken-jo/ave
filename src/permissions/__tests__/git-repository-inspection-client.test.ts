@@ -238,8 +238,8 @@ describe("repository inspection worker", () => {
 
 describe("packaged repository inspection worker", () => {
   it("is a main-bundle root entry that the package footprint check requires", async () => {
-    const build = readFileSync(join(repositoryRoot(), "scripts/build-main-esbuild.mjs"), "utf8");
-    expect(build).toContain(`"git-repository-inspection-worker": resolve(repoRoot, "src", "permissions", "rules", "git-repository-inspection-worker-main.ts")`);
+    const { MAIN_ENTRY_POINTS } = await import("../../../scripts/lib/main-entry-points.mjs");
+    expect(MAIN_ENTRY_POINTS["git-repository-inspection-worker"]).toBe("src/permissions/rules/git-repository-inspection-worker-main.ts");
     const budget = createRequire(import.meta.url)("../../../scripts/lib/main-bundle-budget.mjs") as {
       MAIN_BUNDLE_ROOT_FILES: readonly string[]; isSafeMainBundleManifestPath(path: string): boolean;
     };

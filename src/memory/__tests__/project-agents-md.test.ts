@@ -1,6 +1,6 @@
 /** Project AGENTS.md discovery leaf; unit tests. */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { type ExecException, execFileSync, type ExecFileOptions, type SpawnOptions } from "node:child_process";
+import { execFileSync, type SpawnOptions } from "node:child_process";
 
 const gitCalls = vi.hoisted(() => ({
   checkIgnore: [] as string[],
@@ -16,18 +16,15 @@ vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return {
     ...actual,
-    spawn: ((file: string, args: readonly string[], options: SpawnOptions) =>
-      file === gitCalls.versionFixture && args.includes("--version")
-        ? gitProbeChild((complete) => complete("git version 2.56.0"))
-        : actual.spawn(file, args, options)) as typeof actual.spawn,
-    execFile: ((file: string, args: readonly string[], options: ExecFileOptions,
-      callback: (error: ExecException | null, stdout: string | Buffer, stderr: string | Buffer) => void,
-    ) => {
+    spawn: ((file: string, args: readonly string[], options: SpawnOptions) => {
+      if (file === gitCalls.versionFixture && args.includes("--version")) return gitProbeChild((complete) => complete("git version 2.56.0"));
       if (args.includes("check-ignore")) {
         gitCalls.checkIgnore.push(file);
         gitCalls.lastEnv = options.env;
         gitCalls.lastCwd = options.cwd?.toString();
         if (gitCalls.intercept || gitCalls.ignoreFixture?.path === file) {
+          // A thrown numeric code is the exit status the answer ends with; any other throw is a process that could not run.
+          let ended: number | Error = 0;
           try {
             if (gitCalls.intercept) gitCalls.intercept(args);
             else {
@@ -35,16 +32,20 @@ vi.mock("node:child_process", async (importOriginal) => {
               const ignored = gitCalls.ignoreFixture?.patterns.some((pattern) => pattern.endsWith("/") ? target.startsWith(pattern) : target === pattern);
               if (!ignored) throw Object.assign(new Error("not ignored"), { code: 1 });
             }
-            callback(null, "", "");
           } catch (error) {
-            callback(error as ExecException, "", "");
+            const { code } = error as { code?: unknown };
+            ended = typeof code === "number" ? code : error as Error;
           }
-          return {};
+          const child = gitProbeChild((complete) => {
+            if (typeof ended === "number") complete("", ended);
+            else child.emit("error", ended);
+          });
+          return child;
         }
         options = { ...options, env: { ...options.env, ...FIXTURE_GIT_CONFIG, ...gitCalls.traceEnv } };
       }
-      return actual.execFile(file, args, options, callback);
-    }) as typeof actual.execFile,
+      return actual.spawn(file, args, options);
+    }) as typeof actual.spawn,
   };
 });
 vi.mock("../../shared/host-git-executable.js", async (importOriginal) => {
@@ -652,6 +653,7 @@ describe("discoverDirectoryInstructions", () => {
       expect(gitCalls.checkIgnore).toHaveLength(before);
       const fixtureGit = join(project, "fixture-git");
       const options = { cwd: join(project, "installer"), env: { GIT_ALLOW_PROTOCOL: "" } };
+      mkdirSync(options.cwd);
       resolve.mockReturnValue({ path: fixtureGit, options });
       gitCalls.intercept = () => Buffer.alloc(0);
       expect(await discover(project, join("build", "x.js"), new Set(), opts)).toEqual([]);
@@ -712,5 +714,21 @@ describe("discoverDirectoryInstructions", () => {
     expect(await discoverDirectoryInstructions(project, join("build", "x.js"), new Set(), { gitIgnoreVerdicts: verdicts })).toEqual([]);
     expect(gitCalls.checkIgnore.length - before).toBe(1);
     expect([...verdicts.values()]).toEqual([true]);
+  });
+
+  it("uses a cached ignore verdict again only after the workspace hold is released", async () => {
+    initIgnoredBuild(project, "build/\n", "plain");
+    const opts = { gitIgnoreVerdicts: new Map<string, boolean>() };
+    const target = join("build", "x.js");
+    expect(await discoverDirectoryInstructions(project, target, new Set(), opts)).toEqual([]);
+    expect([...opts.gitIgnoreVerdicts.values()]).toEqual([true]);
+    const before = gitCalls.checkIgnore.length;
+    const release = holdSandboxGitWrites([join(project, "build")]);
+    try {
+      const layers = await discoverDirectoryInstructions(project, target, new Set(), opts);
+      expect(layers.map((layer) => layer.content)).toEqual(["generated rule"]);
+    } finally { release(); }
+    expect(await discoverDirectoryInstructions(project, target, new Set(), opts)).toEqual([]);
+    expect(gitCalls.checkIgnore).toHaveLength(before);
   });
 });

@@ -19,6 +19,10 @@ const mcpServerDirectory = (name: string): boolean => /^[a-z0-9_-][a-z0-9._-]*$/
 // `McpInstaller.dataDir`: one `assertSafeArtifactSlug` directory per installed marketplace server.
 const marketplaceServerData = (name: string): boolean => /^[a-z0-9][a-z0-9._-]{0,127}$/iu.test(name);
 
+// `<project>/<run>/<stage>` under `worktrees`: the host's slugs, and a stage id, which never begins with `_`.
+const workspaceSlug = (name: string): boolean => /^[a-z0-9][a-z0-9-]*$/u.test(name);
+const stageDirectory = (name: string): boolean => /^[a-z0-9][a-z0-9-]{0,31}$/u.test(name);
+
 /**
  * The sandbox read-deny covers the whole Ave home; these are the only children a confined process may be granted beneath it. A
  * grant is honored only inside one of them, and the protected rows inside them (`config`, `certs`, `sessions`, contribution
@@ -39,6 +43,7 @@ export const AVE_HOME_READ_REALLOWS: readonly AveHomeReadReallow[] = Object.free
   { segments: ["runtime", "python"], why: "the base interpreter that venv was created from, granted with it" },
   { segments: ["certs"], why: "corporate CA bundle; still floor-protected, opened only by a declared hostDirectory pierce" },
   { segments: ["sessions"], why: "saved sessions; still floor-protected, opened only by the builtin shell's session pierce" },
+  { segments: ["worktrees", workspaceSlug, workspaceSlug, stageDirectory], why: "one workflow stage's own workspace; the run root, `_join` and `_out` beside it stay closed" },
 ]);
 
 /** Whether `segments` (relative to the Ave home, case-folded like the path they came from) lie inside a re-allowed child. */

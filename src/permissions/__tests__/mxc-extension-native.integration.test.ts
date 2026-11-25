@@ -89,7 +89,7 @@ describe.runIf(process.platform === "win32")("native extension container filesys
         { allowRead: [protectedDirectory, shellDirectory], allowWrite: [granted, staging], denyRead: [denied], denyWrite: [], denyPluginsRoot: true, pinWriteRoots: true },
         { readRoots: [], writeRoots: [granted, staging], hostStorageRoots: [] },
       );
-      const grants = rankMxcFilesystem(admitted.policy, existsSync);
+      const grants = rankMxcFilesystem(admitted.model, existsSync);
       expect(grants.denied).toContain(denied);
       const request = buildMxcConfinedChildRequest({
         command: shell,

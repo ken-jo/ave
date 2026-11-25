@@ -14,11 +14,11 @@ import {
   pinnedWxcExecSha256,
   probeMxcPowerShellStart,
   powerShellMxcCommandLine,
-  rankMxcFilesystem,
   wxcExecPathFor,
   type DetectMxcSupportDeps,
   type MxcRunResult,
 } from "../mxc-windows.js";
+import { rankMxcLists } from "../../__tests__/support/mxc-policy-rows.js";
 
 // Verbatim shapes captured from wxc-exec 1.0.0 on Windows 11 26300.9711 (2026-10-19).
 const PROBE_BASE_CONTAINER = `{
@@ -275,7 +275,7 @@ describe("rankMxcFilesystem", () => {
   const exists = (path: string): boolean => !path.toLowerCase().includes("missing");
 
   it("maps grants, keeps a credential path inside the workspace denied, and omits ancestor denies", () => {
-    const grants = rankMxcFilesystem({
+    const grants = rankMxcLists({
       allowWrite: [repo, sandboxHome],
       allowRead: [repo, "C:\\Program Files\\Git"],
       denyRead: [home, "C:\\Users\\u\\AppData\\Roaming\\Ave\\sandbox-homes", `${repo}\\.env`],
@@ -290,7 +290,7 @@ describe("rankMxcFilesystem", () => {
   });
 
   it("drops a grant beneath the protected floor and demotes a write grant beneath a write deny", () => {
-    const grants = rankMxcFilesystem({
+    const grants = rankMxcLists({
       allowWrite: ["C:\\Users\\u\\.ssh\\work", "C:\\Users\\u\\.config\\fish"],
       allowRead: ["C:\\Users\\u\\.ssh"],
       denyRead: [],
@@ -303,7 +303,7 @@ describe("rankMxcFilesystem", () => {
   it("keeps the saved-session grant that deliberately pierces the floor, with its nested denies", () => {
     const userData = "C:\\Users\\u\\AppData\\Roaming\\Ave";
     const sessions = `${userData}\\sessions`;
-    const grants = rankMxcFilesystem({
+    const grants = rankMxcLists({
       allowWrite: [repo],
       allowRead: [repo, sessions],
       denyRead: [`${sessions}\\secrets`],
@@ -321,7 +321,7 @@ describe("rankMxcFilesystem", () => {
     const project = "C:\\Users\\u\\work";
     const aveHomeRoot = `${project}\\ave`;
     const hooks = `${project}\\.git\\hooks`;
-    const grants = rankMxcFilesystem({
+    const grants = rankMxcLists({
       allowWrite: [project],
       allowRead: [project],
       denyRead: [`${aveHomeRoot}\\`, `${aveHomeRoot}\\secrets\\`, `${aveHomeRoot}\\browser-downloads\\`],
@@ -338,7 +338,7 @@ describe("rankMxcFilesystem", () => {
     const project = "C:\\Users\\u\\work";
     const aveHomeRoot = `${project}\\ave`;
     const own = `${aveHomeRoot}\\workspace\\repo`;
-    const grants = rankMxcFilesystem({
+    const grants = rankMxcLists({
       allowWrite: [project, own],
       allowRead: [],
       denyRead: [`${aveHomeRoot}\\`],
@@ -350,7 +350,7 @@ describe("rankMxcFilesystem", () => {
   });
 
   it("drops grants that do not exist and de-duplicates case variants", () => {
-    const grants = rankMxcFilesystem({
+    const grants = rankMxcLists({
       allowWrite: [repo, repo.toUpperCase(), "C:\\missing-dir"],
       allowRead: [],
       denyRead: [],

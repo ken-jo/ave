@@ -4,6 +4,7 @@ import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js
 import { captureShellWorkingDirectoryIdentity, matchesShellWorkingDirectoryIdentity, type ShellWorkingDirectoryIdentity } from "./shell-working-directory-identity.js";
 import {
   parseHostShellExecutionInput,
+  exactRulePassesUnsandboxedShellAsk,
   requiresExplicitHostShellApproval,
   requiresUnsandboxedShellAsk,
   type HostShellExecutionPlan,
@@ -137,7 +138,7 @@ function isPermitConsentCurrent(record: PermitRecord): boolean {
   return record.windowsShellConsentRevision === undefined || record.windowsShellConsentRevision === getWindowsShellConsentRevision();
 }
 
-// Consume only action-bound host proof: a verified one-shot receipt, an exact host-request rule decision, or the authorization pipeline's normal-policy permit. The partial Windows plan rejects rule proof; structural, unrelated or differently bound decisions fail closed.
+// Consume only action-bound host proof: a verified one-shot receipt, an exact host-request rule decision, the exact-rule pass of the no-backend ask, or the authorization pipeline's normal-policy permit. The partial Windows plan rejects rule proof; structural, unrelated or differently bound decisions fail closed.
 export function mintHostShellExecutionPermit(input: {
   plan: HostShellExecutionPlan;
   approvalDecision: ApprovalDecision | undefined;
@@ -178,7 +179,7 @@ export function mintHostShellExecutionPermit(input: {
       cwd: input.binding.resolvedCwd,
     }, input.permissionManager);
     if (allowRuleAuthorization === undefined) return undefined;
-    if (input.plan.executionRequest !== "host") return undefined;
+    if (input.plan.executionRequest !== "host" && allowRuleAuthorization.floorPlanIdentity === undefined) return undefined;
   } else if (
     !consumeHostApprovedOneShotExecutionBinding(
       input.approvalDecision,
@@ -187,8 +188,11 @@ export function mintHostShellExecutionPermit(input: {
   ) return undefined;
   // Any receipt-bearing mint attempt consumes its receipt before checking plan compatibility, so a mismatch cannot be probed or replayed.
   if (!requiresExplicitHostShellApproval(input.plan, input.binding.toolName)) return undefined;
-  // On a plan under the sandbox-unavailable floor a saved rule never stands in for fresh consent; policy records are made only after a human card.
-  if (allowRuleAuthorization !== undefined && requiresUnsandboxedShellAsk(input.plan)) return undefined;
+  // On a plan under the sandbox-unavailable floor a saved rule stands in for fresh consent only as the exact-rule pass issued on this very plan
+  // (tree T:128); policy records are made only after a human card. A pass proof answers no other plan.
+  if (allowRuleAuthorization !== undefined && (requiresUnsandboxedShellAsk(input.plan)
+    ? !exactRulePassesUnsandboxedShellAsk(input.plan) || allowRuleAuthorization.floorPlanIdentity !== input.plan.identity
+    : allowRuleAuthorization.floorPlanIdentity !== undefined)) return undefined;
   // A floor session allow answers only the marked plan it was approved under.
   if (floorSessionAuthorized && (!requiresUnsandboxedShellAsk(input.plan) || input.plan.identity !== input.binding.planIdentity)) return undefined;
   if (
