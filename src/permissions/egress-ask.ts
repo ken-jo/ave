@@ -391,10 +391,15 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
     scopes: readonly EgressGrantScope[],
     invocation: LiveInvocation,
     oneConnection?: true,
+    checkDeny?: () => Decision | undefined,
   ): Promise<Decision> => {
-    const authority = owner.kind === "shell"
+    const invocationAuthority = owner.kind === "shell"
       ? invocationApprovalPersistenceGuard(owner.context.permissionContext?.remoteControllerAuthority, owner.context.sessionId, invocation.signal)
       : undefined;
+    const authority = checkDeny === undefined ? invocationAuthority : {
+      isCurrent: () => (invocationAuthority?.isCurrent() ?? true) && checkDeny() === undefined,
+      refresh: async () => (await invocationAuthority?.refresh()) ?? true,
+    };
     const subject = grantSubject(token, owner);
     // A one-connection answer is spent here. Longer scopes fence their own commit.
     const holdsGrant = scope !== "once" || (owner.kind === "shell" && !oneConnection);
@@ -411,6 +416,8 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
       }
       if (authority && (!holdsGrant || grantedScope !== scope)) await refreshApprovalPersistence(authority);
       if (!invocation.live()) return unattributed();
+      const denied = checkDeny?.();
+      if (denied !== undefined) return denied;
       assertApprovalPersistenceCurrent(authority);
       return {
         ...allow("prompt", grantedScope),
@@ -418,7 +425,9 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
       };
     } catch (error) {
       if (!invocation.live()) return unattributed();
-      if (error instanceof ApprovalPersistenceError) return revokedConnection();
+      if (error instanceof ApprovalPersistenceError) {
+        return invocationAuthority?.isCurrent() === false ? revokedConnection() : checkDeny?.() ?? revokedConnection();
+      }
       throw error;
     }
   };
@@ -508,8 +517,17 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
           if (evaluation.permission.reasonCode === "no-approver" && owner.kind === "shell") owner.context.onNoApprover?.();
           return networkDenial(evaluation);
         }
+        const checkDeny = owner.kind === "shell" && evaluation
+          ? () => {
+              const current = evaluation.recheck(undefined, deps.shellAskEnabled() ? owner.context.approvalSurface : "unavailable");
+              return current.permission.decision === "deny" ? networkDenial(current) : undefined;
+            }
+          : undefined;
         const resolved = (decision: Decision): Decision => {
-          if (!resolvedPhase || !decision.allow || owner.kind !== "shell" || !evaluation || !owner.context.permissionContext?.remoteControllerAuthority) return pass(decision);
+          if (!resolvedPhase || !decision.allow || owner.kind !== "shell" || !evaluation) return pass(decision);
+          if (!owner.context.permissionContext?.remoteControllerAuthority) {
+            return decision.basis === "prompt" ? { ...decision, recheck: () => checkDeny?.() ?? decision } : decision;
+          }
           return { ...decision, recheck: () => {
             const currentGrant = deps.grants.matchingLoadedScope(subject, grantDestination, eligibleScopes, { verifyPersistent: true });
             const current = evaluation.recheck(currentGrant, deps.shellAskEnabled() ? owner.context.approvalSurface : "unavailable");
@@ -531,7 +549,7 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
           const held = takeHeldAnswer(key);
           if (held !== undefined && held.network === network && (owner.kind === "terminal"
             || held.policyEpoch === evaluation?.policyEpoch && held.approvalIdentity === evaluation?.approvalIdentity)) {
-            return resolved(await grantAnswer(token, owner, grantDestination, held.scope, held.scopes, invocation, held.oneConnection));
+            return resolved(await grantAnswer(token, owner, grantDestination, held.scope, held.scopes, invocation, held.oneConnection, checkDeny));
           }
         }
         if (owner.kind === "shell" && evaluation?.permission.decision === "allow") {
@@ -553,7 +571,7 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
           if (afterAnswer) return afterAnswer;
           if (answer === ASK_AGAIN) return decide(host, port, context, verified);
           if (!answer.allow) return answer.decision;
-          if (resolvedPhase) return resolved(await grantAnswer(token, owner, grantDestination, answer.scope, answer.scopes, invocation, answer.oneConnection));
+          if (resolvedPhase) return resolved(await grantAnswer(token, owner, grantDestination, answer.scope, answer.scopes, invocation, answer.oneConnection, checkDeny));
           holdAnswer(key, { scope: answer.scope, scopes: answer.scopes, network, at: now().getTime(),
             ...(answer.oneConnection ? { oneConnection: true as const } : {}),
             ...(answer.policyEpoch ? { policyEpoch: answer.policyEpoch, approvalIdentity: answer.approvalIdentity } : {}) });
@@ -577,7 +595,7 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
           // The resolved decision can authorize a new socket even when its policy or approval was already known.
           const fresh = await refreshRemoteControllerBoundToSession(binding, owner.context.sessionId);
           decision = invocationRefusal(verified) ?? (fresh ? decision.recheck?.() ?? decision : revokedConnection());
-        }
+        } else if (!decision.provisional) decision = decision.recheck?.() ?? decision;
         if (decision.allow) decision = decision.onAllow?.() ?? decision;
       }
     } catch (error) {

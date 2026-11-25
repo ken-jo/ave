@@ -32,6 +32,12 @@ import { PermissionManager } from "../permission-manager.js";
 import { deferred } from "../../__tests__/support/deferred.js";
 import * as projectRuleFiles from "../rules/project-rule-files.js";
 import * as featureNamespace from "../../main/storage/feature-namespace.js";
+
+it("applies the same deny fence to held and directly resolved shell answers", () => {
+  const source = readFileSync(new URL("../egress-ask.ts", import.meta.url), "utf8");
+  expect(source.match(/grantAnswer\([^\n]+checkDeny\)/g)).toHaveLength(2);
+  expect(source).toMatch(/isCurrent: \(\) => .*checkDeny\(\) === undefined/);
+});
 import { configureHostResources } from "../../main/host-resources.js";
 import { setAveHomeConfigurationOwner } from "../../shared/ave-home-configuration-access.js";
 import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
@@ -907,6 +913,34 @@ describe("egress ask callback — shell calls", () => {
       answer = async () => ({ allow: false, reason: "denied by the user" });
       expect(await callback()(github, listener(OTHER_SHELL_TOKEN, ["140.82.112.3"]))).toEqual({ allow: false, reason: "denied by the user" });
     }
+  });
+
+  it.each(["before resolution", "while redeeming"] as const)("honors a deny saved %s of a held answer", async (when) => {
+    const manager = new PermissionManager(join(dir, "permissions.json"));
+    manager.setMode("strict");
+    answer = async () => ({ allow: true, scope: "session" });
+    const ask = rawCallback(undefined, createShellNetworkPermissionEvaluator(manager));
+    const destination = { host: "policy.example", port: 443 };
+    const saveDeny = async () => {
+      await manager.addRulePersist({ pattern: "Network(policy.example:443)", action: "deny" }, { kind: "user" });
+    };
+    const who = { attributionKey: SHELL_TOKEN, identity: "listener" as const };
+    expect(await ask(destination, { ...who, phase: "name" })).toBe(true);
+    const noteUse = vi.spyOn(grants, "noteUse");
+    if (when === "before resolution") await saveDeny();
+    else {
+      const grant = grants.grant.bind(grants);
+      vi.spyOn(grants, "grant").mockImplementationOnce(async (...args) => {
+        await saveDeny();
+        await grant(...args);
+      });
+    }
+    expect(await ask(destination, { ...who, phase: "resolved", addresses: ["8.8.8.8"], resolution: "pinned" }))
+      .toEqual({ allow: false, reason: "denied by host rule Network(policy.example:443)" });
+    expect(grants.matchingLoadedScope({ token: SHELL_TOKEN, origin: "shell", sessionId: "session-1", tabId: undefined, projectRoot: PROJECT },
+      { ...destination, network: "public" }, ["session"])).toBeUndefined();
+    expect(noteUse).not.toHaveBeenCalled();
+    expect(asked).toHaveLength(1);
   });
 
   it("gives nothing to a token whose owner was replaced", async () => {
