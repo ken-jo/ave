@@ -125,8 +125,9 @@ vi.mock("node:fs", async (original) => {
     if (!present(path)) throw enoent(path);
     return win32.normalize(path).replace(/(?<!:)[\\/]+$/, "");
   };
+  // A host scratch path under the simulated win32 can carry a trailing `\` directory suffix, which is a separator there.
   const stats = (real: typeof actual.lstatSync) => ((path: unknown, options?: { bigint?: boolean; throwIfNoEntry?: boolean }) => {
-    if (!isDrive(path)) return real(path as string, options as never);
+    if (!isDrive(path)) return real(typeof path === "string" ? path.replace(/(?<=.)\\+$/u, "") : path as string, options as never);
     if (!present(path)) {
       if (options?.throwIfNoEntry === false) return undefined;
       throw enoent(path);
@@ -799,6 +800,32 @@ describe("the browser download staging folder in the srt-win session floor and w
       fixtureGlobalGitConfig, fixtureSystemGitConfig,
     ]) {
       expect(writeDenies).toContain(fold(target));
+    }
+  });
+
+  it("refuses a worker wrap whose protected deny target disappears before the runtime stamps it", async () => {
+    useLayout(OUTSIDE_PROFILE, { staged: false });
+    await sessionFloor();
+    const secrets = `${aveHome()}\\secrets`;
+    const egress = openEgressInvocation(TEST_WORKER_EGRESS_OWNER);
+    try {
+      const boundarySnapshot = createAveHomeBoundarySnapshot();
+      runtime.wrap.mockImplementationOnce(async (...args: unknown[]) => {
+        const { filesystem } = args[2] as { filesystem: { denyRead: DenyList; denyWrite: DenyList } };
+        expect([...spelledRows(filesystem.denyRead), ...spelledRows(filesystem.denyWrite)].map(fold)).toContain(fold(secrets));
+        rmdirSync(secrets);
+        return { argv: [srtPath, "node", "server.js"], env: {} };
+      });
+      await expect(wrapWorkerCommand("node server.js", {
+        commandId: egress.token, boundarySnapshot,
+        filesystem: boundarySnapshot.run(() => ({ denyRead: getDefaultSensitiveReadDenyPaths(), denyWrite: getDefaultSensitiveWriteDenyPaths() })),
+      })).rejects.toThrow(/Windows deny target is absent and would be created: .*secrets/u);
+    } finally {
+      try {
+        await cleanupAsrtSandboxAfterCommand();
+      } finally {
+        egress.release();
+      }
     }
   });
 

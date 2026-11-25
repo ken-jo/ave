@@ -130,6 +130,8 @@ describe.runIf(process.platform === "win32")("pinned filesystem admission bounda
     const { sandbox } = await setup();
     const target = scratch();
     const canonical = (await import("node:fs")).realpathSync.native(target);
+    // Present, so the row reaches the native list; an absent row would be watched instead.
+    writeFileSync(join(canonical, ".bashrc"), "");
     const controls = vi.spyOn(writePolicy, "buildMandatorySandboxWritePolicy");
     const config = sandbox.buildSandboxConfig({ allowWrite: [target.toLowerCase()], windows: { externalConfinement: true } });
     expect(controls.mock.calls[0]![0].map(entry => typeof entry === "string" ? entry : entry.path)).toEqual([canonical]);

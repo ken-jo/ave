@@ -16,6 +16,7 @@ interface SandboxQuarantineMove {
 }
 
 export interface SandboxQuarantine {
+  readonly slot: string;
   readonly moved: readonly SandboxQuarantineMove[];
   move(path: string, expectedParent?: { readonly dev: number | bigint; readonly ino: number | bigint }): void;
   notice(): string | undefined;
@@ -71,6 +72,7 @@ export async function createSandboxQuarantine(commandId: string): Promise<Sandbo
   const notice = (): string | undefined => moved.length
     ? t("sandboxPolicy.quarantined", { moves: movesText() }) : undefined;
   return {
+    slot: physicalSlot,
     moved,
     notice,
     move(path, expectedParent): void {

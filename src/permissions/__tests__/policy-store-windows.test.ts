@@ -7,12 +7,14 @@ import { useConfigurationOwner } from "../../__tests__/support/configuration-own
 useConfigurationOwner();
 
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
+import { existsSync } from "node:fs";
 import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { loadPolicy, getAdminPolicyPath } from "../policy-store.js";
 import { buildSandboxConfig } from "../asrt-sandbox.js";
+import { resetWatchedRows, watchedProtectedRows } from "../windows-watched-rows.js";
 import { FilePolicySource, loadMarketplacePolicy } from "../../marketplace/sources/policy.js";
 import { readPolicyServiceBase } from "../../marketplace/service/client.js";
 import { readModelCatalogRefreshPolicy } from "../../core/model-catalog/refresh-policy.js";
@@ -46,6 +48,7 @@ describe.skipIf(process.platform !== "win32")("Windows administrative policy tru
   });
 
   afterEach(async () => {
+    resetWatchedRows();
     vi.unstubAllEnvs();
     await rm(root, { recursive: true, force: true });
   });
@@ -79,6 +82,7 @@ describe.skipIf(process.platform !== "win32")("Windows administrative policy tru
     const workspace = join(process.env.ProgramData!, "workspace");
     await mkdir(join(workspace, ".git", "hooks"), { recursive: true });
     const locked = join(workspace, "locked");
+    await writeFile(locked, "");
     const config = buildSandboxConfig({
       allowedDomains: [],
       allowWrite: [workspace],
@@ -88,7 +92,9 @@ describe.skipIf(process.platform !== "win32")("Windows administrative policy tru
     const denyRead = config.filesystem.denyRead.map((entry) => typeof entry === "string" ? entry : entry.path);
     const denyWrite = writeDenyPaths(config);
     expect(config.filesystem.allowWrite.map(entry => typeof entry === "string" ? entry : entry.path)).toContain(workspace);
-    expect(denyWrite).toContain(join(workspace, ".git", "config"));
+    expect(denyWrite).not.toContain(join(workspace, ".git", "config"));
+    expect(watchedProtectedRows()).toContain(join(workspace, ".git", "config"));
+    expect(existsSync(join(workspace, ".git", "config"))).toBe(false);
     expect(denyWrite).toContain(join(workspace, ".git", "hooks"));
     expect(denyRead).toContain(locked);
     expect(denyWrite).toContain(locked);
@@ -145,15 +151,22 @@ describe.skipIf(process.platform !== "win32")("Windows administrative policy tru
     expect(config.filesystem.denyWrite).toContain(target);
   });
 
-  it("keeps machine deny rows with unresolved short names", () => {
+  it("keeps present machine deny rows with unresolved short names and never stamps an absent one", async () => {
     const target = join(process.env.ProgramData!, "OTHER~1", "locked");
-    const config = buildSandboxConfig({ allowedDomains: [], denyRead: [target], denyWrite: [target] });
+    const absent = join(dirname(target), "absent");
+    await mkdir(dirname(target));
+    await writeFile(target, "");
+    const config = buildSandboxConfig({ allowedDomains: [], denyRead: [target, absent], denyWrite: [target, absent] });
     expect(config.filesystem.denyRead).toContain(target);
     expect(writeDenyPaths(config)).toContain(target);
+    expect(config.filesystem.denyRead).not.toContain(absent);
+    expect(writeDenyPaths(config)).not.toContain(absent);
+    expect(existsSync(absent)).toBe(false);
   });
 
-  it("keeps machine deny rows when canonical identity throws", () => {
+  it("keeps present machine deny rows when canonical identity throws", async () => {
     const target = join(process.env.ProgramData!, "locked");
+    await writeFile(target, "");
     const canonicalize = sensitivePaths.canonicalizePathForMatch;
     const spy = vi.spyOn(sensitivePaths, "canonicalizePathForMatch").mockImplementation((path) => {
       if (path === target) throw new Error("Path identity unavailable");
@@ -174,13 +187,17 @@ describe.skipIf(process.platform !== "win32")("Windows administrative policy tru
       .toThrow(`Windows write grant ${root} contains machine root ${machine}`);
   });
 
-  it("never omits a machine read deny, with or without a read grant over it", () => {
+  it("never omits a present machine read deny, with or without a read grant over it, and never stamps an absent one", async () => {
     // Keep the fixture's ProgramData outside the profile, whose rows the disjoint-profile rule may omit.
     vi.stubEnv("USERPROFILE", join(root, "profile"));
+    await writeFile(admin, "{}");
+    const absent = join(dirname(admin), "absent.json");
     for (const allowRead of [undefined, [process.env.ProgramData!], [root]]) {
-      const config = buildSandboxConfig({ allowedDomains: [], allowRead, denyRead: [admin], denyWrite: [admin] });
+      const config = buildSandboxConfig({ allowedDomains: [], allowRead, denyRead: [admin, absent], denyWrite: [admin, absent] });
       expect(config.filesystem.denyRead).toContain(admin);
       expect(writeDenyPaths(config)).not.toContain(admin);
+      expect(config.filesystem.denyRead).not.toContain(absent);
+      expect(existsSync(absent)).toBe(false);
     }
   });
 

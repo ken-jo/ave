@@ -1,4 +1,4 @@
-import { mkdirSync, realpathSync, renameSync, rmdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import childProcess, { type ChildProcess } from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import { EventEmitter } from "node:events";
@@ -218,15 +218,24 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
     const initialize = vi.spyOn(SandboxManager, "initialize").mockRejectedValue(new Error("Fixture initialization reached"));
     const { initializeAsrtSandbox } = await import("../asrt-sandbox.js");
-    await expect(initializeAsrtSandbox({
-      windows: { externalConfinement: true },
-      allowWrite: ["~/.stamp-fixture"],
-    })).rejects.toThrow("Fixture initialization reached");
-    expect(initialize).toHaveBeenCalledOnce();
-    const filesystem = initialize.mock.calls[0]![0].filesystem;
-    const controls = runtimeDenyWrite(filesystem);
-    expect(controls).toContain(join(process.env.HOME!, ".stamp-fixture", ".bashrc"));
-    expect(controls).not.toContain(resolve("~/.stamp-fixture", ".bashrc"));
+    // A present control file reaches the native list under the expanded home; an absent one stays out of it.
+    const grantRoot = join(process.env.HOME!, ".stamp-fixture");
+    mkdirSync(grantRoot, { recursive: true });
+    writeFileSync(join(grantRoot, ".bashrc"), "");
+    try {
+      await expect(initializeAsrtSandbox({
+        windows: { externalConfinement: true },
+        allowWrite: ["~/.stamp-fixture"],
+      })).rejects.toThrow("Fixture initialization reached");
+      expect(initialize).toHaveBeenCalledOnce();
+      const filesystem = initialize.mock.calls[0]![0].filesystem;
+      const controls = runtimeDenyWrite(filesystem);
+      expect(controls).toContain(join(grantRoot, ".bashrc"));
+      expect(controls).not.toContain(resolve("~/.stamp-fixture", ".bashrc"));
+      expect(controls).not.toContain(join(grantRoot, ".zshrc"));
+    } finally {
+      rmSync(grantRoot, { recursive: true, force: true });
+    }
   });
 
   it.each(["%UNEXPANDED%", "PROGRA~1", "CON", "document."])("refuses a home grant whose expanded control paths still contain %s", async (component) => {
@@ -623,7 +632,7 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     }
   });
 
-  it("preserves grant and deny expansion modes and missing directory markers", async () => {
+  it("preserves grant and deny expansion modes and directory markers, and watches a missing deny under a write grant", async () => {
     vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([scratch()]);
     const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
     const root = scratch();
@@ -631,15 +640,22 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     const writable = join(root, "writable");
     const missingGrant = join(root, "missing-grant");
     const missingDeny = join(writable, "missing-deny");
+    const presentDeny = join(writable, "present-deny");
     writeFileSync(readable, "");
     mkdirSync(writable);
+    mkdirSync(presentDeny);
+    let initialized = false;
     vi.spyOn(SandboxManager, "initialize").mockImplementation(async config => {
       const filesystem = config.filesystem;
+      initialized = true;
       expect(expandWindowsFsPaths(filesystem.allowRead ?? [], { mode: "grant" }).map(path => resolve(path))).toEqual([readable]);
       expect(expandWindowsFsPaths(filesystem.allowWrite, { mode: "grant" }).map(path => resolve(path))).toEqual([writable]);
-      expect(expandWindowsFsPaths(filesystem.denyRead, { mode: "deny" }).map(path => resolve(path))).toContain(missingDeny);
+      const denyRead = expandWindowsFsPaths(filesystem.denyRead, { mode: "deny" }).map(path => resolve(path));
+      expect(denyRead).toContain(presentDeny);
+      expect(denyRead).not.toContain(missingDeny);
       const entries = denyWriteSpellings(filesystem);
-      expect(entries).toContain(missingDeny + "\\");
+      expect(entries).toContain(`${presentDeny}\\`);
+      expect(entries).not.toContain(missingDeny + "\\");
       for (const list of [filesystem.allowRead, filesystem.allowWrite]) {
         expect(list?.every(entry => typeof entry !== "string" && entry.literal === true)).toBe(true);
       }
@@ -648,8 +664,10 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     await initializeAsrtSandbox({
       windows: { externalConfinement: true },
       allowRead: [readable, missingGrant], allowWrite: [writable, missingGrant],
-      denyRead: [missingDeny], denyWrite: [missingDeny + "\\"],
+      denyRead: [missingDeny, presentDeny], denyWrite: [missingDeny + "\\", `${presentDeny}\\`],
     });
+    expect(initialized).toBe(true);
+    expect((await import("../windows-watched-rows.js")).watchedProtectedRows()).toContain(missingDeny);
   });
 
   it("pins worker and terminal wrap lists before the runtime reads them", async () => {
