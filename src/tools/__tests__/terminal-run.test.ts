@@ -1025,7 +1025,7 @@ describe("terminal_run into a pane chat's own host terminal", () => {
       vi.spyOn(deps.host, "typeCommand").mockResolvedValue({ ok: false, reason: "edit-line-mismatch", message });
       const waitDisclosure = vi.spyOn(deps.host, "waitDisclosure");
 
-      const scope = await tool.approvalMemoryScope!({ command: "npm test" }, { cwd: "/workspace", sessionId: "main" });
+      const scope = await tool.approvalMemoryScope?.({ command: "npm test" }, { cwd: "/workspace", sessionId: "main" });
       const result = await tool.execute({ command: "npm test" }, ctxFor(scope));
       expect(result.isError).toBe(true);
       expect(JSON.parse(result.output as string).error).toBe(locale === "ko"

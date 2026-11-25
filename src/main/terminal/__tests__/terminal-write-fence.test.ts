@@ -299,7 +299,7 @@ describe("terminal write fence", () => {
     const result = await terminal.run(fence, undefined, cancel.signal);
     expect(result).toEqual(interruption === "user input"
       ? { ok: false, reason: "effect-refused", pasteUncleared: true,
-        message: refusal + "\nThe pasted line could not be cleared. Enter was not pressed." }
+        message: `${refusal}\nThe pasted line could not be cleared. Enter was not pressed.` }
       : { ok: false, reason: "effect-refused", message: refusal });
     expect(terminal.bytes).toEqual(interruption === "user input"
       ? [RESET, TERMINAL_EDIT_LINE_QUERY, PASTE, TERMINAL_EDIT_LINE_QUERY]
