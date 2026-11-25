@@ -779,7 +779,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       if (prior?.status === run.status && prior.attempt === run.attempt) continue;
       if (!claimEffect(replay, `stage:${run.stageId}`)) continue;
       shown = true;
-      const about = { itemId: state.itemId, stageId: run.stageId, attempt: run.attempt };
+      const about = { itemId: state.itemId, stageId: run.stageId, attempt: run.attempt, ...(run.gate?.judgedBy === "model" ? { judgedBy: run.gate.judgedBy } : {}) };
       if (run.status === "awaiting_gate") emit({ ...about, phase: "stage_gate" });
       else if (run.status === "passed") emit({ ...about, phase: "stage_passed" });
       else if (run.status === "failed") emit({ ...about, phase: "stage_failed", ...(run.failure ? { message: run.failure } : {}) });

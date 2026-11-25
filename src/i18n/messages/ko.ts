@@ -109,6 +109,8 @@ export const ko: Record<MessageCatalogKey, string> = {
   "reasonCodes.attachment-detached": "이 템플릿에서 일정 연결이 해제되었습니다.",
   "reasonCodes.unattended-not-read-only": "읽기 전용 템플릿만 사용자 없이 실행할 수 있습니다.",
   "reasonCodes.gate-check-unsupported": "명령의 종료 상태를 확인하는 게이트는 사용할 수 없습니다. 검토 게이트나 단계 결과를 사용하세요.",
+  "reasonCodes.verdict-unreadable": "단계의 최종 메시지에는 형식에 맞는 판정 블록이 하나 있어야 합니다.",
+  "reasonCodes.verdict-stage-incomplete": "단계가 최종 판정을 내리기 전에 멈췄습니다.",
   "reasonCodes.template-runs-too-large": "워크플로 실행 파일이 너무 커서 실행을 더 저장할 수 없습니다. 오래된 템플릿 실행 항목을 삭제한 뒤 다시 시도하세요.",
   "reasonCodes.invalid-template-run": "이 항목의 템플릿 실행을 읽을 수 없습니다.",
   "reasonCodes.template-runs-pending-review": "변경된 워크플로 실행 파일을 검토할 때까지 템플릿 실행이 멈춰 있습니다.",
