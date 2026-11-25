@@ -283,20 +283,24 @@ check (`assertMxcHolderStaging`) take the staging parent from it.
 
 | Platform | Runtime root | Staging parent |
 |---|---|---|
-| macOS | `<per-user temp>/ave-mxc-<uid>-<home digest>` | `<runtime root>/staging` |
-| Linux | `$XDG_RUNTIME_DIR/ave-mxc-<uid>-<home digest>` when the session provides one, else `<temp>/ave-mxc-<uid>-<home digest>` | `<runtime root>/staging` |
+| macOS | `<per-user temp>/ave-mxc-<digest>` | `<runtime root>/staging` |
+| Linux | `<temp>/ave-mxc-<digest>` | `<runtime root>/staging` |
 | Windows | not moved yet | `<AVE_HOME>\mxc-staging`, unchanged |
 
 - **Selection.**
-  - The base is resolved to its canonical path, because the macOS sandbox
-    matches real paths. `<home digest>` is eight hex digits of the Ave home
-    path's SHA-256, so two Ave homes of one account never share a root.
+  - The base is the temp directory (`os.tmpdir()`), resolved to its canonical
+    path because the macOS sandbox matches real paths. Linux uses it too: the
+    session runtime directory (`$XDG_RUNTIME_DIR`) is memory-backed and not
+    meant for a HOME's worth of files.
+  - `<digest>` is twelve hex digits of the SHA-256 over the account id and the
+    Ave home path, so each account and Ave home has its own root and the name
+    has one length.
+  - The root must lie neither inside nor above the Ave home, compared on both
+    the lexical and the canonical home. This is checked before anything is
+    created.
   - The root and the staging parent are created with mode 0700 and re-verified
     on every use: a real directory, not a link, owned by this account, closed
-    to every other account. A Linux session runtime directory must pass the
-    same check.
-  - The root must lie neither inside nor above the Ave home, compared on both
-    the lexical and the canonical home.
+    to every other account.
   - Any failure refuses the start (`MxcRuntimeRootError`). A directory that
     fails is never re-moded, replaced or bypassed, and staging never falls back
     into the Ave home.
@@ -309,7 +313,7 @@ check (`assertMxcHolderStaging`) take the staging parent from it.
     unmarked tree. It sits in the staging parent, which no container is
     granted, so a container cannot forge or remove it. A run that cannot be
     marked is refused.
-  - `<runtime root>/s/<first 12 id digits>` holds the run's unix sockets. It
+  - `<runtime root>/s/<first 8 id digits>` holds the run's unix sockets. It
     is created on first use, outside the run's write grant, on a short path:
     a socket address holds 104 bytes on macOS and 108 on Linux. A socket path
     over the limit is refused. Granting the directory is the backend's
@@ -332,11 +336,15 @@ check (`assertMxcHolderStaging`) take the staging parent from it.
   under a denied directory, so that placement works there. Moving it needs a
   per-user location with a protected ACL and is a separate change; until then
   the Ave home's read re-allow for `mxc-staging` stays.
-- **Residual.** The runtime root is outside the Ave home's read deny. A
-  container sees only its own grants, so it cannot reach another run. A process
-  confined by a different, allow-by-default backend on the same account is not
-  kept out by mode bits; keeping it out needs a floor deny on the runtime root,
-  which is a permission decision and not part of this placement.
+- **Residuals.**
+  - macOS ages files out of the per-user temp directory when they go unread
+    for days. A run that lives that long can lose untouched files in its HOME
+    and temp, as it would in any temp directory.
+  - The runtime root is outside the Ave home's read deny. A container
+    sees only its own grants, so it cannot reach another run. A process
+    confined by a different, allow-by-default backend on the same account is
+    not kept out by mode bits; keeping it out needs a floor deny on the runtime
+    root, which is a permission decision and not part of this placement.
 
 ## Holder adapters (row 5)
 

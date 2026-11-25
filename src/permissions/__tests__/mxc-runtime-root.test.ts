@@ -35,7 +35,6 @@ let processes: Map<number, string | null>;
 function hostOf(overrides: Partial<MxcRuntimeHost> = {}): MxcRuntimeHost {
   return {
     platform: process.platform,
-    env: {},
     tmpdir: base,
     uid,
     pid: process.pid,
@@ -75,15 +74,16 @@ afterEach(() => {
 });
 
 describe.runIf(posix)("runtime root selection", () => {
-  it("creates a 0700 directory of this account under the temp base, named by account and Ave home", () => {
+  it("creates a 0700 directory of this account under the temp base, named by a digest of account and Ave home", () => {
     const root = ensureMxcRuntimeRoot(hostOf());
     expect(dirname(root)).toBe(base);
-    expect(rootName()).toMatch(new RegExp(`^ave-mxc-${uid}-[0-9a-f]{8}$`, "u"));
+    expect(rootName()).toMatch(/^ave-mxc-[0-9a-f]{12}$/u);
     expect(mode(root)).toBe(0o700);
     expect(lstatSync(root).uid).toBe(uid);
-    // The same host resolves the same root; another Ave home gets its own.
+    // The same host resolves the same root; another Ave home or account has its own.
     expect(ensureMxcRuntimeRoot(hostOf())).toBe(root);
     expect(ensureMxcRuntimeRoot(hostOf({ aveHome: join(scratch, "other", ".ave") }))).not.toBe(root);
+    expect(readdirSync(base).filter((name) => name.startsWith("ave-mxc-"))).toHaveLength(2);
   });
 
   it("returns the canonical path when the temp directory is reached through a link", () => {
@@ -92,17 +92,8 @@ describe.runIf(posix)("runtime root selection", () => {
     expect(ensureMxcRuntimeRoot(hostOf({ tmpdir: linked }))).toBe(join(base, rootName()));
   });
 
-  it("uses the session runtime directory on Linux when there is one, and refuses one that is not private", () => {
-    const session = join(scratch, "run-user");
-    mkdirSync(session, { mode: 0o700 });
-    const linux = hostOf({ platform: "linux", env: { XDG_RUNTIME_DIR: session } });
-    expect(dirname(ensureMxcRuntimeRoot(linux))).toBe(session);
-    chmodSync(session, 0o755);
-    expect(() => ensureMxcRuntimeRoot(linux)).toThrow(MxcRuntimeRootError);
-    // Refused, not replaced by the temp directory.
-    expect(rootName()).toBe("");
-    // macOS has no such convention: the variable is not read there.
-    expect(dirname(ensureMxcRuntimeRoot(hostOf({ platform: "darwin", env: { XDG_RUNTIME_DIR: session } })))).toBe(base);
+  it("uses the temp directory on Linux too, not the memory-backed session runtime directory", () => {
+    expect(dirname(ensureMxcRuntimeRoot(hostOf({ platform: "linux" })))).toBe(base);
   });
 
   it("stages on Windows under the Ave home, as before, and nowhere else resolves to it", () => {
@@ -145,8 +136,8 @@ describe.runIf(posix)("runtime root fails closed", () => {
     writeFileSync(root, "");
     expect(() => createMxcRunStaging(hostOf())).toThrow(MxcRuntimeRootError);
     rmSync(root);
-    mkdirSync(root, { mode: 0o700 });
-    expect(() => createMxcRunStaging(hostOf({ uid: uid + 1 }))).toThrow(MxcRuntimeRootError);
+    // A directory at this account's name that another account owns.
+    expect(() => createMxcRunStaging(hostOf({ uid: uid + 1 }))).toThrow(/not this account's/u);
     nothingUnderAveHome();
   });
 
@@ -165,10 +156,13 @@ describe.runIf(posix)("runtime root fails closed", () => {
     const inside = join(home, "tmp");
     mkdirSync(inside);
     expect(() => ensureMxcRuntimeRoot(hostOf({ tmpdir: inside }))).toThrow(/overlaps the Ave home/u);
+    // Refused before anything is created there.
+    expect(readdirSync(inside)).toEqual([]);
     // Reached through a link, the Ave home is still the Ave home.
     const alias = join(scratch, "home-alias");
     symlinkSync(home, alias);
     expect(() => ensureMxcRuntimeRoot(hostOf({ aveHome: alias, tmpdir: inside }))).toThrow(/overlaps the Ave home/u);
+    expect(readdirSync(inside)).toEqual([]);
   });
 
   it("refuses a platform or account it has no placement for", () => {
@@ -236,6 +230,8 @@ describe.runIf(posix)("run staging layout", () => {
       const server = createServer();
       await new Promise<void>((resolve, reject) => server.once("error", reject).listen(path, resolve));
       await new Promise<void>((resolve) => server.close(() => resolve()));
+      // Headroom for a name on the longest prefix, whatever the account's id: the root's name has a fixed length.
+      expect(Buffer.byteLength(mxcRunSocketPath(run, "control.sock"))).toBeLessThanOrEqual(process.platform === "darwin" ? 103 : 107);
       expect(() => mxcRunSocketPath(run, "x".repeat(110))).toThrow(/socket address/u);
       for (const name of ["../escape", ".hidden", "a/b", ""]) {
         expect(() => mxcRunSocketPath(run, name)).toThrow(MxcProcessContractError);

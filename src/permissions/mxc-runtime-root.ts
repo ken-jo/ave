@@ -26,7 +26,6 @@ export class MxcRuntimeRootError extends Error {
 /** What the selector reads from the host. Production uses `currentMxcRuntimeHost()`; a test replaces single fields. */
 export interface MxcRuntimeHost {
   readonly platform: NodeJS.Platform;
-  readonly env: Readonly<Record<string, string | undefined>>;
   readonly tmpdir: string;
   readonly uid: number | undefined;
   readonly pid: number;
@@ -77,7 +76,6 @@ export function currentMxcRuntimeHost(): MxcRuntimeHost {
   const platform = process.platform;
   return {
     platform,
-    env: process.env,
     tmpdir: tmpdir(),
     uid: typeof process.getuid === "function" ? process.getuid() : undefined,
     pid: process.pid,
@@ -123,37 +121,32 @@ function ensurePrivateDirectory(path: string, uid: number, what: string): string
 const atOrUnder = (child: string, parent: string): boolean =>
   child === parent || child.startsWith(parent.endsWith("/") ? parent : `${parent}/`);
 
-/** The account's private base directory: `$XDG_RUNTIME_DIR` on Linux when the session provides one, else the temp
- * directory (per-user on macOS). Canonical, because the macOS sandbox matches real paths. */
-function runtimeBase(host: MxcRuntimeHost, uid: number): string {
-  const xdg = host.platform === "linux" ? host.env.XDG_RUNTIME_DIR : undefined;
-  const configured = xdg !== undefined && xdg !== "" ? xdg : host.tmpdir;
-  if (!posixPath.isAbsolute(configured)) refuse("Container runtime base directory is not an absolute path");
-  let base: string;
+/** The temp directory (per-user on macOS), canonical because the macOS sandbox matches real paths. Linux uses it
+ * too rather than the session runtime directory, which is memory-backed and not meant to hold a HOME's worth of files. */
+function runtimeBase(host: MxcRuntimeHost): string {
+  if (!posixPath.isAbsolute(host.tmpdir)) refuse("Container runtime base directory is not an absolute path");
   try {
-    base = realpathSync.native(configured);
+    return realpathSync.native(host.tmpdir);
   } catch (error) {
     return refuse("Container runtime base directory could not be resolved", error);
   }
-  // A session runtime directory is this account's alone by its own contract; one that is not is refused, not swapped for temp.
-  if (configured === xdg && !privateTo(lstatSync(base), uid)) {
-    refuse("The session runtime directory is not this account's private directory");
-  }
-  return base;
 }
 
 /**
- * The one directory everything a container needs lives under on macOS and Linux: `<base>/ave-mxc-<uid>-<home digest>`,
- * mode 0700, owned by this account, never a link, and neither inside nor above the Ave home. The Ave home is a denied
- * directory, and the macOS sandbox lets a deny override every allow, so a grant nested inside it cannot work there.
- * The root itself is host-only: a container is granted its own run directory beneath it and nothing above that.
- * Every call re-verifies. A failure throws `MxcRuntimeRootError`; no caller may place staging elsewhere instead.
+ * The one directory everything a container needs lives under on macOS and Linux: `<temp>/ave-mxc-<digest>`, mode
+ * 0700, owned by this account, never a link, and neither inside nor above the Ave home. The digest is over the account
+ * and the Ave home, so each pair has its own root and the name's length never varies (socket paths are short). The
+ * Ave home is a denied directory, and the macOS sandbox lets a deny override every allow, so a grant nested inside it
+ * cannot work there. The root itself is host-only: a container is granted its own run directory beneath it and
+ * nothing above that. Every call re-verifies. A failure throws `MxcRuntimeRootError`, before anything is created when
+ * the placement itself is refused; no caller may place staging elsewhere instead.
  */
 export function ensureMxcRuntimeRoot(host: MxcRuntimeHost = currentMxcRuntimeHost()): string {
   const uid = posixUid(host);
   const home = posixPath.resolve(host.aveHome);
-  const digest = createHash("sha256").update(home).digest("hex").slice(0, 8);
-  const root = ensurePrivateDirectory(posixPath.join(runtimeBase(host, uid), `ave-mxc-${uid}-${digest}`), uid, "Container runtime root");
+  const digest = createHash("sha256").update(`${uid}\0${home}`).digest("hex").slice(0, 12);
+  // The base is canonical and the leaf is verified not to be a link, so this is the root's canonical path.
+  const root = posixPath.join(runtimeBase(host), `ave-mxc-${digest}`);
   let canonicalHome = home;
   try {
     canonicalHome = realpathSync.native(home);
@@ -165,7 +158,7 @@ export function ensureMxcRuntimeRoot(host: MxcRuntimeHost = currentMxcRuntimeHos
   if ([home, canonicalHome].map(fold).some((path) => atOrUnder(fold(root), path) || atOrUnder(path, fold(root)))) {
     refuse("Container runtime root overlaps the Ave home");
   }
-  return root;
+  return ensurePrivateDirectory(root, uid, "Container runtime root");
 }
 
 /**
@@ -214,7 +207,7 @@ function selfOwner(host: MxcRuntimeHost): RunOwner {
 }
 
 const socketDirectoryOf = (runRoot: string): string =>
-  posixPath.join(posixPath.dirname(posixPath.dirname(runRoot)), "s", posixPath.basename(runRoot).slice(0, 12));
+  posixPath.join(posixPath.dirname(posixPath.dirname(runRoot)), "s", posixPath.basename(runRoot).slice(0, 8));
 
 /**
  * Create one run's staging: `<runtime root>/staging/<32 hex>/{home,temp}`, each 0700. A sibling `<id>.owner` records
@@ -251,7 +244,12 @@ export function createMxcRunStaging(host: MxcRuntimeHost = currentMxcRuntimeHost
       if (!liveRuns.has(root)) throw new MxcProcessContractError("Container run staging was already removed");
       const directory = socketDirectoryOf(root);
       ensurePrivateDirectory(posixPath.dirname(directory), uid, "Container socket parent");
-      mkdirSync(directory, { mode: 0o700 });
+      try {
+        // Exclusive: an existing entry is another run's.
+        mkdirSync(directory, { mode: 0o700 });
+      } catch (error) {
+        return refuse("Container socket directory could not be created", error);
+      }
       sockets = directory;
       return directory;
     },
@@ -306,7 +304,12 @@ function removeRunTree(root: string): void {
   }
   removeIfPresent(retired);
   removeIfPresent(socketDirectoryOf(root));
-  unlinkSync(`${root}${OWNER_SUFFIX}`);
+  try {
+    unlinkSync(`${root}${OWNER_SUFFIX}`);
+  } catch (error) {
+    // The platform may age an untouched marker out of the temp directory.
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
 }
 
 /**
