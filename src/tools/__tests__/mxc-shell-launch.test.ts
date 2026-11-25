@@ -1,4 +1,5 @@
 import net from "node:net";
+import { win32 as winPath } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerMxcShellLaunchAdmissionFixture } from "../../__tests__/support/mxc-shell-launch-admission.js";
 import { deferred } from "../../__tests__/support/deferred.js";
@@ -38,6 +39,7 @@ vi.mock("../../permissions/mxc-windows.js", async (importOriginal) => ({
 import { prepareMxcShellLaunch } from "../mxc-shell-launch.js";
 import { createContainedShellLifecycle } from "../contained-shell-lifecycle.js";
 import { MXC_REQUEST_CHARACTER_LIMIT } from "../../permissions/mxc-windows.js";
+import { mxcConfinementStatePaths } from "../../permissions/mxc-runtime-root.js";
 import { egressInvocationOwner, onEgressInvocationReleased, openEgressInvocation } from "../../permissions/egress-invocations.js";
 import * as policyPipe from "../../permissions/mxc-policy-pipe.js";
 import * as sandboxCapability from "../../permissions/sandbox-capability.js";
@@ -148,6 +150,50 @@ describe("prepareMxcShellLaunch", () => {
     } finally {
       expect(await lifecycle.dispose()).toEqual([]);
     }
+  });
+
+  describe.runIf(process.platform === "win32")("the confinement backends' own state", () => {
+    const runtimeRoot = (): string => mxcConfinementStatePaths()[0]!;
+
+    it.each([
+      ["the runtime root", () => runtimeRoot()],
+      ["a child of the runtime root", () => winPath.join(runtimeRoot(), "runs", "other")],
+      ["an ancestor of the runtime root", () => winPath.dirname(winPath.dirname(runtimeRoot()))],
+    ])("refuses a write root at %s before ranking or any listener", async (_name, path) => {
+      relay();
+      const lifecycle = createContainedShellLifecycle();
+      try {
+        const allowWrite = [WS, path()];
+        await expect(prepareMxcShellLaunch({ ...INPUT, filesystem: { ...INPUT.filesystem, allowWrite } }, lifecycle))
+          .rejects.toMatchObject({ code: "confinement-state-write-grant", path: allowWrite[1] });
+        expect(h.openRelay).not.toHaveBeenCalled();
+      } finally {
+        expect(await lifecycle.dispose()).toEqual([]);
+      }
+    });
+
+    it("refuses every write root when a backend's state cannot be located", async () => {
+      relay();
+      vi.stubEnv("LOCALAPPDATA", "");
+      const lifecycle = createContainedShellLifecycle();
+      try {
+        await expect(prepareMxcShellLaunch(INPUT, lifecycle)).rejects.toMatchObject({ code: "confinement-state-write-grant", path: undefined });
+        expect(h.openRelay).not.toHaveBeenCalled();
+      } finally {
+        expect(await lifecycle.dispose()).toEqual([]);
+      }
+    });
+
+    it("keeps a read of the runtime root on the read policy", async () => {
+      relay();
+      const lifecycle = createContainedShellLifecycle();
+      try {
+        const launch = await prepareMxcShellLaunch({ ...INPUT, filesystem: { ...INPUT.filesystem, allowRead: [runtimeRoot()] } }, lifecycle);
+        expect(decodeRequest(launch.argv)["filesystem"]["readwritePaths"]).toEqual([WS]);
+      } finally {
+        expect(await lifecycle.dispose()).toEqual([]);
+      }
+    });
   });
 
   it("expands a pattern deny over the filesystem by default, denies a placeholder directory whole and leaves links alone", async () => {
