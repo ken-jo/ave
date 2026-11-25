@@ -5,6 +5,8 @@ import { PassThrough } from "node:stream";
 import { win32 as winPath } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
+import { SYNTHETIC_MXC_STAGING_PARENT } from "../../__tests__/support/mxc-staging-parent.js";
+import { escapeRegExp } from "../../shared/escape-reg-exp.js";
 
 const state = vi.hoisted(() => ({
   plan: undefined as unknown,
@@ -14,6 +16,7 @@ const state = vi.hoisted(() => ({
 
 const NODE = "C:\\Program Files\\nodejs\\node.exe";
 const SANDBOX = "C:\\ave\\mcp\\fs\\sandbox";
+const STAGING_HOME_PATTERN = new RegExp(String.raw`^${escapeRegExp(SYNTHETIC_MXC_STAGING_PARENT)}\\[0-9a-f]{32}\\home$`, "u");
 
 /** A server on owned streams answering the legacy handshake. */
 function containedServer() {
@@ -169,7 +172,7 @@ describe("contained MCP request", () => {
     // The host's APPDATA/LOCALAPPDATA never reach the container, even when configured: both are the staging HOME.
     expect(request!.environment!.LOCALAPPDATA).toBe(request!.environment!.HOME);
     expect(request!.environment!.APPDATA).toBe(request!.environment!.HOME);
-    expect(request!.environment!.LOCALAPPDATA).toMatch(/^C:\\runtime\\staging\\[0-9a-f]{32}\\home$/u);
+    expect(request!.environment!.LOCALAPPDATA).toMatch(STAGING_HOME_PATTERN);
     expect(request!.workingDirectory).toBe(SANDBOX);
     expect(request!.inheritDefaultEnvironment).toBe(false);
     expect(request!.command.startsWith(`"${NODE}"`)).toBe(true);
@@ -180,7 +183,7 @@ describe("contained MCP request", () => {
     await mcp.connect();
     await mcp.disconnect();
     const [request] = state.requests;
-    expect(request!.workingDirectory).toMatch(/^C:\\runtime\\staging\\[0-9a-f]{32}\\home$/u);
+    expect(request!.workingDirectory).toMatch(STAGING_HOME_PATTERN);
     expect(request!.workingDirectory).toBe(request!.environment!.HOME);
   });
 

@@ -1,9 +1,10 @@
 import { mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, win32 } from "node:path";
 
+export const SIMULATED_MXC_RUNTIME_ROOT = "C:\\runtime-cache\\ai.agent-connector.ave\\mxc-runtime";
 /** The staging parent of suites that lay out synthetic Windows paths and touch no disk. */
-export const SYNTHETIC_MXC_STAGING_PARENT = "C:\\runtime\\staging";
+export const SYNTHETIC_MXC_STAGING_PARENT = win32.join(SIMULATED_MXC_RUNTIME_ROOT, "staging");
 
 let parent: string | undefined;
 

@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { useTempDirs } from "../test-helpers.js";
 import { setProcessPlatform } from "./process-platform.js";
 import { useConfigurationOwner } from "./configuration-owner.js";
-import { mxcStagingParentFor, SYNTHETIC_MXC_STAGING_PARENT } from "./mxc-staging-parent.js";
+import { mxcStagingParentFor, SIMULATED_MXC_RUNTIME_ROOT, SYNTHETIC_MXC_STAGING_PARENT } from "./mxc-staging-parent.js";
 import { nativePluginLaunch } from "./mxc-plugin-launch.js";
 import {
   SIMULATED_MXC_CACHE_HOME, simulatedConfigurationFs, simulatedConfigurationHandles, simulatedRuntimeRoot, simulatedSandboxProcessHome, simulatedWindowsPathFacts,
@@ -134,6 +134,13 @@ describe("simulated container runtime root", () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+
+  it("puts synthetic staging directly under the simulated win32 floor root", () => {
+    const simulated = simulatedRuntimeRoot(runtimeRoot, "linux");
+    setProcessPlatform("win32");
+    expect(simulated.mxcRuntimeRootFloorPath()).toBe(SIMULATED_MXC_RUNTIME_ROOT);
+    expect(win32.dirname(SYNTHETIC_MXC_STAGING_PARENT)).toBe(SIMULATED_MXC_RUNTIME_ROOT);
   });
 
   // Production asks with a positional platform; the installed function must not read it as the host.
