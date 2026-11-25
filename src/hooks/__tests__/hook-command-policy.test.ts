@@ -269,6 +269,36 @@ describe("hook command permission admission", () => {
     }));
   });
 
+  it("runs the hook once per gate-signed allow-once on the unavailable-sandbox forced card, and asks again next time", async () => {
+    setShellSandboxRequestedAtBoot(true);
+    const p = policy();
+    p.permissionManager.setMode("allow");
+    p.permissionManager.setRules([{ pattern: "Bash(node *)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
+    const runOnce = async () => {
+      const wc = { isDestroyed: vi.fn(() => false), send: vi.fn() };
+      const gate = new ApprovalGate(wc as never);
+      const pending = runOneHookScript(hook, payload, { authorizeCommand: createHookCommandAuthorizer({ permissionManager: p.permissionManager, approvalGate: gate }) });
+      const deadline = Date.now() + 3000;
+      while (wc.send.mock.calls.length === 0 && Date.now() < deadline) await new Promise((done) => setTimeout(done, 1));
+      const request = wc.send.mock.calls[0]?.[1] as ApprovalRequest;
+      expect(request?.nonce).toBeTruthy();
+      expect(request).toMatchObject({ allowedChoices: ["allow-once", "deny-once"],
+        executionPlan: { requestedSandbox: true, fallbackReason: "requested-sandbox-unavailable", requiresExplicitUserApproval: true } });
+      gate.resolve(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac });
+      const result = await pending;
+      return { result, cards: wc.send.mock.calls.filter(([, sent]) => (sent as ApprovalRequest | undefined)?.nonce !== undefined).length };
+    };
+    const first = await runOnce();
+    expect(first.result.decision, first.result.reason).toBe("allow");
+    expect(JSON.parse(first.result.rawStdout).reason).toBe("received");
+    expect(first.cards).toBe(1);
+    expect(permits).toMatchObject({ minted: 1, consumed: [true] });
+    const second = await runOnce();
+    expect(second.cards).toBe(1);
+    expect(second.result.decision, second.result.reason).toBe("allow");
+    expect(permits).toMatchObject({ minted: 2, consumed: [true, true] });
+  });
+
   describe.each(["boundary-link", "boundary-unlisted"] as const)("worker-only boot with an unverifiable boundary (%s)", (category) => {
     // Worker confinement on, shell scope off: boot publishes the boundary state while the shell intent stays false.
     function publish(): void {
@@ -437,6 +467,8 @@ describe("hook command permission admission", () => {
       if (requested) {
         expect(p.requestAndWait).toHaveBeenCalledOnce();
         expect(p.requestAndWait).toHaveBeenCalledWith(expect.objectContaining({ forceExplicit: true }));
+        // The mock answer never passed the gate, so it carries no host receipt.
+        expect(baseline).toMatchObject({ decision: "deny", reason: expect.stringContaining("approval receipt is invalid") });
         p.requestAndWait.mockClear();
       } else {
         expect(baseline.decision).toBe("allow");
