@@ -7,7 +7,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   AVE_APP_LOCK_SUITE_TRIGGERS,
-  boundRelatedTests,
   FULL_CHECK_GLOBAL_INPUT_FILES,
   isFullCheckGlobalInput,
   isMessageCatalogPath,
@@ -17,7 +16,6 @@ import {
   AVE_APP_LOCK_SUITES,
   readMessageCatalogEntries,
   readMessageCatalogEntriesByPath,
-  RELATED_TEST_BOUND,
   selectFastSourceChecks,
   selectMessageCatalogChecks,
   selectTriggeredLockSuites,
@@ -238,19 +236,13 @@ describe("pre-push fast source tier", () => {
   });
 
 
-  it("wires the fast tier, manual full checks and its log line into the hook", () => {
+  it("wires the static pre-push checks and the manual full checks into the hook", () => {
     const hook = readFileSync(resolve(root, "scripts/hooks/run-local-checks.mjs"), "utf8");
-    expect(hook).toContain('process.env.AVE_PREPUSH_FULL === "1"');
-    expect(hook).toContain("AVE_PREPUSH_FULL=1 requested global-input checks");
     expect(hook).toContain('} else if (stage === "manual") {');
-    expect(hook).toContain("console.log(describeScopedTier({");
-    expect(readFileSync(resolve(root, "scripts/hooks/pre-push-tier.mjs"), "utf8")).toContain("[checks] tier=${tier} pre-push");
-    expect(hook).toContain("[checks] tier=full ${stage}");
-    expect(hook).not.toContain('"--passWithNoTests"');
-    expect(hook).toContain('"--reporter=json"');
-    expect(hook.indexOf("getFastSourceRelatedSelection(repoRoot,")).toBeGreaterThanOrEqual(0);
-    expect(hook.indexOf("getFastSourceRelatedSelection(repoRoot,")).toBeLessThan(hook.indexOf("console.log(describeScopedTier({"));
-    expect(hook).toContain('runVitestChunks(bun, dir, directArgs, (chunk) => ["run", "test:vitest", "--", "run", ...chunk]);');
+    expect(hook).toContain("[checks] tier=full manual");
+    expect(hook).toContain("[checks] tier=${plan.docsOnly ? ");
+    expect(hook).not.toContain('"run", "test:vitest"');
+    expect(hook).not.toContain("AVE_PREPUSH_FULL");
     const shellHook = readFileSync(resolve(root, "scripts/hooks/pre-push"), "utf8");
     expect(shellHook).toContain('if [ "${AVE_HOOKS_SKIP:-}" = "1" ] || [ "${SKIP_AVE_HOOKS:-}" = "1" ]; then');
   });
@@ -340,39 +332,7 @@ describe("pre-push fast source tier", () => {
     ]);
   });
 
-  it("bounds a shared module's related-test fan-out to its direct importers", () => {
-    const fanOut = Array.from({ length: RELATED_TEST_BOUND + 10 }, (_, index) => `src/feature${index}/__tests__/feature.test.ts`);
-    const texts = new Map<string, string>([
-      [fanOut[0]!, 'import { schema } from "../../audit/audit-schema.js";\n'],
-      [fanOut[1]!, 'vi.mock("../../audit/audit-schema", () => ({}));\n'],
-      [fanOut[2]!, 'import { other } from "../../audit/audit-schema-helpers.js";\n'],
-    ]);
-    const coverage = [
-      { source: "src/audit/audit-schema.ts", tests: fanOut },
-      { source: "src/permissions/judge/judge-engine.ts", tests: ["src/permissions/judge/__tests__/judge-engine.test.ts"] },
-    ];
-    const read = (path: string) => texts.get(path) ?? "";
-    expect(boundRelatedTests(coverage, read)).toEqual({
-      tests: [fanOut[0], fanOut[1], "src/permissions/judge/__tests__/judge-engine.test.ts"].sort(),
-      narrowed: [{ source: "src/audit/audit-schema.ts", related: RELATED_TEST_BOUND + 10, direct: 2, lockSuites: 0 }],
-    });
-    expect(boundRelatedTests([{ source: "src/a.ts", tests: fanOut.slice(0, 30) }], read)).toEqual({
-      tests: [...fanOut.slice(0, 30)].sort(), narrowed: [],
-    });
-    // A fan-out module with no direct importer must not disappear from selection.
-    expect(boundRelatedTests([{ source: "src/lonely.ts", tests: fanOut }], read).reason)
-      .toBe(`src/lonely.ts reaches ${RELATED_TEST_BOUND + 10} related test files and none imports it directly; full checks required`);
-  });
-
-  it("prints the triggered lock suites and the bounded related set", () => {
-    const hook = readFileSync(resolve(root, "scripts/hooks/run-local-checks.mjs"), "utf8");
-    expect(hook).toContain("[checks] lock suite ${suite}: triggered by ${path}");
-    expect(hook).toContain("[checks] related tests bounded: ${source} reaches ${related} test file(s)");
-    expect(hook).toContain("lockSuites: selectTriggeredLockSuites([...changedFiles])");
-  });
-
   it("keeps the IPC lock suites when src/shared/ipc-channels.ts changes alone", () => {
-    // Preserve transitive lock suites when narrowing a large related-test set to direct importers.
     expect(selectTriggeredLockSuites(["src/shared/ipc-channels.ts"]).map(({ suite }) => suite)).toEqual([
       "src/__tests__/packaging-discipline-source.test.ts",
       "src/__tests__/preload-shape.test.ts",
@@ -382,23 +342,6 @@ describe("pre-push fast source tier", () => {
       "src/ipc/__tests__/domain-exports.test.ts",
       "src/ipc/__tests__/host-renderer-only-channels.test.ts",
       "src/permissions/__tests__/sensitive-deny-platform-projection.test.ts",
-    ]);
-    const viaBarrel = [
-      "src/__tests__/preload.test.ts",
-      "src/ipc/__tests__/channel-inventory.test.ts",
-      "src/ipc/__tests__/domain-exports.test.ts",
-    ];
-    const importers = Array.from({ length: 21 }, (_, index) => `src/importer${index}/__tests__/importer.test.ts`);
-    const transitive = Array.from({ length: 255 - 21 - viaBarrel.length }, (_, index) => `src/other${index}/__tests__/other.test.ts`);
-    const texts = new Map(importers.map((path) => [path, 'import { CHANNELS } from "../../shared/ipc-channels.js";\n']));
-    const result = boundRelatedTests(
-      [{ source: "src/shared/ipc-channels.ts", tests: [...importers, ...viaBarrel, ...transitive] }],
-      (path) => texts.get(path) ?? 'import { CHANNELS } from "../../contract/app-contract.js";\n',
-    );
-    expect(result.reason).toBeUndefined();
-    expect(result.tests).toEqual([...importers, ...viaBarrel].sort());
-    expect(result.narrowed).toEqual([
-      { source: "src/shared/ipc-channels.ts", related: 255, direct: 21, lockSuites: 3 },
     ]);
   });
 

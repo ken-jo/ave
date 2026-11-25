@@ -1,584 +1,113 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { TextDecoder } from "node:util";
 import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
-import { classifyDocumentationChanges, isCanonicalGitPath } from "../../scripts/hooks/pre-push-markdown-policy.mjs";
-import { isIntegrationBranchRef, parseGitRawDiff } from "../../scripts/hooks/pre-push-ref-updates.mjs";
-import {
-  selectFastSourceChecks,
-  selectMessageCatalogChecks,
-  selectTriggeredLockSuites,
-} from "../../scripts/hooks/pre-push-source-policy.mjs";
-import { selectPrePushRegressionTests, selectTargetedAveAppVitestFiles } from "../../scripts/hooks/pre-push-test-policy.mjs";
-import { GLOBAL_INPUT_TIER, selectScopedTier } from "../../scripts/hooks/pre-push-tier.mjs";
+import { findTlsBypass, isTlsBypassScanTarget } from "../../scripts/lib/tls-bypass-patterns.mjs";
+import { classifyDocumentationChanges } from "../../scripts/hooks/pre-push-markdown-policy.mjs";
+import { parseGitRawDiff } from "../../scripts/hooks/pre-push-ref-updates.mjs";
+import { isMessageCatalogPath } from "../../scripts/hooks/pre-push-source-policy.mjs";
 import { gitFixtureEnv } from "../../src/__tests__/support/git-fixture-env.mjs";
 import { modifiedEntry as modified } from "../../src/__tests__/support/git-diff-entry.js";
 // Async removal clears read-only loose-object attributes on Windows.
 import { cleanupTmpDir } from "../../src/__tests__/support/tmp-dir-teardown.js";
 
 const source = readFileSync(resolve("scripts/hooks/run-local-checks.mjs"), "utf8");
-const start = source.indexOf("function classifyPrePushChanges(");
+const start = source.indexOf("// The pushed change set.");
 const end = source.indexOf("// Staged safety scan", start);
 const baseSha = "a".repeat(40);
 const localSha = "b".repeat(40);
 const update = { localRef: "refs/heads/topic", remoteRef: "refs/heads/topic", localSha, remoteSha: baseSha };
-interface ClassificationOptions {
+type Entry = { status: string; oldMode: string; newMode: string; path: string };
+interface PushOptions {
   update?: Partial<typeof update>;
   updates?: typeof update[];
+  complete?: boolean;
   fastForward?: boolean;
-  forceGlobalInput?: boolean;
   replacedRemoteAvailable?: boolean;
-  commentOnly?: boolean;
-  historyReason?: string;
-  ownPaths?: string[];
-  ownCommits?: number;
   newBranchBase?: string;
   baseFailure?: string;
   diffFailure?: boolean;
-  log?: (line: string) => void;
   // Per-base entries override the default diff entries.
-  changedEntries?: (base: string) => ReturnType<typeof modified>[];
-  messageCatalog?: { reason?: string; namespaces?: string[]; testFiles?: string[]; consumerModules?: string[] };
-  unattributedCatalog?: { reason?: string; namespaces?: string[]; testFiles?: string[]; consumerModules?: string[] };
+  changedEntries?: (base: string) => Entry[];
 }
 
-// Exercise the actual classifier with controlled Git reads without launching selected checks.
-function classify(entries: ReturnType<typeof modified>[], options: ClassificationOptions = {}) {
-  const classifyChanges = runInNewContext(`${source.slice(start, end)}; classifyPrePushChanges`, {
-    isNullObjectId: (sha: string) => /^0+$/.test(sha),
-    getProtectedBranchNames: () => new Set(["main", "master"]),
-    findNewBranchBase: () => options.baseFailure ? { reason: options.baseFailure } : { sha: options.newBranchBase ?? baseSha, tips: [] },
-    listLiveBaseTips: () => ({ candidates: [] }),
-    isIntegrationBranchRef,
-    selectTriggeredLockSuites,
-    ensureReplacedRemoteCommit: () => options.replacedRemoteAvailable !== false,
-    isFastForwardUpdate: () => options.fastForward !== false,
-    getChangedEntries: (_root: string, base: string) => options.diffFailure ? null : options.changedEntries?.(base) ?? entries,
-    scanPushedHistory: () => options.historyReason
-      ? { reason: options.historyReason }
-      : { ownCommits: options.ownCommits ?? 1, excludedCommits: options.ownPaths ? 1 : 0, ownPaths: options.ownPaths ? new Set(options.ownPaths) : null },
-    isCanonicalGitPath,
-    classifyDocumentationChanges,
-    selectFastSourceChecks,
-    selectPrePushRegressionTests,
-    selectTargetedAveAppVitestFiles,
-    selectCommentOnlyAveAppFiles: () => ({ eligible: options.commentOnly === true, files: [] }),
-    getGitBlob: () => "",
-    getMessageCatalogSelection: (_root: string, entries: { path: string }[]) =>
-      options.messageCatalog ?? { reason: `unexpected catalog selection for ${entries.map(({ path }) => path).join(", ")}` },
-    selectScopedTier,
-    GLOBAL_INPUT_TIER,
-    console: { log: options.log ?? (() => {}) },
-    getUnattributedCatalogSelection: () =>
-      options.unattributedCatalog ?? { namespaces: [], unattributedFiles: [], testFiles: [], consumerModules: [], skippedConsumers: [] },
-  });
-  return classifyChanges("/fixture", { complete: true, updates: options.updates ?? [{ ...update, ...options.update }] }, "origin", options.forceGlobalInput);
+// Exercise the actual collector and planner with controlled Git reads without running checks.
+function plan(entries: Entry[], options: PushOptions = {}) {
+  const { collectPushedChanges, planStaticChecks } = runInNewContext(
+    `${source.slice(start, end)}; ({ collectPushedChanges, planStaticChecks })`,
+    {
+      isNullObjectId: (sha: string) => /^0+$/.test(sha),
+      findNewBranchBase: () => options.baseFailure ? { reason: options.baseFailure } : { sha: options.newBranchBase ?? baseSha },
+      ensureReplacedRemoteCommit: () => options.replacedRemoteAvailable !== false,
+      isFastForwardUpdate: () => options.fastForward !== false,
+      getChangedEntries: (_root: string, base: string) => options.diffFailure ? null : options.changedEntries?.(base) ?? entries,
+      classifyDocumentationChanges,
+      isMessageCatalogPath,
+    },
+  );
+  const pushed = collectPushedChanges(
+    "/fixture",
+    { complete: options.complete !== false, updates: options.updates ?? [{ ...update, ...options.update }] },
+    "origin",
+  );
+  return { pushed, plan: pushed.alreadyOnRemote ? null : planStaticChecks(pushed) };
 }
 
-describe("pre-push classification precedence", () => {
-  it("selects the app icon asset suite for a test-only push", () => {
-    const path = "src/main/__tests__/app-icon-assets.test.ts";
-    expect(selectTargetedAveAppVitestFiles([modified(path)])).toMatchObject({
-      eligible: true, files: [path],
-    });
-    expect(classify([modified(path)])).toMatchObject({
-      testOnly: true, testFiles: [path],
-    });
-    for (const name of ["desktop-packaging", "tray-icon"]) {
-      expect(selectTargetedAveAppVitestFiles([modified(`src/main/__tests__/${name}.test.ts`)]).eligible)
-        .toBe(false);
-    }
+describe("pre-push static check selection", () => {
+  it("runs only the document checks for a documentation-only push", () => {
+    const docs = [modified("docs/notes/example.md")];
+    expect(plan(docs).plan).toEqual({ docsOnly: true, documents: [{ ...docs[0], baseSha, localSha }], frozenLockfile: false, messageCatalog: false });
   });
 
-  it.each([
-    "src/main/__tests__/app-shutdown-order.test.ts",
-    "src/permissions/__tests__/asrt-background-initialization.test.ts",
-    "src/permissions/__tests__/asrt-deny-absent.test.ts",
-    "src/permissions/__tests__/asrt-windows-grant-paths.test.ts",
-    "src/permissions/__tests__/worker-spawn.test.ts",
-  ])("runs the staging contract on a test-only change to %s", (path) => {
-    expect(classify([modified(path)])).toMatchObject({
-      testOnly: true,
-      testFiles: [path, "src/permissions/__tests__/browser-download-staging-windows.test.ts"].sort(),
-    });
+  it("runs the typecheck path for a source push and checks only its regular Markdown or HTML documents", () => {
+    const result = plan([
+      modified("src/lib/example.ts"),
+      modified("docs/notes/example.md"),
+      { status: "D", oldMode: "100644", newMode: "000000", path: "docs/notes/removed.md" },
+      { status: "M", oldMode: "100644", newMode: "100755", path: "docs/notes/mode.html" },
+    ]).plan;
+    expect(result).toMatchObject({ docsOnly: false, frozenLockfile: false, messageCatalog: false });
+    expect(result.documents.map(({ path }: Entry) => path)).toEqual(["docs/notes/example.md"]);
   });
 
-  it.each(["src/main/app-shutdown.ts", "src/permissions/asrt-sandbox.ts", "src/permissions/worker-spawn.ts"])(
-    "runs the staging contract on a source change to %s", (path) => {
-      expect(classify([modified(path)])).toMatchObject({
-        fastSource: true,
-        testFiles: ["src/permissions/__tests__/browser-download-staging-windows.test.ts"],
-      });
+  it.each(["package.json", "bun.lock", "bunfig.toml", "patches/example.patch"])(
+    "adds the frozen-lockfile dry run when %s changes", (path) => {
+      expect(plan([modified(path)]).plan).toMatchObject({ docsOnly: false, frozenLockfile: true, messageCatalog: false });
     },
   );
 
-  it("keeps unrelated test-only changes scoped to the changed file", () => {
-    const path = "src/ipc/__tests__/channel-inventory.test.ts";
-    expect(classify([modified(path)])).toMatchObject({ testOnly: true, testFiles: [path] });
+  it("adds the message catalog check when a locale catalog changes", () => {
+    expect(plan([modified("src/i18n/messages/ko.ts")]).plan).toMatchObject({ docsOnly: false, frozenLockfile: false, messageCatalog: true });
   });
 
   it.each([
-    ["an orphan branch", { baseFailure: "no common base with a remote default or integration branch" }],
-    ["a failed remote lookup", { baseFailure: "git ls-remote failed" }],
-    ["a failed diff", { diffFailure: true }],
-  ] as const)("reports missing changed-file selection per update for %s", (_kind, failure) => {
-    const lines: string[] = [];
-    const updates = ["topic", "another-topic"].map((name) => ({
-      ...update, localRef: `refs/heads/${name}`, remoteRef: `refs/heads/${name}`, remoteSha: "0".repeat(40),
-    }));
-    const result = classify([], { ...failure, updates, log: (line) => lines.push(line) });
-    expect(result).toMatchObject({ tier: GLOBAL_INPUT_TIER, testFiles: [], relatedFiles: [] });
-    expect(lines).toEqual(updates.map(({ localRef }) => {
-      const reason = "baseFailure" in failure ? failure.baseFailure : `git diff failed for ${localRef}`;
-      return `[checks] ${localRef}: ${reason}; no changed-file tests could be selected for this update; CI runs the full suite`;
-    }));
-  });
-
-  it("preserves dropped related modules from scoped selection in the classification", () => {
-    const path = `scripts/${"long/".repeat(3_300)}module.mjs`;
-    expect(classify([modified(path)])).toMatchObject({
-      tier: GLOBAL_INPUT_TIER, relatedFiles: [], droppedRelatedFiles: [path], namedPaths: [path],
-    });
-  });
-
-  it.each([
-    { update: { remoteRef: "refs/tags/example" } },
-  ])("keeps global-input checks ahead of unconsumed documentation for %j", (options) => {
-    expect(classify([modified("docs/notes/example.md")], options).docsOnly).toBe(false);
-  });
-
-  it.each([
-    { remoteSha: baseSha },
-    { remoteSha: "0".repeat(40) },
-  ])("keeps a direct push to an integration branch on global-input checks (%j)", (options) => {
-    const result = classify([modified("src/lib/example.ts")], {
-      update: { remoteRef: "refs/heads/integration/permissions", ...options },
-    });
-    expect(result).toMatchObject({ fastSource: true, tier: GLOBAL_INPUT_TIER });
-    expect(result.reason).toBe("push to integration branch refs/heads/integration/permissions requires global-input checks");
+    ["an incomplete ref list", { complete: false }, "ref updates could not be parsed completely"],
+    ["an unresolvable base", { update: { remoteSha: "0".repeat(40) }, baseFailure: "no conservative base found" }, "no conservative base found"],
+    ["a failed diff", { diffFailure: true }, `git diff ${baseSha}..${localSha} failed for refs/heads/topic`],
+    ["a missing replaced remote commit", { fastForward: false, replacedRemoteAvailable: false },
+      `the replaced remote commit ${baseSha} of refs/heads/topic is not available locally`],
+  ] as const)("runs every static check, never the docs-only path, for %s", (_kind, options, reason) => {
+    const { pushed, plan: result } = plan([modified("docs/notes/example.md")], options);
+    expect(pushed.unresolved).toContain(reason);
+    expect(result).toMatchObject({ docsOnly: false, frozenLockfile: true, messageCatalog: true });
   });
 
   it("checks nothing for a new branch whose commit the remote already contains", () => {
-    const result = classify([], {
-      update: { localRef: "refs/heads/feat/start", remoteRef: "refs/heads/feat/start", localSha: baseSha, remoteSha: "0".repeat(40) },
-    });
-    expect(result).toMatchObject({
-      alreadyOnRemote: true,
-      reason: "every pushed commit is already on a default or integration branch of the remote",
-    });
+    expect(plan([], { update: { remoteSha: "0".repeat(40) }, newBranchBase: localSha }).pushed).toEqual({ alreadyOnRemote: true });
   });
 
-  it("takes a sub-branch pushed beside an integration branch on the fast tier", () => {
-    const result = classify([modified("src/ipc/domains/example.ts")], {
-      update: { localRef: "refs/heads/feat/judge-slot", remoteRef: "refs/heads/feat/judge-slot", remoteSha: "0".repeat(40) },
-    });
-    expect(result).toMatchObject({ fastSource: true, relatedFiles: ["src/ipc/domains/example.ts"] });
-    expect(result.lockSuites.map(({ suite }: { suite: string }) => suite)).toEqual([
-      "src/ipc/__tests__/channel-inventory.test.ts",
-      "src/ipc/__tests__/domain-exports.test.ts",
-      "src/ipc/__tests__/host-renderer-only-channels.test.ts",
-      "src/ui/renderer/__tests__/format-ipc-error-coverage.test.ts",
-    ]);
-  });
-
-  it("does not let a global source input take the comment-only tier", () => {
-    const result = classify([modified("src/__tests__/vitest-ave-home.ts")], { commentOnly: true });
-    expect(result.commentOnly).not.toBe(true);
-    expect(result.tier).toBe(GLOBAL_INPUT_TIER);
-  });
-
-  it.each([
-    "src/i18n/messages/en.ts",
-    "src/i18n/messages/ko.ts",
-  ])("keeps catalog attribution ahead of the comment-only tier: %s", (path) => {
-    const result = classify([modified(path)], {
-      commentOnly: true,
-      messageCatalog: { reason: "catalog edit requires full checks" },
-    });
-    expect(result.commentOnly).not.toBe(true);
-    expect(result).toMatchObject({
-      fastSource: true,
-      tier: "fast",
-      messageCatalog: { files: [path], unattributed: { reason: "catalog edit requires full checks" } },
-    });
-  });
-
-  it("does not let a mode change take the test-only tier", () => {
-    const result = classify([{ ...modified("test/example.test.ts"), oldMode: "100755" }]);
-    expect(result.testOnly).not.toBe(true);
-    expect(result).toMatchObject({ tier: GLOBAL_INPUT_TIER, reason: "test/example.test.ts file mode 100644 requires full checks" });
-  });
-
-  it("keeps changed tests in a mixed source push", () => {
-    expect(classify([modified("src/lib/example.ts"), modified("test/example.test.ts")])).toMatchObject({
-      fastSource: true,
-      relatedFiles: ["src/lib/example.ts"],
-      testFiles: ["test/example.test.ts"],
-    });
-  });
-
-  it.each(["src/lib/example.ts", "test/example.test.ts"])("takes the global-input tier when only %s is deleted", (path) => {
-    const result = classify([{ path, status: "D", oldMode: "100644", newMode: "000000" }]);
-    expect(result.testOnly).not.toBe(true);
-    expect(result).toMatchObject({ tier: GLOBAL_INPUT_TIER, relatedFiles: [], namedPaths: [path] });
-  });
-
-  it("runs the destination of a renamed test instead of silently losing it", () => {
-    const result = classify([
-      { path: "test/old-name.test.ts", status: "D", oldMode: "100644", newMode: "000000" },
-      { path: "test/new-name.test.ts", status: "A", oldMode: "000000", newMode: "100644" },
-    ]);
-    expect(result).toMatchObject({ fastSource: true, testFiles: ["test/new-name.test.ts"] });
-  });
-
-  it.each(["config/vitest.analysis.config.ts", "src/__tests__/vitest-ave-home.ts", "tsconfig.tests.json", "package.json"])(
-    "keeps a sole global change off the narrower tiers, on the global-input tier: %s", (path) => {
-      const result = classify([modified(path)], { commentOnly: true });
-      expect(result.commentOnly).not.toBe(true);
-      expect(result.testOnly).not.toBe(true);
-      expect(result).toMatchObject({ tier: GLOBAL_INPUT_TIER, reason: `${path} is a global test or build input`, namedPaths: [path] });
-    },
-  );
-
-  it("honors a full-tier input in an earlier pushed commit even after it was reverted", () => {
-    const result = classify([modified("src/lib/example.ts")], { historyReason: "package.json changed in pushed history" });
-    expect(result).toMatchObject({ tier: GLOBAL_INPUT_TIER, relatedFiles: ["src/lib/example.ts"] });
-    expect(result.reason).toContain("pushed history");
-  });
-
-  it("reads the global input from real pushed history when the final diff contains only source", async () => {
-    const repo = mkdtempSync(join(tmpdir(), "pre-push-history-"));
-    const env = gitFixtureEnv(repo);
-    const git = (args: string[]) => execFileSync("git", ["-C", repo, ...args], { env, encoding: "utf8" }).trim();
-    try {
-      git(["init", "-q"]);
-      git(["config", "user.name", "Fixture"]);
-      git(["config", "user.email", "fixture@example.invalid"]);
-      mkdirSync(join(repo, "src"));
-      writeFileSync(join(repo, "package.json"), "{}\n");
-      writeFileSync(join(repo, "src/example.ts"), "export const value = 1;\n");
-      git(["add", "."]);
-      git(["commit", "-qm", "initial fixture"]);
-      const base = git(["rev-parse", "HEAD"]);
-      writeFileSync(join(repo, "package.json"), '{"scripts":{}}\n');
-      git(["commit", "-qam", "change compiler input"]);
-      writeFileSync(join(repo, "package.json"), "{}\n");
-      writeFileSync(join(repo, "src/example.ts"), "export const value = 2;\n");
-      git(["commit", "-qam", "restore input and change source"]);
-      expect(git(["diff", "--name-only", base, "HEAD"])).toBe("src/example.ts");
-      const historyStart = source.indexOf("function decodeUtf8Strict(");
-      const historyEnd = source.indexOf("function classifyPrePushChanges(");
-      const scan = runInNewContext(`${source.slice(historyStart, historyEnd)}; scanPushedHistory`, {
-        commands: { git: "git" }, TextDecoder, Buffer, classifyDocumentationChanges, selectFastSourceChecks, parseGitRawDiff,
-        spawnSync: (command: string, args: string[], options: object) => spawnSync(command, args, { ...options, env }),
-        captureOptional: (_command: string, args: string[]) => git(args),
-      });
-      expect(scan(repo, base, git(["rev-parse", "HEAD"])).reason).toContain("package.json is a global test or build input in pushed history");
-    } finally {
-      await cleanupTmpDir(repo);
-    }
-  });
-
-  it("retains a merged main input even when a later commit removes it from the pushed net diff", async () => {
-    const repo = mkdtempSync(join(tmpdir(), "pre-push-main-merge-"));
-    const env = gitFixtureEnv(repo);
-    const git = (args: string[]) => execFileSync("git", ["-C", repo, ...args], { env, encoding: "utf8" }).trim();
-    try {
-      git(["init", "-qb", "main"]);
-      git(["config", "user.name", "Fixture"]);
-      git(["config", "user.email", "fixture@example.invalid"]);
-      mkdirSync(join(repo, "src"));
-      writeFileSync(join(repo, "package.json"), "{}\n");
-      writeFileSync(join(repo, "src/example.ts"), "export const value = 1;\n");
-      git(["add", "."]);
-      git(["commit", "-qm", "initial fixture"]);
-      git(["checkout", "-qb", "topic"]);
-      writeFileSync(join(repo, "src/example.ts"), "export const value = 2;\n");
-      git(["commit", "-qam", "published source"]);
-      const published = git(["rev-parse", "HEAD"]);
-      git(["checkout", "-q", "main"]);
-      writeFileSync(join(repo, "package.json"), '{"scripts":{}}\n');
-      git(["commit", "-qam", "main input"]);
-      git(["checkout", "-q", "topic"]);
-      git(["merge", "--no-ff", "-qm", "merge main fixture", "main"]);
-      writeFileSync(join(repo, "package.json"), "{}\n");
-      writeFileSync(join(repo, "src/example.ts"), "export const value = 3;\n");
-      git(["commit", "-qam", "restore input and update source"]);
-      expect(git(["diff", "--name-only", published, "HEAD"])).toBe("src/example.ts");
-      const historyStart = source.indexOf("function decodeUtf8Strict(");
-      const historyEnd = source.indexOf("function classifyPrePushChanges(");
-      const scan = runInNewContext(`${source.slice(historyStart, historyEnd)}; scanPushedHistory`, {
-        commands: { git: "git" }, TextDecoder, Buffer, classifyDocumentationChanges, selectFastSourceChecks, parseGitRawDiff,
-        spawnSync: (command: string, args: string[], options: object) => spawnSync(command, args, { ...options, env }),
-        captureOptional: (_command: string, args: string[]) => git(args),
-      });
-      expect(scan(repo, published, git(["rev-parse", "HEAD"])).reason)
-        .toContain("package.json is a global test or build input in pushed history");
-    } finally { await cleanupTmpDir(repo); }
-  });
-
-  it("decides the tier from the paths of the branch's own commits", () => {
-    const result = classify([modified("package.json"), modified("src/lib/example.ts")], { ownPaths: ["src/lib/example.ts"] });
-    expect(result).toMatchObject({ fastSource: true, relatedFiles: ["src/lib/example.ts"] });
-  });
-
-  it("checks nothing when every pushed commit is already on a live default or integration tip", () => {
-    expect(classify([modified("package.json")], { ownCommits: 0 })).toMatchObject({ alreadyOnRemote: true });
-  });
-
-  it("keeps the files a non-fast-forward rewrite drops even when its own commits are scoped", () => {
-    const mergeBase = "c".repeat(40);
-    const result = classify([], {
-      fastForward: false,
-      newBranchBase: mergeBase,
-      ownPaths: ["src/lib/example.ts"],
-      changedEntries: (base) => base === mergeBase
-        ? [modified("src/lib/example.ts"), modified("package.json")]
-        : [modified("package.json")],
-    });
-    expect(result).toMatchObject({ tier: GLOBAL_INPUT_TIER });
-    expect(result.reason).toContain("package.json");
-  });
-
-  it("checks a rewrite that adds no own commit by the files it drops", () => {
-    const result = classify([modified("package.json")], { fastForward: false, ownCommits: 0 });
-    expect(result.alreadyOnRemote).not.toBe(true);
-    expect(result).toMatchObject({ tier: GLOBAL_INPUT_TIER });
-  });
-
-  describe("own commits in real history", () => {
-    function baseMergeFixture(options: { conflict?: boolean; ownInput?: boolean } = {}) {
-      const repo = mkdtempSync(join(tmpdir(), "pre-push-own-"));
-      const env = gitFixtureEnv(repo);
-      const git = (args: string[]) => execFileSync("git", ["-C", repo, ...args], { env, encoding: "utf8" }).trim();
-      git(["init", "-qb", "integration/x"]);
-      git(["config", "user.name", "Fixture"]);
-      git(["config", "user.email", "fixture@example.invalid"]);
-      mkdirSync(join(repo, "src"));
-      writeFileSync(join(repo, "package.json"), "{}\n");
-      writeFileSync(join(repo, "src/example.ts"), "export const value = 1;\n");
-      git(["add", "."]);
-      git(["commit", "-qm", "initial fixture"]);
-      git(["checkout", "-qb", "topic"]);
-      writeFileSync(join(repo, "src/example.ts"), "export const value = 2;\n");
-      if (options.conflict) writeFileSync(join(repo, "package.json"), '{"topic":true}\n');
-      git(["commit", "-qam", "published topic"]);
-      const published = git(["rev-parse", "HEAD"]);
-      git(["checkout", "-q", "integration/x"]);
-      writeFileSync(join(repo, "package.json"), '{"scripts":{}}\n');
-      git(["commit", "-qam", "integration input"]);
-      const tip = git(["rev-parse", "HEAD"]);
-      git(["checkout", "-q", "topic"]);
-      if (options.conflict) {
-        spawnSync("git", ["-C", repo, "merge", "--no-ff", "-qm", "merge base", "integration/x"], { env });
-        writeFileSync(join(repo, "package.json"), '{"scripts":{},"topic":true}\n');
-        git(["add", "package.json"]);
-        git(["commit", "-qm", "merge base with resolution"]);
-      } else {
-        git(["merge", "--no-ff", "-qm", "merge base", "integration/x"]);
-      }
-      writeFileSync(join(repo, "src/example.ts"), "export const value = 3;\n");
-      if (options.ownInput) writeFileSync(join(repo, "package.json"), '{"scripts":{"own":""}}\n');
-      git(["commit", "-qam", "own follow-up"]);
-      const scan = runInNewContext(`${source.slice(source.indexOf("function decodeUtf8Strict("), start)}; scanPushedHistory`, {
-        commands: { git: "git" }, TextDecoder, Buffer, classifyDocumentationChanges, selectFastSourceChecks, parseGitRawDiff,
-        spawnSync: (command: string, args: string[], options: object) => spawnSync(command, args, { ...options, env }),
-        captureOptional: (_command: string, args: string[]) => git(args),
-      });
-      return { repo, scan, published, tip, head: git(["rev-parse", "HEAD"]) };
-    }
-
-    it("does not let a merge that only brings in base content force the full checks", async () => {
-      const { repo, scan, published, tip, head } = baseMergeFixture();
-      try {
-        expect(scan(repo, published, head).reason).toContain("package.json");
-        const own = scan(repo, published, head, [tip]);
-        expect(own.reason).toBeUndefined();
-        expect(own).toMatchObject({ ownCommits: 2, excludedCommits: 1 });
-        expect([...own.ownPaths]).toEqual(["src/example.ts"]);
-      } finally { await cleanupTmpDir(repo); }
-    });
-
-    it("counts a conflict resolution in a global input as the branch's own change", async () => {
-      const { repo, scan, published, tip, head } = baseMergeFixture({ conflict: true });
-      try {
-        expect(scan(repo, published, head, [tip]).reason).toContain("package.json is a global test or build input in pushed history");
-      } finally { await cleanupTmpDir(repo); }
-    });
-
-    it("keeps an own change to a global input on the full checks after a base merge", async () => {
-      const { repo, scan, published, tip, head } = baseMergeFixture({ ownInput: true });
-      try {
-        expect(scan(repo, published, head, [tip]).reason).toContain("package.json is a global test or build input in pushed history");
-      } finally { await cleanupTmpDir(repo); }
-    });
-  });
-
-  it("takes a message-only push on the fast tier with its consumers instead of the full suite", () => {
-    const result = classify([modified("src/i18n/messages/en.ts")], {
-      update: { localRef: "refs/heads/feat/copy", remoteRef: "refs/heads/feat/copy", remoteSha: "0".repeat(40) },
-      messageCatalog: {
-        namespaces: ["shellExecution"],
-        testFiles: ["src/i18n/__tests__/i18n.test.ts", "src/shared/__tests__/shell-execution-environment.test.ts"],
-        consumerModules: ["src/shared/shell-execution-environment.ts"],
-      },
-    });
-    expect(result).toMatchObject({
-      fastSource: true,
-      relatedFiles: [],
-      testFiles: ["src/i18n/__tests__/i18n.test.ts", "src/shared/__tests__/shell-execution-environment.test.ts"],
-      messageCatalog: {
-        files: ["src/i18n/messages/en.ts"],
-        namespaces: ["shellExecution"],
-        consumerModules: ["src/shared/shell-execution-environment.ts"],
-      },
-    });
-    expect(result.lockSuites).toEqual([]);
-  });
-
-  it("keeps a message change with a test change off the test-only tier, so the catalog checks still run", () => {
-    const result = classify([modified("src/i18n/messages/en.ts"), modified("test/example.test.ts")], {
-      messageCatalog: { namespaces: ["shellExecution"], testFiles: ["src/i18n/__tests__/i18n.test.ts"], consumerModules: [] },
-    });
-    expect(result.testOnly).not.toBe(true);
-    expect(result).toMatchObject({
-      fastSource: true,
-      testFiles: ["src/i18n/__tests__/i18n.test.ts", "test/example.test.ts"],
-      messageCatalog: { files: ["src/i18n/messages/en.ts"] },
-    });
-  });
-
-  it("does not hand a changed consumer to discovery twice", () => {
-    const result = classify([modified("src/shared/shell-execution-environment.ts"), modified("src/i18n/messages/en.ts")], {
-      messageCatalog: { namespaces: ["shellExecution"], testFiles: [], consumerModules: ["src/shared/shell-execution-environment.ts", "src/ui/panel.tsx"] },
-    });
-    expect(result.relatedFiles).toEqual(["src/shared/shell-execution-environment.ts"]);
-    expect(result.messageCatalog.consumerModules).toEqual(["src/ui/panel.tsx"]);
-  });
-
-  it("keeps the catalog checks, not the full suite, when the message selection cannot be made", () => {
-    const result = classify([modified("src/i18n/messages/en.ts")], {
-      messageCatalog: { reason: "no source file names message namespace shellExecution; a computed key may reach it, full checks required" },
-      unattributedCatalog: { namespaces: ["shellExecution"], testFiles: ["src/i18n/__tests__/i18n.test.ts"], consumerModules: [] },
-    });
-    expect(result).toMatchObject({ fastSource: true, tier: "fast", testFiles: ["src/i18n/__tests__/i18n.test.ts"] });
-    expect(result.messageCatalog.unattributed.reason).toContain("computed key");
-  });
-
-  it.each(["src/i18n/messages/index.ts", "src/i18n/testing/vitest-ambient-intl.ts"])(
-    "keeps the catalog loader and the Vitest setup file global: %s", (path) => {
-      const result = classify([modified(path)]);
-      expect(result.tier).toBe(GLOBAL_INPUT_TIER);
-      expect(result.reason).toBe(`${path} is a global test or build input`);
-    },
-  );
-
-  it("selects message consumers from the pushed blobs and the checked-out tree of a real repository", async () => {
-    const repo = mkdtempSync(join(tmpdir(), "pre-push-messages-"));
-    const env = gitFixtureEnv(repo);
-    const git = (args: string[]) => execFileSync("git", ["-C", repo, ...args], { env, encoding: "utf8" }).trim();
-    const write = (path: string, text: string) => {
-      mkdirSync(join(repo, path, ".."), { recursive: true });
-      writeFileSync(join(repo, path), text);
-    };
-    try {
-      git(["init", "-q"]);
-      git(["config", "user.name", "Fixture"]);
-      git(["config", "user.email", "fixture@example.invalid"]);
-      const catalogPath = "src/i18n/messages/en.ts";
-      const catalog = (english: string) =>
-        `export const en = {\n  "panel.title": ${JSON.stringify(english)},\n  "other.label": "Other",\n} as const;\n`;
-      write(catalogPath, catalog("Panel"));
-      write("src/i18n/runtime.ts", 'export function t(key: string, vars?: unknown) { return key; }\n');
-      write("src/ui/panel.tsx", 'import { t } from "../i18n/runtime.js"; export const title = () => t("panel.title");\n');
-      write("src/ui/other.tsx", 'import { t } from "../i18n/runtime.js"; export const label = () => t("other.label");\n');
-      write("src/ui/__tests__/panel-copy.test.tsx", 'import { t } from "../../i18n/runtime.js"; export const actual = t("panel.title");\n');
-      write("src/i18n/__tests__/i18n.test.ts", 'export const suiteName = "i18n";\n');
-      write("test/e2e/panel.spec.ts", 'import { t } from "../../src/i18n/runtime.js"; export const expected = t("panel.title");\n');
-      git(["add", "."]);
-      git(["commit", "-qm", "initial fixture"]);
-      const base = git(["rev-parse", "HEAD"]);
-      write(catalogPath, catalog("Panel heading"));
-      git(["commit", "-qam", "reword the panel title"]);
-      const local = git(["rev-parse", "HEAD"]);
-      const start = source.indexOf("function decodeUtf8Strict(");
-      const end = source.indexOf("function classifyPrePushChanges(");
-      const select = runInNewContext(`${source.slice(start, end)}; getMessageCatalogSelection`, {
-        commands: { git: "git" }, TextDecoder, Buffer, join, readFileSync, selectMessageCatalogChecks,
-        spawnSync: (command: string, args: string[], options: object) => spawnSync(command, args, { ...options, env }),
-      });
-      expect(select(repo, [{ ...modified(catalogPath), baseSha: base, localSha: local }])).toEqual({
-        namespaces: ["panel"],
-        testFiles: ["src/i18n/__tests__/i18n.test.ts", "src/ui/__tests__/panel-copy.test.tsx"],
-        consumerModules: ["src/ui/panel.tsx"],
-      });
-      // A literal consumer must not hide unresolved computed-namespace consumers.
-      write("src/ui/dynamic.ts", 'export const title = (ns: string) => t(`${ns}.title`);\n');
-      git(["add", "src/ui/dynamic.ts"]);
-      git(["commit", "-qm", "add computed consumer"]);
-      const messageCatalog = select(repo, [{ ...modified(catalogPath), baseSha: base, localSha: git(["rev-parse", "HEAD"]) }]);
-      const result = classify([modified(catalogPath)], { messageCatalog });
-      expect(result).toMatchObject({
-        fastSource: true,
-        tier: "fast",
-        messageCatalog: { unattributed: { reason: "src/ui/dynamic.ts has an unresolved dynamic message consumer; full checks required" } },
-      });
-    } finally {
-      await cleanupTmpDir(repo);
-    }
-  });
-});
-
-describe("pre-push global-input requests", () => {
-  it.each([
-    [{ localSha: "0".repeat(40) }, "deleted ref refs/heads/topic requires global-input checks"],
-    [{ remoteRef: "refs/heads/main" }, "push to default branch refs/heads/main requires global-input checks"],
-    [{ remoteRef: "refs/heads/integration/permissions" }, "push to integration branch refs/heads/integration/permissions requires global-input checks"],
-    [{ remoteRef: "refs/tags/v1.0.0" }, "non-branch updates require global-input checks"],
-    [{ localRef: "refs/tags/v1.0.0" }, "non-branch updates require global-input checks"],
-  ])("keeps global-input checks for %j", (updateOptions, reason) => {
-    expect(classify([modified("src/lib/example.ts")], { update: updateOptions })).toMatchObject({ docsOnly: false, fastSource: true, tier: GLOBAL_INPUT_TIER, reason });
-  });
-
-  it("maps the explicit full switch to global-input checks", () => {
-    expect(classify([modified("docs/notes/example.md")], { forceGlobalInput: true }))
-      .toMatchObject({ docsOnly: false, fastSource: true, tier: GLOBAL_INPUT_TIER });
-  });
-
-  it.each([
-    ["a global input", [modified("package.json")], {}],
-    ["an unresolved pushed history", [modified("src/lib/example.ts")], { historyReason: "package.json changed in pushed history" }],
-    ["a missing replaced remote commit", [modified("src/lib/example.ts")], { fastForward: false, replacedRemoteAvailable: false }],
-    ["a deleted module", [{ path: "src/lib/example.ts", status: "D", oldMode: "100644", newMode: "000000" }], {}],
-  ])("takes a scoped tier, never the full checks, for %s", (_kind, entries, options) => {
-    const result = classify(entries, options);
-    expect(result).toMatchObject({ fastSource: true, tier: GLOBAL_INPUT_TIER });
-  });
-});
-
-describe("pre-push non-fast-forward branch updates", () => {
-  it("measures a non-fast-forward documentation push on the docs-only tier", () => {
+  it("diffs a rewritten branch from its merge-base and from the commit it replaces", () => {
     const newBase = "c".repeat(40);
-    const result = classify([modified("docs/notes/example.md")], { fastForward: false, newBranchBase: newBase });
-    expect(result.docsOnly).toBe(true);
-    expect(result.pushedEntries.map(({ baseSha: entryBase }: { baseSha: string }) => entryBase)).toEqual([newBase, baseSha]);
-  });
-
-  it("takes a rewritten source branch on the fast tier, diffed from its merge-base and the replaced commit", () => {
-    const newBase = "c".repeat(40);
-    const result = classify([], {
+    const { pushed, plan: result } = plan([], {
       fastForward: false,
       newBranchBase: newBase,
-      changedEntries: (base) => base === newBase ? [modified("src/lib/mine.ts")] : [modified("src/lib/dropped.ts")],
+      changedEntries: (base) => base === newBase ? [modified("docs/notes/mine.md")] : [modified("docs/notes/dropped.md")],
     });
-    expect(result).toMatchObject({ fastSource: true, tier: "fast", relatedFiles: ["src/lib/dropped.ts", "src/lib/mine.ts"] });
-  });
-
-  it("does not let a rewritten branch take the comment-only tier", () => {
-    expect(classify([modified("src/lib/example.ts")], { fastForward: false, commentOnly: true }).commentOnly).not.toBe(true);
+    expect(pushed.entries.map(({ path, baseSha: entryBase }: Entry & { baseSha: string }) => [path, entryBase]))
+      .toEqual([["docs/notes/mine.md", newBase], ["docs/notes/dropped.md", baseSha]]);
+    expect(result.docsOnly).toBe(true);
   });
 
   it("checks the files of a commit a rebase drops from the remote branch", async () => {
@@ -589,42 +118,74 @@ describe("pre-push non-fast-forward branch updates", () => {
       git(["init", "-qb", "main"]);
       git(["config", "user.name", "Fixture"]);
       git(["config", "user.email", "fixture@example.invalid"]);
-      mkdirSync(join(repo, "src"));
-      writeFileSync(join(repo, "src/shared.ts"), "export const shared = 1;\n");
+      mkdirSync(join(repo, "docs"));
+      writeFileSync(join(repo, "docs/shared.md"), "Shared 1.\n");
       git(["add", "."]);
       git(["commit", "-qm", "initial fixture"]);
       const main = git(["rev-parse", "HEAD"]);
       git(["checkout", "-qb", "topic"]);
-      writeFileSync(join(repo, "src/shared.ts"), "export const shared = 2;\n");
+      mkdirSync(join(repo, "src"));
       writeFileSync(join(repo, "src/theirs.ts"), "export const theirs = 1;\n");
       git(["add", "."]);
       git(["commit", "-qm", "their commit"]);
-      writeFileSync(join(repo, "src/mine.ts"), "export const mine = 1;\n");
+      writeFileSync(join(repo, "docs/mine.md"), "Mine.\n");
       git(["add", "."]);
       git(["commit", "-qm", "my commit"]);
       const remote = git(["rev-parse", "HEAD"]);
       git(["checkout", "-qB", "topic", main]);
       git(["cherry-pick", remote]);
       const local = git(["rev-parse", "HEAD"]);
-      expect(git(["diff", "--name-only", main, local])).toBe("src/mine.ts");
+      expect(git(["diff", "--name-only", main, local])).toBe("docs/mine.md");
       const diff = (base: string) => parseGitRawDiff(execFileSync(
         "git", ["-C", repo, "diff", "--no-renames", "--raw", "-z", `${base}..${local}`, "--"], { env, encoding: "utf8" },
       ));
-      const result = classify([], {
+      const { pushed, plan: result } = plan([], {
         update: { localSha: local, remoteSha: remote },
         fastForward: false,
         newBranchBase: main,
         changedEntries: (base) => diff(base) ?? [],
       });
-      expect(result).toMatchObject({
-        fastSource: true,
-        tier: GLOBAL_INPUT_TIER,
-        relatedFiles: ["src/mine.ts", "src/shared.ts"],
-        namedPaths: ["src/theirs.ts"],
-        reason: "deleting src/theirs.ts requires full checks",
-      });
+      expect(pushed.entries.map(({ path, status }: Entry) => `${status} ${path}`).sort())
+        .toEqual(["A docs/mine.md", "D src/theirs.ts"]);
+      expect(result).toMatchObject({ docsOnly: false });
     } finally {
       await cleanupTmpDir(repo);
     }
+  });
+});
+
+// Evaluate the hook's staged scan over a fixed staged set without Git.
+function stagedScan(files: Record<string, string>) {
+  const markers = /^const mergeMarkers = .+;$/m.exec(source)?.[0] ?? "";
+  const scanStart = source.indexOf("function runStagedSafetyChecks");
+  const scanEnd = source.indexOf("function getPackageManager", scanStart);
+  const { runStagedSafetyChecks } = runInNewContext(`${markers}\n${source.slice(scanStart, scanEnd)}; ({ runStagedSafetyChecks })`, {
+    commands: { git: "git" },
+    run: () => undefined,
+    getStagedFiles: () => Object.keys(files),
+    getStagedFileContent: (_root: string, path: string) => files[path],
+    findTlsBypass,
+    isTlsBypassScanTarget,
+    String,
+    Error,
+  });
+  return () => runStagedSafetyChecks("/fixture");
+}
+
+// Joined at runtime so this file does not trip the scan it tests.
+const tlsBypass = ["rejectUnauthorized", "false"].join(": ");
+
+describe("pre-push staged safety scan", () => {
+  it("blocks a staged TLS verification bypass in a source file", () => {
+    expect(stagedScan({ "src/client.ts": `request({ ${tlsBypass} });\n` }))
+      .toThrow(/src\/client\.ts: TLS verification bypass/);
+  });
+
+  it("blocks staged merge conflict markers", () => {
+    expect(stagedScan({ "src/a.ts": "a\n<<<<<<< HEAD\nb\n" })).toThrow(/src\/a\.ts: merge conflict markers/);
+  });
+
+  it("passes clean staged files and bypass prose in documents", () => {
+    expect(stagedScan({ "src/a.ts": "export const a = 1;\n", "docs/notes.md": `${tlsBypass}\n` })).not.toThrow();
   });
 });
