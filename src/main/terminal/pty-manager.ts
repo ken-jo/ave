@@ -1316,7 +1316,7 @@ export async function typeHostTerminalCommand(
   ownerWindowId: number,
   request: HostTerminalTypingRequest,
   signal?: AbortSignal,
-): Promise<TypeTerminalCommandResult> {
+): Promise<TypeTerminalCommandResult & { abandonedControlGeneration?: number }> {
   const { requestingSessionId, turn, line, expectedCwd, bound, effectCheck, writeFence } = request;
   const session = hostSession(ref, ownerWindowId);
   const control = session?.control;
@@ -1369,9 +1369,12 @@ export async function typeHostTerminalCommand(
   });
   if (!result.ok) {
     const revoked = lease.signal.aborted;
-    control.abandon(lease);
+    const abandonedControlGeneration = control.abandon(lease);
     if (revoked && !signal?.aborted && result.reason === "aborted") {
       return { ok: false, reason: "aborted", message: "the user took control of the terminal; nothing further was typed" };
+    }
+    if (result.reason === "effect-refused" && abandonedControlGeneration !== undefined) {
+      return { ...result, abandonedControlGeneration };
     }
   }
   return result;

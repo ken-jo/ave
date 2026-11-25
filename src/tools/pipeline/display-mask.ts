@@ -4,7 +4,7 @@ import {
   type HostShellExecutionPlanAuditProjection,
 } from "../../permissions/host-shell-execution-plan.js";
 import type { PermissionReviewEvent } from "../../shared/permission-review-status.js";
-import type { ApprovalMemory } from "../../shared/permissions-events.js";
+import type { ApprovalMemory, ApprovalMemoryScope } from "../../shared/permissions-events.js";
 import { matchesMcpToolApprovalMemory } from "../../shared/mcp-tool-approval.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
 import { parsePatchEnvelope } from "../../shared/patch-envelope.js";
@@ -61,7 +61,15 @@ async function approvalMemoryFor(
   sessionId?: string,
 ): Promise<ApprovalMemory> {
   const scope = await tool.approvalMemoryScope?.(input, sessionId === undefined ? { cwd } : { cwd, sessionId });
-  if (scope === undefined) return ARGS_APPROVAL_MEMORY;
+  return scope === undefined ? ARGS_APPROVAL_MEMORY : approvalMemoryForScope(tool, input, scope, hostShellExecutionPlan);
+}
+
+export function approvalMemoryForScope(
+  tool: Tool,
+  input: Record<string, unknown>,
+  scope: ApprovalMemoryScope,
+  hostShellExecutionPlan?: HostShellExecutionPlanAuditProjection,
+): ApprovalMemory {
   const executionPlan = hostShellExecutionPlan === undefined
     ? null
     : getHostShellExecutionPlanCacheIdentity(hostShellExecutionPlan);

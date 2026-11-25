@@ -31,7 +31,8 @@ import { captureShellWorkingDirectoryIdentity } from "../permissions/shell-worki
 import { canonicalizePathForMatch } from "../permissions/sensitive-paths.js";
 import type { HostTerminalControlState, TerminalLane } from "../shared/terminal-session.js";
 import type { HostTerminalDisclosure } from "../main/terminal/host-terminal-control.js";
-import { currentHostTerminalTurn, type HostTerminalTurn } from "./host-terminal-turn.js";
+import type { typeHostTerminalCommand } from "../main/terminal/pty-manager.js";
+import { currentHostTerminalTurn } from "./host-terminal-turn.js";
 import { errorMessage } from "../shared/error-message.js";
 
 const TERMINAL_RUN_TOOL_NAME = "terminal_run";
@@ -89,15 +90,7 @@ interface HostTerminalDeps {
   shellName: (ref: TerminalSessionRef, windowId: number) => string | undefined;
   control: (ref: TerminalSessionRef, windowId: number) => HostTerminalControlState | undefined;
   verifyShell: VerifyTerminalShell;
-  typeCommand: (ref: TerminalSessionRef, windowId: number, request: {
-    readonly requestingSessionId: string;
-    readonly turn: HostTerminalTurn;
-    readonly line: string;
-    readonly expectedCwd: string;
-    readonly bound: () => boolean;
-    readonly effectCheck: () => Promise<{ ok: true } | { ok: false; message: string }>;
-    readonly writeFence?: () => string | undefined;
-  }, signal?: AbortSignal) => Promise<{ ok: true; firstBlockId: number } | { ok: false; reason: string; message: string }>;
+  typeCommand: typeof typeHostTerminalCommand;
   waitDisclosure: (ref: TerminalSessionRef, windowId: number, sessionId: string, turnId: string, blockId: number, waitMs: number, signal?: AbortSignal) =>
     Promise<HostTerminalDisclosure | undefined>;
 }
@@ -429,7 +422,15 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
       requestingSessionId: scope.sessionId, turn, line: input.command, expectedCwd: scope.cwd, bound, effectCheck, writeFence,
     }, ctx.abortSignal);
     if (!typed.ok) {
-      if (typed.reason === "effect-refused") return fail(`no command was sent in terminal ${scope.tabId}: ${typed.message} Call terminal_run again for a fresh decision.`);
+      if (typed.reason === "effect-refused") {
+        if (typed.abandonedControlGeneration !== undefined && bound()) {
+          const released = deps.host.control(live, windowId);
+          if (released?.mode === "available" && released.generation === typed.abandonedControlGeneration) {
+            route.onLeaseAbandoned(typed.abandonedControlGeneration);
+          }
+        }
+        return fail(`no command was sent in terminal ${scope.tabId}: ${typed.message} Call terminal_run again for a fresh decision.`);
+      }
       return fail(`nothing was typed into terminal ${scope.tabId}: ${typed.message}`);
     }
     const waitMs = BLOCK_START_WAIT_MS + input.waitSeconds * 1000;

@@ -1,9 +1,9 @@
 import { ApprovalGate, type ApprovalRequest } from "../../permissions/approval-gate.js";
 /** terminal_run into a pane chat's own host terminal uses its native session surface choice through the real ToolExecutor and PermissionManager.
  * The physical directory, current user turn and final route remain independently enforced.
- * Only the host PTY typing and its disclosure are stubs, recording what would have been typed. */
+ * Lease regressions use the production PTY protocol against an in-memory editor. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdtempSync, realpathSync, rmSync, unlinkSync } from "node:fs";
+import { existsSync, mkdtempSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PermissionManager } from "../../permissions/permission-manager.js";
@@ -31,6 +31,25 @@ import { _resetAveHomePrivacyForTest, setAveHomePrivacyAtBoot } from "../../shar
 import { HOME_PRIVACY_HELPER_UNAVAILABLE_SHELL_DENIAL } from "../../permissions/host-shell-execution-plan.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 import { PermissionTestResources } from "../../permissions/__tests__/test-resources.js";
+import {
+  __resetTerminalsForTest, controlTerminal, hostTerminalControlState, spawnTerminal, typeHostTerminalCommand,
+  verifyHostTerminalShell, waitForHostTerminalDisclosure,
+} from "../../main/terminal/pty-manager.js";
+import { TERMINAL_EDIT_LINE_QUERY } from "../../main/terminal/shell-integration.js";
+import type { TerminalSessionInfo } from "../../shared/terminal-session.js";
+
+vi.mock("node-pty", () => ({ spawn: () => pty }));
+vi.mock("../../main/terminal/manual-shell.js", () => ({
+  resolveManualShell: () => ({ command: join(dir, "zsh"), args: [] }),
+}));
+vi.mock("../../main/terminal/host-shell-integration.js", () => ({
+  prepareHostShellIntegration: (launch: { command: string; args: string[] }) => ({
+    ...launch, env: {}, nonce: TERMINAL_TEST_NONCE, marksPromptEnd: true, cleanup: () => {},
+  }),
+}));
+vi.mock("../../main/terminal/shell-process.js", () => ({
+  readTerminalForeground: async () => ({ ok: true, foreground: { pid: 4242, command: "zsh", cwd: dir } }),
+}));
 
 // A published operator container makes the host rebuild shell effects onto a disposable route; the harness lets a test publish one mid-command.
 const operatorHarness = vi.hoisted(() => ({ current: null as object | null, issued: new WeakSet<object>(), leases: new WeakMap<object, object>(), unreadable: false }));
@@ -80,6 +99,7 @@ const mark = terminalMarker;
 const resources = new PermissionTestResources();
 
 let dir: string;
+let pty: ReturnType<typeof hostEditor> | undefined;
 beforeEach(() => { dir = realpathSync(mkdtempSync(join(tmpdir(), "ave-terminal-run-host-"))); });
 afterEach(async () => {
   vi.unstubAllEnvs();
@@ -88,12 +108,49 @@ afterEach(async () => {
   operatorHarness.unreadable = false;
   brokerHarness.active = false;
   _resetAveHomePrivacyForTest();
+  __resetTerminalsForTest();
+  pty = undefined;
   __resetTerminalBlocksForTest();
   __resetActiveSandboxCapabilityForTest();
   __resetSandboxRequestedAtBootForTest();
   await resources.cleanup();
   rmSync(dir, { recursive: true, force: true });
 });
+
+function hostEditor(typed: string[]) {
+  let emitData: (data: string) => void = () => {};
+  let prompts = 0;
+  let token = "";
+  let line = "";
+  const bytes: string[] = [];
+  const prompt = () => {
+    token = (++prompts).toString(16).padStart(2, "0").repeat(16);
+    emitData(`\r\n${mark("D;0")}${mark(`P;Cwd=${dir};Keys=emacs;Paste=1;Edit=1;B=${token}`)}${mark("A")}% \u001b]133;B;${token}\u0007`);
+  };
+  return {
+    pid: 4242, bytes, prompt,
+    onData(callback: typeof emitData) { emitData = callback; return { dispose: () => {} }; },
+    onExit() { return { dispose: () => {} }; },
+    write(data: string) {
+      bytes.push(data);
+      if (data === "\u0003") { line = ""; queueMicrotask(prompt); return; }
+      if (data === TERMINAL_EDIT_LINE_QUERY) {
+        queueMicrotask(() => emitData(mark(`E;Line=${encodeURIComponent(line)};B=${token}`)));
+        return;
+      }
+      if (data === "\r") {
+        typed.push(line);
+        queueMicrotask(() => {
+          emitData(`${mark(`C;cmdline_url=${encodeURIComponent(line)}`)}done\r\n`);
+          prompt();
+        });
+        return;
+      }
+      line = data.slice("\u001b[200~".length, -"\u001b[201~".length);
+      queueMicrotask(() => emitData(line));
+    },
+  };
+}
 
 async function run(command: string, options: {
   sessionId?: string;
@@ -108,17 +165,31 @@ async function run(command: string, options: {
   /** The turn the call runs in: the user's own typed turn by default; `null` runs it in a turn that is not the user's. */
   turn?: { sessionId: string; turnId: string } | null;
   permissionContext?: Partial<ToolPermissionContext>;
-  duringApproval?: () => void;
+  duringApproval?: (session: TerminalSessionInfo) => void;
   /** Runs inside the PTY layer before its first pre-write effect check. */
   duringTyping?: () => void | Promise<void>;
   afterEffectCheck?: () => void | Promise<void>;
   logicalReview?: () => Promise<{ consistent: boolean; reason: string }>;
+  useHostPty?: boolean;
+  beforeWriteFence?: (bytes: readonly string[]) => void;
 } = {}) {
   const sessionId = options.sessionId ?? "pane";
-  const tracker = new TerminalBlockTracker({ nonce: TERMINAL_TEST_NONCE, marksPromptEnd: true });
-  tracker.recordOutput(`${mark("D;0")}${mark(`P;Cwd=${dir};Keys=emacs;Paste=1`)}${mark("A")}% ${mark("B")}`);
-  const session = terminalSessionFixture(HOST, "manual");
-  registerTerminalBlockTracker(session, tracker, WINDOW);
+  const typed: string[] = [];
+  const editor = options.useHostPty ? hostEditor(typed) : undefined;
+  let session: TerminalSessionInfo;
+  if (editor) {
+    pty = editor;
+    writeFileSync(join(dir, "zsh"), "", { mode: 0o755 });
+    const spawned = await spawnTerminal({ tabId: HOST, lane: "manual", purpose: "workspace", ownerWindowId: WINDOW, cwd: dir });
+    if (!spawned.ok) throw new Error(spawned.message);
+    session = spawned.session;
+    editor.prompt();
+  } else {
+    const tracker = new TerminalBlockTracker({ nonce: TERMINAL_TEST_NONCE, marksPromptEnd: true });
+    tracker.recordOutput(`${mark("D;0")}${mark(`P;Cwd=${dir};Keys=emacs;Paste=1`)}${mark("A")}% ${mark("B")}`);
+    session = terminalSessionFixture(HOST, "manual");
+    registerTerminalBlockTracker(session, tracker, WINDOW);
+  }
   const pm = options.permissionManager ?? new PermissionManager(join(dir, "permissions.json"));
   pm.setMode(options.mode ?? "default");
   for (const rule of options.rules ?? []) await pm.addRulePersist(rule, { kind: "user" });
@@ -130,8 +201,8 @@ async function run(command: string, options: {
   const review = vi.spyOn(pm, "dispatchReviewer").mockClear();
   const resolvedReview = vi.spyOn(pm, "resolveReviewedPermission").mockClear();
   const check = vi.spyOn(pm, "checkDetailed").mockClear();
-  const typed: string[] = [];
   const refusals: string[] = [];
+  const attemptGenerations: number[] = [];
   const registry = new ToolRegistry();
   registry.register(createTerminalRunTool({
     windowIdForHostedSession: (candidate) => (candidate === sessionId ? WINDOW : null),
@@ -145,10 +216,31 @@ async function run(command: string, options: {
       session: (tabId) => (tabId === HOST ? session : undefined),
       placement: () => "workspace",
       shellName: () => "zsh",
-      control: () => ({ mode: "available", generation: 1, agentInput: "supported" }),
-      verifyShell: async (_ref, _windowId, reportedCwd) => ({ ok: true, cwd: reportedCwd }),
+      control: editor ? hostTerminalControlState : () => ({ mode: "available", generation: 1, agentInput: "supported" }),
+      verifyShell: editor ? verifyHostTerminalShell : async (_ref, _windowId, reportedCwd) => ({ ok: true, cwd: reportedCwd }),
       // The PTY layer's pre-write effect check, then the write it guards.
-      typeCommand: async (_ref, _windowId, request) => {
+      typeCommand: async (ref, windowId, request, signal) => {
+        if (editor) {
+          let checked = false;
+          const result = await typeHostTerminalCommand(ref, windowId, {
+            ...request,
+            effectCheck: async () => {
+              const effect = await request.effectCheck();
+              if (effect.ok && !checked) {
+                checked = true;
+                attemptGenerations.push(hostTerminalControlState(ref, windowId)!.generation);
+                await options.afterEffectCheck?.();
+              }
+              return effect;
+            },
+            writeFence: () => {
+              options.beforeWriteFence?.(editor.bytes);
+              return request.writeFence?.();
+            },
+          }, signal);
+          if (!result.ok && result.reason === "effect-refused") refusals.push(result.message);
+          return result;
+        }
         await options.duringTyping?.();
         const effect = await request.effectCheck();
         if (!effect.ok) { refusals.push(effect.message); return { ok: false, reason: "effect-refused", message: effect.message }; }
@@ -158,14 +250,14 @@ async function run(command: string, options: {
         typed.push(request.line);
         return { ok: true, firstBlockId: 1 };
       },
-      waitDisclosure: async (_ref, _windowId, _sessionId, turnId) => ({
+      waitDisclosure: editor ? waitForHostTerminalDisclosure : async (_ref, _windowId, _sessionId, turnId) => ({
         requestingSessionId: sessionId, turnId, command, cwd: dir, blockId: 1, state: "done", exitCode: 0, output: "done\n", outputChars: 5, truncated: false,
       }),
     },
   }));
   const owner = { isDestroyed: () => false, send: (channel: string, request: ApprovalRequest) => {
     if (channel !== "ave:approval:request") return;
-    options.duringApproval?.();
+    options.duringApproval?.(session);
     const choice = options.choice ?? "deny-once";
     gate.resolveFromDesktopRenderer(request.id, {
       requestId: request.id, choice, nonce: request.nonce, hmac: request.hmac,
@@ -196,6 +288,8 @@ async function run(command: string, options: {
     review,
     resolvedReview,
     typed,
+    bytes: editor?.bytes,
+    attemptGenerations,
     refusals,
     result: result!,
   };
@@ -442,7 +536,7 @@ describe("terminal_run without Windows shell containment", () => {
     const permissionManager = new PermissionManager(join(dir, "permissions.json"));
     const afterEffectCheck = vi.fn<() => Promise<void>>().mockImplementationOnce(async () => { await change(permissionManager); });
     const result = await run(command, {
-      permissionManager, rules: [exactRule], surfaceChoice: "auto", logicalReview: lowReview, afterEffectCheck, choice,
+      permissionManager, rules: [exactRule], surfaceChoice: "auto", logicalReview: lowReview, afterEffectCheck, choice, useHostPty: true,
     });
     expect(result.resolvedReview.mock.results[0]?.value).toMatchObject({ decision: "allow", reasonCode: "exact-host-rule" });
     expect(afterEffectCheck).toHaveBeenCalledTimes(choice === "allow-once" ? 2 : 1);
@@ -455,6 +549,48 @@ describe("terminal_run without Windows shell containment", () => {
     expect(result.typed).toEqual(choice === "allow-once" ? [command] : []);
     expect(Boolean(result.result.is_error)).toBe(choice === "deny-once");
   });
+
+  it.each(["nothing changed", "paste was withdrawn", "terminal control changed", "policy changed", "host plan changed"] as const)(
+    "reacquires the refused lease only while the late card stays current (%s)", async (change) => {
+      setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: dir, sid: "S-1-5-21-1" });
+      const permissionManager = new PermissionManager(join(dir, "permissions.json"));
+      const paste = `\u001b[200~${command}\u001b[201~`;
+      let paused = false;
+      const beforeWriteFence = (bytes: readonly string[]) => {
+        if (!paused && (change !== "paste was withdrawn" || bytes.includes(paste))) {
+          paused = true;
+          pauseAutoApproval(permissionManager);
+        }
+      };
+      const duringApproval = vi.fn((session: TerminalSessionInfo) => {
+        expect(hostTerminalControlState(session, WINDOW)).toMatchObject({ mode: "available", generation: 2 });
+        if (change === "terminal control changed") expect(controlTerminal(session, WINDOW, "take-over")).toMatchObject({ ok: true });
+        if (change === "policy changed") permissionManager.setMode("strict");
+        if (change === "host plan changed") _resetAveHomePrivacyForTest();
+      });
+      const result = await run(command, {
+        permissionManager, rules: [exactRule], surfaceChoice: "auto", logicalReview: lowReview,
+        choice: "allow-once", useHostPty: true, beforeWriteFence, duringApproval,
+      });
+      expect(result.resolvedReview.mock.results[0]?.value).toMatchObject({
+        decision: "allow", reasonCode: "exact-host-rule", reviewer: { verdict: { level: "low" } },
+      });
+      expect(result.refusals).toHaveLength(1);
+      expect(duringApproval).toHaveBeenCalledOnce();
+      expect(result.request).toMatchObject({
+        userOwnedSurfaceReviewFallback: true, approvalMemory: { scope: { controlGeneration: 2 } },
+      });
+      const approved = change === "nothing changed" || change === "paste was withdrawn";
+      expect(result.attemptGenerations).toEqual(approved ? [1, 3] : [1]);
+      expect(result.typed).toEqual(approved ? [command] : []);
+      expect(result.bytes?.filter(byte => byte === "\r")).toHaveLength(approved ? 1 : 0);
+      if (change === "paste was withdrawn") {
+        expect(result.bytes?.filter(byte => byte === paste)).toHaveLength(2);
+        expect(result.bytes?.filter(byte => byte === "\u0003")).toHaveLength(3);
+      }
+      expect(Boolean(result.result.is_error)).toBe(!approved);
+    },
+  );
 
   it("keeps the terminal surface answer across an unrelated memory-only allow when an exact rule passes the floor", async () => {
     setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: dir, sid: "S-1-5-21-1" });
