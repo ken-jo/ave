@@ -39,6 +39,26 @@
         "Support telemetry or release notes show no supported downgrade/import path still creates the legacy plugin board.",
         "The removal PR keeps a regression test proving existing host work-board data is never overwritten or deleted."
       ]
+    },
+    {
+      "id": "sandbox-runtime-package-policy-adapter",
+      "kind": "legacy-compatibility",
+      "status": "active",
+      "owner": "permissions",
+      "introduced": "2026-11-25",
+      "introducedBy": "refactor/pm1-policy-model",
+      "rationale": "toSrtConfig projects the backend-neutral policy rows onto the sandbox runtime package's four filesystem lists, so the package-shaped config is an adapter output while Ave still launches through that package.",
+      "codeReferences": [
+        "src/permissions/srt-policy-adapter.ts",
+        "src/permissions/asrt-sandbox.ts"
+      ],
+      "validation": [
+        "bun run test:vitest -- run src/permissions/__tests__/policy-model-adapters.test.ts"
+      ],
+      "sunsetCriteria": [
+        "No launch path depends on the @anthropic-ai/sandbox-runtime package any more.",
+        "The package dependency is removed in the same change, and src/permissions/srt-policy-adapter.ts is deleted with it."
+      ]
     }
   ]
 }

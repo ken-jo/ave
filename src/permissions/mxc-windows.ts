@@ -7,6 +7,7 @@ import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-p
 import { WIN32_POWERSHELL_STARTUP_ARGS } from "../shared/powershell-startup-policy.js";
 import { WINDOWS_COMMAND_LINE_LIMIT, WINDOWS_COMMAND_LINE_MARGIN, windowsCommandLineLength } from "../shared/windows-command-line.js";
 import { openMxcPolicyPipe } from "./mxc-policy-pipe.js";
+import { isPolicyFloorRow, type PolicyModel, type PolicyRow } from "./policy-model.js";
 
 import { errorMessage } from "../shared/error-message.js";
 import { compileGlobMatcher, globToRegExp } from "../lib/glob-matcher.js";
@@ -444,12 +445,28 @@ function expandPatternDenies(
   return dedupe(out).sort();
 }
 
+// The lists the ranking below reads, taken from policy rows: a grant row is a write or read grant, a floor pierce is a pierce, a
+// `secrets` row is the protected floor, any other denied row is a read deny and a read-only floor row is a write deny.
+function shellPolicyFromModel(model: PolicyModel): ShellFilesystemPolicy {
+  const paths = (keep: (row: PolicyRow) => boolean): string[] => model.rows.filter(keep).map((row) => row.path);
+  const grant = (row: PolicyRow): boolean => !isPolicyFloorRow(row) && row.reason !== "floor-pierce";
+  return {
+    allowWrite: paths((row) => grant(row) && row.access === "rw"),
+    allowRead: paths((row) => grant(row) && row.access === "ro"),
+    denyRead: paths((row) => isPolicyFloorRow(row) && row.access === "denied" && row.reason !== "secrets"),
+    denyWrite: paths((row) => isPolicyFloorRow(row) && row.access === "ro"),
+    protectedFloor: paths((row) => row.reason === "secrets"),
+    floorPierces: paths((row) => row.reason === "floor-pierce"),
+  };
+}
+
 // Drop grants piercing protected floors except explicit history read exceptions; write denies downgrade grants to read-only. Missing write-deny targets must stay denied because read-only does not prevent creation. Preserve nested read denies, omit redundant denied ancestors, and drop nonexistent grants.
 export function rankMxcFilesystem(
-  policy: ShellFilesystemPolicy,
+  policy: ShellFilesystemPolicy | PolicyModel,
   exists: (path: string) => boolean,
   list?: (directory: string) => readonly MxcDirectoryEntry[],
 ): MxcFilesystemGrants {
+  if ("rows" in policy) policy = shellPolicyFromModel(policy);
   // POSIX-rooted floor rows must not turn into current-drive paths.
   const windowsPaths = (paths: readonly string[]): readonly string[] => paths.filter((path) => !/^\/(?!\/)/.test(path));
   const protectedFloor = windowsPaths(policy.protectedFloor);
