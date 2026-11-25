@@ -5,7 +5,6 @@ import { planWindowsSandbox } from "../../boot/steps/windows-sandbox-plan.js";
 import { PERMISSIONS } from "../../shared/ipc-channels.js";
 import * as aveHome from "../../shared/ave-home.js";
 import { _resetAveHomePrivacyForTest, setAveHomePrivacyAtBoot } from "../../shared/ave-home.js";
-import { assertLocalEmbeddingRuntime } from "../../main/memory-map/local-runtime.js";
 import { assertExtensionStartAllowed, probeExtensionStart } from "../asrt-sandbox.js";
 import {
   __resetExtensionStartsForTest, deferExtensionStart, dropExtensionStart, dropPluginExtensionStarts, EXTENSION_START_CONSENT_REQUIRED_CODE, EXTENSION_START_GRANT_TTL_MS, ExtensionStartConsentRequiredError, listPendingExtensionStarts,
@@ -444,10 +443,20 @@ describe("extension start after the backend readiness deadline expired", () => {
     expect(retry).not.toHaveBeenCalled();
   });
 
-  it("gives a start with no consent route no new way to run", () => {
-    // The native entry needs a ready container, and local inference needs its offline sandbox: neither is asked about.
+  it("answers a start with no consent route as any other no-backend plan does", () => {
+    // The native entry still needs a ready container.
     expect(() => assertExtensionStartAllowed({ backend: "mxc" })).toThrow("Native extension backend is not ready for this start");
-    expect(() => assertLocalEmbeddingRuntime()).toThrow("local-runtime-unavailable");
+    // A host-owned start is never asked about and passes this gate, as under every no-backend plan: its spawn path requires the offline sandbox.
+    const hostOwned = (): string => {
+      try { assertExtensionStartAllowed({ hostOwned: true }); return "passed-to-own-gate"; } catch (error) { return (error as { code?: string }).code ?? "refused"; }
+    };
+    expect(hostOwned()).toBe("passed-to-own-gate");
+    __resetWindowsSandboxSubstrateForTest();
+    publish({ state: "unavailable", reason: "runtime-start-failed" });
+    expect(hostOwned()).toBe("passed-to-own-gate");
+    __resetWindowsSandboxSubstrateForTest();
+    publish({ state: "unavailable", reason: "runtime-start-failed" }, "srt-win");
+    expect(hostOwned()).toBe("extension-readiness-refused");
   });
 });
 
