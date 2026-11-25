@@ -945,6 +945,7 @@ export const en = {
   "be_mcpClient.stdioCommandRequired": "stdio transport requires a command.",
   "be_mcpClient.stdinNotWritable": "stdin is not writable.",
   "be_mcpClient.processExitedUnexpectedly": "Process exited unexpectedly.",
+  "be_mcpClient.sandboxEnvironmentSetupFailed": "The sandbox could not set up the server's environment.",
   "be_mcpClient.processError": "Process error: {message}",
   "be_mcpClient.httpFetchFailed": "http transport fetch failed: {reason}",
   "be_mcpClient.httpJsonParseFailed": "http transport JSON parse failed: {message}",
@@ -1170,6 +1171,7 @@ export const en = {
   // be_scriptHookRunner
   "be_scriptHookRunner.containedSettleDeadline": "The hook's contained process did not settle within {ms} ms; it keeps its sandbox resources while its termination is unconfirmed ({code})",
   "be_scriptHookRunner.terminationUnverified": "Hook process tree termination is unverified. Its resources are retained ({code}).",
+  "be_scriptHookRunner.sandboxEnvironmentSetupFailed": "The sandbox could not set up the hook's environment.",
   "be_scriptHookRunner.containedTerminationUnverified": "The hook's contained process termination is unverified; it keeps its sandbox resources: {detail} ({code})",
 
   // be_sessionGoal

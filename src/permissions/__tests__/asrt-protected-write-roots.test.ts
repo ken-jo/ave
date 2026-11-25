@@ -4,7 +4,8 @@ vi.mock("node:fs", async original => (await import("../../__tests__/support/simu
 
 import { TEST_COMMAND_ID, TEST_WORKER_EGRESS_OWNER } from "../../__tests__/support/egress-fixture.js";
 // Write and read grants must never reopen the protected deny floor. All wraps share this rule; private temp/HOME roots re-allow only their own process directory.
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import * as os from "node:os";
@@ -37,7 +38,7 @@ import {
   setPluginWorkerConfinementRequestedAtBoot,
 } from "../sandbox-capability.js";
 import { createSandboxProcessHome } from "../sandbox-process-home.js";
-import { bundledWrappedEnv, wrapBundledCommand } from "../../sandbox/wrap-bundled-command.js";
+import { wrapBundledCommand } from "../../sandbox/wrap-bundled-command.js";
 import { getConfiguredSessionReadPolicy } from "../sensitive-paths.js";
 import { asrtCanInitialize } from "./test-helpers.js";
 
@@ -500,6 +501,23 @@ describe.skipIf(hostPlatform === "win32")("a confined child cannot reach user da
     expect(run.stdout).not.toContain(SECRET);
   });
 
+  async function runBundledProbe(input: Parameters<typeof wrapBundledCommand>[0]): Promise<string> {
+    const { argv, env, egress, targetLaunch } = await wrapBundledCommand(input);
+    try {
+      const child = spawn(argv[0]!, argv.slice(1), {
+        env, stdio: targetLaunch.withStdio(["ignore", "pipe", "ignore"]), timeout: 30_000,
+      });
+      let stdout = "";
+      child.stdout!.setEncoding("utf8").on("data", chunk => { stdout += chunk; });
+      targetLaunch.sendEnvironment(child);
+      await once(child, "close");
+      return stdout;
+    } finally {
+      egress.release();
+      await cleanupAsrtSandboxAfterCommand();
+    }
+  }
+
   itPosixWrap("withholds the saved-session root from a bundled hook or MCP stdio server", async () => {
     if (!sandboxRuns) return;
     const sessions = getConfiguredSessionReadPolicy().allowRead[0]!;
@@ -507,24 +525,19 @@ describe.skipIf(hostPlatform === "win32")("a confined child cannot reach user da
     writeFileSync(join(sessions, "s.jsonl"), SECRET);
     const home = createSandboxProcessHome();
     try {
-      const { argv, env } = await wrapBundledCommand({
+      const stdout = await runBundledProbe({
         egressOwner: TEST_WORKER_EGRESS_OWNER,
         command: "/bin/sh",
         args: ["-c", `cat ${join(sessions, "s.jsonl")}; echo probe-finished`],
         sandboxHome: home,
+        targetEnv: { PATH: process.env.PATH },
         // Lands in the bundled wrap's allowRead as well.
         allowWrite: [sessions],
         ownPluginReads: [],
         tempPrincipal: { kind: "mcp", id: "protected-write-roots" },
       });
-      const run = spawnSync(argv[0]!, argv.slice(1), {
-        env: bundledWrappedEnv({ PATH: process.env.PATH ?? "/usr/bin:/bin" }, env, home.env),
-        encoding: "utf-8",
-        timeout: 30_000,
-      });
-      await cleanupAsrtSandboxAfterCommand();
-      expect(run.stdout).toContain("probe-finished");
-      expect(run.stdout).not.toContain(SECRET);
+      expect(stdout).toContain("probe-finished");
+      expect(stdout).not.toContain(SECRET);
     } finally {
       home.cleanup();
     }
@@ -624,22 +637,17 @@ describe.skipIf(hostPlatform === "win32")("a confined child cannot reach user da
     const layout = pluginsLayout();
     const home = createSandboxProcessHome();
     try {
-      const { argv, env } = await wrapBundledCommand({
+      const stdout = await runBundledProbe({
         egressOwner: TEST_WORKER_EGRESS_OWNER,
         command: "/bin/sh",
         args: ["-c", pluginsProbe(layout, [join(layout.generation, "hook.txt")])],
         sandboxHome: home,
+        targetEnv: { PATH: process.env.PATH },
         allowWrite: [layout.ownData],
         ownPluginReads: [layout.generation],
         tempPrincipal: { kind: "plugin", id: "own" },
       });
-      const run = spawnSync(argv[0]!, argv.slice(1), {
-        env: bundledWrappedEnv({ PATH: process.env.PATH ?? "/usr/bin:/bin" }, env, home.env),
-        encoding: "utf-8",
-        timeout: 30_000,
-      });
-      await cleanupAsrtSandboxAfterCommand();
-      expectOnlyOwnPlugin(run.stdout, layout.ownData, ["own-generation"]);
+      expectOnlyOwnPlugin(stdout, layout.ownData, ["own-generation"]);
     } finally {
       home.cleanup();
     }
@@ -651,22 +659,17 @@ describe.skipIf(hostPlatform === "win32")("a confined child cannot reach user da
     const home = createSandboxProcessHome();
     try {
       // The roots `agent-plugin-hook-runtime.ts` and `agent-plugin-mcp.ts` hand the wrap: the installed version it runs from, the data it writes.
-      const { argv, env } = await wrapBundledCommand({
+      const stdout = await runBundledProbe({
         egressOwner: TEST_WORKER_EGRESS_OWNER,
         command: "/bin/sh",
         args: ["-c", pluginsProbe(layout, [join(layout.ownAgentGeneration, "hook.txt")], layout.ownAgentData)],
         sandboxHome: home,
+        targetEnv: { PATH: process.env.PATH },
         allowWrite: [layout.ownAgentData],
         ownPluginReads: [layout.ownAgentGeneration],
         tempPrincipal: { kind: "plugin", id: "agent-plugin/own" },
       });
-      const run = spawnSync(argv[0]!, argv.slice(1), {
-        env: bundledWrappedEnv({ PATH: process.env.PATH ?? "/usr/bin:/bin" }, env, home.env),
-        encoding: "utf-8",
-        timeout: 30_000,
-      });
-      await cleanupAsrtSandboxAfterCommand();
-      expectOnlyOwnPlugin(run.stdout, layout.ownAgentData, ["own-agent-generation"]);
+      expectOnlyOwnPlugin(stdout, layout.ownAgentData, ["own-agent-generation"]);
     } finally {
       home.cleanup();
     }

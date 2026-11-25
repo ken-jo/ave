@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { link, mkdtemp, mkdir, open as openFile, readFile, realpath, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
@@ -550,22 +550,25 @@ describe("terminal review text is display-only", () => {
   // it. No tool result, model context, observation feed or terminal_read path reads it: those modules never call the
   // snapshot, the channel or the renderer review store, and the writers that import the evidence only record writes.
   const root = join(__dirname, "../../..");
+  // One concurrent scan for the describe: a sequential read per file costs one scheduler round trip each, which a
+  // loaded host stretches past the test timeout.
   async function sources(): Promise<Map<string, string>> {
     const found = new Map<string, string>();
     const walk = async (dir: string): Promise<void> => {
-      for (const entry of await readdir(dir, { withFileTypes: true })) {
+      await Promise.all((await readdir(dir, { withFileTypes: true })).map(async entry => {
         const path = join(dir, entry.name);
         if (entry.isDirectory()) { if (entry.name !== "__tests__") await walk(path); }
         else if (/\.(?:ts|tsx)$/.test(entry.name) && !/\.test\.tsx?$/.test(entry.name)) found.set(relative(root, path).split("\\").join("/"), await readSource(path, "utf8"));
-      }
+      }));
     };
     await walk(root);
     return found;
   }
+  let files: Map<string, string>;
+  beforeAll(async () => { files = await sources(); });
   const users = (files: Map<string, string>, pattern: RegExp) => [...files].filter(([, text]) => pattern.test(text)).map(([path]) => path).sort();
 
-  it("has one producer, one channel and only drawing consumers", async () => {
-    const files = await sources();
+  it("has one producer, one channel and only drawing consumers", () => {
     expect(files.size).toBeGreaterThan(500);
     expect(users(files, /terminalFileEvidence\.snapshot\(/)).toEqual(["ipc/domains/terminal.ts"]);
     expect(users(files, /\bfileReviews\b/)).toEqual(["contract/app-contract.ts", "ipc/domains/terminal.ts", "preload/terminal-api-surface.ts"]);
@@ -578,8 +581,7 @@ describe("terminal review text is display-only", () => {
     expect(users(files, /from "\.\/TerminalChangesView\.js"/)).toEqual(["ui/renderer/components/MainSurfacePanels.tsx", "ui/renderer/components/SidePanelTerminal.tsx"]);
   });
 
-  it("lets the writers that import the evidence only record writes", async () => {
-    const files = await sources();
+  it("lets the writers that import the evidence only record writes", () => {
     const importers = users(files, /changed-file-evidence\.js"/).filter(path => path !== "ipc/domains/terminal.ts");
     expect(importers).toEqual(["memory/code-checkpoints.ts", "observation/document-adapter.ts", "tools/file-tools.ts", "tools/guarded-file-transfer.ts"]);
     for (const path of importers) {

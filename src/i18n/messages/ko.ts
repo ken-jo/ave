@@ -947,6 +947,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "be_mcpClient.stdioCommandRequired": "stdio transport에 command가 필요합니다.",
   "be_mcpClient.stdinNotWritable": "stdin이 쓰기 불가 상태입니다.",
   "be_mcpClient.processExitedUnexpectedly": "프로세스가 예기치 않게 종료되었습니다.",
+  "be_mcpClient.sandboxEnvironmentSetupFailed": "샌드박스가 서버 환경을 설정하지 못했습니다.",
   "be_mcpClient.processError": "프로세스 오류: {message}",
   "be_mcpClient.httpFetchFailed": "http transport fetch 실패: {reason}",
   "be_mcpClient.httpJsonParseFailed": "http transport JSON 파싱 실패: {message}",
@@ -1172,6 +1173,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   // be_scriptHookRunner
   "be_scriptHookRunner.containedSettleDeadline": "훅의 격리 프로세스가 {ms} ms 안에 끝나지 않았습니다. 종료가 확인되지 않는 동안 샌드박스 자원을 유지합니다({code})",
   "be_scriptHookRunner.terminationUnverified": "훅의 전체 프로세스 종료를 확인하지 못했습니다. 관련 자원을 유지합니다 ({code}).",
+  "be_scriptHookRunner.sandboxEnvironmentSetupFailed": "샌드박스가 훅 환경을 설정하지 못했습니다.",
   "be_scriptHookRunner.containedTerminationUnverified": "훅의 격리 프로세스 종료를 확인하지 못했습니다. 샌드박스 자원을 유지합니다: {detail}({code})",
 
   // be_sessionGoal

@@ -134,6 +134,15 @@ describe("contained plugin worker", () => {
     for (const reached of Object.values(accountRoute)) expect(reached).not.toHaveBeenCalled();
   });
 
+  it("hands the holder the host's floor pierces, and none for a worker whose host names none", async () => {
+    await spawnWorker({ ...spec("D:\\work\\a"), allowReadPaths: ["D:\\payload", "D:\\shared\\catalog"],
+      floorPierces: ["D:\\shared\\catalog"], control: "output-only-v1" });
+    expect(holder(0).input).toMatchObject({ allowRead: ["D:\\payload", "D:\\shared\\catalog"], floorPierces: ["D:\\shared\\catalog"] });
+
+    await spawnWorker({ ...spec("D:\\work\\b"), workerId: "other", control: "output-only-v1" });
+    expect(holder(1).input).not.toHaveProperty("floorPierces");
+  });
+
   it("refuses a declared grant inside another plugin's storage or at a plugin root, and admits the plugin's own", async () => {
     const { pluginsRoot, cacheRoot } = resolvePluginPaths();
     const start = (read: string[], write: string[]) => spawnWorker({ ...spec("D:\\work\\a"), allowReadPaths: read, allowWritePaths: write, control: "output-only-v1" });

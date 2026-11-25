@@ -224,6 +224,15 @@ describe("initSandboxGate — shell sandbox and plugin-worker confinement scopes
     });
   });
 
+  it("initializes with the helpers the dependency check resolved", async () => {
+    const linuxWrapperPrograms = { bwrapPath: "/opt/bin/bwrap", socatPath: "/opt/bin/socat", ripgrep: { command: "/opt/bin/rg" } };
+    h.checkDeps.mockResolvedValue({ errors: [], warnings: [], linuxWrapperPrograms });
+    await initSandboxGate(harness.context(true, false));
+
+    expect(h.initialize).toHaveBeenCalledOnce();
+    expect(h.initialize.mock.calls[0]?.[0]).toMatchObject({ linuxWrapperPrograms });
+  });
+
   it("seals the shell sandbox alone without requesting worker confinement", async () => {
     await initSandboxGate(harness.context(true, false));
 

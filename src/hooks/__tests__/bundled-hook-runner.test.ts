@@ -3,7 +3,7 @@ vi.mock("../../shared/windows-configuration-handles.js", async original => (awai
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
 
 import { ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { egressInvocationOwner } from "../../permissions/egress-invocations.js";
 import { join } from "node:path";
@@ -66,15 +66,11 @@ interface WindowsSpawnCall {
 const windowsSpawns: WindowsSpawnCall[] = [];
 const releaseHoldMock = vi.fn();
 let failWindowsSpawn: Error | undefined;
-let failWrappedEnv: Error | undefined;
 vi.mock("../../sandbox/wrap-bundled-command.js", async (original) => {
   const real = await original<typeof import("../../sandbox/wrap-bundled-command.js")>();
   const { spawn } = await import("node:child_process");
   const { PassThrough } = await import("node:stream");
-  return { ...real, bundledWrappedEnv: (...args: Parameters<typeof real.bundledWrappedEnv>) => {
-    if (failWrappedEnv !== undefined) throw failWrappedEnv;
-    return real.bundledWrappedEnv(...args);
-  }, spawnWindowsBundledProcess: async (call: WindowsSpawnCall) => {
+  return { ...real, spawnWindowsBundledProcess: async (call: WindowsSpawnCall) => {
     windowsSpawns.push(call);
     if (failWindowsSpawn !== undefined) throw failWindowsSpawn;
     const command = call.command === "node" ? process.execPath : call.command;
@@ -95,6 +91,7 @@ import { runOneHookScript } from "../script-hook-runner.js";
 import { abandonManagedLaunch, createManagedResources, observeManagedProcessGroup, releaseManagedResources } from "../../main/managed-child-processes.js";
 import { wrapManagedBundledCommand } from "../../sandbox/wrap-bundled-command.js";
 import { appOwnedSandboxPrivateRoots, cleanupAsrtSandboxAfterCommand, type SandboxTempPrincipal } from "../../permissions/asrt-sandbox.js";
+import { t } from "../../i18n/index.js";
 import {
   __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, setActiveSandboxCapability, setShellSandboxRequestedAtBoot,
 } from "../../permissions/sandbox-capability.js";
@@ -104,6 +101,7 @@ const generationRoot = join(root, "generation");
 const dataDir = join(root, "data");
 mkdirSync(generationRoot); mkdirSync(dataDir);
 const script = join(generationRoot, "hook.cjs");
+const fixtureNode = process.env.AVE_TEST_NODE_EXEC_PATH ?? "node";
 const payload: ScriptHookStdin = { hookType: "pre", event: "pre", toolName: "read_file", source: "builtin",
   category: "read", input: {}, sessionId: "runner", trustOrigin: "user-keyboard" };
 const runnable = () => ({ id: "hook", hookType: "pre" as const, source: "config" as const,
@@ -118,7 +116,7 @@ function activateShellSandbox(): void {
     confines: { filesystem: true, process: true, network: true } });
 }
 
-afterEach(() => { vi.mocked(cleanupAsrtSandboxAfterCommand).mockReset(); __resetSandboxRequestedAtBootForTest(); __resetActiveSandboxCapabilityForTest(); sandboxActive = false; admissionOpen = true; wrap.mockReset(); vi.restoreAllMocks(); windowsSpawns.length = 0; releaseHoldMock.mockReset(); failWindowsSpawn = undefined; failWrappedEnv = undefined; });
+afterEach(() => { vi.mocked(cleanupAsrtSandboxAfterCommand).mockReset(); __resetSandboxRequestedAtBootForTest(); __resetActiveSandboxCapabilityForTest(); sandboxActive = false; admissionOpen = true; wrap.mockReset(); vi.restoreAllMocks(); windowsSpawns.length = 0; releaseHoldMock.mockReset(); failWindowsSpawn = undefined; });
 afterAll(async () => { await cleanupTmpDir(root); });
 
 describe("bundled hook runner", () => {
@@ -126,7 +124,7 @@ describe("bundled hook runner", () => {
     writeFileSync(script, "process.stdout.write(JSON.stringify({action:'allow',reason:'wrapped user hook'}))");
     vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
     activateShellSandbox();
-    wrap.mockResolvedValueOnce({ argv: ["node", script], env: {} });
+    wrap.mockResolvedValueOnce({ argv: [fixtureNode, script], env: {} });
     const { confinement: _confinement, ...userHook } = runnable();
     const result = await runOneHookScript(userHook, payload, { cwd: dataDir });
     expect(result.decision, result.reason).toBe("allow");
@@ -144,7 +142,7 @@ describe("bundled hook runner", () => {
     writeFileSync(script, "process.stdout.write(JSON.stringify({action:'allow',reason:'wrapped'}))");
     vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
     activateShellSandbox();
-    wrap.mockResolvedValueOnce({ argv: ["node", script], env: {} });
+    wrap.mockResolvedValueOnce({ argv: [fixtureNode, script], env: {} });
     const protectedAnchor = join(homedir(), ".ssh", "fixture-private.cjs");
     const result = await runOneHookScript({ id: "protected-anchor", hookType: "pre", source: "config",
       hookPath: protectedAnchor, command: ["node", protectedAnchor], configDir: generationRoot,
@@ -171,7 +169,7 @@ describe("bundled hook runner", () => {
     let allowed = true;
     wrap.mockImplementationOnce(async () => {
       allowed = false;
-      return { argv: ["node", script], env: {} };
+      return { argv: [fixtureNode, script], env: {} };
     });
     const { confinement: _confinement, ...userHook } = runnable();
     const result = await runOneHookScript(userHook, payload, { cwd: dataDir,
@@ -224,14 +222,13 @@ process.stdin.on('end', () => process.stdout.write(JSON.stringify({action:'allow
     expect(result.reason).toContain("wrap failed");
   });
 
-  it("releases the egress invocation and the wrap when composing its environment fails", async () => {
+  it("releases the egress invocation and the wrap when the launcher argv is missing", async () => {
     sandboxActive = true;
     vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
-    wrap.mockResolvedValueOnce({ argv: ["node", script], env: {} });
-    failWrappedEnv = new Error("env failed");
+    wrap.mockResolvedValueOnce({ argv: [], env: {} });
     vi.mocked(cleanupAsrtSandboxAfterCommand).mockClear();
     const result = await runOneHookScript(runnable(), payload);
-    expect(result).toMatchObject({ decision: "deny", reason: expect.stringContaining("env failed") });
+    expect(result).toMatchObject({ decision: "deny", reason: expect.stringContaining("empty argv") });
     const token = (wrap.mock.calls[0]![1] as { commandId: string }).commandId;
     expect(egressInvocationOwner(token)).toBeUndefined();
     expect(cleanupAsrtSandboxAfterCommand).toHaveBeenCalledOnce();
@@ -239,19 +236,36 @@ process.stdin.on('end', () => process.stdout.write(JSON.stringify({action:'allow
 
   it.each([["pre", "deny"], ["UserPromptSubmit", "allow"], ["SessionStart", "allow"]] as const)(
     "keeps the %s hook's own verdict and removes its HOME when ASRT cleanup rejects after a confirmed exit", async (hookType, action) => {
-      writeFileSync(script, `process.stdout.write(JSON.stringify({action:'${action}',reason:'home='+process.env.HOME}))`);
+      writeFileSync(script, `process.stdout.write(JSON.stringify({action:'${action}',reason:'own verdict'}))`);
       vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
       activateShellSandbox();
-      wrap.mockResolvedValueOnce({ argv: ["node", script], env: {} });
+      let home = "";
+      wrap.mockImplementationOnce(async (_command, raw) => {
+        home = (raw as { filesystem: { allowWrite: string[] } }).filesystem.allowWrite[1] ?? "";
+        return { argv: [fixtureNode, script], env: {} };
+      });
       vi.mocked(cleanupAsrtSandboxAfterCommand).mockRejectedValueOnce(new Error("mount cleanup failed"));
       const { confinement: _confinement, ...userHook } = runnable();
       const result = await runOneHookScript({ ...userHook, hookType }, { ...payload, hookType, event: hookType, inputText: "prompt" } as ScriptHookStdin, { cwd: dataDir });
       expect(result.decision, result.reason).toBe(action);
       expect(result.hookType).toBe(hookType);
-      const home = result.reason.replace(/^home=/u, "");
       expect(home).toContain("sandbox");
       expect(existsSync(home)).toBe(false);
     });
+
+  it.each([
+    ["a setup failure byte", "require('node:fs').writeSync(5, Buffer.from([1])); process.exit(1)", true],
+    ["no status byte", "process.exit(1)", false],
+  ] as const)("names a sandbox setup failure only from the target status pipe: %s", async (_name, body, failed) => {
+    writeFileSync(script, body);
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    activateShellSandbox();
+    wrap.mockResolvedValueOnce({ argv: [fixtureNode, script], env: {} });
+    const { confinement: _confinement, ...userHook } = runnable();
+    const result = await runOneHookScript(userHook, payload, { cwd: dataDir });
+    expect(result.decision).toBe("deny");
+    expect(result.reason === t("be_scriptHookRunner.sandboxEnvironmentSetupFailed"), result.reason).toBe(failed);
+  });
 
   it("runs the rest of a wrapped handle's release past a rejected ASRT cleanup and retries only that step", async () => {
     vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
@@ -261,7 +275,7 @@ process.stdin.on('end', () => process.stdout.write(JSON.stringify({action:'allow
     cleanup.mockClear();
     cleanup.mockRejectedValueOnce(new Error("mount cleanup failed"));
     const resources = createManagedResources();
-    const wrapped = await wrapManagedBundledCommand({ command: "node", args: [script], resources, allowWrite: [dataDir], ownPluginReads: [],
+    const wrapped = await wrapManagedBundledCommand({ command: "node", args: [script], resources, targetEnv: {}, allowWrite: [dataDir], ownPluginReads: [],
       tempPrincipal: { kind: "hook", id: "release-retry" }, egressOwner: { kind: "worker", role: "hook", pluginId: undefined, instanceId: "release-retry" } });
     const [, options] = wrap.mock.calls[0] ?? [];
     const token = (options as { commandId: string }).commandId;
@@ -290,8 +304,15 @@ process.stdin.on('end', () => process.stdout.write(JSON.stringify({action:'allow
     writeFileSync(script, "process.stdout.write(JSON.stringify({action:'allow',reason:'wrapped'}))");
     sandboxActive = true;
     vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
-    wrap.mockResolvedValueOnce({ argv: ["node", script], env: {} });
-    const result = await runOneHookScript(runnable(), payload);
+    let staged: string[] = [];
+    wrap.mockImplementationOnce(async (_command, raw) => {
+      const home = (raw as { filesystem: { allowWrite: string[] } }).filesystem.allowWrite[1];
+      if (home === undefined) throw new Error("Missing sandbox HOME grant");
+      staged = readdirSync(home, { withFileTypes: true }).filter(entry => entry.isFile())
+        .map(entry => readFileSync(join(home, entry.name), "utf8"));
+      return { argv: [fixtureNode, script], env: {} };
+    });
+    const result = await runOneHookScript({ ...runnable(), env: { HOOK_PROBE: "-a=b" } }, payload);
     expect(result.decision).toBe("allow");
     const [cmdline, raw] = wrap.mock.calls[0]!;
     const token = (raw as { commandId: string }).commandId;
@@ -302,7 +323,10 @@ process.stdin.on('end', () => process.stdout.write(JSON.stringify({action:'allow
     expect(options.filesystem.allowWrite).not.toContain(generationRoot);
     // Its plugin's temp directory, set as TMPDIR inside the wrap, granted alone; the shared root holding every other principal's is read-denied.
     const tempDir = join(SANDBOX_TEMP_ROOT, `plugin-${Buffer.from("hook-plugin").toString("hex")}`);
-    expect(cmdline.startsWith(`'/usr/bin/env' 'TMPDIR=${tempDir}' 'TMP=${tempDir}' 'TEMP=${tempDir}' 'node' `)).toBe(true);
+    expect(cmdline).not.toContain("HOOK_PROBE");
+    expect(staged.some(contents => contents.includes("HOOK_PROBE=-a=b")), "canary in a launcher file").toBe(false);
+    expect(cmdline).toContain(`'${tempDir}'`);
+    expect(cmdline).toContain("'node'");
     expect(options.filesystem.allowWrite).toContain(tempDir);
     expect(options.filesystem.allowWrite).not.toContain(SANDBOX_TEMP_ROOT);
     expect(options.filesystem.denyRead).toEqual(expect.arrayContaining(appOwnedSandboxPrivateRoots()));
