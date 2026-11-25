@@ -124,7 +124,9 @@ function gitControlEntries(discovery?: GitControlDiscovery): readonly string[] {
 function storeControlEntries(directory: string, budget: GitDiscoveryBudget, discovery?: GitControlDiscovery): readonly string[] {
   const container = dirname(directory);
   const commonPath = basename(container) === "worktrees" ? readGitMetadata(join(directory, "commondir"), budget) : undefined;
-  const commonContainer = commonPath && !/[\r\n\0]/.test(commonPath) ? resolvePolicyPath(join(commonPath, "worktrees"), directory) : undefined;
+  // An unusable commondir cannot settle the folder's kind, so it keeps both names.
+  if (commonPath !== undefined && (!commonPath || /[\r\n\0]/.test(commonPath))) return [...gitControlEntries(discovery), "ave.id", "ave-pins"];
+  const commonContainer = commonPath ? resolvePolicyPath(join(commonPath, "worktrees"), directory) : undefined;
   const admin = commonContainer !== undefined && isPhysicalPathWithin(container, commonContainer) && isPhysicalPathWithin(commonContainer, container);
   return [...gitControlEntries(discovery), admin ? "ave.id" : "ave-pins"];
 }

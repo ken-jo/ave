@@ -603,11 +603,12 @@ describe("mandatory sandbox control-file writes", () => {
     const stage = join(root, "stage");
     mkdirSync(stage);
     writeFileSync(join(stage, ".git"), `gitdir: ${stageAdmin}\n`);
-    for (const roots of [[root], [stage]]) {
+    for (const roots of [[stage], [root]]) {
       const rows = nativeDenyRows(withPlatform(platform, () => buildMandatorySandboxWritePolicy(roots)).denyWrite);
       if (roots[0] === stage) {
         expect(rows).toContain(join(stageAdmin, "ave.id"));
         expect(rows).not.toContain(join(stageAdmin, "ave-pins"));
+        expect(rows).toContain(join(marker, "ave-pins"));
         continue;
       }
       for (const store of [marker, moduleStore, nestedModuleStore, separate]) {
@@ -618,6 +619,23 @@ describe("mandatory sandbox control-file writes", () => {
         expect(rows).toContain(join(admin, "ave.id"));
         expect(rows).not.toContain(join(admin, "ave-pins"));
       }
+    }
+  });
+
+  it.skipIf(process.platform !== "win32")("denies both work-board names in a worktrees folder whose commondir is unusable", () => {
+    const marker = join(root, ".git");
+    mkdirSync(marker);
+    writeFileSync(join(marker, "HEAD"), "ref: refs/heads/main\n");
+    const admins = { empty: "", split: "../..\nother\n" };
+    for (const [name, commondir] of Object.entries(admins)) {
+      const admin = join(marker, "worktrees", name);
+      mkdirSync(admin, { recursive: true });
+      writeFileSync(join(admin, "HEAD"), "ref: refs/heads/main\n");
+      writeFileSync(join(admin, "commondir"), commondir);
+    }
+    const rows = nativeDenyRows(buildMandatorySandboxWritePolicy([root]).denyWrite);
+    for (const name of Object.keys(admins)) {
+      expect(rows).toEqual(expect.arrayContaining([join(marker, "worktrees", name, "ave.id"), join(marker, "worktrees", name, "ave-pins")]));
     }
   });
 
