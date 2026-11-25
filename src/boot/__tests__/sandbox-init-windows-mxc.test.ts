@@ -65,6 +65,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
 import { initSandboxGate } from "../steps/sandbox-init.js";
 import { decidePermission } from "../../permissions/decision-pipeline.js";
 import { requiresUnsandboxedShellAsk } from "../../permissions/host-shell-execution-plan.js";
+import { ObligationRefusedError, setWindowsDenyUnenforceableAtBoot, windowsDenyUnenforceableAtBoot } from "../../permissions/admitted-obligation.js";
 import { assertAveHomePrivacyForConfinement, getAveHomePrivacyFailure, setAveHomePrivacyAtBoot, _resetAveHomePrivacyForTest } from "../../shared/ave-home.js";
 import { windowsPathKindHelperUnavailable } from "../../main/windows-path-kind-launcher.js";
 import {
@@ -502,6 +503,41 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     expect(getSandboxBootOutcome()).toMatchObject({ action: "degrade", reason: "degrade-windows-init-failed", causes: ["init-failed"] });
     expect(getAveHomePrivacyFailure()).toBeUndefined();
     expect(h.logger.warn).toHaveBeenCalledWith(expect.stringContaining("isolation=none"));
+  });
+
+  it.each([
+    { label: "a mapped drive", rows: [{ row: "M:\\alice\\.ssh", reason: "mapped-drive" as const }], cause: "windows-deny-unenforceable", kind: "network" },
+    { label: "a local helper failure", rows: [{ row: "C:\\alice\\.ssh", reason: "helper-unavailable" as const }], cause: "windows-deny-path-unenforceable", kind: "path" },
+    { label: "a share next to a device row", rows: [{ row: "\\\\srv\\s\\x", reason: "share" as const }, { row: "\\\\.\\pipe\\x", reason: "device" as const }], cause: "windows-deny-path-unenforceable", kind: "path" },
+  ])("routes an unenforceable Windows deny on $label to the forced sandbox-unavailable question with its own cause, never a proxy-only retry", async ({ rows, cause, kind }) => {
+    h.checkDeps.mockResolvedValue({ errors: [], warnings: [] });
+    h.detectMxc.mockResolvedValue(MXC_OK);
+    h.initialize.mockRejectedValue(new ObligationRefusedError(rows));
+    try {
+      await initSandboxGate(harness.context(true, true));
+
+      expect(h.initialize).toHaveBeenCalledTimes(1);
+      expect(getSandboxBootOutcome()).toMatchObject({ action: "degrade", reason: "degrade-windows-init-failed", causes: [cause] });
+      expect(windowsDenyUnenforceableAtBoot()).toBe(kind);
+      const plan = getHostShellExecutionPlan();
+      expect(plan).toMatchObject({ mode: "plain", fallbackReason: "requested-sandbox-unavailable", requiresExplicitUserApproval: true });
+      expect(requiresUnsandboxedShellAsk(plan)).toBe(true);
+    } finally {
+      setWindowsDenyUnenforceableAtBoot(undefined);
+    }
+  });
+
+  it("clears an earlier deny refusal after Windows sandbox initialization succeeds", async () => {
+    h.checkDeps.mockResolvedValue({ errors: [], warnings: [] });
+    h.detectMxc.mockResolvedValue(MXC_OK);
+    setWindowsDenyUnenforceableAtBoot("path");
+    try {
+      await initSandboxGate(harness.context(true, true));
+      expect(getSandboxBootOutcome()).toMatchObject({ action: "activate" });
+      expect(windowsDenyUnenforceableAtBoot()).toBeUndefined();
+    } finally {
+      setWindowsDenyUnenforceableAtBoot(undefined);
+    }
   });
 
   it("records the withdrawn substrate when ASRT fails to initialize", async () => {

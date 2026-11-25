@@ -3,7 +3,7 @@
 // adapter's output fails here.
 import { describe, expect, it } from "vitest";
 import { synthesizeMxcAncestorQueries } from "../mxc-filesystem-policy.js";
-import { rankMxcFilesystem, type MxcFilesystemGrants } from "../mxc-windows.js";
+import { rankMxcRowsBySpelling, type MxcFilesystemGrants } from "../mxc-windows.js";
 import {
   buildPolicyModel, policyFloorRow, policyGrantRow,
   type PolicyFloorRow, type PolicyGrantRow, type PolicyModel, type PolicyModelInput,
@@ -171,7 +171,7 @@ describe("policy model adapters", () => {
   });
 
   it.each(TABLE)("ranks $name into container grants", (row) => {
-    expect(rankMxcFilesystem(row.model, row.exists)).toEqual(row.mxc);
+    expect(rankMxcRowsBySpelling(row.model, row.exists)).toEqual(row.mxc);
   });
 
   it("leaves the volume-root refusal to the container request builder", () => {

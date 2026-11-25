@@ -1,4 +1,5 @@
 import http from "node:http";
+import { realpathSync } from "node:fs";
 import net, { type AddressInfo, type Socket } from "node:net";
 import { join, resolve } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -153,11 +154,13 @@ type LaneKind = "listener" | "launcher";
 
 async function lane(token: string, kind: LaneKind) {
   if (kind === "launcher") {
+    // The launch admits its grants on native path facts, so the workspace is a real folder.
+    const workspace = realpathSync.native(policyFixture("egress-lane-workspace-"));
     const launch = await prepareOwnedMxcShellLaunch({
       egressToken: token,
       commandLine: "cmd.exe /d /c echo hi",
-      cwd: String.raw`C:\work\repo`,
-      filesystem: { allowWrite: [String.raw`C:\work\repo`], allowRead: [], denyRead: [], denyWrite: [] },
+      cwd: workspace,
+      filesystem: { allowWrite: [workspace], allowRead: [], denyRead: [], denyWrite: [] },
       env: { SYSTEMROOT: String.raw`C:\Windows`, LOCALAPPDATA: String.raw`C:\Users\u\AppData\Local` },
       timeoutMs: 5_000,
       exists: () => true,

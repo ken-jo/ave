@@ -10,7 +10,7 @@ import {
   setWindowsSandboxSubstrate,
 } from "../sandbox-capability.js";
 import { planWindowsSandbox } from "../../boot/steps/windows-sandbox-plan.js";
-import { mxcPolicyRows, rankMxcFilesystem } from "../mxc-windows.js";
+import { mxcPolicyRows, rankMxcRowsBySpelling } from "../mxc-windows.js";
 import { buildMandatorySandboxWritePolicy } from "../sandbox-write-policy.js";
 
 // Admission projects the Ave home boundary, which pins a profile-child home natively.
@@ -74,7 +74,7 @@ describe("holder filesystem admission", () => {
     setProcessPlatform("win32");
     const admitted = admitMxcExtensionFilesystem({ allowRead: ["C:\\holder\\data"], allowWrite: ["C:\\holder\\data"], denyRead: [deny] }, HOLDER_OWNERSHIP);
     expect(mxcPolicyRows(admitted.model).protectedFloor).toContain(deny);
-    expect(rankMxcFilesystem(admitted.model, () => true)).toMatchObject({ readwrite: [], readonly: [] });
+    expect(rankMxcRowsBySpelling(admitted.model, () => true)).toMatchObject({ readwrite: [], readonly: [] });
   });
 
   it("binds every write grant to the host-captured write roots, inside or outside plugin namespaces", () => {

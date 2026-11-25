@@ -2,7 +2,6 @@
 // have exited, so a surviving process can never reach a port reused by another invocation.
 import { win32 as winPath } from "node:path";
 import type { ChildProcess } from "node:child_process";
-import { lstatSync, readdirSync } from "node:fs";
 import { windowsSystemRoot } from "../shared/windows-system-path.js";
 
 import { aveHomeReadBoundaryCovering, getProtectedReadDenyFloor } from "../permissions/asrt-sandbox.js";
@@ -15,7 +14,6 @@ import {
   openMxcRequestTransport,
   rankMxcFilesystem,
   resolveHostWxcExecPath,
-  type MxcDirectoryEntry,
 } from "../permissions/mxc-windows.js";
 import { buildPolicyModel, policyFloorRow, policyGrantRow, type PolicyModel } from "../permissions/policy-model.js";
 import type { ContainedShellLifecycle } from "./contained-shell-lifecycle.js";
@@ -76,24 +74,6 @@ export interface PrepareMxcShellLaunchInput {
   readonly env: Readonly<Record<string, string>>;
   readonly timeoutMs: number;
   readonly exists: (path: string) => boolean;
-  /** Lists a directory without following links; defaults to the real filesystem. */
-  readonly list?: (directory: string) => readonly MxcDirectoryEntry[];
-}
-
-// Listing reports every Windows reparse point as a link; lstat tells a real link (symlink, junction) from a placeholder directory such as a cloud file.
-function listDirectory(directory: string): MxcDirectoryEntry[] {
-  return readdirSync(directory, { withFileTypes: true }).flatMap((entry): MxcDirectoryEntry[] => {
-    if (entry.isDirectory()) return [{ name: entry.name, kind: "directory" }];
-    if (!entry.isSymbolicLink()) return [{ name: entry.name, kind: "file" }];
-    let target: ReturnType<typeof lstatSync>;
-    try { target = lstatSync(winPath.join(directory, entry.name)); }
-    catch (error) {
-      // Removed since the listing: nothing is left to deny.
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-      throw error;
-    }
-    return [{ name: entry.name, kind: target.isSymbolicLink() ? "link" : target.isDirectory() ? "reparse-directory" : "file" }];
-  });
 }
 
 /** Margin MXC's own timeout keeps behind the host's lifetime watch. */
@@ -156,8 +136,7 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
   const allowRead = input.filesystem.allowRead.filter((path) => !insideBoundary(path));
   const allowWrite = input.filesystem.allowWrite.filter((path) => !insideBoundary(path));
   const protectedFloor = getProtectedReadDenyFloor();
-  const grants = rankMxcFilesystem(shellPolicyModel({ ...input.filesystem, allowWrite, allowRead, protectedFloor }),
-    input.exists, input.list ?? listDirectory);
+  const grants = rankMxcFilesystem(shellPolicyModel({ ...input.filesystem, allowWrite, allowRead, protectedFloor }));
   assertAdmission();
   const relay = await openHostEgressListener(token, admission);
   assertAdmission();
