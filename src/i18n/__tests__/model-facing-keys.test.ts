@@ -13,6 +13,7 @@ const SRC = fileURLToPath(new URL("../..", import.meta.url));
  * namespaces each may use there. Any other key in these files must still be model-facing. */
 const INTERFACE_KEYS: ReadonlyMap<string, readonly string[]> = new Map([
   ["boot/steps/home-privacy-notice.ts", ["homePrivacy."]], // private storage repair notification
+  ["boot/steps/plugin-tool-executor.ts", ["extensionStart."]], // notice for an extension start nobody approved
   ["boot/steps/terminal-scrollback-setup.ts", ["ptyTerminal.outputNotSaved", "ptyTerminal.closedOutputNotRemoved"]], // notifications about kept terminal output
   ["floating-dock-window.tsx", ["floatingDock."]], // the dock renderer's own error line (it sits outside ui/)
   ["ipc/domains/attach.ts", ["mainDialog."]], // file picker title

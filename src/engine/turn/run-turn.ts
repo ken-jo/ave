@@ -52,6 +52,7 @@ import { TurnJournal, isHostExitAbort, registerRunningTurn } from "./turn-journa
 import { HOST_EXIT_INTERRUPTION } from "../../memory/session-turn-journal.js";
 import type { MemoryCaptureTaintReason } from "../../memory/memory-capture-service.js";
 import { hookInfluenceContext } from "../../hooks/hook-influence.js";
+import { settlePendingExtensionStarts } from "../../permissions/extension-start-consent.js";
 
 const log = createLogger("ave");
 
@@ -215,6 +216,11 @@ async function runTurnInSpan(
       );
     }
     const turnSignal = ac.signal;
+    // Extension starts nothing confines wait for a person: a verified local turn asks one card each, a turn nobody can answer starts none.
+    // Any other turn only runs the ones a backend has come to confine since.
+    const noApprover = self.deps.headless === true || self.deps.approvalSurface === "unavailable";
+    const personPresent = userKeyboardVerified && !isRemoteControllerTurn && options.unattendedAuthority === undefined && !noApprover;
+    void settlePendingExtensionStarts(personPresent || noApprover ? { sessionId: effectiveSessionId, attended: personPresent } : undefined);
     const runLifecycle = <T>(operation: () => Promise<T>): Promise<T> => {
       const inherited = turnExtensionPolicyContext.getStore();
       const otherPrincipal = lifecycleProvenance.toolTrustOrigin === "file-content" || lifecycleProvenance.toolTrustOrigin === "agent-message" ||

@@ -170,7 +170,6 @@ export const PERMISSIONS = {
   // MUTATING (sender-frame-guarded): the ONLY user-consented privilege escalation entry point;
   // triggers ASRT installWindowsSandbox's single self-elevating UAC prompt. Never auto-triggered.
   sandboxWindowsInstall: "ave:permissions:sandbox-windows-install",
-  approveExtensionsWithoutIsolation: "ave:permissions:approve-extensions-without-isolation",
   // Home content review: the read serves one snapshot; approve and remove act only on its rows and need a user gesture.
   homeTrustReview: "ave:permissions:home-trust-review",
   homeTrustApprove: "ave:permissions:home-trust-approve",

@@ -54,6 +54,10 @@ import { withPluginInstallLock, hasExclusivePluginLifecycleMutation, isPluginIns
 import type { SpawnConfinement } from "../../permissions/confined-child.js";
 import { prepareMxcPluginChildLaunch } from "../isolation/mxc-plugin-child-launch.js";
 import { isMxcExtensionBackendSelected } from "../../sandbox/wrap-bundled-command.js";
+import {
+  deferExtensionStart, dropPluginExtensionStarts, isExtensionStartConsentRequired, pluginChildStartKey, pluginStartLabel, takeExtensionStartGrant,
+} from "../../permissions/extension-start-consent.js";
+import { probeExtensionStart } from "../../permissions/asrt-sandbox.js";
 import { capturePluginSandboxGrant, createOutOfProcessPluginFactory, isPluginSandboxGrantCovered, PluginSandboxGrantError, pluginFactoryDeadlineMs, pluginStopBudgetMs } from "../isolation/out-of-process-plugin.js";
 import { PluginChildTerminationUnverifiedError } from "../isolation/plugin-child-transport.js";
 import { bindPluginInstanceIntegrity, recordPluginFactoryIntegrity } from "../runtime-integrity-evidence.js";
@@ -1598,6 +1602,8 @@ abstract class PluginRuntimeState {
   protected manifestValidator: ValidateFunction | null = null;
   protected manifestValidatorPromise: Promise<ValidateFunction> | null = null;
 
+  abstract addPlugin(pluginId: string): Promise<"started" | "preparing">;
+
   protected abstract instantiateAndStartSinglePlugin(
     plan: ManifestLoadPlan,
     manifest: PluginManifest,
@@ -2703,12 +2709,27 @@ abstract class PluginRuntimeState {
     };
   }
 
+  /** Nothing confines this child: its start waits for a person, asked at the next attended turn. */
+  private deferUnconfinedStart(manifest: PluginManifest, error: unknown): boolean {
+    if (!isExtensionStartConsentRequired(error)) return false;
+    deferExtensionStart({
+      key: pluginChildStartKey(manifest.id),
+      kind: "plugin-child",
+      label: pluginStartLabel(manifest.id, manifest.name),
+      cause: error.unconfinedCause,
+      retry: async () => { await this.addPlugin(manifest.id); },
+      recheck: () => probeExtensionStart(),
+    });
+    return true;
+  }
+
   /** Record refused replacements separately so the incumbent remains loaded; unrelated errors return false. */
   protected recordAttemptRefusal(
     manifest: PluginManifest,
     error: unknown,
     attempt: PluginAttemptRefusal["attempt"],
   ): boolean {
+    this.deferUnconfinedStart(manifest, error);
     if (
       !(error instanceof IncompatibleHostProtocolError)
       && !(error instanceof ProcessEntryUnconfinedError)
@@ -2792,6 +2813,8 @@ abstract class PluginRuntimeState {
       this.markProcessEntryUnconfined(manifest, err);
     } else if (err instanceof PluginSandboxGrantError) {
       this.refuseSandboxGrant(manifest, err);
+    } else if (this.deferUnconfinedStart(manifest, err)) {
+      this.markFailed(manifest.id, undefined, { installFailureMessage: (err as Error).message });
     } else {
       this.markFailed(manifest.id, undefined, containerRefusalDetail(err));
     }
@@ -3238,6 +3261,7 @@ abstract class PluginRuntimePublicationState extends PluginRuntimeState {
         if (this.pendingDisabledRetirements.has(pluginId)) {
           this.inactivePluginIds.add(pluginId);
           this.disabledPluginIds.add(pluginId);
+          dropPluginExtensionStarts(pluginId);
         }
         this.invalidatePluginUiRevision(pluginId);
         if (predecessorAuthKey !== undefined) {
@@ -4530,6 +4554,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     if (manifest.id !== input.manifest.id || manifest.version !== input.manifest.version) {
       throw new Error(`prepared artifact manifest identity changed for '${input.manifest.id}'`);
     }
+    dropPluginExtensionStarts(manifest.id, "generation");
     this.assertActiveCapabilityDependencies(manifest, "prepared artifact activation");
     this.assertActiveCapabilityDependentsRemainSatisfied(
       manifest.id,
@@ -4909,6 +4934,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
         this.registerSandboxEnvelope(manifest.id, paths, pluginRoot, pluginDataDir),
       onChildSpawned: (confinement: SpawnConfinement) =>
         this.recordChildSpawnConfinement(createPlugin, confinement),
+      takeExtensionStart: () => takeExtensionStartGrant(pluginChildStartKey(manifest.id)),
       ...(this.onMalformedCredentialSelector
         ? { onMalformedCredentialSelector: this.onMalformedCredentialSelector }
         : {}),
@@ -5864,6 +5890,8 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       logPluginLifecycle("warn", { pluginId, phase: PluginPhase.RESTART_REQUEST, reason: "not_loaded" }, "restart no-op — plugin not loaded");
       return undefined;
     }
+    // New code is asked about its own workers and hooks.
+    dropPluginExtensionStarts(pluginId, "generation");
     const isCurrent = () =>
       !cancellation.cancelled
       && this.isPluginLifecycleOperationCurrent(pluginId, generation);
@@ -6293,6 +6321,8 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
     options: { preserveConfigOverride?: boolean } = {},
   ): Promise<void> {
     const canonicalPluginId = this.resolveKnownPluginId(pluginId);
+    // A removed plugin has no start left to ask about.
+    dropPluginExtensionStarts(canonicalPluginId);
     // Cancel dependency-held restart work before entering the lifecycle lock.
     this.pendingRestartCancellations.get(canonicalPluginId)?.cancel();
     return withPluginInstallLock(canonicalPluginId, () =>
@@ -6878,6 +6908,7 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
             }
             this.inactivePluginIds.add(canonicalPluginId);
             this.disabledPluginIds.add(canonicalPluginId);
+            dropPluginExtensionStarts(canonicalPluginId);
             if (unpublishedCleanup) {
               try {
                 await unpublishedCleanup();

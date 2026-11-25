@@ -11,6 +11,11 @@ import {
 } from "../../__tests__/test-helpers.js";
 import { servedAgentPluginsDocument } from "../../__tests__/test-helpers.js";
 
+import {
+  __resetExtensionStartsForTest, deferExtensionStart, listPendingExtensionStarts, pluginChildStartKey, setExtensionStartAsker,
+  settlePendingExtensionStarts, takeExtensionStartGrant, workerStartKey,
+} from "../../../permissions/extension-start-consent.js";
+
 describe("PluginRuntime lifecycle — restartPlugin", () => {
   let testDir: string;
   let installedDir: string;
@@ -36,6 +41,33 @@ describe("PluginRuntime lifecycle — restartPlugin", () => {
       pluginsRoot: installedDir,
     });
   }
+
+  it("a restarted plugin's new code asks again: the old workers' yes and waiting starts are gone, the child's own stay", async () => {
+    const pluginDir = join(installedDir, "lc-newgen");
+    await mkdir(pluginDir, { recursive: true });
+    const manifestPath = join(pluginDir, "plugin.json");
+    await writeFile(join(pluginDir, "plugin.mjs"), "export default async function createPlugin() { return { handlers: {} }; }\n", "utf-8");
+    await writeFile(manifestPath, JSON.stringify(servedAgentPluginsDocument({
+      id: "lc-newgen", name: "New Generation", version: "1.0.0", entry: "plugin.mjs", description: "restart fixture", tools: [],
+    })), "utf-8");
+    await writeFile(registryPath, JSON.stringify({ version: 1, plugins: [{ id: "lc-newgen", manifestPath, enabled: true }] }), "utf-8");
+    const runtime = makeRuntime();
+    await runtime.startAll();
+    try {
+      const worker = workerStartKey("lc-newgen", "w");
+      const left: unknown[] = [];
+      deferExtensionStart({ key: worker, kind: "worker", label: "w", cause: "no-backend",
+        retry: async () => { await runtime.restartPlugin("lc-newgen"); left.push(takeExtensionStartGrant(worker)); } });
+      deferExtensionStart({ key: workerStartKey("lc-newgen", "other"), kind: "worker", label: "other", cause: "no-backend" });
+      deferExtensionStart({ key: pluginChildStartKey("lc-newgen"), kind: "plugin-child", label: "child", cause: "no-backend" });
+      setExtensionStartAsker({ ask: async (start) => (start.key === worker ? "yes" : "no-approver"), notify: vi.fn() });
+      await settlePendingExtensionStarts({ sessionId: "s1", attended: true });
+      expect(left).toEqual([undefined]);
+      expect(listPendingExtensionStarts().map((start) => start.key)).toEqual([pluginChildStartKey("lc-newgen")]);
+    } finally {
+      __resetExtensionStartsForTest();
+    }
+  });
 
   it("restartPlugin is a no-op when plugin is not loaded (warns)", async () => {
     await writeFile(

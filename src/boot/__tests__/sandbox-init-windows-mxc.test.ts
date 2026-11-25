@@ -65,10 +65,8 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
 import { initSandboxGate } from "../steps/sandbox-init.js";
 import { decidePermission } from "../../permissions/decision-pipeline.js";
 import { requiresUnsandboxedShellAsk } from "../../permissions/host-shell-execution-plan.js";
-import { areExtensionsWithoutIsolationApproved, assertAveHomePrivacyForConfinement, getAveHomePrivacyFailure, setAveHomePrivacyAtBoot, _resetAveHomePrivacyForTest } from "../../shared/ave-home.js";
+import { assertAveHomePrivacyForConfinement, getAveHomePrivacyFailure, setAveHomePrivacyAtBoot, _resetAveHomePrivacyForTest } from "../../shared/ave-home.js";
 import { windowsPathKindHelperUnavailable } from "../../main/windows-path-kind-launcher.js";
-import { PERMISSIONS } from "../../shared/ipc-channels.js";
-import { hostFrameEvent, makeRegisteredHandlerInvoker } from "../../__tests__/test-helpers.js";
 import {
   __resetActiveSandboxCapabilityForTest,
   __resetSandboxBootOutcomeForTest,
@@ -125,7 +123,7 @@ afterEach(() => {
 });
 
 it.each([
-  { category: "read-back-failed", remedy: "Extensions require session approval in Settings > Permissions.", refusal: "Settings > Permissions" },
+  { category: "read-back-failed", remedy: "Each extension start asks for approval until the folder is fixed.", refusal: "Fix the folder permissions and restart Ave." },
   { category: "helper-unavailable", remedy: "Extensions stay blocked until a restart; if it persists, reinstall Ave.", refusal: "Restart Ave; if it persists, reinstall Ave." },
 ] as const)("degrades before initializing the extension backend when private-directory protection fails ($category)", async ({ category, remedy, refusal }) => {
   const path = "D:/private-state/secrets";
@@ -383,7 +381,7 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     expect(getSandboxBootOutcome()).toMatchObject({ action: "activate", reason: "activate-windows-mxc-proxy-only", onSignal: "explicit-env" });
     await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({ shells: "mxc", extensions: "none" }));
     expect(detectPluginWorkerSandboxCapability().kind).toBe("none");
-    expect(h.logger.warn).toHaveBeenCalledWith(expect.stringContaining("plugin workers, plugin children, plugin hooks and MCP stdio servers run with NO OS isolation"));
+    expect(h.logger.warn).toHaveBeenCalledWith(expect.stringContaining("plugin workers, plugin children, plugin hooks and MCP stdio servers each wait for a per-start approval and then run with NO OS isolation"));
   });
 
   it.each([["link", "boundary-link"], ["unlisted", "boundary-unlisted"]] as const)(
@@ -404,10 +402,10 @@ describe("initSandboxGate — Windows MXC substrate", () => {
       expect(getSandboxBootOutcome()).toMatchObject({ action: "degrade", reason: "degrade-ave-home-boundary-unverified",
         causes: ["ave-home-privacy-failed"], dependencyErrors: ["ave-home-boundary-unverified"] });
       expect(getAveHomePrivacyFailure()).toMatchObject({ enforcement: "none", home, category });
-      expect(() => assertAveHomePrivacyForConfinement()).toThrow("Approve running without isolation in Settings > Permissions");
+      expect(() => assertAveHomePrivacyForConfinement()).toThrow("Fix the folder permissions and restart Ave.");
       expect(detectPluginWorkerSandboxCapability().kind).toBe("none");
       expect(h.logger.warn).toHaveBeenCalledWith(expect.stringContaining("read boundary could not be verified"), "ave-home-boundary-unverified", category,
-        "Extensions require session approval in Settings > Permissions.");
+        "Each extension start asks for approval until the folder is fixed.");
       // Logs carry codes only: the error's paths never reach the boot log.
       for (const call of [...h.logger.warn.mock.calls, ...h.logger.error.mock.calls, ...h.logger.info.mock.calls]) {
         expect(JSON.stringify(call)).not.toContain("alice");
@@ -451,14 +449,6 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     expect(() => assertAveHomePrivacyForConfinement()).toThrow("Restart Ave; if it persists, reinstall Ave.");
     expect(h.logger.warn).toHaveBeenCalledWith(expect.stringContaining("read boundary could not be verified"), "ave-home-boundary-unverified", "helper-unavailable",
       "Extensions stay blocked until a restart; if it persists, reinstall Ave.");
-    h.handlers.clear();
-    const { registerPermissionsHandlers } = await import("../../ipc/domains/permissions.js");
-    const auditLogger = { log: vi.fn() };
-    registerPermissionsHandlers({ auditLogger, settingsService: { get: vi.fn(() => ({ pluginWorkerConfinement: true })), set: vi.fn() } } as never);
-    expect(await makeRegisteredHandlerInvoker(h.handlers)(PERMISSIONS.approveExtensionsWithoutIsolation, hostFrameEvent(),
-      { intent: { inputOrigin: "user-keyboard", userActivation: true } })).toMatchObject({ ok: false, error: "not-applicable" });
-    expect(areExtensionsWithoutIsolationApproved()).toBe(false);
-    expect(auditLogger.log).not.toHaveBeenCalled();
     for (const plan of [getHostShellExecutionPlan(), getHostShellExecutionPlan("host")]) {
       expect(plan).toMatchObject({ mode: "blocked", fallbackReason: "home-privacy-helper-unavailable", requiresExplicitUserApproval: false });
       expect(requiresUnsandboxedShellAsk(plan)).toBe(false);

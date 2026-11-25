@@ -1569,7 +1569,6 @@ export type AvePermissionApi = {
    * user activation lapses after ~5 s, and main reads status itself.
    */
   sandboxWindowsInstall: () => Promise<SandboxWindowsInstallResult | IpcErrorResult>;
-  approveExtensionsWithoutIsolation: () => Promise<{ ok: true } | IpcErrorResult>;
   /** The pending home content review, or null when this boot evaluated nothing. */
   homeTrustReview: () => Promise<import("../../shared/ave-home-trust.js").AveHomeTrustReviewView | null | IpcErrorResult>;
   homeTrustApprove: (snapshotId: string, keys?: readonly string[]) => Promise<{ ok: true; approved: number } | IpcErrorResult>;

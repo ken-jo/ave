@@ -736,7 +736,6 @@ ${WINDOWS_HOME_BOUNDARY_SOURCE}
 }
 
 let bootHomePrivacy: AveHomePrivacy | undefined;
-let extensionsWithoutIsolationApproved = false;
 let reportPrivacyRefusal: ((message: string) => void) | undefined;
 
 /** Main-process audit wiring; no renderer or extension owns this state. */
@@ -744,20 +743,8 @@ export function setAveHomePrivacyRefusalReporter(reporter: (message: string) => 
   reportPrivacyRefusal = reporter;
 }
 
-export function areExtensionsWithoutIsolationApproved(): boolean {
-  return getAveHomePrivacyFailure() !== undefined && extensionsWithoutIsolationApproved;
-}
-
-/** Called only by the trusted, gesture-checked permissions IPC handler. */
-export function approveExtensionsWithoutIsolation(): void {
-  const failure = getAveHomePrivacyFailure();
-  if (failure === undefined || !isAveHomePrivacyApprovable(failure.category)) throw new Error("Home privacy approval is not applicable");
-  extensionsWithoutIsolationApproved = true;
-}
-
 /** Boot publishes this once before confinement starts; folder permission repairs require a restart. */
 export function setAveHomePrivacyAtBoot(privacy: AveHomePrivacy): void {
-  if (JSON.stringify(bootHomePrivacy) !== JSON.stringify(privacy)) extensionsWithoutIsolationApproved = false;
   bootHomePrivacy = Object.freeze(structuredClone(privacy));
 }
 
@@ -771,7 +758,7 @@ export function isAveHomeBoundaryCategory(category: string | undefined): categor
   return category === "boundary-link" || category === "boundary-unlisted";
 }
 
-/** A helper that gave no answer is no evidence about the folder, so it offers no run without isolation: a restart retries the check. */
+/** A helper that gave no answer is no evidence about the folder, so no start is offered a consent: a restart retries the check. */
 export function isAveHomePrivacyApprovable(category: AveHomePrivacyFailureCategory): boolean {
   return category !== "helper-unavailable";
 }
@@ -788,7 +775,7 @@ export function assertAveHomePrivacyForConfinement(): void {
     // A read-boundary refusal names no path: its message reaches the host log, which carries codes only for it.
     const where = isAveHomeBoundaryCategory(failure.category) ? "" : `, ${failure.failedPath ?? failure.home}`;
     const remedy = isAveHomePrivacyApprovable(failure.category)
-      ? "Approve running without isolation in Settings > Permissions, or fix the folder permissions."
+      ? "Fix the folder permissions and restart Ave."
       : "Restart Ave; if it persists, reinstall Ave.";
     const message = `Extension isolation is off: AVE_HOME privacy could not be established (${failure.category}${where}). ${remedy}${principals ? ` Extra principals: ${principals}.` : ""}`;
     reportPrivacyRefusal?.(message);
@@ -806,7 +793,6 @@ export function _resetAveHomePrivacyForTest(): void {
   committedConfigurationHomes.clear();
   windowsConfigurationLocations.clear();
   bootHomePrivacy = undefined;
-  extensionsWithoutIsolationApproved = false;
   reportPrivacyRefusal = undefined;
 }
 

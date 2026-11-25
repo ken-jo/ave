@@ -241,7 +241,6 @@ describe("preload contextBridge world shape lock", () => {
           ],
           "permission": [
             "addRule",
-            "approveExtensionsWithoutIsolation",
             "auditShow",
             "auditVerify",
             "dirDispatch",
