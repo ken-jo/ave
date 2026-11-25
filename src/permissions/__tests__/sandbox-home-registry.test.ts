@@ -51,6 +51,14 @@ describe("the container HOME a launch was issued", () => {
     expect(isIssuedContainerHome(own, own)).toBe(false);
   });
 
+  it("is not its own name once the HOME is moved away and a link to it is left in its place", () => {
+    const moved = `${own}.moved`;
+    renameSync(own, moved);
+    symlinkSync(moved, own, "junction");
+    expect(isIssuedContainerHome(own, own)).toBe(false);
+    expect(isIssuedContainerHome(moved, own)).toBe(false);
+  });
+
   it("follows a link by the identity of its target: its own HOME, never another", () => {
     symlinkSync(own, join(base, "to-own"), "junction");
     symlinkSync(other, join(base, "to-other"), "junction");
