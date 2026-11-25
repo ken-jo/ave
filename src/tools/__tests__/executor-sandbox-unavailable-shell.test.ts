@@ -1,4 +1,5 @@
 // A requested OS sandbox that could not start leaves host shells to a human ask on every platform: once, or for this session; never saved.
+// One saved rule passes that ask: a rule that is exactly the command, while boot verified Ave home privacy (tree T:128, T:259).
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
@@ -34,6 +35,8 @@ import { shellExecutionEnvironmentLines } from "../../shared/shell-execution-env
 import { t } from "../../i18n/runtime.js";
 import { userPermissionContext as permissionContext } from "./tool-context-fixture.js";
 import { cardGate, defined, probe, sessionGate } from "../../__tests__/support/forced-shell-card.js";
+import { _resetAveHomePrivacyForTest, setAveHomePrivacyAtBoot } from "../../shared/ave-home.js";
+import type { AuditEntry, AuditLogger } from "../../audit/audit-logger.js";
 
 const ORIGINAL_PLATFORM = process.platform;
 let testRoot: string;
@@ -44,6 +47,17 @@ const DIALECTS = [
 ] as const;
 
 const PLATFORMS = (["win32", "linux", "darwin"] as const).map(platform => ({ platform }));
+const FIXTURE_HOME = "C:\\Users\\alice\\.ave";
+
+function recordingAuditLogger(): { auditLogger: AuditLogger; entries: AuditEntry[] } {
+  const entries: AuditEntry[] = [];
+  const auditLogger = {
+    log: vi.fn((entry: AuditEntry) => entries.push(entry)), logShadow: vi.fn(), isPermissionAuditChainReady: vi.fn(() => true),
+    assertPermissionAuditWritable: vi.fn(), appendPermissionAuditEntry: vi.fn(async (entry: object) => ({ ...entry, prevHash: "test-chain" })),
+    isShadowChannelWritable: vi.fn(() => true), getPermissionShadowLogFile: vi.fn(() => "test-shadow.jsonl"),
+  } as unknown as AuditLogger;
+  return { auditLogger, entries };
+}
 
 function rulesFile(mode: string): string {
   return join(testRoot, `permissions-${mode}.json`);
@@ -69,11 +83,14 @@ describe.each(PLATFORMS)("host shells when the requested sandbox is unavailable 
     childProcessMock.execFileSync.mockImplementation((_file, args: readonly string[]) =>
       args.join(" ").includes("AVE_PROBE_RHS") ? "parent\0AB\0" : "__ave_shell_ok__");
     requestedSandboxUnavailable(platform);
+    // Boot verified Ave home privacy, so the missing backend is the only reason these shells ask.
+    setAveHomePrivacyAtBoot(platform === "win32" ? { enforcement: "win32-dacl", home: FIXTURE_HOME, sid: "S-1-5-21-1" } : { enforcement: "posix-mode", home: "/home/alice/.ave" });
   });
 
   afterEach(() => {
     __resetActiveSandboxCapabilityForTest();
     __resetSandboxRequestedAtBootForTest();
+    _resetAveHomePrivacyForTest();
     __resetShellResolverCache();
     childProcessMock.execFileSync.mockReset();
     vi.restoreAllMocks();
@@ -84,8 +101,8 @@ describe.each(PLATFORMS)("host shells when the requested sandbox is unavailable 
   const run = (dialect: (typeof DIALECTS)[number], sessionId: string, command: string = dialect.command, host = false) => {
     const input = host ? { command, executionMode: "host", justification: "Retry outside the OS sandbox" } : { command };
     let serial = 0;
-    return (pm: PermissionManager, gate: ApprovalGate, registry: ToolRegistry, headless = false) => runWithToolExecutionCwd(testRoot, () =>
-      new ToolExecutor(registry, undefined, pm, undefined, gate).executeAll(
+    return (pm: PermissionManager, gate: ApprovalGate, registry: ToolRegistry, headless = false, auditLogger?: AuditLogger) => runWithToolExecutionCwd(testRoot, () =>
+      new ToolExecutor(registry, undefined, pm, undefined, gate, undefined, auditLogger).executeAll(
         [{ id: `${sessionId}-${++serial}`, name: dialect.toolName, input }],
         { sessionId, permissionContext: permissionContext(headless ? { headless: true } : {}) },
       ));
@@ -170,6 +187,73 @@ describe.each(PLATFORMS)("host shells when the requested sandbox is unavailable 
     const headless = await start(pm, cardGate("allow-once").gate, registry, true);
     expect(headless[0]?.content).toContain(NO_APPROVER_MESSAGE);
     expect(execute).toHaveBeenCalledOnce();
+  });
+
+  const exactRule = (dialect: (typeof DIALECTS)[number], command: string = dialect.command) => `${dialect.toolName === "bash" ? "Bash" : "PowerShell"}(${command})`;
+  const routes = DIALECTS.flatMap(dialect => [{ dialect, host: false, route: "default" }, { dialect, host: true, route: "explicit-host" }]);
+
+  it.each(routes)("$dialect.toolName ($route) runs on its exact saved rule without a card, saves nothing and audits the rule", async ({ dialect, host }) => {
+    const execute = vi.fn();
+    const registry = probe(dialect.create, execute);
+    const pm = manager("default", [exactRule(dialect)]);
+    const rulesBefore = existsSync(rulesFile("default")) ? readFileSync(rulesFile("default"), "utf8") : undefined;
+    const audit = recordingAuditLogger();
+    const cards = cardGate("deny-once");
+    const ran = await run(dialect, "exact-rule", dialect.command, host)(pm, cards.gate, registry, false, audit.auditLogger);
+    expect(cards.cards()).toHaveLength(0);
+    expect(pm.dispatchReviewer).not.toHaveBeenCalled();
+    expect(execute).toHaveBeenCalledOnce();
+    expect(ran[0]?.is_error).toBeUndefined();
+    const ctx = defined(execute.mock.calls[0], "execute call")[0] as ToolExecutionContext;
+    expect(ctx.hostShellExecutionPermit).toBeDefined();
+    expect(ctx.hostShellExecutionPlan).toMatchObject({ mode: "plain", sandboxed: false, substrate: "none", executionRequest: host ? "host" : "default", requiresExplicitUserApproval: true });
+    const call = audit.entries.find(entry => entry.type === "tool_call")?.toolCalls?.[0];
+    expect(call).toMatchObject({ permissionDecision: "allow" });
+    expect(call?.permissionReason).toContain(exactRule(dialect));
+    // No grant was written and none is held: the rule file is unchanged, and a command the rule does not name asks.
+    expect(existsSync(rulesFile("default")) ? readFileSync(rulesFile("default"), "utf8") : undefined).toBe(rulesBefore);
+    const other = cardGate("deny-once");
+    await run(dialect, "exact-rule", `${dialect.command}2`, host)(pm, other.gate, registry);
+    expect(other.cards()).toHaveLength(1);
+    expect(defined(other.cards()[0], "approval card").allowedChoices).toEqual(["allow-once", "deny-once"]);
+    // The rule runs it again, in any mode; with nobody present it is still denied.
+    pm.setMode("auto");
+    await run(dialect, "exact-rule-other-session", dialect.command, host)(pm, cards.gate, registry);
+    expect(cards.cards()).toHaveLength(0);
+    expect(pm.dispatchReviewer).not.toHaveBeenCalled();
+    expect(execute).toHaveBeenCalledTimes(2);
+    const headless = await run(dialect, "exact-rule", dialect.command, host)(pm, cardGate("allow-once").gate, registry, true);
+    expect(headless[0]?.content).toContain(NO_APPROVER_MESSAGE);
+    expect(execute).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(routes.flatMap(entry => [
+    { ...entry, label: "boot home privacy unverified", unverify: () => setAveHomePrivacyAtBoot({ enforcement: "none", home: FIXTURE_HOME, category: "read-back-failed", reason: "fixture" }) },
+    { ...entry, label: "no published boot home privacy", unverify: () => _resetAveHomePrivacyForTest() },
+  ]))("$dialect.toolName ($route) with its exact saved rule still asks with $label", async ({ dialect, host, unverify }) => {
+    unverify();
+    const execute = vi.fn();
+    const registry = probe(dialect.create, execute);
+    const pm = manager("allow", [exactRule(dialect)]);
+    const denied = cardGate("deny-once");
+    const refused = await run(dialect, "exact-rule-unverified", dialect.command, host)(pm, denied.gate, registry);
+    expect(denied.cards()).toHaveLength(1);
+    const card = defined(denied.cards()[0], "approval card");
+    expect(card.allowedChoices).toEqual(["allow-once", "deny-once"]);
+    expect(card.shellRule).toMatchObject({ exactRule: null, sessionAllowed: true, persistentAllowed: false, floorSessionOnly: true });
+    expect(execute).not.toHaveBeenCalled();
+    expect(refused[0]?.is_error).toBe(true);
+  });
+
+  // A compound of commands that each have an exact rule is not one exact rule for the command.
+  it.each(DIALECTS)("$toolName with exact rules for each part of a compound command still asks", async (dialect) => {
+    const execute = vi.fn();
+    const registry = probe(dialect.create, execute);
+    const pm = manager("allow", [exactRule(dialect), exactRule(dialect, `${dialect.command}2`)]);
+    const denied = cardGate("deny-once");
+    await run(dialect, "exact-rule-compound", `${dialect.command}; ${dialect.command}2`)(pm, denied.gate, registry);
+    expect(denied.cards()).toHaveLength(1);
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it.each(DIALECTS)("$toolName allowed for this session also runs later explicit-host shells without a card", async (dialect) => {

@@ -10,6 +10,7 @@ import {
   type ApprovalDecision,
   type ApprovalRequest,
 } from "../approval-gate.js";
+import { offersFloorSessionAllow } from "../decision-pipeline.js";
 import { buildHostShellExecutionPlan, requiresExplicitHostShellApproval } from "../host-shell-execution-plan.js";
 import { updatePermissionsFile } from "../permissions-store.js";
 import { setWindowsShellLocalNetworkAccess, __resetWindowsSandboxSubstrateForTest } from "../sandbox-capability.js";
@@ -344,6 +345,87 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
     expect(mintHostShellExecutionPermit({
       plan: marked, approvalDecision: undefined, allowRuleDecision: ruleDecision(), permissionManager: pm, binding,
     })).toBeUndefined();
+  });
+
+  // Tree T:128, T:259 (owner decision 2026-11-25): the one saved rule that passes the no-backend ask.
+  it.each(["default", "host"] as const)("lets only an exact saved rule pass the %s no-backend ask, and only with verified boot home privacy", (executionMode) => {
+    const noBackend = (boot: { homePrivacyVerified?: boolean; unavailableSandboxRequiresAsk?: boolean }) => buildHostShellExecutionPlan({
+      platform: "linux", requestedSandbox: true, executionMode, ...boot,
+      activeCapability: { kind: "none", confidence: "verified", platform: "linux", reason: "fixture unavailable sandbox" },
+    });
+    const verified = noBackend({ homePrivacyVerified: true });
+    const cwd = join(directory, "subdir");
+    const decide = (command = "echo one-shot", plan = verified, extra: Record<string, unknown> = {}): PermissionCheckResult => pm.checkDetailed("bash", "builtin", "shell", null, {
+      ruleSubject: { kind: "shell", dialect: "bash", command, cwd }, hostShellExecutionPlan: plan, shellExecution: HOST_ROUTE_ON_SANDBOX_HOST, sessionId: "exact-rule", ...extra,
+    });
+    const mint = (decision: PermissionCheckResult, plan = verified, bound = hostBinding(plan), manager = pm) => mintHostShellExecutionPermit({
+      plan, approvalDecision: undefined, allowRuleDecision: decision, floorSessionDecision: decision, permissionManager: manager, binding: bound,
+    });
+    const asks = (decision: PermissionCheckResult) => {
+      expect(decision).toMatchObject({ decision: "ask", forceModal: true });
+      expect(isIssuedShellAllowRuleDecision(decision)).toBe(false);
+    };
+
+    const passed = decide();
+    expect(passed).toMatchObject({ decision: "allow", reasonCode: "exact-host-rule" });
+    // The audited reason names the rule.
+    expect(passed.reason).toContain("Bash(echo one-shot)");
+    expect(isIssuedShellAllowRuleDecision(passed, pm)).toBe(true);
+    const binding = hostBinding(verified);
+    const permit = mint(passed, verified, binding);
+    expect(permit).toBeDefined();
+    expect(consumeHostShellExecutionPermit(permitInput(binding, permit))).toBe(true);
+    // One decision, one run.
+    expect(mint(passed, verified, binding)).toBeUndefined();
+    // A recheck keeps the proof on the refreshed decision only.
+    const rechecked = pm.recheckPermission(decide());
+    expect(rechecked).toMatchObject({ decision: "allow", reasonCode: "exact-host-rule" });
+    expect(mint(rechecked)).toBeDefined();
+    // The mode and the reviewer are not consulted, and nobody present still denies.
+    for (const mode of ["strict", "auto", "allow"] as const) {
+      pm.setMode(mode);
+      expect(decide()).toMatchObject({ decision: "allow", reasonCode: "exact-host-rule" });
+      expect(decide().reviewer).toBeUndefined();
+    }
+    expect(decide("echo one-shot", verified, { headless: true })).toMatchObject({ decision: "deny", reasonCode: "no-approver" });
+
+    // Prefix and tool-name rules, the allow mode, a session rule and a compound of exact rules keep the forced ask.
+    pm.setMode("allow");
+    asks(decide("echo one-shot && echo other"));
+    pm.setRules(([{ pattern: "Bash(echo *)", action: "allow" }] as const).map(withCurrentShellRuleVersion));
+    asks(decide());
+    pm.setRules([{ pattern: "bash", action: "allow" }]);
+    asks(decide());
+    pm.setRules([]);
+    pm.addSessionRule("exact-rule", "Bash(echo one-shot)");
+    asks(decide());
+    pm.setRules(([{ pattern: "Bash(echo one-shot)", action: "allow" }] as const).map(withCurrentShellRuleVersion));
+    expect(decide()).toMatchObject({ decision: "allow", reasonCode: "exact-host-rule" });
+    // An ask rule and a second forced reason keep it too; the second floor's card is once-only.
+    asks(decide("echo one-shot", verified, { floor: { code: "other-principal", reason: "fixture" } }));
+    expect(offersFloorSessionAllow(decide("echo one-shot", verified, { floor: { code: "other-principal", reason: "fixture" } }))).toBe(false);
+    asks(decide("echo one-shot", verified, { manualRerun: true }));
+    pm.setRules(([{ pattern: "Bash(echo one-shot)", action: "allow" }, { pattern: "Bash(echo *)", action: "ask" }] as const).map(withCurrentShellRuleVersion));
+    asks(decide());
+    pm.setRules(([{ pattern: "Bash(echo one-shot)", action: "allow" }] as const).map(withCurrentShellRuleVersion));
+
+    // Boot home privacy unverified or unpublished: the boot floor governs and no saved rule passes.
+    for (const plan of [noBackend({}), noBackend({ unavailableSandboxRequiresAsk: true })]) {
+      const asked = decide("echo one-shot", plan);
+      asks(asked);
+      expect(asked.reasonCode).toBe("sandbox-unavailable");
+      expect(offersFloorSessionAllow(asked)).toBe(true);
+      // A pass issued on the verified plan answers no other plan.
+      expect(mint(decide(), plan, hostBinding(plan))).toBeUndefined();
+    }
+    // A forged lookalike, another manager, another command and a rule changed after the decision mint nothing.
+    expect(mint({ decision: "allow", reason: "forged", reasonCode: "exact-host-rule" } as PermissionCheckResult)).toBeUndefined();
+    expect(mint(decide(), verified, hostBinding(verified), new PermissionManager(join(directory, "other.json")))).toBeUndefined();
+    expect(mint(decide(), verified, hostBinding(verified, { command: "echo other" }))).toBeUndefined();
+    const stale = decide();
+    pm.setRules([]);
+    expect(mint(stale)).toBeUndefined();
+    asks(decide());
   });
 
   it("mints one permit per issued floor session decision for its own command, cwd and marked plan; the grant covers the session", () => {

@@ -95,6 +95,26 @@ describe("ordered admission, floors and explicit rules", () => {
       expect(decidePermission({ ...evidence, rules: { ...evidence.rules, allow: "Allow rule." }, headless: true }).outcome).toBe("deny");
       expect(decidePermission({ ...evidence, rules: { allow: "Allow rule." } }).outcome).toBe("ask-forced");
     });
+    // Tree T:128, T:259: the one saved-rule pass of the sandbox-unavailable floor, in every mode.
+    it(`an exact saved rule passes the sandbox-unavailable floor only when nothing else asks, in ${mode}`, () => {
+      const evidence = request({ mode, tool: SHELL, shell: { ...SAFE_SHELL, sandboxed: false }, floor: { code: "sandbox-unavailable", reason: "No sandbox." },
+        floorSessionEligible: true, rules: { allow: "Bash(echo exact)", exactHostRule: "Bash(echo exact)" }, reviewer: { status: "success", level: "low" } });
+      const passed = decidePermission(evidence);
+      expect(passed).toMatchObject({ outcome: "allow", reasonCode: "exact-host-rule" });
+      expect(passed.reason).toContain("Bash(echo exact)");
+      // A prefix or tool-name allow, the mode and the reviewer never pass it.
+      expect(decidePermission({ ...evidence, rules: { allow: "Bash(echo *)" } }).outcome).toBe("ask-forced");
+      // A second forced reason, an ask rule, a rerun, an exfiltration signal or a user-owned surface keeps the card.
+      expect(decidePermission({ ...evidence, floorSessionEligible: undefined }).outcome).toBe("ask-forced");
+      expect(decidePermission({ ...evidence, floor: { code: "protected-path", reason: "Protected." } }).outcome).toBe("ask-forced");
+      expect(decidePermission({ ...evidence, rules: { ...evidence.rules, ask: "Ask rule." } }).outcome).toBe("ask-forced");
+      expect(decidePermission({ ...evidence, manualRerun: true }).outcome).toBe("ask-forced");
+      expect(decidePermission({ ...evidence, exfiltration: { reason: "Upload." } }).outcome).toBe("ask-forced");
+      expect(decidePermission({ ...evidence, userOwnedSurface: { kind: "browser", choice: "ask" } }).outcome).toBe("ask-forced");
+      // Deny and admission still win, and nobody present still denies.
+      expect(decidePermission({ ...evidence, rules: { ...evidence.rules, deny: "Deny rule." } }).reasonCode).toBe("rule-deny");
+      expect(decidePermission({ ...evidence, headless: true })).toMatchObject({ outcome: "deny", reasonCode: "no-approver" });
+    });
     it(`ordinary ask rules reach mode handling before read and grants in ${mode}`, () => {
       const result = decidePermission(request({ mode, rules: { ask: "Ask before reading.", allow: "Tool grant.", remembered: "Prior grant." } }));
       expect(result.outcome).toBe(["ask", "ask", "ask", "allow"][index]);

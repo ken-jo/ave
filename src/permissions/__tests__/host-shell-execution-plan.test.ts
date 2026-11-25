@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   HOST_SHELL_EXECUTION_PLAN_VERSION,
   buildHostShellExecutionPlan,
+  exactRulePassesUnsandboxedShellAsk,
   getHostShellExecutionPlanAuditProjection,
   getHostShellExecutionPlanCacheIdentity,
   isIssuedHostShellExecutionPlanAuditProjection,
@@ -187,6 +188,34 @@ describe("host shell execution plan", () => {
       expect(plan.identity).toBe("host-shell-execution-plan/v4:linux:explicit-host");
       expect(requiresUnsandboxedShellAsk(plan)).toBe(false);
     }
+  });
+
+  // Tree T:128, T:259: an exact saved rule may pass only the ask that the missing backend alone raises, with boot home privacy verified.
+  it.each(["default", "host"] as const)("marks the %s no-backend plan for the exact-rule pass only with verified boot home privacy", (executionMode) => {
+    const build = (extra: Partial<Parameters<typeof buildHostShellExecutionPlan>[0]>) => buildHostShellExecutionPlan({
+      platform: "linux", requestedSandbox: true, activeCapability: { ...NONE, platform: "linux" }, executionMode, ...extra });
+    const route = executionMode === "host" ? "explicit-host" : "requested-sandbox-unavailable";
+    const verified = build({ homePrivacyVerified: true });
+    expect(verified.identity).toBe(`host-shell-execution-plan/v4:linux:${route}:home-verified:ask`);
+    expect(requiresUnsandboxedShellAsk(verified)).toBe(true);
+    expect(exactRulePassesUnsandboxedShellAsk(verified)).toBe(true);
+    // No published result, a failed one, and a failed one that also claims verification all leave the boot floor governing.
+    for (const plan of [build({}), build({ unavailableSandboxRequiresAsk: true }), build({ unavailableSandboxRequiresAsk: true, homePrivacyVerified: true })]) {
+      expect(plan.identity).toBe(`host-shell-execution-plan/v4:linux:${route}:ask`);
+      expect(requiresUnsandboxedShellAsk(plan)).toBe(true);
+      expect(exactRulePassesUnsandboxedShellAsk(plan)).toBe(false);
+    }
+    // A ready backend, the sandbox turned off, the helper-unavailable block and a boot-floor plan with the shell scope off are never marked.
+    for (const plan of [
+      build({ activeCapability: { ...FULL_ASRT, platform: "linux" }, homePrivacyVerified: true }),
+      build({ requestedSandbox: false, homePrivacyVerified: true }),
+      build({ requestedSandbox: false, unavailableSandboxRequiresAsk: true, homePrivacyVerified: true }),
+      build({ unconfinedShellDenied: true, homePrivacyVerified: true }),
+    ]) {
+      expect(plan.identity).not.toContain(":home-verified");
+      expect(exactRulePassesUnsandboxedShellAsk(plan)).toBe(false);
+    }
+    expect(exactRulePassesUnsandboxedShellAsk(undefined)).toBe(false);
   });
 
   it("names what to install only on the unavailable plan, and only for causes an install fixes", () => {

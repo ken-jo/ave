@@ -17,7 +17,7 @@ import {
 import { isLoopbackAddress } from "../egress-relay/address-set.js";
 import { isReservedAddress, parseRelayAllowEntry, resolvedAddressPermitted } from "../egress-relay/destination.js";
 import {
-  buildHostShellExecutionPlan, HOME_PRIVACY_HELPER_UNAVAILABLE_SHELL_DENIAL, requiresUnsandboxedShellAsk,
+  buildHostShellExecutionPlan, exactRulePassesUnsandboxedShellAsk, HOME_PRIVACY_HELPER_UNAVAILABLE_SHELL_DENIAL, requiresUnsandboxedShellAsk,
   type HostShellExecutionPlan,
 } from "../host-shell-execution-plan.js";
 import { classifyMxcExtensionReadiness, planWindowsExtensionHolder, type MxcExtensionReadinessEvidence } from "../mxc-extension-readiness.js";
@@ -80,8 +80,8 @@ const capability = (platform: NodeJS.Platform, kind: SandboxCapability["kind"], 
 
 // A plan is a route, not a verdict. Read as: confined -> contained, blocked -> deny, the home-privacy floor -> ask-human for the
 // session, a per-invocation host authorization -> ask once, otherwise the ordinary policy (any saved scope may answer).
-// An explicit host request also sets requiresExplicitUserApproval, yet a saved rule answers it: the rule must be exact
-// (the permit mint accepts an issued rule decision only when executionRequest is "host").
+// An explicit host request also sets requiresExplicitUserApproval, yet a saved rule answers it (the permit mint accepts an issued
+// rule decision for an explicit host request, and for the exact-rule pass of the no-backend ask, D25.a).
 function plan(input: Parameters<typeof buildHostShellExecutionPlan>[0]): Observation {
   const built: HostShellExecutionPlan = buildHostShellExecutionPlan(input);
   const reason = `${built.executionRequest}:${built.fallbackReason}`;
@@ -89,6 +89,17 @@ function plan(input: Parameters<typeof buildHostShellExecutionPlan>[0]): Observa
   if (built.mode === "blocked") return { outcome: "deny", reason, waiver: "none" };
   if (requiresUnsandboxedShellAsk(built)) return { outcome: "ask-human", reason, waiver: "session" };
   return { outcome: "ask", reason, waiver: built.requiresExplicitUserApproval && built.executionRequest !== "host" ? "once" : "any" };
+}
+
+// A shell on a sandbox-on host with no usable backend (T:128), with one saved allow rule. The plan and the pipeline are driven. One
+// manager step is restated: it offers the saved rule as `exactHostRule` only when the rule is exactly the command, the plan is one
+// `exactRulePassesUnsandboxedShellAsk` marks, and no other floor applies; a second floor also withdraws the session offer.
+function noBackendShell(saved: "exact" | "prefix", boot: { homePrivacyVerified?: boolean; unavailableSandboxRequiresAsk?: boolean }, secondFloor = false): Observation {
+  const built = buildHostShellExecutionPlan({ platform: "linux", requestedSandbox: true, activeCapability: capability("linux", "none"), ...boot });
+  expect(requiresUnsandboxedShellAsk(built)).toBe(true);
+  const exact = saved === "exact" && !secondFloor && exactRulePassesUnsandboxedShellAsk(built);
+  return pipeline({ tool: SHELL, shell: HOST_SHELL, mode: "allow", floor: { code: "sandbox-unavailable", reason: "fixture" },
+    ...(secondFloor ? {} : { floorSessionEligible: true as const }), rules: { allow: "fixture", ...(exact ? { exactHostRule: "Bash(fixture)" } : {}) } });
 }
 
 // The permission manager reads this inspection and turns an `analysis-limit` into the admission denial `shell-analysis-limit`.
@@ -218,9 +229,26 @@ const ROWS: readonly Row[] = [
     today: { outcome: "ask", reason: "default:disabled-by-setting", waiver: "any" },
     observe: () => plan({ platform: "linux", requestedSandbox: false, activeCapability: capability("linux", "none") }) },
   { id: "D25", point: "sandbox on, no usable backend", tree: "T:128", unknown: "U2",
-    // S1 (#664) made this the forced ask the core names.
+    // S1 (#664) made this the forced ask the core names. D25.a is its one saved-rule pass; D25.b-d are that pass's controls.
     today: { outcome: "ask-human", reason: "default:requested-sandbox-unavailable", waiver: "session" },
     observe: () => plan({ platform: "linux", requestedSandbox: true, activeCapability: capability("linux", "none") }) },
+  // Nothing is unknown here: the missing boundary is the fact the saved exact rule consents to (owner decision 2026-11-25).
+  { id: "D25.a", point: "no usable backend: a saved rule that is exactly the command, boot home privacy verified", tree: "T:128, T:259", unknown: "-",
+    today: { outcome: "allow", reason: "exact-host-rule", headless: "deny" },
+    observe: () => noBackendShell("exact", { homePrivacyVerified: true }) },
+  { id: "D25.b", point: "no usable backend: a saved prefix rule and the allow mode", tree: "T:128, T:259", unknown: "U2",
+    today: { outcome: "ask-human", reason: "sandbox-unavailable", headless: "deny", waiver: "session" },
+    observe: () => noBackendShell("prefix", { homePrivacyVerified: true }) },
+  { id: "D25.c", point: "no usable backend: the exact rule while boot home privacy is unverified", tree: "T:128, T:205-223, T:259", unknown: "U2",
+    today: { outcome: "ask-human", reason: "sandbox-unavailable", headless: "deny", waiver: "session" },
+    observe: () => {
+      // A boot that published no result is not verified either.
+      expect(noBackendShell("exact", {})).toEqual(noBackendShell("exact", { unavailableSandboxRequiresAsk: true }));
+      return noBackendShell("exact", { unavailableSandboxRequiresAsk: true });
+    } },
+  { id: "D25.d", point: "no usable backend: the exact rule with a second forced reason", tree: "T:128, T:220-221, T:259", unknown: "U2",
+    today: { outcome: "ask-human", reason: "sandbox-unavailable", headless: "deny", waiver: "once" },
+    observe: () => noBackendShell("exact", { homePrivacyVerified: true }, true) },
   { id: "D26", point: "Windows capability that does not contain shells", tree: "T:128", unknown: "U2",
     today: { outcome: "ask", reason: "default:windows-partial-shell-acl-unsafe", waiver: "once" },
     core: { outcome: "ask-human", waiver: "session" },
@@ -357,12 +385,12 @@ const EXCEPTIONS: Readonly<Record<string, readonly string[]>> = {
 
 // Closed inconsistency -> the row that proves it, which answers as the policy core does.
 const RESOLVED: Readonly<Record<string, string>> = {
+  I1: "D25.a",
   I5: "D34.b",
 };
 
 // Inconsistencies no driven row can show, and why.
 const INCONSISTENCIES_WITHOUT_ROW: Readonly<Record<string, string>> = {
-  I1: "an exact saved host rule on a no-backend host: an open owner question (loosening); D25 shows S1's forced ask, the core answer",
   I3: "inference child route: spawn path, not driven",
   I4: "lives on the device-path branch, not on main",
   I6: "stage workspaces are not on main",
