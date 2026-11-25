@@ -545,6 +545,32 @@ export function mxcStagingParent(platform: NodeJS.Platform = process.platform, h
   return ensurePrivateDirectory(posixPath.join(requireMxcRuntimeRoot(current), "staging"), posixUid(current), "Container staging parent");
 }
 
+/** Under the test runner only: the root the run's set-up established (`config/vitest.globalSetup.ts`), taken as it
+ * stands by a test file that has not established one itself. Each file loads this module anew, and the proof starts
+ * PowerShell. */
+function rootOfThisTestRun(host: MxcRuntimeHost): string | undefined {
+  if (!AVE_HOME_ISOLATION_GUARD_ACTIVE || established.has(host.cacheHome)) return undefined;
+  const planned = plannedWindowsRuntimeRoot(host);
+  const entry = lstatSync(planned, { throwIfNoEntry: false });
+  return entry?.isDirectory() === true && !entry.isSymbolicLink() ? planned : undefined;
+}
+
+/**
+ * Where Windows sandbox HOMEs and their owner markers are created: `<runtime root>\homes`, beside `staging`. It
+ * inherits the root's access, so only this account reaches it; a confined process is granted its own HOME inside it
+ * and nothing else, and the markers sit where no confined process is granted. A root no caller has established yet is
+ * established here by the same proof, once per process; a root that was refused stays refused. Nothing falls back to
+ * the host temp directory.
+ */
+export function mxcSandboxHomesParent(host: MxcRuntimeHost = currentMxcRuntimeHost()): string {
+  if (host.platform !== "win32") refuse("Sandbox HOMEs live under the container runtime root on Windows only");
+  const root = rootOfThisTestRun(host) ?? establishMxcRuntimeRoot(host);
+  const homes = ensureWindowsDirectory(winPath.join(root, "homes"), "Sandbox HOME parent");
+  // Again once it exists: a path swapped while it was created is refused before a HOME is placed in it.
+  assertWindowsRuntimeRootUnmoved(root);
+  return homes;
+}
+
 /** One run's directories on macOS and Linux. `root` is the run's only write grant; `home` and `temp` lie inside it. */
 export interface MxcRunStaging {
   readonly root: string;

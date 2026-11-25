@@ -2902,7 +2902,7 @@ function sandboxPrivateBase(): string {
   return testSandboxPrivateBase() ?? join(aveHome(), "sandbox");
 }
 
-// Where every confined process's throwaway sandbox HOME is created on macOS and Linux (`sandbox-process-home.ts`), one `mkdtemp` directory each. App-owned, beside the temp root, rather than under the host's temp directory: there, nothing denied reading it, so any confined process could list the host temp directory and read another one's HOME. Under this root the read floor denies it (getDefaultSensitiveReadDenyPaths) and each wrap re-allows its own HOME alone.
+// Where every confined process's throwaway sandbox HOME is created on macOS and Linux (`sandbox-process-home.ts`), one `mkdtemp` directory each; Windows keeps them under the container runtime root (`mxcSandboxHomesParent`). App-owned, beside the temp root, rather than under the host's temp directory: there, nothing denied reading it, so any confined process could list the host temp directory and read another one's HOME. Under this root the read floor denies it (getDefaultSensitiveReadDenyPaths) and each wrap re-allows its own HOME alone.
 export function appOwnedSandboxHomeRoot(): string {
   return join(sandboxPrivateBase(), "home");
 }
@@ -2918,7 +2918,7 @@ function appOwnedSandboxReallowableRoots(): string[] {
   return [appOwnedSandboxTempRoot(), appOwnedSandboxHomeRoot(), appOwnedTerminalHandoffRoot()];
 }
 
-// The roots of the confined processes' private directories, read-denied by the floor. The container runtime root is one of them on every platform, and the only one on Windows, where it is spelled as that platform's directory rows are, with a trailing separator: it holds what used to be staged under the Ave home, outside it, and stays as unreadable to every other confined process as it was there. No wrap on this route re-opens anything inside it, so its deny is a plain one, and naming it never throws, whatever state the account's cache directory is in.
+// The roots of the confined processes' private directories, read-denied by the floor. The container runtime root is one of them on every platform, and the only one on Windows, where it is spelled as that platform's directory rows are, with a trailing separator: it holds what used to be staged under the Ave home, outside it, and stays as unreadable to every other confined process as it was there. On Windows it also holds every sandbox HOME (`homes`), and a confined process is re-opened its own HOME alone. Naming it never throws, whatever state the account's cache directory is in.
 export function appOwnedSandboxPrivateRoots(): string[] {
   if (process.platform === "win32") return [mxcRuntimeRootFloorPath() + sep];
   return [...appOwnedSandboxReallowableRoots(), mxcRuntimeRootFloorPath()];
@@ -3237,6 +3237,8 @@ interface WindowsWorkerFilesystemGrantRequest {
   readonly allowWrite?: readonly string[];
   // Checked at admission and again after stamping, before any allow ACL is granted.
   readonly assertStillValid?: () => void;
+  // The caller's own sandbox HOME. It lies under a sandbox private root, where a grant is otherwise refused.
+  readonly sandboxHome?: string;
 }
 
 export function grantWindowsWorkerFilesystemAccess(
@@ -3283,7 +3285,7 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
   timing: WindowsGrantTiming,
 ): Promise<WindowsWorkerFilesystemGrant> {
   const { timeStep } = timing;
-  const { assertStillValid, holderPid: requestedHolderPid, ...opts } = request;
+  const { assertStillValid, holderPid: requestedHolderPid, sandboxHome, ...opts } = request;
   timeStep("preflightMs", () => assertStillValid?.());
   if (process.platform === "win32") {
     for (const path of [...(opts.allowRead ?? []), ...(opts.allowWrite ?? [])]) {
@@ -3345,7 +3347,7 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
   const requests = pins.map(pin => ({ path: stripExtendedPathPrefix(pin.canonical!), identity: windowsObjectKey(pin) }));
   const allowRead = requests.map(request => request.path);
   const allowWrite = requests.slice(requestedRead.length - requestedWrite.length).map(request => request.path);
-  timeStep("preflightMs", () => assertWindowsGrantBoundaries(allowRead, allowWrite));
+  timeStep("preflightMs", () => assertWindowsGrantBoundaries(allowRead, allowWrite, sandboxHome));
   timeStep("preflightMs", () => checkWindowsSandboxStampTargets(pinned));
 
   const resolveDocumentsPath = scopedWindowsDocumentsPath();
@@ -3427,7 +3429,7 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
   if (_baseTrustedSettings !== baseTrustedSettings || session.windowsLiveGrantRevision !== grantRevision) {
     throw new Error("Windows sandbox policy changed while stamping the worker grant");
   }
-  timeStep("preflightMs", () => assertWindowsGrantBoundaries(allowRead, allowWrite));
+  timeStep("preflightMs", () => assertWindowsGrantBoundaries(allowRead, allowWrite, sandboxHome));
   timeStep("preflightMs", () => assertStillValid?.());
   if (stampFailure !== undefined) throw stampFailure;
   // Resolved after every refusal above, so a refused turn starts no holder.
@@ -3554,7 +3556,16 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
   return grant;
 }
 
-function assertWindowsGrantBoundaries(read: readonly string[], write: readonly string[]): void {
+// Whether `path` is at or inside `sandboxHome`, and that HOME is a directory directly inside a private root's `homes`.
+function insideOwnWindowsSandboxHome(path: string, sandboxHome: string | undefined): boolean {
+  if (sandboxHome === undefined) return false;
+  const home = win32.resolve(sandboxHome).toLowerCase();
+  if (!appOwnedSandboxPrivateRoots().some(root => win32.dirname(home) === win32.join(root, "homes").toLowerCase())) return false;
+  const resolved = win32.resolve(path).toLowerCase();
+  return resolved === home || resolved.startsWith(home + win32.sep);
+}
+
+function assertWindowsGrantBoundaries(read: readonly string[], write: readonly string[], sandboxHome?: string): void {
   assertPrivateHelperGrants(read, write);
   assertWindowsMachineRootWriteGrants(write);
   for (const path of read) {
@@ -3565,7 +3576,9 @@ function assertWindowsGrantBoundaries(read: readonly string[], write: readonly s
       .some(root => isGrantPathWithin(path, root))) {
       throw new Error(`Windows filesystem grant refuses an ancestor of the workspace or Ave home: ${path}`);
     }
-    if (protectedReadDenyCovering(path, [...getDefaultSensitiveDenyPaths(_baseTrustedSettings?.userDataDir), ...appOwnedSandboxPrivateRoots()])) {
+    // The private roots are closed to every grant but the caller's own HOME.
+    const privateRoots = insideOwnWindowsSandboxHome(path, sandboxHome) ? [] : appOwnedSandboxPrivateRoots();
+    if (protectedReadDenyCovering(path, [...getDefaultSensitiveDenyPaths(_baseTrustedSettings?.userDataDir), ...privateRoots])) {
       throw new Error(`Windows filesystem grant is inside a protected sensitive target: ${path}`);
     }
     if (aveHomeReadBoundaryCovering(path) !== undefined) {

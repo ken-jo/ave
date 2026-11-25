@@ -203,6 +203,7 @@ export async function spawnWindowsBundledProcess(input: {
       label: `${input.label}:asrt-win-acl`,
       allowRead: [...new Set([sandboxHome.path, ...input.allowWrite, ...input.allowRead, ...hostRuntimeReads(input.command)])],
       allowWrite: [...new Set([sandboxHome.path, ...input.allowWrite])],
+      sandboxHome: sandboxHome.path,
     });
     const held = grant;
     const spawned = await spawnConfinedChild({

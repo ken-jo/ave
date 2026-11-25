@@ -13,7 +13,7 @@ import { configureHostResources } from "../../main/host-resources.js";
 import { windowsGrantingRules, windowsOwnerRules, type WindowsDaclFacts } from "../../shared/windows-path-facts.js";
 import {
   AVE_APP_ID, currentMxcRuntimeHost, establishMxcRuntimeRoot, _forgetMxcRuntimeRootForTest, MxcRuntimeRootError,
-  mxcRuntimeRootFloorPath, mxcStagingParent, requireMxcRuntimeRoot, type MxcRuntimeHost,
+  mxcRuntimeRootFloorPath, mxcSandboxHomesParent, mxcStagingParent, requireMxcRuntimeRoot, type MxcRuntimeHost,
 } from "../mxc-runtime-root.js";
 import {
   isWindowsDrivePath, WINDOWS_RUNTIME_HOST, windowsLocalAppData, windowsRuntimeRootFailure, type MxcWindowsRuntimeHost,
@@ -479,7 +479,56 @@ describe.runIf(windows)("Windows runtime root", () => {
     });
   });
 
+  describe("the sandbox HOME parent", () => {
+    it("is <root>\\homes beside staging, and establishes the root when start-up has not", () => {
+      const homes = mxcSandboxHomesParent(hostOf());
+      expect(homes).toBe(join(rootPath(), "homes"));
+      expect(created).toEqual([rootPath()]);
+      expect(lstatSync(homes).isDirectory()).toBe(true);
+      expect(requireMxcRuntimeRoot(hostOf())).toBe(rootPath());
+      expect(mxcSandboxHomesParent(hostOf())).toBe(homes);
+      expect(created).toEqual([rootPath()]);
+    });
+
+    it("is refused with the root, at every later call too, and no HOME parent is created", () => {
+      facts = (path) => privateFacts(path, { fileSystemName: "exFAT" });
+      expect(() => mxcSandboxHomesParent(hostOf())).toThrow(MxcRuntimeRootError);
+      facts = (path) => privateFacts(path);
+      expect(() => mxcSandboxHomesParent(hostOf())).toThrow(/not established/u);
+      expect(existsSync(join(rootPath(), "homes"))).toBe(false);
+    });
+
+    it("is refused once the root is replaced", () => {
+      const root = establishMxcRuntimeRoot(hostOf());
+      rmSync(root, { recursive: true });
+      mkdirSync(root);
+      expect(() => mxcSandboxHomesParent(hostOf())).toThrow(/no longer the directory/u);
+      expect(readdirSync(root)).toEqual([]);
+    });
+
+    it("refuses a junction or a file at its name", () => {
+      const root = establishMxcRuntimeRoot(hostOf());
+      junction(join(scratch, "target"), join(root, "homes"));
+      expect(() => mxcSandboxHomesParent(hostOf())).toThrow(MxcRuntimeRootError);
+      expect(readdirSync(join(scratch, "target"))).toEqual([]);
+      rmdirSync(join(root, "homes"));
+      writeFileSync(join(root, "homes"), "");
+      expect(() => mxcSandboxHomesParent(hostOf())).toThrow(MxcRuntimeRootError);
+    });
+
+    it("is on Windows only", () => {
+      expect(() => mxcSandboxHomesParent(hostOf({ platform: "linux" }))).toThrow(/Windows only/u);
+      expect(readdirSync(base)).toEqual([]);
+    });
+  });
+
   describe("under the test runner", () => {
+    it("takes the root the run's set-up left in place without proving it again", () => {
+      mkdirSync(rootPath(), { recursive: true });
+      expect(mxcSandboxHomesParent(hostOf())).toBe(join(rootPath(), "homes"));
+      expect(created).toEqual([]);
+    });
+
     it("lives in the run's own directory, never in the account's local application data", () => {
       const current = currentMxcRuntimeHost();
       expect(current.cacheHome).toBe(winPath.join(process.env.AVE_TEST_SANDBOX_BASE ?? tmpdir(), "mxc-cache"));

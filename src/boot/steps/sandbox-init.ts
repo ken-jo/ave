@@ -3,7 +3,6 @@
 
 
 import { lstat, readdir, realpath, unlink } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
 import { createLogger } from "../../lib/logger.js";
@@ -581,14 +580,22 @@ export async function sweepSandboxPrivateRoot(root: string, inUse: ReadonlySet<s
   return counts;
 }
 
-/** Windows sandbox HOMEs live in the host temp directory, which other Ave instances share, so only a HOME whose marked owner is gone is removed. */
+/** Windows sandbox HOMEs live under the container runtime root, which this account's other Ave instances share, so only a HOME whose marked owner is gone is removed. This is where every Windows start establishes that root, whatever the sandbox setting: a HOME is created for unconfined children too. A root that cannot be proved private leaves nothing to sweep, and every later HOME is refused. */
 async function sweepWindowsSandboxHomes(): Promise<void> {
   try {
     const { sandboxProcessHomesInUse, warmSandboxHomeOwner } = await import("../../permissions/sandbox-process-home.js");
     warmSandboxHomeOwner();
+    const { mxcSandboxHomesParent } = await import("../../permissions/mxc-runtime-root.js");
+    let homes: string;
+    try {
+      homes = mxcSandboxHomesParent();
+    } catch (error) {
+      log.warn("boot: Windows sandbox HOME root unavailable: %s", errorMessage(error));
+      return;
+    }
     const { readWindowsProcessRunStates } = await import("../../permissions/windows-process-start-time.js");
     const { removed, failed } = await sweepStaleWindowsSandboxHomes(
-      tmpdir(), sandboxProcessHomesInUse(), readWindowsProcessRunStates);
+      homes, sandboxProcessHomesInUse(), readWindowsProcessRunStates);
     if (removed > 0) log.info("boot: removed %d stale Windows sandbox HOME(s)", removed);
     if (failed > 0) log.warn("boot: could not remove %d stale Windows sandbox HOME(s)", failed);
   } catch (error) {

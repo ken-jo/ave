@@ -1257,6 +1257,7 @@ describe("spawnWorker — Windows with gate ON", () => {
       allowRead: [SANDBOX_HOME, stateDir, pythonExecutable, workerScript],
       allowWrite: [SANDBOX_HOME, stateDir, indexDir],
       assertStillValid: expect.any(Function),
+      sandboxHome: SANDBOX_HOME,
     });
 
     expect(wrapWorkerCommandMock).toHaveBeenCalledTimes(1);

@@ -24,6 +24,7 @@ import { ConversationLoop } from "../../engine/conversation-loop.js";
 import { makeBasicConversationLoopDeps } from "../../engine/__tests__/support/conversation-loop-fixtures.js";
 import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
 import { admitMxcExtensionFilesystem, buildSandboxConfig, getDefaultSensitiveWriteDenyEntries, grantWindowsWorkerFilesystemAccess, initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox, runWithSandboxWritePreflight, wrapToolCommand } from "../asrt-sandbox.js";
+import { mxcSandboxHomesParent } from "../mxc-runtime-root.js";
 import { mxcPolicyRows } from "../mxc-windows.js";
 
 vi.mock("@anthropic-ai/sandbox-runtime", async importOriginal => ({
@@ -98,6 +99,47 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
       await expect(rejected).rejects.toThrow(folder.includes("%") ? "not a plain drive path" : "inside a protected sensitive target");
     } finally {
       grant.release();
+    }
+  });
+
+  it("grants a sandbox HOME under the container runtime root to its own process only", async () => {
+    const homes = mxcSandboxHomesParent();
+    const own = mkdtempSync(join(homes, "ave-sandbox-home-"));
+    const sibling = mkdtempSync(join(homes, "ave-sandbox-home-"));
+    mkdirSync(`${own}-2`);
+    mkdirSync(join(own, "AppData"));
+    mkdirSync(join(dirname(homes), "staging"), { recursive: true });
+    try {
+      // The deny on the root is reported as stamped: the grant is what is under test.
+      await initializeAsrtSandbox({});
+      vi.spyOn(denyAcl, "readWindowsDenyAcls").mockImplementation(paths => paths.map(() => ({
+        denyMask: 0x1f01ff, inheritableMask: 0x1f01ff, parentMask: 0x40, directory: true,
+      })));
+      const refused = "inside a protected sensitive target";
+      const request = (path: string, sandboxHome?: string) => grantWindowsWorkerFilesystemAccess({
+        holderPid: process.pid + 1, allowRead: [path], allowWrite: [path], ...(sandboxHome === undefined ? {} : { sandboxHome }),
+      });
+      const grant = await request(own, own);
+      try {
+        expect(grant.allowWrite).toEqual([own]);
+      } finally {
+        grant.release();
+      }
+      const inside = await request(join(own, "AppData"), own);
+      inside.release();
+      // Another process's HOME, the HOME parent, the root and its staging stay closed, whatever HOME the caller names.
+      await expect(request(sibling, own)).rejects.toThrow(refused);
+      await expect(request(own)).rejects.toThrow(refused);
+      await expect(request(homes, own)).rejects.toThrow(refused);
+      await expect(request(dirname(homes), own)).rejects.toThrow(refused);
+      await expect(request(join(dirname(homes), "staging"), own)).rejects.toThrow(refused);
+      await expect(request(sibling, homes)).rejects.toThrow(refused);
+      await expect(request(sibling, dirname(homes))).rejects.toThrow(refused);
+      await expect(request(`${own}-2`, own)).rejects.toThrow(refused);
+    } finally {
+      rmSync(own, { recursive: true, force: true });
+      rmSync(sibling, { recursive: true, force: true });
+      rmSync(`${own}-2`, { recursive: true, force: true });
     }
   });
 
