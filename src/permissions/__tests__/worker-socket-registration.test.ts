@@ -40,6 +40,7 @@ vi.mock("node:child_process", () => ({
   },
 }));
 
+
 describe("worker socket directory ownership", () => {
   registerLinuxWrapperProgramFixtures();
   const originalPlatform = process.platform;

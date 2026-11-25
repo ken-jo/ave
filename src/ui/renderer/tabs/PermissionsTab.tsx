@@ -241,6 +241,7 @@ function homePrivacyReasonText(error: NonNullable<SandboxWindowsStatusInfo["home
     case "identity-failed": return t("permissionsTab.homePrivacyIdentityFailed");
     case "icacls-failed": return t("permissionsTab.homePrivacyIcaclsFailed");
     case "read-back-failed": return t("permissionsTab.homePrivacyReadBackFailed");
+    case "helper-unavailable": return t("permissionsTab.homePrivacyHelperUnavailable");
     case "not-protected": return t("permissionsTab.homePrivacyNotProtected");
     case "invalid-owner-grant": return t("permissionsTab.homePrivacyInvalidOwnerGrant");
     case "owner-claim-failed": return t("permissionsTab.homePrivacyOwnerClaimFailed");
@@ -264,6 +265,7 @@ const HOME_PRIVACY_FIX_KEY = {
   "identity-failed": "permissionsTab.homePrivacyFixIdentity",
   "icacls-failed": "permissionsTab.homePrivacyFixPermissions",
   "read-back-failed": "permissionsTab.homePrivacyFixPermissions",
+  "helper-unavailable": "permissionsTab.homePrivacyFixHelperUnavailable",
   "not-protected": "permissionsTab.homePrivacyFixPermissions",
   "invalid-owner-grant": "permissionsTab.homePrivacyFixPermissions",
   "owner-claim-failed": null,
@@ -275,10 +277,13 @@ const HOME_PRIVACY_FIX_KEY = {
   "workspace-extra-principals": null,
 } as const satisfies Record<NonNullable<SandboxWindowsStatusInfo["homePrivacyError"]>["category"], string | null>;
 
-/** `sentence` followed by the category's own fix, when the cause text does not already carry one. */
+/** `sentence` followed by the category's own fix, when the cause text does not already carry one, and what shells do: every boot
+ * privacy failure forces the shell floor (sandbox-capability.ts getHostShellExecutionPlan), approved for the session or not, except
+ * helper-unavailable, which denies shells and hooks until a restart. */
 function withHomePrivacyFix(sentence: string, error: NonNullable<SandboxWindowsStatusInfo["homePrivacyError"]>): string {
   const fix = HOME_PRIVACY_FIX_KEY[error.category];
-  return fix === null ? sentence : `${sentence} ${t(fix)}`;
+  const shells = t(error.category === "helper-unavailable" ? "permissionsTab.homePrivacyShellDenied" : "permissionsTab.homePrivacyShellAsk");
+  return `${fix === null ? sentence : `${sentence} ${t(fix)}`} ${shells}`;
 }
 
 /**
@@ -1389,7 +1394,7 @@ export function PermissionsTab({
                           path: sandboxCapability.homePrivacyError.path,
                           reason: homePrivacyReasonText(sandboxCapability.homePrivacyError),
                         }), sandboxCapability.homePrivacyError)
-                      : t("permissionsTab.homePrivacyBootFailed")
+                      : `${t("permissionsTab.homePrivacyBootFailed")}.`
                     : sandboxBoot.causes.includes("windows-sandbox-integrity-failed")
                     ? t("permissionsTab.osSandboxWindowsHelperIntegrityError")
                     : sandboxBoot.causes.includes("windows-sandbox-missing")
@@ -1497,9 +1502,11 @@ export function PermissionsTab({
                   path: windowsStatus.homePrivacyError.path,
                   reason: homePrivacyReasonText(windowsStatus.homePrivacyError),
                 }), windowsStatus.homePrivacyError)}
-                {windowsStatus.homePrivacyError.approvedForSession ? null : ` ${t("permissionsTab.homePrivacyApproveHint")}`}
+                {/* A helper that gave no answer offers no run without isolation: only a restart retries the check. */}
+                {windowsStatus.homePrivacyError.approvedForSession || windowsStatus.homePrivacyError.category === "helper-unavailable"
+                  ? null : ` ${t("permissionsTab.homePrivacyApproveHint")}`}
                 <HomePrivacyFixCommand error={windowsStatus.homePrivacyError} />
-                {windowsStatus.homePrivacyError.approvedForSession ? (
+                {windowsStatus.homePrivacyError.category === "helper-unavailable" ? null : windowsStatus.homePrivacyError.approvedForSession ? (
                   <p>{t("permissionsTab.homePrivacyApprovedForSession")}</p>
                 ) : (
                   <Button type="button" size="sm" variant="default" disabled={privacyApprovalBusy}

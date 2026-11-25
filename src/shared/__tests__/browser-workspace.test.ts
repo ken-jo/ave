@@ -72,6 +72,16 @@ describe("browser workspace wire validation", () => {
     expect(new Date(8.64e15).toISOString()).toBe("+275760-09-13T00:00:00.000Z");
     expect(parseBrowserWorkspaceState({ ...STATE, storageStatus: ["ready"] })).toBeNull();
     expect(parseBrowserWorkspaceState({ ...STATE, downloads: [{ id: "download-1", name: "a", receivedBytes: 1, totalBytes: 1, at: 1, state: ["completed"] }] })).toBeNull();
+    for (const notice of ["unsupported-volume", "volume-unknown"]) {
+      const noticed = { ...STATE, downloads: [{ id: "download-1", name: "a", receivedBytes: 1, totalBytes: 1, at: 1, state: "interrupted", notice }] };
+      expect(parseBrowserWorkspaceState(noticed)).toEqual(noticed);
+    }
+    for (const state of ["progressing", "completed", "cancelled", "blocked"]) {
+      expect(parseBrowserWorkspaceState({ ...STATE, downloads: [{ id: "download-1", name: "a", receivedBytes: 1, totalBytes: 1, at: 1, state, notice: "volume-unknown" }] })).toBeNull();
+    }
+    for (const notice of ["unsupported", undefined, null]) {
+      expect(parseBrowserWorkspaceState({ ...STATE, downloads: [{ id: "download-1", name: "a", receivedBytes: 1, totalBytes: 1, at: 1, state: "interrupted", notice }] })).toBeNull();
+    }
     expect(parseBrowserWorkspaceRequest("setBookmark", { url: `https://site.example/${"가".repeat(1000)}`, title: "", bookmarked: true })).toBeNull();
   });
   it("accepts only bounded image bytes in a generation-matched preview shape", () => {

@@ -56,7 +56,6 @@ import {
 import type { WorkerEgressOwner } from "../permissions/egress-invocations.js";
 import {
   assertMxcHolderNotBashForm,
-  bundledWrappedEnv,
   isMxcExtensionBackendSelected,
   MxcBashIncompatibleError,
   spawnMxcBundledHolder,
@@ -65,6 +64,7 @@ import {
   type MxcBundledHolder,
   type WindowsBundledSpawn,
 } from "../sandbox/wrap-bundled-command.js";
+import { assertConfiguredLauncherEnvironment, sandboxTargetSetupFailed, type SandboxTargetLaunch } from "../permissions/launcher-environment.js";
 
 const log = createLogger("hook-runner");
 
@@ -330,6 +330,7 @@ export async function runOneHookScript(
   // The owner holds a POSIX hook's sandbox teardown; this runner sees only the handle. A Windows hook gets none.
   const hookResources = process.platform === "win32" ? undefined : createManagedResources();
   let noteProcessGroup: ((pid: number) => void) | undefined;
+  let targetLaunch: SandboxTargetLaunch | undefined;
   let windowsSpawn: WindowsBundledSpawn | undefined;
   let sandboxArgv = false;
   let contained: MxcBundledHolder | undefined;
@@ -380,6 +381,7 @@ export async function runOneHookScript(
   } else if (sandboxEnabled && process.platform === "win32" && (confinement || admittedPlan?.mode === "asrt")) {
     // Windows hooks use a stdio relay with read access to their generation and write access to their data.
     try {
+      assertConfiguredLauncherEnvironment(runnable.env ?? {});
       await refreshCommandAllowed?.();
       windowsSpawn = await spawnWindowsBundledProcess({
         label: `hook:${confinement?.pluginId ?? "user"}`,
@@ -401,8 +403,10 @@ export async function runOneHookScript(
     }
   } else if (sandboxEnabled && hookResources) {
     try {
+      assertConfiguredLauncherEnvironment(runnable.env ?? {});
       const wrapped = await wrapManagedBundledCommand({ command: spawnCmd, args: spawnArgs,
         resources: hookResources,
+        targetEnv: childEnvBase,
         allowWrite: confinement ? [confinement.dataDir] : [projectDir],
         ownPluginReads: confinement ? [confinement.generationRoot] : userScriptReads,
         tempPrincipal: confinement ? { kind: "plugin", id: confinement.pluginId }
@@ -411,7 +415,8 @@ export async function runOneHookScript(
       noteProcessGroup = wrapped.noteProcessGroup;
       [spawnCmd, ...spawnArgs] = wrapped.argv;
       sandboxArgv = true;
-      spawnEnv = bundledWrappedEnv(childEnvBase, wrapped.env, wrapped.homeEnv);
+      spawnEnv = wrapped.env;
+      targetLaunch = wrapped.targetLaunch;
     } catch (error) {
       await abandonManagedLaunch(hookResources).catch(logReleaseFailure(runnable.id));
       return deny(`sandbox unavailable: ${(error as Error).message}`);
@@ -461,11 +466,15 @@ export async function runOneHookScript(
         hookType: runnable.hookType, durationMs: Date.now() - start }) });
   }
 
-  const startHook = (onSpawn?: (child: ChildProcess) => void): ChildProcess => spawnManaged(
-    sandboxArgv || /[\\/]/u.test(spawnCmd) ? spawnCmd : resolveHostProgram(spawnCmd, spawnEnv), spawnArgs,
-    { cwd, env: spawnEnv, stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32" },
-    { label: "hook:script" }, onSpawn,
-  );
+  const startHook = (onSpawn?: (child: ChildProcess) => void): ChildProcess => {
+    const child = spawnManaged(
+      sandboxArgv || /[\\/]/u.test(spawnCmd) ? spawnCmd : resolveHostProgram(spawnCmd, spawnEnv), spawnArgs,
+      { cwd, env: spawnEnv, stdio: targetLaunch?.withStdio(["pipe", "pipe", "pipe"]) ?? ["pipe", "pipe", "pipe"], detached: process.platform !== "win32" },
+      { label: "hook:script" }, onSpawn,
+    );
+    targetLaunch?.sendEnvironment(child);
+    return child;
+  };
   if (hookResources) {
     return runPosixHook({ start: startHook, stdinJson, timeoutMs, abortSignal, hookId: runnable.id, deny,
       noteProcessGroup: (pid) => noteProcessGroup?.(pid),
@@ -765,6 +774,7 @@ async function runPosixHook(input: {
     const { code, signal } = await exit.wait();
     await releaseManagedResources(input.resources, proof).catch(logReleaseFailure(input.hookId));
     if (fault) return input.deny(fault);
+    if (await sandboxTargetSetupFailed(child)) return input.deny(t("be_scriptHookRunner.sandboxEnvironmentSetupFailed"));
     return input.outcome({ code, signal, cancelled, timedOut, stdout: stdout?.text() ?? "", stderr: stderr?.text() ?? "",
       stdoutCapped: stdout?.capped() ?? false });
   } finally {

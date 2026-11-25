@@ -49,6 +49,7 @@ export function createHookCommandAuthorizer(deps: {
       approvalSurface: turnPolicy?.approvalSurface,
       remoteControllerAuthority: turnPolicy?.remoteControllerAuthority,
       floor: turnPolicy?.floor,
+      // The manager replaces this with the restart notice for a helper-unavailable plan.
       ...(plan.mode === "blocked" ? { admissionDenial: { code: "shell-execution-unavailable", reason: "Host shell execution is blocked" } } : {}),
       hostShellExecutionPlan: plan,
       shellExecution: { runsSandboxed: plan.sandboxed },

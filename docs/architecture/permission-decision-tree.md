@@ -1,6 +1,6 @@
 # Ave permission decision tree (v4)
 
-Status: owner-approved 2026-10-29. Mode names were updated 2026-10-30. Session surfaces, remote-user parity and shell-sandbox defaults: owner decision 2026-11-02. Ave home sandbox read boundary: owner decision 2026-11-07. Workflow templates (template runs, stage sub-agents, remote work approvals, run-scoped grant, unattended start, model-judged pass conditions): owner decision 2026-11-16. Unattended lane, schedule attachment, envelope, requested outputs, stage workspaces and per-stage breaker: owner decision 2026-11-16.
+Status: owner-approved 2026-10-29. Mode names were updated 2026-10-30. Session surfaces, remote-user parity and shell-sandbox defaults: owner decision 2026-11-02. Ave home sandbox read boundary: owner decision 2026-11-07. Workflow templates (template runs, stage sub-agents, remote work approvals, run-scoped grant, unattended start, model-judged pass conditions): owner decision 2026-11-16. Unattended lane, schedule attachment, envelope, requested outputs, stage workspaces and per-stage breaker: owner decision 2026-11-16. Boot home privacy floor (any boot privacy failure) and helper-unavailable deny: owner decision 2026-11-24. Windows absent protected names are watched, never materialised: owner decision 2026-11-24.
 Source design and reference comparison: artifact "에이전트 권한 결정 트리 비교", section 4.
 This file is the single source of truth for permission-decision work. Implementers and reviewers of any change
 to permission classification, approval cards, the reviewer, hooks or headless behaviour must read it and
@@ -202,14 +202,16 @@ Notes that are part of the contract:
   A relocated Ave home gets the root deny.
 - Local memory inference uses the Windows system directory for its working directory. The sandbox account already has read access there,
   so inference needs no ACL grant for its fresh process HOME. The active model is under the denied Ave home models directory and the host streams its verified bytes.
-- Unverifiable Ave home boundary (boot category boundary-link or boundary-unlisted): the OS sandbox cannot deny reads inside the
-  Ave home, so host shells (bash, PowerShell) run unconfined: on the unavailable-sandbox route, on the sandbox-off route when only
+- Unverified Ave home privacy at boot (any boot privacy failure: boundary-link, boundary-unlisted, the Windows ACL, ownership,
+  icacls and read-back categories, and POSIX posix-root-unsafe; owner decision 2026-11-24, matching VS Code and Cursor, which never
+  run a command silently without the sandbox): the OS sandbox cannot be relied on to keep the
+  Ave home private, so host shells (bash, PowerShell) run unconfined: on the unavailable-sandbox route, on the sandbox-off route when only
   worker confinement was requested (shell scope off), and as an explicit host request. Each one runs only after a human approves it
   on its card (the shell card for that route, or the out-of-directory card when the command leaves the allowed folders). The
   `sandbox-unavailable` floor makes it ask-forced (질문†): allow once, allow for this session, or deny once; no saved-rule,
   remembered, allow-mode, auto-review or sandbox auto-allow pass, no durable approval, deny when headless (owner decision
   2026-11-08). The session choice records a grant of this floor for the requesting session only (children do not inherit command choices), kept in
-  memory only, never as a rule, and dropped when the conversation ends or Ave restarts. While the boundary stays unverified,
+  memory only, never as a rule, and dropped when the conversation ends or Ave restarts. While home privacy stays unverified,
   later shell commands and host hooks of that same session pass this floor, whatever the command, dialect, default or
   explicit-host plan, or background run (owner decision 2026-11-08: session-wide). The ordinary stages then decide without a
   reviewer: an allow rule or the allow mode runs it without a card, under its own one-shot execution permit per run; anything
@@ -218,13 +220,23 @@ Notes that are part of the contract:
   When another 질문† floor also applies (protected path, project escape, critical delete, other principal), the card stays
   once-only. Other 질문† floors remain once-only. Host command hooks use the same plan and ask the same way; a headless blocking hook (prompt submit, pre-tool) is
   denied and can refuse its turn, which is the intended fail-closed result. The Permissions banner says shell commands will ask
-  for approval once or for the session. Other boot failures keep the ordinary unavailable-sandbox, sandbox-off and explicit-host routes.
+  for approval once or for the session, for every boot privacy-failure category.
+- Privacy helper unavailable (boot category helper-unavailable: the Windows path-kind or ACL helper did not answer; owner decision
+  2026-11-24): Ave cannot judge the home's protection, so host shells and host hooks are denied, and so is a confined shell whose home
+  denies were skipped or could not be applied without that helper; no extension is offered a start without isolation. The notice tells the user to restart Ave. No approval, session grant or rule passes this denial.
 - Limit of file rows (home dotfiles such as `.gitconfig` and `.npmrc`, and the top-level files of a Windows profile-child Ave home):
   Linux bind masks and Windows ACL stamps are bound to the file object present at spawn, so a long-lived confined child can read a
   file the host replaces by rename-over. A file absent at spawn has no object to bind; it is held only by that backend's absent-path
   handling, which this boundary does not change. macOS seatbelt rules are path-based, so neither case reopens a denied path there.
   Per-exec shells re-apply masks and stamps on every spawn.
-- User-typed terminal-tab commands are user actions and stay outside this tree.
+- Absent protected names on Windows (owner decision 2026-11-24): an ACL can only deny an existing object, and Ave never creates a
+  placeholder in the user's workspace or home to carry a deny. A protected name (for example `.vscode`, `.idea`, `.git/hooks`) that is
+  absent at launch is watched instead: when a sandboxed command ends, a worker is released, or a host-side consumer (host git, host hooks)
+  is about to act on that workspace while a sandboxed process is still live, a watched name that now exists is moved to quarantine under
+  the Ave home, the command result carries a named violation, and the user is told and may restore it. A failed move refuses host-side
+  consumers of that workspace. macOS seatbelt rules are patterns and cover absent names without this.
+- User-typed terminal-tab commands are user actions and stay outside this tree. A command the agent sends into a bound host terminal
+  (`terminal_run`) runs on the host, so the boot home privacy floor above applies to it before the user-surface session choice.
 
 ## Mode behaviour matrix (owner clarification 2026-10-30)
 
@@ -238,13 +250,13 @@ Modes are behaviour, not labels. Each column matches the reference hosts' equiva
 | outside-project write | ask (one card with folder grant) | ask (one card) | reviewer | allow | Claude add-dir card, OpenCode external_directory; owner "질문 1회" |
 | known-safe read-only shell (ls, cat, git status/diff/log, rg…, as the existing literal-proof/read-only classifier defines it) | allow | allow | allow | allow | Claude default read-only bash, Codex untrusted safe commands |
 | other sandboxed shell, incl. file-changing commands inside the project (mkdir/mv/cp/rm/build/test) | ask | sandbox-auto | sandbox-auto | sandbox-auto | Codex workspace-write sandbox, Claude sandboxed bash |
-| sandboxed shell with an unproven/destructive signal | ask | ask | reviewer | allow (unless 질문†) | Codex dangerous heuristic, Claude critical rm |
+| sandboxed shell with an unproven/destructive signal (incl. a command whose directory changes exceed the 16-fork analysis budget: an ask, never a deny; owner decision 2026-11-25) | ask | ask | reviewer | allow (unless 질문†) | Codex dangerous heuristic, Claude critical rm |
 | sandbox escalation / host shell (sandbox off) | ask (prefix rule savable) | ask (prefix rule savable) | reviewer | allow (unless 질문†) | Codex escalation + prefix rules; owner "코덱스와 맞춰" |
 | builtin browser in agent-opened tab | tool use allow; new origin ask (this-site / any-site) | same | same | same | owner decision 2026-11-08; session only, no child inheritance; headless deny |
 | network / web fetch | ask | ask | reviewer | allow | Codex sandbox network off, Claude WebFetch rules |
 | MCP readOnlyHint (server or plugin) | allow | allow | allow | allow | Codex MCP read-only; owner "우리도 맞춰"; plugin read declaration: owner decision 2026-11-06 |
 | MCP other | ask (remember per tool) | ask (remember per tool) | reviewer | allow | Claude per-tool rules; owner "클로드에 맞춰" |
-| 질문† targets (incl. host shells while the Ave home boundary is unverifiable) | ask-forced | ask-forced | ask-forced (no reviewer) | ask-forced | protected paths and instruction files need fresh human consent each time; boundary shells: lead decision 2026-11-08, with later shells and hooks of this session when sandbox-unavailable is the only 질문† (owner decision 2026-11-08) |
+| 질문† targets (incl. host shells while Ave home privacy is unverified at boot) | ask-forced | ask-forced | ask-forced (no reviewer) | ask-forced | protected paths and instruction files need fresh human consent each time; boundary shells: lead decision 2026-11-08, with later shells and hooks of this session when sandbox-unavailable is the only 질문† (owner decision 2026-11-08); every boot privacy failure: owner decision 2026-11-24 |
 | headless (no human), anything that would ask | deny + "do not retry" | same | same (the reviewer still decides first; a fallback to ask → deny) | n/a | Claude -p --permission-prompts none, Codex exec never, OpenCode run, Hermes cron |
 | unattended template stage (schedule-started run) | inside the envelope, a proven sandbox and the stage workspace: allow, sandbox-auto or reviewer (deny only); anything else: deny + "do not retry" | same | same | same | owner decision 2026-11-16; mode, rules and grants are ignored; nothing asks |
 

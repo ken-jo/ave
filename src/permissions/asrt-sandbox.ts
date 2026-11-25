@@ -4,6 +4,7 @@ import { MxcExtensionReadinessRefusedError, MxcNativeEntryRequiredError, MxcProc
 import { assertMxcExtensionFilesystemOwnership, type MxcExtensionFilesystemOwnership } from "./mxc-filesystem-ownership.js";
 import type { ShellFilesystemPolicy } from "./mxc-windows.js";
 import { issueFilesystemSandboxBlock, type SandboxBlock } from "../shared/sandbox-block.js";
+import { buildLauncherEnvironment } from "./launcher-environment.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn } from "node:child_process";
 import { createHmac, randomBytes } from "node:crypto";
@@ -2277,7 +2278,7 @@ function executeAsrtRuntimeProbe(
       child = spawn(executable, args, {
         cwd: process.cwd(),
         windowsHide: true,
-        env: wrapped.env,
+        env: process.platform === "linux" ? buildLauncherEnvironment() : wrapped.env,
         shell: false,
         stdio: "ignore",
       });
@@ -2508,7 +2509,11 @@ export interface AsrtSandboxInitialization {
 }
 
 export async function initializeAsrtSandbox(
-  { queryWindowsDocumentsPath, ...settings }: TrustedSandboxSettings & { readonly queryWindowsDocumentsPath?: WindowsDocumentsQuery },
+  { queryWindowsDocumentsPath, linuxWrapperPrograms, ...settings }: TrustedSandboxSettings & {
+    readonly queryWindowsDocumentsPath?: WindowsDocumentsQuery;
+    /** The helpers this boot attempt's dependency check resolved; absent, initialization resolves them once. */
+    readonly linuxWrapperPrograms?: LinuxWrapperPrograms;
+  },
   askCb?: SandboxAskCallback,
   enableLogMonitor = false,
   startupSignal?: AbortSignal,
@@ -2526,7 +2531,7 @@ export async function initializeAsrtSandbox(
     const trustedSettings = process.platform === "win32" && queryWindowsDocumentsPath !== undefined
       ? { ...settings, resolveWindowsDocumentsPath: await resolveWindowsDocumentsPath(queryWindowsDocumentsPath, startupSignal) }
       : settings;
-    return await initializeSandboxRuntime(trustedSettings, askCb, enableLogMonitor, startupSignal, queryWindowsDocumentsPath);
+    return await initializeSandboxRuntime(trustedSettings, askCb, enableLogMonitor, startupSignal, queryWindowsDocumentsPath, linuxWrapperPrograms);
   } finally {
     sandboxInitializationPending = false;
   }
@@ -2538,6 +2543,7 @@ async function initializeSandboxRuntime(
   enableLogMonitor: boolean,
   startupSignal: AbortSignal | undefined,
   queryWindowsDocumentsPath: WindowsDocumentsQuery | undefined,
+  preflightLinuxPrograms: LinuxWrapperPrograms | undefined,
 ): Promise<AsrtSandboxInitialization> {
   assertWindowsPolicyBudget(trustedSettings, true);
   const configuredDenies = hasConfiguredDenies(trustedSettings);
@@ -2548,7 +2554,7 @@ async function initializeSandboxRuntime(
   const SandboxManager = process.platform === "win32" && trustedSettings.windows?.externalConfinement === true
     ? undefined : await loadSandboxManager();
   startupSignal?.throwIfAborted();
-  const linuxWrapperPrograms = process.platform === "linux" ? requireLinuxWrapperPrograms() : undefined;
+  const linuxWrapperPrograms = process.platform === "linux" ? preflightLinuxPrograms ?? requireLinuxWrapperPrograms() : undefined;
   const backgroundInitialization = process.platform === "win32"
     && trustedSettings.windows?.backgroundInitialization === true
     && trustedSettings.windows.externalConfinement !== true;
@@ -2637,6 +2643,7 @@ export async function checkAsrtDependencies(): Promise<{
   errors: string[];
   warnings: string[];
   dependencyFailure?: unknown;
+  linuxWrapperPrograms?: LinuxWrapperPrograms;
 }> {
   if (process.platform === "win32") {
     const mod = await import("@anthropic-ai/sandbox-runtime");
@@ -2660,7 +2667,8 @@ export async function checkAsrtDependencies(): Promise<{
     const { bwrapPath, socatPath } = result.programs;
     const applyPath = getVendoredApplySeccompPath();
     await getApplySeccompBinaryPathAsync(applyPath);
-    return checkLinuxDependencies({ bwrapPath, socatPath, seccompConfig: { applyPath } });
+    const checked = await checkLinuxDependencies({ bwrapPath, socatPath, seccompConfig: { applyPath } });
+    return { ...checked, linuxWrapperPrograms: result.programs };
   }
   return SandboxManager.checkDependenciesAsync();
 }

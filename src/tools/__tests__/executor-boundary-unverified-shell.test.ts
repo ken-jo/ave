@@ -16,6 +16,7 @@ vi.mock("node:child_process", async (importOriginal) => ({
 
 import { NO_APPROVER_MESSAGE } from "../../permissions/decision-pipeline.js";
 import { saveApprovalCardRule } from "../../permissions/approval-rule-save.js";
+import { HOST_SHELL_AUTHORIZATION_REVOKED_ERROR } from "../../permissions/host-shell-execution-permit.js";
 import { SHELL_RULE_CANONICAL_VERSION } from "../../shared/shell-rule-version.js";
 import { reviewerJudgeOutcomeForTest, setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
@@ -32,9 +33,10 @@ import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootFor
 import { requestedSandboxUnavailable } from "../../__tests__/support/host-shell-sandbox-fixtures.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { __resetShellResolverCache } from "../../lib/shell-resolver.js";
-import { _resetAveHomePrivacyForTest, setAveHomePrivacyAtBoot, AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE } from "../../shared/ave-home.js";
+import { _resetAveHomePrivacyForTest, setAveHomePrivacyAtBoot, ensureAveHomePrivate, AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE, type AveHomePrivacyFailureCategory } from "../../shared/ave-home.js";
 import { shellExecutionEnvironmentLines } from "../../shared/shell-execution-environment.js";
-import { t } from "../../i18n/runtime.js";
+import { windowsPathKindHelperUnavailable } from "../../main/windows-path-kind-launcher.js";
+import { getLocale, setLocale, t } from "../../i18n/runtime.js";
 import { userPermissionContext as permissionContext } from "./tool-context-fixture.js";
 import { sentApprovalCards } from "../../__tests__/test-helpers.js";
 
@@ -261,8 +263,17 @@ describe("host shells under an unverifiable Ave home boundary", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
-  // Worker confinement on, shell scope off: boot still publishes the boundary state, and the sandbox-off plan asks every command.
-  const workerOnlyCases = (["boundary-link", "boundary-unlisted"] as const).flatMap(category => DIALECTS.flatMap(dialect => ([
+  // Worker confinement on, shell scope off: boot still publishes the privacy failure, and the sandbox-off plan asks every command.
+  const FLOOR_CATEGORIES = [
+    "boundary-link", "boundary-unlisted", "system-root-missing", "directory-failed", "identity-failed", "icacls-failed", "read-back-failed",
+    "extra-principals", "workspace-extra-principals", "not-protected", "invalid-owner-grant", "owner-claim-failed", "reparse-point", "posix-root-unsafe",
+  ] as const satisfies readonly AveHomePrivacyFailureCategory[];
+  // The card names no category: the same words hold for every privacy failure that forces the floor.
+  const CARD_TEXT = {
+    en: "Ave home privacy could not be established at startup, so a shell command runs without the OS sandbox only after you approve it. Approve it once, or waive this sandbox approval for later shell commands and hooks in this session while home privacy stays unverified. Other permission checks still apply and may ask again.",
+    ko: "시작할 때 Ave 홈 보호를 확인할 수 없어, 셸 명령은 승인한 뒤에만 OS 샌드박스 없이 실행됩니다. 한 번만 승인하거나, 홈 보호를 확인할 수 없는 동안 이 세션의 이후 셸 명령과 훅에 대한 샌드박스 승인을 면제할 수 있습니다. 다른 권한 검사는 계속 적용되며 다시 승인을 요청할 수 있습니다.",
+  };
+  const workerOnlyCases = FLOOR_CATEGORIES.flatMap(category => DIALECTS.flatMap(dialect => ([
     { category, dialect, mode: "default" as const, label: "saved prefix and tool allows", rules: [dialect.prefixRule, dialect.toolName] },
     { category, dialect, mode: "auto" as const, label: "auto review", rules: [] },
     { category, dialect, mode: "allow" as const, label: "allow mode", rules: [] },
@@ -270,7 +281,7 @@ describe("host shells under an unverifiable Ave home boundary", () => {
 
   it.each(workerOnlyCases)("$category on a worker-only boot: $dialect.toolName with $label asks every command", async ({ category, dialect, mode, rules }) => {
     setShellSandboxRequestedAtBoot(false);
-    publishBoundary(category);
+    setAveHomePrivacyAtBoot({ enforcement: "none", home: HOME, reason: category, category });
     const execute = vi.fn();
     const registry = probe(dialect.create, execute);
     const pm = manager(mode, rules);
@@ -285,7 +296,15 @@ describe("host shells under an unverifiable Ave home boundary", () => {
     const card = defined(denied.cards()[0], "approval card");
     expect(card.executionPlan).toMatchObject({ mode: "plain", requestedSandbox: false, fallbackReason: "disabled-by-setting", requiresExplicitUserApproval: true });
     expect(card.allowedChoices).toEqual(["allow-once", "deny-once"]);
-    expect(shellExecutionEnvironmentLines(defined(card.executionPlan, "card execution plan"))).toContain(t("shellExecution.boundaryUnverifiedAsk"));
+    const locale = getLocale();
+    try {
+      for (const shown of ["en", "ko"] as const) {
+        setLocale(shown);
+        expect(shellExecutionEnvironmentLines(defined(card.executionPlan, "card execution plan"))).toContain(CARD_TEXT[shown]);
+      }
+    } finally {
+      setLocale(locale);
+    }
     expect(execute).not.toHaveBeenCalled();
     expect(pm.dispatchReviewer).not.toHaveBeenCalled();
 
@@ -316,9 +335,8 @@ describe("host shells under an unverifiable Ave home boundary", () => {
     expect(result[0]?.content).toContain(NO_APPROVER_MESSAGE);
   });
 
-  it.each(DIALECTS)("keeps ordinary sandbox-off policy for $toolName with the shell scope off and no boundary failure", async (dialect) => {
+  it.each(DIALECTS)("keeps ordinary sandbox-off policy for $toolName with the shell scope off and no boot privacy failure", async (dialect) => {
     setShellSandboxRequestedAtBoot(false);
-    setAveHomePrivacyAtBoot({ enforcement: "none", home: HOME, reason: "icacls failed", category: "icacls-failed" });
     const execute = vi.fn();
     const registry = probe(dialect.create, execute);
     const approvals = cardGate("deny-once");
@@ -345,8 +363,7 @@ describe("host shells under an unverifiable Ave home boundary", () => {
     expect(result[0]?.content).toContain(NO_APPROVER_MESSAGE);
   });
 
-  it.each(DIALECTS)("keeps the ordinary explicit-host route for $toolName under any other boot failure", async (dialect) => {
-    setAveHomePrivacyAtBoot({ enforcement: "none", home: HOME, reason: "icacls failed", category: "icacls-failed" });
+  it.each(DIALECTS)("keeps the ordinary explicit-host route for $toolName without a boot privacy failure", async (dialect) => {
     const execute = vi.fn();
     const registry = probe(dialect.create, execute);
     const approvals = cardGate("deny-once");
@@ -359,8 +376,7 @@ describe("host shells under an unverifiable Ave home boundary", () => {
     expect((defined(execute.mock.calls[0], "execute call")[0] as ToolExecutionContext).hostShellExecutionPlan).toMatchObject({ executionRequest: "host" });
   });
 
-  it.each(DIALECTS)("keeps the ordinary unavailable-sandbox route for $toolName under any other boot failure", async (dialect) => {
-    setAveHomePrivacyAtBoot({ enforcement: "none", home: HOME, reason: "icacls failed", category: "icacls-failed" });
+  it.each(DIALECTS)("keeps the ordinary unavailable-sandbox route for $toolName without a boot privacy failure", async (dialect) => {
     const execute = vi.fn();
     const registry = probe(dialect.create, execute);
     const approvals = cardGate("deny-once");
@@ -393,6 +409,168 @@ describe("host shells under an unverifiable Ave home boundary", () => {
         { sessionId, permissionContext: permissionContext(headless ? { headless: true } : {}) },
       ));
   }
+
+  type PrivacyFailure = { label: string; category: AveHomePrivacyFailureCategory; helperError?: Error };
+  const privacyFailures: readonly PrivacyFailure[] = [
+    { label: "path-kind helper error", category: "read-back-failed", helperError: new Error("Invalid Windows path facts response") },
+    ...([
+      "system-root-missing", "directory-failed", "identity-failed", "icacls-failed", "read-back-failed",
+      "extra-principals", "workspace-extra-principals", "not-protected", "invalid-owner-grant", "owner-claim-failed", "reparse-point",
+    ] as const).map(category => ({ label: category, category })),
+  ];
+
+  function publishPrivacyFailure({ category, helperError }: PrivacyFailure): void {
+    const privacy = helperError === undefined
+      ? { enforcement: "none" as const, home: HOME, reason: category, category }
+      : ensureAveHomePrivate(join(testRoot, "ave-home"), {
+          platform: "win32",
+          readDacls: () => { throw helperError; },
+        });
+    expect(privacy).toMatchObject({ enforcement: "none", category });
+    setAveHomePrivacyAtBoot(privacy);
+  }
+
+  const routes = [
+    { route: "default", plan: { fallbackReason: "requested-sandbox-unavailable", executionRequest: "default" } },
+    { route: "host", plan: { fallbackReason: "none", executionRequest: "host" } },
+    { route: "worker-only", plan: { fallbackReason: "disabled-by-setting", executionRequest: "default" } },
+  ] as const;
+  const routeCases = routes.flatMap(route => DIALECTS.map(dialect => ({ ...route, dialect })));
+
+  // Owner decision 2026-11-24: a helper that gave no answer checked nothing, so host shells are denied until a restart, whatever approves them.
+  const RESTART = "Restart Ave; if it persists, reinstall Ave.";
+  const helperUnavailable: readonly PrivacyFailure[] = [
+    { label: "path-kind helper timeout", category: "helper-unavailable", helperError: windowsPathKindHelperUnavailable("Windows path facts helper did not answer within 15000 ms", "ETIMEDOUT") },
+    { label: "bare category", category: "helper-unavailable" },
+  ];
+
+  describe.each(helperUnavailable)("helper-unavailable ($label) boot privacy failure", (failure) => {
+    beforeEach(() => publishPrivacyFailure(failure));
+
+    const approvers = [
+      { label: "a saved prefix and tool allow", mode: "default" as const, rules: (d: (typeof DIALECTS)[number]) => [d.prefixRule, d.toolName] },
+      { label: "auto review", mode: "auto" as const, rules: () => [] },
+      { label: "allow mode and a saved prefix", mode: "allow" as const, rules: (d: (typeof DIALECTS)[number]) => [d.prefixRule, d.toolName] },
+    ];
+    const denyCases = routeCases.flatMap(route => approvers.map(approver => ({ ...route, approver })));
+
+    it.each(denyCases)("$route route: $dialect.toolName with $approver.label is denied with the restart notice and no card", async ({ route, dialect, approver }) => {
+      if (route === "worker-only") setShellSandboxRequestedAtBoot(false);
+      const execute = vi.fn();
+      const registry = probe(dialect.create, execute);
+      const pm = manager(approver.mode, approver.rules(dialect));
+      const run = sessionRun(dialect, route, `helper-${route}`);
+
+      const once = cardGate("allow-once");
+      const refused = await run(pm, once.gate, registry);
+      expect(once.cards()).toHaveLength(0);
+      expect(refused[0]?.is_error).toBe(true);
+      expect(refused[0]?.content).toContain(RESTART);
+      expect(pm.dispatchReviewer).not.toHaveBeenCalled();
+
+      // No session waiver: there is no card to save one from.
+      const session = sessionGate(pm);
+      await run(pm, session.gate, registry);
+      expect(session.cards()).toHaveLength(0);
+      expect(session.saves).toEqual([]);
+
+      const headless = await run(pm, cardGate("allow-once").gate, registry, true);
+      expect(headless[0]?.content).toContain(RESTART);
+      expect(headless[0]?.content).not.toContain(NO_APPROVER_MESSAGE);
+      expect(execute).not.toHaveBeenCalled();
+    });
+
+    it.each(DIALECTS)("an out-of-directory $toolName is denied with the restart notice and no card", async (dialect) => {
+      const execute = vi.fn();
+      const registry = probe(dialect.create, execute);
+      const approvals = cardGate("allow-once");
+      const result = await new ToolExecutor(registry, undefined, manager("allow", [dialect.prefixRule, dialect.toolName]), undefined, approvals.gate).executeAll(
+        [{ id: "helper-directory", name: dialect.toolName, input: { command: dialect.command, cwd: testRoot } }],
+        { sessionId: "helper-directory", permissionContext: permissionContext() },
+      );
+      expect(approvals.cards()).toHaveLength(0);
+      expect(result[0]?.content).toContain(RESTART);
+      expect(execute).not.toHaveBeenCalled();
+    });
+
+    it.each(routeCases)("$route route: a direct $dialect.toolName call is refused with the restart notice", async ({ route, dialect }) => {
+      if (route === "worker-only") setShellSandboxRequestedAtBoot(false);
+      const result = await dialect.create().execute({ command: dialect.command, ...(route === "host" ? HOST : {}) },
+        { cwd: testRoot, extraAllowedDirectories: [], metadata: { toolUseId: `helper-direct-${route}` } });
+      expect(result.isError).toBe(true);
+      expect(result.output).toContain(RESTART);
+    });
+  });
+
+  describe.each(privacyFailures)("$label boot privacy failure", (failure) => {
+    const bash = DIALECTS[0];
+
+    beforeEach(() => publishPrivacyFailure(failure));
+
+    it("forces a card despite a saved Bash allow and lets this session pass the floor", async () => {
+      const execute = vi.fn();
+      const registry = probe(bash.create, execute);
+      const pm = manager("default", [bash.prefixRule]);
+      const run = sessionRun(bash, "default", "privacy-failure");
+
+      const denied = cardGate("deny-once");
+      await run(pm, denied.gate, registry);
+      expect(denied.cards()).toHaveLength(1);
+      expect(execute).not.toHaveBeenCalled();
+      const card = defined(denied.cards()[0], "approval card");
+      expect(card.executionPlan).toMatchObject({ mode: "plain", fallbackReason: "requested-sandbox-unavailable", requiresExplicitUserApproval: true });
+      expect(card.allowedChoices).toEqual(["allow-once", "deny-once"]);
+      expect(card.shellRule).toMatchObject({ floorSessionOnly: true, sessionAllowed: true, persistentAllowed: false });
+      expect(shellExecutionEnvironmentLines(defined(card.executionPlan, "card execution plan"))).toContain(t("shellExecution.sandboxUnavailableAsk"));
+
+      const approved = sessionGate(pm);
+      await run(pm, approved.gate, registry);
+      expect(approved.cards()).toHaveLength(1);
+      expect(approved.saves).toEqual([expect.objectContaining({ ok: true, scope: "session", action: "allow" })]);
+      expect(execute).toHaveBeenCalledOnce();
+
+      const later = cardGate("deny-once");
+      await sessionRun(bash, "default", "privacy-failure", bash.other)(pm, later.gate, registry);
+      expect(later.cards()).toHaveLength(0);
+      expect(execute).toHaveBeenCalledTimes(2);
+    });
+
+    it("denies a headless shell even with a saved Bash allow", async () => {
+      const execute = vi.fn();
+      const approvals = cardGate("allow-once");
+      const result = await sessionRun(bash, "default", "privacy-failure-headless")(
+        manager("allow", [bash.prefixRule]), approvals.gate, probe(bash.create, execute), true,
+      );
+      expect(approvals.cards()).toHaveLength(0);
+      expect(execute).not.toHaveBeenCalled();
+      expect(result[0]?.content).toContain(NO_APPROVER_MESSAGE);
+    });
+
+    it.each(routeCases)("$route route: $dialect.toolName in allow mode with a saved prefix asks, and headless is denied", async ({ route, plan, dialect }) => {
+      if (route === "worker-only") setShellSandboxRequestedAtBoot(false);
+      const execute = vi.fn();
+      const registry = probe(dialect.create, execute);
+      const run = sessionRun(dialect, route, `privacy-${route}`);
+
+      const denied = cardGate("deny-once");
+      const refused = await run(manager("allow", [dialect.prefixRule, dialect.toolName]), denied.gate, registry);
+      expect(denied.cards()).toHaveLength(1);
+      expect(defined(denied.cards()[0], "approval card").executionPlan).toMatchObject({ mode: "plain", sandboxed: false, requiresExplicitUserApproval: true, ...plan });
+      expect(refused[0]?.is_error).toBe(true);
+
+      const headless = await run(manager("allow", [dialect.prefixRule, dialect.toolName]), cardGate("allow-once").gate, registry, true);
+      expect(headless[0]?.content).toContain(NO_APPROVER_MESSAGE);
+      expect(execute).not.toHaveBeenCalled();
+    });
+
+    it.each(routeCases)("$route route: a direct $dialect.toolName call without the card's permit never spawns", async ({ route, dialect }) => {
+      if (route === "worker-only") setShellSandboxRequestedAtBoot(false);
+      const result = await dialect.create().execute({ command: dialect.command, ...(route === "host" ? HOST : {}) },
+        { cwd: testRoot, extraAllowedDirectories: [], metadata: { toolUseId: `direct-${route}` } });
+      expect(result.isError).toBe(true);
+      expect(result.output).toContain(`spawn failed: ${HOST_SHELL_AUTHORIZATION_REVOKED_ERROR.split(". ")[0]}`);
+    });
+  });
 
   it.each(sessionCases)("$category, $route route: $dialect.toolName allowed for this session runs the same command again without a card ($label)", async ({ category, dialect, route, mode, rules, command }) => {
     if (route === "worker-only") setShellSandboxRequestedAtBoot(false);
@@ -475,8 +653,8 @@ describe("host shells under an unverifiable Ave home boundary", () => {
     expect(granted.saves).toEqual([expect.objectContaining({ ok: true })]);
     expect(execute).toHaveBeenCalledOnce();
 
-    // Another boot failure: the ordinary unavailable-sandbox plan, which asks in the default mode with no rules.
-    setAveHomePrivacyAtBoot({ enforcement: "none", home: HOME, reason: "icacls failed", category: "icacls-failed" });
+    // A verified home leaves the ordinary unavailable-sandbox plan, which asks in default mode with no rules.
+    setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: HOME, sid: "S-1-5-21-1-2-3-1001" });
     const ordinary = cardGate("deny-once");
     await run(pm, ordinary.gate, registry);
     expect(ordinary.cards()).toHaveLength(1);

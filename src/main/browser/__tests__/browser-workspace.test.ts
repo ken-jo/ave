@@ -5,7 +5,8 @@ import { EventEmitter } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { DownloadItem, WebContents } from "electron";
+import type { WebContents } from "electron";
+import type { ObservedDownload } from "../browser-download-staging.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BrowserWorkspaceService, type BrowserPageRequest, type BrowserPageRequestHold } from "../browser-workspace.js";
 import { BrowserWorkspaceStore } from "../browser-workspace-store.js";
@@ -58,7 +59,7 @@ describe("browser workspace service", () => {
     const first = await service.getState(1);
     expect(first.tabs[0]).toMatchObject({ ...TARGET, url: "https://site.example/", zoomFactor: 1 });
     const item = Object.assign(new EventEmitter(), { getFilename: () => "report.txt", getReceivedBytes: () => 50, getTotalBytes: () => 100, setSavePath: vi.fn(), getSavePath: vi.fn() });
-    service.observeDownload(1, item as unknown as DownloadItem);
+    service.observeDownload(1, item as unknown as ObservedDownload);
     item.emit("done", {}, "completed");
     const state = await service.getState(1);
     expect(state.revision).toBeGreaterThan(first.revision);
@@ -67,6 +68,14 @@ describe("browser workspace service", () => {
     // The save location is never preset; where the user saved is read only when a download completes and stays in main.
     expect(item.setSavePath).not.toHaveBeenCalled(); expect(item.getSavePath).toHaveBeenCalledOnce();
     expect(JSON.stringify(state.downloads)).not.toMatch(/savePath|hostPath|file:\/\//);
+  });
+  it.each(["unsupported-volume", "volume-unknown"] as const)("lists an interrupted download with the notice its save gave (%s)", async (notice) => {
+    const { service } = await setup();
+    const item = Object.assign(new EventEmitter(), { getFilename: () => "report.txt", getReceivedBytes: () => 10, getTotalBytes: () => 10, getSavePath: () => "", getNotice: () => notice });
+    service.observeDownload(1, item as unknown as ObservedDownload);
+    expect((await service.getState(1)).downloads[0]).not.toHaveProperty("notice");
+    item.emit("done", {}, "interrupted");
+    expect((await service.getState(1)).downloads[0]).toMatchObject({ state: "interrupted", notice });
   });
   it("denies an unrelated site decision and observes guest lifecycle without replacing existing listeners", async () => {
     const { service, guest, events, setUrl } = await setup();
@@ -87,7 +96,7 @@ describe("browser workspace service", () => {
     const { service, guest, events } = await setup();
     service.observeGuest(1, guest);
     const item = Object.assign(new EventEmitter(), { getFilename: () => "report.txt", getReceivedBytes: () => 0, getTotalBytes: () => 0 });
-    service.observeDownload(1, item as unknown as DownloadItem);
+    service.observeDownload(1, item as unknown as ObservedDownload);
     service.disposeWindow(1);
     expect(events.listenerCount("did-start-navigation")).toBe(0);
     expect(item.listenerCount("updated")).toBe(0); expect(item.listenerCount("done")).toBe(0);

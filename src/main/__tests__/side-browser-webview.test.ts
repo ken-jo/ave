@@ -270,16 +270,18 @@ describe("side browser webview attach policy", () => {
       let staged = "";
       const item = { getURL: () => "https://site.example/report", getURLChain: () => ["https://site.example/report"], getFilename: () => "report",
         setSavePath: vi.fn((path: string) => { staged = path; writeFileSync(path, "partial download"); }), pause: vi.fn(), resume: vi.fn(),
-        on: vi.fn(), once: vi.fn(), getState: () => "progressing", cancel: vi.fn() };
+        getReceivedBytes: () => 16, on: vi.fn(), once: vi.fn(), getState: () => "progressing", cancel: vi.fn() };
       const first = event();
       download(first, item, contents);
+      // The browser says it wrote the staged file, which is when that file is identified.
+      item.on.mock.calls.find(([name]) => name === "updated")?.[1]({}, "progressing");
       const observed = workspace.observeDownload.mock.calls[0]?.[1];
       if (!observed) throw new Error("the staged download was not observed");
       // Its Save dialog is the system's; closing it cancels the download, and `done` follows once its staged file is removed.
-      const state = await new Promise<string>((resolve) => {
-        observed.once("done", (_event, state) => resolve(state));
+      const ended = await new Promise<{ state: string; cleanup: string }>((resolve) => {
+        observed.once("done", (_event, state, cleanup) => resolve({ state, cleanup }));
       });
-      expect(state).toBe("cancelled");
+      expect(ended).toEqual({ state: "cancelled", cleanup: "removed" });
       expect(first.preventDefault).not.toHaveBeenCalled();
       expect(item.setSavePath).toHaveBeenCalledWith(expect.stringMatching(/browser-downloads[/\\][0-9a-f]{32}$/));
       expect(item.pause).toHaveBeenCalledOnce();

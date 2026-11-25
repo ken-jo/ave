@@ -106,6 +106,8 @@ import {
 } from "../permissions/sandbox-capability.js";
 import {
   getHostShellExecutionPlanAuditProjection,
+  HOME_PRIVACY_HELPER_UNAVAILABLE_SHELL_DENIAL,
+  isHomePrivacyHelperUnavailablePlan,
   requiresExplicitHostShellApproval,
   type HostShellExecutionPlan,
 } from "../permissions/host-shell-execution-plan.js";
@@ -1798,9 +1800,10 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
     }
     if (!disposableExecution && hostShellPlan.mode === "blocked") {
       return {
-        output:
-          "spawn failed: ASRT shell tools require filesystem and process isolation; " +
-          "the active sandbox is only partially confined.",
+        output: isHomePrivacyHelperUnavailablePlan(hostShellPlan)
+          ? `spawn failed: ${HOME_PRIVACY_HELPER_UNAVAILABLE_SHELL_DENIAL.reason}`
+          : "spawn failed: ASRT shell tools require filesystem and process isolation; " +
+            "the active sandbox is only partially confined.",
         isError: true,
         metadata: { sandboxed: false, isolation: "none" },
       };
@@ -3376,6 +3379,10 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
       background: input.run_in_background ?? false,
     });
     const disposableExecution = executionAuthority?.route === "disposable-container";
+    // Before parsing, which needs a trusted PowerShell: the restart notice is the refusal.
+    if (!disposableExecution && isHomePrivacyHelperUnavailablePlan(hostShellPlan)) {
+      return { output: `PowerShell spawn failed: ${HOME_PRIVACY_HELPER_UNAVAILABLE_SHELL_DENIAL.reason}`, isError: true, metadata: { sandboxed: false, isolation: "none" } };
+    }
     try {
       const brokeredAuthority = await acquireBrokeredShellAuthority(
         executionAuthority,
