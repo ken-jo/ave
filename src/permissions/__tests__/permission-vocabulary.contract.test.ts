@@ -365,7 +365,7 @@ const EXCEPTIONS: Readonly<Record<string, readonly string[]>> = {
 // Inconsistencies no driven row can show, and why.
 const INCONSISTENCIES_WITHOUT_ROW: Readonly<Record<string, string>> = {
   I1: "an exact saved host rule on a no-backend host: an open owner question (loosening); D25 shows S1's forced ask, the core answer",
-  I2: "one card for every waiting start: an open owner question (batch card); L5 shows today's answer, one ask per start",
+  I2: "one card for every waiting start: approved by the owner, not built (it needs per-start answers in the approval card); L5 shows one ask per start",
   I3: "inference child route: spawn path, not driven",
   I4: "lives on the device-path branch, not on main",
   I6: "stage workspaces are not on main",

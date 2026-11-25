@@ -23,8 +23,8 @@ describe("the extension start card, notice and audit rows at boot", () => {
     await asker.ask(START, { sessionId: "s1", attended: true });
     await asker.ask({ ...START, kind: "plugin-hook" }, { sessionId: "s1", attended: true });
     expect(requestAndWait.mock.calls.map(([request]) => request.reason)).toEqual([
-      "The plugin Notes (notes) would start without OS isolation. Allow this one start?",
-      "The plugin hook Notes (notes) would run without OS isolation. Allow this one run?",
+      "The extension Notes (notes) would start without OS isolation. Allow this one start?",
+      "The extension hook Notes (notes) would run without OS isolation. Allow this one run?",
     ]);
   });
 
