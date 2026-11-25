@@ -1547,8 +1547,9 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     const sensitive = getDefaultSensitiveReadDenyPaths();
     const privateRoots = appOwnedSandboxPrivateRoots();
     for (const p of sensitive) {
-      // The sandbox private roots and the Ave home boundary roots are spelled exactly, so ASRT's late deny emission keeps the re-allows beneath them.
-      const spelled = privateRoots.includes(p) || aveHomeReadBoundaryCovering(p) === p ? exactDenySpelling(p) : p;
+      // The sandbox private roots and the Ave home boundary roots are spelled exactly, so ASRT's late deny emission keeps the re-allows beneath them. The container runtime root has no re-allow beneath it on this route and stays as written.
+      const reopened = privateRoots.includes(p) && basename(p) !== "mxc-runtime";
+      const spelled = reopened || aveHomeReadBoundaryCovering(p) === p ? exactDenySpelling(p) : p;
       if (reachesAsrt(p)) expect(bare(config.filesystem.denyRead)).toContain(bare([spelled])[0]);
     }
     // The Ave home is one boundary row, so a file inside it and a child created later are both covered.

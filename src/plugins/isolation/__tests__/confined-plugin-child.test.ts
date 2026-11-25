@@ -1,6 +1,8 @@
 import { writePermissionSettingsFixture } from "../../../__tests__/support/permission-settings-fixture.js";
 import { setFixtureOwner } from "../../../__tests__/support/fixture-owner.js";
 import { canCreateSymlinks } from "../../../__tests__/support/symlink-capability.js";
+import { approvedExtensionStart } from "../../../__tests__/support/approved-extension-start.js";
+import { pluginChildStartKey } from "../../../permissions/extension-start-consent.js";
 /** Exercise real confined spawns: secret denial, outside-write refusal, usable own data, private temp storage, mandatory wrapping, and unavailable desktop APIs.
  * Read isolation needs a covering deny; allowed writes include the principal temp directory, and offline probes do not prove egress enforcement.
  * Native cases may opt out locally when unavailable, but required CI backends must fail rather than skip. */
@@ -45,6 +47,7 @@ import {
   PluginSandboxGrantError,
   type ObservedPluginChild,
 } from "../out-of-process-plugin.js";
+import { mxcRuntimeRootFloorPath } from "../../../permissions/mxc-runtime-root.js";
 import {
   appOwnedSandboxHomeRoot,
   appOwnedSandboxTempRoot,
@@ -959,6 +962,44 @@ describe("the host decides how far a plugin child reaches", () => {
     ).toThrow(/resolves inside the host's own storage namespace/);
   });
 
+  it.skipIf(process.platform === "win32")("refuses a chosen directory inside the container runtime root, whatever the user approved", () => {
+    // The runtime root holds every container run's HOME and temp. It lives outside `~/.ave`, so the home subtraction does not reach it; it is one of the confined processes' private roots, and the read floor that denies those refuses a grant inside any of them.
+    const fx = fixture as NonNullable<typeof fixture>;
+    // A cache directory of its own, outside the Ave home and every other floor entry, so only the private-root rule can refuse.
+    const inheritedBase = process.env.AVE_TEST_SANDBOX_BASE;
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "ave-chosen-runtime-")));
+    process.env.AVE_TEST_SANDBOX_BASE = base;
+    try {
+      const runtimeRoot = mxcRuntimeRootFloorPath();
+      expect(runtimeRoot.startsWith(`${base}/`)).toBe(true);
+      approveWorkspaceRoot(fx, base);
+      for (const chosen of [runtimeRoot, join(runtimeRoot, "staging", "0123456789abcdef0123456789abcdef", "home")]) {
+        expect(() =>
+          derivePluginChildEnvelope({
+            pluginId: WIDENED_PLUGIN_ID,
+            sandbox: WIDENED_SANDBOX,
+            pluginRoot: fx.pluginRoot,
+            pluginDataDir: fx.pluginDataDir,
+            configValue: (key) => (key === "indexStorageRoot" ? chosen : undefined),
+          }),
+        ).toThrow(`lies under the sandbox read-deny floor entry '${runtimeRoot}`);
+      }
+      // The rule, not the location: a sibling of the runtime root under the same approved root is admitted.
+      mkdirSync(join(base, "sibling"));
+      expect(derivePluginChildEnvelope({
+        pluginId: WIDENED_PLUGIN_ID,
+        sandbox: WIDENED_SANDBOX,
+        pluginRoot: fx.pluginRoot,
+        pluginDataDir: fx.pluginDataDir,
+        configValue: (key) => (key === "indexStorageRoot" ? join(base, "sibling") : undefined),
+      }).write).toContain(join(base, "sibling"));
+    } finally {
+      if (inheritedBase === undefined) delete process.env.AVE_TEST_SANDBOX_BASE;
+      else process.env.AVE_TEST_SANDBOX_BASE = inheritedBase;
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
   it.skipIf(!canCreateSymlinks())("refuses a declared host root even when it links out of the host's home", () => {
     // WHAT THE `~/.ave` SUBTRACTION ALONE DOES NOT REACH, and the reason the declared host directories are enumerated. A `hostDirectory` grant is a LEXICAL join onto `aveHome()`; the value it is compared against is canonical. Point the granted directory at another volume; the ordinary operational reason being that a
     // multi-gigabyte interpreter tree does not belong on the boot disk; and the two forms stop agreeing, so a home-shaped subtraction stops covering the grant. Both spellings are asked because the plugin can write either: the target's own path, and the link's, which is the one that is byte-identical to what the declaration itself joins.
@@ -1165,7 +1206,7 @@ describe("the host decides how far a plugin child reaches", () => {
 });
 
 describe("a plugin child is confined exactly as much as the host is", () => {
-  it("starts unwrapped, and unmarked, while the host is not sandboxed", async () => {
+  it("starts unwrapped, and unmarked, while the host is not sandboxed and a person approved the start", async () => {
     // The host runs without the OS sandbox on every platform by default, and its own tools run plain there. A plugin child follows the same setting: it is spawned as given, and because nothing wrapped it nothing
     // marks it confined; so the permission reviewer, which reads that marker, grants it no sandbox-based relaxation. The old rule here was to throw instead, which on Windows and Linux meant no plugin could start at all.
     const fx = fixture!;
@@ -1180,6 +1221,7 @@ setTimeout(() => process.exit(0), 2000).unref?.();
     );
     const child = await spawnConfinedPluginChild({
       pluginId: PLUGIN_ID,
+      extensionStart: await approvedExtensionStart(pluginChildStartKey(PLUGIN_ID)),
       socketDir: resolvePluginSocketDir(fx.pluginDataDir),
       envelope: baseEnvelope(fx),
       launch: { kind: "entry", childEntryPath: probePath },
@@ -1219,6 +1261,7 @@ setTimeout(() => process.exit(0), 2000).unref?.();
     await expect(
       spawnConfinedPluginChild({
         pluginId: PLUGIN_ID,
+        extensionStart: await approvedExtensionStart(pluginChildStartKey(PLUGIN_ID)),
         socketDir: resolvePluginSocketDir(fx.pluginDataDir),
         envelope: { read: [fx.pluginRoot, fx.pluginDataDir, dangling], write: [dangling] },
         launch: { kind: "entry", childEntryPath: writeProbeModule(fx) },
@@ -1240,6 +1283,7 @@ setTimeout(() => process.exit(0), 2000).unref?.();
         await expect(
           spawnConfinedPluginChild({
             pluginId: PLUGIN_ID,
+            extensionStart: await approvedExtensionStart(pluginChildStartKey(PLUGIN_ID)),
             socketDir: resolvePluginSocketDir(fx.pluginDataDir),
             envelope: { read: [fx.pluginRoot, fx.pluginDataDir, dangling], write: [dangling] },
             launch: { kind: "entry", childEntryPath: writeProbeModule(fx) },

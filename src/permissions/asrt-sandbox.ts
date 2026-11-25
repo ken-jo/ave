@@ -3,6 +3,7 @@
 import { MxcExtensionReadinessRefusedError, MxcNativeEntryRequiredError, MxcProcessContractError, WorkerTransportUnsupportedError } from "./mxc-extension-errors.js";
 import { assertMxcExtensionFilesystemOwnership, type MxcExtensionFilesystemOwnership } from "./mxc-filesystem-ownership.js";
 import type { ShellFilesystemPolicy } from "./mxc-windows.js";
+import { mxcRuntimeRootFloorPath } from "./mxc-runtime-root.js";
 import { issueFilesystemSandboxBlock, type SandboxBlock } from "../shared/sandbox-block.js";
 import { buildLauncherEnvironment } from "./launcher-environment.js";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -25,7 +26,11 @@ import { EOL, homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
 import { admitWindowsReparse, pinWindowsPaths, windowsObjectKey, windowsPathKey, type WindowsPathFacts } from "../shared/windows-path-facts.js";
 import { isHomeAnchor, policyHomeAnchors } from "../shared/policy-home.js";
-import { aveHome, assertAveHomePrivacyForConfinement, getAveHomePrivacyFailure, areExtensionsWithoutIsolationApproved, AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE } from "../shared/ave-home.js";
+import { aveHome, assertAveHomePrivacyForConfinement, getAveHomePrivacyFailure, isAveHomePrivacyApprovable, AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE } from "../shared/ave-home.js";
+import {
+  ExtensionStartConsentRequiredError, isExtensionStartConsentRequired, presentExtensionStartConsent,
+  type ExtensionStartPresentation, type ExtensionStartRecheck,
+} from "./extension-start-consent.js";
 import { agentPluginDataRoot } from "../marketplace/content/agent-plugin-data.js";
 import { AVE_HOME_ISOLATION_GUARD_ACTIVE, checkSandboxStampTargets, testSandboxPrivateBase } from "../shared/ave-home-test-guard.js";
 import { expandLeadingTilde, leadingTildeHome } from "../shared/home-tilde.js";
@@ -979,7 +984,7 @@ export function buildPerCommandSandboxCustomConfig(
         asrtReadDenyPaths(
           denyRead,
           // The plugin roots are spelled exactly for the reason the private roots are: a wrap whose reads include an ancestor of one (a worker's or a bundled process's host temp directory, above a test `AVE_HOME`) would otherwise lose its own plugin directories to the re-emitted deny.
-          [...appOwnedSandboxPrivateRoots(), ...pluginRoots, ...aveHomeReadBoundaryMasks()],
+          [...appOwnedSandboxReallowableRoots(), ...pluginRoots, ...aveHomeReadBoundaryMasks()],
         ),
         _baseTrustedSettings?.userDataDir,
         windowsGrants,
@@ -1225,25 +1230,50 @@ export function isPluginWorkerConfinementActive(): boolean {
   return active && isPluginWorkerConfinementRequestedAtBoot() && !windowsExternalConfinement;
 }
 
-// Refuse extension starts until private storage or session approval is established.
+/** What the gate answers a waiting start now, with no consent: a backend that became ready after boot confines it. */
+export function probeExtensionStart(holder?: "worker"): ExtensionStartRecheck {
+  try {
+    assertExtensionStartAllowed(holder === undefined ? undefined : { holder });
+    return "confined";
+  } catch (error) {
+    return isExtensionStartConsentRequired(error) ? error.unconfinedCause : "refused";
+  }
+}
+
+// Refuse an extension start that nothing would confine unless a person consented to this one start.
 // `backend: "mxc"` is the native entry. A legacy adapter may declare `holder: "worker"` so a selected container backend refuses it with the worker transport code (D1); every other legacy holder gets the holder-neutral native-entry refusal.
-export function assertExtensionStartAllowed(options?: { readonly backend: "mxc" } | { readonly holder: "worker" }): void {
+// `start` carries the per-start consent. `hostOwned` is a host process (the inference child): it has no consent route and keeps its own gate.
+export function assertExtensionStartAllowed(options?: { readonly backend: "mxc" } | {
+  readonly holder?: "worker";
+  readonly start?: ExtensionStartPresentation;
+  readonly hostOwned?: true;
+}): void {
   const plan = process.platform === "win32" ? getWindowsExtensionBackendPlan() : undefined;
   const nativeEntry = options !== undefined && "backend" in options;
+  const legacy = options !== undefined && "backend" in options ? undefined : options;
   if (plan?.readiness === "checking" || plan?.readiness === "rejected") {
     throw new MxcExtensionReadinessRefusedError();
   }
   if (plan?.selectedBackend === "mxc" && !nativeEntry) {
-    throw options !== undefined && options.holder === "worker" ? new WorkerTransportUnsupportedError() : new MxcNativeEntryRequiredError();
+    throw legacy?.holder === "worker" ? new WorkerTransportUnsupportedError() : new MxcNativeEntryRequiredError();
   }
   if (nativeEntry && (plan?.selectedBackend !== "mxc" || plan.readiness !== "ready")) {
     throw new MxcProcessContractError("Native extension backend is not ready for this start");
   }
   // Intentionally gated by the boot request: a user who turned isolation off is not asked.
-  if (process.platform === "win32" && isPluginWorkerConfinementRequestedAtBoot()) {
-    if (areExtensionsWithoutIsolationApproved()) return;
-    assertAveHomePrivacyForConfinement();
-  }
+  if (process.platform !== "win32" || !isPluginWorkerConfinementRequestedAtBoot()) return;
+  const waivable = !nativeEntry && legacy?.hostOwned !== true;
+  const failure = getAveHomePrivacyFailure();
+  // An unpublished home, a helper that gave no answer, and every start with no consent route are refused here.
+  if (failure === undefined || !isAveHomePrivacyApprovable(failure.category) || !waivable) assertAveHomePrivacyForConfinement();
+  if (!waivable) return;
+  // An expired readiness deadline is this same no-backend ask; it keeps its reason for the card and the notice.
+  const cause = failure !== undefined ? "home-privacy-unverified"
+    : isPluginWorkerConfinementActive() ? undefined
+      : plan?.reason === "readiness-deadline" ? "readiness-deadline" : "no-backend";
+  if (cause === undefined) return;
+  // No setting, rule or earlier answer stands in for it: one consent, one start.
+  if (!presentExtensionStartConsent(legacy?.start)) throw new ExtensionStartConsentRequiredError(cause);
 }
 
 // Reads are deny-only: allowRead only re-allows within a covering deny, so unknown paths remain readable. Project the canonical sensitive table plus trusted runtime userData and private temp/HOME roots; re-allow only each process's own private directory.
@@ -2201,7 +2231,7 @@ export function buildSandboxConfig(
   const windowsGrants: FilesystemPathEntry[] = [...windowsWriteGrants, ...(requestedSettings.allowRead ?? []), ...(trustedSettings.allowRead ?? []), ...(allowRead ?? []), ...(liveGrants.allowRead ?? [])];
   const filesystem: FilesystemConfig = {
     denyRead: windowsDenyTargets(
-      asrtReadDenyPaths(denyReadUnion, [...appOwnedSandboxPrivateRoots(), ...aveHomeReadBoundaryRoots()]),
+      asrtReadDenyPaths(denyReadUnion, [...appOwnedSandboxReallowableRoots(), ...aveHomeReadBoundaryRoots()]),
       trustedSettings.userDataDir,
       windowsGrants,
       windowsWriteGrants,
@@ -2830,10 +2860,16 @@ export function appOwnedTerminalHandoffRoot(): string {
   return join(sandboxPrivateBase(), "handoff");
 }
 
-// The roots of the confined processes' private directories, read-denied by the floor on macOS and Linux. Empty on Windows, whose floor is unchanged.
-export function appOwnedSandboxPrivateRoots(): string[] {
+// The private roots a wrap re-opens its own directory inside: each confined process's HOME and temp live under them, and the terminal's handoff. Their macOS denies are spelled exactly (asrtReadDenyPaths) so the re-allow survives.
+function appOwnedSandboxReallowableRoots(): string[] {
   if (process.platform === "win32") return [];
   return [appOwnedSandboxTempRoot(), appOwnedSandboxHomeRoot(), appOwnedTerminalHandoffRoot()];
+}
+
+// The roots of the confined processes' private directories, read-denied by the floor on macOS and Linux. Empty on Windows, whose floor is unchanged. The container runtime root is one of them: it holds what used to be staged under the Ave home, outside it, and stays as unreadable to every other confined process as it was there. No wrap on this route re-opens anything inside it, so its deny is a plain one, and naming it never throws, whatever state the account's cache directory is in.
+export function appOwnedSandboxPrivateRoots(): string[] {
+  if (process.platform === "win32") return [];
+  return [...appOwnedSandboxReallowableRoots(), mxcRuntimeRootFloorPath()];
 }
 
 // Create a sandbox private root `0o700` if it is absent, and refuse one that is not a real directory. Its ancestors may be links (`AVE_HOME` may be one); the root itself is the host's, and every directory a wrap grants is made inside it, so a link here would put them somewhere the read floor does not name.

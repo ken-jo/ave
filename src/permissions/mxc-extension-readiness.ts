@@ -49,7 +49,8 @@ export function planWindowsExtensionHolder(input: WindowsExtensionHolderInputs):
     return { ...base, selectedBackend: "srt-win", readiness: "fallback", reason: input.mxc.reason,
       fallbackVersion: "0.0.80", egressProtocolCoverage: egressProtocolCoverageFor("srt-win") };
   }
-  return { ...base, readiness: input.mxc.reason === "readiness-deadline" ? "rejected" : "unavailable", reason: input.mxc.reason };
+  // An expired readiness deadline is a start with no backend (per-start ask), not a refusal; the reason says which it was.
+  return { ...base, readiness: "unavailable", reason: input.mxc.reason };
 }
 
 /** Every field is an observation from the exact installed runtime/request probe, not a host version guess. */
@@ -85,7 +86,7 @@ export function classifyMxcExtensionReadiness(evidence: MxcExtensionReadinessEvi
     : { state: "unavailable", reason: "native-validation-required" };
 }
 
-/** A deadline selects an already-ready fallback or rejects. It never initializes a backend or retries a spawn. */
+/** A deadline selects an already-ready fallback or settles with no backend. It never initializes a backend or retries a spawn. */
 export async function settleWindowsExtensionReadiness(input: {
   readonly probe: (signal: AbortSignal) => Promise<MxcExtensionReadinessEvidence>;
   readonly fallback: WindowsExtensionHolderInputs["fallback"];

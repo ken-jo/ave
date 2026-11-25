@@ -56,6 +56,8 @@ import { resolveProcessLaunch } from "../../process-entry.js";
 import { pluginChildEntryPath } from "../../../__tests__/support/plugin-child-entry.js";
 import { installPythonSmoke } from "./python-smoke-harness.js";
 import { sandboxCasesRequired, sandboxCasesRun } from "./sandbox-cases.js";
+import { approvedExtensionStart } from "../../../__tests__/support/approved-extension-start.js";
+import { pluginChildStartKey } from "../../../permissions/extension-start-consent.js";
 
 useVerifiedAveHomePrivacy();
 
@@ -361,9 +363,12 @@ async function spawnInstalled(
   const host = productionHost(installed, config);
   let stdout = "";
   let observed: ObservedPluginChild | undefined;
+  // An unwrapped start needs a person's yes for that one start.
+  const unwrappedStart = wrapped ? undefined : await approvedExtensionStart(pluginChildStartKey(installed.manifest.id));
   const factory = createOutOfProcessPluginFactory({
     manifest: installed.manifest,
     launch: installed.launch,
+    takeExtensionStart: () => unwrappedStart,
     ...(installed.launch.kind === "entry" ? { childEntryPath: pluginChildEntryPath() } : {}),
     observeChild: (child) => {
       observed = child;

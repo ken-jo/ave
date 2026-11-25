@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { buildMxcConfinedChildRequest } from "../mxc-confined-child-request.js";
 import { createMxcExtensionAdmission, consumeMxcExtensionAdmission, type MxcExtensionAdmission } from "../mxc-extension-admission.js";
 import { planWindowsExtensionHolder, type MxcExtensionReadinessEvidence } from "../mxc-extension-readiness.js";
+import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 
 const EVIDENCE: MxcExtensionReadinessEvidence = {
   installedPayloadVerified: true, baseContainerReady: true, exactRequestAccepted: true,
@@ -65,6 +66,18 @@ describe("native request admission receipt", () => {
     const captured = identity();
     await expect(createMxcExtensionAdmission({ ...captured, probe: async () => ({ ...EVIDENCE, otherListenerRefused: false }) })).rejects.toThrow(/readiness failed/);
     await expect(createMxcExtensionAdmission({ ...captured, executableIdentity: "runtime.exe", probe: async () => EVIDENCE })).rejects.toThrow(/measured executable/);
+  });
+
+  it("names the expired deadline as the cause of a per-holder refusal, and keeps the plan reason for any other failure", async () => {
+    await expect(createMxcExtensionAdmission({ ...identity(), probe: async () => ({ ...EVIDENCE, otherListenerRefused: false }) }))
+      .rejects.toThrow("Native admission readiness failed: ancestor-already-admitted");
+    vi.useFakeTimers();
+    try {
+      const refused = expect(createMxcExtensionAdmission({ ...identity(), probe: () => new Promise(() => {}) }))
+        .rejects.toThrow("Native admission readiness failed: readiness-deadline (beneath an admitted holder)");
+      await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.mxcExtensionReadinessMs);
+      await refused;
+    } finally { vi.useRealTimers(); }
   });
 
   it("rejects mutation of the sealed plan after probing", async () => {

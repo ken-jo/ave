@@ -63,6 +63,7 @@ import {
   assertExtensionStartAllowed,
   cleanupAsrtSandboxAfterCommand,
 } from "../permissions/asrt-sandbox.js";
+import { mcpStdioStartKey, takeExtensionStartGrant } from "../permissions/extension-start-consent.js";
 import {
   assertMxcHolderNotBashForm,
   isMxcExtensionBackendSelected,
@@ -1810,7 +1811,9 @@ class StdioTransport implements McpTransport {
 
     // When the OS-tool sandbox is active, route this long-lived stdio worker through ASRT's wrapWorkerCommand so its egress is enforced by the attributed worker proxy policy and its writes are confined to the per-server filesystem jail. ASRT is stdio-transparent on mac/linux: it wraps as `[shell, -c, <wrapped>]`; a child spawned with
     // inherited stdio:["pipe","pipe","pipe"] passes stdin/stdout through, so MCP's newline-delimited framing survives. srt-win relays no stdin and grants no per-exec allow, so on Windows openWrapped hands the server to the host's stdio relay under a held ACL grant (openWrappedWindows). Gate OFF ⇒ the plain spawn below is UNCHANGED.
-    assertExtensionStartAllowed();
+    // One crossing for this server start: it takes the consent waiting for it, if any, and spends it.
+    const startKey = mcpStdioStartKey(this.config.id);
+    assertExtensionStartAllowed({ start: { key: startKey, authority: takeExtensionStartGrant(startKey), spend: true } });
     if (isPluginWorkerConfinementActive()) {
       try {
         assertConfiguredLauncherEnvironment(holderEnv);

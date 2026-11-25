@@ -88,10 +88,11 @@ describe("holder HOME and temp placement", () => {
 
 describe("holder staging layout", () => {
   const aveHome = "C:\\Users\\example\\.ave";
-  const S = `${aveHome}\\mxc-staging\\0123456789abcdef0123456789abcdef`;
+  const stagingParent = `${aveHome}\\mxc-staging`;
+  const S = `${stagingParent}\\0123456789abcdef0123456789abcdef`;
 
   it("accepts exactly S\\home and S\\temp and returns S", () => {
-    expect(assertMxcHolderStaging({ aveHome, home: `${S}\\home`, temp: `${S}\\temp` })).toBe(S);
+    expect(assertMxcHolderStaging({ stagingParent, home: `${S}\\home`, temp: `${S}\\temp` })).toBe(S);
   });
 
   it.each([
@@ -113,6 +114,29 @@ describe("holder staging layout", () => {
     ["plugin-named id", `${aveHome}\\mxc-staging\\native-probe\\home`, `${aveHome}\\mxc-staging\\native-probe\\temp`],
     ["outside AVE_HOME", `C:\\Other\\mxc-staging\\0123456789abcdef0123456789abcdef\\home`, `C:\\Other\\mxc-staging\\0123456789abcdef0123456789abcdef\\temp`],
   ])("refuses %s", (_label, home, temp) => {
-    expect(() => assertMxcHolderStaging({ aveHome, home, temp })).toThrow(/mxc-staging/u);
+    expect(() => assertMxcHolderStaging({ stagingParent, home, temp })).toThrow(/mxc-staging/u);
+  });
+});
+
+describe("holder staging layout under a runtime root outside the Ave home", () => {
+  const stagingParent = "/home/example/.cache/ai.agent-connector.ave/mxc-runtime/staging";
+  const S = `${stagingParent}/0123456789abcdef0123456789abcdef`;
+
+  it("accepts exactly S/home and S/temp and returns S", () => {
+    expect(assertMxcHolderStaging({ stagingParent, home: `${S}/home`, temp: `${S}/temp` })).toBe(S);
+  });
+
+  it.each([
+    ["upper-case home leaf", `${S}/HOME`, `${S}/temp`],
+    ["parent segment", `${S}/home/me/home`, `${S}/temp`],
+    ["doubled separator", `${S}//home`, `${S}/temp`],
+    ["trailing separator", `${S}/home/`, `${S}/temp`],
+    ["shared HOME and temp", `${S}/home`, `${S}/home`],
+    ["nested below the leaf", `${S}/home/tester`, `${S}/temp`],
+    ["different staging directories", `${S}/home`, `${stagingParent}/fedcba9876543210fedcba9876543210/temp`],
+    ["plugin-named id", `${stagingParent}/native-probe/home`, `${stagingParent}/native-probe/temp`],
+    ["under the Ave home", "/home/example/.ave/mxc-staging/0123456789abcdef0123456789abcdef/home", "/home/example/.ave/mxc-staging/0123456789abcdef0123456789abcdef/temp"],
+  ])("refuses %s", (_label, home, temp) => {
+    expect(() => assertMxcHolderStaging({ stagingParent, home, temp })).toThrow(/runtime-root/u);
   });
 });

@@ -29,7 +29,6 @@ export interface SandboxWindowsStatusInfo {
   helperError?: "srt-win-not-found" | "srt-win-integrity-mismatch";
   /** Confinement is refused until this private directory verifies at restart. */
   homePrivacyError?: {
-    approvedForSession?: boolean;
     path: string;
     category: AveHomePrivacyFailureCategory;
     extraPrincipals?: AveHomePrincipal[];
@@ -311,8 +310,8 @@ export function assertSandboxWindowsExtensionPlan(value: unknown): asserts value
       case "checking": if (plan.selectedBackend !== "none" || plan.reason !== "checking") fail(); break;
       case "ready": if (plan.selectedBackend !== "mxc" || plan.reason !== "ready") fail(); break;
       case "fallback": if (plan.selectedBackend !== "srt-win" || ["not-requested", "checking", "ready", "ancestor-already-admitted"].includes(plan.reason)) fail(); break;
-      case "unavailable": if (plan.selectedBackend !== "none" || ["not-requested", "checking", "ready", "readiness-deadline", "ancestor-already-admitted"].includes(plan.reason)) fail(); break;
-      case "rejected": if (plan.selectedBackend !== "none" || !["readiness-deadline", "ancestor-already-admitted", "request-rejected"].includes(plan.reason)) fail(); break;
+      case "unavailable": if (plan.selectedBackend !== "none" || ["not-requested", "checking", "ready", "ancestor-already-admitted"].includes(plan.reason)) fail(); break;
+      case "rejected": if (plan.selectedBackend !== "none" || !["ancestor-already-admitted", "request-rejected"].includes(plan.reason)) fail(); break;
       default: fail();
     }
   }

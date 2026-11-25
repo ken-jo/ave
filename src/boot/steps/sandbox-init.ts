@@ -215,7 +215,7 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
         const path = privacyFailure.failedPath ?? privacyFailure.home;
         log.warn("boot: extension isolation is OFF; AVE_HOME privacy failed (%s, %s). %s", privacyFailure.category, path,
           isAveHomePrivacyApprovable(privacyFailure.category)
-            ? "Extensions require session approval in Settings > Permissions."
+            ? "Each extension start asks for approval until the folder is fixed."
             : "Extensions stay blocked until a restart; if it persists, reinstall Ave.");
         recordWindows("none", true);
         recordGate("degrade", "degrade-ave-home-privacy-failed", [privacyFailure.reason], ["ave-home-privacy-failed"]);
@@ -278,6 +278,15 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
           await sweepSandboxPrivateRoots();
           // Create both roots before any wrap; Linux may omit read denies for paths that do not yet exist.
           ensureSandboxPrivateRoot(appOwnedSandboxHomeRoot());
+          // The container runtime root is on the same read floor, and this is the only place that creates it: a wrap built while it was absent may carry no deny for it. The floor names its path either way, so a root that cannot be established leaves every shell sandboxed as before and refuses container starts for the rest of this process.
+          if (process.platform !== "win32") {
+            const { establishMxcRuntimeRoot } = await import("../../permissions/mxc-runtime-root.js");
+            try {
+              establishMxcRuntimeRoot();
+            } catch (error) {
+              log.warn("boot: container runtime root unavailable: %s", errorMessage(error));
+            }
+          }
           const sandboxTempRoot = useAppOwnedSandboxTempRoot();
           // Subscribe before starting the proxy so no deny precedes monitoring.
           {
@@ -436,7 +445,7 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
             log.warn("boot: extension isolation is OFF; the AVE_HOME read boundary could not be verified (%s, %s). %s",
               AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE, boundaryFailure.category,
               isAveHomePrivacyApprovable(boundaryFailure.category)
-                ? "Extensions require session approval in Settings > Permissions."
+                ? "Each extension start asks for approval until the folder is fixed."
                 : "Extensions stay blocked until a restart; if it persists, reinstall Ave.");
             recordWindows("none", true);
             recordGate("degrade", "degrade-ave-home-boundary-unverified", [AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE], ["ave-home-privacy-failed"]);

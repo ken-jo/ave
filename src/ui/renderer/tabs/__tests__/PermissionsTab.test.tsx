@@ -1424,7 +1424,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     // The exact snapshot a Windows peer recorded: AVE_HOME on another drive keeps inherited principals, the gate degrades before
     // ASRT starts, the MXC start probe still reports available, and no shell or extension uses a sandbox this session.
     const homePrivacyError = {
-      path: "D:/ave-home", category: "extra-principals" as const, approvedForSession: false,
+      path: "D:/ave-home", category: "extra-principals" as const,
       extraPrincipals: [{ sid: "S-1-5-11", account: "NT AUTHORITY\\Authenticated Users" }, { sid: "S-1-5-32-545" }],
     };
     const extensionPlan: SandboxWindowsExtensionPlan = {
@@ -1538,7 +1538,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     it.each(rows)("%s: %s", async (locale, category) => {
       setLocale(locale);
       const homePrivacyError = {
-        path: "D:/ave-home", category, approvedForSession: false,
+        path: "D:/ave-home", category,
         ...(category === "extra-principals" ? { extraPrincipals: [{ sid: "S-1-5-11" }] } : {}),
       };
       const { ave } = installApiWithWindows({ sandboxWindowsStatus: vi.fn(async () => ({
@@ -1576,14 +1576,13 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       }
       await waitFor(() => expect(screen.getByTestId("os-sandbox-boot-degraded-detail").textContent)
         .toBe(t("permissionsTab.osSandboxBootDegradedHomePrivacy", { path: "D:/ave-home", reason }) + tail));
-      // A helper that gave no answer offers no run without isolation: the panel says to restart, with no approval hint or button.
-      const offer = category === "helper-unavailable" ? "" : ` ${t("permissionsTab.homePrivacyApproveHint")}`;
+      // A helper that gave no answer is no evidence about the folder: the panel says to restart, with no per-start hint.
+      const offer = category === "helper-unavailable" ? "" : ` ${t("permissionsTab.homePrivacyPerStartHint")}`;
       await waitFor(() => expect(screen.getByTestId("os-sandbox-windows-home-privacy-error").textContent)
         .toContain(`${t("permissionsTab.osSandboxWindowsHomePrivacyError", { path: "D:/ave-home", reason })}${tail}${offer}`));
       if (category === "helper-unavailable") {
-        expect(screen.getByTestId("os-sandbox-windows-home-privacy-error").textContent).not.toContain(t("permissionsTab.homePrivacyApproveHint"));
+        expect(screen.getByTestId("os-sandbox-windows-home-privacy-error").textContent).not.toContain(t("permissionsTab.homePrivacyPerStartHint"));
         expect(t(fix!)).toBe(locale === "en" ? "Restart Ave; if it persists, reinstall Ave." : "Ave를 다시 시작하세요. 문제가 계속되면 Ave를 다시 설치하세요.");
-        expect(screen.queryByRole("button", { name: t("permissionsTab.homePrivacyApproveForSession") })).toBeNull();
       }
     });
   });
@@ -1606,7 +1605,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       const writeText = vi.fn(async () => undefined);
       vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
       try {
-        await renderPrivacy({ path: "D:\\ave-home", category: "extra-principals", approvedForSession: false,
+        await renderPrivacy({ path: "D:\\ave-home", category: "extra-principals",
           extraPrincipals: [{ sid: "S-1-1-0", explicit: true }, { sid: "S-1-5-18" }] });
         const block = await screen.findByTestId("os-sandbox-windows-home-privacy-command");
         const expected = 'icacls "D:\\ave-home" /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F"\r\nicacls "D:\\ave-home" /remove *S-1-1-0';
@@ -1618,13 +1617,13 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     });
 
     it("gives only the inheritance line for an unprotected DACL", async () => {
-      await renderPrivacy({ path: "D:\\ave-home", category: "not-protected", approvedForSession: false });
+      await renderPrivacy({ path: "D:\\ave-home", category: "not-protected" });
       expect((await screen.findByTestId("os-sandbox-windows-home-privacy-command")).querySelector("pre")?.textContent)
         .toBe('icacls "D:\\ave-home" /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F"');
     });
 
     it("removes only the workspace's explicit writers and never drops its inheritance", async () => {
-      await renderPrivacy({ path: "D:\\ave-home\\workspace", category: "workspace-extra-principals", approvedForSession: false,
+      await renderPrivacy({ path: "D:\\ave-home\\workspace", category: "workspace-extra-principals",
         extraPrincipals: [{ sid: "S-1-5-32-545", explicit: true }, { sid: "S-1-5-11" }] });
       expect(await screen.findByTestId("os-sandbox-windows-home-privacy-error")).toHaveTextContent("S-1-5-32-545");
       expect((await screen.findByTestId("os-sandbox-windows-home-privacy-command")).querySelector("pre")?.textContent)
@@ -1632,14 +1631,14 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     });
 
     it("offers no command when the workspace writer is only inherited", async () => {
-      await renderPrivacy({ path: "D:\\ave-home\\workspace", category: "workspace-extra-principals", approvedForSession: false,
+      await renderPrivacy({ path: "D:\\ave-home\\workspace", category: "workspace-extra-principals",
         extraPrincipals: [{ sid: "S-1-5-11" }] });
       await screen.findByTestId("os-sandbox-windows-home-privacy-error");
       expect(screen.queryByTestId("os-sandbox-windows-home-privacy-command")).toBeNull();
     });
 
     it.each(["reparse-point", "invalid-owner-grant", "identity-failed"])("offers no permission command for %s", async (category) => {
-      await renderPrivacy({ path: "D:\\ave-home", category, approvedForSession: false });
+      await renderPrivacy({ path: "D:\\ave-home", category });
       await screen.findByTestId("os-sandbox-windows-home-privacy-error");
       expect(screen.queryByTestId("os-sandbox-windows-home-privacy-command")).toBeNull();
     });
@@ -1717,7 +1716,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
 
     it.each([
       ["checking", "checking"],
-      ["rejected", "readiness-deadline"],
+      ["rejected", "request-rejected"],
       ["rejected", "ancestor-already-admitted"],
     ] as const)("says a %s plan (%s) refuses starts and never calls extensions unconfined", async (readiness, reason) => {
       const fixture = plan(readiness, reason);
@@ -1726,7 +1725,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       expect(extensions()).toHaveAttribute("data-readiness", readiness);
       expect(extensions().textContent).toBe(readiness === "checking"
         ? t("permissionsTab.osSandboxWindowsExtensionsChecking")
-        : t("permissionsTab.osSandboxWindowsExtensionsRejected", { reason: t(`permissionsTab.osSandboxWindowsExtensionReason${reason === "readiness-deadline" ? "ReadinessDeadline" : "AncestorAlreadyAdmitted"}`) }));
+        : t("permissionsTab.osSandboxWindowsExtensionsRejected", { reason: t(reason === "request-rejected" ? "permissionsTab.osSandboxWindowsMxcReasonRequestRejected" : "permissionsTab.osSandboxWindowsExtensionReasonAncestorAlreadyAdmitted") }));
       // The pre-row-6 copy said "not confined: srt-win is not ready", which is false for a refusing plan.
       expect(extensions().textContent).not.toBe(t("permissionsTab.osSandboxWindowsExtensionsNone"));
       expect(extensions().textContent).not.toMatch(/not confined/u);
@@ -1789,13 +1788,15 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     });
 
     it.each([
-      ["off", "not-requested", "permissionsTab.osSandboxWindowsExtensionsOff"],
-      ["unavailable", "native-validation-required", "permissionsTab.osSandboxWindowsExtensionsUnavailable"],
-    ] as const)("reports a settled %s plan without container disclosures", async (readiness, reason, key) => {
+      ["off", "not-requested", "permissionsTab.osSandboxWindowsExtensionsOff", "permissionsTab.osSandboxWindowsExtensionReasonNativeValidationRequired"],
+      ["unavailable", "native-validation-required", "permissionsTab.osSandboxWindowsExtensionsUnavailable", "permissionsTab.osSandboxWindowsExtensionReasonNativeValidationRequired"],
+      // An expired readiness deadline is a start with no backend: not confined, and the reason says the check ran out of time.
+      ["unavailable", "readiness-deadline", "permissionsTab.osSandboxWindowsExtensionsUnavailable", "permissionsTab.osSandboxWindowsExtensionReasonReadinessDeadline"],
+    ] as const)("reports a settled %s plan (%s) without container disclosures", async (readiness, reason, key, reasonKey) => {
       const fixture = plan(readiness, reason);
       assertSandboxWindowsExtensionPlan(fixture);
       await renderWithPlan(fixture);
-      expect(extensions().textContent).toBe(t(key, { reason: t("permissionsTab.osSandboxWindowsExtensionReasonNativeValidationRequired") }));
+      expect(extensions().textContent).toBe(t(key, { reason: t(reasonKey) }));
       expect(screen.queryByTestId("os-sandbox-windows-extension-disclosure")).toBeNull();
     });
 
@@ -1890,7 +1891,6 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       expect(notice).toHaveAttribute("role", "alert");
       expect(notice).toHaveTextContent(path);
       expect(notice).toHaveTextContent("AVE_HOME");
-      expect(screen.getByRole("button", { name: t("permissionsTab.homePrivacyApproveForSession") })).toBeInTheDocument();
       if (category === "extra-principals") {
         expect(notice).toHaveTextContent("S-1-1-0 (Everyone)");
         expect(notice).toHaveTextContent("S-1-5-21-100-200-300-9999");
@@ -1951,33 +1951,6 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     } finally {
       setLocale(previousLocale);
     }
-  });
-
-  it("requests a session approval once and reads the main-owned OFF status again after a reload", async () => {
-    const status = { applicable: true, userState: null, wfpState: null, ready: false, instructions: "",
-      homePrivacyError: { path: "D:/private-state/secrets", category: "read-back-failed", approvedForSession: false } };
-    const readStatus = vi.fn(async () => structuredClone(status));
-    const { ave } = installApiWithWindows({ sandboxWindowsStatus: readStatus });
-    const approve = vi.fn(async () => { status.homePrivacyError.approvedForSession = true; return { ok: true }; });
-    Object.assign(ave.permission, { approveExtensionsWithoutIsolation: approve });
-    await act(async () => { render(<PermissionsTab />); });
-    expect(approve).not.toHaveBeenCalled();
-    // Before approval the offer is part of the message.
-    expect(screen.getByTestId("os-sandbox-windows-home-privacy-error").textContent).toContain(t("permissionsTab.homePrivacyApproveHint"));
-    await act(async () => { fireEvent.click(screen.getByRole("button", { name: t("permissionsTab.homePrivacyApproveForSession") })); });
-    expect(approve).toHaveBeenCalledTimes(1);
-    expect(screen.getByText(t("permissionsTab.homePrivacyApprovedForSession"))).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: t("permissionsTab.homePrivacyApproveForSession") })).toBeNull();
-    // Approved: no "blocked", no offer to approve; the failure and its fix stay.
-    const approved = screen.getByTestId("os-sandbox-windows-home-privacy-error").textContent ?? "";
-    const reason = t("permissionsTab.homePrivacyReadBackFailed");
-    expect(approved).toContain(`${t("permissionsTab.osSandboxBootDegradedHomePrivacy", { path: "D:/private-state/secrets", reason })} ${t("permissionsTab.homePrivacyFixPermissions")} ${t("permissionsTab.homePrivacyShellAsk")}`);
-    expect(approved).not.toContain(t("permissionsTab.osSandboxWindowsHomePrivacyError", { path: "D:/private-state/secrets", reason }));
-    expect(approved).not.toContain(t("permissionsTab.homePrivacyApproveHint"));
-    cleanup();
-    await act(async () => { render(<PermissionsTab />); });
-    expect(approve).toHaveBeenCalledTimes(1);
-    expect(screen.getByText(t("permissionsTab.homePrivacyApprovedForSession"))).toBeInTheDocument();
   });
 
   it.each([
