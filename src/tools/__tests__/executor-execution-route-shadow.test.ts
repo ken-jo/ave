@@ -231,6 +231,26 @@ describe("execution route shadow metadata", () => {
     }
   });
 
+  it("executes repeated conditions with literal operands and equivalent branches on the host", async () => {
+    setShellSandboxRequestedAtBoot(false);
+    const dir = mkdtempSync(join(tmpdir(), "ave-execution-route-conditions-"));
+    try {
+      const { executor, appendPermissionAuditEntry } = makeExecutor(dir, "allow", new BashAstValidator({ mode: "deny" }));
+      const conditions = Array.from({ length: 8 }, (_, index) => `if test -d branch${index}; then :; fi`).join("; ");
+      const [result] = await executor.executeAll(
+        [{ id: "condition-check", name: "bash", input: { command: `${conditions}; printf ok > marker` } }],
+        { sessionId: "condition-check", executionCwd: dir, permissionContext: { trustOrigin: "llm-tool-arg" } },
+      );
+      expect(result?.is_error, result?.content).toBeFalsy();
+      expect(existsSync(join(dir, "marker"))).toBe(true);
+      expect(appendPermissionAuditEntry).toHaveBeenCalledWith(expect.objectContaining({
+        executionRoute: expect.objectContaining({ decision: "selected", route: "host", unresolvedRequirements: [] }),
+      }));
+    } finally {
+      await cleanupTmpDir(dir);
+    }
+  });
+
   it("asks a human for an exhausted path analysis on the host and runs the command once approved", async () => {
     __resetActiveSandboxCapabilityForTest();
     setShellSandboxRequestedAtBoot(false);
