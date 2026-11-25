@@ -1244,7 +1244,12 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
             output: `[approval:remembered] store=rules decision=${rule.action} scope=${rule.scope} rule=${JSON.stringify(rule.pattern)} edited=${rule.edited} toolName=${JSON.stringify(snapshot.toolName)} source=${JSON.stringify(snapshot.source)}`,
           });
         });
-        if (!saved.ok) return saved;
+        if (!saved.ok) {
+          if (saved.error === "project-scope-changed") {
+            approvalGate.cancelPendingRequest(requestId, snapshot.sessionId, "project-scope-changed");
+          }
+          return saved;
+        }
         savedScope = saved.scope;
         broadcastPermissionConfigChanged(deps);
         return saved.warning === undefined ? { ok: true } : { ok: true, warning: saved.warning };

@@ -11,6 +11,7 @@ import { HOME_FOLDER_REFUSED } from "../shared/permissions-events.js";
 
 import { assertApprovalPersistenceCurrent, refreshApprovalPersistence, type ApprovalPersistenceGuard } from "./approval-persistence-guard.js";
 import { runGrantKeyOfSession } from "./run-grants.js";
+import { ProjectRuleRootChangedError } from "./rules/project-rule-files.js";
 
 type RequestSnapshot = NonNullable<ReturnType<ApprovalGate["getRequestSnapshot"]>>;
 
@@ -199,16 +200,19 @@ export async function saveApprovalCardRule(
     } else if (scope === "project") {
       const projectCwd = target.context.projectCwd;
       if (projectCwd === undefined) return fail("scope-not-offered", "This request has no project");
+      const expectedProjectRoot = target.snapshot.shellRuleProjectRoot;
+      if (target.kind === "shell" && expectedProjectRoot === undefined) return fail("project-scope-changed");
       assertApprovalPersistenceCurrent(authority);
       await permissionManager.addRulePersist({ pattern, action }, {
         kind: "project",
         projectCwd,
-        ...(target.kind === "shell" ? { expectedProjectRoot: target.context.projectRoot } : {}),
+        ...(target.kind === "shell" ? { expectedProjectRoot } : {}),
       }, ...(authority ? [authority] as const : []));
     } else {
       await permissionManager.addRulePersist({ pattern, action }, { kind: "user" }, ...(authority ? [authority] as const : []));
     }
   } catch (error) {
+    if (error instanceof ProjectRuleRootChangedError) return fail("project-scope-changed");
     // The home's rule stores refuse writes while boot refuses the folder: the card answers once instead and says why.
     if (error instanceof AveHomeConfigurationRefusedWriteError) return fail(HOME_FOLDER_REFUSED, error.message);
     // A rule that validated but could not be stored (a refused allow prefix, a corrupt file, a lock or I/O) is reported as a failed save.

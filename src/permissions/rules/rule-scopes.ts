@@ -13,7 +13,7 @@ import { isRuleSpecifier, literalRuleWord, parseRuleSpecifier, type RuleSpecifie
 import { canonicalPowerShellName, POWERSHELL_COMMAND_POLICIES } from "./powershell-command-policy.js";
 import { inspectPowerShellCommand, parsePowerShellCommand, powerShellBoundedDenyPrefix, powerShellRuleShape, proveLiteralPowerShell, type ParsedPowerShellCommand, type PowerShellCommandInput } from "./powershell-exfiltration.js";
 import { isRetiredHostTerminalRule, PermissionRulesFileCorruptError, storedRuleInvalidReason, validatePermissionRule } from "./rule-files.js";
-import { projectRuleRoot, projectRulesLocation, storedFileRulesLocation, readProjectRulesFile, updateProjectRulesFile } from "./project-rule-files.js";
+import { matchesProjectRuleRootBinding, ProjectRuleRootChangedError, projectRulesLocation, storedFileRulesLocation, readProjectRulesFile, updateProjectRulesFile, type ProjectRuleRootBinding } from "./project-rule-files.js";
 import { evaluateShellRules, type ShellRuleEvaluation, type ShellRuleInput, type ShellRuleSet } from "./shell-rule-matcher.js";
 import { type ParsedShellCommand, type ShellCommandInput } from "./shell-prefix-policy.js";
 import { SHELL_FLOOR_INPUT_LIMIT, SHELL_LITERAL_DATA_LIMIT } from "./shell-floor-policy.js";
@@ -121,14 +121,18 @@ export class ProjectRuleScopes {
     projectCwd: string,
     rule: PermissionRule,
     authority?: ApprovalPersistenceGuard,
-    expectedProjectRoot?: string,
+    expectedProjectRoot?: ProjectRuleRootBinding,
   ): Promise<void> {
     const validated = validatePermissionRule(withCurrentShellRuleVersion(rule));
     const location = projectRulesLocation(this.baseDir, projectCwd);
     let writeAuthority = authority;
     if (expectedProjectRoot !== undefined) {
-      const isCurrent = () => (authority?.isCurrent() ?? true) &&
-        location.projectRoot === expectedProjectRoot && projectRuleRoot(projectCwd) === expectedProjectRoot;
+      const isCurrent = () => {
+        if (location.projectRoot !== expectedProjectRoot.path || !matchesProjectRuleRootBinding(projectCwd, expectedProjectRoot)) {
+          throw new ProjectRuleRootChangedError();
+        }
+        return authority?.isCurrent() ?? true;
+      };
       writeAuthority = {
         isCurrent,
         refresh: async () => await (authority?.refresh() ?? true) && isCurrent(),

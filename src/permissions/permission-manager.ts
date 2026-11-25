@@ -29,7 +29,7 @@ import type { ApprovalPersistenceGuard } from "./approval-persistence-guard.js";
 import { answerEpochsOf, type AnswerEpochs } from "./pending-answer-policy.js";
 import { permissionsFilePath as defaultPermissionsFilePath, readPermissionsFile, updatePermissionsFile, type PermissionsFile } from "./permissions-store.js";
 import { PermissionRulesFileCorruptError, storedRuleInvalidReason, validatePermissionRule } from "./rules/rule-files.js";
-import { listStoredProjectRules, projectRulesLocation } from "./rules/project-rule-files.js";
+import { listStoredProjectRules, projectRulesLocation, type ProjectRuleRootBinding } from "./rules/project-rule-files.js";
 import type { ScopedPermissionRule, ScopedPermissionRuleError, ShellRuleDialect } from "../shared/permissions-events.js";
 import { ProjectRuleScopes, evaluatePowerShellSubject, evaluateShellSubject, shellDenyOnBoundedPrefix, type HostTerminalRuleTarget } from "./rules/rule-scopes.js";
 import { isRuleSpecifier, matchesWebFetchHost, parseRuleSpecifier } from "./rules/rule-specifier.js";
@@ -1040,7 +1040,7 @@ export class PermissionManager {
   // add a rules-language rule (`Bash(git status *)`, deny/ask/allow) to the user-global scope (permissions.json) or a project's rule file in Ave home. Validation (canonical spelling, enforced kind, refused allow prefixes) runs before anything is written; the live state changes only after the durable write succeeds.
   async addRulePersist(
     rule: { pattern: string; action: PermissionRule["action"] },
-    scope: { kind: "user" } | { kind: "project"; projectCwd: string; expectedProjectRoot?: string },
+    scope: { kind: "user" } | { kind: "project"; projectCwd: string; expectedProjectRoot?: ProjectRuleRootBinding },
     authority?: ApprovalPersistenceGuard,
   ): Promise<void> {
     const validated = validatePermissionRule(withCurrentShellRuleVersion({ pattern: rule.pattern, action: rule.action }));

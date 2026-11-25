@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuditLogger } from "../../../audit/audit-logger.js";
 import { ScriptHookManager } from "../../../hooks/script-hook-manager.js";
 import { PermissionTestResources } from "../../../permissions/__tests__/test-resources.js";
-import { ApprovalGate, type ApprovalRequest, type ApprovalRequestInput, IPC_APPROVAL_REQUEST } from "../../../permissions/approval-gate.js";
+import { ApprovalGate, type ApprovalRequest, type ApprovalRequestInput, IPC_APPROVAL_REQUEST, IPC_APPROVAL_SETTLED } from "../../../permissions/approval-gate.js";
 import { buildPermissionEvaluationContext } from "../../../permissions/evaluation-context.js";
 import { DEFAULT_JUDGE_SETTINGS } from "../../../permissions/judge/judge-settings.js";
 import { PermissionManager } from "../../../permissions/permission-manager.js";
@@ -340,15 +340,21 @@ describe("live native approval ownership", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
-  it.each(["before saving", "while saving"])("refuses This project when the issued repository loses its marker %s", async (timing) => {
+  it.each([
+    "moves its marker before saving",
+    "moves its marker while saving",
+    "loses its marker without changing its root path",
+    "is replaced at the same path",
+  ])("refuses This project when the issued repository %s", async (scenario) => {
     const f = await subject("default");
     vi.stubEnv("AVE_HOME", f.root);
     setShellSandboxRequestedAtBoot(false);
     const outer = join(f.root, "outer");
     const inner = join(outer, "inner");
-    const cwd = join(inner, "work");
+    const sameRootWithoutMarker = scenario === "loses its marker without changing its root path";
+    const cwd = sameRootWithoutMarker ? inner : join(inner, "work");
     mkdirSync(cwd, { recursive: true });
-    for (const root of [outer, inner]) {
+    for (const root of sameRootWithoutMarker ? [inner] : [outer, inner]) {
       const marker = join(root, ".git");
       mkdirSync(join(marker, "objects"), { recursive: true });
       mkdirSync(join(marker, "refs"));
@@ -361,20 +367,31 @@ describe("live native approval ownership", () => {
     expect(innerStore.filePath).not.toBe(outerStore.filePath);
 
     const bash = new BashTool();
-    vi.spyOn(bash, "execute").mockResolvedValue({ output: "mock launch", isError: false });
+    const execute = vi.spyOn(bash, "execute").mockResolvedValue({ output: "mock launch", isError: false });
     f.registry.register(bash);
-    const running = f.executeAll([{ id: "nested-project-rule", name: "bash", input: { command: "printf ready" } }], {
+    const invokeShell = (id: string) => f.executeAll([{ id, name: "bash", input: { command: "printf ready" } }], {
       sessionId: SESSION_ID, executionCwd: cwd,
       permissionContext: userPermissionContext({ additionalDirectories: [cwd] }),
     });
+    const running = invokeShell("nested-project-rule");
     const card = await f.waitForCard();
     expect(card.shellRule).toMatchObject({ persistentAllowed: true, projectRoot: innerStore.projectRoot });
+    const replaced = scenario === "is replaced at the same path";
+    const currentStore = replaced || sameRootWithoutMarker ? innerStore : outerStore;
     const moveMarker = () => {
       renameSync(join(inner, ".git"), join(inner, "former-marker"));
       expect(captureShellWorkingDirectoryIdentity(cwd)).toEqual(issuedCwd);
-      expect(projectRulesLocation(f.root, cwd)).toEqual(outerStore);
+      expect(projectRulesLocation(f.root, cwd)).toEqual(currentStore);
     };
-    if (timing === "before saving") {
+    if (replaced) {
+      const former = join(outer, "former-inner");
+      renameSync(inner, former);
+      mkdirSync(inner);
+      renameSync(join(former, ".git"), join(inner, ".git"));
+      renameSync(join(former, "work"), cwd);
+      expect(captureShellWorkingDirectoryIdentity(cwd)).toEqual(issuedCwd);
+      expect(projectRulesLocation(f.root, cwd)).toEqual(innerStore);
+    } else if (scenario !== "moves its marker while saving") {
       moveMarker();
     } else {
       const read = homeTrust.readAveHomeInput;
@@ -390,13 +407,29 @@ describe("live native approval ownership", () => {
       verdictAtApproval: f.gate.getRequestSnapshot(card.id)?.verdictAtApproval,
       rule: { action: "allow", scope: "project" }, intent: { inputOrigin: "user-keyboard", userActivation: true },
     });
-    expect.soft(response).toMatchObject({ ok: false });
+    expect.soft(response).toMatchObject({ ok: false, error: "project-scope-changed" });
     expect.soft(existsSync(innerStore.filePath)).toBe(false);
     expect.soft(existsSync(outerStore.filePath)).toBe(false);
-    expect(projectRulesLocation(f.root, cwd)).toEqual(outerStore);
-    await f.manager.ensureProjectRulesLoaded(cwd);
-    invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), { ...allowOnceCardAnswer(card), choice: "deny-once" });
+    expect(projectRulesLocation(f.root, cwd)).toEqual(currentStore);
+    expect(f.gate.getRequestSnapshot(card.id)).toBeNull();
+    expect(f.windowA.webContents.send).toHaveBeenCalledWith(IPC_APPROVAL_SETTLED, { requestId: card.id });
     expect((await running)[0]?.is_error).toBe(true);
+    expect(execute).not.toHaveBeenCalled();
+
+    const nextCard = deferred<ApprovalRequest>();
+    f.windowA.webContents.send.mockImplementation((channel: string, request: ApprovalRequest) => {
+      if (channel === IPC_APPROVAL_REQUEST) nextCard.resolve(request);
+    });
+    const retried = invokeShell("fresh-project-rule");
+    const fresh = await Promise.race([
+      nextCard.promise,
+      retried.then(() => { throw new Error("Shell retry settled without a fresh card"); }),
+    ]);
+    expect(fresh.id).not.toBe(card.id);
+    expect(fresh.shellRule?.projectRoot).toBe(currentStore.projectRoot);
+    invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), { ...allowOnceCardAnswer(fresh), choice: "deny-once" });
+    expect((await retried)[0]?.is_error).toBe(true);
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it("burns a policy receipt on a mismatched consumption attempt", async () => {

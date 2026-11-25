@@ -30,6 +30,7 @@ import { runSessionOf } from "./run-grants.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
 import { isSessionOnlyApprovalMemoryScope, isUserOwnedSurface, isUserOwnedSurfaceChoice, resolveUserApprovalVerdict, type ApprovalMemory, type UserOwnedSurface, type UserOwnedSurfaceChoice } from "../shared/permissions-events.js";
 import { buildShellRuleApproval, type HostTerminalApprovalBinding } from "./rules/shell-rule-approval.js";
+import { captureProjectRuleRootBinding, type ProjectRuleRootBinding } from "./rules/project-rule-files.js";
 import type { ShellRuleApproval } from "../shared/permissions-events.js";
 import { captureApprovalWorkingDirectory } from "./user-approval-store.js";
 import { matchesPluginReadjudicationBasis, type PluginReadjudicationBasis } from "./plugin-readjudication-evidence.js";
@@ -509,7 +510,9 @@ function markHostApprovalRejectedDecision(
   return decision;
 }
 
-function hostCancellationDecision(requestId: string, reason?: "caller-abort" | "session-close"): ApprovalDecision {
+type ApprovalCancellationReason = "caller-abort" | "session-close" | "project-scope-changed";
+
+function hostCancellationDecision(requestId: string, reason?: ApprovalCancellationReason): ApprovalDecision {
   const decision = markHostApprovalRejectedDecision({
     requestId, choice: "deny-once",
     ...(reason === undefined ? {} : { rememberPattern: `approval cancelled: ${reason}` }),
@@ -676,6 +679,7 @@ interface PendingEntry {
   // require the offer.
   runStage: ApprovalRequest["runStage"];
   shellRule?: ShellRuleApproval;
+  shellRuleProjectRoot?: ProjectRuleRootBinding;
   // Host-only: the floor a "This session" save on this card answers (never sent to the renderer).
   floorSessionGrant?: FloorSessionGrant;
   hostShellExecutionPlan?: import("./host-shell-execution-plan.js").HostShellExecutionPlan;
@@ -1364,6 +1368,8 @@ export class ApprovalGate {
     const shellRule = builtShellRule !== undefined && floorSessionGrant !== undefined
       ? { ...builtShellRule, exactRule: null, sessionAllowed: true, persistentAllowed: false, floorSessionOnly: true as const }
       : builtShellRule;
+    const projectRootBinding = shellRule?.persistentAllowed ? captureProjectRuleRootBinding(shellRule.projectCwd) : undefined;
+    const shellRuleProjectRoot = projectRootBinding?.path === shellRule?.projectRoot ? projectRootBinding : undefined;
     // One approval lane per stage session: the card names the stage of the run member that asked. "Allow for this run" is offered where
     // this card's session allow is: a shell card's session rule, any other card's remembered exact allow. A scope that only ever lives
     // for its own session (a browser or terminal target) and a schedule-started run offer none.
@@ -1640,6 +1646,7 @@ export class ApprovalGate {
         persistentAllowAllowed,
         runStage,
         shellRule,
+        ...(shellRuleProjectRoot === undefined ? {} : { shellRuleProjectRoot }),
         ...(floorSessionGrant !== undefined && shellRule?.sessionAllowed === true ? { floorSessionGrant } : {}),
         verifiedShellCommand,
         hostShellExecutionPlan,
@@ -2176,8 +2183,8 @@ export class ApprovalGate {
   // Host cancellation binds the exact pending card and conversation; late renderer answers cannot revive it.
   cancelPendingRequest(
     requestId: string,
-    sessionId: string,
-    reason: "caller-abort" | "session-close" = "caller-abort",
+    sessionId: string | undefined,
+    reason: ApprovalCancellationReason = "caller-abort",
   ): boolean {
     const entry = this.pending.get(requestId);
     if (!entry || entry.sessionId !== sessionId || entry.category !== "tool") return false;
@@ -2207,6 +2214,7 @@ export class ApprovalGate {
     sessionId: string | undefined;
     projectCwd: string | undefined;
     shellRule: ShellRuleApproval | undefined;
+    shellRuleProjectRoot?: ProjectRuleRootBinding;
     floorSessionGrant?: FloorSessionGrant;
     hostShellExecutionPlan?: import("./host-shell-execution-plan.js").HostShellExecutionPlan;
     verifiedShellCommand?: import("./verified-shell-command.js").VerifiedShellCommand;
@@ -2232,6 +2240,7 @@ export class ApprovalGate {
       sessionId: entry.sessionId,
       projectCwd: entry.projectCwd,
       shellRule: entry.shellRule,
+      ...(entry.shellRuleProjectRoot === undefined ? {} : { shellRuleProjectRoot: entry.shellRuleProjectRoot }),
       ...(entry.floorSessionGrant === undefined ? {} : { floorSessionGrant: entry.floorSessionGrant }),
       ...(entry.hostShellExecutionPlan === undefined ? {} : { hostShellExecutionPlan: entry.hostShellExecutionPlan }),
       ...(entry.verifiedShellCommand === undefined ? {} : { verifiedShellCommand: entry.verifiedShellCommand }),
