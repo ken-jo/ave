@@ -1,3 +1,4 @@
+import { renameSync as fsRenameSync } from "node:fs";
 import { rename as fsRename } from "node:fs/promises";
 import { sleep } from "../shared/abortable-deadline.js";
 
@@ -60,6 +61,11 @@ export async function renameDirectory(
 /** One directory rename, never retried: the caller reads an existing target (EEXIST/ENOTEMPTY/EPERM) as a collision, not a lock. */
 export function renameDirectoryOnce(from: string, to: string): Promise<void> {
   return fsRename(from, to);
+}
+
+/** `renameDirectoryOnce` for a caller that must not yield between the rename and what follows it: one attempt, no retry, the filesystem's own error. */
+export function renameDirectorySyncOnce(from: string, to: string): void {
+  fsRenameSync(from, to);
 }
 
 const TRANSIENT_FS_LOCK_CODES = DIRECTORY_OP_LOCK_CODES;

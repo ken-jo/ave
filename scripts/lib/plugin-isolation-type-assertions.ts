@@ -30,6 +30,7 @@ export type OutOfProcessPluginSpecKeysAreExact = Expect<
     | "observeChild"
     | "onChildSpawned"
     | "takeExtensionStart"
+    | "integrity"
   >
 >;
 

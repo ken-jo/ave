@@ -8,6 +8,7 @@ export function approvalAction(request: ApprovalRequest, t: TranslateFn): { titl
   const args = isRecord(request.args) ? request.args : {};
   if (request.browserSite) return { title: t("toolApprovalDialog.siteTitle", { origin: new URL(request.browserSite).origin }), primary: null };
   if (request.kind === "egress-host") return { title: t("egressApprovalCard.dockTitle"), primary: null };
+  if (request.kind === "extension-start") return { title: t("extensionStartCard.title"), primary: null };
   if (request.source === "builtin") return builtinApprovalAction(request, t);
   const scope = request.approvalMemory?.kind === "key" ? request.approvalMemory.scope : undefined;
   if (request.source === "mcp" || request.source === "plugin" || request.kind === "agent-action") {

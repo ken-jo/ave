@@ -2726,8 +2726,13 @@ abstract class PluginRuntimeState {
   /** Nothing confines this child: its start waits for a person, asked at the next attended turn. */
   private deferUnconfinedStart(manifest: PluginManifest, error: unknown): boolean {
     if (!isExtensionStartConsentRequired(error)) return false;
+    const key = pluginChildStartKey(manifest.id);
+    // The factory names the start it would run. A refusal that names another start, or none, is not this child's to wait on:
+    // it stays an ordinary failure of this load.
+    if (error.start?.key !== key) return false;
     deferExtensionStart({
-      key: pluginChildStartKey(manifest.id),
+      key,
+      identity: error.start.identity,
       kind: "plugin-child",
       label: pluginStartLabel(manifest.id, manifest.name),
       cause: error.unconfinedCause,
@@ -5050,6 +5055,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       onChildSpawned: (confinement: SpawnConfinement) =>
         this.recordChildSpawnConfinement(createPlugin, confinement),
       takeExtensionStart: () => takeExtensionStartGrant(pluginChildStartKey(manifest.id)),
+      ...(verified ? { integrity: verified } : {}),
       ...(this.onMalformedCredentialSelector
         ? { onMalformedCredentialSelector: this.onMalformedCredentialSelector }
         : {}),
