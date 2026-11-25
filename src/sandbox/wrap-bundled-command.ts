@@ -1,15 +1,13 @@
-import { shellQuote } from "../lib/shell-resolver.js";
 import {
   getDefaultSensitiveReadDenyPaths,
   getDefaultSensitiveWriteDenyEntries,
   cleanupAsrtSandboxAfterCommand,
   ensureSandboxTempPrincipalDir,
-  sandboxTempEnvLaunch,
   wrapWorkerCommand,
   type SandboxTempPrincipal,
 } from "../permissions/asrt-sandbox.js";
 import { createAveHomeBoundarySnapshot } from "../permissions/ave-home-boundary-snapshot.js";
-import { buildSandboxedChildEnv } from "../tools/safe-env.js";
+import { buildLauncherEnvironment, prepareSandboxTargetLaunch, type SandboxTargetLaunch } from "../permissions/launcher-environment.js";
 import type { ChildProcess } from "node:child_process";
 import {
   abandonManagedLaunch, createManagedRelayResources, observeManagedWindowsRelayExit, recordManagedCleanup,
@@ -54,6 +52,7 @@ export interface BundledWrapInput {
   command: string;
   args: readonly string[];
   sandboxHome: { path: string; env: Record<string, string> };
+  targetEnv: NodeJS.ProcessEnv;
   allowWrite: readonly string[];
   /** The directories of the process's own plugin it reads, re-allowed inside the plugins-root deny: a hook's generation root,
    * a bundled server's payload root. Empty for a server that belongs to no plugin, which then reads nothing under the root. */
@@ -66,7 +65,9 @@ export interface BundledWrapInput {
 
 /** Apply the same sensitive-path floors and egress policy to bundled processes. The wrapped launch, and the egress token it carries. The
  * caller spawns the process itself, so it owns the token too: `egress.release()` once the process has exited, or when the spawn fails. */
-export async function wrapBundledCommand(input: BundledWrapInput): Promise<{ argv: string[]; env: NodeJS.ProcessEnv; egress: EgressInvocation }> {
+export async function wrapBundledCommand(input: BundledWrapInput): Promise<{
+  argv: string[]; env: NodeJS.ProcessEnv; egress: EgressInvocation; targetLaunch: SandboxTargetLaunch;
+}> {
   if (process.platform === "win32") {
     // The macOS and Linux wrap: allow paths in the command. Windows has no per-exec allow; its
     // bundled processes go through `spawnWindowsBundledProcess`, and reaching here is a caller's mistake.
@@ -76,13 +77,12 @@ export async function wrapBundledCommand(input: BundledWrapInput): Promise<{ arg
   // The principal's own temp directory, set as its TMPDIR inside the wrap (ASRT's own assignment would otherwise name the shared root) and granted alone; the read floor denies the
   // shared temp and HOME roots, so no other principal's temp files or HOME can be read either, and the process HOME re-allowed here is its own; as `confined-child.ts` does for its children.
   const temp = ensureSandboxTempPrincipalDir(input.tempPrincipal);
-  const launch = sandboxTempEnvLaunch(temp.dir, input.command, input.args);
-  const cmdline = [launch.command, ...launch.args].map(shellQuote).join(" ");
+  const targetLaunch = prepareSandboxTargetLaunch(input.command, input.args, { ...input.targetEnv, ...input.sandboxHome.env }, temp.dir);
   const egress = openEgressInvocation(input.egressOwner);
   let result: { argv: string[]; env: NodeJS.ProcessEnv };
   try {
     const boundarySnapshot = createAveHomeBoundarySnapshot();
-    result = await wrapWorkerCommand(cmdline, {
+    result = await wrapWorkerCommand(targetLaunch.command, {
       commandId: egress.token,
       boundarySnapshot,
       filesystem: {
@@ -111,29 +111,16 @@ export async function wrapBundledCommand(input: BundledWrapInput): Promise<{ arg
     await cleanupAsrtSandboxAfterCommand();
     throw new Error("ASRT returned an empty argv for a bundled process");
   }
-  return { ...result, egress };
-}
-
-/** Preserve only ASRT's changed proxy keys over the caller's stripped environment. */
-export function bundledWrappedEnv(
-  baseEnv: NodeJS.ProcessEnv,
-  wrappedEnv: NodeJS.ProcessEnv,
-  sandboxHomeEnv: Record<string, string>,
-): NodeJS.ProcessEnv {
-  const composed = buildSandboxedChildEnv(wrappedEnv);
-  const baseline = buildSandboxedChildEnv(process.env);
-  const overlay: Record<string, string> = {};
-  for (const [key, value] of Object.entries(composed)) {
-    if (value !== undefined && baseline[key] !== value) overlay[key] = value;
-  }
-  return { ...baseEnv, ...overlay, ...sandboxHomeEnv };
+  return { argv: result.argv, env: buildLauncherEnvironment(), egress, targetLaunch };
 }
 
 /** {@link wrapBundledCommand} with a throwaway HOME, whose teardown the owner holds on `resources` from acquisition: the caller
  * gets the launch and the egress group hook, never the cleanup. A wrap failure records only the HOME. */
 export async function wrapManagedBundledCommand(input: Omit<BundledWrapInput, "sandboxHome"> & {
   readonly resources: ManagedResources;
-}): Promise<{ argv: string[]; env: NodeJS.ProcessEnv; homeEnv: Record<string, string>; noteProcessGroup: (pid: number) => void }> {
+}): Promise<{
+  argv: string[]; env: NodeJS.ProcessEnv; homeEnv: Record<string, string>; targetLaunch: SandboxTargetLaunch; noteProcessGroup: (pid: number) => void;
+}> {
   const { resources, ...wrapInput } = input;
   const sandboxHome = createSandboxProcessHome();
   let wrapped: Awaited<ReturnType<typeof wrapBundledCommand>>;
@@ -148,6 +135,7 @@ export async function wrapManagedBundledCommand(input: Omit<BundledWrapInput, "s
     argv: wrapped.argv,
     env: wrapped.env,
     homeEnv: sandboxHome.env,
+    targetLaunch: wrapped.targetLaunch,
     noteProcessGroup: (pid) => wrapped.egress.noteProcessGroup(pid),
   };
 }

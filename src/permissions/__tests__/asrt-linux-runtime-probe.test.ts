@@ -25,6 +25,7 @@ import { isHostGitWorkspaceAvailable } from "../../shared/host-git.js";
 import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
 import * as policyHome from "../../shared/policy-home.js";
 import { configureHostResources, getHostResources } from "../../main/host-resources.js";
+import { wrapCommandWithSandboxLinux } from "@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js";
 import { parseSandboxWrappedWords } from "../sandbox-wrapped-command.js";
 
 useVerifiedAveHomePrivacy();
@@ -32,11 +33,25 @@ registerLinuxWrapperProgramFixtures();
 
 // Simulated win32 on a POSIX host: drive-path math, an empty simulated drive, ASRT resolved on it, and spelling-only stamp pins.
 vi.mock("node:path", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDrivePath(await original()));
-vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDriveFs(await original()));
+vi.mock("node:fs", async original => {
+  const fs = (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDriveFs(await original());
+  const isLocalHelper = (path: unknown) => path === "/usr/local/bin/bwrap" || path === "/usr/local/bin/socat" || path === "/usr/local/bin/rg";
+  return {
+    ...fs,
+    statSync: (path: unknown, ...args: unknown[]) => isLocalHelper(path)
+      ? { isFile: () => path !== h.missingHelper } : Reflect.apply(fs.statSync, fs, [path, ...args]),
+    accessSync: (path: unknown, ...args: unknown[]) => {
+      if (!isLocalHelper(path)) Reflect.apply(fs.accessSync, fs, [path, ...args]);
+    },
+  };
+});
 vi.mock("node:module", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDriveModule(await original()));
 vi.mock("../windows-stamp-targets.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedStampTargets(await original()));
 
 const h = vi.hoisted(() => ({
+  missingHelper: undefined as string | undefined,
+  checkDependenciesAsync: vi.fn(),
+  checkLinuxDependencies: vi.fn(),
   initialize: vi.fn(),
   openInvocationListener: vi.fn(),
   closeInvocationListener: vi.fn(),
@@ -48,6 +63,8 @@ const h = vi.hoisted(() => ({
 
 vi.mock("@anthropic-ai/sandbox-runtime", () => ({
   SandboxManager: {
+    isSupportedPlatform: () => true,
+    checkDependenciesAsync: h.checkDependenciesAsync,
     setParentProxyRouter: () => undefined,
     initialize: h.initialize,
     openInvocationListener: h.openInvocationListener,
@@ -56,6 +73,15 @@ vi.mock("@anthropic-ai/sandbox-runtime", () => ({
     cleanupAfterCommand: h.cleanupAfterCommand,
     reset: h.reset,
   },
+}));
+
+vi.mock("@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js", async original => ({
+  ...await original<typeof import("@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js")>(),
+  checkLinuxDependencies: h.checkLinuxDependencies,
+}));
+vi.mock("@anthropic-ai/sandbox-runtime/dist/sandbox/generate-seccomp-filter.js", async original => ({
+  ...await original<typeof import("@anthropic-ai/sandbox-runtime/dist/sandbox/generate-seccomp-filter.js")>(),
+  getApplySeccompBinaryPathAsync: async () => undefined,
 }));
 
 vi.mock("node:child_process", async original => ({
@@ -77,6 +103,7 @@ import {
   appOwnedSandboxPrivateRoots,
   aveHomeReadBoundaryCovering,
   buildPerCommandSandboxCustomConfig,
+  checkAsrtDependencies,
   getBuiltinShellReadPolicy,
   getBuiltinShellSessionReadPolicy,
   getDefaultSensitiveReadDenyPaths,
@@ -135,6 +162,10 @@ async function flushMicrotasks(): Promise<void> {
 beforeEach(() => {
   setLocale("en");
   setProcessPlatform("linux");
+  vi.stubEnv("PATH", `/usr/local/bin:${process.env.PATH ?? ""}`);
+  h.missingHelper = undefined;
+  h.checkDependenciesAsync.mockResolvedValue({ errors: [], warnings: [] });
+  h.checkLinuxDependencies.mockReturnValue({ errors: [], warnings: ["fixture warning"] });
   h.initialize.mockResolvedValue(undefined);
   h.openInvocationListener.mockResolvedValue({ port: 12345 });
   h.wrapWithSandboxArgv.mockResolvedValue({
@@ -498,6 +529,74 @@ describe("Linux wrap filesystem discovery snapshot", () => {
 });
 
 describe("initializeAsrtSandbox — Linux configured-wrapper runtime probe", () => {
+  it("reports an absent helper before starting the runtime", async () => {
+    vi.stubEnv("PATH", "/usr/local/bin");
+    h.missingHelper = "/usr/local/bin/socat";
+    await expect(checkAsrtDependencies()).resolves.toEqual({
+      errors: ["socat not installed on PATH. Searched /usr/local/bin"], warnings: [],
+    });
+    expect(h.checkDependenciesAsync).not.toHaveBeenCalled();
+    expect(h.checkLinuxDependencies).not.toHaveBeenCalled();
+    expect(h.initialize).not.toHaveBeenCalled();
+  });
+
+  it("uses the same pinned local helpers at boot and in a worker wrap with a restricted launcher PATH", async () => {
+    const root = mkdtempSync(join(tmpdir(), "asrt-local-helpers-"));
+    temporaryRoots.push(root);
+    const socketPath = join(root, "bridge.sock");
+    writeFileSync(socketPath, "");
+    vi.stubEnv("PATH", "relative:/usr/local/bin");
+    await expect(checkAsrtDependencies()).resolves.toEqual({ errors: [], warnings: ["fixture warning"], linuxWrapperPrograms: {
+      bwrapPath: "/usr/local/bin/bwrap", socatPath: "/usr/local/bin/socat", ripgrep: { command: "/usr/local/bin/rg" },
+    } });
+    expect(h.checkDependenciesAsync).not.toHaveBeenCalled();
+    expect(h.checkLinuxDependencies).toHaveBeenCalledWith(expect.objectContaining({
+      bwrapPath: "/usr/local/bin/bwrap", socatPath: "/usr/local/bin/socat",
+    }));
+    h.wrapWithSandboxArgv.mockImplementation(async (command: string) => {
+      const config = h.initialize.mock.lastCall?.[0] as SandboxRuntimeConfig;
+      const wrapped = await wrapCommandWithSandboxLinux({
+        command, needsNetworkRestriction: true, readConfig: undefined, writeConfig: undefined,
+        httpSocketPath: socketPath, socksSocketPath: socketPath,
+        binShell: process.execPath.replaceAll("\\", "/"), allowAllUnixSockets: true, allowNestedUserNamespaces: true,
+        bwrapPath: config.bwrapPath, socatPath: config.socatPath,
+      });
+      return { argv: ["/bin/bash", "-c", wrapped], env: { PATH: process.env.PATH } };
+    });
+    await initializeAsrtSandbox({ allowedDomains: [] });
+    expect(h.initialize.mock.lastCall?.[0]).toMatchObject({
+      bwrapPath: "/usr/local/bin/bwrap", socatPath: "/usr/local/bin/socat", ripgrep: { command: "/usr/local/bin/rg" },
+    });
+    const probe = h.spawn.mock.lastCall;
+    if (!probe) throw new Error("Expected the sandbox boot probe to spawn");
+    const [, probeArgs, probeOptions] = probe;
+    expect(probeOptions.env).toEqual({ PATH: "/usr/bin:/bin:/usr/sbin:/sbin", SHLVL: "1" });
+    vi.stubEnv("PATH", "/another-install/bin:/usr/bin:/bin");
+    const worker = await wrapWorkerCommand("true", { commandId: TEST_COMMAND_ID });
+    for (const command of [probeArgs[1], worker.argv[2]]) {
+      expect(command).toContain("/usr/local/bin/bwrap");
+      expect(command).toContain("/usr/local/bin/socat");
+    }
+  });
+
+  it("initializes with the preflight's helpers when PATH changes before initialization", async () => {
+    vi.stubEnv("PATH", "/usr/local/bin");
+    const deps = await checkAsrtDependencies();
+    expect(deps.errors).toEqual([]);
+    vi.stubEnv("PATH", "/another-install/bin");
+    await initializeAsrtSandbox({ allowedDomains: [], linuxWrapperPrograms: deps.linuxWrapperPrograms });
+    expect(h.initialize.mock.lastCall?.[0]).toMatchObject({
+      bwrapPath: "/usr/local/bin/bwrap", socatPath: "/usr/local/bin/socat", ripgrep: { command: "/usr/local/bin/rg" },
+    });
+  });
+
+  it("names the absent helper when initialization resolves its own helpers", async () => {
+    vi.stubEnv("PATH", "/usr/local/bin");
+    h.missingHelper = "/usr/local/bin/bwrap";
+    await expect(initializeAsrtSandbox({ allowedDomains: [] })).rejects.toThrow("bubblewrap (bwrap) not installed on PATH");
+    expect(h.initialize).not.toHaveBeenCalled();
+  });
+
   it.each(["linux", "darwin"] as const)("renders the fixed default and explicit shell at both wrapper layers on %s", async (platform) => {
     const { SandboxManager } = await vi.importActual<typeof import("@anthropic-ai/sandbox-runtime")>("@anthropic-ai/sandbox-runtime");
     setProcessPlatform(platform);
@@ -542,7 +641,7 @@ describe("initializeAsrtSandbox — Linux configured-wrapper runtime probe", () 
       ["-c", CONFIGURED_LINUX_BWRAP_COMMAND],
       {
         cwd: process.cwd(),
-        env: { ASRT_PROBE_ENV: "configured" },
+        env: { PATH: "/usr/bin:/bin:/usr/sbin:/sbin", SHLVL: "1" },
         shell: false,
         stdio: "ignore",
         windowsHide: true,
