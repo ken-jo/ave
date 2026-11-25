@@ -225,40 +225,86 @@ describe("RuleBasedRiskClassifier — disposable guest substrate", () => {
     expect(v.reason).toBe(GUEST_DESTRUCTIVE);
   });
 
-  const DOWNLOAD_COMMANDS = [
-    "pip install -r requirements.txt",
-    "python -m pip install numpy==2.1.0",
-    "git clone https://github.com/example/repo.git /workspace/repo",
-    "git fetch origin",
-    "git pull --ff-only",
-    "curl -O https://example.org/pkg.tar.gz",
-    "curl -fsSL -o /tmp/pkg.tgz https://example.org/pkg.tgz",
-    "wget https://example.org/pkg.tar.gz",
-    "wget -q -O /tmp/pkg https://example.org/pkg",
-    "npm install",
-    "npm ci --no-audit",
-    "uv pip install pandas",
-    "uv sync",
-    "apt-get install -y build-essential",
-    "rsync -a /workspace/src/ /workspace/dst/",
-    "uname -m && cat /etc/os-release | head -3",
+  const expectedGuestWork = { level: "low", reason: GUEST_LOW };
+  const GUEST_LOW_GROUPS = [
+    { why: "Ordinary downloads and dependency retrieval are guest work", commands: [
+      "pip install -r requirements.txt", "python -m pip install numpy==2.1.0",
+      "git clone https://github.com/example/repo.git /workspace/repo", "git fetch origin", "git pull --ff-only",
+      "curl -O https://example.org/pkg.tar.gz", "curl -fsSL -o /tmp/pkg.tgz https://example.org/pkg.tgz",
+      "wget https://example.org/pkg.tar.gz", "wget -q -O /tmp/pkg https://example.org/pkg", "npm install",
+      "npm ci --no-audit", "uv pip install pandas", "uv sync", "apt-get install -y build-essential",
+      "rsync -a /workspace/src/ /workspace/dst/", "uname -m && cat /etc/os-release | head -3",
+    ] },
+    { why: "Local builds and file edits are guest work", commands: [
+      "mkdir -p /workspace/out && cp /workspace/a /workspace/out/", "make -j4", "pytest -q tests/",
+      "python3 /workspace/solve.py --input data.csv", "sed -i 's/8080/9090/' /workspace/app.conf",
+      "tar -xzf /workspace/pkg.tgz -C /opt", "cd /workspace/repo && git status && git log --oneline -5",
+      "cargo build --release",
+    ] },
+    { why: "Downloads, package operations, builds, and interpreter scripts stay on the guest allowlist", commands: [
+      "pip install numpy==2.1.0 'pandas>=2.0'", "npm ci", "bun install", "go mod download", "git status",
+      "git log --oneline -5", "curl -L https://example.org/pkg.tar.gz | tar xz", "make", "make -j4 test",
+      "make -C /workspace/build", "python3 -m pytest -q", "javac Main.java && java Main", "mvn -q test",
+      "node /workspace/index.js",
+    ] },
+    { why: "Project edits, staging changes, and branch creation stay recoverable", commands: [
+      "echo hello > /workspace/out.txt", "cp /workspace/a /workspace/b",
+      "git restore --staged src/app.py", "git checkout -b feature",
+    ] },
+    { why: "Emptying a file is an ordinary content edit", commands: [
+      "> /workspace/log.txt", ": > /workspace/log.txt", "cp /dev/null /workspace/log.txt",
+      "sed -i d /workspace/log.txt",
+    ] },
+    { why: "Local editable installs and requirement files are named inputs", commands: [
+      "pip install -e .", "pip install -e ./pkg", "pip install -e '.[dev]'",
+      "pip install -r requirements.txt -c constraints.txt", "python3 -m pip install -e .",
+    ] },
+    { why: "Common repository and toolchain subcommands stay eligible for local work", commands: [
+      "git submodule update --init --recursive", "git submodule status",
+      "git remote add upstream https://github.com/example/repo.git", "git stash pop", "uv python install 3.12",
+      "go mod tidy",
+    ] },
+    { why: "Explicit paths identify interpreters and project build scripts", commands: [
+      ".venv/bin/python /workspace/solve.py", "./gradlew test", "/usr/bin/make -j2",
+    ] },
+    { why: "Local archive operands and repository sources preserve their input roles", commands: [
+      "tar -cf /tmp/a.tar b", "tar --force-local -cf /tmp/a.tar b", "tar -xzf /tmp/pkg.tar.gz -C /workspace",
+      "git clone git@github.com:example/repo.git /workspace/repo", "git fetch git@github.com:example/repo.git main",
+    ] },
+    { why: "Ref creation, listing, and operation resumption preserve work", commands: [
+      "git branch feature", "git branch -a", "git branch -vv", "git tag v1", "git tag -l", "git switch -c feature",
+      "git merge --continue", "git rebase --continue", "git fetch --all --tags", "git branch -uorigin/dev",
+    ] },
+    { why: "Colons in text options do not turn them into remote file operands", commands: [
+      "git commit -m 'fix: thing'", "git commit --date=2024-01-01T10:00:00 -m x",
+      "git branch --format='%(refname:short)'", "git branch --sort=version:refname", "git grep -e 'TODO:' src",
+      "tar --mtime='2024-01-01 10:00:00' -cf /tmp/a.tar b", "gradle test -x :app:lint",
+    ] },
+    { why: "Fetching a bare forced ref only updates remote-tracking state", commands: [
+      "git fetch origin +main",
+    ] },
+    { why: "A single checkout operand remains ambiguous with a branch switch", commands: [
+      "git checkout f.txt", "git checkout -b feature origin/feature",
+    ] },
+    { why: "Toolchain flags carry text values rather than executable inputs", commands: [
+      "go build -ldflags '-s -w' .", "go build -ldflags=\"-X main.version=1.2.3 -s\" ./cmd/app",
+      "go build -ldflags=all=-s .", "go build -gcflags='all=-N -l' .", "go build -gcflags=-m=2 .",
+      "cargo build --target x86_64-unknown-linux-gnu", "bun test -t 'adds numbers'",
+    ] },
+    { why: "History edits recoverable through the reflog keep the guest grade", commands: [
+      "git reset HEAD~1", "git reset --soft HEAD~1", "git commit --amend --no-edit", "git rebase main",
+    ] },
+    { why: "Removing regenerable state remains ordinary guest work", commands: [
+      "cargo clean", "mvn clean", "npm prune", "apt-get purge -y foo", "apt-get autoremove -y",
+      "rmdir /workspace/empty",
+    ] },
   ];
+  const guestLowCases = GUEST_LOW_GROUPS.flatMap(({ why, commands }) =>
+    commands.map((command) => ({ command, why, expected: expectedGuestWork })));
 
-  // Ordinary guest work the allowlist must keep LOW.
-  const LOCAL_WORK_COMMANDS = [
-    "mkdir -p /workspace/out && cp /workspace/a /workspace/out/",
-    "make -j4",
-    "pytest -q tests/",
-    "python3 /workspace/solve.py --input data.csv",
-    "sed -i 's/8080/9090/' /workspace/app.conf",
-    "tar -xzf /workspace/pkg.tgz -C /opt",
-    "cd /workspace/repo && git status && git log --oneline -5",
-    "cargo build --release",
-  ];
-
-  it.each([...DOWNLOAD_COMMANDS, ...LOCAL_WORK_COMMANDS])("download or local command in the guest stays LOW: %s", (command) => {
-    const v = rb.classify(ctx({ category: "shell", finalInput: { command }, sandboxCapability: guest }));
-    expect({ level: v.level, reason: v.reason }).toEqual({ level: "low", reason: GUEST_LOW });
+  it.each(guestLowCases)("$why: $command", ({ command, expected }) => {
+    const { level, reason } = rb.classify(ctx({ category: "shell", finalInput: { command }, sandboxCapability: guest }));
+    expect({ level, reason }).toEqual(expected);
   });
 
   // Second verification round: same-line sending forms the first allowlist still graded LOW. Every one must be MEDIUM (not on the guest allowlist).
@@ -590,119 +636,6 @@ describe("RuleBasedRiskClassifier — disposable guest substrate", () => {
     expect({ level: v.level, reason: v.reason }).toEqual({ level: "medium", reason: GUEST_UNLISTED });
   });
 
-  // Ordinary guest work the verifier confirmed must stay LOW.
-  const MUST_STAY_LOW = [
-    "pip install -r requirements.txt",
-    "pip install numpy==2.1.0 'pandas>=2.0'",
-    "uv pip install pandas",
-    "npm install",
-    "npm ci",
-    "bun install",
-    "cargo build --release",
-    "go mod download",
-    "apt-get install -y build-essential",
-    "git clone https://github.com/example/repo.git /workspace/repo",
-    "git fetch origin",
-    "git pull --ff-only",
-    "git status",
-    "git log --oneline -5",
-    "curl -O https://example.org/pkg.tar.gz",
-    "curl -fsSL -o /tmp/pkg.tgz https://example.org/pkg.tgz",
-    "curl -L https://example.org/pkg.tar.gz | tar xz",
-    "wget https://example.org/pkg.tar.gz",
-    "make",
-    "make -j4 test",
-    "make -C /workspace/build",
-    "pytest -q tests/",
-    "python3 -m pytest -q",
-    "javac Main.java && java Main",
-    "mvn -q test",
-    "python3 /workspace/solve.py --input data.csv",
-    "node /workspace/index.js",
-    // plain edits
-    "echo hello > /workspace/out.txt",
-    "cp /workspace/a /workspace/b",
-    "git restore --staged src/app.py",
-    "git checkout -b feature",
-    // content edits, including emptying a file, are not deletion or discard
-    "> /workspace/log.txt",
-    ": > /workspace/log.txt",
-    "cp /dev/null /workspace/log.txt",
-    "sed -i d /workspace/log.txt",
-    // editable and requirement-file installs from local paths
-    "pip install -e .",
-    "pip install -e ./pkg",
-    "pip install -e '.[dev]'",
-    "pip install -r requirements.txt -c constraints.txt",
-    "python3 -m pip install -e .",
-    // listed subcommands
-    "git submodule update --init --recursive",
-    "git submodule status",
-    "git remote add upstream https://github.com/example/repo.git",
-    "git stash pop",
-    "uv python install 3.12",
-    "go mod tidy",
-    // interpreters and project wrappers by path
-    ".venv/bin/python /workspace/solve.py",
-    "./gradlew test",
-    "/usr/bin/make -j2",
-    // local archives, `--force-local` included, and git's scp-form sources
-    "tar -cf /tmp/a.tar b",
-    "tar --force-local -cf /tmp/a.tar b",
-    "tar -xzf /tmp/pkg.tar.gz -C /workspace",
-    "git clone git@github.com:example/repo.git /workspace/repo",
-    "git fetch git@github.com:example/repo.git main",
-    // ref creation, listing and resumption are not deletion
-    "git branch feature",
-    "git branch -a",
-    "git branch -vv",
-    "git tag v1",
-    "git tag -l",
-    "git switch -c feature",
-    "git merge --continue",
-    "git rebase --continue",
-    "git fetch --all --tags",
-    "git branch -uorigin/dev",
-    // text option values may hold a `:` before any `/`; only file values carry the `host:path` check
-    "git commit -m 'fix: thing'",
-    "git commit --date=2024-01-01T10:00:00 -m x",
-    "git branch --format='%(refname:short)'",
-    "git branch --sort=version:refname",
-    "git grep -e 'TODO:' src",
-    "tar --mtime='2024-01-01 10:00:00' -cf /tmp/a.tar b",
-    "gradle test -x :app:lint",
-    // a bare `+src` only updates remote-tracking refs, which the default refspec already forces
-    "git fetch origin +main",
-    // stated limit: one checkout operand cannot be told from a branch switch on the line, so `git checkout f.txt` stays LOW
-    "git checkout f.txt",
-    "git checkout -b feature origin/feature",
-    // non-program go tool flags, and `bun test -t` as a value option
-    "go build -ldflags '-s -w' .",
-    "go build -ldflags=\"-X main.version=1.2.3 -s\" ./cmd/app",
-    "go build -ldflags=all=-s .",
-    "go build -gcflags='all=-N -l' .",
-    "go build -gcflags=-m=2 .",
-    "cargo build --target x86_64-unknown-linux-gnu",
-    "bun test -t 'adds numbers'",
-    // history rewrites the reflog can recover stay LOW (unlike `branch -D`)
-    "git reset HEAD~1",
-    "git reset --soft HEAD~1",
-    "git commit --amend --no-edit",
-    "git rebase main",
-    // removing regenerable state (build outputs, packages, an empty dir)
-    "cargo clean",
-    "mvn clean",
-    "npm prune",
-    "apt-get purge -y foo",
-    "apt-get autoremove -y",
-    "rmdir /workspace/empty",
-  ];
-
-  it.each(MUST_STAY_LOW)("ordinary guest work stays LOW: %s", (command) => {
-    const v = rb.classify(ctx({ category: "shell", finalInput: { command }, sandboxCapability: guest }));
-    expect({ level: v.level, reason: v.reason }).toEqual({ level: "low", reason: GUEST_LOW });
-  });
-
   // Stated limit, pinned so it stays visible: a script FILE run by an allowlisted interpreter opens connections argv inspection cannot see; it relies on the guest's egress policy (permission-policy-design.md).
   it.each([
     "python3 /workspace/upload.py",
@@ -713,8 +646,8 @@ describe("RuleBasedRiskClassifier — disposable guest substrate", () => {
   });
 
   it("host grading of the same commands is untouched by the guest rules", () => {
-    for (const command of [...EGRESS_COMMANDS, ...REVIEW_SENDING_MISSES, ...DOWNLOAD_COMMANDS, ...LOCAL_WORK_COMMANDS,
-      ...VERIFIER_SAME_LINE_MISSES, ...GUEST_DESTRUCTIVE_COMMANDS, ...MUST_STAY_LOW, ...COMMAND_STRING_POSITIONALS, ...COMMAND_STRING_GUARDS,
+    for (const command of [...EGRESS_COMMANDS, ...REVIEW_SENDING_MISSES, ...guestLowCases.map(({ command }) => command),
+      ...VERIFIER_SAME_LINE_MISSES, ...GUEST_DESTRUCTIVE_COMMANDS, ...COMMAND_STRING_POSITIONALS, ...COMMAND_STRING_GUARDS,
       ...REMOTE_ARCHIVE_COMMANDS, ...GIT_REF_DESTRUCTIVE_COMMANDS, ...TOOLCHAIN_PROGRAM_COMMANDS]) {
       const v = rb.classify(ctx({ category: "shell", finalInput: { command }, sandboxCapability: host }));
       expect(v.reason, command).not.toMatch(/guest|egress/);
