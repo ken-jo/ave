@@ -1,7 +1,7 @@
 import { win32 as winPath } from "node:path";
 import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
 import type { OwnedMxcExtensionProcess } from "../../permissions/mxc-extension-process.js";
-import { isMxcConfinedChildLive, spawnMxcConfinedChild, type MxcConfinedChildSpawn, type MxcConfinedChildSpec } from "../../permissions/confined-child.js";
+import { isMxcConfinedChildLive, spawnMxcConfinedChild, type MxcConfinedChildSpawn } from "../../permissions/confined-child.js";
 import { assertMxcHolderStaging, type MxcExtensionFilesystemOwnership } from "../../permissions/mxc-filesystem-ownership.js";
 import { registerMxcPluginChildHolder } from "../../permissions/mxc-holder-lifetime.js";
 import { isWindowsPathAtOrUnder } from "../../permissions/mxc-windows.js";
@@ -26,7 +26,6 @@ export interface MxcPluginChildLaunch {
   /** Captured by the host from the owning incarnation. Its write roots must contain the staging directory and every
    * envelope write root, or row-2 admission refuses the spawn. */
   readonly filesystemOwnership: MxcExtensionFilesystemOwnership;
-  readonly probe: MxcConfinedChildSpec["probe"];
   readonly signal: AbortSignal;
   assertCurrent(): void;
   /** Release the planner's own state (staging tree, ownership capture) only after verified termination. */
@@ -185,13 +184,8 @@ export async function spawnMxcPluginChild(
         launch.assertCurrent();
         if (launch.signal.aborted) throw new MxcProcessContractError("Plugin child admission was revoked");
       },
-      // Readiness is probed on a snapshot of the exact request admission later consumes, so this is the request
-      // that runs. Readiness settlement maps only `MxcCapabilityUnavailableError` to not-ready; this contract error
-      // propagates out of admission unchanged.
-      probe: async (request, signal) => {
-        assertLaunchMatchesIntent(request, intent);
-        return launch.probe(request, signal);
-      },
+      // Checked on a snapshot of the exact request admission later consumes, so this is the request that runs.
+      assertRequest: (request) => assertLaunchMatchesIntent(request, intent),
     });
   } catch (error) {
     // Unverified startup cleanup keeps the planner's state: the process may still exist.

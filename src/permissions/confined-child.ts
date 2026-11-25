@@ -45,9 +45,8 @@ import {
   MxcProcessContractError,
   WorkerTransportUnsupportedError,
 } from "./mxc-extension-errors.js";
-import { createMxcExtensionAdmission, consumeMxcExtensionAdmission } from "./mxc-extension-admission.js";
+import { admitMxcExtensionStart, createMxcExtensionAdmission, consumeMxcExtensionAdmission } from "./mxc-extension-admission.js";
 import type { ExtensionStartPresentation } from "./extension-start-consent.js";
-import type { MxcExtensionReadinessEvidence } from "./mxc-extension-readiness.js";
 import type { PluginWorkerControl } from "../plugins/public-contract.js";
 import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
 import { registerMxcHolderLifetime } from "./mxc-holder-lifetime.js";
@@ -178,7 +177,8 @@ export interface MxcConfinedChildSpec extends Pick<ConfinedChildSpec,
   readonly filesystemOwnership: MxcExtensionFilesystemOwnership;
   readonly holder: object;
   readonly parent?: MxcConfinedChildSpawn;
-  readonly probe: (request: ContainerRequest, signal: AbortSignal) => Promise<MxcExtensionReadinessEvidence>;
+  /** The adapter's own check of the exact request, on a snapshot, before the receipt is minted. A throw refuses the start. */
+  readonly assertRequest?: (request: ContainerRequest) => void;
   /** Host adapter's negotiated mode; public worker negotiation is owned by its contract. */
   readonly workerTransport?: PluginWorkerControl;
   readonly signal?: AbortSignal;
@@ -355,6 +355,7 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
   let lease: Awaited<ReturnType<typeof openMxcEgressLease>> | undefined;
   let native: OwnedMxcExtensionProcess | undefined;
   let binding: NativeHolderBinding | undefined;
+  let starting: Promise<unknown> | undefined;
   let settleStartup!: () => void;
   const startupSettled = new Promise<void>((resolve) => { settleStartup = resolve; });
   let lifetime: ReturnType<typeof registerMxcHolderLifetime>;
@@ -392,21 +393,29 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
     const request = buildMxcConfinedChildRequest({ ...spec, grants, proxyUrl: lease.url });
     assertNesting();
     const admissionInput = { request, holder: spec.holder, executableIdentity: measureExecutableIdentity(spec.command), bootPlan: plan };
-    const admission = await createMxcExtensionAdmission({ ...admissionInput, probe: spec.probe, signal });
-    const child = await spawnMxcExtensionProcess(request, {
-      signal,
-      onOwned: (owned) => { native = owned; },
-      beforeSpawn: () => {
-        assertParent();
-        if (signal.aborted) throw new MxcProcessContractError("Extension start was cancelled");
-        spec.assertStillValid?.();
-        admitted.assertStillValid();
-        assertManagedChildProcessAdmissionOpen(spec.label);
-        if (getWindowsExtensionBackendPlan() !== plan) throw new MxcProcessContractError("Extension backend changed before native creation");
-        assertNesting();
-        consumeMxcExtensionAdmission(admission, { ...admissionInput, executableIdentity: measureExecutableIdentity(spec.command) });
-      },
-    });
+    // A separate snapshot, so the callback cannot mutate the production request.
+    spec.assertRequest?.(structuredClone(request));
+    const admission = createMxcExtensionAdmission(admissionInput);
+    let child!: OwnedMxcExtensionProcess;
+    // Readiness is this holder's own start: admitted only once its ready frame carries the start evidence for this request.
+    // A refusal here can follow native creation; the catch below disposes it through the lifetime owner.
+    await admitMxcExtensionStart(admission, { ...admissionInput, signal, start: (startSignal) => starting = (async () => {
+      child = await spawnMxcExtensionProcess(request, {
+        signal: startSignal,
+        onOwned: (owned) => { native = owned; },
+        beforeSpawn: () => {
+          assertParent();
+          if (signal.aborted) throw new MxcProcessContractError("Extension start was cancelled");
+          spec.assertStillValid?.();
+          admitted.assertStillValid();
+          assertManagedChildProcessAdmissionOpen(spec.label);
+          if (getWindowsExtensionBackendPlan() !== plan) throw new MxcProcessContractError("Extension backend changed before native creation");
+          assertNesting();
+          consumeMxcExtensionAdmission(admission, { ...admissionInput, executableIdentity: measureExecutableIdentity(spec.command) });
+        },
+      });
+      return child.startEvidence;
+    })() });
     native = child;
     spec.assertStillValid?.();
     if (signal.aborted) throw new MxcProcessContractError("Extension start was cancelled");
@@ -424,6 +433,8 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
     settleStartup();
     return result;
   } catch (error) {
+    // A refusal at the readiness deadline leaves the cancelled start in flight: it settles before its handle is released.
+    await starting?.then(undefined, () => {});
     settleStartup();
     // Cleanup failure retains the closure, native owner and endpoint in the shutdown registry.
     try { await lifetime.release(); } catch (cause) {
@@ -617,7 +628,9 @@ async function resolveSpawnLine(
   egress?: EgressInvocation;
   targetLaunch?: SandboxTargetLaunch;
 }> {
-  // The inference child is host code with its own gate below; every other owner is an extension start.
+  // The inference child is host-owned code, outside the extension-start floor: never asked, no consent route. Its own gate
+  // below decides, and today it refuses without the OS sandbox. The ruled Settings switch (OQ-14, on by default, unconfined
+  // with no backend) is not built. Every other owner is an extension start.
   assertExtensionStartAllowed(isOfflineOwner(spec) ? { hostOwned: true }
     : { ...(spec.extensionStart ? { start: { ...spec.extensionStart, spend: true } } : {}) });
   // An offline owner's refusal is enforced by the wrap, so it never runs without one; it follows the offline-service gate, not the extension setting.

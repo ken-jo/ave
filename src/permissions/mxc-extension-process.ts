@@ -11,7 +11,7 @@ import { aveHome } from "../shared/ave-home.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { assertMxcExtensionRequest } from "./mxc-extension-request.js";
 import { MxcExtensionChannel } from "./mxc-extension-channel.js";
-import { MXC_STREAM_CHUNK_BYTES } from "./mxc-extension-protocol.js";
+import { MXC_STREAM_CHUNK_BYTES, type MxcExtensionStartRecord } from "./mxc-extension-protocol.js";
 import { MxcIntegrityError } from "../../scripts/lib/mxc-sdk-integrity.mjs";
 import { MxcCapabilityUnavailableError, MxcProcessCleanupError, MxcProcessContractError, MxcSupervisorLostError } from "./mxc-extension-errors.js";
 
@@ -33,6 +33,8 @@ export interface OwnedMxcExtensionProcess {
   readonly stderr: PassThrough;
   readonly completion: Promise<ProcessResult>;
   readonly diagnostics: { nodeVersion: string; nativeModules: readonly string[]; nativeModuleCount: number; nativeModulesTruncated: boolean; ownerHandle: string };
+  /** What this start's own ready frame carried; holder admission judges it. Absent until that frame arrives. */
+  readonly startEvidence: MxcExtensionStartRecord | undefined;
   dispose(): Promise<void>;
 }
 
@@ -44,6 +46,7 @@ class SupervisedMxcProcess implements OwnedMxcExtensionProcess {
   readonly completion: Promise<ProcessResult>;
   readonly ready: Promise<void>;
   diagnostics = { nodeVersion: "", nativeModules: [] as string[], nativeModuleCount: 0, nativeModulesTruncated: false, ownerHandle: "" };
+  startEvidence: MxcExtensionStartRecord | undefined;
   private readonly channel: MxcExtensionChannel;
   private readonly liveness: Duplex;
   private readonly closed: Promise<void>;
@@ -157,6 +160,7 @@ class SupervisedMxcProcess implements OwnedMxcExtensionProcess {
         if (this.id) throw new MxcProcessContractError("Duplicate supervisor readiness");
         this.id = frame.id;
         this.diagnostics = { nodeVersion: frame.nodeVersion, nativeModules: frame.nativeModules, nativeModuleCount: frame.nativeModuleCount, nativeModulesTruncated: frame.nativeModulesTruncated, ownerHandle: frame.ownerHandle };
+        this.startEvidence = Object.freeze({ requestDigest: frame.requestDigest, evidence: Object.freeze({ ...frame.startEvidence }) });
         this.resolveReady();
       } else if (frame.type === "stdout" || frame.type === "stderr") {
         if (!this.id) throw new MxcProcessContractError("Supervisor output preceded readiness");
