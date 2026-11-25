@@ -194,6 +194,7 @@ const MXC_UNAVAILABLE_REASON_KEY = {
   "launcher-mismatch": "permissionsTab.osSandboxWindowsMxcReasonLauncherMismatch",
   "powershell-start-failed": "permissionsTab.osSandboxWindowsMxcReasonPowershellStartFailed",
   "unverified-session": "permissionsTab.osSandboxWindowsMxcReasonUnverifiedSession",
+  "runtime-root-unproved": "permissionsTab.osSandboxWindowsMxcReasonRuntimeRootUnproved",
 } as const satisfies Record<SandboxMxcUnavailableReason, string>;
 
 /** Every reason the shared extension plan can carry, so no reason renders as a raw key. */

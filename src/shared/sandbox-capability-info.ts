@@ -258,6 +258,8 @@ const MXC_UNAVAILABLE_REASONS = {
   "powershell-start-failed": true,
   /** An interactive runtime start has not been established. */
   "unverified-session": true,
+  /** The container runtime root was not proved private, so no container starts. */
+  "runtime-root-unproved": true,
 } as const;
 export type SandboxMxcUnavailableReason = keyof typeof MXC_UNAVAILABLE_REASONS;
 

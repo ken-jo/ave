@@ -3441,6 +3441,8 @@ in its directory.
   reason in Settings (a proxy-only boot keeps its proxy). A PowerShell start that
   fails with `STATUS_DLL_INIT_FAILED` (`0xC0000142`), which a non-interactive
   session such as SSH causes, is reported as `unverified-session`, not as MXC.
+  A container runtime root that was not proved private is reported as
+  `runtime-root-unproved`, and the probe starts no container.
 - **Integrity.** Detection hashes the launcher at boot, and the first command
   hashes it again before its launch; that result is cached for the process. A
   mismatch at boot leaves the shells off MXC (`launcher-mismatch`); at launch

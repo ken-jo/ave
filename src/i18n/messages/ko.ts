@@ -4428,6 +4428,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "permissionsTab.osSandboxWindowsMxcReasonLauncherMismatch": "설치본의 컨테이너 실행기가 예상한 빌드가 아닙니다. Ave 를 다시 설치하세요",
   "permissionsTab.osSandboxWindowsMxcReasonPowershellStartFailed": "이 PC 에서는 Windows PowerShell 이 컨테이너 안에서 시작되지 않았습니다",
   "permissionsTab.osSandboxWindowsMxcReasonUnverifiedSession": "Ave 가 비대화형 세션에서 실행 중이라 컨테이너 안에서 Windows PowerShell 을 시작할 수 없습니다. Windows 에 로그인한 세션에서 Ave 를 실행하세요",
+  "permissionsTab.osSandboxWindowsMxcReasonRuntimeRootUnproved": "Ave 가 컨테이너 폴더가 이 Windows 계정 전용인지 확인하지 못해 컨테이너를 시작하지 않습니다",
   "permissionsTab.osSandboxWindowsExtensionsSrtWin": "익스텐션: srt-win 공유 샌드박스 계정으로 격리됩니다.",
   "permissionsTab.osSandboxWindowsExtensionsNone": "익스텐션: 격리되지 않음. srt-win(1회 관리자 설치)이 준비되지 않았습니다.",
   "permissionsTab.osSandboxWindowsSharedIdentity": "익스텐션은 프록시 신원 하나를 공유해, 어느 프로세스가 연결했는지 프록시가 구분하지 못합니다.",

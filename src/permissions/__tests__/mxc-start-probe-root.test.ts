@@ -1,6 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const h = vi.hoisted(() => ({ execFile: vi.fn(), mkdtemp: vi.fn() }));
+const h = vi.hoisted(() => ({ execFile: vi.fn(), mkdtemp: vi.fn(), refusal: undefined as Error | undefined }));
 vi.mock("node:child_process", async (importOriginal) => ({
   ...await importOriginal<typeof import("node:child_process")>(), execFile: h.execFile,
 }));
@@ -9,15 +9,26 @@ vi.mock("node:fs/promises", async (importOriginal) => ({
 }));
 vi.mock("../mxc-runtime-root.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../mxc-runtime-root.js")>(),
-  requireMxcContainerStartRoot: () => { throw new Error("Container runtime root was not established when the sandbox started"); },
+  requireMxcContainerStartRoot: () => { throw h.refusal; },
 }));
 
 import { probeHostMxcPowerShellStart } from "../mxc-windows.js";
+import { MxcRuntimeRootError } from "../mxc-runtime-root.js";
 
 describe("the host PowerShell start probe", () => {
-  it("starts no container and creates no probe directory while the runtime root is not proved", async () => {
-    await expect(probeHostMxcPowerShellStart()).rejects.toThrow(/not established/u);
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it("reports a runtime root that was not proved under its own reason, starting no container and creating no probe directory", async () => {
+    h.refusal = new MxcRuntimeRootError("Container runtime root was not established when the sandbox started");
+    expect(await probeHostMxcPowerShellStart()).toEqual({ state: "unavailable", reason: "runtime-root-unproved", windowsBuild: null,
+      detail: "runtime root proof failed: Container runtime root was not established when the sandbox started" });
     expect(h.mkdtemp).not.toHaveBeenCalled();
+    expect(h.execFile).not.toHaveBeenCalled();
+  });
+
+  it("lets any other failure through to the probe's own handling", async () => {
+    h.refusal = new Error("unexpected");
+    await expect(probeHostMxcPowerShellStart()).rejects.toThrow("unexpected");
     expect(h.execFile).not.toHaveBeenCalled();
   });
 });
