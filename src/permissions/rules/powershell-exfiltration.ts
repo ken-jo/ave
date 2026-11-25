@@ -182,6 +182,7 @@ class Lexer {
   private parseBody(closer: ")" | "}" | undefined): PsPipeline[] {
     if (++this.depth > MAX_DEPTH) throw new PsUnreadable("nesting too deep");
     const pipelines: PsPipeline[] = [];
+    let completedCount = 0;
     let stages: PsCommand[] = [];
     let tokens: PsToken[] = [];
     const chargeToken = (token: PsToken): void => {
@@ -206,7 +207,6 @@ class Lexer {
       if (stages.length > 0) {
         const pipeline = toPipeline(stages, this.analysis);
         pipelines.push(pipeline);
-        if (this.depth === 1) this.completed.push({ pipeline, end: this.index });
       }
       stages = [];
     };
@@ -218,7 +218,19 @@ class Lexer {
       if (char === " " || char === "\t") { this.index += 1; continue; }
       if (char === ",") { pushToken(word(",", ",", false, [])); this.index += 1; continue; }
       if (char === "`" && (next === "\n" || next === "\r")) { this.index += next === "\r" && src[this.index + 2] === "\n" ? 3 : 2; continue; }
-      if (char === "\n" || char === "\r" || char === ";") { endPipeline(); this.index += 1; continue; }
+      if (char === "\n" || char === "\r" || char === ";") {
+        endPipeline();
+        // Only an explicit statement terminator proves a boundary in a bounded scan.
+        // Line breaks and pipeline separators can be part of the same statement.
+        if (char === ";" && this.depth === 1) {
+          for (const pipeline of pipelines.slice(completedCount)) {
+            this.completed.push({ pipeline, end: this.index });
+          }
+          completedCount = pipelines.length;
+        }
+        this.index += 1;
+        continue;
+      }
       if (char === "<" && next === "#") {
         this.analysis.facts.set("unproven-comment", true);
         const end = src.indexOf("#>", this.index + 2);

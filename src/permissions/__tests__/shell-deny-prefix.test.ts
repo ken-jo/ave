@@ -49,6 +49,13 @@ describe.each([
   );
 
   if (dialect === "powershell") {
+    it.each([" |\n  ", "\n  | ", " ||\n  "])("refuses an over-budget first statement across %j", async (separator) => {
+      const check = await savedDeny();
+      expect(check(`date${separator}${overBudgetTail}`)).toMatchObject({ decision: "deny", reasonCode: "shell-analysis-limit" });
+      expect(check(`date; date${separator}${overBudgetTail}`))
+        .toMatchObject({ decision: "ask", forceModal: true, reasonCode: "shell-analysis-limit" });
+    });
+
     it.each([
       { tail: overBudgetTail, limit: "token" },
       { tail: `date ${"x".repeat(8000)}`, limit: "input" },
