@@ -3545,7 +3545,27 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
         `plugin '${pluginId}' unpublished candidate was not displaced by replacement`,
       ));
     }
-    // The candidate is in no runtime map once displaced, so shutdown finds it only through this entry.
+    const { view, retirement } = this.trackUnpublishedRetirement(
+      plugin,
+      candidateDisposers,
+      this.retireUnpublishedCandidateResources(
+        pluginId,
+        plugin,
+        candidateDisposers,
+        context,
+        { preserveRuntimeRoot: replacementRuntimeRoot },
+      ),
+    );
+    handoff.close(view);
+    return retirement;
+  }
+
+  /** A detached or displaced unpublished plugin is in no runtime map, so shutdown finds it only through this entry. */
+  private trackUnpublishedRetirement(
+    plugin: LoadedPlugin,
+    candidateDisposers: Array<() => void> | undefined,
+    work: Promise<void>,
+  ): { view: PluginRuntimeRetirementView; retirement: Promise<void> } {
     const view: PluginRuntimeRetirementView = {
       manifest: plugin.manifest,
       instance: plugin.instance,
@@ -3555,13 +3575,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       deactivateHostApi: plugin.deactivateHostApi,
       drainHostApiOperations: plugin.drainHostApiOperations,
     };
-    const retirement = this.retireUnpublishedCandidateResources(
-      pluginId,
-      plugin,
-      candidateDisposers,
-      context,
-      { preserveRuntimeRoot: replacementRuntimeRoot },
-    ).then(
+    const retirement = work.then(
       () => { this.retiringUnpublishedCandidates.delete(view); },
       (error: unknown) => {
         // Its child may still run. A shutdown that claimed the entry reports it; otherwise the next shutdown does.
@@ -3570,8 +3584,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       },
     );
     this.retiringUnpublishedCandidates.set(view, retirement);
-    handoff.close(view);
-    return retirement;
+    return { view, retirement };
   }
 
   protected async removePluginLocked(
@@ -3592,15 +3605,27 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     // Late incarnations own private disposers, so invalidated preparation need not settle before tracked state is purged.
     const plugin = this.plugins.get(canonicalPluginId);
     let retirementError: unknown;
-    let unpublishedCleanup: (() => Promise<void>) | undefined;
+    let unpublishedCleanup: Promise<void> | undefined;
+    let startUnpublishedCleanup: (() => void) | undefined;
     if (plugin) {
       const generationLifecycle = this.requireCapabilityCommitLifecycle("plugin removal");
       if (this.isUnpublishedLoadedCandidate(canonicalPluginId, plugin, generationLifecycle)) {
-        unpublishedCleanup = this.detachUnpublishedLoadedCandidate(
+        const candidateDisposers = this.disposers.get(canonicalPluginId);
+        const cleanup = this.detachUnpublishedLoadedCandidate(
           canonicalPluginId,
           plugin,
           "unpublished plugin removal",
         );
+        // Register at detach so shutdown sees the candidate; its cleanup starts after removal bookkeeping, even if that throws.
+        const started = new Promise<void>((resolve) => { startUnpublishedCleanup = resolve; });
+        unpublishedCleanup = this.trackUnpublishedRetirement(
+          plugin,
+          candidateDisposers,
+          started.then(cleanup),
+        ).retirement;
+        unpublishedCleanup.catch((error: unknown) => {
+          log.error(`${canonicalPluginId} removal could not retire the unpublished loaded plugin: ${errorMessage(error)}`);
+        });
       } else {
         const { retirement } = await generationLifecycle.deactivateWithCommit(
           canonicalPluginId,
@@ -3639,30 +3664,34 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       log.info(`removePlugin: plugin in non-loaded state (failed/disabled), purging tracking — ${pluginId}`);
     }
 
-    // Stop hooks may persist config; delete overrides only after bounded deactivation.
-    if (!options.preserveConfigOverride) {
-      this.configStore.delete(canonicalPluginId);
-    }
+    try {
+      // Stop hooks may persist config; delete overrides only after bounded deactivation.
+      if (!options.preserveConfigOverride) {
+        this.configStore.delete(canonicalPluginId);
+      }
 
-    this.knownPluginManifests.delete(canonicalPluginId);
-    this.knownPluginAccessGrants.delete(canonicalPluginId);
-    for (const [toolName, ownerId] of [...this.knownToolOwners.entries()]) {
-      if (ownerId === canonicalPluginId) this.knownToolOwners.delete(toolName);
-    }
-    this.failedPluginIds.delete(canonicalPluginId);
-    this.failedPluginStubs.delete(canonicalPluginId);
-    this.loadFailureInfo.delete(canonicalPluginId);
-    this.lastAttemptRefusal.delete(canonicalPluginId);
-    this.disabledPluginIds.delete(canonicalPluginId);
-    this.inactivePluginIds.delete(canonicalPluginId);
-    this.invalidatePluginUiRevision(canonicalPluginId);
-    this.knownInstallAliases.delete(canonicalPluginId);
-    this.knownInstallClaims.delete(canonicalPluginId);
+      this.knownPluginManifests.delete(canonicalPluginId);
+      this.knownPluginAccessGrants.delete(canonicalPluginId);
+      for (const [toolName, ownerId] of [...this.knownToolOwners.entries()]) {
+        if (ownerId === canonicalPluginId) this.knownToolOwners.delete(toolName);
+      }
+      this.failedPluginIds.delete(canonicalPluginId);
+      this.failedPluginStubs.delete(canonicalPluginId);
+      this.loadFailureInfo.delete(canonicalPluginId);
+      this.lastAttemptRefusal.delete(canonicalPluginId);
+      this.disabledPluginIds.delete(canonicalPluginId);
+      this.inactivePluginIds.delete(canonicalPluginId);
+      this.invalidatePluginUiRevision(canonicalPluginId);
+      this.knownInstallAliases.delete(canonicalPluginId);
+      this.knownInstallClaims.delete(canonicalPluginId);
 
-    this.onDisable?.(canonicalPluginId);
+      this.onDisable?.(canonicalPluginId);
+    } finally {
+      startUnpublishedCleanup?.();
+    }
     if (unpublishedCleanup) {
       try {
-        await unpublishedCleanup();
+        await unpublishedCleanup;
       } catch (error) {
         retirementError = error;
       }

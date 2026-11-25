@@ -873,6 +873,8 @@ export default async function createPlugin() {
     await expect(fixture.runtime.waitForPluginReady(fixture.provider.id)).resolves.toBeUndefined();
     await nextTurn();
     expect(fixture.runtime.listPluginIds()).not.toContain(fixture.consumer.id);
+    // The candidate's stop still fails when shutdown re-awaits it, so shutdown reports it instead of dropping it.
+    expect(await fixture.runtime.stopAll()).toEqual({ unfinished: [fixture.consumer.id] });
   });
 
   it("directly disables an unpublished blocked candidate with the real bundle lifecycle", async () => {

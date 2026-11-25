@@ -4065,6 +4065,28 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     expect(await waitForSandboxHomesRemoved(homes)).toEqual([]);
   });
 
+  it("removing an unpublished loaded plugin still retires it when onDisable throws", async () => {
+    const f = await setup("success");
+    bindNativeBundleLifecycle(f);
+    const earlier = new Set(sandboxProcessHomesInUse());
+    await f.runtime.load();
+    const [orphan] = f.constructed;
+    if (!orphan) throw new Error("load() constructed no instance");
+    const homes = [...sandboxProcessHomesInUse()].filter((home) => !earlier.has(home));
+    expect(homes.length).toBeGreaterThan(0);
+    const disableFault = new Error("onDisable failed");
+    const hooks = f.runtime as unknown as { onDisable?: (pluginId: string) => void };
+    hooks.onDisable = () => {
+      hooks.onDisable = undefined;
+      throw disableFault;
+    };
+    await expect(f.runtime.removePlugin(ID)).rejects.toBe(disableFault);
+    expect(f.runtime.listPluginIds()).not.toContain(ID);
+    expect(await f.runtime.stopAll()).toEqual({ unfinished: [] });
+    expect(orphan.stops).toBe(1);
+    expect(await waitForSandboxHomesRemoved(homes)).toEqual([]);
+  });
+
   it("a restart that commits but fails to publish leaves no loaded instance or sandbox HOME at shutdown", async () => {
     const f = await setup("success");
     bindNativeBundleLifecycle(f, { loopbackPublish: new Error("loopback publish failed") });
