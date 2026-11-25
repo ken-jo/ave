@@ -1358,7 +1358,11 @@ export async function typeHostTerminalCommand(
         control.beginDisclosure(lease, blockId, (append) => attachLeaseOutput(session, control, lease, blockId, append));
       },
       // A turn stopped, or an effect check refused, after the paste leaves the approved text on the prompt: clear it while the lease holds.
-      clearAfterAbort: () => { if (live()) session.pty.write("\u0003"); },
+      clearAfterAbort: () => {
+        if (!live()) return false;
+        session.pty.write("\u0003");
+        return true;
+      },
       missing,
     },
     line,
@@ -1370,10 +1374,10 @@ export async function typeHostTerminalCommand(
   if (!result.ok) {
     const revoked = lease.signal.aborted;
     const abandonedControlGeneration = control.abandon(lease);
-    if (revoked && !signal?.aborted && result.reason === "aborted") {
+    if (revoked && !signal?.aborted && result.reason === "aborted" && !result.pasteUncleared) {
       return { ok: false, reason: "aborted", message: "the user took control of the terminal; nothing further was typed" };
     }
-    if (result.reason === "effect-refused" && abandonedControlGeneration !== undefined) {
+    if (result.reason === "effect-refused" && !result.pasteUncleared && abandonedControlGeneration !== undefined) {
       return { ...result, abandonedControlGeneration };
     }
   }
@@ -1463,7 +1467,7 @@ type TerminalNotTypedReason =
 
 export type TypeTerminalCommandResult =
   | { ok: true; firstBlockId: number }
-  | { ok: false; reason: TerminalNotTypedReason; message: string };
+  | { ok: false; reason: TerminalNotTypedReason; message: string; pasteUncleared?: true };
 
 export type VerifyTerminalShellResult =
   | { ok: true; cwd: string }
@@ -1676,7 +1680,7 @@ export interface PromptTypingTarget {
   /** The message when there is no such terminal. */
   readonly missing: string;
   /** Clear a pasted line that will not be entered: the typing was cancelled or its final effect check refused (host terminals: only while the lease holds). */
-  clearAfterAbort?(): void;
+  clearAfterAbort?(): boolean;
 }
 
 /** The typing protocol of {@link typeAgentTerminalCommand}, over any terminal: check, reset (Ctrl-C), wait for the fresh prompt, paste, confirm the edit line, Enter. */
@@ -1774,9 +1778,13 @@ export async function typeLineAtPrompt(
   if (pasteRefusal !== undefined) return interrupted() ?? effectRefused(pasteRefusal);
   // A cancellation or a refused final effect check from here on leaves the pasted line at the prompt; the target may clear it.
   const cancelledAfterPaste = (result: TypeTerminalCommandResult): TypeTerminalCommandResult => {
-    if (!result.ok && (result.reason === "aborted" || result.reason === "effect-refused") &&
-      isRemoteControllerBoundToSession(authority, sessionId)) target.clearAfterAbort?.();
-    return result;
+    if (result.ok || (result.reason !== "aborted" && result.reason !== "effect-refused")) return result;
+    try {
+      if (isRemoteControllerBoundToSession(authority, sessionId) && target.clearAfterAbort?.()) return result;
+    } catch {
+      // The terminal can close before its cancel write completes.
+    }
+    return { ...result, pasteUncleared: true, message: `${result.message}\nThe pasted line could not be cleared. Enter was not pressed.` };
   };
   const editMismatchAfterPaste = async (message: string): Promise<TypeTerminalCommandResult> => {
     if (target.isLive()) {

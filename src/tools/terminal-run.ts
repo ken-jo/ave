@@ -422,6 +422,7 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
       requestingSessionId: scope.sessionId, turn, line: input.command, expectedCwd: scope.cwd, bound, effectCheck, writeFence,
     }, ctx.abortSignal);
     if (!typed.ok) {
+      if (typed.pasteUncleared) return fail(`no command was sent in terminal ${scope.tabId}: ${typed.message}`);
       if (typed.reason === "effect-refused") {
         if (typed.abandonedControlGeneration !== undefined && bound()) {
           const released = deps.host.control(live, windowId);

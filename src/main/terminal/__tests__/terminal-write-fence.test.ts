@@ -18,7 +18,7 @@ const RESET = "\u0003";
 const PASTE = `\u001b[200~${COMMAND}\u001b[201~`;
 const CWD = canonicalizePathForMatch("/example");
 
-function editor(editFailure?: { at: "echo" | "acknowledgement"; deny(): void }) {
+function editor(editFailure?: { at: "echo" | "acknowledgement"; deny(): void }, canClear = true) {
   const blocks = new TerminalBlockTracker({ nonce: TERMINAL_TEST_NONCE, marksPromptEnd: true });
   let prompts = 0;
   let token = "";
@@ -72,7 +72,11 @@ function editor(editFailure?: { at: "echo" | "acknowledgement"; deny(): void }) 
       isLive: () => true,
       verify: async () => ({ ok: true as const, cwd: CWD }),
       fence: () => { order.push("fence"); return fence(); },
-      clearAfterAbort: () => write(RESET),
+      clearAfterAbort: () => {
+        if (!canClear) return false;
+        write(RESET);
+        return true;
+      },
     };
     return runWithEffectGateContext({ headless: false, toolName: "terminal_run", sessionId: "alice", permissionContext: { remoteControllerAuthority } },
       () => typeLineAtPrompt(target, COMMAND));
@@ -139,6 +143,18 @@ describe("terminal write fence", () => {
     } finally {
       await cleanupTmpDir(directory);
     }
+  });
+
+  it("reports an effect refusal when the pasted line cannot be cleared", async () => {
+    let denied = false;
+    const terminal = editor({ at: "acknowledgement", deny: () => { denied = true; } }, false);
+    const result = await terminal.run(() => denied ? "permission changed" : undefined);
+    expect(result).toEqual({
+      ok: false, reason: "effect-refused", pasteUncleared: true,
+      message: "permission changed\nThe pasted line could not be cleared. Enter was not pressed.",
+    });
+    expect(terminal.bytes).toEqual([RESET, TERMINAL_EDIT_LINE_QUERY, PASTE, TERMINAL_EDIT_LINE_QUERY]);
+    expect(terminal.onBeforeEnter).not.toHaveBeenCalled();
   });
 
   it("sends no reset when the first write is refused", async () => {
