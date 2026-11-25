@@ -217,6 +217,39 @@ describe("a user's read deny beats a plugin's host pierce in the package wrap", 
       ]);
       expect(shellFor(platform).policyNotices).toEqual([]);
     });
+
+    // A pattern rooted at or above the store still reaches files inside it.
+    const reachingPatterns = [
+      { name: "a subtree pattern rooted at the Ave home", rule: () => join(aveHome(), "**", "*.jsonl") },
+      { name: "a subtree pattern rooted above the Ave home", rule: () => join(dirname(aveHome()), "**", "*.jsonl") },
+      { name: "a one-level pattern rooted at the Ave home", rule: () => join(aveHome(), "*", "*.jsonl") },
+    ];
+    it.each(shellPlatforms.flatMap(platform => reachingPatterns.map(entry => ({ platform, ...entry }))))(
+      "on $platform, keeps it beside $name and names the rule",
+      async ({ platform, rule }) => {
+        await initializeWith([rule()]);
+        const policy = shellFor(platform);
+        expect(policy.allowRead).toEqual([workspace(), sessionRoot()]);
+        expect(policy.policyNotices).toEqual([
+          `Your read deny ${rule()} applies inside the saved-session store ${sessionRoot()}, so shell commands cannot read what it matches.`,
+        ]);
+      },
+    );
+
+    it.each(shellPlatforms)("on %s, names no pattern that reaches only a sibling of the store", async (platform) => {
+      await initializeWith([join(aveHome(), "unrelated-sibling", "**", "*.jsonl")]);
+      expect(shellFor(platform).policyNotices).toEqual([]);
+    });
+
+    it("on darwin, withholds it under a bracket deny that may cover it and says Ave cannot tell", async () => {
+      const rule = join(dirname(sessionRoot()), `[${basename(sessionRoot()).slice(0, 1)}]${basename(sessionRoot()).slice(1)}`);
+      await initializeWith([rule]);
+      const policy = shellFor("darwin");
+      expect(policy.allowRead).toEqual([workspace()]);
+      expect(policy.policyNotices).toEqual([
+        `Ave cannot tell whether your read deny ${rule} covers the saved-session store ${sessionRoot()}, so shell commands cannot read it.`,
+      ]);
+    });
   });
 
   // The container backend states the user's denies as their own rows and refuses in the rank, on the admitted paths.

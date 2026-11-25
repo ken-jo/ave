@@ -1579,7 +1579,7 @@ function getBuiltinShellSessionReadPolicyInSnapshot(userDataDir = _baseTrustedSe
   readonly denyRead: readonly string[];
   readonly withheldSessionReadRoot?: string;
   /** User read denies that withhold the saved-session store, or part of it, from the macOS and Linux shell. */
-  readonly sessionReadUserDenies: readonly { readonly rule: string; readonly whole: boolean }[];
+  readonly sessionReadUserDenies: readonly { readonly rule: string; readonly whole: boolean; readonly certain: boolean }[];
 } {
   const sessionPolicy = getConfiguredSessionReadPolicy();
   const sessionRoot = sessionPolicy.allowRead[0];
@@ -1597,7 +1597,7 @@ function getBuiltinShellSessionReadPolicyInSnapshot(userDataDir = _baseTrustedSe
       allowRead: Object.freeze([]),
       denyRead: Object.freeze([...getDefaultSensitiveReadDenyPaths(userDataDir), ...userDenies]),
       ...(withheldSessionReadRoot === undefined ? {} : { withheldSessionReadRoot }),
-      sessionReadUserDenies: Object.freeze(userCover === undefined || floorCovers ? [] : [{ rule: userCover.rule, whole: true }]),
+      sessionReadUserDenies: Object.freeze(userCover === undefined || floorCovers ? [] : [{ rule: userCover.rule, whole: true, certain: userCover.certain }]),
     });
   }
   // The session root is a re-allowed child of the Ave home boundary, so the boundary joins after the carve check.
@@ -1605,31 +1605,40 @@ function getBuiltinShellSessionReadPolicyInSnapshot(userDataDir = _baseTrustedSe
     allowRead: sessionPolicy.allowRead,
     denyRead: Object.freeze([...otherDenies, ...aveHomeReadBoundaryDenies(children), ...sessionPolicy.denyRead]),
     sessionReadUserDenies: Object.freeze(sessionRoot === undefined ? [] : userDenies
-      .filter((entry) => userDenyInside(entry, sessionRoot)).map((rule) => ({ rule, whole: false }))),
+      .filter((entry) => userDenyInside(entry, sessionRoot)).map((rule) => ({ rule, whole: false, certain: true }))),
   });
 }
 
-// A user deny whose literal prefix lies beneath `root`, so it withholds part of what a grant of `root` reads.
+// A user deny that can match something strictly beneath `root`, so it withholds part of what a grant of `root` reads: a path
+// under it, or a pattern rooted at or above it (`~/.ave/**/*.json`). Classes widen as userReadDenyCovering reads them.
 function userDenyInside(entry: string, root: string): boolean {
-  const spelling = canonicalizePathForMatch(expandLeadingTilde(process.platform === "win32" ? expandWindowsEnvRefs(entry) : entry));
-  const wildcard = spelling.search(/[*?[\]{]/u);
-  const prefix = caseFoldForMatch(wildcard < 0 ? spelling : spelling.slice(0, wildcard));
-  return prefix.startsWith(`${caseFoldForMatch(root).replace(/\/+$/u, "")}/`);
+  const spelling = expandLeadingTilde(process.platform === "win32" ? expandWindowsEnvRefs(entry) : entry);
+  const pattern = canonicalizePathForMatch(spelling.replace(/\[[^\]]*\]|[[\]]/g, "**")).split("/");
+  const rootSegments = canonicalizePathForMatch(root).replace(/\/+$/u, "").split("/");
+  const reaches = (pi: number, ri: number): boolean => {
+    const segment = pattern[pi];
+    if (segment === undefined) return false;
+    if (ri === rootSegments.length) return true;
+    const spanning = segment.indexOf("**");
+    if (spanning >= 0) return compileGlobMatcher(`${segment.slice(0, spanning)}**`)(rootSegments[ri] ?? "");
+    return compileGlobMatcher(segment)(rootSegments[ri] ?? "") && reaches(pi + 1, ri + 1);
+  };
+  return reaches(0, 0);
 }
 
 // The saved-session notices already shown, per session setup and Ave session: each rule is named once.
 const shownSessionReadNotices = new WeakMap<object, Set<string>>();
 
-function sessionReadUserDenyNotices(root: string | undefined, denies: readonly { readonly rule: string; readonly whole: boolean }[]): string[] {
+function sessionReadUserDenyNotices(root: string | undefined, denies: readonly { readonly rule: string; readonly whole: boolean; readonly certain: boolean }[]): string[] {
   if (root === undefined || _baseTrustedSettings === undefined || denies.length === 0) return [];
   const shown = shownSessionReadNotices.get(_baseTrustedSettings) ?? new Set<string>();
   shownSessionReadNotices.set(_baseTrustedSettings, shown);
   const session = currentAveHomeBoundarySnapshot()?.sessionId ?? "";
-  return denies.flatMap(({ rule, whole }) => {
+  return denies.flatMap(({ rule, whole, certain }) => {
     const key = `${session}\u0000${rule}`;
     if (shown.has(key)) return [];
     shown.add(key);
-    return [t(whole ? "sandboxPolicy.sessionReadUserDenyWhole" : "sandboxPolicy.sessionReadUserDenyPart", { rule, path: root })];
+    return [t(!whole ? "sandboxPolicy.sessionReadUserDenyPart" : certain ? "sandboxPolicy.sessionReadUserDenyWhole" : "sandboxPolicy.sessionReadUserDenyMaybe", { rule, path: root })];
   });
 }
 
