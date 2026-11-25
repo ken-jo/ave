@@ -570,7 +570,7 @@ describe("initializeAsrtSandbox — Linux configured-wrapper runtime probe", () 
     const probe = h.spawn.mock.lastCall;
     if (!probe) throw new Error("Expected the sandbox boot probe to spawn");
     const [, probeArgs, probeOptions] = probe;
-    expect(probeOptions.env).toEqual({ PATH: "/usr/bin:/bin:/usr/sbin:/sbin" });
+    expect(probeOptions.env).toEqual({ PATH: "/usr/bin:/bin:/usr/sbin:/sbin", SHLVL: "1" });
     vi.stubEnv("PATH", "/another-install/bin:/usr/bin:/bin");
     const worker = await wrapWorkerCommand("true", { commandId: TEST_COMMAND_ID });
     for (const command of [probeArgs[1], worker.argv[2]]) {
@@ -641,7 +641,7 @@ describe("initializeAsrtSandbox — Linux configured-wrapper runtime probe", () 
       ["-c", CONFIGURED_LINUX_BWRAP_COMMAND],
       {
         cwd: process.cwd(),
-        env: { PATH: "/usr/bin:/bin:/usr/sbin:/sbin" },
+        env: { PATH: "/usr/bin:/bin:/usr/sbin:/sbin", SHLVL: "1" },
         shell: false,
         stdio: "ignore",
         windowsHide: true,

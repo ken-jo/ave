@@ -3876,7 +3876,7 @@ it.runIf(process.platform === "darwin" || process.platform === "linux").each(["c
         expect(wrap).toHaveBeenCalledOnce();
         expect(wrap.mock.lastCall?.[0]).not.toContain("mcp-canary");
         expect(JSON.stringify(argv)).not.toContain("mcp-canary");
-        expect(env).toEqual({ PATH: "/usr/bin:/bin:/usr/sbin:/sbin" });
+        expect(env).toEqual({ PATH: "/usr/bin:/bin:/usr/sbin:/sbin", SHLVL: "1" });
         assertHomeHasNoCanary();
         const [program, ...args] = argv;
         if (!program) throw new Error("Expected a bundled command launcher");

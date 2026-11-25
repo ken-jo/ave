@@ -504,7 +504,7 @@ describe("spawnConfinedChild", () => {
 
     const [, , options] = spawnMock.mock.calls.at(-1)!;
     const env = (options as { env: NodeJS.ProcessEnv }).env;
-    expect(env).toEqual({ PATH: "/usr/bin:/bin:/usr/sbin:/sbin" });
+    expect(env).toEqual({ PATH: "/usr/bin:/bin:/usr/sbin:/sbin", SHLVL: "1" });
     const cmdline = wrapWorkerCommandMock.mock.calls.at(-1)?.[0];
     expect(cmdline).not.toContain("HOME=");
     const assignments = environmentPipe.read()?.toString().split("\0");

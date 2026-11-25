@@ -59,8 +59,15 @@ export function assertConfiguredLauncherEnvironment(env: NodeJS.ProcessEnv): voi
   }
 }
 
+// The wrapper's outer `/bin/bash -c` runs on the host. With stdin on a socket (a Node "pipe") and SHLVL below 2 after its own
+// increment, bash treats itself as started by a remote shell daemon and sources the host user's ~/.bashrc, even with `-c`
+// (bash shell.c run_startup_files; "Invoked by remote shell daemon" in the manual). Its exports then reach the target shim as
+// runtime environment and outrank the declared entries. A launcher SHLVL of 1 keeps every shell in the chain at 2 or above;
+// `exec` lowers it before the next shell raises it again. The shim drops SHLVL from the runtime set, and targets cannot declare it.
+const LAUNCHER_SHELL_LEVEL = "1";
+
 export function buildLauncherEnvironment(platform: NodeJS.Platform = process.platform): Record<string, string> {
-  if (platform !== "win32") return { PATH: LAUNCHER_PATH };
+  if (platform !== "win32") return { PATH: LAUNCHER_PATH, SHLVL: LAUNCHER_SHELL_LEVEL };
   const systemRoot = windowsSystemRoot();
   return {
     Path: win32SystemBinary(""),

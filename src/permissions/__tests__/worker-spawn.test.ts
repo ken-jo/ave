@@ -484,7 +484,7 @@ describe("spawnWorker — launcher environment", () => {
       await spawnWorker(workerOptions({ env: { WORKER_PROBE: canary } }));
       const [, args, launch] = spawnMock.mock.calls[0] ?? [];
       const options = launch as { env: NodeJS.ProcessEnv; stdio: unknown } | undefined;
-      expect(options?.env).toEqual({ PATH: "/usr/bin:/bin:/usr/sbin:/sbin" });
+      expect(options?.env).toEqual({ PATH: "/usr/bin:/bin:/usr/sbin:/sbin", SHLVL: "1" });
       expect(options?.stdio).toEqual(["pipe", "pipe", "pipe", "ignore", "pipe", "pipe"]);
       const cmdline = wrapWorkerCommandMock.mock.calls[0]?.[0];
       expect(cmdline).not.toContain("worker-canary");
@@ -642,7 +642,7 @@ describe("spawnWorker — gate ON (macOS)", () => {
     const stateDir = join(aveHome(), "plugins", "local-indexer", "workers", "embed");
     expect(mkdirMock).toHaveBeenCalledWith(stateDir, { mode: 0o700 });
     expect(chmodSyncMock).toHaveBeenCalledWith(stateDir, 0o700);
-    expect(capturedEnv).toEqual({ PATH: "/usr/bin:/bin:/usr/sbin:/sbin" });
+    expect(capturedEnv).toEqual({ PATH: "/usr/bin:/bin:/usr/sbin:/sbin", SHLVL: "1" });
 
     // No platform registers a control socket any more: the channel is the worker's own stdin/stdout.
     expect(registerUdsMock).not.toHaveBeenCalled();

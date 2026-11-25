@@ -1,8 +1,11 @@
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import { describe, expect, it } from "vitest";
-import { prepareSandboxTargetLaunch, sandboxTargetSetupFailed } from "../launcher-environment.js";
+import { describe, expect, it, vi } from "vitest";
+import { buildLauncherEnvironment, prepareSandboxTargetLaunch, sandboxTargetSetupFailed } from "../launcher-environment.js";
 
 describe("sandbox target environment", () => {
   it.each([
@@ -92,6 +95,41 @@ describe("sandbox target environment", () => {
       const refused = await run({ SHELLOPTS: "xtrace" });
       expect(refused).toMatchObject({ code: 1, failed: true });
       expect(refused.stderr).not.toContain("fixture");
+    },
+  );
+
+  it.runIf(process.platform === "linux" || process.platform === "darwin")(
+    "a host ~/.bashrc in the launcher shell cannot outrank a declared entry or add a locale path",
+    async () => {
+      const home = mkdtempSync(join(tmpdir(), "launcher-rc-"));
+      const marker = join(home, "sourced");
+      try {
+        // The GitHub macOS runner image's ~/.bashrc exports LC_ALL like this one.
+        writeFileSync(join(home, ".bashrc"), [
+          `echo "$$" >> ${JSON.stringify(marker)}`,
+          "export LC_ALL=en_US.UTF-8 LOCPATH=/rc-locale-path",
+        ].join("\n"));
+        vi.stubEnv("LC_ALL", "en_US.UTF-8");
+        const target = prepareSandboxTargetLaunch("/bin/sh", ["-c", 'printf "%s\\n" "$LC_ALL"; /usr/bin/printenv LOCPATH || echo unset'], {
+          LC_ALL: "declared-locale",
+        });
+        // The shape a gated wrapped launch has: the process group gate execs the wrapper's `/bin/bash -c`, stdin a pipe (a socket).
+        const child = spawn("/bin/sh", ["-c", 'exec "$@"', "launch-gate", "/bin/bash", "-c", target.command], {
+          env: { ...buildLauncherEnvironment(), HOME: home }, stdio: target.withStdio(["pipe", "pipe", "pipe"]),
+        });
+        let stdout = "";
+        child.stdout?.setEncoding("utf8").on("data", chunk => { stdout += chunk; });
+        const closed = once(child, "close");
+        target.sendEnvironment(child);
+        // stdin stays open until the child ends: bash only takes a connected socket for a remote shell daemon's.
+        await expect(closed).resolves.toEqual([0, null]);
+        child.stdin?.end();
+        expect(existsSync(marker)).toBe(false);
+        expect(stdout).toBe("declared-locale\nunset\n");
+      } finally {
+        vi.unstubAllEnvs();
+        rmSync(home, { recursive: true, force: true });
+      }
     },
   );
 

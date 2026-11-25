@@ -536,7 +536,7 @@ describe("StdioTransport ASRT wrap — gate ON", () => {
       { env: Record<string, string> },
     ];
     // The launcher keeps only its program lookup; the wrapped command carries the proxy settings.
-    expect(spawnOpts.env).toEqual({ PATH: "/usr/bin:/bin:/usr/sbin:/sbin" });
+    expect(spawnOpts.env).toEqual({ PATH: "/usr/bin:/bin:/usr/sbin:/sbin", SHLVL: "1" });
     const assignments: string[] = targetEnv.read()?.toString().split("\0") ?? [];
     // The approved per-server apiKey and the process HOME reach the server only through the target pipe.
     expect(assignments).toContain("MCP_API_KEY=secret-key");
