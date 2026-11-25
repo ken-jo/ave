@@ -85,26 +85,43 @@ describe("named entry rules", () => {
     expect(macWriteRootNameRules([])).toBe("");
   });
 
+  const patterns = (rule: string) => [...rule.matchAll(/\(regex #"([^"]*)"\)/gu)].map(match => new RegExp(match[1] ?? "", "u"));
+  const matches = (rule: string, path: string) => patterns(rule).some(pattern => pattern.test(path));
+
   it("anchors the entries and their carrying directories directly beneath each root", () => {
-    const [entries = "", carriers = "", ...rest] = macWriteRootNameRules(["/Users/example/project/", "/tmp/a.b[1]", "/Users/example/project"]).split("\n");
-    expect(rest).toEqual([]);
-    const pattern = (rule: string) => new RegExp(JSON.parse(rule.slice(rule.indexOf("(regex ") + 7, -2)) as string, "u");
-    expect(entries.startsWith("(deny file-write* file-write-create file-write-unlink (regex ")).toBe(true);
-    expect(carriers.startsWith("(deny file-write-create file-write-unlink (regex ")).toBe(true);
+    const rules = macWriteRootNameRules(["/Users/example/project/", "/tmp/a.b[1]", "/Users/example/project"]).split("\n");
+    expect(rules).toHaveLength(4);
+    const entries = [rules[0] ?? "", rules[2] ?? ""];
+    const carriers = [rules[1] ?? "", rules[3] ?? ""];
+    for (const rule of entries) expect(rule.startsWith("(deny file-write* file-write-create file-write-unlink (regex #")).toBe(true);
+    for (const rule of carriers) expect(rule.startsWith("(deny file-write-create file-write-unlink (regex #")).toBe(true);
     for (const denied of [
       "/Users/example/project/.codex/config.toml", "/Users/example/project/.CODEX/Hooks/run.sh", "/Users/example/project/.codex/AGENTS.override.md",
       "/Users/example/project/.agents/skills/x/SKILL.md", "/Users/example/project/.aws", "/Users/example/project/.aws/credentials",
       "/Users/example/project/.ave/commands/x.md", "/tmp/a.b[1]/.ave/hooks",
-    ]) expect(pattern(entries).test(denied), denied).toBe(true);
+    ]) expect(entries.some(rule => matches(rule, denied)), denied).toBe(true);
     for (const allowed of [
       "/Users/example/project/.codex", "/Users/example/project/.codex/sessions/x", "/Users/example/project/.codex/config.toml.bak",
       "/Users/example/project/sub/.codex/config.toml", "/Users/example/project/.ave/notes", "/Users/example/projectx/.aws",
       "/tmp/aXb[1]/.aws", "/Users/example/.aws",
-    ]) expect(pattern(entries).test(allowed), allowed).toBe(false);
-    for (const pinned of ["/Users/example/project/.codex", "/Users/example/project/.Agents", "/tmp/a.b[1]/.ave"]) expect(pattern(carriers).test(pinned), pinned).toBe(true);
+    ]) expect(entries.some(rule => matches(rule, allowed)), allowed).toBe(false);
+    // A quote cannot sit in a regex literal; it is matched as any character.
+    expect(macWriteRootNameRules(['/tmp/a"b']).split("\n")[1]).toContain('(regex #"^/tmp/a.b/(');
+    for (const pinned of ["/Users/example/project/.codex", "/Users/example/project/.Agents", "/tmp/a.b[1]/.ave"]) expect(carriers.some(rule => matches(rule, pinned)), pinned).toBe(true);
     for (const free of ["/Users/example/project/.codex/log", "/Users/example/project/sub/.ave", "/Users/example/project/.aws", "/Users/example/project/.avenue"]) {
-      expect(pattern(carriers).test(free), free).toBe(false);
+      expect(carriers.some(rule => matches(rule, free)), free).toBe(false);
     }
+  });
+
+  it("keeps every pattern under the length Seatbelt reads, whatever the root's length", () => {
+    for (const length of [8, 200, 600, 820]) {
+      const root = `/${"r".repeat(length - 1)}`;
+      const [entries = "", carriers = ""] = macWriteRootNameRules([root]).split("\n");
+      for (const literal of [...entries.matchAll(/#"([^"]*)"/gu), ...carriers.matchAll(/#"([^"]*)"/gu)]) expect((literal[1] ?? "").length).toBeLessThan(1000);
+      for (const name of [".codex/config.toml", ".agents/plugins/marketplace.json", ".aws/credentials", ".ave/hooks/x"]) expect(matches(entries, `${root}/${name}`), `${length} ${name}`).toBe(true);
+    }
+    // A root too long to anchor one name refuses the wrap instead of leaving the names open.
+    expect(() => macWriteRootNameRules([`/${"r".repeat(990)}`])).toThrow(t("sandboxPolicy.tooLarge"));
   });
 });
 

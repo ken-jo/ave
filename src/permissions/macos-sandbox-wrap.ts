@@ -24,6 +24,8 @@ const GIT_METADATA_RULES = [
   `(deny file-write* file-write-create file-write-unlink ${EGRESS_SOCKET_DIRECTORY_FILTER})`,
 ].join("\n");
 
+// Measured: a profile is read with strings of up to 1022 characters and refused ("Error reading string") from 1023.
+const MAX_SEATBELT_PATTERN_LENGTH = 960;
 function nameExpression(name: string): string {
   return name.replace(/[.]/gu, "\\.").replace(/[a-z]/giu, letter => `[${letter.toLowerCase()}${letter.toUpperCase()}]`);
 }
@@ -37,13 +39,33 @@ function nameExpression(name: string): string {
 // Seatbelt matches.
 export function macWriteRootNameRules(writeRoots: readonly string[]): string {
   const roots = [...new Set(writeRoots.map(root => root.replace(/\/+$/u, "")))].filter(root => root !== "");
-  if (roots.length === 0) return "";
-  const anchor = `^(${roots.map(root => root.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")).join("|")})/`;
   const carriers = [...new Set(SANDBOX_NAMED_ENTRIES.filter(entry => entry.includes("/")).map(entry => entry.slice(0, entry.indexOf("/"))))];
-  return [
-    `(deny file-write* file-write-create file-write-unlink (regex ${JSON.stringify(`${anchor}(${SANDBOX_NAMED_ENTRIES.map(nameExpression).join("|")})(/|$)`)}))`,
-    `(deny file-write-create file-write-unlink (regex ${JSON.stringify(`${anchor}(${carriers.map(nameExpression).join("|")})$`)}))`,
-  ].join("\n");
+  const rules: string[] = [];
+  for (const root of roots) {
+    // A regex literal (`#"…"`) keeps its backslashes through every quoting layer a wrap passes; it cannot hold a quote or a line
+    // break, so one in a root's name is matched as any character, which can only deny more.
+    const anchor = `^${root.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&").replace(/["\r\n]/gu, ".")}/`;
+    const filters = (names: readonly string[], tail: string): string => {
+      // Seatbelt refuses a profile that holds a string of 1023 characters or more, so the names are spread over as many
+      // patterns as the root's length needs.
+      const groups: string[][] = [[]];
+      for (const name of names.map(nameExpression)) {
+        const group = groups[groups.length - 1] ?? [];
+        if (group.length > 0 && anchor.length + [...group, name].join("|").length + tail.length + 2 > MAX_SEATBELT_PATTERN_LENGTH) groups.push([name]);
+        else group.push(name);
+      }
+      return groups.map(group => {
+        const pattern = `${anchor}(${group.join("|")})${tail}`;
+        if (pattern.length > MAX_SEATBELT_PATTERN_LENGTH) throw new Error(t("sandboxPolicy.tooLarge"));
+        return `(regex #"${pattern}")`;
+      }).join(" ");
+    };
+    rules.push(
+      `(deny file-write* file-write-create file-write-unlink ${filters(SANDBOX_NAMED_ENTRIES, "(/|$)")})`,
+      `(deny file-write-create file-write-unlink ${filters(carriers, "$")})`,
+    );
+  }
+  return rules.join("\n");
 }
 
 // The default macOS volume folds case and normalization, so two spellings that differ only there name one directory. On a volume that
