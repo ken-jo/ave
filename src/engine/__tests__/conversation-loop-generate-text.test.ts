@@ -120,6 +120,27 @@ describe("ConversationLoop.generateText", () => {
     );
   });
 
+  it("uses the configured runtime with no tools or history and preserves structured response text", async () => {
+    const response = '<suggested_replies>extra</suggested_replies>\n{"verdict":"pass"}';
+    const provider = new FakeProvider([
+      { type: "text_delta", text: response },
+      { type: "message_complete", stopReason: "end_turn" },
+    ]);
+    const loop = buildLoop(provider);
+    await expect(loop.generateText("condition and output", "judge", undefined, { responseMode: "structured" })).resolves.toBe(response);
+    expect(provider.lastParams).toMatchObject({
+      model: "gpt-5.4-mini", systemPrompt: "judge", messages: [{ role: "user", content: "condition and output" }], tools: [],
+    });
+  });
+
+  it.each([
+    { cause: "stream closed", finish: [] },
+    { cause: "output capped", finish: [{ type: "message_complete", stopReason: "max_tokens" }] },
+  ] satisfies { cause: string; finish: StreamEvent[] }[])("refuses a partial structured response when $cause", async ({ finish }) => {
+    const provider = new FakeProvider([{ type: "text_delta", text: '{"verdict":"pass"}' }, ...finish]);
+    await expect(buildLoop(provider).generateText("prompt", "judge", undefined, { responseMode: "structured" })).rejects.toThrow("Incomplete structured response");
+  });
+
   it("message_complete 이후 이벤트는 집계하지 않는다 (stream break)", async () => {
     const provider = new FakeProvider([
       { type: "text_delta", text: "first" },

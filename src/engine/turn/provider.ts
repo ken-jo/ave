@@ -29,6 +29,8 @@ export interface GenerateTextOptions {
   // Validate and clamp internal output limits before transport.
   outputTokenLimit?: number;
   modelOverride?: string;
+  /** Structured callers validate the raw text and require a complete text-only response. */
+  responseMode?: "structured";
 }
 
 // Native transports may need estimated local output bounds; adding an ellipsis would exceed the cap.
@@ -262,6 +264,7 @@ export async function generateTextForRoute(
         : outputLimitController.signal
       : abortSignal;
     let outputLimitReached = false;
+    let complete = false;
     let text = "";
     try {
     for await (const ev of provider.streamTurn({
@@ -289,13 +292,21 @@ export async function generateTextForRoute(
           }
         }
       }
-      if (ev.type === "message_complete") break;
+      if (ev.type === "message_complete") {
+        complete = ev.stopReason === "end_turn";
+        break;
+      }
+      if (ev.type === "tool_call" && options?.responseMode === "structured") throw new Error("Unexpected tool call in structured response");
       if (ev.type === "error") throw new Error(`LLM stream error: ${ev.error}`);
     }
     } catch (error) {
       if (!outputLimitReached || abortSignal?.aborted) throw error;
     }
     if (abortSignal?.aborted) throw new Error("LLM generation aborted");
+    if (options?.responseMode === "structured") {
+      if (!complete) throw new Error("Incomplete structured response");
+      return text;
+    }
     // Strip reply markup because plugins and routines consume the returned text verbatim.
     return stripSuggestedReplies(text).trim();
 }

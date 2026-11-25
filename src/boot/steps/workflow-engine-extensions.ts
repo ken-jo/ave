@@ -1,6 +1,7 @@
 import { createLogger } from "../../lib/logger.js";
 import { authoriseRunSource } from "../../work-board/workflow/run-authority.js";
 import { createPassConditionRegistry } from "../../work-board/workflow/stage-gates.js";
+import type { GenerateStageVerdictText } from "../../work-board/workflow/stage-verdict.js";
 import type { WorkBoardStore } from "../../main/work-board-store.js";
 import type { RemovedRun } from "../../main/workflow-run-store.js";
 import type { WorkflowTemplateStore } from "../../main/workflow-template-store.js";
@@ -22,7 +23,11 @@ type WorkflowEngineExtensions = Pick<
 /** The one place the stage scheduler's replaceable parts are chosen. Each later part swaps its own line here and nowhere else. Run state
  * is the board store's covered run file. Every stage works in its own folder under the home's `worktrees`, bound to its session, and with
  * no lane only an all-read-only version may run unattended. */
-export function workflowEngineExtensions(store: WorkBoardStore, attachments: Pick<WorkflowTemplateStore, "getAttachment">): WorkflowEngineExtensions {
+export function workflowEngineExtensions(
+  store: WorkBoardStore,
+  attachments: Pick<WorkflowTemplateStore, "getAttachment">,
+  generateVerdict?: GenerateStageVerdictText,
+): WorkflowEngineExtensions {
   // A run's output folder lives as long as its item. A record can go while its row is still listed (a later run superseded it and the
   // row's history let it go): that run's output stays until the row goes. A board that cannot be read removes nothing.
   const workspace = createStageWorkspaceProvider({ removable: () => store.runsWithoutItem() });
@@ -95,6 +100,6 @@ export function workflowEngineExtensions(store: WorkBoardStore, attachments: Pic
     workspace,
     workspaceBinding: { bind: bindStageWorkspace, unbind: unbindStageWorkspace },
     authoriseRunSource,
-    passConditions: createPassConditionRegistry(),
+    passConditions: createPassConditionRegistry(generateVerdict),
   };
 }

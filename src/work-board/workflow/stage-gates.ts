@@ -1,5 +1,6 @@
 import type { SubAgentSpawnResult } from "../../engine/subagent-runner.js";
 import type { TemplateStage } from "../../shared/workflow-template-types.js";
+import { evaluateModelVerdict, type GenerateStageVerdictText } from "./stage-verdict.js";
 
 type PassCondition = Extract<TemplateStage["gate"], { type: "auto" }>["pass"];
 interface GateFacts {
@@ -23,7 +24,7 @@ export interface PassConditionRegistry {
   promptSuffix(kind: PassCondition["kind"]): string | undefined;
 }
 
-export function createPassConditionRegistry(): PassConditionRegistry {
+export function createPassConditionRegistry(generateVerdict?: GenerateStageVerdictText): PassConditionRegistry {
   const entries = new Map<PassCondition["kind"], PassConditionEntry>([
     ["stage_ok", {
       evaluate: ({ result }) => {
@@ -32,6 +33,11 @@ export function createPassConditionRegistry(): PassConditionRegistry {
       },
     }],
   ]);
+  if (generateVerdict) entries.set("model_verdict", {
+    evaluate: ({ result, stage }) => result.ok && !result.incomplete
+      ? evaluateModelVerdict(generateVerdict, stage.goal, result.summary)
+      : { passed: false, evidence: "verdict-stage-incomplete", judgedBy: "model" },
+  });
   return {
     register: (kind, entry) => { entries.set(kind, entry); },
     evaluate: async (pass, facts) => {

@@ -1,5 +1,5 @@
 import { isRecord } from "../shared/is-record.js";
-import { canonicalWorkflowJson } from "../shared/workflow-template-output.js";
+import { canonicalWorkflowJson, STAGE_OUTPUT_MAX_CHARS } from "../shared/workflow-template-output.js";
 import type { WorkflowRunRecord } from "../shared/workflow-template-types.js";
 import { hasTemplateKeys, parseRequestedOutputDecl, isGraphHash, isStageId, isTemplateId, isTemplateVersion, isWorkspaceGlob, requireTemplate, WorkflowTemplateError } from "./template-graph.js";
 const STAGE_STATUSES = ["waiting", "running", "awaiting_gate", "passed", "failed", "cancelled", "rejected"];
@@ -43,7 +43,7 @@ function joins(value: unknown): boolean {
 function validStage(value: unknown): boolean {
   if (!isRecord(value) || !isStageId(value.stageId) || !Number.isInteger(value.attempt) || (value.attempt as number) < 1 || (value.attempt as number) > 3 || !STAGE_STATUSES.includes(value.status as string)) return false;
   for (const key of ["startedAt", "endedAt", "childSessionId", "output"]) if (value[key] !== undefined && typeof value[key] !== "string") return false;
-  if (typeof value.output === "string" && value.output.length > 48_000) throw new WorkflowTemplateError("invalid-template-run", "Stage output exceeds 48000 characters");
+  if (typeof value.output === "string" && value.output.length > STAGE_OUTPUT_MAX_CHARS) throw new WorkflowTemplateError("invalid-template-run", `Stage output exceeds ${STAGE_OUTPUT_MAX_CHARS} characters`);
   if (!optional(value, "resultHash", isGraphHash) || !optional(value, "outputHash", isGraphHash)) return false;
   if (!optional(value, "failure", v => ["error", "gate", "interrupted", "denied-tool", "workspace-lost", "workspace-revoked", "budget", "seed"].includes(v as string))
     || !optional(value, "taint", v => v === "file-content" || v === "agent-message") || !optional(value, "workspace", v => workspace(v, false))
