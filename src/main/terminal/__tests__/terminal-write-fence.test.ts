@@ -18,7 +18,7 @@ const RESET = "\u0003";
 const PASTE = `\u001b[200~${COMMAND}\u001b[201~`;
 const CWD = canonicalizePathForMatch("/example");
 
-function editor() {
+function editor(editFailure?: { at: "echo" | "acknowledgement"; deny(): void }) {
   const blocks = new TerminalBlockTracker({ nonce: TERMINAL_TEST_NONCE, marksPromptEnd: true });
   let prompts = 0;
   let token = "";
@@ -38,9 +38,21 @@ function editor() {
       queueMicrotask(prompt);
     } else if (data === PASTE) {
       line = COMMAND;
-      queueMicrotask(() => blocks.recordOutput(line));
+      queueMicrotask(() => {
+        if (editFailure?.at === "echo") {
+          editFailure.deny();
+          blocks.recordOutput("different line");
+        } else blocks.recordOutput(line);
+      });
     } else if (data === TERMINAL_EDIT_LINE_QUERY) {
-      queueMicrotask(() => blocks.recordOutput(mark(`E;Line=${encodeURIComponent(line)};B=${token}`)));
+      queueMicrotask(() => {
+        let reported = line;
+        if (reported !== "" && editFailure?.at === "acknowledgement") {
+          editFailure.deny();
+          reported = "different line";
+        }
+        blocks.recordOutput(mark(`E;Line=${encodeURIComponent(reported)};B=${token}`));
+      });
     }
   };
   const onBeforeEnter = vi.fn(() => { order.push("disclose"); });
@@ -105,6 +117,28 @@ describe("terminal write fence", () => {
     expect(result).toMatchObject({ ok: false, reason: "effect-refused", message: "permission changed" });
     expect(terminal.bytes).toEqual([RESET, TERMINAL_EDIT_LINE_QUERY, PASTE, TERMINAL_EDIT_LINE_QUERY, RESET]);
     expect(terminal.onBeforeEnter).not.toHaveBeenCalled();
+  });
+
+  it.each(["echo", "acknowledgement"] as const)("withdraws the pasted line and returns a deny after a failed %s", async (at) => {
+    const directory = mkdtempSync(join(tmpdir(), "ave-terminal-fence-"));
+    try {
+      const manager = new PermissionManager(join(directory, "permissions.json"));
+      manager.setMode("allow");
+      const check = () => manager.checkDetailed("terminal_run", "builtin", "shell");
+      const authority = issueHostTerminalWriteAuthority({
+        manager, human: false, cardForced: false, reviewed: false, settled: check(), decidedBackend: "host",
+        check, backendIdentity: () => "host",
+      });
+      const terminal = editor({ at, deny: () => manager.setRules([{ pattern: "terminal_run", action: "deny" }]) });
+      const result = await terminal.run(authority.refusal);
+      expect(check()).toMatchObject({ decision: "deny" });
+      expect(result).toMatchObject({ ok: false, reason: "effect-refused", message: check().reason });
+      expect(terminal.bytes).toEqual(at === "echo" ? [RESET, TERMINAL_EDIT_LINE_QUERY, PASTE, RESET]
+        : [RESET, TERMINAL_EDIT_LINE_QUERY, PASTE, TERMINAL_EDIT_LINE_QUERY, RESET]);
+      expect(terminal.onBeforeEnter).not.toHaveBeenCalled();
+    } finally {
+      await cleanupTmpDir(directory);
+    }
   });
 
   it("sends no reset when the first write is refused", async () => {

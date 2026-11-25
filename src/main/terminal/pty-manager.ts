@@ -1778,12 +1778,19 @@ export async function typeLineAtPrompt(
       isRemoteControllerBoundToSession(authority, sessionId)) target.clearAfterAbort?.();
     return result;
   };
+  const editMismatchAfterPaste = async (message: string): Promise<TypeTerminalCommandResult> => {
+    if (target.isLive()) {
+      const unsafe = await safeToWrite();
+      if (unsafe?.ok === false && unsafe.reason === "effect-refused") return cancelledAfterPaste(unsafe);
+      if (!unsafe) clear("\u0003");
+    }
+    return notTyped("edit-line-mismatch", message);
+  };
   // 5. Confirm both the display and the editor's actual buffer before Enter.
   const shown = await waitForEditLine(blocks, prompt, line, target.signal);
   if (target.signal?.aborted) return cancelledAfterPaste(notTyped("aborted", "terminal command preparation was cancelled; Enter was not pressed"));
   if (!shown || !target.isLive() || interrupted()) {
-    if (target.isLive() && !await safeToWrite()) clear("\u0003");
-    return notTyped("edit-line-mismatch", "the terminal's line editor did not show exactly the approved line after it was pasted, so Enter was not pressed");
+    return editMismatchAfterPaste("the terminal's line editor did not show exactly the approved line after it was pasted, so Enter was not pressed");
   }
   const beforeQuery = await safeToWrite();
   if (beforeQuery) return cancelledAfterPaste(beforeQuery);
@@ -1791,8 +1798,7 @@ export async function typeLineAtPrompt(
   if (target.signal?.aborted) return cancelledAfterPaste(notTyped("aborted", "terminal command preparation was cancelled; Enter was not pressed"));
   if (typeof confirmed === "string") return cancelledAfterPaste(effectRefused(confirmed));
   if (!confirmed || confirmed.line !== line || interrupted()) {
-    if (target.isLive() && !await safeToWrite()) clear("\u0003");
-    return notTyped("edit-line-mismatch", "the terminal's editable command buffer did not match the approved line; Enter was not pressed");
+    return editMismatchAfterPaste("the terminal's editable command buffer did not match the approved line; Enter was not pressed");
   }
   // No other process may share the terminal when Enter is pressed: whatever it writes would land in the agent's command output.
   const beforeEnter = await safeToWrite({ exclusive: true });
