@@ -634,8 +634,7 @@ export async function wireConversation(
     // Persist each run’s conversations so context survives restart and accumulates across reruns.
     transcriptStorage: workBoardStorage,
     workflow: {
-      ...workflowEngineExtensions(workBoardStore, ctx.workflowTemplateStore, (prompt, systemPrompt, signal) =>
-        conversationLoop.generateText(prompt, systemPrompt, signal, { responseMode: "structured", outputTokenLimit: 4_096 })),
+      ...workflowEngineExtensions(workBoardStore, ctx.workflowTemplateStore),
       resolveProjectRoot: (projectRoot) => {
         const resolved = resolveAuthorizedWorkspaceProject(projectRoot);
         return resolved.authorized && resolved.project ? resolved.project.projectRoot : null;

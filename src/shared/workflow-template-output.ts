@@ -1,9 +1,6 @@
 import { createHash } from "node:crypto";
 import { isRecord } from "./is-record.js";
 import type { RequestedOutput } from "./workflow-template-types.js";
-
-export const STAGE_OUTPUT_MAX_CHARS = 48_000;
-
 export function canonicalWorkflowJson(value: unknown): string {
   const ordered = (v: unknown): unknown => Array.isArray(v) ? v.map(ordered) : isRecord(v)
     ? Object.fromEntries(Object.keys(v).sort().map(key => [key, ordered(v[key])])) : v;

@@ -111,7 +111,6 @@ export const TOOL_TIMEOUT_POLICY = {
   reviewerHttpTimeoutMs: 15_000,
   // Provider header and streaming-idle waits share this budget; generation-only gateways may legitimately stay silent beyond page-fetch deadlines.
   modelStreamIdleCeilingMs: 300_000,
-  stageVerdictMs: 30_000,
   // Permission-rationale model work is separate from normal tool execution and interactive user waits.
   rationaleGenerationMs: 15_000,
   rationaleScopeReviewMs: 15_000,

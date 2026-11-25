@@ -22,7 +22,7 @@ import {
   type WorkBoardCancelResult, type WorkBoardRunEvent, type WorkBoardSteerAck, type WorkBoardSteerResult, type WorkItem, type WorkItemResolved,
   type WorkItemRunResult, type WorkItemUpdateResult,
 } from "../../shared/work-board-types.js";
-import { outputHashOf, resultHashOf, STAGE_OUTPUT_MAX_CHARS } from "../../shared/workflow-template-output.js";
+import { outputHashOf, resultHashOf } from "../../shared/workflow-template-output.js";
 import type {
   EnvelopeToolRef, RequestedOutput, RunAuthoritySource, StageEnvelope, TemplateScope, TemplateStage, TemplateVersion, UnattendedQualification,
   WorkItemStageRun,
@@ -43,6 +43,7 @@ const log = createLogger("work-board-stage-run");
 
 /** The host bounds a read-scope stage's rounds, as it does for the plan child of an ordinary run. */
 const READ_STAGE_ROUND_BUDGET = 20;
+const STAGE_OUTPUT_MAX_CHARS = 48_000;
 
 const runKeyOf = (itemId: number, runId: string): string => `work-board:${itemId}#${runId}`;
 
