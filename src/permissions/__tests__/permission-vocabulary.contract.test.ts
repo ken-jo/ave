@@ -112,12 +112,10 @@ function noBackendShell(saved: "exact" | "prefix", boot: { homePrivacyVerified?:
     ...(secondFloor ? {} : { floorSessionEligible: true as const }), rules: { allow: "fixture", ...(exact ? { exactHostRule: "Bash(fixture)" } : {}) } });
 }
 
-// The permission manager reads this inspection. On a host route it turns an `analysis-limit` into the floor `shell-analysis-limit`;
-// on a contained route it adds nothing, and the unproven command goes to the mode. The inspection is driven with the facts the
-// manager passes for bash; that one step of the manager is restated here.
+// Exercise the path evidence and the floor it supplies on either route.
 function analysisLimit(command: string, sandboxed = false): Observation {
   const kind = inspectShellPermissionPaths(command, tmpdir(), { dialect: "bash", environment: {} })?.unproven?.kind;
-  const evidence = kind === "analysis-limit" && !sandboxed ? { floor: { code: "shell-analysis-limit" as const, reason: "fixture" } } : {};
+  const evidence = kind === "analysis-limit" ? { floor: { code: "shell-analysis-limit" as const, reason: "fixture" } } : {};
   return pipeline({ tool: SHELL, shell: { ...HOST_SHELL, sandboxed, unproven: kind !== undefined }, ...evidence });
 }
 const ANALYSIS_LIMIT_COMMAND = [0, 1, 2, 3, 4, 5, 6].map(index => `if test -f q${index}; then v${index}=1; fi`).join("; ");
@@ -281,7 +279,7 @@ const ROWS: readonly Row[] = [
     today: { outcome: "ask-human", reason: "shell-analysis-limit", headless: "deny", waiver: "once" },
     observe: () => analysisLimit(ANALYSIS_LIMIT_COMMAND) },
   { id: "D30.b", point: "analysis limit other than the cd budget, contained route", tree: "no row", unknown: "U1",
-    today: { outcome: "ask", reason: "shell-approval", headless: "deny" },
+    today: { outcome: "ask-human", reason: "shell-analysis-limit", headless: "deny", waiver: "once" },
     observe: () => analysisLimit(ANALYSIS_LIMIT_COMMAND, true) },
   // Layer 1: egress destination classes. These rows pin the class predicates; the relay that acts on them is not driven,
   // so the outcome names what the relay does with each answer and the `relay:` reason is a label of this table, not a product code.

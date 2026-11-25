@@ -19,7 +19,7 @@ flowchart TD
   T -->|통과| H{"입장 검사 · 본인 계정 일치·인증·세션 연결 · 훅 · deny 규칙"}
   H -->|차단| DENY["거부"]
   H -->|신뢰한 훅 입력 변경: 전체 결정 재시작, 최대 3회| T
-  H -->|"통과 (무인 실행: 격리 증명·봉투 존재 포함)"| F{"질문† 대상? 보호 경로 · 위험 삭제 · 탈출 · 다른 주체 턴 · 샌드박스 없는 셸(경계 미확인 · 백엔드 없음)"}
+  H -->|"통과 (무인 실행: 격리 증명·봉투 존재 포함)"| F{"질문† 대상? 보호 경로 · 위험 삭제 · 탈출 · 다른 주체 턴 · 셸 분석 한도 초과 · 샌드박스 없는 셸(경계 미확인 · 백엔드 없음)"}
   F -->|예| ASKF["질문† (이번 한 번; 예외: sandbox-unavailable가 유일한 질문†이면, 또는 Windows 승인 호스트 질문†이면 이 세션의 이후 셸·훅을 이 세션 동안도 허용 가능, 사람 없으면 거부; 백엔드 없음 sandbox-unavailable가 유일한 질문†이고 부팅 홈 보호 확인됨: 명령과 정확히 일치하는 저장된 호스트 규칙만 묻지 않고 통과)"]
   F -->|아니오| UN{"예약이 시작한 템플릿 실행의 단계 세션?"}
   UN -->|아니오| U{"사용자 소유 브라우저 · 호스트 터미널?"}
@@ -250,7 +250,8 @@ Modes are behaviour, not labels. Each column matches the reference hosts' equiva
 | outside-project write | ask (one card with folder grant) | ask (one card) | reviewer | allow | Claude add-dir card, OpenCode external_directory; owner "질문 1회" |
 | known-safe read-only shell (ls, cat, git status/diff/log, rg…, as the existing literal-proof/read-only classifier defines it) | allow | allow | allow | allow | Claude default read-only bash, Codex untrusted safe commands |
 | other sandboxed shell, incl. file-changing commands inside the project (mkdir/mv/cp/rm/build/test) | ask | sandbox-auto | sandbox-auto | sandbox-auto | Codex workspace-write sandbox, Claude sandboxed bash |
-| sandboxed shell with an unproven/destructive signal (incl. a command that exceeds any command-analysis limit, the 16-fork cd budget for directory changes among them: an ask, never a deny; owner decision 2026-11-25) | ask | ask | reviewer | allow (unless 질문†) | Codex dangerous heuristic, Claude critical rm |
+| sandboxed shell with an unproven/destructive signal | ask | ask | reviewer | allow (unless 질문†) | Ordinary mode policy |
+| shell command past an analysis limit, including the directory-change budget | ask-forced | ask-forced | ask-forced | ask-forced | Contained asks in every mode. No rule, mode or grant passes the ask. Host asks the person through the `shell-analysis-limit` floor. Both routes offer one-time approval, no session grant, and deny headless. |
 | sandbox escalation / host shell (sandbox off) | ask (prefix rule savable, except the Windows approved-host 질문†) | ask (prefix rule savable, except the Windows approved-host 질문†) | reviewer (except the Windows approved-host 질문†) | allow (unless 질문†) | Codex escalation + prefix rules; owner "코덱스와 맞춰"; Windows approved-host ask is 질문†, waived once per session, never saved: owner decision 2026-11-25 |
 | builtin browser in agent-opened tab | tool use allow; new origin ask (this-site / any-site) | same | same | same | owner decision 2026-11-08; session only, no child inheritance; headless deny |
 | network / web fetch | ask | ask | reviewer | allow | Codex sandbox network off, Claude WebFetch rules |

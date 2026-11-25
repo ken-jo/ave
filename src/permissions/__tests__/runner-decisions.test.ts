@@ -560,20 +560,43 @@ describe("shared runner decisions", () => {
     expect(checkCommand(manager, dialect, command).decision).toBe("allow");
   });
 
-  // An exhausted evidence budget asks a human on the host, where no grant answers it; a contained command keeps ordinary grant and mode policy.
+  it.each(["rm -rf build", "git push", "git config core.hooksPath x"])("asks for a contained command past the parse limit: %s", async (tail) => {
+    const manager = runnerManager();
+    manager.setMode("allow");
+    await manager.addRulePersist({ pattern: "Bash(rm *)", action: "deny" }, { kind: "user" });
+    const command = `# ${"x".repeat(SHELL_ANALYSIS_LIMITS.sourceBytes + 1)}\n${tail}`;
+    expect(checkCommand(manager, "bash", command, true)).toMatchObject({ decision: "ask", reasonCode: "shell-analysis-limit" });
+  });
+
+  it.each(["saved allow rule", "remembered approval"])("requires a person past the contained parse limit with a %s", async (grant) => {
+    const command = `echo ${"x".repeat(SHELL_ANALYSIS_LIMITS.sourceBytes + 1)}`;
+    const permissionsPath = join(directory, `saved-${managerSequence++}.json`);
+    let manager = runnerManager(permissionsPath);
+    const key = actionKey("bash", command);
+    await manager.addAlwaysAllowedPersist(key);
+    if (grant === "saved allow rule") {
+      manager = runnerManager(permissionsPath);
+      await manager.loadRulesFromFile();
+    }
+    expect(checkCommand(manager, "bash", command, true)).toMatchObject({
+      decision: "ask", reasonCode: "shell-analysis-limit",
+      pipelineRequest: { rules: grant === "saved allow rule" ? { allow: key } : { remembered: expect.any(String) } },
+    });
+  });
+
   it.each([
     { name: "input over the hard length cap", dialect: "bash" as const, command: `echo ${"x".repeat(SHELL_ANALYSIS_LIMITS.sourceBytes + 1)}` },
     { name: "expression lexer out of budget", dialect: "powershell" as const, command: `Get-Content (${"'a' + ".repeat(3000)}'b')` },
-  ])("answers $name on the host before remembered grants", async ({ dialect, command }) => {
+  ])("requires a person on either route when $name, even with remembered grants", async ({ dialect, command }) => {
     const manager = runnerManager();
-    expect(checkCommand(manager, dialect, command)).toMatchObject(analysisLimitAnswer(false, false, {}));
+    expect(checkCommand(manager, dialect, command)).toMatchObject(analysisLimitAnswer(false));
     await manager.addAlwaysAllowedPersist(actionKey(dialect, command));
     for (const mode of ["strict", "default", "auto", "allow"] as const) {
       manager.setMode(mode);
       for (const sandboxed of [false, true]) {
         for (const headless of [false, true]) {
           expect(checkCommand(manager, dialect, command, sandboxed, headless), `${mode} sandboxed=${sandboxed} headless=${headless}`)
-            .toMatchObject(analysisLimitAnswer(sandboxed, headless, { decision: "allow", reasonCode: expect.stringMatching(/^(?:remembered-approval|rule-allow)$/u) }));
+            .toMatchObject(analysisLimitAnswer(headless));
         }
       }
     }

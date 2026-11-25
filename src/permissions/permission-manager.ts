@@ -1818,9 +1818,8 @@ export class PermissionManager {
         brokerGuestRoute ? new ShellFloorContext("powershell", { inspectHostFiles: false }) : undefined) : undefined;
     const shellInspectionExhausted = analysisLimited || shellSignals?.analysisLimited === true;
     analysisLimited ||= shellInspectionExhausted;
-    // An exhausted analysis proves nothing about the command: a human answers it on a host route, and the mode answers a contained one.
-    const analysisLimitFloor = shellExecution.runsSandboxed ? undefined : { code: "shell-analysis-limit" as const, reason: SHELL_ANALYSIS_LIMIT_REASON };
-    if (shellInspectionExhausted && analysisLimitFloor) floor ??= analysisLimitFloor;
+    const analysisLimitFloor = { code: "shell-analysis-limit" as const, reason: SHELL_ANALYSIS_LIMIT_REASON };
+    if (shellInspectionExhausted) floor ??= analysisLimitFloor;
     if (shellSignals?.exfiltration) exfiltration ??= { reason: shellSignals.exfiltration };
     const shellShape = parsed && !analysisLimited && !ruleProofLimited ? analyzeShellForRules(parsed, ruleSubject?.cwd) : undefined;
     // A confirmed broker guest route resolves drive-less operands as guest (Linux) paths. Host routes, and any substrate the live broker does not confirm, keep host semantics and the unchanged floor.
@@ -1830,7 +1829,7 @@ export class PermissionManager {
     const powerShellPaths = !shellInspectionExhausted && command !== undefined && ruleSubject?.dialect === "powershell" && analysisCwd !== undefined
       ? inspectPowerShellPermissionPaths(parsedPowerShell ?? command, analysisCwd, shellExecution.environmentSnapshot ?? {}, undefined,
         { inspectHostFiles: !brokerGuestRoute }) : undefined;
-    if ((shellPaths?.unproven?.kind === "analysis-limit" || powerShellPaths?.evidenceLimitExceeded) && analysisLimitFloor) floor ??= analysisLimitFloor;
+    if (shellPaths?.unproven?.kind === "analysis-limit" || powerShellPaths?.evidenceLimitExceeded) floor ??= analysisLimitFloor;
     const credentialStore = powerShellPaths?.credentialStore;
     if (credentialStore) admissionDenial ??= { code: "credential-store", reason: credentialStore };
     const unknownProtectedWrite = shellPaths?.unknownProtectedWrite ?? powerShellPaths?.unknownProtectedWrite;
@@ -1851,7 +1850,7 @@ export class PermissionManager {
     }
     const competingFloor = floor !== undefined;
     if (sandboxUnavailableAsk) {
-      floor = context.floor ?? { code: "sandbox-unavailable", reason: "The OS sandbox is unavailable, so this shell command would run without isolation; it needs your approval once or for this session." };
+      floor = context.floor ?? (floor?.code === "shell-analysis-limit" ? floor : { code: "sandbox-unavailable", reason: "The OS sandbox is unavailable, so this shell command would run without isolation; it needs your approval once or for this session." });
     }
     const floorSessionEligible = sandboxUnavailableAsk && !competingFloor;
     const floorSessionGranted = floorSessionEligible && context.hostShellExecutionPlan !== undefined && requestedRuleSubject !== undefined &&

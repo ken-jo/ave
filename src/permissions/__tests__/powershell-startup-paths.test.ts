@@ -123,7 +123,7 @@ it("short-circuits capped and already-unproven input before installation discove
   const overCap = `Write-Output ${"x".repeat(100_000)}`;
   for (const sandboxed of [false, true]) {
     expect(checkShellPermission(manager, cwd, "startup-path", overCap, "powershell", sandboxed))
-      .toMatchObject(analysisLimitAnswer(sandboxed, false, { decision: "allow", reasonCode: "allow-mode", pipelineRequest: { shell: { unproven: true } } }));
+      .toMatchObject({ ...analysisLimitAnswer(false), pipelineRequest: { shell: { unproven: true } } });
     expect(buildShellRuleApproval("powershell", overCap, cwd, { allow: true, deny: true }).exactRule).toBeNull();
   }
   expect(inspectPowerShellCommand("Write-Output $runtime", cwd).outcome).toBe("unproven");

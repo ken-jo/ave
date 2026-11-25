@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { analysisLimitAnswer, containedModeAnswer } from "../../__tests__/support/permission-lane.js";
+import { analysisLimitAnswer } from "../../__tests__/support/permission-lane.js";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -37,7 +37,7 @@ function expectAnalysisLimit(command: string, runsSandboxed = true): void {
   try {
     for (const mode of ["strict", "default", "auto", "allow"] as const) {
       manager.setMode(mode);
-      expect(check(command, runsSandboxed), mode).toMatchObject(analysisLimitAnswer(runsSandboxed, false, containedModeAnswer(mode, false)));
+      expect(check(command, runsSandboxed), mode).toMatchObject(analysisLimitAnswer(false));
     }
   } finally { manager.setMode(previousMode); }
 }

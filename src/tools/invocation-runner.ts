@@ -47,7 +47,7 @@ import {
   isFileCopyCheckpointSupported,
 } from "./file-tools.js";
 import { extractShellCommands } from "../shared/shell-command-fields.js";
-import type { ShellPathPolicyViolation } from "./shell-path-policy.js";
+import { isShellExecutionAnalysisLimit, type ShellPathPolicyViolation } from "./shell-path-policy.js";
 // Effective invocation-origin SoT (AsyncLocalStorage). The plugin-surface executor
 // enters a `runWithInvocationOrigin` frame for every card/panel/plugin call, so this
 // is defined ("mcp-app" | "ui" | "plugin") ONLY on that path; the model's main-loop
@@ -2049,11 +2049,7 @@ async function runToolInvocationAttempt(
           break;
         }
         if (shellPathViolation.kind === "analysis-limit") {
-          // Nothing is proven about the command's paths. A contained command goes to the mode; anywhere else a human answers it.
-          const disposable = invocationPermissionContext.disposableSubstrate;
-          const contained = hostTerminalCommand === undefined && hostShellExecutionPlan !== undefined
-            && (isConfinedHostShellExecution(hostShellExecutionPlan, disposable) || disposable !== undefined);
-          if (!contained) invocationPermissionContext.floor ??= { code: "shell-analysis-limit", reason: SHELL_ANALYSIS_LIMIT_REASON };
+          invocationPermissionContext.floor ??= { code: "shell-analysis-limit", reason: SHELL_ANALYSIS_LIMIT_REASON };
           shellAnalysisLimitAdmitted = true;
           break;
         }
@@ -2181,7 +2177,14 @@ async function runToolInvocationAttempt(
       executionRoutePlan?.disposableCapability?.kind !== "workload-broker"
     ) {
       const bashResult = services.bashAstValidator.validate(toolUse.name, finalInput, preparedShellInvocation ? { cwd: executionCwd, facts: hostShellAnalysisFacts(preparedShellInvocation, hostShellExecutionPlan) } : undefined);
-      if (bashResult.decision === "deny") {
+      const containedAnalysisLimit = bashResult.decision === "deny" && bashResult.patternId === "shell-analysis" &&
+        bashResult.reason !== undefined && isShellExecutionAnalysisLimit(bashResult.reason) && hostShellToolName === "bash" &&
+        (executionRoutePlan?.route === "disposable-container" || isConfinedHostShellExecution(hostShellExecutionPlan, disposableSubstrate));
+      if (containedAnalysisLimit) {
+        invocationPermissionContext.floor ??= { code: "shell-analysis-limit", reason: SHELL_ANALYSIS_LIMIT_REASON };
+        shellAnalysisLimitAdmitted = true;
+        if (directoryAuthorization?.permission.reasonCode !== "shell-analysis-limit") directoryAuthorization = undefined;
+      } else if (bashResult.decision === "deny") {
         const msg = t("be_executor.bashAstBlock", { reason: bashResult.reason ?? "", patternId: bashResult.patternId ?? "" })
           + buildPolicyDenialGuidance({
             rule: `bash-ast/${bashResult.patternId ?? "unnamed"}`,

@@ -672,7 +672,7 @@ describe("checkDetailed applies the floors by dialect", () => {
     expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps(command))).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
   });
 
-  it("asks a human for exhausted path evidence on the host before every grant, and keeps ordinary grant policy when contained", async () => {
+  it("asks a human for exhausted path evidence on either route despite grants", async () => {
     const command = `Get-Content (${"'a' + ".repeat(3000)}'b')`;
     const pm = new PermissionManager(join(dir, "permissions.json"));
     await pm.addAlwaysAllowedPersist(ps(command).approvalCacheKey, "write");
@@ -682,8 +682,7 @@ describe("checkDetailed applies the floors by dialect", () => {
       pm.setMode(mode);
       for (const runsSandboxed of [false, true]) for (const headless of [false, true]) {
         const result = pm.checkDetailed("powershell", "builtin", "shell", null, { ...ps(command), headless, shellExecution: { runsSandboxed } });
-        expect(result, `${mode} sandboxed=${runsSandboxed} headless=${headless}`).toMatchObject(analysisLimitAnswer(runsSandboxed, headless, { decision: "allow", reasonCode: expect.stringMatching(/^(?:rule-allow|remembered-approval)$/u) }));
-        if (runsSandboxed) expect(result.forceModal).toBeUndefined();
+        expect(result, `${mode} sandboxed=${runsSandboxed} headless=${headless}`).toMatchObject(analysisLimitAnswer(headless));
       }
     }
   });
@@ -740,7 +739,7 @@ describe("checkDetailed applies the floors by dialect", () => {
     if (boundary === "analysis-limit") {
       await pm.addAlwaysAllowedPersist(ps(command).approvalCacheKey, "write");
       for (const headless of [false, true]) expect(pm.checkDetailed("powershell", "builtin", "shell", null, { ...ps(command), headless }))
-        .toMatchObject(analysisLimitAnswer(false, headless, {}));
+        .toMatchObject(analysisLimitAnswer(headless));
     } else if (boundary === "exfiltration") {
       await pm.addAlwaysAllowedPersist(ps(command).approvalCacheKey, "write");
       expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps(command)))

@@ -403,10 +403,10 @@ describe("bounded sensitive-path inspection", () => {
         approvalCacheKey: `bash-action:${text}`,
       });
       const pending = check(command);
-      expect(pending).toMatchObject(analysisLimitAnswer(false, false, {}));
+      expect(pending).toMatchObject(analysisLimitAnswer(false));
       await manager.addAlwaysAllowedPersist(`bash-action:${command}`);
-      expect(check(command)).toMatchObject(analysisLimitAnswer(false, false, {}));
-      expect(check(`${command} .env`)).toMatchObject(analysisLimitAnswer(false, false, {}));
+      expect(check(command)).toMatchObject(analysisLimitAnswer(false));
+      expect(check(`${command} .env`)).toMatchObject(analysisLimitAnswer(false));
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
