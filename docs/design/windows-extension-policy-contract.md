@@ -283,27 +283,40 @@ check (`assertMxcHolderStaging`) take the staging parent from it.
 
 | Platform | Runtime root | Staging parent |
 |---|---|---|
-| macOS | `<per-user temp>/ave-mxc-<digest>` | `<runtime root>/staging` |
-| Linux | `<temp>/ave-mxc-<digest>` | `<runtime root>/staging` |
+| macOS | `~/Library/Caches/ai.agent-connector.ave/mxc-runtime` | `<runtime root>/staging` |
+| Linux | `$XDG_CACHE_HOME/ai.agent-connector.ave/mxc-runtime`, with `~/.cache` when the variable is unset or not absolute | `<runtime root>/staging` |
 | Windows | not moved yet | `<AVE_HOME>\mxc-staging`, unchanged |
 
 - **Selection.**
-  - The base is the temp directory (`os.tmpdir()`), resolved to its canonical
-    path because the macOS sandbox matches real paths. Linux uses it too: the
-    session runtime directory (`$XDG_RUNTIME_DIR`) is memory-backed and not
-    meant for a HOME's worth of files.
-  - `<digest>` is twelve hex digits of the SHA-256 over the account id and the
-    Ave home path, so each account and Ave home has its own root and the name
-    has one length.
+  - The base is the account's cache directory, named by the packaged app id.
+    It is per-user, so no other account can occupy the name. It is on disk, so
+    a HOME's worth of files fits, which a session runtime directory
+    (`$XDG_RUNTIME_DIR`) is not meant for. Nothing ages files out of it; macOS
+    removes files from the per-user temp directory after days without a read,
+    which a long-lived holder would lose.
+  - The path is resolved to its canonical form, because the macOS sandbox
+    matches real paths. The root's own name is never resolved through a link.
   - The root must lie neither inside nor above the Ave home, compared on both
     the lexical and the canonical home. This is checked before anything is
     created.
   - The root and the staging parent are created with mode 0700 and re-verified
     on every use: a real directory, not a link, owned by this account, closed
-    to every other account.
+    to every other account. The app's cache directory above the root must be
+    this account's real directory.
   - Any failure refuses the start (`MxcRuntimeRootError`). A directory that
     fails is never re-moded, replaced or bypassed, and staging never falls back
     into the Ave home.
+- **Read floor.** The run directories are Ave-private data, as they were under
+  the Ave home, and the move does not open them.
+  - The runtime root is one of the confined processes' private roots
+    (`appOwnedSandboxPrivateRoots`), so the sandbox read floor denies it to
+    every process on the sandbox route, and a read grant inside it is withheld
+    like one inside the other private roots.
+  - A container is granted its own run directory and nothing above it, so
+    every other run stays out of its reach.
+  - Sandbox start-up establishes the root before the first wrap, because Linux
+    may omit a read deny for a path that does not exist yet. A root that cannot
+    be established is logged, and container starts stay refused.
 - **Layout.**
   - `<runtime root>/staging/<opaque-id>/{home,temp}`, each 0700. The id is 32
     lowercase hex digits. `<opaque-id>` is the run's only write grant.
@@ -334,17 +347,10 @@ check (`assertMxcHolderStaging`) take the staging parent from it.
 - **Windows.** The Windows adapters below keep `<AVE_HOME>\mxc-staging`, their
   own removal and their `retired-*` sweep. Windows honours a write grant nested
   under a denied directory, so that placement works there. Moving it needs a
-  per-user location with a protected ACL and is a separate change; until then
-  the Ave home's read re-allow for `mxc-staging` stays.
-- **Residuals.**
-  - macOS ages files out of the per-user temp directory when they go unread
-    for days. A run that lives that long can lose untouched files in its HOME
-    and temp, as it would in any temp directory.
-  - The runtime root is outside the Ave home's read deny. A container
-    sees only its own grants, so it cannot reach another run. A process
-    confined by a different, allow-by-default backend on the same account is
-    not kept out by mode bits; keeping it out needs a floor deny on the runtime
-    root, which is a permission decision and not part of this placement.
+  per-user location with a protected ACL and is a separate change. The moved
+  root must be inside the same read floor: denied to every confined process
+  except the container that owns the run. Until then the Ave home's read
+  re-allow for `mxc-staging` stays.
 
 ## Holder adapters (row 5)
 

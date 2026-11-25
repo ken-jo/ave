@@ -16,7 +16,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join, sep } from "node:path";
+import { basename, join, sep } from "node:path";
 
 import {
   appOwnedSandboxHomeRoot,
@@ -39,6 +39,7 @@ import {
   sandboxTempPrincipalDirName,
   type SandboxTempPrincipal,
 } from "../asrt-sandbox.js";
+import { mxcRuntimeRootPath } from "../mxc-runtime-root.js";
 import { sweepSandboxPrivateRoot } from "../../boot/steps/sandbox-init.js";
 import { makeTestTreeWritable } from "../../plugins/__tests__/test-helpers.js";
 import { createSandboxProcessHome } from "../sandbox-process-home.js";
@@ -245,8 +246,12 @@ describe("the private roots in a sandbox read deny", () => {
     try {
       process.env.AVE_HOME = join(alias, ".ave");
       for (const root of appOwnedSandboxPrivateRoots()) ensureSandboxPrivateRoot(root);
-      const roots = appOwnedSandboxPrivateRoots();
+      // The roots under the aliased home. The container runtime root is outside the Ave home and already canonical.
+      const roots = appOwnedSandboxPrivateRoots().filter((root) => root.startsWith(`${alias}/`));
+      expect(roots.map((root) => basename(root))).toEqual(["tmp", "home", "handoff"]);
       const denyRead = buildPerCommandSandboxCustomConfig({ denyRead: getDefaultSensitiveReadDenyPaths() })!.filesystem!.denyRead;
+      const runtimeRoot = mxcRuntimeRootPath();
+      expect(denyRead.some((path) => path === runtimeRoot || path === `${runtimeRoot.slice(0, -1)}[${runtimeRoot.slice(-1)}]`)).toBe(true);
       for (const root of roots) {
         const canonical = realpathSync(root);
         expect(canonical).not.toBe(root);

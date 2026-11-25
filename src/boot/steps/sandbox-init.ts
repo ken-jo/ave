@@ -278,6 +278,15 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
           await sweepSandboxPrivateRoots();
           // Create both roots before any wrap; Linux may omit read denies for paths that do not yet exist.
           ensureSandboxPrivateRoot(appOwnedSandboxHomeRoot());
+          // The container runtime root is on the same read floor and has to exist first for the same reason. One that cannot be established only keeps container starts refused.
+          if (process.platform !== "win32") {
+            const { ensureMxcRuntimeRoot } = await import("../../permissions/mxc-runtime-root.js");
+            try {
+              ensureMxcRuntimeRoot();
+            } catch (error) {
+              log.warn("boot: container runtime root unavailable: %s", errorMessage(error));
+            }
+          }
           const sandboxTempRoot = useAppOwnedSandboxTempRoot();
           // Subscribe before starting the proxy so no deny precedes monitoring.
           {

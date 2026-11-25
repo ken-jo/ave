@@ -119,7 +119,7 @@ describe("holder staging layout", () => {
 });
 
 describe("holder staging layout under a runtime root outside the Ave home", () => {
-  const stagingParent = "/tmp/ave-mxc-0a1b2c3d4e5f/staging";
+  const stagingParent = "/home/example/.cache/ai.agent-connector.ave/mxc-runtime/staging";
   const S = `${stagingParent}/0123456789abcdef0123456789abcdef`;
 
   it("accepts exactly S/home and S/temp and returns S", () => {

@@ -10,14 +10,14 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createServer } from "node:net";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished } from "vitest";
 
 import { MxcProcessContractError } from "../mxc-extension-errors.js";
 import {
-  createMxcRunStaging, currentMxcRuntimeHost, ensureMxcRuntimeRoot, MxcRuntimeRootError, mxcRunSocketPath, mxcStagingParent,
-  removeMxcRunStaging, sweepMxcRunStaging, type MxcRuntimeHost,
+  AVE_APP_ID, createMxcRunStaging, currentMxcRuntimeHost, ensureMxcRuntimeRoot, mxcCacheHome, MxcRuntimeRootError,
+  mxcRunSocketPath, mxcRuntimeRootPath, mxcStagingParent, removeMxcRunStaging, sweepMxcRunStaging, type MxcRuntimeHost,
 } from "../mxc-runtime-root.js";
 
 const posix = process.platform === "darwin" || process.platform === "linux";
@@ -35,7 +35,7 @@ let processes: Map<number, string | null>;
 function hostOf(overrides: Partial<MxcRuntimeHost> = {}): MxcRuntimeHost {
   return {
     platform: process.platform,
-    tmpdir: base,
+    cacheHome: base,
     uid,
     pid: process.pid,
     aveHome: home,
@@ -48,7 +48,7 @@ function hostOf(overrides: Partial<MxcRuntimeHost> = {}): MxcRuntimeHost {
 const overlaps = (left: string, right: string): boolean =>
   left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
 const mode = (path: string): number => lstatSync(path).mode & 0o777;
-const rootName = (): string => readdirSync(base).find((name) => name.startsWith("ave-mxc-")) ?? "";
+const ROOT = (): string => join(base, AVE_APP_ID, "mxc-runtime");
 
 /** A leftover as a crashed process would leave it: a marker, a tree with a file in it, and optionally a retired tree. */
 function leftover(parent: string, id: string, owner: { pid: number; start: string }): string {
@@ -74,26 +74,41 @@ afterEach(() => {
 });
 
 describe.runIf(posix)("runtime root selection", () => {
-  it("creates a 0700 directory of this account under the temp base, named by a digest of account and Ave home", () => {
+  it("is <cache home>/<app id>/mxc-runtime: 0700, this account's, and the same for every call", () => {
+    expect(mxcRuntimeRootPath(hostOf())).toBe(ROOT());
+    // Naming the root creates nothing.
+    expect(readdirSync(base)).toEqual([]);
     const root = ensureMxcRuntimeRoot(hostOf());
-    expect(dirname(root)).toBe(base);
-    expect(rootName()).toMatch(/^ave-mxc-[0-9a-f]{12}$/u);
+    expect(root).toBe(ROOT());
     expect(mode(root)).toBe(0o700);
     expect(lstatSync(root).uid).toBe(uid);
-    // The same host resolves the same root; another Ave home or account has its own.
     expect(ensureMxcRuntimeRoot(hostOf())).toBe(root);
-    expect(ensureMxcRuntimeRoot(hostOf({ aveHome: join(scratch, "other", ".ave") }))).not.toBe(root);
-    expect(readdirSync(base).filter((name) => name.startsWith("ave-mxc-"))).toHaveLength(2);
   });
 
-  it("returns the canonical path when the temp directory is reached through a link", () => {
-    const linked = join(scratch, "tmp-link");
+  it("names its directory by the packaged app id", () => {
+    const manifest = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8")) as { build: { appId: string } };
+    expect(AVE_APP_ID).toBe(manifest.build.appId);
+  });
+
+  it("takes the account's cache directory, never the temp directory", () => {
+    expect(mxcCacheHome("darwin", { XDG_CACHE_HOME: "/elsewhere" }, "/Users/example")).toBe("/Users/example/Library/Caches");
+    expect(mxcCacheHome("linux", {}, "/home/example")).toBe("/home/example/.cache");
+    expect(mxcCacheHome("linux", { XDG_CACHE_HOME: "/var/cache/example" }, "/home/example")).toBe("/var/cache/example");
+    // Not absolute: ignored, as the base directory specification says.
+    expect(mxcCacheHome("linux", { XDG_CACHE_HOME: "relative/cache" }, "/home/example")).toBe("/home/example/.cache");
+    expect(mxcCacheHome("linux", { XDG_CACHE_HOME: "" }, "/home/example")).toBe("/home/example/.cache");
+  });
+
+  it("returns the canonical path when the cache directory is reached through a link", () => {
+    const linked = join(scratch, "cache-link");
     symlinkSync(base, linked);
-    expect(ensureMxcRuntimeRoot(hostOf({ tmpdir: linked }))).toBe(join(base, rootName()));
+    expect(mxcRuntimeRootPath(hostOf({ cacheHome: linked }))).toBe(ROOT());
+    expect(ensureMxcRuntimeRoot(hostOf({ cacheHome: linked }))).toBe(ROOT());
   });
 
-  it("uses the temp directory on Linux too, not the memory-backed session runtime directory", () => {
-    expect(dirname(ensureMxcRuntimeRoot(hostOf({ platform: "linux" })))).toBe(base);
+  it("creates a cache directory that is not there yet", () => {
+    const absent = join(scratch, "home", ".cache");
+    expect(ensureMxcRuntimeRoot(hostOf({ platform: "linux", cacheHome: absent }))).toBe(join(absent, AVE_APP_ID, "mxc-runtime"));
   });
 
   it("stages on Windows under the Ave home, as before, and nowhere else resolves to it", () => {
@@ -104,65 +119,73 @@ describe.runIf(posix)("runtime root selection", () => {
 });
 
 describe.runIf(posix)("runtime root fails closed", () => {
-  const candidate = (): string => {
-    const root = ensureMxcRuntimeRoot(hostOf());
-    rmSync(root, { recursive: true });
-    return root;
-  };
   const nothingUnderAveHome = (): void => expect(readdirSync(home)).toEqual(["config.json"]);
+  const target = (): string => {
+    const path = join(scratch, "elsewhere");
+    mkdirSync(path, { mode: 0o700 });
+    return path;
+  };
 
   it("refuses a symbolic link at the root, and creates nothing behind it or in the Ave home", () => {
-    const root = candidate();
-    const target = join(scratch, "elsewhere");
-    mkdirSync(target, { mode: 0o700 });
-    symlinkSync(target, root);
-    expect(() => ensureMxcRuntimeRoot(hostOf())).toThrow(MxcRuntimeRootError);
+    const elsewhere = target();
+    mkdirSync(dirname(ROOT()));
+    symlinkSync(elsewhere, ROOT());
     expect(() => createMxcRunStaging(hostOf())).toThrow(MxcRuntimeRootError);
-    expect(readdirSync(target)).toEqual([]);
+    expect(readdirSync(elsewhere)).toEqual([]);
+    nothingUnderAveHome();
+  });
+
+  it("refuses a link at the app's cache directory", () => {
+    const elsewhere = target();
+    symlinkSync(elsewhere, dirname(ROOT()));
+    // A dangling link: there is no directory to resolve, and none is created through it.
+    rmSync(elsewhere, { recursive: true });
+    expect(() => createMxcRunStaging(hostOf())).toThrow(MxcRuntimeRootError);
+    expect(existsSync(elsewhere)).toBe(false);
     nothingUnderAveHome();
   });
 
   it("refuses a root open to other accounts without re-moding it", () => {
-    const root = candidate();
-    mkdirSync(root, { mode: 0o700 });
-    chmodSync(root, 0o755);
+    mkdirSync(ROOT(), { recursive: true });
+    chmodSync(ROOT(), 0o755);
     expect(() => createMxcRunStaging(hostOf())).toThrow(MxcRuntimeRootError);
-    expect(mode(root)).toBe(0o755);
+    expect(mode(ROOT())).toBe(0o755);
     nothingUnderAveHome();
   });
 
   it("refuses a root that is a file, or another account's", () => {
-    const root = candidate();
-    writeFileSync(root, "");
+    mkdirSync(dirname(ROOT()));
+    writeFileSync(ROOT(), "");
     expect(() => createMxcRunStaging(hostOf())).toThrow(MxcRuntimeRootError);
-    rmSync(root);
+    rmSync(ROOT());
     // A directory at this account's name that another account owns.
     expect(() => createMxcRunStaging(hostOf({ uid: uid + 1 }))).toThrow(/not this account's/u);
     nothingUnderAveHome();
   });
 
   it("refuses a link at the staging parent", () => {
-    const root = ensureMxcRuntimeRoot(hostOf());
-    const target = join(scratch, "elsewhere");
-    mkdirSync(target, { mode: 0o700 });
-    symlinkSync(target, join(root, "staging"));
+    const elsewhere = target();
+    symlinkSync(elsewhere, join(ensureMxcRuntimeRoot(hostOf()), "staging"));
     expect(() => createMxcRunStaging(hostOf())).toThrow(MxcRuntimeRootError);
-    expect(readdirSync(target)).toEqual([]);
+    expect(readdirSync(elsewhere)).toEqual([]);
   });
 
-  it("refuses a base that cannot be resolved, is relative, or lies inside the Ave home", () => {
-    expect(() => ensureMxcRuntimeRoot(hostOf({ tmpdir: join(scratch, "absent") }))).toThrow(MxcRuntimeRootError);
-    expect(() => ensureMxcRuntimeRoot(hostOf({ tmpdir: "relative/tmp" }))).toThrow(MxcRuntimeRootError);
-    const inside = join(home, "tmp");
-    mkdirSync(inside);
-    expect(() => ensureMxcRuntimeRoot(hostOf({ tmpdir: inside }))).toThrow(/overlaps the Ave home/u);
-    // Refused before anything is created there.
-    expect(readdirSync(inside)).toEqual([]);
+  it("refuses a cache directory that is relative or lies inside the Ave home, before creating anything", () => {
+    expect(() => ensureMxcRuntimeRoot(hostOf({ cacheHome: "relative/cache" }))).toThrow(MxcRuntimeRootError);
+    const inside = join(home, "cache");
+    expect(() => ensureMxcRuntimeRoot(hostOf({ cacheHome: inside }))).toThrow(/overlaps the Ave home/u);
+    nothingUnderAveHome();
     // Reached through a link, the Ave home is still the Ave home.
     const alias = join(scratch, "home-alias");
     symlinkSync(home, alias);
-    expect(() => ensureMxcRuntimeRoot(hostOf({ aveHome: alias, tmpdir: inside }))).toThrow(/overlaps the Ave home/u);
-    expect(readdirSync(inside)).toEqual([]);
+    expect(() => ensureMxcRuntimeRoot(hostOf({ aveHome: alias, cacheHome: inside }))).toThrow(/overlaps the Ave home/u);
+    expect(() => ensureMxcRuntimeRoot(hostOf({ cacheHome: join(alias, "cache") }))).toThrow(/overlaps the Ave home/u);
+    nothingUnderAveHome();
+  });
+
+  it("refuses an Ave home inside the runtime root", () => {
+    expect(() => ensureMxcRuntimeRoot(hostOf({ aveHome: join(ROOT(), "nested", ".ave") }))).toThrow(/overlaps the Ave home/u);
+    expect(readdirSync(base)).toEqual([]);
   });
 
   it("refuses a platform or account it has no placement for", () => {
@@ -217,29 +240,32 @@ describe.runIf(posix)("run staging layout", () => {
   });
 
   it("keeps sockets in a private directory outside the run's grant, on a path a socket address can hold", async () => {
-    // The real temp directory: the longest prefix this account's sockets will have.
-    const real = hostOf({ tmpdir: realpathSync(tmpdir()), aveHome: home });
-    const run = createMxcRunStaging(real);
-    try {
-      const directory = run.socketDirectory();
-      expect(run.socketDirectory()).toBe(directory);
-      expect(mode(directory)).toBe(0o700);
-      expect(overlaps(directory, run.root)).toBe(false);
-      const path = mxcRunSocketPath(run, "ctl.sock");
-      expect(dirname(path)).toBe(directory);
-      const server = createServer();
-      await new Promise<void>((resolve, reject) => server.once("error", reject).listen(path, resolve));
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-      // Headroom for a name on the longest prefix, whatever the account's id: the root's name has a fixed length.
-      expect(Buffer.byteLength(mxcRunSocketPath(run, "control.sock"))).toBeLessThanOrEqual(process.platform === "darwin" ? 103 : 107);
-      expect(() => mxcRunSocketPath(run, "x".repeat(110))).toThrow(/socket address/u);
-      for (const name of ["../escape", ".hidden", "a/b", ""]) {
-        expect(() => mxcRunSocketPath(run, name)).toThrow(MxcProcessContractError);
-      }
-    } finally {
-      removeMxcRunStaging(run);
-      rmSync(dirname(dirname(run.root)), { recursive: true, force: true });
+    // A cache directory about as long as a real one; the test scratch under the per-user temp directory is longer.
+    const short = realpathSync(mkdtempSync("/tmp/ave-rt-"));
+    onTestFinished(() => rmSync(short, { recursive: true, force: true }));
+    const run = createMxcRunStaging(hostOf({ cacheHome: short }));
+    const directory = run.socketDirectory();
+    expect(run.socketDirectory()).toBe(directory);
+    expect(directory).toBe(join(short, AVE_APP_ID, "mxc-runtime", "s", run.root.slice(-32, -24)));
+    expect(mode(directory)).toBe(0o700);
+    expect(overlaps(directory, run.root)).toBe(false);
+    const path = mxcRunSocketPath(run, "ctl.sock");
+    expect(dirname(path)).toBe(directory);
+    const server = createServer();
+    await new Promise<void>((resolve, reject) => server.once("error", reject).listen(path, resolve));
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    expect(() => mxcRunSocketPath(run, "x".repeat(110))).toThrow(/socket address/u);
+    for (const name of ["../escape", ".hidden", "a/b", ""]) {
+      expect(() => mxcRunSocketPath(run, name)).toThrow(MxcProcessContractError);
     }
+    removeMxcRunStaging(run);
+  });
+
+  it("leaves a socket name room under this account's real cache directory", () => {
+    const prefix = join(mxcCacheHome(process.platform, process.env, homedir()), AVE_APP_ID, "mxc-runtime", "s", "01234567");
+    const limit = process.platform === "darwin" ? 103 : 107;
+    // What is left for the file name after the directory and its separator.
+    expect(limit - Buffer.byteLength(prefix) - 1).toBeGreaterThanOrEqual("control.sock".length);
   });
 });
 

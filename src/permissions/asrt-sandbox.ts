@@ -3,6 +3,7 @@
 import { MxcExtensionReadinessRefusedError, MxcNativeEntryRequiredError, MxcProcessContractError, WorkerTransportUnsupportedError } from "./mxc-extension-errors.js";
 import { assertMxcExtensionFilesystemOwnership, type MxcExtensionFilesystemOwnership } from "./mxc-filesystem-ownership.js";
 import type { ShellFilesystemPolicy } from "./mxc-windows.js";
+import { mxcRuntimeRootPath } from "./mxc-runtime-root.js";
 import { issueFilesystemSandboxBlock, type SandboxBlock } from "../shared/sandbox-block.js";
 import { buildLauncherEnvironment } from "./launcher-environment.js";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -2825,10 +2826,10 @@ export function appOwnedTerminalHandoffRoot(): string {
   return join(sandboxPrivateBase(), "handoff");
 }
 
-// The roots of the confined processes' private directories, read-denied by the floor on macOS and Linux. Empty on Windows, whose floor is unchanged.
+// The roots of the confined processes' private directories, read-denied by the floor on macOS and Linux. Empty on Windows, whose floor is unchanged. The container runtime root is one of them: it holds what used to be staged under the Ave home, outside it, and stays as unreadable to every other confined process as it was there.
 export function appOwnedSandboxPrivateRoots(): string[] {
   if (process.platform === "win32") return [];
-  return [appOwnedSandboxTempRoot(), appOwnedSandboxHomeRoot(), appOwnedTerminalHandoffRoot()];
+  return [appOwnedSandboxTempRoot(), appOwnedSandboxHomeRoot(), appOwnedTerminalHandoffRoot(), mxcRuntimeRootPath()];
 }
 
 // Create a sandbox private root `0o700` if it is absent, and refuse one that is not a real directory. Its ancestors may be links (`AVE_HOME` may be one); the root itself is the host's, and every directory a wrap grants is made inside it, so a link here would put them somewhere the read floor does not name.

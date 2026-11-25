@@ -1,13 +1,14 @@
 import { execFileSync } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import {
   chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, unlinkSync, writeFileSync,
   type Stats,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { posix as posixPath, win32 as winPath } from "node:path";
 import { createLogger } from "../lib/logger.js";
 import { aveHome } from "../shared/ave-home.js";
+import { AVE_HOME_ISOLATION_GUARD_ACTIVE } from "../shared/ave-home-test-guard.js";
 import { MxcProcessContractError } from "./mxc-extension-errors.js";
 import { assertMxcHolderStaging } from "./mxc-filesystem-ownership.js";
 
@@ -26,7 +27,8 @@ export class MxcRuntimeRootError extends Error {
 /** What the selector reads from the host. Production uses `currentMxcRuntimeHost()`; a test replaces single fields. */
 export interface MxcRuntimeHost {
   readonly platform: NodeJS.Platform;
-  readonly tmpdir: string;
+  /** The account's cache directory: `~/Library/Caches` on macOS, `$XDG_CACHE_HOME` or `~/.cache` on Linux. */
+  readonly cacheHome: string;
   readonly uid: number | undefined;
   readonly pid: number;
   readonly aveHome: string;
@@ -72,11 +74,28 @@ function darwinProcessStart(pid: number): string | null {
   }
 }
 
+/** The electron-builder `appId` (package.json `build.appId`), which names the app's per-user directories. */
+export const AVE_APP_ID = "ai.agent-connector.ave";
+
+/**
+ * The account's cache directory. It is per-user, so no other account can occupy a name in it; it is on disk, so a
+ * HOME's worth of files fits; and nothing ages files out of it, as macOS does from the per-user temp directory after
+ * days without a read. A `$XDG_CACHE_HOME` that is not absolute is ignored, as its specification says.
+ */
+export function mxcCacheHome(platform: NodeJS.Platform, env: Readonly<Record<string, string | undefined>>, home: string): string {
+  if (platform === "darwin") return posixPath.join(home, "Library", "Caches");
+  const xdg = env.XDG_CACHE_HOME;
+  return xdg !== undefined && posixPath.isAbsolute(xdg) ? xdg : posixPath.join(home, ".cache");
+}
+
 export function currentMxcRuntimeHost(): MxcRuntimeHost {
   const platform = process.platform;
   return {
     platform,
-    tmpdir: tmpdir(),
+    // Under the test runner the root lives in the run's own directory, never in the account's cache.
+    cacheHome: AVE_HOME_ISOLATION_GUARD_ACTIVE
+      ? posixPath.join(process.env.AVE_TEST_SANDBOX_BASE ?? tmpdir(), "mxc-cache")
+      : mxcCacheHome(platform, process.env, homedir()),
     uid: typeof process.getuid === "function" ? process.getuid() : undefined,
     pid: process.pid,
     aveHome: aveHome(),
@@ -121,32 +140,46 @@ function ensurePrivateDirectory(path: string, uid: number, what: string): string
 const atOrUnder = (child: string, parent: string): boolean =>
   child === parent || child.startsWith(parent.endsWith("/") ? parent : `${parent}/`);
 
-/** The temp directory (per-user on macOS), canonical because the macOS sandbox matches real paths. Linux uses it
- * too rather than the session runtime directory, which is memory-backed and not meant to hold a HOME's worth of files. */
-function runtimeBase(host: MxcRuntimeHost): string {
-  if (!posixPath.isAbsolute(host.tmpdir)) refuse("Container runtime base directory is not an absolute path");
-  try {
-    return realpathSync.native(host.tmpdir);
-  } catch (error) {
-    return refuse("Container runtime base directory could not be resolved", error);
+/** `path` with its deepest existing ancestor resolved, so the result is canonical wherever it can be. */
+function canonicalWhereItExists(path: string): string {
+  const missing: string[] = [];
+  for (let current = path; ; current = posixPath.dirname(current)) {
+    try {
+      return posixPath.join(realpathSync.native(current), ...missing);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT" || posixPath.dirname(current) === current) {
+        return refuse("Container runtime root could not be resolved", error);
+      }
+      missing.unshift(posixPath.basename(current));
+    }
   }
 }
 
 /**
- * The one directory everything a container needs lives under on macOS and Linux: `<temp>/ave-mxc-<digest>`, mode
- * 0700, owned by this account, never a link, and neither inside nor above the Ave home. The digest is over the account
- * and the Ave home, so each pair has its own root and the name's length never varies (socket paths are short). The
- * Ave home is a denied directory, and the macOS sandbox lets a deny override every allow, so a grant nested inside it
- * cannot work there. The root itself is host-only: a container is granted its own run directory beneath it and
- * nothing above that. Every call re-verifies. A failure throws `MxcRuntimeRootError`, before anything is created when
- * the placement itself is refused; no caller may place staging elsewhere instead.
+ * Where the runtime root is, without creating or verifying it: `<cache home>/<app id>/mxc-runtime`, canonical because
+ * the macOS sandbox matches real paths. The sandbox read floor denies this path to every confined process that is not
+ * granted its own run directory inside it (`appOwnedSandboxPrivateRoots`): the run directories are Ave-private data,
+ * as they were under the Ave home.
+ */
+export function mxcRuntimeRootPath(host: MxcRuntimeHost = currentMxcRuntimeHost()): string {
+  posixUid(host);
+  if (!posixPath.isAbsolute(host.cacheHome)) refuse("The account's cache directory is not an absolute path");
+  // The root's own name is not resolved: a link there is refused when the root is established, never followed.
+  return posixPath.join(canonicalWhereItExists(posixPath.join(host.cacheHome, AVE_APP_ID)), "mxc-runtime");
+}
+
+/**
+ * The one directory everything a container needs lives under on macOS and Linux: `<cache home>/<app id>/mxc-runtime`,
+ * mode 0700, owned by this account, never a link, and neither inside nor above the Ave home. The Ave home is a denied
+ * directory, and the macOS sandbox lets a deny override every allow, so a grant nested inside it cannot work there.
+ * The root itself is host-only: a container is granted its own run directory beneath it and nothing above that.
+ * Every call re-verifies. A failure throws `MxcRuntimeRootError`, before anything is created when the placement
+ * itself is refused; no caller may place staging elsewhere instead.
  */
 export function ensureMxcRuntimeRoot(host: MxcRuntimeHost = currentMxcRuntimeHost()): string {
   const uid = posixUid(host);
+  const root = mxcRuntimeRootPath(host);
   const home = posixPath.resolve(host.aveHome);
-  const digest = createHash("sha256").update(`${uid}\0${home}`).digest("hex").slice(0, 12);
-  // The base is canonical and the leaf is verified not to be a link, so this is the root's canonical path.
-  const root = posixPath.join(runtimeBase(host), `ave-mxc-${digest}`);
   let canonicalHome = home;
   try {
     canonicalHome = realpathSync.native(home);
@@ -157,6 +190,18 @@ export function ensureMxcRuntimeRoot(host: MxcRuntimeHost = currentMxcRuntimeHos
   const fold = (path: string): string => host.platform === "darwin" ? path.toLowerCase() : path;
   if ([home, canonicalHome].map(fold).some((path) => atOrUnder(fold(root), path) || atOrUnder(path, fold(root)))) {
     refuse("Container runtime root overlaps the Ave home");
+  }
+  const appDirectory = posixPath.dirname(root);
+  let entry: Stats;
+  try {
+    mkdirSync(appDirectory, { recursive: true, mode: 0o700 });
+    entry = lstatSync(appDirectory);
+  } catch (error) {
+    return refuse("The app's cache directory could not be created", error);
+  }
+  // Created just now through a link, or held by another account: the planned path is no longer where the root would be.
+  if (!entry.isDirectory() || entry.uid !== uid || realpathSync.native(appDirectory) !== appDirectory) {
+    refuse("The app's cache directory is a link, not a directory, or not this account's");
   }
   return ensurePrivateDirectory(root, uid, "Container runtime root");
 }
@@ -307,7 +352,7 @@ function removeRunTree(root: string): void {
   try {
     unlinkSync(`${root}${OWNER_SUFFIX}`);
   } catch (error) {
-    // The platform may age an untouched marker out of the temp directory.
+    // Already removed by an earlier, interrupted pass.
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
 }
