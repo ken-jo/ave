@@ -2596,13 +2596,13 @@ export async function spawnWithSandbox(
   const [cmd, ...args] = wrapped.argv;
   if (signal?.aborted) {
     const released = await runReleaseSteps([() => egress.release(), () => cleanupAsrtSandboxAfterCommand()]);
-    const annotated = await annotateSandboxCommandResult(egress.token, wrapped, "Shell command cancelled.", command, true);
+    const annotated = await annotateSandboxCommandResult(egress.token, wrapped, "Shell command cancelled.", command, true, policyNotices);
     const cleanupMetadata = annotated.sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {};
     return withReleaseFailures({ output: annotated.output, isError: true, metadata: { ...cleanupMetadata, aborted: true, sandboxed: false } }, released);
   }
   if (cmd === undefined) {
     const released = await runReleaseSteps([() => egress.release(), () => cleanupAsrtSandboxAfterCommand()]);
-    const annotated = await annotateSandboxCommandResult(egress.token, wrapped, "spawn failed: ASRT returned an empty argv", command, true);
+    const annotated = await annotateSandboxCommandResult(egress.token, wrapped, "spawn failed: ASRT returned an empty argv", command, true, policyNotices);
     const cleanupMetadata = annotated.sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {};
     return withReleaseFailures({
       output: annotated.output,
@@ -2649,7 +2649,7 @@ export async function spawnWithSandbox(
       observation?.finish(null, "failed");
       void (async () => {
         const released = await runReleaseSteps([() => egress.release(), () => cleanupAsrtSandboxAfterCommand()]);
-        const annotated = await annotateSandboxCommandResult(egress.token, wrapped, `spawn failed: ${(err as Error).message}`, command, true);
+        const annotated = await annotateSandboxCommandResult(egress.token, wrapped, `spawn failed: ${(err as Error).message}`, command, true, policyNotices);
         const cleanupMetadata = annotated.sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {};
         resolveResult(withReleaseFailures({
           output: annotated.output,
@@ -3988,13 +3988,13 @@ async function spawnPowerShellWithSandbox(
   const [cmd, ...args] = wrapped.argv;
   if (signal?.aborted) {
     const released = await releaseSandboxResources();
-    const annotated = await annotateSandboxCommandResult(egress.token, wrapped, "Shell command cancelled.", command, true);
+    const annotated = await annotateSandboxCommandResult(egress.token, wrapped, "Shell command cancelled.", command, true, policyNotices);
     const cleanupMetadata = annotated.sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {};
     return withReleaseFailures({ output: annotated.output, isError: true, metadata: { ...cleanupMetadata, aborted: true, sandboxed: false } }, released);
   }
   if (cmd === undefined) {
     const released = await releaseSandboxResources();
-    const annotated = await annotateSandboxCommandResult(egress.token, wrapped, "PowerShell spawn failed: ASRT returned an empty argv", command, true);
+    const annotated = await annotateSandboxCommandResult(egress.token, wrapped, "PowerShell spawn failed: ASRT returned an empty argv", command, true, policyNotices);
     const cleanupMetadata = annotated.sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {};
     return withReleaseFailures({
       output: annotated.output,
@@ -4043,7 +4043,7 @@ async function spawnPowerShellWithSandbox(
       observation?.finish(null, "failed");
       void (async () => {
         const released = await releaseSandboxResources();
-        const annotated = await annotateSandboxCommandResult(egress.token, wrapped, `PowerShell spawn failed: ${(err as Error).message}`, command, true);
+        const annotated = await annotateSandboxCommandResult(egress.token, wrapped, `PowerShell spawn failed: ${(err as Error).message}`, command, true, policyNotices);
         const cleanupMetadata = annotated.sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {};
         resolveResult(withReleaseFailures({
           output: annotated.output,
@@ -4116,7 +4116,7 @@ async function spawnPowerShellWithSandbox(
         const annotated = await annotateSandboxCommandResult(egress.token, wrapped,
           err && "code" in err && err.code === "ENOENT"
             ? `PowerShell executable not found: ${executable}`
-            : `PowerShell spawn failed: ${err.message}`, command, lifecycleCleaned);
+            : `PowerShell spawn failed: ${err.message}`, command, lifecycleCleaned, policyNotices);
         outputCollector.finishObservation(null, "failed");
         const cleanupMetadata = annotated.sandboxCleanupFailed ? { sandboxCleanupFailed: true } : {};
         resolveResult(withReleaseFailures({

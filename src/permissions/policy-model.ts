@@ -86,7 +86,7 @@ export function policyGrantRow(path: string, access: PolicyGrantRow["access"], r
 
 /** A launch refused because a user's read deny covers, or may cover, a host pierce. The message ends with its code, so the
  * plugin card shows it as a container refusal. */
-export class UserReadDenyPierceError extends Error {
+class UserReadDenyPierceError extends Error {
   constructor(readonly code: "user-deny-covers-pierce" | "user-deny-cover-undecided", message: string) {
     super(message);
     this.name = "UserReadDenyPierceError";

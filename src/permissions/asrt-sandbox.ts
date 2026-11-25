@@ -1622,8 +1622,8 @@ const shownSessionReadNotices = new WeakMap<object, Set<string>>();
 
 function sessionReadUserDenyNotices(root: string | undefined, denies: readonly { readonly rule: string; readonly whole: boolean }[]): string[] {
   if (root === undefined || _baseTrustedSettings === undefined || denies.length === 0) return [];
-  let shown = shownSessionReadNotices.get(_baseTrustedSettings);
-  if (shown === undefined) shownSessionReadNotices.set(_baseTrustedSettings, shown = new Set());
+  const shown = shownSessionReadNotices.get(_baseTrustedSettings) ?? new Set<string>();
+  shownSessionReadNotices.set(_baseTrustedSettings, shown);
   const session = currentAveHomeBoundarySnapshot()?.sessionId ?? "";
   return denies.flatMap(({ rule, whole }) => {
     const key = `${session}\u0000${rule}`;

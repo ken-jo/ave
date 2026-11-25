@@ -178,7 +178,7 @@ describe("a user's read deny beats a plugin's host pierce in the package wrap", 
   // The macOS and Linux shell withholds the saved-session read under a user's deny instead of refusing every command, and says so once per session.
   describe("the shell's saved-session read", () => {
     const shellPlatforms = ["darwin", "linux"] as const;
-    const sessionRoot = () => getConfiguredSessionReadPolicy().allowRead[0]!;
+    const sessionRoot = () => String(getConfiguredSessionReadPolicy().allowRead[0]);
     const workspace = () => canonicalizePathForMatch(join(dirname(aveHome()), "workspace"));
     const shellFor = (platform: NodeJS.Platform, sessionId = "session-a") => {
       setProcessPlatform(platform);
