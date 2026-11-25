@@ -1184,7 +1184,10 @@ export async function authorizeToolInvocation(
         // Any other change while the card was open is judged by the one rule for answered cards (pending-answer-policy.ts): a sibling
         // stage's "Allow for this run" or a run that ended leaves the answer standing; everything else refuses it.
         const answerOutdated = policyChanged && !sameCardPolicyTransition && !(services.permissionManager !== undefined && approvalAnswerEpochs !== undefined
-          && personAnswerStands(services.permissionManager, approvalAnswerEpochs, permissionResult.forceModal === true, checkCurrentPermission));
+          && personAnswerStands(services.permissionManager, approvalAnswerEpochs, permissionResult.forceModal === true, () => {
+            permissionResult = checkCurrentPermission();
+            return permissionResult;
+          }));
         const approvalInvalidationReason = answerOutdated
           ? "Permission policy changed while approval was pending"
           : !isRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)

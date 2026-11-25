@@ -93,6 +93,7 @@ async function run(command: string, options: {
   /** The turn the call runs in: the user's own typed turn by default; `null` runs it in a turn that is not the user's. */
   turn?: { sessionId: string; turnId: string } | null;
   permissionContext?: Partial<ToolPermissionContext>;
+  duringApproval?: () => void;
   /** Runs inside the PTY layer before its first pre-write effect check. */
   duringTyping?: () => void;
 } = {}) {
@@ -139,6 +140,7 @@ async function run(command: string, options: {
   }));
   const owner = { isDestroyed: () => false, send: (channel: string, request: ApprovalRequest) => {
     if (channel !== "ave:approval:request") return;
+    options.duringApproval?.();
     const choice = options.choice ?? "deny-once";
     gate.resolveFromDesktopRenderer(request.id, {
       requestId: request.id, choice, nonce: request.nonce, hmac: request.hmac,
@@ -331,21 +333,43 @@ describe("terminal_run without Windows shell containment", () => {
     expect(denied.result.is_error).toBe(true);
   });
 
-  it("types on a saved exact rule with verified boot home privacy", async () => {
+  it.each(["ask", "allow"] as const)("honors the surface %s choice with the same saved exact rule and verified privacy", async (surfaceChoice) => {
     setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: dir, sid: "S-1-5-21-1" });
-    const allowed = await run(command, { rules: [exactRule] });
-    expect(allowed.decision).toMatchObject({ decision: "allow", reasonCode: "exact-host-rule" });
-    expect(allowed.requestAndWait).not.toHaveBeenCalled();
-    expect(allowed.review).not.toHaveBeenCalled();
-    expect(allowed.surfaceChoice).toBe("ask");
-    expect(allowed.typed).toEqual([command]);
-    expect(allowed.result.is_error).toBeFalsy();
+    const options = { rules: [exactRule], surfaceChoice };
+    const result = await run(command, options);
+    expect(result.surfaceChoice).toBe(surfaceChoice);
+    expect(result.review).not.toHaveBeenCalled();
+    if (surfaceChoice === "ask") {
+      expect(result.decision).toMatchObject({ decision: "ask", reasonCode: "user-owned-surface-ask" });
+      expect(result.requestAndWait).toHaveBeenCalledOnce();
+      expect(result.request).toHaveProperty("userOwnedSurface", "host-terminal");
+      expect(result.typed).toEqual([]);
+      const approved = await run(command, { ...options, choice: "allow-once" });
+      expect(approved.requestAndWait).toHaveBeenCalledOnce();
+      expect(approved.typed).toEqual([command]);
+    } else {
+      expect(result.decision).toMatchObject({ decision: "allow", reasonCode: "exact-host-rule" });
+      expect(result.requestAndWait).not.toHaveBeenCalled();
+      expect(result.typed).toEqual([command]);
+      expect(result.result.is_error).toBeFalsy();
+    }
+  });
+
+  it("keeps the terminal surface answer across an unrelated memory-only allow when an exact rule passes the floor", async () => {
+    setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: dir, sid: "S-1-5-21-1" });
+    const permissionManager = new PermissionManager(join(dir, "permissions.json"));
+    const accepted = await run(command, {
+      permissionManager, rules: [exactRule], surfaceChoice: "ask", choice: "allow-once",
+      duringApproval: () => permissionManager.addSessionRule("other-pane", "Bash(printf ready)"),
+    });
+    expect(accepted.requestAndWait).toHaveBeenCalledOnce();
+    expect(accepted.typed).toEqual([command]);
   });
 
   it("refuses to type if the saved exact rule is deleted before the write", async () => {
     setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: dir, sid: "S-1-5-21-1" });
     const refused = await run(command, {
-      rules: [exactRule], duringTyping: () => unlinkSync(join(dir, "permissions.json")),
+      surfaceChoice: "allow", rules: [exactRule], duringTyping: () => unlinkSync(join(dir, "permissions.json")),
     });
     expect(refused.decision).toMatchObject({ decision: "allow", reasonCode: "exact-host-rule" });
     expect(refused.requestAndWait).not.toHaveBeenCalled();
@@ -355,7 +379,7 @@ describe("terminal_run without Windows shell containment", () => {
 
   it("refuses to type if the host plan loses verified boot home privacy before the write", async () => {
     setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: dir, sid: "S-1-5-21-1" });
-    const refused = await run(command, { rules: [exactRule], duringTyping: _resetAveHomePrivacyForTest });
+    const refused = await run(command, { surfaceChoice: "allow", rules: [exactRule], duringTyping: _resetAveHomePrivacyForTest });
     expect(refused.decision).toMatchObject({ decision: "allow", reasonCode: "exact-host-rule" });
     expect(refused.refusals).toEqual([PATH_POLICY_DECISION_MISMATCH_ERROR]);
     expect(refused.typed).toEqual([]);
