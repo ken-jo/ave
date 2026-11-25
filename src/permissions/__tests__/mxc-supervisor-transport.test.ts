@@ -1,11 +1,12 @@
 import { EventEmitter } from "node:events";
 import { PassThrough, Writable } from "node:stream";
 import type { ChildProcess } from "node:child_process";
-import type { MxcProcess, ProbeOutput } from "@microsoft/mxc-sdk/v1";
+import type { ContainerRequest, MxcProcess, ProbeOutput } from "@microsoft/mxc-sdk/v1";
 import { describe, expect, it, vi } from "vitest";
 import { createMxcExtensionRequest, createMxcNativeProcess } from "../../__tests__/support/mxc-supervisor.js";
 import { _spawnMxcExtensionProcessForTest, spawnMxcExtensionProcess, spawnMxcExtensionProcessForDiagnostics, type OwnedMxcExtensionProcess, type MxcProcessLifecycleEvent } from "../mxc-extension-process.js";
 import { MxcExtensionChannel } from "../mxc-extension-channel.js";
+import { mxcRequestDigest } from "../mxc-extension-protocol.js";
 import { serveMxcSupervisor } from "../mxc-supervisor-service.js";
 import { MxcIntegrityError } from "../../../scripts/lib/mxc-sdk-integrity.mjs";
 import { MxcCapabilityUnavailableError, MxcProcessCleanupError, MxcProcessContractError, MxcSupervisorLostError } from "../mxc-extension-errors.js";
@@ -15,7 +16,7 @@ import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 vi.mock("../../main/host-resources.js", () => ({ getHostResources: () => ({ resourcePath: "unit-resources", isPackaged: false }) }));
 vi.mock("../../main/managed-child-processes.js", () => ({ spawnManaged: vi.fn() }));
 
-function transportFixture() {
+function transportFixture(request = createMxcExtensionRequest()) {
   const fixture = createMxcNativeProcess();
   const probe = vi.fn(() => ({ tier: "base-container", needsDaclAugmentation: false, probes: { baseContainerSupportsEnumeratePaths: true } } as ProbeOutput));
   const spawn = vi.fn(async () => fixture.native as unknown as MxcProcess);
@@ -38,7 +39,7 @@ function transportFixture() {
     void service.then(() => child.emit("close", 0, null), () => child.emit("close", 1, null));
     return child;
   });
-  const launch = (signal?: AbortSignal, onLifecycle?: (event: MxcProcessLifecycleEvent) => void, beforeSpawn?: () => void, onOwned?: (owned: OwnedMxcExtensionProcess) => void) => _spawnMxcExtensionProcessForTest(createMxcExtensionRequest(), "unit-modules", "unit-entry", spawnSupervisor, signal, onLifecycle, beforeSpawn, onOwned);
+  const launch = (signal?: AbortSignal, onLifecycle?: (event: MxcProcessLifecycleEvent) => void, beforeSpawn?: () => void, onOwned?: (owned: OwnedMxcExtensionProcess) => void) => _spawnMxcExtensionProcessForTest(request, "unit-modules", "unit-entry", spawnSupervisor, signal, onLifecycle, beforeSpawn, onOwned);
   return { fixture, probe, spawn, bootstrap, runtime, launch, fatal, get child() { return child; }, get liveness() { return liveness; }, get service() { return service; } };
 }
 
@@ -312,6 +313,28 @@ describe("supervisor transport and lifecycle with an injected SDK (unit only)", 
     await f.service;
   });
 
+  it("reports this start's own evidence on the ready frame: the request it started and fields 1-5", async () => {
+    const request = createMxcExtensionRequest();
+    const f = transportFixture(request);
+    const owned = await f.launch();
+    expect(owned.startEvidence).toEqual({ requestDigest: mxcRequestDigest(request), evidence: {
+      installedPayloadVerified: true, baseContainerReady: true, exactRequestAccepted: true,
+      uiEnabledRuntimeStarted: true, ancestorQueriesSupported: true } });
+    expect(Object.isFrozen(owned.startEvidence)).toBe(true);
+    await owned.dispose();
+    await f.service;
+  });
+
+  it("refuses a request without ancestor queries before native creation when the probe lacks them", async () => {
+    const request: ContainerRequest = { ...createMxcExtensionRequest(),
+      containment: { type: "processcontainer", config: { filesystem: { enumeratePaths: [] } } } };
+    const f = transportFixture(request);
+    f.probe.mockReturnValue({ tier: "base-container", needsDaclAugmentation: false, probes: { baseContainerSupportsEnumeratePaths: false } } as ProbeOutput);
+    await expect(f.launch()).rejects.toBeInstanceOf(MxcCapabilityUnavailableError);
+    expect(f.spawn).not.toHaveBeenCalled();
+    await f.service.catch(() => {});
+  });
+
   it("refuses unsupported enumeration without SDK spawn or fallback", async () => {
     const f = transportFixture();
     f.probe.mockReturnValue({ tier: "base-container", needsDaclAugmentation: false, probes: { baseContainerSupportsEnumeratePaths: false } } as ProbeOutput);
@@ -567,7 +590,9 @@ describe("supervisor transport and lifecycle with an injected SDK (unit only)", 
         controls.once("data", () => {
           void (async () => {
             for (const type of types) {
-              if (type === "ready") await channel.send({ type, id: 42, nodeVersion: process.versions.node, nativeModules: [], nativeModuleCount: 0, nativeModulesTruncated: false, ownerHandle: "271828" });
+              if (type === "ready") await channel.send({ type, id: 42, nodeVersion: process.versions.node, nativeModules: [], nativeModuleCount: 0, nativeModulesTruncated: false, ownerHandle: "271828",
+                requestDigest: mxcRequestDigest(createMxcExtensionRequest()), startEvidence: { installedPayloadVerified: true, baseContainerReady: true,
+                  exactRequestAccepted: true, uiEnabledRuntimeStarted: true, ancestorQueriesSupported: true } });
               else if (type === "native-created") await channel.send({ type, id: 42, processHandle: "161803" });
               else await channel.send({ type: type as "creating" | "spawning" });
             }

@@ -51,7 +51,7 @@ export const SECTION_SETTING_CONTROLS: Readonly<Record<string, readonly SettingC
   "startup-rendering": [{ path: "system.hardwareAcceleration", label: "startupTab.hardwareAccelerationLabel" }],
   "startup-corp-ca": [{ path: "system.corpCaEnabled", label: "startupTab.corpCaEnabledLabel" }, { path: "system.corpCaCommonName", label: "startupTab.corpCaCommonNameLabel" }, { path: "system.corpCaDebugLog", label: "startupTab.corpCaDebugLabel" }],
   "startup-system-behavior": [{ path: "system.closeBehavior", label: "generalTab.systemBehaviorTitle" }, { path: "system.shutdownCleanupTimeoutMs", label: "startupTab.shutdownTimeoutLabel" }],
-  "permissions-os-sandbox": [{ path: "features.osToolSandbox", label: "permissionsTab.osSandboxShellLabel" }, { path: "features.pluginWorkerConfinement", label: "permissionsTab.workerConfinementLabel" }, { path: "features.windowsShellLocalNetworkAccess", label: "permissionsTab.windowsShellLocalNetworkLabel" }],
+  "permissions-os-sandbox": [{ path: "features.osToolSandbox", label: "permissionsTab.osSandboxShellLabel" }, { path: "features.pluginWorkerConfinement", label: "permissionsTab.workerConfinementLabel" }],
   "permissions-network": [{ path: "features.shellEgressAsk", label: "permissionsTab.networkTitle" }],
   "permissions-approval-dialog": [{ path: "permissions.ownerAwayAutoSkipMinutes", label: "permissionsTab.ownerAwayAutoSkipLabel" }],
   "permissions-work-board-approvals": [{ path: "workBoard.toolApprovalSurface", label: "workBoard.approvalSurfaceTitle" }],

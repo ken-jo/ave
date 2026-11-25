@@ -84,7 +84,6 @@ import {
   setActiveSandboxCapability,
   setShellSandboxRequestedAtBoot,
   setWindowsSandboxSubstrate,
-  setWindowsShellLocalNetworkAccess,
 } from "../../permissions/sandbox-capability.js";
 import {
   mxcShellCapability,
@@ -150,7 +149,7 @@ function bootMxcShells(): void {
   setShellSandboxRequestedAtBoot(true);
   setActiveSandboxCapability(windowsProxyOnlyCapability());
   const { substrate } = planWindowsSandbox({
-    shellRequested: true, shellLocalNetworkAccess: true,
+    shellRequested: true,
     workerRequested: false,
     mxc: { state: "available" },
     windowsBuild: "10.0.26300.9711",
@@ -168,78 +167,55 @@ function context(toolUseId: string): ToolExecutionContext {
   };
 }
 
+// The container route goes away mid-flight: the substrate is withdrawn, so no MXC shell capability is published.
+const endMxcRoute = (): void => __resetWindowsSandboxSubstrateForTest();
+
 function executePowerShell(toolContext: ToolExecutionContext, command = "Write-Output hi") {
   return new PowerShellTool().execute({ command, timeoutSeconds: 7 }, toolContext);
 }
 
 describe("builtin shell — Windows MXC containers", () => {
-  it("never prepares an MXC parser or command with local-network access off", async () => {
-    bootMxcShells();
-    setWindowsShellLocalNetworkAccess(false);
-    const result = await executePowerShell(context("local-network-off"));
-    expect(result.isError).toBe(true);
-    expect(getHostShellExecutionPlan()).toMatchObject({ mode: "plain", sandboxed: false, requiresExplicitUserApproval: true });
-    expect(mxcLaunchMock.prepare).not.toHaveBeenCalled();
-    expect(childProcessMock.spawn.mock.calls.some(([file]) => file === WXC_EXEC)).toBe(false);
-  });
-
-  it("refuses a prepared parser when consent is disabled before native spawn", async () => {
+  it("refuses a prepared parser when the container route ends before native spawn", async () => {
     bootMxcShells();
     const prepare = mxcLaunchMock.prepare.getMockImplementation();
     if (!prepare) throw new Error("Container preparation fixture is unavailable");
     mxcLaunchMock.prepare.mockImplementation(async (input, lifecycle) => {
       const launch = await prepare(input, lifecycle);
-      setWindowsShellLocalNetworkAccess(false);
+      endMxcRoute();
       return launch;
     });
-    const result = await executePowerShell(context("local-network-disabled-during-parser"));
+    const result = await executePowerShell(context("route-ended-during-parser"));
     expect(result.isError).toBe(true);
     expect(mxcLaunchMock.prepare).toHaveBeenCalledOnce();
     expect(childProcessMock.spawn.mock.calls.some(([file]) => file === WXC_EXEC)).toBe(false);
     expect(mxcLaunchMock.release).toHaveBeenCalledOnce();
   });
 
-  it("refuses the command when consent is disabled after its parser completed", async () => {
+  it("refuses the command when the container route ends after its parser completed", async () => {
     bootMxcShells();
     const prepare = mxcLaunchMock.prepare.getMockImplementation();
     if (!prepare) throw new Error("Container preparation fixture is unavailable");
     mxcLaunchMock.prepare.mockImplementation(async (input, lifecycle) => {
       const launch = await prepare(input, lifecycle);
-      if (!isParserLaunch(input)) setWindowsShellLocalNetworkAccess(false);
+      if (!isParserLaunch(input)) endMxcRoute();
       return launch;
     });
-    const result = await executePowerShell(context("local-network-disabled-before-command"));
+    const result = await executePowerShell(context("route-ended-before-command"));
     expect(result.isError).toBe(true);
     expect(mxcLaunchMock.prepare).toHaveBeenCalledTimes(2);
     expect(childProcessMock.spawn.mock.calls.filter(([file]) => file === WXC_EXEC)).toHaveLength(1);
     expect(mxcLaunchMock.release).toHaveBeenCalledTimes(2);
   });
 
-  it("does not restore an old parser admission after consent is switched off and on", async () => {
-    bootMxcShells();
-    const prepare = mxcLaunchMock.prepare.getMockImplementation();
-    if (!prepare) throw new Error("Container preparation fixture is unavailable");
-    mxcLaunchMock.prepare.mockImplementation(async (input, lifecycle) => {
-      const launch = await prepare(input, lifecycle);
-      setWindowsShellLocalNetworkAccess(false);
-      setWindowsShellLocalNetworkAccess(true);
-      return launch;
-    });
-    const result = await executePowerShell(context("old-local-network-admission"));
-    expect(result.isError).toBe(true);
-    expect(childProcessMock.spawn.mock.calls.some(([file]) => file === WXC_EXEC)).toBe(false);
-    expect(mxcLaunchMock.release).toHaveBeenCalledOnce();
-  });
-
-  it("refuses the command at admission, as an unavailable spawn, when consent is disabled while its parser runs", async () => {
+  it("refuses the command at admission, as an unavailable spawn, when the container route ends while its parser runs", async () => {
     bootMxcShells();
     const spawn = childProcessMock.spawn.getMockImplementation();
     if (spawn === undefined) throw new Error("Missing child spawn fixture");
     childProcessMock.spawn.mockImplementation((file: string, args: readonly string[], options: unknown) => {
-      if (args.includes(PARSER_REQUEST)) setWindowsShellLocalNetworkAccess(false);
+      if (args.includes(PARSER_REQUEST)) endMxcRoute();
       return spawn(file, args, options);
     });
-    const result = await executePowerShell(context("local-network-disabled-at-command-admission"));
+    const result = await executePowerShell(context("route-ended-at-command-admission"));
     expect(result).toMatchObject({ isError: true, metadata: UNAVAILABLE });
     expect(result.output).toBe("PowerShell spawn failed: container shell route is no longer available");
     // Only the parser was prepared: the command stopped before allocating anything.
@@ -480,8 +456,8 @@ describe("builtin shell — Windows MXC containers", () => {
           return target === parent || target.startsWith(parent + "/");
         });
       };
-      // Execution controls remain protected, including the whole settings directory.
-      for (const entry of [join(".git", "hooks"), join(".git", "config"), ".vscode", ".husky", ".claude", ".envrc"]) {
+      // Execution controls remain protected, including a whole editor settings directory.
+      for (const entry of [join(".git", "hooks"), join(".git", "config"), ".vscode", ".husky", ".idea", ".envrc"]) {
         expect(writeDenyCovers(join(workspace, entry)), entry).toBe(true);
       }
       for (const store of [permissionsFilePath(), userApprovalFilePath(), egressGrantFilePath()]) {
@@ -939,7 +915,7 @@ describe("builtin shell — Windows MXC containers", () => {
     return closeRelay;
   }
 
-  it.each(["consent revocation", "cancellation"] as const)("reports the transport open failure first after %s during preparation", async (trigger) => {
+  it.each(["route loss", "cancellation"] as const)("reports the transport open failure first after %s during preparation", async (trigger) => {
     bootMxcShells();
     const abort = new AbortController();
     const opening = deferred<void>();
@@ -950,7 +926,7 @@ describe("builtin shell — Windows MXC containers", () => {
     }, new Error("invocation release observer failed"));
     const execution = executePowerShell({ ...context("ps-mxc-open-error"), abortSignal: abort.signal });
     await Promise.race([opening.promise, execution.then(() => { throw new Error("shell settled before opening the transport"); })]);
-    if (trigger === "consent revocation") setWindowsShellLocalNetworkAccess(false);
+    if (trigger === "route loss") endMxcRoute();
     else abort.abort();
     transportFailure.resolve(new Error("policy transport open failed"));
     const result = await execution;

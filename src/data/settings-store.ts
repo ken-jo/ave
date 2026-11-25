@@ -480,9 +480,6 @@ export interface FeatureFlags {
   /** Controls host shells and workspace terminals only; worker confinement and approval policy remain independent.
    * Defaults on for macOS/Linux and off for Windows; unavailable settings activation warns, explicit macOS/Linux activation aborts, and Windows reports filesystem/network confinement only. */
   osToolSandbox?: boolean;
-  /** Enables local-network and loopback access for Windows agent-shell containers. Off by default;
-   * changes apply to subsequent commands without restarting. Extension confinement is independent. */
-  windowsShellLocalNetworkAccess?: boolean;
   /**
    * Plugin-worker confinement — when `true`, the processes extensions run
    * (plugin workers, out-of-process plugin children, plugin script hooks and
@@ -947,11 +944,6 @@ export class SettingsService {
 
   get<K extends keyof AppSettings>(key: K): AppSettings[K] {
     return structuredClone(this.settings[key]);
-  }
-
-  /** Durable settings for gates that must not act on a pending in-memory write. */
-  getPersisted<K extends keyof AppSettings>(key: K): AppSettings[K] {
-    return structuredClone(this.saved[key]);
   }
 
   async set<K extends keyof AppSettings>(key: K, value: AppSettings[K]): Promise<void> {

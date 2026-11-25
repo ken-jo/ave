@@ -220,8 +220,8 @@ export async function buildDiagnosticsBundle(
     const status = opts.windowsSandbox;
     const mxc = status.mxc.state === "unavailable" ? { state: status.mxc.state, reason: status.mxc.reason }
       : { state: status.mxc.state };
-    const snapshot = { shellLocalNetworkAccess: status.shellLocalNetworkAccess, shells: status.shells,
-      mxc, shellEgressIdentity: status.shellEgressIdentity, extensions: status.extensions };
+    const snapshot = { shells: status.shells, mxc,
+      shellEgressIdentity: status.shellEgressIdentity, extensions: status.extensions };
     if (addEntry("sandbox-status.json", JSON.stringify(snapshot, null, 2))) contents.push("sandbox-status.json");
   }
 

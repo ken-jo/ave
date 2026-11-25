@@ -5,7 +5,7 @@ import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
 import { createMxcExtensionRequest } from "../../../__tests__/support/mxc-supervisor.js";
 import type { MxcConfinedChildSpawn, MxcConfinedChildSpec } from "../../../permissions/confined-child.js";
 import type { OwnedMxcExtensionProcess } from "../../../permissions/mxc-extension-process.js";
-import { MxcCapabilityUnavailableError, MxcProcessCleanupError, MxcProcessContractError } from "../../../permissions/mxc-extension-errors.js";
+import { MxcProcessCleanupError, MxcProcessContractError } from "../../../permissions/mxc-extension-errors.js";
 import { liveMxcPluginChildHolder, registerMxcHolderLifetime } from "../../../permissions/mxc-holder-lifetime.js";
 import { aveHome } from "../../../shared/ave-home.js";
 import { windowsCommandLine } from "../../../shared/windows-command-line.js";
@@ -41,6 +41,7 @@ function fixture() {
   const owned: OwnedMxcExtensionProcess = {
     id: 42, stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), completion,
     diagnostics: { nodeVersion: "", nativeModules: [], nativeModuleCount: 0, nativeModulesTruncated: false, ownerHandle: "" },
+    startEvidence: undefined,
     dispose: vi.fn(async () => { resolve({ exitCode: 0, timedOut: false }); }),
   };
   const controller = new AbortController();
@@ -48,7 +49,6 @@ function fixture() {
   const launch = {
     home: winPath.join(staging, "home"), temp: winPath.join(staging, "temp"),
     filesystemOwnership: { readRoots: [], writeRoots: [staging], hostStorageRoots: [] },
-    probe: vi.fn(async () => ({ version: "0.0.80", ready: true }) as never),
     signal: controller.signal, assertCurrent: vi.fn(), release: vi.fn(),
   };
   const intent = {
@@ -57,15 +57,9 @@ function fixture() {
     floorPierces: [], baseEnv: { ELECTRON_RUN_AS_NODE: "1" },
   };
   const holderRelease = vi.fn(async () => {});
-  // Row 2 stand-in: probe the measured request, then hand back the owned process.
+  // Row 2 stand-in: run the adapter's check on the measured request, then hand back the owned process.
   spawn.mockReset().mockImplementation(async (spec: MxcConfinedChildSpec) => {
-    try {
-      await spec.probe(admittedRequest(spec), new AbortController().signal);
-    } catch (error) {
-      // As readiness settlement does: only a capability failure becomes not-ready; anything else propagates.
-      if (error instanceof MxcCapabilityUnavailableError) throw new MxcCapabilityUnavailableError("Native admission readiness failed: probe-failed");
-      throw error;
-    }
+    spec.assertRequest?.(admittedRequest(spec));
     return { process: owned, confinement: "windows-mxc", release: holderRelease };
   });
   return { owned, launch, intent, controller, resolve, reject, holderRelease, staging };
@@ -178,7 +172,9 @@ describe("native plugin stream ownership", () => {
       baseEnv: intent.baseEnv, signal: launch.signal,
     });
     expect(spec.holder).toEqual({});
-    expect(launch.probe).toHaveBeenCalledOnce();
+    // No per-start probe: the spec carries only the adapter's own request check.
+    expect(spec).not.toHaveProperty("probe");
+    expect(spec.assertRequest).toBeTypeOf("function");
     // The registration recheck runs inside row 2 (and so in its beforeSpawn), and so does revocation.
     launch.assertCurrent.mockClear();
     spec.assertStillValid!();
@@ -349,14 +345,14 @@ describe("native plugin stream ownership", () => {
   ])("refuses a measured request whose %s differs from the derived intent, with the contract error", async (_label, mutate) => {
     const { launch, intent } = fixture();
     const base = spawn.getMockImplementation()!;
-    spawn.mockImplementation(async (spec: MxcConfinedChildSpec) => base({ ...spec, probe: (request: ContainerRequest, signal: AbortSignal) => {
+    spawn.mockImplementation(async (spec: MxcConfinedChildSpec) => base({ ...spec, assertRequest: (request: ContainerRequest) => {
       mutate(request);
-      return spec.probe(request, signal);
+      spec.assertRequest?.(request);
     } }));
     const failure = await spawnMxcPluginChild(launch, intent).catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(MxcProcessContractError);
     expect((failure as Error).message).toMatch(/^Admitted plugin request does not/u);
-    expect(launch.probe).not.toHaveBeenCalled(); expect(launch.release).toHaveBeenCalledOnce();
+    expect(launch.release).toHaveBeenCalledOnce();
   });
 });
 

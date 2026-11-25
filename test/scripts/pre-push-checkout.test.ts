@@ -9,7 +9,7 @@ import { cleanupTmpDir } from "../../src/__tests__/support/tmp-dir-teardown.js";
 const HOOK = resolve("scripts/hooks/run-local-checks.mjs");
 const NULL_SHA = "0".repeat(40);
 const NOTES = "docs/notes/checkout.md";
-const GLOBAL_TIER_FOR_TAGS = "[checks] tier=global-input pre-push:";
+const STATIC_TIER_FOR_TAGS = "[checks] tier=static pre-push:";
 
 let seed: { repo: string; base: string; head: string };
 
@@ -53,7 +53,6 @@ function fixture() {
   const { base, head } = seed;
   // Use a fixture lock namespace instead of the shared host lock.
   const env: NodeJS.ProcessEnv = { ...gitFixtureEnv(repo), AVE_HOME: join(repo, "runtime"), AVE_PREPUSH_LOCK_DIR: join(repo, "locks") };
-  delete env.AVE_PREPUSH_FULL;
   delete env.AVE_PREPUSH_LOCK_TIMEOUT_S;
   const git = (args: string[]) => execFileSync("git", ["-C", repo, ...args], { env, encoding: "utf8" }).trim();
   const pushInput = (input: string, extraEnv: NodeJS.ProcessEnv = {}) =>
@@ -113,9 +112,9 @@ describe("pre-push checkout binding", () => {
       expect(tag).not.toBe(f.head);
       f.git(["checkout", "-q", "--detach", "fixture-release^{commit}"]);
       const result = f.pushInput(`refs/tags/fixture-release ${tag} refs/tags/fixture-release ${NULL_SHA}\n`);
-      // Checkout binding passed; this fixture cannot finish the tag push full tier without a runtime.
+      // Checkout binding passed; this fixture cannot finish the static checks without a runtime.
       expect(result.stderr).not.toMatch(/PRE_PUSH_[A-Z_]+/);
-      expect(result.stdout).toContain(GLOBAL_TIER_FOR_TAGS);
+      expect(result.stdout).toContain(STATIC_TIER_FOR_TAGS);
     } finally { await f.cleanup(); }
   });
 
@@ -170,14 +169,14 @@ describe("pre-push checkout binding", () => {
       f.git(["tag", "fixture-light"]);
       const passed = f.pushInput(`refs/tags/fixture-light ${f.head} refs/tags/fixture-light ${NULL_SHA}\n`);
       expect(passed.stderr).not.toMatch(/PRE_PUSH_[A-Z_]+/);
-      expect(passed.stdout).toContain(GLOBAL_TIER_FOR_TAGS);
+      expect(passed.stdout).toContain(STATIC_TIER_FOR_TAGS);
       const refused = f.pushInput(`refs/tags/old-light ${f.base} refs/tags/old-light ${NULL_SHA}\n`);
       expect(refused.status).toBe(1);
       expect(refused.stderr).toContain(`git checkout --detach ${f.base}`);
     } finally { await f.cleanup(); }
   });
 
-  it("runs explicit manual checks under the host lock and fails the push when the lock stays held past the timeout", async () => {
+  it("runs explicit manual checks under the host lock and fails when the lock stays held past the timeout", async () => {
     const f = fixture();
     try {
       const lock = join(f.repo, "locks", "ave-prepush-full.lock");
@@ -196,7 +195,7 @@ describe("pre-push checkout binding", () => {
       expect(held.stdout).toContain("tier=full manual");
       expect(held.stdout).toContain(`waiting for the full-tier host lock held by PID ${process.pid}`);
       expect(held.stderr).toContain("[PRE_PUSH_HOST_LOCK_TIMEOUT]");
-      expect(held.stderr).toContain("no checks ran and the push is refused");
+      expect(held.stderr).toContain("no checks ran");
       expect(f.checked()).toBe(false);
     } finally { await f.cleanup(); }
   });
