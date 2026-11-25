@@ -114,9 +114,11 @@ describe.runIf(posix)("runtime root selection", () => {
     expect(establishMxcRuntimeRoot(hostOf({ platform: "linux", cacheHome: absent }))).toBe(join(absent, AVE_APP_ID, "mxc-runtime"));
   });
 
-  it("stages on Windows under the Ave home, as before, and nowhere else resolves to it", () => {
-    expect(mxcStagingParent("win32", hostOf({ platform: "win32", aveHome: "C:\\ave" }))).toBe("C:\\ave\\mxc-staging");
+  it("resolves staging only for the platform it runs on, and never into the Ave home", () => {
+    // This host has no Windows placement: a POSIX cache directory is no drive path, and it has no Windows directory helpers.
     expect(() => establishMxcRuntimeRoot(hostOf({ platform: "win32", cacheHome: join(scratch, "windows") }))).toThrow(MxcRuntimeRootError);
+    expect(() => mxcStagingParent("win32", hostOf({ platform: "win32", aveHome: "C:\\ave" }))).toThrow(MxcRuntimeRootError);
+    expect(() => mxcStagingParent("win32", hostOf())).toThrow(MxcRuntimeRootError);
     establishMxcRuntimeRoot(hostOf());
     expect(overlaps(mxcStagingParent(process.platform, hostOf()), home)).toBe(false);
   });
@@ -302,7 +304,7 @@ describe.runIf(posix)("the root is established at start-up or not at all", () =>
     expect(() => createMxcRunStaging(host)).toThrow(/no longer the directory established/u);
   });
 
-  it("drops the marks of processes that are gone and keeps those of running ones", () => {
+  it("leaves every other process's mark where it is, whether or not its pid is running here", () => {
     mkdirSync(ROOT(), { recursive: true, mode: 0o700 });
     chmodSync(dirname(ROOT()), 0o700);
     const gone = `.established-424242-${"a".repeat(32)}`;
@@ -311,8 +313,8 @@ describe.runIf(posix)("the root is established at start-up or not at all", () =>
     processes.set(424243, "another instance");
     establishMxcRuntimeRoot(hostOf());
     const names = readdirSync(ROOT());
-    expect(names).not.toContain(gone);
-    expect(names).toEqual(expect.arrayContaining([running, "unrelated"]));
+    // A pid names a process only inside one pid namespace: an instance in another one may hold the mark.
+    expect(names).toEqual(expect.arrayContaining([gone, running, "unrelated"]));
     expect(names.filter((name) => name.startsWith(`.established-${process.pid}-`))).toHaveLength(1);
   });
 });

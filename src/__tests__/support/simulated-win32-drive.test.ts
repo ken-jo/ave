@@ -1,11 +1,19 @@
 import * as childProcess from "node:child_process";
 import * as filesystem from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, win32 } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useTempDirs } from "../test-helpers.js";
 import { setProcessPlatform } from "./process-platform.js";
 import { useConfigurationOwner } from "./configuration-owner.js";
-import { simulatedConfigurationFs, simulatedConfigurationHandles, simulatedSandboxProcessHome, simulatedWindowsPathFacts } from "./simulated-win32-drive.js";
+import { mxcStagingParentFor, SIMULATED_MXC_RUNTIME_ROOT, SYNTHETIC_MXC_STAGING_PARENT } from "./mxc-staging-parent.js";
+import { nativePluginLaunch } from "./mxc-plugin-launch.js";
+import {
+  SIMULATED_MXC_CACHE_HOME, simulatedConfigurationFs, simulatedConfigurationHandles, simulatedRuntimeRoot, simulatedSandboxProcessHome, simulatedWindowsPathFacts,
+} from "./simulated-win32-drive.js";
+import * as runtimeRoot from "../../permissions/mxc-runtime-root.js";
+import { assertMxcHolderStaging } from "../../permissions/mxc-filesystem-ownership.js";
+import { isWindowsDrivePath } from "../../permissions/mxc-runtime-root-windows.js";
+import { isPlainWindowsStampPath } from "../../permissions/windows-stamp-targets.js";
 import * as pathFacts from "../../shared/windows-path-facts.js";
 import * as configurationHandles from "../../shared/windows-configuration-handles.js";
 import type * as SandboxProcessHome from "../../permissions/sandbox-process-home.js";
@@ -106,5 +114,50 @@ describe("simulated sandbox process HOME", () => {
     expect(simulated.createSandboxProcessHome()).toBe(fixture);
     expect(simulated.createSandboxProcessHome("darwin")).toBe(fixture);
     expect(real.mock.calls).toEqual([[], ["darwin"]]);
+  });
+});
+
+describe("simulated container runtime root", () => {
+  it("keeps the real module on a Windows host", () => {
+    expect(simulatedRuntimeRoot(runtimeRoot, "win32")).toBe(runtimeRoot);
+  });
+
+  it("denies a drive-path root for a simulated win32 process whatever this kernel spells the run directory", () => {
+    const simulated = simulatedRuntimeRoot(runtimeRoot, "linux");
+    setProcessPlatform("win32");
+    vi.stubEnv("AVE_TEST_SANDBOX_BASE", "/home/alice/.ave/test-tmp/sbx-example");
+    try {
+      const floor = simulated.mxcRuntimeRootFloorPath();
+      expect(floor).toBe(win32.join(SIMULATED_MXC_CACHE_HOME, runtimeRoot.AVE_APP_ID, "mxc-runtime"));
+      expect(isWindowsDrivePath(floor) && isPlainWindowsStampPath(floor)).toBe(true);
+      expect(simulated.mxcRuntimeRootFloorPath("C:\\example")).toBe(runtimeRoot.mxcRuntimeRootFloorPath("C:\\example", "win32"));
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("puts synthetic staging directly under the simulated win32 floor root", () => {
+    const simulated = simulatedRuntimeRoot(runtimeRoot, "linux");
+    setProcessPlatform("win32");
+    expect(simulated.mxcRuntimeRootFloorPath()).toBe(SIMULATED_MXC_RUNTIME_ROOT);
+    expect(win32.dirname(SYNTHETIC_MXC_STAGING_PARENT)).toBe(SIMULATED_MXC_RUNTIME_ROOT);
+  });
+
+  // Production asks with a positional platform; the installed function must not read it as the host.
+  const asProductionAsks = (parent: () => string): string => (parent as (...args: unknown[]) => string)("win32");
+
+  it("hands a foreign host's win32 staging request the synthetic parent its launch passes the holder check on", () => {
+    const parent = mxcStagingParentFor("linux", () => "/tmp/mxc-staging-example");
+    const stagingParent = asProductionAsks(parent);
+    const { home, temp } = nativePluginLaunch({}, parent());
+    expect(() => assertMxcHolderStaging({ stagingParent, home, temp })).not.toThrow();
+    expect(stagingParent).toBe(SYNTHETIC_MXC_STAGING_PARENT);
+  });
+
+  it("hands a Windows host its suite parent with or without a platform argument", () => {
+    const parent = mxcStagingParentFor("win32", () => "D:\\example\\mxc-staging-x");
+    expect([parent(), asProductionAsks(parent)]).toEqual(["D:\\example\\mxc-staging-x", "D:\\example\\mxc-staging-x"]);
+    const { home, temp } = nativePluginLaunch({}, parent());
+    expect(() => assertMxcHolderStaging({ stagingParent: asProductionAsks(parent), home, temp })).not.toThrow();
   });
 });

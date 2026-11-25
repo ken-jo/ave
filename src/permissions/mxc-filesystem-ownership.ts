@@ -72,8 +72,8 @@ export function assertMxcHolderPrivateDirectories(input: {
 }
 
 /** Holder adapters (rows 3–5) place HOME and temp at exactly `<staging parent>/<opaque-id>/home` and `…/temp`, where
- * the staging parent is the platform's (`mxcStagingParent`: `<AVE_HOME>\mxc-staging` on Windows, `<runtime root>/staging`
- * outside the Ave home on macOS and Linux) and the id is 32 lowercase hex digits (no plugin ID or other name). Every
+ * the staging parent is the platform's (`mxcStagingParent`: `<runtime root>/staging`, outside the Ave home, on every
+ * platform) and the id is 32 lowercase hex digits (no plugin ID or other name). Every
  * spelling the platform would alias is refused: each path must already be in normalized form (no `.`/`..`; on Windows
  * no forward slash) with no trailing separator, which `normalize` keeps, the leaf names are the exact lowercase
  * literals (no case alias, trailing dot or space, or `:` stream suffix), and the parent is compared exactly. The
@@ -92,7 +92,7 @@ export function assertMxcHolderStaging(input: { readonly stagingParent: string; 
       || path.dirname(input.temp) !== staging || !/^[0-9a-f]{32}$/u.test(id)
       || staging !== path.join(input.stagingParent, id)) {
     throw new MxcProcessContractError(windows
-      ? "Container HOME and temp must be <AVE_HOME>\\mxc-staging\\<opaque-id>\\home and \\temp"
+      ? "Container HOME and temp must be <runtime-root>\\staging\\<opaque-id>\\home and \\temp"
       : "Container HOME and temp must be <runtime-root>/staging/<opaque-id>/home and /temp");
   }
   return staging;

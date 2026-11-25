@@ -19,6 +19,7 @@ const runtime = vi.hoisted(() => ({ initialize: vi.fn(), wrap: vi.fn() }));
 vi.mock("node:path", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDrivePath(await original()));
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDriveFs(await original()));
 vi.mock("node:module", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDriveModule(await original()));
+vi.mock("../mxc-runtime-root.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedRuntimeRoot(await original()));
 vi.mock("../windows-stamp-targets.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedStampTargets(await original()));
 vi.mock("@anthropic-ai/sandbox-runtime", () => ({
   SandboxManager: {

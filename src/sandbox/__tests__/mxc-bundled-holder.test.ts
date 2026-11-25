@@ -2,7 +2,14 @@
  * is mocked; these tests pin the layout this adapter hands it and the named refusals it raises before admission. */
 import { win32 as winPath } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SIMULATED_MXC_RUNTIME_ROOT, SYNTHETIC_MXC_STAGING_PARENT } from "../../__tests__/support/mxc-staging-parent.js";
+import { escapeRegExp } from "../../shared/escape-reg-exp.js";
 import { assertSandboxWindowsExtensionPlan } from "../../shared/sandbox-capability-info.js";
+
+const STAGING_PATH_PREFIX = `${SYNTHETIC_MXC_STAGING_PARENT}\\`;
+const STAGING_PARENT_PATTERN = escapeRegExp(SYNTHETIC_MXC_STAGING_PARENT);
+const STAGING_ROOT_PATTERN = new RegExp(String.raw`^${STAGING_PARENT_PATTERN}\\[0-9a-f]{32}$`, "u");
+const STAGING_TREE_PATTERN = new RegExp(String.raw`^${STAGING_PARENT_PATTERN}\\[0-9a-f]{32}`, "u");
 
 const state = vi.hoisted(() => ({
   plan: undefined as unknown,
@@ -17,6 +24,13 @@ const state = vi.hoisted(() => ({
   ops: [] as string[],
   stagingRefusal: undefined as Error | undefined,
   unlinkFail: new Set<string>(),
+  contents: new Map<string, string>(),
+  stagingParentRefusal: undefined as Error | undefined,
+  /** The call to `mxcStagingParent`, counted from 1, at which the refusal starts. */
+  stagingParentRefusalFrom: 1,
+  stagingParentCalls: 0,
+  renameFail: new Map<string, string>(),
+  probe: vi.fn(),
 }));
 
 vi.mock("../../permissions/confined-child.js", () => ({
@@ -44,6 +58,19 @@ vi.mock("../../permissions/mxc-filesystem-ownership.js", async (original) => {
     },
   };
 });
+// The staging parent start-up establishes under the runtime root, on the in-memory drive below.
+vi.mock("../../permissions/mxc-runtime-root.js", async (original) => {
+  const { SYNTHETIC_MXC_STAGING_PARENT } = await import("../../__tests__/support/mxc-staging-parent.js");
+  return {
+    ...await original<typeof import("../../permissions/mxc-runtime-root.js")>(),
+    mxcStagingParent: () => {
+      state.stagingParentCalls += 1;
+      if (state.stagingParentRefusal !== undefined && state.stagingParentCalls >= state.stagingParentRefusalFrom) throw state.stagingParentRefusal;
+      return SYNTHETIC_MXC_STAGING_PARENT;
+    },
+  };
+});
+vi.mock("../../permissions/windows-process-start-time.js", () => ({ readWindowsProcessRunStates: state.probe }));
 // A small in-memory Windows drive for drive-letter paths; every other path reaches the real filesystem.
 vi.mock("node:fs", async (original) => {
   const actual = await original<typeof import("node:fs")>();
@@ -80,9 +107,12 @@ vi.mock("node:fs", async (original) => {
     }) as typeof actual.mkdirSync,
     lstatSync: ((path: unknown, options?: unknown) => {
       if (!isDrive(path)) return actual.lstatSync(path as string, options as never);
-      if (linkOf(path) !== undefined) return { isSymbolicLink: () => true, isDirectory: () => false };
-      if (has(state.dirs, path)) return { isSymbolicLink: () => false, isDirectory: () => true };
-      if (has(state.files, path)) return { isSymbolicLink: () => false, isDirectory: () => false };
+      if (linkOf(path) !== undefined) return { isSymbolicLink: () => true, isDirectory: () => false, isFile: () => false };
+      if (has(state.dirs, path)) return { isSymbolicLink: () => false, isDirectory: () => true, isFile: () => false };
+      if (has(state.files, path)) {
+        return { isSymbolicLink: () => false, isDirectory: () => false, isFile: () => true, nlink: 1, size: state.contents.get(fold(path))?.length ?? 0 };
+      }
+      if ((options as { throwIfNoEntry?: boolean } | undefined)?.throwIfNoEntry === false) return undefined;
       throw enoent(path);
     }) as typeof actual.lstatSync,
     readdirSync: ((path: unknown, options?: unknown) => {
@@ -99,6 +129,8 @@ vi.mock("node:fs", async (original) => {
     renameSync: ((from: unknown, to: unknown) => {
       if (!isDrive(from) || !isDrive(to)) return actual.renameSync(from as string, to as string);
       if (!exists(from)) throw enoent(from);
+      const refused = [...state.renameFail].find(([path]) => fold(path) === fold(from))?.[1];
+      if (refused !== undefined) throw Object.assign(new Error(`${refused}: ${from}`), { code: refused });
       state.ops.push(`rename ${winPath.normalize(from)} -> ${winPath.normalize(to)}`);
       const moved = (path: string): string | undefined => fold(path) === fold(from) || fold(path).startsWith(`${fold(from)}\\`)
         ? winPath.normalize(to) + winPath.normalize(path).slice(winPath.normalize(from).length) : undefined;
@@ -110,6 +142,14 @@ vi.mock("node:fs", async (original) => {
         if (next !== undefined) { state.links.delete(link); state.links.set(next, target); }
       }
     }) as typeof actual.renameSync,
+    writeFileSync: ((path: unknown, data: unknown, options?: unknown) => {
+      if (!isDrive(path)) return actual.writeFileSync(path as string, data as string, options as never);
+      if ((options as { flag?: string } | undefined)?.flag === "wx" && exists(path)) throw Object.assign(new Error(`EEXIST: ${path}`), { code: "EEXIST" });
+      state.files.add(winPath.normalize(path));
+      state.contents.set(fold(path), String(data));
+    }) as typeof actual.writeFileSync,
+    readFileSync: ((path: unknown, options?: unknown) => (isDrive(path) ? state.contents.get(fold(path)) : undefined)
+      ?? actual.readFileSync(path as string, options as never)) as typeof actual.readFileSync,
     chmodSync: ((path: unknown, mode: unknown) => {
       if (!isDrive(path)) return actual.chmodSync(path as string, mode as never);
       state.ops.push(`chmod ${winPath.normalize(path)}`);
@@ -140,6 +180,7 @@ vi.mock("node:fs/promises", async (original) => {
 
 const { readFileSync: actualReadFile } = await vi.importActual<typeof import("node:fs")>("node:fs");
 const holderModule = await import("../wrap-bundled-command.js");
+const { MxcRuntimeRootError } = await import("../../permissions/mxc-runtime-root.js");
 const {
   isBashFormCommand,
   isMxcExtensionBackendSelected,
@@ -204,6 +245,13 @@ beforeEach(() => {
   state.ops = [];
   state.stagingRefusal = undefined;
   state.unlinkFail = new Set();
+  state.contents = new Map();
+  state.stagingParentRefusal = undefined;
+  state.stagingParentRefusalFrom = 1;
+  state.stagingParentCalls = 0;
+  state.renameFail = new Map();
+  state.probe.mockReset();
+  state.probe.mockResolvedValue(new Map());
   state.spawn.mockReset();
   state.spawn.mockResolvedValue(spawned);
   spawned.release.mockReset();
@@ -249,7 +297,7 @@ describe("container holder selection", () => {
     unregister = undefined;
     await expect(spawnMxcBundledHolder(input())).rejects.toBeInstanceOf(MxcCapabilityUnavailableError);
     expect(state.spawn).not.toHaveBeenCalled();
-    expect([...state.dirs].some((dir) => dir.includes("mxc-staging"))).toBe(false);
+    expect([...state.dirs].some((dir) => dir.includes("\\staging"))).toBe(false);
   });
 
   it.each(Object.keys(MXC_RELEASE_GATE_EVIDENCE) as (keyof typeof MXC_RELEASE_GATE_EVIDENCE)[])(
@@ -359,12 +407,13 @@ describe("workspace concurrency", () => {
     expect(state.spawn).not.toHaveBeenCalled();
   });
 
-  it("names the AVE_HOME staging overlap when the hook's workspace contains another holder's private folder", async () => {
-    // A user hook rooted at the profile: its workspace write contains <AVE_HOME>\mxc-staging, where a live MCP server keeps its staging.
-    state.live = ["C:\\ave\\mxc-staging\\0123456789abcdef0123456789abcdef"];
+  it("names the staging overlap when the hook's workspace contains another holder's private folder", async () => {
+    // A user hook rooted above the runtime root: its workspace write contains the staging parent, where a live MCP server keeps its staging.
+    state.live = [winPath.join(SYNTHETIC_MXC_STAGING_PARENT, "0123456789abcdef0123456789abcdef")];
+    const workspace = winPath.dirname(SIMULATED_MXC_RUNTIME_ROOT);
     const refusal = await spawnMxcBundledHolder(input({ label: "hook:user",
-      command: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", allowRead: [], allowWrite: ["C:\\ave"],
-      ownedReadRoots: [], cwd: "C:\\ave", workspaceRoots: ["C:\\ave"] })).catch((error: unknown) => error);
+      command: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", allowRead: [], allowWrite: [workspace],
+      ownedReadRoots: [], cwd: workspace, workspaceRoots: [workspace] })).catch((error: unknown) => error);
     expect(refusal).toBeInstanceOf(MxcHolderWorkspaceBusyError);
     expect((refusal as { stagingOverlap: boolean }).stagingOverlap).toBe(true);
     expect((refusal as Error).message).toBe(t("be_wrapBundledCommand.workspaceBusyStaging", { code: "holder-workspace-busy" }));
@@ -386,7 +435,7 @@ describe("workspace concurrency", () => {
 });
 
 describe("environment before admission", () => {
-  const stagingRoots = (): number => [...state.dirs].filter((dir) => /mxc-staging\\[0-9a-f]{32}$/u.test(dir)).length;
+  const stagingRoots = (): number => [...state.dirs].filter((dir) => STAGING_ROOT_PATTERN.test(dir)).length;
 
   it.each([
     [{ NODE_OPTIONS: "--require C:\\x\\loader.js" }, {}, "NODE_OPTIONS"],
@@ -426,9 +475,9 @@ describe("holder layout", () => {
   it("gives the holder its own staging HOME/temp sibling and its own incarnation, passing host env through", async () => {
     await spawnMxcBundledHolder(input());
     const first = lastSpec();
-    const match = /^C:\\ave\\mxc-staging\\([0-9a-f]{32})\\home$/u.exec(first.home);
+    const match = new RegExp(String.raw`^${STAGING_PARENT_PATTERN}\\([0-9a-f]{32})\\home$`, "u").exec(first.home);
     expect(match).not.toBeNull();
-    const root = `C:\\ave\\mxc-staging\\${match![1]}`;
+    const root = winPath.join(SYNTHETIC_MXC_STAGING_PARENT, match![1]);
     expect(first.temp).toBe(`${root}\\temp`);
     expect(first.allowWrite).toEqual(["C:\\ave\\mcp\\fs\\sandbox", root]);
     expect(first.filesystemOwnership).toEqual({ readRoots: ["C:\\ave\\plugins\\fs\\gen"],
@@ -446,7 +495,7 @@ describe("holder layout", () => {
     await spawnMxcBundledHolder(input({ cwd: "C:\\ave\\plugins\\fs\\gen" }));
     expect(lastSpec().cwd).toBe("C:\\ave\\plugins\\fs\\gen");
     state.spawn.mockClear();
-    const stagingRoots = (): number => [...state.dirs].filter((dir) => /mxc-staging\\[0-9a-f]{32}$/u.test(dir)).length;
+    const stagingRoots = (): number => [...state.dirs].filter((dir) => STAGING_ROOT_PATTERN.test(dir)).length;
     const before = stagingRoots();
     await expect(spawnMxcBundledHolder(input({ cwd: "D:\\elsewhere" }))).rejects.toBeInstanceOf(MxcProcessContractError);
     expect(state.spawn).not.toHaveBeenCalled();
@@ -470,11 +519,11 @@ describe("teardown", () => {
     await holder.release();
     expect(spawned.release).toHaveBeenCalledTimes(1);
     // Removal runs on the retired sibling, so the link is unlinked under that name.
-    expect(state.removed.some((path) => /\\retired-[0-9a-f]{32}\\temp\\escape$/u.test(path))).toBe(true);
+    expect(state.removed.some((path) => /\\[0-9a-f]{32}\.retired\\temp\\escape$/u.test(path))).toBe(true);
     expect(temp).toMatch(/\\temp$/u);
     expect(state.removed.some((path) => path.startsWith("D:\\work"))).toBe(false);
     expect(state.dirs.has("D:\\work")).toBe(true);
-    expect([...state.dirs].some((dir) => /mxc-staging\\[0-9a-f]{32}/u.test(dir))).toBe(false);
+    expect([...state.dirs].some((dir) => STAGING_TREE_PATTERN.test(dir))).toBe(false);
   });
 
   it("removes the AppContainer profile subtree MXC creates under HOME, unlinking any reparse point there unfollowed", async () => {
@@ -488,27 +537,27 @@ describe("teardown", () => {
     state.links.set(`${moniker}\\AC\\Temp\\escape`, "D:\\work");
     state.links.set(`${moniker}\\LocalState`, "D:\\work");
     await holder.release();
-    expect([...state.dirs].some((dir) => /mxc-staging\\(?:retired-)?[0-9a-f]{32}/u.test(dir))).toBe(false);
-    expect([...state.files].some((file) => /mxc-staging\\/u.test(file))).toBe(false);
-    expect([...state.links.keys()].some((link) => /mxc-staging\\/u.test(link))).toBe(false);
-    expect(state.removed.some((path) => /\\retired-[0-9a-f]{32}\\home\\Packages\\[^\\]+\\AC\\Temp\\escape$/u.test(path))).toBe(true);
-    expect(state.removed.some((path) => /\\retired-[0-9a-f]{32}\\home\\Packages\\[^\\]+\\LocalState$/u.test(path))).toBe(true);
+    expect([...state.dirs].some((dir) => STAGING_TREE_PATTERN.test(dir))).toBe(false);
+    expect([...state.files].some((file) => file.startsWith(STAGING_PATH_PREFIX))).toBe(false);
+    expect([...state.links.keys()].some((link) => link.startsWith(STAGING_PATH_PREFIX))).toBe(false);
+    expect(state.removed.some((path) => /\\[0-9a-f]{32}\.retired\\home\\Packages\\[^\\]+\\AC\\Temp\\escape$/u.test(path))).toBe(true);
+    expect(state.removed.some((path) => /\\[0-9a-f]{32}\.retired\\home\\Packages\\[^\\]+\\LocalState$/u.test(path))).toBe(true);
     expect(state.removed.some((path) => path.startsWith("D:\\work"))).toBe(false);
     expect(state.files.has("D:\\work\\tool.exe")).toBe(true);
     expect(state.ops.some((op) => /^chmod .*(?:escape|LocalState)$/u.test(op))).toBe(false);
   });
 
-  it("renames the tree to a random sibling before deleting anything inside it", async () => {
+  it("renames the tree to its retired sibling before deleting anything inside it", async () => {
     const holder = await spawnMxcBundledHolder(input());
     const root = winPath.dirname(lastSpec().home);
     state.files.add(`${root}\\temp\\scratch.txt`);
     await holder.release();
     const rename = state.ops.findIndex((op) => op.startsWith(`rename ${root} -> `));
     expect(rename).toBe(0);
-    expect(state.ops[0]).toMatch(/ -> C:\\ave\\mxc-staging\\retired-[0-9a-f]{32}$/u);
+    expect(state.ops[0]).toMatch(new RegExp(String.raw` -> ${STAGING_PARENT_PATTERN}\\[0-9a-f]{32}\.retired$`, "u"));
     expect(state.ops.slice(1).every((op) => !op.includes(root + "\\"))).toBe(true);
-    expect(state.removed.some((path) => /retired-[0-9a-f]{32}\\temp\\scratch\.txt$/u.test(path))).toBe(true);
-    expect([...state.dirs].some((dir) => /mxc-staging\\(?:retired-)?[0-9a-f]{32}/u.test(dir))).toBe(false);
+    expect(state.removed.some((path) => /[0-9a-f]{32}\.retired\\temp\\scratch\.txt$/u.test(path))).toBe(true);
+    expect([...state.dirs].some((dir) => STAGING_TREE_PATTERN.test(dir))).toBe(false);
   });
 
   it("clears a read-only attribute before unlinking, and never chmods a planted link", async () => {
@@ -524,58 +573,171 @@ describe("teardown", () => {
     expect(unlink).toBeGreaterThan(chmod);
     expect(state.ops.some((op) => /^chmod .*\\escape$/u.test(op))).toBe(false);
     expect(state.files.has("D:\\work\\tool.exe")).toBe(true);
-    expect([...state.dirs].some((dir) => /mxc-staging\\(?:retired-)?[0-9a-f]{32}/u.test(dir))).toBe(false);
+    expect([...state.dirs].some((dir) => STAGING_TREE_PATTERN.test(dir))).toBe(false);
   });
 
-  it("sweeps leftover retired trees at the next start without following a link or touching a live holder's tree", async () => {
-    const P = "C:\\ave\\mxc-staging";
-    const live = `${P}\\0123456789abcdef0123456789abcdef`;
-    state.dirs.add(P);
-    state.dirs.add(`${P}\\retired-aaaa`);
-    state.dirs.add(`${P}\\retired-aaaa\\temp`);
-    state.files.add(`${P}\\retired-aaaa\\temp\\locked.txt`);
-    state.readonly.add(`${P}\\retired-aaaa\\temp\\locked.txt`);
-    state.links.set(`${P}\\retired-x`, "D:\\work");
-    state.dirs.add(`${P}\\retired-held`);
-    state.dirs.add(live);
-    state.live = [`${P}\\retired-held\\temp`, live];
-    await spawnMxcBundledHolder(input());
-    expect(state.spawn).toHaveBeenCalledTimes(1);
-    expect(state.dirs.has(`${P}\\retired-aaaa`)).toBe(false);
-    expect(state.files.has(`${P}\\retired-aaaa\\temp\\locked.txt`)).toBe(false);
-    // The link is unlinked itself; its target and everything under it stay.
-    expect(state.links.has(`${P}\\retired-x`)).toBe(false);
-    expect(state.removed).toContain(`${P}\\retired-x`);
-    expect(state.removed.some((path) => path.startsWith("D:\\work"))).toBe(false);
-    expect(state.files.has("D:\\work\\tool.exe")).toBe(true);
-    expect(state.ops.some((op) => op === `chmod ${P}\\retired-x`)).toBe(false);
-    expect(state.dirs.has(`${P}\\retired-held`)).toBe(true);
-    expect(state.dirs.has(live)).toBe(true);
-  });
+  describe("leftovers under the shared staging parent", () => {
+    const P = SYNTHETIC_MXC_STAGING_PARENT;
+    const GONE_PID = 0x7fff_fff0;
+    const id = (digit: string): string => digit.repeat(32);
+    const owned = (digit: string, owner: unknown, suffix = ""): string => {
+      const root = `${P}\\${id(digit)}`;
+      state.dirs.add(`${root}${suffix}`);
+      state.dirs.add(`${root}${suffix}\\temp`);
+      if (owner !== undefined) {
+        state.files.add(`${root}.owner`);
+        state.contents.set(`${root}.owner`.toLowerCase(), typeof owner === "string" ? owner : JSON.stringify(owner));
+      }
+      return root;
+    };
+    const gone = { pid: GONE_PID, start: "1", instance: "feedfeedfeedfeed" };
+    const running = { pid: process.ppid, start: null, instance: "feedfeedfeedfeed" };
 
-  it("only warns when a leftover retired tree cannot be removed, and still starts the holder", async () => {
-    const P = "C:\\ave\\mxc-staging";
-    state.dirs.add(P);
-    state.dirs.add(`${P}\\retired-busy`);
-    state.files.add(`${P}\\retired-busy\\held.dll`);
-    state.unlinkFail.add(`${P}\\retired-busy\\held.dll`);
-    await spawnMxcBundledHolder(input());
-    expect(state.spawn).toHaveBeenCalledTimes(1);
-    expect(state.files.has(`${P}\\retired-busy\\held.dll`)).toBe(true);
+    beforeEach(() => { state.dirs.add(P); });
+
+    it("writes a holder's owner marker before its tree and removes it after the tree", async () => {
+      const holder = await spawnMxcBundledHolder(input());
+      const root = winPath.dirname(lastSpec().home);
+      const owner = JSON.parse(state.contents.get(`${root}.owner`.toLowerCase()) ?? "null") as { pid: number; start: string | null; instance: string };
+      expect(owner).toEqual({ pid: process.pid, start: null, instance: expect.stringMatching(/^[0-9a-f]{16}$/u) });
+      await holder.release();
+      expect(state.files.has(`${root}.owner`)).toBe(false);
+      // The marker is the last thing removed.
+      expect(state.removed.at(-1)).toBe(`${root}.owner`);
+    });
+
+    it("removes the trees of processes that are gone, without following a link", async () => {
+      const crashed = owned("a", gone);
+      state.files.add(`${crashed}\\temp\\locked.txt`);
+      state.readonly.add(`${crashed}\\temp\\locked.txt`);
+      state.links.set(`${crashed}\\temp\\escape`, "D:\\work");
+      const interrupted = owned("b", gone, ".retired");
+      await spawnMxcBundledHolder(input());
+      expect(state.spawn).toHaveBeenCalledTimes(1);
+      for (const root of [crashed, interrupted]) {
+        expect([...state.dirs].some((dir) => dir.startsWith(root))).toBe(false);
+        expect(state.files.has(`${root}.owner`)).toBe(false);
+      }
+      // The crashed tree is retired before anything inside it is deleted, and the link is unlinked itself.
+      expect(state.ops).toContain(`rename ${crashed} -> ${crashed}.retired`);
+      expect(state.removed).toContain(`${crashed}.retired\\temp\\escape`);
+      expect(state.removed.some((path) => path.startsWith("D:\\work"))).toBe(false);
+      expect(state.files.has("D:\\work\\tool.exe")).toBe(true);
+    });
+
+    it("keeps every tree it cannot prove abandoned", async () => {
+      const otherInstance = owned("a", running);
+      const otherCopy = owned("b", { pid: process.pid, start: null, instance: "another-copy" });
+      const unmarked = owned("c", undefined);
+      const unreadable = owned("d", "not json");
+      const wrongShape = owned("e", { pid: "1", start: "1", instance: "x" });
+      const held = owned("f", gone);
+      state.live = [`${held}\\temp`];
+      // A marker beside a link is not a staging tree: the link and its target stay.
+      state.links.set(`${P}\\${id("9")}`, "D:\\work");
+      state.files.add(`${P}\\${id("9")}.owner`);
+      state.contents.set(`${P}\\${id("9")}.owner`.toLowerCase(), JSON.stringify(gone));
+      // Names that are not a run id are never read as one.
+      state.dirs.add(`${P}\\supervisor-state`);
+      state.files.add(`${P}\\supervisor-state.owner`);
+      await spawnMxcBundledHolder(input());
+      expect(state.spawn).toHaveBeenCalledTimes(1);
+      for (const root of [otherInstance, otherCopy, unmarked, unreadable, wrongShape, held]) expect(state.dirs.has(root), root).toBe(true);
+      expect(state.links.has(`${P}\\${id("9")}`)).toBe(true);
+      expect(state.dirs.has(`${P}\\supervisor-state`)).toBe(true);
+      expect(state.removed).toEqual([]);
+      // Owners without a recorded creation time are not asked about.
+      expect(state.probe).not.toHaveBeenCalled();
+    });
+
+    it("removes a running pid's tree only once its creation time is no longer the recorded one", async () => {
+      const reused = owned("a", { pid: process.ppid, start: "111", instance: "feedfeedfeedfeed" });
+      const same = owned("b", { pid: process.ppid, start: "222", instance: "feedfeedfeedfeed" });
+      const answer = { resolve: (_states: Map<number, unknown>): void => {} };
+      state.probe.mockReturnValue(new Promise((resolve) => { answer.resolve = resolve; }));
+      await spawnMxcBundledHolder(input());
+      expect(state.probe).toHaveBeenCalledTimes(1);
+      expect(state.probe).toHaveBeenCalledWith([process.ppid]);
+      expect(state.dirs.has(reused)).toBe(true);
+      // The answer names one creation time for the pid: the tree recorded with another is abandoned, the other is not.
+      answer.resolve(new Map([[process.ppid, { running: true, startTime: "222" }]]));
+      await vi.waitFor(() => expect(state.dirs.has(reused)).toBe(false));
+      expect(state.files.has(`${reused}.owner`)).toBe(false);
+      expect(state.dirs.has(same)).toBe(true);
+      // The parent's other instances are asked about once per process.
+      await spawnMxcBundledHolder(input());
+      expect(state.probe).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(["EPERM", "EBUSY"])("keeps a leftover whole when its rename fails with %s, and removes it on a later start", async (code) => {
+      // A process that outlived its owner still uses the tree.
+      const held = owned("a", gone);
+      state.dirs.add(`${held}\\home`);
+      state.files.add(`${held}\\home\\state.db`);
+      state.links.set(`${held}\\temp\\escape`, "D:\\work");
+      state.renameFail.set(held, code);
+      await spawnMxcBundledHolder(input());
+      expect(state.spawn).toHaveBeenCalledTimes(1);
+      expect(state.removed).toEqual([]);
+      expect(state.ops.some((op) => op.includes(held))).toBe(false);
+      for (const dir of [held, `${held}\\home`, `${held}\\temp`]) expect(state.dirs.has(dir), dir).toBe(true);
+      expect(state.files.has(`${held}\\home\\state.db`)).toBe(true);
+      expect(state.files.has(`${held}.owner`)).toBe(true);
+      state.renameFail.clear();
+      await spawnMxcBundledHolder(input());
+      expect([...state.dirs].some((dir) => dir.startsWith(held))).toBe(false);
+      expect(state.files.has(`${held}.owner`)).toBe(false);
+      expect(state.ops).toContain(`rename ${held} -> ${held}.retired`);
+    });
+
+    it("only warns when a leftover cannot be removed, and still starts the holder", async () => {
+      const busy = owned("a", gone);
+      state.files.add(`${busy}\\temp\\held.dll`);
+      state.unlinkFail.add(`${busy}.retired\\temp\\held.dll`);
+      await spawnMxcBundledHolder(input());
+      expect(state.spawn).toHaveBeenCalledTimes(1);
+      expect(state.files.has(`${busy}.retired\\temp\\held.dll`)).toBe(true);
+      // The marker stays with what is left, so a later sweep can still prove whose it is.
+      expect(state.files.has(`${busy}.owner`)).toBe(true);
+    });
   });
 
   it("forms staging through the shared staging-shape check, before creating a holder directory", async () => {
     state.stagingRefusal = new MxcProcessContractError("shape refused");
     await expect(spawnMxcBundledHolder(input())).rejects.toThrow("shape refused");
     expect(state.spawn).not.toHaveBeenCalled();
-    expect([...state.dirs].some((dir) => /mxc-staging\\[0-9a-f]{32}/u.test(dir))).toBe(false);
+    expect([...state.dirs].some((dir) => STAGING_TREE_PATTERN.test(dir))).toBe(false);
   });
 
-  it("refuses a staging parent that is a link before creating any holder directory or starting anything", async () => {
-    state.links.set("C:\\ave\\mxc-staging", "D:\\work");
-    await expect(spawnMxcBundledHolder(input())).rejects.toThrow(/staging parent is a link/u);
+  it("starts nothing when the runtime root refuses the staging parent", async () => {
+    state.stagingParentRefusal = new MxcRuntimeRootError("Container runtime root was not established when the sandbox started");
+    await expect(spawnMxcBundledHolder(input())).rejects.toBeInstanceOf(MxcRuntimeRootError);
     expect(state.spawn).not.toHaveBeenCalled();
-    expect([...state.dirs].some((dir) => /^D:\\work\\[0-9a-f]{32}/iu.test(dir) || /mxc-staging\\[0-9a-f]{32}/u.test(dir))).toBe(false);
+    expect(state.dirs.has(SYNTHETIC_MXC_STAGING_PARENT)).toBe(false);
+    expect([...state.dirs].some((dir) => dir.startsWith(STAGING_PATH_PREFIX))).toBe(false);
+    expect([...state.files].some((file) => file.startsWith(STAGING_PATH_PREFIX))).toBe(false);
+  });
+
+  it("creates no holder directory when the runtime root refuses right before the tree is created", async () => {
+    state.stagingParentRefusal = new MxcRuntimeRootError("Container runtime root is no longer reached as it was when the sandbox started");
+    state.stagingParentRefusalFrom = 2;
+    await expect(spawnMxcBundledHolder(input())).rejects.toBeInstanceOf(MxcRuntimeRootError);
+    expect(state.stagingParentCalls).toBe(2);
+    expect(state.spawn).not.toHaveBeenCalled();
+    expect([...state.dirs].some((dir) => STAGING_TREE_PATTERN.test(dir))).toBe(false);
+    expect([...state.files].some((file) => file.startsWith(STAGING_PATH_PREFIX))).toBe(false);
+  });
+
+  it("starts no holder in a tree created while the runtime root's path changed, and removes nothing through that path", async () => {
+    state.stagingParentRefusal = new MxcRuntimeRootError("Container runtime root is no longer reached as it was when the sandbox started");
+    state.stagingParentRefusalFrom = 3;
+    await expect(spawnMxcBundledHolder(input())).rejects.toBeInstanceOf(MxcRuntimeRootError);
+    expect(state.stagingParentCalls).toBe(3);
+    expect(state.spawn).not.toHaveBeenCalled();
+    expect(state.removed).toEqual([]);
+    // The marker stays beside the tree, so a later sweep can prove whose it is.
+    const ownerMarker = new RegExp(String.raw`^${STAGING_PARENT_PATTERN}\\[0-9a-f]{32}\.owner$`, "u");
+    expect([...state.files].filter((file) => ownerMarker.test(file))).toHaveLength(1);
   });
 
   it("stays quarantined with its staging tree when termination is unverified, and retries cleanup", async () => {
@@ -661,12 +823,12 @@ describe("plugin child start resources", () => {
   const DATA = "C:\\ave\\mcp\\fs\\sandbox";
   const intent = (overrides: Partial<Parameters<typeof prepareMxcPluginChildLaunch>[0]> = {}): Parameters<typeof prepareMxcPluginChildLaunch>[0] =>
     ({ pluginId: "fs", command: NODE, cwd: GEN, pluginDataDir: DATA, baseEnv: { SYSTEMROOT: "C:\\Windows", ELECTRON_RUN_AS_NODE: "1" }, envelope: { read: [GEN, DATA], write: [DATA] }, ...overrides });
-  const stagingExists = (): boolean => [...state.dirs].some((dir) => dir.includes("mxc-staging\\"));
+  const stagingExists = (): boolean => [...state.dirs].some((dir) => STAGING_TREE_PATTERN.test(dir));
 
   it("lays out a fresh staging HOME/temp and the captured ownership, and spawns nothing", async () => {
     const launch = await prepareMxcPluginChildLaunch(intent());
     const staging = winPath.dirname(launch.home);
-    expect(staging).toMatch(/^C:\\ave\\mxc-staging\\[0-9a-f]{32}$/u);
+    expect(staging).toMatch(STAGING_ROOT_PATTERN);
     expect(launch.temp).toBe(winPath.join(staging, "temp"));
     expect(state.dirs.has(launch.home) && state.dirs.has(launch.temp)).toBe(true);
     expect(launch.filesystemOwnership).toEqual({ readRoots: [GEN], writeRoots: [DATA, staging], hostStorageRoots: [resolvePluginHostStorageDir(DATA)] });
