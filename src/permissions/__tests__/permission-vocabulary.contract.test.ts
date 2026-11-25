@@ -1,5 +1,6 @@
 // One row per permission decision point: what it answers today, in one closed vocabulary.
 // A row whose answer differs from the policy core carries `core` and is listed in EXCEPTIONS; fixing it removes both.
+// LEAD rule: a fix PR that closes an I-id must flip or delete its exception row in the same PR.
 // Tree = docs/architecture/permission-decision-tree.md line(s), or "no row".
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
@@ -77,19 +78,21 @@ const capability = (platform: NodeJS.Platform, kind: SandboxCapability["kind"], 
 
 // A plan is a route, not a verdict. Read as: confined -> contained, blocked -> deny, the home-privacy floor -> ask-human for the
 // session, a per-invocation host authorization -> ask once, otherwise the ordinary policy (any saved scope may answer).
+// An explicit host request also sets requiresExplicitUserApproval, yet a saved rule answers it: the rule must be exact
+// (the permit mint accepts an issued rule decision only when executionRequest is "host").
 function plan(input: Parameters<typeof buildHostShellExecutionPlan>[0]): Observation {
   const built: HostShellExecutionPlan = buildHostShellExecutionPlan(input);
   const reason = `${built.executionRequest}:${built.fallbackReason}`;
   if (built.sandboxed) return { outcome: "contained", reason, waiver: "none" };
   if (built.mode === "blocked") return { outcome: "deny", reason, waiver: "none" };
   if (requiresUnsandboxedShellAsk(built)) return { outcome: "ask-human", reason, waiver: "session" };
-  return { outcome: "ask", reason, waiver: built.requiresExplicitUserApproval ? "once" : "any" };
+  return { outcome: "ask", reason, waiver: built.requiresExplicitUserApproval && built.executionRequest !== "host" ? "once" : "any" };
 }
 
 // The permission manager reads this inspection and turns an `analysis-limit` into the admission denial `shell-analysis-limit`.
-// The inspection is driven; that one step of the manager is restated here.
+// The inspection is driven with the facts the manager passes for bash; that one step of the manager is restated here.
 function analysisLimit(command: string): Observation {
-  const kind = inspectShellPermissionPaths(command, tmpdir())?.unproven?.kind;
+  const kind = inspectShellPermissionPaths(command, tmpdir(), { dialect: "bash", environment: {} })?.unproven?.kind;
   const evidence = kind === "analysis-limit" ? { admissionDenial: { code: "shell-analysis-limit", reason: "fixture" } } : {};
   return pipeline({ tool: SHELL, shell: { ...HOST_SHELL, unproven: kind !== undefined }, ...evidence });
 }
@@ -207,7 +210,7 @@ const ROWS: readonly Row[] = [
       return JSON.parse(shapes.join()) as Observation;
     } },
   { id: "D23", point: "explicit host request", tree: "T:254", unknown: "-",
-    today: { outcome: "ask", reason: "host:none", waiver: "once" },
+    today: { outcome: "ask", reason: "host:none", waiver: "any" },
     observe: () => plan({ platform: "linux", requestedSandbox: true, activeCapability: capability("linux", "asrt"), executionMode: "host" }) },
   { id: "D24", point: "sandbox off by setting", tree: "T:128, T:254", unknown: "-",
     today: { outcome: "ask", reason: "default:disabled-by-setting", waiver: "any" },
@@ -220,6 +223,8 @@ const ROWS: readonly Row[] = [
     today: { outcome: "ask", reason: "default:windows-partial-shell-acl-unsafe", waiver: "once" },
     core: { outcome: "ask-human", waiver: "session" },
     observe: () => plan({ platform: "win32", requestedSandbox: true, activeCapability: capability("win32", "asrt", false) }) },
+  // I12 removes this branch with the partial and fs-only kinds (PF3); nothing produces them today. Until then the core answer
+  // is the U2 one its neighbours D25 and D26 carry.
   { id: "D27", point: "any other partial substrate", tree: "no row", unknown: "U2",
     today: { outcome: "deny", reason: "default:active-sandbox-not-shell-contained", waiver: "none" },
     core: { outcome: "ask-human", waiver: "session" },
@@ -229,23 +234,25 @@ const ROWS: readonly Row[] = [
     core: { outcome: "ask-human" },
     observe: () => analysisLimit([0, 1, 2, 3, 4, 5, 6].map(index => `if test -f q${index}; then v${index}=1; fi`).join("; ")) },
   // Layer 1: egress destination classes. These rows pin the class predicates; the relay that acts on them is not driven,
-  // so the outcome and reason here name what the relay does with each answer.
-  { id: "D32", point: "reserved literal (link-local, metadata, unspecified, multicast); loopback is not one", tree: "no row", unknown: "-",
-    today: { outcome: "deny", reason: "reserved" },
+  // so the outcome names what the relay does with each answer and the `relay:` reason is a label of this table, not a product code.
+  // D32 pins class membership only; what an allow-list entry does with a reserved literal is not pinned here.
+  { id: "D32", point: "reserved literal class (link-local, metadata, unspecified, multicast); loopback is outside it", tree: "no row", unknown: "-",
+    today: { outcome: "deny", reason: "relay:reserved" },
     observe: () => {
       const literals = ["169.254.169.254", "0.0.0.0", "224.0.0.1", "fe80::1", "fd00:ec2::254", "::ffff:169.254.169.254"];
       expect(["127.0.0.1", "::1"].filter(address => isLoopbackAddress(address) && !isReservedAddress(address))).toHaveLength(2);
-      return { outcome: literals.every(isReservedAddress) ? "deny" : "ask", reason: "reserved" };
+      expect(literals.filter(literal => !isReservedAddress(literal))).toEqual([]);
+      return { outcome: "deny", reason: "relay:reserved" };
     } },
   { id: "D34.a", point: "a name resolving to loopback or a reserved address", tree: "no row", unknown: "-",
-    today: { outcome: "deny", reason: "resolved-local-or-reserved" },
+    today: { outcome: "deny", reason: "relay:resolved-local-or-reserved" },
     observe: () => ({ outcome: ["127.0.0.1", "169.254.169.254"].some(address => resolvedAddressPermitted("name.example", address, 443, [], [])) ? "allow" : "deny",
-      reason: "resolved-local-or-reserved" }) },
+      reason: "relay:resolved-local-or-reserved" }) },
   { id: "D34.b", point: "a name resolving to a reserved address the allow list names", tree: "no row", unknown: "-",
-    today: { outcome: "allow", reason: "allow-listed-address" },
+    today: { outcome: "allow", reason: "relay:allow-listed-address" },
     core: { outcome: "deny" },
     observe: () => ({ outcome: resolvedAddressPermitted("name.example", "169.254.169.254", 80, [parseRelayAllowEntry("169.254.169.254:80")], []) ? "allow" : "deny",
-      reason: "allow-listed-address" }) },
+      reason: "relay:allow-listed-address" }) },
   // Layer 2: start and launch admission.
   { id: "L1", point: "extension start after the readiness deadline", tree: "no row", unknown: "U2",
     today: { outcome: "deny", reason: "extension-readiness-refused" },
@@ -271,6 +278,7 @@ const ROWS: readonly Row[] = [
       expect(publishExtensionPlan({ state: "unavailable", reason: "runtime-start-failed" }, true)).toBe("fallback:runtime-start-failed");
       return extensionStart({ backend: "mxc" });
     } },
+  // Listed under I8 only, but the uncoded reason is the I15 shape: the reason registry (PF2) must clear this row's reason too.
   { id: "L4", point: "Windows extension start while home privacy failed", tree: "no row", unknown: "U2",
     today: { outcome: "deny", reason: "uncoded:Error", waiver: "setting" },
     core: { outcome: "ask-human", reason: "registry-code", waiver: "session" },
@@ -338,7 +346,7 @@ const EXCEPTIONS: Readonly<Record<string, readonly string[]>> = {
   I1: ["D25"],
   I2: ["L5"],
   I5: ["D34.b"],
-  I8: ["L4"],
+  I8: ["L4"], // also carries an uncoded reason (I15); PF2 clears it
   I10: ["L1"],
   I11: ["D26"],
   I12: ["D27"],
