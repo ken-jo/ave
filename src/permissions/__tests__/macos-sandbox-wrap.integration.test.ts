@@ -7,7 +7,6 @@ import { initializeRequiredSandbox, shouldSkipNativeSandboxTests } from "../../_
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { cleanupAsrtSandboxAfterCommand, isAsrtSandboxActive, resetAsrtSandbox, wrapToolCommand } from "../asrt-sandbox.js";
 import { openEgressInvocation } from "../egress-invocations.js";
-import { hardenMacSandboxGitMetadata } from "../macos-sandbox-wrap.js";
 
 describe.skipIf(process.platform !== "darwin" || shouldSkipNativeSandboxTests())("native typed repository markers", () => {
   let root: string;
@@ -24,10 +23,10 @@ describe.skipIf(process.platform !== "darwin" || shouldSkipNativeSandboxTests())
     const invocation = openEgressInvocation({ kind: "shell", toolName: "bash", toolUseId: undefined,
       context: { sessionId: undefined, workspaceRoot: directory, approvalSurface: "unavailable" } });
     try {
-      const wrapped = hardenMacSandboxGitMetadata(await wrapToolCommand(command, {
+      const wrapped = await wrapToolCommand(command, {
         commandId: invocation.token, denyUnixSockets: true,
         filesystem: { allowWrite: [directory], denyWrite: [] },
-      }));
+      });
       const result = spawnSync(wrapped.argv[0]!, wrapped.argv.slice(1), {
         cwd: directory, env: { ...process.env, ...wrapped.env }, encoding: "utf8", timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs,
       });
