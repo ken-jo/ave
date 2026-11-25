@@ -169,14 +169,21 @@ function StageCapabilities({ stage, setupCommands }: { stage: TemplateStage; set
 
 function CapabilityItems({ label, items }: { label: string; items?: string[] }) {
   const { t } = useTranslation();
+  const occurrences = new Map<string, number>();
   return (
     <div>
       <dt className="font-medium">{label}</dt>
       <dd>{items?.length ? (
         <ul className="list-disc pl-5">
-          {items.map((item, index) => (
-            <li key={index} className="whitespace-pre-wrap">{revealHiddenCharacters(item, { lineBreaks: true })}</li>
-          ))}
+          {items.map(item => {
+            const occurrence = (occurrences.get(item) ?? 0) + 1;
+            occurrences.set(item, occurrence);
+            return (
+              <li key={`${occurrence}:${item}`} className="whitespace-pre-wrap">
+                {revealHiddenCharacters(item, { lineBreaks: true })}
+              </li>
+            );
+          })}
         </ul>
       ) : t("workflowTemplates.none")}</dd>
     </div>

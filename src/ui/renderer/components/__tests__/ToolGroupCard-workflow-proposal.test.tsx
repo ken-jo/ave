@@ -101,7 +101,8 @@ it("shows stage capabilities as visible text in the confirmation dialog", async 
     ["declaredTools", t("workflowTemplates.none")],
     ["networkHosts", t("workflowTemplates.none")],
   ]) {
-    const field = dialog.getByText(t(`workflowTemplates.${key}`)).parentElement!;
+    const field = dialog.getByText(t(`workflowTemplates.${key}`)).parentElement;
+    if (!field) throw new Error(`Missing capability field ${key}`);
     expect(within(field).getByText(value)).toBeVisible();
   }
 });
