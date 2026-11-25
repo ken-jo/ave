@@ -962,8 +962,11 @@ describe.each([
     const privateRoots = appOwnedSandboxPrivateRoots();
     const own = canonicalizePathForMatch(ownHome);
     // The fixture is immutable during matching; canonicalize each deny once while retaining the per-path, per-ancestor oracle.
+    // A trusted deny's character class reads as any run, a superset: it withholds only what it could match.
+    const trusted = new Set<string>(denyRead);
     const patterns = new Map([...sessions.denyRead, ...privateRoots].map(denied => [denied,
-      /[\[\]]/.test(denied) ? denied : canonicalizePathForMatch(expandLeadingTilde(denied))]));
+      trusted.has(denied) ? canonicalizePathForMatch(expandLeadingTilde(denied.replace(/\[[^\]]*\]/gu, "**")))
+        : /[\[\]]/.test(denied) ? denied : canonicalizePathForMatch(expandLeadingTilde(denied))]));
     // The Ave home root deny is a boundary: inside it, the per-path check is the re-allow table.
     const trimmed = (path: string): string => path.replace(/[\\/]+$/u, "");
     const ordinaryDenies = sessions.denyRead.filter((denied) => /[*?[\]]/.test(denied)
@@ -985,8 +988,10 @@ describe.each([
       expect(policy.allowRead).toContain(join(homedir(), "secretive"));
       expect(policy.allowRead).toContain(join(homedir(), "projects", "x"));
     } else {
-      // A bracket pattern is not represented, so it fails closed for every grant.
-      expect(policy.allowRead).toEqual([]);
+      // A bracket pattern withholds what its superset reading can match, and nothing else.
+      expect(policy.allowRead).not.toContain(join(homedir(), "sa"));
+      expect(policy.allowRead).not.toContain(join(homedir(), "sb"));
+      expect(policy.allowRead).toContain(join(homedir(), "projects", "x"));
     }
   });
 
