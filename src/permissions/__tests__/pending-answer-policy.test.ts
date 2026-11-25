@@ -36,6 +36,18 @@ describe("a person's answer across a policy change", () => {
     expect(recheck).not.toHaveBeenCalled();
   });
 
+  it("refuses an async re-check if a non-memory policy step occurs during it", async () => {
+    const manager = policy();
+    const opened = answerEpochsOf(manager);
+    manager.memoryRuleStep();
+    const recheck = vi.fn(async () => {
+      manager.otherStep();
+      return allow;
+    });
+    expect(await personAnswerStands(manager, opened, true, recheck)).toBe(false);
+    expect(recheck).toHaveBeenCalledOnce();
+  });
+
   it.each([
     ["still asked", ask, false, true],
     ["now allowed", allow, false, true],

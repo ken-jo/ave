@@ -26,6 +26,7 @@ import { dirname, resolve } from "node:path";
 import type { DenyRule, ToolCategory, ToolSource, ToolTrustOrigin } from "../tools/types.js";
 import type { RemoteControllerAuthority } from "../shared/chat-origin.js";
 import type { ApprovalPersistenceGuard } from "./approval-persistence-guard.js";
+import { answerEpochsOf, type AnswerEpochs } from "./pending-answer-policy.js";
 import { permissionsFilePath as defaultPermissionsFilePath, readPermissionsFile, updatePermissionsFile, type PermissionsFile } from "./permissions-store.js";
 import { PermissionRulesFileCorruptError, storedRuleInvalidReason, validatePermissionRule } from "./rules/rule-files.js";
 import { listStoredProjectRules, projectRulesLocation } from "./rules/project-rule-files.js";
@@ -1303,9 +1304,11 @@ export class PermissionManager {
   }
 
   // Re-check actual destinations at the host fetch boundary, including redirects.
-  async checkNetworkRules(url: string, projectCwd: string, privateNetwork = false): Promise<ScopedRuleEvaluation> {
+  async checkNetworkRules(url: string, projectCwd: string, privateNetwork = false): Promise<ScopedRuleEvaluation & { answerEpochs: AnswerEpochs }> {
     await this.projectRuleScopes.ensureLoaded(projectCwd);
-    return this.checkScopedRules({ kind: "webfetch", url, privateNetwork }, projectCwd);
+    const answerEpochs = answerEpochsOf(this);
+    const rules = this.checkScopedRules({ kind: "webfetch", url, privateNetwork }, projectCwd);
+    return { ...rules, answerEpochs };
   }
 
   // Read an already loaded scope; a generic tool allow is never a scoped grant.

@@ -34,12 +34,21 @@ export function answerSurvivesRecheck(now: Rechecked, cardForced: boolean): bool
 
 /** The whole rule. `recheck` judges the pending call by the policy as it is now; it runs only across memory-only rule steps. */
 export function personAnswerStands(manager: EpochSource, opened: AnswerEpochs, cardForced: boolean, recheck: () => Rechecked,
-  sameCard?: SameCardPolicyTransition): boolean {
+  sameCard?: SameCardPolicyTransition): boolean;
+export function personAnswerStands(manager: EpochSource, opened: AnswerEpochs, cardForced: boolean, recheck: () => Promise<Rechecked>,
+  sameCard?: SameCardPolicyTransition): boolean | Promise<boolean>;
+export function personAnswerStands(manager: EpochSource, opened: AnswerEpochs, cardForced: boolean, recheck: () => Rechecked | Promise<Rechecked>,
+  sameCard?: SameCardPolicyTransition): boolean | Promise<boolean> {
   const current = manager.getPolicyEpoch();
   if (current === opened.epoch) return true;
   if (sameCard?.gate.allowsPolicyTransition?.(sameCard.decision, opened.epoch, current)) {
     sameCard.onTransition?.();
     return true;
   }
-  return onlyMemoryRulesChangedSince(manager, opened) && answerSurvivesRecheck(recheck(), cardForced);
+  if (!onlyMemoryRulesChangedSince(manager, opened)) return false;
+  const now = recheck();
+  if (now instanceof Promise) {
+    return now.then(result => onlyMemoryRulesChangedSince(manager, opened) && answerSurvivesRecheck(result, cardForced));
+  }
+  return answerSurvivesRecheck(now, cardForced);
 }

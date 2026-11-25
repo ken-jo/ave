@@ -752,22 +752,20 @@ export async function executeAuthorizedToolInvocation(
         if (!manager || !gate || !sessionId || origin === null || !validateExternalUrl(url).ok || invocationPermissionContext.headless || invocationPermissionContext.approvalSurface === "unavailable") throw new Error(NO_APPROVER_MESSAGE);
         siteSignal.throwIfAborted();
         if (!await refreshRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)) throw new Error("remote-controller-revoked");
-        const opened = answerEpochsOf(manager);
-        const policyEpoch = opened.epoch;
-        /** The destination judged again after a card the person answered, across memory-only allow-rule steps (pending-answer-policy.ts). */
-        const siteAnswerStands = async (): Promise<boolean> => {
-          if (manager.getPolicyEpoch() === policyEpoch) return true;
-          if (!onlyMemoryRulesChangedSince(manager, opened)) return false;
-          const now = await manager.checkNetworkRules(url, executionCwd, false);
-          // Never stricter than what was judged first: a destination that is now denied, or now asked for or flagged when it was not
-          // (a run's network rule went with its run), is refused.
-          return onlyMemoryRulesChangedSince(manager, opened) && !now.admissionDenial && now.decision !== "deny"
-            && (now.decision !== "ask" || rules.decision === "ask") && (!now.exfiltration || Boolean(rules.exfiltration));
-        };
         const rules = await manager.checkNetworkRules(url, executionCwd, false);
         if (rules.admissionDenial || rules.decision === "deny") throw new Error(rules.admissionDenial ?? "Browser destination denied");
+        let destinationEpochs = rules.answerEpochs;
+        const recheckDestination = async () => {
+          const now = await manager.checkNetworkRules(url, executionCwd, false);
+          const eligible = !now.admissionDenial && now.decision !== "deny"
+            && (now.decision !== "ask" || rules.decision === "ask") && (!now.exfiltration || Boolean(rules.exfiltration));
+          if (!eligible) return { decision: "deny" } as const;
+          destinationEpochs = now.answerEpochs;
+          return { decision: "allow" } as const;
+        };
         const screened = screenEgressRequest({ url, allowPrivateNetwork: false });
         if (rules.decision === "ask" || (rules.exfiltration || screened.outcome === "screened") && !(humanApproved && url === finalInput.url)) {
+          const actionOpened = destinationEpochs;
           const actionDecision = await gate.requestAndWait({
             id: randomUUID(), category: "tool", toolName: tool.name, source: "builtin", toolCategory: "network", args: { url },
             reason: rules.decision === "ask" ? "A destination rule requires approval for this navigation." : "This navigation carries an exfiltration signal and requires human consent.", createdAt: Date.now(), sessionId, abortSignal: siteSignal,
@@ -776,14 +774,15 @@ export async function executeAuthorizedToolInvocation(
           });
           if (actionDecision.choice !== "allow-once" || isHostApprovalRejectedDecision(actionDecision)) throw new Error("Browser navigation denied");
           siteSignal.throwIfAborted();
-          if (!await refreshRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId) || !await siteAnswerStands()) throw new Error("Browser navigation authority changed");
+          if (!await refreshRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId) || !await personAnswerStands(manager, actionOpened, true, recheckDestination)) throw new Error("Browser navigation authority changed");
         }
         if (manager.browserSites.allows(sessionId, url)) {
           siteSignal.throwIfAborted();
-          if (!await refreshRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId) || !await siteAnswerStands() || !isRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)) throw new Error("Browser navigation authority changed");
+          if (!await refreshRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId) || !await personAnswerStands(manager, destinationEpochs, true, recheckDestination) || !isRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)) throw new Error("Browser navigation authority changed");
           return;
         }
-        const decision = await gate.requestAndWait({
+        const siteOpened = destinationEpochs;
+        const siteDecision = await gate.requestAndWait({
           id: randomUUID(), category: "tool", toolName: tool.name, source: "builtin", toolCategory: "network",
           browserSite: origin, toolUseId: toolUse.id, args: { url }, reason: "Opening this site requires session consent.", createdAt: Date.now(),
           sessionId, abortSignal: siteSignal, remoteControllerAuthority: invocationPermissionContext.remoteControllerAuthority,
@@ -791,9 +790,9 @@ export async function executeAuthorizedToolInvocation(
         });
         siteSignal.throwIfAborted();
         if (!await refreshRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)) throw new Error("remote-controller-revoked");
-        if (!await siteAnswerStands() || !isRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)) throw new Error("Permission policy changed during site approval");
-        const choice = gate.consumeBrowserSiteChoice(decision, sessionId, origin);
-        if (decision.choice !== "allow-once" || choice === undefined || isHostApprovalRejectedDecision(decision)) throw new Error("Browser site opening denied");
+        if (!await personAnswerStands(manager, siteOpened, true, recheckDestination) || !isRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)) throw new Error("Permission policy changed during site approval");
+        const choice = gate.consumeBrowserSiteChoice(siteDecision, sessionId, origin);
+        if (siteDecision.choice !== "allow-once" || choice === undefined || isHostApprovalRejectedDecision(siteDecision)) throw new Error("Browser site opening denied");
         siteSignal.throwIfAborted();
         manager.browserSites.allow(sessionId, url, choice);
       },
