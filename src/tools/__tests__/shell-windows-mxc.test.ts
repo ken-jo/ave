@@ -480,8 +480,8 @@ describe("builtin shell — Windows MXC containers", () => {
           return target === parent || target.startsWith(parent + "/");
         });
       };
-      // Execution controls remain protected, including the whole settings directory.
-      for (const entry of [join(".git", "hooks"), join(".git", "config"), ".vscode", ".husky", ".claude", ".envrc"]) {
+      // Execution controls remain protected, including a whole editor settings directory.
+      for (const entry of [join(".git", "hooks"), join(".git", "config"), ".vscode", ".husky", ".idea", ".envrc"]) {
         expect(writeDenyCovers(join(workspace, entry)), entry).toBe(true);
       }
       for (const store of [permissionsFilePath(), userApprovalFilePath(), egressGrantFilePath()]) {
