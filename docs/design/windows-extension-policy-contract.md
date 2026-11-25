@@ -99,6 +99,17 @@ admission begins the start, so it covers supervisor startup, native creation and
 the ready frame; an expiry here is a refusal of this start and is never written
 into the boot plan.
 
+What the start reports today, per field. Field 5 is measured: the SDK probe's
+enumeration support, true or false. Field 2 is the SDK probe's tier; the
+supervisor refuses a non-BaseContainer tier before native creation, so a ready
+frame always reports it true. Fields 1 and 3 are implied by the frame existing:
+the supervisor verified the installed payload before loading it, and the SDK
+created a process for the digested request. Field 4 is the request's UI policy
+plus an attached process that is not cleanup-failed; runtime initialisation
+inside the container is not observed. So the checks a start can fail today are
+field 5, the request-digest binding, the frame shape and the deadline. Stronger
+observations for fields 1, 3 and 4 belong to the native release gate.
+
 Release-gate evidence is an install property. A start checks the registered
 record and never gathers it; nothing runs fields 8-13 per start. With no record,
 or a record with a field not observed, every holder start is refused with
