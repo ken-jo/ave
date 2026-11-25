@@ -82,11 +82,12 @@ describe("host shell execution plan", () => {
       const plan = buildHostShellExecutionPlan({ platform: "linux", requestedSandbox: true,
         activeCapability: { ...FULL_ASRT, platform: "linux", confines } });
       expect(plan.sandboxed).toBe(false);
-      expect(plan.mode).toBe("blocked");
+      expect(plan.mode).toBe("plain");
+      expect(requiresUnsandboxedShellAsk(plan)).toBe(true);
     }
   });
 
-  it("uses Windows Plan B for requested partial ASRT without calling it a sandbox", () => {
+  it("reports the unconfined route for incomplete Windows shell containment", () => {
     const plan = buildHostShellExecutionPlan({
       platform: "win32",
       requestedSandbox: true,
@@ -97,14 +98,14 @@ describe("host shell execution plan", () => {
       version: HOST_SHELL_EXECUTION_PLAN_VERSION,
       requestedSandbox: true,
       mode: "plain",
-      fallbackReason: "windows-partial-shell-acl-unsafe",
+      fallbackReason: "active-sandbox-not-shell-contained",
       requiresExplicitUserApproval: true,
       capability: {
         kind: "none",
         confines: { filesystem: false, process: false, network: false },
       },
     });
-    expect(plan.identity).toContain("windows-partial-shell-acl-unsafe");
+    expect(plan.identity).toContain("active-sandbox-not-shell-contained");
     expect(Object.isFrozen(plan)).toBe(true);
     expect(Object.isFrozen(plan.capability)).toBe(true);
   });
@@ -123,12 +124,12 @@ describe("host shell execution plan", () => {
       egressProtocolCoverage: { dns: "unknown", rawIp: "unknown" },
       capability: {
         kind: "none", confidence: "verified", platform: "win32",
-        reason: "Windows ASRT partial shell confinement is unavailable: the host will not issue path-based ACL grants for one-shot shells.",
+        reason: "The active OS sandbox does not prove containment for this shell.",
         confines: { filesystem: false, process: false, network: false },
       },
-      fallbackReason: "windows-partial-shell-acl-unsafe",
+      fallbackReason: "active-sandbox-not-shell-contained",
       requiresExplicitUserApproval: true,
-      identity: "host-shell-execution-plan/v4:win32:windows-partial-shell-acl-unsafe:ask",
+      identity: "host-shell-execution-plan/v4:win32:active-sandbox-not-shell-contained:ask",
     });
     expect(requiresUnsandboxedShellAsk(plan)).toBe(true);
     const host = buildHostShellExecutionPlan({ platform: "win32", requestedSandbox: true, activeCapability: WINDOWS_PARTIAL_ASRT, executionMode: "host" });
@@ -285,23 +286,21 @@ describe("host shell execution plan", () => {
     },
   );
 
-  it("keeps a hypothetical non-Windows partial substrate fail-closed rather than applying Plan B", () => {
-    const plan = buildHostShellExecutionPlan({
-      platform: "linux",
-      requestedSandbox: true,
-      activeCapability: {
-        ...WINDOWS_PARTIAL_ASRT,
-        platform: "linux",
-      },
-    });
-
-    expect(plan.mode).toBe("blocked");
-    expect(plan.fallbackReason).toBe("active-sandbox-not-shell-contained");
-    expect(plan.requiresExplicitUserApproval).toBe(false);
-    expect(plan.capability).toMatchObject({
-      kind: "none",
-      confines: { filesystem: false, process: false, network: false },
-    });
+  it.each(["default", "host"] as const)("uses the same floor on the %s route for missing and incomplete Linux containment", (executionMode) => {
+    const missing = { ...NONE, platform: "linux" as const };
+    const incomplete = { ...FULL_ASRT, platform: "linux" as const,
+      confines: { filesystem: true, process: false, network: false } };
+    for (const activeCapability of [missing, incomplete]) {
+      for (const homePrivacyVerified of [false, true]) {
+        const plan = buildHostShellExecutionPlan({
+          platform: "linux", requestedSandbox: true, executionMode, activeCapability, homePrivacyVerified,
+        });
+        expect(plan).toMatchObject({ mode: "plain", sandboxed: false, requiresExplicitUserApproval: true,
+          capability: { kind: "none", confines: { filesystem: false, process: false, network: false } } });
+        expect(requiresUnsandboxedShellAsk(plan)).toBe(true);
+        expect(exactRulePassesUnsandboxedShellAsk(plan)).toBe(homePrivacyVerified);
+      }
+    }
   });
   it("partitions cache identity by the entire safe plan projection", () => {
     const requested = buildHostShellExecutionPlan({
@@ -325,7 +324,7 @@ describe("host shell execution plan", () => {
       .toBe(getHostShellExecutionPlanCacheIdentity(requestedProjection));
   });
   it.each(["darwin", "linux", "win32"] as const)(
-    "fails closed for future partial substrates on %s",
+    "requires the no-confinement floor for incomplete substrates on %s",
     (platform) => {
       for (const kind of ["partial", "fs-only"] as const) {
         const plan = buildHostShellExecutionPlan({
@@ -346,9 +345,9 @@ describe("host shell execution plan", () => {
 
         expect(plan).toMatchObject({
           requestedSandbox: true,
-          mode: "blocked",
+          mode: "plain",
           fallbackReason: "active-sandbox-not-shell-contained",
-          requiresExplicitUserApproval: false,
+          requiresExplicitUserApproval: true,
           capability: {
             kind: "none",
             confines: { filesystem: false, process: false, network: false },
@@ -375,7 +374,7 @@ describe("host shell execution plan", () => {
       platform: "win32",
       requestedSandbox: true,
       mode: "plain",
-      fallbackReason: "windows-partial-shell-acl-unsafe",
+      fallbackReason: "active-sandbox-not-shell-contained",
       requiresExplicitUserApproval: true,
       capability: {
         kind: "none",
@@ -473,7 +472,7 @@ describe("host shell execution plan — Windows under a boot home-privacy failur
     { label: "partial ASRT", requestedSandbox: true, activeCapability: WINDOWS_PARTIAL_ASRT, expected: "ask" },
     { label: "MXC", requestedSandbox: true, activeCapability: MXC, shellSubstrate: "mxc", expected: "confined" },
     { label: "full ASRT", requestedSandbox: true, activeCapability: MXC, expected: "confined" },
-    { label: "uncontained capability", requestedSandbox: true, activeCapability: { ...NONE, kind: "asrt" as const, platform: "linux" as const }, platform: "linux", expected: "refused" },
+    { label: "uncontained capability", requestedSandbox: true, activeCapability: { ...NONE, kind: "asrt" as const, platform: "linux" as const }, platform: "linux", expected: "ask" },
   ] as const;
 
   it.each(branches)("$label: $expected", (branch) => {

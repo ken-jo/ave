@@ -286,12 +286,9 @@ const ROWS: readonly Row[] = [
       }
       return uncontainedShell("exact", verified, false, "default", active);
     } },
-  // I12 removes this branch with the partial and fs-only kinds (PF3); nothing produces them today. Until then the core answer
-  // is the U2 one its neighbours D25 and D26 carry.
-  { id: "D27", point: "any other partial substrate", tree: "no row", unknown: "U2",
-    today: { outcome: "deny", reason: "default:active-sandbox-not-shell-contained", waiver: "none" },
-    core: { outcome: "ask-human", waiver: "session" },
-    observe: () => plan({ platform: "linux", requestedSandbox: true, activeCapability: capability("linux", "partial") }) },
+  { id: "D27", point: "incomplete filesystem-only containment", tree: "T:144-151, T:232", unknown: "U2",
+    today: { outcome: "ask-human", reason: "default:active-sandbox-not-shell-contained", waiver: "session" },
+    observe: () => plan({ platform: "linux", requestedSandbox: true, activeCapability: capability("linux", "fs-only", false) }) },
   { id: "D30", point: "analysis limit other than the cd budget", tree: "no row", unknown: "U1",
     today: { outcome: "deny", reason: "shell-analysis-limit", headless: "deny" },
     core: { outcome: "ask-human" },
@@ -479,7 +476,6 @@ const ROWS: readonly Row[] = [
 // Inconsistency id (policy design, section 3) -> the rows that still answer differently from the policy core.
 const EXCEPTIONS: Readonly<Record<string, readonly string[]>> = {
   I3: ["L20"],
-  I12: ["D27"],
   I15: ["L3", "L13"],
   I16: ["L18"],
   I18: ["L6"],
@@ -493,6 +489,7 @@ const RESOLVED: Readonly<Record<string, string>> = {
   I8: "L4",
   I10: "L1",
   I11: "D26",
+  I12: "D27",
 };
 
 // Inconsistencies no driven row can show, and why.

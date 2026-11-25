@@ -27,7 +27,7 @@ import type { ToolRegistry } from "../registry.js";
 import type { ToolExecutionContext } from "../types.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import type { ApprovalGate } from "../../permissions/approval-gate.js";
-import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest } from "../../permissions/sandbox-capability.js";
+import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, setActiveSandboxCapability } from "../../permissions/sandbox-capability.js";
 import { requestedSandboxUnavailable } from "../../__tests__/support/host-shell-sandbox-fixtures.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { __resetShellResolverCache } from "../../lib/shell-resolver.js";
@@ -254,6 +254,34 @@ describe.each(PLATFORMS)("host shells when the requested sandbox is unavailable 
     expect(execute).not.toHaveBeenCalled();
     expect(refused[0]?.is_error).toBe(true);
   });
+
+  it.skipIf(platform !== "linux").each(["default", "host"] as const)(
+    "applies the same floor with a missing or filesystem-only Linux backend on the %s invocation route",
+    async (route) => {
+      const dialect = DIALECTS[0];
+      const execute = vi.fn();
+      const registry = probe(dialect.create, execute);
+      const pm = await savedManager("default", [exactRule(dialect)]);
+      const start = run(dialect, "linux-shell-floor", dialect.command, route === "host");
+
+      for (const backend of ["missing", "filesystem-only"] as const) {
+        if (backend === "filesystem-only") {
+          setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform, reason: "fixture",
+            confines: { filesystem: true, process: false, network: false } });
+        }
+        for (const verified of [true, false]) {
+          _resetAveHomePrivacyForTest();
+          if (verified) setAveHomePrivacyAtBoot({ enforcement: "posix-mode", home: "/home/alice/.ave" });
+          execute.mockClear();
+          const approval = cardGate("deny-once");
+          const result = await start(pm, approval.gate, registry);
+          expect(approval.cards(), `${backend} backend, privacy verified: ${verified}`).toHaveLength(verified ? 0 : 1);
+          expect(execute).toHaveBeenCalledTimes(verified ? 1 : 0);
+          expect(result[0]?.is_error === true).toBe(!verified);
+        }
+      }
+    },
+  );
 
   // A compound of commands that each have an exact rule is not one exact rule for the command.
   it.each(DIALECTS)("$toolName with exact rules for each part of a compound command still asks", async (dialect) => {

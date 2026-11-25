@@ -459,7 +459,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
       const card = defined(denied.cards()[0], "approval card");
       expect(card.executionPlan).toMatchObject(host
         ? { mode: "plain", executionRequest: "host", requiresExplicitUserApproval: true }
-        : { mode: "plain", fallbackReason: "windows-partial-shell-acl-unsafe", requiresExplicitUserApproval: true });
+        : { mode: "plain", fallbackReason: "active-sandbox-not-shell-contained", requiresExplicitUserApproval: true });
       expect(card.allowedChoices).toEqual(["allow-once", "deny-once"]);
       expect(card.reviewerVerdict).toBeUndefined();
       expect(card.shellRule).toMatchObject({ exactRule: null, sessionAllowed: true, persistentAllowed: false, denyAllowed: false, floorSessionOnly: true });
@@ -648,7 +648,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     expect(rendererApproval.sandboxCapability).toBeUndefined();
     expect(rendererApproval.executionPlan).toMatchObject({
       mode: "plain",
-      fallbackReason: "windows-partial-shell-acl-unsafe",
+      fallbackReason: "active-sandbox-not-shell-contained",
       requiresExplicitUserApproval: true,
       capability: {
         kind: "none",
@@ -657,12 +657,12 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     });
     expect(JSON.stringify(rendererApproval.executionPlan)).not.toContain("echo one-shot");
     expect(JSON.stringify(rendererApproval.executionPlan)).not.toContain(
-      "Windows ASRT partial shell confinement is unavailable",
+      "The active OS sandbox does not prove containment for this shell.",
     );
     expect(observedPermit).toBeDefined();
     expect(observedPlan).toMatchObject({
       mode: "plain",
-      fallbackReason: "windows-partial-shell-acl-unsafe",
+      fallbackReason: "active-sandbox-not-shell-contained",
       requiresExplicitUserApproval: true,
       capability: {
         kind: "none",
@@ -678,7 +678,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     expect(endMetas[0]?.executionPlan).toBe(auditPlan);
     const resultPlanJson = JSON.stringify(result[0]?.executionPlan);
     expect(resultPlanJson).not.toContain("echo one-shot");
-    expect(resultPlanJson).not.toContain("Windows ASRT partial shell confinement is unavailable");
+    expect(resultPlanJson).not.toContain("The active OS sandbox does not prove containment for this shell.");
     expect(resultPlanJson).not.toContain("hostShellExecutionPermit");
     const ask = audit.permissionEntries.find((entry) => entry.decision === "ask");
     const terminal = audit.permissionEntries.find((entry) => entry.decision === "allow");
@@ -743,7 +743,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     expect(endMetas[0]?.executionPlan).toBe(expectedPlan);
     const deniedResultPlanJson = JSON.stringify(result[0]?.executionPlan);
     expect(deniedResultPlanJson).not.toContain("echo denied");
-    expect(deniedResultPlanJson).not.toContain("Windows ASRT partial shell confinement is unavailable");
+    expect(deniedResultPlanJson).not.toContain("The active OS sandbox does not prove containment for this shell.");
     expect(deniedResultPlanJson).not.toContain("hostShellExecutionPermit");
     for (const surface of [ask, terminal, telemetry]) {
       expect(surface).toBeDefined();
@@ -794,7 +794,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     expect(endMetas).toHaveLength(1);
     expect(endMetas[0]?.executionPlan).toBe(request!.executionPlan);
     const permitlessResultPlanJson = JSON.stringify(result[0]?.executionPlan);
-    expect(permitlessResultPlanJson).not.toContain("Windows ASRT partial shell confinement is unavailable");
+    expect(permitlessResultPlanJson).not.toContain("The active OS sandbox does not prove containment for this shell.");
     expect(permitlessResultPlanJson).not.toContain("hostShellExecutionPermit");
     expect(permitlessResultPlanJson).not.toContain('"reason"');
   });

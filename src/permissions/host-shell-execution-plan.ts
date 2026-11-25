@@ -210,7 +210,7 @@ export function buildHostShellExecutionPlan(input: {
   shellSubstrate?: "asrt" | "mxc";
   executionMode?: HostShellExecutionRequest;
   // Boot could not establish Ave home privacy (any category but helper-unavailable, which `unconfinedShellDenied` blocks): every plain host shell
-  // (unavailable sandbox, shell scope off, Windows partial shell or explicit host) then needs a human ask for every command.
+  // then needs a human ask for every command.
   unavailableSandboxRequiresAsk?: boolean;
   // Why boot could not start the requested sandbox; read only for the unavailable plan's install hints.
   unavailableCauses?: readonly SandboxStartFailureCause[];
@@ -289,14 +289,17 @@ export function buildHostShellExecutionPlan(input: {
     });
   }
 
-  // A requested sandbox that is unavailable (missing bwrap/socat, start failure, host below the documented minimums) yields a plain child on every platform, and only through the sandbox-unavailable forced ask: once or for this session, never saved; allow mode, auto review and saved prefix rules do not pass, and a headless run is denied. One saved rule passes it: an exact one, and only on a plan `exactRulePassesUnsandboxedShellAsk` marks. A helper-unavailable boot blocks it before this branch. The fallback reason stays on the plan so the approval card, the tool result and audit can say the sandbox was unavailable.
-  if (requestedSandbox && input.activeCapability.kind === "none") {
-    const fallbackReason: HostShellFallbackReason = "requested-sandbox-unavailable";
-    const capability = noneCapability(
-      input.platform,
-      "The requested OS sandbox is unavailable, so this shell will run without OS isolation until it is restored.",
-    );
-    const installHints = [...new Set((input.unavailableCauses ?? []).flatMap((cause) => INSTALL_HINT_BY_CAUSE[cause] ?? []))];
+  if (!hasShellContainment(input.activeCapability)) {
+    const missing = input.activeCapability.kind === "none";
+    const fallbackReason: HostShellFallbackReason = missing
+      ? "requested-sandbox-unavailable"
+      : "active-sandbox-not-shell-contained";
+    const capability = noneCapability(input.platform, missing
+      ? "The requested OS sandbox is unavailable, so this shell will run without OS isolation until it is restored."
+      : "The active OS sandbox does not prove containment for this shell.");
+    const installHints = missing
+      ? [...new Set((input.unavailableCauses ?? []).flatMap((cause) => INSTALL_HINT_BY_CAUSE[cause] ?? []))]
+      : [];
     return Object.freeze({
       version: HOST_SHELL_EXECUTION_PLAN_VERSION,
       platform: input.platform,
@@ -314,70 +317,20 @@ export function buildHostShellExecutionPlan(input: {
     });
   }
 
-  if (input.activeCapability.kind === "asrt" && hasShellContainment(input.activeCapability)) {
-    const capability = freezeCapability(input.activeCapability);
-    return Object.freeze({
-      version: HOST_SHELL_EXECUTION_PLAN_VERSION,
-      platform: input.platform,
-      requestedSandbox,
-      executionRequest,
-      mode: "asrt" as const,
-      sandboxed: true,
-      substrate: shellSubstrate,
-      egressProtocolCoverage: egressProtocolCoverageFor(shellSubstrate),
-      capability,
-      fallbackReason: "none" as const,
-      requiresExplicitUserApproval: false,
-      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":" + shellSubstrate,
-    });
-  }
-
-  // This default route can run on the host under the same no-confinement floor.
-  if (
-    input.platform === "win32" &&
-    requestedSandbox &&
-    input.activeCapability.kind === "asrt"
-  ) {
-    const fallbackReason: HostShellFallbackReason = "windows-partial-shell-acl-unsafe";
-    const capability = noneCapability(
-      input.platform,
-      "Windows ASRT partial shell confinement is unavailable: the host will not issue path-based ACL grants for one-shot shells.",
-    );
-    return Object.freeze({
-      version: HOST_SHELL_EXECUTION_PLAN_VERSION,
-      platform: input.platform,
-      requestedSandbox,
-      executionRequest,
-      mode: "plain" as const,
-      sandboxed: false,
-      substrate: "none" as const,
-      egressProtocolCoverage: egressProtocolCoverageFor("none"),
-      capability,
-      fallbackReason,
-      requiresExplicitUserApproval: true,
-      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":" + fallbackReason + noConfinementAskSuffix,
-    });
-  }
-
-  // Only a full ASRT route and the explicitly modelled Windows ASRT Plan B may execute a requested shell. Future partial substrates (for example `partial` or `fs-only`) must not silently degrade to an ordinary host shell before they receive their own sealed execution contract.
-  const fallbackReason: HostShellFallbackReason = "active-sandbox-not-shell-contained";
-  const capability = noneCapability(
-    input.platform,
-    "The active OS sandbox does not provide both filesystem and process confinement required for shell execution.",
-  );
+  const capability = freezeCapability(input.activeCapability);
   return Object.freeze({
     version: HOST_SHELL_EXECUTION_PLAN_VERSION,
     platform: input.platform,
     requestedSandbox,
     executionRequest,
-    mode: "blocked" as const,
-    sandboxed: false,
-    substrate: "none" as const,
-    egressProtocolCoverage: egressProtocolCoverageFor("none"),
+    mode: "asrt" as const,
+    sandboxed: true,
+    substrate: shellSubstrate,
+    egressProtocolCoverage: egressProtocolCoverageFor(shellSubstrate),
     capability,
-    fallbackReason,
+    fallbackReason: "none" as const,
     requiresExplicitUserApproval: false,
-    identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":" + fallbackReason,
+    identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":" + shellSubstrate,
   });
 }
 

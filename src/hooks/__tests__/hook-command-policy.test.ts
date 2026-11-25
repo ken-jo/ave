@@ -39,7 +39,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async (original) => ({
   isAsrtSandboxActive: () => false,
 }));
 
-// The partial Windows sandbox plan requires a per-invocation permit; an unavailable sandbox does not. Override only the plan's platform probe so the hook still runs on this host.
+// Override only the plan platform for Windows fixtures so the hook still runs on this host.
 const plans = vi.hoisted(() => ({ windowsPartial: false }));
 vi.mock("../../permissions/sandbox-capability.js", async (original) => {
   const actual = await original<typeof import("../../permissions/sandbox-capability.js")>();
@@ -270,8 +270,12 @@ describe("hook command permission admission", () => {
     }));
   });
 
-  it("runs a hook command on its saved exact rule past the unavailable-sandbox ask only with verified boot home privacy", async () => {
+  it.each(["missing", "filesystem-only"] as const)("requires verified boot privacy for the saved hook rule with a %s backend", async (backend) => {
     setShellSandboxRequestedAtBoot(true);
+    if (backend === "filesystem-only") {
+      setActiveSandboxCapability({ kind: "fs-only", confidence: "verified", platform: process.platform, reason: "fixture",
+        confines: { filesystem: true, process: false, network: false } });
+    }
     const printfHook = { ...hook, command: ["printf", "ready"] };
     const rule = { pattern: "Bash('printf' 'ready')", action: "allow" as const };
     try {
@@ -537,7 +541,7 @@ describe("hook command permission admission", () => {
   it("consumes a real gate-approved host execution receipt before spawning", async () => {
     windowsPartialPlan();
     expect(getHostShellExecutionPlan()).toMatchObject({
-      mode: "plain", fallbackReason: "windows-partial-shell-acl-unsafe", requiresExplicitUserApproval: true,
+      mode: "plain", fallbackReason: "active-sandbox-not-shell-contained", requiresExplicitUserApproval: true,
     });
     const p = policy();
     p.permissionManager.setRules([{ pattern: "Bash(node *)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
@@ -701,7 +705,7 @@ describe("hook command permission admission", () => {
     expect(p.requestAndWait).toHaveBeenCalledOnce();
     expect(p.requestAndWait).toHaveBeenCalledWith(expect.objectContaining({
       forceExplicit: true, allowedChoices: ["allow-once", "deny-once"], durableApprovalRecordAllowed: false, floorSessionAllowed: true,
-      executionPlan: expect.objectContaining({ fallbackReason: "windows-partial-shell-acl-unsafe", requiresExplicitUserApproval: true }),
+      executionPlan: expect.objectContaining({ fallbackReason: "active-sandbox-not-shell-contained", requiresExplicitUserApproval: true }),
     }));
     expect(permits.minted).toBe(0);
   });
