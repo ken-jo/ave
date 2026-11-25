@@ -3,8 +3,9 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { IpcMainInvokeEvent, WebContents } from "electron";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { AuditLogger } from "../../../audit/audit-logger.js";
+import { configureHostResources } from "../../../main/host-resources.js";
 import { ScriptHookManager } from "../../../hooks/script-hook-manager.js";
 import { PermissionTestResources } from "../../../permissions/__tests__/test-resources.js";
 import { ApprovalGate, type ApprovalRequest, type ApprovalRequestInput, IPC_APPROVAL_REQUEST } from "../../../permissions/approval-gate.js";
@@ -32,6 +33,9 @@ const cleanup: Array<() => Promise<void>> = [];
 const RUN = "work-board:7#run-a";
 const NEXT_RUN = "work-board:7#run-b";
 const INTENT = { inputOrigin: "user-keyboard", userActivation: true };
+
+// Windows path admission pins through the shipped path-kind helper; boot configures its resources first.
+beforeAll(() => configureHostResources({ resourcePath: join(process.cwd(), "resources"), isPackaged: false }));
 
 afterEach(async () => {
   for (const close of cleanup.splice(0)) await close();

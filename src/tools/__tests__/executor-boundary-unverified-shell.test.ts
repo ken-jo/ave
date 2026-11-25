@@ -31,7 +31,7 @@ import { runWithToolExecutionCwd } from "../execution-context.js";
 import { ToolRegistry } from "../registry.js";
 import type { ToolExecutionContext } from "../types.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
-import type { ApprovalGate } from "../../permissions/approval-gate.js";
+import { ApprovalGate, type ApprovalRequest } from "../../permissions/approval-gate.js";
 import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, setShellSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
 import { requestedSandboxUnavailable } from "../../__tests__/support/host-shell-sandbox-fixtures.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
@@ -39,6 +39,7 @@ import { __resetShellResolverCache } from "../../lib/shell-resolver.js";
 import { _resetAveHomePrivacyForTest, setAveHomePrivacyAtBoot, ensureAveHomePrivate, AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE, type AveHomePrivacyFailureCategory } from "../../shared/ave-home.js";
 import { shellExecutionEnvironmentLines } from "../../shared/shell-execution-environment.js";
 import { setWindowsDenyUnenforceableAtBoot } from "../../permissions/admitted-obligation.js";
+import { __resetRunGrantsForTest, registerRunSession } from "../../permissions/run-grants.js";
 import { windowsPathKindHelperUnavailable } from "../../main/windows-path-kind-launcher.js";
 import { getLocale, setLocale, t } from "../../i18n/runtime.js";
 import { userPermissionContext as permissionContext } from "./tool-context-fixture.js";
@@ -193,6 +194,46 @@ describe("host shells under an unverifiable Ave home boundary", () => {
       setWindowsDenyUnenforceableAtBoot(undefined);
     }
   });
+
+  it.each(DIALECTS.flatMap(dialect => (["sibling run rule", "rule change", "mode change"] as const).map(change => ({ dialect, change }))))(
+    "$dialect.toolName: the Windows deny card answered across a $change", async ({ dialect, change }) => {
+      setWindowsDenyUnenforceableAtBoot("path");
+      try {
+        const execute = vi.fn();
+        const registry = probe(dialect.create, execute);
+        const pm = manager("allow", [dialect.prefixRule, dialect.toolName]);
+        let gate: ApprovalGate;
+        const send = vi.fn((channel: string, request: ApprovalRequest) => {
+          if (channel !== "ave:approval:request") return;
+          setTimeout(() => {
+            if (change === "sibling run rule") {
+              registerRunSession("stale-card-run", "sibling-session", { stageId: "plan", stageName: "Plan", lane: "attended" });
+              pm.addRunRule("sibling-session", "Bash(npm test)");
+            }
+            else if (change === "rule change") pm.setRules([{ pattern: "Bash(npm test)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
+            else pm.setMode("default");
+            gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac }, webContents as never);
+          }, 0);
+        });
+        const webContents = { isDestroyed: () => false, send };
+        gate = new ApprovalGate(webContents as never);
+        const [result] = await runWithToolExecutionCwd(testRoot, () => new ToolExecutor(registry, undefined, pm, undefined, gate).executeAll(
+          [{ id: "deny-unenforceable-stale", name: dialect.toolName, input: { command: dialect.command } }],
+          { sessionId: "deny-unenforceable-stale", permissionContext: permissionContext() },
+        ));
+        expect(send).toHaveBeenCalledWith("ave:approval:request", expect.anything());
+        if (change === "sibling run rule") {
+          expect(result?.is_error, JSON.stringify(result)).toBeUndefined();
+          expect(execute).toHaveBeenCalledOnce();
+        } else {
+          expect(result).toMatchObject({ is_error: true, content: expect.stringMatching(/policy changed/i) });
+          expect(execute).not.toHaveBeenCalled();
+        }
+      } finally {
+        __resetRunGrantsForTest();
+        setWindowsDenyUnenforceableAtBoot(undefined);
+      }
+    });
 
   const HOST = { executionMode: "host", justification: "Retry outside the OS sandbox" } as const;
   const hostCases = (["boundary-link", "boundary-unlisted"] as const).flatMap(category => DIALECTS.flatMap(dialect => ([
