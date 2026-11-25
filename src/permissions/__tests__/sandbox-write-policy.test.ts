@@ -476,7 +476,7 @@ describe("mandatory sandbox control-file writes", () => {
     const roots = [join(root, "project"), join(root, "temp")];
     const names = [".agents", ".ave/commands", ".ave/hooks"];
     const rowsNaming = (denies: ReturnType<typeof nativeDenyRows>, name: string) => (denies ?? [])
-      .map(entry => typeof entry === "string" ? entry : entry.path).filter(path => path.endsWith(`/${name}`));
+      .map(entry => typeof entry === "string" ? entry : entry.path).filter(path => path.endsWith(join(sep, name)));
     const holding = (denies: ReturnType<typeof nativeDenyRows>, text: string) => (denies ?? [])
       .map(entry => typeof entry === "string" ? entry : entry.path).filter(path => path.includes(text));
     withPlatform("darwin", () => {
@@ -488,7 +488,7 @@ describe("mandatory sandbox control-file writes", () => {
       const denies = nativeDenyRows(buildMandatorySandboxWritePolicy(roots).denyWrite);
       for (const name of names) expect(rowsNaming(denies, name)).toEqual(roots.map(base => join(base, name)));
       // The `.ave` directory is not a row itself, and `.codex` and a project `.aws` are not named.
-      for (const base of roots) for (const unnamed of [".ave", ".codex", ".aws"]) expect(holding(denies, join(base, unnamed)).filter(path => !path.includes("/.ave/"))).toEqual([]);
+      for (const base of roots) for (const unnamed of [".ave", ".codex", ".aws"]) expect(holding(denies, join(base, unnamed)).filter(path => !path.includes(join(sep, ".ave", sep)))).toEqual([]);
     });
   });
 
