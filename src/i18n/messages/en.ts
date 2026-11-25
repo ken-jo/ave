@@ -3342,7 +3342,7 @@ export const en = {
   "inputActionBar.sandboxCauseInitFailed": "the sandbox failed to start",
   "inputActionBar.sandboxCausePlatformUnsupported": "not supported on this platform",
   "inputActionBar.sandboxCauseWindowsShellNotContained": "Windows shells run outside the sandbox (path ACL grants are not safe)",
-  "inputActionBar.sandboxCauseShellNotContained": "the active sandbox cannot contain shells, so shell commands are blocked",
+  "inputActionBar.sandboxCauseShellNotContained": "the active sandbox cannot contain shells, so shell commands ask for approval and run without it",
   "inputActionBar.sandboxCauseWindowsSandboxMissing": "the Windows sandbox (srt-win) is missing from this installation — reinstall Ave",
   "inputActionBar.sandboxCauseWindowsSandboxIntegrityFailed": "the Windows sandbox helper (srt-win) failed its integrity check — reinstall Ave",
   "inputActionBar.sandboxStateError": "Status error — Ave could not determine the sandbox state. See the log.",
