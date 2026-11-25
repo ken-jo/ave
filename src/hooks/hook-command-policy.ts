@@ -3,8 +3,8 @@ import type { PermissionCheckResult, PermissionManager } from "../permissions/pe
 import { isHostApprovalRejectedDecision, type ApprovalDecision, type ApprovalGate } from "../permissions/approval-gate.js";
 import { refreshRemoteControllerBoundToSession, isRemoteControllerBoundToSession, remoteControllerOriginOf } from "../shared/chat-origin.js";
 import { getHostShellExecutionPlan } from "../permissions/sandbox-capability.js";
-import { getHostShellExecutionPlanAuditProjection, requiresUnsandboxedShellAsk, type HostShellExecutionPlan } from "../permissions/host-shell-execution-plan.js";
-import { buildHostShellExecutionPermitBinding, mintHostShellExecutionPermit, consumeHostShellExecutionPermit, recordHostShellPolicyAuthorization } from "../permissions/host-shell-execution-permit.js";
+import { getHostShellExecutionPlanAuditProjection, type HostShellExecutionPlan } from "../permissions/host-shell-execution-plan.js";
+import { buildHostShellExecutionPermitBinding, mintHostShellExecutionPermit, consumeHostShellExecutionPermit } from "../permissions/host-shell-execution-permit.js";
 import { captureShellWorkingDirectoryIdentity, matchesShellWorkingDirectoryIdentity } from "../permissions/shell-working-directory-identity.js";
 import { buildPermissionEvaluationContext } from "../permissions/evaluation-context.js";
 import { NO_APPROVER_MESSAGE, offersFloorSessionAllow } from "../permissions/decision-pipeline.js";
@@ -115,7 +115,6 @@ export function createHookCommandAuthorizer(deps: {
     if (effectIdentity(current) !== requestedEffect) return { decision: "deny", reason: "Hook command effect changed during approval" };
     if (!matchesShellWorkingDirectoryIdentity(cwd, cwdIdentity)) return { decision: "deny", reason: "Hook working directory changed during approval" };
     if (binding) {
-      if (!humanApproved && !requiresUnsandboxedShellAsk(plan)) recordHostShellPolicyAuthorization(binding);
       // `current` carries the proof of a non-human pass of the sandbox-unavailable ask: the session grant or an exact saved rule.
       const permit = mintHostShellExecutionPermit({ plan, approvalDecision: approval, allowRuleDecision: current, floorSessionDecision: current, permissionManager: deps.permissionManager, binding });
       if (!consumeHostShellExecutionPermit({ ...binding, permit })) {
