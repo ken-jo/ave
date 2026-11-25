@@ -2,10 +2,12 @@ import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, win32 } from "node:path";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import { buildLauncherEnvironment, prepareSandboxTargetLaunch, sandboxTargetSetupFailed } from "../launcher-environment.js";
+import { sandboxProcessProfileEnvironment } from "../sandbox-process-home.js";
+import { srtWinConfinementStatePaths } from "../srt-win-integrity.js";
 
 describe("sandbox target environment", () => {
   it.each([
@@ -139,5 +141,31 @@ describe("sandbox target environment", () => {
     target.sendEnvironment({ stdio: [null, null, null, null, pipe] } as unknown as ChildProcess);
     expect(() => pipe.emit("error", new Error("closed before delivery"))).not.toThrow();
     expect(pipe.destroyed).toBe(true);
+  });
+});
+
+describe("the Windows helper launcher's own environment", () => {
+  const host = { LOCALAPPDATA: "C:\\Users\\alice\\AppData\\Local", ProgramData: "C:\\ProgramData" };
+  const childHome = "C:\\Users\\alice\\AppData\\Local\\Temp\\ave-sandbox-home-x";
+
+  it("carries the host's state variables, so the ledger it opens is one the state check protects and not the child's", () => {
+    const env = buildLauncherEnvironment("win32", host);
+    expect(env).toMatchObject(host);
+    expect(srtWinConfinementStatePaths(host, "C:\\Users\\alice")).toContain(win32.join(env.LOCALAPPDATA!, "sandbox-runtime"));
+    const child = sandboxProcessProfileEnvironment(childHome, "win32");
+    expect(env.LOCALAPPDATA).not.toBe(child.LOCALAPPDATA);
+    expect(Object.values(env)).not.toContain(child.LOCALAPPDATA);
+  });
+
+  it.each([
+    ["LOCALAPPDATA is missing", { ProgramData: host.ProgramData }],
+    ["ProgramData is missing", { LOCALAPPDATA: host.LOCALAPPDATA }],
+    ["LOCALAPPDATA is not a drive path", { ...host, LOCALAPPDATA: "relative\\Local" }],
+  ])("refuses a launch when %s", (_name, env) => {
+    expect(() => buildLauncherEnvironment("win32", env)).toThrow(expect.objectContaining({ code: "srt-win-state-location-unresolved" }));
+  });
+
+  it("keeps the POSIX launcher environment unchanged", () => {
+    expect(buildLauncherEnvironment("linux", {})).toEqual({ PATH: "/usr/bin:/bin:/usr/sbin:/sbin", SHLVL: "1" });
   });
 });

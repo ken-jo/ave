@@ -1205,6 +1205,7 @@ describe("spawnWorker — Windows with gate ON", () => {
       COMSPEC: "C:\\Windows\\System32\\cmd.exe",
       PATHEXT: ".COM;.EXE;.BAT;.CMD",
       LOCALAPPDATA: "C:\\Users\\test\\AppData\\Local",
+      ProgramData: "C:\\ProgramData",
       TEMP: "C:\\Users\\test\\AppData\\Local\\Temp",
       TMP: "C:\\Users\\test\\AppData\\Local\\Temp",
       ANTHROPIC_API_KEY: "sk-should-not-reach-worker",
@@ -1302,6 +1303,9 @@ describe("spawnWorker — Windows with gate ON", () => {
       SystemRoot: "C:\\Windows",
       WINDIR: "C:\\Windows",
       SystemDrive: "C:",
+      // The host's, from which the launcher opens its ledger; the child's profile is the sandbox HOME's.
+      LOCALAPPDATA: "C:\\Users\\test\\AppData\\Local",
+      ProgramData: "C:\\ProgramData",
     });
     expect(workerOpts.shell).toBe(false);
     expect(workerOpts.stdio).toEqual(["pipe", "pipe", "pipe"]);

@@ -266,13 +266,32 @@ export function srtWinPrivateDirectories(): string[] {
 
 const isDrivePath = (value: string | undefined): value is string => value !== undefined && /^[A-Za-z]:\\/u.test(value);
 
-/** The helper's own state: its per-user ACL ledger under `%LOCALAPPDATA%` (the runtime's ACL calls inherit the host's
- * environment, passing none of their own), the profile's default for that folder, and the machine store under
- * `%ProgramData%`. Undefined when either variable is missing or not a drive path. */
-export function srtWinConfinementStatePaths(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): string[] | undefined {
+/** The two variables the helper locates its state from, read from its own environment: the host's. Undefined when either
+ * is missing or not a drive path. */
+function srtWinStateBases(env: NodeJS.ProcessEnv): { LOCALAPPDATA: string; ProgramData: string } | undefined {
   const { LOCALAPPDATA: local, ProgramData: programData } = env;
-  if (!isDrivePath(local) || !isDrivePath(programData)) return undefined;
-  return [...new Set([local, win32.join(home, "AppData", "Local"), programData].map((base) => win32.join(base, "sandbox-runtime")))];
+  return isDrivePath(local) && isDrivePath(programData) ? { LOCALAPPDATA: local, ProgramData: programData } : undefined;
+}
+
+/** The helper's own state: its per-user ACL ledger under `%LOCALAPPDATA%` (the runtime's ACL calls inherit the host's
+ * environment, and the exec launcher is handed it by {@link srtWinStateEnvironment}), the profile's default for that
+ * folder, and the machine store under `%ProgramData%`. Undefined when either variable is missing or not a drive path. */
+export function srtWinConfinementStatePaths(env: NodeJS.ProcessEnv = process.env, home: string = homedir()): string[] | undefined {
+  const bases = srtWinStateBases(env);
+  if (bases === undefined) return undefined;
+  return [...new Set([bases.LOCALAPPDATA, win32.join(home, "AppData", "Local"), bases.ProgramData]
+    .map((base) => win32.join(base, "sandbox-runtime")))];
+}
+
+/** The host's state variables for a helper process's own environment, so its ledger is the one the state check protects
+ * and never a location the child's environment names. Throws when they cannot be determined. */
+export function srtWinStateEnvironment(env: NodeJS.ProcessEnv = process.env): { LOCALAPPDATA: string; ProgramData: string } {
+  const bases = srtWinStateBases(env);
+  if (bases === undefined) {
+    throw Object.assign(new Error("The sandbox helper's state location could not be determined: LOCALAPPDATA and ProgramData must be drive paths"),
+      { code: "srt-win-state-location-unresolved" });
+  }
+  return bases;
 }
 
 // Recheck immediately before each host-controlled helper spawn.

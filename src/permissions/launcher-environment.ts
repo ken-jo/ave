@@ -2,6 +2,7 @@ import type { ChildProcess, StdioOptions } from "node:child_process";
 import { Readable, Writable } from "node:stream";
 import { shellQuote } from "../lib/shell-resolver.js";
 import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-path.js";
+import { srtWinStateEnvironment } from "./srt-win-integrity.js";
 
 const LAUNCHER_PATH = "/usr/bin:/bin:/usr/sbin:/sbin";
 // fd 3 is used by the process-group launch gate or by the plugin protocol.
@@ -66,7 +67,7 @@ export function assertConfiguredLauncherEnvironment(env: NodeJS.ProcessEnv): voi
 // `exec` lowers it before the next shell raises it again. The shim drops SHLVL from the runtime set, and targets cannot declare it.
 const LAUNCHER_SHELL_LEVEL = "1";
 
-export function buildLauncherEnvironment(platform: NodeJS.Platform = process.platform): Record<string, string> {
+export function buildLauncherEnvironment(platform: NodeJS.Platform = process.platform, hostEnv: NodeJS.ProcessEnv = process.env): Record<string, string> {
   if (platform !== "win32") return { PATH: LAUNCHER_PATH, SHLVL: LAUNCHER_SHELL_LEVEL };
   const systemRoot = windowsSystemRoot();
   return {
@@ -74,6 +75,8 @@ export function buildLauncherEnvironment(platform: NodeJS.Platform = process.pla
     SystemRoot: systemRoot,
     WINDIR: systemRoot,
     SystemDrive: systemRoot.slice(0, 2),
+    // The launcher opens its ACL ledger from these. The child's profile starts from the sandbox account's own environment.
+    ...srtWinStateEnvironment(hostEnv),
   };
 }
 
