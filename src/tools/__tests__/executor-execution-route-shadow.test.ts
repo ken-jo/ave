@@ -273,7 +273,7 @@ describe("execution route shadow metadata", () => {
       registry.register(new BashTool());
       const permissions = new PermissionManager(join(dir, "permissions.json"));
       permissions.setMode("allow");
-      const validator = route === "contained" ? new BashAstValidator({ mode: "deny" }) : undefined;
+      const validator = new BashAstValidator({ mode: "deny" });
       const executor = new ToolExecutor(registry, undefined, permissions, validator, gate);
       const tests = Array.from({ length: 7 }, (_, index) => `if test -f q${index}; then v${index}=1; fi`).join("; ");
       const pending = executor.executeAll(
@@ -313,6 +313,24 @@ describe("execution route shadow metadata", () => {
       await cleanupTmpDir(dir);
     }
   }, 60_000);
+
+  it.each(["host", "contained"] as const)("denies a structural refusal on the %s route without a card", async (route) => {
+    setShellSandboxRequestedAtBoot(false);
+    if (route === "contained") activateDisposableCapability();
+    const dir = mkdtempSync(join(tmpdir(), "ave-structural-refusal-"));
+    try {
+      const { executor } = makeExecutor(dir, "allow", new BashAstValidator({ mode: "deny" }));
+      const [result] = await executor.executeAll(
+        [{ id: "structural-refusal", name: "bash", input: { command: 'eval "printf ok"' } }],
+        { sessionId: "structural-refusal", executionCwd: dir, permissionContext: { trustOrigin: "llm-tool-arg" } },
+      );
+      expect(result?.is_error).toBe(true);
+      expect(result?.content).toContain("eval-untrusted");
+      expect(operatorHarness.consumeCount).toBe(0);
+    } finally {
+      await cleanupTmpDir(dir);
+    }
+  });
 
   it("executes recursive work in the verified disposable guest and records the consumed route", async () => {
     __resetActiveSandboxCapabilityForTest();

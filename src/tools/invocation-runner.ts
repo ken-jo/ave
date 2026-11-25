@@ -2177,10 +2177,11 @@ async function runToolInvocationAttempt(
       executionRoutePlan?.disposableCapability?.kind !== "workload-broker"
     ) {
       const bashResult = services.bashAstValidator.validate(toolUse.name, finalInput, preparedShellInvocation ? { cwd: executionCwd, facts: hostShellAnalysisFacts(preparedShellInvocation, hostShellExecutionPlan) } : undefined);
-      const containedAnalysisLimit = bashResult.decision === "deny" && bashResult.patternId === "shell-analysis" &&
+      const bashAnalysisLimit = bashResult.decision === "deny" && bashResult.patternId === "shell-analysis" &&
         bashResult.reason !== undefined && isShellExecutionAnalysisLimit(bashResult.reason) && hostShellToolName === "bash" &&
-        (executionRoutePlan?.route === "disposable-container" || isConfinedHostShellExecution(hostShellExecutionPlan, disposableSubstrate));
-      if (containedAnalysisLimit) {
+        (hostShellExecutionPlan?.mode === "plain" || executionRoutePlan?.route === "disposable-container"
+           || isConfinedHostShellExecution(hostShellExecutionPlan, disposableSubstrate));
+      if (bashAnalysisLimit) {
         invocationPermissionContext.floor ??= { code: "shell-analysis-limit", reason: SHELL_ANALYSIS_LIMIT_REASON };
         shellAnalysisLimitAdmitted = true;
         if (directoryAuthorization?.permission.reasonCode !== "shell-analysis-limit") directoryAuthorization = undefined;
