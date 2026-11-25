@@ -211,7 +211,7 @@ export async function updateProjectRulesFile(
         writeUtf8FileAtomicSync(location.filePath, `${JSON.stringify(file, null, 2)}\n`, 0o600);
       }
       return file;
-    });
+    }, { createTarget: authority === undefined });
   });
 }
 

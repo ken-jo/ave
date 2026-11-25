@@ -1039,7 +1039,7 @@ export class PermissionManager {
   // add a rules-language rule (`Bash(git status *)`, deny/ask/allow) to the user-global scope (permissions.json) or a project's rule file in Ave home. Validation (canonical spelling, enforced kind, refused allow prefixes) runs before anything is written; the live state changes only after the durable write succeeds.
   async addRulePersist(
     rule: { pattern: string; action: PermissionRule["action"] },
-    scope: { kind: "user" } | { kind: "project"; projectCwd: string },
+    scope: { kind: "user" } | { kind: "project"; projectCwd: string; expectedProjectRoot?: string },
     authority?: ApprovalPersistenceGuard,
   ): Promise<void> {
     const validated = validatePermissionRule(withCurrentShellRuleVersion({ pattern: rule.pattern, action: rule.action }));
@@ -1047,7 +1047,7 @@ export class PermissionManager {
       throw new Error(`addRulePersist takes rules-language specifiers; got legacy pattern ${validated.pattern}`);
     }
     if (scope.kind === "project") {
-      await this.projectRuleScopes.addRule(scope.projectCwd, validated, authority);
+      await this.projectRuleScopes.addRule(scope.projectCwd, validated, authority, scope.expectedProjectRoot);
     } else {
       await this.updateRulesFile((file) => {
         if (!file.rules.some((r) => r.pattern === validated.pattern && r.action === validated.action && !r.source && isCurrentShellRule(r))) {

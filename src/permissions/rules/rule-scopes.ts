@@ -13,7 +13,7 @@ import { isRuleSpecifier, literalRuleWord, parseRuleSpecifier, type RuleSpecifie
 import { canonicalPowerShellName, POWERSHELL_COMMAND_POLICIES } from "./powershell-command-policy.js";
 import { inspectPowerShellCommand, parsePowerShellCommand, powerShellBoundedDenyPrefix, powerShellRuleShape, proveLiteralPowerShell, type ParsedPowerShellCommand, type PowerShellCommandInput } from "./powershell-exfiltration.js";
 import { isRetiredHostTerminalRule, PermissionRulesFileCorruptError, storedRuleInvalidReason, validatePermissionRule } from "./rule-files.js";
-import { projectRulesLocation, storedFileRulesLocation, readProjectRulesFile, updateProjectRulesFile } from "./project-rule-files.js";
+import { projectRuleRoot, projectRulesLocation, storedFileRulesLocation, readProjectRulesFile, updateProjectRulesFile } from "./project-rule-files.js";
 import { evaluateShellRules, type ShellRuleEvaluation, type ShellRuleInput, type ShellRuleSet } from "./shell-rule-matcher.js";
 import { type ParsedShellCommand, type ShellCommandInput } from "./shell-prefix-policy.js";
 import { SHELL_FLOOR_INPUT_LIMIT, SHELL_LITERAL_DATA_LIMIT } from "./shell-floor-policy.js";
@@ -117,9 +117,23 @@ export class ProjectRuleScopes {
     return state;
   }
 
-  async addRule(projectCwd: string, rule: PermissionRule, authority?: ApprovalPersistenceGuard): Promise<void> {
+  async addRule(
+    projectCwd: string,
+    rule: PermissionRule,
+    authority?: ApprovalPersistenceGuard,
+    expectedProjectRoot?: string,
+  ): Promise<void> {
     const validated = validatePermissionRule(withCurrentShellRuleVersion(rule));
     const location = projectRulesLocation(this.baseDir, projectCwd);
+    let writeAuthority = authority;
+    if (expectedProjectRoot !== undefined) {
+      const isCurrent = () => (authority?.isCurrent() ?? true) &&
+        location.projectRoot === expectedProjectRoot && projectRuleRoot(projectCwd) === expectedProjectRoot;
+      writeAuthority = {
+        isCurrent,
+        refresh: async () => await (authority?.refresh() ?? true) && isCurrent(),
+      };
+    }
     const file = await updateProjectRulesFile(location, (current) => {
       const exists = current.rules.some((r) => r.pattern === validated.pattern && r.action === validated.action && isCurrentShellRule(r));
       if (!exists) current.rules = current.rules.filter((r) => !(r.pattern === validated.pattern && r.action === validated.action));
@@ -128,7 +142,7 @@ export class ProjectRuleScopes {
         if (validated.action === "allow") current.rules.push(validated);
         else current.rules.unshift(validated);
       }
-    }, authority);
+    }, writeAuthority);
     this.states.set(location.identity, { ok: true, projectRoot: location.projectRoot, rules: Object.freeze([...file.rules]) });
     this.policyVersions.set(location.identity, persistedPolicyVersionForContent(location.filePath, `${JSON.stringify(file, null, 2)}\n`));
     this.revision += 1;

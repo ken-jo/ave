@@ -1,7 +1,7 @@
 import { allowOnceCardAnswer } from "../../../__tests__/support/approval-card-answer.js";
 import { deferred } from "../../../__tests__/support/deferred.js";
 import { randomBytes, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { IpcMainInvokeEvent, WebContents } from "electron";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -20,6 +20,7 @@ import { LlmApprovalSentenceSelector } from "../../../permissions/reviewer/appro
 import * as approvals from "../../../permissions/user-approval-store.js";
 import { PERMISSIONS } from "../../../shared/ipc-channels.js";
 import { _resetAveHomePrivacyForTest, setAveHomeConfigurationRefusedAtBoot } from "../../../shared/ave-home.js";
+import * as homeTrust from "../../../shared/ave-home-trust.js";
 import { HOME_FOLDER_REFUSED } from "../../../shared/permissions-events.js";
 import { consumeHostShellExecutionPermitForSpawn, canonicalizeHostShellAllowedDirectories, resolveHostShellWorkingDirectory } from "../../../permissions/host-shell-execution-permit.js";
 import { parseHostShellExecutionInput } from "../../../permissions/host-shell-execution-plan.js";
@@ -337,6 +338,65 @@ describe("live native approval ownership", () => {
     invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), allowOnceCardAnswer(card));
     expect((await running)[0]?.is_error).toBe(true);
     expect(execute).not.toHaveBeenCalled();
+  });
+
+  it.each(["before saving", "while saving"])("refuses This project when the issued repository loses its marker %s", async (timing) => {
+    const f = await subject("default");
+    vi.stubEnv("AVE_HOME", f.root);
+    setShellSandboxRequestedAtBoot(false);
+    const outer = join(f.root, "outer");
+    const inner = join(outer, "inner");
+    const cwd = join(inner, "work");
+    mkdirSync(cwd, { recursive: true });
+    for (const root of [outer, inner]) {
+      const marker = join(root, ".git");
+      mkdirSync(join(marker, "objects"), { recursive: true });
+      mkdirSync(join(marker, "refs"));
+      writeFileSync(join(marker, "HEAD"), "ref: refs/heads/main\n");
+    }
+    const innerStore = projectRulesLocation(f.root, cwd);
+    const outerStore = projectRulesLocation(f.root, outer);
+    const issuedCwd = captureShellWorkingDirectoryIdentity(cwd);
+    expect(issuedCwd).toBeDefined();
+    expect(innerStore.filePath).not.toBe(outerStore.filePath);
+
+    const bash = new BashTool();
+    vi.spyOn(bash, "execute").mockResolvedValue({ output: "mock launch", isError: false });
+    f.registry.register(bash);
+    const running = f.executeAll([{ id: "nested-project-rule", name: "bash", input: { command: "printf ready" } }], {
+      sessionId: SESSION_ID, executionCwd: cwd,
+      permissionContext: userPermissionContext({ additionalDirectories: [cwd] }),
+    });
+    const card = await f.waitForCard();
+    expect(card.shellRule).toMatchObject({ persistentAllowed: true, projectRoot: innerStore.projectRoot });
+    const moveMarker = () => {
+      renameSync(join(inner, ".git"), join(inner, "former-marker"));
+      expect(captureShellWorkingDirectoryIdentity(cwd)).toEqual(issuedCwd);
+      expect(projectRulesLocation(f.root, cwd)).toEqual(outerStore);
+    };
+    if (timing === "before saving") {
+      moveMarker();
+    } else {
+      const read = homeTrust.readAveHomeInput;
+      vi.spyOn(homeTrust, "readAveHomeInput").mockImplementation(async (...args) => {
+        const input = await read(...args);
+        if (args[0] === innerStore.filePath) moveMarker();
+        return input;
+      });
+    }
+
+    const response = await invoke(PERMISSIONS.userApprovalRecord, frameEvent(f.windowA), {
+      requestId: card.id, args: JSON.stringify(card.args), decision: "allow", scope: "persistent",
+      verdictAtApproval: f.gate.getRequestSnapshot(card.id)?.verdictAtApproval,
+      rule: { action: "allow", scope: "project" }, intent: { inputOrigin: "user-keyboard", userActivation: true },
+    });
+    expect.soft(response).toMatchObject({ ok: false });
+    expect.soft(existsSync(innerStore.filePath)).toBe(false);
+    expect.soft(existsSync(outerStore.filePath)).toBe(false);
+    expect(projectRulesLocation(f.root, cwd)).toEqual(outerStore);
+    await f.manager.ensureProjectRulesLoaded(cwd);
+    invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), { ...allowOnceCardAnswer(card), choice: "deny-once" });
+    expect((await running)[0]?.is_error).toBe(true);
   });
 
   it("burns a policy receipt on a mismatched consumption attempt", async () => {
