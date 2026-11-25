@@ -164,6 +164,15 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     expect(h.startProbe).toHaveBeenCalledOnce();
   });
 
+  it("skips the container start probe when only extensions asked for confinement", async () => {
+    h.checkDeps.mockResolvedValue({ errors: [], warnings: [] });
+    h.detectMxc.mockResolvedValue(MXC_OK);
+    await initSandboxGate(harness.context(false, true));
+    await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({ shells: "none", extensions: "srt-win" }));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(h.startProbe).not.toHaveBeenCalled();
+  });
+
   it.each([["slow", MXC_OK, "mxc"], ["hung", MXC_OLD, "approved-host"]] as const)("reaches ready while a %s ACL stamp remains pending", async (_delay, mxc, shells) => {
     h.checkDeps.mockResolvedValue({ errors: [], warnings: [] });
     h.detectMxc.mockResolvedValue(mxc);

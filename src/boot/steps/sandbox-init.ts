@@ -159,7 +159,8 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
         if (started === "proxy-only" && !failed) {
           setActiveSandboxCapability(windowsProxyOnlyCapability(first));
         }
-        if (windowsMxc?.state !== "checking" || failed || started === "none") return;
+        // The probe only settles the shell route; skip it when no shell will take that route.
+        if (windowsMxc?.state !== "checking" || failed || started === "none" || !windowsInputs.shellRequested) return;
         const recordedMxc = getWindowsSandboxSubstrate()?.mxc;
         shellStartProbe ??= settleWindowsMxcStartProbe();
         void shellStartProbe.then((mxc) => {
