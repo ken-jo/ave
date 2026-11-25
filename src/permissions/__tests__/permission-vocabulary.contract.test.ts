@@ -1,6 +1,7 @@
 // One row per permission decision point: what it answers today, in one closed vocabulary.
 // A row whose answer differs from the policy core carries `core` and is listed in EXCEPTIONS; fixing it removes both.
-// LEAD rule: a fix PR that closes an I-id must flip or delete its exception row in the same PR.
+// LEAD rule: a fix PR that closes an I-id must flip or delete its exception row in the same PR, and move the id into RESOLVED
+// with the row that now proves it. Every I-id sits in exactly one of EXCEPTIONS, INCONSISTENCIES_WITHOUT_ROW and RESOLVED.
 // Tree = docs/architecture/permission-decision-tree.md line(s), or "no row".
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
@@ -355,11 +356,15 @@ const EXCEPTIONS: Readonly<Record<string, readonly string[]>> = {
   I19: ["D30"],
 };
 
+// Closed inconsistency -> the row that proves it, which answers as the policy core does.
+const RESOLVED: Readonly<Record<string, string>> = {
+  I5: "D34.b",
+};
+
 // Inconsistencies no driven row can show, and why.
 const INCONSISTENCIES_WITHOUT_ROW: Readonly<Record<string, string>> = {
   I3: "inference child route: spawn path, not driven",
   I4: "lives on the device-path branch, not on main",
-  I5: "closed: D34.b pins the refusal",
   I6: "stage workspaces are not on main",
   I7: "a launch-count budget, not a decision",
   I9: "a checking plan cannot be published (per-holder readiness resolves it), so no start meets it at the gate driven here",
@@ -459,7 +464,12 @@ describe("permission vocabulary contract", () => {
     expect(driven.filter(id => id in NOT_DRIVEN)).toEqual([]);
     expect([...driven, ...Object.keys(NOT_DRIVEN)].sort()).toEqual([...points].sort());
     const inconsistencies = Array.from({ length: 28 }, (_, index) => `I${index + 1}`);
-    expect(Object.keys(EXCEPTIONS).filter(id => id in INCONSISTENCIES_WITHOUT_ROW)).toEqual([]);
-    expect([...Object.keys(EXCEPTIONS), ...Object.keys(INCONSISTENCIES_WITHOUT_ROW)].sort()).toEqual([...inconsistencies].sort());
+    expect([...Object.keys(EXCEPTIONS), ...Object.keys(INCONSISTENCIES_WITHOUT_ROW), ...Object.keys(RESOLVED)].sort()).toEqual([...inconsistencies].sort());
+    for (const [id, proof] of Object.entries(RESOLVED)) {
+      const row = ROWS.find(candidate => candidate.id === proof);
+      expect(row, id).toBeDefined();
+      expect(row?.core, id).toBeUndefined();
+      expect(Object.values(EXCEPTIONS).flat(), id).not.toContain(proof);
+    }
   });
 });

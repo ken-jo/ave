@@ -63,6 +63,7 @@ export function formatAuthority(host: string, port: number, defaultPort: number)
   return port === defaultPort ? spelled : `${spelled}:${port}`;
 }
 
+// Not the extension allowlist grammar (egressAllowlistMatches): there a portless entry admits every port and `*` everything, so one grammar for both would widen or narrow extension allowlists.
 export interface RelayAllowEntry {
   // Canonical host, or the suffix after `*.` for a wildcard.
   readonly host: string;
