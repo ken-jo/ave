@@ -14,7 +14,7 @@ import {
   releaseManagedResources, type ManagedResources, type RelayBestEffortExit,
 } from "../main/managed-child-processes.js";
 import { randomBytes } from "node:crypto";
-import { chmodSync, lstatSync, mkdirSync, readdirSync, rmdirSync, unlinkSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, win32 as winPath } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { t } from "../i18n/index.js";
@@ -38,7 +38,8 @@ import { isFullyQualifiedWindowsPath } from "../shared/windows-path-spelling.js"
 import { getWindowsExtensionBackendPlan } from "../permissions/sandbox-capability.js";
 import { listAuthorizedWorkspaceRoots } from "../permissions/workspace-authorized-roots.js";
 import type { SandboxWindowsExtensionPlan } from "../shared/sandbox-capability-info.js";
-import { createSandboxProcessHome } from "../permissions/sandbox-process-home.js";
+import { createSandboxProcessHome, resolvedHostProcessOwner } from "../permissions/sandbox-process-home.js";
+import { readWindowsProcessRunStates, type ProcessRunStateProbe } from "../permissions/windows-process-start-time.js";
 import {
   holdWindowsFilesystemGrant,
   terminateChildBestEffort,
@@ -48,7 +49,7 @@ import { isPathWithin } from "../plugins/plugin-storage-containment.js";
 import { AVE_HOME_RUNTIME_DIRECTORY, AVE_RUNTIME_LAYOUT, aveHome } from "../shared/ave-home.js";
 import { assertMxcHolderStaging } from "../permissions/mxc-filesystem-ownership.js";
 import { mxcStagingParent } from "../permissions/mxc-runtime-root.js";
-import { renameDirectory } from "../lib/transient-fs-lock-retry.js";
+import { renameDirectory, renameDirectorySyncOnce } from "../lib/transient-fs-lock-retry.js";
 import { openEgressInvocation, type EgressInvocation, type WorkerEgressOwner } from "../permissions/egress-invocations.js";
 
 const log = createLogger("wrap-bundled-command");
@@ -291,8 +292,8 @@ export class MxcExecutableNotAdmissibleError extends Error {
 }
 
 /** Another live extension holder writes the same workspace; two such holders cannot be live at once and are never queued.
- * `stagingOverlap`: the overlap is another holder's private staging tree under AVE_HOME inside this workspace (a project
- * rooted at the user profile), which the message then names. */
+ * `stagingOverlap`: the overlap is another holder's private staging tree under the runtime root inside this workspace (a
+ * project rooted at the user profile), which the message then names. */
 export class MxcHolderWorkspaceBusyError extends Error {
   readonly code = "holder-workspace-busy";
   constructor(readonly stagingOverlap = false) {
@@ -428,29 +429,69 @@ function assertNoLiveWorkspaceWriter(allowWrite: readonly string[], workspaceRoo
   if (workspaceWrites.length === 0) return;
   const busy = liveMxcHolderWritableRoots().filter((live) => workspaceWrites.some((write) => overlaps(write, live)));
   if (busy.length === 0) return;
-  // The profile / AVE_HOME case: the caller's workspace write contains another holder's private staging tree.
-  const staging = pathForms([mxcStagingParent("win32")]);
+  // The caller's workspace write contains another holder's private staging tree.
+  let staging: string[] = [];
+  try { staging = pathForms([mxcStagingParent("win32")]); } catch { /* no staging parent: the busy root is not under one */ }
   throw new MxcHolderWorkspaceBusyError(busy.some((live) => staging.some((root) => isWindowsPathAtOrUnder(live, root))));
 }
 
 interface HolderStaging { readonly root: string; readonly home: string; readonly temp: string }
 
-/** `<staging parent>\<opaque-id>\{home,temp}`: its enumerate grant reveals only opaque IDs (contract doc). The parent is
- * the platform's (`mxcStagingParent`); this adapter is the Windows one, whose parent is still `<AVE_HOME>\mxc-staging`. */
+/** Resolve the staging parent again, which re-reads the runtime root's path, and refuse one that is no longer `parent`. */
+function assertSameStagingParent(parent: string): void {
+  if (mxcStagingParent("win32") !== parent) throw new MxcProcessContractError("Container staging parent changed while a holder's directories were created");
+}
+
+/** `instance` tells two copies of this module in one process apart: each copy knows only its own live holders.
+ * `start` is the process creation time, or null while the start-up probe has not read it. */
+interface StagingOwner { readonly pid: number; readonly start: string | null; readonly instance: string }
+
+const STAGING_INSTANCE = randomBytes(8).toString("hex");
+const STAGING_OWNER_SUFFIX = ".owner";
+const STAGING_RETIRED_SUFFIX = ".retired";
+const STAGING_OWNER_MAX_BYTES = 256;
+const STAGING_ID = /^[0-9a-f]{32}$/u;
+
+/** Staging roots this copy created and has not yet been told to remove. A sweep never touches them. */
+const liveStaging = new Set<string>();
+/** Staging parents whose other instances' leftovers this process has already asked the OS about. */
+const probedStagingParents = new Set<string>();
+
+/**
+ * `<staging parent>\<opaque-id>\{home,temp}`: its enumerate grant reveals only opaque IDs (contract doc). The parent is
+ * the platform's (`mxcStagingParent`), under the runtime root outside the Ave home, which every Ave home and running
+ * instance of this account shares. A sibling `<id>.owner` therefore records this process before the directory exists,
+ * so a crash never leaves an unmarked tree. The marker sits in the staging parent, which no holder is granted.
+ */
 function createHolderStaging(): HolderStaging {
   const parent = mxcStagingParent("win32");
-  mkdirSync(parent, { recursive: true });
-  // A link at the staging parent would place every holder's HOME/temp, and later its removal, somewhere else.
-  if (lstatSync(parent).isSymbolicLink()) throw new MxcProcessContractError("Holder staging parent is a link");
-  sweepRetiredStaging(parent);
+  sweepHolderStaging(parent);
   const dir = winPath.join(parent, randomBytes(16).toString("hex"));
   const home = winPath.join(dir, "home");
   const temp = winPath.join(dir, "temp");
   // The shared staging-shape check (also the plugin-child adapter's): exactly <staging parent>\<32-hex>\{home,temp}.
   const root = assertMxcHolderStaging({ stagingParent: parent, home, temp });
-  mkdirSync(home, { recursive: true });
-  mkdirSync(temp, { recursive: true });
-  if (lstatSync(root).isSymbolicLink()) throw new MxcProcessContractError("Holder staging root is a link");
+  const owner: StagingOwner = { pid: process.pid, start: resolvedHostProcessOwner()?.startTime ?? null, instance: STAGING_INSTANCE };
+  // The sweep ran since the parent was resolved: the runtime root's path is read again right before the tree is created.
+  assertSameStagingParent(parent);
+  writeFileSync(`${root}${STAGING_OWNER_SUFFIX}`, JSON.stringify(owner), { flag: "wx" });
+  liveStaging.add(root);
+  try {
+    // Exclusive: an existing entry under a fresh random name is not this holder's.
+    for (const directory of [root, home, temp]) mkdirSync(directory);
+  } catch (error) {
+    liveStaging.delete(root);
+    try { removeStagingTree(root); } catch { /* the marked remainder is left for a sweep */ }
+    throw error;
+  }
+  try {
+    // And once it exists: a tree created while the path was swapped is never handed to a holder.
+    assertSameStagingParent(parent);
+  } catch (error) {
+    // Nothing is removed through a path that no longer leads to the root; the marked tree is left for a sweep.
+    liveStaging.delete(root);
+    throw error;
+  }
   return Object.freeze({ root, home, temp });
 }
 
@@ -472,43 +513,137 @@ function removeTreeWithoutFollowingLinks(path: string): void {
   rmdirSync(path);
 }
 
-/** Remove a dead holder's staging tree. It is first renamed to a random `retired-` sibling, so nothing can reach it by
- * its old name mid-removal. The rename retries Windows lock codes, which a just-exited holder's handles can still
- * raise. A partial failure leaves the retired tree for the next sweep. */
-async function removeHolderStaging(root: string): Promise<void> {
-  let target = root;
+/** The retired and unretired trees a marker stands for, where they exist. Each must be a real directory. */
+function stagingTrees(root: string): string[] {
+  return [`${root}${STAGING_RETIRED_SUFFIX}`, root].filter((tree) => {
+    const entry = lstatSync(tree, { throwIfNoEntry: false });
+    if (entry !== undefined && (entry.isSymbolicLink() || !entry.isDirectory())) throw new Error("the marked entry is not a directory");
+    return entry !== undefined;
+  });
+}
+
+/** Delete one holder's retired and unretired trees and, last, its owner marker. A marked entry that is a link or a
+ * file is not a staging tree and stops the removal. The marker goes only once neither tree is left, so an interrupted
+ * removal stays provably this owner's for a later sweep. */
+function removeStagingTree(root: string): void {
+  for (const tree of stagingTrees(root)) removeTreeWithoutFollowingLinks(tree);
   try {
-    const retired = winPath.join(winPath.dirname(root), `retired-${randomBytes(16).toString("hex")}`);
-    await renameDirectory(root, retired);
-    target = retired;
-    // Synchronous after the rename, so no sweep in this process interleaves with it.
-    removeTreeWithoutFollowingLinks(target);
+    unlinkSync(`${root}${STAGING_OWNER_SUFFIX}`);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT" && target === root) return;
+    // Already removed by another remover of the same tree.
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+}
+
+/** Remove a dead holder's staging tree. It is first renamed to its `.retired` sibling, so nothing can reach it by its
+ * granted name mid-removal. The rename retries Windows lock codes, which a just-exited holder's handles can still
+ * raise. A partial failure leaves the marked remainder for the next sweep. */
+async function removeHolderStaging(root: string): Promise<void> {
+  if (!liveStaging.delete(root)) return;
+  try {
+    try {
+      await renameDirectory(root, `${root}${STAGING_RETIRED_SUFFIX}`);
+    } catch (error) {
+      // Never created.
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    // Synchronous after the rename, so no sweep in this process interleaves with it.
+    removeStagingTree(root);
+  } catch (error) {
     log.warn(`holder staging removal incomplete: ${(error as Error).message}`);
   }
 }
 
-/** Remove `retired-*` siblings a partial removal left behind, with the same link-refusing delete. A tree that a live
- * holder's writable roots reach is skipped. Failure only warns: a leftover never blocks a start. */
-function sweepRetiredStaging(parent: string): void {
+function readStagingOwner(markerPath: string): StagingOwner | null {
+  try {
+    const entry = lstatSync(markerPath);
+    if (!entry.isFile() || entry.nlink !== 1 || entry.size > STAGING_OWNER_MAX_BYTES) return null;
+    const parsed: unknown = JSON.parse(readFileSync(markerPath, "utf8"));
+    if (typeof parsed !== "object" || parsed === null) return null;
+    const { pid, start, instance } = parsed as Record<string, unknown>;
+    if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0 || typeof instance !== "string" || instance === ""
+        || !(start === null || (typeof start === "string" && start !== ""))) return null;
+    return { pid, start, instance };
+  } catch {
+    return null;
+  }
+}
+
+function processIsGone(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ESRCH";
+  }
+}
+
+function sweepStagingTree(root: string): void {
+  // A holder this process still runs keeps its tree, whichever copy of this module started it.
+  if (liveMxcHolderWritableRoots().some((live) => overlaps(live, root))) return;
+  try {
+    // Before the rename: a link or a file beside a marker is left exactly where it is.
+    stagingTrees(root);
+    try {
+      renameDirectorySyncOnce(root, `${root}${STAGING_RETIRED_SUFFIX}`);
+    } catch (error) {
+      // Already retired by an interrupted removal, or never created. EPERM is not among them: a process that outlived
+      // its owner may still hold the tree open, so it is kept whole, marker included, for a sweep after a later start.
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTEMPTY" && code !== "EEXIST") throw error;
+    }
+    removeStagingTree(root);
+  } catch (error) {
+    log.warn(`abandoned holder staging not removed: ${(error as Error).message}`);
+  }
+}
+
+/**
+ * Remove what crashed or interrupted holders left under the staging parent. A tree is another instance's until its
+ * sibling marker proves otherwise: it is removed only when the marker names this copy of this module for a holder it
+ * already released, or a process that is provably gone (no such pid, or a pid whose creation time is no longer the
+ * recorded one). Entries with no marker, an unreadable marker, or a live or undetermined owner are kept. The first
+ * call per staging parent asks the OS for the creation times of the owners still running and removes the reused ones
+ * when the answer arrives. Failure only warns: a leftover never blocks a start.
+ */
+function sweepHolderStaging(parent: string, probe: ProcessRunStateProbe = readWindowsProcessRunStates): void {
   let names: string[];
   try {
-    names = readdirSync(parent).filter((name) => /^retired-/iu.test(name));
+    names = readdirSync(parent).filter((name) => name.endsWith(STAGING_OWNER_SUFFIX) && STAGING_ID.test(name.slice(0, -STAGING_OWNER_SUFFIX.length)));
   } catch (error) {
-    log.warn(`retired holder staging sweep skipped: ${(error as Error).message}`);
+    log.warn(`holder staging sweep skipped: ${(error as Error).message}`);
     return;
   }
-  const live = liveMxcHolderWritableRoots();
+  const running = new Map<string, StagingOwner>();
   for (const name of names) {
-    const path = winPath.join(parent, name);
-    if (live.some((root) => overlaps(root, path))) continue;
-    try {
-      removeTreeWithoutFollowingLinks(path);
-    } catch (error) {
-      log.warn(`retired holder staging not removed: ${(error as Error).message}`);
+    const root = winPath.join(parent, name.slice(0, -STAGING_OWNER_SUFFIX.length));
+    if (liveStaging.has(root)) continue;
+    const owner = readStagingOwner(`${root}${STAGING_OWNER_SUFFIX}`);
+    if (owner === null) continue;
+    if (owner.pid === process.pid) {
+      if (owner.instance === STAGING_INSTANCE) sweepStagingTree(root);
+    } else if (processIsGone(owner.pid)) {
+      sweepStagingTree(root);
+    } else if (owner.start !== null) {
+      running.set(root, owner);
     }
   }
+  if (running.size === 0 || probedStagingParents.has(parent)) return;
+  probedStagingParents.add(parent);
+  void probe([...new Set([...running.values()].map((owner) => owner.pid))]).then((states) => {
+    for (const [root, owner] of running) {
+      const state = states.get(owner.pid);
+      // A different creation time under the same pid is another process: the owner exited and its pid was reused.
+      const gone = state !== undefined && (!state.running || (state.startTime !== null && state.startTime !== owner.start));
+      // The marker is read again: it must still be the one the question was asked about.
+      const current = readStagingOwner(`${root}${STAGING_OWNER_SUFFIX}`);
+      if (gone && current !== null && current.pid === owner.pid && current.start === owner.start && current.instance === owner.instance) {
+        sweepStagingTree(root);
+      }
+    }
+  }).catch((error: unknown) => {
+    log.warn(`holder staging owner probe failed: ${errorMessage(error)}`);
+  });
 }
 
 export interface MxcBundledHolderInput {

@@ -96,12 +96,11 @@ const reallowed = (): string[] => [
   join(aveHome(), "mcp-data", "example-server"),
   join(aveHome(), "runtime", "python-envs", "example"),
   join(aveHome(), "runtime", "uv"),
-  // Container staging is under the Ave home on Windows alone; elsewhere it lives outside it and is not re-opened here.
-  ...(process.platform === "win32" ? [join(aveHome(), "mxc-staging", "alice")] : []),
 ];
 const withheld = (): string[] => [
   aveHome(),
-  ...(process.platform === "win32" ? [] : [join(aveHome(), "mxc-staging", "alice")]),
+  // Container staging lives outside the Ave home on every platform: what an earlier version left here is not re-opened.
+  join(aveHome(), "mxc-staging", "alice"),
   join(aveHome(), "logs"),
   join(aveHome(), "traces", "alice.jsonl"),
   join(aveHome(), "plugins"),
@@ -145,14 +144,13 @@ describe("the Ave home re-allow table", () => {
     expect(AVE_HOME_READ_REALLOWS.every((row) => row.why.length > 0)).toBe(true);
   });
 
-  it("re-opens container staging on Windows only", () => {
-    expect(isAveHomeReadReallowed(["mxc-staging", "0123456789abcdef0123456789abcdef", "home"], "win32")).toBe(true);
-    for (const platform of ["darwin", "linux"] as const) {
+  it("re-opens container staging on no platform", () => {
+    for (const platform of ["win32", "darwin", "linux"] as const) {
       expect(isAveHomeReadReallowed(["mxc-staging", "0123456789abcdef0123456789abcdef", "home"], platform)).toBe(false);
       expect(isAveHomeReadReallowed(["workspace"], platform)).toBe(true);
     }
-    // Every other row applies everywhere.
-    expect(AVE_HOME_READ_REALLOWS.filter((row) => row.platforms !== undefined).map((row) => row.segments)).toEqual([["mxc-staging"]]);
+    // Every row applies everywhere.
+    expect(AVE_HOME_READ_REALLOWS.filter((row) => row.platforms !== undefined)).toEqual([]);
   });
 });
 

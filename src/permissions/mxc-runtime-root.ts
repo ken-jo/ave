@@ -12,6 +12,9 @@ import { aveHome } from "../shared/ave-home.js";
 import { AVE_HOME_ISOLATION_GUARD_ACTIVE } from "../shared/ave-home-test-guard.js";
 import { MxcProcessContractError } from "./mxc-extension-errors.js";
 import { assertMxcHolderStaging } from "./mxc-filesystem-ownership.js";
+import {
+  isWindowsDrivePath, WINDOWS_RUNTIME_HOST, windowsLocalAppData, windowsRuntimeRootFailure, windowsRuntimeRootMoved, type MxcWindowsRuntimeHost,
+} from "./mxc-runtime-root-windows.js";
 
 const log = createLogger("mxc-runtime-root");
 
@@ -28,7 +31,8 @@ export class MxcRuntimeRootError extends Error {
 /** What the selector reads from the host. Production uses `currentMxcRuntimeHost()`; a test replaces single fields. */
 export interface MxcRuntimeHost {
   readonly platform: NodeJS.Platform;
-  /** The account's cache directory: `~/Library/Caches` on macOS, `$XDG_CACHE_HOME` or `~/.cache` on Linux. */
+  /** The account's cache directory: `~/Library/Caches` on macOS, `$XDG_CACHE_HOME` or `~/.cache` on Linux, the local
+   * application data directory on Windows. */
   readonly cacheHome: string;
   readonly uid: number | undefined;
   readonly pid: number;
@@ -37,6 +41,8 @@ export interface MxcRuntimeHost {
   processExists(pid: number): boolean;
   /** A value that differs between two processes that had the same pid, or null when it cannot be read. */
   processStart(pid: number): string | null;
+  /** How Windows creates and proves the root. Absent on the other platforms. */
+  readonly windows?: MxcWindowsRuntimeHost | undefined;
 }
 
 function processExists(pid: number): boolean {
@@ -91,6 +97,11 @@ export function mxcCacheHome(platform: NodeJS.Platform, env: Readonly<Record<str
 
 /** Under the test runner the root lives in the run's own directory, never in the account's cache. */
 function currentCacheHome(): string {
+  if (process.platform === "win32") {
+    return AVE_HOME_ISOLATION_GUARD_ACTIVE
+      ? winPath.join(process.env.AVE_TEST_SANDBOX_BASE ?? tmpdir(), "mxc-cache")
+      : windowsLocalAppData(process.env, homedir());
+  }
   return AVE_HOME_ISOLATION_GUARD_ACTIVE
     ? posixPath.join(process.env.AVE_TEST_SANDBOX_BASE ?? tmpdir(), "mxc-cache")
     : mxcCacheHome(process.platform, process.env, homedir());
@@ -106,6 +117,7 @@ export function currentMxcRuntimeHost(): MxcRuntimeHost {
     aveHome: aveHome(),
     processExists,
     processStart: platform === "linux" ? linuxProcessStart : platform === "darwin" ? darwinProcessStart : () => null,
+    windows: platform === "win32" ? WINDOWS_RUNTIME_HOST : undefined,
   };
 }
 
@@ -147,33 +159,34 @@ const atOrUnder = (child: string, parent: string): boolean =>
 
 /** `path` with its deepest existing ancestor resolved, so the result is canonical wherever it can be. Throws what the
  * filesystem raised for anything but an absent entry. */
-function canonicalWhereItExists(path: string): string {
+function canonicalWhereItExists(path: string, flavor: typeof posixPath = posixPath): string {
   const missing: string[] = [];
-  for (let current = path; ; current = posixPath.dirname(current)) {
+  for (let current = path; ; current = flavor.dirname(current)) {
     try {
-      return posixPath.join(realpathSync.native(current), ...missing);
+      return flavor.join(realpathSync.native(current), ...missing);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT" || posixPath.dirname(current) === current) throw error;
-      missing.unshift(posixPath.basename(current));
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT" || flavor.dirname(current) === current) throw error;
+      missing.unshift(flavor.basename(current));
     }
   }
 }
 
-const rootUnder = (cacheHome: string): string => posixPath.join(cacheHome, AVE_APP_ID, "mxc-runtime");
+const rootUnder = (cacheHome: string, flavor: typeof posixPath = posixPath): string => flavor.join(cacheHome, AVE_APP_ID, "mxc-runtime");
 
 /**
  * The path the sandbox read floor denies (`appOwnedSandboxPrivateRoots`): the runtime root, `<cache home>/<app id>/
- * mxc-runtime`, whether or not it exists. The run directories are Ave-private data, as they were under the Ave home,
+ * mxc-runtime` (on Windows `<local application data>\<app id>\mxc-runtime`), whether or not it exists. The run directories are Ave-private data, as they were under the Ave home,
  * so every confined process that is not granted its own run directory is denied the whole root. It never throws: the
  * floor of every sandboxed process is composed from it, and a cache directory that cannot be resolved must refuse
  * container starts only. With the cache directory resolved the path is canonical, as the macOS sandbox matches real
  * paths; otherwise it is the path as spelled, and a deny on a path nothing can be created under costs nothing.
  */
-export function mxcRuntimeRootFloorPath(cacheHome: string = currentCacheHome()): string {
+export function mxcRuntimeRootFloorPath(cacheHome: string = currentCacheHome(), platform: NodeJS.Platform = process.platform): string {
+  const flavor = platform === "win32" ? winPath : posixPath;
   try {
-    return rootUnder(canonicalWhereItExists(cacheHome));
+    return rootUnder(canonicalWhereItExists(cacheHome, flavor), flavor);
   } catch {
-    return rootUnder(cacheHome);
+    return rootUnder(cacheHome, flavor);
   }
 }
 
@@ -232,27 +245,34 @@ function nearestExisting(path: string): string {
 /** `mark` is a file this process created inside the root when it established it. A filesystem may hand a new
  * directory the inode of one just removed, so device and inode alone do not tell a replaced root from the original;
  * a replacement does not contain the file. */
-interface EstablishedRoot { readonly root: string; readonly dev: number; readonly ino: number; readonly mark: string }
+interface EstablishedRoot { readonly root: string; readonly dev: number | bigint; readonly ino: number | bigint; readonly mark: string }
 
-const ESTABLISHED_MARK = /^\.established-(\d+)-[0-9a-f]{32}$/u;
+/** The marks this process created. It removes them when it exits; a crash leaves an empty file. */
+const ownMarks = new Set<string>();
 
-/** Create this process's mark in the root, exclusively (a link at the name is refused, never followed), and drop the
- * marks of processes that are gone. Other running instances of this account share the root and keep theirs. */
-function markEstablished(root: string, host: MxcRuntimeHost): string {
-  try {
-    for (const name of readdirSync(root)) {
-      const pid = Number(ESTABLISHED_MARK.exec(name)?.[1]);
-      if (Number.isSafeInteger(pid) && pid > 0 && pid !== host.pid && !host.processExists(pid)) unlinkSync(posixPath.join(root, name));
-    }
-  } catch (error) {
-    log.warn(`stale container runtime root marks not removed: ${(error as Error).message}`);
+function removeOwnMarksAtExit(): void {
+  for (const path of ownMarks) {
+    try { unlinkSync(path); } catch { /* already gone with its root */ }
   }
+}
+
+/**
+ * Create this process's mark in the root, exclusively (a link at the name is refused, never followed). Every running
+ * instance of this account shares the root and keeps its own mark, and no instance removes another's: a pid names a
+ * process only inside one pid namespace, and a file's age against start-up depends on a clock a container may not
+ * share, so neither proves that a mark's process is gone, and a mark removed in error refuses a running instance's
+ * container starts.
+ */
+function markEstablished(root: string, host: MxcRuntimeHost, flavor: typeof posixPath = posixPath): string {
   const mark = `.established-${host.pid}-${randomBytes(16).toString("hex")}`;
+  const path = flavor.join(root, mark);
   try {
-    writeFileSync(posixPath.join(root, mark), "", { flag: "wx", mode: 0o600 });
+    writeFileSync(path, "", { flag: "wx", mode: 0o600 });
   } catch (error) {
     return refuse("Container runtime root could not be marked as established", error);
   }
+  if (ownMarks.size === 0) process.once("exit", removeOwnMarksAtExit);
+  ownMarks.add(path);
   return mark;
 }
 
@@ -263,6 +283,8 @@ function holdsMark(known: EstablishedRoot, uid: number): boolean {
 
 /** One entry per cache directory this process tried to establish a root under: the root, or null when it failed. */
 const established = new Map<string, EstablishedRoot | null>();
+/** Why start-up could not establish the root, per cache directory. */
+const establishFailures = new Map<string, string>();
 
 function createRuntimeRoot(host: MxcRuntimeHost): EstablishedRoot {
   const uid = posixUid(host);
@@ -306,8 +328,137 @@ function createRuntimeRoot(host: MxcRuntimeHost): EstablishedRoot {
   }
 }
 
+const windowsAtOrUnder = (child: string, parent: string): boolean =>
+  child === parent || child.startsWith(parent.endsWith("\\") ? parent : `${parent}\\`);
+
+function windowsRuntimeHost(host: MxcRuntimeHost): MxcWindowsRuntimeHost {
+  if (host.platform !== "win32") refuse(`Container runtime root has no Windows placement on ${host.platform}`);
+  if (host.windows === undefined) refuse("Container runtime root needs the Windows directory helpers");
+  return host.windows;
+}
+
+/** The Windows root's planned path, with the local application data directory resolved. A share, a device path or a
+ * mapped drive (which resolves to its share) is refused before anything is created. */
+function plannedWindowsRuntimeRoot(host: MxcRuntimeHost): string {
+  if (!isWindowsDrivePath(host.cacheHome)) refuse("The account's local application data directory is not a local drive path");
+  let cacheHome: string;
+  try {
+    cacheHome = canonicalWhereItExists(host.cacheHome, winPath);
+  } catch (error) {
+    return refuse("The account's local application data directory could not be resolved", error);
+  }
+  if (!isWindowsDrivePath(cacheHome)) refuse("The account's local application data directory resolves to a share or a device");
+  return rootUnder(cacheHome, winPath);
+}
+
+function assertOutsideWindowsAveHome(root: string, host: MxcRuntimeHost): void {
+  const home = winPath.resolve(host.aveHome);
+  let canonicalHome: string;
+  try {
+    canonicalHome = canonicalWhereItExists(home, winPath);
+  } catch (error) {
+    refuse("The Ave home could not be resolved", error);
+  }
+  // Windows paths fold case.
+  const folded = root.toLowerCase();
+  if ([home, canonicalHome].map((path) => path.toLowerCase()).some((path) => windowsAtOrUnder(folded, path) || windowsAtOrUnder(path, folded))) {
+    refuse("Container runtime root overlaps the Ave home");
+  }
+}
+
+/** Create `path` if it is absent, then require a real directory: a link or junction at the name is refused, not followed. */
+function ensureWindowsDirectory(path: string, what: string): string {
+  try {
+    mkdirSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") refuse(`${what} could not be created`, error);
+  }
+  let entry: Stats;
+  try {
+    entry = lstatSync(path);
+  } catch (error) {
+    return refuse(`${what} could not be inspected`, error);
+  }
+  if (entry.isSymbolicLink() || !entry.isDirectory()) refuse(`${what} is a link or not a directory`);
+  return path;
+}
+
+function createWindowsRuntimeRoot(host: MxcRuntimeHost): EstablishedRoot {
+  const windows = windowsRuntimeHost(host);
+  const planned = plannedWindowsRuntimeRoot(host);
+  // Before anything is created.
+  assertOutsideWindowsAveHome(planned, host);
+  let cacheHome: string;
+  try {
+    mkdirSync(host.cacheHome, { recursive: true });
+    cacheHome = realpathSync.native(host.cacheHome);
+  } catch (error) {
+    return refuse("The account's local application data directory could not be created or resolved", error);
+  }
+  // The app's directory inherits its access: only the root is private, and the root is what is proved.
+  const root = winPath.join(ensureWindowsDirectory(winPath.join(cacheHome, AVE_APP_ID), "The app's local data directory"), "mxc-runtime");
+  if (root !== planned) refuse("The account's local application data directory changed while the container runtime root was established");
+  const existing = lstatSync(root, { throwIfNoEntry: false });
+  if (existing === undefined) {
+    try {
+      // The private descriptor is part of the creation, so the root is never open to the accounts its parent admits.
+      windows.createPrivateDirectory(root);
+    } catch (error) {
+      return refuse("Container runtime root could not be created", error);
+    }
+  } else if (existing.isSymbolicLink() || !existing.isDirectory()) {
+    refuse("Container runtime root is a link or not a directory");
+  }
+  // A root that was already there is proved as it is: it is never given a new descriptor, replaced or bypassed.
+  let failure: string | undefined;
+  try {
+    failure = windowsRuntimeRootFailure(windows.readFacts(root), root);
+  } catch (error) {
+    return refuse("Container runtime root could not be inspected", error);
+  }
+  if (failure !== undefined) refuse(`Container runtime root ${root} cannot be used: ${failure}`);
+  const mark = markEstablished(root, host, winPath);
+  try {
+    // The 64-bit file id carries the record's sequence number, so a directory created in a removed one's place differs.
+    const identity = lstatSync(root, { bigint: true });
+    return { root, dev: identity.dev, ino: identity.ino, mark };
+  } catch (error) {
+    return refuse("Container runtime root could not be inspected", error);
+  }
+}
+
+/** Refuse a root whose path no longer leads to it through real directories alone. */
+function assertWindowsRuntimeRootUnmoved(root: string): void {
+  const moved = windowsRuntimeRootMoved(root);
+  if (moved !== undefined) refuse(`Container runtime root is no longer reached as it was when the sandbox started: ${moved}`);
+}
+
+/** The Windows root that start-up established, still the same directory at the same real path. The descriptor proved
+ * then is not read again: only this account or an administrator can rewrite it. */
+function requireWindowsRuntimeRoot(host: MxcRuntimeHost): string {
+  windowsRuntimeHost(host);
+  const known = established.get(host.cacheHome);
+  if (known === undefined || known === null) {
+    const reason = establishFailures.get(host.cacheHome);
+    refuse(`Container runtime root was not established when the sandbox started${reason === undefined ? "" : `: ${reason}`}`);
+  }
+  let same: boolean;
+  try {
+    const entry = lstatSync(known.root, { bigint: true });
+    const mark = lstatSync(winPath.join(known.root, known.mark), { bigint: true, throwIfNoEntry: false });
+    same = !entry.isSymbolicLink() && entry.isDirectory() && entry.dev === known.dev && entry.ino === known.ino
+      && mark?.isFile() === true && mark.nlink === 1n;
+  } catch (error) {
+    return refuse("Container runtime root is no longer there", error);
+  }
+  if (!same) refuse("Container runtime root is no longer the directory established when the sandbox started");
+  assertWindowsRuntimeRootUnmoved(known.root);
+  assertOutsideWindowsAveHome(known.root, host);
+  return known.root;
+}
+
 /**
- * Establish the one directory everything a container needs lives under on macOS and Linux: `<cache home>/<app id>/
+ * Establish the one directory everything a container needs lives under. On macOS and Linux: `<cache home>/<app id>/
  * mxc-runtime`, mode 0700, owned by this account, never a link or below one in the app's own directory, below only
  * directories held by this account or the system, and neither inside nor above the Ave home. The Ave home is a denied
  * directory, and the macOS sandbox lets a deny override every allow, so a grant nested inside it cannot work there.
@@ -318,11 +469,22 @@ function createRuntimeRoot(host: MxcRuntimeHost): EstablishedRoot {
  * that does not exist), so a root that was not established then is never created later: a second call returns the
  * established root or refuses again. A failure throws `MxcRuntimeRootError`, before anything is created when the
  * placement itself is refused; no caller may place staging elsewhere instead.
+ *
+ * On Windows it is `<local application data>\<app id>\mxc-runtime`: a real directory on an NTFS volume of this
+ * machine, reached through no link or junction, created with a protected access control list that names this account
+ * alone, and neither inside nor above the Ave home. It is host-only there too.
  */
 export function establishMxcRuntimeRoot(host: MxcRuntimeHost = currentMxcRuntimeHost()): string {
   if (established.has(host.cacheHome)) return requireMxcRuntimeRoot(host);
   established.set(host.cacheHome, null);
-  const root = createRuntimeRoot(host);
+  establishFailures.delete(host.cacheHome);
+  let root: EstablishedRoot;
+  try {
+    root = host.platform === "win32" ? createWindowsRuntimeRoot(host) : createRuntimeRoot(host);
+  } catch (error) {
+    if (error instanceof MxcRuntimeRootError) establishFailures.set(host.cacheHome, error.message);
+    throw error;
+  }
   established.set(host.cacheHome, root);
   return root.root;
 }
@@ -330,6 +492,7 @@ export function establishMxcRuntimeRoot(host: MxcRuntimeHost = currentMxcRuntime
 /** A test stands in for a new process: it forgets what start-up recorded for one cache directory. */
 export function _forgetMxcRuntimeRootForTest(cacheHome: string): void {
   established.delete(cacheHome);
+  establishFailures.delete(cacheHome);
 }
 
 /**
@@ -338,6 +501,7 @@ export function _forgetMxcRuntimeRootForTest(cacheHome: string): void {
  * account's private directory refuses the run.
  */
 export function requireMxcRuntimeRoot(host: MxcRuntimeHost = currentMxcRuntimeHost()): string {
+  if (host.platform === "win32") return requireWindowsRuntimeRoot(host);
   const uid = posixUid(host);
   const known = established.get(host.cacheHome);
   if (known === undefined || known === null) refuse("Container runtime root was not established when the sandbox started");
@@ -363,15 +527,21 @@ export function requireMxcRuntimeRoot(host: MxcRuntimeHost = currentMxcRuntimeHo
 /**
  * Where holder staging directories are created, per platform. This is the only place that decides it.
  *
- * - macOS, Linux: `<runtime root>/staging`, outside the Ave home.
- * - Windows: `<AVE_HOME>\mxc-staging`, unchanged. Windows honours a write grant nested under a denied directory, and its
- *   move to a runtime root (with the ACL placement that needs) is a separate change. This is that platform's current
- *   placement, not a fallback: no other platform ever resolves to it.
+ * Every platform: `<runtime root>/staging`, outside the Ave home, under the root that start-up established. On
+ * Windows it inherits the root's access, a link or junction at the name is refused, and every call reads the root's
+ * path again, before and after staging is created: a caller creates a holder tree right after a call. Nothing falls
+ * back into the Ave home.
  */
 export function mxcStagingParent(platform: NodeJS.Platform = process.platform, host?: MxcRuntimeHost): string {
-  if (platform === "win32") return winPath.join(host?.aveHome ?? aveHome(), "mxc-staging");
   const current = host ?? currentMxcRuntimeHost();
   if (current.platform !== platform) refuse("Container staging is resolved on the platform it runs on");
+  if (platform === "win32") {
+    const root = requireMxcRuntimeRoot(current);
+    const staging = ensureWindowsDirectory(winPath.join(root, "staging"), "Container staging parent");
+    // Again once staging exists: a path swapped while it was created is refused before anything is placed in it.
+    assertWindowsRuntimeRootUnmoved(root);
+    return staging;
+  }
   return ensurePrivateDirectory(posixPath.join(requireMxcRuntimeRoot(current), "staging"), posixUid(current), "Container staging parent");
 }
 

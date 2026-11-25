@@ -3,6 +3,7 @@ import type * as Fs from "node:fs";
 import type * as Module from "node:module";
 import type * as Os from "node:os";
 import type * as Path from "node:path";
+import type * as RuntimeRoot from "../../permissions/mxc-runtime-root.js";
 import type * as SandboxProcessHome from "../../permissions/sandbox-process-home.js";
 import type * as StampTargets from "../../permissions/windows-stamp-targets.js";
 import type * as ConfigurationHandles from "../../shared/windows-configuration-handles.js";
@@ -90,6 +91,17 @@ export async function simulatedSandboxProcessHome(actual: typeof SandboxProcessH
       cleanup: () => rmSync(path, { recursive: true, force: true }) });
   };
   return { ...actual, createSandboxProcessHome };
+}
+
+/** The cache home of the runtime root a simulated win32 process denies: the run directory is spelled by this kernel, and no Windows path names it. */
+export const SIMULATED_MXC_CACHE_HOME = "C:\\runtime-cache";
+
+/** While win32 is simulated, the runtime root's floor row is on the simulated drive. An explicit cache home is passed through. */
+export function simulatedRuntimeRoot(actual: typeof RuntimeRoot, nativeHost = host): typeof RuntimeRoot {
+  if (nativeHost === "win32") return actual;
+  const mxcRuntimeRootFloorPath: typeof actual.mxcRuntimeRootFloorPath = (cacheHome, platform = process.platform) =>
+    actual.mxcRuntimeRootFloorPath(cacheHome ?? (platform === "win32" ? SIMULATED_MXC_CACHE_HOME : undefined), platform);
+  return { ...actual, mxcRuntimeRootFloorPath };
 }
 
 /** Drive-path arguments use win32 path operations while the simulated platform is win32. */

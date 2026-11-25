@@ -8,6 +8,11 @@ import { PassThrough } from "node:stream";
 
 const state = vi.hoisted(() => ({ plan: undefined as unknown, holdCompletion: false, denyWrite: [] as string[],
   natives: [] as Array<{ label: string; dispose: ReturnType<typeof vi.fn> }> }));
+// A real staging parent of this suite's own: the runtime root's is shared by every suite of a run.
+vi.mock("../mxc-runtime-root.js", async (original) => ({
+  ...await original<typeof import("../mxc-runtime-root.js")>(),
+  mxcStagingParent: (await import("../../__tests__/support/mxc-staging-parent.js")).suiteMxcStagingParent,
+}));
 vi.mock("../asrt-sandbox.js", async (original) => {
   const { mxcPolicyModel } = await import("../../__tests__/support/mxc-policy-rows.js");
   return {
@@ -63,6 +68,7 @@ const { prepareMxcPluginChildLaunch } = await import("../../plugins/isolation/mx
 const { spawnMxcPluginChild } = await import("../../plugins/isolation/mxc-plugin-child.js");
 const { resolvePluginPaths } = await import("../../plugins/plugin-paths.js");
 const { aveHome } = await import("../../shared/ave-home.js");
+const { suiteMxcStagingParent } = await import("../../__tests__/support/mxc-staging-parent.js");
 const { buildSafeChildEnv } = await import("../../tools/safe-env.js");
 const { __resetActiveWrappedWorkersForTest, spawnWorker } = await import("../worker-spawn.js");
 
@@ -77,8 +83,7 @@ describe.skipIf(process.platform !== "win32")("contained worker under a real plu
   const dataDir = (): string => join(pluginRoot(), "data");
   const work = (): string => join(aveHome(), "..", "native-parent-work");
   const stagingEntries = (): string[] => {
-    const parent = join(aveHome(), "mxc-staging");
-    return existsSync(parent) ? readdirSync(parent) : [];
+    return readdirSync(suiteMxcStagingParent());
   };
 
   beforeEach(() => {
