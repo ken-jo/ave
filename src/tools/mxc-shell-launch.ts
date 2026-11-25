@@ -9,7 +9,7 @@ import { appOwnedSandboxPrivateRoots, aveHomeReadBoundaryCovering, getProtectedR
 import { openInvocationProxyListener } from "../permissions/egress-invocation-listener.js";
 import { openHostEgressListener } from "../permissions/egress-host-listener.js";
 import { egressInvocationAbortSignal, egressInvocationOwner, onEgressInvocationReleased, releaseEgressInvocation } from "../permissions/egress-invocations.js";
-import { detectMxcShellCapability, getWindowsShellConsentRevision, onSandboxStatusChanged } from "../permissions/sandbox-capability.js";
+import { detectMxcShellCapability, onSandboxStatusChanged } from "../permissions/sandbox-capability.js";
 import {
   buildMxcShellRequest,
   openMxcRequestTransport,
@@ -103,13 +103,12 @@ const MXC_TIMEOUT_MARGIN_MS = 30_000;
 
 /**
  * Every resource is registered with `lifecycle` as it is allocated, and every failure is thrown raw: the
- * lifecycle's owner disposes and formats. Ending the invocation (its release, its cancellation, a route or
- * consent change) revokes the lifecycle, which stops all forwarding at once.
+ * lifecycle's owner disposes and formats. Ending the invocation (its release, its cancellation, a route
+ * change) revokes the lifecycle, which stops all forwarding at once.
  */
 export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, lifecycle: ContainedShellLifecycle): Promise<MxcShellLaunch> {
   const capability = detectMxcShellCapability();
   if (capability === undefined) throw new Error("Container shell route is unavailable");
-  const consentRevision = getWindowsShellConsentRevision();
   const token = input.egressToken;
   const owner = egressInvocationOwner(token);
   if (owner?.kind !== "shell" || owner.requiresListener !== true) {
@@ -118,8 +117,7 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
   lifecycle.onRevoke(() => releaseEgressInvocation(token));
   const invocationSignal = egressInvocationAbortSignal(token);
   let active = false;
-  const isRouteCurrent = (): boolean =>
-    detectMxcShellCapability() === capability && getWindowsShellConsentRevision() === consentRevision;
+  const isRouteCurrent = (): boolean => detectMxcShellCapability() === capability;
   // The invocation's own end (cancellation or release) is reported before what it caused.
   const assertAdmission = (): void => {
     invocationSignal?.throwIfAborted();

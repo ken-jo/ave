@@ -10,7 +10,7 @@ import { AveHomeConfigurationRefusedWriteError } from "../shared/ave-home.js";
 import { HOME_FOLDER_REFUSED } from "../shared/permissions-events.js";
 
 import { assertApprovalPersistenceCurrent, refreshApprovalPersistence, type ApprovalPersistenceGuard } from "./approval-persistence-guard.js";
-import { getWindowsShellConsentRevision, isWindowsShellConsentCurrent } from "./sandbox-capability.js";
+import { runGrantKeyOfSession } from "./run-grants.js";
 
 type RequestSnapshot = NonNullable<ReturnType<ApprovalGate["getRequestSnapshot"]>>;
 
@@ -45,6 +45,14 @@ function targetOf(snapshot: RequestSnapshot): Target | undefined {
 
 // Where an allow at `scope` may be saved for this request, or the error that refuses it.
 function allowRefusal(target: Target, scope: ShellRuleSaveScope): string | undefined {
+  // "Allow for this run" is a shell card's choice, offered where its session allow is, to a stage session of a live attended run.
+  // A network card keeps its own grant lifetimes.
+  if (scope === "run") {
+    if (target.kind !== "shell") return "scope-not-offered";
+    if (!target.context.sessionAllowed) return "one-shot-not-recordable";
+    // The card must be one the host offered the run on (never a host-terminal or user-owned-surface card), whatever the renderer sends.
+    return target.snapshot.runStage?.runAllowOffered !== true || runGrantKeyOfSession(target.snapshot.sessionId) === undefined ? "run-scope-unavailable" : undefined;
+  }
   if (target.kind === "shell") {
     const offered = scope === "session" ? target.context.sessionAllowed : target.context.persistentAllowed;
     return offered ? undefined : "one-shot-not-recordable";
@@ -101,20 +109,17 @@ export async function saveApprovalCardRule(
   authority?: ApprovalPersistenceGuard,
   beforePersist?: (saved: Extract<ApprovalRuleSaveResult, { ok: true }>) => Promise<void>,
 ): Promise<ApprovalRuleSaveResult> {
-  const shellConsentRevision = getWindowsShellConsentRevision();
-  const isShellConsentCurrent = (): boolean => getWindowsShellConsentRevision() === shellConsentRevision &&
-    (snapshot.hostShellExecutionPlan?.platform !== "win32" || isWindowsShellConsentCurrent(snapshot.hostShellExecutionPlan));
   const { action, scope, pattern: edited } = rule;
   if (Object.keys(rule).some((key) => key !== "action" && key !== "scope" && key !== "pattern")) {
     return fail("invalid-rule", "A card rule names only its action, scope and, when edited, its pattern");
   }
   if ((action !== "allow" && action !== "deny") || !isShellRuleSaveScope(scope) || (edited !== undefined && typeof edited !== "string")) {
-    return fail("invalid-rule", "A card rule needs action allow or deny, scope session, project or always, and an optional pattern string");
+    return fail("invalid-rule", "A card rule needs action allow or deny, scope session, run, project or always, and an optional pattern string");
   }
   // "Always deny" is the only deny a card saves: user-global.
   if (action === "deny" && scope !== "always") return fail("invalid-rule", "A card saves a deny rule only as Always deny");
   // The record's own fields must describe the same choice.
-  if (answer.decision !== action || answer.scope !== (scope === "session" ? "session" : "persistent")) {
+  if (answer.decision !== action || answer.scope !== (scope === "session" || scope === "run" ? scope : "persistent")) {
     return fail("invalid-rule", "The rule's action and scope do not match the recorded decision");
   }
   // The sandbox-unavailable floor card saves only its session grant for this conversation; no rule text is involved.
@@ -132,7 +137,6 @@ export async function saveApprovalCardRule(
       await refreshApprovalPersistence(authority);
       await beforePersist?.(saved);
       await refreshApprovalPersistence(authority);
-      if (!isShellConsentCurrent()) return fail("rule-save-failed", "Shell consent changed during approval");
       assertApprovalPersistenceCurrent(authority);
       permissionManager.addFloorSessionGrant(sessionId, floorGrant);
     } catch (error) {
@@ -182,9 +186,16 @@ export async function saveApprovalCardRule(
     if (scope === "session") {
       if (snapshot.sessionId === undefined) return fail("missing-session", "This request has no conversation session");
       await refreshApprovalPersistence(authority);
-      if (target.kind === "shell" && !isShellConsentCurrent()) return fail("rule-save-failed", "Shell consent changed during approval");
       assertApprovalPersistenceCurrent(authority);
       permissionManager.addSessionRule(snapshot.sessionId, pattern);
+    } else if (scope === "run") {
+      await refreshApprovalPersistence(authority);
+      assertApprovalPersistenceCurrent(authority);
+      // Asked again after the waits, with nothing awaited before the rule is added: a run that ended meanwhile gets no rule.
+      if (snapshot.sessionId === undefined || snapshot.runStage?.runAllowOffered !== true || runGrantKeyOfSession(snapshot.sessionId) === undefined) {
+        return fail("run-scope-unavailable", "This request's run has ended or takes no run allow");
+      }
+      permissionManager.addRunRule(snapshot.sessionId, pattern);
     } else if (scope === "project") {
       const projectCwd = target.context.projectCwd;
       if (projectCwd === undefined) return fail("scope-not-offered", "This request has no project");

@@ -5,10 +5,10 @@ import { isSensitivePath, protectedControlEntryFor } from "../permissions/sensit
 import { hasOnlyKeys, isPlainRecord, isRecord } from "../shared/is-record.js";
 
 export class WorkflowTemplateError extends Error {
-  constructor(readonly code: WorkflowTemplateErrorCode, message: string = code, readonly refusals?: EnvelopeRefusal[]) { super(message); this.name = "WorkflowTemplateError"; }
+  constructor(readonly code: WorkflowTemplateErrorCode, message: string = code, readonly refusals?: EnvelopeRefusal[], readonly field?: string) { super(message); this.name = "WorkflowTemplateError"; }
 }
-export function requireTemplate(condition: unknown, code: WorkflowTemplateErrorCode = "invalid-input"): asserts condition {
-  if (!condition) throw new WorkflowTemplateError(code);
+export function requireTemplate(condition: unknown, code: WorkflowTemplateErrorCode = "invalid-input", field?: string): asserts condition {
+  if (!condition) throw new WorkflowTemplateError(code, code, undefined, field);
 }
 export function isTemplateId(value: unknown): value is string { return typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value); }
 export function isGraphHash(value: unknown): value is string { return typeof value === "string" && /^[a-f0-9]{64}$/.test(value); }
@@ -20,6 +20,14 @@ export function hasTemplateKeys(value: unknown, keys: readonly string[]): value 
   return isPlainRecord(value) && hasOnlyKeys(value, keys);
 }
 function compare(a: string, b: string): number { return a < b ? -1 : a > b ? 1 : 0; }
+
+function atTemplateField<T>(field: string, parse: () => T): T {
+  try { return parse(); }
+  catch (error) {
+    if (!(error instanceof WorkflowTemplateError) || error.field !== undefined) throw error;
+    throw new WorkflowTemplateError(error.code, error.message, error.refusals, field);
+  }
+}
 
 const REQUESTED_OUTPUT_KINDS: readonly RequestedOutputKind[] = ["upload", "send-message", "publish-post", "external-write", "other"];
 function workspaceGlobs(raw: unknown, max: number): string[] {
@@ -92,7 +100,7 @@ export function isAllReadOnlyVersion(graph: TemplateGraph): boolean {
 // Absent or empty optional collections are omitted; required members retain their canonical defaults.
 export function canonicalTemplateGraph(raw: unknown): TemplateGraph {
   requireTemplate(isRecord(raw) && Array.isArray(raw.stages) && raw.stages.length > 0 && raw.stages.length <= 12 && Array.isArray(raw.edges) && raw.edges.length <= 132);
-  const stages = raw.stages.map((s: unknown): TemplateStage => {
+  const stages = raw.stages.map((s: unknown, index): TemplateStage => {
     requireTemplate(hasTemplateKeys(s, ["id", "name", "goal", "kind", "inputs", "toolScope", "agentName", "allowSubAgents", "gate", "envelope", "requestedOutputs", "inputFiles", "outputs"]));
     requireTemplate(isStageId(s.id), "bad-stage-id");
     requireTemplate(text(s.name, 40) && text(s.goal, 400));
@@ -102,7 +110,8 @@ export function canonicalTemplateGraph(raw: unknown): TemplateGraph {
     requireTemplate(s.kind === undefined || s.kind === "plan");
     requireTemplate(s.allowSubAgents === undefined || typeof s.allowSubAgents === "boolean");
     requireTemplate(s.outputs === undefined || Array.isArray(s.outputs));
-    if (s.requestedOutputs !== undefined) requestedOutputs(s.requestedOutputs);
+    const outputs = atTemplateField(`stages.${index}.requestedOutputs`, () => requestedOutputs(s.requestedOutputs));
+    const envelope = s.envelope === undefined ? undefined : atTemplateField(`stages.${index}.envelope`, () => canonicalEnvelope(s.envelope));
     const g = s.gate;
     requireTemplate(isRecord(g));
     if (g.type === "human") requireTemplate(hasTemplateKeys(g, ["type"]));
@@ -122,27 +131,35 @@ export function canonicalTemplateGraph(raw: unknown): TemplateGraph {
         else requireTemplate(entry.from === "stage" && isStageId(entry.stageId));
       }
     }
-    return { id: s.id, name: s.name, goal: s.goal, inputs: [...s.inputs].sort(compare), toolScope: s.toolScope, ...(s.agentName !== undefined ? { agentName: s.agentName as string } : {}), allowSubAgents: s.allowSubAgents === true, gate: structuredClone(g) as TemplateStage["gate"], ...(Array.isArray(s.inputFiles) && s.inputFiles.length > 0 ? { inputFiles: structuredClone(s.inputFiles) as StageInputDecl[] } : {}), ...(Array.isArray(s.outputs) && s.outputs.length > 0 ? { outputs: workspaceGlobs(s.outputs, 32) } : {}), ...(s.envelope !== undefined ? { envelope: canonicalEnvelope(s.envelope) } : {}), ...(Array.isArray(s.requestedOutputs) && s.requestedOutputs.length > 0 ? { requestedOutputs: requestedOutputs(s.requestedOutputs) } : {}) };
-  }).sort((a, b) => compare(a.id, b.id));
-  const ids = new Set(stages.map(s => s.id)); requireTemplate(ids.size === stages.length);
+    return { id: s.id, name: s.name, goal: s.goal, inputs: [...s.inputs].sort(compare), toolScope: s.toolScope, ...(s.agentName !== undefined ? { agentName: s.agentName as string } : {}), allowSubAgents: s.allowSubAgents === true, gate: structuredClone(g) as TemplateStage["gate"], ...(Array.isArray(s.inputFiles) && s.inputFiles.length > 0 ? { inputFiles: structuredClone(s.inputFiles) as StageInputDecl[] } : {}), ...(Array.isArray(s.outputs) && s.outputs.length > 0 ? { outputs: workspaceGlobs(s.outputs, 32) } : {}), ...(envelope !== undefined ? { envelope } : {}), ...(outputs.length > 0 ? { requestedOutputs: outputs } : {}) };
+  });
+  const ids = new Set(stages.map(s => s.id)); requireTemplate(ids.size === stages.length, "invalid-input", "stages");
   const edgeKeys = new Set<string>();
-  const edges = raw.edges.map((e: unknown) => {
-    requireTemplate(hasTemplateKeys(e, ["from", "to"]) && isTemplateId(e.from) && isTemplateId(e.to) && ids.has(e.from) && ids.has(e.to) && e.from !== e.to);
-    const key = JSON.stringify([e.from, e.to]); requireTemplate(!edgeKeys.has(key)); edgeKeys.add(key);
+  const edges = raw.edges.map((e: unknown, index: number) => {
+    requireTemplate(hasTemplateKeys(e, ["from", "to"]), "invalid-input", `edges.${index}`);
+    requireTemplate(isTemplateId(e.from) && ids.has(e.from), "invalid-input", `edges.${index}.from`);
+    requireTemplate(isTemplateId(e.to) && ids.has(e.to) && e.from !== e.to, "invalid-input", `edges.${index}.to`);
+    const key = JSON.stringify([e.from, e.to]); requireTemplate(!edgeKeys.has(key), "invalid-input", `edges.${index}`); edgeKeys.add(key);
     return { from: e.from, to: e.to };
   }).sort((a, b) => compare(a.from, b.from) || compare(a.to, b.to));
   const ancestors = (id: string, visiting = new Set<string>()): Set<string> => {
-    requireTemplate(!visiting.has(id)); const next = new Set(visiting).add(id); const found = new Set<string>();
+    requireTemplate(!visiting.has(id), "invalid-input", "edges"); const next = new Set(visiting).add(id); const found = new Set<string>();
     for (const e of edges.filter(e => e.to === id)) { found.add(e.from); for (const a of ancestors(e.from, next)) found.add(a); }
     return found;
   };
-  for (const s of stages) { const before = ancestors(s.id); requireTemplate(s.inputs.every(id => before.has(id)) && (s.inputFiles ?? []).every(input => input.from === "project" || before.has(input.stageId))); }
+  stages.forEach((stage, index) => {
+    const before = ancestors(stage.id);
+    requireTemplate(stage.inputs.every(id => before.has(id)), "invalid-input", `stages.${index}.inputs`);
+    requireTemplate((stage.inputFiles ?? []).every(input => input.from === "project" || before.has(input.stageId)), "invalid-input", `stages.${index}.inputFiles`);
+  });
   const roots = stages.filter(s => !edges.some(e => e.to === s.id));
   if (roots.length === 1 && roots[0].toolScope === "read" && roots[0].gate.type === "human") roots[0].kind = "plan";
-  for (const rawStage of raw.stages) requireTemplate(rawStage.kind === undefined || rawStage.kind === stages.find(s => s.id === rawStage.id)?.kind);
+  raw.stages.forEach((rawStage, index) => {
+    requireTemplate(rawStage.kind === undefined || rawStage.kind === stages[index].kind, "invalid-input", `stages.${index}.kind`);
+  });
   if (raw.setupCommands !== undefined) requireTemplate(Array.isArray(raw.setupCommands) && raw.setupCommands.length <= 256 && raw.setupCommands.every(command => text(command, 8192)));
-  if (Array.isArray(raw.setupCommands) && raw.setupCommands.length > 0 && !stages.some(stage => stage.toolScope === "all")) throw new WorkflowTemplateError("envelope-refused", "Setup commands require an all-tools stage", ["setup-outside-commands"]);
-  return { stages, edges, ...(Array.isArray(raw.setupCommands) && raw.setupCommands.length > 0 ? { setupCommands: [...raw.setupCommands as string[]] } : {}) };
+  if (Array.isArray(raw.setupCommands) && raw.setupCommands.length > 0 && !stages.some(stage => stage.toolScope === "all")) throw new WorkflowTemplateError("envelope-refused", "Setup commands require an all-tools stage", ["setup-outside-commands"], "setupCommands");
+  return { stages: stages.sort((a, b) => compare(a.id, b.id)), edges, ...(Array.isArray(raw.setupCommands) && raw.setupCommands.length > 0 ? { setupCommands: [...raw.setupCommands as string[]] } : {}) };
 }
 export function graphHashOf(graph: unknown): string {
   return createHash("sha256").update(canonicalWorkflowJson(canonicalTemplateGraph(graph)), "utf8").digest("hex");

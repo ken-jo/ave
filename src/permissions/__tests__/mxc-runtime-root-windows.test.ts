@@ -211,7 +211,8 @@ describe.runIf(windows)("Windows runtime root", () => {
       const row = WINDOWS_RUNTIME_HOST.readFacts(root);
       expect(row.fileSystemName).toBe("NTFS");
       expect(row.dacl?.protected).toBe(true);
-      expect(row.dacl?.owner).toBe(row.elevated ? expect.stringMatching(/^S-1-5-/u) : row.currentUserSid);
+      // An elevated run's new objects may be owned by the Administrators group instead.
+      expect(row.elevated ? [row.currentUserSid, "S-1-5-32-544"] : [row.currentUserSid]).toContain(row.dacl?.owner);
       expect(windowsGrantingRules(windowsOwnerRules(daclOf(row)))).toEqual([expect.objectContaining({
         sid: row.currentUserSid, accessControlType: 0, fileSystemRights: 2032127, inheritanceFlags: 3, propagationFlags: 0, isInherited: false,
       })]);

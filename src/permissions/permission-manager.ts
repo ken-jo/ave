@@ -18,6 +18,7 @@ import { isCurrentShellRule, withCurrentShellRuleVersion, type ShellRuleVersion 
 
 import { BuiltinLlmJudge, assertRiskClassificationTrace, traceRiskClassifier, type TracingRiskClassifier } from "./judge/builtin-llm-judge.js";
 import { JudgeCircuitBreaker } from "./judge/judge-breaker.js";
+import { isRunStageSession, requireRunGrantKey, runGrantKeyOfSession, runSessionOf } from "./run-grants.js";
 import { JudgeContractError, JudgeFailure, isSameOrStricter, type JudgeLane, type JudgeRequest } from "./judge/judge-contract.js";
 import { resolveJudge, type JudgeEngineDeps, type JudgeGate, type JudgeOutcome } from "./judge/judge-engine.js";
 import { DEFAULT_JUDGE_SETTINGS, type JudgeBreakerSettings } from "./judge/judge-settings.js";
@@ -60,7 +61,6 @@ import {
   type ToolInvocationContext,
 } from "./reviewer/risk-classifier.js";
 import {
-  getWindowsShellConsentRevision,
   resolveReviewerSandboxCacheState,
   type DisposableSubstrate,
   type ReviewerSandboxCacheState,
@@ -604,10 +604,11 @@ export class PermissionManager {
   private readonly alwaysAllowed = new Map<string, GrantTier>();
   // "This session" allow rules (`addSessionRule`), by requesting session. Held in memory only: they end with the session (`endSession`) or the app.
   private readonly sessionRules = new Map<string, PermissionRule[]>();
+  // "Allow for this run" rules (`addRunRule`), by template run. Memory only: read by the run's stage sessions, dropped when the run ends (`endRun`).
+  private readonly runRules = new Map<string, PermissionRule[]>();
   // Sessions holding the sandbox-unavailable floor's "This session" grant (`addFloorSessionGrant`), kept apart from the rules: it
   // answers only that floor, and no rule answers the floor. Memory only, like the session rules.
   private readonly floorSessionGrants = new Set<string>();
-  private shellConsentRevision = getWindowsShellConsentRevision();
 
 
   private readonly permissionsFilePath: string;
@@ -625,13 +626,17 @@ export class PermissionManager {
   private resolveJudgeRootSession: (sessionId: string) => string = (sessionId) => sessionId;
   private verdictCache: VerdictCache | null = null;
   private recentlyDenied: RecentlyDeniedStore | null = null;
-  private readonly pipelineRequests = new WeakMap<PermissionCheckResult, { request: PermissionDecisionRequest; policyEpoch: string; hostTerminalContext?: HostTerminalPermissionContext }>();
+  private readonly pipelineRequests = new WeakMap<PermissionCheckResult, { request: PermissionDecisionRequest; policyEpoch: string; policyContextEpoch: string; hostTerminalContext?: HostTerminalPermissionContext }>();
   private reviewerCacheScope: Record<string, unknown> = {};
   // Runtime degrade flag — true when the persisted reviewer mode is "llm" but boot wiring could not instantiate the LLM provider adapter (fresh install: no chat provider/key configured) and fell back to the rule classifier. Surfaced to the renderer (PermissionsTab banner) so the user understands the reviewer is running rule-only until they configure a provider. Reset to false on every successful "llm" wiring.
   private reviewerDegradedToRule = false;
   // Retained persisted reviewer preference for settings round trips; mode owns routing.
   private blockReadsOutsideWorkingDirectories = false;
   private policyGeneration = 0;
+  // How many of those steps only added or dropped a memory-only allow rule of one conversation or one template run (`addSessionRule`,
+  // `addRunRule`, `endRun`). Such a step changes nothing but what a fresh rule match returns, so an approval card that was open across it
+  // can be judged again instead of refused (`getPolicyContextEpoch`).
+  private memoryRuleGeneration = 0;
   private permissionStoreError: string | undefined;
   private reviewerSettingsError: string | undefined;
   private reviewerReconfiguration: object | undefined;
@@ -690,8 +695,26 @@ export class PermissionManager {
     return this.judgeBreaker;
   }
 
+  // Whose reviewer breaker a session counts on. A session of a template run (a stage session of either lane, or a sub-agent under
+  // one) counts on its own: three blocks in one stage do not pause its siblings, nor a sub-agent's its stage (owner decision
+  // 2026-11-16). Every other session shares its root's, as before.
+  private judgeBreakerSession(sessionId: string): string {
+    return runSessionOf(sessionId) !== undefined ? sessionId : this.resolveJudgeRootSession(sessionId);
+  }
+
   beginPermissionTurn(sessionId: string): void {
-    this.judgeBreaker.beginTurn(this.resolveJudgeRootSession(sessionId));
+    this.judgeBreaker.beginTurn(this.judgeBreakerSession(sessionId));
+  }
+
+  // A stage session linked to its run: its own reviewer count starts here. Its turns never pass the depth-0 reset.
+  beginRunSessionReview(sessionId: string): void {
+    if (!isRunStageSession(sessionId)) throw new JudgeContractError("A run session's review starts after the run linked it");
+    this.judgeBreaker.beginTurn(sessionId);
+  }
+
+  // The stage session ended: its count goes with it.
+  endRunSessionReview(sessionId: string): void {
+    this.judgeBreaker.forget(sessionId);
   }
 
   isAutomatedApprovalPaused(sessionId?: string): boolean {
@@ -699,7 +722,7 @@ export class PermissionManager {
   }
 
   getAutomatedApprovalPauseReason(sessionId?: string): "consecutive" | "total" | undefined {
-    return sessionId === undefined ? undefined : this.judgeBreaker.pauseReason(this.resolveJudgeRootSession(sessionId));
+    return sessionId === undefined ? undefined : this.judgeBreaker.pauseReason(this.judgeBreakerSession(sessionId));
   }
 
   hasJudge(category?: ToolCategory): boolean {
@@ -871,10 +894,19 @@ export class PermissionManager {
 
   // Monotonic host policy identity for sealed rationale revalidation.
   getPolicyEpoch(): string {
-    this.refreshShellSessionConsent();
     this.refreshPermissionStoreError();
     this.refreshReviewerSettingsError();
     return `${this.policyGeneration}:${this.projectRuleScopes.getRevision()}:${this.mode}`;
+  }
+
+  // The policy epoch without the memory-only rule steps. Equal before and after: every change in between was a conversation's or a
+  // run's own memory-only allow rule, which a fresh permission check of the pending call reads. Different: something else changed
+  // (a setting, a mode, a saved rule, a grant, the reviewer), and an answer given across it is refused.
+  getPolicyContextEpoch(): string {
+    // The same refreshes as `getPolicyEpoch`, so the two are read of one state whichever is asked first.
+    this.refreshPermissionStoreError();
+    this.refreshReviewerSettingsError();
+    return `${this.policyGeneration - this.memoryRuleGeneration}:${this.projectRuleScopes.getRevision()}:${this.mode}`;
   }
 
   private refreshReviewerSettingsError(): string | undefined {
@@ -1034,7 +1066,6 @@ export class PermissionManager {
 
   // Add a validated shell or network allow rule for one conversation; prefixes apply on host and sandbox routes.
   addSessionRule(sessionId: string, pattern: string): void {
-    this.refreshShellSessionConsent();
     if (sessionId.length === 0) throw new Error("A session rule requires its conversation session");
     const validated = validatePermissionRule(withCurrentShellRuleVersion({ pattern, action: "allow" }));
     const spec = isRuleSpecifier(validated.pattern) ? parseRuleSpecifier(validated.pattern) : undefined;
@@ -1050,21 +1081,54 @@ export class PermissionManager {
     }
     this.sessionRules.set(sessionId, rules);
     this.policyGeneration += 1;
+    this.memoryRuleGeneration += 1;
     this.broadcastConfigChanged?.();
   }
 
-  // The "This session" rules a decision may read. A scheduled wake turn reads only their deny and ask rules: it does not inherit
-  // the conversation's session allows (permission tree, delegated work), and the decision order is unchanged.
+  // Add a validated shell or network allow rule for the template run the session is a stage of ("Allow for this run", owner decision
+  // 2026-11-16). The run is the host's membership record for that session; a session of no live attended run adds none.
+  addRunRule(sessionId: string, pattern: string): void {
+    const runKey = requireRunGrantKey(sessionId);
+    const validated = validatePermissionRule(withCurrentShellRuleVersion({ pattern, action: "allow" }));
+    const spec = isRuleSpecifier(validated.pattern) ? parseRuleSpecifier(validated.pattern) : undefined;
+    if (spec?.kind !== "bash" && spec?.kind !== "powershell" && spec?.kind !== "network") {
+      throw new Error(`A run rule must be a Bash(...), PowerShell(...) or Network(...) rule; got ${validated.pattern}`);
+    }
+    const rules = this.runRules.get(runKey) ?? [];
+    if (!rules.some((rule) => rule.pattern === validated.pattern && isCurrentShellRule(rule))) {
+      const previous = rules.findIndex((rule) => rule.pattern === validated.pattern);
+      if (previous >= 0) rules.splice(previous, 1);
+      rules.push(validated);
+    }
+    this.runRules.set(runKey, rules);
+    this.policyGeneration += 1;
+    this.memoryRuleGeneration += 1;
+    this.broadcastConfigChanged?.();
+  }
+
+  // The run is over: its "Allow for this run" rules end with it.
+  endRun(runKey: string): boolean {
+    const dropped = this.runRules.delete(runKey);
+    if (dropped) {
+      this.policyGeneration += 1;
+      this.memoryRuleGeneration += 1;
+      this.broadcastConfigChanged?.();
+    }
+    return dropped;
+  }
+
+  // The "This session" rules a decision may read, and after them the "Allow for this run" rules of the attended template run the
+  // session is a live stage of. A scheduled wake turn reads only their deny and ask rules: it does not inherit the conversation's
+  // session allows or a run's (permission tree, delegated work), and the decision order is unchanged.
   private sessionRulesInScope(sessionId: string | undefined): readonly PermissionRule[] {
-    this.refreshShellSessionConsent();
     if (sessionId === undefined) return [];
-    const rules = this.sessionRules.get(sessionId) ?? [];
+    const runKey = runGrantKeyOfSession(sessionId);
+    const rules = [...(this.sessionRules.get(sessionId) ?? []), ...(runKey === undefined ? [] : this.runRules.get(runKey) ?? [])];
     return sessionAuthorityWithheld(sessionId, approvalConversationRoot(sessionId)) ? rules.filter((rule) => rule.action !== "allow") : rules;
   }
 
   // Record the floor card's "This session" answer for its own session (host-derived from the pending card).
   addFloorSessionGrant(sessionId: string, grant: FloorSessionGrant): void {
-    this.refreshShellSessionConsent();
     if (sessionId.length === 0) throw new Error("A floor session grant requires its conversation session");
     if (grant.code !== "sandbox-unavailable") throw new Error("A floor session grant answers only the sandbox-unavailable floor");
     this.floorSessionGrants.add(sessionId);
@@ -1074,25 +1138,8 @@ export class PermissionManager {
 
   // A scheduled wake turn inherits no floor session grant, like the other session allows.
   private holdsFloorSessionGrant(sessionId: string | undefined): boolean {
-    this.refreshShellSessionConsent();
     if (sessionId === undefined || sessionAuthorityWithheld(sessionId, approvalConversationRoot(sessionId))) return false;
     return this.floorSessionGrants.has(sessionId);
-  }
-
-  // Revoke on either consent transition, including an off/on round trip between commands.
-  // Revision checks also invalidate issued policy proofs before they can authorize execution.
-  private refreshShellSessionConsent(): void {
-    const revision = getWindowsShellConsentRevision();
-    if (revision === this.shellConsentRevision) return;
-    this.shellConsentRevision = revision;
-    for (const [sessionId, rules] of this.sessionRules) {
-      const retained = rules.filter((rule) => parseRuleSpecifier(rule.pattern).kind === "network");
-      if (retained.length === 0) this.sessionRules.delete(sessionId);
-      else this.sessionRules.set(sessionId, retained);
-    }
-    this.floorSessionGrants.clear();
-    this.policyGeneration += 1;
-    this.broadcastConfigChanged?.();
   }
 
   // The "This session" rules a conversation holds.
@@ -1109,7 +1156,6 @@ export class PermissionManager {
   }
 
   listSessionRules(sessionId: string): readonly string[] {
-    this.refreshShellSessionConsent();
     return (this.sessionRules.get(sessionId) ?? []).map((rule) => rule.pattern);
   }
 
@@ -1117,7 +1163,9 @@ export class PermissionManager {
   endSession(sessionId: string): boolean {
     const root = approvalConversationRoot(sessionId);
     const ended = (held: string) => held === sessionId || (root === sessionId && approvalConversationRoot(held) === root);
-    if (root === sessionId) this.judgeBreaker.forget(this.resolveJudgeRootSession(root));
+    if (root === sessionId) this.judgeBreaker.forget(this.judgeBreakerSession(root));
+    // A session of a template run counted on its own breaker (`judgeBreakerSession`); its count ends with it.
+    this.judgeBreaker.forget(sessionId);
     let dropped = false;
     for (const held of this.sessionRules.keys()) if (ended(held)) dropped = this.sessionRules.delete(held) || dropped;
     for (const held of this.floorSessionGrants) if (ended(held)) dropped = this.floorSessionGrants.delete(held) || dropped;
@@ -1579,15 +1627,19 @@ export class PermissionManager {
       ...(decision.outcome === "ask-forced" || (request.manualRerun || request.agentBrowser && request.exfiltration !== undefined) && decision.outcome === "ask" ? { forceModal: true } : {}),
       ...(decision.reviewRequired ? { reviewer: { route: request.headless ? "headless" as const : "foreground-auto" as const } } : {}),
     };
-    this.pipelineRequests.set(result, { request, policyEpoch: this.getPolicyEpoch(), ...(hostTerminalContext ? { hostTerminalContext } : {}) });
+    this.pipelineRequests.set(result, { request, policyEpoch: this.getPolicyEpoch(), policyContextEpoch: this.getPolicyContextEpoch(), ...(hostTerminalContext ? { hostTerminalContext } : {}) });
     return result;
   }
 
-  recheckPermission(result: PermissionCheckResult): PermissionCheckResult {
+  // `acrossMemoryRuleChanges`: for a card a person answers or is about to (pending-answer-policy.ts). Steps that only added or dropped
+  // a memory-only allow rule since the request was issued do not make it stale; every other change still does. Never passed for a
+  // call no person answers: an allow a run's rule gave must not be re-read after the run ended.
+  recheckPermission(result: PermissionCheckResult, options?: { acrossMemoryRuleChanges: true }): PermissionCheckResult {
     const issued = this.pipelineRequests.get(result);
     if (!issued) throw new JudgeContractError("Permission recheck requires an issued pipeline request");
     this.pipelineRequests.delete(result);
-    const stale = issued.policyEpoch !== this.getPolicyEpoch();
+    const stale = issued.policyEpoch !== this.getPolicyEpoch()
+      && !(options?.acrossMemoryRuleChanges === true && issued.policyContextEpoch === this.getPolicyContextEpoch());
     const refreshed = this.pipelineResult({ ...issued.request,
       ...(stale ? { admissionDenial: STALE_PERMISSION_POLICY } : {}),
     }, issued.hostTerminalContext);
@@ -1932,7 +1984,7 @@ export class PermissionManager {
 
   private async dispatchSurfaceReviewer(request: PermissionDecisionRequest, context: HostTerminalPermissionContext, input: ReviewerDispatchInput, signal?: AbortSignal): Promise<ReviewerDispatchResult> {
     const finish = (consistent: boolean, reason: string, outcome: ReviewerDispatchOutcome): ReviewerDispatchResult => {
-      const breakerTripped = outcome === "fresh" ? this.judgeBreaker.record(this.resolveJudgeRootSession(input.sessionId!), consistent ? "allow" : "ask", input.invocationId) : false;
+      const breakerTripped = outcome === "fresh" ? this.judgeBreaker.record(this.judgeBreakerSession(input.sessionId!), consistent ? "allow" : "ask", input.invocationId) : false;
       const pause = this.getAutomatedApprovalPauseReason(input.sessionId);
       return { verdict: { level: consistent ? "low" : "high", reason }, outcome, cacheReason: "miss-not-found",
         judge: { judged: true, mode: "active", decision: consistent ? "allow" : "ask", applied: true, source: "judge", rationale: reason, breakerTripped, ...(pause ? { pause } : {}) } };
@@ -2217,7 +2269,7 @@ export class PermissionManager {
   }
 
   resolveReviewerChoice(sessionId: string, invocationId: string, decision: "allow" | "deny"): void {
-    this.judgeBreaker.record(this.resolveJudgeRootSession(sessionId), decision, invocationId);
+    this.judgeBreaker.record(this.judgeBreakerSession(sessionId), decision, invocationId);
   }
 
   async dispatchJudge(
@@ -2299,7 +2351,7 @@ export class PermissionManager {
     const request: JudgeRequest = {
       invocationId: input.invocationId,
       deferDenialCounting: input.rationaleAvailable === true && reviewedRequest?.rationaleAvailable === true && !reviewedRequest.userOwnedSurface && context?.scopeAssessment !== true,
-      sessionId: this.resolveJudgeRootSession(input.sessionId),
+      sessionId: this.judgeBreakerSession(input.sessionId),
       lane, invocation,
       recentUserMessages: input.conversationContext?.recentUserMessage ? [input.conversationContext.recentUserMessage] : [],
       projectRoot: projectRulesLocation(dirname(this.permissionsFilePath), input.executionCwd).projectRoot,

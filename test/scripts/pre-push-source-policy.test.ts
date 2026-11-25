@@ -105,7 +105,7 @@ describe("test-only diff policy", () => {
 });
 
 describe("pre-push source policy", () => {
-  it("takes a source-only change on the fast tier with its related tests", () => {
+  it("selects a source-only change's related tests", () => {
     const result = selectFastSourceChecks([
       modified("src/ui/renderer/hooks/status-bar/vendor-label.ts"),
     ]);
@@ -399,7 +399,7 @@ describe("pre-push message catalog selection", () => {
   };
   const catalogFiles = () => ["en.ts", "ko.ts"].map((name) => `${MESSAGES}/${name}`);
 
-  it("takes locale catalogs on the fast tier and leaves the loader and unknown files global", () => {
+  it("selects locale catalogs by key and leaves the loader and unknown files global", () => {
     for (const path of catalogFiles()) {
       expect(isMessageCatalogPath(path), path).toBe(true);
       expect(isFullCheckGlobalInput(path), path).toBe(false);

@@ -23,6 +23,7 @@ import {
 import { createReadToolResultChunkTool } from "../tools/tool-result-chunk.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import { type MemoryManager } from "../memory/memory-manager.js";
+import { errorMessage } from "../shared/error-message.js";
 import { isValidSessionId } from "../shared/session-id.js";
 import { projectRootEquals } from "../shared/project-identity.js";
 import type {
@@ -2649,7 +2650,17 @@ export class SubAgentRunner {
       },
       ...(callbacks?.onTerminal ? { onTerminal: callbacks.onTerminal } : {}),
     });
-    if (!executionPolicy) callbacks?.onLinked?.({ childSessionId });
+    if (!executionPolicy) {
+      try {
+        callbacks?.onLinked?.({ childSessionId });
+      } catch (error) {
+        // A linkage hook that refuses the child (a run's permission scope, for one) ends the run just tracked: it is not left listed as
+        // submitted with nothing running it. The refusal still reaches the caller.
+        trackedRun.initialMetadataFailed = true;
+        this.finalizeRun(trackedRun, this.buildFailureResult(childSessionId, errorMessage(error)));
+        throw error;
+      }
+    }
 
     const setupResult = (() => {
       try {

@@ -315,13 +315,11 @@ vi.mock("../egress-host-listener.js", async (original) => ({
   openMxcEgressLease: runtime.openMxcEgressLease.mockImplementation(async () => ({ url: "http://127.0.0.1:43210", port: 43210, close: async () => {} })),
 }));
 // The container holder's OS edge: the native process entry, and the boot plan that selects the container backend.
-// The staging parent start-up establishes under the runtime root: a real one of this suite's own on Windows, a path on the simulated drive elsewhere.
+// The staging parent start-up establishes under the runtime root, and the floor row of the root itself, on the simulated drive off Windows.
 vi.mock("../mxc-runtime-root.js", async (original) => {
-  const { SYNTHETIC_MXC_STAGING_PARENT, suiteMxcStagingParent } = await import("../../__tests__/support/mxc-staging-parent.js");
-  return {
-    ...await original<typeof import("../mxc-runtime-root.js")>(),
-    mxcStagingParent: () => hostPlatform === "win32" ? suiteMxcStagingParent() : SYNTHETIC_MXC_STAGING_PARENT,
-  };
+  const { mxcStagingParentFor } = await import("../../__tests__/support/mxc-staging-parent.js");
+  const { simulatedRuntimeRoot } = await import("../../__tests__/support/simulated-win32-drive.js");
+  return { ...simulatedRuntimeRoot(await original()), mxcStagingParent: mxcStagingParentFor() };
 });
 vi.mock("../mxc-extension-process.js", () => ({ spawnMxcExtensionProcess: (...args: unknown[]) => runtime.nativeSpawn(...args) }));
 vi.mock("../sandbox-capability.js", async (original) => {
@@ -451,8 +449,11 @@ const { assertWindowsGrantGrammar, pinWindowsGrantTargets } = await import("../w
 const { prepareOwnedMxcShellLaunch } = await import("../../__tests__/support/contained-shell-launch.js");
 const { existsSync, mkdirSync, mkdtempSync, rmdirSync } = await import("node:fs");
 const { tmpdir } = await import("node:os");
+const runtimeRoot = await import("../mxc-runtime-root.js");
+const { mxcStagingParentFor } = await import("../../__tests__/support/mxc-staging-parent.js");
 const { join: hostJoin } = await vi.importActual<typeof import("node:path")>("node:path");
 
+const stagingParent = mxcStagingParentFor();
 const originalCwd = process.cwd();
 
 function checkCheckoutStampTargets(paths: readonly string[], checkout = originalCwd): void {
@@ -1104,6 +1105,10 @@ describe("the browser download staging folder in a container holder's native req
     runtime.containerBackend = false;
     const { drainMxcHolderLifetimes } = await import("../mxc-holder-lifetime.js");
     await drainMxcHolderLifetimes();
+  });
+
+  it("hands production's win32 staging request the parent of this host", () => {
+    expect((runtimeRoot.mxcStagingParent as (...args: unknown[]) => string)("win32")).toBe(stagingParent());
   });
 
   /** An MCP server's container start as `McpClient.openContained` asks for it, through the real holder adapter and native-entry

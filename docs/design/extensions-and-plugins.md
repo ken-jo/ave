@@ -1412,7 +1412,7 @@ Validation discipline follows the repository contract (`AGENTS.md`, "Validation:
 proportional during work, complete once at publish"): narrow vitest runs and
 `bun run typecheck` while iterating; the complete run — typecheck gate, `bun run test`,
 `bun run build`, `check:gate-core` — happens **once**, on the main + PR merged tree before merge (the pre-push hook
-runs its fast tier, `scripts/hooks/run-local-checks.mjs`), not as a separate ritual before it; CI
+runs static checks only, `scripts/hooks/run-local-checks.mjs`), not as a separate ritual before it; CI
 `build-and-test` and `naming-gate` green on the check rollup before merge; and
 `.github/scripts/naming-gate.sh origin/main HEAD` locally with GNU grep
 (`naming-gate.sh:25` fails closed without PCRE).

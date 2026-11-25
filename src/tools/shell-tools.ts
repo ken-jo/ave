@@ -101,7 +101,6 @@ import { currentToolExecutionCwd } from "./execution-context.js";
 import {
   getHostShellExecutionPlan,
   isIssuedHostShellExecutionPlan,
-  isWindowsShellConsentCurrent,
   detectMxcShellCapability,
 } from "../permissions/sandbox-capability.js";
 import {
@@ -3472,7 +3471,7 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
     let commandAst: PowerShellAstSummary;
     try {
       const parsed = hostShellPlan.mode === "asrt" && hostShellPlan.substrate === "mxc"
-        ? await parsePowerShellAstInMxc(input.command, resolvedCwd, ctx, input.timeoutSeconds, hostShellPlan)
+        ? await parsePowerShellAstInMxc(input.command, resolvedCwd, ctx, input.timeoutSeconds)
         : await parsePowerShellAst(input.command, startupPinned || hostSpawnAuthorization !== undefined);
       if ("failure" in parsed) return parsed.failure;
       commandAst = parsed;
@@ -3537,7 +3536,6 @@ export class PowerShellTool extends ZodTool<typeof PowerShellToolInputSchema> {
       if (command === null) return { output: "PowerShell command blocked: host script runtime has no parser extent", isError: true };
       if (hostShellPlan.substrate === "mxc") {
         const checked = await checkedShellResult(() => spawnPowerShellInMxc(
-          hostShellPlan,
           command,
           resolvedCwd,
           writePaths,
@@ -3789,7 +3787,7 @@ export function resolvePowerShellExecutable(): string {
   return installation.executable;
 }
 
-async function parsePowerShellAstInMxc(command: string, cwd: string, ctx: ToolExecutionContext, timeoutSeconds: number, plan: HostShellExecutionPlan): Promise<PowerShellAstSummary | { failure: ToolExecutionResult }> {
+async function parsePowerShellAstInMxc(command: string, cwd: string, ctx: ToolExecutionContext, timeoutSeconds: number): Promise<PowerShellAstSummary | { failure: ToolExecutionResult }> {
   // Only AST input is embedded; decoding never executes the supplied source.
   const input = Buffer.from(command, "utf8").toString("base64");
   const parserScript = POWER_SHELL_AST_PARSER.replace("[Console]::In.ReadToEnd()", `[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${input}'))`);
@@ -3798,7 +3796,7 @@ async function parsePowerShellAstInMxc(command: string, cwd: string, ctx: ToolEx
     allowedDirectories: containerShellAllowedDirectories(cwd, ctx.extraAllowedDirectories),
   });
   const response = createPowerShellParserResponse();
-  const result = await spawnPowerShellInMxc(plan, parserScript, cwd, writePaths, timeoutSeconds, ctx.abortSignal, undefined, undefined,
+  const result = await spawnPowerShellInMxc(parserScript, cwd, writePaths, timeoutSeconds, ctx.abortSignal, undefined, undefined,
     typeof ctx.metadata.toolUseId === "string" ? ctx.metadata.toolUseId : undefined, response, [], undefined, boundarySessionOf(ctx));
   if (result.isError) return { failure: result };
   const text = response.read();
@@ -4136,7 +4134,6 @@ async function spawnPowerShellWithSandbox(
  * @internal — called only for a plan whose substrate is `mxc`.
  */
 async function spawnPowerShellInMxc(
-  plan: HostShellExecutionPlan,
   command: string,
   cwd: string,
   writePaths: readonly string[],
@@ -4150,7 +4147,7 @@ async function spawnPowerShellInMxc(
   verified?: VerifiedPowerShellExecution,
   sessionId?: string,
 ): Promise<ToolExecutionResult> {
-  if (!isWindowsShellConsentCurrent(plan) || detectMxcShellCapability() === undefined) {
+  if (detectMxcShellCapability() === undefined) {
     return mxcSpawnFailure("container shell route is no longer available");
   }
   const waitForClose = verified !== undefined && verifiedShellRequiresResultCheck(verified.handle, verified.identity);
@@ -4228,7 +4225,7 @@ async function spawnPowerShellInMxc(
       { mode: "isolated", detail: "filesystem/process confinement" }, token) : undefined;
     if (!isRemoteControllerBoundToSession(gate?.permissionContext?.remoteControllerAuthority, gate?.sessionId)) throw new Error("remote-controller-revoked");
     assertManagedChildProcessAdmissionOpen(MXC_SHELL_LABEL);
-    if (!isWindowsShellConsentCurrent(plan) || detectMxcShellCapability() === undefined) throw new Error("Container shell route is no longer available");
+    if (detectMxcShellCapability() === undefined) throw new Error("Container shell route is no longer available");
     const [cmd, ...args] = launch.argv;
     if (cmd === undefined) throw new Error("Container launcher is missing");
     launch.activate();

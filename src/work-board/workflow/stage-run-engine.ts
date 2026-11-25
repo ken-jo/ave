@@ -47,7 +47,13 @@ const STAGE_OUTPUT_MAX_CHARS = 48_000;
 
 const runKeyOf = (itemId: number, runId: string): string => `work-board:${itemId}#${runId}`;
 
-interface RunScopeHooks { sessionLinked(runKey: string, sessionId: string): void; sessionEnded(sessionId: string): void; runEnded(runKey: string): void }
+/** The run's permission scope: its "Allow for this run" grants and each stage session's own reviewer breaker. `sessionLinked` names the
+ * stage and the lane the run authority gave the run, and throws when it refuses the link; `runEnded` revokes every grant of the run. */
+interface RunScopeHooks {
+  sessionLinked(runKey: string, sessionId: string, member: { stageId: string; stageName: string; lane: "attended" | "unattended" }): void;
+  sessionEnded(sessionId: string): void;
+  runEnded(runKey: string): void;
+}
 interface LaneHooks {
   admit(a: { runKey: string; stageId: string; envelope: StageEnvelope | undefined; workspaceRoot: string }): Promise<{ ok: true } | { ok: false; code: LaneBlockCode }>;
   sessionLinked(a: { runKey: string; stageId: string; sessionId: string; envelope: StageEnvelope; workspaceRoot: string }): void;
@@ -779,7 +785,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       if (prior?.status === run.status && prior.attempt === run.attempt) continue;
       if (!claimEffect(replay, `stage:${run.stageId}`)) continue;
       shown = true;
-      const about = { itemId: state.itemId, stageId: run.stageId, attempt: run.attempt };
+      const about = { itemId: state.itemId, stageId: run.stageId, attempt: run.attempt, ...(run.gate?.judgedBy === "model" ? { judgedBy: run.gate.judgedBy } : {}) };
       if (run.status === "awaiting_gate") emit({ ...about, phase: "stage_gate" });
       else if (run.status === "passed") emit({ ...about, phase: "stage_passed" });
       else if (run.status === "failed") emit({ ...about, phase: "stage_failed", ...(run.failure ? { message: run.failure } : {}) });
@@ -984,6 +990,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
       if (halted(state, stageId)) throw new WorkflowInvariantError("run-stopped");
 
       let linked: string | undefined;
+      let scoped = false;
       try {
         const result = await runner.spawn(
           {
@@ -1009,7 +1016,10 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
               try { deps.workspaceBinding?.bind(childSessionId, stageRoot); } catch { bound = false; }
               // A stop, a rejection or a revocation that arrived while the child was starting reaches it here.
               if (!bound || state.stopping || state.faulted !== null || state.interruptAsked.has(stageId) || state.revoked.has(stageId)) runner.interruptRun(childSessionId, workBoardOriginSessionId(state.itemId));
-              deps.runScope?.sessionLinked(runKey, childSessionId);
+              // The run's permission scope takes the session with its stage and the lane the authority gave the run. A refused link (the
+              // run has ended, or the session belongs to another run) throws and fails the launch.
+              deps.runScope?.sessionLinked(runKey, childSessionId, { stageId, stageName: stage.name, lane });
+              scoped = true;
               if (lane === "unattended" && stage.envelope) deps.lane?.sessionLinked({ runKey, stageId, sessionId: childSessionId, envelope: stage.envelope, workspaceRoot: stageRoot });
               emit({ itemId: state.itemId, phase: "executing", stageId, attempt, runSessionId: childSessionId });
               post(state, { type: "stage_linked", stageId, childSessionId }, attempt);
@@ -1024,7 +1034,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
         state.live.delete(stageId);
         if (linked !== undefined) {
           deps.workspaceBinding?.unbind(linked);
-          deps.runScope?.sessionEnded(linked);
+          if (scoped) deps.runScope?.sessionEnded(linked);
           if (lane === "unattended") deps.lane?.sessionEnded(linked);
         }
       }

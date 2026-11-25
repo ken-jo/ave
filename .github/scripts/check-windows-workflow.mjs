@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parse } from "yaml";
-import { WINDOWS_TEST_SHARDS } from "../../scripts/run-windows-test-list.mjs";
+import { WINDOWS_TEST_SHARDS, WINDOWS_TIER_TEST_SHARDS } from "../../scripts/run-windows-test-list.mjs";
 import { collectedVitestFiles } from "../../scripts/lib/vitest-collection.mjs";
 import { windowsPowerShellEnv, windowsPowerShellPath } from "../../scripts/lib/windows-powershell-env.mjs";
 
@@ -21,6 +21,9 @@ const REGRESSION_CONDITION = "steps.docs-impact.outputs.docs_only != 'true'";
 const SHARD_INVOCATION = "node .github/scripts/run-in-job.mjs bun run scripts/run-windows-test-list.mjs";
 // Test commands in the job that owns the isolated job root run inside the containment launcher.
 const CONTAINED_JOB = "windows-permission-tests";
+// The tier job runs the plan's tier shards through the same contained regression step.
+const TIER_JOB = "windows-tier-tests";
+const TEST_JOBS = [CONTAINED_JOB, TIER_JOB];
 const PREPARATION_JOB = "windows-native-preparation";
 const ARM64_JOB = "windows-arm64-path-kind";
 const PATH_KIND_TIMEOUT_MINUTES = 30;
@@ -28,6 +31,7 @@ const PATH_KIND_TIMEOUT_MINUTES = 30;
 const CONTAINED_CONDITIONS = new Map([
   [PREPARATION_JOB, REGRESSION_CONDITION],
   [CONTAINED_JOB, REGRESSION_CONDITION],
+  [TIER_JOB, REGRESSION_CONDITION],
   [ARM64_JOB, undefined],
 ]);
 const CONTAINED_JOBS = [...CONTAINED_CONDITIONS.keys()];
@@ -129,7 +133,7 @@ export function containedSteps(workflow, job = CONTAINED_JOB) {
 
 function windowsRegressionSteps(steps) {
   const regressions = steps.filter(({ jobId, stepName }) =>
-    jobId === "windows-permission-tests" && REGRESSION_STEP.test(stepName ?? ""));
+    TEST_JOBS.includes(jobId) && REGRESSION_STEP.test(stepName ?? ""));
   for (const { name, condition } of regressions) {
     if (condition !== REGRESSION_CONDITION) {
       throw new Error(`${name}: expected if: ${REGRESSION_CONDITION}; found ${JSON.stringify(condition) ?? "no if condition"}`);
@@ -138,14 +142,19 @@ function windowsRegressionSteps(steps) {
   return regressions;
 }
 
+function hasOneRegressionStepPerTestJob(regressions) {
+  return regressions.length === TEST_JOBS.length && TEST_JOBS.every(jobId => regressions.filter(step => step.jobId === jobId).length === 1)
+    && regressions.every(step => step.stepName === REGRESSION_STEP_NAME && step.run.trim() === SHARD_INVOCATION);
+}
+
 /**
- * The suites the Windows regression step runs: every collected suite in the
- * checkout at root, split by the build job's plan across the matrix shards.
+ * The suites the Windows regression steps run: every collected suite in the
+ * checkout at root, split by the build job's plan across the default shards
+ * and, for the selected tiers, the tier shards.
  */
 export function windowsRegressionSuites(workflow, root) {
-  const regressions = windowsRegressionSteps(windowsRunSteps(workflow));
-  if (regressions.length !== 1 || regressions[0].run.trim() !== SHARD_INVOCATION) {
-    throw new Error(`The Windows shard must run one ${REGRESSION_STEP_NAME} step: ${SHARD_INVOCATION}`);
+  if (!hasOneRegressionStepPerTestJob(windowsRegressionSteps(windowsRunSteps(workflow)))) {
+    throw new Error(`Each Windows test job must run one ${REGRESSION_STEP_NAME} step: ${SHARD_INVOCATION}`);
   }
   return collectedVitestFiles(root);
 }
@@ -392,6 +401,7 @@ const HELPER_TRUST = {
     srtWin: "node .github/scripts/restore-windows-ci-inputs.mjs",
   },
 };
+HELPER_TRUST[TIER_JOB] = HELPER_TRUST[CONTAINED_JOB];
 
 function executesHelper(line) {
   return CONTAINED_LINE_RE.test(line) || HELPER_EXECUTABLE_RE.test(line);
@@ -478,6 +488,36 @@ function checkArm64PathKindJob(jobs) {
   }
 }
 
+const TIER_SELECTION = "needs.build.outputs.windows_tier_tests == 'true'";
+const TIER_SELECTION_OUTPUT = "${{ steps.docs-impact.outputs.docs_only != 'true' && steps.tiers.outputs.windows_tiers != '' }}";
+const PLAN_UPLOAD_CONDITION = "steps.docs-impact.outputs.docs_only != 'true' && "
+  + "(steps.plan.outputs.platform_checks == 'true' || steps.tiers.outputs.windows_tiers != '')";
+const TIER_AGGREGATE = 'case "$WINDOWS_TIER_TESTS:$WINDOWS_TIER_RESULT" in\n  true:success|false:skipped) ;;';
+const PREPARATION_AGGREGATE = [
+  "preparation=$expected",
+  'if [ "$WINDOWS_TIER_TESTS" = "true" ]; then preparation=success; fi',
+  'if [ "$WINDOWS_PREPARATION_RESULT" != "$preparation" ]; then',
+].join("\n");
+
+// A selected Windows tier is prepared, uploaded, run and required even when the platform matrix is skipped.
+function checkTierSelection(jobs, tierCondition) {
+  const upload = jobs.build?.steps?.filter(step => step.name === "Upload the Windows regression plan");
+  const tierJob = jobs[TIER_JOB];
+  const aggregate = jobs["build-and-test"];
+  const result = aggregate?.steps?.[0];
+  if (jobs.build?.outputs?.windows_tier_tests !== TIER_SELECTION_OUTPUT
+    || upload?.length !== 1 || upload[0].if !== PLAN_UPLOAD_CONDITION
+    || tierJob?.if !== tierCondition || JSON.stringify(tierJob?.needs) !== JSON.stringify(["build", PREPARATION_JOB])
+    || !Array.isArray(aggregate?.needs) || !aggregate.needs.includes(TIER_JOB) || !aggregate.needs.includes(PREPARATION_JOB)
+    || result?.env?.WINDOWS_TIER_TESTS !== "${{ needs.build.outputs.windows_tier_tests }}"
+    || result.env.WINDOWS_TIER_RESULT !== `\${{ needs.${TIER_JOB}.result }}`
+    || result.env.WINDOWS_PREPARATION_RESULT !== `\${{ needs.${PREPARATION_JOB}.result }}`
+    || typeof result.run !== "string" || !result.run.includes(TIER_AGGREGATE) || !result.run.includes(PREPARATION_AGGREGATE)
+    || result.run.includes('"$WINDOWS_PREPARATION_RESULT" "$WINDOWS_RESULT"')) {
+    throw new Error("The Windows tier shards must follow tier selection through preparation, plan upload and the aggregate");
+  }
+}
+
 export function checkWindowsWorkflow(workflow, inspect) {
   const { jobs } = parse(workflow);
   checkArm64PathKindJob(jobs);
@@ -487,16 +527,21 @@ export function checkWindowsWorkflow(workflow, inspect) {
   }
   const job = jobs[CONTAINED_JOB];
   const platform = "needs.build.outputs.platform_checks == 'true'";
-  if (jobs[PREPARATION_JOB]?.if !== platform || jobs[PREPARATION_JOB]?.needs !== "build"
-    || job?.if !== `${platform} && needs.windows-native-preparation.result == 'success'`
+  const prepared = "needs.windows-native-preparation.result == 'success'";
+  if (jobs[PREPARATION_JOB]?.if !== `${platform} || ${TIER_SELECTION}` || jobs[PREPARATION_JOB]?.needs !== "build"
+    || job?.if !== `${platform} && ${prepared}`
     || JSON.stringify(job?.needs) !== JSON.stringify(["build", PREPARATION_JOB])) {
     throw new Error("Windows preparation and every shard must follow native platform selection");
   }
-  const strategy = job?.strategy;
-  if (strategy?.["fail-fast"] !== false || Object.keys(strategy.matrix ?? {}).length !== 1
-    || JSON.stringify(strategy.matrix.shard) !== JSON.stringify(WINDOWS_TEST_SHARDS)
-    || job.env?.AVE_WINDOWS_TEST_SHARD !== "${{ matrix.shard }}") {
-    throw new Error("The Windows test job must run every contained shard");
+  const tierJob = jobs[TIER_JOB];
+  checkTierSelection(jobs, `${TIER_SELECTION} && ${prepared}`);
+  for (const [testJob, shards, tier] of [[job, WINDOWS_TEST_SHARDS, undefined], [tierJob, WINDOWS_TIER_TEST_SHARDS, "tiers"]]) {
+    const strategy = testJob?.strategy;
+    if (strategy?.["fail-fast"] !== false || Object.keys(strategy.matrix ?? {}).length !== 1
+      || JSON.stringify(strategy.matrix.shard) !== JSON.stringify(shards)
+      || testJob.env?.AVE_WINDOWS_TEST_SHARD !== "${{ matrix.shard }}" || testJob.env?.AVE_WINDOWS_TEST_TIER !== tier) {
+      throw new Error("The Windows test job must run every contained shard");
+    }
   }
   for (const id of CONTAINED_JOBS) {
     const contained = jobs[id];
@@ -507,11 +552,10 @@ export function checkWindowsWorkflow(workflow, inspect) {
   checkPreparationCache(jobs[PREPARATION_JOB]);
   const steps = windowsRunSteps(workflow);
   const regressions = windowsRegressionSteps(steps);
-  if (regressions.length !== 1 || regressions[0].jobId !== CONTAINED_JOB || regressions[0].stepName !== REGRESSION_STEP_NAME
-    || regressions[0].run.trim() !== SHARD_INVOCATION) {
+  if (!hasOneRegressionStepPerTestJob(regressions)) {
     throw new Error(`The Windows shard must run every collected suite through one ${REGRESSION_STEP_NAME} step: ${SHARD_INVOCATION}`);
   }
-  for (const step of job.steps ?? []) {
+  for (const step of TEST_JOBS.flatMap(id => jobs[id].steps ?? [])) {
     if (!REGRESSION_STEP.test(step.name ?? "")) continue;
     if (Object.hasOwn(step.env ?? {}, "AVE_WINDOWS_TEST_SHARD")) {
       throw new Error(`${step.name}: Windows regression steps must inherit the matrix shard ID`);

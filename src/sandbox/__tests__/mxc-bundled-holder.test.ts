@@ -2,7 +2,14 @@
  * is mocked; these tests pin the layout this adapter hands it and the named refusals it raises before admission. */
 import { win32 as winPath } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SIMULATED_MXC_RUNTIME_ROOT, SYNTHETIC_MXC_STAGING_PARENT } from "../../__tests__/support/mxc-staging-parent.js";
+import { escapeRegExp } from "../../shared/escape-reg-exp.js";
 import { assertSandboxWindowsExtensionPlan } from "../../shared/sandbox-capability-info.js";
+
+const STAGING_PATH_PREFIX = `${SYNTHETIC_MXC_STAGING_PARENT}\\`;
+const STAGING_PARENT_PATTERN = escapeRegExp(SYNTHETIC_MXC_STAGING_PARENT);
+const STAGING_ROOT_PATTERN = new RegExp(String.raw`^${STAGING_PARENT_PATTERN}\\[0-9a-f]{32}$`, "u");
+const STAGING_TREE_PATTERN = new RegExp(String.raw`^${STAGING_PARENT_PATTERN}\\[0-9a-f]{32}`, "u");
 
 const state = vi.hoisted(() => ({
   plan: undefined as unknown,
@@ -52,14 +59,17 @@ vi.mock("../../permissions/mxc-filesystem-ownership.js", async (original) => {
   };
 });
 // The staging parent start-up establishes under the runtime root, on the in-memory drive below.
-vi.mock("../../permissions/mxc-runtime-root.js", async (original) => ({
-  ...await original<typeof import("../../permissions/mxc-runtime-root.js")>(),
-  mxcStagingParent: () => {
-    state.stagingParentCalls += 1;
-    if (state.stagingParentRefusal !== undefined && state.stagingParentCalls >= state.stagingParentRefusalFrom) throw state.stagingParentRefusal;
-    return "C:\\runtime\\staging";
-  },
-}));
+vi.mock("../../permissions/mxc-runtime-root.js", async (original) => {
+  const { SYNTHETIC_MXC_STAGING_PARENT } = await import("../../__tests__/support/mxc-staging-parent.js");
+  return {
+    ...await original<typeof import("../../permissions/mxc-runtime-root.js")>(),
+    mxcStagingParent: () => {
+      state.stagingParentCalls += 1;
+      if (state.stagingParentRefusal !== undefined && state.stagingParentCalls >= state.stagingParentRefusalFrom) throw state.stagingParentRefusal;
+      return SYNTHETIC_MXC_STAGING_PARENT;
+    },
+  };
+});
 vi.mock("../../permissions/windows-process-start-time.js", () => ({ readWindowsProcessRunStates: state.probe }));
 // A small in-memory Windows drive for drive-letter paths; every other path reaches the real filesystem.
 vi.mock("node:fs", async (original) => {
@@ -399,10 +409,11 @@ describe("workspace concurrency", () => {
 
   it("names the staging overlap when the hook's workspace contains another holder's private folder", async () => {
     // A user hook rooted above the runtime root: its workspace write contains the staging parent, where a live MCP server keeps its staging.
-    state.live = ["C:\\runtime\\staging\\0123456789abcdef0123456789abcdef"];
+    state.live = [winPath.join(SYNTHETIC_MXC_STAGING_PARENT, "0123456789abcdef0123456789abcdef")];
+    const workspace = winPath.dirname(SIMULATED_MXC_RUNTIME_ROOT);
     const refusal = await spawnMxcBundledHolder(input({ label: "hook:user",
-      command: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", allowRead: [], allowWrite: ["C:\\runtime"],
-      ownedReadRoots: [], cwd: "C:\\runtime", workspaceRoots: ["C:\\runtime"] })).catch((error: unknown) => error);
+      command: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", allowRead: [], allowWrite: [workspace],
+      ownedReadRoots: [], cwd: workspace, workspaceRoots: [workspace] })).catch((error: unknown) => error);
     expect(refusal).toBeInstanceOf(MxcHolderWorkspaceBusyError);
     expect((refusal as { stagingOverlap: boolean }).stagingOverlap).toBe(true);
     expect((refusal as Error).message).toBe(t("be_wrapBundledCommand.workspaceBusyStaging", { code: "holder-workspace-busy" }));
@@ -424,7 +435,7 @@ describe("workspace concurrency", () => {
 });
 
 describe("environment before admission", () => {
-  const stagingRoots = (): number => [...state.dirs].filter((dir) => /runtime\\staging\\[0-9a-f]{32}$/u.test(dir)).length;
+  const stagingRoots = (): number => [...state.dirs].filter((dir) => STAGING_ROOT_PATTERN.test(dir)).length;
 
   it.each([
     [{ NODE_OPTIONS: "--require C:\\x\\loader.js" }, {}, "NODE_OPTIONS"],
@@ -464,9 +475,9 @@ describe("holder layout", () => {
   it("gives the holder its own staging HOME/temp sibling and its own incarnation, passing host env through", async () => {
     await spawnMxcBundledHolder(input());
     const first = lastSpec();
-    const match = /^C:\\runtime\\staging\\([0-9a-f]{32})\\home$/u.exec(first.home);
+    const match = new RegExp(String.raw`^${STAGING_PARENT_PATTERN}\\([0-9a-f]{32})\\home$`, "u").exec(first.home);
     expect(match).not.toBeNull();
-    const root = `C:\\runtime\\staging\\${match![1]}`;
+    const root = winPath.join(SYNTHETIC_MXC_STAGING_PARENT, match![1]);
     expect(first.temp).toBe(`${root}\\temp`);
     expect(first.allowWrite).toEqual(["C:\\ave\\mcp\\fs\\sandbox", root]);
     expect(first.filesystemOwnership).toEqual({ readRoots: ["C:\\ave\\plugins\\fs\\gen"],
@@ -484,7 +495,7 @@ describe("holder layout", () => {
     await spawnMxcBundledHolder(input({ cwd: "C:\\ave\\plugins\\fs\\gen" }));
     expect(lastSpec().cwd).toBe("C:\\ave\\plugins\\fs\\gen");
     state.spawn.mockClear();
-    const stagingRoots = (): number => [...state.dirs].filter((dir) => /runtime\\staging\\[0-9a-f]{32}$/u.test(dir)).length;
+    const stagingRoots = (): number => [...state.dirs].filter((dir) => STAGING_ROOT_PATTERN.test(dir)).length;
     const before = stagingRoots();
     await expect(spawnMxcBundledHolder(input({ cwd: "D:\\elsewhere" }))).rejects.toBeInstanceOf(MxcProcessContractError);
     expect(state.spawn).not.toHaveBeenCalled();
@@ -512,7 +523,7 @@ describe("teardown", () => {
     expect(temp).toMatch(/\\temp$/u);
     expect(state.removed.some((path) => path.startsWith("D:\\work"))).toBe(false);
     expect(state.dirs.has("D:\\work")).toBe(true);
-    expect([...state.dirs].some((dir) => /runtime\\staging\\[0-9a-f]{32}/u.test(dir))).toBe(false);
+    expect([...state.dirs].some((dir) => STAGING_TREE_PATTERN.test(dir))).toBe(false);
   });
 
   it("removes the AppContainer profile subtree MXC creates under HOME, unlinking any reparse point there unfollowed", async () => {
@@ -526,9 +537,9 @@ describe("teardown", () => {
     state.links.set(`${moniker}\\AC\\Temp\\escape`, "D:\\work");
     state.links.set(`${moniker}\\LocalState`, "D:\\work");
     await holder.release();
-    expect([...state.dirs].some((dir) => /runtime\\staging\\[0-9a-f]{32}(?:\.retired)?/u.test(dir))).toBe(false);
-    expect([...state.files].some((file) => /runtime\\staging\\/u.test(file))).toBe(false);
-    expect([...state.links.keys()].some((link) => /runtime\\staging\\/u.test(link))).toBe(false);
+    expect([...state.dirs].some((dir) => STAGING_TREE_PATTERN.test(dir))).toBe(false);
+    expect([...state.files].some((file) => file.startsWith(STAGING_PATH_PREFIX))).toBe(false);
+    expect([...state.links.keys()].some((link) => link.startsWith(STAGING_PATH_PREFIX))).toBe(false);
     expect(state.removed.some((path) => /\\[0-9a-f]{32}\.retired\\home\\Packages\\[^\\]+\\AC\\Temp\\escape$/u.test(path))).toBe(true);
     expect(state.removed.some((path) => /\\[0-9a-f]{32}\.retired\\home\\Packages\\[^\\]+\\LocalState$/u.test(path))).toBe(true);
     expect(state.removed.some((path) => path.startsWith("D:\\work"))).toBe(false);
@@ -543,10 +554,10 @@ describe("teardown", () => {
     await holder.release();
     const rename = state.ops.findIndex((op) => op.startsWith(`rename ${root} -> `));
     expect(rename).toBe(0);
-    expect(state.ops[0]).toMatch(/ -> C:\\runtime\\staging\\[0-9a-f]{32}\.retired$/u);
+    expect(state.ops[0]).toMatch(new RegExp(String.raw` -> ${STAGING_PARENT_PATTERN}\\[0-9a-f]{32}\.retired$`, "u"));
     expect(state.ops.slice(1).every((op) => !op.includes(root + "\\"))).toBe(true);
     expect(state.removed.some((path) => /[0-9a-f]{32}\.retired\\temp\\scratch\.txt$/u.test(path))).toBe(true);
-    expect([...state.dirs].some((dir) => /runtime\\staging\\[0-9a-f]{32}(?:\.retired)?/u.test(dir))).toBe(false);
+    expect([...state.dirs].some((dir) => STAGING_TREE_PATTERN.test(dir))).toBe(false);
   });
 
   it("clears a read-only attribute before unlinking, and never chmods a planted link", async () => {
@@ -562,11 +573,11 @@ describe("teardown", () => {
     expect(unlink).toBeGreaterThan(chmod);
     expect(state.ops.some((op) => /^chmod .*\\escape$/u.test(op))).toBe(false);
     expect(state.files.has("D:\\work\\tool.exe")).toBe(true);
-    expect([...state.dirs].some((dir) => /runtime\\staging\\[0-9a-f]{32}(?:\.retired)?/u.test(dir))).toBe(false);
+    expect([...state.dirs].some((dir) => STAGING_TREE_PATTERN.test(dir))).toBe(false);
   });
 
   describe("leftovers under the shared staging parent", () => {
-    const P = "C:\\runtime\\staging";
+    const P = SYNTHETIC_MXC_STAGING_PARENT;
     const GONE_PID = 0x7fff_fff0;
     const id = (digit: string): string => digit.repeat(32);
     const owned = (digit: string, owner: unknown, suffix = ""): string => {
@@ -695,15 +706,16 @@ describe("teardown", () => {
     state.stagingRefusal = new MxcProcessContractError("shape refused");
     await expect(spawnMxcBundledHolder(input())).rejects.toThrow("shape refused");
     expect(state.spawn).not.toHaveBeenCalled();
-    expect([...state.dirs].some((dir) => /runtime\\staging\\[0-9a-f]{32}/u.test(dir))).toBe(false);
+    expect([...state.dirs].some((dir) => STAGING_TREE_PATTERN.test(dir))).toBe(false);
   });
 
   it("starts nothing when the runtime root refuses the staging parent", async () => {
     state.stagingParentRefusal = new MxcRuntimeRootError("Container runtime root was not established when the sandbox started");
     await expect(spawnMxcBundledHolder(input())).rejects.toBeInstanceOf(MxcRuntimeRootError);
     expect(state.spawn).not.toHaveBeenCalled();
-    expect([...state.dirs].some((dir) => /runtime\\staging/u.test(dir))).toBe(false);
-    expect([...state.files].some((file) => /runtime\\staging/u.test(file))).toBe(false);
+    expect(state.dirs.has(SYNTHETIC_MXC_STAGING_PARENT)).toBe(false);
+    expect([...state.dirs].some((dir) => dir.startsWith(STAGING_PATH_PREFIX))).toBe(false);
+    expect([...state.files].some((file) => file.startsWith(STAGING_PATH_PREFIX))).toBe(false);
   });
 
   it("creates no holder directory when the runtime root refuses right before the tree is created", async () => {
@@ -712,8 +724,8 @@ describe("teardown", () => {
     await expect(spawnMxcBundledHolder(input())).rejects.toBeInstanceOf(MxcRuntimeRootError);
     expect(state.stagingParentCalls).toBe(2);
     expect(state.spawn).not.toHaveBeenCalled();
-    expect([...state.dirs].some((dir) => /runtime\\staging\\[0-9a-f]{32}/u.test(dir))).toBe(false);
-    expect([...state.files].some((file) => /runtime\\staging/u.test(file))).toBe(false);
+    expect([...state.dirs].some((dir) => STAGING_TREE_PATTERN.test(dir))).toBe(false);
+    expect([...state.files].some((file) => file.startsWith(STAGING_PATH_PREFIX))).toBe(false);
   });
 
   it("starts no holder in a tree created while the runtime root's path changed, and removes nothing through that path", async () => {
@@ -724,7 +736,8 @@ describe("teardown", () => {
     expect(state.spawn).not.toHaveBeenCalled();
     expect(state.removed).toEqual([]);
     // The marker stays beside the tree, so a later sweep can prove whose it is.
-    expect([...state.files].filter((file) => /runtime\\staging\\[0-9a-f]{32}\.owner$/u.test(file))).toHaveLength(1);
+    const ownerMarker = new RegExp(String.raw`^${STAGING_PARENT_PATTERN}\\[0-9a-f]{32}\.owner$`, "u");
+    expect([...state.files].filter((file) => ownerMarker.test(file))).toHaveLength(1);
   });
 
   it("stays quarantined with its staging tree when termination is unverified, and retries cleanup", async () => {
@@ -810,12 +823,12 @@ describe("plugin child start resources", () => {
   const DATA = "C:\\ave\\mcp\\fs\\sandbox";
   const intent = (overrides: Partial<Parameters<typeof prepareMxcPluginChildLaunch>[0]> = {}): Parameters<typeof prepareMxcPluginChildLaunch>[0] =>
     ({ pluginId: "fs", command: NODE, cwd: GEN, pluginDataDir: DATA, baseEnv: { SYSTEMROOT: "C:\\Windows", ELECTRON_RUN_AS_NODE: "1" }, envelope: { read: [GEN, DATA], write: [DATA] }, ...overrides });
-  const stagingExists = (): boolean => [...state.dirs].some((dir) => dir.includes("mxc-staging\\"));
+  const stagingExists = (): boolean => [...state.dirs].some((dir) => STAGING_TREE_PATTERN.test(dir));
 
   it("lays out a fresh staging HOME/temp and the captured ownership, and spawns nothing", async () => {
     const launch = await prepareMxcPluginChildLaunch(intent());
     const staging = winPath.dirname(launch.home);
-    expect(staging).toMatch(/^C:\\runtime\\staging\\[0-9a-f]{32}$/u);
+    expect(staging).toMatch(STAGING_ROOT_PATTERN);
     expect(launch.temp).toBe(winPath.join(staging, "temp"));
     expect(state.dirs.has(launch.home) && state.dirs.has(launch.temp)).toBe(true);
     expect(launch.filesystemOwnership).toEqual({ readRoots: [GEN], writeRoots: [DATA, staging], hostStorageRoots: [resolvePluginHostStorageDir(DATA)] });
