@@ -263,7 +263,9 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
   async function dropRepositoryPins(at: Held): Promise<void> {
     const repo = at.file.repo;
     if (repo === undefined || devOf(repo.id) === devOf(at.project.id)) return;
-    const pins = holdDir(repo.gitDir, repo.id).existing(PIN_DIR);
+    let pins: OwnedDir | undefined;
+    // A repository that is no longer the one recorded keeps its pins.
+    try { pins = holdDir(repo.gitDir, repo.id).existing(PIN_DIR); } catch { return; }
     if (pins === undefined) return;
     const own = `${basename(at.runRoot)}.`;
     for (const name of pins.list()) if (name.startsWith(own) && name.endsWith(".pin")) await dropPin(pins, name, "any");
