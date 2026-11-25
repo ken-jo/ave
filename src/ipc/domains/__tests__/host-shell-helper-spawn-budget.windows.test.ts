@@ -131,7 +131,7 @@ describe.skipIf(!helperPresent)("host shell admission native helper launch budge
     mkdirSync(join(project, ".git"), { recursive: true });
     setShellSandboxRequestedAtBoot(true);
     setActiveSandboxCapability(windowsProxyOnlyCapability());
-    const { substrate } = planWindowsSandbox({ shellRequested: true, shellLocalNetworkAccess: true, workerRequested: false,
+    const { substrate } = planWindowsSandbox({ shellRequested: true, workerRequested: false,
       mxc: { state: "available" }, windowsBuild: "10.0.26300.9711", srtWinReady: false });
     setWindowsSandboxSubstrate(substrate, mxcShellCapability());
     const tool = toolName === "bash" ? new BashTool() : new PowerShellTool();

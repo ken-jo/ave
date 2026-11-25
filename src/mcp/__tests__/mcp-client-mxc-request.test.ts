@@ -114,7 +114,8 @@ const { unusedNetworkFetch } = await import("../../__tests__/support/network-fet
 const { governanceWithPolicy, buildPolicy, stdioApproval } = await import("./test-helpers.js");
 const { __resetWrappedMcpServersForTest } = await import("../../permissions/sandbox-capability.js");
 const { planWindowsExtensionHolder } = await import("../../permissions/mxc-extension-readiness.js");
-const { registerMxcHolderReadinessProbe } = await import("../../sandbox/wrap-bundled-command.js");
+const { registerMxcReleaseGateEvidence } = await import("../../permissions/mxc-extension-admission.js");
+const { MXC_RELEASE_GATE_EVIDENCE } = await import("../../__tests__/support/mxc-supervisor.js");
 const { setProcessPlatform } = await import("../../__tests__/support/process-platform.js");
 
 const REAL_PLATFORM = process.platform;
@@ -136,7 +137,7 @@ beforeEach(() => {
   state.requests = [];
   state.nativeStarts = 0;
   __resetWrappedMcpServersForTest();
-  unregister = registerMxcHolderReadinessProbe(async () => { throw new Error("row 2 calls the probe"); });
+  unregister = registerMxcReleaseGateEvidence(MXC_RELEASE_GATE_EVIDENCE);
 });
 
 afterEach(() => {

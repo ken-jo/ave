@@ -33,11 +33,11 @@ const MAX_FAST_ARGUMENT_CHARS = 16_384;
  * settings shape, package scripts and guidance text, renderer error copy,
  * settings anchors, repository tooling). Each reaches some of its inputs
  * without importing them (a directory scan, a file read, a module it does not
- * import yet), so `vitest related` cannot see that a change reaches it. The
- * fast tier runs a suite when a changed path starts with one of its triggers:
- * the paths it scans or reads plus the modules it pins. Import-reachable
- * inputs are already covered by `vitest related`, and boundRelatedTests
- * never cuts a lock suite out of a related set.
+ * import yet), so `vitest related` cannot see that a change reaches it. CI's
+ * affected selection (scripts/run-ci-suite.mjs) runs a suite when a changed
+ * path starts with one of its triggers: the paths it scans or reads plus the
+ * modules it pins. Import-reachable inputs are already covered by
+ * `vitest related`.
  *
  * The IPC and preload suites reach src/shared/ipc-channels.ts only through
  * the contract barrel src/contract/app-contract.ts, so every suite whose
@@ -46,9 +46,8 @@ const MAX_FAST_ARGUMENT_CHARS = 16_384;
  * graphs).
  *
  * `test/scripts` holds the hook, gate and repository-tooling suites; its
- * triggers (`scripts/`, `package.json`) are also global inputs, so on a
- * fast push it runs only through a changed test file or a recorded document
- * reader. Non-test-only category PRs and periodic full CI runs cover it all.
+ * triggers (`scripts/`, `package.json`) are also global inputs, so off an
+ * integration base a change to them runs the full suite in CI.
  */
 export const AVE_APP_LOCK_SUITE_TRIGGERS = Object.freeze({
   "src/__tests__/packaging-discipline-source.test.ts": Object.freeze([
@@ -260,76 +259,6 @@ export function getRelatedCoverageFullReason(relatedFiles, coverage, messageCons
     }
   }
   return null;
-}
-
-/**
- * `vitest related` follows every transitive importer, so one shared module
- * (a schema, a contract) can pull a large part of the suite into a branch
- * push: `src/audit/audit-schema.ts` alone reached 160 of the ~1450 test
- * files, 73 s of a 140 s fast run. Above RELATED_TEST_BOUND test files the
- * fast tier keeps every related test of a narrow module and narrows each
- * module whose fan-out exceeds FAN_OUT_SOURCE_BOUND to the test files that
- * import it directly, plus every lock suite in its related set: a lock suite
- * often reaches a shared contract through a barrel (the IPC suites reach
- * src/shared/ipc-channels.ts through src/contract/app-contract.ts), and
- * cutting it would drop exactly the cross-cutting check the change needs.
- * The full transitive set runs in CI's affected selection.
- */
-export const RELATED_TEST_BOUND = 150;
-const FAN_OUT_SOURCE_BOUND = 25;
-const MODULE_EXTENSION = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/;
-const MODULE_SPECIFIER = /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+|\bvi\.(?:mock|doMock|importActual)\s*(?:<[^>]*>)?\(\s*|\brequire\(\s*)["']([^"']+)["']/g;
-
-function isLockSuiteFile(relativePath) {
-  return AVE_APP_LOCK_SUITES.some((suite) => relativePath === suite || relativePath.startsWith(`${suite}/`));
-}
-
-function importsModuleDirectly(text, testPath, source) {
-  if (typeof text !== "string") return false;
-  const target = source.replace(MODULE_EXTENSION, "");
-  for (const [, specifier] of text.matchAll(MODULE_SPECIFIER)) {
-    if (!specifier.startsWith(".")) continue;
-    const resolved = posix.normalize(posix.join(posix.dirname(testPath), specifier));
-    if (resolved.replace(MODULE_EXTENSION, "") === target) return true;
-  }
-  return false;
-}
-
-/**
- * Resolve the related test files to run from per-module discovery coverage
- * (already validated by getRelatedCoverageFullReason). Returns
- * { tests, narrowed } — `narrowed` lists each module cut down to its direct
- * importers and the lock suites among its related tests — or { reason } when the bound cannot be met without dropping a
- * module's coverage, which keeps the full checks.
- *
- * `readText(path)` returns a test file's source, or null.
- */
-export function boundRelatedTests(coverage, readText) {
-  const union = (records) => [...new Set(records.flatMap((record) => record.tests))].sort();
-  const all = union(coverage);
-  if (all.length <= RELATED_TEST_BOUND) return { tests: all, narrowed: [] };
-  const narrowed = [];
-  const records = [];
-  for (const record of coverage) {
-    if (record.tests.length <= FAN_OUT_SOURCE_BOUND) {
-      records.push(record);
-      continue;
-    }
-    const direct = record.tests.filter((test) => importsModuleDirectly(readText(test), test, record.source));
-    if (direct.length === 0) {
-      return {
-        reason: `${record.source} reaches ${record.tests.length} related test files and none imports it directly; full checks required`,
-      };
-    }
-    const lockSuites = record.tests.filter((test) => isLockSuiteFile(test) && !direct.includes(test));
-    narrowed.push({ source: record.source, related: record.tests.length, direct: direct.length, lockSuites: lockSuites.length });
-    records.push({ source: record.source, tests: [...direct, ...lockSuites] });
-  }
-  const tests = union(records);
-  if (tests.length > RELATED_TEST_BOUND) {
-    return { reason: `related tests still exceed ${RELATED_TEST_BOUND} files after narrowing (${tests.length}); full checks required` };
-  }
-  return { tests, narrowed };
 }
 
 /**

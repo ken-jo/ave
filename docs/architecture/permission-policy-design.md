@@ -824,10 +824,43 @@ each admitted write root, taking precedence over grants:
 - `.vscode/**`;
 - `.envrc`, `.mise.toml`, `mise.toml`, `.tool-versions`, `.npmrc`, `.yarnrc.yml`,
   `bunfig.toml` and `.husky/**`;
+- all of `.agents`, which holds the skills, commands and plugins agent hosts
+  load, and `.ave/commands` and `.ave/hooks`, which Ave loads. Other agents'
+  folders such as `.claude` and `.codex` are not on this floor, and the file
+  tools do not ask about them: each host protects its own (owner decision
+  2026-11-25). On Linux these are entries beneath each write root. On macOS
+  rules appended to the Seatbelt profile, anchored at the write roots, deny the
+  same entries, and also refuse to create, remove or rename `.ave` directly
+  beneath a root, so its parts cannot be moved out from under their names. The
+  Windows floor does not carry these entries yet;
 - configured `core.hooksPath` directories, including absent targets and their
   physical symlink targets;
 - Ave settings, permission settings, rules, policies and approval grants, with
   paths derived from their owning stores rather than copied filenames.
+
+Links and this floor. A protected entry that is a link, or is reached through
+links, is held where it resolves. On macOS every name the resolution of
+`.agents`, `.ave/commands` or `.ave/hooks` looks up, whether a link, a real
+folder, a folder a `..` climbs out of or the first absent name, can be neither
+created, removed nor renamed, so the entry cannot be made to resolve somewhere
+new while the command runs. The target becomes read-only to confined shells whatever it is:
+`.agents -> .claude` makes `.claude` read-only to them. When such a link
+resolves to a work folder or to a folder that holds one, the wrap is refused
+with a named reason, because denying the target would deny the work folder.
+
+Known limit, for every entry on this floor on every platform (`.vscode`,
+`.git/hooks`, the Linux rows and the macOS rules alike): a deny names a path,
+so a link *inside* a protected folder that leads out of it, such as
+`.agents/skills -> ../.claude/skills` or a file link under `.ave/commands`,
+leaves its target writable at the target's own path. The link itself cannot be
+changed, and the host loads whatever the target then holds.
+
+On macOS two more denies sit outside the write roots' own entries. A directory
+named `srt-sock-*` (the sandbox runtime's proxy socket directory under the host
+temp directory) is write-denied wherever it appears, by an appended rule. When a write root holds the
+Ave home or one of the confined processes' private roots, writes to that directory
+are denied except under the wrap's own write roots inside it. Linux masks both
+with a mount.
 
 The Windows MXC PowerShell container receives the same denies from the same
 policy builder: an existing protected entry inside a write grant becomes

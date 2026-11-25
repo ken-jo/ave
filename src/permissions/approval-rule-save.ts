@@ -10,7 +10,6 @@ import { AveHomeConfigurationRefusedWriteError } from "../shared/ave-home.js";
 import { HOME_FOLDER_REFUSED } from "../shared/permissions-events.js";
 
 import { assertApprovalPersistenceCurrent, refreshApprovalPersistence, type ApprovalPersistenceGuard } from "./approval-persistence-guard.js";
-import { getWindowsShellConsentRevision, isWindowsShellConsentCurrent } from "./sandbox-capability.js";
 import { runGrantKeyOfSession } from "./run-grants.js";
 
 type RequestSnapshot = NonNullable<ReturnType<ApprovalGate["getRequestSnapshot"]>>;
@@ -110,9 +109,6 @@ export async function saveApprovalCardRule(
   authority?: ApprovalPersistenceGuard,
   beforePersist?: (saved: Extract<ApprovalRuleSaveResult, { ok: true }>) => Promise<void>,
 ): Promise<ApprovalRuleSaveResult> {
-  const shellConsentRevision = getWindowsShellConsentRevision();
-  const isShellConsentCurrent = (): boolean => getWindowsShellConsentRevision() === shellConsentRevision &&
-    (snapshot.hostShellExecutionPlan?.platform !== "win32" || isWindowsShellConsentCurrent(snapshot.hostShellExecutionPlan));
   const { action, scope, pattern: edited } = rule;
   if (Object.keys(rule).some((key) => key !== "action" && key !== "scope" && key !== "pattern")) {
     return fail("invalid-rule", "A card rule names only its action, scope and, when edited, its pattern");
@@ -141,7 +137,6 @@ export async function saveApprovalCardRule(
       await refreshApprovalPersistence(authority);
       await beforePersist?.(saved);
       await refreshApprovalPersistence(authority);
-      if (!isShellConsentCurrent()) return fail("rule-save-failed", "Shell consent changed during approval");
       assertApprovalPersistenceCurrent(authority);
       permissionManager.addFloorSessionGrant(sessionId, floorGrant);
     } catch (error) {
@@ -191,12 +186,10 @@ export async function saveApprovalCardRule(
     if (scope === "session") {
       if (snapshot.sessionId === undefined) return fail("missing-session", "This request has no conversation session");
       await refreshApprovalPersistence(authority);
-      if (target.kind === "shell" && !isShellConsentCurrent()) return fail("rule-save-failed", "Shell consent changed during approval");
       assertApprovalPersistenceCurrent(authority);
       permissionManager.addSessionRule(snapshot.sessionId, pattern);
     } else if (scope === "run") {
       await refreshApprovalPersistence(authority);
-      if (target.kind === "shell" && !isShellConsentCurrent()) return fail("rule-save-failed", "Shell consent changed during approval");
       assertApprovalPersistenceCurrent(authority);
       // Asked again after the waits, with nothing awaited before the rule is added: a run that ended meanwhile gets no rule.
       if (snapshot.sessionId === undefined || snapshot.runStage?.runAllowOffered !== true || runGrantKeyOfSession(snapshot.sessionId) === undefined) {

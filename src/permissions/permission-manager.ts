@@ -61,7 +61,6 @@ import {
   type ToolInvocationContext,
 } from "./reviewer/risk-classifier.js";
 import {
-  getWindowsShellConsentRevision,
   resolveReviewerSandboxCacheState,
   type DisposableSubstrate,
   type ReviewerSandboxCacheState,
@@ -610,7 +609,6 @@ export class PermissionManager {
   // Sessions holding the sandbox-unavailable floor's "This session" grant (`addFloorSessionGrant`), kept apart from the rules: it
   // answers only that floor, and no rule answers the floor. Memory only, like the session rules.
   private readonly floorSessionGrants = new Set<string>();
-  private shellConsentRevision = getWindowsShellConsentRevision();
 
 
   private readonly permissionsFilePath: string;
@@ -896,7 +894,6 @@ export class PermissionManager {
 
   // Monotonic host policy identity for sealed rationale revalidation.
   getPolicyEpoch(): string {
-    this.refreshShellSessionConsent();
     this.refreshPermissionStoreError();
     this.refreshReviewerSettingsError();
     return `${this.policyGeneration}:${this.projectRuleScopes.getRevision()}:${this.mode}`;
@@ -907,7 +904,6 @@ export class PermissionManager {
   // (a setting, a mode, a saved rule, a grant, the reviewer), and an answer given across it is refused.
   getPolicyContextEpoch(): string {
     // The same refreshes as `getPolicyEpoch`, so the two are read of one state whichever is asked first.
-    this.refreshShellSessionConsent();
     this.refreshPermissionStoreError();
     this.refreshReviewerSettingsError();
     return `${this.policyGeneration - this.memoryRuleGeneration}:${this.projectRuleScopes.getRevision()}:${this.mode}`;
@@ -1070,7 +1066,6 @@ export class PermissionManager {
 
   // Add a validated shell or network allow rule for one conversation; prefixes apply on host and sandbox routes.
   addSessionRule(sessionId: string, pattern: string): void {
-    this.refreshShellSessionConsent();
     if (sessionId.length === 0) throw new Error("A session rule requires its conversation session");
     const validated = validatePermissionRule(withCurrentShellRuleVersion({ pattern, action: "allow" }));
     const spec = isRuleSpecifier(validated.pattern) ? parseRuleSpecifier(validated.pattern) : undefined;
@@ -1093,7 +1088,6 @@ export class PermissionManager {
   // Add a validated shell or network allow rule for the template run the session is a stage of ("Allow for this run", owner decision
   // 2026-11-16). The run is the host's membership record for that session; a session of no live attended run adds none.
   addRunRule(sessionId: string, pattern: string): void {
-    this.refreshShellSessionConsent();
     const runKey = requireRunGrantKey(sessionId);
     const validated = validatePermissionRule(withCurrentShellRuleVersion({ pattern, action: "allow" }));
     const spec = isRuleSpecifier(validated.pattern) ? parseRuleSpecifier(validated.pattern) : undefined;
@@ -1127,7 +1121,6 @@ export class PermissionManager {
   // session is a live stage of. A scheduled wake turn reads only their deny and ask rules: it does not inherit the conversation's
   // session allows or a run's (permission tree, delegated work), and the decision order is unchanged.
   private sessionRulesInScope(sessionId: string | undefined): readonly PermissionRule[] {
-    this.refreshShellSessionConsent();
     if (sessionId === undefined) return [];
     const runKey = runGrantKeyOfSession(sessionId);
     const rules = [...(this.sessionRules.get(sessionId) ?? []), ...(runKey === undefined ? [] : this.runRules.get(runKey) ?? [])];
@@ -1136,7 +1129,6 @@ export class PermissionManager {
 
   // Record the floor card's "This session" answer for its own session (host-derived from the pending card).
   addFloorSessionGrant(sessionId: string, grant: FloorSessionGrant): void {
-    this.refreshShellSessionConsent();
     if (sessionId.length === 0) throw new Error("A floor session grant requires its conversation session");
     if (grant.code !== "sandbox-unavailable") throw new Error("A floor session grant answers only the sandbox-unavailable floor");
     this.floorSessionGrants.add(sessionId);
@@ -1146,27 +1138,8 @@ export class PermissionManager {
 
   // A scheduled wake turn inherits no floor session grant, like the other session allows.
   private holdsFloorSessionGrant(sessionId: string | undefined): boolean {
-    this.refreshShellSessionConsent();
     if (sessionId === undefined || sessionAuthorityWithheld(sessionId, approvalConversationRoot(sessionId))) return false;
     return this.floorSessionGrants.has(sessionId);
-  }
-
-  // Revoke on either consent transition, including an off/on round trip between commands.
-  // Revision checks also invalidate issued policy proofs before they can authorize execution.
-  private refreshShellSessionConsent(): void {
-    const revision = getWindowsShellConsentRevision();
-    if (revision === this.shellConsentRevision) return;
-    this.shellConsentRevision = revision;
-    for (const held of [this.sessionRules, this.runRules]) {
-      for (const [scopeId, rules] of held) {
-        const retained = rules.filter((rule) => parseRuleSpecifier(rule.pattern).kind === "network");
-        if (retained.length === 0) held.delete(scopeId);
-        else held.set(scopeId, retained);
-      }
-    }
-    this.floorSessionGrants.clear();
-    this.policyGeneration += 1;
-    this.broadcastConfigChanged?.();
   }
 
   // The "This session" rules a conversation holds.
@@ -1183,7 +1156,6 @@ export class PermissionManager {
   }
 
   listSessionRules(sessionId: string): readonly string[] {
-    this.refreshShellSessionConsent();
     return (this.sessionRules.get(sessionId) ?? []).map((rule) => rule.pattern);
   }
 

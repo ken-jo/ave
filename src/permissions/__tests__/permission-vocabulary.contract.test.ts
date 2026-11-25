@@ -4,12 +4,13 @@
 // with the row that now proves it. Every I-id sits in exactly one of EXCEPTIONS, INCONSISTENCIES_WITHOUT_ROW and RESOLVED.
 // An id no driven row can show stays in INCONSISTENCIES_WITHOUT_ROW when it is closed: its note says so and names the tests that prove it.
 // Tree = docs/architecture/permission-decision-tree.md line(s), or "no row".
+import net from "node:net";
 import { tmpdir } from "node:os";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { answerEachStart } from "../../__tests__/support/approved-extension-start.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
-import { planWindowsSandbox } from "../../boot/steps/windows-sandbox-plan.js";
+import { mxcShellCapability, planWindowsSandbox, windowsProxyOnlyCapability } from "../../boot/steps/windows-sandbox-plan.js";
 import { _resetAveHomePrivacyForTest, setAveHomePrivacyAtBoot } from "../../shared/ave-home.js";
 import {
   __resetExtensionStartsForTest, EXTENSION_START_CONSENT_REQUIRED_CODE, requestExtensionStartConsent, setExtensionStartAsker,
@@ -19,18 +20,22 @@ import {
   decidePermission, NO_APPROVER_MESSAGE, offersFloorSessionAllow,
   type PermissionDecisionRequest, type PermissionFloorCode, type PermissionPipelineOutcome,
 } from "../decision-pipeline.js";
+import { openInvocationProxyListener } from "../egress-invocation-listener.js";
 import { isLoopbackAddress } from "../egress-relay/address-set.js";
 import { isReservedAddress, parseRelayAllowEntry, resolvedAddressPermitted } from "../egress-relay/destination.js";
 import {
   buildHostShellExecutionPlan, exactRulePassesUnsandboxedShellAsk, HOME_PRIVACY_HELPER_UNAVAILABLE_SHELL_DENIAL, requiresUnsandboxedShellAsk,
   type HostShellExecutionPlan,
 } from "../host-shell-execution-plan.js";
-import { classifyMxcExtensionReadiness, planWindowsExtensionHolder, type MxcExtensionReadinessEvidence } from "../mxc-extension-readiness.js";
+import { assertLocalEmbeddingRuntime } from "../../main/memory-map/local-runtime.js";
+import type { MxcExtensionStartEvidence } from "../mxc-extension-protocol.js";
+import { classifyMxcExtensionReadiness, classifyMxcReleaseGate, planWindowsExtensionHolder, type MxcExtensionReleaseGateEvidence } from "../mxc-extension-readiness.js";
 import { synthesizeMxcAncestorQueries } from "../mxc-filesystem-policy.js";
 import { inspectShellPermissionPaths } from "../rules/literal-shell-inspection.js";
 import {
-  __resetSandboxRequestedAtBootForTest, __resetWindowsSandboxSubstrateForTest,
-  setPluginWorkerConfinementRequestedAtBoot, setWindowsSandboxSubstrate, type SandboxCapability,
+  __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, __resetWindowsSandboxSubstrateForTest,
+  getHostShellExecutionPlan, setActiveSandboxCapability, setPluginWorkerConfinementRequestedAtBoot, setShellSandboxRequestedAtBoot,
+  setWindowsSandboxSubstrate, type SandboxCapability,
 } from "../sandbox-capability.js";
 
 // The five outcomes of the policy core, plus two answers that exist today outside it:
@@ -144,10 +149,14 @@ function refusal(run: () => unknown): string {
   return "none";
 }
 
-const READY: MxcExtensionReadinessEvidence = {
+// Per-start evidence (the holder's own start) and the install's release-gate record: two classifications, never one.
+const READY: MxcExtensionStartEvidence = {
   installedPayloadVerified: true, baseContainerReady: true, exactRequestAccepted: true, uiEnabledRuntimeStarted: true,
-  ancestorQueriesSupported: true, standardStreamsRoundTrip: true, cleanTermination: true, ownProxySucceeded: true,
-  otherListenerRefused: true, directEgressRefused: true, forgedLabelsAttributed: true, noWorkerPort: true, reparseSubstitutionRefused: true,
+  ancestorQueriesSupported: true,
+};
+const RELEASE_GATE: MxcExtensionReleaseGateEvidence = {
+  ownProxySucceeded: true, otherListenerRefused: true, directEgressRefused: true, forgedLabelsAttributed: true,
+  noWorkerPort: true, reparseSubstitutionRefused: true,
 };
 const FLOOR_CODES: readonly PermissionFloorCode[] = ["protected-path", "critical-delete", "project-escape", "other-principal"];
 const FIXTURE_HOME = "C:\\Users\\alice\\.ave";
@@ -380,10 +389,27 @@ const ROWS: readonly Row[] = [
     observe: () => {
       expect(classifyMxcExtensionReadiness(READY)).toEqual({ state: "available" });
       expect(classifyMxcExtensionReadiness({ ...READY, ancestorQueriesSupported: false })).toEqual({ state: "unavailable", reason: "ancestor-policy-unsupported" });
+      expect(classifyMxcReleaseGate(RELEASE_GATE)).toEqual({ state: "available" });
+      expect(classifyMxcReleaseGate({ ...RELEASE_GATE, otherListenerRefused: false })).toEqual({ state: "unavailable", reason: "endpoint-isolation-unverified" });
       const fallback = { version: "0.0.80", ready: false };
       expect(planWindowsExtensionHolder({ requested: true, mxc: { state: "checking" }, fallback }).readiness).toBe("checking");
       const settled = planWindowsExtensionHolder({ requested: true, mxc: { state: "unavailable", reason: "readiness-deadline" }, fallback });
       return { outcome: "state", reason: `${settled.readiness}:${settled.reason}` };
+    } },
+  // Host-owned code: the extension-start floor never asks about it, and its own gate decides. Today that gate refuses with
+  // no OS sandbox; the ruled end state (OQ-14, T:204) is a Settings switch, on by default, that runs it unconfined.
+  { id: "L20", point: "local inference child with no confinement backend", tree: "T:203-204", unknown: "-",
+    today: { outcome: "deny", reason: "local-runtime-unavailable" },
+    core: { outcome: "unasked", waiver: "setting" },
+    observe: () => {
+      setProcessPlatform("win32");
+      setPluginWorkerConfinementRequestedAtBoot(true);
+      setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: FIXTURE_HOME, sid: "S-1-5-21-1" });
+      // The plan production boot publishes for extensions today.
+      expect(publishExtensionPlan({ state: "unavailable", reason: "native-validation-required" })).toBe("unavailable:native-validation-required");
+      expect(extensionStart().outcome).toBe("ask-human");
+      expect(extensionStart({ hostOwned: true })).toEqual({ outcome: "unasked", reason: "none" });
+      return { outcome: "deny", reason: refusal(assertLocalEmbeddingRuntime) };
     } },
   { id: "L18", point: "a container route is published under the runtime-wrap name", tree: "T:128", unknown: "-",
     today: { outcome: "contained", reason: "mode=asrt kind=asrt substrate=mxc" },
@@ -392,10 +418,49 @@ const ROWS: readonly Row[] = [
       const built = buildHostShellExecutionPlan({ platform: "win32", requestedSandbox: true, activeCapability: capability("win32", "asrt"), shellSubstrate: "mxc" });
       return { outcome: built.sandboxed ? "contained" : "ask", reason: `mode=${built.mode} kind=${built.capability.kind} substrate=${built.substrate}` };
     } },
+  // The local-network consent gate is removed (T:117): an available container carries the shells with nothing saved.
+  { id: "L18.a", point: "Windows shell route when MXC is available", tree: "T:117", unknown: "-",
+    today: { outcome: "contained", reason: "shells=mxc substrate=mxc" },
+    observe: () => {
+      setProcessPlatform("win32");
+      const { substrate } = planWindowsSandbox({ shellRequested: true, workerRequested: false, mxc: { state: "available" }, windowsBuild: null, srtWinReady: false });
+      setShellSandboxRequestedAtBoot(true);
+      setActiveSandboxCapability(windowsProxyOnlyCapability(substrate));
+      setWindowsSandboxSubstrate(substrate, mxcShellCapability());
+      const built = getHostShellExecutionPlan();
+      return { outcome: built.sandboxed ? "contained" : "ask", reason: `shells=${substrate.shells} substrate=${built.substrate}` };
+    } },
+  // Control for L18.a: the route that replaced the gate still refuses a start whose [::1]:P another process holds.
+  { id: "L18.b", point: "container shell endpoint whose IPv6 loopback port a foreign listener holds", tree: "T:117", unknown: "-",
+    today: { outcome: "deny", reason: "invocation proxy listener could not hold [::1]:P (EADDRINUSE)" },
+    observe: async () => {
+      const listen = net.Server.prototype.listen;
+      const foreign = net.createServer((socket) => socket.destroy());
+      // The other listener takes [::1]:P the moment the route asks for it.
+      vi.spyOn(net.Server.prototype, "listen").mockImplementation(function (this: net.Server, ...args: unknown[]) {
+        const options = args[0] as { host?: string; port?: number } | null;
+        if (this === foreign || typeof options !== "object" || options === null || options.host !== "::1") {
+          return listen.apply(this, args as Parameters<typeof listen>);
+        }
+        listen.call(foreign, { host: "::1", port: options.port, ipv6Only: true, exclusive: true }, () => {
+          listen.apply(this, args as Parameters<typeof listen>);
+        });
+        return this;
+      });
+      try {
+        const opened = await openInvocationProxyListener({ upstream: () => undefined }).then(
+          async (listener) => { await listener.close(); return "opened"; },
+          (error: unknown) => (error instanceof Error ? error.message : String(error)).replace(/\]:\d+/u, "]:P"));
+        return { outcome: opened === "opened" ? "contained" : "deny", reason: opened };
+      } finally {
+        await new Promise<void>((done) => { foreign.close(() => done()); });
+      }
+    } },
 ];
 
 // Inconsistency id (policy design, section 3) -> the rows that still answer differently from the policy core.
 const EXCEPTIONS: Readonly<Record<string, readonly string[]>> = {
+  I3: ["L20"],
   I11: ["D26"],
   I12: ["D27"],
   I15: ["L3", "L13"],
@@ -415,7 +480,6 @@ const RESOLVED: Readonly<Record<string, string>> = {
 // Inconsistencies no driven row can show, and why.
 const INCONSISTENCIES_WITHOUT_ROW: Readonly<Record<string, string>> = {
   I2: "built: the starts waiting in a session share one card and each keeps its own yes or no. A row observes one start's gate outcome (L5), not how the question is presented; extension-start-consent.test.ts, extension-start-card.test.ts and telegram-remote-approval.test.ts (one remote card per start) prove it",
-  I3: "inference child route: spawn path, not driven",
   I4: "lives on the device-path branch, not on main",
   I6: "stage workspaces are not on main",
   I7: "a launch-count budget, not a decision",
@@ -457,7 +521,6 @@ const NOT_DRIVEN: Readonly<Record<string, string>> = {
   L15: "needs the pinned launcher on disk",
   L16: "needs the native launcher request",
   L19: "boot step with settings and environment",
-  L20: "needs the inference child spawn",
   L21: "native helper behaviour",
   L22: "not on main",
   L23: "needs the hook runner; its gate is the one L1-L6 drive",
@@ -474,8 +537,10 @@ const NOT_DRIVEN: Readonly<Record<string, string>> = {
 const HOST_PLATFORM = process.platform;
 
 afterEach(() => {
+  vi.restoreAllMocks();
   __resetExtensionStartsForTest();
   setProcessPlatform(HOST_PLATFORM);
+  __resetActiveSandboxCapabilityForTest();
   __resetSandboxRequestedAtBootForTest();
   __resetWindowsSandboxSubstrateForTest();
   _resetAveHomePrivacyForTest();

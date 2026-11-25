@@ -16,9 +16,7 @@ import { CHANNELS } from "../../../contract/app-contract.js";
 import { PERMISSIONS } from "../../../shared/ipc-channels.js";
 import { SECURITY_FEATURE_KEYS } from "../../../shared/security-settings.js";
 import { securitySettingsGestures } from "../../security-settings-gesture.js";
-import { __resetWindowsSandboxSubstrateForTest, getWindowsSandboxSubstrate,
-  setWindowsSandboxSubstrate, setWindowsShellLocalNetworkAccess, bindWindowsShellLocalNetworkAccess } from "../../../permissions/sandbox-capability.js";
-import { mxcShellCapability, planWindowsSandbox } from "../../../boot/steps/windows-sandbox-plan.js";
+import { __resetWindowsSandboxSubstrateForTest } from "../../../permissions/sandbox-capability.js";
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 vi.mock("electron", () => ({
@@ -26,7 +24,6 @@ vi.mock("electron", () => ({
 }));
 
 let userDataPath: string;
-let disposeConsent: (() => void) | undefined;
 let stopSettingsListener: (() => void) | undefined;
 const USER_INTENT = { inputOrigin: "user-keyboard", userActivation: true };
 
@@ -65,8 +62,6 @@ async function setup() {
 
 afterEach(async () => {
   handlers.clear();
-  disposeConsent?.();
-  disposeConsent = undefined;
   stopSettingsListener?.();
   stopSettingsListener = undefined;
   __resetWindowsSandboxSubstrateForTest();
@@ -74,26 +69,6 @@ afterEach(async () => {
 });
 
 describe("shell sandbox checkbox write", () => {
-  it("applies user-confirmed local-network consent after save without changing either confinement scope", async () => {
-    const f = await setup();
-    disposeConsent = bindWindowsShellLocalNetworkAccess(f.settingsService);
-    const { substrate } = planWindowsSandbox({ shellRequested: true, workerRequested: true,
-      mxc: { state: "available" }, windowsBuild: null, srtWinReady: false });
-    setWindowsSandboxSubstrate(substrate, mxcShellCapability());
-    const extensionPlan = getWindowsSandboxSubstrate()?.extensionPlan;
-    for (const enabled of [true, false]) {
-      await f.updateSecurity({ features: { windowsShellLocalNetworkAccess: enabled } });
-      expect(getWindowsSandboxSubstrate()).toMatchObject({ shellLocalNetworkAccess: enabled,
-        shells: enabled ? "mxc" : "approved-host" });
-      expect(getWindowsSandboxSubstrate()?.extensionPlan).toBe(extensionPlan);
-      const reloaded = new SettingsService({ userDataPath, encryption: unavailableSecretEncryption });
-      expect(reloaded.get("features")?.windowsShellLocalNetworkAccess).toBe(enabled);
-      expect(reloaded.get("features")?.pluginWorkerConfinement).toBe(false);
-    }
-    expect(f.refreshSandboxNetworkConfig).toHaveBeenCalledTimes(2);
-    setWindowsShellLocalNetworkAccess(false);
-  });
-
   it.each([
     [false, true, true],
     [true, false, true],
