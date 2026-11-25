@@ -159,7 +159,7 @@ const atOrUnder = (child: string, parent: string): boolean =>
 
 /** `path` with its deepest existing ancestor resolved, so the result is canonical wherever it can be. Throws what the
  * filesystem raised for anything but an absent entry. */
-function canonicalWhereItExists(path: string, flavor: typeof posixPath = posixPath): string {
+export function canonicalWhereItExists(path: string, flavor: typeof posixPath = posixPath): string {
   const missing: string[] = [];
   for (let current = path; ; current = flavor.dirname(current)) {
     try {
@@ -190,9 +190,10 @@ export function mxcRuntimeRootFloorPath(cacheHome: string = currentCacheHome(), 
   }
 }
 
-/** The container backend's own state: the runtime root, whose staging and run directories are host-created per holder. */
+/** The container backend's own state: the runtime root, whose staging and run directories are host-created per holder.
+ * As spelled; write admission resolves it strictly. */
 export function mxcConfinementStatePaths(): string[] {
-  return [mxcRuntimeRootFloorPath()];
+  return [rootUnder(currentCacheHome(), process.platform === "win32" ? winPath : posixPath)];
 }
 
 /** The runtime root's planned path, with the cache directory resolved. The app's directory and the root's own name

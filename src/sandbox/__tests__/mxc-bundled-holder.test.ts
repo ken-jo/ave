@@ -241,7 +241,8 @@ beforeEach(() => {
   state.workspaces = ["D:\\work"];
   state.files = new Set([NODE, "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
     "C:\\Program Files\\Git\\bin\\bash.exe", "C:\\Program Files\\nodejs\\npx.cmd", "D:\\work\\tool.exe", "C:\\ave\\mcp\\fs\\sandbox\\tool.exe"]);
-  state.dirs = new Set(["C:\\ave\\mcp\\fs\\sandbox", "C:\\ave\\plugins\\fs\\gen", "D:\\work"]);
+  // The drive roots exist, so write admission can resolve any missing path under them.
+  state.dirs = new Set(["C:\\", "D:\\", "C:\\ave\\mcp\\fs\\sandbox", "C:\\ave\\plugins\\fs\\gen", "D:\\work"]);
   state.links = new Map();
   state.removed = [];
   state.readonly = new Set();

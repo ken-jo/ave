@@ -1,5 +1,6 @@
+import { win32 as winPath } from "node:path";
 import { t } from "../i18n/index.js";
-import { mxcConfinementStatePaths } from "./mxc-runtime-root.js";
+import { canonicalWhereItExists, mxcConfinementStatePaths } from "./mxc-runtime-root.js";
 import { isGrantPathWithin } from "./sandbox-write-policy.js";
 import { srtWinConfinementStatePaths } from "./srt-win-integrity.js";
 
@@ -16,9 +17,29 @@ export class ConfinementStateWriteGrantError extends Error {
   }
 }
 
+/** `path` with its deepest existing ancestor resolved and the missing rest kept; undefined when no ancestor resolves or the
+ * filesystem refuses the lookup. Never a lexical fallback. */
+function strictlyResolved(path: string): string | undefined {
+  if (!/^[A-Za-z]:\\/u.test(path)) return undefined;
+  try { return canonicalWhereItExists(winPath.normalize(path), winPath); }
+  catch { return undefined; }
+}
+
+/** Each declared state path as spelled and as resolved; undefined when the declaration is missing or any path is unproven. */
+function resolvedStatePaths(statePaths: readonly string[] | undefined): string[] | undefined {
+  if (statePaths === undefined) return undefined;
+  const resolved: string[] = [];
+  for (const state of statePaths) {
+    const real = strictlyResolved(state);
+    if (real === undefined) return undefined;
+    resolved.push(state, real);
+  }
+  return resolved;
+}
+
 /**
  * The shared step every backend's grant check runs: no write grant may equal, sit inside or contain a path the backend
- * declares as its own state. `statePaths` undefined means the backend could not locate its state; any write is refused.
+ * declares as its own state. A declaration that is missing or does not resolve refuses every write.
  * `within(root, path)` is the backend's containment rule for its grant spellings.
  */
 export function assertWriteGrantsOutsideConfinementState(
@@ -27,15 +48,17 @@ export function assertWriteGrantsOutsideConfinementState(
   within: (root: string, path: string) => boolean = isGrantPathWithin,
 ): void {
   if (write.length === 0) return;
-  if (statePaths === undefined) throw new ConfinementStateWriteGrantError(undefined);
+  const states = resolvedStatePaths(statePaths);
+  if (states === undefined) throw new ConfinementStateWriteGrantError(undefined);
   for (const grant of write) {
-    if (statePaths.some(state => within(state, grant) || within(grant, state))) throw new ConfinementStateWriteGrantError(grant);
+    if (states.some(state => within(state, grant) || within(grant, state))) throw new ConfinementStateWriteGrantError(grant);
   }
 }
 
-/** Every backend's declared state, for a grant chosen before a backend is selected. An unlocatable declaration is left to
- * that backend's own grant check, which refuses then. Both declaring backends grant on Windows only. */
-export function declaredConfinementStatePaths(): string[] {
+/** Every backend's declared state, for a grant chosen before a backend is selected; undefined when one cannot be located.
+ * Both declaring backends grant on Windows only. */
+export function declaredConfinementStatePaths(): string[] | undefined {
   if (process.platform !== "win32") return [];
-  return [...(srtWinConfinementStatePaths() ?? []), ...mxcConfinementStatePaths()];
+  const srtWin = srtWinConfinementStatePaths();
+  return srtWin === undefined ? undefined : [...srtWin, ...mxcConfinementStatePaths()];
 }
