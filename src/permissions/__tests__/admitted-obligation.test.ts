@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { configureHostResources } from "../../main/host-resources.js";
+import { windowsPathKindHelperUnavailable } from "../../main/windows-path-kind-launcher.js";
 import { setWindowsDriveQueryForTest } from "../../shared/windows-drive-locality.js";
 import { inspectShellExecution } from "../../shared/shell-execution.js";
 import {
@@ -121,12 +122,27 @@ describe.runIf(process.platform === "win32")("admitObligations", () => {
     expect(set.admitted[0]?.target).toBe(join(root, "secrets"));
   });
 
+  it("reports only a drive query with no answer as helper-unavailable", () => {
+    setWindowsDriveQueryForTest(() => { throw windowsPathKindHelperUnavailable("the Windows folder classifier did not answer"); });
+    expect(admitObligations({ purpose: "sandbox-config", principal: "srt-sandbox", rows: [deny(String.raw`Q:\alice`)] }).unresolved[0]?.reason).toBe("helper-unavailable");
+    setWindowsDriveQueryForTest(() => { throw new TypeError("drive query contract"); });
+    expect(() => admitObligations({ purpose: "sandbox-config", principal: "srt-sandbox", rows: [deny(String.raw`Q:\alice`)] })).toThrow("drive query contract");
+  });
+
+  it("fails as itself when the drive query runs before host resources are configured", async () => {
+    setWindowsDriveQueryForTest();
+    vi.resetModules();
+    const unconfigured = await import("../admitted-obligation.js");
+    expect(() => unconfigured.admitObligations({ purpose: "sandbox-config", principal: "srt-sandbox", rows: [deny(join(root, "secrets"))] }))
+      .toThrow("host-resources-unavailable");
+  });
+
   it("reads a mapped or substituted drive's mapping before opening it", () => {
     setWindowsDriveQueryForTest(letter => letter === "Y:" ? String.raw`\??\UNC\example\share` : letter === "W:" ? String.raw`\??\C:\alice` : String.raw`\Device\HarddiskVolume3`);
     const set = admitObligations({ purpose: "sandbox-config", principal: "srt-sandbox", rows: [deny(String.raw`Y:\alice`), deny(String.raw`W:\alice`)] });
     expect(set.unresolved.map(row => row.reason)).toEqual(["mapped-drive", "subst"]);
     local("Q:");
-    expect(admitObligations({ purpose: "sandbox-config", principal: "srt-sandbox", rows: [deny(String.raw`Q:\alice`)] }).unresolved[0]?.reason).toBe("helper-unavailable");
+    expect(admitObligations({ purpose: "sandbox-config", principal: "srt-sandbox", rows: [deny(String.raw`Q:\alice`)] }).unresolved[0]?.reason).toBe("device");
   });
 
   it("refuses an MXC pattern deny whose literal prefix is a substituted drive", () => {

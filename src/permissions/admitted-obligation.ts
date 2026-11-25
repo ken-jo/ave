@@ -211,9 +211,12 @@ function driveRefusal(path: string): UnresolvedReason | undefined {
     admitLocalPath(`${path.slice(0, 2)}\\`);
     return undefined;
   } catch (error) {
+    // Only a locality refusal names a reason; anything else is a broken contract and fails as itself.
+    if ((error as { code?: unknown }).code !== "ENETWORKSHAREPATH") throw error;
+    if (isWindowsPathKindHelperUnavailable(error)) return "helper-unavailable";
     const root = String((error as { path?: unknown }).path ?? "");
     if (/^\\\\(?!\?)/u.test(root)) return "mapped-drive";
-    return /^\\\\\?\\GLOBALROOT\\\?\?\\[A-Za-z]:\\/u.test(root) ? "subst" : "helper-unavailable";
+    return /^\\\\\?\\GLOBALROOT\\\?\?\\[A-Za-z]:\\/u.test(root) ? "subst" : "device";
   }
 }
 

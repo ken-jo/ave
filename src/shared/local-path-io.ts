@@ -152,7 +152,8 @@ function proveSpelling(path: string, decision: Decision, rest: readonly string[]
   const identity = driveIdentity(drive, decision);
   if (identity.local) return;
   const components = path.replace(/^[\\/]{2}\?[\\/]/u, "").slice(3).split(/[\\/]+/u).filter(Boolean);
-  throw refused(identity.root, [identity.root.replace(/[\\/]+$/u, ""), ...components, ...rest].join("\\"));
+  const refusal = refused(identity.root, [identity.root.replace(/[\\/]+$/u, ""), ...components, ...rest].join("\\"));
+  throw identity.unavailable === undefined ? refusal : Object.assign(refusal, { cause: identity.unavailable });
 }
 
 /** Whether drive `drive` (`X:`) exists in this decision: a local volume, or a mapping nothing has proved local. */

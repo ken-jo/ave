@@ -547,7 +547,7 @@ describe.runIf(process.platform === "win32")("Windows admission with exact files
   it.each([
     [`${MAPPED}file.txt`, "mapped-drive"],
     ["S:\\file.txt", "subst"],
-    ["Q:\\file.txt", "helper-unavailable"],
+    ["Q:\\file.txt", "device"],
     ["W:file.txt", "drive-relative"],
     ["\\file.txt", "unbound-rooted"],
     ["relative\\file.txt", "relative"],

@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { resolveWindowsPathKindHelper } from "../main/windows-path-kind-launcher.js";
+import { isWindowsPathKindHelperTimeout, isWindowsPathKindHelperUnavailable, resolveWindowsPathKindHelper, windowsPathKindHelperUnavailable } from "../main/windows-path-kind-launcher.js";
 import { decodeWindowsNativeReply, runWindowsNative } from "./windows-native-host.js";
 
 // The drive query opens nothing, so its timeout only bounds a hung helper.
@@ -14,7 +14,14 @@ function queryWithHelper(drive: string): string | null {
   const result = runWindowsNative(() => spawnSync(resolveWindowsPathKindHelper(), [drive], {
     windowsHide: true, shell: false, timeout: QUERY_TIMEOUT_MS, encoding: "buffer",
   }));
-  if (result.error) throw result.error;
+  if (result.error) {
+    // A launch failure or a timeout is no answer; the spawn error names the install path, so only its code is kept.
+    const { code } = result.error as NodeJS.ErrnoException;
+    if (isWindowsPathKindHelperTimeout(result.error) || typeof code === "string") {
+      throw windowsPathKindHelperUnavailable(`the Windows folder classifier for ${drive} gave no answer (${code ?? "unknown"})`, code);
+    }
+    throw result.error;
+  }
   if (result.status === EXIT_NO_MAPPING) return null;
   const mapping = decodeWindowsNativeReply(result.stdout).replace(/\r?\n$/u, "");
   if (result.status !== 0 || mapping.length === 0 || /[\r\n]/u.test(mapping)) throw new Error(`The Windows drive classifier gave no mapping for ${drive}`);
@@ -30,17 +37,21 @@ export function setWindowsDriveQueryForTest(next?: DriveQuery): void {
 
 /**
  * What drive `drive` (`X:`) names, from a fresh query of its mapping alone: a local volume, or the share a redirector
- * names, or an opaque device spelling. `absent` when the OS has no mapping for the drive. A drive the classifier cannot
- * answer for is opaque, and so is any substitute drive: its backing path is not walked, so nothing proves it local.
+ * names, or an opaque device spelling. `absent` when the OS has no mapping for the drive. A drive the classifier gave no
+ * answer for is opaque and carries that failure as `unavailable`; any other query failure is thrown. A substitute drive is
+ * opaque too: its backing path is not walked, so nothing proves it local.
  * Callers keep an answer for one decision at most (`local-path-io.ts`).
  */
-export type DriveIdentity = { local: true } | { local: false; root: string; absent: boolean };
+export type DriveIdentity = { local: true } | { local: false; root: string; absent: boolean; unavailable?: Error };
 
 export function queryDriveIdentity(drive: string): DriveIdentity {
   const letter = drive.toUpperCase();
   const opaque = `\\\\?\\GLOBALROOT\\??\\${letter}`;
   let mapping: string | null;
-  try { mapping = query(letter); } catch { return { local: false, root: opaque, absent: false }; }
+  try { mapping = query(letter); } catch (error) {
+    if (!isWindowsPathKindHelperUnavailable(error)) throw error;
+    return { local: false, root: opaque, absent: false, unavailable: error as Error };
+  }
   if (mapping === null) return { local: false, root: opaque, absent: true };
   if (/^\\Device\\(?:HarddiskVolume|CdRom|Floppy)\d+$/iu.test(mapping)) return { local: true };
   const [, unc] = /^\\\?\?\\UNC\\(.+)$/isu.exec(mapping) ?? [];
