@@ -260,4 +260,51 @@ describe.skipIf(process.platform !== "win32").each(["shell", "extension"] as con
     expect(asked).toEqual([]);
     expect(upstream.connects).toEqual([]);
   });
+
+  // What a connection attempt meets at a loopback address.
+  function probe(host: string, port: number): Promise<string> {
+    return new Promise((done) => {
+      const socket = net.connect(port, host);
+      socket.once("error", (error: NodeJS.ErrnoException) => done(error.code ?? "error"));
+      socket.once("connect", () => socket.once("close", () => done("dropped")));
+    });
+  }
+
+  // A contained process reaches the endpoint's port number on 127.0.0.1 and on [::1] alike, so the route owns both.
+  it("holds the endpoint's port on both loopback addresses and serves only the IPv4 one", async () => {
+    const opened = await openRoute();
+    expect(await probe("::1", opened.port)).toBe("dropped");
+    const foreign = net.createServer();
+    const bind = await new Promise<string>((done) => {
+      foreign.once("error", (error: NodeJS.ErrnoException) => done(error.code ?? "error"));
+      foreign.listen({ host: "::1", port: opened.port, ipv6Only: true, exclusive: true }, () => foreign.close(() => done("bound")));
+    });
+    expect(bind).toBe("EADDRINUSE");
+    expect(await refusal(opened.port)).toMatch(/^HTTP\/1\.[01] 200 /u);
+    expect(asked.length).toBeGreaterThan(0);
+  });
+
+  it("refuses to open when another listener has the endpoint's IPv6 loopback port, and leaves no IPv4 endpoint behind", async () => {
+    const listen = net.Server.prototype.listen;
+    const foreign = net.createServer((socket) => socket.destroy());
+    cleanups.push(() => new Promise<void>((done) => { foreign.close(() => done()); }));
+    let taken: number | undefined;
+    // The other listener takes [::1]:P the moment the route asks for it.
+    vi.spyOn(net.Server.prototype, "listen").mockImplementation(function (this: net.Server, ...args: unknown[]) {
+      const options = args[0] as { host?: string; port?: number } | null;
+      if (this === foreign || typeof options !== "object" || options === null || options.host !== "::1") {
+        return listen.apply(this, args as Parameters<typeof listen>);
+      }
+      taken = options.port;
+      listen.call(foreign, { host: "::1", port: options.port, ipv6Only: true, exclusive: true }, () => {
+        listen.apply(this, args as Parameters<typeof listen>);
+      });
+      return this;
+    });
+
+    await expect(openRoute()).rejects.toThrow(/could not hold \[::1\]:\d+ \(EADDRINUSE\)/u);
+    expect(taken).toBeTypeOf("number");
+    await expect.poll(() => probe("127.0.0.1", taken!)).toBe("ECONNREFUSED");
+    expect(asked).toEqual([]);
+  });
 });

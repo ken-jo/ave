@@ -262,7 +262,8 @@ describe("prepareMxcShellLaunch", () => {
     let tunnel: net.Socket | undefined;
     try {
       const launch = await prepareMxcShellLaunch({ ...INPUT, egressToken: invocation.token }, lifecycle);
-      const server = listen.mock.contexts.at(-1) as net.Server;
+      // The front listener: the last server bound is the hold on the IPv6 loopback port.
+      const server = listen.mock.contexts.at(-2) as net.Server;
       const accepted: net.Socket[] = [];
       server.on("connect", (_request, socket: net.Socket) => accepted.push(socket));
       launch.activate();
