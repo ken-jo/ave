@@ -23,7 +23,7 @@ import * as defaultWorkspace from "../../main/default-workspace-root.js";
 import { ConversationLoop } from "../../engine/conversation-loop.js";
 import { makeBasicConversationLoopDeps } from "../../engine/__tests__/support/conversation-loop-fixtures.js";
 import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
-import { admitMxcExtensionFilesystem, buildSandboxConfig, getDefaultSensitiveWriteDenyEntries, grantWindowsWorkerFilesystemAccess, initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox, runWithSandboxWritePreflight, wrapToolCommand } from "../asrt-sandbox.js";
+import { admitMxcExtensionFilesystem, appOwnedSandboxPrivateRoots, buildSandboxConfig, getBuiltinShellReadPolicy, getDefaultSensitiveWriteDenyEntries, grantWindowsWorkerFilesystemAccess, initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox, runWithSandboxWritePreflight, wrapToolCommand } from "../asrt-sandbox.js";
 import { mxcSandboxHomesParent } from "../mxc-runtime-root.js";
 import { mxcPolicyRows } from "../mxc-windows.js";
 
@@ -140,6 +140,26 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
       rmSync(own, { recursive: true, force: true });
       rmSync(sibling, { recursive: true, force: true });
       rmSync(`${own}-2`, { recursive: true, force: true });
+    }
+  });
+
+  it("a shell's read policy keeps its own sandbox HOME and paths inside it, and drops another process's", async () => {
+    const homes = mxcSandboxHomesParent();
+    const own = mkdtempSync(join(homes, "ave-sandbox-home-"));
+    const sibling = mkdtempSync(join(homes, "ave-sandbox-home-"));
+    try {
+      await initializeAsrtSandbox({});
+      const inside = join(own, "AppData");
+      const policy = getBuiltinShellReadPolicy([own, inside, sibling, join(sibling, "AppData"), homes, dirname(homes)], undefined, own);
+      // The saved-session grant rides along with every shell.
+      expect(policy.allowRead.filter(path => !policy.floorPierces.includes(path))).toEqual([own, inside]);
+      expect(policy.denyRead).toEqual(expect.arrayContaining(appOwnedSandboxPrivateRoots()));
+      // Without a HOME of its own a wrap is granted none.
+      const homeless = getBuiltinShellReadPolicy([own, inside], undefined);
+      expect(homeless.allowRead.filter(path => !homeless.floorPierces.includes(path))).toEqual([]);
+    } finally {
+      rmSync(own, { recursive: true, force: true });
+      rmSync(sibling, { recursive: true, force: true });
     }
   });
 

@@ -9,7 +9,7 @@ import { mxcShellCapability, planWindowsSandbox, windowsProxyOnlyCapability } fr
 import { configureHostResources } from "../../main/host-resources.js";
 import { initializeAsrtSandbox, resetAsrtSandbox } from "../../permissions/asrt-sandbox.js";
 import { baseAllowedDirectories } from "../../permissions/base-allowed-directories.js";
-import { establishMxcRuntimeRoot } from "../../permissions/mxc-runtime-root.js";
+import { establishMxcRuntimeRoot, mxcRuntimeRootFloorPath } from "../../permissions/mxc-runtime-root.js";
 import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, __resetWindowsSandboxSubstrateForTest,
   getHostShellExecutionPlan, setActiveSandboxCapability, setShellSandboxRequestedAtBoot, setWindowsSandboxSubstrate } from "../../permissions/sandbox-capability.js";
 import { _resolveHostOwnerMarkerForTest, createSandboxProcessHome, SANDBOX_HOME_OWNER_SUFFIX } from "../../permissions/sandbox-process-home.js";
@@ -58,10 +58,14 @@ describe.runIf(process.platform === "win32")("container shell and sibling sandbo
   it.for([
     { name: "the per-turn base directories", grantsBase: true },
     { name: "no additional directory", grantsBase: false },
-  ])("keeps a sibling HOME and the host temp root closed with $name", { timeout: 2 * TOOL_TIMEOUT_POLICY.shellDefaultMs + TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs }, async ({ grantsBase }, testContext) => {
+    // The working directory's grant covers the runtime root's parent: the root's own access is what keeps a sibling closed.
+    { name: "a working directory above the runtime root", grantsBase: false, aboveRoot: true },
+  ])("keeps a sibling HOME and the host temp root closed with $name", { timeout: 2 * TOOL_TIMEOUT_POLICY.shellDefaultMs + TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs }, async ({ grantsBase, aboveRoot }, testContext) => {
     configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     const tempRoot = realpathSync.native(tmpdir());
-    const directory = realpathSync.native(mkdtempSync(join(tempRoot, "ave-g1-ws-")));
+    const directory = aboveRoot === true
+      ? realpathSync.native(resolve(mxcRuntimeRootFloorPath(), "..", "..", ".."))
+      : realpathSync.native(mkdtempSync(join(tempRoot, "ave-g1-ws-")));
     const nonce = randomUUID().replaceAll("-", "").slice(0, 16);
     const secret = `AVE-G1-SECRET-${randomUUID()}`;
     const hostFile = join(tempRoot, `g1-host-${nonce}.txt`);
@@ -106,7 +110,7 @@ describe.runIf(process.platform === "win32")("container shell and sibling sandbo
         planted: planted.filter((path) => existsSync(path)).map((path) => basename(path)),
         markerIntact: existsSync(marker) && readFileSync(marker, "utf8") === markerText,
       };
-      console.info(`G1 evidence ${JSON.stringify({ grantsBase, probes: Object.fromEntries(lines), hostConfirmed })}`);
+      console.info(`G1 evidence ${JSON.stringify({ grantsBase, aboveRoot: aboveRoot === true, probes: Object.fromEntries(lines), hostConfirmed })}`);
       expect(result.output).not.toContain(secret);
       // The shell's HOME is a sibling of the other process's, and its temp directory lies inside its own HOME.
       const ownHome = lines.get("own-home-path") ?? "";
@@ -126,7 +130,8 @@ describe.runIf(process.platform === "win32")("container shell and sibling sandbo
       sibling?.cleanup();
       if (sibling !== undefined) rmSync(`${sibling.path}${SANDBOX_HOME_OWNER_SUFFIX}`, { force: true });
       for (const path of [...planted, hostFile]) rmSync(path, { force: true });
-      rmSync(directory, { recursive: true, force: true });
+      if (aboveRoot === true) rmSync(join(directory, "cwd.txt"), { force: true });
+      else rmSync(directory, { recursive: true, force: true });
     }
   });
 });
