@@ -7,6 +7,7 @@ import { ipcMain, session, type IpcMainInvokeEvent } from "electron";
 import { isRuleSpecifier } from "../../permissions/rules/rule-specifier.js";
 import { validatePermissionRule } from "../../permissions/rules/rule-files.js";
 import { saveApprovalCardRule } from "../../permissions/approval-rule-save.js";
+import { RunGrantError, runGrantKeyOfSession } from "../../permissions/run-grants.js";
 import { loadPolicy, savePolicy, validatePolicyPatch, PolicyWriteError } from "../../permissions/policy-store.js";
 import { isPolicyUserEditable } from "../../shared/policy-editability.js";
 import { UNATTRIBUTED_APPROVAL_SESSION_ID, type ApprovalDecision } from "../../permissions/approval-gate.js";
@@ -1197,13 +1198,13 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     if (
       typeof args !== "string" ||
       (decision !== "allow" && decision !== "deny") ||
-      (scope !== "session" && scope !== "persistent" && scope !== "global") ||
+      (scope !== "session" && scope !== "run" && scope !== "persistent" && scope !== "global") ||
       (displayedVerdictAtApproval !== "low" && displayedVerdictAtApproval !== "medium" && displayedVerdictAtApproval !== "high")
       || (body.readjudicate !== undefined && body.readjudicate !== true)
     ) {
       return { ok: false, error: "invalid-payload", message: "user-approval record: invalid payload" };
     }
-    if (decision === "deny" && scope === "session") {
+    if (decision === "deny" && (scope === "session" || scope === "run")) {
       return { ok: false, error: "deny-requires-persistent-scope", message: "Exact deny decisions are managed persistently in Settings" };
     }
     // Server-side SOT lookup. If the approval already resolved/timed out or never existed, reject; we
@@ -1233,7 +1234,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       }
       const manager = conversationLoop.permissionManager;
       const saveToken = manager === undefined ? undefined : approvalGate.beginApprovalRuleSave(requestId, manager.getPolicyEpoch());
-      let savedScope: "session" | "project" | "always" | undefined;
+      let savedScope: "session" | "run" | "project" | "always" | undefined;
       try {
         const saved = await saveApprovalCardRule(snapshot, payloadRecord(body.rule), { decision, scope, displayedVerdictAtApproval }, manager, authority, async (rule) => {
           await auditLogger.append({
@@ -1275,8 +1276,13 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     // Conservative risk display during a failed assessment does not decide persistence. Only the gate's live eligibility snapshot can authorize it.
     // Every session approval (shell, browser, terminal, any exact tool approval) belongs to the
     // root conversation of the request, so one without a conversation has nothing to be scoped to.
-    if (scope === "session" && !snapshot.sessionId) {
+    if ((scope === "session" || scope === "run") && !snapshot.sessionId) {
       return { ok: false, error: "missing-session", message: "This request has no conversation session" };
+    }
+    // "Allow for this run" (permission tree, node R): only a stage session of a live attended template run makes one, by the host's own
+    // membership record. The floors and one-shot cards were refused above, like every remembered scope.
+    if (scope === "run" && runGrantKeyOfSession(snapshot.sessionId) === undefined) {
+      return { ok: false, error: "run-scope-unavailable", message: "This request does not belong to a run that takes a run allow" };
     }
     // A project allow is bound to the request's working directory; a global one (owner 2026-10-25, "Always allow everywhere") applies in every project
     // and needs none, but the live request must still permit remembering it.
@@ -1309,8 +1315,8 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       await recordApproval(snapshot.toolName, canonicalArgs, snapshot.source, {
         decision,
         scope,
-        ...(scope === "session" ? { sessionId: snapshot.sessionId } : {}),
-        ...(snapshot.projectCwd === undefined || scope === "global" ? {} : { projectCwd: snapshot.projectCwd }),
+        ...(scope === "session" || scope === "run" ? { sessionId: snapshot.sessionId } : {}),
+        ...(snapshot.projectCwd === undefined || scope === "global" || scope === "run" ? {} : { projectCwd: snapshot.projectCwd }),
         verdictAtApproval,
         nlJustification: typeof nlJustification === "string" ? nlJustification : null,
         trustOrigin: snapshot.trustOrigin,
@@ -1336,6 +1342,8 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     } catch (err) {
       // The saved-approvals store refuses writes while boot refuses the home folder: the card answers once instead and says why.
       if (err instanceof AveHomeConfigurationRefusedWriteError) return { ok: false, error: HOME_FOLDER_REFUSED, message: err.message };
+      // The run ended while the card's authority was checked: nothing was stored.
+      if (err instanceof RunGrantError) return { ok: false, error: "run-scope-unavailable", message: err.message };
       return { ok: false, error: "managed", message: (err as Error).message };
     }
   });
