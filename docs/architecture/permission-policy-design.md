@@ -752,10 +752,31 @@ there is no separate per-command word allowance. Separators and operators are
 bounded by the character cap. General structural parsing retains its existing
 safety limits. The independent path-evidence pass uses the same complete-input
 400-record budget, including executed nested literal code. Exhausting a parser
-or evidence safety limit is an admission denial (`shell-analysis-limit`), not an
-approvable card. The 2,000-character reusable-rule limit alone does not stop
-path evidence collection or create a forced floor. Ordinary runtime opacity
-within the safety budget continues through the mode stage.
+or evidence safety limit proves nothing about the command, and no saved rule or
+remembered grant answers it. On a contained route the command continues through
+the mode stage as unproven. On a host route it is the forced floor
+`shell-analysis-limit`: one human approval for that call, never a session
+grant, and a denial when nobody can approve. The shell tool's own re-check
+accepts that one verdict and still refuses any other path violation. The
+2,000-character reusable-rule limit alone does not stop path evidence
+collection or create a forced floor. Ordinary runtime opacity within the safety
+budget continues through the mode stage.
+
+On an unsandboxed host shell a `cd` may fail when the command runs: its
+directory can be missing, removed or replaced by a link by then. The path check
+therefore follows both outcomes of each such `cd`, the shell staying where it
+was and the shell having moved, and checks every later relative operand against
+each. A removed working directory keeps resolving relative operands lexically
+from its old path, and a later `cd` from there may land anywhere, so every
+`cd` that is not to an ancestor of the current directory is followed both
+ways, inside a failed branch too. A branch that `|| exit`, `set -e` or
+`exit` ends is not followed. When the command leaves its starting directory
+through a failed branch, the branch ends there if an ask comes before every
+command on that route anyway; with the sandbox off, and for a command typed
+into the user's own host terminal, nothing asks first, so the branch goes on
+and checks its writes. Exhausting the branch budget is an ordinary ask. A
+session's working directory moves to the directory a run reports only when
+that run exits 0; any other run leaves it where it was.
 
 Quoted literal data is retained as an original source slice. The lexer scans
 it only to locate its terminator lines; it does not turn body contents into
