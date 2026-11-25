@@ -34,6 +34,7 @@ import {
   registerWorkerUnixSocketDir,
   unregisterWorkerUnixSocketDir,
 } from "../../permissions/asrt-sandbox.js";
+import { pluginChildStartKey, type ExtensionStartAuthority } from "../../permissions/extension-start-consent.js";
 import { holdWindowsFilesystemGrant, type HeldWindowsGrant } from "../../permissions/windows-acl-grant-holder.js";
 import {
   resolvePluginSocketDir,
@@ -367,6 +368,8 @@ export interface ConfinedPluginChildSpec {
   readonly socketDir: string;
   /** What the wrap runs: see {@link ConfinedPluginLaunch}. */
   readonly launch: ConfinedPluginLaunch;
+  /** The consent for this one start when nothing confines it; spent at the spawn. */
+  readonly extensionStart?: ExtensionStartAuthority;
 }
 
 /** The two ways a plugin child is produced (docs/design/plugin-hostapi-protocol.md §2.1). - `entry`: the host's reference runtime, `childEntryPath`, run by the Electron binary as Node.
@@ -427,7 +430,8 @@ function windowsLoopbackLaunchLine(
 export async function spawnConfinedPluginChild(
   spec: ConfinedPluginChildSpec,
 ): Promise<ConfinedPluginChild> {
-  assertExtensionStartAllowed();
+  const extensionStart = { key: pluginChildStartKey(spec.pluginId), authority: spec.extensionStart };
+  assertExtensionStartAllowed({ start: extensionStart });
   const { launch } = spec;
   const processLaunch = launch.kind === "process";
   if (processLaunch && process.platform === "win32") throw new ProcessEntryUnconfinedError();
@@ -519,6 +523,7 @@ export async function spawnConfinedPluginChild(
       command,
       ...launchLine,
       label: `plugin-child:${spec.pluginId}`,
+      extensionStart,
       egressOwner: { kind: "worker", role: "plugin-child", pluginId: spec.pluginId },
       grantMode: process.platform === "win32" ? "deny-only" : "allow-list",
       requireWrap: processLaunch,
@@ -738,6 +743,8 @@ export interface OutOfProcessPluginSpec {
    * handshake succeed (never for a child that died first), and calls the returned function when it begins terminating, which withdraws the marker. Not
    * called when no child was spawned. The runtime records it for the Doctor (`PluginConfinementReport`); it can read a value and nothing more. */
   readonly onChildSpawned?: (confinement: SpawnConfinement) => (() => void) | void;
+  /** Takes the consent a person gave for this plugin's next child start, if one waits. */
+  readonly takeExtensionStart?: () => ExtensionStartAuthority | undefined;
 }
 
 /** The host protocol version this plugin's connection speaks (§3.2). Its declared, served `requires.hostProtocol`. Omission and unserved
@@ -765,7 +772,9 @@ export function createOutOfProcessPluginFactory(
 
   const factory = async (context: PluginRuntimeContext): Promise<RuntimePlugin> => {
     // A native launch is admitted by row 2's own native-entry guard; the legacy guard refuses a selected container plan.
-    if (!spec.prepareMxcChild) assertExtensionStartAllowed();
+    // The factory, the child spawn and its wrap are three crossings of one start: they share this consent.
+    const extensionStart = spec.prepareMxcChild ? undefined : spec.takeExtensionStart?.();
+    if (!spec.prepareMxcChild) assertExtensionStartAllowed({ start: { key: pluginChildStartKey(spec.manifest.id), authority: extensionStart } });
     // Refused before anything is spawned. `runtime/index.ts` refuses the same manifest at every load path; this is the spawn path's
     // own copy of the rule, so a factory reached any other way cannot start a child that would be told a version it does not speak.
     const hostProtocolVersion = connectionHostProtocol(spec.manifest);
@@ -828,6 +837,7 @@ export function createOutOfProcessPluginFactory(
         });
       } else child = await spawnConfinedPluginChild({
         pluginId,
+        ...(extensionStart ? { extensionStart } : {}),
         envelope,
         assertStillValid: () => registration?.assertCurrent(),
         socketDir: resolvePluginSocketDir(context.pluginDataDir),

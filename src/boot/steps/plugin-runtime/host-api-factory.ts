@@ -94,6 +94,8 @@ import {
   type ResolveApiKeyVendor,
 } from "../../../main/host-api/resolve-api-key.js";
 import { spawnWorker } from "../../../permissions/worker-spawn.js";
+import { pluginStartLabel, runExtensionStart, turnExtensionStartSession, workerStartKey } from "../../../permissions/extension-start-consent.js";
+import { probeExtensionStart } from "../../../permissions/asrt-sandbox.js";
 import { declaredHostDirectoryFloorPierces } from "../../../plugins/sandbox-authority.js";
 import { routeExternalUrl } from "./external-url.js";
 import {
@@ -971,12 +973,23 @@ export function createHostApiFactory(
       },
       // Bind worker identity host-side; a self-claimed worker id cannot authorize host-routed tools.
       spawnWorker: async (workerSpec) => {
-        const worker = await spawnWorker({
-          ...workerSpec,
-          pluginId,
-          // Only reviewed host declarations may allow worker reads inside the protected floor.
-          floorPierces: declaredHostDirectoryFloorPierces(manifest.sandbox),
-        });
+        const call = currentEffectGateContext();
+        // Inside a tool call that session answers for an unconfined worker; outside one there is no session to ask.
+        const session = call === undefined || call.standalone === true || call.sessionId === undefined ? undefined : {
+          ...turnExtensionStartSession(call.sessionId),
+          ...(call.abortSignal ? { abortSignal: call.abortSignal } : {}),
+        };
+        const worker = await runExtensionStart(
+          { key: workerStartKey(pluginId, workerSpec.workerId), kind: "worker", label: `${pluginStartLabel(pluginId, manifest.name)} / ${workerSpec.workerId}`,
+            recheck: () => probeExtensionStart("worker") },
+          session,
+          (extensionStart) => spawnWorker({
+            ...workerSpec,
+            pluginId,
+            // Only reviewed host declarations may allow worker reads inside the protected floor.
+            floorPierces: declaredHostDirectoryFloorPierces(manifest.sandbox),
+            extensionStart,
+          }));
         if (!hostIncarnation.isActive()) {
           worker.stop();
           throw new Error(

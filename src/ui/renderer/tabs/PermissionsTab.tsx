@@ -1020,24 +1020,6 @@ export function PermissionsTab({
       setWindowsShellLocalNetworkBusy(false);
     }
   };
-  const [privacyApprovalBusy, setPrivacyApprovalBusy] = useState(false);
-  const handlePrivacyApproval = async () => {
-    if (privacyApprovalBusy) return;
-    setPrivacyApprovalBusy(true);
-    try {
-      const result = await window.ave.permission.approveExtensionsWithoutIsolation();
-      if (!result.ok) {
-        showBanner("error", t("permissionsTab.homePrivacyApprovalFailed"));
-        return;
-      }
-      setWindowsStatus(await window.ave.permission.sandboxWindowsStatus());
-    } catch (error) {
-      showBanner("error", t("permissionsTab.homePrivacyApprovalFailed"));
-      console.warn("[ave] extension isolation session approval failed:", errorMessage(error));
-    } finally {
-      setPrivacyApprovalBusy(false);
-    }
-  };
 
   // The ONLY user-consented privilege-escalation trigger. The OS sandbox is normally provisioned at app-install time (NSIS customInstall), so this is the manual REPAIR
   // / re-provision path; invoked from an explicit "Re-provision" click inside the win32 panel, never automatically. Triggers ASRT's single self-elevating UAC prompt.
@@ -1495,25 +1477,14 @@ export function PermissionsTab({
                 role="alert"
                 className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-dense text-warning"
               >
-                {/* After the session approval extensions run unisolated, so "blocked" and the approval offer would both be false. */}
-                {withHomePrivacyFix(t(windowsStatus.homePrivacyError.approvedForSession
-                  ? "permissionsTab.osSandboxBootDegradedHomePrivacy"
-                  : "permissionsTab.osSandboxWindowsHomePrivacyError", {
+                {withHomePrivacyFix(t("permissionsTab.osSandboxWindowsHomePrivacyError", {
                   path: windowsStatus.homePrivacyError.path,
                   reason: homePrivacyReasonText(windowsStatus.homePrivacyError),
                 }), windowsStatus.homePrivacyError)}
                 {/* A helper that gave no answer offers no run without isolation: only a restart retries the check. */}
-                {windowsStatus.homePrivacyError.approvedForSession || windowsStatus.homePrivacyError.category === "helper-unavailable"
-                  ? null : ` ${t("permissionsTab.homePrivacyApproveHint")}`}
+                {windowsStatus.homePrivacyError.category === "helper-unavailable"
+                  ? null : ` ${t("permissionsTab.homePrivacyPerStartHint")}`}
                 <HomePrivacyFixCommand error={windowsStatus.homePrivacyError} />
-                {windowsStatus.homePrivacyError.category === "helper-unavailable" ? null : windowsStatus.homePrivacyError.approvedForSession ? (
-                  <p>{t("permissionsTab.homePrivacyApprovedForSession")}</p>
-                ) : (
-                  <Button type="button" size="sm" variant="default" disabled={privacyApprovalBusy}
-                    onClick={() => void handlePrivacyApproval()}>
-                    {t("permissionsTab.homePrivacyApproveForSession")}
-                  </Button>
-                )}
               </div>
             ) : windowsStatus.helperError ? (
               <p

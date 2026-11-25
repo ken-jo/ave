@@ -54,6 +54,10 @@ import { withPluginInstallLock, hasExclusivePluginLifecycleMutation, isPluginIns
 import type { SpawnConfinement } from "../../permissions/confined-child.js";
 import { prepareMxcPluginChildLaunch } from "../isolation/mxc-plugin-child-launch.js";
 import { isMxcExtensionBackendSelected } from "../../sandbox/wrap-bundled-command.js";
+import {
+  deferExtensionStart, dropPluginExtensionStarts, isExtensionStartConsentRequired, pluginChildStartKey, pluginStartLabel, takeExtensionStartGrant,
+} from "../../permissions/extension-start-consent.js";
+import { probeExtensionStart } from "../../permissions/asrt-sandbox.js";
 import { capturePluginSandboxGrant, createOutOfProcessPluginFactory, isPluginSandboxGrantCovered, PluginSandboxGrantError, pluginFactoryDeadlineMs, pluginStopBudgetMs } from "../isolation/out-of-process-plugin.js";
 import { PluginChildTerminationUnverifiedError } from "../isolation/plugin-child-transport.js";
 import { bindPluginInstanceIntegrity, recordPluginFactoryIntegrity } from "../runtime-integrity-evidence.js";
@@ -875,6 +879,14 @@ type PluginCandidateConstruction = {
   readonly cleanupFailures: unknown[];
 };
 
+/** Spans a commit that may displace an unpublished plugin until that plugin's retirement is registered. */
+type PluginUnpublishedRetirementHandoff = {
+  readonly pluginId: string;
+  /** The registered retirement's view, or `undefined` when nothing was displaced. */
+  readonly registered: Promise<PluginRuntimeRetirementView | undefined>;
+  close(view?: PluginRuntimeRetirementView): void;
+};
+
 /** `work`'s value, or `undefined` as soon as `signal` aborts (the work keeps running). */
 function untilAborted<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T | undefined> {
   if (!signal) return work;
@@ -1528,6 +1540,12 @@ abstract class PluginRuntimeState {
   protected generationLifecycle: PluginRuntimeGenerationLifecycle | undefined;
   /** A committed generation owns its resources even if runtime publication fails; retire it exactly once. */
   protected readonly committedUnmappedGenerations = new Map<string, PluginRuntimeGenerationProjection>();
+  /** Displaced unpublished plugins whose retirement failed; shutdown re-awaits each and reports a failure unfinished. */
+  protected readonly unretiredUnpublishedCandidates = new Set<PluginRuntimeRetirementView>();
+  /** Displaced unpublished plugins whose retirement is still running; shutdown claims and waits for them. */
+  protected readonly retiringUnpublishedCandidates = new Map<PluginRuntimeRetirementView, Promise<void>>();
+  /** Commits that may displace an unpublished plugin but have not registered its retirement; shutdown waits for each. */
+  protected readonly unpublishedRetirementHandoffs = new Set<PluginUnpublishedRetirementHandoff>();
   /** Checkpoint retirement per phase and generation; failed phases remain retryable. */
   private readonly retirementPhaseRuns = new WeakMap<RuntimePlugin, Map<PluginRuntimeRetirementPhase, Promise<void>>>();
   /** Retry failed disposers only; successful disposers must not run twice. */
@@ -1597,6 +1615,8 @@ abstract class PluginRuntimeState {
   }
   protected manifestValidator: ValidateFunction | null = null;
   protected manifestValidatorPromise: Promise<ValidateFunction> | null = null;
+
+  abstract addPlugin(pluginId: string): Promise<"started" | "preparing">;
 
   protected abstract instantiateAndStartSinglePlugin(
     plan: ManifestLoadPlan,
@@ -2703,12 +2723,27 @@ abstract class PluginRuntimeState {
     };
   }
 
+  /** Nothing confines this child: its start waits for a person, asked at the next attended turn. */
+  private deferUnconfinedStart(manifest: PluginManifest, error: unknown): boolean {
+    if (!isExtensionStartConsentRequired(error)) return false;
+    deferExtensionStart({
+      key: pluginChildStartKey(manifest.id),
+      kind: "plugin-child",
+      label: pluginStartLabel(manifest.id, manifest.name),
+      cause: error.unconfinedCause,
+      retry: async () => { await this.addPlugin(manifest.id); },
+      recheck: () => probeExtensionStart(),
+    });
+    return true;
+  }
+
   /** Record refused replacements separately so the incumbent remains loaded; unrelated errors return false. */
   protected recordAttemptRefusal(
     manifest: PluginManifest,
     error: unknown,
     attempt: PluginAttemptRefusal["attempt"],
   ): boolean {
+    this.deferUnconfinedStart(manifest, error);
     if (
       !(error instanceof IncompatibleHostProtocolError)
       && !(error instanceof ProcessEntryUnconfinedError)
@@ -2792,6 +2827,8 @@ abstract class PluginRuntimeState {
       this.markProcessEntryUnconfined(manifest, err);
     } else if (err instanceof PluginSandboxGrantError) {
       this.refuseSandboxGrant(manifest, err);
+    } else if (this.deferUnconfinedStart(manifest, err)) {
+      this.markFailed(manifest.id, undefined, { installFailureMessage: (err as Error).message });
     } else {
       this.markFailed(manifest.id, undefined, containerRefusalDetail(err));
     }
@@ -3238,6 +3275,7 @@ abstract class PluginRuntimePublicationState extends PluginRuntimeState {
         if (this.pendingDisabledRetirements.has(pluginId)) {
           this.inactivePluginIds.add(pluginId);
           this.disabledPluginIds.add(pluginId);
+          dropPluginExtensionStarts(pluginId);
         }
         this.invalidatePluginUiRevision(pluginId);
         if (predecessorAuthKey !== undefined) {
@@ -3500,26 +3538,77 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       );
   }
 
+  /** Open before a commit can displace an unpublished plugin; the displacing path closes it on every outcome. */
+  protected openUnpublishedRetirementHandoff(pluginId: string): PluginUnpublishedRetirementHandoff {
+    let resolve!: (view: PluginRuntimeRetirementView | undefined) => void;
+    const registered = new Promise<PluginRuntimeRetirementView | undefined>((settle) => { resolve = settle; });
+    const handoff: PluginUnpublishedRetirementHandoff = {
+      pluginId,
+      registered,
+      close: (view) => {
+        this.unpublishedRetirementHandoffs.delete(handoff);
+        resolve(view);
+      },
+    };
+    this.unpublishedRetirementHandoffs.add(handoff);
+    return handoff;
+  }
+
   /** Displaced-candidate retirement touches captured old resources only; the successor owns current maps. */
-  private retireDisplacedUnpublishedLoadedCandidate(
+  protected retireDisplacedUnpublishedLoadedCandidate(
     pluginId: string,
     plugin: LoadedPlugin,
     candidateDisposers: Array<() => void> | undefined,
     replacementRuntimeRoot: string,
     context: string,
+    handoff: PluginUnpublishedRetirementHandoff,
   ): Promise<void> {
     if (this.plugins.get(pluginId) === plugin) {
+      handoff.close();
       return Promise.reject(new Error(
         `plugin '${pluginId}' unpublished candidate was not displaced by replacement`,
       ));
     }
-    return this.retireUnpublishedCandidateResources(
-      pluginId,
+    const { view, retirement } = this.trackUnpublishedRetirement(
       plugin,
       candidateDisposers,
-      context,
-      { preserveRuntimeRoot: replacementRuntimeRoot },
+      this.retireUnpublishedCandidateResources(
+        pluginId,
+        plugin,
+        candidateDisposers,
+        context,
+        { preserveRuntimeRoot: replacementRuntimeRoot },
+      ),
     );
+    handoff.close(view);
+    return retirement;
+  }
+
+  /** A detached or displaced unpublished plugin is in no runtime map, so shutdown finds it only through this entry. */
+  protected trackUnpublishedRetirement(
+    plugin: LoadedPlugin,
+    candidateDisposers: Array<() => void> | undefined,
+    work: Promise<void>,
+  ): { view: PluginRuntimeRetirementView; retirement: Promise<void> } {
+    const view: PluginRuntimeRetirementView = {
+      manifest: plugin.manifest,
+      instance: plugin.instance,
+      lifecycleHookScope: plugin.lifecycleHookScope,
+      hostEffects: plugin.hostEffects,
+      disposers: candidateDisposers ?? [],
+      deactivateHostApi: plugin.deactivateHostApi,
+      drainHostApiOperations: plugin.drainHostApiOperations,
+    };
+    const retirement = work.then(
+      () => { this.retiringUnpublishedCandidates.delete(view); },
+      (error: unknown) => {
+        // Its child may still run. A shutdown that claimed the entry reports it; otherwise the next shutdown does.
+        if (this.retiringUnpublishedCandidates.delete(view)) this.unretiredUnpublishedCandidates.add(view);
+        throw error;
+      },
+    );
+    this.retiringUnpublishedCandidates.set(view, retirement);
+    return { view, retirement };
   }
 
   protected async removePluginLocked(
@@ -3540,15 +3629,27 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     // Late incarnations own private disposers, so invalidated preparation need not settle before tracked state is purged.
     const plugin = this.plugins.get(canonicalPluginId);
     let retirementError: unknown;
-    let unpublishedCleanup: (() => Promise<void>) | undefined;
+    let unpublishedCleanup: Promise<void> | undefined;
+    let startUnpublishedCleanup: (() => void) | undefined;
     if (plugin) {
       const generationLifecycle = this.requireCapabilityCommitLifecycle("plugin removal");
       if (this.isUnpublishedLoadedCandidate(canonicalPluginId, plugin, generationLifecycle)) {
-        unpublishedCleanup = this.detachUnpublishedLoadedCandidate(
+        const candidateDisposers = this.disposers.get(canonicalPluginId);
+        const cleanup = this.detachUnpublishedLoadedCandidate(
           canonicalPluginId,
           plugin,
           "unpublished plugin removal",
         );
+        // Register at detach so shutdown sees the candidate; its cleanup starts after removal bookkeeping, even if that throws.
+        const started = new Promise<void>((resolve) => { startUnpublishedCleanup = resolve; });
+        unpublishedCleanup = this.trackUnpublishedRetirement(
+          plugin,
+          candidateDisposers,
+          started.then(cleanup),
+        ).retirement;
+        unpublishedCleanup.catch((error: unknown) => {
+          log.error(`${canonicalPluginId} removal could not retire the unpublished loaded plugin: ${errorMessage(error)}`);
+        });
       } else {
         const { retirement } = await generationLifecycle.deactivateWithCommit(
           canonicalPluginId,
@@ -3587,30 +3688,34 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       log.info(`removePlugin: plugin in non-loaded state (failed/disabled), purging tracking — ${pluginId}`);
     }
 
-    // Stop hooks may persist config; delete overrides only after bounded deactivation.
-    if (!options.preserveConfigOverride) {
-      this.configStore.delete(canonicalPluginId);
-    }
+    try {
+      // Stop hooks may persist config; delete overrides only after bounded deactivation.
+      if (!options.preserveConfigOverride) {
+        this.configStore.delete(canonicalPluginId);
+      }
 
-    this.knownPluginManifests.delete(canonicalPluginId);
-    this.knownPluginAccessGrants.delete(canonicalPluginId);
-    for (const [toolName, ownerId] of [...this.knownToolOwners.entries()]) {
-      if (ownerId === canonicalPluginId) this.knownToolOwners.delete(toolName);
-    }
-    this.failedPluginIds.delete(canonicalPluginId);
-    this.failedPluginStubs.delete(canonicalPluginId);
-    this.loadFailureInfo.delete(canonicalPluginId);
-    this.lastAttemptRefusal.delete(canonicalPluginId);
-    this.disabledPluginIds.delete(canonicalPluginId);
-    this.inactivePluginIds.delete(canonicalPluginId);
-    this.invalidatePluginUiRevision(canonicalPluginId);
-    this.knownInstallAliases.delete(canonicalPluginId);
-    this.knownInstallClaims.delete(canonicalPluginId);
+      this.knownPluginManifests.delete(canonicalPluginId);
+      this.knownPluginAccessGrants.delete(canonicalPluginId);
+      for (const [toolName, ownerId] of [...this.knownToolOwners.entries()]) {
+        if (ownerId === canonicalPluginId) this.knownToolOwners.delete(toolName);
+      }
+      this.failedPluginIds.delete(canonicalPluginId);
+      this.failedPluginStubs.delete(canonicalPluginId);
+      this.loadFailureInfo.delete(canonicalPluginId);
+      this.lastAttemptRefusal.delete(canonicalPluginId);
+      this.disabledPluginIds.delete(canonicalPluginId);
+      this.inactivePluginIds.delete(canonicalPluginId);
+      this.invalidatePluginUiRevision(canonicalPluginId);
+      this.knownInstallAliases.delete(canonicalPluginId);
+      this.knownInstallClaims.delete(canonicalPluginId);
 
-    this.onDisable?.(canonicalPluginId);
+      this.onDisable?.(canonicalPluginId);
+    } finally {
+      startUnpublishedCleanup?.();
+    }
     if (unpublishedCleanup) {
       try {
-        await unpublishedCleanup();
+        await unpublishedCleanup;
       } catch (error) {
         retirementError = error;
       }
@@ -4530,6 +4635,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
     if (manifest.id !== input.manifest.id || manifest.version !== input.manifest.version) {
       throw new Error(`prepared artifact manifest identity changed for '${input.manifest.id}'`);
     }
+    dropPluginExtensionStarts(manifest.id, "generation");
     this.assertActiveCapabilityDependencies(manifest, "prepared artifact activation");
     this.assertActiveCapabilityDependentsRemainSatisfied(
       manifest.id,
@@ -4732,61 +4838,95 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
       // Await publication inside this try so rejection releases the candidate unless ownership already committed.
       return await withPluginInstallLock(manifest.id, async () => {
         let displacedUnpublishedCandidate:
-          | { plugin: LoadedPlugin; disposers: Array<() => void> | undefined }
+          | { plugin: LoadedPlugin; disposers: Array<() => void> | undefined; handoff: PluginUnpublishedRetirementHandoff }
           | undefined;
-        const result = await generationLifecycle.replaceRuntimeWithCommit(
-          projection,
-          input.receiptRaw,
-          input.durableCommit,
-          this.capabilityDependencyCommitScope(() => {
-            this.assertActiveCapabilityDependencies(
-              manifest,
-              "prepared artifact activation",
-            );
-            this.assertActiveCapabilityDependentsRemainSatisfied(
-              manifest.id,
-              manifest,
-              "prepared artifact activation",
-            );
-            const incumbent = this.plugins.get(manifest.id);
-            if (
-              incumbent
-              && this.isUnpublishedLoadedCandidate(
+        let result: Awaited<ReturnType<typeof generationLifecycle.replaceRuntimeWithCommit<T>>>;
+        let displacedRetirement: Promise<void>;
+        try {
+          result = await generationLifecycle.replaceRuntimeWithCommit(
+            projection,
+            input.receiptRaw,
+            input.durableCommit,
+            this.capabilityDependencyCommitScope(() => {
+              this.assertActiveCapabilityDependencies(
+                manifest,
+                "prepared artifact activation",
+              );
+              this.assertActiveCapabilityDependentsRemainSatisfied(
                 manifest.id,
-                incumbent,
-                generationLifecycle,
+                manifest,
+                "prepared artifact activation",
+              );
+              const incumbent = this.plugins.get(manifest.id);
+              if (
+                !displacedUnpublishedCandidate
+                && incumbent
+                && this.isUnpublishedLoadedCandidate(
+                  manifest.id,
+                  incumbent,
+                  generationLifecycle,
+                )
+              ) {
+                displacedUnpublishedCandidate = {
+                  plugin: incumbent,
+                  disposers: this.disposers.get(manifest.id),
+                  handoff: this.openUnpublishedRetirementHandoff(manifest.id),
+                };
+              }
+              commit();
+            }),
+          );
+          if (candidateConfigOverride) {
+            this.mergeConfigOverride(manifest.id, candidateConfigOverride);
+          }
+
+          // Clear blocked retry state only after durable commit and pointer publication; failed commits leave it retryable.
+          this.clearCapabilityBlockedRetry(
+            manifest.id,
+            `plugin '${manifest.id}' capability dependency wait was superseded by prepared activation`,
+          );
+          this.beginPluginLifecycleOperation(manifest.id);
+          this.preparation.clearFor(manifest.id);
+          this.onEnable?.(manifest.id);
+
+          displacedRetirement = displacedUnpublishedCandidate
+            ? this.retireDisplacedUnpublishedLoadedCandidate(
+                manifest.id,
+                displacedUnpublishedCandidate.plugin,
+                displacedUnpublishedCandidate.disposers,
+                payloadRoot,
+                "prepared artifact activation replacement",
+                displacedUnpublishedCandidate.handoff,
               )
-            ) {
-              displacedUnpublishedCandidate = {
-                plugin: incumbent,
-                disposers: this.disposers.get(manifest.id),
-              };
-            }
-            commit();
-          }),
-        );
-        if (candidateConfigOverride) {
-          this.mergeConfigOverride(manifest.id, candidateConfigOverride);
-        }
-
-        // Clear blocked retry state only after durable commit and pointer publication; failed commits leave it retryable.
-        this.clearCapabilityBlockedRetry(
-          manifest.id,
-          `plugin '${manifest.id}' capability dependency wait was superseded by prepared activation`,
-        );
-        this.beginPluginLifecycleOperation(manifest.id);
-        this.preparation.clearFor(manifest.id);
-        this.onEnable?.(manifest.id);
-
-        const displacedRetirement = displacedUnpublishedCandidate
-          ? this.retireDisplacedUnpublishedLoadedCandidate(
+            : Promise.resolve();
+        } catch (error) {
+          const committedGeneration = generationLifecycle.getActive(manifest.id)?.generationId === generationId;
+          if (
+            displacedUnpublishedCandidate
+            && committedGeneration
+            && this.plugins.get(manifest.id) === displacedUnpublishedCandidate.plugin
+          ) {
+            // Runtime publication failed after commit, so the candidate is still mapped and shutdown retires it from there.
+            displacedUnpublishedCandidate.handoff.close();
+            log.warn(`${manifest.id} prepared activation left the unpublished loaded plugin mapped after a post-commit publication failure`);
+          } else if (displacedUnpublishedCandidate && committedGeneration) {
+            // The replacement committed, so the displaced candidate is still owed its retirement; register it before rethrowing.
+            void this.retireDisplacedUnpublishedLoadedCandidate(
               manifest.id,
               displacedUnpublishedCandidate.plugin,
               displacedUnpublishedCandidate.disposers,
               payloadRoot,
               "prepared artifact activation replacement",
-            )
-          : Promise.resolve();
+              displacedUnpublishedCandidate.handoff,
+            ).catch((retirementError: unknown) => {
+              log.error(`${manifest.id} prepared activation could not retire the unpublished loaded plugin: ${errorMessage(retirementError)}`);
+            });
+          } else {
+            // Nothing was committed, so nothing is owed to shutdown.
+            displacedUnpublishedCandidate?.handoff.close();
+          }
+          throw error;
+        }
         const retirement = Promise.all([result.retirement, displacedRetirement])
           .then(() => undefined);
         const completion = Promise.all([result.completion, displacedRetirement])
@@ -4909,6 +5049,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
         this.registerSandboxEnvelope(manifest.id, paths, pluginRoot, pluginDataDir),
       onChildSpawned: (confinement: SpawnConfinement) =>
         this.recordChildSpawnConfinement(createPlugin, confinement),
+      takeExtensionStart: () => takeExtensionStartGrant(pluginChildStartKey(manifest.id)),
       ...(this.onMalformedCredentialSelector
         ? { onMalformedCredentialSelector: this.onMalformedCredentialSelector }
         : {}),
@@ -5600,6 +5741,32 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
     const committedUnmapped = [...this.committedUnmappedGenerations.values()];
     this.committedUnmappedGenerations.clear();
     for (const runtime of committedUnmapped) retire(runtime);
+    // A stop settlement is memoized per instance, so a failed one is re-awaited and fails this report again rather than running twice.
+    const settleUnpublishedRetirement = (runtime: PluginRuntimeRetirementView): Promise<void> => {
+      const retirement = this.retiringUnpublishedCandidates.get(runtime);
+      if (retirement) {
+        this.retiringUnpublishedCandidates.delete(runtime);
+        return retirement.catch(() => this.runShutdownRetirement(runtime));
+      }
+      if (this.unretiredUnpublishedCandidates.delete(runtime)) return this.runShutdownRetirement(runtime);
+      return Promise.resolve();
+    };
+    // Displaced unpublished plugins are in no runtime map; claim failed, in-flight and still-committing retirements, again once the grace ends.
+    const claimUnpublishedRetirements = (): void => {
+      const unretired = [...this.unretiredUnpublishedCandidates];
+      this.unretiredUnpublishedCandidates.clear();
+      for (const runtime of unretired) retire(runtime);
+      for (const runtime of [...this.retiringUnpublishedCandidates.keys()]) {
+        track(runtime.manifest.id, settleUnpublishedRetirement(runtime));
+      }
+      for (const handoff of [...this.unpublishedRetirementHandoffs]) {
+        this.unpublishedRetirementHandoffs.delete(handoff);
+        // A commit before shutdown may register its retirement after both claims; wait for it here.
+        track(handoff.pluginId, handoff.registered.then((runtime) =>
+          runtime ? settleUnpublishedRetirement(runtime) : undefined));
+      }
+    };
+    claimUnpublishedRetirements();
     for (const candidate of this.candidateConstructions) {
       track(candidate.pluginId, candidate.releaseForShutdown?.() ?? candidate.settled);
     }
@@ -5609,6 +5776,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       log.warn(`plugin retirements still waiting after ${graceMs}ms of shutdown; aborting in-flight plugin calls and stopping their generations`);
     }
     this.runtimeShutdown.abort();
+    claimUnpublishedRetirements();
     for (const retiring of this.generationLifecycle?.listRetiringGenerations() ?? []) {
       track(retiring.pluginId, Promise.all([
         this.runShutdownRetirement(retiring.runtime),
@@ -5864,6 +6032,8 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       logPluginLifecycle("warn", { pluginId, phase: PluginPhase.RESTART_REQUEST, reason: "not_loaded" }, "restart no-op — plugin not loaded");
       return undefined;
     }
+    // New code is asked about its own workers and hooks.
+    dropPluginExtensionStarts(pluginId, "generation");
     const isCurrent = () =>
       !cancellation.cancelled
       && this.isPluginLifecycleOperationCurrent(pluginId, generation);
@@ -6158,6 +6328,9 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
     // Coordinator commit transfers ownership of this exact candidate.
     let committed = false;
     this.commitHandoffs.set(candidate, () => { committed = true; });
+    let displacedUnpublishedCandidate:
+      | { plugin: LoadedPlugin; disposers: Array<() => void> | undefined; handoff: PluginUnpublishedRetirementHandoff }
+      | undefined;
     try {
       await generationLifecycle.replaceRuntime(
         candidate,
@@ -6172,6 +6345,20 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
             manifest,
             "plugin restart",
           );
+          // A loaded plugin that was never published has no predecessor for the coordinator to retire; retire it only once the replacement commits.
+          const incumbent = this.plugins.get(pluginId);
+          if (
+            !displacedUnpublishedCandidate
+            && incumbent
+            && this.isUnpublishedLoadedCandidate(pluginId, incumbent, generationLifecycle)
+          ) {
+            // Shutdown waits on the handoff until this restart's finally registers the retirement or closes it.
+            displacedUnpublishedCandidate = {
+              plugin: incumbent,
+              disposers: this.disposers.get(pluginId),
+              handoff: this.openUnpublishedRetirementHandoff(pluginId),
+            };
+          }
           commitReplacementHostApi();
         }),
       );
@@ -6197,6 +6384,22 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
       return "failed";
     } finally {
       this.commitHandoffs.delete(candidate);
+      if (displacedUnpublishedCandidate && !committed) displacedUnpublishedCandidate.handoff.close();
+      if (displacedUnpublishedCandidate && committed) {
+        try {
+          await this.retireDisplacedUnpublishedLoadedCandidate(
+            pluginId,
+            displacedUnpublishedCandidate.plugin,
+            displacedUnpublishedCandidate.disposers,
+            runtimeRoot,
+            "unpublished plugin restart",
+            displacedUnpublishedCandidate.handoff,
+          );
+        } catch (error) {
+          // The failed retirement stays owed to shutdown, which re-awaits it and reports it unfinished.
+          log.error(`${pluginId} restart could not retire the unpublished loaded plugin: ${errorMessage(error)}`);
+        }
+      }
     }
     this.onEnable?.(pluginId);
     return "started";
@@ -6293,6 +6496,8 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
     options: { preserveConfigOverride?: boolean } = {},
   ): Promise<void> {
     const canonicalPluginId = this.resolveKnownPluginId(pluginId);
+    // A removed plugin has no start left to ask about.
+    dropPluginExtensionStarts(canonicalPluginId);
     // Cancel dependency-held restart work before entering the lifecycle lock.
     this.pendingRestartCancellations.get(canonicalPluginId)?.cancel();
     return withPluginInstallLock(canonicalPluginId, () =>
@@ -6792,7 +6997,8 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
           };
 
           let retirementError: unknown;
-          let unpublishedCleanup: (() => Promise<void>) | undefined;
+          let unpublishedCleanup: Promise<void> | undefined;
+          let startUnpublishedCleanup: (() => void) | undefined;
           if (!enabled) {
             const plugin = this.plugins.get(canonicalPluginId);
             const unpublishedCandidate = plugin && this.isUnpublishedLoadedCandidate(
@@ -6818,25 +7024,40 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
                   "disable",
                 );
               });
-              await commitScope(async () => {
-                // Only a committed disabled state cancels the candidate; failed registry transactions leave preparation retryable.
-                await persist();
-                this.clearCapabilityBlockedRetry(
-                  canonicalPluginId,
-                  `plugin '${canonicalPluginId}' capability dependency wait was cancelled by disable`,
-                );
-                this.beginPluginLifecycleOperation(canonicalPluginId);
-                this.preparation.clearFor(canonicalPluginId);
-                try {
-                  unpublishedCleanup = this.detachUnpublishedLoadedCandidate(
+              try {
+                await commitScope(async () => {
+                  // Only a committed disabled state cancels the candidate; failed registry transactions leave preparation retryable.
+                  await persist();
+                  this.clearCapabilityBlockedRetry(
                     canonicalPluginId,
-                    unpublishedCandidate,
-                    "unpublished plugin enabled-state disable",
+                    `plugin '${canonicalPluginId}' capability dependency wait was cancelled by disable`,
                   );
-                } catch (error) {
-                  retirementError = error;
-                }
-              });
+                  this.beginPluginLifecycleOperation(canonicalPluginId);
+                  this.preparation.clearFor(canonicalPluginId);
+                  try {
+                    const candidateDisposers = this.disposers.get(canonicalPluginId);
+                    const cleanup = this.detachUnpublishedLoadedCandidate(
+                      canonicalPluginId,
+                      unpublishedCandidate,
+                      "unpublished plugin enabled-state disable",
+                    );
+                    // Register at detach so shutdown sees the candidate; its cleanup starts once the scope ends, even if it throws.
+                    const started = new Promise<void>((resolve) => { startUnpublishedCleanup = resolve; });
+                    unpublishedCleanup = this.trackUnpublishedRetirement(
+                      unpublishedCandidate,
+                      candidateDisposers,
+                      started.then(cleanup),
+                    ).retirement;
+                    unpublishedCleanup.catch((error: unknown) => {
+                      log.error(`${canonicalPluginId} disable could not retire the unpublished loaded plugin: ${errorMessage(error)}`);
+                    });
+                  } catch (error) {
+                    retirementError = error;
+                  }
+                });
+              } finally {
+                startUnpublishedCleanup?.();
+              }
             } else {
               this.clearCapabilityBlockedRetry(
                 canonicalPluginId,
@@ -6878,9 +7099,10 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
             }
             this.inactivePluginIds.add(canonicalPluginId);
             this.disabledPluginIds.add(canonicalPluginId);
+            dropPluginExtensionStarts(canonicalPluginId);
             if (unpublishedCleanup) {
               try {
-                await unpublishedCleanup();
+                await unpublishedCleanup;
               } catch (error) {
                 retirementError = retirementError === undefined
                   ? error

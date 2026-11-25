@@ -32,6 +32,7 @@ import {
   makeTestPluginRuntime,
   makeTestPluginRuntimeFixture,
   makeTestTreeWritable,
+  stopTestPluginRuntimes,
   makeTestManifest,
   writeTestPluginRegistry,
   type TestPluginRuntimeFixture,
@@ -147,10 +148,12 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  const stopped = await stopTestPluginRuntimes();
   vi.unstubAllEnvs();
   resetDevFlags();
   await makeTestTreeWritable(fixture.rootDir);
   await rm(fixture.rootDir, { recursive: true, force: true });
+  expect(stopped).toEqual({ unfinished: [], leftHomes: [] });
 });
 
 async function registryRuntime(audit: unknown[] = []): Promise<PluginRuntime> {

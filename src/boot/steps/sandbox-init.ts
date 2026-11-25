@@ -215,7 +215,7 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
         const path = privacyFailure.failedPath ?? privacyFailure.home;
         log.warn("boot: extension isolation is OFF; AVE_HOME privacy failed (%s, %s). %s", privacyFailure.category, path,
           isAveHomePrivacyApprovable(privacyFailure.category)
-            ? "Extensions require session approval in Settings > Permissions."
+            ? "Each extension start asks for approval until the folder is fixed."
             : "Extensions stay blocked until a restart; if it persists, reinstall Ave.");
         recordWindows("none", true);
         recordGate("degrade", "degrade-ave-home-privacy-failed", [privacyFailure.reason], ["ave-home-privacy-failed"]);
@@ -445,7 +445,7 @@ export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSig
             log.warn("boot: extension isolation is OFF; the AVE_HOME read boundary could not be verified (%s, %s). %s",
               AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE, boundaryFailure.category,
               isAveHomePrivacyApprovable(boundaryFailure.category)
-                ? "Extensions require session approval in Settings > Permissions."
+                ? "Each extension start asks for approval until the folder is fixed."
                 : "Extensions stay blocked until a restart; if it persists, reinstall Ave.");
             recordWindows("none", true);
             recordGate("degrade", "degrade-ave-home-boundary-unverified", [AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE], ["ave-home-privacy-failed"]);
