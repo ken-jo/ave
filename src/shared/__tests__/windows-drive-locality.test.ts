@@ -1,8 +1,9 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { configureHostResources } from "../../main/host-resources.js";
+import { windowsPathKindHelperUnavailable } from "../../main/windows-path-kind-launcher.js";
 import { queryDriveIdentity, setWindowsDriveQueryForTest } from "../windows-drive-locality.js";
 
 // The shared setup answers every drive as local; this file checks the classifier itself.
@@ -50,9 +51,15 @@ describe("queryDriveIdentity", () => {
     expect(queryDriveIdentity(drive)).toEqual(expected);
   });
 
-  it("treats a drive the classifier cannot answer for as opaque but present", () => {
-    setWindowsDriveQueryForTest(() => { throw new Error("helper unavailable"); });
-    expect(queryDriveIdentity("C:")).toEqual(opaque(String.raw`\\?\GLOBALROOT\??\C:`));
+  it("treats a drive the classifier gives no answer for as opaque but present", () => {
+    const failure = windowsPathKindHelperUnavailable("the Windows folder classifier did not answer");
+    setWindowsDriveQueryForTest(() => { throw failure; });
+    expect(queryDriveIdentity("C:")).toEqual({ ...opaque(String.raw`\\?\GLOBALROOT\??\C:`), unavailable: failure });
+  });
+
+  it("throws any other drive query failure as itself", () => {
+    setWindowsDriveQueryForTest(() => { throw new Error("host-resources-unavailable"); });
+    expect(() => queryDriveIdentity("C:")).toThrow("host-resources-unavailable");
   });
 
   it("keeps no answer: every call reads the mapping again", () => {
@@ -71,9 +78,14 @@ describe.runIf(process.platform === "win32")("queryDriveIdentity through the shi
   });
 
   it("keeps every drive opaque when the helper is missing", () => {
-    configureHostResources({ resourcePath: mkdtempSync(join(tmpdir(), "no-helper-")), isPackaged: false });
-    expect(queryDriveIdentity(process.env.SystemDrive ?? "C:")).toMatchObject({
-      local: false, absent: false, root: expect.stringMatching(/^\\\\\?\\GLOBALROOT\\\?\?\\[A-Z]:$/u),
-    });
+    const resources = mkdtempSync(join(tmpdir(), "no-helper-"));
+    try {
+      configureHostResources({ resourcePath: resources, isPackaged: false });
+      expect(queryDriveIdentity(process.env.SystemDrive ?? "C:")).toMatchObject({
+        local: false, absent: false, root: expect.stringMatching(/^\\\\\?\\GLOBALROOT\\\?\?\\[A-Z]:$/u),
+      });
+    } finally {
+      rmSync(resources, { recursive: true, force: true });
+    }
   });
 });
