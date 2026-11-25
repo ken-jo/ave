@@ -38,7 +38,7 @@ describe("the policy of a pending tool answer", () => {
     const nextCard = browserCards.indexOf("gate.requestAndWait(", sharedCheck);
     expect(browserCards.slice(issue, nextCard === -1 ? undefined : nextCard)).toContain(`${decision}.choice`);
     expect(browserCards).toContain("let destinationEpochs = rules.answerEpochs");
-    expect(browserCards).not.toMatch(/onlyMemoryRulesChangedSince|getPolicy(?:Context)?Epoch/);
+    expect(browserCards).not.toMatch(/siteAnswerStands|answerSurvivesRecheck|onlyMemoryRulesChangedSince|getPolicy(?:Context)?Epoch/);
   });
 
   it.each([
