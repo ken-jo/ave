@@ -3,7 +3,7 @@
 // LEAD rule: a fix PR that closes an I-id must flip or delete its exception row in the same PR, and move the id into RESOLVED
 // with the row that now proves it. Every I-id sits in exactly one of EXCEPTIONS, INCONSISTENCIES_WITHOUT_ROW and RESOLVED.
 // An id no driven row can show stays in INCONSISTENCIES_WITHOUT_ROW when it is closed: its note says so and names the tests that prove it.
-// Tree = docs/architecture/permission-decision-tree.md line(s), or "no row".
+// Source lines: T = docs/architecture/permission-decision-tree.md, A = docs/architecture/architecture.md.
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -426,7 +426,8 @@ const ROWS: readonly Row[] = [
       expect(extensionStart({ hostOwned: true })).toEqual({ outcome: "unasked", reason: "none" });
       return { outcome: "deny", reason: refusal(assertLocalEmbeddingRuntime) };
     } },
-  { id: "L18", point: "a container route is published under the runtime-wrap name", tree: "T:143", unknown: "-",
+  // The Windows shell "Boot plan" in the architecture describes this route.
+  { id: "L18", point: "a container route is published under the runtime-wrap name", tree: "A:3467", unknown: "-",
     today: { outcome: "contained", reason: "mode=asrt kind=asrt substrate=mxc" },
     core: { reason: "containment-evidence" },
     observe: () => {
@@ -573,7 +574,7 @@ describe("permission vocabulary contract", () => {
         if (seen.headless !== undefined) expect(OUTCOMES, row.id).toContain(seen.headless);
         if (seen.waiver !== undefined) expect(WAIVERS, row.id).toContain(seen.waiver);
       }
-      expect(row.tree, row.id).toMatch(/^(?:no row|T:\d+(?:-\d+)?(?:, T:\d+(?:-\d+)?)*)$/u);
+      expect(row.tree, row.id).toMatch(/^(?:no row|A:\d+|T:\d+(?:-\d+)?(?:, T:\d+(?:-\d+)?)*)$/u);
       // The outcome the policy core gives this row must be the one its unknown class allows.
       expect(UNKNOWN_CORE[row.unknown], row.id).toContain(row.core?.outcome ?? row.today.outcome);
     }
