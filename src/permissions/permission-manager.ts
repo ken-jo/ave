@@ -44,7 +44,7 @@ import { isDestructiveShellArgv, noReusableRuleReason, MAX_LITERAL_COMMAND_LENGT
 import { isStagedTurnSource } from "../shared/staged-origins.js";
 import { PERMISSION_REVIEWER_FRAMEWORK_VERSION } from "../shared/permission-reviewer-framework.js";
 import type { ApprovalMemory, UserApprovalHitPayload, UserApprovalVerdict } from "../shared/permissions-events.js";
-import { decidePermission, EXACT_HOST_RULE_REASON_CODE, NO_APPROVER_MESSAGE, type PermissionDecisionRequest } from "./decision-pipeline.js";
+import { decidePermission, EXACT_HOST_RULE_REASON_CODE, NO_APPROVER_MESSAGE, SHELL_ANALYSIS_LIMIT_REASON, type PermissionDecisionRequest } from "./decision-pipeline.js";
 import { exactShellRuleFor } from "./rules/shell-rule-approval.js";
 import { isHostNetworkSubject } from "./host-network-subject.js";
 import { canonicalEgressHost, isValidEgressPort } from "./egress-grants.js";
@@ -1742,7 +1742,9 @@ export class PermissionManager {
         brokerGuestRoute ? new ShellFloorContext("powershell", { inspectHostFiles: false }) : undefined) : undefined;
     const shellInspectionExhausted = analysisLimited || shellSignals?.analysisLimited === true;
     analysisLimited ||= shellInspectionExhausted;
-    if (shellInspectionExhausted) admissionDenial ??= { code: "shell-analysis-limit", reason: "Shell path evidence exceeded its analysis limit." };
+    // An exhausted analysis proves nothing about the command: a human answers it on a host route, and the mode answers a contained one.
+    const analysisLimitFloor = shellExecution.runsSandboxed ? undefined : { code: "shell-analysis-limit" as const, reason: SHELL_ANALYSIS_LIMIT_REASON };
+    if (shellInspectionExhausted && analysisLimitFloor) floor ??= analysisLimitFloor;
     if (shellSignals?.exfiltration) exfiltration ??= { reason: shellSignals.exfiltration };
     const shellShape = parsed && !analysisLimited && !ruleProofLimited ? analyzeShellForRules(parsed, ruleSubject?.cwd) : undefined;
     // A confirmed broker guest route resolves drive-less operands as guest (Linux) paths. Host routes, and any substrate the live broker does not confirm, keep host semantics and the unchanged floor.
@@ -1752,7 +1754,7 @@ export class PermissionManager {
     const powerShellPaths = !shellInspectionExhausted && command !== undefined && ruleSubject?.dialect === "powershell" && analysisCwd !== undefined
       ? inspectPowerShellPermissionPaths(parsedPowerShell ?? command, analysisCwd, shellExecution.environmentSnapshot ?? {}, undefined,
         { inspectHostFiles: !brokerGuestRoute }) : undefined;
-    if (shellPaths?.unproven?.kind === "analysis-limit" || powerShellPaths?.evidenceLimitExceeded) admissionDenial ??= { code: "shell-analysis-limit", reason: "Shell path evidence exceeded its analysis limit." };
+    if ((shellPaths?.unproven?.kind === "analysis-limit" || powerShellPaths?.evidenceLimitExceeded) && analysisLimitFloor) floor ??= analysisLimitFloor;
     const credentialStore = powerShellPaths?.credentialStore;
     if (credentialStore) admissionDenial ??= { code: "credential-store", reason: credentialStore };
     const unknownProtectedWrite = shellPaths?.unknownProtectedWrite ?? powerShellPaths?.unknownProtectedWrite;

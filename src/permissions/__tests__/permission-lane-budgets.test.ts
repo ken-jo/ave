@@ -1,6 +1,6 @@
 import "../../__tests__/support/trusted-powershell.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { checkShellPermission, distinctPathArguments } from "../../__tests__/support/permission-lane.js";
+import { analysisLimitAnswer, checkShellPermission, distinctPathArguments } from "../../__tests__/support/permission-lane.js";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -57,13 +57,13 @@ describe("complete manager timing", () => {
       process.stdout.write(`permission lane timing ${dialect} sandboxed=${runsSandboxed} chars=${length} decision=${result.decision} modal=${result.forceModal === true} ms=${elapsed.toFixed(3)}\n`);
       expect(result.reason).toEqual(expect.any(String));
       expect(elapsed).toBeLessThan(5_000);
-      expect(result).toMatchObject({ decision: "deny", reasonCode: "shell-analysis-limit" });
+      expect(result).toMatchObject(analysisLimitAnswer(runsSandboxed, false, { decision: "allow", reasonCode: "allow-mode" }));
       if (MAX_LITERAL_COMMAND_LENGTH === LITERAL_INPUT_LIMIT) {
         expect(spies).toHaveLength(10);
         for (const spy of spies.filter(spy => spy !== spies[6])) expect(spy).not.toHaveBeenCalled();
         expect(spies[6]).toHaveBeenCalledOnce();
         expect(elapsed).toBeLessThan(250);
-        expect(result.forceModal).toBeUndefined();
+        if (runsSandboxed) expect(result.forceModal).toBeUndefined();
       }
     } finally {
       for (const spy of spies) spy.mockRestore();
@@ -151,9 +151,7 @@ describe.each(["bash", "powershell"] as const)("sandbox floor bounds (%s)", (dia
     else vi.mocked(powerShellPolicy.inspectPowerShellCommand).mockReturnValue({ outcome: "static-complete", sensitive: null, exfiltration: null });
     try {
       const result = checkShellPermission(manager, cwd, SESSION_ID, command, dialect, true);
-      expect(result).toMatchObject(length > FLOOR_INPUT_LIMIT
-        ? { decision: "deny", reasonCode: "shell-analysis-limit" }
-        : { decision: "allow", reasonCode: "allow-mode" });
+      expect(result).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
       expect(result.forceModal).toBeUndefined();
       expect(result.pipelineRequest?.shell?.unproven).toBe(true);
       const floorInspector = dialect === "bash" ? shellFloors.inspectShellCommand : powerShellPolicy.inspectPowerShellCommand;
@@ -167,7 +165,7 @@ describe.each(["bash", "powershell"] as const)("sandbox floor bounds (%s)", (dia
 });
 
 describe.each(["bash", "powershell"] as const)("mandatory safety analysis exhaustion (%s)", (dialect) => {
-  it.each([false, true])("denies actual safety exhaustion without reparsing when sandboxed=%s", (runsSandboxed) => {
+  it.each([false, true])("answers actual safety exhaustion without reparsing when sandboxed=%s", (runsSandboxed) => {
     const command = "printf ready";
     seedExactAllow(command, dialect);
     const inspect = dialect === "bash"
@@ -185,10 +183,10 @@ describe.each(["bash", "powershell"] as const)("mandatory safety analysis exhaus
       return { outcome: "unproven", sensitive: null, exfiltration: null, analysisLimited: true };
     });
     try {
-      expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, runsSandboxed)).toMatchObject({ decision: "deny", reasonCode: "shell-analysis-limit" });
+      expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, runsSandboxed)).toMatchObject(analysisLimitAnswer(runsSandboxed, false, { decision: "allow", reasonCode: "allow-mode" }));
       expect(bashParse).toHaveBeenCalledTimes(parsesBeforeBudget);
       expect(floorParse).toHaveBeenCalledTimes(floorParsesBeforeBudget);
-      if (!runsSandboxed) expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false, true)).toMatchObject({ decision: "deny", reasonCode: "shell-analysis-limit" });
+      if (!runsSandboxed) expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false, true)).toMatchObject(analysisLimitAnswer(false, true, {}));
       expect(bashParse).toHaveBeenCalledTimes(parsesBeforeBudget);
       expect(floorParse).toHaveBeenCalledTimes(floorParsesBeforeBudget);
       expect(powerShellShape).not.toHaveBeenCalled();

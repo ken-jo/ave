@@ -28,3 +28,16 @@ export function checkShellPermission(
     headless,
   });
 }
+
+/** An exhausted shell analysis: a human answers it on a host route, and the mode answers it on a contained one. */
+export function analysisLimitAnswer(runsSandboxed: boolean, headless: boolean, contained: Record<string, unknown>): Record<string, unknown> {
+  if (runsSandboxed) return contained;
+  return headless ? { decision: "deny", reasonCode: "no-approver" } : { decision: "ask", forceModal: true, reasonCode: "shell-analysis-limit" };
+}
+
+/** The mode's answer for an unproven contained shell command that no reviewer has answered yet. */
+export function containedModeAnswer(mode: "strict" | "default" | "auto" | "allow", headless: boolean): Record<string, unknown> {
+  if (mode === "allow") return { decision: "allow", reasonCode: "allow-mode" };
+  if (mode === "auto") return { decision: "ask", reasonCode: "review-required" };
+  return headless ? { decision: "deny", reasonCode: "no-approver" } : { decision: "ask", reasonCode: "shell-approval" };
+}

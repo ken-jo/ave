@@ -4,7 +4,7 @@ vi.mock("node:fs", async original => (await import("../../__tests__/support/simu
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "../../__tests__/support/trusted-powershell.js";
-import { checkShellPermission, distinctPathArguments } from "../../__tests__/support/permission-lane.js";
+import { analysisLimitAnswer, checkShellPermission, distinctPathArguments } from "../../__tests__/support/permission-lane.js";
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -245,16 +245,23 @@ function requireLaneBehavior(fixture: EncodedCase): void {
       ...(exactEligible ? [{ pattern: card.exactRule!, action: "allow" as const }] : []),
     ] : [];
     manager.setRules(rules.map(withCurrentShellRuleVersion));
-    const expected = fixture.admissionLimit
-      ? { decision: "deny", reasonCode: "shell-analysis-limit" }
-      : fixture.permissionFloor
-        ? { decision: "ask", forceModal: true, reasonCode: fixture.permissionFloor }
-        : { decision: "allow" };
+    const expected = fixture.permissionFloor
+      ? { decision: "ask", forceModal: true, reasonCode: fixture.permissionFloor }
+      : { decision: "allow" };
     for (const sandboxed of [false, true]) {
       const foreground = checkShellPermission(manager, cwd, SESSION_ID, command, dialect, sandboxed);
+      const headless = checkShellPermission(manager, cwd, SESSION_ID, command, dialect, sandboxed, true);
+      if (fixture.admissionLimit) {
+        // No saved rule answers an exhausted analysis on the host; a contained one keeps the ordinary rule and mode policy.
+        for (const [result, unattended] of [[foreground, false], [headless, true]] as const) {
+          expect.soft(result, `headless=${unattended}, sandboxed=${sandboxed}, saved=${saved}`)
+            .toMatchObject(analysisLimitAnswer(sandboxed, unattended, { decision: "allow", reasonCode: saved ? expect.stringMatching(/^(?:rule-allow|allow-mode)$/u) : "allow-mode" }));
+        }
+        continue;
+      }
       expect.soft(foreground, `sandboxed=${sandboxed}, saved=${saved}`).toMatchObject(expected);
       if (!fixture.permissionFloor) expect.soft(foreground).not.toHaveProperty("forceModal");
-      expect.soft(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, sandboxed, true), `headless, sandboxed=${sandboxed}, saved=${saved}`).toMatchObject(fixture.admissionLimit ? expected : fixture.permissionFloor || fixture.exfiltration && !saved ? { decision: "deny", reasonCode: "no-approver" } : expected);
+      expect.soft(headless, `headless, sandboxed=${sandboxed}, saved=${saved}`).toMatchObject(fixture.permissionFloor || fixture.exfiltration && !saved ? { decision: "deny", reasonCode: "no-approver" } : expected);
     }
   }
 }
@@ -598,15 +605,15 @@ describe.each(["bash", "powershell"] as const)("permission decision input bounds
       const start = performance.now();
       const result = checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false);
       const elapsed = performance.now() - start;
-      expect(result).toMatchObject({ decision: "deny", reasonCode: "shell-analysis-limit" });
+      expect(result).toMatchObject(analysisLimitAnswer(false, false, {}));
       process.stdout.write(`permission decision ${dialect} ${length} chars ${name}: ${elapsed.toFixed(3)} ms\n`);
-      // Rule proof stays capped while the independent bounded path-evidence pass denies exhausted evidence.
+      // Rule proof stays capped while the independent bounded path-evidence pass hands exhausted evidence to a human.
       expect(elapsed).toBeLessThan(overLimit ? 250 : 2_000);
       if (overLimit) {
         for (const spy of spies.slice(0, 7)) expect(spy).not.toHaveBeenCalled();
         expect(spies[7]).toHaveBeenCalledTimes(1);
         expect(spies[8]).not.toHaveBeenCalled();
-        expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false, true)).toMatchObject({ decision: "deny", reasonCode: "shell-analysis-limit" });
+        expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false, true)).toMatchObject(analysisLimitAnswer(false, true, {}));
         for (const spy of spies.slice(0, 7)) expect(spy).not.toHaveBeenCalled();
         expect(spies[7]).toHaveBeenCalledTimes(2);
         expect(spies[8]).not.toHaveBeenCalled();

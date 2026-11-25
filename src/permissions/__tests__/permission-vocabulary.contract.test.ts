@@ -112,13 +112,15 @@ function noBackendShell(saved: "exact" | "prefix", boot: { homePrivacyVerified?:
     ...(secondFloor ? {} : { floorSessionEligible: true as const }), rules: { allow: "fixture", ...(exact ? { exactHostRule: "Bash(fixture)" } : {}) } });
 }
 
-// The permission manager reads this inspection and turns an `analysis-limit` into the admission denial `shell-analysis-limit`.
-// The inspection is driven with the facts the manager passes for bash; that one step of the manager is restated here.
-function analysisLimit(command: string): Observation {
+// The permission manager reads this inspection. On a host route it turns an `analysis-limit` into the floor `shell-analysis-limit`;
+// on a contained route it adds nothing, and the unproven command goes to the mode. The inspection is driven with the facts the
+// manager passes for bash; that one step of the manager is restated here.
+function analysisLimit(command: string, sandboxed = false): Observation {
   const kind = inspectShellPermissionPaths(command, tmpdir(), { dialect: "bash", environment: {} })?.unproven?.kind;
-  const evidence = kind === "analysis-limit" ? { admissionDenial: { code: "shell-analysis-limit", reason: "fixture" } } : {};
-  return pipeline({ tool: SHELL, shell: { ...HOST_SHELL, unproven: kind !== undefined }, ...evidence });
+  const evidence = kind === "analysis-limit" && !sandboxed ? { floor: { code: "shell-analysis-limit" as const, reason: "fixture" } } : {};
+  return pipeline({ tool: SHELL, shell: { ...HOST_SHELL, sandboxed, unproven: kind !== undefined }, ...evidence });
 }
+const ANALYSIS_LIMIT_COMMAND = [0, 1, 2, 3, 4, 5, 6].map(index => `if test -f q${index}; then v${index}=1; fi`).join("; ");
 
 type StartOptions = Parameters<typeof assertExtensionStartAllowed>[0];
 type ExtensionState = NonNullable<Parameters<typeof planWindowsSandbox>[0]["extensionMxc"]>;
@@ -275,10 +277,12 @@ const ROWS: readonly Row[] = [
     today: { outcome: "deny", reason: "default:active-sandbox-not-shell-contained", waiver: "none" },
     core: { outcome: "ask-human", waiver: "session" },
     observe: () => plan({ platform: "linux", requestedSandbox: true, activeCapability: capability("linux", "partial") }) },
-  { id: "D30", point: "analysis limit other than the cd budget", tree: "no row", unknown: "U1",
-    today: { outcome: "deny", reason: "shell-analysis-limit", headless: "deny" },
-    core: { outcome: "ask-human" },
-    observe: () => analysisLimit([0, 1, 2, 3, 4, 5, 6].map(index => `if test -f q${index}; then v${index}=1; fi`).join("; ")) },
+  { id: "D30", point: "analysis limit other than the cd budget, host route", tree: "no row", unknown: "U1",
+    today: { outcome: "ask-human", reason: "shell-analysis-limit", headless: "deny", waiver: "once" },
+    observe: () => analysisLimit(ANALYSIS_LIMIT_COMMAND) },
+  { id: "D30.b", point: "analysis limit other than the cd budget, contained route", tree: "no row", unknown: "U1",
+    today: { outcome: "ask", reason: "shell-approval", headless: "deny" },
+    observe: () => analysisLimit(ANALYSIS_LIMIT_COMMAND, true) },
   // Layer 1: egress destination classes. These rows pin the class predicates; the relay that acts on them is not driven,
   // so the outcome names what the relay does with each answer and the `relay:` reason is a label of this table, not a product code.
   // D32 pins class membership only; what an allow-list entry does with a reserved literal is not pinned here.
@@ -466,7 +470,6 @@ const EXCEPTIONS: Readonly<Record<string, readonly string[]>> = {
   I15: ["L3", "L13"],
   I16: ["L18"],
   I18: ["L6"],
-  I19: ["D30"],
 };
 
 // Closed inconsistency -> the row that proves it, which answers as the policy core does.
@@ -475,6 +478,7 @@ const RESOLVED: Readonly<Record<string, string>> = {
   I5: "D34.b",
   I8: "L4",
   I10: "L1",
+  I19: "D30",
 };
 
 // Inconsistencies no driven row can show, and why.

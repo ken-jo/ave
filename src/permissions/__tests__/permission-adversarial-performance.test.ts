@@ -91,10 +91,8 @@ describe("adversarial complete manager work", () => {
     }
     const work = counted[0]!;
     process.stdout.write(`permission adversarial work ${JSON.stringify({ dialect, radix, nested, lane: runsSandboxed ? "A" : "B", chars: length, smallChars: small ? smallCommand.length : undefined, work: json(work), smallWork: small ? json(small.work) : undefined, results: results.map(({ decision, forceModal }) => ({ decision, forceModal: forceModal === true })) })}\n`);
-    // These generated long inputs contain more than the complete evidence token budget.
-    const expected = runsSandboxed
-      ? { decision: "deny", reasonCode: "shell-analysis-limit" }
-      : { decision: "ask", reasonCode: "shell-approval" };
+    // In the contained lane these inputs exceed the complete evidence token budget, which leaves the answer to the mode.
+    const expected = { decision: "ask", reasonCode: "shell-approval" };
     for (const result of results) expect(result).toMatchObject(expected);
     for (const repeated of counted) expect(json(repeated)).toEqual(json(work));
     if (small) {
@@ -106,9 +104,7 @@ describe("adversarial complete manager work", () => {
     for (const result of results) expect(result.forceModal).toBeUndefined();
     manager.setMode("allow");
     const permitted = checkShellPermission(manager, cwd, SESSION_ID, command, dialect, runsSandboxed);
-    expect(permitted).toMatchObject(runsSandboxed
-      ? { decision: "deny", reasonCode: "shell-analysis-limit" }
-      : { decision: "allow", reasonCode: "allow-mode" });
+    expect(permitted).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
     expect(permitted.pipelineRequest?.shell).toEqual(results[0]!.pipelineRequest?.shell);
   });
 });

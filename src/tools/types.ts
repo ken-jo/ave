@@ -67,6 +67,9 @@ export interface ToolExecutionContext {
   /** `permissions.blockReadsOutsideWorkingDirectories`; re-fence READ-tier path operands to the same allow-list writes are confined to. Threaded here because a shell tool re-runs the path policy on its own execution surface, and
    * running it with a different answer than the permission layer used would refuse at execute time exactly what the executor had just admitted. Absent is the shipped policy; reads are not confined; the setting ships off and has no UI. */
   blockReadsOutsideWorkingDirectories?: boolean;
+  /** The permission decision for this call already answered its shell path analysis running out of budget (a human on a host route,
+   * the mode on a contained one). The shell tool's own re-check accepts that one verdict and no other. */
+  shellAnalysisLimitAdmitted?: true;
   /**
    * Owner plugin sandbox root (`~/.ave/plugins/<pluginId>/`) when the
    * invoking tool is plugin-owned, else undefined for builtins. Threaded

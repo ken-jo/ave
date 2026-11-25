@@ -2,7 +2,7 @@ import type { ToolCategory, ToolSource } from "../tools/types.js";
 import type { UserOwnedSurface, UserOwnedSurfaceChoice } from "../shared/permissions-events.js";
 
 export type PermissionPipelineOutcome = "allow" | "sandbox-auto" | "ask" | "ask-forced" | "deny";
-export type PermissionFloorCode = "protected-path" | "critical-delete" | "project-escape" | "other-principal" | "sandbox-unavailable";
+export type PermissionFloorCode = "protected-path" | "critical-delete" | "project-escape" | "other-principal" | "sandbox-unavailable" | "shell-analysis-limit";
 
 export interface PermissionDecisionRequest {
   tool: { name: string; source: ToolSource; kind: ToolCategory | "mcp" | "file-write"; readOnlyHint?: boolean };
@@ -50,6 +50,8 @@ export function offersFloorSessionAllow(result: { readonly pipelineRequest?: Per
 export const EXACT_HOST_RULE_REASON_CODE = "exact-host-rule";
 
 export const NO_APPROVER_MESSAGE = "Nobody can approve this request; do not retry.";
+
+export const SHELL_ANALYSIS_LIMIT_REASON = "Shell path analysis ran out of budget, so nothing is proven about where this command reads or writes; it needs your approval.";
 
 function askHuman(request: PermissionDecisionRequest, reasonCode: string, reason: string): PermissionPipelineDecision {
   return request.headless

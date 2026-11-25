@@ -9,6 +9,7 @@ import { selectDeclaredPathValues } from "../shared/dotted-field-value.js";
 import { isConfinedHostShellExecution } from "../permissions/host-shell-execution-plan.js";
 import { dispatchReviewerForHeadless, dispatchReviewerForInteractiveAuto } from "./pipeline/reviewer-dispatch.js";
 import { criticalDeleteTargetFor } from "../permissions/sensitive-paths.js";
+import { SHELL_ANALYSIS_LIMIT_REASON } from "../permissions/decision-pipeline.js";
 import { hookChainFromDispatch } from "./pipeline/audit-entries.js";
 import { runScriptHook } from "./invocation-services.js";
 import { HookInputMutationRequest, attachHookControlContext, hookInfluenceContext } from "../hooks/hook-influence.js";
@@ -1452,6 +1453,7 @@ async function runToolInvocationAttempt(
 
     const canonicalTargets: Array<{ filePath: string; canonicalPath: string; runtimePath: string }> = [];
     let directoryAuthorization: AuthorizationStageContext["directoryAuthorization"];
+    let shellAnalysisLimitAdmitted = false;
     const directoryApprovalSignal = (approvalSignal?: AbortSignal) =>
       approvalSignal && abortSignal ? AbortSignal.any([approvalSignal, abortSignal]) : approvalSignal ?? abortSignal;
     const directoryGrantGuard = (signal?: AbortSignal) =>
@@ -2012,6 +2014,7 @@ async function runToolInvocationAttempt(
     if (canonicalBrokerLifecycleTool === undefined && hasShellCommandArgument(finalInput) && !brokeredHostShellRouteSelected()) {
       while (true) {
         let shellPathViolation: ShellPathPolicyViolation | null = null;
+        shellAnalysisLimitAdmitted = false;
         if (hostShellToolName === "powershell") {
           const resolvedCwd = resolveHostShellWorkingDirectory(executionCwd, typeof finalInput.cwd === "string" ? finalInput.cwd : undefined);
           // Unpinned startup cannot run a native host preflight. The tool repeats
@@ -2042,7 +2045,15 @@ async function runToolInvocationAttempt(
           }
           break;
         }
-
+        if (shellPathViolation.kind === "analysis-limit") {
+          // Nothing is proven about the command's paths. A contained command goes to the mode; anywhere else a human answers it.
+          const disposable = invocationPermissionContext.disposableSubstrate;
+          const contained = hostTerminalCommand === undefined && hostShellExecutionPlan !== undefined
+            && (isConfinedHostShellExecution(hostShellExecutionPlan, disposable) || disposable !== undefined);
+          if (!contained) invocationPermissionContext.floor ??= { code: "shell-analysis-limit", reason: SHELL_ANALYSIS_LIMIT_REASON };
+          shellAnalysisLimitAdmitted = true;
+          break;
+        }
 
         if (
           executionRoutePlan?.route === "disposable-container" &&
@@ -2586,6 +2597,7 @@ async function runToolInvocationAttempt(
       trust,
       invocationCategory,
       blockReadsOutsideWorkingDirectories,
+      ...(shellAnalysisLimitAdmitted ? { shellAnalysisLimitAdmitted: true as const } : {}),
       evaluationContext,
       approvalCacheKey,
       approvalPurpose,

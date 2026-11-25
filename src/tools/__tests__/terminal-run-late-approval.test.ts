@@ -1,5 +1,5 @@
 import type { UserOwnedSurfaceChoice } from "../../shared/permissions-events.js";
-import { NO_APPROVER_MESSAGE } from "../../permissions/decision-pipeline.js";
+import { NO_APPROVER_MESSAGE, SHELL_ANALYSIS_LIMIT_REASON } from "../../permissions/decision-pipeline.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
@@ -301,9 +301,26 @@ describe("host terminal late native approval", () => {
       await vi.waitFor(() => expect(f.cards).toHaveLength(1), CARD_WAIT);
       expect(f.cards[0]?.kind).toBe("out-of-allowed-dir");
       expect(f.typed).toEqual([]);
-      f.deny(f.cards[0]!);
+      f.deny(f.cards[0]);
       await pending;
       expect(f.typed).toEqual([]);
+    });
+  });
+
+  it("asks a human once for a command whose path analysis runs out of budget, then types it", async () => {
+    const command = Array.from({ length: 7 }, (_, index) => `if test -f q${index}; then v${index}=1; fi`).join("; ");
+    const f = await fixture({ command, mode: "default", exactRule: false, holdFinalizer: false });
+    await runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "analysis-limit-turn" }, async () => {
+      const pending = f.run();
+      await vi.waitFor(() => expect(f.cards).toHaveLength(1), CARD_WAIT);
+      expect(f.cards[0]?.reason).toContain(SHELL_ANALYSIS_LIMIT_REASON);
+      expect(f.cards[0]?.allowedChoices).toEqual(["allow-once", "deny-once"]);
+      expect(f.typed).toEqual([]);
+      f.approve(f.cards[0], true);
+      const [result] = await pending;
+      expect(result.is_error, result.content).toBeFalsy();
+      expect(f.cards).toHaveLength(1);
+      expect(f.typed).toEqual([command]);
     });
   });
 

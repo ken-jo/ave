@@ -168,6 +168,8 @@ export interface ExecutionStageContext {
   invocationCategory: ToolCategory;
   /** Layer 1 read fence for this invocation; see ToolExecutionContext. */
   blockReadsOutsideWorkingDirectories: boolean;
+  /** See ToolExecutionContext. */
+  shellAnalysisLimitAdmitted?: true;
   finalInput: Record<string, unknown>;
   sessionId: string | undefined;
   invocationPermissionContext: ToolPermissionContext;
@@ -243,6 +245,7 @@ export async function executeAuthorizedToolInvocation(
     trust,
     invocationCategory,
     blockReadsOutsideWorkingDirectories,
+    shellAnalysisLimitAdmitted,
     finalInput,
     sessionId,
     invocationPermissionContext,
@@ -808,6 +811,7 @@ export async function executeAuthorizedToolInvocation(
     } : {}),
     extraAllowedDirectories: [...new Set(invocationRuntimeAllowedDirectories)],
     blockReadsOutsideWorkingDirectories,
+    ...(shellAnalysisLimitAdmitted ? { shellAnalysisLimitAdmitted } : {}),
     headless: invocationPermissionContext.headless === true,
     // Owner plugin sandbox root — same derivation the reviewer uses
     // (executor permission path). Plugin-owned tools confine their OS

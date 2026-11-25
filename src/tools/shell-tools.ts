@@ -1759,6 +1759,7 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
     );
     if (
       commandPathViolation &&
+      !(commandPathViolation.kind === "analysis-limit" && ctx.shellAnalysisLimitAdmitted === true) &&
       !disposableGrantRelaxesPathPolicy(executionAuthority, commandPathViolation.kind)
     ) {
       return { output: commandPathViolation.reason, isError: true };

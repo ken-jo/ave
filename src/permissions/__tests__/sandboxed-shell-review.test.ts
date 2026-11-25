@@ -111,11 +111,10 @@ describe("confined shell mode and review policy", () => {
       projectRulesCwd: cwd, shellExecution: { runsSandboxed: true },
     })).toMatchObject({ decision: "ask", reasonCode: "review-required", reviewer: { route: "foreground-auto" } });
   });
-  it("denies actual safety-budget exhaustion before auto review", () => {
+  it("routes actual safety-budget exhaustion through ordinary auto review", () => {
     const result = check(`echo ${"x".repeat(9000)}`);
-    expect(result).toMatchObject({ decision: "deny", reasonCode: "shell-analysis-limit" });
+    expect(result).toMatchObject({ decision: "ask", reasonCode: "review-required", pipelineRequest: { shell: { unproven: true } } });
     expect(result.forceModal).toBeUndefined();
-    expect(result.reviewer).toBeUndefined();
   });
   it("routes bounded analysis uncertainty through ordinary auto review", () => {
     const result = check("mystery \"$value\"");

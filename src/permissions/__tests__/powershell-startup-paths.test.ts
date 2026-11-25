@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveTrustedPowerShellExecutable, type TrustedPowerShellExecutable } from "../../shared/powershell-executable.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
-import { checkShellPermission } from "../../__tests__/support/permission-lane.js";
+import { analysisLimitAnswer, checkShellPermission } from "../../__tests__/support/permission-lane.js";
 import { PermissionManager } from "../permission-manager.js";
 import { inspectPowerShellCommand } from "../rules/powershell-exfiltration.js";
 import { buildShellRuleApproval } from "../rules/shell-rule-approval.js";
@@ -123,7 +123,7 @@ it("short-circuits capped and already-unproven input before installation discove
   const overCap = `Write-Output ${"x".repeat(100_000)}`;
   for (const sandboxed of [false, true]) {
     expect(checkShellPermission(manager, cwd, "startup-path", overCap, "powershell", sandboxed))
-      .toMatchObject({ decision: "deny", reasonCode: "shell-analysis-limit" });
+      .toMatchObject(analysisLimitAnswer(sandboxed, false, { decision: "allow", reasonCode: "allow-mode", pipelineRequest: { shell: { unproven: true } } }));
     expect(buildShellRuleApproval("powershell", overCap, cwd, { allow: true, deny: true }).exactRule).toBeNull();
   }
   expect(inspectPowerShellCommand("Write-Output $runtime", cwd).outcome).toBe("unproven");

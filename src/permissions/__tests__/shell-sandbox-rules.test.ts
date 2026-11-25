@@ -3,6 +3,7 @@ import { _resetAveHomePrivacyForTest, setAveHomePrivacyAtBoot } from "../../shar
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { containedModeAnswer } from "../../__tests__/support/permission-lane.js";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -567,14 +568,14 @@ describe("plain-shell invocation authorization", () => {
 });
 
 describe("protected write evidence budget", () => {
-  it.each(["strict", "default", "auto", "allow"] as const)("denies actual evidence parser exhaustion before mode or a card in %s", (mode) => {
+  it.each(["strict", "default", "auto", "allow"] as const)("leaves actual evidence parser exhaustion on a contained route to the mode in %s", (mode) => {
     manager.setMode(mode);
     const command = " ".repeat(SHELL_ANALYSIS_LIMITS.sourceBytes + 1) + "git config core.hooksPath /tmp";
     for (const headless of [false, true]) {
       const result = check(command, true, { headless });
-      expect(result).toMatchObject({ decision: "deny", reasonCode: "shell-analysis-limit" });
+      expect(result).toMatchObject({ ...containedModeAnswer(mode, headless), pipelineRequest: { shell: { unproven: true } } });
       expect(result.forceModal).toBeUndefined();
-      expect(result.reviewer).toBeUndefined();
+      expect(result.pipelineRequest?.floor).toBeUndefined();
     }
   });
 });

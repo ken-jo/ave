@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { analysisLimitAnswer } from "../../__tests__/support/permission-lane.js";
 import { SHELL_ANALYSIS_LIMITS } from "../../shared/shell-parser.js";
 import { aveHome } from "../../shared/ave-home.js";
 import { PermissionManager, type PermissionRule } from "../permission-manager.js";
@@ -538,20 +539,21 @@ describe("shared runner decisions", () => {
     expect(checkCommand(manager, dialect, command).decision).toBe("allow");
   });
 
-  // Exhausted evidence budgets deny before rules or modes can grant execution.
+  // An exhausted evidence budget asks a human on the host, where no grant answers it; a contained command keeps ordinary grant and mode policy.
   it.each([
     { name: "input over the hard length cap", dialect: "bash" as const, command: `echo ${"x".repeat(SHELL_ANALYSIS_LIMITS.sourceBytes + 1)}` },
     { name: "expression lexer out of budget", dialect: "powershell" as const, command: `Get-Content (${"'a' + ".repeat(3000)}'b')` },
-  ])("denies $name before modes or remembered grants", async ({ dialect, command }) => {
+  ])("answers $name on the host before remembered grants", async ({ dialect, command }) => {
     const manager = runnerManager();
-    const expected = { decision: "deny", reasonCode: "shell-analysis-limit" };
-    expect(checkCommand(manager, dialect, command)).toMatchObject(expected);
+    expect(checkCommand(manager, dialect, command)).toMatchObject(analysisLimitAnswer(false, false, {}));
     await manager.addAlwaysAllowedPersist(actionKey(dialect, command));
     for (const mode of ["strict", "default", "auto", "allow"] as const) {
       manager.setMode(mode);
       for (const sandboxed of [false, true]) {
-        expect(checkCommand(manager, dialect, command, sandboxed)).toMatchObject(expected);
-        expect(checkCommand(manager, dialect, command, sandboxed, true)).toMatchObject(expected);
+        for (const headless of [false, true]) {
+          expect(checkCommand(manager, dialect, command, sandboxed, headless), `${mode} sandboxed=${sandboxed} headless=${headless}`)
+            .toMatchObject(analysisLimitAnswer(sandboxed, headless, { decision: "allow", reasonCode: expect.stringMatching(/^(?:remembered-approval|rule-allow)$/u) }));
+        }
       }
     }
     expect(buildShellRuleApproval(dialect, command, CWD, { allow: true, deny: true }).exactRule).toBeNull();

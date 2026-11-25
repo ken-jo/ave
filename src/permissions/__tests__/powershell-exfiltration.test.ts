@@ -1,5 +1,6 @@
 import { reviewerJudgeOutcomeForTest } from "../../__tests__/support/reviewer-judge.js";
 import "../../__tests__/support/trusted-powershell.js";
+import { analysisLimitAnswer } from "../../__tests__/support/permission-lane.js";
 import { MAX_LITERAL_COMMAND_LENGTH } from "../rules/shell-prefix-values.js";
 // Shell floors apply by dialect, including sensitive paths and credential exfiltration.
 import { mkdtempSync, rmSync } from "node:fs";
@@ -671,7 +672,7 @@ describe("checkDetailed applies the floors by dialect", () => {
     expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps(command))).toMatchObject({ decision: "allow", reasonCode: "allow-mode" });
   });
 
-  it("denies exhausted path-evidence budgets before every mode and grant", async () => {
+  it("asks a human for exhausted path evidence on the host before every grant, and keeps ordinary grant policy when contained", async () => {
     const command = `Get-Content (${"'a' + ".repeat(3000)}'b')`;
     const pm = new PermissionManager(join(dir, "permissions.json"));
     await pm.addAlwaysAllowedPersist(ps(command).approvalCacheKey, "write");
@@ -680,9 +681,9 @@ describe("checkDetailed applies the floors by dialect", () => {
     for (const mode of ["strict", "default", "auto", "allow"] as const) {
       pm.setMode(mode);
       for (const runsSandboxed of [false, true]) for (const headless of [false, true]) {
-        const denied = pm.checkDetailed("powershell", "builtin", "shell", null, { ...ps(command), headless, shellExecution: { runsSandboxed } });
-        expect(denied).toMatchObject({ decision: "deny", reasonCode: "shell-analysis-limit" });
-        expect(denied.forceModal).toBeUndefined();
+        const result = pm.checkDetailed("powershell", "builtin", "shell", null, { ...ps(command), headless, shellExecution: { runsSandboxed } });
+        expect(result, `${mode} sandboxed=${runsSandboxed} headless=${headless}`).toMatchObject(analysisLimitAnswer(runsSandboxed, headless, { decision: "allow", reasonCode: expect.stringMatching(/^(?:rule-allow|remembered-approval)$/u) }));
+        if (runsSandboxed) expect(result.forceModal).toBeUndefined();
       }
     }
   });
@@ -739,7 +740,7 @@ describe("checkDetailed applies the floors by dialect", () => {
     if (boundary === "analysis-limit") {
       await pm.addAlwaysAllowedPersist(ps(command).approvalCacheKey, "write");
       for (const headless of [false, true]) expect(pm.checkDetailed("powershell", "builtin", "shell", null, { ...ps(command), headless }))
-        .toMatchObject({ decision: "deny", reasonCode: "shell-analysis-limit" });
+        .toMatchObject(analysisLimitAnswer(false, headless, {}));
     } else if (boundary === "exfiltration") {
       await pm.addAlwaysAllowedPersist(ps(command).approvalCacheKey, "write");
       expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps(command)))

@@ -6,6 +6,8 @@ import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { ApprovalGate, type ApprovalRequest } from "../../permissions/approval-gate.js";
+import { SHELL_ANALYSIS_LIMIT_REASON } from "../../permissions/decision-pipeline.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import {
   __resetActiveSandboxCapabilityForTest,
@@ -228,6 +230,41 @@ describe("execution route shadow metadata", () => {
       await cleanupTmpDir(dir);
     }
   });
+
+  it("asks a human for an exhausted path analysis on the host and runs the command once approved", async () => {
+    __resetActiveSandboxCapabilityForTest();
+    setShellSandboxRequestedAtBoot(false);
+    const dir = mkdtempSync(join(tmpdir(), "ave-analysis-limit-host-"));
+    try {
+      const cards: ApprovalRequest[] = [];
+      const owner = { isDestroyed: () => false, send: (channel: string, card: ApprovalRequest) => {
+        if (channel === "ave:approval:request") cards.push(card);
+      } };
+      const gate = new ApprovalGate(owner as never);
+      const registry = new ToolRegistry();
+      registry.register(new BashTool());
+      const permissions = new PermissionManager(join(dir, "permissions.json"));
+      permissions.setMode("allow");
+      const executor = new ToolExecutor(registry, undefined, permissions, undefined, gate);
+      const tests = Array.from({ length: 7 }, (_, index) => `if test -f q${index}; then v${index}=1; fi`).join("; ");
+      const pending = executor.executeAll(
+        [{ id: "tu-analysis-limit", name: "bash", input: { command: `${tests}; printf ok > marker` } }],
+        { sessionId: "sess-analysis-limit", executionCwd: dir, permissionContext: { trustOrigin: "llm-tool-arg" } },
+      );
+      await vi.waitFor(() => expect(cards).toHaveLength(1), { timeout: 30_000 });
+      expect(cards[0]?.reason).toContain(SHELL_ANALYSIS_LIMIT_REASON);
+      expect(cards[0]?.allowedChoices).toEqual(["allow-once", "deny-once"]);
+      expect(existsSync(join(dir, "marker"))).toBe(false);
+      const [card] = cards;
+      if (!card) throw new Error("no approval card");
+      gate.resolveFromDesktopRenderer(card.id, { requestId: card.id, choice: "allow-once", nonce: card.nonce, hmac: card.hmac }, owner as never);
+      const [result] = await pending;
+      expect(result?.is_error, result?.content).toBeFalsy();
+      expect(existsSync(join(dir, "marker"))).toBe(true);
+    } finally {
+      await cleanupTmpDir(dir);
+    }
+  }, 60_000);
 
   it("executes recursive work in the verified disposable guest and records the consumed route", async () => {
     __resetActiveSandboxCapabilityForTest();
