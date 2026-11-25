@@ -46,6 +46,7 @@ async function registeredBuiltins() {
     networkFetch: unusedNetworkFetch, singleHopNetworkFetch: unusedNetworkFetch,
     getAskUserQuestionGate: () => undefined, getSubAgentRunner: () => undefined, emitAgentSpawn: vi.fn(),
     routinesStore: available, routineScheduleDeps: available, sessionTasksStore: available, sessionGoalStore: available,
+    workflowTemplateStore: available,
     agentProfileStore: available, terminalRead: available, terminalRun: available, browser: available,
     getAgentSendRuntime: () => undefined, skillStore: available, emitSkillLoad: vi.fn(),
     skillOverlay: available, skillApprovalsStore: available, approvalGate: available,
@@ -65,7 +66,7 @@ describe("builtin approval action coverage", () => {
   it.each(["en", "ko"] as const)("summarizes every tool registered by core and workflow boot in %s", async (locale) => {
     const tools = (await registeredBuiltins()).listAll().filter(tool => tool.source === "builtin");
     setLocale(locale);
-    expect(tools.map(tool => tool.name)).toEqual(expect.arrayContaining(["extract_archive", "memory_delete", "browser_navigate", "skill_load", "terminal_run"]));
+    expect(tools.map(tool => tool.name)).toEqual(expect.arrayContaining(["extract_archive", "memory_delete", "browser_navigate", "skill_load", "terminal_run", "workflow_template_propose"]));
     expect(tools.filter(tool => !Object.hasOwn(BUILTIN_APPROVAL_ACTIONS, tool.name)).map(tool => tool.name)).toEqual([]);
     const missing = tools.flatMap(tool => {
       const action = approvalAction(request(tool.name), t);

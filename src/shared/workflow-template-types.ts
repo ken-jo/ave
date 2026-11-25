@@ -70,6 +70,19 @@ export interface WorkflowTemplateDraftInput extends TemplateGraph {
   description?: string;
   basedOn?: number;
 }
+export const WORKFLOW_TEMPLATE_PROPOSE_TOOL = "workflow_template_propose";
+
+/** An in-memory draft that can be saved only through template confirmation. */
+export interface WorkflowTemplateProposal {
+  id: string;
+  graphHash: string;
+  draft: WorkflowTemplateDraftInput;
+}
+
+export function isWorkflowTemplateProposalId(value: unknown): value is string {
+  return typeof value === "string" && /^proposal-[0-9a-f-]{36}$/.test(value);
+}
+
 interface WorkflowTemplateDraft extends WorkflowTemplateDraftInput {
   graphHash: string;
   revision: string;
