@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { windowsCommandLineLength, WINDOWS_COMMAND_LINE_LIMIT } from "../windows-command-line.js";
 import * as nativeHost from "../windows-native-host.js";
 import { pinWindowsPaths, readWindowsDacls } from "../windows-path-facts.js";
+import { isWindowsPathKindHelperUnavailable } from "../../main/windows-path-kind-launcher.js";
+import { sleepingHelper } from "../../__tests__/support/sleeping-helper.js";
 
 type OutputEncoding = BufferEncoding | "buffer" | null | undefined;
 
@@ -11,7 +13,11 @@ const { execute, helper } = vi.hoisted(() => ({
   helper: "C:\\path kind\\helper.exe",
 }));
 vi.mock("node:child_process", async original => ({ ...await original<typeof import("node:child_process")>(), execFileSync: execute }));
-vi.mock("../../main/windows-path-kind-launcher.js", () => ({ resolveWindowsPathKindHelper: () => helper }));
+vi.mock("../../main/windows-path-kind-launcher.js", async original => ({ ...await original<typeof import("../../main/windows-path-kind-launcher.js")>(), resolveWindowsPathKindHelper: () => helper }));
+vi.mock("../tool-timeout-policy.js", async original => {
+  const actual = await original<typeof import("../tool-timeout-policy.js")>();
+  return { ...actual, TOOL_TIMEOUT_POLICY: { ...actual.TOOL_TIMEOUT_POLICY, windowsAclRequestMs: 300 } };
+});
 
 const MISSING = {
   exists: false, canonical: null, volumeSerial: null, fileId: null, volumeSerialNumber: null, fileIndex: null,
@@ -127,5 +133,36 @@ describe("Windows path facts transport", () => {
     expect(request([path])).toMatchObject([{ exists: true, canonical: path }]);
     replyOnce(malformed);
     expect(() => request([path])).toThrow(/encoding utf-8/i);
+  });
+
+  function thrown(run: () => unknown): NodeJS.ErrnoException {
+    try { run(); } catch (error) { return error as NodeJS.ErrnoException; }
+    throw new Error("expected a failure");
+  }
+
+  it("names a helper that does not answer within its bound by its cause and code alone, as unavailable", async () => {
+    const { execFileSync: spawnReal } = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+    const sleeper = sleepingHelper();
+    execute.mockImplementationOnce((_file, _args, options) => spawnReal(sleeper.file, sleeper.args, { ...options, input: undefined }));
+    const error = thrown(() => readWindowsDacls([resolve("timed out")]));
+    expect(error).toMatchObject({ message: "Windows path facts helper did not answer within 300 ms", code: "ETIMEDOUT" });
+    expect(isWindowsPathKindHelperUnavailable(error)).toBe(true);
+    expect(error.message).not.toContain(sleeper.file);
+    expect(error.cause).toBeUndefined();
+    expect(error).not.toHaveProperty("path");
+    expect(error).not.toHaveProperty("syscall");
+  });
+
+  it("names a helper that cannot start by its code alone, as unavailable, and keeps a non-zero exit a helper failure", () => {
+    execute.mockImplementationOnce(() => { throw Object.assign(new Error(`spawnSync ${helper} ENOENT`), { code: "ENOENT", syscall: `spawnSync ${helper}`, path: helper }); });
+    const missing = thrown(() => pinWindowsPaths([resolve("missing")]));
+    expect(missing).toMatchObject({ message: "Windows path facts helper could not start (ENOENT)", code: "ENOENT" });
+    expect(isWindowsPathKindHelperUnavailable(missing)).toBe(true);
+    expect(missing.message).not.toContain(helper);
+
+    execute.mockImplementationOnce(() => { throw Object.assign(new Error(`Command failed: ${helper}`), { status: 5 }); });
+    const failed = thrown(() => pinWindowsPaths([resolve("failed")]));
+    expect(failed.message).toBe("Windows path facts helper failed (exit 5)");
+    expect(isWindowsPathKindHelperUnavailable(failed)).toBe(false);
   });
 });

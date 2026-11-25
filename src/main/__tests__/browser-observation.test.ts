@@ -1,6 +1,7 @@
 import { AsyncResource } from "node:async_hooks";
 import { EventEmitter } from "node:events";
-import type { DownloadItem, IpcMainInvokeEvent, WebContents } from "electron";
+import type { IpcMainInvokeEvent, WebContents } from "electron";
+import type { ObservedDownload } from "../browser/browser-download-staging.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CHANNELS } from "../../contract/app-contract.js";
 import { ObservationDaemon } from "../../observation/daemon.js";
@@ -39,7 +40,7 @@ async function flush() { await vi.advanceTimersByTimeAsync(1); }
 function download(chain = ["https://example.test/file.zip"]) {
   return Object.assign(new EventEmitter(), { getURLChain: () => chain, hasUserGesture: () => true,
     getFilename: () => { throw new Error("Observation must not read the filename"); },
-    getSavePath: () => { throw new Error("Observation must not read the save path"); } }) as unknown as DownloadItem;
+    getSavePath: () => { throw new Error("Observation must not read the save path"); } }) as unknown as ObservedDownload & EventEmitter;
 }
 beforeEach(() => {
   vi.useFakeTimers(); state.holder = sender; state.registered = true; state.childLive = true; sender.send.mockReset();

@@ -443,6 +443,13 @@ describe("holder layout", () => {
     expect(state.spawn).not.toHaveBeenCalled();
     expect(stagingRoots()).toBe(before);
   });
+
+  it("carries the host's floor pierces to the native entry, and none when the host names none", async () => {
+    await spawnMxcBundledHolder(input({ allowRead: ["C:\\ave\\plugins\\fs\\gen", "D:\\shared\\catalog"], floorPierces: ["D:\\shared\\catalog"] }));
+    expect(lastSpec().floorPierces).toEqual(["D:\\shared\\catalog"]);
+    await spawnMxcBundledHolder(input());
+    expect(lastSpec()).not.toHaveProperty("floorPierces");
+  });
 });
 
 describe("teardown", () => {

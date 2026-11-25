@@ -5,6 +5,8 @@ import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { configureHostResources } from "../../main/host-resources.js";
 import { removeLinksUnder } from "../../__tests__/support/tmp-dir-teardown.js";
+import { isWindowsPathKindHelperUnavailable } from "../../main/windows-path-kind-launcher.js";
+import { TOOL_TIMEOUT_POLICY } from "../tool-timeout-policy.js";
 import { admitWindowsReparse, decodeWindowsPathFacts, evaluateWindowsReadDacl, isOwnerOnlyDacl, leadingWindowsDenies, mapWindowsGenericRights, pinWindowsPaths, readWindowsDacls, windowsObjectKey, windowsOwnerRules, windowsPathKey, type WindowsDacl, type WindowsPathFacts } from "../windows-path-facts.js";
 
 vi.mock("node:child_process", async (importOriginal) => {
@@ -234,7 +236,7 @@ describe.runIf(process.platform === "win32")("Windows path facts native boundary
       }));
     }
   });
-  it("reports a helper's non-zero exit by its status alone and keeps system errors", () => {
+  it("reports a helper's non-zero exit by its status alone and a timed-out helper by its cause and code, never its path", () => {
     const leaked = String.raw`D:\example\alice\ave-path-kind.exe`;
     vi.mocked(execFileSync).mockImplementationOnce(() => {
       throw Object.assign(new Error(`Command failed: ${leaked} --dacl\n${leaked}`), { status: 3, signal: null, stderr: Buffer.from(leaked) });
@@ -247,6 +249,10 @@ describe.runIf(process.platform === "win32")("Windows path facts native boundary
     expect(Object.values(failure as object).map(String).join("\n")).not.toContain("alice");
     const system = Object.assign(new Error(`spawnSync ${leaked} ETIMEDOUT`), { code: "ETIMEDOUT", syscall: `spawnSync ${leaked}`, status: null });
     vi.mocked(execFileSync).mockImplementationOnce(() => { throw system; });
-    expect(() => readWindowsDacls([join(fixture, "directory")])).toThrow(system);
+    let timedOut: unknown;
+    try { readWindowsDacls([join(fixture, "directory")]); } catch (error) { timedOut = error; }
+    expect(timedOut).toMatchObject({ message: `Windows path facts helper did not answer within ${TOOL_TIMEOUT_POLICY.windowsAclRequestMs} ms`, code: "ETIMEDOUT" });
+    expect(isWindowsPathKindHelperUnavailable(timedOut)).toBe(true);
+    expect(Object.values(timedOut as object).map(String).join("\n")).not.toContain("alice");
   });
 });

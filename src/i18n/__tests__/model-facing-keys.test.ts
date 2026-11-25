@@ -25,6 +25,7 @@ const INTERFACE_KEYS: ReadonlyMap<string, readonly string[]> = new Map([
   ["lib/chat-stream-state.ts", ["askUserQuestionCard."]], // transcript recap labels
   ["lib/llm-status-message.ts", ["useChatState."]], // status line
   ["main/auto-updater.ts", ["common.", "mainDialog."]], // update dialogs
+  ["main/browser/browser-download-staging.ts", ["browserDownload.unsupportedVolume", "browserDownload.volumeUnknown"]], // download refusals, logged for people
   ["main/browser/browser-page-context-menu.ts", ["browserContextMenu."]], // native page context menu
   ["main/browser/browser-workspace-desktop.ts", ["browserWorkspace.permissionPrompt."]], // native site-permission dialog
   ["main/configuration-boot-error.ts", ["homePrivacy."]],

@@ -555,6 +555,7 @@ async function spawnContainedWorker(
       egressOwner: { kind: "worker", role: "worker", pluginId: spec.pluginId, instanceId: spec.workerId },
       workerTransport: control,
       parent,
+      ...(spec.floorPierces !== undefined ? { floorPierces: spec.floorPierces } : {}),
     });
   } catch (error) {
     releaseWorkerReservation(error instanceof MxcProcessCleanupError);
