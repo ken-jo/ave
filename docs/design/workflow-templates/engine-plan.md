@@ -864,7 +864,7 @@ Commit: `feat(permissions): unattended lane and envelope evaluator`.
 Files: new `src/permissions/unattended-isolation.ts`; changed `permissions/asrt-sandbox.ts`, `permissions/egress-runtime.ts`, `engine/turn/tool-scope.ts`, `permissions/host-shell-execution-plan.ts`, the shell environment builder and the project hook / skill / MCP loaders (anchors not read; first task of the item); one line in `workflow-engine-extensions.ts` (`LaneHooks.admit`).
 
 ```ts
-type IsolationUnproven = "sandbox-unavailable" | "boundary-unverified" | "platform-not-qualified" | "read-narrowing-unavailable" | "local-network-required";
+type IsolationUnproven = "sandbox-unavailable" | "boundary-unverified" | "platform-not-qualified" | "read-narrowing-unavailable";
 interface UnattendedIsolationProfile {
   readRoots: string[];            // the stage workspace, toolchain roots, envelope.readRoots; everything else in the user's home is read-denied
   writeRoots: string[];           // the stage workspace and its temp folder
