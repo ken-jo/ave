@@ -17,7 +17,8 @@ export function shellExecutionEnvironmentLines(plan: ShellEnvironmentPlan): read
           ? [t("shellExecution.sandboxInstallHint", { packages: plan.installHints.map((hint) => INSTALL_HINT_NAMES[hint]).join(", ") })] : [])]
       // A shell-scope-off plan requires approval only while boot cannot establish Ave home privacy (any category but helper-unavailable, whose plan is blocked).
       : plan.requiresExplicitUserApproval && (plan.fallbackReason === "disabled-by-setting" || plan.fallbackReason === "platform-unsupported")
-        ? [t("shellExecution.boundaryUnverifiedAsk")] : []),
+        ? [t("shellExecution.boundaryUnverifiedAsk")]
+        : plan.fallbackReason === "windows-partial-shell-acl-unsafe" ? [t("shellExecution.shellNotContainedAsk")] : []),
     t("shellExecution.location", { platform: plan.platform }),
     plan.mode === "asrt" ? t("shellExecution.temporaryHome") : t("shellExecution.hostHome"),
     plan.mode === "asrt" ? t("shellExecution.isolatedAuthentication") : t("shellExecution.hostAuthentication"),

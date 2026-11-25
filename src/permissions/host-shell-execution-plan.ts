@@ -254,6 +254,7 @@ export function buildHostShellExecutionPlan(input: {
   if (executionRequest === "host") {
     // With the requested sandbox unavailable an explicit host request is the same uncontained shell, so it takes the same ask.
     const forcedAsk = askEveryCommand || (requestedSandbox && input.activeCapability.kind === "none");
+    const windowsUncontained = input.platform === "win32" && requestedSandbox && input.activeCapability.kind === "asrt" && !hasShellContainment(input.activeCapability);
     return Object.freeze({
       version: HOST_SHELL_EXECUTION_PLAN_VERSION,
       platform: input.platform,
@@ -266,7 +267,7 @@ export function buildHostShellExecutionPlan(input: {
       capability: noneCapability(input.platform, "Explicit host execution runs as the current user without OS confinement."),
       fallbackReason: "none" as const,
       requiresExplicitUserApproval: true,
-      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":explicit-host" + (forcedAsk ? noBackendAskSuffix : ""),
+      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":explicit-host" + (forcedAsk ? noBackendAskSuffix : windowsUncontained ? ASK_EVERY_COMMAND_SUFFIX : ""),
     });
   }
 
@@ -334,7 +335,7 @@ export function buildHostShellExecutionPlan(input: {
     });
   }
 
-  // Windows remains special only when a real ASRT substrate is active but is not shell-contained. The execution authorization itself is generic.
+  // Windows remains special only when a real ASRT substrate is active but is not shell-contained. That shell takes the same ask as a missing backend, with no saved-rule pass.
   if (
     input.platform === "win32" &&
     requestedSandbox &&
@@ -357,7 +358,7 @@ export function buildHostShellExecutionPlan(input: {
       capability,
       fallbackReason,
       requiresExplicitUserApproval: true,
-      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":" + fallbackReason + (askEveryCommand ? ASK_EVERY_COMMAND_SUFFIX : ""),
+      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":" + fallbackReason + ASK_EVERY_COMMAND_SUFFIX,
     });
   }
 

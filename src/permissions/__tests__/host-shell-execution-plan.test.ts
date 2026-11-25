@@ -109,7 +109,7 @@ describe("host shell execution plan", () => {
     expect(Object.isFrozen(plan.capability)).toBe(true);
   });
 
-  it("leaves the Windows approved-host plan as it was: explicit approval, outside the forced ask", () => {
+  it("puts the Windows approved-host plan on the forced ask, with no exact-rule pass on either route", () => {
     const plan = buildHostShellExecutionPlan({ platform: "win32", requestedSandbox: true, activeCapability: WINDOWS_PARTIAL_ASRT,
       unavailableCauses: ["missing-bwrap"] });
     expect(plan).toEqual({
@@ -128,9 +128,21 @@ describe("host shell execution plan", () => {
       },
       fallbackReason: "windows-partial-shell-acl-unsafe",
       requiresExplicitUserApproval: true,
-      identity: "host-shell-execution-plan/v4:win32:windows-partial-shell-acl-unsafe",
+      identity: "host-shell-execution-plan/v4:win32:windows-partial-shell-acl-unsafe:ask",
     });
-    expect(requiresUnsandboxedShellAsk(plan)).toBe(false);
+    expect(requiresUnsandboxedShellAsk(plan)).toBe(true);
+    const host = buildHostShellExecutionPlan({ platform: "win32", requestedSandbox: true, activeCapability: WINDOWS_PARTIAL_ASRT, executionMode: "host" });
+    expect(host.identity).toBe("host-shell-execution-plan/v4:win32:explicit-host:ask");
+    for (const homePrivacyVerified of [true, false]) {
+      for (const executionMode of ["default", "host"] as const) {
+        const built = buildHostShellExecutionPlan({ platform: "win32", requestedSandbox: true, activeCapability: WINDOWS_PARTIAL_ASRT, executionMode, homePrivacyVerified });
+        expect(requiresUnsandboxedShellAsk(built)).toBe(true);
+        expect(exactRulePassesUnsandboxedShellAsk(built)).toBe(false);
+      }
+    }
+    // A contained shell route is not floored when its explicit host request is: the request leaves a ready backend.
+    const ready = buildHostShellExecutionPlan({ platform: "win32", requestedSandbox: true, activeCapability: { ...WINDOWS_PARTIAL_ASRT, confines: { filesystem: true, process: true, network: true } }, shellSubstrate: "mxc", executionMode: "host" });
+    expect(requiresUnsandboxedShellAsk(ready)).toBe(false);
   });
 
   it.each(["darwin", "linux", "win32"] as const)(

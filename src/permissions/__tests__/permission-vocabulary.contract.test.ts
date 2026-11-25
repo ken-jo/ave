@@ -274,9 +274,16 @@ const ROWS: readonly Row[] = [
       return noBackendShell("exact", { homePrivacyVerified: true }, false, "host");
     } },
   { id: "D26", point: "Windows capability that does not contain shells", tree: "T:128", unknown: "U2",
-    today: { outcome: "ask", reason: "default:windows-partial-shell-acl-unsafe", waiver: "once" },
-    core: { outcome: "ask-human", waiver: "session" },
-    observe: () => plan({ platform: "win32", requestedSandbox: true, activeCapability: capability("win32", "asrt", false) }) },
+    today: { outcome: "ask-human", reason: "default:windows-partial-shell-acl-unsafe", waiver: "session" },
+    observe: () => {
+      // An explicit host request there is the same uncontained shell, and no saved rule passes either route.
+      for (const executionMode of ["default", "host"] as const) {
+        const built = buildHostShellExecutionPlan({ platform: "win32", requestedSandbox: true, activeCapability: capability("win32", "asrt", false), executionMode, homePrivacyVerified: true });
+        expect(requiresUnsandboxedShellAsk(built)).toBe(true);
+        expect(exactRulePassesUnsandboxedShellAsk(built)).toBe(false);
+      }
+      return plan({ platform: "win32", requestedSandbox: true, activeCapability: capability("win32", "asrt", false) });
+    } },
   // I12 removes this branch with the partial and fs-only kinds (PF3); nothing produces them today. Until then the core answer
   // is the U2 one its neighbours D25 and D26 carry.
   { id: "D27", point: "any other partial substrate", tree: "no row", unknown: "U2",
@@ -469,7 +476,6 @@ const ROWS: readonly Row[] = [
 // Inconsistency id (policy design, section 3) -> the rows that still answer differently from the policy core.
 const EXCEPTIONS: Readonly<Record<string, readonly string[]>> = {
   I3: ["L20"],
-  I11: ["D26"],
   I12: ["D27"],
   I15: ["L3", "L13"],
   I16: ["L18"],
@@ -483,6 +489,7 @@ const RESOLVED: Readonly<Record<string, string>> = {
   I5: "D34.b",
   I8: "L4",
   I10: "L1",
+  I11: "D26",
 };
 
 // Inconsistencies no driven row can show, and why.

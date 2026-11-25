@@ -674,14 +674,20 @@ describe("hook command permission admission", () => {
       allowedChoices: ["allow-once", "deny-once"], durableApprovalRecordAllowed: false }));
   });
 
-  it("uses action-bound native permits for a normal allow-mode decision", async () => {
+  it("takes the forced ask for a host hook the capability does not contain: a saved allow and allow mode do not run it unasked", async () => {
     windowsPartialPlan();
-    const p = policy();
+    const p = policy("deny-once");
     p.permissionManager.setMode("allow");
+    p.permissionManager.setRules([{ pattern: "Bash(node *)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
     const result = await runOneHookScript(hook, payload, { authorizeCommand: p.authorizeCommand });
-    expect(result.decision, result.reason).toBe("allow");
-    expect(p.requestAndWait).not.toHaveBeenCalled();
-    expect(permits).toMatchObject({ minted: 1, consumed: [true] });
+    expect(result.decision).toBe("deny");
+    expect(result.rawStdout).toBe("");
+    expect(p.requestAndWait).toHaveBeenCalledOnce();
+    expect(p.requestAndWait).toHaveBeenCalledWith(expect.objectContaining({
+      forceExplicit: true, allowedChoices: ["allow-once", "deny-once"], durableApprovalRecordAllowed: false, floorSessionAllowed: true,
+      executionPlan: expect.objectContaining({ fallbackReason: "windows-partial-shell-acl-unsafe", requiresExplicitUserApproval: true }),
+    }));
+    expect(permits.minted).toBe(0);
   });
 
   it("refuses an automatic hook decision after policy changes during review", async () => {
