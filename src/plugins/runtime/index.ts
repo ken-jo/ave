@@ -3561,7 +3561,7 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
   }
 
   /** A detached or displaced unpublished plugin is in no runtime map, so shutdown finds it only through this entry. */
-  private trackUnpublishedRetirement(
+  protected trackUnpublishedRetirement(
     plugin: LoadedPlugin,
     candidateDisposers: Array<() => void> | undefined,
     work: Promise<void>,
@@ -6961,7 +6961,8 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
           };
 
           let retirementError: unknown;
-          let unpublishedCleanup: (() => Promise<void>) | undefined;
+          let unpublishedCleanup: Promise<void> | undefined;
+          let startUnpublishedCleanup: (() => void) | undefined;
           if (!enabled) {
             const plugin = this.plugins.get(canonicalPluginId);
             const unpublishedCandidate = plugin && this.isUnpublishedLoadedCandidate(
@@ -6987,25 +6988,40 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
                   "disable",
                 );
               });
-              await commitScope(async () => {
-                // Only a committed disabled state cancels the candidate; failed registry transactions leave preparation retryable.
-                await persist();
-                this.clearCapabilityBlockedRetry(
-                  canonicalPluginId,
-                  `plugin '${canonicalPluginId}' capability dependency wait was cancelled by disable`,
-                );
-                this.beginPluginLifecycleOperation(canonicalPluginId);
-                this.preparation.clearFor(canonicalPluginId);
-                try {
-                  unpublishedCleanup = this.detachUnpublishedLoadedCandidate(
+              try {
+                await commitScope(async () => {
+                  // Only a committed disabled state cancels the candidate; failed registry transactions leave preparation retryable.
+                  await persist();
+                  this.clearCapabilityBlockedRetry(
                     canonicalPluginId,
-                    unpublishedCandidate,
-                    "unpublished plugin enabled-state disable",
+                    `plugin '${canonicalPluginId}' capability dependency wait was cancelled by disable`,
                   );
-                } catch (error) {
-                  retirementError = error;
-                }
-              });
+                  this.beginPluginLifecycleOperation(canonicalPluginId);
+                  this.preparation.clearFor(canonicalPluginId);
+                  try {
+                    const candidateDisposers = this.disposers.get(canonicalPluginId);
+                    const cleanup = this.detachUnpublishedLoadedCandidate(
+                      canonicalPluginId,
+                      unpublishedCandidate,
+                      "unpublished plugin enabled-state disable",
+                    );
+                    // Register at detach so shutdown sees the candidate; its cleanup starts once the scope ends, even if it throws.
+                    const started = new Promise<void>((resolve) => { startUnpublishedCleanup = resolve; });
+                    unpublishedCleanup = this.trackUnpublishedRetirement(
+                      unpublishedCandidate,
+                      candidateDisposers,
+                      started.then(cleanup),
+                    ).retirement;
+                    unpublishedCleanup.catch((error: unknown) => {
+                      log.error(`${canonicalPluginId} disable could not retire the unpublished loaded plugin: ${errorMessage(error)}`);
+                    });
+                  } catch (error) {
+                    retirementError = error;
+                  }
+                });
+              } finally {
+                startUnpublishedCleanup?.();
+              }
             } else {
               this.clearCapabilityBlockedRetry(
                 canonicalPluginId,
@@ -7049,7 +7065,7 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
             this.disabledPluginIds.add(canonicalPluginId);
             if (unpublishedCleanup) {
               try {
-                await unpublishedCleanup();
+                await unpublishedCleanup;
               } catch (error) {
                 retirementError = retirementError === undefined
                   ? error

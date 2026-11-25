@@ -4065,6 +4065,57 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     expect(await waitForSandboxHomesRemoved(homes)).toEqual([]);
   });
 
+  it("disabling an unpublished loaded plugin still retires it when its commit scope throws after detach", async () => {
+    const f = await setup("success");
+    bindNativeBundleLifecycle(f);
+    const earlier = new Set(sandboxProcessHomesInUse());
+    await f.runtime.load();
+    const [orphan] = f.constructed;
+    if (!orphan) throw new Error("load() constructed no instance");
+    const homes = [...sandboxProcessHomesInUse()].filter((home) => !earlier.has(home));
+    expect(homes.length).toBeGreaterThan(0);
+    // The real scope cannot fail once its callback returns; inject that failure once so the path is exercised.
+    const scopeFault = new Error("commit scope failed after detach");
+    type Scope = <T>(operation: () => Promise<T>) => Promise<T>;
+    const internals = f.runtime as unknown as { capabilityDependencyCommitScope: (assert: () => void) => Scope };
+    const makeScope = internals.capabilityDependencyCommitScope.bind(f.runtime);
+    internals.capabilityDependencyCommitScope = (assert) => {
+      internals.capabilityDependencyCommitScope = makeScope;
+      const scope = makeScope(assert);
+      return async (operation) => {
+        await scope(operation);
+        throw scopeFault;
+      };
+    };
+    await expect(f.runtime.setPluginEnabled(ID, false)).rejects.toBe(scopeFault);
+    expect(await f.runtime.stopAll()).toEqual({ unfinished: [] });
+    expect(orphan.stops).toBe(1);
+    expect(await waitForSandboxHomesRemoved(homes)).toEqual([]);
+  });
+
+  it("stopAll during an unpublished plugin's disable cleanup reports it unfinished", async () => {
+    const f = await setup("success");
+    bindNativeBundleLifecycle(f);
+    await f.runtime.load();
+    const [orphan] = f.constructed;
+    if (!orphan) throw new Error("load() constructed no instance");
+    orphan.instance.stop = () => {
+      orphan.stops += 1;
+      return new Promise<void>(() => undefined);
+    };
+    try {
+      const disabling = f.runtime.setPluginEnabled(ID, false);
+      void disabling.catch(() => undefined);
+      await vi.waitFor(() => expect(orphan.stops).toBe(1));
+      expect(await f.runtime.stopAll()).toEqual({ unfinished: [ID] });
+      await disabling.catch(() => undefined);
+    } finally {
+      // The orphan's stop never settles, so its child is killed here or it keeps its sandbox HOME.
+      await forceKillAndDrainManagedChildProcesses("runtime test: unpublished plugin stop never settles");
+      __resetManagedChildProcessesForTest();
+    }
+  });
+
   it("removing an unpublished loaded plugin still retires it when onDisable throws", async () => {
     const f = await setup("success");
     bindNativeBundleLifecycle(f);
