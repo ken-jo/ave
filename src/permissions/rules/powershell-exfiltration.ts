@@ -1535,7 +1535,7 @@ export function _inspectPowerShellForTest(input: ShellCommandInput, cwd?: string
   const parsed = parsePowerShellCommand(typeof input === "string" ? input : input.command);
   const { context } = parsed;
   const result = applyStartupPolicy(inspectParsed(parsed, cwd, { tokens: { count: 0 }, depth: 0 }));
-  return { ...result, limited: parsed.analysisLimited, visits: context.visits, shellVisits: context.floor.visits, limits: POWERSHELL_ANALYSIS_LIMITS };
+  return { ...result, limited: parsed.analysisLimited, visits: context.visits, shellVisits: sharedWork(context).visits, limits: POWERSHELL_ANALYSIS_LIMITS };
 }
 
 // Recursive traversal
