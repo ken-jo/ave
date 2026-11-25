@@ -803,6 +803,32 @@ describe("the browser download staging folder in the srt-win session floor and w
     }
   });
 
+  it("refuses a worker wrap whose protected deny target disappears before the runtime stamps it", async () => {
+    useLayout(OUTSIDE_PROFILE, { staged: false });
+    await sessionFloor();
+    const secrets = `${aveHome()}\\secrets`;
+    const egress = openEgressInvocation(TEST_WORKER_EGRESS_OWNER);
+    try {
+      const boundarySnapshot = createAveHomeBoundarySnapshot();
+      runtime.wrap.mockImplementationOnce(async (...args: unknown[]) => {
+        const { filesystem } = args[2] as { filesystem: { denyRead: DenyList; denyWrite: DenyList } };
+        expect([...spelledRows(filesystem.denyRead), ...spelledRows(filesystem.denyWrite)].map(fold)).toContain(fold(secrets));
+        rmdirSync(secrets);
+        return { argv: [srtPath, "node", "server.js"], env: {} };
+      });
+      await expect(wrapWorkerCommand("node server.js", {
+        commandId: egress.token, boundarySnapshot,
+        filesystem: boundarySnapshot.run(() => ({ denyRead: getDefaultSensitiveReadDenyPaths(), denyWrite: getDefaultSensitiveWriteDenyPaths() })),
+      })).rejects.toThrow(/Windows deny target is absent and would be created: .*secrets/u);
+    } finally {
+      try {
+        await cleanupAsrtSandboxAfterCommand();
+      } finally {
+        egress.release();
+      }
+    }
+  });
+
   it("proves missing grant targets through the drive's existing ancestor identities", () => {
     useLayout(PROFILE_CHILD, { staged: false });
     const missing = `${PROFILE_CHILD.home}\\plugins\\cache`;
