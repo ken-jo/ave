@@ -57,14 +57,18 @@ describe.each([
       expect(check(`${first}; ${tail}`)).toMatchObject({ decision: "deny", reasonCode: "rule-deny" });
       expect(check(`${first}; ${tail} # it’s a comment`)).toMatchObject({ decision: "deny", reasonCode: "rule-deny" });
       expect(check(`Write-Output ‘ready’; ${tail}`))
-        .toMatchObject({ decision: "ask", forceModal: true, reasonCode: "shell-analysis-limit" });
+        .toMatchObject({ decision: "deny", reasonCode: "shell-analysis-limit" });
+      expect(check(`date; Write-Output ‘open; ${tail}`))
+        .toMatchObject({ decision: "deny", reasonCode: "shell-analysis-limit" });
     });
 
     it.each([
-      { position: "leading", command: `# it’s a comment\n${first}\n${overBudgetTail}` },
-      { position: "inline", command: `${first} # it’s a comment\n${overBudgetTail}` },
-    ])("keeps a completed deny with a typographic apostrophe in a $position comment", async ({ command }) => {
-      expect((await savedDeny())(command)).toMatchObject({ decision: "deny", reasonCode: "rule-deny" });
+      { position: "leading comment", command: `# it’s a comment\n${first}\n${overBudgetTail}` },
+      { position: "inline comment", command: `${first} # it’s a comment\n${overBudgetTail}` },
+      { position: "double-quoted string", command: `Write-Output "it’s ready"; ${overBudgetTail}` },
+      { position: "single-quoted string", command: `Write-Output 'say “ready”'; ${overBudgetTail}` },
+    ])("refuses an unproven prefix with a typographic quote in the $position", async ({ command }) => {
+      expect((await savedDeny())(command)).toMatchObject({ decision: "deny", reasonCode: "shell-analysis-limit" });
     });
 
     it("ignores quote ambiguity inside the clipped suffix after a completed deny", async () => {
@@ -104,7 +108,10 @@ describe.each([
   });
 
   it("keeps the outer parse cap even when the first statement would be denied", async () => {
-    expect((await savedDeny())(`${first}; ${longTail.repeat(10)}`))
-      .toMatchObject({ decision: "ask", forceModal: true, reasonCode: "shell-analysis-limit" });
+    expect((await savedDeny())(`${first}; ${longTail.repeat(10)}`)).toMatchObject(
+      dialect === "powershell"
+        ? { decision: "deny", reasonCode: "shell-analysis-limit" }
+        : { decision: "ask", forceModal: true, reasonCode: "shell-analysis-limit" },
+    );
   });
 });

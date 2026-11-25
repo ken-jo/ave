@@ -148,14 +148,15 @@ function normalizeDashes(text: string): string {
 
 const CONTROL_ESCAPES: Readonly<Record<string, string>> = { n: "\n", r: "\r", t: "\t" };
 
+const ALTERNATE_QUOTE = /[\u2018-\u201e]/;
+
 class Lexer {
   private index = 0;
   private depth = 0;
   private grammarRecords = 0;
   // Complete command tokens remain usable for positive effects after refusal.
   readonly readable: PsCommand[] = [];
-  private readonly completed: PsPipeline[] = [];
-  private unambiguousPipelineCount = 0;
+  readonly completed: { pipeline: PsPipeline; end: number }[] = [];
   private quoteScanStart = 0;
   private quoteDelimiterUnproven = false;
   private rootPartial: PsToken[] = [];
@@ -171,7 +172,7 @@ class Lexer {
 
   // Scan consumed source for unsupported delimiters between line comments.
   private scanQuoteDelimiters(): void {
-    if (!this.quoteDelimiterUnproven && /[\u2018-\u201e]/.test(this.source.slice(this.quoteScanStart, this.index))) {
+    if (!this.quoteDelimiterUnproven && ALTERNATE_QUOTE.test(this.source.slice(this.quoteScanStart, this.index))) {
       this.quoteDelimiterUnproven = true;
     }
     this.quoteScanStart = this.index;
@@ -205,12 +206,7 @@ class Lexer {
       if (stages.length > 0) {
         const pipeline = toPipeline(stages, this.analysis);
         pipelines.push(pipeline);
-        if (this.depth === 1) {
-          this.completed.push(pipeline);
-          if (!this.quoteDelimiterUnproven) {
-            this.unambiguousPipelineCount = this.completed.length;
-          }
-        }
+        if (this.depth === 1) this.completed.push({ pipeline, end: this.index });
       }
       stages = [];
     };
@@ -309,13 +305,6 @@ class Lexer {
     if (!this.clipped) endPipeline();
     this.depth -= 1;
     return pipelines;
-  }
-
-  boundedDenyPrefix(): BoundedDenyPrefix {
-    return {
-      pipelines: this.completed.slice(0, this.unambiguousPipelineCount),
-      firstStatementLimited: this.completed.length === 0,
-    };
   }
 
   partialCommand(): PsCommand | undefined {
@@ -958,8 +947,7 @@ function finalizeSignals(sensitive: string | null, exfiltration: string | null, 
 
 // Parsing and reusable exact identity
 
-type BoundedDenyPrefix = { pipelines: PsPipeline[]; firstStatementLimited: boolean };
-type LexedPowerShell = { pipelines: PsPipeline[] | null; reason?: string; readable?: PsCommand[]; permissionPipelines?: PsPipeline[]; boundedPrefix?: BoundedDenyPrefix };
+type LexedPowerShell = { pipelines: PsPipeline[] | null; reason?: string; readable?: PsCommand[]; permissionPipelines?: PsPipeline[]; boundedPrefix?: Lexer["completed"] };
 let powerShellLexObserver: ((command: string) => void) | undefined;
 
 function lex(command: string, context: PowerShellAnalysisContext): LexedPowerShell {
@@ -978,7 +966,7 @@ function lex(command: string, context: PowerShellAnalysisContext): LexedPowerShe
   }
   catch (error) {
     if (error instanceof PowerShellStructuralLimitError) {
-      return { pipelines: null, reason: error.message, boundedPrefix: lexer.boundedDenyPrefix() };
+      return { pipelines: null, reason: error.message, boundedPrefix: lexer.completed };
     }
     if (error instanceof PsUnreadable) {
       const partial = lexer.partialCommand();
@@ -1017,22 +1005,28 @@ export function parsePowerShellCommand(command: string, resolver?: VerifiedArgvR
 
 export function powerShellBoundedDenyPrefix(command: string, parsed?: ParsedPowerShellCommand): {
   readonly commands: readonly (readonly (string | null)[])[];
-  readonly firstStatementLimited: boolean;
+  readonly boundaryUnproven: boolean;
 } {
-  const bounded = parsed?.syntax.boundedPrefix;
-  let pipelines = bounded?.pipelines;
-  const firstStatementLimited = bounded?.firstStatementLimited ?? false;
-  if (pipelines === undefined && parsed === undefined && command.length > POWERSHELL_ANALYSIS_LIMITS.inputChars) {
-    const lexer = new Lexer(command.slice(0, POWERSHELL_ANALYSIS_LIMITS.inputChars), new SharedPowerShellContext(), true);
+  const source = command.slice(0, POWERSHELL_ANALYSIS_LIMITS.inputChars);
+  // The native AST bridge is async and requires launch authority. Without it, an
+  // alternate quote can invalidate any later boundary the static lexer found.
+  const firstAlternateQuote = source.search(ALTERNATE_QUOTE);
+  let completed = parsed?.syntax.boundedPrefix ?? [];
+  let boundaryUnproven = firstAlternateQuote !== -1;
+  if (parsed === undefined) {
+    const lexer = new Lexer(source, new SharedPowerShellContext(), true);
     try {
       lexer.parseProgram();
     } catch (error) {
       if (!(error instanceof PowerShellStructuralLimitError || error instanceof PsUnreadable)) throw error;
+      boundaryUnproven ||= error instanceof PsUnreadable;
     }
-    pipelines = lexer.boundedDenyPrefix().pipelines;
+    completed = lexer.completed;
   }
-  let stages = (pipelines ?? []).flatMap((pipeline) => pipeline.stages);
-  if (pipelines?.length) {
+  const pipelines = completed.filter(({ end }) => firstAlternateQuote === -1 || end < firstAlternateQuote)
+    .map(({ pipeline }) => pipeline);
+  let stages = pipelines.flatMap((pipeline) => pipeline.stages);
+  if (pipelines.length > 0) {
     try {
       stages = staticProgram(pipelines, new SharedPowerShellContext()).stages.map((stage) => stage.command);
     } catch (error) {
@@ -1040,7 +1034,7 @@ export function powerShellBoundedDenyPrefix(command: string, parsed?: ParsedPowe
     }
   }
   const commands = stages.map(ruleArgv).filter((argv): argv is (string | null)[] => argv !== null);
-  return { commands, firstStatementLimited };
+  return { commands, boundaryUnproven: boundaryUnproven || pipelines.length === 0 };
 }
 
 function asPowerShellCommand(input: PowerShellCommandInput): ParsedPowerShellCommand {

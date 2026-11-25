@@ -350,9 +350,10 @@ export function shellDenyOnBoundedPrefix(input: {
   parsed?: ParsedShellCommand | undefined;
   parsedPowerShell?: ParsedPowerShellCommand | undefined;
   ruleScopes: ReadonlyArray<readonly PermissionRule[]>;
-}): { pattern?: string; unreadable?: true; firstStatementLimited?: true } {
+}): { pattern?: string; unreadable?: true; analysisRefused?: true } {
   const { command, dialect, cwd, parsed, parsedPowerShell, ruleScopes } = input;
-  if (command.length > SHELL_FLOOR_INPUT_LIMIT + SHELL_LITERAL_DATA_LIMIT) return {};
+  const pastParseCap = command.length > SHELL_FLOOR_INPUT_LIMIT + SHELL_LITERAL_DATA_LIMIT;
+  if (dialect === "bash" && pastParseCap) return {};
   const denies = ruleScopes.map((scope) => scope.filter((rule) => rule.action === "deny"));
   if (dialect === "bash") {
     const rules = collectShellRuleSet(...denies);
@@ -361,11 +362,12 @@ export function shellDenyOnBoundedPrefix(input: {
       : bashBoundedDenyPrefix(command);
     const evaluated = evaluateShellRules(bounded.parsed ?? parsed ?? { command, analysis: { ok: false, reason: "No completed shell statement" }, facts: new Map() }, rules, cwd);
     if (evaluated.decision === "deny") return { pattern: evaluated.pattern };
-    if ("firstStatementLimited" in bounded && bounded.firstStatementLimited) return { firstStatementLimited: true };
+    if ("firstStatementLimited" in bounded && bounded.firstStatementLimited) return { analysisRefused: true };
     return evaluated.decision === "ask" ? { unreadable: true } : {};
   }
   const rules = collectPowerShellRules(...denies);
   if (rules.deny.length === 0) return {};
+  if (pastParseCap) return { analysisRefused: true };
   const parsedCommand = parsedPowerShell ?? (command.length <= SHELL_FLOOR_INPUT_LIMIT ? parsePowerShellCommand(command) : undefined);
   if (parsedCommand && !parsedCommand.analysisLimited) {
     const evaluated = evaluatePowerShellSubject({ command: parsedCommand, cwd, exactAllowOnly: false }, ...denies);
@@ -376,5 +378,5 @@ export function shellDenyOnBoundedPrefix(input: {
   const visible = bounded.commands.map((argv) => ({ argv, normalized: restrictionTokens(argv) }));
   const match = rules.deny.find((rule) => visible.some(({ argv, normalized }) =>
     matchesPowerShellRule(rule.spec, argv) || matchesPowerShellRule(rule.restriction, normalized)));
-  return match ? { pattern: match.pattern } : bounded.firstStatementLimited ? { firstStatementLimited: true } : {};
+  return match ? { pattern: match.pattern } : bounded.boundaryUnproven ? { analysisRefused: true } : {};
 }

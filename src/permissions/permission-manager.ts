@@ -1908,7 +1908,7 @@ export class PermissionManager {
     const allow = matchingRule("allow");
     const rules: NonNullable<PermissionDecisionRequest["rules"]> = {};
     if (deny || shellDeny?.pattern !== undefined || scopedRules?.decision === "deny") rules.deny = deny?.pattern ?? shellDeny?.pattern ?? scopedRules?.pattern ?? "Deny rule matched";
-    if (rules.deny === undefined && shellDeny?.firstStatementLimited) {
+    if (rules.deny === undefined && shellDeny?.analysisRefused) {
       admissionDenial ??= { code: "shell-analysis-limit", reason: "Shell analysis could not check saved deny rules for the over-budget statement." };
     }
     if (ask || shellRules?.decision === "ask" || scopedRules?.decision === "ask" || (!shellAnalysisLimited && shellDeny?.unreadable)) rules.ask = ask?.pattern ?? (shellRules?.decision === "ask" ? shellRules.pattern : undefined) ?? scopedRules?.pattern ?? "Ask rule matched";
