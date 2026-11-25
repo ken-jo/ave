@@ -12,7 +12,7 @@ import { getLocale, setLocale } from "../../i18n/runtime.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { windowsGrantingRules, windowsOwnerRules, type WindowsDaclFacts } from "../../shared/windows-path-facts.js";
 import {
-  AVE_APP_ID, currentMxcRuntimeHost, establishMxcRuntimeRoot, _forgetMxcRuntimeRootForTest, MxcRuntimeRootError,
+  AVE_APP_ID, currentMxcRuntimeHost, establishMxcRuntimeRoot, establishMxcSandboxHomesParent, _forgetMxcRuntimeRootForTest, MxcRuntimeRootError,
   mxcRuntimeRootFloorPath, mxcSandboxHomesParent, mxcStagingParent, requireMxcRuntimeRoot, type MxcRuntimeHost,
 } from "../mxc-runtime-root.js";
 import {
@@ -481,8 +481,11 @@ describe.runIf(windows)("Windows runtime root", () => {
   });
 
   describe("the sandbox HOME parent", () => {
-    it("is <root>\\homes beside staging, and establishes the root when start-up has not", () => {
-      const homes = mxcSandboxHomesParent(hostOf());
+    it("is <root>\\homes beside staging, created by start-up only", () => {
+      expect(() => mxcSandboxHomesParent(hostOf())).toThrow(/not established/u);
+      expect(created).toEqual([]);
+      expect(existsSync(rootPath())).toBe(false);
+      const homes = establishMxcSandboxHomesParent(hostOf());
       expect(homes).toBe(join(rootPath(), "homes"));
       expect(created).toEqual([rootPath()]);
       expect(lstatSync(homes).isDirectory()).toBe(true);
@@ -491,10 +494,17 @@ describe.runIf(windows)("Windows runtime root", () => {
       expect(created).toEqual([rootPath()]);
     });
 
+    it("is refused while start-up proved the root but created no HOME parent, and is not created then", () => {
+      establishMxcRuntimeRoot(hostOf());
+      expect(() => mxcSandboxHomesParent(hostOf())).toThrow(/HOME parent was not established/u);
+      expect(existsSync(join(rootPath(), "homes"))).toBe(false);
+    });
+
     it("is refused with the root, at every later call too, and no HOME parent is created", () => {
       facts = (path) => privateFacts(path, { fileSystemName: "exFAT" });
-      expect(() => mxcSandboxHomesParent(hostOf())).toThrow(MxcRuntimeRootError);
+      expect(() => establishMxcSandboxHomesParent(hostOf())).toThrow(MxcRuntimeRootError);
       facts = (path) => privateFacts(path);
+      expect(() => establishMxcSandboxHomesParent(hostOf())).toThrow(/not established/u);
       expect(() => mxcSandboxHomesParent(hostOf())).toThrow(/not established/u);
       expect(existsSync(join(rootPath(), "homes"))).toBe(false);
     });
@@ -503,6 +513,7 @@ describe.runIf(windows)("Windows runtime root", () => {
       const root = establishMxcRuntimeRoot(hostOf());
       rmSync(root, { recursive: true });
       mkdirSync(root);
+      expect(() => establishMxcSandboxHomesParent(hostOf())).toThrow(/no longer the directory/u);
       expect(() => mxcSandboxHomesParent(hostOf())).toThrow(/no longer the directory/u);
       expect(readdirSync(root)).toEqual([]);
     });
@@ -510,21 +521,22 @@ describe.runIf(windows)("Windows runtime root", () => {
     it("refuses a junction or a file at its name", () => {
       const root = establishMxcRuntimeRoot(hostOf());
       junction(join(scratch, "target"), join(root, "homes"));
-      expect(() => mxcSandboxHomesParent(hostOf())).toThrow(MxcRuntimeRootError);
+      expect(() => establishMxcSandboxHomesParent(hostOf())).toThrow(MxcRuntimeRootError);
       expect(readdirSync(join(scratch, "target"))).toEqual([]);
       rmdirSync(join(root, "homes"));
       writeFileSync(join(root, "homes"), "");
-      expect(() => mxcSandboxHomesParent(hostOf())).toThrow(MxcRuntimeRootError);
+      expect(() => establishMxcSandboxHomesParent(hostOf())).toThrow(MxcRuntimeRootError);
     });
 
     it("is refused once the HOME parent itself is replaced", () => {
-      const homes = mxcSandboxHomesParent(hostOf());
+      const homes = establishMxcSandboxHomesParent(hostOf());
       rmdirSync(homes);
       mkdirSync(homes);
       expect(() => mxcSandboxHomesParent(hostOf())).toThrow(/no longer the directory first used/u);
     });
 
     it("is on Windows only", () => {
+      expect(() => establishMxcSandboxHomesParent(hostOf({ platform: "linux" }))).toThrow(/Windows only/u);
       expect(() => mxcSandboxHomesParent(hostOf({ platform: "linux" }))).toThrow(/Windows only/u);
       expect(readdirSync(base)).toEqual([]);
     });
@@ -540,24 +552,33 @@ describe.runIf(windows)("Windows runtime root", () => {
     beforeEach(() => { proofs = 0; });
     afterEach(() => { vi.unstubAllEnvs(); });
 
-    it("takes the root the run's set-up proved and published without proving it again", () => {
-      mkdirSync(rootPath(), { recursive: true });
+    it("takes the root and HOME parent the run's set-up made and published without proving or creating either", () => {
+      mkdirSync(join(rootPath(), "homes"), { recursive: true });
       publish(rootPath());
       expect(mxcSandboxHomesParent(counting())).toBe(join(rootPath(), "homes"));
       expect(proofs).toBe(0);
     });
 
-    it("proves a root the set-up did not publish, and one put in the published root's place", () => {
+    it("refuses a published root whose HOME parent the set-up did not create, and creates none", () => {
+      mkdirSync(rootPath(), { recursive: true });
+      publish(rootPath());
+      expect(() => mxcSandboxHomesParent(counting())).toThrow(/could not be inspected/u);
+      expect(existsSync(join(rootPath(), "homes"))).toBe(false);
+    });
+
+    it("proves, at its own start-up, a root the set-up did not publish, and one put in the published root's place", () => {
       mkdirSync(rootPath(), { recursive: true });
       vi.stubEnv("AVE_TEST_MXC_RUNTIME_ROOT", "");
-      mxcSandboxHomesParent(counting());
+      expect(() => mxcSandboxHomesParent(counting())).toThrow(/not established/u);
+      expect(proofs).toBe(0);
+      establishMxcSandboxHomesParent(counting());
       expect(proofs).toBeGreaterThan(0);
       _forgetMxcRuntimeRootForTest(base);
       proofs = 0;
       publish(rootPath());
       rmSync(rootPath(), { recursive: true });
       mkdirSync(rootPath());
-      mxcSandboxHomesParent(counting());
+      establishMxcSandboxHomesParent(counting());
       expect(proofs).toBeGreaterThan(0);
     });
 
@@ -565,6 +586,7 @@ describe.runIf(windows)("Windows runtime root", () => {
       mkdirSync(rootPath(), { recursive: true });
       vi.stubEnv("AVE_TEST_MXC_RUNTIME_ROOT", "");
       const open = hostOf({}, { readFacts: () => { throw new Error("helper unavailable"); } });
+      expect(() => establishMxcSandboxHomesParent(open)).toThrow(MxcRuntimeRootError);
       expect(() => mxcSandboxHomesParent(open)).toThrow(MxcRuntimeRootError);
       expect(existsSync(join(rootPath(), "homes"))).toBe(false);
     });

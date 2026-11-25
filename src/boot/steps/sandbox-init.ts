@@ -33,9 +33,18 @@ const log = createLogger("ave");
 export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSignal): Promise<void> {
   startupSignal?.throwIfAborted();
   const { settingsService, bootAuditLogger, buildWorkerEgressAllowlists } = ctx;
-  // Sandbox HOMEs are made whether or not the gate activates, so their sweep does not wait on it.
-  // Not awaited: the in-use set and live owner markers keep this process's HOMEs, and a slow probe must not hold boot.
-  if (process.platform === "win32") void sweepWindowsSandboxHomes();
+  // Sandbox HOMEs are made whether or not the gate activates, so their parent is established here, on every Windows start,
+  // before anything can ask for a HOME; a root that cannot be proved private leaves every HOME refused.
+  // The sweep is not awaited: the in-use set and live owner markers keep this process's HOMEs, and a slow probe must not hold boot.
+  if (process.platform === "win32") {
+    const { establishMxcSandboxHomesParent } = await import("../../permissions/mxc-runtime-root.js");
+    try {
+      establishMxcSandboxHomesParent();
+    } catch (error) {
+      log.warn("boot: Windows sandbox HOME root unavailable: %s", errorMessage(error));
+    }
+    void sweepWindowsSandboxHomes();
+  }
   setAveHomePrivacyRefusalReporter((message) => {
     log.warn(message);
     bootAuditLogger.log({ timestamp: new Date().toISOString(), sessionId: "extensions", type: "error",
@@ -561,7 +570,7 @@ export async function sweepSandboxPrivateRoot(root: string, inUse: ReadonlySet<s
   return counts;
 }
 
-/** Windows sandbox HOMEs live under the container runtime root, which this account's other Ave instances share, so only a HOME whose marked owner is gone is removed. This is where every Windows start establishes that root, whatever the sandbox setting: a HOME is created for unconfined children too. A root that cannot be proved private leaves nothing to sweep, and every later HOME is refused. */
+/** Windows sandbox HOMEs live under the container runtime root, which this account's other Ave instances share, so only a HOME whose marked owner is gone is removed. It sweeps the parent `initSandboxGate` established, whatever the sandbox setting: a HOME is created for unconfined children too. A root that cannot be proved private leaves nothing to sweep, and every later HOME is refused. */
 async function sweepWindowsSandboxHomes(): Promise<void> {
   try {
     const { sandboxProcessHomesInUse, warmSandboxHomeOwner } = await import("../../permissions/sandbox-process-home.js");

@@ -548,7 +548,7 @@ export function mxcStagingParent(platform: NodeJS.Platform = process.platform, h
 
 /** Under the test runner only: the root the run's set-up proved and published by identity
  * (`config/vitest.globalSetup.ts`), taken by a test file that has not established one itself. Each file loads this
- * module anew, and the proof starts PowerShell. A root the set-up refused is published by nobody and is proved here. */
+ * module anew, and the proof starts PowerShell. A root the set-up refused is published by nobody: a file establishes its own or is refused. */
 function rootOfThisTestRun(host: MxcRuntimeHost): string | undefined {
   if (!AVE_HOME_ISOLATION_GUARD_ACTIVE || established.has(host.cacheHome)) return undefined;
   const planned = plannedWindowsRuntimeRoot(host);
@@ -575,18 +575,34 @@ export function requireMxcContainerStartRoot(host: MxcRuntimeHost = currentMxcRu
 }
 
 /**
- * Where Windows sandbox HOMEs and their owner markers are created: `<runtime root>\homes`, beside `staging`. It
- * inherits the root's access, so only this account reaches it; a confined process is granted its own HOME inside it
- * and nothing else, and the markers sit where no confined process is granted. A root no caller has established yet is
- * established here by the same proof, once per process; a root that was refused stays refused. Nothing falls back to
- * the host temp directory.
+ * Sandbox start-up only: establish the runtime root by its proof and create `<runtime root>\homes`, beside `staging`,
+ * where Windows sandbox HOMEs and their owner markers go. It inherits the root's access, so only this account reaches
+ * it; a confined process is granted its own HOME inside it and nothing else, and the markers sit where no confined
+ * process is granted.
+ */
+export function establishMxcSandboxHomesParent(host: MxcRuntimeHost = currentMxcRuntimeHost()): string {
+  if (host.platform !== "win32") refuse("Sandbox HOMEs live under the container runtime root on Windows only");
+  const root = rootOfThisTestRun(host) ?? establishMxcRuntimeRoot(host);
+  ensureWindowsDirectory(winPath.join(root, "homes"), "Sandbox HOME parent");
+  // Again once it exists: a path swapped while it was created is refused before a HOME is placed in it.
+  assertWindowsRuntimeRootUnmoved(root);
+  return verifiedHomesParent(root);
+}
+
+/**
+ * The sandbox HOME parent start-up established (under the test runner, the one the run's set-up created), still the
+ * same directory. It creates and proves nothing: without a root and HOME parent from start-up every HOME is refused,
+ * and nothing falls back to the host temp directory.
  */
 export function mxcSandboxHomesParent(host: MxcRuntimeHost = currentMxcRuntimeHost()): string {
   if (host.platform !== "win32") refuse("Sandbox HOMEs live under the container runtime root on Windows only");
-  const root = rootOfThisTestRun(host) ?? establishMxcRuntimeRoot(host);
-  const homes = ensureWindowsDirectory(winPath.join(root, "homes"), "Sandbox HOME parent");
-  // Again once it exists: a path swapped while it was created is refused before a HOME is placed in it.
-  assertWindowsRuntimeRootUnmoved(root);
+  const root = requireMxcContainerStartRoot(host);
+  if (!homesParents.has(root) && rootOfThisTestRun(host) !== root) refuse("Sandbox HOME parent was not established when the sandbox started");
+  return verifiedHomesParent(root);
+}
+
+function verifiedHomesParent(root: string): string {
+  const homes = winPath.join(root, "homes");
   let entry: BigIntStats;
   let real: string;
   try {

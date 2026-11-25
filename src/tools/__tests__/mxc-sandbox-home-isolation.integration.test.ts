@@ -9,7 +9,7 @@ import { mxcShellCapability, planWindowsSandbox, windowsProxyOnlyCapability } fr
 import { configureHostResources } from "../../main/host-resources.js";
 import { initializeAsrtSandbox, resetAsrtSandbox } from "../../permissions/asrt-sandbox.js";
 import { baseAllowedDirectories } from "../../permissions/base-allowed-directories.js";
-import { establishMxcRuntimeRoot, mxcRuntimeRootFloorPath, mxcStagingParent } from "../../permissions/mxc-runtime-root.js";
+import { establishMxcRuntimeRoot, establishMxcSandboxHomesParent, mxcRuntimeRootFloorPath, mxcStagingParent } from "../../permissions/mxc-runtime-root.js";
 import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, __resetWindowsSandboxSubstrateForTest,
   getHostShellExecutionPlan, setActiveSandboxCapability, setShellSandboxRequestedAtBoot, setWindowsSandboxSubstrate } from "../../permissions/sandbox-capability.js";
 import { _resolveHostOwnerMarkerForTest, createSandboxProcessHome, SANDBOX_HOME_OWNER_SUFFIX } from "../../permissions/sandbox-process-home.js";
@@ -82,6 +82,7 @@ describe.runIf(process.platform === "win32")("container shell and sibling sandbo
       const started = await requireMxcCapability(testContext.skip);
       vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([join(directory, "policy-home")]);
       establishMxcRuntimeRoot();
+      establishMxcSandboxHomesParent();
       await initializeAsrtSandbox({ allowedDomains: [], windows: { externalConfinement: true } }, async () => false);
       const { substrate } = planWindowsSandbox({ shellRequested: true, workerRequested: false,
         mxc: { state: "available" }, windowsBuild: started.windowsBuild, srtWinReady: false });

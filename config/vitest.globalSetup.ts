@@ -134,17 +134,17 @@ export async function setup(project: TestProject): Promise<() => Promise<void>> 
       );
     }
     if (process.platform === "win32") {
-      // Windows sandbox HOMEs live under the container runtime root. It is proved once here; each test file takes it as it stands.
+      // Windows sandbox HOMEs live under the container runtime root. It is proved, and its HOME parent created, once here; each test file takes both as they stand.
       // The host is spelled out: the default one reads the Ave home through the workers' guard, which has no worker here.
-      const { establishMxcRuntimeRoot } = await import("../src/permissions/mxc-runtime-root.js");
+      const { establishMxcSandboxHomesParent } = await import("../src/permissions/mxc-runtime-root.js");
       const { WINDOWS_RUNTIME_HOST } = await import("../src/permissions/mxc-runtime-root-windows.js");
       const { configureHostResources } = await import("../src/main/host-resources.js");
       configureHostResources({ resourcePath: join(HERE, "resources"), isPackaged: false });
       try {
-        const root = establishMxcRuntimeRoot({
+        const root = dirname(establishMxcSandboxHomesParent({
           platform: "win32", cacheHome: join(sandboxBase, "mxc-cache"), uid: undefined, pid: process.pid, aveHome: aveHomeBase,
           processExists: () => true, processStart: () => null, windows: WINDOWS_RUNTIME_HOST,
-        });
+        }));
         // Workers take only the directory proved here, by its identity.
         const proved = lstatSync(root, { bigint: true });
         process.env.AVE_TEST_MXC_RUNTIME_ROOT = JSON.stringify([root, String(proved.dev), String(proved.ino)]);
