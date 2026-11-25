@@ -237,16 +237,16 @@ describe("buildDiagnosticsBundle — PII / secret exclusion", () => {
 });
 
 describe("buildDiagnosticsBundle — effective Windows shell route", () => {
-  it.each([false, true])("records the effective route when local-network consent is %s", async consent => {
+  it.each(["available", "checking"] as const)("records the effective route while containers are %s", async state => {
     const { substrate } = planWindowsSandbox({ shellRequested: true, workerRequested: false,
-      shellLocalNetworkAccess: consent, mxc: { state: "available" }, windowsBuild: null, srtWinReady: false });
+      mxc: { state }, windowsBuild: null, srtWinReady: false });
     const zip = new AdmZip(await build({ windowsSandbox: substrate }));
     const status = zip.getEntry("sandbox-status.json");
     const manifest = zip.getEntry("manifest.json");
     if (!status || !manifest) throw new Error("Diagnostics status entries are missing");
     const saved = JSON.parse(status.getData().toString("utf8"));
-    expect(saved).toEqual({ shellLocalNetworkAccess: consent, shells: consent ? "mxc" : "approved-host",
-      mxc: { state: "available" }, shellEgressIdentity: consent ? "kernel-channel" : "shared", extensions: "none" });
+    expect(saved).toEqual({ shells: state === "available" ? "mxc" : "approved-host",
+      mxc: { state }, shellEgressIdentity: state === "available" ? "kernel-channel" : "shared", extensions: "none" });
     expect(JSON.parse(manifest.getData().toString("utf8")).contents).toContain("sandbox-status.json");
   });
 });

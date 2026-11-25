@@ -8,7 +8,7 @@ import type { MxcSupport } from "../../permissions/mxc-windows.js";
 /** Only a host whose probe reports no container API can excuse native execution; damaged prerequisites still fail. */
 export async function requireMxcCapability(skip: TestContext["skip"]): Promise<Extract<MxcSupport, { state: "available" }>> {
   await requireMxcPrerequisites(skip);
-  const started = await probeHostMxcPowerShellStart(() => true);
+  const started = await probeHostMxcPowerShellStart();
   if (started.state !== "available") throw new Error(`Native container start: ${started.reason}: ${started.detail}`);
   return started;
 }

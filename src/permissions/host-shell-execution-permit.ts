@@ -24,7 +24,6 @@ import {
   type ShellAllowRuleAuthorization,
 } from "./permission-manager.js";
 import { withShellPolicyHandoff, type ShellPolicyHandoff } from "./shell-policy-handoff.js";
-import { getWindowsShellConsentRevision } from "./sandbox-capability.js";
 
 export type HostShellToolName = "bash" | "powershell";
 
@@ -58,7 +57,6 @@ interface PermitRecord extends HostShellExecutionPermitBinding {
   readonly plan: HostShellExecutionPlan;
   readonly allowRuleAuthorization: ShellAllowRuleAuthorization | undefined;
   readonly cwdIdentity: ShellWorkingDirectoryIdentity;
-  readonly windowsShellConsentRevision: number | undefined;
 }
 
 export interface HostShellSpawnAuthorization {
@@ -126,15 +124,11 @@ export function buildHostShellExecutionPermitBinding(input: {
 }
 
 // Only the host authorization pipeline records these after its policy/reviewer gates pass. Bind to the exact in-process action, never renderer-supplied data.
-const policyAuthorizations = new WeakMap<HostShellExecutionPermitBinding, number>();
+const policyAuthorizations = new WeakSet<HostShellExecutionPermitBinding>();
 
 // Record one host-policy authorization; it does not change any sandbox plan.
 export function recordHostShellPolicyAuthorization(binding: HostShellExecutionPermitBinding): void {
-  policyAuthorizations.set(binding, getWindowsShellConsentRevision());
-}
-
-function isPermitConsentCurrent(record: PermitRecord): boolean {
-  return record.windowsShellConsentRevision === undefined || record.windowsShellConsentRevision === getWindowsShellConsentRevision();
+  policyAuthorizations.add(binding);
 }
 
 // Consume only action-bound host proof: a verified one-shot receipt, an exact host-request rule decision, or the authorization pipeline's normal-policy permit. The partial Windows plan rejects rule proof; structural, unrelated or differently bound decisions fail closed.
@@ -151,10 +145,7 @@ export function mintHostShellExecutionPermit(input: {
   if (input.binding === undefined) return undefined;
   let allowRuleAuthorization: ShellAllowRuleAuthorization | undefined;
   // Consumed on every mint attempt, so a recorded authorization never outlives it.
-  const policyRevision = policyAuthorizations.get(input.binding);
-  policyAuthorizations.delete(input.binding);
-  const policyApproved = policyRevision !== undefined &&
-    (input.plan.platform !== "win32" || policyRevision === getWindowsShellConsentRevision());
+  const policyApproved = policyAuthorizations.delete(input.binding);
   let floorSessionAuthorized = false;
   if (input.approvalDecision === undefined && policyApproved) {
     // The policy lane already decided this exact action.
@@ -198,8 +189,7 @@ export function mintHostShellExecutionPermit(input: {
   const cwdIdentity = allowRuleAuthorization?.cwdIdentity ?? captureShellWorkingDirectoryIdentity(input.binding.resolvedCwd);
   if (cwdIdentity === undefined) return undefined;
   const permit = Object.freeze({}) as HostShellExecutionPermit;
-  permits.set(permit, Object.freeze({ ...input.binding, plan: input.plan, allowRuleAuthorization, cwdIdentity,
-    windowsShellConsentRevision: input.plan.platform === "win32" ? getWindowsShellConsentRevision() : undefined }));
+  permits.set(permit, Object.freeze({ ...input.binding, plan: input.plan, allowRuleAuthorization, cwdIdentity }));
   return permit;
 }
 
@@ -224,7 +214,6 @@ export function consumeHostShellExecutionPermitForSpawn(input: {
   if (record === undefined) return undefined;
   permits.delete(input.permit);
   const valid = (
-    isPermitConsentCurrent(record) &&
     (record.allowRuleAuthorization === undefined || isShellAllowRuleAuthorizationCurrent(record.allowRuleAuthorization)) &&
     matchesShellWorkingDirectoryIdentity(record.resolvedCwd, record.cwdIdentity) &&
     record.plan === input.plan &&
@@ -259,7 +248,7 @@ export function withHostShellExecutionHandoff<T>(
   const record = pendingHandoffs.get(authorization);
   pendingHandoffs.delete(authorization);
   return withShellPolicyHandoff(() => {
-    if (record === undefined || !isPermitConsentCurrent(record) ||
+    if (record === undefined ||
       (record.allowRuleAuthorization !== undefined && !isShellAllowRulePolicyCurrent(record.allowRuleAuthorization)) ||
       !matchesShellWorkingDirectoryIdentity(record.cwdIdentity.realpath, record.cwdIdentity)) return undefined;
     // This host's persisted policy mutations share this queue. Uncoordinated external edits after this final validation apply from the next command. The synchronous handoff grants the waiting child (or spawns it on platforms without a child guard); it must never await between validation and grant.

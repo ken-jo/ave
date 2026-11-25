@@ -2728,10 +2728,7 @@ confinement, so shell/process relaxation must remain stricter than filesystem
 or network-bearing tool relaxation.
 
 `features.osToolSandbox` defaults to `true` on macOS, Linux and Windows.
-An explicit stored value is preserved. On Windows, container-backed agent
-shells also require `features.windowsShellLocalNetworkAccess`, which defaults
-to `false`; while it is off, they use the approved-host route and cannot earn
-sandbox-auto eligibility. Plugin confinement remains independently opt-in.
+An explicit stored value is preserved. Plugin confinement remains independently opt-in.
 Activation still requires a successful runtime
 probe. The host issues one immutable `HostShellExecutionPlan` per invocation;
 its `sandboxed` field describes the selected child, including exclusions and
@@ -3306,23 +3303,17 @@ inbound, and `hostLoopback: "allow"` requests backend-dependent bidirectional
 connectivity, not only proxy access. Inbound probes failed while host-listener
 controls succeeded; these bounded measurements do not guarantee inbound denial.
 
-`features.windowsShellLocalNetworkAccess` defaults to `false`. OFF keeps
-Windows agent shells on the existing approved-host permission route, without
-sandbox-auto eligibility or an MXC shell start probe. ON permits the existing
-MXC route once readiness passes and accepts possible local-network and loopback
-inbound connections. Changes apply to the next command without restarting;
-either transition revokes shell session rules and floor-only session grants,
-while independent network and extension grants remain. Within an unchanged
-consent state, the floor-only session exception still follows the
-[decision tree](permission-decision-tree.md), including headless denial.
-This explicit opt-in follows the
-[VS Code Windows sandbox proxy access reference](https://code.visualstudio.com/docs/agents/run/agent-sandboxing#check-windows-sandbox-proxy-access).
-The shell setting does not alter the separately opted-in extension policy,
-including stdio MCP servers and its documented [D2 residual](../design/windows-extensions-mxc.md#7-resolved-owner-decisions).
+Windows agent shells take the MXC route with no separate local-network setting
+(owner decision 2026-11-25, [decision tree](permission-decision-tree.md)): each
+command's relay endpoint holds its port on both `127.0.0.1` and `[::1]` and a
+start is refused when another process holds either. A
+`features.windowsShellLocalNetworkAccess` value saved by an earlier build is
+ignored. Extension confinement, including stdio MCP servers, keeps its own
+policy and its documented [D2 residual](../design/windows-extensions-mxc.md#7-resolved-owner-decisions).
 
 By owner decision (2026-10-19, proxy-egress PR 9) a Bash or PowerShell tool
 command on Windows runs in its own Microsoft Execution Containers (MXC)
-BaseContainer when local-network access is enabled and the host offers one.
+BaseContainer when the host offers one.
 The shell path uses the MIT-licensed
 `wxc-exec.exe` launcher from `@microsoft/mxc-sdk` 1.1.0 at
 `<resources>/mxc/<arch>/wxc-exec.exe` (x64, arm64), staged at build time by
@@ -3435,16 +3426,13 @@ in its directory.
   probe reports only whether the ProcessContainer backend can serve the
   request; network-policy and PSEC checks happen at launch, so the start
   probe below (loopback proxy, `exit 0`) is what refuses a proxy contract the
-  host cannot carry. These checks do not start a container. With shell
-  local-network access off, the real start probe is deferred and shells stay
-  on the approved-host route. Once access is on, MXC is `checking`: off the
+  host cannot carry. These checks do not start a container. MXC is then `checking`: off the
   critical path, System32 Windows PowerShell
   5.1 must start (`exit 0`) in a real container of that shape (reduced
   caller-owned environment, proxy mode; a cold start can take tens of
   seconds). Until it settles, shells take the approved-host route and Settings
-  says the check is running; when it passes and local-network access remains
-  on, the effective route switches to MXC. Turning access off prevents a late
-  probe result from enabling that route. Detection reads what the launcher does,
+  says the check is running; when it passes, the effective route switches to
+  MXC. Detection reads what the launcher does,
   not the build number: MXC no longer requires PSEC 1.1 for an
   identity-less loopback proxy (the launcher queries host support and the
   directions depend on the Windows build), so the exact request must still
@@ -3468,7 +3456,7 @@ in its directory.
   changing already-admitted holders. Failure retains the degraded routes and
   publishes the startup diagnostic. Reset invalidates pending promotion before
   releasing session ACLs.
-  With ready MXC and shell local-network access enabled, shells run in containers
+  With ready MXC, shells run in containers
   whether or not srt-win is installed;
   without srt-win, ASRT starts as the proxy only (`windows.externalConfinement`,
   patch part 3, which also skips the srt-win dependency check `initialize()`
@@ -3571,8 +3559,7 @@ in its directory.
   loopback, LAN, overlay-network and remote peers, while host-listener controls
   succeeded. Firewall and audit policies were unchanged, so attribution to
   a particular filter or firewall rule is an unknown implementation detail.
-  These bounded refusals do not establish an inbound boundary. Shells request
-  this policy only after the local-network access setting is enabled; the
+  These bounded refusals do not establish an inbound boundary. The
   separate account's connect-only WFP filters do not protect MXC-shell inbound.
 - **UI.** Containers run with `ui.disable: false` (PowerShell 5.1 does not
   start without Win32k), clipboard `none` and input injection off. A contained

@@ -1322,7 +1322,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       confines: { filesystem: true, process: false, network: true },
       boot: { action: "activate", reason: "activate-windows-mxc-proxy-only", onSignal: "default-settings", causes: [] },
       windowsSubstrate: {
-        shellLocalNetworkAccess: true,
+
         mxc: { state: "available" }, windowsBuild: "10.0.26300.9711", srtWinReady: false,
         shells: "mxc", extensions: "none", shellEgressIdentity: "kernel-channel", extensionEgressIdentity: "shared",
       },
@@ -1342,60 +1342,11 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     expect(screen.queryByTestId("os-sandbox-windows-shared-identity")).toBeNull();
   });
 
-  it.each([
-    ["en", "checking"], ["ko", "checking"],
-    ["en", "available"], ["ko", "available"],
-  ] as const)("shows local-network consent off in %s while the container is %s", async (locale, mxcState) => {
-    const before = getLocale();
-    setLocale(locale);
-    try {
-      const { ave } = installApiWithWindows();
-      const current = await ave.permission.sandboxCapability();
-      ave.permission.sandboxCapability.mockResolvedValue({ ...current,
-        windowsSubstrate: {
-          shellLocalNetworkAccess: false,
-          mxc: { state: mxcState }, windowsBuild: "10.0.26300", srtWinReady: false,
-          shells: "approved-host", extensions: "none", shellEgressIdentity: "shared", extensionEgressIdentity: "shared",
-        },
-      } as never);
-      await renderPermissionsTab();
-      expect(screen.getByTestId("windows-shell-local-network-toggle")).toHaveAttribute("aria-checked", "false");
-      expect(screen.getByTestId("windows-shell-local-network-risk"))
-        .toHaveTextContent(t("permissionsTab.windowsShellLocalNetworkRisk"));
-      expect(screen.getByTestId("windows-shell-local-network-extension-scope"))
-        .toHaveTextContent(t("permissionsTab.windowsShellLocalNetworkExtensionScope"));
-      expect(screen.getByTestId("os-sandbox-windows-substrate-shells"))
-        .toHaveTextContent(t("permissionsTab.osSandboxWindowsShellsLocalNetworkOff"));
-      expect(screen.getByTestId("os-sandbox-windows-substrate-shells"))
-        .not.toHaveTextContent(locale === "en" ? "containers are available" : "컨테이너를 사용할 수 있지만");
-    } finally {
-      setLocale(before);
-    }
-  });
-
-  it("saves shell local-network consent, refreshes status and requires no restart", async () => {
-    const { ave, updateSettings } = installApiWithWindows();
+  it("offers no local-network consent switch for Windows shells", async () => {
+    installApiWithWindows();
     await renderPermissionsTab();
-    const reads = ave.permission.sandboxCapability.mock.calls.length;
-    const toggle = screen.getByTestId("windows-shell-local-network-toggle");
-    await act(async () => { fireEvent.click(toggle); });
-    expect(updateSettings).toHaveBeenCalledWith({ features: { windowsShellLocalNetworkAccess: true } });
-    expect(toggle).toHaveAttribute("aria-checked", "true");
-    expect(ave.permission.sandboxCapability.mock.calls.length).toBeGreaterThan(reads);
-    expect(screen.queryByRole("dialog")).toBeNull();
-    await act(async () => { fireEvent.click(toggle); });
-    expect(updateSettings).toHaveBeenLastCalledWith({ features: { windowsShellLocalNetworkAccess: false } });
-    expect(toggle).toHaveAttribute("aria-checked", "false");
-  });
-
-  it("keeps consent off when its save is refused", async () => {
-    const { updateSettings } = installApiWithWindows();
-    updateSettings.mockResolvedValueOnce({ ok: false, error: "settings-save-failed" });
-    await renderPermissionsTab();
-    const toggle = screen.getByTestId("windows-shell-local-network-toggle");
-    await act(async () => { fireEvent.click(toggle); });
-    expect(toggle).toHaveAttribute("aria-checked", "false");
-    expect(screen.getByText(t("permissionsTab.windowsShellLocalNetworkToggleFailed"))).toBeVisible();
+    expect(screen.queryByTestId("windows-shell-local-network-setting")).toBeNull();
+    expect(screen.queryByTestId("windows-shell-local-network-toggle")).toBeNull();
   });
 
   it("describes the shell sandbox as on by default on Windows too, as the settings default is", () => {
@@ -1444,7 +1395,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       homePrivacyError,
       boot: { action: "degrade", reason: "degrade-ave-home-privacy-failed", onSignal: "default-settings", causes: ["ave-home-privacy-failed"] },
       windowsSubstrate: {
-        shellLocalNetworkAccess: true,
+
         mxc: { state: "available" }, windowsBuild: "10.0.26300.9711", srtWinReady: false,
         shells: "none", extensions: "none", shellEgressIdentity: "shared", extensionEgressIdentity: "shared", extensionPlan,
       },
@@ -1705,7 +1656,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
         confines: { filesystem: true, process: false, network: true },
         boot: { action: "activate", reason: "activate-windows-mxc-proxy-only", onSignal: "default-settings", causes: [] },
         windowsSubstrate: {
-          shellLocalNetworkAccess: true,
+
           mxc: { state: "available" }, windowsBuild: "10.0.26300.9711", srtWinReady: extensionPlan.selectedBackend === "srt-win",
           shells, extensions: extensionPlan.selectedBackend, extensionPlan,
           shellEgressIdentity: shells === "mxc" ? "kernel-channel" : "shared", extensionEgressIdentity: extensionPlan.egressIdentity,
@@ -1841,7 +1792,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       confines: { filesystem: true, process: false, network: true },
       boot: { action: "activate", reason: "activate-windows-mxc-proxy-only", onSignal: "default-settings", causes: [] },
       windowsSubstrate: {
-        shellLocalNetworkAccess: true,
+
         mxc: { state: "available" }, windowsBuild: "10.0.26300", srtWinReady: false,
         shells: "mxc", extensions: "none", shellEgressIdentity: "kernel-channel", extensionEgressIdentity: "shared",
       },
@@ -2018,7 +1969,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       confines: { filesystem: true, process: false, network: true },
       boot: { action: "activate", reason: "activate-windows-mxc-proxy-only", onSignal: "default-settings", causes: [] },
       windowsSubstrate: {
-        shellLocalNetworkAccess: true,
+
         mxc: { state: "checking" }, windowsBuild: "10.0.26300", srtWinReady: false,
         shells: "approved-host", extensions: "none", shellEgressIdentity: "shared", extensionEgressIdentity: "shared",
       },
@@ -2038,7 +1989,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       confines: { filesystem: true, process: false, network: true },
       boot: { action: "degrade", reason: "degrade-windows-init-failed", onSignal: "default-settings", causes: ["init-failed"] },
       windowsSubstrate: {
-        shellLocalNetworkAccess: true,
+
         mxc: { state: "available" }, windowsBuild: "10.0.26300.9711", srtWinReady: true,
         shells: "none", extensions: "none", shellEgressIdentity: "shared", extensionEgressIdentity: "shared",
       },
@@ -2057,7 +2008,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       confines: { filesystem: true, process: false, network: true },
       boot: { action: "activate", reason: "deps-present", onSignal: "default-settings", causes: [] },
       windowsSubstrate: {
-        shellLocalNetworkAccess: true,
+
         mxc: { state: "unavailable", reason: "container-unavailable" }, windowsBuild: "10.0.22631.4317", srtWinReady: true,
         shells: "approved-host", extensions: "srt-win", shellEgressIdentity: "shared", extensionEgressIdentity: "shared",
       },

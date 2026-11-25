@@ -27,7 +27,7 @@ const snapshot = {
   boot: { action: "degrade", reason: "degrade-ave-home-privacy-failed", onSignal: "default-settings", causes: ["ave-home-privacy-failed"] },
   shell: { state: "unavailable", setting: true, envForced: true, causes: ["ave-home-privacy-failed"] },
   windowsSubstrate: {
-        mxc: { state: "available" }, windowsBuild: "10.0.26300.9711", srtWinReady: false, shellLocalNetworkAccess: true,
+        mxc: { state: "available" }, windowsBuild: "10.0.26300.9711", srtWinReady: false,
     shells: "none", extensions: "none", shellEgressIdentity: "shared", extensionEgressIdentity: "shared", extensionPlan,
   },
 };
