@@ -60,21 +60,20 @@ function isRecorded(path: string, stat: BigIntStats, id: FolderId): boolean {
 const NO_LINK = new Set(["EPERM", "ENOTSUP", "EOPNOTSUPP", "EXDEV", "EMLINK", "ENOSYS", "EINVAL", "EISDIR"]);
 /** Whether the volume of `dir` gives a file a second name there at all: a refusal it gives the probe too is the volume's, any other is
  * the pin's own. */
-function linksIn(dir: OwnedDir, name: string): boolean {
+async function linksIn(dir: OwnedDir, name: string): Promise<boolean> {
   const probe = dir.makeTemp(".probe-");
-  const file = join(probe.path, "a");
   try {
     closeSync(probe.createFile("a").fd);
     probe.check();
-    linkSync(file, join(probe.path, entryName(name)));
+    linkSync(join(probe.path, "a"), join(probe.path, entryName(name)));
     return true;
   } catch (error) {
     if (NO_LINK.has(codeOf(error) ?? "")) return false;
     throw error;
   } finally {
-    unlinkEntry(join(probe.path, name));
-    unlinkEntry(file);
-    rmdirSync(probe.path);
+    await probe.remove(name);
+    await probe.remove("a");
+    probe.removeSelfIfEmpty();
   }
 }
 /** A junction or any other link is no real directory. */
@@ -177,7 +176,7 @@ export interface OwnedDir {
   mark(name: string, pin?: Pin): FolderId;
   /** `mark`, with the anchor made first when the folder has none and the pin made as its second name when that name is free; `no-link`
    * on a volume that gives a file no second name. */
-  anchor(name: string, pin: Pin): FolderId;
+  anchor(name: string, pin: Pin): Promise<FolderId>;
   /** Which entry `name` is now, a link as the link itself; undefined when nothing is there. Read with every level still the one held,
    * before and after (`moved` otherwise): a folder that took a held one's place says nothing of what the held one holds. */
   entryId(name: string, kind?: "single-link-file"): NodeId | undefined;
@@ -284,7 +283,7 @@ class Dir implements OwnedDir {
     return `${this.id}+${mark}`;
   }
 
-  anchor(name: string, pin: Pin): FolderId {
+  async anchor(name: string, pin: Pin): Promise<FolderId> {
     const path = join(this.path, entryName(name));
     this.check();
     if (stats(path) === undefined) closeSync(this.createFile(name).fd);
@@ -294,7 +293,7 @@ class Dir implements OwnedDir {
       if (stat === undefined || !stat.isFile() || stat.nlink !== 1n) throw new OwnedFsError("changed", "the anchor is not a file of its own");
       this.check();
       try { linkSync(path, join(pin.dir.path, entryName(pin.name))); } catch (error) {
-        if (NO_LINK.has(codeOf(error) ?? "") && !linksIn(pin.dir, pin.name)) throw new OwnedFsError("no-link", "the volume gives a file no second name");
+        if (NO_LINK.has(codeOf(error) ?? "") && !(await linksIn(pin.dir, pin.name))) throw new OwnedFsError("no-link", "the volume gives a file no second name");
         if (codeOf(error) === "EEXIST") throw new OwnedFsError("exists", "the pin's name is taken");
         throw error;
       }

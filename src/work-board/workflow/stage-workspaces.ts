@@ -214,7 +214,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     const found = captureRegistration(at, key, folder);
     if (found === undefined) return undefined;
     let id: FolderId;
-    try { id = found.held.anchor(ADMIN_MARK, adminPin(at, key, "make")); } catch (error) {
+    try { id = await found.held.anchor(ADMIN_MARK, adminPin(at, key, "make")); } catch (error) {
       await found.worktrees.remove(basename(found.admin), found.held.id).catch(() => undefined);
       await dropAdminPin(at, key).catch(() => undefined);
       throw error;
@@ -256,6 +256,18 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     }
     await dropPin(pin.dir, pin.name);
     if (pin.dir !== at.project) pin.dir.removeSelfIfEmpty();
+  }
+
+  /** The run's own pins in a repository on another device than the home, those of registrations left there too; the repository is held
+   * by the identity its record names, and only names of this run are asked about. */
+  async function dropRepositoryPins(at: Held): Promise<void> {
+    const repo = at.file.repo;
+    if (repo === undefined || devOf(repo.id) === devOf(at.project.id)) return;
+    const pins = holdDir(repo.gitDir, repo.id).existing(PIN_DIR);
+    if (pins === undefined) return;
+    const own = `${basename(at.runRoot)}.`;
+    for (const name of pins.list()) if (name.startsWith(own) && name.endsWith(".pin")) await dropPin(pins, name, "any");
+    pins.removeSelfIfEmpty();
   }
 
   /** Takes the run's own registration out of the repository, host-side and by identity. Git's prune is never run: it would drop every
@@ -532,7 +544,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     }
     let self: FolderId;
     // The pin is made before the record: no record is written for a folder nothing pins.
-    try { self = chain.run.anchor(RUN_MARK, runPin({ runRoot, ...chain })); } catch (error) {
+    try { self = await chain.run.anchor(RUN_MARK, runPin({ runRoot, ...chain })); } catch (error) {
       await chain.project.remove(basename(runRoot), chain.run.id).catch(() => undefined);
       await dropPin(chain.project, runPin({ runRoot, ...chain }).name).catch(() => undefined);
       return refused(noLink(error) ? "volume-unsupported" : "workspace-unavailable");
@@ -1090,6 +1102,7 @@ export function createStageWorkspaceProvider(options: StageWorkspaceOptions = {}
     try {
       const own = `${basename(at.runRoot)}.`;
       for (const name of at.project.list()) if (name.endsWith(".pin")) await dropPin(at.project, name, name.startsWith(own) ? "any" : undefined);
+      await dropRepositoryPins(at);
       if (at.run.removeSelfIfEmpty()) at.project.removeSelfIfEmpty();
     } catch { /* what could not go stays */ }
     return undefined;

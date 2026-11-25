@@ -1,6 +1,6 @@
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, parse, resolve } from "node:path";
+import { basename, dirname, join, parse, resolve, sep } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { aveHome } from "../../../shared/ave-home.js";
 import { createHostGit, type HostGit, HostGitError } from "../host-git.js";
@@ -986,6 +986,31 @@ it("a pin deleted from a repository's ave-pins leaves its registration the run c
   }
 });
 
+it("a run whose registrations are left in a repository on another device takes its own pins out of ave-pins, and no other run's", async () => {
+  const fx = gitFixture();
+  try {
+    const handle = fx.start();
+    const other = fx.start({}, 8);
+    between.otherDevice = projectFolderOf(fx, handle);
+    const open = await handle.provider.open(handle.run, fx.repo);
+    const otherOpen = await other.provider.open(other.run, fx.repo);
+    if (!open.ok || !otherOpen.ok) throw new Error("expected two workspaces");
+    await stageRoot(handle, "s1");
+    const record = join(open.workspace.runRoot, RUN_FILE);
+    const file = JSON.parse(readFileSync(record, "utf8")) as { project: { id: string }; registrations: Record<string, { admin: string }> };
+    const admins = Object.values(file.registrations).map(registration => registration.admin);
+    // A project id that no longer matches leaves the repository as it is: the registrations stay there.
+    file.project.id = "1:1";
+    writeFileSync(record, JSON.stringify(file));
+    await handle.provider.release(handle.run, "all");
+    expect(existsSync(open.workspace.runRoot)).toBe(false);
+    expect(listing(join(fx.repo, ".git", "ave-pins"))).toEqual([`${basename(otherOpen.workspace.runRoot)}._join.pin`]);
+    expect(admins.map(admin => existsSync(join(admin, ADMIN_MARK)))).toEqual(admins.map(() => true));
+  } finally {
+    await fx.done();
+  }
+});
+
 it("a stop right before any write of a record leaves a run whose later release removes nothing but the run's own", async () => {
   const fx = gitFixture();
   try {
@@ -1014,11 +1039,19 @@ it("a stop right before any write of a record leaves a run whose later release r
       between.stop = { at, seen: 0, stopped: false };
       await steps(handle);
       between.stop = undefined;
+      // This run's own: its run folder, its pins beside it, the admin folders that point into it, and the project folder once empty.
+      const projectFolder = projectFolderOf(fx, handle);
+      const slug = runSlug(handle.run.itemId, handle.run.runId);
+      const runRoot = join(projectFolder, slug);
+      const key = (path: string): string => resolve(path).toLowerCase();
+      const admins = listing(join(fx.repo, ".git", "worktrees")).map(name => join(fx.repo, ".git", "worktrees", name))
+        .filter(admin => existsSync(join(admin, "gitdir")) && key(readFileSync(join(admin, "gitdir"), "utf8").trim()).startsWith(key(runRoot) + sep));
+      const own = (path: string): boolean => key(path) === key(projectFolder) || (key(dirname(path)) === key(projectFolder) && basename(path).startsWith(`${slug}.`))
+        || [runRoot, ...admins].some(root => key(path) === key(root) || key(path).startsWith(key(root) + sep));
       between.gone = [];
       // As after a restart: a provider that knows nothing of the run finds it by its record.
       await createStageWorkspaceProvider({ git: createHostGit({ env: fx.env }) }).release(handle.run, "all");
-      const own = [projectFolderOf(fx, handle), join(fx.repo, ".git", "worktrees", JOIN_DIR), join(fx.repo, ".git", "worktrees", "s1")];
-      expect(between.gone.filter(path => !own.some(root => resolve(path).toLowerCase().startsWith(resolve(root).toLowerCase())))).toEqual([]);
+      expect(between.gone.filter(path => !own(path))).toEqual([]);
       expect(userRefs()).toEqual(before);
       expect(fx.userGit(fx.repo, "status", "--porcelain")).toBe("");
       between.gone = undefined;

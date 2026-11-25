@@ -196,19 +196,19 @@ describe("anchors", () => {
   it.each([
     ["a link", (path: string): void => linkDir(outside, path)],
     ["a file with a second name", (path: string): void => linkSync(join(outside, "victim.txt"), path)],
-  ])("an anchor that is %s gets no pin, and nothing is linked to what it names", (_, plant) => {
+  ])("an anchor that is %s gets no pin, and nothing is linked to what it names", async (_, plant) => {
     const run = holdDir(join(base, "home")).ensure("run");
     const admin = run.ensure("admin");
     plant(join(admin.path, "ave.id"));
     const names = lstatSync(join(outside, "victim.txt")).nlink;
-    expect(reasonOf(() => admin.anchor("ave.id", { dir: run, name: "a.pin" }))).toBe("changed");
+    expect(await rejection(admin.anchor("ave.id", { dir: run, name: "a.pin" }))).toBe("changed");
     expect([existsSync(join(run.path, "a.pin")), lstatSync(join(outside, "victim.txt")).nlink]).toEqual([false, names]);
   });
 
-  it("an anchor made with its pin has exactly two names, and holds the folder", () => {
+  it("an anchor made with its pin has exactly two names, and holds the folder", async () => {
     const run = holdDir(join(base, "home")).ensure("run");
     const admin = run.ensure("admin");
-    const id = admin.anchor("ave.id", { dir: run, name: "a.pin" });
+    const id = await admin.anchor("ave.id", { dir: run, name: "a.pin" });
     expect(lstatSync(join(admin.path, "ave.id")).nlink).toBe(2);
     expect(run.child("admin", id)?.path).toBe(admin.path);
     expect(readdirSync(run.path).sort()).toEqual(["a.pin", "admin"]);
