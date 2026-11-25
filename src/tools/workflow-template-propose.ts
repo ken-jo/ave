@@ -5,7 +5,7 @@ import type { WorkflowTemplateStore } from "../main/workflow-template-store.js";
 import { currentEffectGateContext } from "../permissions/effect-enforcement.js";
 import { WORKFLOW_TEMPLATE_PROPOSE_TOOL } from "../shared/workflow-template-types.js";
 import { isStageId, isWorkspaceGlob, WorkflowTemplateError } from "../work-board/template-graph.js";
-import { createDynamicTool, toolErrorResult, type Tool } from "./base.js";
+import { createDynamicTool, toolErrorResult, toolSessionId, type Tool } from "./base.js";
 
 const MAX_DRAFT_BYTES = 256 * 1024;
 const nonBlank = (max: number) => z.string().max(max).regex(/\S/);
@@ -21,15 +21,15 @@ const generationTool = z.strictObject({
 const envelope = z.strictObject({
   writePaths: z.array(workspaceGlob).max(256),
   readRoots: stringList,
-  tools: stringList,
+  tools: stringList.max(0),
   network: z.array(z.strictObject({
     host: z.string().max(253).regex(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/i),
     port: z.number().int().min(1).max(65535).optional(),
-  })).max(256),
+  })).max(0),
   commands: stringList,
   mcpReadOnlyTools: stringList,
-  mcpGenerationTools: z.array(generationTool).max(256),
-  pluginGenerationTools: z.array(generationTool).max(256),
+  mcpGenerationTools: z.array(generationTool).max(0),
+  pluginGenerationTools: z.array(generationTool).max(0),
   outputs: z.array(z.union([z.literal("branch"), outputKind])).max(256),
   budget: z.strictObject({ rounds: z.int().positive(), minutes: z.number().positive(), costUsd: z.number().nonnegative() }),
 });
@@ -82,7 +82,8 @@ export function createWorkflowTemplateProposeTool(store: WorkflowTemplateStore):
     isReadOnly: () => true,
     jsonSchema: z.toJSONSchema(draftSchema),
     execute: async (raw, ctx) => {
-      if (ctx.headless !== false || currentEffectGateContext()?.permissionContext?.ownerUnattended) {
+      const sessionId = toolSessionId(ctx);
+      if (!sessionId || ctx.headless !== false || currentEffectGateContext()?.permissionContext?.ownerUnattended) {
         return toolErrorResult("human-confirmation-unavailable");
       }
       const parsed = draftSchema.safeParse(raw);
@@ -103,7 +104,7 @@ export function createWorkflowTemplateProposeTool(store: WorkflowTemplateStore):
           }
           draft.scope = { kind: "project", projectRoot: resolved.project.projectRoot };
         }
-        const { id, graphHash } = store.propose(draft);
+        const { id, graphHash } = store.propose(sessionId, draft);
         return { isError: false, output: JSON.stringify({ status: "pending-confirmation", proposalId: id, graphHash }) };
       } catch (error) {
         if (!(error instanceof WorkflowTemplateError)) throw error;

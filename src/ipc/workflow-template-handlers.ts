@@ -96,13 +96,14 @@ export function registerWorkflowTemplateHandlers(deps: IpcDeps): void {
   handle(WORK_BOARD.templateConfirm, async (store, event, id, raw, intent, ...args) => {
     requireTemplate(args.length === 0 && isTemplateId(id) && hasTemplateKeys(raw, ["expectedGraphHash", "expectedDraftRevision"]) && isGraphHash(raw.expectedGraphHash) && isTemplateId(raw.expectedDraftRevision));
     requireLocalGesture(event, intent, WORK_BOARD.templateConfirm);
-    if (isWorkflowTemplateProposalId(id)) loadProposal(id);
+    const proposalId = isWorkflowTemplateProposalId(id) ? id : undefined;
+    if (proposalId) loadProposal(proposalId);
     else {
       const { draft } = await load(id);
       if (draft) requireTemplate(authorizedScope(draft.scope), "scope-not-authorised");
     }
     const result = await store.confirmDraft(id, raw as unknown as WorkflowTemplateConfirmInput, { who: "user", origin: "local-desktop" });
-    deps.auditLogger.log({ timestamp: result.confirmedAt, sessionId: `work-board:${result.templateId}`, type: "approval", output: JSON.stringify({ event: "template_confirmed", templateId: result.templateId, version: result.version, graphHash: result.graphHash, origin: "local-desktop" }) });
+    deps.auditLogger.log({ timestamp: result.confirmedAt, sessionId: `work-board:${result.templateId}`, type: "approval", output: JSON.stringify({ event: "template_confirmed", proposalId, templateId: result.templateId, version: result.version, graphHash: result.graphHash, origin: "local-desktop" }) });
     return result;
   });
   handle(WORK_BOARD.templateArchive, async (store, _event, id, ...args) => { requireTemplate(args.length === 0); const record = await load(id); await store.archive(record.template.id); return null; });

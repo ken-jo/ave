@@ -63,7 +63,8 @@ function validateFile(raw: unknown): TemplatesFile {
 
 export class WorkflowTemplateStore {
   readonly changed = new ChangeSignal(error => log.warn("Template change listener failed: %s", String(error)));
-  private readonly proposals = new Map<string, WorkflowTemplateProposal>();
+  private readonly proposals = new Map<string, { sessionId: string; proposal: WorkflowTemplateProposal }>();
+  private readonly proposalIdsBySession = new Map<string, Set<string>>();
   constructor(private readonly filePath = join(openFeatureNamespace("work-board").dir, "templates.json"), private readonly now: () => number = Date.now) {}
   private async readFile(): Promise<TemplatesFile> {
     const input = await readAveHomeInput(this.filePath);
@@ -102,7 +103,7 @@ export class WorkflowTemplateStore {
     requireTemplate(version, "unknown-version"); requireTemplate(version.graphHash === pin.graphHash, "graph-hash-mismatch");
     return structuredClone(version);
   }
-  propose(raw: WorkflowTemplateDraftInput): WorkflowTemplateProposal {
+  propose(sessionId: string, raw: WorkflowTemplateDraftInput): WorkflowTemplateProposal {
     const draft = parseTemplateDraft(raw);
     requireTemplate(draft.basedOn === undefined, "invalid-input", "basedOn");
     for (const stage of draft.stages) {
@@ -114,17 +115,28 @@ export class WorkflowTemplateStore {
       throw new WorkflowTemplateError("envelope-refused", "Stage confirmation refused", refusals, field);
     }
     const proposal = { id: `proposal-${randomUUID()}`, graphHash: graphHashOf(draft), draft };
-    if (this.proposals.size >= MAX_PENDING_PROPOSALS) {
-      const oldest = this.proposals.keys().next();
-      if (!oldest.done) this.proposals.delete(oldest.value);
+    const sessionProposals = this.proposalIdsBySession.get(sessionId) ?? new Set<string>();
+    if (sessionProposals.size >= MAX_PENDING_PROPOSALS) {
+      const oldest = sessionProposals.values().next().value;
+      if (oldest !== undefined) this.removeProposal(oldest);
     }
-    this.proposals.set(proposal.id, proposal);
+    sessionProposals.add(proposal.id);
+    this.proposalIdsBySession.set(sessionId, sessionProposals);
+    this.proposals.set(proposal.id, { sessionId, proposal });
     return structuredClone(proposal);
   }
   getProposal(id: string): WorkflowTemplateProposal {
-    const proposal = this.proposals.get(id);
+    const proposal = this.proposals.get(id)?.proposal;
     requireTemplate(proposal, "no-draft");
     return structuredClone(proposal);
+  }
+  private removeProposal(id: string): void {
+    const entry = this.proposals.get(id);
+    if (!entry) return;
+    this.proposals.delete(id);
+    const sessionProposals = this.proposalIdsBySession.get(entry.sessionId);
+    sessionProposals?.delete(id);
+    if (sessionProposals?.size === 0) this.proposalIdsBySession.delete(entry.sessionId);
   }
   async draft(id: string | null, raw: WorkflowTemplateDraftInput): Promise<WorkflowTemplateRecord> {
     const input = parseTemplateDraft(raw);
@@ -167,7 +179,7 @@ export class WorkflowTemplateStore {
       delete record.draft;
       if (proposal) file.templates.push(record);
       await this.commit(file);
-      if (proposal) this.proposals.delete(id);
+      if (proposal) this.removeProposal(id);
       return structuredClone(confirmed);
     });
   }
