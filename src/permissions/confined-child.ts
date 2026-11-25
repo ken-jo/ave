@@ -330,7 +330,7 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
     denyRead: getDefaultSensitiveReadDenyPaths(), denyWrite: getDefaultSensitiveWriteDenyEntries(),
     floorPierces: spec.floorPierces, denyPluginsRoot: true, pinWriteRoots: true,
   }, spec.filesystemOwnership)));
-  const grants = rankMxcFilesystem(admitted.policy, existsSync);
+  const grants = rankMxcFilesystem(admitted.model, existsSync);
   assertWritesInsideEnvelope(grants, spec.filesystemOwnership);
   assertMxcHolderPrivateDirectories({ home: spec.home, temp: spec.temp, ownership: spec.filesystemOwnership,
     sharedPrivateRoots: [appOwnedSandboxHomeRoot(), appOwnedSandboxTempRoot(), appOwnedTerminalHandoffRoot()] });

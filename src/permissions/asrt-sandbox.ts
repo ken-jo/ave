@@ -2,8 +2,7 @@
 
 import { MxcExtensionReadinessRefusedError, MxcNativeEntryRequiredError, MxcProcessContractError, WorkerTransportUnsupportedError } from "./mxc-extension-errors.js";
 import { assertMxcExtensionFilesystemOwnership, type MxcExtensionFilesystemOwnership } from "./mxc-filesystem-ownership.js";
-import type { ShellFilesystemPolicy } from "./mxc-windows.js";
-import { buildPolicyModel, policyFloorRow, policyGrantRow, type PolicyFloorRow, type PolicyGrantRow } from "./policy-model.js";
+import { buildPolicyModel, policyFloorRow, policyGrantRow, type PolicyFloorRow, type PolicyGrantRow, type PolicyModel } from "./policy-model.js";
 import { srtWriteFloorRow, toSrtConfig } from "./srt-policy-adapter.js";
 import { issueFilesystemSandboxBlock, type SandboxBlock } from "../shared/sandbox-block.js";
 import { buildLauncherEnvironment } from "./launcher-environment.js";
@@ -815,7 +814,8 @@ export function admitMxcExtensionFilesystem(
 }
 
 function admitMxcExtensionFilesystemInSnapshot(filesystem: PerCommandFilesystem, ownership?: MxcExtensionFilesystemOwnership): {
-  readonly policy: ShellFilesystemPolicy;
+  /** The holder's admitted policy as rows, every path literal. */
+  readonly model: PolicyModel;
   readonly assertStillValid: () => void;
 } {
   if (process.platform !== "win32") throw new Error("Container filesystem admission requires win32");
@@ -880,18 +880,26 @@ function admitMxcExtensionFilesystemInSnapshot(filesystem: PerCommandFilesystem,
   const explicitReadFloor = literalDenies(admitted.denyRead).filter(path => !reallowableMasks.some(mask => samePath(path, mask)));
   const protectedFloor = [...new Set([...literalDenies(floor), ...explicitReadFloor])];
   const allowRead = readGrantsOutsideReadDenies(admitted.allowRead, protectedFloor, pierces);
-  const policy: ShellFilesystemPolicy = Object.freeze({
-    allowRead: Object.freeze(allowRead),
-    allowWrite: Object.freeze([...mandatory.allowWrite]),
-    denyRead: Object.freeze([...literalDenies([
-      ...getDefaultSensitiveReadDenyPaths(), ...admitted.denyRead,
-      ...namespaceRoots, ...(pinnedOwnership?.hostStorageRoots ?? []),
-    ])]),
-    denyWrite: Object.freeze([...literalDenies([...sensitiveWriteDenies, ...admitted.denyWrite, ...mandatory.denyWrite], true)]),
-    protectedFloor: Object.freeze(protectedFloor),
-    floorPierces: Object.freeze([...pierces]),
+  const readDenies = literalDenies([
+    ...getDefaultSensitiveReadDenyPaths(), ...admitted.denyRead,
+    ...namespaceRoots, ...(pinnedOwnership?.hostStorageRoots ?? []),
+  ]);
+  const writeFloor = literalDenies([...sensitiveWriteDenies, ...admitted.denyWrite, ...mandatory.denyWrite], true);
+  const model = buildPolicyModel({
+    floors: [
+      ...readDenies.map((path) => policyFloorRow(path, "denied", "read-boundary", true)),
+      ...writeFloor.map((path) => policyFloorRow(path, "ro", "protected-name", true)),
+      ...protectedFloor.map((path) => policyFloorRow(path, "denied", "secrets", true)),
+    ],
+    userGrants: [],
+    extensionManifests: [
+      ...mandatory.allowWrite.map((path) => policyGrantRow(path, "rw", "extension-manifest", null, true)),
+      ...allowRead.map((path) => policyGrantRow(path, "ro", "extension-manifest", null, true)),
+      ...pierces.map((path) => policyGrantRow(path, "ro", "floor-pierce", null, true)),
+    ],
+    launchGrants: [],
   });
-  assertSandboxWritePolicySize(policy.denyWrite, undefined, admitted.denyWrite);
+  assertSandboxWritePolicySize(writeFloor, undefined, admitted.denyWrite);
   const assertStillValid = (): void => {
     for (const entry of [...(pinned.allowRead ?? []), ...(pinned.allowWrite ?? []),
       ...(ownershipPins?.allowRead ?? []), ...(ownershipPins?.allowWrite ?? []), ...(namespacePins.allowRead ?? [])]) {
@@ -901,7 +909,7 @@ function admitMxcExtensionFilesystemInSnapshot(filesystem: PerCommandFilesystem,
       pluginNamespaceRoots: namespaceRoots, ownership: pinnedOwnership });
   };
   assertStillValid();
-  return { policy, assertStillValid };
+  return { model, assertStillValid };
 }
 
 export function buildPerCommandSandboxCustomConfig(

@@ -16,8 +16,8 @@ import {
   rankMxcFilesystem,
   resolveHostWxcExecPath,
   type MxcDirectoryEntry,
-  type ShellFilesystemPolicy,
 } from "../permissions/mxc-windows.js";
+import { buildPolicyModel, policyFloorRow, policyGrantRow } from "../permissions/policy-model.js";
 import type { ContainedShellLifecycle } from "./contained-shell-lifecycle.js";
 
 export interface MxcShellLaunch {
@@ -35,8 +35,17 @@ export interface PrepareMxcShellLaunchInput {
   readonly egressToken: string;
   readonly commandLine: string;
   readonly cwd: string;
-  /** The per-command policy the ASRT wrap would get, without the floor (added here). */
-  readonly filesystem: Omit<ShellFilesystemPolicy, "protectedFloor">;
+  /** What the shell computed for this command. The protected read floor is added here. */
+  readonly filesystem: {
+    readonly allowWrite: readonly string[];
+    readonly allowRead: readonly string[];
+    /** Read denies a more specific grant re-opens (the session read boundary, the Ave home, sandbox private directories). */
+    readonly denyRead: readonly string[];
+    /** The write floor. */
+    readonly denyWrite: readonly string[];
+    /** Reads the shell holds inside the protected floor on purpose (the saved session history). */
+    readonly floorPierces?: readonly string[];
+  };
   /** The child's secret-stripped environment. */
   readonly env: Readonly<Record<string, string>>;
   readonly timeoutMs: number;
@@ -120,12 +129,24 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
   }
   // A grant would carve the Ave home deny open, so inside that home only a re-allowed child is granted.
   const insideBoundary = (path: string): boolean => aveHomeReadBoundaryCovering(path) !== undefined;
-  const grants = rankMxcFilesystem({
-    ...input.filesystem,
-    allowRead: input.filesystem.allowRead.filter((path) => !insideBoundary(path)),
-    allowWrite: input.filesystem.allowWrite.filter((path) => !insideBoundary(path)),
-    protectedFloor: getProtectedReadDenyFloor(),
-  }, input.exists, input.list ?? listDirectory);
+  const allowRead = input.filesystem.allowRead.filter((path) => !insideBoundary(path));
+  const allowWrite = input.filesystem.allowWrite.filter((path) => !insideBoundary(path));
+  const protectedFloor = getProtectedReadDenyFloor();
+  // The shell's lists are spellings as the shell composed them, and its interface does not say which grant stands behind a root.
+  const grants = rankMxcFilesystem(buildPolicyModel({
+    floors: [
+      ...input.filesystem.denyRead.map((path) => policyFloorRow(path, "denied", "read-boundary")),
+      ...input.filesystem.denyWrite.map((path) => policyFloorRow(path, "ro", "protected-name")),
+      ...protectedFloor.map((path) => policyFloorRow(path, "denied", "secrets")),
+    ],
+    userGrants: [],
+    extensionManifests: [],
+    launchGrants: [
+      ...allowWrite.map((path) => policyGrantRow(path, "rw", "launch-grant", null)),
+      ...allowRead.map((path) => policyGrantRow(path, "ro", "launch-grant", null)),
+      ...(input.filesystem.floorPierces ?? []).map((path) => policyGrantRow(path, "ro", "floor-pierce", null)),
+    ],
+  }), input.exists, input.list ?? listDirectory);
   assertAdmission();
   const relay = await openHostEgressListener(token, admission);
   assertAdmission();
