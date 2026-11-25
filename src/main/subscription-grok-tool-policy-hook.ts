@@ -1,4 +1,5 @@
 // The runtime treats malformed hook output as fail-open, so every unexpected input must produce an explicit valid JSON denial.
+import "./bare-program-lookup.js";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isPlainRecord } from "../shared/is-record.js";

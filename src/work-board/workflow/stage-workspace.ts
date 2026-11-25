@@ -1,13 +1,18 @@
 import type { RunWorkspace, TemplateStage } from "../../shared/workflow-template-types.js";
 import type { JoinConflict } from "./shipped-shapes.js";
 
-export interface RunRef { itemId: number; runId: string; runKey: string }
+/** `projectRoot`: the project the caller has the run open on, as the caller holds it now; none for a run of no project, and none
+ * when the call is made for a run nobody has open. A provider checks what its own record says of the project against it. */
+export interface RunRef { itemId: number; runId: string; runKey: string; projectRoot?: string }
 interface StageWorkspace { root: string; kind: "git" | "folder"; baseCommit?: string }
 /** Every code a workspace provider refuses with; each has its text in the catalogs. */
 export const WORKSPACE_REFUSALS = [
-  "workspace-unavailable", "home-boundary-unverified", "git-unavailable", "inputs-need-project", "seed-too-large", "seed-unreadable", "identity-missing",
+  "workspace-unavailable", "home-boundary-unverified", "git-unavailable", "inputs-need-project", "seed-too-large", "seed-unreadable", "identity-missing", "volume-unsupported",
 ] as const;
 type WorkspaceRefusal = typeof WORKSPACE_REFUSALS[number];
+
+/** What the host's run file named for a run when its record went: its project root, and the item it was a run of. */
+export interface RemovedRunProject { projectRoot: string; itemId: number }
 
 /** Where a run's stages work. Every stage child gets its own folder under the run root; there is no shared-folder mode. */
 export interface StageWorkspaceProvider {
@@ -21,18 +26,20 @@ export interface StageWorkspaceProvider {
   /** Install one immutable result per run/join from the stage seals; repetition returns that result without another merge.
    * A non-idempotent implementation must commit its receipt atomically with the integration. */
   integrate(run: RunRef, joinId: string, stageIds: readonly string[]): Promise<{ ok: true } | { ok: false; conflict: JoinConflict }>;
-  /** Stage folders only; the run branch and the output folder stay. Already absent folders are a no-op. */
+  /** Stage folders only; the run branch and the output folder stay. Already absent folders are a no-op. A git run is released only
+   * with its project open (`run.projectRoot`): without it nothing of the run is touched. */
   release(run: RunRef, stageIds: readonly string[] | "all"): Promise<void>;
-  /** Boot: drop what no active run owns. */
-  sweep(activeRunIds: readonly string[]): Promise<void>;
+  /** Everything left under the run root, the output folder included, of each run that has no record and whose item is gone. A run
+   * whose item is still listed keeps its output folder whether or not its record stays. The run branch stays. `projects` gives,
+   * by run id, what the host's run file named for a run when its record went; a git run is taken apart only against that root, as
+   * in `sweep`, and one with none is left whole, with a warning. Resolves to the ids of the runs it took in hand, taken apart or
+   * left whole, and of the runs in `projects` that have no folder left: what `projects` held for them has been used. A run has no
+   * folder left when every level was listed and no folder that could not be read carries the name its item and id give.
+   * `waits` is asked of a run just before it would be taken in hand: a run it answers true for is left to a later discard, untold. */
+  discard(projects: ReadonlyMap<string, RemovedRunProject>, waits?: (runId: string) => boolean): Promise<readonly string[]>;
+  /** Boot: drop what no active run owns, and with it what `discard` would remove. An active run loses only what a stop during a
+   * seeding left of its ignore matcher. `projects` gives, by run id, the project root the host's own run state names for a run; a
+   * git run is taken apart only against that root, and one with none is left whole, with a warning. Nothing a run folder holds is
+   * ever taken for it. */
+  sweep(activeRunIds: readonly string[], projects?: ReadonlyMap<string, string>): Promise<void>;
 }
-
-/** The default until a real provider is wired: no template run can start. */
-export const unavailableWorkspaceProvider: StageWorkspaceProvider = {
-  open: async () => ({ ok: false, code: "workspace-unavailable" }),
-  prepare: async () => ({ ok: false, code: "workspace-unavailable" }),
-  seal: async () => ({ ok: false, code: "workspace-unavailable" }),
-  integrate: async () => { throw new Error("stage workspaces are not available"); },
-  release: async () => {},
-  sweep: async () => {},
-};

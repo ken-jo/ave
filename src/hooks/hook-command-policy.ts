@@ -116,7 +116,8 @@ export function createHookCommandAuthorizer(deps: {
     if (!matchesShellWorkingDirectoryIdentity(cwd, cwdIdentity)) return { decision: "deny", reason: "Hook working directory changed during approval" };
     if (binding) {
       if (!humanApproved && !requiresUnsandboxedShellAsk(plan)) recordHostShellPolicyAuthorization(binding);
-      const permit = mintHostShellExecutionPermit({ plan, approvalDecision: approval, floorSessionDecision: current, permissionManager: deps.permissionManager, binding });
+      // `current` carries the proof of a non-human pass of the sandbox-unavailable ask: the session grant or an exact saved rule.
+      const permit = mintHostShellExecutionPermit({ plan, approvalDecision: approval, allowRuleDecision: current, floorSessionDecision: current, permissionManager: deps.permissionManager, binding });
       if (!consumeHostShellExecutionPermit({ ...binding, permit })) {
         return { decision: "deny", reason: "Hook host execution approval receipt is invalid" };
       }

@@ -1,3 +1,4 @@
+import "../../main/bare-program-lookup.js";
 import { parentPort } from "node:worker_threads";
 import { inspectGitRepository } from "./git-repository-inputs.js";
 

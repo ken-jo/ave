@@ -48,6 +48,7 @@ import type { PluginHostApi, PluginManifest, PluginRuntimeContext, RuntimePlugin
 import { HOSTAPI_DISPATCH_TABLE } from "../host-api-dispatcher.js";
 import {
   createOutOfProcessPluginFactory,
+  pluginChildStartIdentity,
   PluginSandboxGrantError,
   type ObservedPluginChild,
 } from "../out-of-process-plugin.js";
@@ -364,7 +365,8 @@ async function spawnInstalled(
   let stdout = "";
   let observed: ObservedPluginChild | undefined;
   // An unwrapped start needs a person's yes for that one start.
-  const unwrappedStart = wrapped ? undefined : await approvedExtensionStart(pluginChildStartKey(installed.manifest.id));
+  const unwrappedStart = wrapped ? undefined : await approvedExtensionStart(pluginChildStartKey(installed.manifest.id),
+    pluginChildStartIdentity({ manifest: installed.manifest, launchKind: installed.launch.kind }));
   const factory = createOutOfProcessPluginFactory({
     manifest: installed.manifest,
     launch: installed.launch,

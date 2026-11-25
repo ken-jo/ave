@@ -7,16 +7,19 @@ import { PassThrough } from "node:stream";
 
 const state = vi.hoisted(() => ({ plan: undefined as unknown, holdCompletion: false, denyWrite: [] as string[],
   natives: [] as Array<{ label: string; dispose: ReturnType<typeof vi.fn> }> }));
-vi.mock("../asrt-sandbox.js", async (original) => ({
+vi.mock("../asrt-sandbox.js", async (original) => {
+  const { mxcPolicyModel } = await import("../../__tests__/support/mxc-policy-rows.js");
+  return {
   ...await original<typeof import("../asrt-sandbox.js")>(),
   assertExtensionStartAllowed: () => {},
   runWithSandboxWritePreflight: async (_signal: AbortSignal | undefined, compose: () => unknown) => compose(),
   getDefaultSensitiveReadDenyPaths: () => [], getDefaultSensitiveWriteDenyEntries: () => [],
   admitMxcExtensionFilesystem: (request: { allowRead: string[]; allowWrite: string[] }) => ({
-    policy: { allowRead: request.allowRead, allowWrite: request.allowWrite, denyRead: [], denyWrite: state.denyWrite, protectedFloor: [] },
+    model: mxcPolicyModel({ allowRead: request.allowRead, allowWrite: request.allowWrite, denyRead: [], denyWrite: state.denyWrite, protectedFloor: [] }),
     assertStillValid: () => {},
   }),
-}));
+  };
+});
 vi.mock("../sandbox-capability.js", async (original) => ({
   ...await original<typeof import("../sandbox-capability.js")>(),
   getWindowsExtensionBackendPlan: () => state.plan,

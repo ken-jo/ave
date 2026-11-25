@@ -18,6 +18,7 @@ export const FORWARD_ENV_KEYS = [
   "SHELL",
   "COMSPEC",
   "PATHEXT",
+  "NoDefaultCurrentDirectoryInExePath",
   "SystemDrive",
   "SystemRoot",
   "WINDIR",

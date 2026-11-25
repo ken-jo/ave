@@ -24,6 +24,8 @@ type RunAdoption = {
   named: { item: WorkItemResolved; run: RunRecord | null }[];
   /** Workspace identities that must survive sweeping; undefined defers the sweep. */
   keepWorkspaces: readonly string[] | undefined;
+  /** Every readable run of the run file, over or not. */
+  runs: readonly RunRecord[];
   /** Unsettled runs no adopted row names, by class (see classifyRun): `orphans`, `lost`, `removed` (due-delete) and `kept`, every other
    * class (waiting-delete or unreadable). */
   orphans: RunRecord[];
@@ -128,7 +130,7 @@ export function boardRunState(store: Pick<WorkBoardStore, "beginRun" | "updateRu
       const adopted = new Set(named.flatMap(({ run }) => run ? [run.runId] : []));
       const rest = stored.runs.filter(run => !adopted.has(run.runId) && run.settled === undefined);
       const of = (...allowed: RunClass[]) => rest.filter(run => allowed.includes(classes.get(run.runId) as RunClass));
-      return { ok: true, named, keepWorkspaces, orphans: of("orphan"), lost: of("lost"), kept: of("waiting-delete", "unreadable", "live"), removed: of("due-delete") };
+      return { ok: true, named, keepWorkspaces, runs: stored.runs, orphans: of("orphan"), lost: of("lost"), kept: of("waiting-delete", "unreadable", "live"), removed: of("due-delete") };
     },
     deleted: () => store.deleteIntentsOnDisk(),
     pruneSettled: () => store.pruneSettledRuns(),

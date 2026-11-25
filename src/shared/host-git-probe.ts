@@ -26,7 +26,9 @@ export function runGitProbeSync(path: string, args: string[], options: ProbeOpti
   }
 }
 
-export function runGitProbeAsync(path: string, args: string[], options: ProbeOptions): Promise<ProbeOutput> {
+export function runGitProbeAsync(path: string, args: string[], options: ProbeOptions, deadline?: number): Promise<ProbeOutput> {
+  const timeLeft = () => Math.min(TOOL_TIMEOUT_POLICY.projectGitQueryMs, (deadline ?? Infinity) - performance.now());
+  if (timeLeft() <= 0) return Promise.resolve({ stdout: "" });
   return new Promise<ProbeOutput>((resolve) => {
     const child = spawn(path, args, { ...options, windowsHide: true, stdio: ["ignore", "pipe", "ignore"] });
     const chunks: Buffer[] = [];
@@ -51,7 +53,7 @@ export function runGitProbeAsync(path: string, args: string[], options: ProbeOpt
         // The probe has already settled as unavailable.
       }
     };
-    const timer = setTimeout(stop, TOOL_TIMEOUT_POLICY.projectGitQueryMs);
+    const timer = setTimeout(stop, Math.ceil(timeLeft()));
     timer.unref();
     child.stdout.on("data", (chunk: Buffer) => {
       if (settled) return;

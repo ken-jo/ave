@@ -1,7 +1,7 @@
 // Reviewer relaxation requires live OS isolation; none forbids intent-only downgrades from MEDIUM/HIGH to LOW. Inactive gates publish verified none; audit stores the resulting verdict rather than the full capability (docs/architecture/permission-policy-design.md).
 
 import { assertSandboxWindowsExtensionPlan, egressProtocolCoverageFor } from "../shared/sandbox-capability-info.js";
-import { getAveHomePrivacyFailure, isAveHomePrivacyApprovable } from "../shared/ave-home.js";
+import { getAveHomePrivacyFailure, isAveHomePrivacyApprovable, isAveHomePrivacyVerifiedAtBoot } from "../shared/ave-home.js";
 import { t } from "../i18n/index.js";
 import type { ToolCategory, ToolSource } from "../tools/types.js";
 import type {
@@ -399,6 +399,7 @@ export function getHostShellExecutionPlan(executionMode: HostShellExecutionReque
     unavailableCauses: _bootOutcome?.causes,
     unavailableSandboxRequiresAsk: privacyFailure !== undefined,
     unconfinedShellDenied: privacyFailure !== undefined && !isAveHomePrivacyApprovable(privacyFailure.category),
+    homePrivacyVerified: isAveHomePrivacyVerifiedAtBoot(),
   });
   recordIssuedHostShellExecutionPlan(plan, generation);
   windowsShellPlanRevisions.set(plan, windowsShellLocalNetworkRevision);

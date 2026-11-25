@@ -19,6 +19,7 @@ const SAFE_KEYS = [
   "SHELL",
   "COMSPEC",
   "PATHEXT",
+  "NoDefaultCurrentDirectoryInExePath",
   "SystemDrive",
   "SystemRoot",
   "WINDIR",
@@ -123,6 +124,7 @@ describe("buildSafeChildEnv — allowlist forwarding", () => {
     vi.stubEnv("APPDATA", "C:\\Users\\test\\AppData\\Roaming");
     vi.stubEnv("SystemRoot", "C:\\Windows");
     vi.stubEnv("PATHEXT", ".COM;.EXE;.BAT;.CMD");
+    vi.stubEnv("NoDefaultCurrentDirectoryInExePath", "1");
     vi.stubEnv("PYTHONDONTWRITEBYTECODE", "1");
 
     const env = buildSafeChildEnv();
@@ -131,6 +133,7 @@ describe("buildSafeChildEnv — allowlist forwarding", () => {
     expect(env.APPDATA).toBe("C:\\Users\\test\\AppData\\Roaming");
     expect(env.SystemRoot).toBe("C:\\Windows");
     expect(env.PATHEXT).toBe(".COM;.EXE;.BAT;.CMD");
+    expect(env.NoDefaultCurrentDirectoryInExePath).toBe("1");
     expect(env.PYTHONDONTWRITEBYTECODE).toBe("1");
   });
 

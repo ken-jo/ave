@@ -16,8 +16,8 @@ import {
   rankMxcFilesystem,
   resolveHostWxcExecPath,
   type MxcDirectoryEntry,
-  type ShellFilesystemPolicy,
 } from "../permissions/mxc-windows.js";
+import { buildPolicyModel, policyFloorRow, policyGrantRow, type PolicyModel } from "../permissions/policy-model.js";
 import type { ContainedShellLifecycle } from "./contained-shell-lifecycle.js";
 
 export interface MxcShellLaunch {
@@ -30,13 +30,48 @@ export interface MxcShellLaunch {
   bindChild(child: ChildProcess): void;
 }
 
+/** A shell command's policy as the lists the shell composes. */
+export interface MxcShellPolicyLists {
+  readonly allowWrite: readonly string[];
+  readonly allowRead: readonly string[];
+  /** Read denies a more specific grant re-opens (the session read boundary, the Ave home, sandbox private directories). */
+  readonly denyRead: readonly string[];
+  /** The write floor. */
+  readonly denyWrite: readonly string[];
+  /** The protected read floor. A grant at or beneath a row is dropped. */
+  readonly protectedFloor: readonly string[];
+  /** Reads the shell holds inside the protected floor on purpose (the saved session history). */
+  readonly floorPierces?: readonly string[];
+}
+
+/**
+ * The shell's lists as policy rows. The paths are spellings as the shell composed them, and its interface does not say which
+ * grant stands behind a root. A path on both deny lists is stated twice; the container adapter reads the two lists differently.
+ */
+export function shellPolicyModel(lists: MxcShellPolicyLists): PolicyModel {
+  return buildPolicyModel({
+    floors: [
+      ...lists.denyRead.map((path) => policyFloorRow(path, "denied", "read-boundary", false)),
+      ...lists.denyWrite.map((path) => policyFloorRow(path, "ro", "protected-name", false)),
+      ...lists.protectedFloor.map((path) => policyFloorRow(path, "denied", "secrets", false)),
+    ],
+    userGrants: [],
+    extensionManifests: [],
+    launchGrants: [
+      ...lists.allowWrite.map((path) => policyGrantRow(path, "rw", "launch-grant", false)),
+      ...lists.allowRead.map((path) => policyGrantRow(path, "ro", "launch-grant", false)),
+      ...(lists.floorPierces ?? []).map((path) => policyGrantRow(path, "ro", "floor-pierce", false)),
+    ],
+  });
+}
+
 export interface PrepareMxcShellLaunchInput {
   /** The invocation's egress token (`egress-invocations.ts`): the identity its listener stamps. */
   readonly egressToken: string;
   readonly commandLine: string;
   readonly cwd: string;
-  /** The per-command policy the ASRT wrap would get, without the floor (added here). */
-  readonly filesystem: Omit<ShellFilesystemPolicy, "protectedFloor">;
+  /** What the shell computed for this command. The protected read floor is added here. */
+  readonly filesystem: Omit<MxcShellPolicyLists, "protectedFloor">;
   /** The child's secret-stripped environment. */
   readonly env: Readonly<Record<string, string>>;
   readonly timeoutMs: number;
@@ -120,12 +155,11 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput, l
   }
   // A grant would carve the Ave home deny open, so inside that home only a re-allowed child is granted.
   const insideBoundary = (path: string): boolean => aveHomeReadBoundaryCovering(path) !== undefined;
-  const grants = rankMxcFilesystem({
-    ...input.filesystem,
-    allowRead: input.filesystem.allowRead.filter((path) => !insideBoundary(path)),
-    allowWrite: input.filesystem.allowWrite.filter((path) => !insideBoundary(path)),
-    protectedFloor: getProtectedReadDenyFloor(),
-  }, input.exists, input.list ?? listDirectory);
+  const allowRead = input.filesystem.allowRead.filter((path) => !insideBoundary(path));
+  const allowWrite = input.filesystem.allowWrite.filter((path) => !insideBoundary(path));
+  const protectedFloor = getProtectedReadDenyFloor();
+  const grants = rankMxcFilesystem(shellPolicyModel({ ...input.filesystem, allowWrite, allowRead, protectedFloor }),
+    input.exists, input.list ?? listDirectory);
   assertAdmission();
   const relay = await openHostEgressListener(token, admission);
   assertAdmission();

@@ -24,6 +24,7 @@ import { ConversationLoop } from "../../engine/conversation-loop.js";
 import { makeBasicConversationLoopDeps } from "../../engine/__tests__/support/conversation-loop-fixtures.js";
 import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
 import { admitMxcExtensionFilesystem, buildSandboxConfig, getDefaultSensitiveWriteDenyEntries, grantWindowsWorkerFilesystemAccess, initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox, runWithSandboxWritePreflight, wrapToolCommand } from "../asrt-sandbox.js";
+import { mxcPolicyRows } from "../mxc-windows.js";
 
 vi.mock("@anthropic-ai/sandbox-runtime", async importOriginal => ({
   ...(await importOriginal<typeof import("@anthropic-ai/sandbox-runtime")>()),
@@ -108,11 +109,11 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     writeFileSync(profile, "");
     await initializeAsrtSandbox({ resolveWindowsDocumentsPath: () => documents });
 
-    const { policy } = admitMxcExtensionFilesystem({ allowRead: [], allowWrite: [target] }, {
+    const policy = mxcPolicyRows(admitMxcExtensionFilesystem({ allowRead: [], allowWrite: [target] }, {
       readRoots: [], writeRoots: [target], hostStorageRoots: [],
-    });
-    expect(policy.allowWrite).toEqual([target]);
-    expect(policy.denyWrite).toContain(profile);
+    }).model);
+    expect(policy.writeGrants).toEqual([target]);
+    expect(policy.writeFloor).toContain(profile);
   });
 
   it("uses one Documents lookup for a wrap and refuses writes after a lookup timeout", async () => {

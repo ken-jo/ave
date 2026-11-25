@@ -14,6 +14,7 @@ export function resolveShellTimeoutMs(timeoutSeconds: number): number {
 export const TOOL_TIMEOUT_POLICY = {
   shellDefaultMs: 120_000,
   projectGitQueryMs: 2_000,
+  stageWorkspaceGitMs: 120_000,
   // Reserve host-owned handshake, receipt, cleanup, and outer-timer headroom beyond semantic shell time on every route.
   shellCeilingGraceMs: 31_000,
   globalCeilingMs: 120_000,

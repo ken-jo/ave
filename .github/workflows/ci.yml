@@ -318,6 +318,11 @@ jobs:
       # namespace — rather than inside a test.
       - name: Prove the sandbox backend
         run: bwrap --version && socat -V | head -1 && rg --version | head -1 && bwrap --unshare-all --ro-bind / / --dev /dev --proc /proc /bin/true
+      # The stage-workspace regressions need at least the git release their
+      # hook events were validated against; an older one fails here, not in a
+      # test, and the exact version is logged.
+      - name: Require the validated git release or newer
+        run: node ave/.github/scripts/require-validated-git.mjs
       - uses: ./ave/.github/actions/setup-bun
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -679,6 +684,14 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           bun-version-file: ave/.bun-version
+      # Before job-root setup: the guard contains every later step. The
+      # stage-workspace regressions need at least the git release their hook
+      # events were validated against; an older one fails here, not in a
+      # test, and the exact version is logged.
+      - name: Require the validated git release or newer
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        shell: bash
+        run: node ave/.github/scripts/require-validated-git.mjs
       # Native fixtures need system-volume aliases and trusted root ownership.
       # The unique job directory remains outside the account profile.
       - &windows-home
@@ -1189,6 +1202,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: node .github/scripts/python-download-mirror.mjs
+      - name: Show the git the regressions run against
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        run: git --version
       - name: Run macOS permission regressions
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -1207,6 +1223,12 @@ jobs:
           src/tools/__tests__/session-read-shell.test.ts
           src/tools/__tests__/host-script-policy.test.ts
           src/tools/__tests__/xlsx-edit-sandbox.integration.test.ts
+          src/work-board/workflow/__tests__/host-git.test.ts
+          src/work-board/workflow/__tests__/host-git-discovery.test.ts
+          src/work-board/workflow/__tests__/stage-workspaces-git.test.ts
+          src/work-board/workflow/__tests__/stage-workspaces-folder.test.ts
+          src/work-board/workflow/__tests__/stage-workspaces-open-race.test.ts
+          src/work-board/workflow/__tests__/stage-workspaces-ownership.test.ts
           src/permissions/__tests__/sandbox-control-writes.integration.test.ts
           src/permissions/__tests__/sandbox-shell-sockets.integration.test.ts
           src/permissions/__tests__/sandbox-git-controls.integration.test.ts
