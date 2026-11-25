@@ -104,7 +104,7 @@ describe("test-only diff policy", () => {
   });
 });
 
-describe("pre-push fast source tier", () => {
+describe("pre-push source policy", () => {
   it("takes a source-only change on the fast tier with its related tests", () => {
     const result = selectFastSourceChecks([
       modified("src/ui/renderer/hooks/status-bar/vendor-label.ts"),
