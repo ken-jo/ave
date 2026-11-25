@@ -9,6 +9,7 @@ import * as windowsHelpers from "@anthropic-ai/sandbox-runtime/dist/sandbox/wind
 import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { afterQueuedCallbacks, deferred } from "../../__tests__/support/deferred.js";
+import { removeLinkOnly } from "../../__tests__/support/tmp-dir-teardown.js";
 import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
 import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
 import { configureHostResources } from "../../main/host-resources.js";
@@ -969,7 +970,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
       expect(watchedProtectedRows()).toContain(absent);
       expect(lstatSync(link).isSymbolicLink()).toBe(true);
     } finally {
-      (process.platform === "win32" ? rmdirSync : unlinkSync)(link);
+      removeLinkOnly(link);
     }
   });
 

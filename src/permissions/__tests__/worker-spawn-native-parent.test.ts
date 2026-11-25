@@ -1,6 +1,6 @@
 // A contained worker under a real row-2 plugin child parent: the plugin child adapter, the worker route, the holder
 // adapter and row 2 run for real; only admission ranking input, the egress lease and the native process are mocked.
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { configureHostResources } from "../../main/host-resources.js";
@@ -68,7 +68,8 @@ const { prepareMxcPluginChildLaunch } = await import("../../plugins/isolation/mx
 const { spawnMxcPluginChild } = await import("../../plugins/isolation/mxc-plugin-child.js");
 const { resolvePluginPaths } = await import("../../plugins/plugin-paths.js");
 const { aveHome } = await import("../../shared/ave-home.js");
-const { suiteMxcStagingParent } = await import("../../__tests__/support/mxc-staging-parent.js");
+const { removeSuiteMxcStagingParent, suiteMxcStagingParent } = await import("../../__tests__/support/mxc-staging-parent.js");
+afterAll(removeSuiteMxcStagingParent);
 const { buildSafeChildEnv } = await import("../../tools/safe-env.js");
 const { __resetActiveWrappedWorkersForTest, spawnWorker } = await import("../worker-spawn.js");
 

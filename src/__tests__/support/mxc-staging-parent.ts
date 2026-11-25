@@ -1,4 +1,4 @@
-import { mkdtempSync, realpathSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
 
@@ -15,6 +15,12 @@ let parent: string | undefined;
 export function suiteMxcStagingParent(): string {
   parent ??= realpathSync.native(mkdtempSync(join(tmpdir(), "mxc-staging-")));
   return parent;
+}
+
+/** Remove the suite's staging parent, if it made one; for the suite's afterAll. */
+export function removeSuiteMxcStagingParent(): void {
+  if (parent !== undefined) rmSync(parent, { recursive: true, force: true });
+  parent = undefined;
 }
 
 const host = process.platform;

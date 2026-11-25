@@ -450,7 +450,8 @@ const { prepareOwnedMxcShellLaunch } = await import("../../__tests__/support/con
 const { existsSync, mkdirSync, mkdtempSync, rmdirSync } = await import("node:fs");
 const { tmpdir } = await import("node:os");
 const runtimeRoot = await import("../mxc-runtime-root.js");
-const { mxcStagingParentFor } = await import("../../__tests__/support/mxc-staging-parent.js");
+const { mxcStagingParentFor, removeSuiteMxcStagingParent } = await import("../../__tests__/support/mxc-staging-parent.js");
+afterAll(removeSuiteMxcStagingParent);
 const { join: hostJoin } = await vi.importActual<typeof import("node:path")>("node:path");
 
 const stagingParent = mxcStagingParentFor();
