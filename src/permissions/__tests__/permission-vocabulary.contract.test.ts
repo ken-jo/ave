@@ -4,12 +4,13 @@
 // with the row that now proves it. Every I-id sits in exactly one of EXCEPTIONS, INCONSISTENCIES_WITHOUT_ROW and RESOLVED.
 // An id no driven row can show stays in INCONSISTENCIES_WITHOUT_ROW when it is closed: its note says so and names the tests that prove it.
 // Tree = docs/architecture/permission-decision-tree.md line(s), or "no row".
+import net from "node:net";
 import { tmpdir } from "node:os";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { answerEachStart } from "../../__tests__/support/approved-extension-start.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
-import { planWindowsSandbox } from "../../boot/steps/windows-sandbox-plan.js";
+import { mxcShellCapability, planWindowsSandbox, windowsProxyOnlyCapability } from "../../boot/steps/windows-sandbox-plan.js";
 import { _resetAveHomePrivacyForTest, setAveHomePrivacyAtBoot } from "../../shared/ave-home.js";
 import {
   __resetExtensionStartsForTest, EXTENSION_START_CONSENT_REQUIRED_CODE, requestExtensionStartConsent, setExtensionStartAsker,
@@ -19,6 +20,7 @@ import {
   decidePermission, NO_APPROVER_MESSAGE, offersFloorSessionAllow,
   type PermissionDecisionRequest, type PermissionFloorCode, type PermissionPipelineOutcome,
 } from "../decision-pipeline.js";
+import { openInvocationProxyListener } from "../egress-invocation-listener.js";
 import { isLoopbackAddress } from "../egress-relay/address-set.js";
 import { isReservedAddress, parseRelayAllowEntry, resolvedAddressPermitted } from "../egress-relay/destination.js";
 import {
@@ -31,8 +33,9 @@ import { classifyMxcExtensionReadiness, classifyMxcReleaseGate, planWindowsExten
 import { synthesizeMxcAncestorQueries } from "../mxc-filesystem-policy.js";
 import { inspectShellPermissionPaths } from "../rules/literal-shell-inspection.js";
 import {
-  __resetSandboxRequestedAtBootForTest, __resetWindowsSandboxSubstrateForTest,
-  setPluginWorkerConfinementRequestedAtBoot, setWindowsSandboxSubstrate, type SandboxCapability,
+  __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, __resetWindowsSandboxSubstrateForTest,
+  getHostShellExecutionPlan, setActiveSandboxCapability, setPluginWorkerConfinementRequestedAtBoot, setShellSandboxRequestedAtBoot,
+  setWindowsSandboxSubstrate, type SandboxCapability,
 } from "../sandbox-capability.js";
 
 // The five outcomes of the policy core, plus two answers that exist today outside it:
@@ -415,6 +418,44 @@ const ROWS: readonly Row[] = [
       const built = buildHostShellExecutionPlan({ platform: "win32", requestedSandbox: true, activeCapability: capability("win32", "asrt"), shellSubstrate: "mxc" });
       return { outcome: built.sandboxed ? "contained" : "ask", reason: `mode=${built.mode} kind=${built.capability.kind} substrate=${built.substrate}` };
     } },
+  // The local-network consent gate is removed (T:117): an available container carries the shells with nothing saved.
+  { id: "L18.a", point: "Windows shell route when MXC is available", tree: "T:117", unknown: "-",
+    today: { outcome: "contained", reason: "shells=mxc substrate=mxc" },
+    observe: () => {
+      setProcessPlatform("win32");
+      const { substrate } = planWindowsSandbox({ shellRequested: true, workerRequested: false, mxc: { state: "available" }, windowsBuild: null, srtWinReady: false });
+      setShellSandboxRequestedAtBoot(true);
+      setActiveSandboxCapability(windowsProxyOnlyCapability(substrate));
+      setWindowsSandboxSubstrate(substrate, mxcShellCapability());
+      const built = getHostShellExecutionPlan();
+      return { outcome: built.sandboxed ? "contained" : "ask", reason: `shells=${substrate.shells} substrate=${built.substrate}` };
+    } },
+  // Control for L18.a: the route that replaced the gate still refuses a start whose [::1]:P another process holds.
+  { id: "L18.b", point: "container shell endpoint whose IPv6 loopback port a foreign listener holds", tree: "T:117", unknown: "-",
+    today: { outcome: "deny", reason: "invocation proxy listener could not hold [::1]:P (EADDRINUSE)" },
+    observe: async () => {
+      const listen = net.Server.prototype.listen;
+      const foreign = net.createServer((socket) => socket.destroy());
+      // The other listener takes [::1]:P the moment the route asks for it.
+      vi.spyOn(net.Server.prototype, "listen").mockImplementation(function (this: net.Server, ...args: unknown[]) {
+        const options = args[0] as { host?: string; port?: number } | null;
+        if (this === foreign || typeof options !== "object" || options === null || options.host !== "::1") {
+          return listen.apply(this, args as Parameters<typeof listen>);
+        }
+        listen.call(foreign, { host: "::1", port: options.port, ipv6Only: true, exclusive: true }, () => {
+          listen.apply(this, args as Parameters<typeof listen>);
+        });
+        return this;
+      });
+      try {
+        const opened = await openInvocationProxyListener({ upstream: () => undefined }).then(
+          async (listener) => { await listener.close(); return "opened"; },
+          (error: unknown) => (error instanceof Error ? error.message : String(error)).replace(/\]:\d+/u, "]:P"));
+        return { outcome: opened === "opened" ? "contained" : "deny", reason: opened };
+      } finally {
+        await new Promise<void>((done) => { foreign.close(() => done()); });
+      }
+    } },
 ];
 
 // Inconsistency id (policy design, section 3) -> the rows that still answer differently from the policy core.
@@ -496,8 +537,10 @@ const NOT_DRIVEN: Readonly<Record<string, string>> = {
 const HOST_PLATFORM = process.platform;
 
 afterEach(() => {
+  vi.restoreAllMocks();
   __resetExtensionStartsForTest();
   setProcessPlatform(HOST_PLATFORM);
+  __resetActiveSandboxCapabilityForTest();
   __resetSandboxRequestedAtBootForTest();
   __resetWindowsSandboxSubstrateForTest();
   _resetAveHomePrivacyForTest();

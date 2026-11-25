@@ -27,7 +27,6 @@ import {
   getWindowsSandboxSubstrate,
   setActiveSandboxCapability,
   setShellSandboxRequestedAtBoot,
-  setWindowsShellLocalNetworkAccess,
   setWindowsSandboxSubstrate,
 } from "../sandbox-capability.js";
 
@@ -61,7 +60,6 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
   function recordSubstrate(state: "checking" | "available"): void {
     const { substrate } = planWindowsSandbox({
       shellRequested: true,
-      shellLocalNetworkAccess: true,
       workerRequested: false,
       mxc: { state },
       windowsBuild: "10.0.26300",
@@ -122,10 +120,10 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
     return within(response, `request to port ${port}`).finally(() => req?.destroy());
   }
 
-  function endAdmission(revocation: "consent" | "cancel" | "release", controller: AbortController, ending: EgressInvocation): void {
-    if (revocation === "consent") {
-      setWindowsShellLocalNetworkAccess(false);
-      setWindowsShellLocalNetworkAccess(true);
+  function endAdmission(revocation: "route" | "cancel" | "release", controller: AbortController, ending: EgressInvocation): void {
+    if (revocation === "route") {
+      // A republished substrate is a new container route: admissions under the old one end.
+      recordSubstrate("available");
     } else if (revocation === "cancel") {
       controller.abort();
     } else {
@@ -305,10 +303,10 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
   });
 
   it.each([
-    ["consent", "relay"],
+    ["route", "relay"],
     ["cancel", "relay"],
     ["release", "relay"],
-    ["consent", "frontend"],
+    ["route", "frontend"],
     ["cancel", "frontend"],
     ["release", "frontend"],
   ] as const)("closes bound endpoints before preparation resumes when %s ends admission at the %s", async (revocation, boundary) => {
@@ -359,7 +357,7 @@ describe.skipIf(process.platform !== "win32")("contained shell egress identity",
     expect((await result)[0]?.status).toBe("rejected");
   });
 
-  it.each(["consent", "cancel", "release"] as const)("closes a relay whose native bind was still pending when %s ended admission", async (revocation) => {
+  it.each(["route", "cancel", "release"] as const)("closes a relay whose native bind was still pending when %s ended admission", async (revocation) => {
     const controller = new AbortController();
     const pendingInvocation = openEgressInvocation(invocation.owner, { abortSignal: controller.signal });
     cleanups.push(pendingInvocation.release);

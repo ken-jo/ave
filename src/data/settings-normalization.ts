@@ -1189,9 +1189,6 @@ export function normalizeFeatureFlags(input: unknown): FeatureFlags {
   if (typeof obj.osToolSandbox === "boolean") {
     result.osToolSandbox = obj.osToolSandbox;
   }
-  if (typeof obj.windowsShellLocalNetworkAccess === "boolean") {
-    result.windowsShellLocalNetworkAccess = obj.windowsShellLocalNetworkAccess;
-  }
   if (typeof obj.pluginWorkerConfinement === "boolean") {
     result.pluginWorkerConfinement = obj.pluginWorkerConfinement;
   }
