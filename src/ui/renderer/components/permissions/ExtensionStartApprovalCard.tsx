@@ -19,6 +19,7 @@ const KIND_KEYS: Readonly<Record<ExtensionStartApprovalRow["kind"], string>> = {
 
 const CAUSE_KEYS: Readonly<Record<ExtensionStartApprovalRow["cause"], string>> = {
   "no-backend": "extensionStartCard.causeNoBackend",
+  "readiness-deadline": "extensionStartCard.causeReadinessDeadline",
   "home-privacy-unverified": "extensionStartCard.causeHomePrivacy",
 };
 

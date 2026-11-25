@@ -123,6 +123,14 @@ describe("the shared extension-start approval card", () => {
     shown.unmount();
   });
 
+  it("says on its own row that a start's container check did not finish in time", () => {
+    const shown = renderApproval(request([ROWS[0], { id: "row-late", label: "files", kind: "mcp-stdio", cause: "readiness-deadline" }]), vi.fn());
+    expect(within(row(1)).getByText(new RegExp(t("extensionStartCard.causeReadinessDeadline")))).toBeInTheDocument();
+    expect(within(row(0)).queryByText(new RegExp(t("extensionStartCard.causeReadinessDeadline")))).not.toBeInTheDocument();
+    expect(ko["extensionStartCard.causeReadinessDeadline"]).toBe("컨테이너 확인이 제한 시간 안에 끝나지 않았습니다");
+    shown.unmount();
+  });
+
   it("says dismissing leaves the rest unstarted once a row was answered elsewhere, since that row's answer stands", () => {
     const decide = vi.fn();
     const shown = renderApproval(request(), decide);
@@ -194,7 +202,7 @@ describe("the shared extension-start approval card", () => {
 
   it("has every card string in both languages", () => {
     const keys = Object.keys(en).filter((key) => key.startsWith("extensionStartCard.") || key === "extensionStart.cardBatch");
-    expect(keys).toHaveLength(19);
+    expect(keys).toHaveLength(20);
     for (const key of keys) {
       expect(ko[key as keyof typeof ko], key).toEqual(expect.any(String));
       expect(ko[key as keyof typeof ko], key).not.toBe("");

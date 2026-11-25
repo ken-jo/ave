@@ -9,8 +9,8 @@ const log = createLogger("extension-start-consent");
 
 export const EXTENSION_START_CONSENT_REQUIRED_CODE = "extension-start-consent-required";
 
-/** Why the start would run without OS isolation. */
-export type ExtensionStartUnconfinedCause = "no-backend" | "home-privacy-unverified";
+/** Why the start would run without OS isolation. "readiness-deadline" is the no-backend case whose backend check ran out of time. */
+export type ExtensionStartUnconfinedCause = "no-backend" | "readiness-deadline" | "home-privacy-unverified";
 
 /** One start as its spawn site names it: the key says which extension, the identity says exactly what would run. */
 export interface ExtensionStartIdentity { readonly key: string; readonly identity: string }

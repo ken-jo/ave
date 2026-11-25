@@ -6,14 +6,14 @@ import { planWindowsSandbox } from "../../boot/steps/windows-sandbox-plan.js";
 import { PERMISSIONS } from "../../shared/ipc-channels.js";
 import * as aveHome from "../../shared/ave-home.js";
 import { _resetAveHomePrivacyForTest, setAveHomePrivacyAtBoot } from "../../shared/ave-home.js";
-import { assertExtensionStartAllowed } from "../asrt-sandbox.js";
+import { assertExtensionStartAllowed, probeExtensionStart } from "../asrt-sandbox.js";
 import {
   __resetExtensionStartsForTest, deferExtensionStart, dropExtensionStart, dropPluginExtensionStarts, EXTENSION_START_CONSENT_REQUIRED_CODE, EXTENSION_START_GRANT_TTL_MS, extensionStartIdentity, listPendingExtensionStarts,
   requestExtensionStartConsent, runExtensionStart, setExtensionStartAsker, settlePendingExtensionStarts, takeExtensionStartGrant,
   type ExtensionStartAsker, type ExtensionStartAuthority, type PendingExtensionStart,
 } from "../extension-start-consent.js";
 import {
-  __resetSandboxRequestedAtBootForTest, __resetWindowsSandboxSubstrateForTest,
+  __resetSandboxRequestedAtBootForTest, __resetWindowsSandboxSubstrateForTest, getWindowsExtensionBackendPlan,
   setPluginWorkerConfinementRequestedAtBoot, setWindowsSandboxSubstrate,
 } from "../sandbox-capability.js";
 
@@ -178,7 +178,8 @@ describe("extension start states a consent does not answer", () => {
     setExtensionStartAsker(fakeAsker(["yes"]));
     const authority = await requestExtensionStartConsent(start("plugin-child:a"), ATTENDED);
     __resetWindowsSandboxSubstrateForTest();
-    publish({ state: "unavailable", reason: "readiness-deadline" });
+    publish({ state: "unavailable", reason: "runtime-start-failed" }, "srt-win");
+    expect(getWindowsExtensionBackendPlan()).toMatchObject({ readiness: "rejected", reason: "ancestor-already-admitted" });
     expect(gate("plugin-child:a", undefined)).toBe("extension-readiness-refused");
     expect(gate("plugin-child:a", authority, true)).toBe("extension-readiness-refused");
   });
@@ -576,6 +577,90 @@ describe("one card for every waiting start", () => {
     await settlePendingExtensionStarts(ATTENDED);
     expect(started).toEqual(["plugin-child:a"]);
     expect(takeExtensionStartGrant("mcp-stdio:b")).toBeUndefined();
+  });
+});
+
+describe("extension start after the backend readiness deadline expired", () => {
+  const KEY = "plugin-child:a";
+  const pending = { key: KEY, identity: ID, kind: "plugin-child" as const, label: "a" };
+  const spawn = async (authority: ExtensionStartAuthority | undefined): Promise<string> => {
+    assertExtensionStartAllowed({ start: { key: KEY, identity: ID, authority, spend: true } });
+    return "started";
+  };
+  const deadline = { code: EXTENSION_START_CONSENT_REQUIRED_CODE, unconfinedCause: "readiness-deadline" };
+
+  beforeEach(() => {
+    __resetWindowsSandboxSubstrateForTest();
+    publish({ state: "unavailable", reason: "readiness-deadline" });
+  });
+
+  it("is the no-backend plan with its own reason, and every other no-backend start keeps its cause", () => {
+    expect(getWindowsExtensionBackendPlan()).toMatchObject({ selectedBackend: "none", readiness: "unavailable", reason: "readiness-deadline" });
+    expect(probeExtensionStart()).toBe("readiness-deadline");
+    __resetWindowsSandboxSubstrateForTest();
+    publish({ state: "unavailable", reason: "runtime-start-failed" });
+    expect(probeExtensionStart()).toBe("no-backend");
+  });
+
+  it("waits with the readiness reason, starts once on a yes and needs a new yes for the next start", async () => {
+    const asker = fakeAsker(["yes"]);
+    setExtensionStartAsker(asker);
+    await expect(runExtensionStart(pending, undefined, spawn)).rejects.toMatchObject(deadline);
+    expect(listPendingExtensionStarts()).toMatchObject([{ key: KEY, cause: "readiness-deadline", state: "pending" }]);
+    await settlePendingExtensionStarts(ATTENDED);
+    expect(asker.ask).toHaveBeenCalledTimes(1);
+    expect(asker.ask.mock.calls[0]?.[0]).toMatchObject([{ key: KEY, cause: "readiness-deadline" }]);
+    await expect(runExtensionStart(pending, undefined, spawn)).resolves.toBe("started");
+    // The consent was spent at that spawn: the next start waits for its own answer.
+    await expect(runExtensionStart(pending, undefined, spawn)).rejects.toMatchObject(deadline);
+    expect(asker.ask).toHaveBeenCalledTimes(1);
+    expect(asker.notify).not.toHaveBeenCalled();
+  });
+
+  it("is denied headless: left unstarted with one notice that carries the readiness reason", async () => {
+    const asker = fakeAsker(["yes"]);
+    setExtensionStartAsker(asker);
+    await expect(runExtensionStart(pending, undefined, spawn)).rejects.toMatchObject(deadline);
+    await settlePendingExtensionStarts(HEADLESS);
+    await settlePendingExtensionStarts(HEADLESS);
+    await expect(runExtensionStart(pending, HEADLESS, spawn)).rejects.toMatchObject(deadline);
+    expect(asker.ask).not.toHaveBeenCalled();
+    expect(asker.notify).toHaveBeenCalledTimes(1);
+    expect(asker.notify).toHaveBeenCalledWith(expect.objectContaining({ key: KEY, cause: "readiness-deadline" }), "unattended");
+    expect(takeExtensionStartGrant(KEY)).toBeUndefined();
+    expect(listPendingExtensionStarts().map((entry) => entry.state)).toEqual(["pending"]);
+  });
+
+  it("offers no consent while the privacy helper is unavailable: the helper deny wins", async () => {
+    const asker = fakeAsker(["yes"]);
+    setExtensionStartAsker(asker);
+    _resetAveHomePrivacyForTest();
+    setAveHomePrivacyAtBoot({ enforcement: "none", home: HOME, category: "helper-unavailable", reason: "fixture" });
+    expect(gate(KEY, undefined, true)).toBe("refused:Error");
+    expect(probeExtensionStart()).toBe("refused");
+    await expect(runExtensionStart(pending, ATTENDED, spawn)).rejects.toThrow(/helper-unavailable/u);
+    const retry = vi.fn(async () => undefined);
+    deferExtensionStart({ ...pending, cause: "readiness-deadline", retry, recheck: () => probeExtensionStart() });
+    await settlePendingExtensionStarts(ATTENDED);
+    expect(asker.ask).not.toHaveBeenCalled();
+    expect(asker.notify).not.toHaveBeenCalled();
+    expect(retry).not.toHaveBeenCalled();
+  });
+
+  it("answers a start with no consent route as any other no-backend plan does", () => {
+    // The native entry still needs a ready container.
+    expect(() => assertExtensionStartAllowed({ backend: "mxc" })).toThrow("Native extension backend is not ready for this start");
+    // A host-owned start is never asked about and passes this gate, as under every no-backend plan: its spawn path requires the offline sandbox.
+    const hostOwned = (): string => {
+      try { assertExtensionStartAllowed({ hostOwned: true }); return "passed-to-own-gate"; } catch (error) { return (error as { code?: string }).code ?? "refused"; }
+    };
+    expect(hostOwned()).toBe("passed-to-own-gate");
+    __resetWindowsSandboxSubstrateForTest();
+    publish({ state: "unavailable", reason: "runtime-start-failed" });
+    expect(hostOwned()).toBe("passed-to-own-gate");
+    __resetWindowsSandboxSubstrateForTest();
+    publish({ state: "unavailable", reason: "runtime-start-failed" }, "srt-win");
+    expect(hostOwned()).toBe("extension-readiness-refused");
   });
 });
 

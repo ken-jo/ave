@@ -40,7 +40,7 @@ export interface ExtensionStartApprovalRow {
   readonly id: string;
   readonly label: string;
   readonly kind: "plugin-child" | "mcp-stdio" | "worker" | "plugin-hook";
-  readonly cause: "no-backend" | "home-privacy-unverified";
+  readonly cause: "no-backend" | "readiness-deadline" | "home-privacy-unverified";
 }
 
 const EXTENSION_START_ROW_KINDS: readonly string[] = ["plugin-child", "mcp-stdio", "worker", "plugin-hook"];
@@ -54,7 +54,7 @@ export function extensionStartApprovalRows(args: unknown): readonly ExtensionSta
     if (typeof start !== "object" || start === null) return undefined;
     const { id, label, kind, cause } = start as Record<string, unknown>;
     if (typeof id !== "string" || id.length === 0 || typeof label !== "string" || typeof kind !== "string" || !EXTENSION_START_ROW_KINDS.includes(kind)
-      || (cause !== "no-backend" && cause !== "home-privacy-unverified")) return undefined;
+      || (cause !== "no-backend" && cause !== "readiness-deadline" && cause !== "home-privacy-unverified")) return undefined;
     rows.push({ id, label, kind: kind as ExtensionStartApprovalRow["kind"], cause });
   }
   return new Set(rows.map((row) => row.id)).size === rows.length ? rows : undefined;

@@ -32,7 +32,7 @@ import type { PluginOperationIdentityProvider } from "../../tools/invocation-ser
 import { isPluginRuntimeDetachedOperationError } from "../../plugins/runtime/detached-operation.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import type { HostPluginAuthLifecycle } from "../../tools/executor-contract.js";
-import { setExtensionStartAsker, type ExtensionStartAsker } from "../../permissions/extension-start-consent.js";
+import { setExtensionStartAsker, type ExtensionStartAsker, type PendingExtensionStart } from "../../permissions/extension-start-consent.js";
 import { createExtensionStartAsker } from "../../permissions/extension-start-asker.js";
 import { t } from "../../i18n/index.js";
 
@@ -56,6 +56,12 @@ const EXTENSION_START_CARD_KEYS = {
   "plugin-hook": "extensionStart.cardPluginHook",
 } as const;
 
+const EXTENSION_START_NOTICE_KEYS = {
+  "no-backend": { declined: "extensionStart.declinedNoBackend", unattended: "extensionStart.notStartedNoBackend" },
+  "readiness-deadline": { declined: "extensionStart.declinedReadinessDeadline", unattended: "extensionStart.notStartedReadinessDeadline" },
+  "home-privacy-unverified": { declined: "extensionStart.declinedHomePrivacy", unattended: "extensionStart.notStartedHomePrivacy" },
+} as const satisfies Record<PendingExtensionStart["cause"], Record<"declined" | "unattended", string>>;
+
 /** The card, the notice and the audit rows of an extension start that nothing confines. */
 export function bootExtensionStartAsker(ctx: Pick<BootContext, "approvalGate" | "bootAuditLogger" | "notificationService">): ExtensionStartAsker {
   const { approvalGate, bootAuditLogger } = ctx;
@@ -63,14 +69,13 @@ export function bootExtensionStartAsker(ctx: Pick<BootContext, "approvalGate" | 
     approvalGate,
     reason: (starts) => {
       const [only] = starts;
-      return only !== undefined && starts.length === 1
-        ? t(EXTENSION_START_CARD_KEYS[only.kind], { name: only.label })
-        : t("extensionStart.cardBatch", { count: starts.length, names: starts.map((start) => start.label).join(", ") });
+      // Several starts: each row of the card names its own cause, the expired container check among them.
+      if (only === undefined || starts.length !== 1) return t("extensionStart.cardBatch", { count: starts.length, names: starts.map((start) => start.label).join(", ") });
+      const question = t(EXTENSION_START_CARD_KEYS[only.kind], { name: only.label });
+      return only.cause === "readiness-deadline" ? t("extensionStart.cardReadinessDeadline", { question }) : question;
     },
     notify: (start, why) => {
-      const body = start.cause === "no-backend"
-        ? (why === "declined" ? "extensionStart.declinedNoBackend" : "extensionStart.notStartedNoBackend")
-        : (why === "declined" ? "extensionStart.declinedHomePrivacy" : "extensionStart.notStartedHomePrivacy");
+      const body = EXTENSION_START_NOTICE_KEYS[start.cause][why];
       ctx.notificationService.deliver({ kind: "system", title: t("extensionStart.notStartedTitle"), body: t(body, { name: start.label }), bypassFocusGate: true });
     },
     record: (event, start) => bootAuditLogger.log({
