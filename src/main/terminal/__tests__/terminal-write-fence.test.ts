@@ -353,13 +353,37 @@ describe("terminal write fence", () => {
     ]);
   });
 
-  it("routes every protocol write, including host cleanup, through send", () => {
+  it("enumerates every PTY write and routes protocol writes through send", () => {
     const source = readFileSync(new URL("../pty-manager.ts", import.meta.url), "utf8");
+    const path = "pty-manager.ts";
+    const parsed = parseSourceTexts(new Map([[path, source]])).get(path) as ts.SourceFile | undefined;
+    if (!parsed) throw new Error("Terminal source not found.");
+    const ptyWrites: string[] = [];
+    const collect = (node: ts.Node, owner?: string): void => {
+      const functionName = ts.isFunctionDeclaration(node) ? node.name?.text : owner;
+      if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
+        && node.expression.name.text === "write" && ts.isPropertyAccessExpression(node.expression.expression)
+        && node.expression.expression.name.text === "pty") {
+        ptyWrites.push(functionName ?? "<module>");
+      }
+      node.forEachChild((child) => collect(child, functionName));
+    };
+    collect(parsed);
+    expect(ptyWrites).toEqual([
+      "writeTerminal",
+      "stopHostAgentCommand",
+      "stopHostAgentCommand",
+      "typeHostTerminalCommand",
+      "typeAgentTerminalCommand",
+    ]);
+
     const host = source.slice(source.indexOf("export async function typeHostTerminalCommand("), source.indexOf("export interface HostTerminalTypingRequest"));
     const typing = source.slice(source.indexOf("export async function typeLineAtPrompt("), source.indexOf("const TERMINAL_NOT_READY_MESSAGES"));
+    const agent = source.slice(source.indexOf("export async function typeAgentTerminalCommand("), source.indexOf("export interface PromptTypingTarget"));
     const writeSites = /\b(?:\w+\.)+write\(/g;
     expect(host.match(writeSites)).toEqual(["session.pty.write("]);
     expect(host).toMatch(/write: \(data, withdrawPaste\) => \{[^}]*session\.pty\.write\(data\)/);
+    expect(agent).toMatch(/write: \(data\) => \{[^}]*session\.pty\.write\(data\)/);
     expect(typing.match(writeSites)).toEqual(["target.write("]);
     const sendBody = typing.slice(typing.indexOf("const send: SendPromptInput"), typing.indexOf("if (!hasOnlyTypeableCharacters("));
     expect(sendBody).toContain("target.write(data, withdrawPaste)");
