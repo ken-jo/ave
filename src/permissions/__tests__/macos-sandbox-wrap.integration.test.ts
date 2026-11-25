@@ -83,7 +83,7 @@ async function runConfined(command: string, directory: string, allowWrite: reado
     });
     if (result.error) throw result.error;
     expect(result.status, result.stderr).not.toBe(71);
-    return result;
+    return { stdout: result.stdout, grantedWrite: (wrapped.filesystemPolicy?.allowWrite ?? []).map(entry => typeof entry === "string" ? entry : entry.path) };
   } finally {
     invocation.release();
     await cleanupAsrtSandboxAfterCommand();
@@ -102,11 +102,12 @@ describe.skipIf(process.platform !== "darwin" || shouldSkipNativeSandboxTests())
   let socketDirectory: string;
   beforeAll(async () => {
     root = realpathSync(mkdtempSync(join(temp, "sandbox-socket-floor-")));
-    const before = new Set(readdirSync(temp));
     await initializeRequiredSandbox({ allowedDomains: [] });
-    const created = readdirSync(temp).filter(name => name.startsWith("srt-sock-") && !before.has(name));
-    expect(created).toHaveLength(1);
-    socketDirectory = join(temp, created[0]!);
+    // Other suites' processes share the temp directory; this process's sockets carry its pid.
+    const own = readdirSync(temp).filter(name => name.startsWith("srt-sock-")
+      && readdirSync(join(temp, name)).some(socket => socket.includes(`-${process.pid}-`)));
+    expect(own).toHaveLength(1);
+    socketDirectory = join(temp, own[0]!);
   });
   afterAll(async () => {
     if (isAsrtSandboxActive()) await resetAsrtSandbox();
@@ -126,10 +127,50 @@ describe.skipIf(process.platform !== "darwin" || shouldSkipNativeSandboxTests())
       `rm -rf '${socketDirectory}' 2>/dev/null; test -d '${socketDirectory}'; echo "remove-directory=$?"`,
       `printf x > '${control}' && rm '${control}'; echo "temp-write=$?"`,
       `printf x > ordinary; echo "project-write=$?"`,
-    ].join("\n"), root, [root, temp]);
+    ].join("\n"), root, [root, socketDirectory, temp]);
+    // The directory is granted by name as well, so the case does not rest on the shared temp root: a scan that cannot finish there
+    // (other suites' fixtures) withdraws that root alone, and the control below follows what the wrap actually granted.
+    expect(result.grantedWrite).toContain(socketDirectory);
     expect(statuses(result.stdout)).toEqual({
-      unlink: "0", rename: "1", plant: "1", "rename-directory": "1", "remove-directory": "0", "temp-write": "0", "project-write": "0",
+      unlink: "0", rename: "1", plant: "1", "rename-directory": "1", "remove-directory": "0",
+      "temp-write": result.grantedWrite.includes(temp) ? "0" : "1", "project-write": "0",
     });
     expect(readdirSync(socketDirectory)).toEqual(sockets);
+  });
+});
+
+describe.skipIf(process.platform !== "darwin" || shouldSkipNativeSandboxTests())("native project names another tool loads", () => {
+  let root: string;
+  beforeAll(async () => {
+    root = realpathSync(mkdtempSync(join(tmpdir(), "sandbox-name-floor-")));
+    await initializeRequiredSandbox({ allowedDomains: [] });
+  });
+  afterAll(async () => {
+    if (isAsrtSandboxActive()) await resetAsrtSandbox();
+    if (root) rmSync(root, { recursive: true, force: true });
+  });
+
+  it("keeps existing and absent agent and cloud config directories read-only inside a write root", async () => {
+    const project = join(root, "agent-config");
+    for (const directory of [".codex", ".agents/skills", ".aws", "packages/tool/.codex"]) mkdirSync(join(project, directory), { recursive: true });
+    mkdirSync(join(project, "fresh"));
+    mkdirSync(join(project, "fresh-other-case"));
+    writeFileSync(join(project, ".codex", "config.toml"), "host");
+    const result = await runConfined([
+      `printf x > .codex/config.toml 2>/dev/null; echo "codex=$?"`,
+      `printf x > .agents/skills/planted.md 2>/dev/null; echo "agents=$?"`,
+      `printf x > .aws/config 2>/dev/null; echo "aws=$?"`,
+      `printf x > packages/tool/.codex/config.toml 2>/dev/null; echo "nested=$?"`,
+      `mkdir fresh/.codex 2>/dev/null; echo "create=$?"`,
+      `mkdir fresh-other-case/.CODEX 2>/dev/null; echo "create-other-case=$?"`,
+      `mv .codex .codex-moved 2>/dev/null; echo "rename=$?"`,
+      `printf x > codex.txt; echo "ordinary=$?"`,
+    ].join("\n"), project);
+    expect(statuses(result.stdout)).toEqual({
+      codex: "1", agents: "1", aws: "1", nested: "1", create: "1", "create-other-case": "1", rename: "1", ordinary: "0",
+    });
+    expect(readFileSync(join(project, ".codex", "config.toml"), "utf8")).toBe("host");
+    expect(readdirSync(join(project, "fresh"))).toEqual([]);
+    expect(readdirSync(join(project, "fresh-other-case"))).toEqual([]);
   });
 });

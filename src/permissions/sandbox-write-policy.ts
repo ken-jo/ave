@@ -30,6 +30,17 @@ const SANDBOX_PROTECTED_ROOT_ENTRIES = [...new Set([
   ...PROTECTED_ROOT_ENTRIES.filter(entry => !isSandboxGitMetadataEntry(entry)), ...SANDBOX_LOADER_ENTRIES,
 ])];
 
+// Config that another agent or cloud tool loads from a project: Codex's own protected names, and an `.aws/config` whose
+// `credential_process` runs on the host. A confined command must not plant or edit them in a write root. Linux carries one row per
+// root. macOS carries each name once, as an any-depth pattern like the repository controls: a row per root costs the root's length for
+// every name, and the longest supported darwin layout has well under one such set left in MAX_POSIX_WRITE_DENY_POLICY_BYTES. The
+// Windows floor is stamped and watched per row and is not changed here.
+const SANDBOX_FOREIGN_CONFIG_ENTRIES = [".codex", ".agents", ".aws"] as const;
+function caseInsensitivePattern(path: string): string {
+  return path.replace(/[a-z]/gu, character => `[${character}${character.toUpperCase()}]`);
+}
+const MAC_FOREIGN_CONFIG_GLOBS = SANDBOX_FOREIGN_CONFIG_ENTRIES.map(entry => `/**/${caseInsensitivePattern(entry)}`);
+
 // Linux discovery depth; the admitted root is depth zero.
 export const SANDBOX_GIT_SCAN_DEPTH = 3;
 const MAX_GIT_SCAN_ENTRIES = 16_384;
@@ -68,14 +79,11 @@ const GIT_CONTROL_ENTRIES = [
 ] as const;
 const LINUX_GIT_CONTROL_ENTRIES = [...GIT_CONTROL_ENTRIES, "info/attributes"] as const;
 export const SANDBOX_BARE_REPOSITORY_ENTRIES = ["HEAD", "objects", "refs", "config"] as const;
-function caseInsensitiveGitPattern(path: string): string {
-  return path.replace(/[a-z]/gu, character => `[${character}${character.toUpperCase()}]`);
-}
 const MAC_GIT_CONTROL_GLOBS = GIT_CONTROL_ENTRIES.flatMap(entry => [
-  `/**/${caseInsensitiveGitPattern(`.git/${entry}`)}`,
-  `/**/${caseInsensitiveGitPattern(".git/modules")}/**/${caseInsensitiveGitPattern(entry)}`,
-  `/**/${caseInsensitiveGitPattern(".git/worktrees")}/*/${caseInsensitiveGitPattern(entry)}`,
-]).concat(`/**/${caseInsensitiveGitPattern(".git/ave-pins")}`, `/**/${caseInsensitiveGitPattern(".git/modules")}/**/${caseInsensitiveGitPattern("ave-pins")}`, `/**/${caseInsensitiveGitPattern(".git/worktrees")}/*/${caseInsensitiveGitPattern("ave.id")}`);
+  `/**/${caseInsensitivePattern(`.git/${entry}`)}`,
+  `/**/${caseInsensitivePattern(".git/modules")}/**/${caseInsensitivePattern(entry)}`,
+  `/**/${caseInsensitivePattern(".git/worktrees")}/*/${caseInsensitivePattern(entry)}`,
+]).concat(`/**/${caseInsensitivePattern(".git/ave-pins")}`, `/**/${caseInsensitivePattern(".git/modules")}/**/${caseInsensitivePattern("ave-pins")}`, `/**/${caseInsensitivePattern(".git/worktrees")}/*/${caseInsensitivePattern("ave.id")}`);
 // The patched sandbox runtime keeps every proxy backend socket of a host process in one `srt-sock-*` directory under the host temp
 // directory (ensurePrivateSocketDir in its sandbox manager), and that temp directory is a shell write root. Linux masks the directory in
 // every wrap; Seatbelt has no mask, so the name is write-denied wherever it appears. One short pattern holds for every temp spelling and
@@ -993,9 +1001,10 @@ export function buildMandatorySandboxWritePolicy(
     // A marked literal already carries the admitted identity; discovery must retain that canonical path.
     return { original, physical: typeof entry === "string" ? resolvePolicyPath(original, process.cwd()) : original };
   });
+  const rootEntries = process.platform === "linux" ? [...SANDBOX_PROTECTED_ROOT_ENTRIES, ...SANDBOX_FOREIGN_CONFIG_ENTRIES] : SANDBOX_PROTECTED_ROOT_ENTRIES;
   const paths = new Set([
     ...rootSnapshots.flatMap(({ original, physical }) => [original, physical]).flatMap((root) =>
-      SANDBOX_PROTECTED_ROOT_ENTRIES.map((entry) => join(root, entry))),
+      rootEntries.map((entry) => join(root, entry))),
     // The configuration directory is a control boundary, including future files.
     join(aveHome(), AVE_HOME_CONFIGURATION_DIRECTORY),
     permissionSettingsPath(),
@@ -1110,7 +1119,7 @@ export function buildMandatorySandboxWritePolicy(
     entries.push(...[...routingPins].map(path => ({ path, literal: true } as const)));
   }
   // Backend globs cover future controls at any depth without denying ordinary object, ref, index and HEAD updates in existing metadata directories.
-  if (process.platform === "darwin") entries.push(...MAC_GIT_CONTROL_GLOBS, MAC_EGRESS_SOCKET_DIRECTORY_GLOB);
+  if (process.platform === "darwin") entries.push(...MAC_GIT_CONTROL_GLOBS, MAC_EGRESS_SOCKET_DIRECTORY_GLOB, ...MAC_FOREIGN_CONFIG_GLOBS);
   // Mandatory loader denies scale with admitted root lengths, not metadata discovery.
   const backendEntries = nativeWriteDenyEntries(entries);
   const backendMandatoryPaths = new Set([...mandatoryPaths].map(nativeWriteDenyPath));

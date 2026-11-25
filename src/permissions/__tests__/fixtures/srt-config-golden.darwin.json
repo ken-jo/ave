@@ -336,6 +336,9 @@
    "/**/.[gG][iI][tT]/[mM][oO][dD][uU][lL][eE][sS]/**/[aA][vV][eE]-[pP][iI][nN][sS]",
    "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[aA][vV][eE].[iI][dD]",
    "/**/srt-sock-*",
+   "/**/.[cC][oO][dD][eE][xX]",
+   "/**/.[aA][gG][eE][nN][tT][sS]",
+   "/**/.[aA][wW][sS]",
    "<FIXTURE>/ws/locked",
    {
     "path": "<FIXTURE>/ws/lit[1]",
@@ -636,7 +639,10 @@
    "/**/.[gG][iI][tT]/[aA][vV][eE]-[pP][iI][nN][sS]",
    "/**/.[gG][iI][tT]/[mM][oO][dD][uU][lL][eE][sS]/**/[aA][vV][eE]-[pP][iI][nN][sS]",
    "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[aA][vV][eE].[iI][dD]",
-   "/**/srt-sock-*"
+   "/**/srt-sock-*",
+   "/**/.[cC][oO][dD][eE][xX]",
+   "/**/.[aA][gG][eE][nN][tT][sS]",
+   "/**/.[aA][wW][sS]"
   ]
  },
  "darwin · shared: two write roots and a user data directory": {
@@ -1006,7 +1012,10 @@
    "/**/.[gG][iI][tT]/[aA][vV][eE]-[pP][iI][nN][sS]",
    "/**/.[gG][iI][tT]/[mM][oO][dD][uU][lL][eE][sS]/**/[aA][vV][eE]-[pP][iI][nN][sS]",
    "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[aA][vV][eE].[iI][dD]",
-   "/**/srt-sock-*"
+   "/**/srt-sock-*",
+   "/**/.[cC][oO][dD][eE][xX]",
+   "/**/.[aA][gG][eE][nN][tT][sS]",
+   "/**/.[aA][wW][sS]"
   ]
  },
  "darwin · shared: an empty read list": {
@@ -1332,7 +1341,10 @@
    "/**/.[gG][iI][tT]/[aA][vV][eE]-[pP][iI][nN][sS]",
    "/**/.[gG][iI][tT]/[mM][oO][dD][uU][lL][eE][sS]/**/[aA][vV][eE]-[pP][iI][nN][sS]",
    "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[aA][vV][eE].[iI][dD]",
-   "/**/srt-sock-*"
+   "/**/srt-sock-*",
+   "/**/.[cC][oO][dD][eE][xX]",
+   "/**/.[aA][gG][eE][nN][tT][sS]",
+   "/**/.[aA][wW][sS]"
   ],
   "allowRead": []
  },
@@ -1513,7 +1525,10 @@
    "/**/.[gG][iI][tT]/[aA][vV][eE]-[pP][iI][nN][sS]",
    "/**/.[gG][iI][tT]/[mM][oO][dD][uU][lL][eE][sS]/**/[aA][vV][eE]-[pP][iI][nN][sS]",
    "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[aA][vV][eE].[iI][dD]",
-   "/**/srt-sock-*"
+   "/**/srt-sock-*",
+   "/**/.[cC][oO][dD][eE][xX]",
+   "/**/.[aA][gG][eE][nN][tT][sS]",
+   "/**/.[aA][wW][sS]"
   ]
  },
  "darwin · wrap: pinned write root with the floors restated": {
@@ -1851,6 +1866,9 @@
    "/**/.[gG][iI][tT]/[mM][oO][dD][uU][lL][eE][sS]/**/[aA][vV][eE]-[pP][iI][nN][sS]",
    "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[aA][vV][eE].[iI][dD]",
    "/**/srt-sock-*",
+   "/**/.[cC][oO][dD][eE][xX]",
+   "/**/.[aA][gG][eE][nN][tT][sS]",
+   "/**/.[aA][wW][sS]",
    "<FIXTURE>/ws/.ave-pinned-write-root"
   ],
   "allowRead": [
@@ -2038,7 +2056,10 @@
    "/**/.[gG][iI][tT]/[aA][vV][eE]-[pP][iI][nN][sS]",
    "/**/.[gG][iI][tT]/[mM][oO][dD][uU][lL][eE][sS]/**/[aA][vV][eE]-[pP][iI][nN][sS]",
    "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[aA][vV][eE].[iI][dD]",
-   "/**/srt-sock-*"
+   "/**/srt-sock-*",
+   "/**/.[cC][oO][dD][eE][xX]",
+   "/**/.[aA][gG][eE][nN][tT][sS]",
+   "/**/.[aA][wW][sS]"
   ]
  },
  "darwin · wrap: one read deny and an empty read list": {
@@ -2221,7 +2242,10 @@
    "/**/.[gG][iI][tT]/[aA][vV][eE]-[pP][iI][nN][sS]",
    "/**/.[gG][iI][tT]/[mM][oO][dD][uU][lL][eE][sS]/**/[aA][vV][eE]-[pP][iI][nN][sS]",
    "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[aA][vV][eE].[iI][dD]",
-   "/**/srt-sock-*"
+   "/**/srt-sock-*",
+   "/**/.[cC][oO][dD][eE][xX]",
+   "/**/.[aA][gG][eE][nN][tT][sS]",
+   "/**/.[aA][wW][sS]"
   ],
   "allowRead": []
  },
@@ -2550,6 +2574,9 @@
    "/**/.[gG][iI][tT]/[mM][oO][dD][uU][lL][eE][sS]/**/[aA][vV][eE]-[pP][iI][nN][sS]",
    "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[aA][vV][eE].[iI][dD]",
    "/**/srt-sock-*",
+   "/**/.[cC][oO][dD][eE][xX]",
+   "/**/.[aA][gG][eE][nN][tT][sS]",
+   "/**/.[aA][wW][sS]",
    {
     "path": "<FIXTURE>/plain/x",
     "literal": true
@@ -2816,7 +2843,10 @@
    "/**/.[gG][iI][tT]/[aA][vV][eE]-[pP][iI][nN][sS]",
    "/**/.[gG][iI][tT]/[mM][oO][dD][uU][lL][eE][sS]/**/[aA][vV][eE]-[pP][iI][nN][sS]",
    "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[aA][vV][eE].[iI][dD]",
-   "/**/srt-sock-*"
+   "/**/srt-sock-*",
+   "/**/.[cC][oO][dD][eE][xX]",
+   "/**/.[aA][gG][eE][nN][tT][sS]",
+   "/**/.[aA][wW][sS]"
   ]
  },
  "darwin · wrap: read grant only": {
@@ -2996,7 +3026,10 @@
    "/**/.[gG][iI][tT]/[aA][vV][eE]-[pP][iI][nN][sS]",
    "/**/.[gG][iI][tT]/[mM][oO][dD][uU][lL][eE][sS]/**/[aA][vV][eE]-[pP][iI][nN][sS]",
    "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[aA][vV][eE].[iI][dD]",
-   "/**/srt-sock-*"
+   "/**/srt-sock-*",
+   "/**/.[cC][oO][dD][eE][xX]",
+   "/**/.[aA][gG][eE][nN][tT][sS]",
+   "/**/.[aA][wW][sS]"
   ],
   "allowRead": [
    "<FIXTURE>/ro"
@@ -3329,6 +3362,9 @@
    "/**/.[gG][iI][tT]/[mM][oO][dD][uU][lL][eE][sS]/**/[aA][vV][eE]-[pP][iI][nN][sS]",
    "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[aA][vV][eE].[iI][dD]",
    "/**/srt-sock-*",
+   "/**/.[cC][oO][dD][eE][xX]",
+   "/**/.[aA][gG][eE][nN][tT][sS]",
+   "/**/.[aA][wW][sS]",
    "<FIXTURE>/plain/.ave-pinned-write-root"
   ],
   "allowRead": [
@@ -3626,7 +3662,10 @@
    "/**/.[gG][iI][tT]/[aA][vV][eE]-[pP][iI][nN][sS]",
    "/**/.[gG][iI][tT]/[mM][oO][dD][uU][lL][eE][sS]/**/[aA][vV][eE]-[pP][iI][nN][sS]",
    "/**/.[gG][iI][tT]/[wW][oO][rR][kK][tT][rR][eE][eE][sS]/*/[aA][vV][eE].[iI][dD]",
-   "/**/srt-sock-*"
+   "/**/srt-sock-*",
+   "/**/.[cC][oO][dD][eE][xX]",
+   "/**/.[aA][gG][eE][nN][tT][sS]",
+   "/**/.[aA][wW][sS]"
   ],
   "allowRead": [
    "<FIXTURE>/ro"
@@ -3997,6 +4036,9 @@
    "<FIXTURE>/ws/.tool-versions",
    "<FIXTURE>/ws/.yarnrc.yml",
    "<FIXTURE>/ws/bunfig.toml",
+   "<FIXTURE>/ws/.codex",
+   "<FIXTURE>/ws/.agents",
+   "<FIXTURE>/ws/.aws",
    "/etc/ave/policy.json",
    "/private/etc/ave/policy.json",
    "<AVE_HOME>/sandbox-quarantine",
@@ -4717,6 +4759,9 @@
    "<FIXTURE>/ws/.tool-versions",
    "<FIXTURE>/ws/.yarnrc.yml",
    "<FIXTURE>/ws/bunfig.toml",
+   "<FIXTURE>/ws/.codex",
+   "<FIXTURE>/ws/.agents",
+   "<FIXTURE>/ws/.aws",
    "<FIXTURE>/plain/.vscode",
    "<FIXTURE>/plain/.idea",
    "<FIXTURE>/plain/.husky",
@@ -4744,6 +4789,9 @@
    "<FIXTURE>/plain/.tool-versions",
    "<FIXTURE>/plain/.yarnrc.yml",
    "<FIXTURE>/plain/bunfig.toml",
+   "<FIXTURE>/plain/.codex",
+   "<FIXTURE>/plain/.agents",
+   "<FIXTURE>/plain/.aws",
    "/etc/ave/policy.json",
    "/private/etc/ave/policy.json",
    "<AVE_HOME>/sandbox-quarantine",
@@ -5114,6 +5162,9 @@
    "<FIXTURE>/plain/.tool-versions",
    "<FIXTURE>/plain/.yarnrc.yml",
    "<FIXTURE>/plain/bunfig.toml",
+   "<FIXTURE>/plain/.codex",
+   "<FIXTURE>/plain/.agents",
+   "<FIXTURE>/plain/.aws",
    "/etc/ave/policy.json",
    "/private/etc/ave/policy.json",
    "<AVE_HOME>/sandbox-quarantine",
@@ -5680,6 +5731,9 @@
    "<FIXTURE>/ws/.tool-versions",
    "<FIXTURE>/ws/.yarnrc.yml",
    "<FIXTURE>/ws/bunfig.toml",
+   "<FIXTURE>/ws/.codex",
+   "<FIXTURE>/ws/.agents",
+   "<FIXTURE>/ws/.aws",
    "/etc/ave/policy.json",
    "/private/etc/ave/policy.json",
    "<AVE_HOME>/sandbox-quarantine",
@@ -6454,6 +6508,9 @@
    "<FIXTURE>/plain/.tool-versions",
    "<FIXTURE>/plain/.yarnrc.yml",
    "<FIXTURE>/plain/bunfig.toml",
+   "<FIXTURE>/plain/.codex",
+   "<FIXTURE>/plain/.agents",
+   "<FIXTURE>/plain/.aws",
    "/etc/ave/policy.json",
    "/private/etc/ave/policy.json",
    "<AVE_HOME>/sandbox-quarantine",
@@ -6692,6 +6749,9 @@
    "<FIXTURE>/ws/.tool-versions",
    "<FIXTURE>/ws/.yarnrc.yml",
    "<FIXTURE>/ws/bunfig.toml",
+   "<FIXTURE>/ws/.codex",
+   "<FIXTURE>/ws/.agents",
+   "<FIXTURE>/ws/.aws",
    "<FIXTURE>/plain/.vscode",
    "<FIXTURE>/plain/.idea",
    "<FIXTURE>/plain/.husky",
@@ -6719,6 +6779,9 @@
    "<FIXTURE>/plain/.tool-versions",
    "<FIXTURE>/plain/.yarnrc.yml",
    "<FIXTURE>/plain/bunfig.toml",
+   "<FIXTURE>/plain/.codex",
+   "<FIXTURE>/plain/.agents",
+   "<FIXTURE>/plain/.aws",
    "/etc/ave/policy.json",
    "/private/etc/ave/policy.json",
    "<AVE_HOME>/sandbox-quarantine",
@@ -7291,6 +7354,9 @@
    "<FIXTURE>/plain/.tool-versions",
    "<FIXTURE>/plain/.yarnrc.yml",
    "<FIXTURE>/plain/bunfig.toml",
+   "<FIXTURE>/plain/.codex",
+   "<FIXTURE>/plain/.agents",
+   "<FIXTURE>/plain/.aws",
    "/etc/ave/policy.json",
    "/private/etc/ave/policy.json",
    "<AVE_HOME>/sandbox-quarantine",
