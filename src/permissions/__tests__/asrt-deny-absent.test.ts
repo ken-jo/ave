@@ -954,18 +954,23 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
     const link = join(root, "dangling");
     symlinkSync(join(root, "missing-directory"), link, "junction");
     const absent = join(workspace, ".git", "modules");
-    for (const rows of [{ denyRead: [link + sep] }, { denyWrite: [link + sep] }]) {
-      expect(() => buildSandboxConfig({ allowWrite: [workspace], ...rows })).toThrow(expect.objectContaining({
-        code: "sandbox-obligation-unenforceable", rows: expect.arrayContaining([{ row: link + sep, reason: "link-spelling" }]),
-      }));
+    // A forced recursive removal stops silently at a dangling junction on Windows, so the test removes its own.
+    try {
+      for (const rows of [{ denyRead: [link + sep] }, { denyWrite: [link + sep] }]) {
+        expect(() => buildSandboxConfig({ allowWrite: [workspace], ...rows })).toThrow(expect.objectContaining({
+          code: "sandbox-obligation-unenforceable", rows: expect.arrayContaining([{ row: link + sep, reason: "link-spelling" }]),
+        }));
+      }
+      const next = buildSandboxConfig({ allowWrite: [workspace] });
+      const denyWrite = next.filesystem.denyWrite.map(entry => typeof entry === "string"
+        ? nativeDenySpelling(entry) : { ...entry, path: nativeDenySpelling(entry.path) });
+      expect(denyWrite).toContainEqual(expect.objectContaining({ path: present, literal: true }));
+      expect(denyWrite).not.toContainEqual(expect.objectContaining({ path: absent }));
+      expect(watchedProtectedRows()).toContain(absent);
+      expect(lstatSync(link).isSymbolicLink()).toBe(true);
+    } finally {
+      (process.platform === "win32" ? rmdirSync : unlinkSync)(link);
     }
-    const next = buildSandboxConfig({ allowWrite: [workspace] });
-    const denyWrite = next.filesystem.denyWrite.map(entry => typeof entry === "string"
-      ? nativeDenySpelling(entry) : { ...entry, path: nativeDenySpelling(entry.path) });
-    expect(denyWrite).toContainEqual(expect.objectContaining({ path: present, literal: true }));
-    expect(denyWrite).not.toContainEqual(expect.objectContaining({ path: absent }));
-    expect(watchedProtectedRows()).toContain(absent);
-    expect(lstatSync(link).isSymbolicLink()).toBe(true);
   });
 
   it("binds a deny glob to its present static base and refuses confinement on a share row", () => {
