@@ -19,6 +19,7 @@ import { resolveToolPathForPermission } from "../shared/tool-path-resolution.js"
 import { areProjectWriteTargetsInside } from "./project-write-scope.js";
 import { prepareVerifiedShellCommand, type VerifiedShellCommand } from "../permissions/verified-shell-command.js";
 import { isPowerShellStartupPinned } from "../shared/powershell-startup-policy.js";
+import { withHostCdFaults } from "../shared/shell-execution.js";
 import { hostShellAnalysisFacts, prepareShellInvocation, preparedShellFacts, bindPreparedShellExecutableReadPaths, disposePreparedShellInvocation, type PreparedShellInvocation } from "./prepared-shell-invocation.js";
 import { resolveHostShellWorkingDirectory } from "../permissions/host-shell-execution-permit.js";
 import { randomUUID } from "node:crypto";
@@ -2026,9 +2027,10 @@ async function runToolInvocationAttempt(
           const pathPolicyInput = isCanonicalTerminalRunTool(tool)
             ? { ...finalInput, cwd: terminalCommandScopeOf(approvalMemory).cwd }
             : finalInput;
+          // The user's own host terminal is an unsandboxed host shell with no ask of its own before the command runs.
           shellPathViolation = shellPathPolicyViolation(
             pathPolicyInput, executionCwd, invocationRuntimeAllowedDirectories, blockReadsOutsideWorkingDirectories,
-            hostShellAnalysisFacts(preparedShellInvocation, hostShellExecutionPlan),
+            hostTerminalCommand !== undefined ? withHostCdFaults(undefined, "host-unasked") : hostShellAnalysisFacts(preparedShellInvocation, hostShellExecutionPlan),
           );
         }
         if (!shellPathViolation) break;

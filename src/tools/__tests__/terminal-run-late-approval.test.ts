@@ -1,7 +1,7 @@
 import type { UserOwnedSurfaceChoice } from "../../shared/permissions-events.js";
 import { NO_APPROVER_MESSAGE } from "../../permissions/decision-pipeline.js";
 import { randomBytes, randomUUID } from "node:crypto";
-import { realpathSync } from "node:fs";
+import { mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuditLogger } from "../../audit/audit-logger.js";
@@ -39,10 +39,11 @@ afterEach(async () => {
   await resources.cleanup();
 });
 
-async function fixture(options: { outside?: boolean; mode?: "default" | "strict"; exactRule?: boolean; holdFinalizer?: boolean; surfaceChoice?: UserOwnedSurfaceChoice; logicalReview?: () => Promise<{ consistent: boolean; reason: string }>; headless?: boolean } = {}) {
+async function fixture(options: { outside?: boolean; mode?: "default" | "strict"; exactRule?: boolean; holdFinalizer?: boolean; surfaceChoice?: UserOwnedSurfaceChoice; logicalReview?: () => Promise<{ consistent: boolean; reason: string }>; headless?: boolean; command?: string } = {}) {
   const root = realpathSync(resources.makeTmpDir("ave-late-terminal-"));
   const outside = realpathSync(resources.makeTmpDir("ave-terminal-outside-"));
-  const command = options.outside ? `printf ready > ${shellQuote(join(outside, "output.txt"))}` : COMMAND;
+  mkdirSync(join(root, "sub"));
+  const command = options.command ?? (options.outside ? `printf ready > ${shellQuote(join(outside, "output.txt"))}` : COMMAND);
   const manager = new PermissionManager(join(root, "permissions.json"));
   manager.setMode(options.mode ?? "auto");
   if (options.holdFinalizer !== false) manager.setUserOwnedSurfaceChoice(SESSION_ID, "host-terminal", "allow");
@@ -290,6 +291,19 @@ describe("host terminal late native approval", () => {
       expect(result.is_error, result.content).toBeFalsy();
       expect(f.typed).toEqual([f.command]);
       expect(f.cards).toHaveLength(1);
+    });
+  });
+
+  it("checks a relative write against the directory a failed cd leaves the user's shell in", async () => {
+    const f = await fixture({ command: "cd sub; printf ready > ../output.txt", mode: "strict", exactRule: false, holdFinalizer: false });
+    await runWithHostTerminalTurn({ sessionId: SESSION_ID, turnId: "cd-fault-turn" }, async () => {
+      const pending = f.run();
+      await vi.waitFor(() => expect(f.cards).toHaveLength(1), CARD_WAIT);
+      expect(f.cards[0]?.kind).toBe("out-of-allowed-dir");
+      expect(f.typed).toEqual([]);
+      f.deny(f.cards[0]!);
+      await pending;
+      expect(f.typed).toEqual([]);
     });
   });
 
