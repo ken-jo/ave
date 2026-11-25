@@ -83,6 +83,12 @@ export function warmSandboxHomeOwner(): void {
   void resolveHostOwnerMarker(readWindowsProcessRunStates);
 }
 
+/** This process's pid and creation time, once the start-up probe has read them. */
+export function resolvedHostProcessOwner(probe: ProcessRunStateProbe = readWindowsProcessRunStates): SandboxHomeOwner | undefined {
+  const marker = resolvedOwnerMarkers.get(probe);
+  return marker === undefined ? undefined : JSON.parse(marker) as SandboxHomeOwner;
+}
+
 export function _resolveHostOwnerMarkerForTest(probe: ProcessRunStateProbe): Promise<string | null> {
   return resolveHostOwnerMarker(probe);
 }

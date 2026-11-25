@@ -1,3 +1,11 @@
+// The staging parent start-up establishes under the runtime root, as a synthetic path.
+vi.mock("../../../permissions/mxc-runtime-root.js", async (original) => {
+  const { SYNTHETIC_MXC_STAGING_PARENT } = await import("../../../__tests__/support/mxc-staging-parent.js");
+  return {
+    ...await original<typeof import("../../../permissions/mxc-runtime-root.js")>(),
+    mxcStagingParent: () => SYNTHETIC_MXC_STAGING_PARENT,
+  };
+});
 vi.mock("../../../shared/windows-path-facts.js", async original => (await import("../../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 vi.mock("../../../shared/windows-configuration-handles.js", async original => (await import("../../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 vi.mock("node:fs", async original => {
