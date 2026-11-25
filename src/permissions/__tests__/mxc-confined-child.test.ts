@@ -259,9 +259,25 @@ describe("native confined holder admission", () => {
     });
 
     it("refuses before any listener or native start while no release-gate record is registered", async () => {
+      const before = liveEgressInvocationCount();
       unregisterReleaseGate?.();
       await expect(spawnMxcConfinedChild(spec())).rejects.toThrow(/No release-gate evidence is registered/);
       expect(state.spawn).not.toHaveBeenCalled();
+      expect(state.lease).not.toHaveBeenCalled();
+      expect(state.admit).not.toHaveBeenCalled();
+      expect(liveEgressInvocationCount()).toBe(before);
+    });
+
+    it("disposes the native process when the caller's signal aborts after admission", async () => {
+      const before = liveEgressInvocationCount();
+      const controller = new AbortController();
+      const result = await spawnMxcConfinedChild({ ...spec(), signal: controller.signal });
+      expect(result.process.dispose).not.toHaveBeenCalled();
+      controller.abort();
+      await vi.waitFor(() => expect(state.close).toHaveBeenCalledOnce());
+      expect(result.process.dispose).toHaveBeenCalledOnce();
+      expect(liveEgressInvocationCount()).toBe(before);
+      expect(liveMxcHolderWritableRoots()).toEqual([]);
     });
 
     it("runs the adapter's request check on a snapshot before the start", async () => {

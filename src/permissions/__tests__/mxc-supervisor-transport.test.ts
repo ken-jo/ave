@@ -325,15 +325,14 @@ describe("supervisor transport and lifecycle with an injected SDK (unit only)", 
     await f.service;
   });
 
-  it("reports an unsupported ancestor query as observed, never as a constant", async () => {
+  it("refuses a request without ancestor queries before native creation when the probe lacks them", async () => {
     const request: ContainerRequest = { ...createMxcExtensionRequest(),
       containment: { type: "processcontainer", config: { filesystem: { enumeratePaths: [] } } } };
     const f = transportFixture(request);
     f.probe.mockReturnValue({ tier: "base-container", needsDaclAugmentation: false, probes: { baseContainerSupportsEnumeratePaths: false } } as ProbeOutput);
-    const owned = await f.launch();
-    expect(owned.startEvidence?.evidence).toMatchObject({ ancestorQueriesSupported: false, baseContainerReady: true });
-    await owned.dispose();
-    await f.service;
+    await expect(f.launch()).rejects.toBeInstanceOf(MxcCapabilityUnavailableError);
+    expect(f.spawn).not.toHaveBeenCalled();
+    await f.service.catch(() => {});
   });
 
   it("refuses unsupported enumeration without SDK spawn or fallback", async () => {

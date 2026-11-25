@@ -159,7 +159,7 @@ describe("per-start admission (fields 1-5) on the holder's own start", () => {
     let startSignal: AbortSignal | undefined;
     const refused = expect(admitMxcExtensionStart(receipt, { ...captured,
       start: signal => { startSignal = signal; return new Promise(() => {}); } }))
-      .rejects.toThrow("Native admission readiness failed: readiness-deadline (beneath an admitted holder)");
+      .rejects.toThrow(/Native admission readiness failed: readiness-deadline$/u);
     await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.mxcExtensionReadinessMs);
     await refused;
     expect(startSignal?.aborted).toBe(true);
@@ -182,7 +182,7 @@ describe("per-start admission (fields 1-5) on the holder's own start", () => {
     const receipt = createMxcExtensionAdmission(captured);
     const controller = new AbortController();
     const refused = expect(admitMxcExtensionStart(receipt, { ...captured, signal: controller.signal, start: () => new Promise(() => {}) }))
-      .rejects.toThrow(/changed during readiness/);
+      .rejects.toThrow("Extension start was cancelled");
     controller.abort();
     await refused;
   });

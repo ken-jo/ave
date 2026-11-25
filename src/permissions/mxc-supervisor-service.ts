@@ -71,12 +71,10 @@ export async function serveMxcSupervisor(channel: MxcExtensionChannel, liveness:
             const runtime = await bootstrap();
             if (stopping) return null;
             const probe = runtime.sdk.probe(frame.request);
-            const enumeration = frame.request.containment?.type === "processcontainer"
-              ? frame.request.containment.config?.filesystem?.enumeratePaths ?? [] : [];
             // Start evidence (contract fields 1-5): each value is what this start observed, reported on its ready frame.
             const baseContainerReady = probe.tier === "base-container" && probe.needsDaclAugmentation === false;
             const ancestorQueriesSupported = probe.probes.baseContainerSupportsEnumeratePaths === true;
-            if (!baseContainerReady || (enumeration.length && !ancestorQueriesSupported)) {
+            if (!baseContainerReady || !ancestorQueriesSupported) {
               throw new MxcCapabilityUnavailableError("Required native containment is unavailable");
             }
             runtime.auditModules();

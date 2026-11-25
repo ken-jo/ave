@@ -108,16 +108,16 @@ export async function admitMxcExtensionStart(admission: MxcExtensionAdmission, i
       admittedAncestorBackend: () => "mxc",
       signal: input.signal,
     });
-    if (input.signal?.aborted || mxcRequestDigest(input.request) !== record.requestDigest
-        || canonicalStringify(input.bootPlan) !== record.bootPlanDigest) {
+    if (input.signal?.aborted) throw new MxcProcessContractError("Extension start was cancelled");
+    if (mxcRequestDigest(input.request) !== record.requestDigest || canonicalStringify(input.bootPlan) !== record.bootPlanDigest) {
       throw new MxcProcessContractError("Native admission request changed during readiness");
     }
     // The start's own capability refusal keeps its message; the settled plan would only name the ancestor.
     if (startFailure) throw startFailure;
     if (result.selectedBackend !== "mxc" || result.readiness !== "ready") {
-      // Only the deadline aborts a start whose caller did not cancel; the plan reason alone names the ancestor, not the cause.
+      // Only the deadline aborts a start whose caller did not cancel; the plan reason names the ancestor, not the cause.
       const cause = observed?.state === "unavailable" ? observed.reason
-        : startSignal?.aborted === true ? "readiness-deadline (beneath an admitted holder)" : result.reason;
+        : startSignal?.aborted === true ? "readiness-deadline" : result.reason;
       throw new MxcCapabilityUnavailableError(`Native admission readiness failed: ${cause}`);
     }
   } finally {

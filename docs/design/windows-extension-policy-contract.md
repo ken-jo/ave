@@ -100,17 +100,15 @@ the ready frame; an expiry here is a refusal of this start and is never written
 into the boot plan.
 
 What the start reports today, per field. Field 5 is the SDK probe's enumeration
-support. The supervisor already refuses before native creation when the request
-names ancestor queries and the probe lacks them, so a ready frame reports it
-false only for a request that names none; admission refuses that start too.
-Field 2 is the SDK probe's tier; the supervisor refuses a non-BaseContainer tier
+support; the supervisor refuses before native creation when the probe lacks it,
+whether or not the request names ancestor queries, so a ready frame always
+reports it true. Field 2 is the SDK probe's tier; the supervisor refuses a non-BaseContainer tier
 before native creation, so a ready frame always reports it true. Fields 1 and 3 are implied by the frame existing:
 the supervisor verified the installed payload before loading it, and the SDK
 created a process for the digested request. Field 4 is the request's UI policy
 plus an attached process that is not cleanup-failed; runtime initialisation
 inside the container is not observed. So what admission adds
-today is the request-digest binding, the frame shape, the deadline and field 5
-for a request without ancestor queries. Stronger
+today is the request-digest binding, the frame shape and the deadline. Stronger
 observations for fields 1, 3 and 4 belong to the native release gate.
 
 Release-gate evidence is an install property. A start checks the registered

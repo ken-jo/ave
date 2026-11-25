@@ -45,7 +45,7 @@ import {
   MxcProcessContractError,
   WorkerTransportUnsupportedError,
 } from "./mxc-extension-errors.js";
-import { admitMxcExtensionStart, createMxcExtensionAdmission, consumeMxcExtensionAdmission } from "./mxc-extension-admission.js";
+import { admitMxcExtensionStart, assertMxcReleaseGateEvidence, createMxcExtensionAdmission, consumeMxcExtensionAdmission } from "./mxc-extension-admission.js";
 import type { ExtensionStartPresentation } from "./extension-start-consent.js";
 import type { PluginWorkerControl } from "../plugins/public-contract.js";
 import type { ContainerRequest } from "@microsoft/mxc-sdk/v1";
@@ -311,6 +311,8 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
   if (process.platform !== "win32" || plan?.selectedBackend !== "mxc" || plan.readiness !== "ready") {
     throw new MxcProcessContractError("Extension container backend is not ready");
   }
+  // Checked before filesystem admission, the egress invocation and the lease.
+  assertMxcReleaseGateEvidence();
   spec = Object.freeze({ ...spec, args: Object.freeze([...spec.args]),
     baseEnv: Object.freeze({ ...spec.baseEnv }), egressOwner: Object.freeze({ ...spec.egressOwner }),
     holderEnv: Object.freeze({ ...(spec.holderEnv ?? {}) }),
@@ -359,8 +361,13 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
   let settleStartup!: () => void;
   const startupSettled = new Promise<void>((resolve) => { settleStartup = resolve; });
   let lifetime: ReturnType<typeof registerMxcHolderLifetime>;
+  // The caller's abort after admission releases the holder, which disposes the native process.
+  const releaseOnAbort = (): void => {
+    void lifetime.release().catch((error: unknown) => { log.warn(`Extension cleanup failed: ${String(error)}`); });
+  };
   try {
     lifetime = registerMxcHolderLifetime(spec.label, async () => {
+      spec.signal?.removeEventListener("abort", releaseOnAbort);
       if (binding) binding.active = false;
       controller.abort();
       // Start cancellation immediately, then retain ownership until startup adopts
@@ -426,6 +433,7 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
     binding = { plan, active: true, children: new Set(), footprint: ownRoots };
     const result: MxcConfinedChildSpawn = Object.freeze({ process: child, confinement: "windows-mxc", release: lifetime.release });
     nativeHolderBindings.set(result, binding);
+    spec.signal?.addEventListener("abort", releaseOnAbort, { once: true });
     // Revocation closes descendant admission even when termination cannot be established.
     void child.completion.then(() => result.release(), () => result.release()).catch((error: unknown) => {
       log.warn(`Extension cleanup failed: ${String(error)}`);
