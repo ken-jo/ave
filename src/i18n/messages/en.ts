@@ -1326,6 +1326,7 @@ export const en = {
   "be_terminalRun.ranDifferentCommand": "Terminal {tabId} ran a different command from the one approved (its shell's record is in block.command). This was recorded in the audit log. Do not retry; tell the user.",
   "be_terminalRun.stillRunning": "The command is still running in terminal {tabId}. Read its output later with terminal_read using the exact terminalSessionId and blockId in continuation (block {blockId}).",
   "be_terminalRun.notVerified": "The command was typed into terminal {tabId}, but its shell did not report starting it, so whether it ran as approved is not verified. Check with terminal_read using this result’s terminalSessionId (tabId {tabId}) and tell the user.",
+  "be_terminalRun.hostCommandNotSubmitted": "The command was not submitted in terminal {tabId}: {reason}",
   "be_terminalRun.hostRanDifferentCommand": "Host terminal {tabId} ran a different command from the one approved, so none of its output is returned. This was recorded in the audit log. Do not retry; tell the user.",
   "be_terminalRun.hostInterrupted": "The user took control of terminal {tabId} (or its pane chat ended) before the command finished. Only the output from before that moment is shown, and nothing later can be read. Do not retry unless the user asks.",
   "be_terminalRun.hostNoPromptYet": "Terminal {tabId} has not drawn a marked prompt yet: its shell may still be starting or waiting at a startup question (for example zsh's compinit prompt). Nothing was typed. Ask the user to answer it in the terminal, then retry.",

@@ -1015,6 +1015,26 @@ describe("terminal_run into a pane chat's own host terminal", () => {
     expect(hostTyped).toEqual([]);
   });
 
+  it.each(["en", "ko"] as const)("reports a withdrawn host-terminal paste as unsubmitted in %s", async (locale) => {
+    const previous = getLocale();
+    try {
+      await loadLocaleMessages(locale);
+      setLocale(locale);
+      const { deps, tool } = hostDeps();
+      const message = "the terminal's editable command buffer did not match the approved line; Enter was not pressed";
+      vi.spyOn(deps.host, "typeCommand").mockResolvedValue({ ok: false, reason: "edit-line-mismatch", message });
+      const waitDisclosure = vi.spyOn(deps.host, "waitDisclosure");
+
+      const scope = await tool.approvalMemoryScope!({ command: "npm test" }, { cwd: "/workspace", sessionId: "main" });
+      const result = await tool.execute({ command: "npm test" }, ctxFor(scope));
+      expect(result.isError).toBe(true);
+      expect(JSON.parse(result.output as string).error).toBe(locale === "ko"
+        ? `터미널 ${HOST}에 명령을 제출하지 못했습니다. 사유: ${message}`
+        : `The command was not submitted in terminal ${HOST}: ${message}`);
+      expect(waitDisclosure).not.toHaveBeenCalled();
+    } finally { setLocale(previous); }
+  });
+
   it("refuses a host command that reaches execute without its sealed execution route", async () => {
     const { tool, hostTyped } = hostDeps();
     const scope = await tool.approvalMemoryScope!({ command: "npm test" }, { cwd: "/workspace", sessionId: "main" });

@@ -1328,6 +1328,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "be_terminalRun.ranDifferentCommand": "터미널 {tabId} 가 승인된 명령과 다른 명령을 실행했습니다 (셸의 기록은 block.command 에 있습니다). 감사 로그에 기록했습니다. 다시 시도하지 말고 사용자에게 알리세요.",
   "be_terminalRun.stillRunning": "명령이 터미널 {tabId} 에서 아직 실행 중입니다. 출력은 나중에 continuation의 정확한 terminalSessionId·blockId로 terminal_read를 호출해 읽으세요(블록 {blockId}).",
   "be_terminalRun.notVerified": "명령을 터미널 {tabId} 에 입력했지만 셸이 시작을 알리지 않아, 승인된 대로 실행됐는지 확인하지 못했습니다. 결과의 terminalSessionId와 terminal_read (tabId {tabId}) 로 확인하고 사용자에게 알리세요.",
+  "be_terminalRun.hostCommandNotSubmitted": "터미널 {tabId}에 명령을 제출하지 못했습니다. 사유: {reason}",
   "be_terminalRun.hostRanDifferentCommand": "호스트 터미널 {tabId}이(가) 승인된 명령과 다른 명령을 실행했으므로 출력은 반환되지 않습니다. 감사 로그에 기록되었습니다. 다시 시도하지 말고 사용자에게 알리세요.",
   "be_terminalRun.hostInterrupted": "명령이 끝나기 전에 사용자가 터미널 {tabId}의 제어를 가져왔거나 패널 채팅이 끝났습니다. 그 시점 이전의 출력만 표시되며 이후 내용은 읽을 수 없습니다. 사용자가 요청하지 않으면 다시 시도하지 마세요.",
   "be_terminalRun.hostNoPromptYet": "터미널 {tabId}이(가) 아직 표시된 프롬프트를 그리지 않았습니다. 셸이 시작 중이거나 시작 질문(예: zsh compinit 프롬프트)에서 기다리고 있을 수 있습니다. 아무것도 입력하지 않았습니다. 사용자에게 터미널에서 답하도록 요청한 뒤 다시 시도하세요.",

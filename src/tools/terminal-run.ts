@@ -434,7 +434,7 @@ export function createTerminalRunTool(deps: TerminalRunToolDeps): Tool {
         const guidance = reapprovalPending ? "The host handles reapproval in a separate invocation." : "Call terminal_run again for a fresh decision.";
         return fail(`no command was sent in terminal ${scope.tabId}: ${typed.message} ${guidance}`);
       }
-      return fail(`nothing was typed into terminal ${scope.tabId}: ${typed.message}`);
+      return fail(t("be_terminalRun.hostCommandNotSubmitted", { tabId: scope.tabId, reason: typed.message }));
     }
     const waitMs = BLOCK_START_WAIT_MS + input.waitSeconds * 1000;
     const span = await deps.host.waitDisclosure(live, windowId, scope.sessionId, scope.turnId, typed.firstBlockId, waitMs, ctx.abortSignal);
