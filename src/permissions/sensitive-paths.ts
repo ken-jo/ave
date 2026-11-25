@@ -579,8 +579,8 @@ export function caseFoldForMatch(canonical: string): string {
 // Mutations of control paths require fresh approval independently of ordinary secret evidence.
 export const PROTECTED_ROOT_ENTRIES = [
   ".git", ".vscode", ".idea", ".husky", ".cargo", ".devcontainer", ".yarn",
-  ".mvn", ".claude", ".config/git", ".bashrc", ".zshrc", ".zprofile", ".profile",
-  ".envrc", ".gitconfig", ".npmrc", ".mcp.json", ".claude.json",
+  ".mvn", ".config/git", ".bashrc", ".zshrc", ".zprofile", ".profile",
+  ".envrc", ".gitconfig", ".npmrc", ".mcp.json",
   // Agent skills, commands and plugins that several agent hosts load from a project or a home folder (owner decision 2026-11-25).
   ".agents",
 ] as const;

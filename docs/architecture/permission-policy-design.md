@@ -825,7 +825,10 @@ each admitted write root, taking precedence over grants:
 - `.envrc`, `.mise.toml`, `mise.toml`, `.tool-versions`, `.npmrc`, `.yarnrc.yml`,
   `bunfig.toml` and `.husky/**`;
 - all of `.agents`, which holds the skills, commands and plugins agent hosts
-  load, and `.ave/commands` and `.ave/hooks`, which Ave loads. On Linux these are entries beneath each write root. On macOS
+  load, and `.ave/commands` and `.ave/hooks`, which Ave loads. Other agents'
+  folders such as `.claude` and `.codex` are not on this floor, and the file
+  tools do not ask about them: each host protects its own (owner decision
+  2026-11-25). On Linux these are entries beneath each write root. On macOS
   rules appended to the Seatbelt profile, anchored at the write roots, deny the
   same entries, and also refuse to create, remove or rename `.ave` directly
   beneath a root, so its parts cannot be moved out from under their names. The

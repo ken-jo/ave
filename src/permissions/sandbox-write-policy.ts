@@ -23,7 +23,7 @@ export function isSandboxGitMetadataEntry(entry: string): boolean {
 }
 const SANDBOX_LOADER_ENTRIES = [
   ".bash_profile", ".githooks", ".pre-commit-config.yaml", "lefthook.yml",
-  ".claude/settings.json", ".claude/settings.local.json", ".claude/hooks", ".claude/commands", ".idea/workspace.xml",
+  ".idea/workspace.xml",
   ".envrc", ".mise.toml", "mise.toml", ".tool-versions", ".npmrc", ".yarnrc.yml", "bunfig.toml", ".husky",
 ] as const;
 const SANDBOX_PROTECTED_ROOT_ENTRIES = [...new Set([

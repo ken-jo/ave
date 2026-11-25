@@ -82,7 +82,7 @@ describe("mandatory sandbox control-file writes", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  const loaderEntries = [".bash_profile", ".githooks", ".pre-commit-config.yaml", "lefthook.yml", ".claude/settings.json", ".claude/settings.local.json", ".claude/hooks", ".claude/commands", ".idea/workspace.xml", ".envrc", ".mise.toml", "mise.toml", ".tool-versions", ".npmrc", ".yarnrc.yml", "bunfig.toml", ".husky"];
+  const loaderEntries = [".bash_profile", ".githooks", ".pre-commit-config.yaml", "lefthook.yml", ".idea/workspace.xml", ".envrc", ".mise.toml", "mise.toml", ".tool-versions", ".npmrc", ".yarnrc.yml", "bunfig.toml", ".husky"];
 
   it.each(["win32", "linux"] as const)("keeps explicit descendant write denies for %s enforcement", platform => {
     const parent = join(root, "protected");
@@ -116,7 +116,7 @@ describe("mandatory sandbox control-file writes", () => {
     expect(literal.path).toBe(forwardSlashes);
   });
 
-  it.each([".claude", ".idea"].flatMap(entry => [false, true].map(reportsMissingChild => ({ entry, reportsMissingChild }))))
+  it.each([".idea"].flatMap(entry => [false, true].map(reportsMissingChild => ({ entry, reportsMissingChild }))))
   ("retains $entry protection after a regular placeholder with native missing-child reporting=$reportsMissingChild", async ({ entry, reportsMissingChild }) => {
     const project = join(root, "project");
     mkdirSync(project);
@@ -125,7 +125,7 @@ describe("mandatory sandbox control-file writes", () => {
     writeFileSync(placeholder, "");
     if (reportsMissingChild) await reportMissingChildrenUnder(placeholder);
     withPlatform("linux", () => {
-      const child = join(placeholder, entry === ".claude" ? "settings.json" : "workspace.xml");
+      const child = join(placeholder, "workspace.xml");
       const repeated = buildMandatorySandboxWritePolicy([project], undefined, [child]);
       expect(repeated.allowWrite).toEqual(initial.allowWrite);
       expect(nativeDenyRows(repeated.denyWrite)).toContain(placeholder);
@@ -134,7 +134,7 @@ describe("mandatory sandbox control-file writes", () => {
     });
   });
 
-  it.each([".claude", ".idea"])("pins a linked regular %s ancestor before omitting impossible children", entry => {
+  it.each([".idea"])("pins a linked regular %s ancestor before omitting impossible children", entry => {
     const project = join(root, "project");
     const work = join(project, "work");
     const target = join(root, "external-placeholder");
@@ -236,7 +236,7 @@ describe("mandatory sandbox control-file writes", () => {
     expect(policy.allowWrite).toEqual([missing]);
     expect(policy.narrowedWriteRoots).toEqual([]);
     expect(nativeDenyRows(policy.denyWrite)).toContain(join(missing, ".bash_profile"));
-    expectLiteralDenyCovers(policy.denyWrite, join(missing, ".claude", "settings.json"));
+    expectLiteralDenyCovers(policy.denyWrite, join(missing, ".idea", "workspace.xml"));
     expect(filesystem.existsSync(missing)).toBe(false);
   });
 
@@ -269,7 +269,7 @@ describe("mandatory sandbox control-file writes", () => {
         const project = join(root, existing ? "existing" : "absent");
         mkdirSync(project);
         if (existing) for (const entry of loaderEntries) {
-          if ([".husky", ".githooks", ".claude/hooks", ".claude/commands"].includes(entry)) mkdirSync(join(project, entry), { recursive: true });
+          if ([".husky", ".githooks"].includes(entry)) mkdirSync(join(project, entry), { recursive: true });
           else {
             mkdirSync(dirname(join(project, entry)), { recursive: true });
             writeFileSync(join(project, entry), "loader fixture");
@@ -323,14 +323,14 @@ describe("mandatory sandbox control-file writes", () => {
       const project = join(root, "project");
       const storage = join(root, "storage");
       const work = join(project, "work");
-      for (const directory of [join(project, ".claude"), join(project, ".idea"), work, storage]) {
+      for (const directory of [join(project, ".config"), join(project, ".idea"), work, storage]) {
         mkdirSync(directory, { recursive: true });
       }
       const hooks = join(storage, "hooks");
       const workspace = join(storage, "workspace.xml");
       mkdirSync(hooks);
       writeFileSync(workspace, "workspace fixture");
-      const hookLink = join(project, ".claude", "hooks");
+      const hookLink = join(project, ".config", "git");
       const workspaceLink = join(project, ".idea", "workspace.xml");
       symlinkSync(hooks, hookLink, "dir");
       symlinkSync(workspace, workspaceLink, "file");
@@ -511,7 +511,7 @@ describe("mandatory sandbox control-file writes", () => {
     writeFileSync(join(marker, "modules", "inner", "HEAD"), "ref: refs/heads/main\n");
     writeFileSync(join(marker, "modules", "inner", "config"), "existing control");
     const denies = buildMandatorySandboxWritePolicy([project]).denyWrite;
-    for (const entry of [".gitconfig", ".githooks", ".husky", ".claude", ".claude/hooks"]) expectLiteralDenyCovers(denies, join(project, entry));
+    for (const entry of [".gitconfig", ".githooks", ".husky", ".idea", ".idea/workspace.xml"]) expectLiteralDenyCovers(denies, join(project, entry));
     for (const path of [marker, join(marker, "modules"), join(marker, "modules", "inner")]) expect(nativeDenyRows(denies)).not.toContain(path);
     for (const path of [join(marker, "hooks"), join(marker, "config"), join(marker, "modules", "inner", "hooks"), join(marker, "modules", "inner", "config")]) {
       expect(nativeDenyRows(denies)).toContain(path);
@@ -856,7 +856,7 @@ describe("mandatory sandbox control-file writes", () => {
   });
 
   it("bounds missing ancestry and Linux routing components independently", () => {
-    // The deepest protected root entry (`.claude/settings.json`) adds two components.
+    // The deepest protected root entry (`.idea/workspace.xml`) adds two components.
     const withinMissingLimit = join(root, ...Array.from({ length: 62 }, (_, index) => `missing-${index}`));
     const beyondMissingLimit = join(withinMissingLimit, "missing-62");
     const buildWithoutLinuxRouting = (path: string) => process.platform === "win32"
