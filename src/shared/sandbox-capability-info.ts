@@ -29,7 +29,6 @@ export interface SandboxWindowsStatusInfo {
   helperError?: "srt-win-not-found" | "srt-win-integrity-mismatch";
   /** Confinement is refused until this private directory verifies at restart. */
   homePrivacyError?: {
-    approvedForSession?: boolean;
     path: string;
     category: AveHomePrivacyFailureCategory;
     extraPrincipals?: AveHomePrincipal[];

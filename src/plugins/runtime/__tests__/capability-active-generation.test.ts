@@ -17,6 +17,7 @@ import {
   makeTestPluginRuntime,
   makeTestTreeWritable,
 } from "../../__tests__/test-helpers.js";
+import { stopTestPluginRuntimes, trackTestPluginRuntime } from "../../__tests__/test-helpers.js";
 import { PluginBundleLifecycle } from "../../plugin-bundle-lifecycle.js";
 import { PersonaPromptStore } from "../../../main/persona-prompt-store.js";
 import {
@@ -75,8 +76,10 @@ describe("PluginRuntime capability dependencies use active generations", () => {
   });
 
   afterEach(async () => {
+    const stopped = await stopTestPluginRuntimes();
     await makeTestTreeWritable(root);
     await rm(root, { recursive: true, force: true });
+    expect(stopped).toEqual({ unfinished: [], leftHomes: [] });
   });
 
   async function writePlugin(options: {
@@ -238,7 +241,7 @@ describe("PluginRuntime capability dependencies use active generations", () => {
     await Promise.all([writeReceipt(consumer), writeReceipt(provider)]);
 
     const providerPreparation = deferredGate();
-    const runtime = new PluginRuntime({ childEntryPath: pluginChildEntryPath(), encryption: unavailableSecretEncryption,
+    const runtime = trackTestPluginRuntime(new PluginRuntime({ childEntryPath: pluginChildEntryPath(), encryption: unavailableSecretEncryption,
       hostRoot: root,
       pluginsRoot,
       registryPath,
@@ -252,7 +255,7 @@ describe("PluginRuntime capability dependencies use active generations", () => {
       preparePluginStart: ({ pluginId }) =>
         pluginId === provider.id ? providerPreparation.promise : undefined,
       onActiveStateChange: options.onActiveStateChange,
-    });
+    }));
     const lifecycle = bindRealBundleLifecycle(runtime);
     await runtime.startAll();
 
@@ -870,6 +873,8 @@ export default async function createPlugin() {
     await expect(fixture.runtime.waitForPluginReady(fixture.provider.id)).resolves.toBeUndefined();
     await nextTurn();
     expect(fixture.runtime.listPluginIds()).not.toContain(fixture.consumer.id);
+    // The candidate's stop still fails when shutdown re-awaits it, so shutdown reports it instead of dropping it.
+    expect(await fixture.runtime.stopAll()).toEqual({ unfinished: [fixture.consumer.id] });
   });
 
   it("directly disables an unpublished blocked candidate with the real bundle lifecycle", async () => {
@@ -1005,6 +1010,8 @@ export default async function createPlugin() {
     await expect(fixture.runtime.waitForPluginReady(fixture.provider.id)).resolves.toBeUndefined();
     await nextTurn();
     await expect(fixture.runtime.call(prepared.toolName)).resolves.toBe("replacement-pong");
+    // The old candidate's stop still fails when shutdown retries it, so shutdown reports it instead of dropping it.
+    expect(await fixture.runtime.stopAll()).toEqual({ unfinished: [fixture.consumer.id] });
   });
 
   it("keeps an unpublished blocked candidate retryable when prepared durable commit fails", async () => {

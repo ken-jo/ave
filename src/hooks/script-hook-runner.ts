@@ -53,6 +53,7 @@ import { getHostShellExecutionPlanAuditProjection, getHostShellExecutionPlanCach
 import {
   assertExtensionStartAllowed, isPluginWorkerConfinementActive,
 } from "../permissions/asrt-sandbox.js";
+import { isExtensionStartConsentRequired, pluginHookStartKey, requestExtensionStartConsent, turnExtensionStartSession } from "../permissions/extension-start-consent.js";
 import type { WorkerEgressOwner } from "../permissions/egress-invocations.js";
 import {
   assertMxcHolderNotBashForm,
@@ -321,7 +322,16 @@ export async function runOneHookScript(
   }
   if (confinement && !containedRoute) {
     try {
-      assertExtensionStartAllowed();
+      try {
+        assertExtensionStartAllowed();
+      } catch (error) {
+        if (!isExtensionStartConsentRequired(error)) throw error;
+        // Nothing confines this hook: its own session is asked for this one run.
+        const key = pluginHookStartKey(confinement.pluginId, runnable.id);
+        const authority = await requestExtensionStartConsent({ key, kind: "plugin-hook",
+          label: `${confinement.pluginId} (${runnable.id})`, cause: error.unconfinedCause }, turnExtensionStartSession(payload.sessionId));
+        assertExtensionStartAllowed({ start: { key, authority, spend: true } });
+      }
     } catch (error) {
       return deny(`sandbox unavailable: ${(error as Error).message}`);
     }

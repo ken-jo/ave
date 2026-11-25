@@ -6,6 +6,7 @@ import { join } from "node:path";
 import {
   pureTool,
   TestPluginRuntime as PluginRuntime,
+  stopTestPluginRuntimes,
 } from "./test-helpers.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { servedAgentPluginsDocument } from "./test-helpers.js";
@@ -88,7 +89,9 @@ describe("PluginRuntime.listPluginCards — Phase 1.5 Option C catalog", () => {
   });
 
   afterEach(async () => {
+    const stopped = await stopTestPluginRuntimes();
     await cleanupTmpDir(tmp);
+    expect(stopped).toEqual({ unfinished: [], leftHomes: [] });
   });
 
   it("returns id, name, description, sampleTools (max 3)", async () => {
