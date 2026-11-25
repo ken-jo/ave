@@ -147,9 +147,10 @@ const {
   MxcExecutableNotAdmissibleError,
   MxcHolderEnvironmentRefusedError,
   MxcHolderWorkspaceBusyError,
-  registerMxcHolderReadinessProbe,
   spawnMxcBundledHolder,
 } = holderModule;
+const { registerMxcReleaseGateEvidence } = await import("../../permissions/mxc-extension-admission.js");
+const { MXC_RELEASE_GATE_EVIDENCE } = await import("../../__tests__/support/mxc-supervisor.js");
 const { prepareMxcPluginChildLaunch } = await import("../../plugins/isolation/mxc-plugin-child-launch.js");
 const { resolvePluginHostStorageDir } = await import("../../plugins/plugin-storage-layout.js");
 const { planWindowsExtensionHolder } = await import("../../permissions/mxc-extension-readiness.js");
@@ -164,7 +165,6 @@ const FALLBACK = planWindowsExtensionHolder({ requested: true, mxc: { state: "un
   fallback: { version: "0.0.80", ready: true } });
 const NODE = "C:\\Program Files\\nodejs\\node.exe";
 const REAL_PLATFORM = process.platform;
-const probe = vi.fn(async () => { throw new Error("probe is row 2's to call"); });
 let unregister: (() => void) | undefined;
 
 type Spec = Record<string, unknown> & { allowRead: string[]; allowWrite: string[]; home: string; temp: string; cwd: string;
@@ -208,7 +208,7 @@ beforeEach(() => {
   state.spawn.mockResolvedValue(spawned);
   spawned.release.mockReset();
   spawned.release.mockResolvedValue(undefined);
-  unregister = registerMxcHolderReadinessProbe(probe);
+  unregister = registerMxcReleaseGateEvidence(MXC_RELEASE_GATE_EVIDENCE);
 });
 
 afterEach(() => {
@@ -244,7 +244,7 @@ describe("container holder selection", () => {
     expect(state.spawn).not.toHaveBeenCalled();
   });
 
-  it("fails closed with capability-unavailable when no readiness probe is registered", async () => {
+  it("fails closed with capability-unavailable when no release-gate evidence is registered", async () => {
     unregister?.();
     unregister = undefined;
     await expect(spawnMxcBundledHolder(input())).rejects.toBeInstanceOf(MxcCapabilityUnavailableError);
@@ -252,10 +252,19 @@ describe("container holder selection", () => {
     expect([...state.dirs].some((dir) => dir.includes("mxc-staging"))).toBe(false);
   });
 
-  it("allows one registered probe and hands exactly it to the native entry", async () => {
-    expect(() => registerMxcHolderReadinessProbe(probe)).toThrow(MxcProcessContractError);
+  it.each(Object.keys(MXC_RELEASE_GATE_EVIDENCE) as (keyof typeof MXC_RELEASE_GATE_EVIDENCE)[])(
+    "fails closed when the release-gate record did not observe %s", async (field) => {
+      unregister?.();
+      unregister = registerMxcReleaseGateEvidence({ ...MXC_RELEASE_GATE_EVIDENCE, [field]: false });
+      await expect(spawnMxcBundledHolder(input())).rejects.toBeInstanceOf(MxcCapabilityUnavailableError);
+      expect(state.spawn).not.toHaveBeenCalled();
+      expect([...state.dirs].some((dir) => dir.includes("mxc-staging"))).toBe(false);
+    });
+
+  it("allows one release-gate record per installation and hands the native entry no per-start probe", async () => {
+    expect(() => registerMxcReleaseGateEvidence(MXC_RELEASE_GATE_EVIDENCE)).toThrow(MxcProcessContractError);
     await spawnMxcBundledHolder(input());
-    expect(lastSpec().probe).toBe(probe);
+    expect(lastSpec()).not.toHaveProperty("probe");
   });
 });
 
@@ -654,14 +663,14 @@ describe("plugin child start resources", () => {
     ({ pluginId: "fs", command: NODE, cwd: GEN, pluginDataDir: DATA, baseEnv: { SYSTEMROOT: "C:\\Windows", ELECTRON_RUN_AS_NODE: "1" }, envelope: { read: [GEN, DATA], write: [DATA] }, ...overrides });
   const stagingExists = (): boolean => [...state.dirs].some((dir) => dir.includes("mxc-staging\\"));
 
-  it("lays out a fresh staging HOME/temp, the captured ownership and the registered probe, and spawns nothing", async () => {
+  it("lays out a fresh staging HOME/temp and the captured ownership, and spawns nothing", async () => {
     const launch = await prepareMxcPluginChildLaunch(intent());
     const staging = winPath.dirname(launch.home);
     expect(staging).toMatch(/^C:\\ave\\mxc-staging\\[0-9a-f]{32}$/u);
     expect(launch.temp).toBe(winPath.join(staging, "temp"));
     expect(state.dirs.has(launch.home) && state.dirs.has(launch.temp)).toBe(true);
     expect(launch.filesystemOwnership).toEqual({ readRoots: [GEN], writeRoots: [DATA, staging], hostStorageRoots: [resolvePluginHostStorageDir(DATA)] });
-    expect(launch.probe).toBe(probe);
+    expect(launch).not.toHaveProperty("probe");
     expect(launch.signal.aborted).toBe(false);
     expect(state.spawn).not.toHaveBeenCalled();
     const second = await prepareMxcPluginChildLaunch(intent());
@@ -671,7 +680,7 @@ describe("plugin child start resources", () => {
     expect(state.dirs.has(second.home)).toBe(true);
   });
 
-  it("refuses with capability-unavailable while no readiness probe is registered, before any staging exists", async () => {
+  it("refuses with capability-unavailable while no release-gate evidence is registered, before any staging exists", async () => {
     unregister?.();
     unregister = undefined;
     await expect(prepareMxcPluginChildLaunch(intent())).rejects.toBeInstanceOf(MxcCapabilityUnavailableError);
