@@ -4039,6 +4039,32 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     expect(f.stops()).toBe(f.constructed.length);
   });
 
+  it.each(["onEnable", "loopback publication"] as const)("a prepared activation whose post-commit %s throws still retires the displaced loaded plugin", async (point) => {
+    const f = await setup("success");
+    const fault = new Error(`${point} failed`);
+    const lifecycle = bindNativeBundleLifecycle(f, point === "loopback publication" ? { loopbackPublish: fault } : {});
+    const earlier = new Set(sandboxProcessHomesInUse());
+    await f.runtime.load();
+    const [orphan] = f.constructed;
+    if (!orphan) throw new Error("load() constructed no instance");
+    if (point === "onEnable") {
+      const hooks = f.runtime as unknown as { onEnable?: (pluginId: string) => void };
+      hooks.onEnable = () => {
+        hooks.onEnable = undefined;
+        throw fault;
+      };
+    }
+    await expect(f.runtime.activatePreparedArtifact(await f.preparedInput())).rejects.toThrow(
+      point === "onEnable" ? fault.message : "publication failed after durable commit",
+    );
+    expect(lifecycle.getActive(ID)).toBeDefined();
+    const homes = [...sandboxProcessHomesInUse()].filter((home) => !earlier.has(home));
+    expect(await f.runtime.stopAll()).toEqual({ unfinished: [] });
+    expect(orphan.stops).toBe(1);
+    expect(f.stops()).toBe(f.constructed.length);
+    expect(await waitForSandboxHomesRemoved(homes)).toEqual([]);
+  });
+
   it("a restart that commits but fails to publish leaves no loaded instance or sandbox HOME at shutdown", async () => {
     const f = await setup("success");
     bindNativeBundleLifecycle(f, { loopbackPublish: new Error("loopback publish failed") });

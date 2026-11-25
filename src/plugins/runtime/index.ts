@@ -4846,8 +4846,25 @@ abstract class PluginRuntimeCapabilityLifecycle extends PluginRuntimePublication
               )
             : Promise.resolve();
         } catch (error) {
-          // Nothing was registered for shutdown to wait on.
-          displacedUnpublishedCandidate?.handoff.close();
+          if (
+            displacedUnpublishedCandidate
+            && generationLifecycle.getActive(manifest.id)?.generationId === generationId
+          ) {
+            // The replacement committed, so the displaced candidate is still owed its retirement; register it before rethrowing.
+            void this.retireDisplacedUnpublishedLoadedCandidate(
+              manifest.id,
+              displacedUnpublishedCandidate.plugin,
+              displacedUnpublishedCandidate.disposers,
+              payloadRoot,
+              "prepared artifact activation replacement",
+              displacedUnpublishedCandidate.handoff,
+            ).catch((retirementError: unknown) => {
+              log.error(`${manifest.id} prepared activation could not retire the unpublished loaded plugin: ${errorMessage(retirementError)}`);
+            });
+          } else {
+            // Nothing was committed, so nothing is owed to shutdown.
+            displacedUnpublishedCandidate?.handoff.close();
+          }
           throw error;
         }
         const retirement = Promise.all([result.retirement, displacedRetirement])
