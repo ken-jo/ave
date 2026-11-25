@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { answerEachStart } from "../../../__tests__/support/approved-extension-start.js";
 import { access, mkdir, rm, writeFile } from "node:fs/promises";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -63,11 +64,11 @@ describe("PluginRuntime lifecycle — restartPlugin", () => {
     try {
       const worker = workerStartKey("lc-newgen", "w");
       const left: unknown[] = [];
-      deferExtensionStart({ key: worker, kind: "worker", label: "w", cause: "no-backend",
+      deferExtensionStart({ key: worker, identity: "fixture", kind: "worker", label: "w", cause: "no-backend",
         retry: async () => { await runtime.restartPlugin("lc-newgen"); left.push(takeExtensionStartGrant(worker)); } });
-      deferExtensionStart({ key: workerStartKey("lc-newgen", "other"), kind: "worker", label: "other", cause: "no-backend" });
-      deferExtensionStart({ key: pluginChildStartKey("lc-newgen"), kind: "plugin-child", label: "child", cause: "no-backend" });
-      setExtensionStartAsker({ ask: async (start) => (start.key === worker ? "yes" : "no-approver"), notify: vi.fn() });
+      deferExtensionStart({ key: workerStartKey("lc-newgen", "other"), identity: "fixture", kind: "worker", label: "other", cause: "no-backend" });
+      deferExtensionStart({ key: pluginChildStartKey("lc-newgen"), identity: "fixture", kind: "plugin-child", label: "child", cause: "no-backend" });
+      setExtensionStartAsker({ ask: answerEachStart((start) => (start.key === worker ? "yes" : "no-approver")), notify: vi.fn() });
       await settlePendingExtensionStarts({ sessionId: "s1", attended: true });
       expect(left).toEqual([undefined]);
       expect(listPendingExtensionStarts().map((start) => start.key)).toEqual([pluginChildStartKey("lc-newgen")]);

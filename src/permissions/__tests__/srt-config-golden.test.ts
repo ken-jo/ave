@@ -83,6 +83,8 @@ function hostRoots(): [string, string][] {
     [process.cwd(), "<REPO>"],
     // A checkout whose node_modules is a link resolves vendored paths outside the repository.
     [realpathSync(join(process.cwd(), "node_modules")), "<REPO>/node_modules"],
+    // The per-worker directory the test setup hands out; the container runtime cache hangs off it under test.
+    ...(process.env.AVE_TEST_SANDBOX_BASE ? [[process.env.AVE_TEST_SANDBOX_BASE, "<TEST_SANDBOX>"] as [string, string]] : []),
     [tmpdir(), "<TMP>"],
     [homedir(), "<HOST_HOME>"],
   ];

@@ -37,6 +37,7 @@ vi.mock("../../shared/policy-home.js", async original => {
 });
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { answerEachStart } from "../../__tests__/support/approved-extension-start.js";
 import {
   __resetExtensionStartsForTest, deferExtensionStart, listPendingExtensionStarts, setExtensionStartAsker, settlePendingExtensionStarts, takeExtensionStartGrant,
 } from "../extension-start-consent.js";
@@ -330,10 +331,10 @@ describe("background session isolation", () => {
     expect(isOfflineProcessConfinementActive()).toBe(false);
     expect(() => assertExtensionStartAllowed()).toThrow("extension-start-consent-required");
     // A start refused in this window waits; once the backend is ready it runs confined, with no card and no consent.
-    const ask = vi.fn(async () => "yes" as const);
+    const ask = vi.fn(answerEachStart(() => "yes"));
     const taken: unknown[] = [];
     setExtensionStartAsker({ ask, notify: vi.fn() });
-    deferExtensionStart({ key: "plugin-child:early", kind: "plugin-child", label: "early", cause: "no-backend", recheck: () => probeExtensionStart(),
+    deferExtensionStart({ key: "plugin-child:early", identity: "fixture", kind: "plugin-child", label: "early", cause: "no-backend", recheck: () => probeExtensionStart(),
       retry: async () => { taken.push(takeExtensionStartGrant("plugin-child:early"), probeExtensionStart()); } });
 
     succeed();

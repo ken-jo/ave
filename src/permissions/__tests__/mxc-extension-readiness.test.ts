@@ -46,8 +46,9 @@ describe("extension request readiness", () => {
 
   it.each([
     ["0.0.80", true, undefined, "srt-win", "fallback"],
-    ["0.0.80", false, undefined, "none", "rejected"],
-    ["0.0.81", true, undefined, "none", "rejected"],
+    // No fallback and no admitted ancestor: a start with no backend, asked per start, with the deadline as its reason.
+    ["0.0.80", false, undefined, "none", "unavailable"],
+    ["0.0.81", true, undefined, "none", "unavailable"],
     ["0.0.80", true, "mxc", "none", "rejected"],
     ["0.0.80", true, "srt-win", "none", "rejected"],
   ] as const)("settles a deadline against version=%s ready=%s ancestor=%s", async (version, ready, ancestor, backend, readiness) => {
@@ -58,7 +59,8 @@ describe("extension request readiness", () => {
       fallback: { version, ready }, admittedAncestorBackend: () => ancestor,
     });
     await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.mxcExtensionReadinessMs);
-    expect(await result).toMatchObject({ selectedBackend: backend, readiness });
+    expect(await result).toMatchObject({ selectedBackend: backend, readiness,
+      reason: readiness === "rejected" ? "ancestor-already-admitted" : "readiness-deadline" });
     expect(signal?.aborted).toBe(true);
   });
 

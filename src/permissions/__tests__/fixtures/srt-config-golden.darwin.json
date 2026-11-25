@@ -110,6 +110,7 @@
    "<AVE_HOME>/sandbox/tm[p]",
    "<AVE_HOME>/sandbox/hom[e]",
    "<AVE_HOME>/sandbox/handof[f]",
+   "<TEST_SANDBOX>/mxc-cache/ai.agent-connector.ave/mxc-runtime",
    "<FIXTURE>/custom",
    "<HOST_HOME>/.golden-secret"
   ],
@@ -451,7 +452,8 @@
    "<FIXTURE>/account/.av[e]",
    "<AVE_HOME>/sandbox/tm[p]",
    "<AVE_HOME>/sandbox/hom[e]",
-   "<AVE_HOME>/sandbox/handof[f]"
+   "<AVE_HOME>/sandbox/handof[f]",
+   "<TEST_SANDBOX>/mxc-cache/ai.agent-connector.ave/mxc-runtime"
   ],
   "allowWrite": [],
   "denyWrite": [
@@ -738,7 +740,8 @@
    "<FIXTURE>/account/.av[e]",
    "<AVE_HOME>/sandbox/tm[p]",
    "<AVE_HOME>/sandbox/hom[e]",
-   "<AVE_HOME>/sandbox/handof[f]"
+   "<AVE_HOME>/sandbox/handof[f]",
+   "<TEST_SANDBOX>/mxc-cache/ai.agent-connector.ave/mxc-runtime"
   ],
   "allowWrite": [
    "<FIXTURE>/ws",
@@ -1102,7 +1105,8 @@
    "<FIXTURE>/account/.av[e]",
    "<AVE_HOME>/sandbox/tm[p]",
    "<AVE_HOME>/sandbox/hom[e]",
-   "<AVE_HOME>/sandbox/handof[f]"
+   "<AVE_HOME>/sandbox/handof[f]",
+   "<TEST_SANDBOX>/mxc-cache/ai.agent-connector.ave/mxc-runtime"
   ],
   "allowWrite": [
    "<FIXTURE>/plain"
@@ -1600,7 +1604,8 @@
    "<FIXTURE>/account/.av[e]",
    "<AVE_HOME>/sandbox/tm[p]",
    "<AVE_HOME>/sandbox/hom[e]",
-   "<AVE_HOME>/sandbox/handof[f]"
+   "<AVE_HOME>/sandbox/handof[f]",
+   "<TEST_SANDBOX>/mxc-cache/ai.agent-connector.ave/mxc-runtime"
   ],
   "allowWrite": [
    "<FIXTURE>/ws"
@@ -2296,6 +2301,7 @@
    "<AVE_HOME>/sandbox/tm[p]",
    "<AVE_HOME>/sandbox/hom[e]",
    "<AVE_HOME>/sandbox/handof[f]",
+   "<TEST_SANDBOX>/mxc-cache/ai.agent-connector.ave/mxc-runtime",
    "<FIXTURE>/custom"
   ],
   "allowWrite": [
@@ -3059,6 +3065,7 @@
    "<AVE_HOME>/sandbox/tm[p]",
    "<AVE_HOME>/sandbox/hom[e]",
    "<AVE_HOME>/sandbox/handof[f]",
+   "<TEST_SANDBOX>/mxc-cache/ai.agent-connector.ave/mxc-runtime",
    "<AVE_HOME>/plugin[s]",
    "<AVE_HOME>/agent-plugin-dat[a]",
    "<AVE_HOME>/packages/agent-plugi[n]"
@@ -3386,7 +3393,8 @@
    "<FIXTURE>/account/.av[e]",
    "<AVE_HOME>/sandbox/tm[p]",
    "<AVE_HOME>/sandbox/hom[e]",
-   "<AVE_HOME>/sandbox/handof[f]"
+   "<AVE_HOME>/sandbox/handof[f]",
+   "<TEST_SANDBOX>/mxc-cache/ai.agent-connector.ave/mxc-runtime"
   ],
   "allowWrite": [
    "<FIXTURE>/account/.ssh"
@@ -3711,6 +3719,7 @@
    "<AVE_HOME>/sandbox/tmp",
    "<AVE_HOME>/sandbox/home",
    "<AVE_HOME>/sandbox/handoff",
+   "<TEST_SANDBOX>/mxc-cache/ai.agent-connector.ave/mxc-runtime",
    "<FIXTURE>/custom",
    "<HOST_HOME>/.golden-secret"
   ],
@@ -4090,7 +4099,8 @@
    "<FIXTURE>/account/.ave",
    "<AVE_HOME>/sandbox/tmp",
    "<AVE_HOME>/sandbox/home",
-   "<AVE_HOME>/sandbox/handoff"
+   "<AVE_HOME>/sandbox/handoff",
+   "<TEST_SANDBOX>/mxc-cache/ai.agent-connector.ave/mxc-runtime"
   ],
   "allowWrite": [],
   "denyWrite": [
@@ -4429,7 +4439,8 @@
    "<FIXTURE>/account/.ave",
    "<AVE_HOME>/sandbox/tmp",
    "<AVE_HOME>/sandbox/home",
-   "<AVE_HOME>/sandbox/handoff"
+   "<AVE_HOME>/sandbox/handoff",
+   "<TEST_SANDBOX>/mxc-cache/ai.agent-connector.ave/mxc-runtime"
   ],
   "allowWrite": [
    "<FIXTURE>/ws",
@@ -4826,7 +4837,8 @@
    "<FIXTURE>/account/.ave",
    "<AVE_HOME>/sandbox/tmp",
    "<AVE_HOME>/sandbox/home",
-   "<AVE_HOME>/sandbox/handoff"
+   "<AVE_HOME>/sandbox/handoff",
+   "<TEST_SANDBOX>/mxc-cache/ai.agent-connector.ave/mxc-runtime"
   ],
   "allowWrite": [
    "<FIXTURE>/plain"
@@ -5391,7 +5403,8 @@
    "<FIXTURE>/account/.ave",
    "<AVE_HOME>/sandbox/tmp",
    "<AVE_HOME>/sandbox/home",
-   "<AVE_HOME>/sandbox/handoff"
+   "<AVE_HOME>/sandbox/handoff",
+   "<TEST_SANDBOX>/mxc-cache/ai.agent-connector.ave/mxc-runtime"
   ],
   "allowWrite": [
    "<FIXTURE>/ws"
@@ -6164,6 +6177,7 @@
    "<AVE_HOME>/sandbox/tmp",
    "<AVE_HOME>/sandbox/home",
    "<AVE_HOME>/sandbox/handoff",
+   "<TEST_SANDBOX>/mxc-cache/ai.agent-connector.ave/mxc-runtime",
    "<FIXTURE>/custom"
   ],
   "allowWrite": [
@@ -6998,6 +7012,7 @@
    "<AVE_HOME>/sandbox/tmp",
    "<AVE_HOME>/sandbox/home",
    "<AVE_HOME>/sandbox/handoff",
+   "<TEST_SANDBOX>/mxc-cache/ai.agent-connector.ave/mxc-runtime",
    "<AVE_HOME>/plugins",
    "<AVE_HOME>/agent-plugin-data",
    "<AVE_HOME>/packages/agent-plugin"
@@ -7371,7 +7386,8 @@
    "<FIXTURE>/account/.ave",
    "<AVE_HOME>/sandbox/tmp",
    "<AVE_HOME>/sandbox/home",
-   "<AVE_HOME>/sandbox/handoff"
+   "<AVE_HOME>/sandbox/handoff",
+   "<TEST_SANDBOX>/mxc-cache/ai.agent-connector.ave/mxc-runtime"
   ],
   "allowWrite": [],
   "denyWrite": [
