@@ -2674,6 +2674,8 @@ async function initializeSandboxRuntime(
       : config;
     // A contained endpoint's ports are no destination of the shared proxy, whatever its caller is allowed: a front port asks for no
     // credential and its relay speaks as the shell. Refused before the policy is asked, by name and again by resolved address.
+    // The runtime skips this ask for a destination one of its own lists allows; boot passes it no allow list and nothing registers a
+    // per-command one (pinned in sandbox-boot-outcome.test.ts), so no destination gets past the refusal.
     // A key its relay owns is learned from that relay alone: named by a shared proxy username it attributes nothing.
     const sharedAsk: SandboxAskCallback | undefined = askCb === undefined || process.platform !== "win32" ? askCb
       : async (destination, context) => {
