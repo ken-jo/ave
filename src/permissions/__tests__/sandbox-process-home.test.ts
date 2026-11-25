@@ -252,7 +252,7 @@ describe("createSandboxProcessHome", () => {
       expect(dirname(home.path)).toBe(realpathSync.native(mxcSandboxHomesParent()));
       expect(dirname(home.path)).toBe(join(realpathSync.native(mxcRuntimeRootFloorPath()), "homes"));
       const temp = realpathSync.native(tmpdir()).toLowerCase();
-      for (const path of [home.path, home.env.TEMP!, home.env.TMP!]) {
+      for (const path of [home.path, home.env.TEMP ?? "", home.env.TMP ?? ""]) {
         expect(path.toLowerCase().startsWith(`${home.path.toLowerCase()}`), path).toBe(true);
         expect(path.toLowerCase().startsWith(`${temp}\\`), path).toBe(false);
       }

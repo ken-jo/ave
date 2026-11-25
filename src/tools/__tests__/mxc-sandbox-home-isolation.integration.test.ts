@@ -82,7 +82,7 @@ describe.runIf(process.platform === "win32")("container shell and sibling sandbo
       sibling = createSandboxProcessHome();
       const marker = `${sibling.path}${SANDBOX_HOME_OWNER_SUFFIX}`;
       const markerText = readFileSync(marker, "utf8");
-      const siblingTemp = sibling.env.TEMP!;
+      const siblingTemp = sibling.env.TEMP ?? "";
       writeFileSync(join(sibling.path, "secret.txt"), secret);
       writeFileSync(join(siblingTemp, "secret.txt"), secret);
       writeFileSync(hostFile, secret);
@@ -106,12 +106,12 @@ describe.runIf(process.platform === "win32")("container shell and sibling sandbo
         planted: planted.filter((path) => existsSync(path)).map((path) => basename(path)),
         markerIntact: existsSync(marker) && readFileSync(marker, "utf8") === markerText,
       };
-      console.info("G1 evidence " + JSON.stringify({ grantsBase, probes: Object.fromEntries(lines), hostConfirmed }));
+      console.info(`G1 evidence ${JSON.stringify({ grantsBase, probes: Object.fromEntries(lines), hostConfirmed })}`);
       expect(result.output).not.toContain(secret);
       // The shell's HOME is a sibling of the other process's, and its temp directory lies inside its own HOME.
-      const ownHome = lines.get("own-home-path")!;
+      const ownHome = lines.get("own-home-path") ?? "";
       expect(dirname(ownHome).toLowerCase()).toBe(dirname(sibling.path).toLowerCase());
-      expect(lines.get("own-temp-path")!.toLowerCase().startsWith(`${ownHome.toLowerCase()}\\`)).toBe(true);
+      expect((lines.get("own-temp-path") ?? "").toLowerCase().startsWith(`${ownHome.toLowerCase()}\\`)).toBe(true);
       for (const control of CONTROLS) expect(lines.get(control), `${control}\n${result.output}`).toBe("ok");
       expect(existsSync(join(directory, "cwd.txt"))).toBe(true);
       for (const attack of ATTACKS) expect.soft(lines.get(attack), attack).toBe("denied");

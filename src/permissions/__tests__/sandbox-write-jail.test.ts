@@ -118,8 +118,8 @@ describe("containerShellAllowedDirectories", () => {
   it.runIf(process.platform === "win32")("drops the host temp directory, however it is spelled, and keeps every other directory", () => {
     const cwd = resources.makeTmpDir("ave-jail-cwd-");
     const added = resources.makeTmpDir("ave-jail-added-");
-    const [temp] = baseAllowedDirectories();
-    expect(containerShellAllowedDirectories(cwd, [temp!, temp!.toUpperCase(), temp! + sep, added])).toEqual([cwd, added]);
+    const temp = baseAllowedDirectories()[0] ?? "";
+    expect(containerShellAllowedDirectories(cwd, [temp, temp.toUpperCase(), temp + sep, added])).toEqual([cwd, added]);
     // A working directory inside the temp directory stays: only the directory itself is the base entry.
     expect(containerShellAllowedDirectories(cwd, [])).toEqual([cwd]);
   });
