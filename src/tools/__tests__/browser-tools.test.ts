@@ -11,6 +11,7 @@ import { AuditLogger } from "../../audit/audit-logger.js";
 import { ApprovalGate, type ApprovalRequest } from "../../permissions/approval-gate.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
+import { registerRunSession, __resetRunGrantsForTest } from "../../permissions/run-grants.js";
 import { VerdictCache } from "../../permissions/reviewer/verdict-cache.js";
 import {
   __resetSessionStoreForTest,
@@ -745,6 +746,36 @@ describe("browser tools", () => {
     expect(cards.filter((card) => card.browserSite !== undefined)).toHaveLength(1);
     expect(cards.find(card => card.browserSite !== undefined)).toMatchObject({ browserSite: browserOrigin("https://evil.com"), exactRecordAllowed: false, allowedChoices: ["allow-once", "deny-once"] });
     if (action === "ask") expect(cards.some(card => card.browserSite === undefined && card.exactRecordAllowed === false)).toBe(true);
+  });
+
+  // The site card is answered while the policy moves (pending-answer-policy.ts): a sibling stage's "Allow for this run" leaves the
+  // answer standing; any other change refuses it, and so does a destination the rules now treat more strictly than when it was asked.
+  it.each(["sibling run rule", "other policy change", "stricter destination"] as const)("a site card answered across a policy change: %s", async (change) => {
+    let changed = false;
+    const h = harness({ mode: "default", onCard: (card) => {
+      if (card.browserSite === undefined || changed) return;
+      changed = true;
+      if (change === "other policy change") {
+        h.manager.setRules([{ pattern: "Bash(npm test)", action: "allow" }]);
+        return;
+      }
+      registerRunSession("work-board:7#run-a", "sibling-stage-session", { stageId: "build", stageName: "Build", lane: "attended" });
+      h.manager.addRunRule("sibling-stage-session", "Bash(npm test)");
+      if (change === "stricter destination") {
+        const check = h.manager.checkNetworkRules.bind(h.manager);
+        vi.spyOn(h.manager, "checkNetworkRules").mockImplementation(async (...args) => ({ ...await check(...args), decision: "ask" }));
+      }
+    } });
+    try {
+      const tab = await h.agentTab("https://example.com/");
+      const result = await h.run(BROWSER_TOOL.navigate, { tabId: tab.handle, url: "https://evil.com/x" });
+      expect(changed).toBe(true);
+      expect(h.cards.filter((card) => card.browserSite !== undefined)).toHaveLength(1);
+      if (change === "sibling run rule") expect(result.isError, String(result.output)).toBe(false);
+      else expect(result).toMatchObject({ isError: true, output: expect.stringContaining("Permission policy changed during site approval") });
+    } finally {
+      __resetRunGrantsForTest();
+    }
   });
 
   it.each([BROWSER_TOOL.snapshot, BROWSER_TOOL.readText])("reads an agent tab without asking and asks again when the user selects Ask: %s", async (tool) => {

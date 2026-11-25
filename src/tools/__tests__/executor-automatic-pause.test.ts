@@ -175,10 +175,12 @@ function manualGate() {
     },
   };
   const gate = new ApprovalGate(nativeWebContents as never);
-  const approve = (card: ApprovalRequest) => gate.resolveFromDesktopRenderer(card.id, {
-    requestId: card.id, choice: "allow-once", nonce: card.nonce, hmac: card.hmac,
+  const answer = (card: ApprovalRequest, choice: "allow-once" | "deny-once") => gate.resolveFromDesktopRenderer(card.id, {
+    requestId: card.id, choice, nonce: card.nonce, hmac: card.hmac,
   }, nativeWebContents as never);
-  return { gate, cards, approve, parkedAt };
+  const approve = (card: ApprovalRequest) => answer(card, "allow-once");
+  const deny = (card: ApprovalRequest) => answer(card, "deny-once");
+  return { gate, cards, approve, deny, parkedAt };
 }
 
 function heldHandlerFinalizers(toolUseId: string, count: number) {
@@ -772,6 +774,65 @@ describe("executor automated approval pause", () => {
     }
     expect(cards).toHaveLength(1);
     expect(f.manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(true);
+  });
+
+  // The late card is judged like the main card when only a memory-only allow rule moved the policy: the person's Allow stands also when
+  // the policy now allows the call, their Deny stands whatever it says, and a call now denied or asked under a forced card is refused.
+  it.each([
+    ["allow", "approve", "runs"], ["allow", "deny", "refused"], ["deny", "approve", "refused"], ["forced ask", "approve", "refused"],
+  ] as const)("a late card answered across a sibling's run rule, re-checked as %s and answered %s: %s", async (recheck, answer, expected) => {
+    const f = await subject();
+    const command = "printf late-recheck";
+    f.manager.setMode("auto");
+    const registry = new ToolRegistry();
+    const shell = new BashTool();
+    const execute = vi.spyOn(shell, "execute");
+    registry.register(shell);
+    const held = heldHandlerFinalizers("late-recheck", 2);
+    const { gate, cards, approve, deny } = manualGate();
+    const executor = new ToolExecutor(registry, undefined, f.manager, undefined, gate, undefined, f.audit);
+    const pending = executor.executeAll([{ id: "late-recheck", name: "bash", input: { command, executionMode: "host", justification: "Read fixture output" } }], {
+      sessionId: SESSION_ID, executionCwd: f.root,
+      permissionContext: userPermissionContext({ additionalDirectories: [f.root] }),
+    });
+    try {
+      await held.waits[0].reached;
+      await f.pause();
+      held.waits[0].release();
+      await vi.waitFor(() => expect(cards).toHaveLength(1));
+      registerRunSession("work-board:7#run-a", "sibling-stage-session", { stageId: "build", stageName: "Build", lane: "attended" });
+      f.manager.addRunRule("sibling-stage-session", "Bash(npm test)");
+      // What the policy says of the pending call when it is judged again.
+      const original = f.manager.recheckPermission.bind(f.manager);
+      vi.spyOn(f.manager, "recheckPermission").mockImplementation((result, options) => {
+        const rechecked = original(result, options);
+        if (options?.acrossMemoryRuleChanges !== true) return rechecked;
+        if (recheck === "allow") rechecked.decision = "allow";
+        if (recheck === "deny") rechecked.decision = "deny";
+        if (recheck === "forced ask") rechecked.forceModal = true;
+        return rechecked;
+      });
+      (answer === "approve" ? approve : deny)(cards[0]);
+      if (expected === "runs") {
+        await held.waits[1].reached;
+        held.waits[1].release();
+      }
+      const [result] = await pending;
+      if (expected === "runs") {
+        expect(result.is_error, result.content).toBeUndefined();
+        expect(result.content).toContain("late-recheck");
+        expect(execute).toHaveBeenCalledOnce();
+      } else {
+        expect(result.is_error).toBe(true);
+        expect(execute).not.toHaveBeenCalled();
+        // A Deny is refused as the person's own answer, by the card's reason; a changed question is refused as a changed policy.
+        if (answer === "deny") expect(result.content).toBe(cards[0].reason);
+        else expect(result.content).toBe("Permission policy changed before execution.");
+      }
+      expect(cards).toHaveLength(1);
+    } finally {
+      __resetRunGrantsForTest();
+    }
   });
 
   it("preserves a rule-issued host permit when the reviewer pauses before the handler", async () => {

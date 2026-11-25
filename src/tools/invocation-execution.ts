@@ -755,7 +755,7 @@ export async function executeAuthorizedToolInvocation(
           // Never stricter than what was judged first: a destination that is now denied, or now asked for or flagged when it was not
           // (a run's network rule went with its run), is refused.
           return onlyMemoryRulesChangedSince(manager, opened) && !now.admissionDenial && now.decision !== "deny"
-            && (now.decision === "allow" || rules.decision === "ask") && (!now.exfiltration || Boolean(rules.exfiltration));
+            && (now.decision !== "ask" || rules.decision === "ask") && (!now.exfiltration || Boolean(rules.exfiltration));
         };
         const rules = await manager.checkNetworkRules(url, executionCwd, false);
         if (rules.admissionDenial || rules.decision === "deny") throw new Error(rules.admissionDenial ?? "Browser destination denied");
@@ -960,14 +960,15 @@ export async function executeAuthorizedToolInvocation(
 
   let lateApprovalPolicyEpoch: string | undefined;
   let lateApprovalAnswerEpochs: AnswerEpochs | undefined;
-  /** The late card's question judged again across memory-only allow-rule steps (pending-answer-policy.ts): it stands while it is still
-   * asked and no more forced than it was. Returns false for every other change, and when the question is denied or newly forced. */
-  const lateApprovalStandsAcrossMemoryRules = (): boolean => {
+  /** The late card's question judged again across memory-only allow-rule steps (pending-answer-policy.ts). Before the card is asked it
+   * stands while it is still asked; once a person `answered`, also when the policy now allows the call, as on the main card. Never
+   * when the question is denied or more forced than it was, and never across any other change. */
+  const lateApprovalStandsAcrossMemoryRules = (answered: boolean): boolean => {
     const manager = services.permissionManager;
     if (!manager || lateApprovalAnswerEpochs === undefined || !permissionResult?.pipelineRequest || !onlyMemoryRulesChangedSince(manager, lateApprovalAnswerEpochs)) return false;
     const forced = permissionResult.forceModal === true;
     permissionResult = manager.recheckPermission(permissionResult, { acrossMemoryRuleChanges: true });
-    if (permissionResult.decision !== "ask" || !answerSurvivesRecheck(permissionResult, forced)) return false;
+    if (!(permissionResult.decision === "ask" || answered && permissionResult.decision === "allow") || !answerSurvivesRecheck(permissionResult, forced)) return false;
     lateApprovalAnswerEpochs = answerEpochsOf(manager);
     lateApprovalPolicyEpoch = lateApprovalAnswerEpochs.epoch;
     return true;
@@ -976,7 +977,7 @@ export async function executeAuthorizedToolInvocation(
     const manager = services.permissionManager;
     if (manager && lateApprovalPolicyEpoch !== manager.getPolicyEpoch()) {
       // A sibling stage's "Allow for this run", or a run that ended, does not withdraw a card that is about to be asked.
-      if (lateApprovalStandsAcrossMemoryRules()) return;
+      if (lateApprovalStandsAcrossMemoryRules(false)) return;
       if (permissionResult?.pipelineRequest) permissionResult = manager.recheckPermission(permissionResult);
       throw new Error(permissionResult?.reason ?? "Permission policy changed before execution.");
     }
@@ -1122,7 +1123,7 @@ export async function executeAuthorizedToolInvocation(
     if (lateApprovalPolicyEpoch !== currentEpoch &&
         (lateApprovalPolicyEpoch === undefined || currentEpoch === undefined ||
           !services.approvalGate!.allowsPolicyTransition(decision, lateApprovalPolicyEpoch, currentEpoch)) &&
-        !lateApprovalStandsAcrossMemoryRules()) {
+        !lateApprovalStandsAcrossMemoryRules(true)) {
       permissionResult = { ...permissionResult, decision: "deny", reason: "Permission policy changed before execution." };
       throw new Error(permissionResult.reason);
     }
@@ -1138,7 +1139,8 @@ export async function executeAuthorizedToolInvocation(
       throw new Error(failure.content);
     }
     humanApproved = surfaceResolution.humanApproved ?? (decision.choice.startsWith("allow") && !isHostApprovalRejectedDecision(decision));
-    if (!humanApproved && permissionResult.decision !== "allow") {
+    // The person's Deny stands whatever the policy now says of the call: an allow the re-check found never overrides it.
+    if (!humanApproved && (permissionResult.decision !== "allow" || decision.choice.startsWith("deny"))) {
       permissionResult = { ...permissionResult, decision: "deny", reason: request.reason };
       throw new Error(request.reason);
     }
