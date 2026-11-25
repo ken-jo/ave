@@ -1,16 +1,12 @@
 // One row per permission decision point: what it answers today, in one closed vocabulary.
 // A row whose answer differs from the policy core carries `core` and is listed in EXCEPTIONS; fixing it removes both.
 // Tree = docs/architecture/permission-decision-tree.md line(s), or "no row".
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { planWindowsSandbox } from "../../boot/steps/windows-sandbox-plan.js";
 import { _resetAveHomePrivacyForTest, approveExtensionsWithoutIsolation, setAveHomePrivacyAtBoot } from "../../shared/ave-home.js";
-import type { ShellExecutionFacts } from "../../shared/shell-execution.js";
-import { findShellPathPolicyViolation } from "../../tools/shell-path-policy.js";
 import { assertExtensionStartAllowed } from "../asrt-sandbox.js";
 import {
   decidePermission, NO_APPROVER_MESSAGE, offersFloorSessionAllow,
@@ -23,6 +19,7 @@ import {
 } from "../host-shell-execution-plan.js";
 import { classifyMxcExtensionReadiness, planWindowsExtensionHolder, type MxcExtensionReadinessEvidence } from "../mxc-extension-readiness.js";
 import { synthesizeMxcAncestorQueries } from "../mxc-filesystem-policy.js";
+import { inspectShellPermissionPaths } from "../rules/literal-shell-inspection.js";
 import {
   __resetSandboxRequestedAtBootForTest, __resetWindowsSandboxSubstrateForTest,
   setPluginWorkerConfinementRequestedAtBoot, setWindowsSandboxSubstrate, type SandboxCapability,
@@ -89,19 +86,12 @@ function plan(input: Parameters<typeof buildHostShellExecutionPlan>[0]): Observa
   return { outcome: "ask", reason, waiver: built.requiresExplicitUserApproval ? "once" : "any" };
 }
 
-let fixture = "";
-let root = "";
-
-// The path analysis names a kind; the permission manager turns it into pipeline evidence (permission-manager.ts: analysis-limit ->
-// admission denial, any other unproven kind -> an unproven shell, an escape -> the project-escape floor). The same mapping, by hand.
-function pathPolicy(command: string): Observation {
-  const facts: ShellExecutionFacts = { dialect: "bash", environment: { R: root.replaceAll("\\", "/") }, hostCdFaults: true };
-  const kind = findShellPathPolicyViolation(command, root, root, [], true, facts)?.kind ?? "none";
-  const evidence: Partial<PermissionDecisionRequest> = kind === "analysis-limit"
-    ? { admissionDenial: { code: "shell-analysis-limit", reason: "fixture" } }
-    : kind === "sandbox-boundary" ? { floor: { code: "project-escape", reason: "fixture" } } : {};
-  const decision = decidePermission({ ...ATTENDED, tool: SHELL, shell: { ...HOST_SHELL, unproven: kind !== "none" }, ...evidence });
-  return { outcome: PIPELINE_NAME[decision.outcome], reason: kind };
+// The permission manager reads this inspection and turns an `analysis-limit` into the admission denial `shell-analysis-limit`.
+// The inspection is driven; that one step of the manager is restated here.
+function analysisLimit(command: string): Observation {
+  const kind = inspectShellPermissionPaths(command, tmpdir())?.unproven?.kind;
+  const evidence = kind === "analysis-limit" ? { admissionDenial: { code: "shell-analysis-limit", reason: "fixture" } } : {};
+  return pipeline({ tool: SHELL, shell: { ...HOST_SHELL, unproven: kind !== undefined }, ...evidence });
 }
 
 type StartOptions = Parameters<typeof assertExtensionStartAllowed>[0];
@@ -212,8 +202,9 @@ const ROWS: readonly Row[] = [
     observe: () => {
       const seen = FLOOR_CODES.map(code => pipeline({ floor: { code, reason: "fixture" }, floorSessionEligible: true, rules: { floorSession: "fixture" } }));
       expect(seen.map(entry => entry.reason)).toEqual(FLOOR_CODES);
-      expect(new Set(seen.map(({ reason: _reason, ...rest }) => JSON.stringify(rest))).size).toBe(1);
-      return { ...pipeline({ floor: { code: "protected-path", reason: "fixture" } }), reason: "floor" };
+      const shapes = [...new Set(seen.map(entry => JSON.stringify({ ...entry, reason: "floor" })))];
+      expect(shapes).toHaveLength(1);
+      return JSON.parse(shapes.join()) as Observation;
     } },
   { id: "D23", point: "explicit host request", tree: "T:254", unknown: "-",
     today: { outcome: "ask", reason: "host:none", waiver: "once" },
@@ -233,21 +224,17 @@ const ROWS: readonly Row[] = [
     today: { outcome: "deny", reason: "default:active-sandbox-not-shell-contained", waiver: "none" },
     core: { outcome: "ask-human", waiver: "session" },
     observe: () => plan({ platform: "linux", requestedSandbox: true, activeCapability: capability("linux", "partial") }) },
-  { id: "D29", point: "cd fork budget on the host route", tree: "T:253", unknown: "U1",
-    today: { outcome: "ask", reason: "dynamic-path" },
-    observe: () => pathPolicy(`${Array<string>(16).fill("cd sub; cd ..").join("; ")}; cd sub; touch ../y`) },
-  { id: "D30", point: "any other analysis limit", tree: "no row", unknown: "U1",
-    today: { outcome: "deny", reason: "analysis-limit" },
+  { id: "D30", point: "analysis limit other than the cd budget", tree: "no row", unknown: "U1",
+    today: { outcome: "deny", reason: "shell-analysis-limit", headless: "deny" },
     core: { outcome: "ask-human" },
-    observe: () => pathPolicy([0, 1, 2, 3, 4, 5, 6].map(index => `if test -f q${index}; then v${index}=1; fi`).join("; ")) },
-  { id: "D31", point: "operand outside the granted roots", tree: "T:44, T:129", unknown: "-",
-    today: { outcome: "ask-human", reason: "sandbox-boundary" },
-    observe: () => pathPolicy("touch ../outside") },
-  // Layer 1: egress destination classes.
-  { id: "D32", point: "reserved literal (link-local, metadata, unspecified, multicast)", tree: "no row", unknown: "-",
+    observe: () => analysisLimit([0, 1, 2, 3, 4, 5, 6].map(index => `if test -f q${index}; then v${index}=1; fi`).join("; ")) },
+  // Layer 1: egress destination classes. These rows pin the class predicates; the relay that acts on them is not driven,
+  // so the outcome and reason here name what the relay does with each answer.
+  { id: "D32", point: "reserved literal (link-local, metadata, unspecified, multicast); loopback is not one", tree: "no row", unknown: "-",
     today: { outcome: "deny", reason: "reserved" },
     observe: () => {
       const literals = ["169.254.169.254", "0.0.0.0", "224.0.0.1", "fe80::1", "fd00:ec2::254", "::ffff:169.254.169.254"];
+      expect(["127.0.0.1", "::1"].filter(address => isLoopbackAddress(address) && !isReservedAddress(address))).toHaveLength(2);
       return { outcome: literals.every(isReservedAddress) ? "deny" : "ask", reason: "reserved" };
     } },
   { id: "D34.a", point: "a name resolving to loopback or a reserved address", tree: "no row", unknown: "-",
@@ -259,9 +246,6 @@ const ROWS: readonly Row[] = [
     core: { outcome: "deny" },
     observe: () => ({ outcome: resolvedAddressPermitted("name.example", "169.254.169.254", 80, [parseRelayAllowEntry("169.254.169.254:80")], []) ? "allow" : "deny",
       reason: "allow-listed-address" }) },
-  { id: "D35", point: "loopback literal: not reserved, so it reaches the destination ask", tree: "no row", unknown: "-",
-    today: { outcome: "ask", reason: "local" },
-    observe: () => ({ outcome: ["127.0.0.1", "::1"].every(address => isLoopbackAddress(address) && !isReservedAddress(address)) ? "ask" : "deny", reason: "local" }) },
   // Layer 2: start and launch admission.
   { id: "L1", point: "extension start after the readiness deadline", tree: "no row", unknown: "U2",
     today: { outcome: "deny", reason: "extension-readiness-refused" },
@@ -370,7 +354,7 @@ const INCONSISTENCIES_WITHOUT_ROW: Readonly<Record<string, string>> = {
   I4: "lives on the device-path branch, not on main",
   I6: "stage workspaces are not on main",
   I7: "a launch-count budget, not a decision",
-  I9: "a checking plan is never published (per-holder readiness resolves it), so no start meets it at this gate",
+  I9: "a checking plan cannot be published (per-holder readiness resolves it), so no start meets it at the gate driven here",
   I13: "boot abort versus degrade: boot step, not driven",
   I14: "headless wording spans the relay and tool results, not driven",
   I17: "absent protected names: native launch, not driven",
@@ -389,6 +373,9 @@ const INCONSISTENCIES_WITHOUT_ROW: Readonly<Record<string, string>> = {
 const NOT_DRIVEN: Readonly<Record<string, string>> = {
   D18: "needs a PermissionManager with an unreadable rule store",
   D19: "needs a PermissionManager with a policy change during review",
+  D29: "the analysis kind is pinned by shell-path-policy-cwd-tracking.test.ts; the approval path that turns it into an ask is not driven",
+  D31: "the analysis kind is pinned by the shell-path-policy tests; the approval path that turns it into a floor is not driven",
+  D35: "the ask for a loopback literal is in the relay; D32 pins that loopback is not a reserved literal",
   D28: "route selection needs host-issued plans, capabilities and effect envelopes; pinned by execution-router.test.ts",
   D33: "needs a live relay listener and an ask callback",
   D36: "needs a live relay listener",
@@ -420,14 +407,6 @@ const NOT_DRIVEN: Readonly<Record<string, string>> = {
 };
 
 const HOST_PLATFORM = process.platform;
-
-beforeAll(() => {
-  fixture = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-vocabulary-")));
-  root = join(fixture, "project");
-  mkdirSync(join(root, "sub"), { recursive: true });
-});
-
-afterAll(() => rmSync(fixture, { recursive: true, force: true }));
 
 afterEach(() => {
   setProcessPlatform(HOST_PLATFORM);
