@@ -1495,9 +1495,10 @@ async function runToolInvocationAttempt(
         ? { kind: "shell" as const, dialect: isCanonicalPowerShellTool(tool) ? "powershell" as const : "bash" as const, command,
             cwd: terminalScope?.cwd ?? resolveHostShellWorkingDirectory(executionCwd, typeof finalInput.cwd === "string" ? finalInput.cwd : undefined) }
         : undefined;
-      await manager.ensureProjectRulesLoaded(shellSubject?.cwd ?? executionCwd);
+      const projectRulesCwd = hostShellExecutionPermitBinding?.cwdIdentity?.realpath ?? shellSubject?.cwd ?? executionCwd;
+      await manager.ensureProjectRulesLoaded(projectRulesCwd);
       const checkDirectoryPermission = (): PermissionCheckResult => manager.checkDetailed(toolUse.name, source, invocationCategory, overlayTriggerOrigin, {
-        ...invocationPermissionContext, sessionId, projectRulesCwd: shellSubject?.cwd ?? executionCwd,
+        ...invocationPermissionContext, sessionId, projectRulesCwd,
         ...(hostShellExecutionPermitBinding ? { hostShellCwdIdentity: hostShellExecutionPermitBinding.cwdIdentity ?? null } : {}),
         userOwnedBrowser: userOwnedBrowserScopeOf(tool, approvalMemory),
         agentBrowser: agentBrowserScopeOf(tool, approvalMemory),

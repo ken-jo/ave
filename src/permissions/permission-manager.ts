@@ -1732,7 +1732,8 @@ export class PermissionManager {
       admissionDenial ??= { code: "shell-cwd-changed", reason: "The shell working directory changed or could not be verified. Request authorization again." };
     }
     const cwdIdentity = context.hostShellExecutionPlan?.executionRequest === "host" && requestedRuleSubject?.cwd !== undefined
-      ? boundCwd ?? captureShellWorkingDirectoryIdentity(requestedRuleSubject.cwd) : undefined;
+      ? boundCwd === undefined ? captureShellWorkingDirectoryIdentity(requestedRuleSubject.cwd) : boundCwd ?? undefined
+      : undefined;
     const ruleSubject = requestedRuleSubject === undefined ? undefined : {
       ...requestedRuleSubject, ...(cwdIdentity ? { cwd: cwdIdentity.realpath } : {}),
     };
@@ -1865,9 +1866,12 @@ export class PermissionManager {
       (requestedRuleSubject.dialect === "bash" || requestedRuleSubject.dialect === "powershell") && requestedRuleSubject.dialect === toolName &&
       this.holdsFloorSessionGrant(context.sessionId);
     const sessionRules = this.sessionRulesInScope(context.sessionId);
+    const ruleScopes = [this.rules, projectRules, sessionRules];
+    // Exhausted analysis can still establish a deny from the parsed command. It cannot establish a reusable allow.
+    const shellRuleScopes = shellAnalysisLimited ? ruleScopes.map(scope => scope.filter(rule => rule.action === "deny")) : ruleScopes;
     const shellRules = parsed && (!analysisLimited || parsed.analysis.ok) ? evaluateShellSubject({ command: parsed, cwd: ruleSubject?.cwd, exactAllowOnly: shellSignals?.exactLiteralEvaluation === true,
-        ...(ruleSubject?.hostTerminal === undefined ? {} : { hostTerminal: ruleSubject.hostTerminal }) }, this.rules, projectRules, sessionRules)
-      : parsedPowerShell && !parsedPowerShell.analysisLimited ? evaluatePowerShellSubject({ command: parsedPowerShell, cwd: ruleSubject?.cwd, hostShellExecutionPlan: context.hostShellExecutionPlan, exactAllowOnly: shellSignals?.exactLiteralEvaluation === true }, this.rules, projectRules, sessionRules) : undefined;
+        ...(ruleSubject?.hostTerminal === undefined ? {} : { hostTerminal: ruleSubject.hostTerminal }) }, ...shellRuleScopes)
+      : parsedPowerShell && !parsedPowerShell.analysisLimited ? evaluatePowerShellSubject({ command: parsedPowerShell, cwd: ruleSubject?.cwd, hostShellExecutionPlan: context.hostShellExecutionPlan, exactAllowOnly: shellSignals?.exactLiteralEvaluation === true }, ...shellRuleScopes) : undefined;
     // Tree T:128, T:259: a saved rule that is exactly this command passes the sandbox-unavailable ask when the plan asks only for the missing
     // backend (boot home privacy verified) and no other floor applies. Session rules are not saved; a prefix rule, a tool-name rule and a
     // compound command keep the ask. It is offered only when its rule proof can be issued, so a pass never ends as a refused spawn.

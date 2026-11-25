@@ -369,7 +369,7 @@ export async function authorizeToolInvocation(
     const scopedRuleSubject = scopedSubjectCandidate?.kind === "edit"
       && invocationPermissionContext.disposableSubstrate?.authority === "workload-broker"
       ? undefined : scopedSubjectCandidate;
-    const projectRulesCwd = shellRuleSubject !== undefined ? shellRuleSubject.cwd : executionCwd;
+    const projectRulesCwd = hostShellExecutionPermitBinding?.cwdIdentity?.realpath ?? shellRuleSubject?.cwd ?? executionCwd;
     if (services.permissionManager && projectRulesCwd !== undefined) {
       await services.permissionManager.ensureProjectRulesLoaded(projectRulesCwd);
     }
