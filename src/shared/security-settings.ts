@@ -1,6 +1,6 @@
 /** Security controls have one user-consented write boundary. */
 export const SECURITY_FEATURE_KEYS = [
-  "osToolSandbox", "pluginWorkerConfinement", "windowsShellLocalNetworkAccess", "shellEgressAsk",
+  "osToolSandbox", "pluginWorkerConfinement", "shellEgressAsk",
   "a2aLoopbackServer", "a2aRemoteRouting", "a2aRemoteReceiver",
 ] as const;
 type SecurityFeatureKey = (typeof SECURITY_FEATURE_KEYS)[number];

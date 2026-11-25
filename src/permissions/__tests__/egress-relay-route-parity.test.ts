@@ -84,7 +84,7 @@ describe.skipIf(process.platform !== "win32").each(["shell", "extension"] as con
     setShellSandboxRequestedAtBoot(true);
     setActiveSandboxCapability(windowsProxyOnlyCapability());
     const { substrate } = planWindowsSandbox({
-      shellRequested: true, shellLocalNetworkAccess: true, workerRequested: false,
+      shellRequested: true, workerRequested: false,
       mxc: { state: "available" }, windowsBuild: "10.0.26300", srtWinReady: false,
     });
     setWindowsSandboxSubstrate(substrate, mxcShellCapability());
