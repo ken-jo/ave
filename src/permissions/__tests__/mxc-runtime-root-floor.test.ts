@@ -177,7 +177,10 @@ describe.runIf(windows && hasNativeSrtWinBuildReceipt())("the sandbox account's 
   it("stamps the read deny on the root, keeps the root usable by the host, and restores it", (context) => {
     const srtWin = runtime.resolveSrtWin({ path: getVendoredSrtWinExePath() });
     const sid = runtime.getWindowsSandboxUserStatus({ srtWin }).sid;
-    if (!sid) return context.skip();
+    if (!sid) {
+      if (process.env.AVE_REQUIRE_SANDBOX_CASES === "1") throw new Error("AVE_REQUIRE_SANDBOX_CASES=1 but the sandbox account has no SID on this machine");
+      return context.skip();
+    }
     const root = establishMxcRuntimeRoot(host);
     expect(root).toBe(mxcRuntimeRootFloorPath(cacheHome));
     expect(readWindowsDenyAcls([root], sid)[0]?.denyMask).toBe(0);

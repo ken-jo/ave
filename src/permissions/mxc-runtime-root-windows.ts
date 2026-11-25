@@ -1,4 +1,6 @@
+import { lstatSync, realpathSync } from "node:fs";
 import { win32 as winPath } from "node:path";
+import { t } from "../i18n/index.js";
 import { createAveHomeIfAbsent } from "../shared/ave-home.js";
 import {
   admitWindowsReparse, isOwnerOnlyDacl, readWindowsDacls, windowsOwnerRules, windowsPathKey, type WindowsDaclFacts,
@@ -61,8 +63,30 @@ export function windowsRuntimeRootFailure(facts: WindowsDaclFacts, planned: stri
   } catch {
     return "its access control list has an entry of an unknown kind";
   }
+  // An elevated run created it: its owner is the Administrators group, which a normal run of this account is not.
+  if (dacl.owner === "S-1-5-32-544" && !facts.elevated) return t("be_mxcRuntimeRoot.elevatedOwned", { path: planned });
   if (!isOwnerOnlyDacl({ ownerSid: dacl.owner, elevated: facts.elevated, rules }, facts.currentUserSid)) {
     return "it is another account's, or open to other accounts";
   }
   return undefined;
+}
+
+/**
+ * Why the established root at `root` is no longer reached the way it was proved, or undefined when it is: the root,
+ * the app's directory and the local application data directory are each a real directory, and the path resolves to
+ * itself. A renamed directory with a junction planted at its name still leads to the same root, so the root's identity
+ * alone does not show it.
+ */
+export function windowsRuntimeRootMoved(root: string): string | undefined {
+  const appDirectory = winPath.dirname(root);
+  try {
+    for (const path of [root, appDirectory, winPath.dirname(appDirectory)]) {
+      const entry = lstatSync(path);
+      if (entry.isSymbolicLink() || !entry.isDirectory()) return `${path} is now a link, a junction or not a directory`;
+    }
+    const resolved = realpathSync.native(root);
+    return windowsPathKey(resolved) === windowsPathKey(root) ? undefined : `it now resolves to ${resolved}`;
+  } catch (error) {
+    return `its path could not be read again: ${(error as Error).message}`;
+  }
 }

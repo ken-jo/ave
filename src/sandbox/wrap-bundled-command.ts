@@ -466,6 +466,11 @@ function assertNoLiveWorkspaceWriter(allowWrite: readonly string[], workspaceRoo
 
 interface HolderStaging { readonly root: string; readonly home: string; readonly temp: string }
 
+/** Resolve the staging parent again, which re-reads the runtime root's path, and refuse one that is no longer `parent`. */
+function assertSameStagingParent(parent: string): void {
+  if (mxcStagingParent("win32") !== parent) throw new MxcProcessContractError("Container staging parent changed while a holder's directories were created");
+}
+
 /** `instance` tells two copies of this module in one process apart: each copy knows only its own live holders.
  * `start` is the process creation time, or null while the start-up probe has not read it. */
 interface StagingOwner { readonly pid: number; readonly start: string | null; readonly instance: string }
@@ -496,6 +501,8 @@ function createHolderStaging(): HolderStaging {
   // The shared staging-shape check (also the plugin-child adapter's): exactly <staging parent>\<32-hex>\{home,temp}.
   const root = assertMxcHolderStaging({ stagingParent: parent, home, temp });
   const owner: StagingOwner = { pid: process.pid, start: resolvedHostProcessOwner()?.startTime ?? null, instance: STAGING_INSTANCE };
+  // The sweep ran since the parent was resolved: the runtime root's path is read again right before the tree is created.
+  assertSameStagingParent(parent);
   writeFileSync(`${root}${STAGING_OWNER_SUFFIX}`, JSON.stringify(owner), { flag: "wx" });
   liveStaging.add(root);
   try {
@@ -504,6 +511,14 @@ function createHolderStaging(): HolderStaging {
   } catch (error) {
     liveStaging.delete(root);
     try { removeStagingTree(root); } catch { /* the marked remainder is left for a sweep */ }
+    throw error;
+  }
+  try {
+    // And once it exists: a tree created while the path was swapped is never handed to a holder.
+    assertSameStagingParent(parent);
+  } catch (error) {
+    // Nothing is removed through a path that no longer leads to the root; the marked tree is left for a sweep.
+    liveStaging.delete(root);
     throw error;
   }
   return Object.freeze({ root, home, temp });
@@ -601,9 +616,10 @@ function sweepStagingTree(root: string): void {
     try {
       renameDirectorySyncOnce(root, `${root}${STAGING_RETIRED_SUFFIX}`);
     } catch (error) {
-      // Already retired by an interrupted removal, or never created.
+      // Already retired by an interrupted removal, or never created. EPERM is not among them: a process that outlived
+      // its owner may still hold the tree open, so it is kept whole, marker included, for a sweep after a later start.
       const code = (error as NodeJS.ErrnoException).code;
-      if (code !== "ENOENT" && code !== "ENOTEMPTY" && code !== "EEXIST" && code !== "EPERM") throw error;
+      if (code !== "ENOENT" && code !== "ENOTEMPTY" && code !== "EEXIST") throw error;
     }
     removeStagingTree(root);
   } catch (error) {

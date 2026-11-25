@@ -19,6 +19,10 @@ const state = vi.hoisted(() => ({
   unlinkFail: new Set<string>(),
   contents: new Map<string, string>(),
   stagingParentRefusal: undefined as Error | undefined,
+  /** The call to `mxcStagingParent`, counted from 1, at which the refusal starts. */
+  stagingParentRefusalFrom: 1,
+  stagingParentCalls: 0,
+  renameFail: new Map<string, string>(),
   probe: vi.fn(),
 }));
 
@@ -51,7 +55,8 @@ vi.mock("../../permissions/mxc-filesystem-ownership.js", async (original) => {
 vi.mock("../../permissions/mxc-runtime-root.js", async (original) => ({
   ...await original<typeof import("../../permissions/mxc-runtime-root.js")>(),
   mxcStagingParent: () => {
-    if (state.stagingParentRefusal !== undefined) throw state.stagingParentRefusal;
+    state.stagingParentCalls += 1;
+    if (state.stagingParentRefusal !== undefined && state.stagingParentCalls >= state.stagingParentRefusalFrom) throw state.stagingParentRefusal;
     return "C:\\runtime\\staging";
   },
 }));
@@ -114,6 +119,8 @@ vi.mock("node:fs", async (original) => {
     renameSync: ((from: unknown, to: unknown) => {
       if (!isDrive(from) || !isDrive(to)) return actual.renameSync(from as string, to as string);
       if (!exists(from)) throw enoent(from);
+      const refused = [...state.renameFail].find(([path]) => fold(path) === fold(from))?.[1];
+      if (refused !== undefined) throw Object.assign(new Error(`${refused}: ${from}`), { code: refused });
       state.ops.push(`rename ${winPath.normalize(from)} -> ${winPath.normalize(to)}`);
       const moved = (path: string): string | undefined => fold(path) === fold(from) || fold(path).startsWith(`${fold(from)}\\`)
         ? winPath.normalize(to) + winPath.normalize(path).slice(winPath.normalize(from).length) : undefined;
@@ -230,6 +237,9 @@ beforeEach(() => {
   state.unlinkFail = new Set();
   state.contents = new Map();
   state.stagingParentRefusal = undefined;
+  state.stagingParentRefusalFrom = 1;
+  state.stagingParentCalls = 0;
+  state.renameFail = new Map();
   state.probe.mockReset();
   state.probe.mockResolvedValue(new Map());
   state.spawn.mockReset();
@@ -639,6 +649,27 @@ describe("teardown", () => {
       expect(state.probe).toHaveBeenCalledTimes(1);
     });
 
+    it.each(["EPERM", "EBUSY"])("keeps a leftover whole when its rename fails with %s, and removes it on a later start", async (code) => {
+      // A process that outlived its owner still uses the tree.
+      const held = owned("a", gone);
+      state.dirs.add(`${held}\\home`);
+      state.files.add(`${held}\\home\\state.db`);
+      state.links.set(`${held}\\temp\\escape`, "D:\\work");
+      state.renameFail.set(held, code);
+      await spawnMxcBundledHolder(input());
+      expect(state.spawn).toHaveBeenCalledTimes(1);
+      expect(state.removed).toEqual([]);
+      expect(state.ops.some((op) => op.includes(held))).toBe(false);
+      for (const dir of [held, `${held}\\home`, `${held}\\temp`]) expect(state.dirs.has(dir), dir).toBe(true);
+      expect(state.files.has(`${held}\\home\\state.db`)).toBe(true);
+      expect(state.files.has(`${held}.owner`)).toBe(true);
+      state.renameFail.clear();
+      await spawnMxcBundledHolder(input());
+      expect([...state.dirs].some((dir) => dir.startsWith(held))).toBe(false);
+      expect(state.files.has(`${held}.owner`)).toBe(false);
+      expect(state.ops).toContain(`rename ${held} -> ${held}.retired`);
+    });
+
     it("only warns when a leftover cannot be removed, and still starts the holder", async () => {
       const busy = owned("a", gone);
       state.files.add(`${busy}\\temp\\held.dll`);
@@ -664,6 +695,27 @@ describe("teardown", () => {
     expect(state.spawn).not.toHaveBeenCalled();
     expect([...state.dirs].some((dir) => /runtime\\staging/u.test(dir))).toBe(false);
     expect([...state.files].some((file) => /runtime\\staging/u.test(file))).toBe(false);
+  });
+
+  it("creates no holder directory when the runtime root refuses right before the tree is created", async () => {
+    state.stagingParentRefusal = new MxcRuntimeRootError("Container runtime root is no longer reached as it was when the sandbox started");
+    state.stagingParentRefusalFrom = 2;
+    await expect(spawnMxcBundledHolder(input())).rejects.toBeInstanceOf(MxcRuntimeRootError);
+    expect(state.stagingParentCalls).toBe(2);
+    expect(state.spawn).not.toHaveBeenCalled();
+    expect([...state.dirs].some((dir) => /runtime\\staging\\[0-9a-f]{32}/u.test(dir))).toBe(false);
+    expect([...state.files].some((file) => /runtime\\staging/u.test(file))).toBe(false);
+  });
+
+  it("starts no holder in a tree created while the runtime root's path changed, and removes nothing through that path", async () => {
+    state.stagingParentRefusal = new MxcRuntimeRootError("Container runtime root is no longer reached as it was when the sandbox started");
+    state.stagingParentRefusalFrom = 3;
+    await expect(spawnMxcBundledHolder(input())).rejects.toBeInstanceOf(MxcRuntimeRootError);
+    expect(state.stagingParentCalls).toBe(3);
+    expect(state.spawn).not.toHaveBeenCalled();
+    expect(state.removed).toEqual([]);
+    // The marker stays beside the tree, so a later sweep can prove whose it is.
+    expect([...state.files].filter((file) => /runtime\\staging\\[0-9a-f]{32}\.owner$/u.test(file))).toHaveLength(1);
   });
 
   it("stays quarantined with its staging tree when termination is unverified, and retries cleanup", async () => {

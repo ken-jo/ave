@@ -12,7 +12,9 @@ import { aveHome } from "../shared/ave-home.js";
 import { AVE_HOME_ISOLATION_GUARD_ACTIVE } from "../shared/ave-home-test-guard.js";
 import { MxcProcessContractError } from "./mxc-extension-errors.js";
 import { assertMxcHolderStaging } from "./mxc-filesystem-ownership.js";
-import { isWindowsDrivePath, WINDOWS_RUNTIME_HOST, windowsLocalAppData, windowsRuntimeRootFailure, type MxcWindowsRuntimeHost } from "./mxc-runtime-root-windows.js";
+import {
+  isWindowsDrivePath, WINDOWS_RUNTIME_HOST, windowsLocalAppData, windowsRuntimeRootFailure, windowsRuntimeRootMoved, type MxcWindowsRuntimeHost,
+} from "./mxc-runtime-root-windows.js";
 
 const log = createLogger("mxc-runtime-root");
 
@@ -281,6 +283,8 @@ function holdsMark(known: EstablishedRoot, uid: number): boolean {
 
 /** One entry per cache directory this process tried to establish a root under: the root, or null when it failed. */
 const established = new Map<string, EstablishedRoot | null>();
+/** Why start-up could not establish the root, per cache directory. */
+const establishFailures = new Map<string, string>();
 
 function createRuntimeRoot(host: MxcRuntimeHost): EstablishedRoot {
   const uid = posixUid(host);
@@ -412,7 +416,7 @@ function createWindowsRuntimeRoot(host: MxcRuntimeHost): EstablishedRoot {
   } catch (error) {
     return refuse("Container runtime root could not be inspected", error);
   }
-  if (failure !== undefined) refuse(`Container runtime root cannot be used: ${failure}`);
+  if (failure !== undefined) refuse(`Container runtime root ${root} cannot be used: ${failure}`);
   const mark = markEstablished(root, host, winPath);
   try {
     // The 64-bit file id carries the record's sequence number, so a directory created in a removed one's place differs.
@@ -423,12 +427,21 @@ function createWindowsRuntimeRoot(host: MxcRuntimeHost): EstablishedRoot {
   }
 }
 
-/** The Windows root that start-up established, still the same directory. The descriptor proved then is not read again:
- * only this account or an administrator can rewrite it. */
+/** Refuse a root whose path no longer leads to it through real directories alone. */
+function assertWindowsRuntimeRootUnmoved(root: string): void {
+  const moved = windowsRuntimeRootMoved(root);
+  if (moved !== undefined) refuse(`Container runtime root is no longer reached as it was when the sandbox started: ${moved}`);
+}
+
+/** The Windows root that start-up established, still the same directory at the same real path. The descriptor proved
+ * then is not read again: only this account or an administrator can rewrite it. */
 function requireWindowsRuntimeRoot(host: MxcRuntimeHost): string {
   windowsRuntimeHost(host);
   const known = established.get(host.cacheHome);
-  if (known === undefined || known === null) refuse("Container runtime root was not established when the sandbox started");
+  if (known === undefined || known === null) {
+    const reason = establishFailures.get(host.cacheHome);
+    refuse(`Container runtime root was not established when the sandbox started${reason === undefined ? "" : `: ${reason}`}`);
+  }
   let same: boolean;
   try {
     const entry = lstatSync(known.root, { bigint: true });
@@ -439,6 +452,7 @@ function requireWindowsRuntimeRoot(host: MxcRuntimeHost): string {
     return refuse("Container runtime root is no longer there", error);
   }
   if (!same) refuse("Container runtime root is no longer the directory established when the sandbox started");
+  assertWindowsRuntimeRootUnmoved(known.root);
   assertOutsideWindowsAveHome(known.root, host);
   return known.root;
 }
@@ -463,7 +477,14 @@ function requireWindowsRuntimeRoot(host: MxcRuntimeHost): string {
 export function establishMxcRuntimeRoot(host: MxcRuntimeHost = currentMxcRuntimeHost()): string {
   if (established.has(host.cacheHome)) return requireMxcRuntimeRoot(host);
   established.set(host.cacheHome, null);
-  const root = host.platform === "win32" ? createWindowsRuntimeRoot(host) : createRuntimeRoot(host);
+  establishFailures.delete(host.cacheHome);
+  let root: EstablishedRoot;
+  try {
+    root = host.platform === "win32" ? createWindowsRuntimeRoot(host) : createRuntimeRoot(host);
+  } catch (error) {
+    if (error instanceof MxcRuntimeRootError) establishFailures.set(host.cacheHome, error.message);
+    throw error;
+  }
   established.set(host.cacheHome, root);
   return root.root;
 }
@@ -471,6 +492,7 @@ export function establishMxcRuntimeRoot(host: MxcRuntimeHost = currentMxcRuntime
 /** A test stands in for a new process: it forgets what start-up recorded for one cache directory. */
 export function _forgetMxcRuntimeRootForTest(cacheHome: string): void {
   established.delete(cacheHome);
+  establishFailures.delete(cacheHome);
 }
 
 /**
@@ -506,13 +528,20 @@ export function requireMxcRuntimeRoot(host: MxcRuntimeHost = currentMxcRuntimeHo
  * Where holder staging directories are created, per platform. This is the only place that decides it.
  *
  * Every platform: `<runtime root>/staging`, outside the Ave home, under the root that start-up established. On
- * Windows it inherits the root's access, and a link or junction at the name is refused. Nothing falls back into the
- * Ave home.
+ * Windows it inherits the root's access, a link or junction at the name is refused, and every call reads the root's
+ * path again, before and after staging is created: a caller creates a holder tree right after a call. Nothing falls
+ * back into the Ave home.
  */
 export function mxcStagingParent(platform: NodeJS.Platform = process.platform, host?: MxcRuntimeHost): string {
   const current = host ?? currentMxcRuntimeHost();
   if (current.platform !== platform) refuse("Container staging is resolved on the platform it runs on");
-  if (platform === "win32") return ensureWindowsDirectory(winPath.join(requireMxcRuntimeRoot(current), "staging"), "Container staging parent");
+  if (platform === "win32") {
+    const root = requireMxcRuntimeRoot(current);
+    const staging = ensureWindowsDirectory(winPath.join(root, "staging"), "Container staging parent");
+    // Again once staging exists: a path swapped while it was created is refused before anything is placed in it.
+    assertWindowsRuntimeRootUnmoved(root);
+    return staging;
+  }
   return ensurePrivateDirectory(posixPath.join(requireMxcRuntimeRoot(current), "staging"), posixUid(current), "Container staging parent");
 }
 

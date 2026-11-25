@@ -3,11 +3,12 @@
  * data, outside the Ave home. These cases hold the root to a real NTFS directory that only this account can open,
  * established once at start-up, and its staging parent to that root.
  */
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, win32 as winPath } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
+import { getLocale, setLocale } from "../../i18n/runtime.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { windowsGrantingRules, windowsOwnerRules, type WindowsDaclFacts } from "../../shared/windows-path-facts.js";
 import {
@@ -80,7 +81,19 @@ describe("what makes a directory the runtime root", () => {
 
   it("accepts an elevated process's root owned by the administrators group", () => {
     expect(windowsRuntimeRootFailure(privateFacts(ROOT, { elevated: true, dacl: { ...dacl, owner: "S-1-5-32-544" } }), ROOT)).toBeUndefined();
-    expect(windowsRuntimeRootFailure(privateFacts(ROOT, { dacl: { ...dacl, owner: "S-1-5-32-544" } }), ROOT)).toMatch(/another account/u);
+  });
+
+  it.each(["en", "ko"] as const)("names the folder and what to do about it when a normal run finds an elevated run's root (%s)", (locale) => {
+    const previous = getLocale();
+    setLocale(locale);
+    try {
+      const failure = windowsRuntimeRootFailure(privateFacts(ROOT, { dacl: { ...dacl, owner: "S-1-5-32-544" } }), ROOT);
+      expect(failure).toContain(ROOT);
+      expect(failure).toMatch(locale === "en" ? /Delete that folder.*run Ave as administrator again/u : /삭제.*관리자 권한/u);
+      expect(failure).not.toMatch(/be_mxcRuntimeRoot|\{path\}/u);
+    } finally {
+      setLocale(previous);
+    }
   });
 
   it.each<[string, Partial<WindowsDaclFacts>, RegExp]>([
@@ -270,6 +283,31 @@ describe.runIf(windows)("Windows runtime root", () => {
       refused(hostOf());
     });
 
+    it("keeps refusing an elevated run's root, naming the folder to delete at start-up and at every later start", () => {
+      facts = (path) => privateFacts(path, { dacl: { ...PRIVATE_DACL, owner: "S-1-5-32-544" } });
+      const previous = getLocale();
+      setLocale("en");
+      try {
+        expect(() => establishMxcRuntimeRoot(hostOf())).toThrow(/Delete that folder/u);
+        // The facts are not read again: the refusal repeats what start-up found.
+        facts = (path) => privateFacts(path);
+        for (const start of [() => requireMxcRuntimeRoot(hostOf()), () => mxcStagingParent("win32", hostOf())]) {
+          expect(start).toThrow(MxcRuntimeRootError);
+          expect(start).toThrow(/not established/u);
+          expect(start).toThrow(rootPath());
+          expect(start).toThrow(/Delete that folder/u);
+        }
+      } finally {
+        setLocale(previous);
+      }
+      expect(readdirSync(rootPath())).toEqual([]);
+    });
+
+    it("names the folder in every refusal of a root that is already there", () => {
+      facts = (path) => privateFacts(path, { fileSystemName: "FAT32" });
+      expect(() => establishMxcRuntimeRoot(hostOf())).toThrow(rootPath());
+    });
+
     it("refuses a root that the OS resolves to a share", () => {
       facts = () => privateFacts("UNC\\server\\share\\mxc-runtime");
       refused(hostOf());
@@ -333,6 +371,85 @@ describe.runIf(windows)("Windows runtime root", () => {
       expect(() => requireMxcRuntimeRoot(hostOf())).toThrow(/no longer the directory/u);
       writeFileSync(join(root, mark), "");
       expect(() => mxcStagingParent("win32", hostOf())).toThrow(/no longer the directory/u);
+    });
+
+    describe("a directory above the root replaced by a junction", () => {
+      const appDirectory = (): string => join(base, AVE_APP_ID);
+      const identity = (path: string): bigint => lstatSync(path, { bigint: true }).ino;
+
+      it("refuses a run when the app directory is renamed and a junction to it planted at its name", () => {
+        const host = nativeHost();
+        const root = establishMxcRuntimeRoot(host);
+        const moved = join(base, "moved");
+        renameSync(appDirectory(), moved);
+        junction(moved, appDirectory());
+        // Through the junction the path still names the established directory, mark and all.
+        expect(identity(root)).toBe(identity(join(moved, "mxc-runtime")));
+        expect(existsSync(join(root, markIn(root)))).toBe(true);
+        expect(() => requireMxcRuntimeRoot(host)).toThrow(/no longer reached/u);
+        expect(() => mxcStagingParent("win32", host)).toThrow(MxcRuntimeRootError);
+        expect(existsSync(join(moved, "mxc-runtime", "staging"))).toBe(false);
+      });
+
+      it("refuses a run when the local application data directory is renamed and a junction to it planted", () => {
+        const host = nativeHost();
+        const root = establishMxcRuntimeRoot(host);
+        const moved = join(scratch, "moved-local");
+        renameSync(base, moved);
+        junction(moved, base);
+        expect(identity(root)).toBe(identity(join(moved, AVE_APP_ID, "mxc-runtime")));
+        expect(() => mxcStagingParent("win32", host)).toThrow(/no longer reached/u);
+        expect(existsSync(join(moved, AVE_APP_ID, "mxc-runtime", "staging"))).toBe(false);
+      });
+
+      it("refuses a run when a directory above local application data becomes a junction", () => {
+        const deep = join(scratch, "profile", "AppData", "Local");
+        mkdirSync(deep, { recursive: true });
+        const host = nativeHost({ cacheHome: deep });
+        const root = establishMxcRuntimeRoot(host);
+        try {
+          const moved = join(scratch, "moved-profile");
+          renameSync(join(scratch, "profile"), moved);
+          junction(moved, join(scratch, "profile"));
+          expect(identity(root)).toBe(identity(join(moved, "AppData", "Local", AVE_APP_ID, "mxc-runtime")));
+          expect(() => mxcStagingParent("win32", host)).toThrow(/no longer reached/u);
+        } finally {
+          _forgetMxcRuntimeRootForTest(deep);
+        }
+      });
+
+      it("hands out no staging parent when the junction is retargeted between the check and the creation", () => {
+        const attacker = join(scratch, "attacker");
+        mkdirSync(join(attacker, "mxc-runtime"), { recursive: true });
+        let armed = false;
+        // The Ave home is read after the root's path is checked and before staging is created: the swap happens there.
+        const host = Object.defineProperty({ ...nativeHost() }, "aveHome", {
+          get: (): string => {
+            if (armed) {
+              armed = false;
+              renameSync(appDirectory(), join(base, "moved"));
+              junction(attacker, appDirectory());
+            }
+            return home;
+          },
+        }) as MxcRuntimeHost;
+        const root = establishMxcRuntimeRoot(host);
+        expect(mxcStagingParent("win32", host)).toBe(join(root, "staging"));
+        rmdirSync(join(root, "staging"));
+        armed = true;
+        expect(() => mxcStagingParent("win32", host)).toThrow(/no longer reached/u);
+        expect(armed).toBe(false);
+        expect(lstatSync(appDirectory()).isSymbolicLink()).toBe(true);
+      });
+
+      it("still admits a root whose local application data was reached through a junction at start-up", () => {
+        const linked = join(scratch, "link");
+        junction(base, linked);
+        const host = nativeHost({ cacheHome: linked });
+        const root = establishMxcRuntimeRoot(host);
+        expect(root).toBe(rootPath());
+        expect(mxcStagingParent("win32", host)).toBe(join(root, "staging"));
+      });
     });
 
     it("tells a root whose mark is gone from the one it established", () => {
