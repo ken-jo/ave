@@ -1,5 +1,5 @@
 // Resolve operands against each possible execution directory, including changes made by cd.
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -24,6 +24,7 @@ beforeAll(() => {
   for (let index = 0; index < 8; index += 1) mkdirSync(join(ROOT, "a", `d${index}`));
   mkdirSync(join(ROOT, "sub", "s2", "s3"), { recursive: true });
   mkdirSync(join(ROOT, "sub", "t2"));
+  symlinkSync(join(ROOT, "sub"), join(ROOT, "lnk"), "junction");
   writeFileSync(join(ROOT, "flag"), "");
   writeFileSync(join(ROOT, "src", "foo.ts"), "");
   mkdirSync(join(STAGING, "x"), { recursive: true });
@@ -219,7 +220,8 @@ describe("shell path policy — working directory tracking", () => {
       ["SUBR16", repeat(16, () => "cd sub && ls && cd ..")],
       ["SUBR32", repeat(32, () => "cd sub && ls && cd ..")],
       ["FORR24", listedLoop(24)],
-      ["IF16 (cap)", `cd a || exit 1; ${repeat(16, (index) => `if cd d${index % 8}; then v${index}=1; cd ..; fi`)}`],
+      ["IF8", `cd a || exit 1; ${repeat(8, (index) => `if cd d${index}; then v${index}=1; cd ..; fi`)}`],
+      ["IF16 (cap)",`cd a || exit 1; ${repeat(16, (index) => `if cd d${index % 8}; then v${index}=1; cd ..; fi`)}`],
       ["NAV20 (cap)", `cd a || exit 1; cd ..; ${repeat(20, () => "cd sub && cd ..")}`],
       ["IFC24 (cap)", `cd a || exit 1; ${repeat(24, (index) => `if cd d${index % 8}; then v${index}=1; cd ..; fi`)}`],
       ["IFT16 (cap)", `cd a || true; ${repeat(16, (index) => `if cd d${index % 8}; then v${index}=1; cd ..; fi`)}`],
@@ -271,7 +273,6 @@ describe("shell path policy — working directory tracking", () => {
       "cd a || exit 1; cd ..; cd b; ls; cd ..",
       "cd a || ls; cd ..; cd b; ls; cd ..",
       "cd a || mkdir m; cd ..; cd b; ls; cd ..",
-      `cd a || exit 1; ${repeat(8, (index) => `if cd d${index}; then v${index}=1; cd ..; fi`)}`,
       "cd sub || exit 1; touch ../x",
       "cd sub || { echo no >&2; exit 1; }; touch ../x",
       "set -e; cd sub; touch ../x",
@@ -360,8 +361,8 @@ describe("shell path policy — working directory tracking", () => {
     });
 
 
-    // For lexical, link-free paths, a removal that failed a recorded destination fails a later cd iff it also contains the target,
-    // possible iff the deepest directory containing both does not contain the fault path cwd.
+    // On a fault path every cd that does not stay in the current directory or move to an ancestor forks again: a removed working
+    // directory keeps resolving relative operands from its old path, and links or a second removal can fail any later cd.
     it.each([
       ["REL-anc-ancq", "cd sub/s2; cd \"$R\"; ls", null],
       ["REL-disj-ancq", "cd a; cd ../b; cd \"$R/a\"; ls", null],
@@ -371,14 +372,25 @@ describe("shell path policy — working directory tracking", () => {
       ["ANC2", "cd sub/s2/s3; cd \"$R/sub\"; touch ../x", "sandbox-boundary"],
       ["ANC3", "cd sub/s2 || true; cd sub; touch ../x", "sandbox-boundary"],
       ["REL-disj-desc", "cd sub/s2; cd \"$R/sub/t2\"; touch ../../x", "sandbox-boundary"],
-      ["REL-disj-desc (shared ancestor holds the cwd)", "cd sub; cd \"$R/a\"; touch ../x", null],
+      ["REL-disj-desc (shared ancestor holds the cwd, TWO1)", "cd sub; cd \"$R/a\"; touch ../x", "sandbox-boundary"],
       ["REL-eq-disj", "cd a; cd ../sub/s2; cd \"$R/sub/s2\"; touch ../../x", "sandbox-boundary"],
       ["REL-desc-disj", "cd a; cd ../sub; cd \"$R/sub/s2\"; touch ../../x", "sandbox-boundary"],
       ["REL-anc-disj", "cd a; cd ../sub/s2/s3; cd \"$R/sub/s2\"; touch ../../x", "sandbox-boundary"],
       ["REL-disj-disj", "cd a; cd ../sub/s2; cd \"$R/sub/t2\"; touch ../../x", "sandbox-boundary"],
-      ["REL-disj-disj (shared ancestor holds the cwd)", "cd b; cd ../sub/s2; cd \"$R/a/d0\"; touch ../../x", null],
+      ["REL-disj-disj (shared ancestor holds the cwd, TWO2)", "cd b; cd ../sub/s2; cd \"$R/a/d0\"; touch ../../x", "sandbox-boundary"],
+      ["CWD1", "cd sub; cd s2; cd \"$R/sub/t2\"; touch ../../x", "sandbox-boundary"],
     ])("models a later cd against a recorded fault destination: %s: %s", (_cell, command, kind) => {
       expect(verdict(command)).toBe(kind);
+    });
+
+    it.each([
+      ["SYM1", "cd sub/s2; cd lnk; touch ../x"],
+      ["SYM2", "cd sub; cd lnk/s2; touch ../../x"],
+      ["SYM4", "cd lnk/s2; cd \"$R/sub\"; touch ../x"],
+      ["SYM5", "cd sub/s2; cd -P lnk; touch ../x"],
+      ["SYM6", "cd lnk; cd \"$R/sub/s2\"; touch ../../x"],
+    ])("forks a later cd that reaches a fault destination through a directory link: %s: %s", (_row, command) => {
+      expect(verdict(command)).toBe("sandbox-boundary");
     });
 
     it("keeps a fault path ended where it leaves the starting directory (known gap, owner carve-out (y)): ANC4, Y1", () => {

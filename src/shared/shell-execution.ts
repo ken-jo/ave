@@ -1,5 +1,5 @@
 import { accessSync, constants, statSync } from "node:fs";
-import { dirname, isAbsolute, posix, relative as pathRelative, resolve as pathResolve, sep } from "node:path";
+import { isAbsolute, posix, relative as pathRelative, resolve as pathResolve, sep } from "node:path";
 import { analyzeShell, literalWord, staticShellWord, validatePreparedShellAnalysis, type PreparedShellAnalysis, type ShellAnalysis, type ShellCommand, type ShellRedirect, type ShellStatement, type ShellWord, type ShellWordPart } from "./shell-analysis.js";
 import { effectiveShellCommand, stripCommandPath, type EffectiveShellCommand } from "./shell-effective-command.js";
 import { SHELL_ANALYSIS_LIMITS } from "./shell-parser.js";
@@ -101,7 +101,7 @@ interface ShellState {
 type ExitStatus = "success" | "failure" | "unknown";
 interface BreakControl { kind: "break"; levels: number; boundary: number }
 interface StateResult { state: ShellState; status: ExitStatus; control?: BreakControl }
-interface ExecutionContext { boundary: number; loopDepth: number; condition?: true; fallback?: true }
+interface ExecutionContext { boundary: number; loopDepth: number; condition?: true }
 interface WordEvaluation { lastSubstitutionStatus?: ExitStatus; mayFail?: boolean }
 interface CommandRedirectObservation { state?: ShellState; inspected: boolean }
 // Past this many forks without a possible filesystem change, a host cd asks like an exhausted flagged budget.
@@ -189,16 +189,6 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
   const within = (parent: string, path: string): boolean => {
     const rest = pathRelative(parent, path);
     return rest === "" || !isAbsolute(rest) && rest !== ".." && !rest.startsWith(`..${sep}`);
-  };
-  // For lexical, link-free paths: one removal that failed a cd to missing can fail a cd to target iff it can contain both without containing cwd.
-  const sharesRemoval = (target: string, missing: string, cwd: string): boolean => {
-    let shared = target;
-    while (!within(shared, missing)) {
-      const parent = dirname(shared);
-      if (parent === shared) return false;
-      shared = parent;
-    }
-    return !within(shared, cwd);
   };
   let steps = 0;
   let nextExecutionBoundary = 0;
@@ -669,9 +659,9 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
         const failed: StateResult[] = state.errexit && !context.condition ? [] : [{ state, status: "failure" }];
         return state.cdFault.length === 1 ? failed : [success, ...failed];
       }
+      // Every other cd forks, on a fault path too: a removed working directory keeps resolving relative operands from its old path,
+      // and a directory link or a second removal can fail any later destination.
       if (observedDirectory && state.cwd !== null && within(destination, state.cwd) || state.errexit && !context.condition) return [success];
-      // A fault path models one removal: it forks again only after a possible change, for a fallback cd, or where that removal can fail this cd too.
-      if (state.cdFault && observedDirectory && !filesystemMayChange && !context.fallback && !state.cdFault.some((missing) => state.cwd === null || sharesRemoval(destination, missing, state.cwd))) return [success];
       if (filesystemMayChange) {
         if (++flaggedCdForks > SHELL_ANALYSIS_LIMITS.states) decline("unresolved working-directory destination", targetWord);
       } else if (observedDirectory && ++unflaggedCdForks > UNFLAGGED_CD_FORK_LIMIT) decline("unresolved working-directory destination", targetWord);
@@ -720,8 +710,7 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
           if (left.control) { results.push(left); continue; }
           const desired = node.kind === "and" ? "success" : "failure";
           if (left.status !== desired) results.push({ state: left.state, status: desired === "success" ? "failure" : "success" });
-          const rightContext = node.kind === "or" && left.state.cdFault ? { ...context, fallback: true as const } : context;
-          if (left.status === desired || left.status === "unknown") results.push(...walk(node.right, left.state, depth + 1, rightContext));
+          if (left.status === desired || left.status === "unknown") results.push(...walk(node.right, left.state, depth + 1, context));
         }
         return uniqueResults(results);
       }
