@@ -3959,7 +3959,8 @@ describe("PluginRuntime load attempts release what they own exactly once", () =>
     const f = await setup("success");
     bindNativeBundleLifecycle(f);
     await f.runtime.load();
-    const orphan = f.constructed[0]!;
+    const [orphan] = f.constructed;
+    if (!orphan) throw new Error("load() constructed no instance");
     orphan.instance.stop = () => {
       orphan.stops += 1;
       return new Promise<void>(() => undefined);
