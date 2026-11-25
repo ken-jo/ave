@@ -8,6 +8,7 @@ import { closed, echoParentProxy, openTunnel, probePort, within } from "../../__
 const h = vi.hoisted(() => ({
   openRelay: vi.fn(),
   floor: vi.fn(() => [] as string[]),
+  userDenies: vi.fn(() => [] as string[]),
   boundary: vi.fn((_path: string): string | undefined => undefined),
   wxcExec: vi.fn(async () => String.raw`C:\Ave\resources\mxc\x64\wxc-exec.exe`),
   registerPort: vi.fn(),
@@ -125,7 +126,7 @@ vi.mock("../../permissions/egress-host-listener.js", () => ({
 vi.mock("../../permissions/asrt-sandbox.js", () => ({
   aveHomeReadBoundaryCovering: h.boundary,
   getProtectedReadDenyFloor: h.floor,
-  getUserReadDenies: () => [],
+  getUserReadDenies: h.userDenies,
   getWindowsProxyPortRange: () => [60080, 60089],
 }));
 vi.mock("../../permissions/mxc-windows.js", async (importOriginal) => ({
@@ -252,6 +253,32 @@ describe("prepareMxcShellLaunch", () => {
       expect(JSON.stringify(request.filesystem)).not.toMatch(/logs|traces/);
     } finally {
       expect(await lifecycle.dispose()).toEqual([]);
+    }
+  });
+
+  it("states the user's read denies as their own rows: one inside a grant is denied, one over the workspace refuses the launch", async () => {
+    relay();
+    const secret = winPath.join(WS, "secret");
+    onDrive(secret);
+    try {
+      h.userDenies.mockReturnValue([secret]);
+      const lifecycle = createContainedShellLifecycle();
+      try {
+        const request = decodeRequest((await prepareMxcShellLaunch(INPUT, lifecycle)).argv);
+        expect(request.filesystem.readwritePaths).toEqual([WS]);
+        expect(request.filesystem.deniedPaths).toEqual([secret]);
+      } finally {
+        expect(await lifecycle.dispose()).toEqual([]);
+      }
+      h.userDenies.mockReturnValue([WS]);
+      const refused = createContainedShellLifecycle();
+      try {
+        await expect(prepareMxcShellLaunch(INPUT, refused)).rejects.toThrow(/working directory must lie inside a granted path/);
+      } finally {
+        await refused.dispose();
+      }
+    } finally {
+      h.userDenies.mockReturnValue([]);
     }
   });
 

@@ -155,7 +155,7 @@ type LaneKind = "listener" | "launcher";
 async function lane(token: string, kind: LaneKind) {
   if (kind === "launcher") {
     // The launch admits its grants on native path facts, so the workspace is a real folder.
-    const workspace = realpathSync.native(policyFixture("egress-lane-workspace-"));
+    const workspace = realpathSync.native(policyFixture("egress-review-workspace-"));
     const launch = await prepareOwnedMxcShellLaunch({
       egressToken: token,
       commandLine: "cmd.exe /d /c echo hi",

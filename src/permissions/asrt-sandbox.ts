@@ -3,7 +3,7 @@
 import { MxcExtensionReadinessRefusedError, MxcNativeEntryRequiredError, MxcProcessContractError, WorkerTransportUnsupportedError } from "./mxc-extension-errors.js";
 import { assertMxcExtensionFilesystemOwnership, type MxcExtensionFilesystemOwnership } from "./mxc-filesystem-ownership.js";
 import { mxcRuntimeRootFloorPath } from "./mxc-runtime-root.js";
-import { buildPolicyModel, policyFloorRow, policyGrantRow, type PolicyFloorRow, type PolicyGrantRow, type PolicyModel } from "./policy-model.js";
+import { buildPolicyModel, policyFloorRow, policyGrantRow, userDenyCoversPierce, type PolicyFloorRow, type PolicyGrantRow, type PolicyModel } from "./policy-model.js";
 import { srtWriteFloorRow, toSrtConfig } from "./srt-policy-adapter.js";
 import { isMxcReadPattern } from "./mxc-windows.js";
 import { issueFilesystemSandboxBlock, type SandboxBlock } from "../shared/sandbox-block.js";
@@ -935,7 +935,8 @@ function admitMxcExtensionFilesystemInSnapshot(filesystem: PerCommandFilesystem,
     win32.normalize(left).replace(/[\\/]+$/, "").toLowerCase() === win32.normalize(right).replace(/[\\/]+$/, "").toLowerCase();
   const explicitReadFloor = literalDenies(admitted.denyRead).filter(path => !reallowableMasks.some(mask => samePath(path, mask)));
   const protectedFloor = [...new Set([...literalDenies(floor), ...explicitReadFloor])];
-  const allowRead = readGrantsOutsideReadDenies(admitted.allowRead, protectedFloor, pierces);
+  // The user's denies are stated as their own rows below; the container rank refuses a pierce they cover and withholds what they deny.
+  const allowRead = readGrantsOutsideReadDenies(admitted.allowRead, protectedFloor, pierces, []);
   const readDenies = literalDenies([
     ...getDefaultSensitiveReadDenyPaths(), ...admitted.denyRead,
     ...namespaceRoots, ...(pinnedOwnership?.hostStorageRoots ?? []),
@@ -1051,13 +1052,14 @@ export function buildPerCommandSandboxCustomConfig(
       hiddenSeccompHelper = seccompHelperHiddenBy(denyRead);
       // Each row names the floor its path came from, judged on the spelling the caller gave: the protected read floor, the Ave
       // home boundary, or anything else the caller restated.
+      const userRows = new Set(getUserReadDenies());
       const protectedRows = new Set(floor);
       const boundaryRows = new Set(aveHomeReadBoundaryDenies());
       const requested = new Map(grants.denyRead.map((path, index) => [path, configured.denyRead[index] ?? path] as const));
       floors.push(...denyRead.map((path) => {
         const spelling = requested.get(path) ?? path;
-        return policyFloorRow(path, "denied",
-          protectedRows.has(spelling) ? "secrets" : boundaryRows.has(spelling) ? "ave-home" : "read-boundary", false);
+        return policyFloorRow(path, "denied", userRows.has(spelling) ? "user-deny"
+          : protectedRows.has(spelling) ? "secrets" : boundaryRows.has(spelling) ? "ave-home" : "read-boundary", false);
       }));
       fs.denyRead = windowsDenyTargets(
         asrtReadDenyPaths(
@@ -1712,6 +1714,7 @@ function readGrantsOutsideReadDenies(
   grants: readonly string[],
   floor: readonly string[],
   floorPierces: readonly string[],
+  userDenies: readonly string[] = getUserReadDenies(),
 ): string[] {
   const ceiling = floorPierceCeiling();
   for (const pierce of floorPierces) {
@@ -1719,7 +1722,13 @@ function readGrantsOutsideReadDenies(
       throw new Error(`sandbox: ${pierce} is not a read the host lets re-open the protected floor`);
     }
   }
-  return withholdUnder(grants, floor, floorPierces, "read grant");
+  // A pierce re-opens only host floor rows: a user's deny at, above or matching it refuses the launch.
+  const userCovering = readDenyCovering(userDenies);
+  for (const pierce of floorPierces) {
+    const rule = userCovering(canonicalizePathForMatch(pierce));
+    if (rule !== undefined) throw userDenyCoversPierce(rule, pierce);
+  }
+  return withholdUnder(grants, floor, floorPierces, "read grant", userCovering);
 }
 
 function withholdUnder(
@@ -1727,6 +1736,7 @@ function withholdUnder(
   floor: readonly string[],
   pierces: readonly string[],
   kind: string,
+  userCovering: (canonicalPath: string) => string | undefined = () => undefined,
 ): string[] {
   const canonicalPierces = pierces.map((pierce) => canonicalizePathForMatch(pierce));
   const floorCovering = paths.length === 0 ? () => undefined : readDenyCovering(floor);
@@ -1734,9 +1744,10 @@ function withholdUnder(
   const boundaryCovering = paths.length === 0 ? () => undefined : aveHomeReadBoundaryMatcher();
   return paths.filter((path) => {
     const resolved = canonicalizePathForMatch(path);
-    const denied = floorCovering(resolved) ?? boundaryCovering(resolved);
+    const user = userCovering(resolved);
+    const denied = user ?? floorCovering(resolved) ?? boundaryCovering(resolved);
     if (denied === undefined) return true;
-    if (canonicalPierces.some((pierce) => resolved === pierce || resolved.startsWith(`${pierce}/`))) return true;
+    if (user === undefined && canonicalPierces.some((pierce) => resolved === pierce || resolved.startsWith(`${pierce}/`))) return true;
     // Withheld silently, a later EACCES/EROFS/ENOENT in the child would have no visible cause.
     log.debug({ path, deny: denied }, `sandbox: ${kind} withheld under the protected read floor`);
     return false;
@@ -1990,7 +2001,7 @@ function windowsDenyTargets<T extends FilesystemPathEntry>(
     });
     let home: string | undefined;
     try { home = homedir(); } catch { /* No profile root to withhold. */ }
-    // A pattern's base is never widened over a grant (LEAD r7 Q2), so patterns bring the grants along; an unproven grant
+    // A pattern's base is never widened over a grant, so patterns bring the grants along; an unproven grant
     // is not refused here.
     const patterned = denyRows.some(({ spelling }) => typeof spelling === "string" && /[*?[\]]/u.test(spelling));
     const grantRows = patterned

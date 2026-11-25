@@ -209,7 +209,8 @@ describe("policy model adapters", () => {
   });
 
   it("refuses a pierce at or beneath a user's deny, naming the rule", () => {
-    for (const rule of [`${HOME}\\.ave`, `${HOME}\\.ave\\sessions`]) {
+    // Literal, pattern and relative (unanchored) rules alike.
+    for (const rule of [`${HOME}\\.ave`, `${HOME}\\.ave\\sessions`, `${HOME}\\.ave\\sess*`, `${HOME}\\.ave\\sessions\\**`, "sessions", "**\\.ave"]) {
       const pierced = model({
         floors: [floor(`${HOME}\\.ave\\sessions`, "denied", "secrets"), floor(rule, "denied", "user-deny")],
         launchGrants: [grant(`${HOME}\\.ave\\sessions`, "ro", "launch-grant"), grant(`${HOME}\\.ave\\sessions`, "ro", "floor-pierce")],

@@ -11,7 +11,7 @@ import { admitLocalPath, admitLocalRoute, localFs, withLocalityDecision } from "
 import { expandWindowsEnvRefs, stripExtendedPathPrefix } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
 import { openMxcPolicyPipe } from "./mxc-policy-pipe.js";
-import { isPolicyFloorRow, type PolicyModel, type PolicyRow } from "./policy-model.js";
+import { isPolicyFloorRow, userDenyCoversPierce, type PolicyModel, type PolicyRow } from "./policy-model.js";
 import {
   admitObligations, consumeObligations, obligationWithin, requireEnforceable,
   type AdmittedObligation, type ObligationRow, type ObligationSet,
@@ -528,9 +528,12 @@ function pathAndAncestors(path: string): string[] {
   }
 }
 
-// A host pierce at or beneath a user's read deny: the user's rule wins, so the launch is refused and names it.
-function userDenyCoversPierce(rule: string, pierce: string): Error {
-  return new Error(`Your read deny ${rule} covers ${pierce}, which this launch needs to read; the launch is refused`);
+// Whether a user's normalized read deny pattern names `target`, its contents or an ancestor; a relative pattern matches at any depth.
+function userPatternCovers(pattern: string, target: string): boolean {
+  const glob = pattern.replaceAll("\\", "/");
+  const matches = compileGlobMatcher(WINDOWS_ABSOLUTE.test(pattern) || glob.startsWith("**") ? glob : `**/${glob}`, { caseInsensitive: true });
+  // With a trailing separator a path names its contents too, so `<dir>\**` covers the directory itself.
+  return pathAndAncestors(target).some(path => [path, `${path}/`].some(form => matches(form.replaceAll("\\", "/"))));
 }
 
 export function mxcPolicyRows(model: PolicyModel): MxcPolicyRows {
@@ -562,12 +565,15 @@ export function rankMxcRowsBySpelling(
   const denyWrite = windowsPaths(rows.writeFloor);
   const pierces = rows.floorPierces;
   const userDenies = windowsPaths(rows.userDenies);
+  // A relative row is unanchored, as a pattern is: it applies wherever the shell reads, so it is expanded rather than dropped.
+  const isPatternDeny = (deny: string): boolean => PATTERN_SEGMENT.test(deny) || !WINDOWS_ABSOLUTE.test(deny);
   for (const pierce of pierces) {
-    const rule = userDenies.find((deny) => !PATTERN_SEGMENT.test(deny) && isWindowsPathAtOrUnder(pierce, deny));
+    const rule = userDenies.find((deny) => isPatternDeny(deny)
+      ? userPatternCovers(normalizedPatternSpelling(deny), pierce) : isWindowsPathAtOrUnder(pierce, deny));
     if (rule !== undefined) throw userDenyCoversPierce(rule, pierce);
   }
   const floored = (path: string): boolean =>
-    userDenies.some((deny) => !PATTERN_SEGMENT.test(deny) && isWindowsPathAtOrUnder(path, deny)) ||
+    userDenies.some((deny) => !isPatternDeny(deny) && isWindowsPathAtOrUnder(path, deny)) ||
     (protectedFloor.some((floor) => isWindowsPathAtOrUnder(path, floor)) &&
     !pierces.some((pierce) => isWindowsPathAtOrUnder(path, pierce)));
   const writeDenied = (path: string): boolean => denyWrite.some((deny) => isWindowsPathAtOrUnder(path, deny));
@@ -581,8 +587,6 @@ export function rankMxcRowsBySpelling(
   // exact row goes: a floor row above a pierce stays, and the more specific read grant carves the pierce out of it.
   const pierced = new Set(pierces.map(foldPath));
   const readDenies = dedupe([...windowsPaths(rows.readDenies), ...protectedFloor.filter((row) => !pierced.has(foldPath(row))), ...userDenies]);
-  // A relative row is unanchored, as a pattern is: it applies wherever the shell reads, so it is expanded rather than dropped.
-  const isPatternDeny = (deny: string): boolean => PATTERN_SEGMENT.test(deny) || !WINDOWS_ABSOLUTE.test(deny);
   const literalDenies = readDenies.filter((deny) => !isPatternDeny(deny));
   // Whether reads at `path` are denied: the most specific requested grant or emitted read deny at or above it is a deny (a deny wins a
   // tie). A write-floor row there must not become a read-only grant: being more specific than that deny, the grant would re-open it.
@@ -866,9 +870,7 @@ function rankAdmittedMxcFilesystem(set: ObligationSet, requestedPatterns: readon
     patterns = canonicalPatternSpellings(requestedPatterns, baseAllows);
     for (const { requested, pattern } of patterns) {
       if (!userPatterns.includes(requested)) continue;
-      const glob = pattern.replaceAll("\\", "/");
-      const matches = compileGlobMatcher(WINDOWS_ABSOLUTE.test(pattern) || glob.startsWith("**") ? glob : `**/${glob}`, { caseInsensitive: true });
-      const pierce = pierces.find(entry => pathAndAncestors(entry.target).some(path => matches(path.replaceAll("\\", "/"))));
+      const pierce = pierces.find(entry => userPatternCovers(pattern, entry.target));
       if (pierce !== undefined) throw userDenyCoversPierce(requested, pierce.origin.row);
     }
     const rules: MxcRule[] = [

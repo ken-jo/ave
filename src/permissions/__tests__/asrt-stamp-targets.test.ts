@@ -199,7 +199,7 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     const match = join(globBase, "match.stamp-fixture");
     writeFileSync(match, "");
     const glob = join(globBase, "*.stamp-fixture");
-    // LEAD r7 Q2: a base at the profile root, or at or above a grant, refuses before the runtime starts.
+    // A deny glob is denied on its static base: a base at the profile root, or at or above a grant, refuses before the runtime starts.
     await expect(initializeAsrtSandbox({
       allowWrite: ["~/.stamp-fixture"],
       denyRead: [join(process.env.USERPROFILE!, "*.stamp-fixture")],
@@ -213,7 +213,7 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     const paths = guard.mock.calls.flatMap(([paths]) => paths).map((path) => resolve(path));
     expect(paths).toContain(join(process.env.HOME!, ".stamp-fixture"));
     expect(paths).toContain(join(process.env.USERPROFILE!, ".stamp-env-fixture"));
-    // A deny glob is one subtree row on its static base (LEAD r7 Q2), never its matches.
+    // A deny glob is one subtree row on its static base, never its matches.
     expect(paths).toContain(globBase);
     expect(paths).not.toContain(match);
     expect(paths).not.toContain(glob);

@@ -82,6 +82,11 @@ export function policyGrantRow(path: string, access: PolicyGrantRow["access"], r
   return { path, literal, access, reason };
 }
 
+/** A host pierce at or beneath a user's read deny: the user's rule wins, so the launch is refused and names it. */
+export function userDenyCoversPierce(rule: string, pierce: string): Error {
+  return new Error(`Your read deny ${rule} covers ${pierce}, which this launch needs to read; the launch is refused`);
+}
+
 export function isPolicyFloorRow(row: PolicyRow): row is PolicyFloorRow {
   return FLOOR_REASONS.has(row.reason);
 }

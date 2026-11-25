@@ -219,7 +219,7 @@ describe("hosted write policy spellings", () => {
     mkdirSync(externalControl);
     symlinkSync(externalControl, linkedControl, hostPlatform === "win32" ? "junction" : "dir");
     const protectedDenies = getDefaultSensitiveWriteDenyPaths();
-    // LEAD r7 Q2 denies a pattern on its static base, so this one sits below the home that holds the grants.
+    // A deny pattern is denied on its static base, so this one sits below the home that holds the grants.
     const nonCoveringDenies = ["pattern-files/k*", "pattern-files/key", "CaseRoot", "caseroot/data", "caf\u00e9", "cafe\u0301/data"]
       .map(path => join(root, ...path.split("/")));
     if (platform === "win32") {
@@ -229,7 +229,7 @@ describe("hosted write policy spellings", () => {
           rows: [expect.objectContaining({ row: linkedControl, reason: "link-spelling" })],
         }));
     } else nonCoveringDenies.push(linkedControl);
-    // A bracket spelling is a pattern whose static base here is the profile root, which Windows refuses (LEAD r7 Q2).
+    // A bracket spelling is a pattern whose static base here is the profile root, which Windows refuses.
     if (platform === "win32") {
       expect(() => buildPerCommandSandboxCustomConfig({ allowWrite: ordinaryRoots, allowRead: [], denyWrite: [join(literalRoot, ".vscode")] }))
         .toThrow(expect.objectContaining({ code: "sandbox-obligation-unenforceable", rows: [expect.objectContaining({ reason: "glob-not-subtree" })] }));

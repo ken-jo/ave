@@ -46,7 +46,7 @@ const cleanup: Array<() => Promise<void>> = [];
 
 // LEAD target: at most 4 helper launches per phase (card, approved) for Bash and PowerShell.
 const HOST_SHELL_ADMISSION_TARGET = 4;
-// Binding per-phase ceiling, measured 0 on main cde88405d and 2 once Windows lookups admit the shell's paths; it stays below the LEAD target of 4.
+// Binding per-phase ceiling: 2 once Windows lookups admit the shell's paths, below the target.
 const HOST_SHELL_ADMISSION_MEASURED = 2;
 // Per-verb detail of the current measurement; lower it when launches are removed.
 const HOST_SHELL_ADMISSION_LAUNCHES = {

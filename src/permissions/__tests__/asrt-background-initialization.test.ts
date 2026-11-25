@@ -109,7 +109,7 @@ function grantedFixture(): string[] {
   return [fixtureRoot];
 }
 
-// Literal rows: deny globs on one static base become a single subtree row (LEAD r7 Q2), which no budget counts twice.
+// Literal rows: deny globs on one static base become a single subtree row on that base, which no budget counts twice.
 function denyRows(prefix: string, count: number): string[] {
   return Array.from({ length: count }, (_, index) => win32.join(fixtureRoot, prefix, `${index}.deny`));
 }
@@ -186,7 +186,7 @@ describe("background session isolation", () => {
 
   it("refuses confinement on a drive-relative deny, whose base is hidden per-drive state", async () => {
     const drive = win32.parse(fixtureRoot).root.slice(0, 2).toUpperCase();
-    // LEAD r7 design: a drive-relative row is always `drive-relative` and refuses.
+    // A drive-relative row is always `drive-relative` and refuses.
     await expect(initializeAsrtSandbox({ denyRead: [`${drive}fixture\\worker\\denied`] }))
       .rejects.toMatchObject({ code: "sandbox-obligation-unenforceable", rows: [expect.objectContaining({ reason: "drive-relative" })] });
   });

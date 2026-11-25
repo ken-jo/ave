@@ -195,9 +195,10 @@ describe("host shells under an unverifiable Ave home boundary", () => {
     }
   });
 
-  it.each(DIALECTS.flatMap(dialect => (["sibling run rule", "rule change", "mode change"] as const).map(change => ({ dialect, change }))))(
-    "$dialect.toolName: the Windows deny card answered across a $change", async ({ dialect, change }) => {
-      setWindowsDenyUnenforceableAtBoot("path");
+  it.each(DIALECTS.flatMap(dialect => (["path", "network"] as const).flatMap(kind =>
+    (["sibling run rule", "rule change", "mode change"] as const).map(change => ({ dialect, kind, change })))))(
+    "$dialect.toolName: the Windows $kind deny card answered across a $change", async ({ dialect, kind, change }) => {
+      setWindowsDenyUnenforceableAtBoot(kind);
       try {
         const execute = vi.fn();
         const registry = probe(dialect.create, execute);

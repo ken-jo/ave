@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -332,6 +332,14 @@ describe("rankMxcFilesystem", () => {
       expect(() => rankAdmittedMxcLists({ ...policy, userDenyRead: [protectedRoot] })).toThrow(`Your read deny ${protectedRoot} covers ${certs}`);
       expect(() => rankAdmittedMxcLists({ ...policy, userDenyRead: [join(protectedRoot, "cert*")] }))
         .toThrow(`Your read deny ${join(protectedRoot, "cert*")} covers ${certs}`);
+      // A pattern over the pierce's whole contents covers it; one naming some files beneath keeps the pierce and denies its matches.
+      expect(() => rankAdmittedMxcLists({ ...policy, userDenyRead: [join(certs, "**")] }))
+        .toThrow(`Your read deny ${join(certs, "**")} covers ${certs}`);
+      const key = join(certs, "a.key");
+      writeFileSync(key, "");
+      const keys = rankAdmittedMxcLists({ ...policy, userDenyRead: [join(certs, "*.key")] });
+      expect(keys.readonly.toSorted()).toEqual([certs, owned].toSorted());
+      expect(keys.denied).toContain(key);
       // A user deny beneath the pierce stays a deny, and one elsewhere drops the grant beneath it.
       const beneath = rankAdmittedMxcLists({ ...policy, userDenyRead: [nestedDeny, mask] });
       expect(beneath.readonly).toEqual([certs]);
