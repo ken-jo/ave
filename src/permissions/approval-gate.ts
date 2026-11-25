@@ -59,6 +59,8 @@ import { resolve as pathResolve } from "node:path";
 import { caseFoldForMatch, foldCanonicalPathSeparators } from "./sensitive-paths.js";
 import { isEgressGrantScope, type EgressGrantNetwork, type EgressGrantScope } from "../shared/egress-grant-scopes.js";
 import { isTerminalTabId } from "../shared/tab-id.js";
+import { matchesShellWorkingDirectoryIdentity, type ShellWorkingDirectoryIdentity } from "./shell-working-directory-identity.js";
+import type { ApprovalPersistenceGuard } from "./approval-persistence-guard.js";
 
 // Args DLP masking
 
@@ -680,6 +682,7 @@ interface PendingEntry {
   verifiedShellCommand?: import("./verified-shell-command.js").VerifiedShellCommand;
   projectCwd?: string;
   workingDirectoryIdentity?: string;
+  shellWorkingDirectory?: { readonly path: string; readonly identity: ShellWorkingDirectoryIdentity };
   riskCeilingAtApproval?: RiskLevel;
   executionPlan?: HostShellExecutionPlanAuditProjection;
   hostShellExecutionPermitBinding?: HostShellExecutionPermitBinding;
@@ -1642,6 +1645,10 @@ export class ApprovalGate {
         hostShellExecutionPlan,
         projectCwd: workingDirectory?.path,
         workingDirectoryIdentity: workingDirectory?.identity,
+        shellWorkingDirectory: shellDirectory?.binding.cwdIdentity === undefined ? undefined : {
+          path: shellDirectory.binding.resolvedCwd,
+          identity: shellDirectory.binding.cwdIdentity,
+        },
         riskCeilingAtApproval,
         ...(executionPlanAudit === undefined
           ? {}
@@ -1781,10 +1788,14 @@ export class ApprovalGate {
     }).catch((error: unknown) => { retractToast(); throw error; });
   }
 
-  capturePendingRequestIdentityGuard(requestId: string): { refresh: () => Promise<boolean>; isCurrent: () => boolean } | null {
+  capturePendingRequestIdentityGuard(requestId: string): ApprovalPersistenceGuard | null {
     const entry = this.pending.get(requestId);
     if (!entry) return null;
-    const isCurrent = () => this.pending.get(requestId) === entry && isRemoteControllerBoundToSession(entry.remoteControllerAuthority, entry.sessionId);
+    const { shellWorkingDirectory } = entry;
+    const isCurrent = () => this.pending.get(requestId) === entry &&
+      isRemoteControllerBoundToSession(entry.remoteControllerAuthority, entry.sessionId) &&
+      (shellWorkingDirectory === undefined ||
+        matchesShellWorkingDirectoryIdentity(shellWorkingDirectory.path, shellWorkingDirectory.identity));
     return { refresh: async () => await refreshRemoteControllerBoundToSession(entry.remoteControllerAuthority, entry.sessionId) && isCurrent(), isCurrent };
   }
 

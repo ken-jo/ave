@@ -13,7 +13,7 @@ import { PermissionRulesFileCorruptError, inertRulePatterns, invalidJsonDetail, 
 import { assertAveHomeInputWritable, readAveHomeInput } from "../../shared/ave-home-trust.js";
 import { withShellPolicyMutation } from "../shell-policy-handoff.js";
 
-import { commitApprovalFile, type ApprovalPersistenceGuard } from "../approval-persistence-guard.js";
+import { assertApprovalPersistenceCurrent, commitApprovalFile, type ApprovalPersistenceGuard } from "../approval-persistence-guard.js";
 
 export interface ProjectRulesFile {
   version: 1;
@@ -191,6 +191,7 @@ export async function updateProjectRulesFile(
   // The store reads as absent in a refused home; rewriting it from that view would erase the user's file.
   assertAveHomeInputWritable(location.filePath);
   return withShellPolicyMutation(async () => {
+    assertApprovalPersistenceCurrent(authority);
     await mkdir(dirname(location.filePath), { recursive: true, mode: PRIVATE_DIR_MODE });
     return withFileLock(location.filePath, async () => {
       const existing = await readProjectRulesFile(location);

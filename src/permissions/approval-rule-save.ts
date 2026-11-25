@@ -199,6 +199,7 @@ export async function saveApprovalCardRule(
     } else if (scope === "project") {
       const projectCwd = target.context.projectCwd;
       if (projectCwd === undefined) return fail("scope-not-offered", "This request has no project");
+      assertApprovalPersistenceCurrent(authority);
       await permissionManager.addRulePersist({ pattern, action }, { kind: "project", projectCwd }, ...(authority ? [authority] as const : []));
     } else {
       await permissionManager.addRulePersist({ pattern, action }, { kind: "user" }, ...(authority ? [authority] as const : []));

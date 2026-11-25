@@ -1,7 +1,7 @@
 import { allowOnceCardAnswer } from "../../../__tests__/support/approval-card-answer.js";
 import { deferred } from "../../../__tests__/support/deferred.js";
 import { randomBytes, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import type { IpcMainInvokeEvent, WebContents } from "electron";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -12,6 +12,8 @@ import { ApprovalGate, type ApprovalRequest, type ApprovalRequestInput, IPC_APPR
 import { buildPermissionEvaluationContext } from "../../../permissions/evaluation-context.js";
 import { DEFAULT_JUDGE_SETTINGS } from "../../../permissions/judge/judge-settings.js";
 import { PermissionManager } from "../../../permissions/permission-manager.js";
+import { projectRulesLocation } from "../../../permissions/rules/project-rule-files.js";
+import { captureShellWorkingDirectoryIdentity } from "../../../permissions/shell-working-directory-identity.js";
 import { makeRecentlyDeniedStore } from "../../../__tests__/support/recently-denied.js";
 import { LlmRiskClassifier, type LlmReviewerProvider, type RiskVerdict } from "../../../permissions/reviewer/risk-classifier.js";
 import { LlmApprovalSentenceSelector } from "../../../permissions/reviewer/approval-sentence-selector.js";
@@ -299,6 +301,42 @@ describe("live native approval ownership", () => {
     const answer = await result;
     expect(f.gate.allowsPolicyTransition(answer, before, f.manager.getPolicyEpoch())).toBe(true);
     expect(f.gate.allowsPolicyTransition(answer, before, f.manager.getPolicyEpoch())).toBe(false);
+  });
+
+  it("refuses This project when an ordinary Bash card's directory was replaced", async () => {
+    const f = await subject("default");
+    vi.stubEnv("AVE_HOME", f.root);
+    setShellSandboxRequestedAtBoot(false);
+    const project = join(f.root, "project");
+    const original = join(f.root, "original");
+    mkdirSync(project);
+    const bash = new BashTool();
+    const execute = vi.spyOn(bash, "execute").mockResolvedValue({ output: "mock launch", isError: false });
+    f.registry.register(bash);
+    const running = f.executeAll([{ id: "project-rule-cwd", name: "bash", input: { command: "printf ready" } }], {
+      sessionId: SESSION_ID, executionCwd: project,
+      permissionContext: userPermissionContext({ additionalDirectories: [project] }),
+    });
+    const card = await f.waitForCard();
+    expect(card.allowedChoices).toBeUndefined();
+    expect(card.shellRule?.persistentAllowed).toBe(true);
+    const issued = captureShellWorkingDirectoryIdentity(project);
+    expect(issued).toBeDefined();
+    renameSync(project, original);
+    mkdirSync(project);
+    const replacement = projectRulesLocation(f.root, project);
+    expect(captureShellWorkingDirectoryIdentity(project)?.ino).not.toBe(issued?.ino);
+
+    const response = await invoke(PERMISSIONS.userApprovalRecord, frameEvent(f.windowA), {
+      requestId: card.id, args: JSON.stringify(card.args), decision: "allow", scope: "persistent",
+      verdictAtApproval: f.gate.getRequestSnapshot(card.id)?.verdictAtApproval,
+      rule: { action: "allow", scope: "project" }, intent: { inputOrigin: "user-keyboard", userActivation: true },
+    });
+    expect.soft(response).toMatchObject({ ok: false });
+    expect.soft(existsSync(replacement.filePath)).toBe(false);
+    invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), allowOnceCardAnswer(card));
+    expect((await running)[0]?.is_error).toBe(true);
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it("burns a policy receipt on a mismatched consumption attempt", async () => {
