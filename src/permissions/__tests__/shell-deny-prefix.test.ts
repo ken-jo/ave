@@ -48,6 +48,24 @@ describe.each([
     },
   );
 
+  if (dialect === "powershell") {
+    it.each([
+      { tail: overBudgetTail, limit: "token" },
+      { tail: `date ${"x".repeat(8000)}`, limit: "input" },
+    ])("keeps a completed deny when quote ambiguity is beyond the $limit limit", async ({ tail }) => {
+      const check = await savedDeny();
+      expect(check(`${first}; ${tail}`)).toMatchObject({ decision: "deny", reasonCode: "rule-deny" });
+      expect(check(`${first}; ${tail} # it’s a comment`)).toMatchObject({ decision: "deny", reasonCode: "rule-deny" });
+      expect(check(`Write-Output ‘ready’; ${tail}`))
+        .toMatchObject({ decision: "ask", forceModal: true, reasonCode: "shell-analysis-limit" });
+    });
+
+    it("ignores quote ambiguity inside the clipped suffix after a completed deny", async () => {
+      const check = await savedDeny();
+      expect(check(`${first}; date ‘${"x".repeat(8000)}`)).toMatchObject({ decision: "deny", reasonCode: "rule-deny" });
+    });
+  }
+
   it("preserves the merge-base refusal when the first statement exhausts the token budget", async () => {
     const check = await savedDeny();
     expect(check(first)).toMatchObject({ decision: "deny", reasonCode: "rule-deny", reason: pattern });
