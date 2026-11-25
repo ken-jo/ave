@@ -185,6 +185,36 @@ describe("resolveHostGit", () => {
     }
   });
 
+  it("changes executable identity after a same-size overwrite with the original mtime restored", async () => {
+    const fs = await vi.importActual<typeof import("node:fs")>("node:fs");
+    const { executableIdentitySync } = await import("../host-git-executable.js");
+    const fixture = mkdtempSync(join(tmpdir(), "ave-overwritten-git-"));
+    const path = join(fixture, binary);
+    const timestamp = new Date("2020-01-01T00:00:00Z");
+    try {
+      vi.mocked(statSync).mockImplementation((file) => fs.statSync(file, { bigint: true }));
+      writeFileSync(path, "original", { mode: 0o755 });
+      fs.utimesSync(path, timestamp, timestamp);
+      const before = fs.statSync(path, { bigint: true });
+      const identity = executableIdentitySync(path);
+      expect(identity).not.toBeNull();
+
+      // Retry if the filesystem records both writes in the same clock tick.
+      await vi.waitFor(() => {
+        writeFileSync(path, "modified");
+        fs.utimesSync(path, timestamp, timestamp);
+        expect(fs.statSync(path, { bigint: true }).ctimeNs).not.toBe(before.ctimeNs);
+      });
+      const after = fs.statSync(path, { bigint: true });
+      expect(after).toMatchObject({ dev: before.dev, ino: before.ino, size: before.size, mtimeNs: before.mtimeNs });
+      const overwrittenIdentity = executableIdentitySync(path);
+      expect(overwrittenIdentity).not.toBeNull();
+      expect(overwrittenIdentity).not.toBe(identity);
+    } finally {
+      await cleanupTmpDir(fixture);
+    }
+  });
+
   it("advances to the next candidate when a probe's stdout stays open past the deadline", async () => {
     const { discoverHostGitAsync } = await import("../host-git-executable.js");
     const { TOOL_TIMEOUT_POLICY } = await import("../tool-timeout-policy.js");
@@ -316,6 +346,29 @@ describe("resolveHostGit", () => {
       Object.defineProperty(process, "execPath", { value: originalExecPath });
       setProcessPlatform(platform);
     }
+  });
+
+  it("uses system Git when the bundle fails qualification and keeps the bundle for ordinary discovery", async () => {
+    const { discoverHostGitAsync, withHostGitRecovery } = await import("../host-git-executable.js");
+    const installer = join("C:/Ave", "git");
+    const bundled = join(installer, "cmd", "git.exe");
+    const system = "D:\\SystemGit\\git.exe";
+    setProcessPlatform("win32");
+    vi.stubEnv("PATH", "D:\\SystemGit");
+    vi.mocked(existsSync).mockReturnValue(true);
+    vi.mocked(statSync).mockImplementation((file) => ({
+      isFile: () => file === bundled || file === system, dev: 1n, ino: file === system ? 2n : 1n,
+    }) as ReturnType<typeof statSync>);
+    vi.mocked(execFile).mockImplementation((_file, _args, _options, callback) => {
+      callback?.(null, systemDirectoryReply("C:\\Windows\\System32").stdout, Buffer.alloc(0));
+      return {} as ReturnType<typeof execFile>;
+    });
+    vi.mocked(spawn).mockImplementation(() => gitProbeChild((complete) => complete("git version 2.56.0")));
+    const acceptsFloor = vi.fn(async ({ path }: { path: string }) => path === system);
+
+    await expect(withHostGitRecovery(installer, async ({ git }) => git?.path, undefined, acceptsFloor)).resolves.toBe(system);
+    expect(acceptsFloor.mock.calls.map(([git]) => git.path)).toEqual([bundled, system]);
+    await expect(discoverHostGitAsync(installer)).resolves.toMatchObject({ git: { path: bundled } });
   });
 
   it("rejects a semicolon in the bundle directory before calling the helper", async () => {
