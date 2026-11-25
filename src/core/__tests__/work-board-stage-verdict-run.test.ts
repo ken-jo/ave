@@ -14,7 +14,7 @@ import { ApprovalGate, IPC_APPROVAL_REQUEST, type ApprovalRequest } from "../../
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { ReadFileTool, WriteFileTool } from "../../tools/file-tools.js";
 import { ToolRegistry } from "../../tools/registry.js";
-import { autoStageOf, stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
+import { autoStageOf, runScopePermissions, stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
 import { stageRunHarness } from "../../work-board/workflow/__tests__/stage-run-harness.js";
 
 const MODEL_STAGE = autoStageOf("a", { gate: { type: "auto", pass: { kind: "model_verdict" } } });
@@ -29,7 +29,7 @@ async function withRun(
   const h = await stageRunHarness({
     observeRunWork: true,
     runner,
-    wiring: (store, { templates }) => ({ passConditions: workflowEngineExtensions(store, templates).passConditions }),
+    wiring: (store, { templates }) => ({ passConditions: workflowEngineExtensions(store, templates, runScopePermissions()).passConditions }),
   });
   await h.runThenEnd(() => test(h));
 }
