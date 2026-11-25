@@ -3251,6 +3251,12 @@ export const en = {
   "gitMarketplace.authority.filesystem": "Filesystem: {grant}",
 
   // homePrivacy
+  "extensionStart.cardPluginChild": "The plugin {name} would start without OS isolation. Allow this one start?",
+  "extensionStart.cardMcpStdio": "The MCP server {name} would start without OS isolation. Allow this one start?",
+  "extensionStart.cardWorker": "The plugin worker {name} would start without OS isolation. Allow this one start?",
+  "extensionStart.cardPluginHook": "The plugin hook {name} would run without OS isolation. Allow this one run?",
+  "extensionStart.declinedNoBackend": "{name} was not started: you declined to run it without OS isolation. Install the Windows sandbox in Settings > Permissions to run it isolated.",
+  "extensionStart.declinedHomePrivacy": "{name} was not started: you declined to run it without OS isolation. Fix the Ave folder permissions shown in Settings > Permissions and restart Ave to run it isolated.",
   "extensionStart.notStartedTitle": "Extension not started",
   "extensionStart.notStartedNoBackend": "{name} was not started: it would run without OS isolation and nobody approved it. Install the Windows sandbox in Settings > Permissions to run it isolated.",
   "extensionStart.notStartedHomePrivacy": "{name} was not started: it would run without OS isolation and nobody approved it. Fix the Ave folder permissions shown in Settings > Permissions and restart Ave to run it isolated.",

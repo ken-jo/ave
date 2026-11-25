@@ -217,9 +217,10 @@ async function runTurnInSpan(
     }
     const turnSignal = ac.signal;
     // Extension starts nothing confines wait for a person: a verified local turn asks one card each, a turn nobody can answer starts none.
+    // Any other turn only runs the ones a backend has come to confine since.
     const noApprover = self.deps.headless === true || self.deps.approvalSurface === "unavailable";
     const personPresent = userKeyboardVerified && !isRemoteControllerTurn && options.unattendedAuthority === undefined && !noApprover;
-    if (personPresent || noApprover) void settlePendingExtensionStarts({ sessionId: effectiveSessionId, attended: personPresent });
+    void settlePendingExtensionStarts(personPresent || noApprover ? { sessionId: effectiveSessionId, attended: personPresent } : undefined);
     const runLifecycle = <T>(operation: () => Promise<T>): Promise<T> => {
       const inherited = turnExtensionPolicyContext.getStore();
       const otherPrincipal = lifecycleProvenance.toolTrustOrigin === "file-content" || lifecycleProvenance.toolTrustOrigin === "agent-message" ||

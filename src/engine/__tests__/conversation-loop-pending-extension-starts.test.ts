@@ -6,6 +6,8 @@ import { ConversationLoop } from "../conversation-loop.js";
 import type { LLMProvider, StreamEvent } from "../llm/types.js";
 import { makeBasicConversationLoopDeps, ScriptedTurnProvider } from "./support/conversation-loop-fixtures.js";
 import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
+import { issueUnattendedTurnAuthority } from "../../shared/authorization-required.js";
+import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
 import {
   __resetExtensionStartsForTest, deferExtensionStart, listPendingExtensionStarts, setExtensionStartAsker, type ExtensionStartAsker,
 } from "../../permissions/extension-start-consent.js";
@@ -38,14 +40,29 @@ describe("waiting extension starts at a turn", () => {
     expect(notify).not.toHaveBeenCalled();
   });
 
-  it("leaves them waiting at a turn nobody typed", async () => {
+  it.each(["queued", "unattended owner", "remote controller"])("leaves them waiting at a %s turn", async (kind) => {
     const { loop, ask, notify, retry } = waiting();
-    await loop.runTurn("hello", {}, undefined, { inputOrigin: "queue-auto" });
+    const options = kind === "queued" ? { inputOrigin: "queue-auto" as const }
+      : kind === "unattended owner" ? { ...userKeyboardTurn(), unattendedAuthority: issueUnattendedTurnAuthority() }
+      : { inputOrigin: "tailnet-surface" as const, remoteControllerAuthority: bindRemoteControllerToSession({ kind: "tailnet-controller", actorId: "tailnet:owner",
+          pairedShare: { pairingId: "pairing", pairingEpoch: 1, shareId: "share", shareEpoch: 1, scope: "scope" },
+          pairedShareGuard: { isCurrent: () => true, refreshCurrent: async () => true } }, loop.getSessionId()) };
+    await loop.runTurn("hello", {}, undefined, options);
     await new Promise((resolve) => setImmediate(resolve));
     expect(ask).not.toHaveBeenCalled();
     expect(notify).not.toHaveBeenCalled();
     expect(retry).not.toHaveBeenCalled();
     expect(listPendingExtensionStarts().map((entry) => entry.state)).toEqual(["pending", "pending"]);
+  });
+
+  it("runs a start a backend has come to confine at any turn, with no card", async () => {
+    const { loop, ask, retry } = waiting();
+    const confined = vi.fn(async () => {});
+    deferExtensionStart({ key: "plugin-child:c", kind: "plugin-child", label: "c", cause: "no-backend", retry: confined, recheck: () => "confined" });
+    await loop.runTurn("hello", {}, undefined, { inputOrigin: "queue-auto" });
+    await vi.waitFor(() => expect(confined).toHaveBeenCalledTimes(1));
+    expect(ask).not.toHaveBeenCalled();
+    expect(retry).not.toHaveBeenCalled();
   });
 
   it.each([{ headless: true }, { approvalSurface: "unavailable" }])("starts none, with one notice each, at a turn nobody can answer (%o)", async (deps) => {

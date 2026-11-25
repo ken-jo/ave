@@ -1094,11 +1094,20 @@ describe("HostApi incarnation authority", () => {
       );
       const spawn = () => api.spawnWorker({ workerId: "w", command: "node", control: "output-only-v1" } as never);
       await runWithEffectGateContext({ headless: false, approvalSurface: "interactive", sessionId: "tool-session", toolName: "sample" }, spawn);
-      expect(ask.mock.calls.map(([start, session]) => [start.key, session.sessionId, session.attended])).toEqual([["worker:plugin-a/w", "tool-session", true]]);
+      expect(ask.mock.calls.map(([start, session]) => [start.key, start.label, session.sessionId, session.attended]))
+        .toEqual([["worker:plugin-a/w", "plugin-a / w", "tool-session", true]]);
       expect(runtimeTestState.spawnWorker).toHaveBeenCalledTimes(2);
 
+      // A no covers that spawn only: the next spawn in a tool call asks again.
+      ask.mockResolvedValueOnce("no");
+      const inToolCall = () => runWithEffectGateContext({ headless: false, approvalSurface: "interactive", sessionId: "tool-session", toolName: "sample" }, spawn);
+      await expect(inToolCall()).rejects.toThrow("extension-start-consent-required");
+      await inToolCall();
+      expect(ask).toHaveBeenCalledTimes(3);
+      ask.mockClear();
+
       await expect(spawn()).rejects.toThrow("extension-start-consent-required");
-      expect(ask).toHaveBeenCalledTimes(1);
+      expect(ask).not.toHaveBeenCalled();
       expect(listPendingExtensionStarts()).toMatchObject([{ key: "worker:plugin-a/w", kind: "worker", state: "pending" }]);
     } finally {
       __resetExtensionStartsForTest();

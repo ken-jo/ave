@@ -37,6 +37,9 @@ vi.mock("../../shared/policy-home.js", async original => {
 });
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  __resetExtensionStartsForTest, deferExtensionStart, listPendingExtensionStarts, setExtensionStartAsker, settlePendingExtensionStarts, takeExtensionStartGrant,
+} from "../extension-start-consent.js";
 import { resolve, win32 } from "node:path";
 import { realpathSync } from "node:fs";
 import { WindowsSandboxError } from "@anthropic-ai/sandbox-runtime";
@@ -52,7 +55,7 @@ import * as facts from "../../shared/windows-path-facts.js";
 import * as denyAcl from "../windows-deny-acl.js";
 import * as stampTargets from "../windows-stamp-targets.js";
 import { windowsDenyOperandKey } from "../sandbox-write-policy.js";
-import { assertExtensionStartAllowed, grantWindowsWorkerFilesystemAccess, initializeAsrtSandbox, isAsrtSandboxActive, isOfflineProcessConfinementActive, isPluginWorkerConfinementActive, resetAsrtSandbox, wrapToolCommand, wrapWorkerCommand } from "../asrt-sandbox.js";
+import { assertExtensionStartAllowed, grantWindowsWorkerFilesystemAccess, initializeAsrtSandbox, probeExtensionStart, isAsrtSandboxActive, isOfflineProcessConfinementActive, isPluginWorkerConfinementActive, resetAsrtSandbox, wrapToolCommand, wrapWorkerCommand } from "../asrt-sandbox.js";
 
 const manager = vi.hoisted(() => ({
   initialize: vi.fn(async () => undefined),
@@ -326,12 +329,23 @@ describe("background session isolation", () => {
     expect(isPluginWorkerConfinementActive()).toBe(false);
     expect(isOfflineProcessConfinementActive()).toBe(false);
     expect(() => assertExtensionStartAllowed()).toThrow("extension-start-consent-required");
+    // A start refused in this window waits; once the backend is ready it runs confined, with no card and no consent.
+    const ask = vi.fn(async () => "yes" as const);
+    const taken: unknown[] = [];
+    setExtensionStartAsker({ ask, notify: vi.fn() });
+    deferExtensionStart({ key: "plugin-child:early", kind: "plugin-child", label: "early", cause: "no-backend", recheck: () => probeExtensionStart(),
+      retry: async () => { taken.push(takeExtensionStartGrant("plugin-child:early"), probeExtensionStart()); } });
 
     succeed();
     await expect(initialization.windowsIsolation).resolves.toEqual({ status: "ready" });
     expect(isPluginWorkerConfinementActive()).toBe(true);
     // A ready backend confines the start: nobody is asked and no consent is needed.
     expect(() => assertExtensionStartAllowed()).not.toThrow();
+    await settlePendingExtensionStarts({ sessionId: "s1", attended: true });
+    expect(ask).not.toHaveBeenCalled();
+    expect(taken).toEqual([undefined, "confined"]);
+    expect(listPendingExtensionStarts()).toEqual([]);
+    __resetExtensionStartsForTest();
     expect(isOfflineProcessConfinementActive()).toBe(true);
     expect(manager.reset).not.toHaveBeenCalled();
   });

@@ -94,7 +94,8 @@ import {
   type ResolveApiKeyVendor,
 } from "../../../main/host-api/resolve-api-key.js";
 import { spawnWorker } from "../../../permissions/worker-spawn.js";
-import { runExtensionStart, workerStartKey } from "../../../permissions/extension-start-consent.js";
+import { pluginStartLabel, runExtensionStart, workerStartKey } from "../../../permissions/extension-start-consent.js";
+import { probeExtensionStart } from "../../../permissions/asrt-sandbox.js";
 import { declaredHostDirectoryFloorPierces } from "../../../plugins/sandbox-authority.js";
 import { routeExternalUrl } from "./external-url.js";
 import {
@@ -981,7 +982,8 @@ export function createHostApiFactory(
           ...(call.abortSignal ? { abortSignal: call.abortSignal } : {}),
         };
         const worker = await runExtensionStart(
-          { key: workerStartKey(pluginId, workerSpec.workerId), kind: "worker", label: `${manifest.name ?? pluginId} (${workerSpec.workerId})` },
+          { key: workerStartKey(pluginId, workerSpec.workerId), kind: "worker", label: `${pluginStartLabel(pluginId, manifest.name)} / ${workerSpec.workerId}`,
+            recheck: () => probeExtensionStart("worker") },
           session,
           (extensionStart) => spawnWorker({
             ...workerSpec,

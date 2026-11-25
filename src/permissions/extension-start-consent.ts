@@ -61,6 +61,9 @@ function burnExtensionStartConsent(authority: ExtensionStartAuthority): void {
 
 type PendingExtensionStartKind = "plugin-child" | "mcp-stdio" | "worker" | "plugin-hook";
 
+/** What the gate says about a waiting start now: a backend confines it, it still needs a person, or it is refused outright. */
+export type ExtensionStartRecheck = "confined" | "refused" | ExtensionStartUnconfinedCause;
+
 export interface PendingExtensionStart {
   /** One start identity; a consent answers this key only. */
   readonly key: string;
@@ -70,12 +73,18 @@ export interface PendingExtensionStart {
   readonly cause: ExtensionStartUnconfinedCause;
   /** Re-runs the start after a yes; it picks the parked consent up by key. Absent: the owner's next start does. */
   readonly retry?: () => Promise<void>;
+  /** Asked again before any card: the backend may have become ready since the start was refused. */
+  readonly recheck?: () => ExtensionStartRecheck;
 }
 
 export const pluginChildStartKey = (pluginId: string): string => `plugin-child:${pluginId}`;
 export const mcpStdioStartKey = (serverId: string): string => `mcp-stdio:${serverId}`;
 export const workerStartKey = (pluginId: string, workerId: string): string => `worker:${pluginId}/${workerId}`;
 export const pluginHookStartKey = (pluginId: string, hookId: string): string => `plugin-hook:${pluginId}/${hookId}`;
+
+/** A plugin names itself, so its id is always shown beside the name it chose. */
+export const pluginStartLabel = (pluginId: string, name?: string): string =>
+  name === undefined || name === pluginId ? pluginId : `${name} (${pluginId})`;
 
 export interface ExtensionStartSession {
   readonly sessionId: string;
@@ -92,53 +101,105 @@ export function turnExtensionStartSession(sessionId: string): ExtensionStartSess
   return { sessionId, attended, ...(turn?.abortSignal ? { abortSignal: turn.abortSignal } : {}) };
 }
 
+type ExtensionStartNotice = "declined" | "unattended";
+
 export interface ExtensionStartAsker {
-  /** One card for one start. "no-approver": nobody could answer. */
+  /** One card for one start. "no-approver": nobody answered. */
   ask(start: PendingExtensionStart, session: ExtensionStartSession): Promise<"yes" | "no" | "no-approver">;
-  /** One install-hint notice per start. */
-  notify(start: PendingExtensionStart, why: "declined" | "unattended"): void;
+  /** One install-hint notice per start and reason. */
+  notify(start: PendingExtensionStart, why: ExtensionStartNotice): void;
+  /** Audit row for a start that did not run, or that ran confined after waiting. */
+  record?(event: "waiting" | "confined" | ExtensionStartNotice, start: PendingExtensionStart): void;
 }
 
 type Entry = PendingExtensionStart & { state: "pending" | "asking" | "declined" };
 
+/** How long a consent waits for a start that has no retry of its own. */
+export const EXTENSION_START_GRANT_TTL_MS = 5 * 60_000;
+
 // A list, so one card could show every waiting start later; today each start gets its own card.
 const entries = new Map<string, Entry>();
-const parked = new Map<string, ExtensionStartAuthority>();
+const parked = new Map<string, { authority: ExtensionStartAuthority; expiresAt: number }>();
+const asking = new Set<string>();
 const noticed = new Set<string>();
+const recordedWaiting = new Set<string>();
+// Bumped when an extension is removed: an answer that arrives afterwards starts nothing.
+const removals = new Map<string, number>();
 let asker: ExtensionStartAsker | undefined;
+
+function record(event: Parameters<NonNullable<ExtensionStartAsker["record"]>>[0], start: PendingExtensionStart): void {
+  try {
+    asker?.record?.(event, start);
+  } catch (error) {
+    log.warn(`extension start audit failed (${start.kind}): %s`, errorMessage(error));
+  }
+}
+
+function recordWaiting(entry: Entry): void {
+  if (recordedWaiting.has(entry.key) || asker?.record === undefined) return;
+  recordedWaiting.add(entry.key);
+  record("waiting", entry);
+}
+
+function forget(key: string): void {
+  entries.delete(key);
+  recordedWaiting.delete(key);
+}
 
 export function setExtensionStartAsker(next: ExtensionStartAsker | undefined): void {
   asker = next;
+  // Starts deferred during boot, before the sink existed, are recorded now.
+  for (const entry of entries.values()) recordWaiting(entry);
 }
 
 export function listPendingExtensionStarts(): readonly (PendingExtensionStart & { readonly state: Entry["state"] })[] {
   return [...entries.values()].map((entry) => ({ ...entry }));
 }
 
-function queue(start: PendingExtensionStart): Entry {
-  const existing = entries.get(start.key);
-  // A start being asked about, or already declined, keeps its entry.
-  if (existing !== undefined && existing.state !== "pending") return existing;
-  const entry: Entry = { ...start, state: "pending" };
-  entries.set(start.key, entry);
-  return entry;
-}
-
 /** A sessionless site records its start here instead of running it. A declined start stays declined. */
 export function deferExtensionStart(start: PendingExtensionStart): void {
-  queue(start);
+  const existing = entries.get(start.key);
+  // A start being asked about, or already declined, keeps its entry.
+  if (existing !== undefined && existing.state !== "pending") return;
+  const entry: Entry = { ...start, state: "pending" };
+  entries.set(start.key, entry);
+  recordWaiting(entry);
 }
 
 /** The consent a yes parked for this key, removed from the list; the caller threads it to its spawn. */
 export function takeExtensionStartGrant(key: string): ExtensionStartAuthority | undefined {
-  const authority = parked.get(key);
+  const grant = parked.get(key);
+  if (grant === undefined) return undefined;
   parked.delete(key);
-  return authority;
+  if (Date.now() < grant.expiresAt) return grant.authority;
+  burnExtensionStartConsent(grant.authority);
+  return undefined;
 }
 
-function notifyOnce(start: PendingExtensionStart, why: "declined" | "unattended"): void {
-  if (noticed.has(start.key)) return;
-  noticed.add(start.key);
+/** The extension behind this key is gone or reconfigured: nothing waits for it and no answer starts it. */
+export function dropExtensionStart(key: string): void {
+  removals.set(key, (removals.get(key) ?? 0) + 1);
+  forget(key);
+  for (const why of ["declined", "unattended"]) noticed.delete(`${why}:${key}`);
+  const grant = parked.get(key);
+  parked.delete(key);
+  if (grant !== undefined) burnExtensionStartConsent(grant.authority);
+}
+
+/** Uninstall or disable: the plugin's child, workers and hooks. */
+export function dropPluginExtensionStarts(pluginId: string): void {
+  const child = pluginChildStartKey(pluginId);
+  const workers = workerStartKey(pluginId, "");
+  const hooks = pluginHookStartKey(pluginId, "");
+  for (const key of new Set([...entries.keys(), ...parked.keys(), ...asking])) {
+    if (key === child || key.startsWith(workers) || key.startsWith(hooks)) dropExtensionStart(key);
+  }
+}
+
+function notifyOnce(start: PendingExtensionStart, why: ExtensionStartNotice): void {
+  if (noticed.has(`${why}:${start.key}`)) return;
+  noticed.add(`${why}:${start.key}`);
+  record(why, start);
   try {
     asker?.notify(start, why);
   } catch (error) {
@@ -147,12 +208,15 @@ function notifyOnce(start: PendingExtensionStart, why: "declined" | "unattended"
 }
 
 async function answer(entry: Entry, session: ExtensionStartSession): Promise<ExtensionStartAuthority | undefined> {
-  if (entry.state !== "pending") return undefined;
+  // One card per start at a time, whichever site asks.
+  if (entry.state !== "pending" || asking.has(entry.key)) return undefined;
   if (!session.attended || asker === undefined) {
     notifyOnce(entry, "unattended");
     return undefined;
   }
-  // Claimed before the await: a concurrent turn never shows a second card for this start.
+  const waiting = entries.get(entry.key) === entry;
+  const removal = removals.get(entry.key);
+  asking.add(entry.key);
   entry.state = "asking";
   let outcome: "yes" | "no" | "no-approver";
   try {
@@ -160,10 +224,14 @@ async function answer(entry: Entry, session: ExtensionStartSession): Promise<Ext
   } catch (error) {
     log.warn(`extension start ask failed (${entry.kind}): %s`, errorMessage(error));
     outcome = "no-approver";
+  } finally {
+    asking.delete(entry.key);
   }
+  entry.state = "pending";
+  // Removed while the card was open: the answer is for something that is no longer there.
+  if (removals.get(entry.key) !== removal) return undefined;
   if (outcome === "yes") {
-    entries.delete(entry.key);
-    noticed.delete(entry.key);
+    if (waiting) forget(entry.key);
     return mintAuthority(entry.key);
   }
   if (outcome === "no") {
@@ -171,40 +239,59 @@ async function answer(entry: Entry, session: ExtensionStartSession): Promise<Ext
     notifyOnce(entry, "declined");
     return undefined;
   }
-  entry.state = "pending";
   notifyOnce(entry, "unattended");
   return undefined;
 }
 
-/** A turn began in this session: ask once per waiting start, then run the ones approved. Unattended: none starts. */
-export async function settlePendingExtensionStarts(session: ExtensionStartSession): Promise<void> {
-  for (const entry of [...entries.values()]) {
-    if (entries.get(entry.key) !== entry) continue;
+async function retryStart(entry: Entry): Promise<void> {
+  try {
+    await entry.retry?.();
+  } catch (error) {
+    log.warn(`waiting extension start failed (${entry.kind}): %s`, errorMessage(error));
+  }
+}
+
+/**
+ * A turn began in this session. A waiting start a backend now confines runs with no card. Each other one is asked once and
+ * the approved ones run. Unattended: none of those starts. No session: only the confined ones run and nobody is asked or told.
+ */
+export async function settlePendingExtensionStarts(session?: ExtensionStartSession): Promise<void> {
+  for (const waiting of [...entries.values()]) {
+    if (entries.get(waiting.key) !== waiting || asking.has(waiting.key)) continue;
+    let entry = waiting;
+    const now = entry.recheck?.();
+    if (now === "confined") {
+      // A no refused an unconfined start; this one is confined, so it runs either way.
+      forget(entry.key);
+      record("confined", entry);
+      await retryStart(entry);
+      continue;
+    }
+    if (now === "refused" || session === undefined) continue;
+    if (now !== undefined && now !== entry.cause) {
+      entry = { ...entry, cause: now };
+      entries.set(entry.key, entry);
+    }
     const authority = await answer(entry, session);
     if (authority === undefined) continue;
-    parked.set(entry.key, authority);
+    parked.set(entry.key, { authority, expiresAt: Date.now() + EXTENSION_START_GRANT_TTL_MS });
     if (entry.retry === undefined) continue;
     try {
-      await entry.retry();
-    } catch (error) {
-      log.warn(`approved extension start failed (${entry.kind}): %s`, errorMessage(error));
+      await retryStart(entry);
     } finally {
       // A retry that never reached its spawn leaves nothing behind for a later start.
-      if (parked.get(entry.key) === authority) parked.delete(entry.key);
+      if (parked.get(entry.key)?.authority === authority) parked.delete(entry.key);
       burnExtensionStartConsent(authority);
     }
   }
 }
 
-/** A session-bound site (a hook, a worker inside a tool call) asks now. Undefined: do not start. */
+/** A session-bound site (a hook, a worker inside a tool call) asks now. Its answer covers this run only. Undefined: do not start. */
 export async function requestExtensionStartConsent(
   start: PendingExtensionStart,
   session: ExtensionStartSession,
 ): Promise<ExtensionStartAuthority | undefined> {
-  const authority = await answer(queue(start), session);
-  // Unattended leaves nothing queued for this session-bound start: its next run asks for itself.
-  if (authority === undefined && entries.get(start.key)?.state === "pending") entries.delete(start.key);
-  return authority;
+  return answer({ ...start, state: "pending" }, session);
 }
 
 /**
@@ -235,6 +322,9 @@ export async function runExtensionStart<T>(
 export function __resetExtensionStartsForTest(): void {
   entries.clear();
   parked.clear();
+  asking.clear();
   noticed.clear();
+  recordedWaiting.clear();
+  removals.clear();
   asker = undefined;
 }

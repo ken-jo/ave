@@ -3253,6 +3253,12 @@ export const ko: Record<MessageCatalogKey, string> = {
   "gitMarketplace.authority.filesystem": "파일 접근: {grant}",
 
   // homePrivacy
+  "extensionStart.cardPluginChild": "플러그인 {name}이(가) OS 격리 없이 시작됩니다. 이번 한 번의 시작을 허용할까요?",
+  "extensionStart.cardMcpStdio": "MCP 서버 {name}이(가) OS 격리 없이 시작됩니다. 이번 한 번의 시작을 허용할까요?",
+  "extensionStart.cardWorker": "플러그인 워커 {name}이(가) OS 격리 없이 시작됩니다. 이번 한 번의 시작을 허용할까요?",
+  "extensionStart.cardPluginHook": "플러그인 훅 {name}이(가) OS 격리 없이 실행됩니다. 이번 한 번의 실행을 허용할까요?",
+  "extensionStart.declinedNoBackend": "{name}은(는) 시작되지 않았습니다. OS 격리 없이 실행하는 것을 거부하셨습니다. 격리된 상태로 실행하려면 설정 > 권한에서 Windows 샌드박스를 설치하세요.",
+  "extensionStart.declinedHomePrivacy": "{name}은(는) 시작되지 않았습니다. OS 격리 없이 실행하는 것을 거부하셨습니다. 격리된 상태로 실행하려면 설정 > 권한에 표시된 Ave 폴더 권한을 고친 뒤 Ave를 다시 시작하세요.",
   "extensionStart.notStartedTitle": "확장 기능이 시작되지 않았습니다",
   "extensionStart.notStartedNoBackend": "{name}은(는) 시작되지 않았습니다. OS 격리 없이 실행되는데 승인한 사람이 없습니다. 격리된 상태로 실행하려면 설정 > 권한에서 Windows 샌드박스를 설치하세요.",
   "extensionStart.notStartedHomePrivacy": "{name}은(는) 시작되지 않았습니다. OS 격리 없이 실행되는데 승인한 사람이 없습니다. 격리된 상태로 실행하려면 설정 > 권한에 표시된 Ave 폴더 권한을 고친 뒤 Ave를 다시 시작하세요.",

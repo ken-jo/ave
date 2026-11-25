@@ -6,9 +6,12 @@ import { mkdir, rm } from "node:fs/promises";
 import { mkdtempSync } from "node:fs";
 
 const mockConnect = vi.fn();
+const created = vi.hoisted(() => [] as unknown[]);
+const probe = vi.hoisted(() => ({ now: "no-backend" as "no-backend" | "confined" }));
 
 vi.mock("../mcp-client.js", () => ({
   McpClient: class {
+    constructor(config: unknown) { created.push(config); }
     connect = mockConnect;
     disconnect = vi.fn().mockResolvedValue(undefined);
     getState = () => ({ id: "files", status: "connected" as const, registeredTools: [] });
@@ -23,6 +26,7 @@ vi.mock("../mcp-governance.js", () => ({
   },
 }));
 vi.mock("../../tools/registry.js", () => ({ ToolRegistry: class { unregisterByMcp = vi.fn(); } }));
+vi.mock("../../permissions/asrt-sandbox.js", async (original) => ({ ...await original<typeof import("../../permissions/asrt-sandbox.js")>(), probeExtensionStart: () => probe.now }));
 
 import { McpManager } from "../mcp-manager.js";
 import type { McpServerConfig } from "../types.js";
@@ -52,6 +56,8 @@ async function makeManager() {
 
 beforeEach(async () => {
   mockConnect.mockReset();
+  created.length = 0;
+  probe.now = "no-backend";
   await mkdir(testDir, { recursive: true });
 });
 afterEach(() => __resetExtensionStartsForTest());
@@ -83,6 +89,46 @@ describe("an MCP server start that nothing confines", () => {
     await settlePendingExtensionStarts({ sessionId: "s1", attended: true });
     expect(mockConnect).toHaveBeenCalledTimes(1);
     expect(notify).toHaveBeenCalledTimes(1);
+  });
+
+  it("connects with no card once a backend confines the server", async () => {
+    const manager = await makeManager();
+    mockConnect.mockRejectedValueOnce(new ExtensionStartConsentRequiredError("no-backend")).mockResolvedValue(undefined);
+    await expect(manager.connectServer(SERVER)).rejects.toBeInstanceOf(ExtensionStartConsentRequiredError);
+    const ask = vi.fn(async () => "yes" as const);
+    setExtensionStartAsker({ ask, notify: vi.fn() });
+    probe.now = "confined";
+    await settlePendingExtensionStarts({ sessionId: "s1", attended: true });
+    expect(ask).not.toHaveBeenCalled();
+    expect(mockConnect).toHaveBeenCalledTimes(2);
+    expect(listPendingExtensionStarts()).toEqual([]);
+  });
+
+  it("never reconnects the old config of a server edited while it waited", async () => {
+    const manager = await makeManager();
+    const edited: McpServerConfig = { ...SERVER, url: "https://example.org/mcp" };
+    mockConnect.mockRejectedValue(new ExtensionStartConsentRequiredError("no-backend"));
+    await expect(manager.connectServer(SERVER)).rejects.toBeInstanceOf(ExtensionStartConsentRequiredError);
+    await expect(manager.connectServer(edited)).rejects.toBeInstanceOf(ExtensionStartConsentRequiredError);
+    mockConnect.mockResolvedValue(undefined);
+    created.length = 0;
+    setExtensionStartAsker({ ask: async () => "yes", notify: vi.fn() });
+    await settlePendingExtensionStarts({ sessionId: "s1", attended: true });
+    expect(created).toEqual([edited]);
+    expect(listPendingExtensionStarts()).toEqual([]);
+  });
+
+  it("forgets the waiting start of a removed server", async () => {
+    const manager = await makeManager();
+    mockConnect.mockRejectedValue(new ExtensionStartConsentRequiredError("no-backend"));
+    await expect(manager.connectServer(SERVER)).rejects.toBeInstanceOf(ExtensionStartConsentRequiredError);
+    await manager.removeConfig(SERVER.id);
+    expect(listPendingExtensionStarts()).toEqual([]);
+    const ask = vi.fn(async () => "yes" as const);
+    setExtensionStartAsker({ ask, notify: vi.fn() });
+    await settlePendingExtensionStarts({ sessionId: "s1", attended: true });
+    expect(ask).not.toHaveBeenCalled();
+    expect(mockConnect).toHaveBeenCalledTimes(1);
   });
 
   it("does not queue any other connect failure", async () => {

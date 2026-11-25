@@ -26,7 +26,10 @@ import { dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:p
 import { admitWindowsReparse, pinWindowsPaths, windowsObjectKey, windowsPathKey, type WindowsPathFacts } from "../shared/windows-path-facts.js";
 import { isHomeAnchor, policyHomeAnchors } from "../shared/policy-home.js";
 import { aveHome, assertAveHomePrivacyForConfinement, getAveHomePrivacyFailure, isAveHomePrivacyApprovable, AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE } from "../shared/ave-home.js";
-import { ExtensionStartConsentRequiredError, presentExtensionStartConsent, type ExtensionStartPresentation } from "./extension-start-consent.js";
+import {
+  ExtensionStartConsentRequiredError, isExtensionStartConsentRequired, presentExtensionStartConsent,
+  type ExtensionStartPresentation, type ExtensionStartRecheck,
+} from "./extension-start-consent.js";
 import { agentPluginDataRoot } from "../marketplace/content/agent-plugin-data.js";
 import { AVE_HOME_ISOLATION_GUARD_ACTIVE, checkSandboxStampTargets, testSandboxPrivateBase } from "../shared/ave-home-test-guard.js";
 import { expandLeadingTilde, leadingTildeHome } from "../shared/home-tilde.js";
@@ -1207,6 +1210,16 @@ export function isShellSandboxActive(): boolean {
 export function isPluginWorkerConfinementActive(): boolean {
   if (getAveHomePrivacyFailure() !== undefined) return false;
   return active && isPluginWorkerConfinementRequestedAtBoot() && !windowsExternalConfinement;
+}
+
+/** What the gate answers a waiting start now, with no consent: a backend that became ready after boot confines it. */
+export function probeExtensionStart(holder?: "worker"): ExtensionStartRecheck {
+  try {
+    assertExtensionStartAllowed(holder === undefined ? undefined : { holder });
+    return "confined";
+  } catch (error) {
+    return isExtensionStartConsentRequired(error) ? error.unconfinedCause : "refused";
+  }
 }
 
 // Refuse an extension start that nothing would confine unless a person consented to this one start.

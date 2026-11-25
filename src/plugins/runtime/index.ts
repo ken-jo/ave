@@ -54,7 +54,10 @@ import { withPluginInstallLock, hasExclusivePluginLifecycleMutation, isPluginIns
 import type { SpawnConfinement } from "../../permissions/confined-child.js";
 import { prepareMxcPluginChildLaunch } from "../isolation/mxc-plugin-child-launch.js";
 import { isMxcExtensionBackendSelected } from "../../sandbox/wrap-bundled-command.js";
-import { deferExtensionStart, isExtensionStartConsentRequired, pluginChildStartKey, takeExtensionStartGrant } from "../../permissions/extension-start-consent.js";
+import {
+  deferExtensionStart, dropPluginExtensionStarts, isExtensionStartConsentRequired, pluginChildStartKey, pluginStartLabel, takeExtensionStartGrant,
+} from "../../permissions/extension-start-consent.js";
+import { probeExtensionStart } from "../../permissions/asrt-sandbox.js";
 import { capturePluginSandboxGrant, createOutOfProcessPluginFactory, isPluginSandboxGrantCovered, PluginSandboxGrantError, pluginFactoryDeadlineMs, pluginStopBudgetMs } from "../isolation/out-of-process-plugin.js";
 import { PluginChildTerminationUnverifiedError } from "../isolation/plugin-child-transport.js";
 import { bindPluginInstanceIntegrity, recordPluginFactoryIntegrity } from "../runtime-integrity-evidence.js";
@@ -2712,9 +2715,10 @@ abstract class PluginRuntimeState {
     deferExtensionStart({
       key: pluginChildStartKey(manifest.id),
       kind: "plugin-child",
-      label: manifest.name ?? manifest.id,
+      label: pluginStartLabel(manifest.id, manifest.name),
       cause: error.unconfinedCause,
       retry: async () => { await this.addPlugin(manifest.id); },
+      recheck: () => probeExtensionStart(),
     });
     return true;
   }
@@ -3257,6 +3261,7 @@ abstract class PluginRuntimePublicationState extends PluginRuntimeState {
         if (this.pendingDisabledRetirements.has(pluginId)) {
           this.inactivePluginIds.add(pluginId);
           this.disabledPluginIds.add(pluginId);
+          dropPluginExtensionStarts(pluginId);
         }
         this.invalidatePluginUiRevision(pluginId);
         if (predecessorAuthKey !== undefined) {
@@ -6313,6 +6318,8 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
     options: { preserveConfigOverride?: boolean } = {},
   ): Promise<void> {
     const canonicalPluginId = this.resolveKnownPluginId(pluginId);
+    // A removed plugin has no start left to ask about.
+    dropPluginExtensionStarts(canonicalPluginId);
     // Cancel dependency-held restart work before entering the lifecycle lock.
     this.pendingRestartCancellations.get(canonicalPluginId)?.cancel();
     return withPluginInstallLock(canonicalPluginId, () =>
@@ -6898,6 +6905,7 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
             }
             this.inactivePluginIds.add(canonicalPluginId);
             this.disabledPluginIds.add(canonicalPluginId);
+            dropPluginExtensionStarts(canonicalPluginId);
             if (unpublishedCleanup) {
               try {
                 await unpublishedCleanup();

@@ -6,6 +6,8 @@ vi.mock("node:fs", async original => (await import("../../../__tests__/support/s
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const factory = vi.hoisted(() => ({ specs: [] as Array<{ takeExtensionStart?: () => unknown }> }));
+const probe = vi.hoisted(() => ({ now: "no-backend" as "no-backend" | "confined" }));
+vi.mock("../../../permissions/asrt-sandbox.js", async (original) => ({ ...await original<typeof import("../../../permissions/asrt-sandbox.js")>(), probeExtensionStart: () => probe.now }));
 
 vi.mock("../../isolation/out-of-process-plugin.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../isolation/out-of-process-plugin.js")>();
@@ -56,6 +58,7 @@ function runtime(): PluginRuntime {
 afterEach(() => {
   __resetExtensionStartsForTest();
   factory.specs.length = 0;
+  probe.now = "no-backend";
 });
 
 describe("a plugin child start that nothing confines", () => {
@@ -63,12 +66,32 @@ describe("a plugin child start that nothing confines", () => {
     const subject = runtime();
     const addPlugin = vi.spyOn(subject, "addPlugin").mockResolvedValue("started");
     (subject as unknown as RuntimeInternals).reportAttemptFactoryFailure(MANIFEST, new ExtensionStartConsentRequiredError("no-backend"), {});
-    expect(listPendingExtensionStarts()).toMatchObject([{ key: KEY, kind: "plugin-child", label: "Pending Start Fixture", cause: "no-backend", state: "pending" }]);
+    expect(listPendingExtensionStarts()).toMatchObject([{ key: KEY, kind: "plugin-child", label: "Pending Start Fixture (pendingstartfixture)", cause: "no-backend", state: "pending" }]);
     expect(addPlugin).not.toHaveBeenCalled();
 
     setExtensionStartAsker({ ask: async () => "yes", notify: vi.fn() });
     await settlePendingExtensionStarts(ATTENDED);
     expect(addPlugin).toHaveBeenCalledExactlyOnceWith(PLUGIN_ID);
+  });
+
+  it("re-adds the plugin with no card once a backend confines it", async () => {
+    const subject = runtime();
+    const addPlugin = vi.spyOn(subject, "addPlugin").mockResolvedValue("started");
+    (subject as unknown as RuntimeInternals).reportAttemptFactoryFailure(MANIFEST, new ExtensionStartConsentRequiredError("no-backend"), {});
+    const ask = vi.fn(async () => "yes" as const);
+    setExtensionStartAsker({ ask, notify: vi.fn() });
+    probe.now = "confined";
+    await settlePendingExtensionStarts(ATTENDED);
+    expect(ask).not.toHaveBeenCalled();
+    expect(addPlugin).toHaveBeenCalledExactlyOnceWith(PLUGIN_ID);
+  });
+
+  it("forgets the waiting start of a removed plugin", async () => {
+    const subject = runtime();
+    (subject as unknown as RuntimeInternals).reportAttemptFactoryFailure(MANIFEST, new ExtensionStartConsentRequiredError("no-backend"), {});
+    deferExtensionStart({ key: `worker:${PLUGIN_ID}/w`, kind: "worker", label: "w", cause: "no-backend" });
+    await subject.removePlugin(PLUGIN_ID).catch(() => {});
+    expect(listPendingExtensionStarts()).toEqual([]);
   });
 
   it("queues a refused replacement too, and keeps it a failure of that attempt", () => {

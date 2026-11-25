@@ -8,7 +8,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { planWindowsSandbox } from "../../boot/steps/windows-sandbox-plan.js";
 import { _resetAveHomePrivacyForTest, setAveHomePrivacyAtBoot } from "../../shared/ave-home.js";
-import { EXTENSION_START_CONSENT_REQUIRED_CODE } from "../extension-start-consent.js";
+import {
+  __resetExtensionStartsForTest, EXTENSION_START_CONSENT_REQUIRED_CODE, requestExtensionStartConsent, setExtensionStartAsker,
+} from "../extension-start-consent.js";
 import { assertExtensionStartAllowed } from "../asrt-sandbox.js";
 import {
   decidePermission, NO_APPROVER_MESSAGE, offersFloorSessionAllow,
@@ -46,7 +48,7 @@ interface Row {
   unknown: UnknownClass;
   today: Observation;
   core?: Partial<Observation>;
-  observe: () => Observation;
+  observe: () => Observation | Promise<Observation>;
 }
 
 const PIPELINE_NAME: Record<PermissionPipelineOutcome, Outcome> = {
@@ -281,7 +283,7 @@ const ROWS: readonly Row[] = [
       expect(publishExtensionPlan({ state: "unavailable", reason: "runtime-start-failed" }, true)).toBe("fallback:runtime-start-failed");
       return extensionStart({ backend: "mxc" });
     } },
-  // No setting answers it: every start asks for itself (the single use is driven in extension-start-consent.test.ts).
+  // No setting answers it. The waiver is observed: a person's yes starts one start, and the same yes does not start a second.
   { id: "L4", point: "Windows extension start while home privacy failed", tree: "no row", unknown: "U2",
     today: { outcome: "ask-human", reason: "extension-start-consent-required", waiver: "once" },
     observe: () => {
@@ -289,7 +291,14 @@ const ROWS: readonly Row[] = [
       setPluginWorkerConfinementRequestedAtBoot(true);
       setAveHomePrivacyAtBoot({ enforcement: "none", home: FIXTURE_HOME, category: "read-back-failed", reason: "fixture" });
       const first = extensionStart();
-      return { ...first, waiver: extensionStart().outcome === "ask-human" ? "once" : "none" };
+      setExtensionStartAsker({ ask: async () => "yes", notify: () => {} });
+      const key = "plugin-child:fixture";
+      return requestExtensionStartConsent({ key, kind: "plugin-child", label: "fixture", cause: "home-privacy-unverified" }, { sessionId: "s1", attended: true })
+        .then((authority): Observation => {
+          const start = () => extensionStart({ start: { key, authority, spend: true } }).outcome;
+          if (start() !== "unasked") return { ...first, waiver: "none" };
+          return { ...first, waiver: start() === "ask-human" ? "once" : "session" };
+        });
     } },
   { id: "L5", point: "Windows extension start, settled with no backend", tree: "no row", unknown: "U2",
     today: { outcome: "ask-human", reason: "unavailable:runtime-start-failed" },
@@ -356,7 +365,7 @@ const EXCEPTIONS: Readonly<Record<string, readonly string[]>> = {
 
 // Inconsistencies no driven row can show, and why.
 const INCONSISTENCIES_WITHOUT_ROW: Readonly<Record<string, string>> = {
-  I2: "per-start part closed (row L5 asks per start); the batch card waits for the owner",
+  I2: "one card for every waiting start: an open owner question (batch card); L5 shows today's answer, one ask per start",
   I3: "inference child route: spawn path, not driven",
   I4: "lives on the device-path branch, not on main",
   I6: "stage workspaces are not on main",
@@ -417,6 +426,7 @@ const NOT_DRIVEN: Readonly<Record<string, string>> = {
 const HOST_PLATFORM = process.platform;
 
 afterEach(() => {
+  __resetExtensionStartsForTest();
   setProcessPlatform(HOST_PLATFORM);
   __resetSandboxRequestedAtBootForTest();
   __resetWindowsSandboxSubstrateForTest();
@@ -424,8 +434,8 @@ afterEach(() => {
 });
 
 describe("permission vocabulary contract", () => {
-  it.each(ROWS.map(row => [row.id, row.point, row] as const))("%s %s", (_id, _point, row) => {
-    expect(row.observe()).toEqual(row.today);
+  it.each(ROWS.map(row => [row.id, row.point, row] as const))("%s %s", async (_id, _point, row) => {
+    expect(await row.observe()).toEqual(row.today);
   });
 
   it("keeps every row inside the closed vocabulary", () => {

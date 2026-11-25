@@ -132,6 +132,10 @@ describe.each([
     ask.mockResolvedValueOnce("no");
     await expect(turnExtensionPolicyContext.run(TURN, () => runOneHookScript(hook, payload))).resolves.toMatchObject({ decision: "deny" });
     expect(spawn).toHaveBeenCalledTimes(2);
+    // That no was for that run: the next run asks again and a yes runs it.
+    await expect(turnExtensionPolicyContext.run(TURN, () => runOneHookScript(hook, payload))).resolves.toMatchObject({ decision: "allow", reason: "fixture" });
+    expect(ask).toHaveBeenCalledTimes(4);
+    expect(spawn).toHaveBeenCalledTimes(3);
   });
 
   it.each(["plugin worker", "plugin child", "MCP stdio"])("never starts %s without a consent, starts it once on a yes and asks again for the next start", async (kind) => {
