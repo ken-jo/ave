@@ -1,10 +1,6 @@
-import {
-  exactRulePassesUnsandboxedShellAsk,
-  type HostShellExecutionPlan,
-  type HostShellExecutionPlanAuditProjection,
-  requiresUnsandboxedShellAsk,
-} from "../permissions/host-shell-execution-plan.js";
+import type { HostShellExecutionPlan, HostShellExecutionPlanAuditProjection } from "../permissions/host-shell-execution-plan.js";
 import { t } from "../i18n/runtime.js";
+import { exactRulePassesUnsandboxedShellAsk, requiresUnsandboxedShellAsk } from "./unsandboxed-shell-ask.js";
 
 type ShellEnvironmentPlan = Pick<HostShellExecutionPlanAuditProjection,
   "platform" | "mode" | "substrate" | "capability" | "requiresExplicitUserApproval" | "fallbackReason" | "installHints">;

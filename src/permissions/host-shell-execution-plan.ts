@@ -7,6 +7,9 @@ import { egressProtocolCoverageFor, type EgressProtocolCoverage, type SandboxCon
 import { isRecord } from "../shared/is-record.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { isPowerShellStartupPinned } from "../shared/powershell-startup-policy.js";
+import { ASK_EVERY_COMMAND_SUFFIX, EXACT_RULE_PASS_MARKER, requiresUnsandboxedShellAsk } from "../shared/unsandboxed-shell-ask.js";
+
+export { exactRulePassesUnsandboxedShellAsk, requiresUnsandboxedShellAsk } from "../shared/unsandboxed-shell-ask.js";
 
 export const HOST_SHELL_EXECUTION_PLAN_VERSION = "host-shell-execution-plan/v4" as const;
 
@@ -334,9 +337,6 @@ export function buildHostShellExecutionPlan(input: {
   });
 }
 
-const ASK_EVERY_COMMAND_SUFFIX = ":ask";
-const EXACT_RULE_PASS_MARKER = ":home-verified";
-
 // The deny for a "home-privacy-helper-unavailable" plan: shells, hooks and their tool results all carry this restart notice.
 export const HOME_PRIVACY_HELPER_UNAVAILABLE_SHELL_DENIAL = Object.freeze({
   code: "home-privacy-helper-unavailable",
@@ -345,21 +345,6 @@ export const HOME_PRIVACY_HELPER_UNAVAILABLE_SHELL_DENIAL = Object.freeze({
 
 export function isHomePrivacyHelperUnavailablePlan(plan: Pick<HostShellExecutionPlan, "mode" | "fallbackReason"> | undefined): boolean {
   return plan?.mode === "blocked" && plan.fallbackReason === "home-privacy-helper-unavailable";
-}
-
-// Plain routes take this floor when requested shell containment lacks proof or boot cannot establish Ave home privacy.
-// A missing privacy helper blocks the plan before the floor is considered.
-export function requiresUnsandboxedShellAsk(plan: HostShellExecutionPlan | undefined): boolean {
-  if (plan === undefined || plan.mode !== "plain" || plan.sandboxed || plan.capability.kind !== "none" ||
-    plan.requiresExplicitUserApproval !== true || !plan.identity.endsWith(ASK_EVERY_COMMAND_SUFFIX)) return false;
-  return plan.executionRequest === "host"
-    ? plan.fallbackReason === "none"
-    : plan.executionRequest === "default" && plan.fallbackReason !== "none";
-}
-
-// A saved exact rule can answer this floor (tree T:151, T:232) when boot verified Ave home privacy.
-export function exactRulePassesUnsandboxedShellAsk(plan: HostShellExecutionPlan | undefined): boolean {
-  return plan !== undefined && requiresUnsandboxedShellAsk(plan) && plan.identity.endsWith(EXACT_RULE_PASS_MARKER + ASK_EVERY_COMMAND_SUFFIX);
 }
 
 // An unpinned native parser needs one-shot authority before startup. Existing
