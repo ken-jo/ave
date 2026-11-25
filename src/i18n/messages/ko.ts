@@ -1096,8 +1096,8 @@ export const ko: Record<MessageCatalogKey, string> = {
   "be_pluginUiHost.pluginUiLoadingDesc": "익스텐션 화면을 로딩합니다.",
 
   // be_policyModel
-  "be_policyModel.userDenyCoversPierce": "읽기 거부 규칙 {rule}이(가) 이 실행에 필요한 {pierce}의 읽기를 막고 있어 실행을 거부했습니다",
-  "be_policyModel.userDenyMayCoverPierce": "읽기 거부 규칙 {rule}이(가) 이 실행에 필요한 {pierce}의 읽기를 막는지 Ave가 판단할 수 없어 실행을 거부했습니다",
+  "be_policyModel.userDenyCoversPierce": "읽기 거부 규칙 {rule}이(가) 이 실행에 필요한 {pierce}의 읽기를 막고 있어 실행을 거부했습니다 ({code})",
+  "be_policyModel.userDenyMayCoverPierce": "읽기 거부 규칙 {rule}이(가) 이 실행에 필요한 {pierce}의 읽기를 막는지 Ave가 판단할 수 없어 실행을 거부했습니다 ({code})",
 
   // be_policyStore
   "be_policyStore.managedPolicyUserCannotChange": "IT 관리 정책은 사용자가 변경할 수 없습니다.",

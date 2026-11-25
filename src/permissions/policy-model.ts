@@ -84,14 +84,25 @@ export function policyGrantRow(path: string, access: PolicyGrantRow["access"], r
   return { path, literal, access, reason };
 }
 
+/** A launch refused because a user's read deny covers, or may cover, a host pierce. The message ends with its code, so the
+ * plugin card shows it as a container refusal. */
+export class UserReadDenyPierceError extends Error {
+  constructor(readonly code: "user-deny-covers-pierce" | "user-deny-cover-undecided", message: string) {
+    super(message);
+    this.name = "UserReadDenyPierceError";
+  }
+}
+
 /** A host pierce at or beneath a user's read deny: the user's rule wins, so the launch is refused and names it. */
 export function userDenyCoversPierce(rule: string, pierce: string): Error {
-  return new Error(t("be_policyModel.userDenyCoversPierce", { rule, pierce }));
+  const code = "user-deny-covers-pierce";
+  return new UserReadDenyPierceError(code, t("be_policyModel.userDenyCoversPierce", { rule, pierce, code }));
 }
 
 /** A user's read deny whose cover of a host pierce cannot be decided: the launch is refused as if it covered, and says it cannot tell. */
 export function userDenyMayCoverPierce(rule: string, pierce: string): Error {
-  return new Error(t("be_policyModel.userDenyMayCoverPierce", { rule, pierce }));
+  const code = "user-deny-cover-undecided";
+  return new UserReadDenyPierceError(code, t("be_policyModel.userDenyMayCoverPierce", { rule, pierce, code }));
 }
 
 export function isPolicyFloorRow(row: PolicyRow): row is PolicyFloorRow {

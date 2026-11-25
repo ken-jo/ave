@@ -167,6 +167,10 @@ describe.runIf(hostPlatform === "win32")("a user's read deny over a plugin's cer
     try {
       const card = (id: string) => runtime.listPluginCards().find((entry) => entry.id === id);
       expect(card(CERTS_PLUGIN)?.loadStatus).toBe("failed");
+      // The card carries the refusal, rule named, not only the lifecycle log.
+      expect(card(CERTS_PLUGIN)?.installFailureMessage).toBe(
+        `Your read deny ${certs()} covers ${certs()}, which this launch needs to read; the launch is refused (user-deny-covers-pierce)`);
+      expect(card(OTHER_PLUGIN)?.installFailureMessage).toBeUndefined();
       expect(runtime.listPluginIds()).not.toContain(CERTS_PLUGIN);
       expect(runtimeErrors.filter((line) => line.includes(CERTS_PLUGIN))).toEqual([
         expect.stringContaining(`Your read deny ${certs()} covers ${certs()}, which this launch needs to read; the launch is refused`),
