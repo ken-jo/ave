@@ -1,4 +1,4 @@
-import { lstatSync, readdirSync, readlinkSync, type Stats } from "node:fs";
+import { lstatSync, readlinkSync, type Stats } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { SANDBOX_NAMED_ENTRIES } from "./sandbox-write-policy.js";
 import { parseSandboxWrappedWords, quoteSandboxWrappedWord } from "./sandbox-wrapped-command.js";
@@ -79,67 +79,68 @@ export function macWriteRootNameRules(writeRoots: readonly string[]): string {
   return rules.join("\n");
 }
 
-// Follow `entry` beneath `root` (a resolved path) one component at a time, the way the kernel will: where it ends, and every link
-// passed on the way, each at its own resolved location and under the name the folder gives it. An absent tail is kept as spelled.
+// Follow `entry` beneath `root` (a resolved path) one component at a time, the way the kernel will. `visited` is every name the
+// walk looks up, in order: links, real directories, the directories a `..` steps out of, and the first absent name, where the
+// walk ends. `linked` says whether any of them was a link. An absent tail is kept as spelled.
 const MAX_NAMED_ENTRY_LINKS = 40;
-export function followNamedEntry(root: string, entry: string): { physical: string; links: string[] } {
-  const links: string[] = [];
+export function followNamedEntry(root: string, entry: string): { physical: string; visited: string[]; linked: boolean } {
+  const visited: string[] = [];
+  let links = 0;
   let current = root;
   const pending = entry.split("/");
   while (pending.length > 0) {
     const name = pending.shift();
     if (name === undefined || name === "" || name === ".") continue;
-    if (name === "..") { current = dirname(current); continue; }
+    if (name === "..") { visited.push(current); current = dirname(current); continue; }
     const candidate = join(current, name);
+    visited.push(candidate);
     let stat: Stats;
     try { stat = lstatSync(candidate); }
     catch (error) {
-      if (error instanceof Error && "code" in error && (error.code === "ENOENT" || error.code === "ENOTDIR")) return { physical: join(candidate, ...pending), links };
+      if (error instanceof Error && "code" in error && (error.code === "ENOENT" || error.code === "ENOTDIR")) {
+        return { physical: join(candidate, ...pending), visited, linked: links > 0 };
+      }
       throw error;
     }
     if (!stat.isSymbolicLink()) { current = candidate; continue; }
-    // The folder may hold the link under another case or normalization than the one asked for; a literal rule needs the stored one.
-    const fold = (text: string): string => text.normalize("NFC").toLowerCase();
-    const listed = readdirSync(current);
-    links.push(join(current, listed.includes(name) ? name : listed.find(stored => fold(stored) === fold(name)) ?? name));
-    if (links.length > MAX_NAMED_ENTRY_LINKS) throw new Error(t("sandboxPolicy.tooLarge"));
+    links += 1;
+    if (links > MAX_NAMED_ENTRY_LINKS) throw new Error(t("sandboxPolicy.tooLarge"));
     const target = readlinkSync(candidate);
     if (isAbsolute(target)) current = "/";
     pending.unshift(...target.split("/"));
   }
-  return { physical: current, links };
+  return { physical: current, visited, linked: links > 0 };
+}
+
+// A path as a pattern that also matches its other spellings on a volume that folds case and normalization: each ASCII letter in
+// either case, and each run of other characters as any run within one name. Beneath a write root the root is taken as given (it
+// is a resolved spelling) and only the rest is widened, which keeps the pattern short.
+function foldedPathPattern(path: string, writeRoots: readonly string[]): string {
+  const exact = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&").replace(/["\r\n]/gu, ".");
+  const folded = (text: string): string => text.replace(/\P{ASCII}+|[a-z]|[.*+?^${}()|[\]\\"\r\n]/giu, part =>
+    /^[a-z]$/iu.test(part) ? `[${part.toLowerCase()}${part.toUpperCase()}]` : /["\r\n]/u.test(part) ? "." : part.charCodeAt(0) > 0x7f ? "[^/]+" : `\\${part}`);
+  const base = writeRoots.map(root => root.replace(/\/+$/u, "")).filter(root => root !== "" && path.startsWith(`${root}/`))
+    .sort((left, right) => right.length - left.length)[0];
+  const pattern = base === undefined ? folded(path) : `${exact(base)}${folded(path.slice(base.length))}`;
+  if (Buffer.byteLength(pattern) + 8 > MAX_SEATBELT_STRING_BYTES) throw new Error(t("sandboxPolicy.tooLarge"));
+  return pattern;
 }
 
 // Where a named entry is a link, or lies behind one (`.agents -> tools/agents`, `.ave/commands -> ../cmds`, `.ave -> conf`), Seatbelt
-// sees a write at the resolved path, which the rules above do not name. Each resolved target is denied as a directory, present or
-// not. Every link passed on the way cannot be removed, replaced or renamed over, or the entry could be pointed somewhere new. The
-// targets, the links and the folders above them inside a write root cannot be moved away, so no name on the way can be emptied and
-// filled again.
-export function macLinkedNameTargetRules(targets: readonly string[], links: readonly string[], writeRoots: readonly string[]): string {
-  const rules = new Set<string>();
-  const literal = (path: string): string => {
-    const text = JSON.stringify(path);
-    if (Buffer.byteLength(text) > MAX_SEATBELT_STRING_BYTES) throw new Error(t("sandboxPolicy.tooLarge"));
-    return text;
-  };
-  const pinAbove = (path: string): void => {
-    for (const root of writeRoots) {
-      const base = root.replace(/\/+$/u, "");
-      if (!path.startsWith(`${base}/`)) continue;
-      for (let above = path.slice(0, path.lastIndexOf("/")); above.length > base.length; above = above.slice(0, above.lastIndexOf("/"))) {
-        rules.add(`(deny file-write-unlink (literal ${literal(above)}))`);
-      }
-    }
-  };
-  for (const target of targets) {
-    rules.add(`(deny file-write* file-write-create file-write-unlink (subpath ${literal(target)}))`);
-    pinAbove(target);
-  }
-  for (const link of links) {
-    rules.add(`(deny file-write-create file-write-unlink (literal ${literal(link)}))`);
-    pinAbove(link);
-  }
-  return [...rules].join("\n");
+// sees a write at the resolved path, which the name rules above do not cover. Two kinds of rule hold it, and there is no other
+// mechanism:
+//   - each resolved target is denied as a directory, present or not;
+//   - every name the walk to it looked up (`visited` above) can be neither created, removed nor renamed, in either direction.
+// Why the second is enough. Where a name resolves is decided by that walk alone: at each step the kernel looks one name up in the
+// directory the previous steps reached, and gets a link's text, a directory, or nothing. A link's text cannot be edited in place;
+// what a name gives can change only by removing, creating or renaming an entry under that name, and the rules deny all three for
+// every name looked up, including the directory a `..` steps out of and the first absent name. So no step can come out
+// differently, and the entry resolves to the denied target for as long as the command runs.
+export function macLinkedNameTargetRules(targets: readonly string[], visited: readonly string[], writeRoots: readonly string[]): string {
+  return [...new Set([
+    ...targets.map(target => `(deny file-write* file-write-create file-write-unlink (regex #"^${foldedPathPattern(target, writeRoots)}(/|$)"))`),
+    ...visited.filter(path => path !== "/").map(path => `(deny file-write-create file-write-unlink (regex #"^${foldedPathPattern(path, writeRoots)}$"))`),
+  ])].join("\n");
 }
 
 // The default macOS volume folds case and normalization, so two spellings that differ only there name one directory. On a volume that

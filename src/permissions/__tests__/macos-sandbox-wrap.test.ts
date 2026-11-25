@@ -143,23 +143,33 @@ describe("named entry rules", () => {
 });
 
 describe("linked name target rules", () => {
-  it("adds nothing without a target or a link", () => {
+  const body = (rule: string) => new RegExp(/\(regex #"([^"]*)"\)/u.exec(rule)?.[1] ?? "$^", "u");
+
+  it("adds nothing without a target or a visited name", () => {
     expect(macLinkedNameTargetRules([], [], ["/Users/example/project"])).toBe("");
   });
 
-  it("denies each target as a directory, pins each link, and pins the folders above both inside a write root", () => {
-    expect(macLinkedNameTargetRules(
-      ["/Users/example/project/tools/shared/agents", "/Users/example/elsewhere/cmds"], ["/Users/example/project/hops/l1", "/tmp/x/l2"], ["/Users/example/project/", "/tmp/x"],
-    ).split("\n")).toEqual([
-      '(deny file-write* file-write-create file-write-unlink (subpath "/Users/example/project/tools/shared/agents"))',
-      '(deny file-write-unlink (literal "/Users/example/project/tools/shared"))',
-      '(deny file-write-unlink (literal "/Users/example/project/tools"))',
-      '(deny file-write* file-write-create file-write-unlink (subpath "/Users/example/elsewhere/cmds"))',
-      '(deny file-write-create file-write-unlink (literal "/Users/example/project/hops/l1"))',
-      '(deny file-write-unlink (literal "/Users/example/project/hops"))',
-      '(deny file-write-create file-write-unlink (literal "/tmp/x/l2"))',
-    ]);
-    expect(() => macLinkedNameTargetRules([`/${"가".repeat(400)}`], [], [])).toThrow(t("sandboxPolicy.tooLarge"));
+  it("denies each target as a directory and pins every visited name, in any case or normalization", () => {
+    const rules = macLinkedNameTargetRules(
+      ["/Users/example/project/tools/agents", "/Users/example/elsewhere/cmds"],
+      ["/Users/example/project/.agents", "/Users/example/project/tools", "/Users/example/project/tools/agents", "/Users/example/project/한글", "/"],
+      ["/Users/example/project/"],
+    ).split("\n");
+    expect(rules).toHaveLength(6);
+    expect(rules.slice(0, 2).every(rule => rule.startsWith("(deny file-write* file-write-create file-write-unlink (regex #"))).toBe(true);
+    expect(rules.slice(2).every(rule => rule.startsWith("(deny file-write-create file-write-unlink (regex #"))).toBe(true);
+    for (const held of ["/Users/example/project/tools/agents", "/Users/example/project/TOOLS/Agents/skills/x"]) expect(body(rules[0] ?? "").test(held), held).toBe(true);
+    for (const free of ["/Users/example/project/tools/agents2", "/Users/example/project/tools", "/users/example/project/tools/agents"]) expect(body(rules[0] ?? "").test(free), free).toBe(false);
+    expect(body(rules[1] ?? "").test("/users/Example/ELSEWHERE/cmds/x")).toBe(true);
+    expect(body(rules[3] ?? "").test("/Users/example/project/Tools")).toBe(true);
+    expect(body(rules[3] ?? "").test("/Users/example/project/tools/other.txt")).toBe(false);
+    for (const spelling of ["한글", "한글".normalize("NFD")]) expect(body(rules[5] ?? "").test(`/Users/example/project/${spelling}`), spelling).toBe(true);
+    expect(body(rules[5] ?? "").test("/Users/example/project/한글/child")).toBe(false);
+  });
+
+  it("refuses a path too long to hold in one pattern", () => {
+    expect(() => macLinkedNameTargetRules([`/${"r".repeat(300)}`], [], [])).toThrow(t("sandboxPolicy.tooLarge"));
+    expect(() => macLinkedNameTargetRules([], [`/Users/example/project/${"r".repeat(300)}`], ["/Users/example/project"])).toThrow(t("sandboxPolicy.tooLarge"));
   });
 });
 

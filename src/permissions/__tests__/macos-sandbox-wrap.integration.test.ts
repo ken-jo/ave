@@ -278,6 +278,30 @@ describe.skipIf(process.platform !== "darwin" || shouldSkipNativeSandboxTests())
     expect(readdirSync(join(project, "cmds-real"))).toEqual([]);
   });
 
+  it("keeps a directory that a link's own path climbs back out of from being swapped for a link", async () => {
+    const project = join(root, "climbing");
+    for (const directory of ["sub/deep", "real", "fresh/x/y", "fresh/real", ".ave", "store/a", "store/cmds"]) mkdirSync(join(project, directory), { recursive: true });
+    symlinkSync("sub/l2", join(project, ".agents"));
+    // Through `deep` and back out twice: `deep` decides where the `..` steps land.
+    symlinkSync("deep/../../real", join(project, "sub", "l2"));
+    symlinkSync("../store/a/../cmds", join(project, ".ave", "commands"));
+    const result = await runConfined([
+      `mv sub/deep sub/deep2 2>/dev/null; echo "move-climbed=$?"`,
+      `ln -s ../fresh/x/y sub/deep 2>/dev/null; test -L sub/deep; echo "climbed-became-link=$?"`,
+      `mv store/a store/b 2>/dev/null; echo "move-commands-climbed=$?"`,
+      `mv store store2 2>/dev/null; echo "move-commands-above=$?"`,
+      `mkdir -p .agents/skills 2>/dev/null; printf x > .agents/planted 2>/dev/null; echo "plant=$?"`,
+      `printf x > .ave/commands/planted.md 2>/dev/null; echo "plant-command=$?"`,
+      `printf x > sub/deep/inside.txt; echo "inside-climbed=$?"`,
+      `printf x > store/a/inside.txt; echo "inside-commands-climbed=$?"`,
+    ].join("\n"), project);
+    expect(statuses(result.stdout)).toEqual({
+      "move-climbed": "1", "climbed-became-link": "1", "move-commands-climbed": "1", "move-commands-above": "1",
+      plant: "1", "plant-command": "1", "inside-climbed": "0", "inside-commands-climbed": "0",
+    });
+    for (const untouched of ["real", "fresh/real", "store/cmds"]) expect(readdirSync(join(project, untouched)), untouched).toEqual([]);
+  });
+
   it("refuses the wrap when an entry links to a work folder or a folder that holds one", async () => {
     const same = join(root, "self");
     mkdirSync(same);

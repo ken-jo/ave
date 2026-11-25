@@ -839,9 +839,11 @@ each admitted write root, taking precedence over grants:
   paths derived from their owning stores rather than copied filenames.
 
 Links and this floor. A protected entry that is a link, or is reached through
-links, is held where it resolves, and on macOS every link on the way to
-`.agents`, `.ave/commands` or `.ave/hooks` is pinned so it cannot be pointed
-somewhere new. The target becomes read-only to confined shells whatever it is:
+links, is held where it resolves. On macOS every name the resolution of
+`.agents`, `.ave/commands` or `.ave/hooks` looks up, whether a link, a real
+folder, a folder a `..` climbs out of or the first absent name, can be neither
+created, removed nor renamed, so the entry cannot be made to resolve somewhere
+new while the command runs. The target becomes read-only to confined shells whatever it is:
 `.agents -> .claude` makes `.claude` read-only to them. When such a link
 resolves to a work folder or to a folder that holds one, the wrap is refused
 with a named reason, because denying the target would deny the work folder.
