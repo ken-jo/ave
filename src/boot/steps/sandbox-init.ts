@@ -595,7 +595,9 @@ async function sweepWindowsSandboxHomes(): Promise<void> {
     }
     const { readWindowsProcessRunStates } = await import("../../permissions/windows-process-start-time.js");
     const { removed, failed } = await sweepStaleWindowsSandboxHomes(
-      homes, sandboxProcessHomesInUse(), readWindowsProcessRunStates);
+      homes, sandboxProcessHomesInUse(), readWindowsProcessRunStates, () => {
+        if (mxcSandboxHomesParent() !== homes) throw new Error("Sandbox HOME parent changed during the sweep");
+      });
     if (removed > 0) log.info("boot: removed %d stale Windows sandbox HOME(s)", removed);
     if (failed > 0) log.warn("boot: could not remove %d stale Windows sandbox HOME(s)", failed);
   } catch (error) {
@@ -603,11 +605,12 @@ async function sweepWindowsSandboxHomes(): Promise<void> {
   }
 }
 
-/** Remove `ave-sandbox-home-*` directories directly under `root` whose sibling owner marker names a process that is gone or a reused pid, with their markers, and drop orphan markers of dead owners. Keep unmarked, unreadable and undetermined ones. Never follows links. */
+/** Remove `ave-sandbox-home-*` directories directly under `root` whose sibling owner marker names a process that is gone or a reused pid, with their markers, and drop orphan markers of dead owners. Keep unmarked, unreadable and undetermined ones. Never follows links. `assertRootUnmoved` runs before each removal and stops the sweep by throwing. */
 export async function sweepStaleWindowsSandboxHomes(
   root: string,
   inUse: ReadonlySet<string>,
   probe: ProcessRunStateProbe,
+  assertRootUnmoved: () => void = () => {},
 ): Promise<{ removed: number; failed: number }> {
   const { SANDBOX_HOME_OWNER_SUFFIX, SANDBOX_HOME_PREFIX, readSandboxHomeOwner } =
     await import("../../permissions/sandbox-process-home.js");
@@ -644,6 +647,7 @@ export async function sweepStaleWindowsSandboxHomes(
     const stale = state !== undefined
       && (!state.running || (state.startTime !== null && state.startTime !== startTime));
     if (!stale) continue;
+    assertRootUnmoved();
     try {
       if (!orphan) {
         const entry = await lstat(home);

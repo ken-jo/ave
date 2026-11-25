@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
   chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmdirSync, unlinkSync, writeFileSync,
-  type Stats,
+  type BigIntStats, type Stats,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { posix as posixPath, win32 as winPath } from "node:path";
@@ -493,6 +493,7 @@ export function establishMxcRuntimeRoot(host: MxcRuntimeHost = currentMxcRuntime
 export function _forgetMxcRuntimeRootForTest(cacheHome: string): void {
   established.delete(cacheHome);
   establishFailures.delete(cacheHome);
+  homesParents.clear();
 }
 
 /**
@@ -545,14 +546,22 @@ export function mxcStagingParent(platform: NodeJS.Platform = process.platform, h
   return ensurePrivateDirectory(posixPath.join(requireMxcRuntimeRoot(current), "staging"), posixUid(current), "Container staging parent");
 }
 
-/** Under the test runner only: the root the run's set-up established (`config/vitest.globalSetup.ts`), taken as it
- * stands by a test file that has not established one itself. Each file loads this module anew, and the proof starts
- * PowerShell. */
+/** Under the test runner only: the root the run's set-up proved and published by identity
+ * (`config/vitest.globalSetup.ts`), taken by a test file that has not established one itself. Each file loads this
+ * module anew, and the proof starts PowerShell. A root the set-up refused is published by nobody and is proved here. */
 function rootOfThisTestRun(host: MxcRuntimeHost): string | undefined {
   if (!AVE_HOME_ISOLATION_GUARD_ACTIVE || established.has(host.cacheHome)) return undefined;
   const planned = plannedWindowsRuntimeRoot(host);
-  const entry = lstatSync(planned, { throwIfNoEntry: false });
-  return entry?.isDirectory() === true && !entry.isSymbolicLink() ? planned : undefined;
+  let published: unknown;
+  try {
+    published = JSON.parse(process.env.AVE_TEST_MXC_RUNTIME_ROOT ?? "null");
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(published) || published[0] !== planned) return undefined;
+  const entry = lstatSync(planned, { bigint: true, throwIfNoEntry: false });
+  return entry?.isDirectory() === true && !entry.isSymbolicLink()
+    && String(entry.dev) === published[1] && String(entry.ino) === published[2] ? planned : undefined;
 }
 
 /**
@@ -568,8 +577,26 @@ export function mxcSandboxHomesParent(host: MxcRuntimeHost = currentMxcRuntimeHo
   const homes = ensureWindowsDirectory(winPath.join(root, "homes"), "Sandbox HOME parent");
   // Again once it exists: a path swapped while it was created is refused before a HOME is placed in it.
   assertWindowsRuntimeRootUnmoved(root);
+  let entry: BigIntStats;
+  let real: string;
+  try {
+    entry = lstatSync(homes, { bigint: true });
+    real = realpathSync.native(homes);
+  } catch (error) {
+    return refuse("Sandbox HOME parent could not be inspected", error);
+  }
+  // The directory this process first saw there, for as long as it runs: a caller asks again after it creates a HOME
+  // and before the sweep removes one, and a replaced parent is refused.
+  const known = homesParents.get(root) ?? { dev: entry.dev, ino: entry.ino };
+  if (entry.isSymbolicLink() || !entry.isDirectory() || entry.dev !== known.dev || entry.ino !== known.ino
+    || real.toLowerCase() !== homes.toLowerCase()) {
+    refuse("Sandbox HOME parent is no longer the directory first used under the container runtime root");
+  }
+  homesParents.set(root, known);
   return homes;
 }
+
+const homesParents = new Map<string, { dev: bigint; ino: bigint }>();
 
 /** One run's directories on macOS and Linux. `root` is the run's only write grant; `home` and `temp` lie inside it. */
 export interface MxcRunStaging {

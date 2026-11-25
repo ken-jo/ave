@@ -6,7 +6,7 @@
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, win32 as winPath } from "node:path";
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { getLocale, setLocale } from "../../i18n/runtime.js";
 import { configureHostResources } from "../../main/host-resources.js";
@@ -516,6 +516,13 @@ describe.runIf(windows)("Windows runtime root", () => {
       expect(() => mxcSandboxHomesParent(hostOf())).toThrow(MxcRuntimeRootError);
     });
 
+    it("is refused once the HOME parent itself is replaced", () => {
+      const homes = mxcSandboxHomesParent(hostOf());
+      rmdirSync(homes);
+      mkdirSync(homes);
+      expect(() => mxcSandboxHomesParent(hostOf())).toThrow(/no longer the directory first used/u);
+    });
+
     it("is on Windows only", () => {
       expect(() => mxcSandboxHomesParent(hostOf({ platform: "linux" }))).toThrow(/Windows only/u);
       expect(readdirSync(base)).toEqual([]);
@@ -523,10 +530,42 @@ describe.runIf(windows)("Windows runtime root", () => {
   });
 
   describe("under the test runner", () => {
-    it("takes the root the run's set-up left in place without proving it again", () => {
+    const publish = (path: string): void => {
+      const proved = lstatSync(path, { bigint: true });
+      vi.stubEnv("AVE_TEST_MXC_RUNTIME_ROOT", JSON.stringify([rootPath(), String(proved.dev), String(proved.ino)]));
+    };
+    let proofs = 0;
+    const counting = (): MxcRuntimeHost => hostOf({}, { readFacts: (path) => { proofs += 1; return facts(path); } });
+    beforeEach(() => { proofs = 0; });
+    afterEach(() => { vi.unstubAllEnvs(); });
+
+    it("takes the root the run's set-up proved and published without proving it again", () => {
       mkdirSync(rootPath(), { recursive: true });
-      expect(mxcSandboxHomesParent(hostOf())).toBe(join(rootPath(), "homes"));
-      expect(created).toEqual([]);
+      publish(rootPath());
+      expect(mxcSandboxHomesParent(counting())).toBe(join(rootPath(), "homes"));
+      expect(proofs).toBe(0);
+    });
+
+    it("proves a root the set-up did not publish, and one put in the published root's place", () => {
+      mkdirSync(rootPath(), { recursive: true });
+      vi.stubEnv("AVE_TEST_MXC_RUNTIME_ROOT", "");
+      mxcSandboxHomesParent(counting());
+      expect(proofs).toBeGreaterThan(0);
+      _forgetMxcRuntimeRootForTest(base);
+      proofs = 0;
+      publish(rootPath());
+      rmSync(rootPath(), { recursive: true });
+      mkdirSync(rootPath());
+      mxcSandboxHomesParent(counting());
+      expect(proofs).toBeGreaterThan(0);
+    });
+
+    it("refuses an existing root the set-up refused", () => {
+      mkdirSync(rootPath(), { recursive: true });
+      vi.stubEnv("AVE_TEST_MXC_RUNTIME_ROOT", "");
+      const open = hostOf({}, { readFacts: () => { throw new Error("helper unavailable"); } });
+      expect(() => mxcSandboxHomesParent(open)).toThrow(MxcRuntimeRootError);
+      expect(existsSync(join(rootPath(), "homes"))).toBe(false);
     });
 
     it("lives in the run's own directory, never in the account's local application data", () => {

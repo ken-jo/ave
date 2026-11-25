@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { readdir, rm } from "node:fs/promises";
 import { homedir, userInfo } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
@@ -141,10 +141,13 @@ export async function setup(project: TestProject): Promise<() => Promise<void>> 
       const { configureHostResources } = await import("../src/main/host-resources.js");
       configureHostResources({ resourcePath: join(HERE, "resources"), isPackaged: false });
       try {
-        establishMxcRuntimeRoot({
+        const root = establishMxcRuntimeRoot({
           platform: "win32", cacheHome: join(sandboxBase, "mxc-cache"), uid: undefined, pid: process.pid, aveHome: aveHomeBase,
           processExists: () => true, processStart: () => null, windows: WINDOWS_RUNTIME_HOST,
         });
+        // Workers take only the directory proved here, by its identity.
+        const proved = lstatSync(root, { bigint: true });
+        process.env.AVE_TEST_MXC_RUNTIME_ROOT = JSON.stringify([root, String(proved.dev), String(proved.ino)]);
       } catch (error) {
         // Without the native path helper nothing is proved here; a test that needs a sandbox HOME then reports it itself.
         console.warn(`[vitest setup] container runtime root not established: ${(error as Error).message}`);
