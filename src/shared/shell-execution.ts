@@ -25,6 +25,8 @@ export interface ShellCommandEvent {
   definedFunctions: readonly string[];
   unsetVariables: readonly string[];
   dialect: "bash" | "posix";
+  /** Set on a host fault path continued past its starting directory: only write operands of this command are checked. */
+  faultWritesOnly?: true;
   testExpression?: ShellTestExpression;
   inputRedirect?: ShellRedirect;
   inspectNested(
@@ -73,10 +75,12 @@ export interface ShellExecutionFacts {
   guestCwd?: string;
   /** Set only for an unsandboxed host route: an observed cd may still fail at execution. */
   hostCdFaults?: true;
+  /** With hostCdFaults, only where no ask precedes the command: a fault path that leaves its starting directory continues and checks its writes. */
+  hostCdFaultWrites?: true;
 }
 /** Only the containment gate of an unsandboxed host route models a cd that fails at execution. */
-export function withHostCdFaults(facts: ShellExecutionFacts | undefined, unsandboxedHost: boolean): ShellExecutionFacts | undefined {
-  return unsandboxedHost ? { ...(facts ?? { dialect: "bash", environment: {} }), hostCdFaults: true } : facts;
+export function withHostCdFaults(facts: ShellExecutionFacts | undefined, route: "host" | "host-unasked"): ShellExecutionFacts {
+  return { ...(facts ?? { dialect: "bash", environment: {} }), hostCdFaults: true, ...(route === "host-unasked" ? { hostCdFaultWrites: true as const } : {}) };
 }
 interface ShellState {
   cwd: string | null;
@@ -96,6 +100,8 @@ interface ShellState {
   inputRedirect?: ShellRedirect;
   /** Follows a host cd modeled as failing although its destination was observed; holds the destinations that failed. */
   cdFault?: readonly string[];
+  /** A fault path past its starting directory: reads and directory checks no longer apply, writes still do. */
+  faultWritesOnly?: true;
   errexit?: true;
 }
 type ExitStatus = "success" | "failure" | "unknown";
@@ -117,7 +123,7 @@ export function assertStableShellEnvironmentVariable(
   }
 }
 function stateKey(state: ShellState): string {
-  return JSON.stringify([state.cwd, state.dialect, state.unicodeEscapes, state.prefixAssignmentRhs, state.inputRedirect?.source, [...state.variables].sort(), [...state.arrays].sort(), [...state.exported].sort(), [...state.readonlyVariables].sort(), [...state.unsetVariables].sort(), [...state.functions].map(([name, body]) => [name, body.source]), state.errexit, state.cdFault !== undefined]);
+  return JSON.stringify([state.cwd, state.dialect, state.unicodeEscapes, state.prefixAssignmentRhs, state.inputRedirect?.source, [...state.variables].sort(), [...state.arrays].sort(), [...state.exported].sort(), [...state.readonlyVariables].sort(), [...state.unsetVariables].sort(), [...state.functions].map(([name, body]) => [name, body.source]), state.errexit, state.cdFault !== undefined, state.faultWritesOnly]);
 }
 function decline(reason: string, word?: ShellWord): never {
   throw new ShellExecutionError(reason, word?.source.raw);
@@ -205,6 +211,7 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
       : { ...result, control: { ...control, levels: control.levels - 1 } };
   };
   const checkPath = (path: string, raw: string, state: ShellState, effect: "read" | "write", role?: "directory"): void => {
+    if (state.faultWritesOnly && (effect === "read" || role === "directory")) return;
     if (!(guest ? posix.isAbsolute(path) : isAbsolute(path)) && state.cwd === null) {
       const error = new ShellExecutionError("working directory is unresolved", raw);
       if (inspector.unresolvedPath?.(raw, state.cwd, effect, error, role) === true) return;
@@ -361,11 +368,11 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
         let path: string | undefined;
         try { path = resolveWord(redirect.target, state, depth); }
         catch (error) {
-          if (error instanceof ShellExecutionError && inspector.unresolvedPath?.(redirect.target.source.raw, state.cwd, redirect.effect, error) === true) continue;
+          if (error instanceof ShellExecutionError && (state.faultWritesOnly && redirect.effect === "read" || inspector.unresolvedPath?.(redirect.target.source.raw, state.cwd, redirect.effect, error) === true)) continue;
           throw error;
         }
         if (path === undefined) {
-          if (inspector.unresolvedPath?.(redirect.target.source.raw, state.cwd, redirect.effect) === true) continue;
+          if (state.faultWritesOnly && redirect.effect === "read" || inspector.unresolvedPath?.(redirect.target.source.raw, state.cwd, redirect.effect) === true) continue;
           decline("unresolved redirect target", redirect.target);
         }
         inspector.resolvedRedirect?.(redirect.target, path, redirect.effect, Object.fromEntries(state.variables));
@@ -463,6 +470,7 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
       definedFunctions: Object.freeze([...state.functions.keys()]),
       unsetVariables: Object.freeze([...commandState.unsetVariables]),
       dialect: state.dialect,
+      ...(commandState.faultWritesOnly ? { faultWritesOnly: true as const } : {}),
       inputRedirect: standardInputRedirect(node.redirects, state.inputRedirect),
       ...(testAnalysis?.ok ? { testExpression: testAnalysis.expression } : {}),
       inspectNested(text, dialect, nestedContext, origin) {
@@ -632,8 +640,11 @@ export function inspectShellExecution(command: string, cwd: string, facts: Shell
           decline("cannot resolve working-directory destination", targetWord);
         }
       }
-      // A modeled fault path ends where it leaves the starting directory.
-      if (state.cdFault && !within(cwd, destination)) return [];
+      // A modeled fault path ends where it leaves the starting directory, or, where no ask precedes the command, continues checking only writes.
+      if (state.cdFault && !state.faultWritesOnly && !within(cwd, destination)) {
+        if (facts.hostCdFaultWrites !== true) return [];
+        state.faultWritesOnly = true;
+      }
       // Logical cd collapses .., but original components must still be searchable; physical cd follows links.
       checkPath(destination, label, state, "write", "directory");
       let observedDirectory = false;

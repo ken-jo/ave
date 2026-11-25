@@ -337,12 +337,11 @@ describe("host cd failure states", () => {
     expect(touched).toEqual([join(cwd,"safe")]);
   });
 
-  it("sets the host fact only for an unsandboxed host route", () => {
+  it("sets the host facts for an unsandboxed host route", () => {
     const facts={dialect:"bash" as const,environment:{HOME:"/home/alice"}};
-    expect(withHostCdFaults(facts,false)).toBe(facts);
-    expect(withHostCdFaults(undefined,false)).toBeUndefined();
-    expect(withHostCdFaults(facts,true)).toEqual({...facts,hostCdFaults:true});
-    expect(withHostCdFaults(undefined,true)).toEqual({dialect:"bash",environment:{},hostCdFaults:true});
+    expect(withHostCdFaults(facts,"host")).toEqual({...facts,hostCdFaults:true});
+    expect(withHostCdFaults(undefined,"host")).toEqual({dialect:"bash",environment:{},hostCdFaults:true});
+    expect(withHostCdFaults(facts,"host-unasked")).toEqual({...facts,hostCdFaults:true,hostCdFaultWrites:true});
   });
 
   it("continues a fault path in the parent when it ends inside a subshell", () => {

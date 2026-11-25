@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { shellQuote } from "../../lib/shell-resolver.js";
+import type { HostShellFallbackReason } from "../../permissions/host-shell-execution-plan.js";
 import type { ShellExecutionFacts } from "../../shared/shell-execution.js";
 import { hostShellAnalysisFacts } from "../prepared-shell-invocation.js";
 import { findShellPathPolicyViolation } from "../shell-path-policy.js";
@@ -393,9 +394,34 @@ describe("shell path policy — working directory tracking", () => {
       expect(verdict(command)).toBe("sandbox-boundary");
     });
 
-    it("keeps a fault path ended where it leaves the starting directory (known gap, owner carve-out (y)): ANC4, Y1", () => {
+    it("ends a fault path where it leaves the starting directory on a route that asks before every command: ANC4, Y1", () => {
       expect(verdict("cd \"$R/sub/s2\"; cd ..; cd \"$R/sub\"; touch ../x")).toBeNull();
       expect(verdict("cd sub; cd ..; touch x")).toBeNull();
+    });
+
+    describe("where nothing else asks before the command runs", () => {
+      const writes = (command: string) => findShellPathPolicyViolation(command, ROOT, ROOT, EXTRAS, true, { ...hostFacts(), hostCdFaultWrites: true })?.kind ?? null;
+
+      it.each([
+        ["ANC4", "cd \"$R/sub/s2\"; cd ..; cd \"$R/sub\"; touch ../x"],
+        ["Y1", "cd sub; cd ..; touch x"],
+        ["Y2", "cd a; make; cd ..; touch stamp"],
+        ["Y3", "cd a && make; cd ..; touch stamp"],
+        ["Y4", "cd a; make; cd ..; echo done > stamp"],
+        ["Y5", "cd a; ls; cd ../b; touch y"],
+      ])("continues a fault path that leaves the starting directory and checks its writes: %s: %s", (_row, command) => {
+        expect(writes(command)).toBe("sandbox-boundary");
+      });
+
+      it.each([
+        "cd a || exit 1; make; cd ..; touch stamp",
+        "set -e; cd a; make; cd ..; touch stamp",
+        "cd a; ls; cd ../b; ls",
+        "cd a; make; cd ..; cat stamp",
+        "cd sub; ls; cd -",
+      ])("leaves reads and stopped fault paths as they are: %s", (command) => {
+        expect(writes(command)).toBeNull();
+      });
     });
 
     it("keeps condition ladders without a cd as they are on main", () => {
@@ -405,10 +431,21 @@ describe("shell path policy — working directory tracking", () => {
     });
 
     it("models cd faults only for the unsandboxed host substrate", () => {
-      const facts = (substrate: "none" | "asrt" | "mxc") => hostShellAnalysisFacts(undefined, { substrate });
+      const facts = (substrate: "none" | "asrt" | "mxc") => hostShellAnalysisFacts(undefined, { substrate, executionRequest: "default", fallbackReason: "none" });
       expect(findShellPathPolicyViolation("cd sub; touch ../y", ROOT, ROOT, EXTRAS, true, facts("none"))?.kind).toBe("sandbox-boundary");
       expect(findShellPathPolicyViolation("cd sub; touch ../y", ROOT, ROOT, EXTRAS, true, facts("asrt"))).toBeNull();
       expect(findShellPathPolicyViolation("cd sub; touch ../y", ROOT, ROOT, EXTRAS, true, facts("mxc"))).toBeNull();
+    });
+
+    it("continues fault paths past the starting directory only with the shell sandbox off", () => {
+      const continues = (executionRequest: "default" | "host", fallbackReason: HostShellFallbackReason) =>
+        hostShellAnalysisFacts(undefined, { substrate: "none", executionRequest, fallbackReason })?.hostCdFaultWrites === true;
+      expect(continues("default", "disabled-by-setting")).toBe(true);
+      expect(continues("default", "platform-unsupported")).toBe(true);
+      expect(continues("host", "none")).toBe(false);
+      expect(continues("default", "requested-sandbox-unavailable")).toBe(false);
+      expect(continues("default", "windows-partial-shell-acl-unsafe")).toBe(false);
+      expect(hostShellAnalysisFacts(undefined, { substrate: "asrt", executionRequest: "default", fallbackReason: "none" })).toBeUndefined();
     });
   });
 });

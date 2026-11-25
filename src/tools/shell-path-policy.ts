@@ -1705,7 +1705,10 @@ export function findShellPathPolicyViolation(
     const cwdError = validateShellWorkingDirectory(cwd, sandboxRoot, extraAllowedDirectories, canonicalize);
     if (cwdError) return { kind: cwdError.startsWith("Sensitive") ? "sensitive-path" : "sandbox-boundary", reason: cwdError, path: cwd };
   }
+  // Operands of a command on a host fault path continued past its starting directory: only writes are checked.
+  let commandWritesOnly = false;
   const checkPath = (path: string, label: string, cwd: string | null, effect: PathEffect, deleting = false, role?: "directory"): void => {
+    if (commandWritesOnly && (effect !== "write" || role === "directory")) return;
     if (evidence && role === "directory") effect = "read";
     // Public standard-stream operands identify child descriptors; host resolution would inspect different resources.
     if (SHELL_DEVICE_PATHS.has(path)) return;
@@ -1790,7 +1793,7 @@ export function findShellPathPolicyViolation(
       firstAnalysis = false;
       literalBudget.tokens.count += count;
       if (literalBudget.tokens.count > MAX_SHELL_ANALYSIS_TOKENS) throw new ShellExecutionError("Shell analysis total token limit exceeded");
-    }, path: (path, raw, at, effect, role) => checkPath(path, raw, at, effect, false, role),
+    }, path: (path, raw, at, effect, role) => { commandWritesOnly = false; checkPath(path, raw, at, effect, false, role); },
       word(word) {
         if (word.parts.some((part) => part.kind !== "literal")) targetProof?.dynamicWords.add(word);
       },
@@ -1818,6 +1821,7 @@ export function findShellPathPolicyViolation(
           return true;
         }
       }, command(event) {
+      commandWritesOnly = event.faultWritesOnly === true;
       const {node, effective} = event;
       if (evidence && !argumentView?.literalBodiesAlreadyInspected) for (const body of literalShellBodies(event.argv, event.dialect, effective.words.map(word => word.source.raw))) {
         if (body.dialect !== "powershell") continue;

@@ -102,11 +102,18 @@ export function matchesPreparedShellInvocation(handle: PreparedShellInvocation, 
 /** The provider tool-use id the invocation was prepared for, when it had one. */
 export function preparedShellToolUseId(handle: PreparedShellInvocation): string | undefined { return stateOf(handle).identity.toolUseId; }
 export function preparedShellFacts(handle: PreparedShellInvocation): Readonly<ShellExecutionFacts> { return stateOf(handle).facts; }
-/** Shell analysis facts for a host plan: only the unsandboxed host substrate models a cd that fails at execution. */
-export function hostShellAnalysisFacts(handle: PreparedShellInvocation, plan: Pick<HostShellExecutionPlan, "substrate"> | undefined): ShellExecutionFacts;
-export function hostShellAnalysisFacts(handle: PreparedShellInvocation | undefined, plan: Pick<HostShellExecutionPlan, "substrate"> | undefined): ShellExecutionFacts | undefined;
-export function hostShellAnalysisFacts(handle: PreparedShellInvocation | undefined, plan: Pick<HostShellExecutionPlan, "substrate"> | undefined): ShellExecutionFacts | undefined {
-  return withHostCdFaults(handle ? stateOf(handle).facts : undefined, plan?.substrate === "none");
+type AnalysisPlan = Pick<HostShellExecutionPlan, "substrate" | "executionRequest" | "fallbackReason">;
+/**
+ * Shell analysis facts for a host plan: only the unsandboxed host substrate models a cd that fails at execution. With the shell
+ * sandbox off nothing asks before an ordinary command runs, so there a fault path also continues past its starting directory.
+ */
+export function hostShellAnalysisFacts(handle: PreparedShellInvocation, plan: AnalysisPlan | undefined): ShellExecutionFacts;
+export function hostShellAnalysisFacts(handle: PreparedShellInvocation | undefined, plan: AnalysisPlan | undefined): ShellExecutionFacts | undefined;
+export function hostShellAnalysisFacts(handle: PreparedShellInvocation | undefined, plan: AnalysisPlan | undefined): ShellExecutionFacts | undefined {
+  const facts = handle ? stateOf(handle).facts : undefined;
+  if (plan?.substrate !== "none") return facts;
+  const sandboxOff = plan.executionRequest === "default" && (plan.fallbackReason === "disabled-by-setting" || plan.fallbackReason === "platform-unsupported");
+  return withHostCdFaults(facts, sandboxOff ? "host-unasked" : "host");
 }
 
 /** Bind only after command policy accepts the final source, before approval. */
