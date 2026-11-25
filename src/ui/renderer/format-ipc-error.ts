@@ -315,6 +315,7 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "invalid-rule": "formatIpcError.invalidRule",
   "command-rule-required": "formatIpcError.commandRuleRequired",
   "missing-session": "formatIpcError.missingSession",
+  "run-scope-unavailable": "formatIpcError.runScopeUnavailable",
   "rule-save-failed": "formatIpcError.ruleSaveFailed",
   "rule-does-not-match": "formatIpcError.ruleDoesNotMatch",
   "rule-required": "formatIpcError.ruleRequired",

@@ -47,6 +47,44 @@ afterEach(() => {
 });
 
 describe("the git a stage workspace starts is the one the host's discovery resolved", () => {
+  it.each([true, false])("selects a later macOS Git only if it passes the hook floor (passes: %s)", async (passes) => {
+    setProcessPlatform("darwin");
+    const first = "/fixture-first/git";
+    const second = "/fixture-second/git";
+    const workspace = tmpdir();
+    vi.stubEnv("PATH", [dirname(first), dirname(second)].join(":"));
+    const fs = await vi.importActual<typeof import("node:fs")>("node:fs");
+    vi.mocked(accessSync).mockImplementation((path) => {
+      if (path !== first && path !== second) throw new Error("missing");
+    });
+    vi.mocked(existsSync).mockImplementation(fs.existsSync);
+    vi.mocked(statSync).mockImplementation(((path: string) => {
+      if (path !== first && path !== second) return fs.statSync(path);
+      return { isFile: () => true, dev: 1n, ino: path === first ? 1n : 2n, size: 1n, mtimeNs: 1n };
+    }) as typeof statSync);
+    vi.mocked(spawn).mockImplementation(((program: string, args: string[], options: { cwd?: string }) => {
+      if (args.includes("--version")) return ended(0, `git version ${program === first ? "2.54.0" : "2.56.0"}\n`);
+      if (args.includes("--allow-unknown-hook-name")) {
+        if (options.cwd === undefined) throw new Error("Missing hook probe directory");
+        writeFileSync(join(options.cwd, "ran"), "ran");
+      }
+      if (args.at(-1) === "applypatch-msg" && (program === first || !passes)) return ended(3);
+      return ended(0);
+    }) as typeof spawn);
+    const { createHostGit } = await import("../host-git.js");
+    const { discoverHostGitAsync } = await import("../../../shared/host-git-executable.js");
+    const git = createHostGit();
+
+    expect((await discoverHostGitAsync(null)).git?.path).toBe(first);
+    expect(await git.floorHolds()).toBe(passes);
+    const operation = git.run(workspace, ["worktree", "add", "--no-checkout", "fixture", "main"], { requiresFloor: true });
+    if (passes) await expect(operation).resolves.toMatchObject({ code: 0 });
+    else await expect(operation).rejects.toMatchObject({ reason: "unavailable" });
+    const workspaceCalls = vi.mocked(spawn).mock.calls.filter(([, , options]) => options?.cwd === workspace);
+    expect(workspaceCalls.map(([program]) => program)).toEqual(passes ? [second] : []);
+    expect((await discoverHostGitAsync(null)).git?.path).toBe(first);
+  });
+
   it("does not run a floor-dependent repository operation on an unproven replacement after a launch failure", async () => {
     setProcessPlatform("linux");
     const first = "/fixture-first/git";

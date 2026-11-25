@@ -275,9 +275,8 @@ Pre-push runs static checks only and logs its tier
 (`scripts/hooks/run-local-checks.mjs` owns the rules); pull request CI runs
 the tests and the build through `scripts/run-ci-suite.mjs`:
 
-- every push: ref, shared-history and checkout guards, staged safety (merge
-  markers, TLS-verification bypass), `git diff --check` and merge-marker
-  checks on pushed Markdown and HTML, the ASRT version-claim check when such a
+- every push: ref, shared-history and checkout guards, `git diff --check`
+  and merge-marker checks on pushed Markdown and HTML, the ASRT version-claim check when such a
   document changes, and the retired-name and Biome gates.
 - docs-only: documentation prose with no test or build consumer stops there.
 - static, every other push: also the typecheck gate (`typecheck` and
@@ -285,6 +284,10 @@ the tests and the build through `scripts/run-ci-suite.mjs`:
   when a locale catalog changes, and a frozen-lockfile install dry run when
   `package.json`, `bun.lock`, `bunfig.toml` or `patches/` changes. A change
   set the hook cannot resolve runs every static check.
+- Pre-push requires a clean index, so its staged scan sees no files. Merge
+  markers and TLS-verification bypasses are blocked at pre-commit (staged
+  scan), by the Markdown and HTML safety checks above, and in CI by
+  `bun run build` (`scripts/check-no-tls-bypass.mjs`).
 - The hook runs no Vitest. `node scripts/hooks/run-local-checks.mjs` (manual
   stage) runs typecheck, the full suite, the build and gate-core under an
   exclusive host lock. `AVE_HOOKS_SKIP=1` still skips the hook.

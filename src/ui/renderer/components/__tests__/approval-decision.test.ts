@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  allowMenuChoices,
   allowRefusalKey,
   defaultAllowChoice,
   exactDecisionModel,
@@ -36,7 +37,9 @@ describe("approval decision models", () => {
   it("a shell card offers every choice with its exact rule, editable in the card, and warns on wildcard allows", () => {
     const model = shellDecisionModel(shell());
     expect(offeredChoices(model)).toEqual(["deny-always", "allow-session", "allow-project", "allow-everywhere"]);
-    expect(Object.values(model.options).every((option) => option.rule === "Bash(npm test)" && option.editing === "inline")).toBe(true);
+    // The run choice belongs to a template run's stage card only (below).
+    expect(Object.entries(model.options).filter(([choice]) => choice !== "allow-run").every(([, option]) => option.rule === "Bash(npm test)" && option.editing === "inline")).toBe(true);
+    expect(model.options["allow-run"]).toMatchObject({ offered: false, reasonKey: "toolApprovalDialog.runAllowUnavailable" });
     expect(model.warnsOnWildcardAllow).toBe(true);
     expect(wildcardWarningKey(model)).toBe("toolApprovalDialog.wildcardAllowBroaderScope");
     expect(defaultAllowChoice(model)).toBe("allow-session");
@@ -181,5 +184,44 @@ describe("approval decision answers", () => {
     ["Network(api.example.com:443)", false],
   ])("treats %s as a wildcard rule the host warns about: %s", (text, wildcard) => {
     expect(isWildcardRuleText(text)).toBe(wildcard);
+  });
+});
+
+// Owner decision 2026-11-16 (per-stage approval lane, run-scoped grant): a card a template run's stage session raised lists "Allow for
+// this run" between the conversation and the saved scopes; the host says whether it is offered.
+describe("a template-run stage card", () => {
+  const stage = (runAllowOffered: boolean) => ({ stageId: "plan", stageName: "Plan", runAllowOffered });
+  const exact = (over: Partial<Parameters<typeof exactDecisionModel>[0]> = {}) =>
+    exactDecisionModel({ sessionOnly: false, hasSession: true, allowRefusalKey: null, denyRefusalKey: null, settingsEditing: true, ...over });
+
+  it("lists the run allow on a stage card and on no other card", () => {
+    expect(allowMenuChoices(shellDecisionModel(shell(), stage(true)))).toEqual(["allow-session", "allow-run", "allow-project", "allow-everywhere"]);
+    expect(allowMenuChoices(exact({ stage: stage(true) }))).toEqual(["allow-session", "allow-run", "allow-project", "allow-everywhere"]);
+    for (const model of [shellDecisionModel(shell()), exact(), networkDecisionModel(egress(), "s"), oneShotDecisionModel("toolApprovalDialog.persistentUnavailableOneShot")]) {
+      expect(allowMenuChoices(model)).not.toContain("allow-run");
+      expect(model.options["allow-run"].offered).toBe(false);
+    }
+  });
+
+  it("offers it where the host does, with the session rule's text on a shell card, and saves a run-scope rule", () => {
+    const model = shellDecisionModel(shell(), stage(true));
+    expect(model.options["allow-run"]).toMatchObject({ offered: true, rule: "Bash(npm test)", editing: "inline" });
+    expect(ruleSaveFor("allow-run", undefined)).toEqual({ action: "allow", scope: "run" });
+    expect(ruleSaveFor("allow-run", "Bash(npm *)")).toEqual({ action: "allow", scope: "run", pattern: "Bash(npm *)" });
+    expect(exact({ stage: stage(true) }).options["allow-run"]).toMatchObject({ offered: true, rule: null });
+    // The conversation stays the middle button's default.
+    expect(defaultAllowChoice(model)).toBe("allow-session");
+  });
+
+  it("refuses it with a reason where the host does not offer it: a schedule-started run, a floor, a session-only memory", () => {
+    expect(shellDecisionModel(shell(), stage(false)).options["allow-run"]).toMatchObject({ offered: false, reasonKey: "toolApprovalDialog.runAllowUnavailable" });
+    expect(exact({ stage: stage(false) }).options["allow-run"]).toMatchObject({ offered: false, reasonKey: "toolApprovalDialog.runAllowUnavailable" });
+    expect(shellDecisionModel(shell({ floorSessionOnly: true }), stage(true)).options["allow-run"]).toMatchObject({ offered: false, reasonKey: "toolApprovalDialog.persistentUnavailableOneShot" });
+    expect(exact({ stage: stage(true), sessionOnly: true }).options["allow-run"]).toMatchObject({ offered: false, reasonKey: "toolApprovalDialog.sessionOnlyRemember" });
+    expect(shellDecisionModel(shell({ exactRule: null, sessionAllowed: false, persistentAllowed: false }), stage(true)).options["allow-run"].offered).toBe(false);
+  });
+
+  it("a network card answers no run allow", () => {
+    expect(() => networkAnswer(egress(), "allow-run", undefined)).toThrow("A network card offers no run allow");
   });
 });

@@ -95,6 +95,8 @@ interface ShellNetworkPermissionRequest {
 
 interface ShellNetworkPermissionSnapshot extends NetworkPermissionEvaluation {
   readonly policyEpoch: string;
+  /** The epoch without memory-only allow-rule steps (`PermissionManager.getPolicyContextEpoch`), for the card's answer. */
+  readonly policyContextEpoch: string;
   readonly approvalIdentity: string;
 }
 

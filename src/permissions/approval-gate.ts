@@ -26,8 +26,9 @@ import { matchesApprovalRuleBasis, type ApprovalRuleBasis } from "./approval-rul
 import { NO_APPROVER_MESSAGE, type PermissionDecisionRequest } from "./decision-pipeline.js";
 import { isIssuedToolApprovalWait, withToolApprovalWait, type ToolApprovalWait } from "../tools/executor-ceiling.js";
 import { maskSensitiveData } from "../audit/dlp-filter.js";
+import { runSessionOf } from "./run-grants.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
-import { isUserOwnedSurface, isUserOwnedSurfaceChoice, resolveUserApprovalVerdict, type ApprovalMemory, type UserOwnedSurface, type UserOwnedSurfaceChoice } from "../shared/permissions-events.js";
+import { isSessionOnlyApprovalMemoryScope, isUserOwnedSurface, isUserOwnedSurfaceChoice, resolveUserApprovalVerdict, type ApprovalMemory, type UserOwnedSurface, type UserOwnedSurfaceChoice } from "../shared/permissions-events.js";
 import { buildShellRuleApproval, type HostTerminalApprovalBinding } from "./rules/shell-rule-approval.js";
 import type { ShellRuleApproval } from "../shared/permissions-events.js";
 import { captureApprovalWorkingDirectory } from "./user-approval-store.js";
@@ -76,6 +77,18 @@ function maskArgsForDisplay(value: unknown, detections: Set<string>): unknown {
     return out;
   }
   return value;
+}
+
+// An extension-start card's row ids are host-minted keys, not content: the answers name them (`extensionStartChoices`,
+// `extensionStartRow`) and the gate checks those against the ids it offered. A random id can read as a phone or card number,
+// so masking one would leave the desk card naming a row the gate never offered, and the desk answer would be refused.
+// The rest of each row (its label) is masked as usual. `assertExtensionStartRequestShape` has already checked the rows.
+function maskExtensionStartArgsForDisplay(args: unknown, detections: Set<string>): unknown {
+  const { starts, ...rest } = args as { starts: readonly Readonly<Record<string, unknown>>[] };
+  return {
+    ...(maskArgsForDisplay(rest, detections) as Record<string, unknown>),
+    starts: starts.map(({ id, ...row }) => ({ id, ...(maskArgsForDisplay(row, detections) as Record<string, unknown>) })),
+  };
 }
 
 function maskApprovalPurposeForDisplay(
@@ -172,6 +185,10 @@ export interface ApprovalRequest {
   toolUseId?: string;
   // Display-only title derived from host-tracked child provenance.
   requestingAgentTitle?: string;
+  // Host-derived from the run engine's membership record, present iff a template run's stage session asked: the stage whose approval lane
+  // draws this card, and whether "Allow for this run" may be recorded for it (an attended run, and a card that may be remembered for
+  // its session). Display-only: the record handler checks the membership and the request again. Never an approval capability.
+  runStage?: { readonly stageId: string; readonly stageName: string; readonly runAllowOffered: boolean };
   id: string;
   // Display-only: the code of the pipeline decision that asked, so the card can word its reason in the user's language instead of the host's English `reason`. A user-owned-surface card gets its surface decision's code; a card about a file target gets one of `APPROVAL_REASON_CODES`, the tree stage that raised it. Never an approval capability, and never read back from a decision.
   reasonCode?: string;
@@ -290,7 +307,7 @@ export function signApprovalRequest(
 // Input accepted by ApprovalGate.requestAndWait before the host seals nonce/HMAC and derives the renderer-facing `requireExplicit` field. `forceExplicit` is deliberately one-way: callers can only make a prompt stricter than the current policy, never relax it. It is used by execution routes whose substrate requires per-invocation, affirmative consent.
 export type ApprovalRequestInput = Omit<
   ApprovalRequest,
-  "requireExplicit" | "executionPlan" | "persistentAllowAllowed" | "exactRecordAllowed" | "persistentApprovalCwd" | "shellRule" | "hostTerminalAfterExternalContent" | "homeFolderRefused" | "requestingAgentTitle" | "readjudication"
+  "requireExplicit" | "executionPlan" | "persistentAllowAllowed" | "exactRecordAllowed" | "persistentApprovalCwd" | "shellRule" | "hostTerminalAfterExternalContent" | "homeFolderRefused" | "requestingAgentTitle" | "runStage" | "readjudication"
 > & {
   // Host-only native execution proof; removed before renderer/audit payloads.
   readonly hostShellExecutionPlan?: import("./host-shell-execution-plan.js").HostShellExecutionPlan;
@@ -639,6 +656,9 @@ interface PendingEntry {
   // Host-owned permission to create a user-approval-store record.
   durableApprovalRecordAllowed: boolean;
   persistentAllowAllowed: boolean;
+  // The stage a template run's session asked for and whether the host offered "Allow for this run" on the card; the record handlers
+  // require the offer.
+  runStage: ApprovalRequest["runStage"];
   shellRule?: ShellRuleApproval;
   // Host-only: the floor a "This session" save on this card answers (never sent to the renderer).
   floorSessionGrant?: FloorSessionGrant;
@@ -861,7 +881,7 @@ export class ApprovalGate {
     transition.saving = false;
     const before = Number(saved.before);
     if (!Number.isSafeInteger(before) || before < 0 || after !== String(before + 1) ||
-        !["session", "persistent", "global"].includes(scope)) transition.valid = false;
+        !["session", "run", "persistent", "global"].includes(scope)) transition.valid = false;
     transition.to = after;
     transition.scope = scope;
   }
@@ -900,7 +920,7 @@ export class ApprovalGate {
   }
 
   /** Complete only a successful, validated rule save; any other mutation breaks the chain. */
-  completeApprovalRuleSave(token: object | undefined, after: string, scope?: "session" | "project" | "always"): void {
+  completeApprovalRuleSave(token: object | undefined, after: string, scope?: "session" | "run" | "project" | "always"): void {
     if (!token) return;
     const saved = this.ruleSaveTokens.get(token);
     this.ruleSaveTokens.delete(token);
@@ -1127,6 +1147,7 @@ export class ApprovalGate {
       abortSignal,
       childProvenance,
       requestingAgentTitle: _requestedAgentTitle,
+      runStage: _requestedRunStage,
       reviewerOutcome,
       reviewerApprovalBasis,
       approvalRuleBasis,
@@ -1135,7 +1156,7 @@ export class ApprovalGate {
       verifiedShellCommand,
       hostShellExecutionPlan,
       ...request
-    } = req as ApprovalRequestInput & { hostTerminalAfterExternalContent?: unknown; homeFolderRefused?: unknown; requestingAgentTitle?: unknown; readjudication?: unknown };
+    } = req as ApprovalRequestInput & { hostTerminalAfterExternalContent?: unknown; homeFolderRefused?: unknown; requestingAgentTitle?: unknown; runStage?: unknown; readjudication?: unknown };
     if (toolApprovalWait !== undefined && !isIssuedToolApprovalWait(toolApprovalWait)) {
       return rejectBeforeAnswer("Approval execution budget was not issued by the host");
     }
@@ -1306,8 +1327,20 @@ export class ApprovalGate {
     const shellRule = builtShellRule !== undefined && floorSessionGrant !== undefined
       ? { ...builtShellRule, exactRule: null, sessionAllowed: true, persistentAllowed: false, floorSessionOnly: true as const }
       : builtShellRule;
+    // One approval lane per stage session: the card names the stage of the run member that asked. "Allow for this run" is offered where
+    // this card's session allow is: a shell card's session rule, any other card's remembered exact allow. A scope that only ever lives
+    // for its own session (a browser or terminal target) and a schedule-started run offer none.
+    const runMember = runSessionOf(req.sessionId);
+    const sessionOnlyMemory = req.approvalMemory?.kind === "key" && isSessionOnlyApprovalMemoryScope(req.approvalMemory.scope);
+    const runStage = runMember === undefined ? undefined : Object.freeze({
+      stageId: runMember.stageId,
+      stageName: maskSensitiveData(runMember.stageName).masked.slice(0, 120),
+      runAllowOffered: runMember.lane === "attended" && userOwnedSurface === undefined && hostTerminal === undefined &&
+        (shellRule !== undefined ? shellRule.sessionAllowed && shellRule.floorSessionOnly !== true : persistentAllowAllowed && !sessionOnlyMemory),
+    });
     const fullReq: ApprovalRequest = {
       ...request,
+      ...(runStage === undefined ? {} : { runStage }),
       ...(readjudication === undefined ? {} : { args: JSON.parse(exactCanonicalStringify(req.args)) }),
       ...(childProvenance === undefined ? {} : { requestingAgentTitle: maskSensitiveData(childProvenance.childTitle).masked.slice(0, 240) }),
       ...(hostTerminal?.afterExternalContent === true ? { hostTerminalAfterExternalContent: true as const } : {}),
@@ -1565,6 +1598,7 @@ export class ApprovalGate {
         approvalMemory: fullReq.approvalMemory,
         durableApprovalRecordAllowed,
         persistentAllowAllowed,
+        runStage,
         shellRule,
         ...(floorSessionGrant !== undefined && shellRule?.sessionAllowed === true ? { floorSessionGrant } : {}),
         verifiedShellCommand,
@@ -1609,7 +1643,9 @@ export class ApprovalGate {
       try {
         maskedSignedReq = {
               ...signedReq,
-              args: maskArgsForDisplay(fullReq.args, dlpHits),
+              args: fullReq.kind === "extension-start"
+                ? maskExtensionStartArgsForDisplay(fullReq.args, dlpHits)
+                : maskArgsForDisplay(fullReq.args, dlpHits),
               ...(signedReq.approvalPurpose
                 ? {
                     approvalPurpose: maskApprovalPurposeForDisplay(
@@ -2119,6 +2155,7 @@ export class ApprovalGate {
     approvalMemory: ApprovalMemory | undefined;
     durableApprovalRecordAllowed: boolean;
     persistentAllowAllowed: boolean;
+    runStage: ApprovalRequest["runStage"];
     sessionId: string | undefined;
     projectCwd: string | undefined;
     shellRule: ShellRuleApproval | undefined;
@@ -2143,6 +2180,7 @@ export class ApprovalGate {
       approvalMemory: entry.approvalMemory,
       durableApprovalRecordAllowed: entry.durableApprovalRecordAllowed,
       persistentAllowAllowed: entry.persistentAllowAllowed,
+      runStage: entry.runStage,
       sessionId: entry.sessionId,
       projectCwd: entry.projectCwd,
       shellRule: entry.shellRule,

@@ -63,6 +63,8 @@ beforeAll(async () => {
     }
   }
   expect(applicationRoots.map(({ path }) => canonicalizePathForMatch(path))).toEqual(canonicalRoots);
+  corpusManagers = [runnerManager(), runnerManager()].map((manager) => ({ manager, state: managerState(manager) }));
+  for (const { state } of corpusManagers) expect(state).toEqual(EMPTY_MANAGER_STATE);
 });
 afterAll(() => { rmSync(directory, { recursive: true, force: true }); });
 
@@ -162,14 +164,33 @@ const CREDENTIAL_COMMANDS = new Set([
   "& Get-ChildItem Cert:\\CurrentUser\\My | Export-PfxCertificate -FilePath x.pfx -Password $p",
 ].flatMap((command) => command.startsWith("& ") ? [command] : [command, `& ${command}`]));
 
-function expectStaticContract(manager: () => PermissionManager, dialect: ShellDialect, command: string): void {
-  if (dialect === "powershell" && CREDENTIAL_COMMANDS.has(command)) {
-    for (const headless of [false, true]) expect(checkCommand(manager(), dialect, command, false, headless))
-      .toMatchObject({ decision: "deny", reasonCode: "credential-store" });
-    return;
+// The corpus shares one manager per mode; every check must leave its policy and grant state untouched.
+function managerState(manager: PermissionManager) {
+  const state = manager as unknown as { alwaysAllowed: Map<string, unknown>; sessionRules: Map<string, unknown>; floorSessionGrants: Set<string>; rules: readonly unknown[] };
+  return {
+    epoch: manager.getPolicyEpoch(),
+    alwaysAllowed: [...state.alwaysAllowed.keys()],
+    sessionRules: [...state.sessionRules.keys()],
+    floorSessionGrants: [...state.floorSessionGrants],
+    rules: state.rules.length,
+    verdictCache: manager.getVerdictCache(),
+    recentlyDenied: manager.getRecentlyDenied(),
+  };
+}
+
+const EMPTY_MANAGER_STATE = { epoch: expect.any(String), alwaysAllowed: [], sessionRules: [], floorSessionGrants: [], rules: 0, verdictCache: null, recentlyDenied: null };
+let corpusManagers: { manager: PermissionManager; state: ReturnType<typeof managerState> }[];
+
+function expectStaticContract(dialect: ShellDialect, command: string): void {
+  const credential = dialect === "powershell" && CREDENTIAL_COMMANDS.has(command);
+  for (const [index, headless] of [false, true].entries()) {
+    const { manager, state } = corpusManagers[index];
+    expect(managerState(manager)).toEqual(state);
+    expect(checkCommand(manager, dialect, command, false, headless)).toMatchObject(credential
+      ? { decision: "deny", reasonCode: "credential-store" }
+      : { decision: headless ? "deny" : "ask" });
+    expect(managerState(manager)).toEqual(state);
   }
-  expect(checkCommand(manager(), dialect, command).decision).toBe("ask");
-  expect(checkCommand(manager(), dialect, command, false, true).decision).toBe("deny");
 }
 
 describe("shared runner decisions", () => {
@@ -200,7 +221,7 @@ describe("shared runner decisions", () => {
   it.each(DECISION_CASES)("applies Default mode to the preserved corpus in $dialect: $command ($why)", (row) => {
     const { command, dialect } = row;
     // Historical buckets describe analysis coverage. Default mode independently requires a card for host shells.
-    expectStaticContract(runnerManager, dialect, command);
+    expectStaticContract(dialect, command);
   });
 
   it.each(RUNNER_SECURITY_CASES)("retains reviewed security disposition in Allow with saved grants: $dialect $command", async (row) => {

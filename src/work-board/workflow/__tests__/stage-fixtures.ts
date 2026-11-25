@@ -1,5 +1,8 @@
 import { type BigIntStats, chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, parse, sep } from "node:path";
+import { PermissionManager } from "../../../permissions/permission-manager.js";
 import type { TemplateGraph, TemplateStage, TemplateVersion, WorkItemStageRun } from "../../../shared/workflow-template-types.js";
 import { graphHashOf } from "../../template-graph.js";
 
@@ -107,4 +110,9 @@ export function versionOf(graph: TemplateGraph, version = 1, templateId = "tpl-1
 
 export function waitingRuns(graph: TemplateGraph): WorkItemStageRun[] {
   return graph.stages.map(stage => ({ stageId: stage.id, attempt: 1, status: "waiting" as const }));
+}
+
+/** A permission manager for a run's permission scope, on a rules file of its own that is never written. */
+export function runScopePermissions(): PermissionManager {
+  return new PermissionManager(join(tmpdir(), `ave-run-scope-${randomUUID()}`, "permissions.json"));
 }

@@ -4,11 +4,12 @@ import type { ShellRuleVersion } from "./shell-rule-version.js";
 import type { RiskLevel } from "./permission-review-status.js";
 
 
-/** Approval-scope literal. `session`: the root conversation, in memory. `persistent`: this project folder (the request's working directory),
+/** Approval-scope literal. `session`: the root conversation, in memory. `run`: the stage sessions of one template run, in memory, until the
+ * run ends (owner decision 2026-11-16, "Allow for this run"); never on disk. `persistent`: this project folder (the request's working directory),
  * on disk. `global`: every project, on disk (owner decision 2026-10-25, "Always allow everywhere" for exact tool approvals).
  * Approval-scope literal. Hoisted from inline `"session" | "persistent"` unions so renderer types
  * (`ui/renderer/types.ts`) can share the same SOT as the IPC payload. Cross-cutting follow-up of #802. */
-export type UserApprovalScope = "session" | "persistent" | "global";
+export type UserApprovalScope = "session" | "run" | "persistent" | "global";
 
 /** Historical host evidence attached when a person re-adjudicates an exact plugin request. */
 export interface PluginReadjudicationEvidence {
@@ -103,11 +104,11 @@ export interface ScopedPermissionRule extends ShellRuleVersion {
 /** The shell dialects with a rule language: `Bash(...)` rules match bash, `PowerShell(...)` rules match PowerShell. */
 export type ShellRuleDialect = "bash" | "powershell";
 
-/** Where an approval card saves a rule (owner 2026-10-25, unified approval card): this conversation (in memory, ends with it), this project's rule file, or the user-global rules. */
-export type ShellRuleSaveScope = "session" | "project" | "always";
+/** Where an approval card saves a rule (owner 2026-10-25, unified approval card): this conversation (in memory, ends with it), this template run (in memory, ends with the run; offered to its stage sessions only), this project's rule file, or the user-global rules. */
+export type ShellRuleSaveScope = "session" | "run" | "project" | "always";
 
 export function isShellRuleSaveScope(value: unknown): value is ShellRuleSaveScope {
-  return value === "session" || value === "project" || value === "always";
+  return value === "session" || value === "run" || value === "project" || value === "always";
 }
 
 /** What a card sends to save a rule (`userApprovalRecord` `rule`): the action and scope of the choice and, only when the person edited it, the edited rule text. The host validates an edited rule against the card's own rule grammar and requires it to decide this very request; without one it stores the rule it derived itself. */

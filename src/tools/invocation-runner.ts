@@ -1,3 +1,4 @@
+import { answerEpochsOf, personAnswerStands } from "../permissions/pending-answer-policy.js";
 import { agentBrowserScopeOf, browserApprovalCardFacts, userOwnedBrowserScopeOf } from "./browser-tools.js";
 import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pipeline/user-owned-surface.js";
 import { issueReplayRootBinding } from "../permissions/reviewer/replay-root-binding.js";
@@ -1496,7 +1497,7 @@ async function runToolInvocationAttempt(
             cwd: terminalScope?.cwd ?? resolveHostShellWorkingDirectory(executionCwd, typeof finalInput.cwd === "string" ? finalInput.cwd : undefined) }
         : undefined;
       await manager.ensureProjectRulesLoaded(shellSubject?.cwd ?? executionCwd);
-      let directoryPermission = behavior !== undefined ? manager.recheckPermission(behavior.reviewedPermission) : manager.checkDetailed(toolUse.name, source, invocationCategory, overlayTriggerOrigin, {
+      const checkDirectoryPermission = (): PermissionCheckResult => manager.checkDetailed(toolUse.name, source, invocationCategory, overlayTriggerOrigin, {
         ...invocationPermissionContext, sessionId, projectRulesCwd: shellSubject?.cwd ?? executionCwd,
         userOwnedBrowser: userOwnedBrowserScopeOf(tool, approvalMemory),
         agentBrowser: agentBrowserScopeOf(tool, approvalMemory),
@@ -1514,6 +1515,7 @@ async function runToolInvocationAttempt(
         }),
         ...(approvalReasonPrefix || invocationPermissionContext.otherPrincipal ? { floor: { code: "other-principal" as const, reason: "This action requires the user's approval." } } : {}),
       });
+      let directoryPermission = behavior !== undefined ? manager.recheckPermission(behavior.reviewedPermission) : checkDirectoryPermission();
       const memoryRequest = directoryPermission.pipelineRequest;
       if (behavior === undefined && directoryPermission.decision !== "allow" && memoryRequest && !memoryRequest.admissionDenial && !memoryRequest.floor
         && !memoryRequest.rules?.deny && !memoryRequest.rules?.ask && !memoryRequest.manualRerun && !rationaleResumeContext) {
@@ -1541,7 +1543,7 @@ async function runToolInvocationAttempt(
         }) };
       }
       dirLayerResult = directoryPermission;
-      const directoryPolicyEpoch = manager.getPolicyEpoch();
+      const directoryAnswerEpochs = answerEpochsOf(manager);
 
       const trustOrigin = invocationPermissionContext.trustOrigin;
       // A directory-confirm modal is an approval like any other, so it carries
@@ -1788,7 +1790,8 @@ async function runToolInvocationAttempt(
         if (grantGuard && !grantGuard.isCurrent()) {
           return { allowed: false, result: await denyDirectoryGrant(directorySignal) };
         }
-        if (directoryPolicyEpoch !== manager.getPolicyEpoch()) {
+        // The one rule for answered cards (pending-answer-policy.ts): a sibling stage's "Allow for this run" leaves the answer standing.
+        if (!personAnswerStands(manager, directoryAnswerEpochs, dirLayerResult.forceModal === true, checkDirectoryPermission)) {
           const denied: PermissionCheckResult = { decision: "deny", reason: "Permission policy changed during approval.", };
           await auditCurrentToolCall(sessionId, toolUse.name, source, trust, finalInput, denied.reason, true, startTime, denied, Infinity, invocationPermissionContext, invocationCategory, executionCwd);
           return { allowed: false, result: withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: denied.reason, is_error: true, durationMs: Date.now() - startTime }) };
