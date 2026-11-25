@@ -78,6 +78,18 @@ function maskArgsForDisplay(value: unknown, detections: Set<string>): unknown {
   return value;
 }
 
+// An extension-start card's row ids are host-minted keys, not content: the answers name them (`extensionStartChoices`,
+// `extensionStartRow`) and the gate checks those against the ids it offered. A random id can read as a phone or card number,
+// so masking one would leave the desk card naming a row the gate never offered, and the desk answer would be refused.
+// The rest of each row (its label) is masked as usual. `assertExtensionStartRequestShape` has already checked the rows.
+function maskExtensionStartArgsForDisplay(args: unknown, detections: Set<string>): unknown {
+  const { starts, ...rest } = args as { starts: readonly Readonly<Record<string, unknown>>[] };
+  return {
+    ...(maskArgsForDisplay(rest, detections) as Record<string, unknown>),
+    starts: starts.map(({ id, ...row }) => ({ id, ...(maskArgsForDisplay(row, detections) as Record<string, unknown>) })),
+  };
+}
+
 function maskApprovalPurposeForDisplay(
   purpose: ApprovalPurposeSuggestion,
   detections: Set<string>,
@@ -1609,7 +1621,9 @@ export class ApprovalGate {
       try {
         maskedSignedReq = {
               ...signedReq,
-              args: maskArgsForDisplay(fullReq.args, dlpHits),
+              args: fullReq.kind === "extension-start"
+                ? maskExtensionStartArgsForDisplay(fullReq.args, dlpHits)
+                : maskArgsForDisplay(fullReq.args, dlpHits),
               ...(signedReq.approvalPurpose
                 ? {
                     approvalPurpose: maskApprovalPurposeForDisplay(
