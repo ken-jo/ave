@@ -64,6 +64,8 @@ const MAX_REPOSITORY_ANCESTORS = 256;
 const GIT_CONTROL_ENTRIES = [
   "hooks", "config", "config.worktree", "commondir", "gitdir",
   "objects/info/alternates", "objects/info/http-alternates", "remotes", "branches",
+  // The anchor the host makes in a run's admin folder and the pins it keeps in a repository (work-board workspace-layout.ts).
+  "ave.id", "ave-pins",
 ] as const;
 const LINUX_GIT_CONTROL_ENTRIES = [...GIT_CONTROL_ENTRIES, "info/attributes"] as const;
 export const SANDBOX_BARE_REPOSITORY_ENTRIES = ["HEAD", "objects", "refs", "config"] as const;

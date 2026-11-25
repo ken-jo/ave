@@ -560,6 +560,18 @@ describe("mandatory sandbox control-file writes", () => {
     }
   });
 
+  it("keeps a run's workspace anchor and the pins of a repository off a stage that can write the repository", () => {
+    const marker = join(root, ".git");
+    const worktree = join(marker, "worktrees", "linked");
+    mkdirSync(worktree, { recursive: true });
+    mkdirSync(join(marker, "ave-pins"));
+    writeFileSync(join(marker, "HEAD"), "ref: refs/heads/main\n");
+    writeFileSync(join(worktree, "HEAD"), "ref: refs/heads/main\n");
+    writeFileSync(join(worktree, "ave.id"), "");
+    const policy = buildMandatorySandboxWritePolicy([root]);
+    expect(nativeDenyRows(policy.denyWrite)).toEqual(expect.arrayContaining([join(marker, "ave-pins"), join(worktree, "ave.id")]));
+  });
+
   it("discovers new Linux repositories on each policy build using HEAD markers", () => {
     const nested = join(root, "new", ".git");
     mkdirSync(nested, { recursive: true });
