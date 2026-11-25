@@ -1,4 +1,4 @@
-import { realpathSync, statSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, realpathSync, statSync } from "node:fs";
 
 export interface ShellWorkingDirectoryIdentity {
   readonly realpath: string;
@@ -39,4 +39,27 @@ export function sameShellWorkingDirectoryIdentity(actual: ShellWorkingDirectoryI
   return actual.realpath === expected.realpath &&
     actual.dev === expected.dev &&
     actual.ino === expected.ino;
+}
+
+/** Keep the approved directory object alive until the invocation finishes its launch. */
+export function holdShellWorkingDirectory(cwd: string, identity: ShellWorkingDirectoryIdentity): (() => void) | undefined {
+  if (process.platform === "win32") {
+    return matchesShellWorkingDirectoryIdentity(cwd, identity) ? () => {} : undefined;
+  }
+  let fd: number | undefined;
+  try {
+    fd = openSync(identity.realpath, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    const opened = fstatSync(fd, { bigint: true });
+    if (opened.isDirectory() && opened.dev === identity.dev && opened.ino === identity.ino &&
+      matchesShellWorkingDirectoryIdentity(cwd, identity)) {
+      const held = fd;
+      fd = undefined;
+      return () => closeSync(held);
+    }
+  } catch {
+    return undefined;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+  return undefined;
 }
