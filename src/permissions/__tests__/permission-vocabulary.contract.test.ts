@@ -6,6 +6,7 @@
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { answerEachStart } from "../../__tests__/support/approved-extension-start.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { planWindowsSandbox } from "../../boot/steps/windows-sandbox-plan.js";
 import { _resetAveHomePrivacyForTest, setAveHomePrivacyAtBoot } from "../../shared/ave-home.js";
@@ -292,11 +293,12 @@ const ROWS: readonly Row[] = [
       setPluginWorkerConfinementRequestedAtBoot(true);
       setAveHomePrivacyAtBoot({ enforcement: "none", home: FIXTURE_HOME, category: "read-back-failed", reason: "fixture" });
       const first = extensionStart();
-      setExtensionStartAsker({ ask: async () => "yes", notify: () => {} });
+      setExtensionStartAsker({ ask: answerEachStart(() => "yes"), notify: () => {} });
       const key = "plugin-child:fixture";
-      return requestExtensionStartConsent({ key, kind: "plugin-child", label: "fixture", cause: "home-privacy-unverified" }, { sessionId: "s1", attended: true })
+      const identity = "fixture";
+      return requestExtensionStartConsent({ key, identity, kind: "plugin-child", label: "fixture", cause: "home-privacy-unverified" }, { sessionId: "s1", attended: true })
         .then((authority): Observation => {
-          const start = () => extensionStart({ start: { key, authority, spend: true } }).outcome;
+          const start = () => extensionStart({ start: { key, identity, authority, spend: true } }).outcome;
           if (start() !== "unasked") return { ...first, waiver: "none" };
           return { ...first, waiver: start() === "ask-human" ? "once" : "session" };
         });
@@ -371,7 +373,7 @@ const RESOLVED: Readonly<Record<string, string>> = {
 // Inconsistencies no driven row can show, and why.
 const INCONSISTENCIES_WITHOUT_ROW: Readonly<Record<string, string>> = {
   I1: "an exact saved host rule on a no-backend host: an open owner question (loosening); D25 shows S1's forced ask, the core answer",
-  I2: "one shared card for every waiting start is not built (lane i2-batch-card); L5 shows the per-start ask",
+  I2: "built: the starts waiting in a session share one card and each keeps its own yes or no. A row observes one start's gate outcome (L5), not how the question is presented; extension-start-consent.test.ts and extension-start-card.test.ts prove the card",
   I3: "inference child route: spawn path, not driven",
   I4: "lives on the device-path branch, not on main",
   I6: "stage workspaces are not on main",

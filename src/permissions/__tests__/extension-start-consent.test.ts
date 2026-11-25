@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { answerEachStart, FIXTURE_START_IDENTITY as ID } from "../../__tests__/support/approved-extension-start.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { planWindowsSandbox } from "../../boot/steps/windows-sandbox-plan.js";
 import { PERMISSIONS } from "../../shared/ipc-channels.js";
@@ -7,7 +8,7 @@ import * as aveHome from "../../shared/ave-home.js";
 import { _resetAveHomePrivacyForTest, setAveHomePrivacyAtBoot } from "../../shared/ave-home.js";
 import { assertExtensionStartAllowed } from "../asrt-sandbox.js";
 import {
-  __resetExtensionStartsForTest, deferExtensionStart, dropExtensionStart, dropPluginExtensionStarts, EXTENSION_START_CONSENT_REQUIRED_CODE, EXTENSION_START_GRANT_TTL_MS, ExtensionStartConsentRequiredError, listPendingExtensionStarts,
+  __resetExtensionStartsForTest, deferExtensionStart, dropExtensionStart, dropPluginExtensionStarts, EXTENSION_START_CONSENT_REQUIRED_CODE, EXTENSION_START_GRANT_TTL_MS, extensionStartIdentity, listPendingExtensionStarts,
   requestExtensionStartConsent, runExtensionStart, setExtensionStartAsker, settlePendingExtensionStarts, takeExtensionStartGrant,
   type ExtensionStartAsker, type ExtensionStartAuthority, type PendingExtensionStart,
 } from "../extension-start-consent.js";
@@ -28,9 +29,9 @@ function publish(extensionMxc: ExtensionState, admittedAncestorBackend?: "srt-wi
   setWindowsSandboxSubstrate(substrate);
 }
 
-function gate(key: string, authority: ExtensionStartAuthority | undefined, spend = false): string {
+function gate(key: string, authority: ExtensionStartAuthority | undefined, spend = false, identity = ID): string {
   try {
-    assertExtensionStartAllowed({ start: { key, authority, spend } });
+    assertExtensionStartAllowed({ start: { key, identity, authority, spend } });
     return "started";
   } catch (error) {
     return (error as { code?: string }).code ?? `refused:${(error as Error).name}`;
@@ -38,11 +39,11 @@ function gate(key: string, authority: ExtensionStartAuthority | undefined, spend
 }
 
 function fakeAsker(answers: ("yes" | "no" | "no-approver")[]) {
-  return { ask: vi.fn<ExtensionStartAsker["ask"]>(async () => answers.shift() ?? "no"), notify: vi.fn<ExtensionStartAsker["notify"]>() };
+  return { ask: vi.fn<ExtensionStartAsker["ask"]>(answerEachStart(() => answers.shift() ?? "no")), notify: vi.fn<ExtensionStartAsker["notify"]>() };
 }
 
 const start = (key: string, retry?: () => Promise<void>): PendingExtensionStart =>
-  ({ key, kind: "plugin-child", label: key, cause: "no-backend", ...(retry ? { retry } : {}) });
+  ({ key, identity: ID, kind: "plugin-child", label: key, cause: "no-backend", ...(retry ? { retry } : {}) });
 
 beforeEach(() => {
   setProcessPlatform("win32");
@@ -70,7 +71,7 @@ describe("extension start with no backend", () => {
     }
   });
 
-  it("asks once per waiting start, starts each approved one with its own consent and spends it at the spawn", async () => {
+  it("asks about every waiting start on one card, starts each approved one with its own consent and spends it at the spawn", async () => {
     const asker = fakeAsker(["yes", "yes"]);
     setExtensionStartAsker(asker);
     const results: string[] = [];
@@ -83,8 +84,8 @@ describe("extension start with no backend", () => {
     }
     expect(listPendingExtensionStarts().map((entry) => entry.key)).toEqual(["plugin-child:a", "mcp-stdio:b"]);
     await settlePendingExtensionStarts(ATTENDED);
-    expect(asker.ask).toHaveBeenCalledTimes(2);
-    expect(asker.ask.mock.calls.map(([asked]) => (asked as PendingExtensionStart).key)).toEqual(["plugin-child:a", "mcp-stdio:b"]);
+    expect(asker.ask).toHaveBeenCalledTimes(1);
+    expect(asker.ask.mock.calls[0]?.[0].map((asked) => asked.key)).toEqual(["plugin-child:a", "mcp-stdio:b"]);
     const once = ["started", "started", "started", EXTENSION_START_CONSENT_REQUIRED_CODE];
     expect(results).toEqual([...once, ...once]);
     expect(listPendingExtensionStarts()).toEqual([]);
@@ -111,7 +112,7 @@ describe("extension start with no backend", () => {
     expect(gate("plugin-child:b", authority, true)).toBe(EXTENSION_START_CONSENT_REQUIRED_CODE);
     // A mismatched presentation burns it.
     expect(gate("plugin-child:a", authority, true)).toBe(EXTENSION_START_CONSENT_REQUIRED_CODE);
-    expect(gate("plugin-child:a", { key: "plugin-child:a", consent: {} as ExtensionStartAuthority["consent"] }, true)).toBe(EXTENSION_START_CONSENT_REQUIRED_CODE);
+    expect(gate("plugin-child:a", { key: "plugin-child:a", identity: ID, consent: {} as ExtensionStartAuthority["consent"] }, true)).toBe(EXTENSION_START_CONSENT_REQUIRED_CODE);
   });
 
   it("never starts a waiting start in a headless session and says so once", async () => {
@@ -148,12 +149,16 @@ describe("extension start with no backend", () => {
 
   it("shows one card when two turns begin together", async () => {
     let release!: (answer: "yes") => void;
-    const asker: ExtensionStartAsker = { ask: vi.fn(() => new Promise<"yes">((resolve) => { release = resolve; })), notify: vi.fn() };
+    const asker: ExtensionStartAsker = { ask: vi.fn<ExtensionStartAsker["ask"]>(async (starts) => {
+      const given = await new Promise<"yes">((resolve) => { release = resolve; });
+      return new Map(starts.map((asked) => [asked.key, given]));
+    }), notify: vi.fn() };
     setExtensionStartAsker(asker);
     const retry = vi.fn(async () => undefined);
     deferExtensionStart(start("plugin-child:a", retry));
     const first = settlePendingExtensionStarts(ATTENDED);
     const second = settlePendingExtensionStarts({ sessionId: "s2", attended: true });
+    await vi.waitFor(() => expect(asker.ask).toHaveBeenCalledTimes(1));
     release("yes");
     await Promise.all([first, second]);
     expect(asker.ask).toHaveBeenCalledTimes(1);
@@ -182,9 +187,8 @@ describe("extension start states a consent does not answer", () => {
     const asker = fakeAsker(["yes", "no"]);
     setExtensionStartAsker(asker);
     const run = vi.fn(async (authority: ExtensionStartAuthority | undefined) => {
-      const outcome = gate("worker:p/w", authority, true);
-      if (outcome !== "started") throw new ExtensionStartConsentRequiredError("no-backend");
-      return outcome;
+      assertExtensionStartAllowed({ start: { key: "worker:p/w", identity: ID, authority, spend: true } });
+      return "started";
     });
     const pending = { key: "worker:p/w", kind: "worker" as const, label: "p (w)" };
     await expect(runExtensionStart(pending, ATTENDED, run)).resolves.toBe("started");
@@ -199,9 +203,8 @@ describe("extension start states a consent does not answer", () => {
     const asker = fakeAsker(["yes"]);
     setExtensionStartAsker(asker);
     const run = vi.fn(async (authority: ExtensionStartAuthority | undefined) => {
-      const outcome = gate("worker:p/w", authority, true);
-      if (outcome !== "started") throw new ExtensionStartConsentRequiredError("no-backend");
-      return outcome;
+      assertExtensionStartAllowed({ start: { key: "worker:p/w", identity: ID, authority, spend: true } });
+      return "started";
     });
     const pending = { key: "worker:p/w", kind: "worker" as const, label: "p (w)" };
     await expect(runExtensionStart(pending, undefined, run)).rejects.toThrow(EXTENSION_START_CONSENT_REQUIRED_CODE);
@@ -228,10 +231,10 @@ describe("extension start states a consent does not answer", () => {
     if (a === undefined) throw new Error("the fixture consent was not given");
     expect(gate("plugin-child:b", a)).toBe(EXTENSION_START_CONSENT_REQUIRED_CODE);
     // Re-labelled for the other start, the same consent is still a's.
-    expect(gate("plugin-child:b", { key: "plugin-child:b", consent: a.consent })).toBe(EXTENSION_START_CONSENT_REQUIRED_CODE);
+    expect(gate("plugin-child:b", { key: "plugin-child:b", identity: ID, consent: a.consent })).toBe(EXTENSION_START_CONSENT_REQUIRED_CODE);
     // A crossing that is not the spawn leaves it live for its own start.
     expect(gate("plugin-child:a", a)).toBe("started");
-    expect(gate("plugin-child:b", { key: "plugin-child:b", consent: a.consent }, true)).toBe(EXTENSION_START_CONSENT_REQUIRED_CODE);
+    expect(gate("plugin-child:b", { key: "plugin-child:b", identity: ID, consent: a.consent }, true)).toBe(EXTENSION_START_CONSENT_REQUIRED_CODE);
     expect(gate("plugin-child:a", a)).toBe(EXTENSION_START_CONSENT_REQUIRED_CODE);
   });
 
@@ -264,7 +267,7 @@ describe("extension start states a consent does not answer", () => {
     expect(listPendingExtensionStarts()).toMatchObject([{ state: "pending" }]);
     now = "home-privacy-unverified";
     await settlePendingExtensionStarts(ATTENDED);
-    expect(asker.ask.mock.calls[0]?.[0]).toMatchObject({ key: "plugin-child:a", cause: "home-privacy-unverified" });
+    expect(asker.ask.mock.calls[0]?.[0]).toMatchObject([{ key: "plugin-child:a", cause: "home-privacy-unverified" }]);
   });
 
   it("keeps a start waiting when nobody answered its card, and asks again at the next turn", async () => {
@@ -293,24 +296,27 @@ describe("extension start states a consent does not answer", () => {
   });
 
   it("forgets a removed extension's starts: a card still open cannot start it", async () => {
-    let answerCard: (answer: "yes") => void = () => {};
-    const ask = vi.fn<ExtensionStartAsker["ask"]>(() => new Promise((resolve) => { answerCard = resolve; }));
+    let answerCard: () => void = () => {};
+    const ask = vi.fn<ExtensionStartAsker["ask"]>(async (starts) => {
+      await new Promise<void>((resolve) => { answerCard = resolve; });
+      return new Map(starts.map((asked) => [asked.key, "yes"]));
+    });
     setExtensionStartAsker({ ask, notify: vi.fn() });
-    const retry = vi.fn(async () => {});
-    for (const key of ["plugin-child:p", "worker:p/w", "plugin-hook:p/h", "plugin-child:pp", "mcp-stdio:p"]) deferExtensionStart(start(key, retry));
+    const retried: string[] = [];
+    const keys = ["plugin-child:p", "worker:p/w", "plugin-hook:p/h", "plugin-child:pp", "mcp-stdio:p"];
+    for (const key of keys) deferExtensionStart(start(key, async () => { retried.push(key); }));
     const settling = settlePendingExtensionStarts(ATTENDED);
     await vi.waitFor(() => expect(ask).toHaveBeenCalledTimes(1));
+    expect(ask.mock.calls[0]?.[0].map((asked) => asked.key)).toEqual(keys);
     dropPluginExtensionStarts("p");
     dropExtensionStart("mcp-stdio:p");
     expect(listPendingExtensionStarts().map((entry) => entry.key)).toEqual(["plugin-child:pp"]);
-    answerCard("yes");
-    await vi.waitFor(() => expect(ask).toHaveBeenCalledTimes(2));
-    expect(ask.mock.calls[1]?.[0]).toMatchObject({ key: "plugin-child:pp" });
-    expect(retry).not.toHaveBeenCalled();
-    expect(takeExtensionStartGrant("plugin-child:p")).toBeUndefined();
-    answerCard("yes");
+    // Every row is answered yes; only the start that is still there runs.
+    answerCard();
     await settling;
-    expect(retry).toHaveBeenCalledTimes(1);
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(retried).toEqual(["plugin-child:pp"]);
+    for (const key of keys) expect(takeExtensionStartGrant(key)).toBeUndefined();
   });
 
   it("expires the consent of a start with no retry when its owner does not start in time", async () => {
@@ -372,6 +378,188 @@ describe("extension start states a consent does not answer", () => {
     _resetAveHomePrivacyForTest();
     setAveHomePrivacyAtBoot({ enforcement: "none", home: HOME, category: "helper-unavailable", reason: "fixture" });
     expect(gate("plugin-child:a", authority, true)).toBe("refused:Error");
+  });
+});
+
+/** An asker whose card stays open until the test answers it. */
+function heldAsker() {
+  const cards: { keys: string[]; answer: (answers: Record<string, "yes" | "no">) => void }[] = [];
+  const ask = vi.fn<ExtensionStartAsker["ask"]>((starts) => new Promise((resolve) => {
+    cards.push({ keys: starts.map((asked) => asked.key), answer: (answers) => resolve(new Map(Object.entries(answers))) });
+  }));
+  return { cards, ask, notify: vi.fn<ExtensionStartAsker["notify"]>() };
+}
+
+describe("one card for every waiting start", () => {
+  it("lists three waiting starts on one card and starts exactly the two that got a yes, each once", async () => {
+    const asker = fakeAsker(["yes", "no", "yes"]);
+    setExtensionStartAsker(asker);
+    const spawned: string[] = [];
+    const keys = ["plugin-child:a", "mcp-stdio:b", "plugin-child:c"];
+    for (const key of keys) deferExtensionStart(start(key, async () => { spawned.push(`${key} ${gate(key, takeExtensionStartGrant(key), true)}`); }));
+    await settlePendingExtensionStarts(ATTENDED);
+    expect(asker.ask).toHaveBeenCalledTimes(1);
+    expect(asker.ask.mock.calls[0]?.[0].map((asked) => asked.key)).toEqual(keys);
+    expect(spawned).toEqual(["plugin-child:a started", "plugin-child:c started"]);
+    expect(listPendingExtensionStarts()).toMatchObject([{ key: "mcp-stdio:b", state: "declined" }]);
+    expect(asker.notify).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ key: "mcp-stdio:b" }), "declined");
+    // Nothing is left over: no consent waits for a later start and the next turn asks about none of them.
+    for (const key of keys) expect(gate(key, takeExtensionStartGrant(key), true)).toBe(EXTENSION_START_CONSENT_REQUIRED_CODE);
+    await settlePendingExtensionStarts(ATTENDED);
+    expect(asker.ask).toHaveBeenCalledTimes(1);
+    expect(spawned).toHaveLength(2);
+  });
+
+  it("gives a start the card did not answer no consent, even when the others got a yes", async () => {
+    const asker = { ask: vi.fn<ExtensionStartAsker["ask"]>(async () => new Map([["plugin-child:a", "yes" as const], ["plugin-child:zz", "yes" as const]])), notify: vi.fn() };
+    setExtensionStartAsker(asker);
+    const spawned: string[] = [];
+    for (const key of ["plugin-child:a", "plugin-child:b"]) deferExtensionStart(start(key, async () => { spawned.push(key); }));
+    await settlePendingExtensionStarts(ATTENDED);
+    expect(spawned).toEqual(["plugin-child:a"]);
+    expect(takeExtensionStartGrant("plugin-child:b")).toBeUndefined();
+    expect(takeExtensionStartGrant("plugin-child:zz")).toBeUndefined();
+    expect(listPendingExtensionStarts()).toMatchObject([{ key: "plugin-child:b", state: "pending" }]);
+  });
+
+  it("does not start on a yes when what the start runs changed after the card was shown", async () => {
+    const asker = heldAsker();
+    setExtensionStartAsker(asker);
+    let manifest = { version: "1.0.0", entry: "dist/index.js" };
+    const outcomes: string[] = [];
+    const key = "plugin-child:a";
+    deferExtensionStart({ ...start(key, async () => {
+      outcomes.push(gate(key, takeExtensionStartGrant(key), true, extensionStartIdentity(manifest)));
+    }), identity: extensionStartIdentity(manifest) });
+    const settling = settlePendingExtensionStarts(ATTENDED);
+    await vi.waitFor(() => expect(asker.cards).toHaveLength(1));
+    manifest = { version: "1.0.0", entry: "dist/other.js" };
+    asker.cards[0]?.answer({ [key]: "yes" });
+    await settling;
+    expect(outcomes).toEqual([EXTENSION_START_CONSENT_REQUIRED_CODE]);
+    // The refused presentation spent the old yes: it cannot start the old identity either.
+    expect(takeExtensionStartGrant(key)).toBeUndefined();
+  });
+
+  it("voids an open card's yes when the same extension waits again as another start, and asks about the new one", async () => {
+    const asker = heldAsker();
+    setExtensionStartAsker(asker);
+    const key = "plugin-child:a";
+    const started: string[] = [];
+    const version = (identity: string): PendingExtensionStart => ({ ...start(key, async () => {
+      started.push(`${identity} ${gate(key, takeExtensionStartGrant(key), true, identity)}`);
+    }), identity });
+    deferExtensionStart(version("v1"));
+    const first = settlePendingExtensionStarts(ATTENDED);
+    await vi.waitFor(() => expect(asker.cards).toHaveLength(1));
+    deferExtensionStart(version("v2"));
+    asker.cards[0]?.answer({ [key]: "yes" });
+    await first;
+    expect(started).toEqual([]);
+    expect(listPendingExtensionStarts()).toMatchObject([{ key, identity: "v2", state: "pending" }]);
+    const second = settlePendingExtensionStarts(ATTENDED);
+    await vi.waitFor(() => expect(asker.cards).toHaveLength(2));
+    asker.cards[1]?.answer({ [key]: "yes" });
+    await second;
+    expect(started).toEqual(["v2 started"]);
+  });
+
+  it("clears an earlier yes and an earlier no when the start comes back with another identity", async () => {
+    const asker = fakeAsker(["yes", "no", "yes"]);
+    setExtensionStartAsker(asker);
+    const waiting = (key: string, identity: string): PendingExtensionStart => ({ ...start(key), identity });
+    deferExtensionStart(waiting("worker:p/w", "v1"));
+    deferExtensionStart(waiting("mcp-stdio:b", "v1"));
+    await settlePendingExtensionStarts(ATTENDED);
+    expect(listPendingExtensionStarts()).toMatchObject([{ key: "mcp-stdio:b", state: "declined" }]);
+    // The worker's yes waits for its owner's next start; the server's no stands. Both are for v1 only.
+    deferExtensionStart(waiting("worker:p/w", "v2"));
+    deferExtensionStart(waiting("mcp-stdio:b", "v2"));
+    expect(takeExtensionStartGrant("worker:p/w")).toBeUndefined();
+    expect(listPendingExtensionStarts()).toMatchObject([
+      { key: "worker:p/w", identity: "v2", state: "pending" }, { key: "mcp-stdio:b", identity: "v2", state: "pending" }]);
+    // The same identity again changes nothing: a no stays a no.
+    await settlePendingExtensionStarts(ATTENDED);
+    deferExtensionStart(waiting("mcp-stdio:b", "v2"));
+    expect(listPendingExtensionStarts().find((entry) => entry.key === "mcp-stdio:b")).toMatchObject({ identity: "v2", state: "declined" });
+  });
+
+  it("starts none of several waiting starts in a headless session, with one notice each and no card", async () => {
+    const asker = fakeAsker(["yes", "yes", "yes"]);
+    setExtensionStartAsker(asker);
+    const retry = vi.fn(async () => undefined);
+    const keys = ["plugin-child:a", "mcp-stdio:b", "plugin-child:c"];
+    for (const key of keys) deferExtensionStart(start(key, retry));
+    await settlePendingExtensionStarts(HEADLESS);
+    await settlePendingExtensionStarts(HEADLESS);
+    expect(asker.ask).not.toHaveBeenCalled();
+    expect(retry).not.toHaveBeenCalled();
+    expect(asker.notify.mock.calls.map(([entry, why]) => [entry.key, why])).toEqual(keys.map((key) => [key, "unattended"]));
+    for (const key of keys) expect(takeExtensionStartGrant(key)).toBeUndefined();
+    expect(listPendingExtensionStarts().map((entry) => entry.state)).toEqual(["pending", "pending", "pending"]);
+  });
+
+  it("shows a start that arrives while a card is open on the next card, never on the open one", async () => {
+    const asker = heldAsker();
+    setExtensionStartAsker(asker);
+    const retry = vi.fn(async () => undefined);
+    deferExtensionStart(start("plugin-child:a", retry));
+    const settling = settlePendingExtensionStarts(ATTENDED);
+    await vi.waitFor(() => expect(asker.cards).toHaveLength(1));
+    // Two starts ask while the first card is open: a hook and a worker of the same session.
+    const hook = requestExtensionStartConsent(start("plugin-hook:p/h"), ATTENDED);
+    const worker = requestExtensionStartConsent(start("worker:p/w"), ATTENDED);
+    await Promise.resolve();
+    expect(asker.cards.map((card) => card.keys)).toEqual([["plugin-child:a"]]);
+    asker.cards[0]?.answer({ "plugin-child:a": "yes", "plugin-hook:p/h": "yes", "worker:p/w": "yes" });
+    await settling;
+    expect(retry).toHaveBeenCalledTimes(1);
+    // The late arrivals were not answered by the first card; they share the second.
+    await vi.waitFor(() => expect(asker.cards).toHaveLength(2));
+    expect(asker.cards[1]?.keys).toEqual(["plugin-hook:p/h", "worker:p/w"]);
+    asker.cards[1]?.answer({ "plugin-hook:p/h": "no", "worker:p/w": "yes" });
+    expect(await hook).toBeUndefined();
+    expect(gate("worker:p/w", await worker, true)).toBe("started");
+  });
+
+  it("does not make another session wait behind an open card", async () => {
+    const asker = heldAsker();
+    setExtensionStartAsker(asker);
+    const first = requestExtensionStartConsent(start("plugin-hook:p/h"), ATTENDED);
+    const other = requestExtensionStartConsent(start("plugin-hook:q/h"), { sessionId: "s2", attended: true });
+    await vi.waitFor(() => expect(asker.cards).toHaveLength(2));
+    expect(asker.ask.mock.calls.map(([, session]) => session.sessionId)).toEqual(["s1", "s2"]);
+    asker.cards[1]?.answer({ "plugin-hook:q/h": "yes" });
+    expect(gate("plugin-hook:q/h", await other, true)).toBe("started");
+    asker.cards[0]?.answer({ "plugin-hook:p/h": "no" });
+    expect(await first).toBeUndefined();
+  });
+
+  it("treats a start cancelled while its card was open as unanswered and leaves the card to the others", async () => {
+    const asker = heldAsker();
+    setExtensionStartAsker(asker);
+    const cancelled = new AbortController();
+    const hook = requestExtensionStartConsent(start("plugin-hook:p/h"), { ...ATTENDED, abortSignal: cancelled.signal });
+    const worker = requestExtensionStartConsent(start("worker:p/w"), { ...ATTENDED, abortSignal: new AbortController().signal });
+    await vi.waitFor(() => expect(asker.cards).toHaveLength(1));
+    expect(asker.cards[0]?.keys).toEqual(["plugin-hook:p/h", "worker:p/w"]);
+    cancelled.abort();
+    // The card is withdrawn only when every start on it was cancelled.
+    expect(asker.ask.mock.calls[0]?.[1].abortSignal?.aborted).toBe(false);
+    asker.cards[0]?.answer({ "plugin-hook:p/h": "yes", "worker:p/w": "yes" });
+    expect(await hook).toBeUndefined();
+    expect(gate("worker:p/w", await worker, true)).toBe("started");
+  });
+
+  it("burns a yes whose start was removed while an earlier start on the same card was still starting", async () => {
+    const asker = fakeAsker(["yes", "yes"]);
+    setExtensionStartAsker(asker);
+    const started: string[] = [];
+    deferExtensionStart(start("plugin-child:a", async () => { dropExtensionStart("mcp-stdio:b"); started.push("plugin-child:a"); }));
+    deferExtensionStart(start("mcp-stdio:b", async () => { started.push(`mcp-stdio:b ${gate("mcp-stdio:b", takeExtensionStartGrant("mcp-stdio:b"), true)}`); }));
+    await settlePendingExtensionStarts(ATTENDED);
+    expect(started).toEqual(["plugin-child:a"]);
+    expect(takeExtensionStartGrant("mcp-stdio:b")).toBeUndefined();
   });
 });
 

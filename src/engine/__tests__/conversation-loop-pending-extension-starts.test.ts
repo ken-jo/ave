@@ -8,16 +8,17 @@ import { makeBasicConversationLoopDeps, ScriptedTurnProvider } from "./support/c
 import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
 import { issueUnattendedTurnAuthority } from "../../shared/authorization-required.js";
 import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
+import { answerEachStart } from "../../__tests__/support/approved-extension-start.js";
 import {
   __resetExtensionStartsForTest, deferExtensionStart, listPendingExtensionStarts, setExtensionStartAsker, type ExtensionStartAsker,
 } from "../../permissions/extension-start-consent.js";
 
 function waiting(overrides: Record<string, unknown> = {}) {
-  const ask = vi.fn<ExtensionStartAsker["ask"]>(async () => "yes");
+  const ask = vi.fn<ExtensionStartAsker["ask"]>(answerEachStart(() => "yes"));
   const notify = vi.fn<ExtensionStartAsker["notify"]>();
   const retry = vi.fn(async () => {});
   setExtensionStartAsker({ ask, notify });
-  for (const key of ["plugin-child:a", "mcp-stdio:b"]) deferExtensionStart({ key, kind: "plugin-child", label: key, cause: "no-backend", retry });
+  for (const key of ["plugin-child:a", "mcp-stdio:b"]) deferExtensionStart({ key, identity: "fixture", kind: "plugin-child", label: key, cause: "no-backend", retry });
   const loop = new ConversationLoop(makeBasicConversationLoopDeps(overrides));
   (loop as { provider: LLMProvider | null }).provider = new ScriptedTurnProvider([[
     { type: "text_delta", text: "done" } as StreamEvent,
@@ -29,13 +30,12 @@ function waiting(overrides: Record<string, unknown> = {}) {
 afterEach(() => __resetExtensionStartsForTest());
 
 describe("waiting extension starts at a turn", () => {
-  it("asks the person who typed the turn once per start, in that conversation", async () => {
+  it("asks the person who typed the turn about every waiting start on one card, in that conversation", async () => {
     const { loop, ask, notify, retry } = waiting();
     await loop.runTurn("hello", {}, undefined, userKeyboardTurn());
     await vi.waitFor(() => expect(retry).toHaveBeenCalledTimes(2));
-    expect(ask.mock.calls.map(([start, session]) => [start.key, session])).toEqual([
-      ["plugin-child:a", { sessionId: loop.getSessionId(), attended: true }],
-      ["mcp-stdio:b", { sessionId: loop.getSessionId(), attended: true }],
+    expect(ask.mock.calls.map(([starts, session]) => [starts.map((start) => start.key), session])).toEqual([
+      [["plugin-child:a", "mcp-stdio:b"], { sessionId: loop.getSessionId() }],
     ]);
     expect(notify).not.toHaveBeenCalled();
   });
@@ -58,7 +58,7 @@ describe("waiting extension starts at a turn", () => {
   it("runs a start a backend has come to confine at any turn, with no card", async () => {
     const { loop, ask, retry } = waiting();
     const confined = vi.fn(async () => {});
-    deferExtensionStart({ key: "plugin-child:c", kind: "plugin-child", label: "c", cause: "no-backend", retry: confined, recheck: () => "confined" });
+    deferExtensionStart({ key: "plugin-child:c", identity: "fixture", kind: "plugin-child", label: "c", cause: "no-backend", retry: confined, recheck: () => "confined" });
     await loop.runTurn("hello", {}, undefined, { inputOrigin: "queue-auto" });
     await vi.waitFor(() => expect(confined).toHaveBeenCalledTimes(1));
     expect(ask).not.toHaveBeenCalled();

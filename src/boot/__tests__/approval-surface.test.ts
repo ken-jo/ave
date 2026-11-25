@@ -89,7 +89,7 @@ describe("registered approval surface resolution", () => {
     const registry = new ApprovalSurfaceRegistry();
     registry.register("board-root", surfaceFixture().contents);
     const asker = createExtensionStartAsker({ approvalGate: gateFixture(registry), reason: () => "start it?", notify: vi.fn() });
-    const answer = asker.ask({ key: "mcp-stdio:files", kind: "mcp-stdio", label: "files", cause: "no-backend" }, { sessionId: "board-root", attended: true });
+    const answer = asker.ask([{ key: "mcp-stdio:files", identity: "fixture", kind: "mcp-stdio", label: "files", cause: "no-backend" }], { sessionId: "board-root" });
     await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
     await expect(answer).resolves.toBe("no-approver");
   });

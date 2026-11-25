@@ -2,7 +2,7 @@ import { securitySettingsGestures } from "../security-settings-gesture.js";
 import { isSecuritySettingsPatch } from "../../shared/security-settings.js";
 import { broadcastSettingsSnapshot, rendererSettingsSnapshot } from "./settings.js";
 /** Permissions domain IPC handlers. Covers: ave:permission:*, ave:approval:*, ave:policy:* */
-import { isBrowserSiteChoice } from "../../shared/permissions-events.js";
+import { isBrowserSiteChoice, isExtensionStartChoices } from "../../shared/permissions-events.js";
 import { ipcMain, session, type IpcMainInvokeEvent } from "electron";
 import { isRuleSpecifier } from "../../permissions/rules/rule-specifier.js";
 import { validatePermissionRule } from "../../permissions/rules/rule-files.js";
@@ -839,6 +839,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       body.browserSite !== undefined || body.userOwnedSurface !== undefined || body.userOwnedSurfaceReviewFallback !== undefined ||
       (body.choice !== "allow-once" && body.choice !== "allow-session" && body.choice !== "allow-always" && body.choice !== "deny-once" && body.choice !== "deny-always") ||
       (body.browserSiteChoice !== undefined && !isBrowserSiteChoice(body.browserSiteChoice)) ||
+      (body.extensionStartChoices !== undefined && !isExtensionStartChoices(body.extensionStartChoices)) ||
       (body.userOwnedSurfaceChoice !== undefined && !isUserOwnedSurfaceChoice(body.userOwnedSurfaceChoice))) {
       return { ok: false, error: "invalid-payload", message: "Invalid approval response" };
     }

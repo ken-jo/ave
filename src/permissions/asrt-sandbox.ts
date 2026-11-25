@@ -1268,7 +1268,10 @@ export function assertExtensionStartAllowed(options?: { readonly backend: "mxc" 
   const cause = failure !== undefined ? "home-privacy-unverified" : !isPluginWorkerConfinementActive() ? "no-backend" : undefined;
   if (cause === undefined) return;
   // No setting, rule or earlier answer stands in for it: one consent, one start.
-  if (!presentExtensionStartConsent(legacy?.start)) throw new ExtensionStartConsentRequiredError(cause);
+  const start = legacy?.start;
+  if (!presentExtensionStartConsent(start)) {
+    throw new ExtensionStartConsentRequiredError(cause, start === undefined ? undefined : { key: start.key, identity: start.identity });
+  }
 }
 
 // Reads are deny-only: allowRead only re-allows within a covering deny, so unknown paths remain readable. Project the canonical sensitive table plus trusted runtime userData and private temp/HOME roots; re-allow only each process's own private directory.

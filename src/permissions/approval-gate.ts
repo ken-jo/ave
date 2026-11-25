@@ -1,5 +1,5 @@
 import { browserOrigin } from "../shared/browser-tools.js";
-import { isBrowserSiteChoice, type BrowserSiteChoice } from "../shared/permissions-events.js";
+import { extensionStartApprovalRows, isBrowserSiteChoice, isExtensionStartChoices, type BrowserSiteChoice, type ExtensionStartChoice } from "../shared/permissions-events.js";
 import { aveHome, isAveHomeConfigurationRefused } from "../shared/ave-home.js";
 import { isRemoteControllerBoundToSession, refreshRemoteControllerBoundToSession } from "../shared/chat-origin.js";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
@@ -89,7 +89,7 @@ function maskApprovalPurposeForDisplay(
 
 // Permission policy.5 — discriminated kinds for the approval dock. Default `"tool"` is the normal Layer 3 ask; `"out-of-allowed-dir"` is the Layer 1 directory-confirm variant; and `"agent-action"` is a plugin-origin host approval request that does not correspond to a host tool execution.
 type ApprovalKind =
-  "tool" | "out-of-allowed-dir" | "agent-action" | "egress-host";
+  "tool" | "out-of-allowed-dir" | "agent-action" | "egress-host" | "extension-start";
 
 // The egress-host ask's payload (`kind: "egress-host"`): a sandboxed shell call or workspace terminal tab wants to reach `host:port`, and the person picks how long an allow lasts from `scopes`. Built by `egress-approval.ts`.
 interface EgressHostApproval {
@@ -348,6 +348,8 @@ export interface ApprovalDecision {
   userOwnedSurfaceChoice?: UserOwnedSurfaceChoice;
   // For an `egress-host` ask answered `allow-once`: how long the allow lasts, one of the request's `egressHost.scopes`. Required there, ignored everywhere else; a missing or unoffered scope makes the answer a deny.
   egressScope?: EgressGrantScope;
+  // For an `extension-start` ask: the person's own yes or no for each start on the card, by row id. The host accepts it only when it covers exactly the rows the card offered; an allow with no map is honoured only on a one-start card.
+  extensionStartChoices?: Readonly<Record<string, ExtensionStartChoice>>;
 
   rememberPattern?: string;
   // One-shot structured content captured by renderer-only approval surfaces. Currently used for MCP `elicitation/create` form-mode requests; never persisted in the user-approval memory store.
@@ -427,6 +429,39 @@ function assertEgressHostRequestShape(req: ApprovalRequestInput): void {
   if (req.durableApprovalRecordAllowed !== false) {
     throw new Error("approval: an egress-host request is never recorded in the user-approval store");
   }
+}
+
+// An `extension-start` request lists its starts in the signed `args`, offers exactly allow-once and deny-once, always needs a person, belongs to a conversation and is never recorded.
+function assertExtensionStartRequestShape(req: ApprovalRequestInput): void {
+  if (req.kind !== "extension-start") return;
+  if (extensionStartApprovalRows(req.args) === undefined) {
+    throw new Error("approval: an extension-start request lists at least one start, each with its own row id");
+  }
+  const choices = req.allowedChoices ?? [];
+  if (choices.length !== 2 || !choices.includes("allow-once") || !choices.includes("deny-once")) {
+    throw new Error("approval: an extension-start request offers exactly allow-once and deny-once");
+  }
+  if (req.durableApprovalRecordAllowed !== false || req.forceExplicit !== true || !req.sessionId) {
+    throw new Error("approval: an extension-start request is asked of a person in its conversation and never recorded");
+  }
+}
+
+// What an answer to an `extension-start` card may be. A map must answer exactly the offered rows and agree with the choice.
+// With no map, a deny refuses every start and an allow is an answer only on a one-start card. "desktop-only": a surface that
+// cannot answer per start said allow to several; the card stays for the desktop.
+function extensionStartAnswerProblem(
+  offered: readonly string[], decision: ApprovalDecision, nativeRenderer: boolean,
+): string | "desktop-only" | undefined {
+  const choices: unknown = decision.extensionStartChoices;
+  if (choices === undefined) {
+    if (decision.choice === "deny-once" || offered.length === 1) return undefined;
+    return nativeRenderer ? "extension start answers missing" : "desktop-only";
+  }
+  if (!isExtensionStartChoices(choices)) return "extension start answers malformed";
+  const answered = Object.keys(choices);
+  if (answered.length !== offered.length || !offered.every((id) => Object.hasOwn(choices, id))) return "extension start answers do not match the starts offered";
+  if ((decision.choice === "allow-once") !== Object.values(choices).includes("yes")) return "extension start answers disagree with the choice";
+  return undefined;
 }
 
 function markHostApprovalRejectedDecision(
@@ -575,6 +610,8 @@ interface PendingEntry {
     candidatePath: string;
     suggestedParent: string | null;
   };
+  // The row ids an `extension-start` ask offered, kept host-side for the answer check.
+  extensionStartIds?: readonly string[];
   // The scopes an `egress-host` ask offered, kept host-side for the answer check.
   egressScopes?: readonly EgressGrantScope[];
   // A workspace terminal tab's egress ask: only the window that owns the tab may fetch or answer it (`listPendingRendererRequests`, `resolveFromDesktopRenderer`).
@@ -1054,6 +1091,7 @@ export class ApprovalGate {
         requestId: req.id, choice: "deny-once", ...(rememberPattern === undefined ? {} : { rememberPattern }),
       });
     assertEgressHostRequestShape(req);
+    assertExtensionStartRequestShape(req);
     if (req.browserSite !== undefined && (browserOrigin(req.browserSite) !== req.browserSite || !req.sessionId || req.source !== "builtin" || req.forceExplicit !== true || req.durableApprovalRecordAllowed !== false || req.evaluationContext?.headless === true)) {
       return rejectBeforeAnswer();
     }
@@ -1495,6 +1533,9 @@ export class ApprovalGate {
                 suggestedParent: fullReq.outOfAllowedDir.suggestedParent,
               },
             }),
+        ...(fullReq.kind === "extension-start"
+          ? { extensionStartIds: (extensionStartApprovalRows(fullReq.args) ?? []).map((row) => row.id) }
+          : {}),
         ...(fullReq.egressHost === undefined
           ? {}
           : {
@@ -1864,6 +1905,35 @@ export class ApprovalGate {
           sessionId: entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
           type: "approval",
           output: `[approval:egress-scope-rejected] ${requestId} ${formatApprovalAuditFields({ ...entry, answeredBy }, entry.executionPlan)} choice=${decision.choice} scope=${decision.egressScope ?? "none"} → deny-once (forced)`,
+        });
+        const forcedDecision: ApprovalDecision = { requestId, choice: "deny-once", rememberPattern: problem };
+        hostRejectedApprovalDecisions.add(forcedDecision);
+        entry.resolve(forcedDecision);
+        return forcedDecision;
+      }
+    }
+    // Each start on an extension-start card has its own answer. A yes is never inferred for a start the answer does not name.
+    if (entry.kind === "extension-start" || decision.extensionStartChoices !== undefined) {
+      const problem = entry.kind === "extension-start"
+        ? extensionStartAnswerProblem(entry.extensionStartIds ?? [], decision, nativeRenderer)
+        : "extension start answers on another request";
+      if (problem === "desktop-only") {
+        this.auditLogger?.log({
+          timestamp: new Date().toISOString(),
+          sessionId: entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
+          type: "approval",
+          output: `[approval:native-desktop-required] ${requestId} ${formatApprovalAuditFields({ ...entry, answeredBy }, entry.executionPlan)} -> response-rejected`,
+        });
+        return null;
+      }
+      if (problem !== undefined) {
+        clearTimeout(entry.timer);
+        this.pending.delete(requestId);
+        this.auditLogger?.log({
+          timestamp: new Date().toISOString(),
+          sessionId: entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
+          type: "approval",
+          output: `[approval:extension-start-answers-rejected] ${requestId} ${formatApprovalAuditFields({ ...entry, answeredBy }, entry.executionPlan)} choice=${decision.choice} → deny-once (forced)`,
         });
         const forcedDecision: ApprovalDecision = { requestId, choice: "deny-once", rememberPattern: problem };
         hostRejectedApprovalDecisions.add(forcedDecision);

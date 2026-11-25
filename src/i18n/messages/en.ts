@@ -3255,6 +3255,7 @@ export const en = {
   "extensionStart.cardMcpStdio": "The MCP server {name} would start without OS isolation. Allow this one start?",
   "extensionStart.cardWorker": "The extension worker {name} would start without OS isolation. Allow this one start?",
   "extensionStart.cardPluginHook": "The extension hook {name} would run without OS isolation. Allow this one run?",
+  "extensionStart.cardBatch": "{count} extension starts would run without OS isolation: {names}. Answer for each one.",
   "extensionStart.declinedNoBackend": "{name} was not started: you declined to run it without OS isolation. Install the Windows sandbox in Settings > Permissions to run it isolated.",
   "extensionStart.declinedHomePrivacy": "{name} was not started: you declined to run it without OS isolation. Fix the Ave folder permissions shown in Settings > Permissions and restart Ave to run it isolated.",
   "extensionStart.notStartedTitle": "Extension not started",

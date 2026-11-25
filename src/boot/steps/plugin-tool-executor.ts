@@ -61,7 +61,12 @@ export function bootExtensionStartAsker(ctx: Pick<BootContext, "approvalGate" | 
   const { approvalGate, bootAuditLogger } = ctx;
   return createExtensionStartAsker({
     approvalGate,
-    reason: (start) => t(EXTENSION_START_CARD_KEYS[start.kind], { name: start.label }),
+    reason: (starts) => {
+      const [only] = starts;
+      return only !== undefined && starts.length === 1
+        ? t(EXTENSION_START_CARD_KEYS[only.kind], { name: only.label })
+        : t("extensionStart.cardBatch", { count: starts.length, names: starts.map((start) => start.label).join(", ") });
+    },
     notify: (start, why) => {
       const body = start.cause === "no-backend"
         ? (why === "declined" ? "extensionStart.declinedNoBackend" : "extensionStart.notStartedNoBackend")

@@ -2712,8 +2712,12 @@ abstract class PluginRuntimeState {
   /** Nothing confines this child: its start waits for a person, asked at the next attended turn. */
   private deferUnconfinedStart(manifest: PluginManifest, error: unknown): boolean {
     if (!isExtensionStartConsentRequired(error)) return false;
+    const key = pluginChildStartKey(manifest.id);
+    // The factory names what it would run; a refusal that names no start, or another one, has nothing a person could answer for.
+    if (error.start?.key !== key) throw new Error(`plugin '${manifest.id}' start was refused without naming this start`, { cause: error });
     deferExtensionStart({
-      key: pluginChildStartKey(manifest.id),
+      key,
+      identity: error.start.identity,
       kind: "plugin-child",
       label: pluginStartLabel(manifest.id, manifest.name),
       cause: error.unconfinedCause,

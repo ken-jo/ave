@@ -3,7 +3,7 @@ import { getLocale, setLocale } from "../../../i18n/index.js";
 import { bootExtensionStartAsker } from "../plugin-tool-executor.js";
 import type { PendingExtensionStart } from "../../../permissions/extension-start-consent.js";
 
-const START: PendingExtensionStart = { key: "plugin-child:notes", kind: "plugin-child", label: "Notes (notes)", cause: "no-backend" };
+const START: PendingExtensionStart = { key: "plugin-child:notes", identity: "fixture", kind: "plugin-child", label: "Notes (notes)", cause: "no-backend" };
 
 function subject() {
   const requestAndWait = vi.fn(async (_request: { reason: string }) => ({ choice: "deny-once" }));
@@ -20,12 +20,23 @@ describe("the extension start card, notice and audit rows at boot", () => {
 
   it("asks with the catalog text for the kind of start, naming the plugin by its id", async () => {
     const { asker, requestAndWait } = subject();
-    await asker.ask(START, { sessionId: "s1", attended: true });
-    await asker.ask({ ...START, kind: "plugin-hook" }, { sessionId: "s1", attended: true });
+    await asker.ask([START], { sessionId: "s1" });
+    await asker.ask([{ ...START, kind: "plugin-hook" }], { sessionId: "s1" });
     expect(requestAndWait.mock.calls.map(([request]) => request.reason)).toEqual([
       "The extension Notes (notes) would start without OS isolation. Allow this one start?",
       "The extension hook Notes (notes) would run without OS isolation. Allow this one run?",
     ]);
+  });
+
+  it("names every start on a card that lists several", async () => {
+    const { asker, requestAndWait } = subject();
+    await asker.ask([START, { ...START, key: "mcp-stdio:files", kind: "mcp-stdio", label: "files" }], { sessionId: "s1" });
+    expect(requestAndWait.mock.calls.map(([request]) => request.reason)).toEqual([
+      "2 extension starts would run without OS isolation: Notes (notes), files. Answer for each one.",
+    ]);
+    setLocale("ko");
+    await asker.ask([START, { ...START, key: "mcp-stdio:files", kind: "mcp-stdio", label: "files" }], { sessionId: "s1" });
+    expect(requestAndWait.mock.calls[1]?.[0].reason).toBe("2개 항목이 OS 격리 없이 시작됩니다: Notes (notes), files. 항목마다 따로 답해 주세요.");
   });
 
   it("says a declined start was declined, and an unanswered one that nobody approved it", () => {

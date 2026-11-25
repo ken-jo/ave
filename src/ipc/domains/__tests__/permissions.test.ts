@@ -1612,6 +1612,22 @@ describe("shell egress grants in Settings", () => {
     expect(deps.approvalGate.resolveFromDesktopRendererWithFreshIdentity).toHaveBeenCalledWith("egress-1", decision, sender);
   });
 
+  it("passes an extension-start card's per-start answers through to the gate, and refuses a malformed set before it", async () => {
+    const { deps, appWindows } = await setup();
+    const sender = appWindows[0].webContents;
+    const frame = { url: "file:///application/index.html" };
+    Object.assign(sender, { mainFrame: frame });
+    const decision = { requestId: "starts-1", choice: "allow-once", extensionStartChoices: { "row-1": "yes", "row-2": "no" }, nonce: "n", hmac: "h" };
+    const respond = handlers.get(PERMISSIONS.approvalRespond);
+    await respond?.({ sender, senderFrame: frame }, decision);
+    expect(deps.approvalGate.resolveFromDesktopRendererWithFreshIdentity).toHaveBeenCalledExactlyOnceWith("starts-1", decision, sender);
+    for (const extensionStartChoices of [["yes"], "yes", { "row-1": "always" }, { "row-1": true }, null]) {
+      expect(await respond?.({ sender, senderFrame: frame }, { ...decision, extensionStartChoices }))
+        .toMatchObject({ ok: false, error: "invalid-payload" });
+    }
+    expect(deps.approvalGate.resolveFromDesktopRendererWithFreshIdentity).toHaveBeenCalledTimes(1);
+  });
+
   it("lists persistent grants, and reports an unreadable store as an error", async () => {
     await setup();
     const grant = { scope: "always", host: "github.com", port: 443, grantedAt: "2026-10-19T00:00:00.000Z" };

@@ -14,6 +14,7 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
+import { answerEachStart, FIXTURE_START_IDENTITY as ID } from "../../__tests__/support/approved-extension-start.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { setAveHomePrivacyAtBoot, _resetAveHomePrivacyForTest } from "../../shared/ave-home.js";
 import { setPluginWorkerConfinementRequestedAtBoot, setWindowsSandboxSubstrate, __resetSandboxRequestedAtBootForTest, __resetWindowsSandboxSubstrateForTest } from "../sandbox-capability.js";
@@ -55,9 +56,17 @@ function unverifiedHome(category: "read-back-failed" | "helper-unavailable" = "r
   setAveHomePrivacyAtBoot({ enforcement: "none", home: path, category, reason: "fixture" });
 }
 
+type Refusal = { code?: string; start?: { key: string; identity: string } } | undefined;
+const refusalOf = (starting: Promise<unknown>): Promise<Refusal> => starting.then(() => undefined, (error: unknown) => error as Refusal);
+/** The identity the refused spawn site gave its start. */
+function namedIdentity(refusal: Refusal): string {
+  if (refusal?.start === undefined) throw new Error("the refusal names no start");
+  return refusal.start.identity;
+}
+
 /** A person answers yes for this start; the consent waits under its key for the start to take. */
-async function approve(key: string, kind: PendingExtensionStart["kind"], cause: PendingExtensionStart["cause"]): Promise<void> {
-  deferExtensionStart({ key, kind, label: key, cause });
+async function approve(key: string, kind: PendingExtensionStart["kind"], cause: PendingExtensionStart["cause"], identity: string = ID): Promise<void> {
+  deferExtensionStart({ key, identity, kind, label: key, cause });
   await settlePendingExtensionStarts({ sessionId: "privacy", attended: true });
 }
 
@@ -75,7 +84,7 @@ describe.each([
     path = home();
     arrange();
     spawn.mockReset();
-    ask = vi.fn<ExtensionStartAsker["ask"]>(async () => "yes");
+    ask = vi.fn<ExtensionStartAsker["ask"]>(answerEachStart(() => "yes"));
     notify = vi.fn<ExtensionStartAsker["notify"]>();
     setExtensionStartAsker({ ask, notify });
   });
@@ -95,7 +104,7 @@ describe.each([
     await expect(spawnConfinedPluginChild(spec)).rejects.toMatchObject({ code: EXTENSION_START_CONSENT_REQUIRED_CODE, unconfinedCause: cause });
     expect(spawn).not.toHaveBeenCalled();
     await approve(key, "plugin-child", cause);
-    const extensionStart = takeExtensionStartGrant(key);
+    const extensionStart = { identity: ID, authority: takeExtensionStartGrant(key) };
     spawn.mockImplementation(() => { throw new Error("fixture spawn reached"); });
     await expect(spawnConfinedPluginChild({ ...spec, extensionStart })).rejects.toThrow("fixture spawn reached");
     expect(spawn).toHaveBeenCalledTimes(1);
@@ -129,7 +138,7 @@ describe.each([
     expect(spawn).toHaveBeenCalledTimes(2);
     expect(ask).toHaveBeenCalledTimes(2);
     expect(ask.mock.calls.map(([, session]) => (session as { sessionId: string }).sessionId)).toEqual(["hook-session", "hook-session"]);
-    ask.mockResolvedValueOnce("no");
+    ask.mockImplementationOnce(answerEachStart(() => "no"));
     await expect(turnExtensionPolicyContext.run(TURN, () => runOneHookScript(hook, payload))).resolves.toMatchObject({ decision: "deny" });
     expect(spawn).toHaveBeenCalledTimes(2);
     // That no was for that run: the next run asks again and a yes runs it.
@@ -149,16 +158,18 @@ describe.each([
       if (kind === "plugin child") {
         return spawnConfinedChild({ command: "privacy-child.exe", args: [], label: "plugin-child:privacy",
           baseEnv: {}, grantMode: "deny-only", egressOwner: TEST_WORKER_EGRESS_OWNER,
-          extensionStart: { key, authority: takeExtensionStartGrant(key) } });
+          extensionStart: { key, identity: ID, authority: takeExtensionStartGrant(key) } });
       }
       client = new McpClient({ id: "privacy", transport: "stdio", command: "privacy-server.exe", args: [] },
         governanceWithPolicy(buildPolicy([stdioApproval("privacy", "privacy-server.exe")])), new ToolRegistry(), unusedNetworkFetch);
       return client.connect();
     };
-    await expect(start()).rejects.toThrow(EXTENSION_START_CONSENT_REQUIRED_CODE);
+    // The refused spawn site names the start it would run; the person is asked about exactly that.
+    const refused = await refusalOf(start());
+    expect(refused).toMatchObject({ code: EXTENSION_START_CONSENT_REQUIRED_CODE, start: { key } });
     expect(spawn).not.toHaveBeenCalled();
     const before = readdirSync(path);
-    await approve(key, kind === "MCP stdio" ? "mcp-stdio" : kind === "plugin worker" ? "worker" : "plugin-child", cause);
+    await approve(key, kind === "MCP stdio" ? "mcp-stdio" : kind === "plugin worker" ? "worker" : "plugin-child", cause, namedIdentity(refused));
     expect(readdirSync(path)).toEqual(before);
     if (kind === "MCP stdio") {
       const child = new FakeChildProcess();
@@ -178,6 +189,24 @@ describe.each([
     await expect(start()).rejects.toThrow(EXTENSION_START_CONSENT_REQUIRED_CODE);
     expect(spawn).toHaveBeenCalledTimes(1);
   });
+
+  it.each(["plugin worker", "MCP stdio"])("does not start %s on a yes given for what it ran before it changed", async (kind) => {
+    const key = kind === "plugin worker" ? workerStartKey("privacy", "worker") : mcpStdioStartKey("privacy");
+    const start = (program: string, args: string[]) => kind === "plugin worker"
+      ? spawnWorker({ pluginId: "privacy", workerId: "worker", control: "output-only-v1", command: program, args, extensionStart: takeExtensionStartGrant(key) })
+      : new McpClient({ id: "privacy", transport: "stdio", command: program, args },
+        governanceWithPolicy(buildPolicy([stdioApproval("privacy", program)])), new ToolRegistry(), unusedNetworkFetch).connect();
+    const shown = namedIdentity(await refusalOf(start("privacy.exe", ["serve"])));
+    for (const [program, args] of [["other.exe", ["serve"]], ["privacy.exe", ["serve", "--all"]]] as const) {
+      await approve(key, kind === "MCP stdio" ? "mcp-stdio" : "worker", cause, shown);
+      const changed = await refusalOf(start(program, [...args]));
+      expect(changed).toMatchObject({ code: EXTENSION_START_CONSENT_REQUIRED_CODE, start: { key } });
+      expect(namedIdentity(changed)).not.toBe(shown);
+      // The refused presentation spent the yes: the unchanged start cannot use it afterwards either.
+      await expect(start("privacy.exe", ["serve"])).rejects.toThrow(EXTENSION_START_CONSENT_REQUIRED_CODE);
+    }
+    expect(spawn).not.toHaveBeenCalled();
+  });
 });
 
 describe("the privacy helper gave no answer", () => {
@@ -187,7 +216,7 @@ describe("the privacy helper gave no answer", () => {
     path = home();
     unverifiedHome("helper-unavailable");
     spawn.mockReset();
-    setExtensionStartAsker({ ask: vi.fn(async () => "yes" as const), notify: vi.fn() });
+    setExtensionStartAsker({ ask: answerEachStart(() => "yes"), notify: vi.fn() });
   });
   afterEach(() => {
     __resetExtensionStartsForTest();
@@ -201,7 +230,7 @@ describe("the privacy helper gave no answer", () => {
     await approve(key, "plugin-child", "home-privacy-unverified");
     await expect(spawnConfinedChild({ command: "privacy-child.exe", args: [], label: "plugin-child:privacy",
       baseEnv: {}, grantMode: "deny-only", egressOwner: TEST_WORKER_EGRESS_OWNER,
-      extensionStart: { key, authority: takeExtensionStartGrant(key) } })).rejects.toThrow("Restart Ave");
+      extensionStart: { key, identity: ID, authority: takeExtensionStartGrant(key) } })).rejects.toThrow("Restart Ave");
     expect(spawn).not.toHaveBeenCalled();
   });
 });
